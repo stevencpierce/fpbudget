@@ -1,0 +1,619 @@
+{% extends "base.html" %}
+{% block title %}Schedule — {{ budget.name }}{% endblock %}
+
+{% block content %}
+{% set MODE_META = {
+  'estimated': {'label':'ESTIMATED', 'short':'Est',  'cls':'mode-estimated'},
+  'working':   {'label':'WORKING',   'short':'Work', 'cls':'mode-working'},
+} %}
+{% set cur_mode = MODE_META.get(budget.budget_mode, MODE_META['estimated']) %}
+
+<div class="page-header budget-header">
+  <div class="budget-header-left">
+    <div class="breadcrumb">
+      <a href="{{ url_for('dashboard') }}">Projects</a> /
+      <a href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}">{{ project.name }}</a> /
+      Schedule
+    </div>
+    <div class="budget-name-row">
+      <h1>{{ budget.name }}</h1>
+      <span class="mode-badge {{ cur_mode.cls }}">{{ cur_mode.label }}</span>
+    </div>
+  </div>
+  <div class="budget-header-right" style="display:flex;align-items:center;gap:.75rem;">
+    <!-- Version picker dropdown -->
+    {% set active_count = all_budgets | rejectattr('version_status', 'eq', 'archived') | list | length %}
+    {% set archived_count = all_budgets | selectattr('version_status', 'eq', 'archived') | list | length %}
+    {% set status_label = {'current': 'Active', 'superseded': 'Previous', 'archived': 'Archived'} %}
+    <div class="dropdown version-dropdown">
+      <button class="btn btn-sm btn-outline version-picker-btn">
+        Versions ({{ active_count }}) ▾
+      </button>
+      <div class="dropdown-menu version-menu">
+        {% for b in all_budgets %}
+        {% set bm = MODE_META.get(b.budget_mode, MODE_META['estimated']) %}
+        {% set is_cur = (b.id == budget.id) %}
+        <div class="version-item {% if is_cur %}version-item-active{% endif %} {% if b.version_status == 'archived' %}version-item-archived{% endif %}">
+          <a href="{{ url_for('gantt_view', pid=project.id, bid=b.id) }}" class="version-item-link">
+            <span class="version-item-name">{{ b.name }}</span>
+            <div class="version-item-meta">
+              <span class="version-status-badge vs-{{ b.version_status }}">{{ status_label.get(b.version_status, b.version_status | capitalize) }}</span>
+              <span class="mode-badge {{ bm.cls }}" style="font-size:.65rem;padding:.1rem .4rem">{{ bm.short }}</span>
+              {% if parent_names.get(b.id) %}
+              <span class="version-parent-ref">← {{ parent_names[b.id] }}</span>
+              {% endif %}
+            </div>
+            <div class="version-item-ts">
+              {% if b.updated_at %}Updated {{ b.updated_at | in_tz(budget.timezone) }}{% elif b.created_at %}Created {{ b.created_at | in_tz(budget.timezone) }}{% endif %}
+            </div>
+          </a>
+          {% if not is_cur %}
+          <div class="version-item-actions">
+            <button class="btn btn-xs btn-ghost version-archive-btn"
+                    data-bid="{{ b.id }}"
+                    title="{{ 'Restore to Previous' if b.version_status == 'archived' else 'Archive' }}">
+              {{ '↩' if b.version_status == 'archived' else '⊘' }}
+            </button>
+            <button class="btn btn-xs btn-ghost version-delete-btn"
+                    data-bid="{{ b.id }}" data-name="{{ b.name }}"
+                    title="Permanently delete {{ b.name }}">✕</button>
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+        <div class="version-menu-footer">
+          {% if archived_count > 0 %}
+          <button class="btn btn-xs btn-ghost version-show-archived-btn" style="width:100%;margin-bottom:.35rem">
+            Show {{ archived_count }} archived version{{ 's' if archived_count != 1 else '' }}
+          </button>
+          {% endif %}
+          <a href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}" class="btn btn-xs btn-ghost" style="width:100%;text-align:center;display:block">Manage in Budget View →</a>
+        </div>
+      </div>
+    </div>
+    <div class="dropdown">
+      <button class="btn btn-sm btn-outline">Export ▾</button>
+      <div class="dropdown-menu">
+        <a href="{{ url_for('export_csv', pid=project.id, bid=budget.id) }}">Top Sheet CSV</a>
+        <a href="{{ url_for('export_csv', pid=project.id, bid=budget.id, type='working') }}">Working Budget CSV</a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Shared tab bar + mode switcher row — Schedule is active -->
+<div class="tabs-row">
+  <div class="tabs">
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=topsheet">Top Sheet</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=working">Budget</a>
+    <span class="tab-btn active">Schedule</span>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=contacts">Contacts</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=locations">Locations</a>
+    <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=actuals">Actuals</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=settings">⚙ Settings</a>
+  </div>
+  <div class="mode-switcher-seg">
+    {% if current_estimated_bid %}
+    <a href="{{ url_for('gantt_view', pid=project.id, bid=current_estimated_bid) }}"
+       class="mode-seg-btn {% if budget.budget_mode not in ('working','actual') %}active mode-estimated{% endif %}">Estimated</a>
+    {% else %}
+    <span class="mode-seg-btn mode-seg-inactive" title="No estimated budget">Estimated</span>
+    {% endif %}
+    {% if current_working_bid %}
+    <a href="{{ url_for('gantt_view', pid=project.id, bid=current_working_bid) }}"
+       class="mode-seg-btn {% if budget.budget_mode in ('working','actual') %}active mode-working{% endif %}">Working</a>
+    {% else %}
+    <span class="mode-seg-btn mode-seg-inactive" title="No Working budget — create one in the Budget tab">Working</span>
+    {% endif %}
+  </div>
+</div>
+
+<div class="gantt-toolbar">
+  <button class="btn btn-sm btn-outline" id="btn-prev-week" onclick="shiftWindow(-7)">← Prev</button>
+  <button class="btn btn-sm btn-outline" id="btn-next-week" onclick="shiftWindow(7)">Next →</button>
+  <div class="gantt-range-btns">
+    <button class="btn btn-sm btn-ghost" onclick="showWeeks(2)" title="Show 2 weeks">2W</button>
+    <button class="btn btn-sm btn-ghost" onclick="showWeeks(3)" title="Show 3 weeks">3W</button>
+    <button class="btn btn-sm btn-ghost" onclick="showWeeks(4)" title="Show 4 weeks">4W</button>
+  </div>
+
+  <!-- Schedule being viewed -->
+  <span class="gantt-sched-mode-label mode-badge {{ cur_mode.cls }}" title="Currently editing {{ sched_mode }} schedule">{{ sched_mode | upper }} SCHEDULE</span>
+
+  <!-- Select mode button -->
+  <button class="btn btn-sm btn-outline" id="btn-select-mode" onclick="toggleSelectMode()">☐ Select</button>
+
+  <!-- Date range pickers -->
+  <label class="gantt-date-label">From
+    <input type="date" id="gantt-start-input" value="{{ gantt_start }}"
+           onchange="applyDateRange()" class="gantt-date-input">
+  </label>
+  <label class="gantt-date-label">To
+    <input type="date" id="gantt-end-input" value="{{ gantt_end }}"
+           onchange="applyDateRange()" class="gantt-date-input">
+  </label>
+
+  <div class="legend">
+    <span class="day-chip day-work">Work</span>
+    <span class="day-chip day-travel">Travel</span>
+    <span class="day-chip day-hold">Hold</span>
+    <span class="day-chip day-half">Half</span>
+    <span class="day-chip day-kill_fee">Kill</span>
+    <span class="day-chip day-off">Off</span>
+    <span class="day-chip day-has-ot-legend">OT</span>
+    <span class="day-chip day-has-dt-legend">DT</span>
+  </div>
+
+  <!-- Payroll profile selector + info button -->
+  <div class="payroll-selector-wrap">
+    <select class="payroll-profile-select" id="payroll-profile-select"
+            onchange="changePayrollProfile(this.value)"
+            title="Payroll profile drives OT/DT calculation">
+      <option value="">⚡ No payroll profile</option>
+      {% for p in payroll_profiles %}
+      <option value="{{ p.id }}"
+              {% if budget.payroll_profile_id == p.id %}selected{% endif %}
+              title="{{ p.description or '' }}">⚡ {{ p.name }}</option>
+      {% endfor %}
+    </select>
+    <button class="payroll-info-btn" id="payroll-info-btn"
+            onclick="togglePayrollInfo(event)" title="How this payroll profile calculates OT/DT">?</button>
+  </div>
+</div>
+
+<!-- Payroll info popup -->
+<div class="payroll-info-popup hidden" id="payroll-info-popup">
+  <div class="payroll-info-header">
+    <strong id="payroll-info-name"></strong>
+    <button class="payroll-info-close" onclick="hidePayrollInfo()">✕</button>
+  </div>
+  <div class="payroll-info-body" id="payroll-info-body"></div>
+  <div class="payroll-info-tip">Tip: Exempt fringe disables OT regardless of payroll profile.</div>
+</div>
+
+<!-- Select mode badge (shown when select mode is active) -->
+<div class="select-mode-badge hidden" id="select-mode-badge">
+  ☐ SELECT MODE — click cells to select, Cmd+C copy, Cmd+V paste, Shift or Esc to exit
+</div>
+
+<!-- Live Totals Panel -->
+<div class="gantt-totals-panel" id="gantt-totals-panel">
+  <div class="gantt-totals-header" onclick="toggleTotalsPanel()">
+    <span class="gantt-totals-title">Labor Totals</span>
+    <span class="gantt-totals-toggle" id="totals-toggle-icon">▼</span>
+  </div>
+  <div class="gantt-totals-body" id="gantt-totals-body">
+    <table class="gantt-totals-table" id="gantt-totals-table">
+      <thead>
+        <tr>
+          <th>Section</th>
+          <th class="col-num">ST</th>
+          <th class="col-num">OT</th>
+          <th class="col-num">DT</th>
+          <th class="col-num">Total</th>
+        </tr>
+      </thead>
+      <tbody id="gantt-totals-tbody">
+        {% for s in gantt_section_totals %}
+        <tr data-section="{{ s.code }}">
+          <td class="totals-section-name">{{ s.name }}</td>
+          <td class="col-num totals-st">{{ s.st | currency }}</td>
+          <td class="col-num totals-ot {{ 'has-ot' if s.ot > 0 else '' }}">{{ s.ot | currency }}</td>
+          <td class="col-num totals-dt {{ 'has-dt' if s.dt > 0 else '' }}">{{ s.dt | currency }}</td>
+          <td class="col-num totals-total"><strong>{{ s.total | currency }}</strong></td>
+        </tr>
+        {% else %}
+        <tr id="totals-empty-row"><td colspan="5" class="muted" style="padding:.4rem .5rem;font-size:.8rem">No schedule data yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="gantt-scroll-wrap" id="gantt-scroll-wrap">
+<table class="gantt-table" id="gantt-table">
+  <thead>
+    <tr>
+      <th class="gantt-row-label">Line / Crew</th>
+      {% for d in date_range %}
+      {% set is_week_start = d.isoformat() in week_boundary_dates %}
+      <th class="gantt-date-col {{ 'weekend' if d.weekday() >= 5 else '' }} {{ 'week-start-col' if is_week_start else '' }}"
+          data-date="{{ d.isoformat() }}">
+        <div class="gantt-date-head">
+          {% if is_week_start %}
+          <span class="week-label">Wk</span>
+          {% endif %}
+          <span class="gantt-dow">{{ d.strftime('%a') }}</span>
+          <span class="gantt-day">{{ d.strftime('%-m/%-d') }}</span>
+        </div>
+      </th>
+      {% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+
+    <!-- ── Working Meal rows (production-wide per-day flags) ── -->
+    <tr class="gantt-meal-row" data-meal="courtesy_breakfast">
+      <td class="gantt-row-label gantt-meal-label">
+        <span class="gantt-line-desc">Courtesy Breakfast</span>
+      </td>
+      {% for d in date_range %}
+      {% set is_week_start = d.isoformat() in week_boundary_dates %}
+      {% set meal_data = meal_map.get(d.isoformat(), {}) %}
+      {% set active = meal_data.get('courtesy_breakfast', False) %}
+      <td class="gantt-meal-cell {{ 'meal-active' if active else '' }} {{ 'week-start-col' if is_week_start else '' }}"
+          data-date="{{ d.isoformat() }}" data-meal="courtesy_breakfast"
+          onclick="toggleMeal(this)">
+        {% if active %}<span class="meal-dot">●</span>{% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+
+    <tr class="gantt-meal-row" data-meal="first_meal">
+      <td class="gantt-row-label gantt-meal-label">
+        <span class="gantt-line-desc">First Meal</span>
+      </td>
+      {% for d in date_range %}
+      {% set is_week_start = d.isoformat() in week_boundary_dates %}
+      {% set meal_data = meal_map.get(d.isoformat(), {}) %}
+      {% set active = meal_data.get('first_meal', False) %}
+      <td class="gantt-meal-cell {{ 'meal-active' if active else '' }} {{ 'week-start-col' if is_week_start else '' }}"
+          data-date="{{ d.isoformat() }}" data-meal="first_meal"
+          onclick="toggleMeal(this)">
+        {% if active %}<span class="meal-dot">●</span>{% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+
+    <tr class="gantt-meal-row" data-meal="second_meal">
+      <td class="gantt-row-label gantt-meal-label">
+        <span class="gantt-line-desc">Second Meal</span>
+      </td>
+      {% for d in date_range %}
+      {% set is_week_start = d.isoformat() in week_boundary_dates %}
+      {% set meal_data = meal_map.get(d.isoformat(), {}) %}
+      {% set active = meal_data.get('second_meal', False) %}
+      <td class="gantt-meal-cell {{ 'meal-active' if active else '' }} {{ 'week-start-col' if is_week_start else '' }}"
+          data-date="{{ d.isoformat() }}" data-meal="second_meal"
+          onclick="toggleMeal(this)">
+        {% if active %}<span class="meal-dot">●</span>{% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+
+    <!-- ── Labor rows ── -->
+    {% set ns = namespace(prev_account_code=None, prev_sub_group=None) %}
+    {% for row in expanded_lines %}
+
+    {# Department header row when account_code changes #}
+    {% if loop.first or row.account_code != ns.prev_account_code %}
+    <tr class="gantt-dept-header">
+      <td colspan="{{ date_range|length + 1 }}">{{ row.account_name }}</td>
+    </tr>
+    {% set ns.prev_sub_group = None %}
+    {% endif %}
+
+    {# Sub-department header for Production Staff (account 1000) #}
+    {% if row.account_code == 1000 and row.sub_group and row.sub_group != ns.prev_sub_group %}
+    <tr class="gantt-sub-dept-header">
+      <td colspan="{{ date_range|length + 1 }}">{{ row.sub_group }}</td>
+    </tr>
+    {% set ns.prev_sub_group = row.sub_group %}
+    {% endif %}
+
+    {% set ns.prev_account_code = row.account_code %}
+
+    {% set row_key = row.id ~ ':' ~ row.instance %}
+    {% set assignment = assignments_map.get((row.id, row.instance)) %}
+    {% if assignment and assignment.crew_member_id and assignment.crew_member %}
+      {% set assigned_name = assignment.crew_member.name %}
+    {% elif assignment and assignment.name_override %}
+      {% set assigned_name = assignment.name_override %}
+    {% else %}
+      {% set assigned_name = None %}
+    {% endif %}
+    <tr class="gantt-row" data-line-id="{{ row.id }}" data-instance="{{ row.instance }}" data-rate="{{ row.rate }}">
+      <td class="gantt-row-label">
+        <span class="gantt-line-code">{{ row.account_code }}</span>
+        <span class="gantt-line-desc {{ 'gantt-label-custom' if row.custom_label else '' }}"
+              data-line="{{ row.id }}" data-instance="{{ row.instance }}"
+              data-base-label="{{ row.base_label | e }}"
+              title="Double-click to rename for schedule"
+              ondblclick="startLabelEdit(this)">{{ row.label }}{% if row.custom_label %}<span class="gantt-label-original">({{ row.base_label }})</span>{% endif %}</span>
+        {% if row_key in overflow_before %}
+        <span class="gantt-overflow-arrow gantt-overflow-left"
+              title="Work days before visible range — click to jump"
+              data-date="{{ overflow_earliest[row_key].isoformat() }}"
+              onclick="jumpOverflow(event)">◀</span>
+        {% endif %}
+        {% if row_key in overflow_after %}
+        <span class="gantt-overflow-arrow gantt-overflow-right"
+              title="Work days after visible range — click to jump"
+              data-date="{{ overflow_latest[row_key].isoformat() }}"
+              onclick="jumpOverflow(event)">▶</span>
+        {% endif %}
+        <label class="sched-toggle" title="Use schedule to drive this line's days/total">
+          <input type="checkbox" class="use-sched-cb" data-id="{{ row.id }}"
+                 {{ 'checked' if row.use_schedule else '' }}>
+          <span class="sched-toggle-label">Sched</span>
+        </label>
+        <span class="gantt-crew-chip {{ '' if assigned_name else 'unassigned' }}"
+              data-line="{{ row.id }}" data-instance="{{ row.instance }}"
+              onclick="openCrewPicker({{ row.id }}, {{ row.instance }}, this)"
+              title="{{ assigned_name or 'Click to assign crew member' }}">
+          {{ assigned_name or '+ Assign' }}
+          {% if assigned_name %}
+          <span class="crew-chip-remove" title="Remove"
+                onclick="event.stopPropagation(); removeCrewFromRow({{ row.id }}, {{ row.instance }}, this.parentElement)">✕</span>
+          {% endif %}
+        </span>
+      </td>
+      {% for d in date_range %}
+      {% set is_week_start = d.isoformat() in week_boundary_dates %}
+      {% set cell = day_map.get((row.id, row.instance, d.isoformat())) %}
+      {% set ot_status = ot_status_map.get(row.id ~ ':' ~ row.instance ~ ':' ~ d.isoformat()) %}
+      {% set flags = (cell.cell_flags | fromjson) if cell and cell.cell_flags else {} %}
+      <td class="gantt-cell {{ 'weekend' if d.weekday() >= 5 else '' }} {{ 'week-start-col' if is_week_start else '' }} {{ 'day-' + cell.day_type if cell else 'day-off' }} {{ 'day-has-ot' if ot_status == 'ot' else ('day-has-dt' if ot_status == 'dt' else '') }}"
+          data-line="{{ row.id }}" data-instance="{{ row.instance }}" data-date="{{ d.isoformat() }}"
+          data-type="{{ cell.day_type if cell else 'off' }}"
+          data-ot-hours="{{ cell.est_ot_hours | float if cell and cell.est_ot_hours else 0 }}"
+          data-flags="{{ cell.cell_flags or '{}' }}"
+          title="{{ cell.note or '' }}"
+          onclick="handleCellClick(event, this)">
+        {% if cell and cell.day_type != 'off' %}
+          <span class="cell-label">{{ cell.day_type | upper | truncate(2, True, '') }}</span>
+          {% if cell.est_ot_hours and cell.est_ot_hours > 0 %}
+            <span class="cell-ot-badge">+{{ cell.est_ot_hours | float }}h</span>
+          {% endif %}
+        {% endif %}
+        {# Corner travel flags #}
+        {% if flags.get('flight') %}<span class="flag-dot flag-flight" title="Flight"></span>{% endif %}
+        {% if flags.get('mileage') %}<span class="flag-dot flag-mileage" title="Mileage"></span>{% endif %}
+        {% if flags.get('car_rental') %}<span class="flag-dot flag-car-rental" title="Car Rental"></span>{% endif %}
+        {% if flags.get('hotel') %}
+          <span class="flag-dot flag-hotel-l" title="Hotel"></span>
+          <span class="flag-dot flag-hotel-r" title="Hotel"></span>
+        {% endif %}
+        {% if flags.get('working_meal') %}<span class="flag-dot flag-working-meal" title="Working Meal"></span>{% endif %}
+        {% if flags.get('per_diem') %}<span class="flag-dot flag-per-diem" title="Per Diem"></span>{% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+
+    <!-- ── Location rows ── -->
+    {% if gantt_locations %}
+    <tr class="gantt-dept-header">
+      <td colspan="{{ date_range|length + 1 }}">📍 Locations</td>
+    </tr>
+    {% for loc in gantt_locations %}
+    <tr class="gantt-location-row" data-loc-id="{{ loc.id }}">
+      <td class="gantt-row-label">
+        <span class="gantt-line-code">{{ loc.location_type or 'LOC' }}</span>
+        <span class="gantt-line-desc">{{ loc.name }}</span>
+        {% if loc.daily_rate and loc.billing_type != 'info_only' %}
+        <span class="location-rate-badge">${{ loc.daily_rate | round(0) | int }}/day</span>
+        {% endif %}
+      </td>
+      {% for d in date_range %}
+      {% set is_week_start = d.isoformat() in week_boundary_dates %}
+      {% set loc_day_type = gantt_loc_day_map.get((loc.id, d.isoformat()), '') %}
+      <td class="gantt-loc-cell {{ 'week-start-col' if is_week_start else '' }} {{ 'loc-day-' + loc_day_type if loc_day_type else '' }}"
+          data-loc="{{ loc.id }}" data-date="{{ d.isoformat() }}"
+          onclick="toggleLocDay(this)"
+          title="{{ loc.name }} — {{ d.strftime('%a %-m/%-d') }}">
+        {% if loc_day_type %}
+        <span class="loc-day-label">{{ loc_day_type[0]|upper }}</span>
+        {% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+    {% endif %}
+  </tbody>
+</table>
+</div>
+
+<!-- Day type picker (right-click context menu — subcategory selection) -->
+<div id="day-picker" class="day-picker hidden">
+  <div class="day-picker-section-label">Day Type</div>
+  {% for dt in day_types %}{% if dt != 'off' %}
+  <button class="day-pick-btn day-{{ dt }}" data-type="{{ dt }}">{{ dt | replace('_', ' ') | title }}</button>
+  {% endif %}{% endfor %}
+  <button class="day-pick-btn day-off" data-type="off">Off (clear)</button>
+  <div class="day-picker-divider"></div>
+  <button class="day-pick-btn day-note-btn" data-type="__note__">📝 Add Note</button>
+  <button class="day-pick-btn day-ot-btn" data-type="__ot__">⏱ OT Hours</button>
+  <div class="day-picker-divider"></div>
+  <div class="day-picker-flags" id="day-picker-flags">
+    <span class="flag-toggle-label">Meals:</span>
+    <button class="flag-toggle-btn" data-flag="working_meal">🍽 Working Meal</button>
+    <button class="flag-toggle-btn" data-flag="per_diem">💰 Per Diem</button>
+    <span class="flag-toggle-label">Travel:</span>
+    <button class="flag-toggle-btn" data-flag="flight">✈ Flight</button>
+    <button class="flag-toggle-btn" data-flag="mileage">🚗 Mileage</button>
+    <button class="flag-toggle-btn" data-flag="hotel">🏨 Hotel</button>
+    <button class="flag-toggle-btn" data-flag="car_rental">🔑 Car Rental</button>
+  </div>
+</div>
+
+<!-- Crew picker popover -->
+<div id="crew-picker-popover" class="crew-picker-popover hidden">
+  <div class="crew-picker-header">
+    <input type="text" id="crew-picker-search" class="crew-picker-search"
+           placeholder="Search by name…" oninput="filterCrewPicker(this.value)" autocomplete="off">
+    <button class="crew-picker-x" onclick="closeCrewPicker()" title="Close">✕</button>
+  </div>
+  <div id="crew-picker-list" class="crew-picker-list"></div>
+  <div class="crew-picker-footer">
+    <button class="btn btn-ghost btn-xs" onclick="assignCrewToRow(null, null)">✕ Clear</button>
+    <button class="btn btn-primary btn-xs" onclick="openAddCrewModal()">+ Add Crew</button>
+  </div>
+</div>
+
+<!-- Add Crew modal (inline, no page nav) -->
+<div id="add-crew-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="closeAddCrewModal()"></div>
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-header">
+      <h3 style="margin:0">Add Crew Member</h3>
+      <button class="modal-close" onclick="closeAddCrewModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label>Name <span style="color:var(--danger)">*</span></label>
+        <input type="text" id="ac-name" placeholder="Full name" autocomplete="off"
+               onkeydown="if(event.key==='Enter') submitAddCrew()">
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Phone</label>
+          <input type="tel" id="ac-phone" placeholder="Phone">
+        </div>
+        <div class="field"><label>Email</label>
+          <input type="email" id="ac-email" placeholder="Email">
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Company</label>
+          <input type="text" id="ac-company" placeholder="Loan-out or agency">
+        </div>
+        <div class="field"><label>Department</label>
+          <input type="text" id="ac-department" placeholder="e.g. Camera">
+        </div>
+      </div>
+      <p id="ac-error" class="form-error hidden"></p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeAddCrewModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitAddCrew()">Add &amp; Assign</button>
+    </div>
+  </div>
+</div>
+
+<!-- Select mode bulk action menu (right-click when cells are selected) -->
+<div id="select-action-menu" class="select-action-menu hidden">
+  <div class="select-action-label" id="select-action-count"></div>
+  <div class="select-action-section">Set day type:</div>
+  <button class="select-action-btn" data-action="type" data-value="work">Work</button>
+  <button class="select-action-btn" data-action="type" data-value="travel">Travel</button>
+  <button class="select-action-btn" data-action="type" data-value="hold">Hold</button>
+  <button class="select-action-btn" data-action="type" data-value="half">Half</button>
+  <button class="select-action-btn" data-action="type" data-value="kill_fee">Kill Fee</button>
+  <button class="select-action-btn" data-action="type" data-value="off">Off (clear)</button>
+  <div class="select-action-divider"></div>
+  <div class="select-action-section">Toggle flag on all:</div>
+  <button class="select-action-btn" data-action="flag" data-value="working_meal">🍽 Working Meal</button>
+  <button class="select-action-btn" data-action="flag" data-value="per_diem">💰 Per Diem</button>
+  <button class="select-action-btn" data-action="flag" data-value="hotel">🏨 Hotel</button>
+  <button class="select-action-btn" data-action="flag" data-value="flight">✈ Flight</button>
+  <button class="select-action-btn" data-action="flag" data-value="mileage">🚗 Mileage</button>
+</div>
+
+{# ── Floating budget total bar ──────────────────────────────────────────────── #}
+<div id="budget-float-bar" class="budget-float-bar">
+  <div class="float-bar-inner">
+    <div class="float-bar-item">
+      <span class="float-bar-label">Subtotal</span>
+      <span class="float-bar-value" id="float-subtotal">{{ gantt_top_sheet.subtotal_estimated | currency }}</span>
+    </div>
+    <div class="float-bar-item float-bar-fee">
+      <span class="float-bar-label">Prod. Fee ({{ (gantt_top_sheet.company_fee_pct * 100) | round(1) }}%{% if gantt_top_sheet.company_fee_dispersed %} · Disp.{% endif %})</span>
+      <span class="float-bar-value" id="float-fee">{{ gantt_top_sheet.company_fee | currency }}</span>
+    </div>
+    <div class="float-bar-item float-bar-grand">
+      <span class="float-bar-label">Grand Total</span>
+      <span class="float-bar-value" id="float-grand">{{ gantt_top_sheet.grand_total_estimated | currency }}</span>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PAYROLL_PROFILES = {{ profiles_json | safe }};
+const ALL_CREW = {{ crew_members_json | safe }};
+const _GANTT_PID = {{ project.id }};
+const _GANTT_BID = {{ budget.id }};
+// Add bottom padding so gantt content clears the float bar
+document.body.style.paddingBottom = '56px';
+</script>
+<script>
+// ── Version management (gantt) ───────────────────────────────────────────────
+(function() {
+  // Hide archived items on load
+  document.querySelectorAll('.version-item-archived').forEach(el => el.style.display = 'none');
+
+  // Show/hide archived toggle
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('.version-show-archived-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    const items = document.querySelectorAll('.version-item-archived');
+    const anyHidden = [...items].some(el => el.style.display === 'none');
+    items.forEach(el => el.style.display = anyHidden ? '' : 'none');
+    btn.textContent = anyHidden
+      ? `Hide archived version${items.length !== 1 ? 's' : ''}`
+      : `Show ${items.length} archived version${items.length !== 1 ? 's' : ''}`;
+  });
+
+  // Archive toggle
+  document.addEventListener('click', async e => {
+    const btn = e.target.closest('.version-archive-btn');
+    if (!btn) return;
+    e.preventDefault(); e.stopPropagation();
+    const r = await fetch(`/projects/${_GANTT_PID}/budget/${btn.dataset.bid}/archive`, { method: 'POST' });
+    if (r.ok) { window.location.reload(); }
+  });
+
+  // Delete
+  document.addEventListener('click', async e => {
+    const btn = e.target.closest('.version-delete-btn');
+    if (!btn) return;
+    e.preventDefault(); e.stopPropagation();
+    if (!confirm(`Permanently delete "${btn.dataset.name}"? This cannot be undone.`)) return;
+    const r = await fetch(`/projects/${_GANTT_PID}/budget/${btn.dataset.bid}/delete`, { method: 'POST' });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert(d.error || 'Could not delete this version.');
+      return;
+    }
+    const d = await r.json();
+    window.location = d.redirect;
+  });
+})();
+</script>
+<script src="{{ url_for('static', filename='gantt.js') }}"></script>
+<script>
+initGantt({{ project.id }}, {{ budget.id }}, {{ budget.payroll_profile_id or 'null' }});
+</script>
+<script>
+const LOC_DAY_TYPES = ['use', 'scout', 'hold', 'strike'];
+const LOC_DAY_LABELS = {use:'Use', scout:'Scout', hold:'Hold', strike:'Strike'};
+
+async function toggleLocDay(cell) {
+  const locId  = cell.dataset.loc;
+  const date   = cell.dataset.date;
+  const current = cell.classList.contains('loc-day-use') ? 'use'
+                : cell.classList.contains('loc-day-scout') ? 'scout'
+                : cell.classList.contains('loc-day-hold') ? 'hold'
+                : cell.classList.contains('loc-day-strike') ? 'strike' : '';
+  // Cycle: '' → use → scout → hold → strike → ''
+  const cycle = ['', 'use', 'scout', 'hold', 'strike', ''];
+  const nextType = cycle[cycle.indexOf(current) + 1] ?? '';
+
+  LOC_DAY_TYPES.forEach(t => cell.classList.remove('loc-day-' + t));
+  cell.innerHTML = '';
+  if (nextType) {
+    cell.classList.add('loc-day-' + nextType);
+    cell.innerHTML = `<span class="loc-day-label">${nextType[0].toUpperCase()}</span>`;
+  }
+
+  await fetch(`/projects/{{ project.id }}/budget/{{ budget.id }}/location-day`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ location_id: parseInt(locId), date, day_type: nextType }),
+  });
+}
+</script>
+{% endblock %}

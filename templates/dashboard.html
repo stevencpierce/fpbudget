@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Projects — FPBudget{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Projects</h1>
+  <button class="btn btn-primary"
+          onclick="document.getElementById('new-project-modal').classList.remove('hidden')">
+    + New Project
+  </button>
+</div>
+
+{% if projects %}
+<div class="card-grid">
+  {% for p in projects %}
+  <div class="project-card">
+    <div class="project-card-name">{{ p.name }}</div>
+    <div class="project-card-meta">
+      {{ budget_counts.get(p.id, 0) }} budget{{ 's' if budget_counts.get(p.id, 0) != 1 else '' }}
+    </div>
+    <div class="project-card-actions">
+      <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-primary btn-sm">
+        Open Budget
+      </a>
+      <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
+            onsubmit="return confirm('Delete {{ p.name }} and all its budgets?')">
+        <button type="submit" class="btn btn-sm btn-ghost" title="Delete project">✕</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+  <p>No projects yet.</p>
+  <button class="btn btn-primary"
+          onclick="document.getElementById('new-project-modal').classList.remove('hidden')">
+    Create First Project
+  </button>
+</div>
+{% endif %}
+
+<!-- New Project Modal -->
+<div id="new-project-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box">
+    <h2>New Project</h2>
+    <form method="POST" action="{{ url_for('project_new') }}">
+      <div class="field">
+        <label>Project Name</label>
+        <input type="text" name="name" required autofocus placeholder="e.g. GINTS Season 2">
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline"
+                onclick="document.getElementById('new-project-modal').classList.add('hidden')">
+          Cancel
+        </button>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ project.name }} — Budget {{ 'Working' if is_working_view else 'Estimated' }}</title>
+<style>
+  @page {
+    size: letter landscape;
+    margin: 0.65in 0.6in 0.7in 0.6in;
+    @bottom-center {
+      content: "{{ project.name | replace('"', '\"') }} \B7 {{ budget.name | replace('"', '\"') }} \B7 " counter(page) " of " counter(pages);
+      font-family: Arial, sans-serif;
+      font-size: 8pt;
+      color: #888;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 9pt;
+    color: #1a1a1a;
+    line-height: 1.35;
+  }
+
+  /* ── Header ── */
+  .pdf-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding-bottom: 10pt;
+    border-bottom: 2pt solid #1a1a1a;
+    margin-bottom: 14pt;
+  }
+  .pdf-header-left .company-name {
+    font-size: 14pt;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    margin-bottom: 3pt;
+  }
+  .pdf-header-left .company-detail {
+    font-size: 7.5pt;
+    color: #555;
+    line-height: 1.5;
+  }
+  .pdf-header-right {
+    text-align: right;
+  }
+  .pdf-header-right .production-title {
+    font-size: 13pt;
+    font-weight: 700;
+    margin-bottom: 3pt;
+  }
+  .pdf-header-right .meta-row {
+    font-size: 7.5pt;
+    color: #555;
+    line-height: 1.6;
+  }
+  .pdf-header-right .version-badge {
+    display: inline-block;
+    background: {% if is_working_view %}#1a3a6b{% else %}#2d6a2d{% endif %};
+    color: #fff;
+    font-size: 7pt;
+    font-weight: 700;
+    padding: 1pt 5pt;
+    border-radius: 2pt;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    margin-bottom: 4pt;
+  }
+
+  /* ── Section title ── */
+  .section-title {
+    font-size: 10pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 6pt;
+    color: #1a1a1a;
+    border-bottom: 0.5pt solid #ccc;
+    padding-bottom: 3pt;
+  }
+
+  /* ── Tables ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 8.5pt;
+  }
+  thead tr {
+    background: #1a1a1a;
+    color: #fff;
+  }
+  thead th {
+    padding: 4pt 6pt;
+    text-align: left;
+    font-weight: 600;
+    font-size: 7.5pt;
+    letter-spacing: 0.3px;
+  }
+  thead th.num { text-align: right; }
+
+  tbody tr { border-bottom: 0.25pt solid #e0e0e0; }
+  tbody tr:nth-child(even) { background: #f9f9f9; }
+  tbody td { padding: 3.5pt 6pt; vertical-align: middle; }
+  tbody td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody td.code { color: #888; font-size: 7.5pt; width: 52pt; }
+  tbody td.account { font-weight: 500; }
+
+  /* Section subtotal row */
+  tr.section-sub td { border-top: 0.5pt solid #aaa; font-weight: 600; background: #f0f0f0; }
+  /* Auto-calc line (Workers Comp / Payroll Fee) */
+  tr.auto-line td { color: #666; font-style: italic; font-size: 7.5pt; }
+  /* Total rows */
+  tr.subtotal-row td { border-top: 1pt solid #666; font-weight: 700; font-size: 9pt; background: #efefef; }
+  tr.fee-row td { font-style: italic; color: #2d7a2d; }
+  tr.grand-total-row td { border-top: 2pt solid #1a1a1a; font-weight: 800; font-size: 10pt; background: #e8eaf6; }
+
+  /* Variance */
+  .var-over  { color: #c0392b; font-weight: 600; }
+  .var-under { color: #1a6b3a; font-weight: 600; }
+
+  /* ── Detail section header ── */
+  .detail-section-header {
+    margin-top: 18pt;
+    margin-bottom: 5pt;
+    page-break-after: avoid;
+  }
+  .detail-section-header h3 {
+    font-size: 9pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    background: #334;
+    color: #fff;
+    padding: 3pt 6pt;
+  }
+
+  .page-break { page-break-before: always; }
+  .no-break   { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+
+{# ── Macros ── #}
+{% macro currency(v) %}${{ "{:,.2f}".format(v | float) }}{% endmacro %}
+
+{# ── Header ── #}
+<div class="pdf-header">
+  <div class="pdf-header-left">
+    {% if company_settings.company_name %}
+    <div class="company-name">{{ company_settings.company_name }}</div>
+    {% endif %}
+    <div class="company-detail">
+      {% if company_settings.address_line1 %}{{ company_settings.address_line1 }}<br>{% endif %}
+      {% if company_settings.address_line2 %}{{ company_settings.address_line2 }}<br>{% endif %}
+      {% if company_settings.city or company_settings.state or company_settings.zip_code %}
+        {{ [company_settings.city, company_settings.state, company_settings.zip_code] | select | join(', ') }}<br>
+      {% endif %}
+      {% if company_settings.phone %}{{ company_settings.phone }}{% if company_settings.email %} &nbsp;|&nbsp; {% endif %}{% endif %}
+      {% if company_settings.email %}{{ company_settings.email }}{% endif %}
+    </div>
+  </div>
+  <div class="pdf-header-right">
+    <div class="production-title">{{ project.name }}</div>
+    <div class="meta-row">
+      <span class="version-badge">{{ 'Working Budget' if is_working_view else 'Estimated Budget' }}</span><br>
+      {% if budget.client_name %}<strong>Client:</strong> {{ budget.client_name }}<br>{% endif %}
+      <strong>Version:</strong> {{ budget.name }}<br>
+      <strong>Date:</strong> {{ today.strftime('%B %d, %Y') }}<br>
+      {% if budget.prepared_by %}
+        <strong>Prepared by:</strong> {{ budget.prepared_by }}{% if budget.prepared_by_title %}, {{ budget.prepared_by_title }}{% endif %}<br>
+        {% if budget.prepared_by_email %}{{ budget.prepared_by_email }}{% if budget.prepared_by_phone %} &nbsp;|&nbsp; {% endif %}{% endif %}
+        {% if budget.prepared_by_phone %}{{ budget.prepared_by_phone }}{% endif %}
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{# ── Top Sheet ── #}
+<div class="section-title">Budget Summary — Top Sheet</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:52pt">Code</th>
+      <th>Account</th>
+      <th class="num" style="width:90pt">
+        {% if is_working_view %}Estimated{% else %}Budget{% endif %}
+      </th>
+      {% if is_working_view %}
+      <th class="num" style="width:90pt">Working</th>
+      <th class="num" style="width:80pt">Variance</th>
+      {% endif %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in top_sheet.rows %}
+    <tr>
+      <td class="code">{{ row.code }}</td>
+      <td class="account">{{ row.account }}</td>
+      {% if is_working_view %}
+        {# For working view, top_sheet computed from working lines — show est (frozen) vs working #}
+        <td class="num">{{ currency(row.raw_estimated if row.raw_estimated is defined else row.estimated) }}</td>
+        <td class="num">{{ currency(row.estimated) }}</td>
+        {% set _var = row.estimated - (row.raw_estimated if row.raw_estimated is defined else row.estimated) %}
+        <td class="num {% if _var > 0.005 %}var-over{% elif _var < -0.005 %}var-under{% endif %}">
+          {{ currency(_var) }}
+        </td>
+      {% else %}
+        <td class="num">{{ currency(row.estimated) }}</td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+    {# Auto-calc lines (Workers Comp / Payroll Fee) — always shown regardless of dispersed #}
+    {% if top_sheet.workers_comp_amount > 0 %}
+    <tr class="auto-line">
+      <td class="code">14000*</td>
+      <td>Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of labor)</td>
+      <td class="num">{{ currency(top_sheet.workers_comp_amount) }}</td>
+      {% if is_working_view %}<td class="num">{{ currency(top_sheet.workers_comp_amount) }}</td><td class="num">—</td>{% endif %}
+    </tr>
+    {% endif %}
+    {% if top_sheet.payroll_fee_amount > 0 %}
+    <tr class="auto-line">
+      <td class="code">15000*</td>
+      <td>Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}%)</td>
+      <td class="num">{{ currency(top_sheet.payroll_fee_amount) }}</td>
+      {% if is_working_view %}<td class="num">{{ currency(top_sheet.payroll_fee_amount) }}</td><td class="num">—</td>{% endif %}
+    </tr>
+    {% endif %}
+    {# Subtotal #}
+    <tr class="subtotal-row">
+      <td class="code"></td>
+      <td>SUBTOTAL</td>
+      <td class="num">{{ currency(top_sheet.subtotal_estimated) }}</td>
+      {% if is_working_view %}<td class="num">{{ currency(top_sheet.subtotal_estimated) }}</td><td class="num">—</td>{% endif %}
+    </tr>
+    {# Fee row — only when NOT dispersed #}
+    {% if not dispersed %}
+    <tr class="fee-row">
+      <td class="code"></td>
+      <td>Production Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(1) }}%)</td>
+      <td class="num">{{ currency(top_sheet.company_fee) }}</td>
+      {% if is_working_view %}<td class="num">{{ currency(top_sheet.company_fee) }}</td><td class="num">—</td>{% endif %}
+    </tr>
+    {% endif %}
+    {# Grand Total #}
+    <tr class="grand-total-row">
+      <td class="code"></td>
+      <td>GRAND TOTAL</td>
+      <td class="num">{{ currency(top_sheet.grand_total_estimated) }}</td>
+      {% if is_working_view %}<td class="num">{{ currency(top_sheet.grand_total_estimated) }}</td><td class="num">—</td>{% endif %}
+    </tr>
+  </tbody>
+</table>
+
+{# ── Detail Lines ── #}
+{% if detail_mode %}
+<div class="page-break"></div>
+<div class="section-title">Budget Detail — Line by Line</div>
+{% for sec in sections_ordered %}
+{% if sec.lines %}
+<div class="detail-section-header no-break">
+  <h3>{{ sec.code }} &nbsp;{{ sec.name }}</h3>
+</div>
+<table class="no-break">
+  <thead>
+    <tr>
+      <th style="width:28%">Description</th>
+      <th class="num" style="width:36pt">Qty</th>
+      <th class="num" style="width:40pt">Days</th>
+      <th class="num" style="width:64pt">Rate{% if dispersed %}<br><span style="font-weight:400;font-size:6.5pt;opacity:.7">incl. fee</span>{% endif %}</th>
+      <th class="num" style="width:44pt">OT</th>
+      <th class="num" style="width:46pt">Fringe</th>
+      <th class="num" style="width:58pt">Subtotal</th>
+      {% if is_working_view %}
+      <th class="num" style="width:66pt">Estimated</th>
+      <th class="num" style="width:66pt">Working</th>
+      <th class="num" style="width:60pt">Variance</th>
+      {% else %}
+      <th class="num" style="width:80pt">Total</th>
+      {% endif %}
+    </tr>
+  </thead>
+  <tbody>
+    {% set ns = namespace(sec_est=0, sec_work=0) %}
+    {% for ln in sec.lines %}
+    {% set res = line_results[ln.id] %}
+    {% set line_total = res.est_total * fee_m %}
+    {% set frozen = (ln.working_total | float) if ln.working_total is not none else res.est_total %}
+    {% set ns.sec_est = ns.sec_est + frozen %}
+    {% set ns.sec_work = ns.sec_work + res.est_total %}
+    <tr>
+      <td>{{ ln.description or ln.account_name }}</td>
+      <td class="num">{{ ln.quantity | float | int if (ln.quantity | float) == (ln.quantity | float | int) else ln.quantity | float }}</td>
+      <td class="num">{{ ln.days | float | int if (ln.days | float) == (ln.days | float | int) else ln.days | float }}</td>
+      <td class="num">${{ "{:,.2f}".format(ln.rate | float * fee_m) }}</td>
+      <td class="num">{% if res.ot_amount %}{{ currency(res.ot_amount * fee_m) }}{% else %}—{% endif %}</td>
+      <td class="num">{% if res.fringe_amount %}{{ currency(res.fringe_amount * fee_m) }}{% else %}—{% endif %}</td>
+      <td class="num">{{ currency(res.subtotal * fee_m) }}</td>
+      {% if is_working_view %}
+      <td class="num">{{ currency(frozen * fee_m) }}</td>
+      <td class="num">{{ currency(res.est_total * fee_m) }}</td>
+      {% set _var = (res.est_total - frozen) * fee_m %}
+      <td class="num {% if _var > 0.005 %}var-over{% elif _var < -0.005 %}var-under{% endif %}">{{ currency(_var) }}</td>
+      {% else %}
+      <td class="num">{{ currency(line_total) }}</td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+    {% set ns_sub = namespace(subtot=0, ot=0, fringe=0) %}
+    {% for ln in sec.lines %}{% set _r = line_results[ln.id] %}
+      {% set ns_sub.subtot = ns_sub.subtot + _r.subtotal %}
+      {% set ns_sub.ot     = ns_sub.ot     + (_r.ot_amount or 0) %}
+      {% set ns_sub.fringe = ns_sub.fringe + (_r.fringe_amount or 0) %}
+    {% endfor %}
+    <tr class="section-sub">
+      <td colspan="3" style="text-align:right;padding-right:6pt;font-size:7.5pt;letter-spacing:0.3px">SECTION TOTAL</td>
+      <td class="num"></td>
+      <td class="num">{% if ns_sub.ot %}{{ currency(ns_sub.ot * fee_m) }}{% endif %}</td>
+      <td class="num">{% if ns_sub.fringe %}{{ currency(ns_sub.fringe * fee_m) }}{% endif %}</td>
+      <td class="num">{{ currency(ns_sub.subtot * fee_m) }}</td>
+      {% if is_working_view %}
+      <td class="num">{{ currency(ns.sec_est * fee_m) }}</td>
+      <td class="num">{{ currency(ns.sec_work * fee_m) }}</td>
+      {% set _svar = (ns.sec_work - ns.sec_est) * fee_m %}
+      <td class="num {% if _svar > 0.005 %}var-over{% elif _svar < -0.005 %}var-under{% endif %}">{{ currency(_svar) }}</td>
+      {% else %}
+      <td class="num">{{ currency(ns.sec_work * fee_m) }}</td>
+      {% endif %}
+    </tr>
+  </tbody>
+</table>
+{% endif %}
+{% endfor %}
+{% endif %}
+
+</body>
+</html>

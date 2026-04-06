@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Budget Templates — FPBudget{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Budget Templates</h1>
+  <button class="btn btn-primary"
+          onclick="document.getElementById('new-tmpl-modal').classList.remove('hidden')">
+    + New Template
+  </button>
+</div>
+
+{% if templates %}
+<div class="card-grid">
+  {% for t in templates %}
+  <div class="project-card">
+    <div class="project-card-name">{{ t.name }}</div>
+    <div class="project-card-meta">{{ t.lines | length }} lines
+      {% if t.description %} · {{ t.description }}{% endif %}</div>
+    <div class="project-card-actions">
+      <a href="{{ url_for('template_edit', tid=t.id) }}" class="btn btn-sm btn-outline">Edit</a>
+      <form method="POST" action="{{ url_for('template_delete', tid=t.id) }}" style="display:inline"
+            onsubmit="return confirm('Delete template?')">
+        <button type="submit" class="btn btn-sm btn-ghost">Delete</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state"><p>No templates yet.</p></div>
+{% endif %}
+
+<div id="new-tmpl-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box">
+    <h2>New Template</h2>
+    <form method="POST" action="{{ url_for('template_new') }}">
+      <div class="field">
+        <label>Name</label>
+        <input type="text" name="name" required>
+      </div>
+      <div class="field">
+        <label>Description</label>
+        <input type="text" name="description">
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline"
+                onclick="document.getElementById('new-tmpl-modal').classList.add('hidden')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

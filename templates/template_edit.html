@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Edit Template — {{ template.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="breadcrumb"><a href="{{ url_for('template_list') }}">Templates</a> / {{ template.name }}</div>
+  <h1>{{ template.name }}</h1>
+</div>
+
+<div class="working-toolbar">
+  <button class="btn btn-primary btn-sm" onclick="addTmplLine()">+ Add Line</button>
+  <button class="btn btn-outline btn-sm" onclick="saveTemplate()">Save Template</button>
+</div>
+
+<table class="data-table" id="tmpl-table">
+  <thead>
+    <tr>
+      <th class="col-code">Code</th>
+      <th>Account Name</th>
+      <th>Description</th>
+      <th>Labor?</th>
+      <th>Rate Type</th>
+      <th>Fringe</th>
+      <th class="col-num">Agent%</th>
+      <th class="col-num">Est. Total</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="tmpl-body">
+    {% for ln in lines %}
+    <tr class="tmpl-row">
+      <td><input type="number" class="field-input f-code" value="{{ ln.account_code }}"></td>
+      <td><input type="text" class="field-input f-name" value="{{ ln.account_name }}"></td>
+      <td><input type="text" class="field-input f-desc" value="{{ ln.description or '' }}"></td>
+      <td>
+        <input type="checkbox" class="f-labor" {{ 'checked' if ln.is_labor else '' }}>
+      </td>
+      <td>
+        <select class="inline-select f-rt">
+          {% for rt in ['day_8','day_10','day_12','flat_day','flat_project','hourly','custom'] %}
+          <option value="{{ rt }}" {{ 'selected' if ln.rate_type == rt else '' }}>{{ rt }}</option>
+          {% endfor %}
+        </select>
+      </td>
+      <td>
+        <select class="inline-select f-fr">
+          {% for ft in ['E','N','L','U','S','I'] %}
+          <option value="{{ ft }}" {{ 'selected' if ln.fringe_type == ft else '' }}>{{ ft }}</option>
+          {% endfor %}
+        </select>
+      </td>
+      <td><input type="number" class="field-input f-agent col-num" value="{{ (ln.agent_pct|float*100)|round(1) }}" step="0.1"></td>
+      <td><input type="number" class="field-input f-est col-num" value="{{ ln.estimated_total|float|round(2) }}" step="100"></td>
+      <td>
+        <button type="button" class="btn btn-xs btn-ghost" onclick="this.closest('tr').remove()">✕</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div style="margin-top:1rem">
+  <button class="btn btn-primary" onclick="saveTemplate()">Save Template</button>
+  <a href="{{ url_for('template_list') }}" class="btn btn-outline">Cancel</a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TID = {{ template.id }};
+
+function addTmplLine() {
+  const tbody = document.getElementById('tmpl-body');
+  const row = document.createElement('tr');
+  row.className = 'tmpl-row';
+  row.innerHTML = `
+    <td><input type="number" class="field-input f-code" value="100"></td>
+    <td><input type="text" class="field-input f-name" value=""></td>
+    <td><input type="text" class="field-input f-desc" value=""></td>
+    <td><input type="checkbox" class="f-labor"></td>
+    <td>
+      <select class="inline-select f-rt">
+        <option value="day_10" selected>day_10</option>
+        <option value="day_8">day_8</option>
+        <option value="flat_day">flat_day</option>
+        <option value="flat_project">flat_project</option>
+        <option value="hourly">hourly</option>
+      </select>
+    </td>
+    <td>
+      <select class="inline-select f-fr">
+        <option value="E">E</option>
+        <option value="N" selected>N</option>
+        <option value="L">L</option>
+        <option value="U">U</option>
+        <option value="S">S</option>
+        <option value="I">I</option>
+      </select>
+    </td>
+    <td><input type="number" class="field-input f-agent col-num" value="0" step="0.1"></td>
+    <td><input type="number" class="field-input f-est col-num" value="0" step="100"></td>
+    <td><button type="button" class="btn btn-xs btn-ghost" onclick="this.closest('tr').remove()">✕</button></td>
+  `;
+  tbody.appendChild(row);
+}
+
+async function saveTemplate() {
+  const rows = document.querySelectorAll('.tmpl-row');
+  const lines = Array.from(rows).map(r => ({
+    account_code:    parseInt(r.querySelector('.f-code').value || 0),
+    account_name:    r.querySelector('.f-name').value.trim(),
+    description:     r.querySelector('.f-desc').value.trim(),
+    is_labor:        r.querySelector('.f-labor').checked,
+    rate_type:       r.querySelector('.f-rt').value,
+    fringe_type:     r.querySelector('.f-fr').value,
+    agent_pct:       parseFloat(r.querySelector('.f-agent').value || 0) / 100,
+    estimated_total: parseFloat(r.querySelector('.f-est').value || 0),
+  }));
+
+  const res = await fetch(`/budget-templates/${TID}/save`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({lines})
+  });
+  if (res.ok) {
+    alert('Template saved.');
+  } else {
+    alert('Save failed.');
+  }
+}
+</script>
+{% endblock %}

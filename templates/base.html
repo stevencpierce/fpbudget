@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}FPBudget{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <nav class="navbar">
+    <a class="nav-brand" href="{{ url_for('dashboard') }}">FPBudget</a>
+    <div class="nav-links">
+      <a href="{{ url_for('dashboard') }}">Projects</a>
+      <a href="{{ url_for('crew_list') }}">Crew</a>
+      <a href="{{ url_for('location_db_list') }}">Locations</a>
+      <a href="{{ url_for('template_list') }}">Templates</a>
+      <a href="{{ url_for('fringe_config') }}">Fringes</a>
+      <a href="{{ url_for('logout') }}">Logout</a>
+    </div>
+  </nav>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-container">
+        {% for cat, msg in messages %}
+          <div class="flash flash-{{ cat }}">{{ msg }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <main class="main-content">
+    {% block content %}{% endblock %}
+  </main>
+
+  {% block scripts %}{% endblock %}
+  {% if GOOGLE_MAPS_API_KEY %}
+  <script>
+  // Google Places Autocomplete for location name/address fields
+  // Auto-initialised when Google Maps JS API finishes loading
+  function _initGooglePlaces() {
+    const configs = [
+      // budget.html location modal
+      { nameId: 'loc-name', facilityId: 'loc-facility-name', addrId: 'loc-address' },
+      // locations.html library modal
+      { nameId: 'ldb-name', facilityId: 'ldb-facility-name', addrId: 'ldb-address' },
+    ];
+    configs.forEach(({ nameId, facilityId, addrId }) => {
+      const nameInput = document.getElementById(nameId);
+      if (!nameInput) return;
+      const ac = new google.maps.places.Autocomplete(nameInput, {
+        types: ['establishment', 'geocode'],
+        fields: ['name', 'formatted_address', 'geometry'],
+      });
+      ac.addListener('place_changed', () => {
+        const place = ac.getPlace();
+        // Put the official Google place name in the Facility/Business Name field
+        const facilityInput = document.getElementById(facilityId);
+        if (facilityInput && place.name) facilityInput.value = place.name;
+        // Fill address
+        const addrInput = document.getElementById(addrId);
+        if (addrInput && place.formatted_address) addrInput.value = place.formatted_address;
+        // Keep the user's typed name (their custom label) in the name field untouched
+      });
+    });
+  }
+  </script>
+  <script async
+    src="https://maps.googleapis.com/maps/api/js?key={{ GOOGLE_MAPS_API_KEY }}&libraries=places&callback=_initGooglePlaces">
+  </script>
+  {% endif %}
+</body>
+</html>

@@ -1,0 +1,59 @@
+<div class="field-row-2">
+  <div class="field">
+    <label>Name *</label>
+    <input type="text" name="name" required>
+  </div>
+  <div class="field">
+    <label>Department</label>
+    <input type="text" name="department">
+  </div>
+</div>
+<div class="field-row-2">
+  <div class="field">
+    <label>Company</label>
+    <input type="text" name="company">
+  </div>
+  <div class="field">
+    <label>Email</label>
+    <input type="email" name="email">
+  </div>
+</div>
+<div class="field-row-2">
+  <div class="field">
+    <label>Phone</label>
+    <input type="text" name="phone">
+  </div>
+  <div class="field">
+    <label>Default Rate ($)</label>
+    <input type="number" name="default_rate" min="0" step="0.01">
+  </div>
+</div>
+<div class="field-row-3">
+  <div class="field">
+    <label>Rate Type</label>
+    <select name="default_rate_type" class="select-sm">
+      <option value="day_10">10hr Day</option>
+      <option value="day_8">8hr Day</option>
+      <option value="day_12">12hr Day</option>
+      <option value="flat_day">Flat Day</option>
+      <option value="flat_project">Flat Project</option>
+      <option value="hourly">Hourly</option>
+      <option value="custom">Custom</option>
+    </select>
+  </div>
+  <div class="field">
+    <label>Fringe</label>
+    <select name="default_fringe" class="select-sm">
+      <option value="E">E — Exempt</option>
+      <option value="N" selected>N — Non Union</option>
+      <option value="L">L — Loan Out</option>
+      <option value="U">U — Union</option>
+      <option value="S">S — SAG</option>
+      <option value="I">I — IATSE</option>
+    </select>
+  </div>
+  <div class="field">
+    <label>Agent %</label>
+    <input type="number" name="default_agent_pct" value="0" min="0" step="0.1">
+  </div>
+</div>

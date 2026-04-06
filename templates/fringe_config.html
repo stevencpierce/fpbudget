@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}Fringe Config — FPBudget{% endblock %}
+
+{% block content %}
+<div class="page-header" style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:.75rem">
+  <div>
+    <h1>Fringe Rates</h1>
+    <p class="muted">Global defaults. Per-project overrides can be set later.</p>
+  </div>
+  <button class="btn btn-outline btn-sm" onclick="openNewFringeModal()">+ Add Fringe</button>
+</div>
+
+{% set DEFAULT_FRINGES = ['E','N','L','U','S','I'] %}
+
+<table class="data-table" style="max-width:700px">
+  <thead>
+    <tr>
+      <th>Type</th>
+      <th>Label</th>
+      <th class="col-num">Rate</th>
+      <th>Flat?</th>
+      <th class="col-num">Flat Amount / Day</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for f in fringes %}
+    <tr>
+      <td><strong>{{ f.fringe_type }}</strong></td>
+      <td>{{ f.label }}</td>
+      <td class="col-num">{{ (f.rate | float * 100) | round(2) }}%</td>
+      <td>{{ '✓' if f.is_flat else '—' }}</td>
+      <td class="col-num">{{ f.flat_amount | currency if f.flat_amount else '—' }}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-xs btn-outline"
+                onclick="openFringeEdit({{ f.id }}, '{{ f.fringe_type }}', '{{ f.label }}',
+                  {{ f.rate | float }}, {{ 'true' if f.is_flat else 'false' }},
+                  {{ f.flat_amount | float if f.flat_amount else 0 }})">Edit</button>
+        {% if f.fringe_type not in DEFAULT_FRINGES %}
+        <form method="POST" action="{{ url_for('fringe_config_delete', fid=f.id) }}"
+              style="display:inline" onsubmit="return confirm('Delete fringe {{ f.fringe_type }}?')">
+          <button type="submit" class="btn btn-xs btn-ghost" style="color:var(--red,#e74c3c)">Delete</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<!-- Edit Fringe Modal -->
+<div id="fringe-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box">
+    <h2 id="fringe-modal-title">Edit Fringe</h2>
+    <form method="POST" action="{{ url_for('fringe_config_save') }}">
+      <input type="hidden" name="fringe_id" id="f-id">
+      <div class="field-row-2">
+        <div class="field">
+          <label>Label</label>
+          <input type="text" name="label" id="f-label" required>
+        </div>
+        <div class="field">
+          <label>Rate (decimal, e.g. 0.1937)</label>
+          <input type="number" name="rate" id="f-rate" step="0.0001" min="0" max="2">
+        </div>
+      </div>
+      <div class="field-row-2">
+        <div class="field">
+          <label class="checkbox-label">
+            <input type="checkbox" name="is_flat" id="f-is-flat" value="1"> Flat amount per day
+          </label>
+        </div>
+        <div class="field">
+          <label>Flat Amount ($)</label>
+          <input type="number" name="flat_amount" id="f-flat-amt" step="0.01" min="0">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline"
+                onclick="document.getElementById('fringe-modal').classList.add('hidden')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- New Fringe Modal -->
+<div id="new-fringe-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box">
+    <h2>Add New Fringe</h2>
+    <form method="POST" action="{{ url_for('fringe_config_new') }}">
+      <div class="field-row-2">
+        <div class="field">
+          <label>Type Code <span class="muted" style="font-size:.8rem">(max 5 chars, e.g. FICA)</span></label>
+          <input type="text" name="fringe_type" id="nf-type" maxlength="5" required
+                 style="text-transform:uppercase" oninput="this.value=this.value.toUpperCase()">
+        </div>
+        <div class="field">
+          <label>Label</label>
+          <input type="text" name="label" id="nf-label" required placeholder="e.g. FICA / Social Security">
+        </div>
+      </div>
+      <div class="field-row-2">
+        <div class="field">
+          <label>Rate (decimal, e.g. 0.0765)</label>
+          <input type="number" name="rate" id="nf-rate" step="0.0001" min="0" max="2" value="0" required>
+        </div>
+        <div class="field">
+          <label class="checkbox-label" style="margin-top:1.5rem">
+            <input type="checkbox" name="is_flat" id="nf-is-flat" value="1"> Flat amount per day
+          </label>
+        </div>
+      </div>
+      <div class="field">
+        <label>Flat Amount ($) <span class="muted" style="font-size:.8rem">if flat enabled</span></label>
+        <input type="number" name="flat_amount" id="nf-flat-amt" step="0.01" min="0" placeholder="Optional">
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline"
+                onclick="document.getElementById('new-fringe-modal').classList.add('hidden')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Fringe</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function openFringeEdit(id, type, label, rate, isFlat, flatAmt) {
+  document.getElementById('fringe-modal-title').textContent = `Edit ${type} Fringe`;
+  document.getElementById('f-id').value      = id;
+  document.getElementById('f-label').value   = label;
+  document.getElementById('f-rate').value    = rate;
+  document.getElementById('f-is-flat').checked = isFlat;
+  document.getElementById('f-flat-amt').value = flatAmt || '';
+  document.getElementById('fringe-modal').classList.remove('hidden');
+}
+
+function openNewFringeModal() {
+  document.getElementById('nf-type').value    = '';
+  document.getElementById('nf-label').value   = '';
+  document.getElementById('nf-rate').value    = '0';
+  document.getElementById('nf-is-flat').checked = false;
+  document.getElementById('nf-flat-amt').value = '';
+  document.getElementById('new-fringe-modal').classList.remove('hidden');
+}
+</script>
+{% endblock %}

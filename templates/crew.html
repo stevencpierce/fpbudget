@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Crew Database — FPBudget{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Crew Database</h1>
+  <button class="btn btn-primary" onclick="document.getElementById('add-crew-modal').classList.remove('hidden')">
+    + Add Crew Member
+  </button>
+</div>
+
+{% if members %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Department</th>
+      <th>Company</th>
+      <th class="col-num">Default Rate</th>
+      <th>Rate Type</th>
+      <th>Fringe</th>
+      <th>Agent%</th>
+      <th>Email</th>
+      <th>Phone</th>
+      <th>Active</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for m in members %}
+    <tr>
+      <td><strong>{{ m.name }}</strong></td>
+      <td>{{ m.department or '—' }}</td>
+      <td>{{ m.company or '—' }}</td>
+      <td class="col-num">{{ m.default_rate | currency if m.default_rate else '—' }}</td>
+      <td>{{ m.default_rate_type }}</td>
+      <td>{{ m.default_fringe }}</td>
+      <td>{{ (m.default_agent_pct | float * 100) | round(1) }}%</td>
+      <td>{{ m.email or '—' }}</td>
+      <td>{{ m.phone or '—' }}</td>
+      <td>{{ '✓' if m.active else '—' }}</td>
+      <td>
+        <button class="btn btn-xs btn-outline edit-crew-btn"
+                data-id="{{ m.id }}"
+                data-crew='{{ {"name": m.name, "department": m.department or "", "company": m.company or "", "email": m.email or "", "phone": m.phone or "", "default_rate": m.default_rate | float if m.default_rate else 0, "default_rate_type": m.default_rate_type, "default_fringe": m.default_fringe, "default_agent_pct": m.default_agent_pct | float, "active": m.active} | tojson }}'>Edit</button>
+        <form method="POST" action="{{ url_for('crew_delete', cid=m.id) }}" style="display:inline"
+              onsubmit="return confirm('Delete {{ m.name }}?')">
+          <button type="submit" class="btn btn-xs btn-ghost">✕</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  <p>No crew members yet.</p>
+</div>
+{% endif %}
+
+<!-- Add Modal -->
+<div id="add-crew-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box">
+    <h2>Add Crew Member</h2>
+    <form method="POST" action="{{ url_for('crew_new') }}">
+      {% include "_crew_fields.html" %}
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline"
+                onclick="document.getElementById('add-crew-modal').classList.add('hidden')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="edit-crew-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box">
+    <h2>Edit Crew Member</h2>
+    <form id="edit-crew-form" method="POST">
+      {% include "_crew_fields.html" %}
+      <div class="field-row">
+        <label class="checkbox-label">
+          <input type="checkbox" name="active" value="1" id="edit-active"> Active
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline"
+                onclick="document.getElementById('edit-crew-modal').classList.add('hidden')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function openEditCrew(id, m) {
+  const form = document.getElementById('edit-crew-form');
+  form.action = `/crew/${id}/edit`;
+  form.querySelector('[name="name"]').value          = m.name || '';
+  form.querySelector('[name="department"]').value    = m.department || '';
+  form.querySelector('[name="company"]').value       = m.company || '';
+  form.querySelector('[name="email"]').value         = m.email || '';
+  form.querySelector('[name="phone"]').value         = m.phone || '';
+  form.querySelector('[name="default_rate"]').value  = m.default_rate || '';
+  form.querySelector('[name="default_agent_pct"]').value = parseFloat(m.default_agent_pct||0)*100;
+  const rtSel = form.querySelector('[name="default_rate_type"]');
+  if (rtSel) setSelectVal(rtSel, m.default_rate_type);
+  const frSel = form.querySelector('[name="default_fringe"]');
+  if (frSel) setSelectVal(frSel, m.default_fringe);
+  const activeCb = document.getElementById('edit-active');
+  if (activeCb) activeCb.checked = !!m.active;
+  document.getElementById('edit-crew-modal').classList.remove('hidden');
+}
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.edit-crew-btn');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const m  = JSON.parse(btn.dataset.crew);
+  openEditCrew(id, m);
+});
+
+function setSelectVal(sel, val) {
+  for (let i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === val) { sel.selectedIndex = i; return; }
+  }
+}
+</script>
+{% endblock %}

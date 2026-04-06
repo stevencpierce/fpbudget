@@ -1,0 +1,261 @@
+{% extends "base.html" %}
+{% block title %}Locations Database — FPBudget{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Locations Database</h1>
+  <button class="btn btn-primary" onclick="openLocModal()">+ Add Location</button>
+</div>
+
+<p class="muted" style="margin-bottom:1.5rem;font-size:.85rem">
+  Global location library — stages, offices, exteriors, vendors, and recurring spots.
+  Locations added here are available in every project's Locations tab.
+</p>
+
+{% if locations %}
+<div class="locations-grid" id="loc-db-grid">
+  {% for loc in locations %}
+  <div class="location-card" data-id="{{ loc.id }}">
+    <div class="location-card-header">
+      <span class="location-type-badge {{ 'loc-' + (loc.location_type or 'other') }}">{{ loc.location_type or 'location' }}</span>
+      <div class="location-card-actions">
+        <button class="btn btn-xs btn-ghost" onclick="editLoc({{ loc.id }}, {{ {
+          'id': loc.id,
+          'name': loc.name,
+          'location_type': loc.location_type or '',
+          'address': loc.address or '',
+          'map_url': loc.map_url or '',
+          'contact_name': loc.contact_name or '',
+          'contact_phone': loc.contact_phone or '',
+          'contact_email': loc.contact_email or '',
+          'dayof_name': loc.dayof_name or '',
+          'dayof_phone': loc.dayof_phone or '',
+          'dayof_email': loc.dayof_email or '',
+          'billing_type': loc.billing_type or 'per_day',
+          'daily_rate': loc.daily_rate | float if loc.daily_rate else '',
+          'notes': loc.notes or '',
+        } | tojson }})">✎ Edit</button>
+        <button class="btn btn-xs btn-ghost" onclick="deleteLoc({{ loc.id }}, '{{ loc.name | e }}')">✕</button>
+      </div>
+    </div>
+    <div class="location-card-name">{{ loc.name }}</div>
+    {% if loc.address %}
+    <div class="location-card-address">
+      {% if loc.map_url %}
+      <a href="{{ loc.map_url }}" target="_blank" rel="noopener" class="map-link">📍 {{ loc.address }}</a>
+      {% else %}
+      <a href="https://maps.google.com/?q={{ loc.address | urlencode }}" target="_blank" rel="noopener" class="map-link">📍 {{ loc.address }}</a>
+      {% endif %}
+    </div>
+    {% endif %}
+    <div class="location-card-contacts">
+      {% if loc.contact_name %}
+      <div class="contact-row">
+        <span class="contact-label">Main:</span>
+        <span>{{ loc.contact_name }}</span>
+        {% if loc.contact_phone %}<a href="tel:{{ loc.contact_phone }}" class="contact-link">{{ loc.contact_phone }}</a>{% endif %}
+        {% if loc.contact_email %}<a href="mailto:{{ loc.contact_email }}" class="contact-link">{{ loc.contact_email }}</a>{% endif %}
+      </div>
+      {% endif %}
+      {% if loc.dayof_name %}
+      <div class="contact-row">
+        <span class="contact-label">Day-Of:</span>
+        <span>{{ loc.dayof_name }}</span>
+        {% if loc.dayof_phone %}<a href="tel:{{ loc.dayof_phone }}" class="contact-link">{{ loc.dayof_phone }}</a>{% endif %}
+        {% if loc.dayof_email %}<a href="mailto:{{ loc.dayof_email }}" class="contact-link">{{ loc.dayof_email }}</a>{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% if loc.billing_type and loc.billing_type != 'info_only' %}
+    <div class="location-card-billing">
+      {% if loc.daily_rate %}{{ loc.daily_rate | currency }}/{% endif %}{{ loc.billing_type | replace('_', ' ') }}
+    </div>
+    {% endif %}
+    {% if loc.notes %}
+    <div class="location-card-notes muted">{{ loc.notes }}</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+  <p>No locations in the library yet.</p>
+  <p class="muted" style="font-size:.82rem;margin-top:.3rem">
+    Add stages, offices, vendors, and recurring spots. They'll appear in every project's Locations tab.
+  </p>
+  <button type="button" class="btn btn-primary" style="margin-top:1rem" onclick="openLocModal()">+ Add Location</button>
+</div>
+{% endif %}
+
+{# ── Add / Edit Modal ─────────────────────────────────────────────────────── #}
+<div id="loc-db-modal" class="modal hidden">
+  <div class="modal-overlay"></div><!-- no click-to-close on data-entry modals -->
+  <div class="modal-box modal-wide">
+    <h2 id="loc-db-modal-title">Add Location</h2>
+    <input type="hidden" id="ldb-id" value="">
+    <div class="field-row-2">
+      <div class="field">
+        <label>Location Name *</label>
+        <input type="text" id="ldb-name" placeholder="e.g. Studio A / Warehouse / City Hall" required>
+      </div>
+      <div class="field">
+        <label>Type</label>
+        <select id="ldb-type">
+          <option value="">— select —</option>
+          <option value="stage">Stage</option>
+          <option value="office">Office / Production Office</option>
+          <option value="exterior">Exterior Location</option>
+          <option value="holding">Holding / Basecamp</option>
+          <option value="parking">Parking</option>
+          <option value="vendor">Vendor / Supplier</option>
+          <option value="delivery">Delivery / Drop-Off</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label>Facility / Business Name <span class="muted" style="font-weight:400;font-size:.8rem">(optional — official venue or company name)</span></label>
+      <input type="text" id="ldb-facility-name" placeholder="e.g. Public Storage — 42nd St, Be Electric Studios">
+    </div>
+    <div class="field">
+      <label>Address</label>
+      <input type="text" id="ldb-address" placeholder="Full street address">
+    </div>
+    <div class="field">
+      <label>Google Maps URL <span class="muted" style="font-size:.78rem">(paste to auto-fill name + address)</span></label>
+      <input type="url" id="ldb-map-url" placeholder="https://maps.google.com/..." onpaste="handleMapPaste(event)">
+    </div>
+    <div class="field-section-label">Main Contact (Venue / Negotiating)</div>
+    <div class="field-row-3">
+      <div class="field"><label>Name</label><input type="text" id="ldb-contact-name" placeholder="Contact name"></div>
+      <div class="field"><label>Phone</label><input type="tel" id="ldb-contact-phone" placeholder="Phone"></div>
+      <div class="field"><label>Email</label><input type="email" id="ldb-contact-email" placeholder="Email"></div>
+    </div>
+    <div class="field-section-label">Day-Of Contact (On-Site)</div>
+    <div class="field-row-3">
+      <div class="field"><label>Name</label><input type="text" id="ldb-dayof-name" placeholder="Day-of contact"></div>
+      <div class="field"><label>Phone</label><input type="tel" id="ldb-dayof-phone" placeholder="Phone"></div>
+      <div class="field"><label>Email</label><input type="email" id="ldb-dayof-email" placeholder="Email"></div>
+    </div>
+    <div class="field-row-2">
+      <div class="field">
+        <label>Billing</label>
+        <select id="ldb-billing-type">
+          <option value="per_day">Per Day</option>
+          <option value="per_week">Per Week</option>
+          <option value="flat">Flat</option>
+          <option value="info_only">Informational Only (no cost)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Rate ($)</label>
+        <input type="number" id="ldb-daily-rate" min="0" step="0.01" placeholder="0.00">
+      </div>
+    </div>
+    <div class="field">
+      <label>Notes</label>
+      <textarea id="ldb-notes" rows="2" placeholder="Parking instructions, access codes, key contacts…"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline" onclick="closeLocModal()">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="saveLoc()">Save Location</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function openLocModal(data) {
+  document.getElementById('loc-db-modal-title').textContent = data ? 'Edit Location' : 'Add Location';
+  document.getElementById('ldb-id').value            = data ? data.id : '';
+  document.getElementById('ldb-name').value           = data ? (data.name || '') : '';
+  document.getElementById('ldb-facility-name').value = data ? (data.facility_name || '') : '';
+  document.getElementById('ldb-type').value           = data ? (data.location_type || '') : '';
+  document.getElementById('ldb-address').value        = data ? (data.address || '') : '';
+  document.getElementById('ldb-map-url').value       = data ? (data.map_url || '') : '';
+  document.getElementById('ldb-contact-name').value  = data ? (data.contact_name || '') : '';
+  document.getElementById('ldb-contact-phone').value = data ? (data.contact_phone || '') : '';
+  document.getElementById('ldb-contact-email').value = data ? (data.contact_email || '') : '';
+  document.getElementById('ldb-dayof-name').value    = data ? (data.dayof_name || '') : '';
+  document.getElementById('ldb-dayof-phone').value   = data ? (data.dayof_phone || '') : '';
+  document.getElementById('ldb-dayof-email').value   = data ? (data.dayof_email || '') : '';
+  document.getElementById('ldb-billing-type').value  = data ? (data.billing_type || 'per_day') : 'per_day';
+  document.getElementById('ldb-daily-rate').value    = data ? (data.daily_rate || '') : '';
+  document.getElementById('ldb-notes').value         = data ? (data.notes || '') : '';
+  document.getElementById('loc-db-modal').classList.remove('hidden');
+}
+
+function closeLocModal() {
+  document.getElementById('loc-db-modal').classList.add('hidden');
+}
+
+function editLoc(id, data) {
+  openLocModal(data);
+}
+
+async function deleteLoc(id, name) {
+  if (!confirm(`Delete "${name}" from the location library?`)) return;
+  const res = await fetch(`/locations/${id}/delete`, { method: 'POST' });
+  if (res.ok) window.location.reload();
+  else alert('Failed to delete location');
+}
+
+async function saveLoc() {
+  const id   = document.getElementById('ldb-id').value;
+  const name = document.getElementById('ldb-name').value.trim();
+  if (!name) { alert('Location name is required'); return; }
+  const payload = {
+    name,
+    facility_name:  document.getElementById('ldb-facility-name').value.trim() || null,
+    location_type:  document.getElementById('ldb-type').value || null,
+    address:        document.getElementById('ldb-address').value.trim() || null,
+    map_url:        document.getElementById('ldb-map-url').value.trim() || null,
+    contact_name:   document.getElementById('ldb-contact-name').value.trim() || null,
+    contact_phone:  document.getElementById('ldb-contact-phone').value.trim() || null,
+    contact_email:  document.getElementById('ldb-contact-email').value.trim() || null,
+    dayof_name:     document.getElementById('ldb-dayof-name').value.trim() || null,
+    dayof_phone:    document.getElementById('ldb-dayof-phone').value.trim() || null,
+    dayof_email:    document.getElementById('ldb-dayof-email').value.trim() || null,
+    billing_type:   document.getElementById('ldb-billing-type').value,
+    daily_rate:     parseFloat(document.getElementById('ldb-daily-rate').value) || null,
+    notes:          document.getElementById('ldb-notes').value.trim() || null,
+  };
+  if (id) payload.id = parseInt(id);
+  const btn = document.querySelector('#loc-db-modal .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const res = await fetch('/locations/save', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      window.location.reload();
+    } else {
+      const body = await res.json().catch(() => ({}));
+      alert(body.error || `Save failed (HTTP ${res.status})`);
+    }
+  } catch (err) {
+    alert(`Network error: ${err.message}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save Location'; }
+  }
+}
+
+// Auto-fill name + address from a pasted Google Maps URL
+async function handleMapPaste(e) {
+  const url = (e.clipboardData || window.clipboardData).getData('text').trim();
+  if (!url) return;
+  // Try to extract place name from Google Maps URL patterns
+  const match = url.match(/place\/([^/@]+)/);
+  if (match) {
+    const decoded = decodeURIComponent(match[1].replace(/\+/g, ' '));
+    const nameField = document.getElementById('ldb-name');
+    const addrField = document.getElementById('ldb-address');
+    if (!nameField.value) nameField.value = decoded;
+    if (!addrField.value) addrField.value = decoded;
+  }
+}
+</script>
+{% endblock %}

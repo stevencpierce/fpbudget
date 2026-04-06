@@ -1,0 +1,1643 @@
+{% extends "base.html" %}
+{% block title %}Call Sheet — {{ project.name }} | {{ selected_date.strftime('%b %d, %Y') }}{% endblock %}
+
+{% block content %}
+{% set MODE_META = {
+  'estimated': {'label':'ESTIMATED', 'short':'Est',  'cls':'mode-estimated'},
+  'working':   {'label':'WORKING',   'short':'Work', 'cls':'mode-working'},
+  'actual':    {'label':'ACTUAL',    'short':'Act',  'cls':'mode-actual'},
+} %}
+{% set cur_mode = MODE_META.get(budget.budget_mode, MODE_META['estimated']) %}
+
+{# ── Page header (hidden on print) ─────────────────────────────────────────── #}
+<div class="page-header budget-header cs-screen-header">
+  <div class="budget-header-left">
+    <div class="breadcrumb">
+      <a href="{{ url_for('dashboard') }}">Projects</a> /
+      <a href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}">{{ project.name }}</a> /
+      Call Sheet
+    </div>
+    <div class="budget-name-row">
+      <h1>{{ budget.name }}</h1>
+      <span class="mode-badge {{ cur_mode.cls }}">{{ cur_mode.label }}</span>
+    </div>
+  </div>
+  <div class="budget-header-right" style="display:flex;align-items:center;gap:.75rem;">
+    {# Version picker dropdown #}
+    {% set active_count = all_budgets | rejectattr('version_status', 'eq', 'archived') | list | length %}
+    {% set status_label = {'current': 'Active', 'superseded': 'Previous', 'archived': 'Archived'} %}
+    <div class="dropdown version-dropdown">
+      <button class="btn btn-sm btn-outline version-picker-btn">Versions ({{ active_count }}) ▾</button>
+      <div class="dropdown-menu version-menu">
+        {% for b in all_budgets %}
+        {% set bm = MODE_META.get(b.budget_mode, MODE_META['estimated']) %}
+        {% set is_cur = (b.id == budget.id) %}
+        <div class="version-item {% if is_cur %}version-item-active{% endif %} {% if b.version_status == 'archived' %}version-item-archived{% endif %}">
+          <a href="{{ url_for('callsheet_view', pid=project.id, bid=b.id) }}" class="version-item-link">
+            <span class="version-item-name">{{ b.name }}</span>
+            <div class="version-item-meta">
+              <span class="version-status-badge vs-{{ b.version_status }}">{{ status_label.get(b.version_status, b.version_status | capitalize) }}</span>
+              <span class="mode-badge {{ bm.cls }}" style="font-size:.65rem;padding:.1rem .4rem">{{ bm.short }}</span>
+              {% if parent_names.get(b.id) %}
+              <span class="version-parent-ref">← {{ parent_names[b.id] }}</span>
+              {% endif %}
+            </div>
+          </a>
+        </div>
+        {% endfor %}
+        <div class="version-menu-footer">
+          <a href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}" class="btn btn-xs btn-ghost" style="width:100%;text-align:center;display:block">Back to Budget →</a>
+        </div>
+      </div>
+    </div>
+    <button class="btn btn-sm btn-accent cs-print-btn" onclick="window.print()">Print / PDF</button>
+  </div>
+</div>
+
+{# ── Tab bar + mode switcher row (hidden on print) ──────────────────────────── #}
+<div class="tabs-row cs-screen-header">
+  <div class="tabs">
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=topsheet">Top Sheet</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=working">Budget</a>
+    <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=budget.id) }}">Schedule</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=contacts">Contacts</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=locations">Locations</a>
+    <span class="tab-btn active">Call Sheets</span>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=actuals">Actuals</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=settings">⚙ Settings</a>
+  </div>
+  <div class="mode-switcher-seg">
+    {% if current_estimated_bid %}
+    <a href="{{ url_for('callsheet_view', pid=project.id, bid=current_estimated_bid) }}"
+       class="mode-seg-btn {% if budget.budget_mode not in ('working','actual') %}active mode-estimated{% endif %}">Estimated</a>
+    {% else %}
+    <span class="mode-seg-btn mode-seg-inactive" title="No estimated budget">Estimated</span>
+    {% endif %}
+    {% if current_working_bid %}
+    <a href="{{ url_for('callsheet_view', pid=project.id, bid=current_working_bid) }}"
+       class="mode-seg-btn {% if budget.budget_mode in ('working','actual') %}active mode-working{% endif %}">Working</a>
+    {% else %}
+    <span class="mode-seg-btn mode-seg-inactive" title="No Working budget — create one in the Budget tab">Working</span>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Date navigation controls (hidden on print) ─────────────────────────────── #}
+<div class="cs-date-nav cs-screen-header">
+  {% if all_scheduled_dates %}
+    {% set cur_idx = all_scheduled_dates.index(selected_date) if selected_date in all_scheduled_dates else -1 %}
+    {% set prev_date = all_scheduled_dates[cur_idx - 1] if cur_idx > 0 else None %}
+    {% set next_date = all_scheduled_dates[cur_idx + 1] if cur_idx >= 0 and cur_idx < all_scheduled_dates|length - 1 else None %}
+    {% if prev_date %}
+    <a href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id, date_str=prev_date.strftime('%Y-%m-%d')) }}" class="btn btn-sm btn-outline cs-date-nav-btn">← Prev Day</a>
+    {% else %}
+    <button class="btn btn-sm btn-outline cs-date-nav-btn" disabled>← Prev Day</button>
+    {% endif %}
+    <form method="get" action="" id="cs-date-jump-form" class="cs-date-jump-form">
+      <select name="date_select" id="cs-date-select" onchange="jumpToDate(this)">
+        {% for d in all_scheduled_dates %}
+        <option value="{{ d.strftime('%Y-%m-%d') }}" {% if d == selected_date %}selected{% endif %}>
+          Day {{ loop.index }} — {{ d.strftime('%a, %b %d, %Y') }}
+        </option>
+        {% endfor %}
+      </select>
+    </form>
+    {% if next_date %}
+    <a href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id, date_str=next_date.strftime('%Y-%m-%d')) }}" class="btn btn-sm btn-outline cs-date-nav-btn">Next Day →</a>
+    {% else %}
+    <button class="btn btn-sm btn-outline cs-date-nav-btn" disabled>Next Day →</button>
+    {% endif %}
+  {% else %}
+    <span class="cs-placeholder">No schedule dates found for this budget in {{ sched_mode }} mode.</span>
+  {% endif %}
+</div>
+
+{# ── Edit status banner (screen only) ─────────────────────────────────────── #}
+<div class="cs-edit-banner cs-screen-only">
+  <span class="cs-edit-hint">✎ Click any highlighted field to edit · changes auto-save</span>
+  <span id="cs-save-status" class="cs-save-status"></span>
+</div>
+
+<div class="cs-audience-bar cs-screen-only">
+  <span class="cs-audience-label">View As:</span>
+  <div class="cs-audience-pills" id="cs-audience-pills">
+    <button class="cs-aud-pill active" data-audience="internal" onclick="setAudience('internal')">Internal (Full)</button>
+    <button class="cs-aud-pill" data-audience="crew" onclick="setAudience('crew')">Crew</button>
+    <button class="cs-aud-pill" data-audience="client" onclick="setAudience('client')">Client</button>
+    <button class="cs-aud-pill" data-audience="talent" onclick="setAudience('talent')">Talent / Cast</button>
+    <button class="cs-aud-pill" data-audience="union" onclick="setAudience('union')">Union</button>
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════════════════════════════
+   CALL SHEET DOCUMENT
+   ═══════════════════════════════════════════════════════════════════════════════ #}
+<div class="callsheet-wrapper">
+
+  {# ╔══════════════════════════════════════════════════════════════════════════
+     PAGE 1
+     ══════════════════════════════════════════════════════════════════════════╗ #}
+  <div class="callsheet-page callsheet-page-1">
+
+    {# ── Main header bar ──────────────────────────────────────────────────── #}
+    <div class="callsheet-header-main">
+      <div class="callsheet-header-company">
+        <div class="callsheet-company-name">Framework Productions</div>
+        <div class="callsheet-header-sub">{{ budget.name }} <span class="callsheet-mode-pill">{{ cur_mode.short }}</span></div>
+      </div>
+      <div class="callsheet-header-center">
+        <div class="callsheet-project-title">{{ project.name }}</div>
+        <div class="callsheet-header-label">CALL SHEET</div>
+      </div>
+      <div class="callsheet-header-right-block">
+        <div class="callsheet-date-display">{{ selected_date.strftime('%A, %B %d, %Y') }}</div>
+        {% if shooting_day_num %}
+        <div class="callsheet-day-num">Shoot Day {{ shooting_day_num }} of {{ all_scheduled_dates|length }}</div>
+        {% else %}
+        <div class="callsheet-day-num">Non-scheduled date</div>
+        {% endif %}
+        <div class="callsheet-versions">
+          <div class="callsheet-version-badge">
+            CS <span class="cs-editable cs-version-val" id="cs-callsheet-version" contenteditable="true"
+                     data-field="callsheet_version" title="Call sheet version — click to edit">{{ cs_data.get('callsheet_version', '') or 'v1' }}</span>
+          </div>
+          <div class="callsheet-version-sub">
+            <span class="cs-version-label">Script:</span>
+            <span class="cs-editable cs-version-val" id="cs-script-version" contenteditable="true"
+                  data-field="script_version">{{ cs_data.get('script_version', '') or 'v1' }}</span>
+            <span class="cs-version-sep">·</span>
+            <span class="cs-version-label">Sched:</span>
+            <span class="cs-editable cs-version-val" id="cs-schedule-version" contenteditable="true"
+                  data-field="schedule_version">{{ cs_data.get('schedule_version', '') or 'v1' }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {# ── General crew call bar ─────────────────────────────────────────────── #}
+    <div class="callsheet-crew-call-bar">
+      <div class="callsheet-call-label">GENERAL CREW CALL</div>
+      <span class="cs-editable callsheet-call-time" id="cs-crew-call"
+            contenteditable="true"
+            data-field="general_crew_call"
+            title="Click to edit crew call time">{{ cs_data.get('general_crew_call', 'TBD') }}</span>
+    </div>
+
+    {# ── Key Personnel + Locations (two columns) ──────────────────────────── #}
+    <div class="callsheet-two-col">
+
+      {# Left: Key Personnel (JS-driven) #}
+      <div class="callsheet-col callsheet-col-left">
+        <div class="callsheet-section">
+          <div class="callsheet-section-title">Key Personnel</div>
+          <table class="callsheet-table callsheet-key-contact-table" id="kp-table">
+            <thead>
+              <tr>
+                <th class="cs-screen-only" style="width:1.5rem"></th>
+                <th>Role</th>
+                <th>Name</th>
+                <th>Contact</th>
+                <th class="cs-screen-only" style="width:2rem"></th>
+              </tr>
+            </thead>
+            <tbody id="kp-tbody">
+              {# Populated by JS #}
+            </tbody>
+          </table>
+          <div class="cs-row-toolbar cs-screen-only">
+            <button class="btn btn-xs btn-ghost" onclick="addKpRow()">+ Row</button>
+            <button class="btn btn-xs btn-ghost" onclick="addKpSpacer()">+ Spacer</button>
+          </div>
+        </div>
+      </div>
+
+      {# Right: Locations today (drag-and-drop) #}
+      <div class="callsheet-col callsheet-col-right">
+        <div class="callsheet-section">
+          <div class="callsheet-section-title">
+            Locations Today
+            <span class="cs-drag-hint cs-screen-only" style="font-size:.7rem;font-weight:400;color:var(--text-muted);margin-left:.5rem">drag ⠿ to reorder</span>
+          </div>
+          {% if location_days_today %}
+          <div id="loc-sortable">
+            {% for ld in location_days_today %}
+              {% set loc = locations_by_id.get(ld.location_id) %}
+              {% if loc %}
+              <div class="cs-loc-item" data-ld-id="{{ ld.id }}" draggable="true">
+                <span class="cs-drag-handle cs-screen-only" title="Drag to reorder">⠿</span>
+                <div class="callsheet-location-card">
+                  <div class="callsheet-location-header">
+                    <span class="callsheet-location-name">{{ loc.name }}</span>
+                    <span class="callsheet-day-type-badge callsheet-dt-{{ ld.day_type }}">{{ ld.day_type | upper }}</span>
+                    {% if loc.location_type %}<span class="callsheet-location-type">{{ loc.location_type }}</span>{% endif %}
+                  </div>
+                  {% if loc.address %}
+                  <div class="callsheet-location-address">
+                    {% if loc.map_url %}
+                    <a href="{{ loc.map_url }}" target="_blank" class="callsheet-map-link">{{ loc.address }}</a>
+                    {% else %}
+                    {{ loc.address }}
+                    {% endif %}
+                  </div>
+                  {% endif %}
+                  {% if loc.contact_name or loc.contact_phone %}
+                  <div class="callsheet-location-contact">
+                    <span class="callsheet-contact-label">Main:</span>
+                    {% if loc.contact_name %}<span>{{ loc.contact_name }}</span>{% endif %}
+                    {% if loc.contact_phone %}<span>{{ loc.contact_phone }}</span>{% endif %}
+                  </div>
+                  {% endif %}
+                  {% if loc.dayof_name or loc.dayof_phone %}
+                  <div class="callsheet-location-contact">
+                    <span class="callsheet-contact-label">Day-of:</span>
+                    {% if loc.dayof_name %}<span>{{ loc.dayof_name }}</span>{% endif %}
+                    {% if loc.dayof_phone %}<span>{{ loc.dayof_phone }}</span>{% endif %}
+                  </div>
+                  {% endif %}
+                  {% if ld.note %}
+                  <div class="callsheet-location-note">{{ ld.note }}</div>
+                  {% endif %}
+                </div>
+              </div>
+              {% endif %}
+            {% endfor %}
+          </div>
+          {% else %}
+            <div class="callsheet-placeholder">No locations booked for this date.</div>
+          {% endif %}
+        </div>
+      </div>
+
+    </div>{# /callsheet-two-col #}
+
+    {# ── Key Times + Weather/Emergency (two columns) ────────────────────────── #}
+    <div class="callsheet-two-col">
+
+      {# Left: Key Times #}
+      <div class="callsheet-col callsheet-col-left">
+        <div class="callsheet-section">
+          <div class="callsheet-section-title">Key Times</div>
+          <table class="callsheet-table callsheet-times-table">
+            <thead>
+              <tr><th>Time</th><th>Event</th><th>Notes</th></tr>
+            </thead>
+            <tbody>
+              {% if prod_day and prod_day.courtesy_breakfast %}
+              <tr><td class="callsheet-time-cell cs-editable" id="cs-courtesy-breakfast-time" contenteditable="true" data-field="courtesy_breakfast_time" title="Edit time">{{ cs_data.get('courtesy_breakfast_time', 'TBD') }}</td><td>Courtesy Breakfast</td><td></td></tr>
+              {% endif %}
+              <tr>
+                <td class="callsheet-time-cell cs-editable" id="cs-general-crew-call-kt" contenteditable="true" data-field="general_crew_call_kt" title="Edit time — also updates the main crew call header">{{ cs_data.get('general_crew_call', 'TBD') }}</td>
+                <td>General Crew Call</td>
+                <td></td>
+              </tr>
+              {% if prod_day and prod_day.first_meal %}
+              <tr><td class="callsheet-time-cell cs-editable" id="cs-first-meal-time" contenteditable="true" data-field="first_meal_time" title="Edit time">{{ cs_data.get('first_meal_time', 'TBD') }}</td><td>First Meal</td><td></td></tr>
+              {% endif %}
+              {% if prod_day and prod_day.second_meal %}
+              <tr><td class="callsheet-time-cell cs-editable" id="cs-second-meal-time" contenteditable="true" data-field="second_meal_time" title="Edit time">{{ cs_data.get('second_meal_time', 'TBD') }}</td><td>Second Meal</td><td></td></tr>
+              {% endif %}
+              <tr><td class="callsheet-time-cell cs-editable" id="cs-estimated-wrap" contenteditable="true" data-field="estimated_wrap_time" title="Edit time">{{ cs_data.get('estimated_wrap_time', 'TBD') }}</td><td>Estimated Wrap</td><td></td></tr>
+              <tr class="callsheet-times-divider"><td colspan="3"></td></tr>
+              <tr>
+                <td class="callsheet-time-cell cs-editable" id="cs-sunrise" contenteditable="true" data-field="sunrise" title="Click to edit — will auto-populate from location in a future update">{{ cs_data.get('sunrise', '—') }}</td>
+                <td>Sunrise <span class="cs-future-badge cs-screen-only" title="Will auto-populate from location + date in a future update">◌</span></td>
+                <td></td>
+              </tr>
+              <tr>
+                <td class="callsheet-time-cell cs-editable" id="cs-sunset" contenteditable="true" data-field="sunset" title="Click to edit — will auto-populate from location in a future update">{{ cs_data.get('sunset', '—') }}</td>
+                <td>Sunset <span class="cs-future-badge cs-screen-only" title="Will auto-populate from location + date in a future update">◌</span></td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {# Right: Weather + Hospital + Notes #}
+      <div class="callsheet-col callsheet-col-right">
+        <div class="callsheet-section">
+
+          {# Weather #}
+          <div class="callsheet-section-title">
+            Weather
+            <span class="cs-future-badge cs-screen-only" title="Will auto-populate from shoot location + date in a future update">◌</span>
+          </div>
+          <div class="cs-info-field">
+            <span class="cs-editable cs-weather-field" id="cs-weather" contenteditable="true"
+                  data-field="weather"
+                  title="Click to edit — will auto-populate from location + date in a future update"
+                  data-placeholder="Click to add weather info">{{ cs_data.get('weather', '') or '' }}</span>
+            {% if not cs_data.get('weather') %}
+            <span class="cs-field-placeholder cs-screen-only">Check day-of forecast</span>
+            {% endif %}
+          </div>
+
+          {# Nearest Hospital(s) #}
+          <div class="callsheet-section-title" style="margin-top:.85rem">
+            Nearest Hospital
+            <span class="cs-future-badge cs-screen-only" title="Will link to location records in a future update">◌</span>
+          </div>
+          <div id="hospital-container"></div>
+          <div class="cs-row-toolbar cs-screen-only" style="margin-top:.25rem">
+            <button class="btn btn-xs btn-ghost" onclick="addHospitalRow()">+ Hospital</button>
+          </div>
+
+          {# Notes #}
+          <div class="callsheet-section-title" style="margin-top:.85rem">Emergency / Notes</div>
+          <div class="cs-editable cs-notes-area" id="cs-emergency-notes" contenteditable="true"
+               data-field="emergency_notes"
+               title="Click to edit">{{ cs_data.get('emergency_notes', '') or '' }}</div>
+
+        </div>
+      </div>
+
+    </div>{# /callsheet-two-col #}
+
+    {# ── Cast / Talent section (always shown — populates when cast data exists) #}
+    <div class="callsheet-section callsheet-section-talent">
+      <div class="callsheet-section-title">Cast / Talent</div>
+      {% if talent_rows %}
+      <table class="callsheet-table">
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Name</th>
+            <th>Day Type</th>
+            <th>Contact</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in talent_rows %}
+          <tr>
+            <td>{{ r.role }}</td>
+            <td>{{ r.name }}</td>
+            <td><span class="callsheet-day-type-badge callsheet-dt-{{ r.day_type }}">{{ r.day_type | upper }}</span></td>
+            <td class="callsheet-contact-cell">
+              {% if r.phone %}<div class="callsheet-contact-item">{{ r.phone }}</div>{% endif %}
+              {% if r.email %}<div class="callsheet-contact-item callsheet-email">{{ r.email }}</div>{% endif %}
+              {% if not r.phone and not r.email %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="callsheet-placeholder" style="padding:.6rem .25rem;font-style:italic">No cast scheduled for this day. Cast will appear here once assigned in the schedule.</div>
+      {% endif %}
+    </div>
+
+    {# ── Background / Extras ────────────────────────────────────────────────── #}
+    <div class="callsheet-section">
+      <div class="callsheet-section-title">Background / Extras</div>
+      <table class="callsheet-table" id="extras-table">
+        <thead>
+          <tr>
+            <th class="cs-screen-only" style="width:1.5rem"></th>
+            <th>Type / Description</th>
+            <th style="width:4rem">Qty</th>
+            <th style="width:7rem">Call Time</th>
+            <th>Location</th>
+            <th>Notes</th>
+            <th class="cs-screen-only" style="width:2rem"></th>
+          </tr>
+        </thead>
+        <tbody id="extras-tbody">
+          {# Populated by JS #}
+        </tbody>
+      </table>
+      <div class="cs-row-toolbar cs-screen-only">
+        <button class="btn btn-xs btn-ghost" onclick="addExtrasRow()">+ Row</button>
+      </div>
+    </div>
+
+    {# ── Above the Line section ───────────────────────────────────────────── #}
+    {% if atl_rows %}
+    <div class="callsheet-section callsheet-section-atl">
+      <div class="callsheet-section-title">Above the Line</div>
+      <table class="callsheet-table">
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Name</th>
+            <th>Day Type</th>
+            <th>Contact</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in atl_rows %}
+          <tr>
+            <td>{{ r.role }}</td>
+            <td>{{ r.name }}</td>
+            <td><span class="callsheet-day-type-badge callsheet-dt-{{ r.day_type }}">{{ r.day_type | upper }}</span></td>
+            <td class="callsheet-contact-cell">
+              {% if r.phone %}<div class="callsheet-contact-item">{{ r.phone }}</div>{% endif %}
+              {% if r.email %}<div class="callsheet-contact-item callsheet-email">{{ r.email }}</div>{% endif %}
+              {% if not r.phone and not r.email %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {# ── Clients (shown on page 1 if any are flagged show_on_callsheet) ─────── #}
+    <div class="callsheet-section callsheet-section-clients">
+      <div class="callsheet-section-title">Clients</div>
+      {% if project_clients_cs %}
+      <table class="callsheet-table">
+        <thead>
+          <tr><th>Name</th><th>Title</th><th>Company</th><th>Contact</th></tr>
+        </thead>
+        <tbody>
+          {% for c in project_clients_cs %}
+          <tr>
+            <td><strong>{{ c.name }}</strong></td>
+            <td>{{ c.title or '—' }}</td>
+            <td>{{ c.company or '—' }}</td>
+            <td class="callsheet-contact-cell">
+              {% if c.phone %}<div class="callsheet-contact-item">{{ c.phone }}</div>{% endif %}
+              {% if c.email %}<div class="callsheet-contact-item callsheet-email">{{ c.email }}</div>{% endif %}
+              {% if not c.phone and not c.email %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="callsheet-placeholder cs-screen-only">
+        No clients added yet.
+        <a href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=contacts" style="color:var(--accent)">Add clients in the Contacts tab</a>
+        and check "Show on Call Sheet".
+      </div>
+      {% endif %}
+    </div>
+
+    {# ── Department Notes ─────────────────────────────────────────────────────── #}
+    <div class="callsheet-section">
+      <div class="callsheet-section-title">Department Notes</div>
+      <div id="dept-notes-container" class="cs-dept-notes-container">
+        {# Populated by JS from crew department list + saved notes #}
+      </div>
+      <div class="cs-row-toolbar cs-screen-only">
+        <button class="btn btn-xs btn-ghost" onclick="addDeptNote()">+ Add Department</button>
+      </div>
+    </div>
+
+    {# ── Today's Schedule: text area (shot list integration planned for future) ─ #}
+    <div class="callsheet-section">
+      <div class="callsheet-section-title">
+        Today's Shooting Schedule
+        <span class="cs-future-badge cs-screen-only" title="Will connect to shot list / scene breakdown system in a future update">◌</span>
+        <span class="cs-screen-only" style="font-size:.7rem;font-weight:400;color:var(--text-muted);margin-left:.5rem">Manual notes for now — shot list integration planned</span>
+      </div>
+      <textarea id="cs-schedule-notes" class="cs-schedule-notes"
+                placeholder="Enter today's shooting schedule, scene breakdown, or production notes here…
+Example:
+7:00 AM  General crew call — Stage A
+7:30 AM  Camera ready
+8:00 AM  First shot — INT. OFFICE - Scene 14A
+...">{{ cs_data.get('schedule_notes', '') }}</textarea>
+    </div>
+
+    {# ── Advance Schedule ──────────────────────────────────────────────────────── #}
+    <div class="callsheet-section">
+      <div class="callsheet-section-title">
+        Advance Schedule
+        {% if next_day_date %}
+        <span style="font-weight:400;font-size:.78rem;color:var(--text-muted);margin-left:.5rem">Next shoot day: {{ next_day_date.strftime('%a, %b %d') }}</span>
+        {% endif %}
+      </div>
+      {% if next_day_lines_preview %}
+      <div class="cs-advance-lines">
+        {% for ln in next_day_lines_preview %}
+        <div class="cs-advance-line">{{ ln.description or ln.account_name }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <textarea id="cs-advance-schedule" class="cs-schedule-notes cs-advance-notes"
+                placeholder="Enter advance schedule / next day notes…">{{ cs_data.get('advance_schedule', '') }}</textarea>
+    </div>
+
+  </div>{# /callsheet-page-1 #}
+
+  {# ── Page break ──────────────────────────────────────────────────────────── #}
+  <div class="callsheet-page-break"></div>
+
+  {# ╔══════════════════════════════════════════════════════════════════════════
+     PAGE 2
+     ══════════════════════════════════════════════════════════════════════════╗ #}
+  <div class="callsheet-page callsheet-page-2">
+
+    {# ── Page 2 header ────────────────────────────────────────────────────── #}
+    <div class="callsheet-header-p2-bar">
+      <div class="callsheet-p2-left">
+        <div class="callsheet-company-name">Framework Productions</div>
+        <div class="callsheet-p2-budget-sub">{{ budget.name }} <span class="callsheet-mode-pill">{{ cur_mode.short }}</span></div>
+      </div>
+      <div class="callsheet-p2-center">
+        <div class="callsheet-project-title">{{ project.name }}</div>
+        <div class="callsheet-header-label">CREW CALL SHEET — PAGE 2</div>
+      </div>
+      <div class="callsheet-p2-right">
+        <div class="callsheet-date-display">{{ selected_date.strftime('%A, %B %d, %Y') }}</div>
+        {% if shooting_day_num %}
+        <div class="callsheet-day-num">Shoot Day {{ shooting_day_num }} of {{ all_scheduled_dates|length }}</div>
+        {% endif %}
+        <div class="callsheet-p2-version">
+          CS <span class="cs-version-ref">{{ cs_data.get('callsheet_version', 'v1') }}</span>
+        </div>
+      </div>
+    </div>
+
+    {# ── Crew Call Sheet by department ────────────────────────────────────── #}
+    <div class="callsheet-section">
+      <div class="callsheet-section-title" style="display:flex;align-items:center;justify-content:space-between;">
+        <span>Crew Call Sheet</span>
+        <div class="cs-screen-only" style="display:flex;align-items:center;gap:.5rem">
+          <span class="muted" style="font-size:.72rem">General Call:</span>
+          <strong id="cs-crew-call-p2-display" style="font-size:.82rem">—</strong>
+          <button class="btn btn-xs btn-ghost" id="crew-view-toggle" onclick="toggleCrewView()" title="Toggle department/flat view">By Dept</button>
+        </div>
+      </div>
+      {% if crew_p2_all %}
+      {# Build department groups #}
+      {% set ns_dept = namespace(groups={}, order=[]) %}
+      {% for r in crew_p2_all %}
+        {% if r.p2_section not in ns_dept.groups %}
+          {% set _ = ns_dept.order.append(r.p2_section) %}
+          {% set _ = ns_dept.groups.update({r.p2_section: []}) %}
+        {% endif %}
+        {% set _ = ns_dept.groups[r.p2_section].append(r) %}
+      {% endfor %}
+
+      <div class="cs-dept-grid" id="crew-call-tbody">
+        {% for dept_name in ns_dept.order %}
+        {% set dept_rows = ns_dept.groups[dept_name] %}
+        <div class="cs-dept-box">
+          <div class="cs-dept-box-header">{{ dept_name | upper }}</div>
+          <table class="cs-dept-box-table">
+            <tbody>
+              {% for r in dept_rows %}
+              {% set crew_key = r.p2_section ~ '||' ~ r.role ~ '||' ~ r.name %}
+              <tr class="cs-crew-member-row">
+                <td class="cs-dept-role">{{ r.role }}</td>
+                <td class="cs-dept-name">{{ r.name }}</td>
+                <td class="callsheet-time-cell cs-editable cs-crew-call-cell cs-dept-call"
+                    contenteditable="true"
+                    data-crew-key="{{ crew_key }}"
+                    data-is-override="false"
+                    title="Click to set call time"
+                    onblur="crewCallBlur(this)"
+                    oninput="this.dataset.isOverride='true'">{{ cs_data.get('crew_call_times', {}).get(crew_key, '') or '' }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endfor %}
+      </div>
+
+      {# Flat list view (hidden by default, toggled by button) #}
+      <div id="crew-flat-list" style="display:none">
+        <table class="callsheet-table callsheet-crew-table">
+          <thead>
+            <tr><th>Dept</th><th>Role</th><th>Name</th><th>Call Time</th></tr>
+          </thead>
+          <tbody>
+            {% for r in crew_p2_all %}
+            {% set crew_key = r.p2_section ~ '||' ~ r.role ~ '||' ~ r.name %}
+            <tr>
+              <td class="muted" style="font-size:.78rem">{{ r.p2_section }}</td>
+              <td>{{ r.role }}</td>
+              <td>{{ r.name }}</td>
+              <td class="callsheet-time-cell cs-editable"
+                  contenteditable="true"
+                  data-crew-key="{{ crew_key }}"
+                  data-is-override="false"
+                  onblur="crewCallBlur(this)"
+                  oninput="this.dataset.isOverride='true'">{{ cs_data.get('crew_call_times', {}).get(crew_key, '') or '' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="callsheet-placeholder callsheet-empty-state">No crew scheduled for this day.</div>
+      {% endif %}
+    </div>
+
+    {# ── Useful Contacts ──────────────────────────────────────────────────────── #}
+    <div class="callsheet-section">
+      <div class="callsheet-section-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Useful Contacts</span>
+        <div class="cs-screen-only" style="display:flex;gap:.4rem;align-items:center">
+          <span class="muted" style="font-size:.72rem">Select from contact sheet or enter manually</span>
+        </div>
+      </div>
+      <table class="callsheet-table callsheet-key-contact-table">
+        <thead>
+          <tr>
+            <th class="cs-screen-only" style="width:1.5rem"></th>
+            <th>Role</th>
+            <th>Name</th>
+            <th>Contact</th>
+            <th class="cs-screen-only" style="width:2rem"></th>
+          </tr>
+        </thead>
+        <tbody id="uc-tbody"></tbody>
+      </table>
+      <div class="cs-row-toolbar cs-screen-only">
+        <button class="btn btn-xs btn-ghost" onclick="addUcRow()">+ Add Contact</button>
+      </div>
+    </div>
+
+    {# ── Representation & Support Contacts ──────────────────────────────────────── #}
+    {% if rep_contacts %}
+    <div class="callsheet-section cs-callsheet-rep">
+      <div class="callsheet-section-title">Representation &amp; Support</div>
+      <table class="callsheet-table">
+        <thead>
+          <tr>
+            <th>Crew Member</th>
+            <th>Role</th>
+            <th>Rep / Contact</th>
+            <th>Type</th>
+            <th>Company</th>
+            <th>Contact</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rep_contacts %}
+          <tr>
+            <td>{{ r.crew_name }}</td>
+            <td class="muted" style="font-size:.8em">{{ r.crew_role }}</td>
+            <td><strong>{{ r.rep_name }}</strong></td>
+            <td><span class="contact-role-badge">{{ r.rep_role_type | capitalize }}</span></td>
+            <td>{{ r.rep_company or '—' }}</td>
+            <td class="callsheet-contact-cell">
+              {% if r.rep_phone %}<div class="callsheet-contact-item">{{ r.rep_phone }}</div>{% endif %}
+              {% if r.rep_email %}<div class="callsheet-contact-item callsheet-email">{{ r.rep_email }}</div>{% endif %}
+              {% if not r.rep_phone and not r.rep_email %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {# ── Union Contacts ──────────────────────────────────────────────────────────── #}
+    {% if project_unions_cs %}
+    <div class="callsheet-section cs-callsheet-unions">
+      <div class="callsheet-section-title">Union Contacts</div>
+      <table class="callsheet-table">
+        <thead>
+          <tr><th>Union</th><th>Contact</th><th>Phone</th><th>Email</th></tr>
+        </thead>
+        <tbody>
+          {% for u in project_unions_cs %}
+          <tr>
+            <td><strong>{{ u.union_name }}</strong></td>
+            <td>{{ u.contact_name or '—' }}</td>
+            <td>{{ u.phone or '—' }}</td>
+            <td class="callsheet-email-cell">{{ u.email or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {# ── Meal Counts ───────────────────────────────────────────────────────── #}
+    <div class="callsheet-two-col">
+      <div class="callsheet-col callsheet-col-left">
+        <div class="callsheet-section">
+          <div class="callsheet-section-title">Meals Scheduled</div>
+          <table class="callsheet-table">
+            <thead>
+              <tr><th>Meal</th><th>Scheduled</th><th>Count</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Courtesy Breakfast</td>
+                <td>{% if prod_day and prod_day.courtesy_breakfast %}<span class="callsheet-meal-yes">Yes</span>{% else %}<span class="callsheet-meal-no">No</span>{% endif %}</td>
+                <td class="cs-editable" contenteditable="true" title="Edit count">—</td>
+              </tr>
+              <tr>
+                <td>First Meal</td>
+                <td>{% if prod_day and prod_day.first_meal %}<span class="callsheet-meal-yes">Yes</span>{% else %}<span class="callsheet-meal-no">No</span>{% endif %}</td>
+                <td class="cs-editable" contenteditable="true" title="Edit count">—</td>
+              </tr>
+              <tr>
+                <td>Second Meal</td>
+                <td>{% if prod_day and prod_day.second_meal %}<span class="callsheet-meal-yes">Yes</span>{% else %}<span class="callsheet-meal-no">No</span>{% endif %}</td>
+                <td class="cs-editable" contenteditable="true" title="Edit count">—</td>
+              </tr>
+            </tbody>
+          </table>
+          <div style="margin-top:.5rem;font-size:.75rem;color:var(--text-muted)">
+            Meal settings from Production Day. Update in Schedule view.
+          </div>
+        </div>
+      </div>
+
+      <div class="callsheet-col callsheet-col-right">
+        <div class="callsheet-section">
+          <div class="callsheet-section-title">Additional Notes</div>
+          <div class="cs-editable cs-remarks-area" id="cs-additional-notes" contenteditable="true"
+               data-field="additional_notes"
+               title="Click to edit">{{ cs_data.get('additional_notes', '') or '' }}</div>
+        </div>
+      </div>
+    </div>
+
+    {# ── Quote of the Day ────────────────────────────────────────────────────── #}
+    <div class="callsheet-section cs-quote-section">
+      <div class="callsheet-section-title" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Quote of the Day</span>
+        <div class="cs-screen-only" style="display:flex;align-items:center;gap:.4rem">
+          <select id="cs-quote-type" class="cs-quote-type-select">
+            <option value="random">Random</option>
+            <option value="film">Film</option>
+            <option value="tv">TV</option>
+            <option value="book">Book</option>
+            <option value="person">Famous Person</option>
+          </select>
+          <button class="btn btn-xs btn-ghost" onclick="refreshQuote()" id="cs-quote-refresh-btn" title="Generate new quote">↻ New Quote</button>
+        </div>
+      </div>
+      <div class="cs-quote-display">
+        <div class="cs-editable cs-quote-text" id="cs-quote-text" contenteditable="true"
+             data-field="quote_of_day"
+             title="Click to edit, or use ↻ to generate a new one">{{ cs_data.get('quote_of_day', '') or '' }}</div>
+        {% if not cs_data.get('quote_of_day') %}
+        <div class="cs-quote-placeholder cs-screen-only">Click ↻ to generate a Quote of the Day</div>
+        {% endif %}
+      </div>
+    </div>
+
+    {# ── Confidentiality footer ────────────────────────────────────────────── #}
+    <div class="callsheet-footer">
+      Confidential — Framework Productions &nbsp;|&nbsp; {{ selected_date.strftime('%B %d, %Y') }}
+      {% if shooting_day_num %} &nbsp;|&nbsp; Shoot Day {{ shooting_day_num }} {% endif %}
+      &nbsp;|&nbsp; Not for distribution
+    </div>
+
+  </div>{# /callsheet-page-2 #}
+
+</div>{# /callsheet-wrapper #}
+
+{# ── Distribution panel (screen only, foundation for future send) ─────────── #}
+<div class="cs-distribution-panel cs-screen-only">
+  <div class="cs-dist-header">
+    <h3>Distribution</h3>
+    <span class="muted" style="font-size:.78rem">Future: send call sheet via email to crew, cast, clients, unions</span>
+  </div>
+  <div class="cs-dist-body">
+    <div class="cs-dist-meta">
+      <span class="muted" style="font-size:.82rem">Call Sheet Version:</span>
+      <strong id="cs-dist-version-display">{{ cs_data.get('callsheet_version', 'v1') }}</strong>
+      <span class="cs-dist-coming-soon">Email send coming soon</span>
+    </div>
+    <div class="cs-dist-recipients-summary">
+      <span class="muted" style="font-size:.78rem">Distribution will include: crew, cast, clients, union contacts, CC'd reps</span>
+    </div>
+    <button class="btn btn-sm btn-outline" disabled title="Email distribution coming soon">✉ Send Call Sheet</button>
+  </div>
+</div>
+
+{# ─── JavaScript ──────────────────────────────────────────────────────────── #}
+<script>
+// ── Constants ─────────────────────────────────────────────────────────────────
+const CS_SAVE_URL   = "{{ url_for('callsheet_save', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
+const CS_DATA       = {{ cs_data | tojson }};
+const KEY_CONTACTS_FALLBACK = {{ key_contacts | tojson }};
+const AVAILABLE_CONTACTS    = {{ available_contacts | tojson }};
+
+// ── Auto-save ─────────────────────────────────────────────────────────────────
+let _saveTimer = null;
+function scheduleAutoSave() {
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(doAutoSave, 900);
+}
+function doAutoSave() {
+  const payload = collectCallSheetData();
+  const statusEl = document.getElementById('cs-save-status');
+  if (statusEl) { statusEl.textContent = 'Saving…'; statusEl.className = 'cs-save-status saving'; }
+  fetch(CS_SAVE_URL, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (statusEl) { statusEl.textContent = 'Saved'; statusEl.className = 'cs-save-status saved'; }
+    setTimeout(() => { if (statusEl) { statusEl.textContent = ''; statusEl.className = 'cs-save-status'; } }, 2500);
+  })
+  .catch(() => {
+    if (statusEl) { statusEl.textContent = 'Save failed'; statusEl.className = 'cs-save-status error'; }
+  });
+}
+
+// ── Data collection ────────────────────────────────────────────────────────────
+function collectCallSheetData() {
+  return {
+    general_crew_call:       getText('cs-crew-call'),
+    weather:                 getText('cs-weather'),
+    sunrise:                 getText('cs-sunrise'),
+    sunset:                  getText('cs-sunset'),
+    emergency_notes:         getText('cs-emergency-notes'),
+    additional_notes:        getText('cs-additional-notes'),
+    schedule_notes:          (document.getElementById('cs-schedule-notes') || {}).value || '',
+    advance_schedule:        (document.getElementById('cs-advance-schedule') || {}).value || '',
+    callsheet_version:       getText('cs-callsheet-version'),
+    script_version:          getText('cs-script-version'),
+    schedule_version:        getText('cs-schedule-version'),
+    quote_of_day:            getText('cs-quote-text'),
+    courtesy_breakfast_time: getText('cs-courtesy-breakfast-time'),
+    first_meal_time:         getText('cs-first-meal-time'),
+    second_meal_time:        getText('cs-second-meal-time'),
+    estimated_wrap_time:     getText('cs-estimated-wrap'),
+    extras:             collectExtras(),
+    dept_notes:         collectDeptNotes(),
+    crew_call_times:    collectCrewCallTimes(),
+    key_personnel:      collectKeyPersonnel(),
+    hospitals:          collectHospitals(),
+    location_order:     collectLocationOrder(),
+    useful_contacts:    collectUsefulContacts(),
+  };
+}
+function getText(id) {
+  const el = document.getElementById(id);
+  return el ? el.textContent.trim() : '';
+}
+
+// ── HH:MM time normalization ──────────────────────────────────────────────────
+function normalizeTimeStr(raw) {
+  const s = (raw || '').trim();
+  if (!s || s === 'TBD' || s === '—' || s === '-') return s;
+  // Strip AM/PM suffix, parse
+  const isPM = /pm/i.test(s);
+  const isAM = /am/i.test(s);
+  const stripped = s.replace(/[apm\s]/gi, '');
+  let h, m;
+  if (stripped.includes(':')) {
+    const parts = stripped.split(':');
+    h = parseInt(parts[0], 10);
+    m = parseInt(parts[1] || '0', 10);
+  } else if (stripped.length <= 2) {
+    h = parseInt(stripped, 10);
+    m = 0;
+  } else if (stripped.length === 3) {
+    h = parseInt(stripped[0], 10);
+    m = parseInt(stripped.slice(1), 10);
+  } else {
+    h = parseInt(stripped.slice(0, 2), 10);
+    m = parseInt(stripped.slice(2, 4), 10);
+  }
+  if (isNaN(h) || isNaN(m)) return s; // can't parse — leave as-is
+  if (isPM && h < 12) h += 12;
+  if (isAM && h === 12) h = 0;
+  h = Math.max(0, Math.min(23, h));
+  m = Math.max(0, Math.min(59, m));
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+// ── Bind contenteditable auto-save ────────────────────────────────────────────
+document.querySelectorAll('.cs-editable[contenteditable]').forEach(el => {
+  el.addEventListener('input', scheduleAutoSave);
+  el.addEventListener('blur', () => {
+    // Normalize time format for time cells
+    if (el.classList.contains('callsheet-time-cell') || el.classList.contains('callsheet-call-time')) {
+      const normalized = normalizeTimeStr(el.textContent.trim());
+      if (normalized !== el.textContent.trim()) el.textContent = normalized;
+    }
+    clearTimeout(_saveTimer);
+    doAutoSave();
+  });
+});
+document.getElementById('cs-schedule-notes').addEventListener('input', scheduleAutoSave);
+const _advEl = document.getElementById('cs-advance-schedule');
+if (_advEl) _advEl.addEventListener('input', scheduleAutoSave);
+
+// ── Sync Key Times "General Crew Call" row ↔ main header ──────────────────────
+(function() {
+  const ktEl = document.getElementById('cs-general-crew-call-kt');
+  const hdrEl = document.getElementById('cs-crew-call');
+  if (ktEl && hdrEl) {
+    // When Key Times row is edited, mirror to header
+    ktEl.addEventListener('input', () => {
+      hdrEl.textContent = ktEl.textContent.trim();
+      propagateGeneralCrewCall(hdrEl.textContent.trim());
+    });
+    // When header is edited, mirror to Key Times row
+    hdrEl.addEventListener('input', () => {
+      ktEl.textContent = hdrEl.textContent.trim();
+    });
+  }
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// KEY PERSONNEL
+// ═══════════════════════════════════════════════════════════════════════════════
+let KP_ROWS = [];
+let _kpIdCounter = 1;
+function _newKpId() { return 'kp' + (_kpIdCounter++); }
+
+function initKeyPersonnel() {
+  if (CS_DATA.key_personnel && CS_DATA.key_personnel.length > 0) {
+    KP_ROWS = CS_DATA.key_personnel.map(r => ({
+      row_id: r.row_id || _newKpId(),
+      is_spacer: !!r.is_spacer,
+      role: r.role || '',
+      name: r.name || '',
+      phone: r.phone || '',
+      email: r.email || '',
+      crew_member_id: r.crew_member_id || null,
+    }));
+  } else if (KEY_CONTACTS_FALLBACK && KEY_CONTACTS_FALLBACK.length > 0) {
+    KP_ROWS = KEY_CONTACTS_FALLBACK.map(r => ({
+      row_id: _newKpId(),
+      is_spacer: false,
+      role: r.role || '',
+      name: r.name || '',
+      phone: r.phone || '',
+      email: r.email || '',
+      crew_member_id: null,
+    }));
+    // Ensure at least 5 rows for empty-state padding
+    while (KP_ROWS.length < 5) {
+      KP_ROWS.push({ row_id: _newKpId(), is_spacer: false, role: '', name: '', phone: '', email: '', crew_member_id: null });
+    }
+  } else {
+    // Default: 5 empty rows
+    for (let i = 0; i < 5; i++) {
+      KP_ROWS.push({ row_id: _newKpId(), is_spacer: false, role: '', name: '', phone: '', email: '', crew_member_id: null });
+    }
+  }
+  renderKpTable();
+}
+
+function renderKpTable() {
+  const tbody = document.getElementById('kp-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  KP_ROWS.forEach((row, i) => {
+    const tr = document.createElement('tr');
+    if (row.is_spacer) {
+      tr.className = 'kp-spacer-row';
+      tr.innerHTML = `
+        <td class="cs-drag-handle cs-screen-only kp-drag-handle" draggable="true">⠿</td>
+        <td colspan="3" class="kp-spacer-cell"></td>
+        <td class="kp-actions cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="removeKpRow(${i})" title="Remove">✕</button></td>`;
+    } else {
+      const contactOpts = AVAILABLE_CONTACTS.map(c =>
+        `<option value="${c.id || ''}" ${c.id == row.crew_member_id ? 'selected' : ''}>${escHtml(c.name)}${c.role ? ' — ' + escHtml(c.role) : ''}</option>`
+      ).join('');
+      tr.className = 'kp-row';
+      tr.innerHTML = `
+        <td class="cs-drag-handle cs-screen-only kp-drag-handle" draggable="true">⠿</td>
+        <td>
+          <div class="kp-select-wrap cs-screen-only">
+            <select class="kp-contact-select" onchange="kpSelectContact(${i}, this)">
+              <option value="">— pick contact —</option>
+              ${contactOpts}
+            </select>
+          </div>
+          <span class="cs-editable kp-role-cell" contenteditable="true"
+                onblur="kpFieldBlur(${i}, 'role', this)"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.role)}</span>
+        </td>
+        <td><span class="cs-editable kp-name-cell" contenteditable="true"
+                  onblur="kpFieldBlur(${i}, 'name', this)"
+                  onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.name)}</span></td>
+        <td class="callsheet-contact-cell">
+          <span class="cs-editable kp-phone-cell" contenteditable="true"
+                onblur="kpFieldBlur(${i}, 'phone', this)"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.phone)}</span>
+        </td>
+        <td class="kp-actions cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="removeKpRow(${i})" title="Remove">✕</button></td>`;
+    }
+    tbody.appendChild(tr);
+  });
+}
+
+function kpFieldBlur(idx, field, el) {
+  if (KP_ROWS[idx]) {
+    let val = el.textContent.trim();
+    if (field === 'phone') { val = normalizePhone(val) || val; el.textContent = val; }
+    if (field === 'email') warnInvalidEmail(el, val);
+    KP_ROWS[idx][field] = val;
+    scheduleAutoSave();
+  }
+}
+
+function kpSelectContact(idx, sel) {
+  if (!sel.value) return;
+  const contact = AVAILABLE_CONTACTS.find(c => String(c.id) === sel.value);
+  if (!contact) return;
+  KP_ROWS[idx].crew_member_id = contact.id;
+  KP_ROWS[idx].name  = contact.name;
+  KP_ROWS[idx].role  = contact.role;
+  KP_ROWS[idx].phone = contact.phone;
+  KP_ROWS[idx].email = contact.email;
+  renderKpTable();
+  scheduleAutoSave();
+}
+
+function addKpRow() {
+  KP_ROWS.push({ row_id: _newKpId(), is_spacer: false, role: '', name: '', phone: '', email: '', crew_member_id: null });
+  renderKpTable();
+  scheduleAutoSave();
+}
+
+function addKpSpacer() {
+  KP_ROWS.push({ row_id: _newKpId(), is_spacer: true });
+  renderKpTable();
+  scheduleAutoSave();
+}
+
+function removeKpRow(idx) {
+  KP_ROWS.splice(idx, 1);
+  renderKpTable();
+  scheduleAutoSave();
+}
+
+function collectKeyPersonnel() {
+  return KP_ROWS.map(r => ({
+    row_id: r.row_id,
+    is_spacer: r.is_spacer,
+    role: r.role || '',
+    name: r.name || '',
+    phone: r.phone || '',
+    email: r.email || '',
+    crew_member_id: r.crew_member_id || null,
+  }));
+}
+
+// KP drag-and-drop
+let _kpDragIdx = null;
+document.getElementById('kp-tbody').addEventListener('dragstart', e => {
+  const handle = e.target.closest('.kp-drag-handle');
+  if (!handle) return;
+  const tr = handle.closest('tr');
+  const rows = Array.from(tr.parentElement.children);
+  _kpDragIdx = rows.indexOf(tr);
+  e.dataTransfer.effectAllowed = 'move';
+  tr.classList.add('dragging');
+});
+document.getElementById('kp-tbody').addEventListener('dragover', e => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+});
+document.getElementById('kp-tbody').addEventListener('drop', e => {
+  e.preventDefault();
+  const tr = e.target.closest('tr');
+  if (!tr || _kpDragIdx === null) return;
+  const rows = Array.from(tr.parentElement.children);
+  const dropIdx = rows.indexOf(tr);
+  if (_kpDragIdx !== dropIdx) {
+    const moved = KP_ROWS.splice(_kpDragIdx, 1)[0];
+    KP_ROWS.splice(dropIdx, 0, moved);
+    renderKpTable();
+    scheduleAutoSave();
+  }
+  _kpDragIdx = null;
+});
+document.getElementById('kp-tbody').addEventListener('dragend', e => {
+  document.querySelectorAll('.kp-row.dragging, .kp-spacer-row.dragging').forEach(el => el.classList.remove('dragging'));
+  _kpDragIdx = null;
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HOSPITALS
+// ═══════════════════════════════════════════════════════════════════════════════
+let HOSPITAL_ROWS = [];
+let _hospIdCounter = 1;
+function _newHospId() { return 'h' + (_hospIdCounter++); }
+
+function initHospitals() {
+  const saved = CS_DATA.hospitals;
+  if (saved && saved.length > 0) {
+    HOSPITAL_ROWS = saved.map(h => ({ row_id: h.row_id || _newHospId(), name: h.name || '', address: h.address || '', phone: h.phone || '' }));
+  } else {
+    HOSPITAL_ROWS = [{ row_id: _newHospId(), name: '', address: '', phone: '' }];
+  }
+  renderHospitals();
+}
+
+function renderHospitals() {
+  const container = document.getElementById('hospital-container');
+  if (!container) return;
+  container.innerHTML = '';
+  HOSPITAL_ROWS.forEach((h, i) => {
+    const div = document.createElement('div');
+    div.className = 'cs-hospital-row';
+    div.innerHTML = `
+      <span class="cs-editable cs-hospital-name" contenteditable="true"
+            data-placeholder="Hospital name"
+            onblur="hospFieldBlur(${i}, 'name', this)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(h.name)}</span>
+      <span class="cs-editable cs-hospital-addr" contenteditable="true"
+            data-placeholder="Address"
+            onblur="hospFieldBlur(${i}, 'address', this)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(h.address)}</span>
+      <span class="cs-editable cs-hospital-phone" contenteditable="true"
+            data-placeholder="Phone"
+            onblur="hospFieldBlur(${i}, 'phone', this)"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(h.phone)}</span>
+      <button class="btn btn-xs btn-ghost cs-screen-only" onclick="removeHospitalRow(${i})" title="Remove" style="margin-left:.25rem">✕</button>`;
+    container.appendChild(div);
+  });
+}
+
+function hospFieldBlur(idx, field, el) {
+  if (HOSPITAL_ROWS[idx]) {
+    let val = el.textContent.trim();
+    if (field === 'phone') { val = normalizePhone(val) || val; el.textContent = val; }
+    HOSPITAL_ROWS[idx][field] = val;
+    scheduleAutoSave();
+  }
+}
+
+function addHospitalRow() {
+  HOSPITAL_ROWS.push({ row_id: _newHospId(), name: '', address: '', phone: '' });
+  renderHospitals();
+  scheduleAutoSave();
+}
+
+function removeHospitalRow(idx) {
+  HOSPITAL_ROWS.splice(idx, 1);
+  if (HOSPITAL_ROWS.length === 0) HOSPITAL_ROWS = [{ row_id: _newHospId(), name: '', address: '', phone: '' }];
+  renderHospitals();
+  scheduleAutoSave();
+}
+
+function collectHospitals() {
+  return HOSPITAL_ROWS.map(h => ({ row_id: h.row_id, name: h.name || '', address: h.address || '', phone: h.phone || '' }));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOCATION DRAG-AND-DROP
+// ═══════════════════════════════════════════════════════════════════════════════
+function initLocationDragDrop() {
+  const container = document.getElementById('loc-sortable');
+  if (!container) return;
+  let dragSrcEl = null;
+
+  container.addEventListener('dragstart', e => {
+    const item = e.target.closest('.cs-loc-item');
+    if (!item) return;
+    dragSrcEl = item;
+    e.dataTransfer.effectAllowed = 'move';
+    setTimeout(() => item.classList.add('dragging'), 0);
+  });
+  container.addEventListener('dragend', e => {
+    if (dragSrcEl) dragSrcEl.classList.remove('dragging');
+    document.querySelectorAll('.cs-loc-item.drag-over').forEach(el => el.classList.remove('drag-over'));
+    dragSrcEl = null;
+    scheduleAutoSave();
+  });
+  container.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const item = e.target.closest('.cs-loc-item');
+    if (item && item !== dragSrcEl) {
+      document.querySelectorAll('.cs-loc-item.drag-over').forEach(el => el.classList.remove('drag-over'));
+      item.classList.add('drag-over');
+    }
+  });
+  container.addEventListener('drop', e => {
+    e.preventDefault();
+    const item = e.target.closest('.cs-loc-item');
+    if (!item || !dragSrcEl || item === dragSrcEl) return;
+    const items = Array.from(container.children);
+    const srcIdx = items.indexOf(dragSrcEl);
+    const tgtIdx = items.indexOf(item);
+    if (srcIdx < tgtIdx) {
+      container.insertBefore(dragSrcEl, item.nextSibling);
+    } else {
+      container.insertBefore(dragSrcEl, item);
+    }
+    item.classList.remove('drag-over');
+  });
+}
+
+function collectLocationOrder() {
+  const container = document.getElementById('loc-sortable');
+  if (!container) return [];
+  return Array.from(container.querySelectorAll('.cs-loc-item'))
+    .map(el => parseInt(el.dataset.ldId, 10))
+    .filter(Boolean);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTRAS / BACKGROUND
+// ═══════════════════════════════════════════════════════════════════════════════
+let EXTRAS_ROWS = [];
+let _extrasIdCounter = 1;
+function _newExtrasId() { return 'ex' + (_extrasIdCounter++); }
+
+function initExtras() {
+  const saved = CS_DATA.extras;
+  if (saved && saved.length > 0) {
+    EXTRAS_ROWS = saved.map(e => ({ row_id: e.row_id || _newExtrasId(), type: e.type || '', qty: e.qty || '', call_time: e.call_time || '', location: e.location || '', notes: e.notes || '' }));
+  } else {
+    EXTRAS_ROWS = [{ row_id: _newExtrasId(), type: '', qty: '', call_time: '', location: '', notes: '' }];
+  }
+  renderExtras();
+}
+
+function renderExtras() {
+  const tbody = document.getElementById('extras-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  EXTRAS_ROWS.forEach((row, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="cs-drag-handle cs-screen-only" style="color:var(--text-muted);cursor:grab">⠿</td>
+      <td><span class="cs-editable" contenteditable="true" onblur="extrasFieldBlur(${i},'type',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.type)}</span></td>
+      <td><span class="cs-editable" contenteditable="true" onblur="extrasFieldBlur(${i},'qty',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.qty)}</span></td>
+      <td><span class="cs-editable" contenteditable="true" onblur="extrasFieldBlur(${i},'call_time',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.call_time)}</span></td>
+      <td><span class="cs-editable" contenteditable="true" onblur="extrasFieldBlur(${i},'location',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.location)}</span></td>
+      <td><span class="cs-editable" contenteditable="true" onblur="extrasFieldBlur(${i},'notes',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.notes)}</span></td>
+      <td class="cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="removeExtrasRow(${i})">✕</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+function extrasFieldBlur(idx, field, el) {
+  if (EXTRAS_ROWS[idx]) { EXTRAS_ROWS[idx][field] = el.textContent.trim(); scheduleAutoSave(); }
+}
+function addExtrasRow() {
+  EXTRAS_ROWS.push({ row_id: _newExtrasId(), type: '', qty: '', call_time: '', location: '', notes: '' });
+  renderExtras(); scheduleAutoSave();
+}
+function removeExtrasRow(idx) {
+  EXTRAS_ROWS.splice(idx, 1);
+  if (EXTRAS_ROWS.length === 0) EXTRAS_ROWS = [{ row_id: _newExtrasId(), type: '', qty: '', call_time: '', location: '', notes: '' }];
+  renderExtras(); scheduleAutoSave();
+}
+function collectExtras() {
+  return EXTRAS_ROWS.map(r => ({ row_id: r.row_id, type: r.type, qty: r.qty, call_time: r.call_time, location: r.location, notes: r.notes }));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEPARTMENT NOTES
+// ═══════════════════════════════════════════════════════════════════════════════
+let DEPT_NOTES = {};    // { deptName: noteText }
+let DEPT_NOTE_ORDER = []; // ordered list of dept names
+
+function initDeptNotes() {
+  const saved = CS_DATA.dept_notes || {};
+  const savedOrder = CS_DATA.dept_note_order || [];
+  // Collect unique dept names from crew rows (server-rendered)
+  const crewDepts = [];
+  document.querySelectorAll('.cs-crew-dept-row td').forEach(td => {
+    const d = td.textContent.trim();
+    if (d && !crewDepts.includes(d)) crewDepts.push(d);
+  });
+  // Build order: saved order first, then any new depts from crew
+  DEPT_NOTE_ORDER = savedOrder.filter(d => crewDepts.includes(d) || saved[d]);
+  crewDepts.forEach(d => { if (!DEPT_NOTE_ORDER.includes(d)) DEPT_NOTE_ORDER.push(d); });
+  // If no crew depts, use saved keys
+  if (DEPT_NOTE_ORDER.length === 0) DEPT_NOTE_ORDER = Object.keys(saved);
+  DEPT_NOTES = { ...saved };
+  renderDeptNotes();
+}
+
+function renderDeptNotes() {
+  const container = document.getElementById('dept-notes-container');
+  if (!container) return;
+  container.innerHTML = '';
+  DEPT_NOTE_ORDER.forEach((dept, i) => {
+    const div = document.createElement('div');
+    div.className = 'cs-dept-note-row';
+    div.innerHTML = `
+      <div class="cs-dept-note-label">${escHtml(dept)}</div>
+      <textarea class="cs-dept-note-text" rows="2"
+                placeholder="Notes for ${escHtml(dept)}…"
+                onblur="deptNoteBlur('${dept.replace(/'/g,"\\'")}', this)"
+                oninput="scheduleAutoSave()">${escHtml(DEPT_NOTES[dept] || '')}</textarea>
+      <button class="btn btn-xs btn-ghost cs-screen-only" onclick="removeDeptNote(${i})" title="Remove">✕</button>`;
+    container.appendChild(div);
+  });
+}
+
+function deptNoteBlur(dept, el) {
+  DEPT_NOTES[dept] = el.value;
+  scheduleAutoSave();
+}
+
+function addDeptNote() {
+  const name = prompt('Department name:');
+  if (!name || !name.trim()) return;
+  const d = name.trim();
+  if (!DEPT_NOTE_ORDER.includes(d)) DEPT_NOTE_ORDER.push(d);
+  renderDeptNotes(); scheduleAutoSave();
+}
+
+function removeDeptNote(idx) {
+  const dept = DEPT_NOTE_ORDER[idx];
+  DEPT_NOTE_ORDER.splice(idx, 1);
+  delete DEPT_NOTES[dept];
+  renderDeptNotes(); scheduleAutoSave();
+}
+
+function collectDeptNotes() {
+  const result = {};
+  DEPT_NOTE_ORDER.forEach(d => { result[d] = DEPT_NOTES[d] || ''; });
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CREW CALL TIMES + DEPT/FLAT TOGGLE
+// ═══════════════════════════════════════════════════════════════════════════════
+let _crewViewMode = 'dept'; // 'dept' | 'flat'
+
+function initCrewCallTimes() {
+  // Populate call time cells from saved data or general crew call
+  const generalCall = document.getElementById('cs-crew-call');
+  const generalTime = generalCall ? generalCall.textContent.trim() : '';
+  const saved = CS_DATA.crew_call_times || {};
+
+  document.querySelectorAll('.cs-crew-call-cell').forEach(cell => {
+    const key = cell.dataset.crewKey;
+    if (saved[key]) {
+      cell.textContent = saved[key];
+      cell.dataset.isOverride = 'true';
+    } else if (generalTime && generalTime !== 'TBD') {
+      cell.textContent = generalTime;
+      cell.dataset.isOverride = 'false';
+    }
+  });
+
+  // Update the Page 2 general call display
+  updateCrewCallP2Display();
+
+  // When general crew call changes, propagate to non-override cells
+  const crewCallEl = document.getElementById('cs-crew-call');
+  if (crewCallEl) {
+    crewCallEl.addEventListener('input', () => {
+      propagateGeneralCrewCall(crewCallEl.textContent.trim());
+    });
+  }
+}
+
+function propagateGeneralCrewCall(time) {
+  updateCrewCallP2Display(time);
+  document.querySelectorAll('.cs-crew-call-cell').forEach(cell => {
+    if (cell.dataset.isOverride !== 'true') {
+      cell.textContent = time;
+    }
+  });
+}
+
+function updateCrewCallP2Display(time) {
+  const el = document.getElementById('cs-crew-call-p2-display');
+  if (!el) return;
+  const t = time || (document.getElementById('cs-crew-call') || {}).textContent || '';
+  el.textContent = t.trim() || '—';
+}
+
+function crewCallBlur(cell) {
+  scheduleAutoSave();
+}
+
+function collectCrewCallTimes() {
+  const times = {};
+  document.querySelectorAll('.cs-crew-call-cell').forEach(cell => {
+    const key = cell.dataset.crewKey;
+    const val = cell.textContent.trim();
+    if (key && val) times[key] = val;
+  });
+  return times;
+}
+
+function toggleCrewView() {
+  _crewViewMode = _crewViewMode === 'dept' ? 'flat' : 'dept';
+  const grid = document.getElementById('crew-call-tbody');
+  const flat = document.getElementById('crew-flat-list');
+  const btn = document.getElementById('crew-view-toggle');
+  if (_crewViewMode === 'flat') {
+    if (grid) grid.style.display = 'none';
+    if (flat) flat.style.display = '';
+    if (btn) btn.textContent = 'Flat List';
+  } else {
+    if (grid) grid.style.display = '';
+    if (flat) flat.style.display = 'none';
+    if (btn) btn.textContent = 'By Dept';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// USEFUL CONTACTS (independently selectable, not mirror of KP)
+// ═══════════════════════════════════════════════════════════════════════════════
+let UC_ROWS = [];
+let _ucIdCounter = 1;
+function _newUcId() { return 'uc' + (_ucIdCounter++); }
+
+function initUsefulContacts() {
+  const saved = CS_DATA.useful_contacts;
+  if (saved && saved.length > 0) {
+    UC_ROWS = saved.map(r => ({
+      row_id: r.row_id || _newUcId(),
+      role: r.role || '',
+      name: r.name || '',
+      phone: r.phone || '',
+      email: r.email || '',
+      crew_member_id: r.crew_member_id || null,
+    }));
+  } else {
+    // Seed from KP rows if no saved useful contacts
+    UC_ROWS = KP_ROWS.filter(r => !r.is_spacer && (r.name || r.role)).map(r => ({
+      row_id: _newUcId(),
+      role: r.role || '',
+      name: r.name || '',
+      phone: r.phone || '',
+      email: r.email || '',
+      crew_member_id: r.crew_member_id || null,
+    }));
+    if (UC_ROWS.length === 0) {
+      UC_ROWS = [{ row_id: _newUcId(), role: '', name: '', phone: '', email: '', crew_member_id: null }];
+    }
+  }
+  renderUsefulContacts();
+}
+
+function renderUsefulContacts() {
+  const tbody = document.getElementById('uc-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  UC_ROWS.forEach((row, i) => {
+    const contactOpts = AVAILABLE_CONTACTS.map(c =>
+      `<option value="${c.id || ''}" ${c.id == row.crew_member_id ? 'selected' : ''}>${escHtml(c.name)}${c.role ? ' — ' + escHtml(c.role) : ''}</option>`
+    ).join('');
+    const tr = document.createElement('tr');
+    tr.className = 'uc-row';
+    tr.innerHTML = `
+      <td class="cs-drag-handle cs-screen-only" draggable="true" style="color:var(--text-muted);cursor:grab">⠿</td>
+      <td>
+        <div class="kp-select-wrap cs-screen-only">
+          <select class="kp-contact-select" onchange="ucSelectContact(${i}, this)">
+            <option value="">— pick contact —</option>
+            ${contactOpts}
+          </select>
+        </div>
+        <span class="cs-editable kp-role-cell" contenteditable="true"
+              onblur="ucFieldBlur(${i}, 'role', this)"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.role)}</span>
+      </td>
+      <td><span class="cs-editable kp-name-cell" contenteditable="true"
+                onblur="ucFieldBlur(${i}, 'name', this)"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.name)}</span></td>
+      <td class="callsheet-contact-cell">
+        <span class="cs-editable kp-phone-cell" contenteditable="true"
+              onblur="ucPhoneBlur(${i}, this)"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.phone)}</span>
+      </td>
+      <td class="cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="removeUcRow(${i})" title="Remove">✕</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function ucFieldBlur(idx, field, el) {
+  if (UC_ROWS[idx]) { UC_ROWS[idx][field] = el.textContent.trim(); scheduleAutoSave(); }
+}
+function ucPhoneBlur(idx, el) {
+  if (UC_ROWS[idx]) {
+    const norm = normalizePhone(el.textContent.trim());
+    if (norm) el.textContent = norm;
+    UC_ROWS[idx].phone = el.textContent.trim();
+    scheduleAutoSave();
+  }
+}
+function ucSelectContact(idx, sel) {
+  if (!sel.value) return;
+  const contact = AVAILABLE_CONTACTS.find(c => String(c.id) === sel.value);
+  if (!contact) return;
+  UC_ROWS[idx] = { ...UC_ROWS[idx], crew_member_id: contact.id, name: contact.name, role: contact.role, phone: contact.phone, email: contact.email };
+  renderUsefulContacts(); scheduleAutoSave();
+}
+function addUcRow() {
+  UC_ROWS.push({ row_id: _newUcId(), role: '', name: '', phone: '', email: '', crew_member_id: null });
+  renderUsefulContacts(); scheduleAutoSave();
+}
+function removeUcRow(idx) {
+  UC_ROWS.splice(idx, 1);
+  if (UC_ROWS.length === 0) UC_ROWS = [{ row_id: _newUcId(), role: '', name: '', phone: '', email: '', crew_member_id: null }];
+  renderUsefulContacts(); scheduleAutoSave();
+}
+function collectUsefulContacts() {
+  return UC_ROWS.map(r => ({ row_id: r.row_id, role: r.role, name: r.name, phone: r.phone, email: r.email, crew_member_id: r.crew_member_id || null }));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// QUOTE OF THE DAY
+// ═══════════════════════════════════════════════════════════════════════════════
+const CS_QUOTE_URL = "{{ url_for('get_quote') }}";
+
+function refreshQuote() {
+  const btn = document.getElementById('cs-quote-refresh-btn');
+  const typeEl = document.getElementById('cs-quote-type');
+  const type = typeEl ? typeEl.value : 'random';
+  const quoteEl = document.getElementById('cs-quote-text');
+  const placeholder = document.querySelector('.cs-quote-placeholder');
+  if (btn) { btn.disabled = true; btn.textContent = '↻ Loading…'; }
+  fetch(CS_QUOTE_URL + '?type=' + encodeURIComponent(type))
+    .then(r => r.json())
+    .then(d => {
+      if (quoteEl && d.quote) {
+        quoteEl.textContent = d.quote;
+        if (placeholder) placeholder.style.display = 'none';
+        scheduleAutoSave();
+      }
+    })
+    .catch(err => { console.error('Quote fetch failed', err); })
+    .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '↻ New Quote'; } });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+function escHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function normalizePhone(v) {
+  if (!v || !v.trim()) return v;
+  const digits = v.replace(/\D/g, '');
+  const n = digits.length;
+  if (n === 0) return '';
+  if (n === 10) return `+1-${digits.slice(0,3)}-${digits.slice(3,6)}-${digits.slice(6)}`;
+  if (n === 11 && digits[0] === '1') return `+1-${digits.slice(1,4)}-${digits.slice(4,7)}-${digits.slice(7)}`;
+  if (n === 11) return `+${digits[0]}-${digits.slice(1,4)}-${digits.slice(4,7)}-${digits.slice(7)}`;
+  if (n === 12) return `+${digits.slice(0,2)}-${digits.slice(2,5)}-${digits.slice(5,8)}-${digits.slice(8)}`;
+  if (n >= 7) return `+${digits}`;
+  return v;
+}
+
+function validateEmail(v) {
+  if (!v || !v.trim()) return true;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.trim());
+}
+function warnInvalidEmail(el, val) {
+  el.style.borderBottom = validateEmail(val) ? '' : '2px solid #e74c3c';
+  el.title = validateEmail(val) ? '' : 'Invalid email format';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUDIENCE SELECTOR
+// ═══════════════════════════════════════════════════════════════════════════════
+let _currentAudience = 'internal';
+function setAudience(aud) {
+  _currentAudience = aud;
+  document.querySelectorAll('.cs-aud-pill').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.audience === aud);
+  });
+  // Sections visibility
+  const clientSection = document.querySelector('.callsheet-section-clients');
+  if (clientSection) {
+    clientSection.style.display = (aud === 'crew') ? 'none' : '';
+  }
+  // Union section
+  const unionSection = document.querySelector('.cs-callsheet-unions');
+  if (unionSection) {
+    unionSection.style.display = (aud === 'client' || aud === 'crew') ? 'none' : '';
+  }
+  // Representation section
+  const repSection = document.querySelector('.cs-callsheet-rep');
+  if (repSection) {
+    repSection.style.display = (aud === 'crew' || aud === 'union') ? 'none' : '';
+  }
+  // Phone/email columns in crew table
+  const phoneCols = document.querySelectorAll('.callsheet-phone-cell, .callsheet-email-cell');
+  phoneCols.forEach(el => {
+    el.style.display = (aud === 'client' || aud === 'union') ? 'none' : '';
+  });
+  document.querySelectorAll('.callsheet-section-clients .callsheet-contact-cell .callsheet-contact-item').forEach(el => {
+    el.style.display = (aud === 'crew') ? 'none' : '';
+  });
+}
+
+function jumpToDate(sel) {
+  const dateStr = sel.value;
+  if (dateStr) {
+    window.location.href = "{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}/" + dateStr;
+  }
+}
+
+// ── Initialize ────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  initKeyPersonnel();
+  initHospitals();
+  initLocationDragDrop();
+  initExtras();
+  initDeptNotes();
+  initCrewCallTimes();
+  initUsefulContacts();
+});
+</script>
+
+{% endblock %}

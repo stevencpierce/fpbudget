@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}New Budget — {{ project.name }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>{{ project.name }}</h1>
+  <p>No budgets yet. Create the first one.</p>
+</div>
+
+<div class="card" style="max-width:480px">
+  <form method="POST" action="{{ url_for('budget_new', pid=project.id) }}">
+    <div class="field">
+      <label>Budget Name</label>
+      <input type="text" name="name" value="{{ project.name }} Budget" required>
+    </div>
+    <div class="field-row">
+      <button type="submit" class="btn btn-primary">Create Budget</button>
+    </div>
+  </form>
+
+  {% set templates = [] %}
+  {% if templates %}
+  <hr>
+  <p>Or start from a template:</p>
+  {% endif %}
+</div>
+{% endblock %}
