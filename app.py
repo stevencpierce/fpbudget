@@ -4166,6 +4166,12 @@ with app.app_context():
         db.session.commit()
     except Exception:
         db.session.rollback()
+    # Drop legacy is_admin column now that role replaces it
+    try:
+        db.session.execute(text("ALTER TABLE users DROP COLUMN is_admin"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
 
     # ── Seed admin user ───────────────────────────────────────────────────────
     def _seed_admin_user():
