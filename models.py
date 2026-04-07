@@ -20,6 +20,7 @@ class User(db.Model, UserMixin):
     created_at           = db.Column(db.DateTime, default=datetime.utcnow)
     reset_token          = db.Column(db.String(100), nullable=True)
     reset_token_expires  = db.Column(db.DateTime, nullable=True)
+    phone                = db.Column(db.String(50), nullable=True)
 
     def set_password(self, pw):
         from werkzeug.security import generate_password_hash

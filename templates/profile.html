@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}My Profile — FPBudget{% endblock %}
+
+{% block content %}
+<div style="max-width:520px;margin:48px auto">
+  <h1>My Profile</h1>
+
+  {% if current_user.must_change_password %}
+  <div class="flash flash-warning" style="background:#fffbe6;border:1px solid #f5c518;padding:12px 16px;border-radius:6px;margin-bottom:20px">
+    Please set a new password before continuing.
+  </div>
+  {% endif %}
+
+  {# ── Section 1: Profile Info ── #}
+  <section style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:24px;margin-bottom:24px">
+    <h2 style="margin-top:0;margin-bottom:20px;font-size:1.1rem">Profile Info</h2>
+    <form method="POST" action="{{ url_for('profile') }}"
+          style="display:flex;flex-direction:column;gap:16px">
+      <input type="hidden" name="action" value="profile">
+      <div class="field">
+        <label>Full Name</label>
+        <input type="text" name="name" value="{{ current_user.name or '' }}">
+      </div>
+      <div class="field">
+        <label>Email</label>
+        <input type="email" name="email" value="{{ current_user.email }}" required>
+      </div>
+      <div class="field">
+        <label>Phone</label>
+        <input type="tel" name="phone" value="{{ current_user.phone or '' }}">
+      </div>
+      <div class="field">
+        <label>Role</label>
+        <span class="badge badge-role" style="display:inline-block;padding:4px 10px;border-radius:12px;background:#e8f0fe;color:#1a73e8;font-size:.85rem;font-weight:600">
+          {{ current_user.display_role }}
+        </span>
+      </div>
+      <div>
+        <button type="submit" class="btn btn-primary">Save Profile</button>
+      </div>
+    </form>
+  </section>
+
+  {# ── Section 2: Change Password ── #}
+  <section style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:24px;margin-bottom:24px">
+    <h2 style="margin-top:0;margin-bottom:20px;font-size:1.1rem">Change Password</h2>
+    <form method="POST" action="{{ url_for('profile') }}"
+          style="display:flex;flex-direction:column;gap:16px">
+      <input type="hidden" name="action" value="password">
+      <div class="field">
+        <label>Current Password</label>
+        <input type="password" name="current_password" required>
+      </div>
+      <div class="field">
+        <label>New Password <span style="color:#999;font-size:.85em">(min 8 characters)</span></label>
+        <input type="password" name="new_password" required minlength="8">
+      </div>
+      <div class="field">
+        <label>Confirm New Password</label>
+        <input type="password" name="confirm_password" required minlength="8">
+      </div>
+      <div>
+        <button type="submit" class="btn btn-primary">Change Password</button>
+        {% if not current_user.must_change_password %}
+          {% if current_user.is_admin %}
+          <a href="{{ url_for('admin_panel') }}" class="btn btn-outline" style="margin-left:8px">Cancel</a>
+          {% else %}
+          <a href="{{ url_for('dashboard') }}" class="btn btn-outline" style="margin-left:8px">Cancel</a>
+          {% endif %}
+        {% endif %}
+      </div>
+    </form>
+  </section>
+
+</div>
+{% endblock %}

@@ -1,4 +1,5 @@
 import os, logging, json, csv, io, re
+from flask_mail import Mail, Message as MailMessage
 from datetime import date, datetime, timedelta
 from flask import (Flask, render_template, redirect, url_for, request,
                    flash, jsonify, Response, abort)
@@ -144,6 +145,14 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True, "pool_recycle"
 
 db.init_app(app)
 
+app.config['MAIL_SERVER']         = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
+app.config['MAIL_PORT']           = int(os.getenv('MAIL_PORT', 587))
+app.config['MAIL_USE_TLS']        = True
+app.config['MAIL_USERNAME']       = os.getenv('MAIL_USERNAME', '')
+app.config['MAIL_PASSWORD']       = os.getenv('MAIL_PASSWORD', '')
+app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_USERNAME', '')
+mail = Mail(app)
+
 # ── Timezone filter ────────────────────────────────────────────────────────────
 try:
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -183,6 +192,19 @@ GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 @app.context_processor
 def inject_globals():
     return {"GOOGLE_MAPS_API_KEY": GOOGLE_MAPS_API_KEY}
+
+
+def _send_email(to, subject, body):
+    """Send email — silently no-ops if mail not configured."""
+    if not app.config.get('MAIL_USERNAME'):
+        return False
+    try:
+        msg = MailMessage(subject, recipients=[to], body=body)
+        mail.send(msg)
+        return True
+    except Exception as e:
+        logging.warning(f"Email send failed: {e}")
+        return False
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -228,7 +250,7 @@ def login():
             login_user(user)
             if user.must_change_password:
                 flash("Please set a new password to continue.", "warning")
-                return redirect(url_for("admin_me_password"))
+                return redirect(url_for("profile"))
             return redirect(url_for("dashboard"))
         flash("Invalid credentials.", "error")
     return render_template("login.html")
@@ -3513,7 +3535,26 @@ def admin_user_create():
     u.set_password(temp_pw)
     db.session.add(u)
     db.session.commit()
-    flash(f"User created. Temporary password: {temp_pw}", "temp_pw")
+    sent = _send_email(
+        email,
+        "You've been invited to FPBudget",
+        f"""Hi {name or email},
+
+You've been invited to FPBudget by Framework Productions.
+
+Login: https://fp-budget.onrender.com/login
+Email: {email}
+Temporary password: {temp_pw}
+
+Please log in and change your password on your first visit.
+
+— Framework Productions
+"""
+    )
+    if sent:
+        flash(f"User created and invitation sent to {email}. Temporary password: {temp_pw}", "temp_pw")
+    else:
+        flash(f"User created. Temporary password: {temp_pw} (no email configured — send manually)", "temp_pw")
     return redirect(url_for("admin_panel"))
 
 
@@ -3580,7 +3621,25 @@ def admin_user_reset_password(uid):
     u.set_password(temp_pw)
     u.must_change_password = True
     db.session.commit()
-    flash(f"Password reset. New temporary password: {temp_pw}", "temp_pw")
+    sent = _send_email(
+        u.email,
+        "Your FPBudget password has been reset",
+        f"""Hi {u.name or u.email},
+
+Your FPBudget password has been reset by an administrator.
+
+Temporary password: {temp_pw}
+
+Please log in and change your password immediately:
+https://fp-budget.onrender.com/login
+
+— Framework Productions
+"""
+    )
+    if sent:
+        flash(f"Password reset. Temporary password: {temp_pw} (email sent to {u.email})", "temp_pw")
+    else:
+        flash(f"Password reset. Temporary password: {temp_pw} (no email — copy and send manually)", "temp_pw")
     return redirect(url_for("admin_panel"))
 
 
@@ -3656,6 +3715,18 @@ def project_share(pid):
             pa = ProjectAccess(project_id=pid, user_id=target.id, role="collaborator")
             db.session.add(pa)
             db.session.commit()
+        _send_email(
+            target.email,
+            f"You've been added to a project on FPBudget",
+            f"""Hi {target.name or target.email},
+
+You've been given access to the project "{project.name}" on FPBudget.
+
+View it here: https://fp-budget.onrender.com/
+
+— Framework Productions
+"""
+        )
         return jsonify({"ok": True, "user": {"name": target.name or target.email, "email": target.email, "id": target.id}})
     # GET — return share page
     access_list = (db.session.query(ProjectAccess, User)
@@ -3677,32 +3748,49 @@ def project_share_remove(pid):
     return redirect(url_for("project_share", pid=pid))
 
 
-# ── Password change route ──────────────────────────────────────────────────────
+# ── Profile / password change route ───────────────────────────────────────────
 
-@app.route("/admin/me/password", methods=["GET", "POST"])
+@app.route("/profile", methods=["GET", "POST"])
 @login_required
-def admin_me_password():
+def profile():
     if request.method == "POST":
-        current_pw = request.form.get("current_password", "")
-        new_pw     = request.form.get("new_password", "")
-        confirm_pw = request.form.get("confirm_password", "")
-        if not current_user.check_password(current_pw):
-            flash("Current password is incorrect.", "error")
-            return redirect(url_for("admin_me_password"))
-        if not new_pw or len(new_pw) < 8:
-            flash("New password must be at least 8 characters.", "error")
-            return redirect(url_for("admin_me_password"))
-        if new_pw != confirm_pw:
-            flash("New passwords do not match.", "error")
-            return redirect(url_for("admin_me_password"))
-        current_user.set_password(new_pw)
-        current_user.must_change_password = False
-        db.session.commit()
-        flash("Password updated successfully.", "success")
-        if current_user.is_admin:
-            return redirect(url_for("admin_panel"))
-        return redirect(url_for("dashboard"))
-    return render_template("change_password.html")
+        action = request.form.get("action", "")
+        if action == "profile":
+            name  = request.form.get("name", "").strip()
+            email = request.form.get("email", "").strip().lower()
+            phone = request.form.get("phone", "").strip()
+            if email and email != current_user.email:
+                existing = User.query.filter_by(email=email).first()
+                if existing and existing.id != current_user.id:
+                    flash("That email address is already in use.", "error")
+                    return redirect(url_for("profile"))
+                current_user.email = email
+            current_user.name  = name or current_user.name
+            current_user.phone = phone or None
+            db.session.commit()
+            flash("Profile updated.", "success")
+            return redirect(url_for("profile"))
+        elif action == "password":
+            current_pw = request.form.get("current_password", "")
+            new_pw     = request.form.get("new_password", "")
+            confirm_pw = request.form.get("confirm_password", "")
+            if not current_user.check_password(current_pw):
+                flash("Current password is incorrect.", "error")
+                return redirect(url_for("profile"))
+            if not new_pw or len(new_pw) < 8:
+                flash("New password must be at least 8 characters.", "error")
+                return redirect(url_for("profile"))
+            if new_pw != confirm_pw:
+                flash("New passwords do not match.", "error")
+                return redirect(url_for("profile"))
+            current_user.set_password(new_pw)
+            current_user.must_change_password = False
+            db.session.commit()
+            flash("Password updated successfully.", "success")
+            if current_user.is_admin:
+                return redirect(url_for("admin_panel"))
+            return redirect(url_for("dashboard"))
+    return render_template("profile.html")
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
@@ -4001,6 +4089,12 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
+
+    # ── User phone column ─────────────────────────────────────────────────────
+    try:
+        db.session.execute(text("ALTER TABLE users ADD COLUMN phone VARCHAR(50)"))
+        db.session.commit()
+    except: db.session.rollback()
     # Migrate old is_admin=1 rows to role='admin'
     try:
         db.session.execute(text("UPDATE users SET role='admin' WHERE is_admin=1 AND role='line_producer'"))
