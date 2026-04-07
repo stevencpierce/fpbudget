@@ -2,319 +2,322 @@
 {% block title %}Admin Panel — FPBudget{% endblock %}
 
 {% block content %}
-<div class="page-header">
-  <h1>Admin Panel</h1>
-  <div style="display:flex;gap:16px;align-items:center">
-    <span class="badge badge-info">{{ users|length }} user{{ 's' if users|length != 1 else '' }}</span>
-    <span class="badge badge-info">{{ projects|length }} project{{ 's' if projects|length != 1 else '' }}</span>
-  </div>
-</div>
+<style>
+  .admin-wrap { max-width: 1100px; margin: 0 auto; padding: 0 0 4rem; }
+  .admin-page-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1.5rem 0 1.25rem; border-bottom: 1px solid var(--border);
+    margin-bottom: 2rem; flex-wrap: wrap; gap: .75rem;
+  }
+  .admin-page-header h1 { font-size: 1.4rem; font-weight: 700; margin: 0; }
+  .admin-stats { display: flex; gap: .6rem; }
+  .admin-stat {
+    background: var(--surface, #2a2a2a); border: 1px solid var(--border);
+    border-radius: 8px; padding: .3rem .85rem; font-size: .82rem;
+    color: var(--text-muted); display: flex; align-items: center; gap: .35rem;
+  }
+  .admin-stat strong { color: var(--text); font-size: .95rem; }
+  .temp-pw-box {
+    background: #1c1700; border: 1.5px solid #f5c518;
+    border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1.75rem;
+  }
+  .temp-pw-box .label {
+    font-size: .75rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .06em; color: #f5c518; margin-bottom: .4rem;
+  }
+  .temp-pw-box .pw-display {
+    font-family: 'SF Mono', 'Consolas', monospace;
+    font-size: 1.25rem; letter-spacing: .12em; font-weight: 700;
+    color: #fff; background: #2a2000; border-radius: 6px;
+    padding: .4rem .85rem; display: inline-block; margin: .25rem 0;
+    user-select: all; cursor: text;
+  }
+  .temp-pw-box .sub { font-size: .78rem; color: #aaa; margin-top: .35rem; }
+  .admin-card {
+    background: var(--surface, #1e1e1e); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.5rem; margin-bottom: 1.75rem;
+  }
+  .admin-card-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 1.25rem; flex-wrap: wrap; gap: .5rem;
+  }
+  .admin-card-header h2 {
+    font-size: .8rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--text-muted); margin: 0;
+  }
+  .users-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  .users-table th {
+    text-align: left; padding: .5rem .75rem; font-size: .72rem;
+    font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--text-muted); border-bottom: 1px solid var(--border);
+  }
+  .users-table td { padding: .7rem .75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .users-table tr:last-child td { border-bottom: none; }
+  .users-table tbody tr:hover td { background: rgba(255,255,255,.025); }
+  .role-badge {
+    display: inline-block; padding: .2rem .65rem; border-radius: 20px;
+    font-size: .72rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  }
+  .role-super_admin  { background:rgba(124,58,237,.2); color:#c4b5fd; border:1px solid rgba(124,58,237,.4); }
+  .role-admin        { background:rgba(79,70,229,.2);  color:#a5b4fc; border:1px solid rgba(79,70,229,.4); }
+  .role-line_producer{ background:rgba(2,132,199,.2);  color:#7dd3fc; border:1px solid rgba(2,132,199,.4); }
+  .role-dept_head    { background:rgba(8,145,178,.2);  color:#67e8f9; border:1px solid rgba(8,145,178,.4); }
+  .status-dot { display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:.35rem; }
+  .dot-active   { background:#22c55e;box-shadow:0 0 5px #22c55e80; }
+  .dot-inactive { background:#6b7280; }
+  .action-row { display:flex;gap:.3rem;flex-wrap:wrap; }
+  .btn-xs {
+    padding:.22rem .55rem;font-size:.75rem;border-radius:5px;
+    border:1px solid var(--border);background:transparent;
+    color:var(--text);cursor:pointer;transition:all .12s;line-height:1.4;
+  }
+  .btn-xs:hover { background:var(--border); }
+  .btn-xs.danger { color:#f87171;border-color:rgba(248,113,113,.35); }
+  .btn-xs.danger:hover { background:rgba(248,113,113,.12); }
+  .btn-xs:disabled { opacity:.3;cursor:not-allowed; }
+  .create-form { display:grid;grid-template-columns:1fr 1fr;gap:1rem; }
+  .create-form .full { grid-column:1/-1; }
+  .fg { display:flex;flex-direction:column;gap:.3rem; }
+  .fg label { font-size:.78rem;font-weight:600;color:var(--text-muted); }
+  .fg input,.fg select {
+    padding:.5rem .75rem;border:1px solid var(--border);border-radius:7px;
+    background:var(--bg,#141414);color:var(--text);font-size:.88rem;
+  }
+  .fg input:focus,.fg select:focus { outline:none;border-color:var(--accent,#4f46e5); }
+  .proj-access-row {
+    display:flex;align-items:center;flex-wrap:wrap;gap:.75rem;
+    padding:.75rem 0;border-bottom:1px solid var(--border);
+  }
+  .proj-access-row:last-child { border-bottom:none; }
+  .proj-access-name { font-weight:600;font-size:.9rem;min-width:160px; }
+  .access-chips { display:flex;flex-wrap:wrap;gap:.35rem;flex:1; }
+  .access-chip {
+    display:inline-flex;align-items:center;gap:.3rem;
+    background:rgba(79,70,229,.12);border:1px solid rgba(79,70,229,.3);
+    color:#a5b4fc;padding:.18rem .6rem;border-radius:20px;font-size:.78rem;
+  }
+  .access-chip .chip-role { color:#64748b;font-size:.7rem; }
+  .access-chip button { background:none;border:none;color:#f87171;cursor:pointer;font-size:.78rem;padding:0;line-height:1; }
+  .add-row { display:flex;gap:.4rem;align-items:center;flex-wrap:wrap; }
+  .add-row select {
+    padding:.32rem .6rem;border:1px solid var(--border);border-radius:6px;
+    background:var(--bg,#141414);color:var(--text);font-size:.8rem;
+  }
+  .edit-backdrop {
+    display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);
+    z-index:1000;align-items:center;justify-content:center;
+  }
+  .edit-backdrop.open { display:flex; }
+  .edit-box {
+    background:var(--surface,#1e1e1e);border:1px solid var(--border);
+    border-radius:12px;padding:1.75rem 2rem;
+    min-width:320px;max-width:440px;width:90%;
+  }
+  .edit-box h3 { margin:0 0 1.2rem;font-size:1rem; }
+  .edit-fields { display:flex;flex-direction:column;gap:.8rem; }
+  .edit-actions { display:flex;gap:.5rem;margin-top:1.2rem; }
+</style>
 
-<!-- Flash messages -->
-{% with messages = get_flashed_messages(with_categories=true) %}
-  {% for cat, msg in messages %}
-    {% if cat == 'temp_pw' %}
-      <div style="background:#fffbe6;border:2px solid #f5c518;padding:14px 18px;border-radius:8px;margin-bottom:16px;font-size:1em">
-        <strong>&#9888; Save this password — it will not be shown again:</strong><br>
-        <code style="font-size:1.15em;letter-spacing:.08em;background:#fff3cd;padding:2px 6px;border-radius:4px">{{ msg.replace('User created. Temporary password: ', '').replace('Password reset. New temporary password: ', '') }}</code>
-        <div style="font-size:.8em;color:#666;margin-top:4px">{{ msg }}</div>
+<div class="admin-wrap">
+
+  <div class="admin-page-header">
+    <h1>Admin Panel</h1>
+    <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
+      <div class="admin-stats">
+        <div class="admin-stat"><strong>{{ users|length }}</strong>&nbsp;user{{ 's' if users|length!=1 }}</div>
+        <div class="admin-stat"><strong>{{ projects|length }}</strong>&nbsp;project{{ 's' if projects|length!=1 }}</div>
       </div>
-    {% else %}
-      <div class="flash flash-{{ cat }}">{{ msg }}</div>
-    {% endif %}
-  {% endfor %}
-{% endwith %}
+      <a href="{{ url_for('profile') }}" class="btn btn-sm btn-outline">My Profile &amp; Password</a>
+    </div>
+  </div>
 
-<!-- Section A: My Account -->
-<section style="margin-top:16px;margin-bottom:32px">
-  <a href="{{ url_for('profile') }}" class="btn btn-outline">&#9881; Change My Password</a>
-</section>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      {% if cat == 'temp_pw' %}
+        {% set pw = msg.split(': ')[-1].split(' (')[0] %}
+        <div class="temp-pw-box">
+          <div class="label">⚠ Temporary Password — copy now, won't be shown again</div>
+          <div class="pw-display">{{ pw }}</div>
+          <div class="sub">Send to the user with this login link: <strong>https://fp-budget.onrender.com/login</strong></div>
+        </div>
+      {% else %}
+        <div class="flash flash-{{ cat }}">{{ msg }}</div>
+      {% endif %}
+    {% endfor %}
+  {% endwith %}
 
-<!-- Section B: Users Table -->
-<section style="margin-top:8px">
-  <h2>Users</h2>
-  <div class="table-wrap" style="overflow-x:auto">
-    <table class="data-table" style="width:100%;border-collapse:collapse">
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Email</th>
-          <th>Role</th>
-          <th>Dept</th>
-          <th>Status</th>
-          <th>Projects</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
+  <!-- Users -->
+  <div class="admin-card">
+    <div class="admin-card-header"><h2>Users</h2></div>
+    <table class="users-table">
+      <thead><tr>
+        <th>Name</th><th>Email</th><th>Role</th><th>Department</th>
+        <th>Status</th><th style="text-align:center">Projects</th><th>Actions</th>
+      </tr></thead>
       <tbody>
         {% for u in users %}
-        {% set proj_count = project_access | selectattr('user_id', 'eq', u.id) | list | length %}
-        <tr id="user-row-{{ u.id }}">
-          <td>{{ u.name or '—' }}</td>
-          <td>{{ u.email }}</td>
-          <td>
-            {% if u.role == 'super_admin' %}
-              <span class="badge" style="background:#7c3aed;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Super Admin</span>
-            {% elif u.role == 'admin' %}
-              <span class="badge" style="background:#4f46e5;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Admin</span>
-            {% elif u.role == 'line_producer' %}
-              <span class="badge" style="background:#0284c7;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Line Producer</span>
-            {% elif u.role == 'dept_head' %}
-              <span class="badge" style="background:#0891b2;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Dept Head</span>
-            {% else %}
-              <span class="badge" style="background:#6b7280;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">{{ u.role }}</span>
-            {% endif %}
+        {% set pc = project_access|selectattr('user_id','eq',u.id)|list|length %}
+        <tr>
+          <td style="font-weight:600">{{ u.name or '—' }}</td>
+          <td style="color:var(--text-muted);font-size:.85rem">{{ u.email }}</td>
+          <td><span class="role-badge role-{{ u.role }}">{{ u.display_role }}</span></td>
+          <td style="font-size:.82rem;color:var(--text-muted)">
+            {% if u.role=='dept_head' and u.dept_code %}
+              {% for code,name in coa_sections %}{% if code==u.dept_code %}{{ name }}{% endif %}{% endfor %}
+            {% else %}—{% endif %}
           </td>
           <td>
-            {% if u.role == 'dept_head' and u.dept_code %}
-              {% for code, name in coa_sections %}
-                {% if code == u.dept_code %}<span style="font-size:.85em">{{ name }}</span>{% endif %}
-              {% endfor %}
-            {% else %}
-              <span style="color:#999">—</span>
-            {% endif %}
+            <span class="status-dot {{ 'dot-active' if u.is_active else 'dot-inactive' }}"></span>
+            <span style="font-size:.82rem">{{ 'Active' if u.is_active else 'Inactive' }}</span>
           </td>
+          <td style="text-align:center;color:var(--text-muted)">{{ pc }}</td>
           <td>
-            {% if u.is_active %}
-              <span class="badge" style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Active</span>
-            {% else %}
-              <span class="badge" style="background:#dc2626;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Inactive</span>
-            {% endif %}
-          </td>
-          <td style="text-align:center">{{ proj_count }}</td>
-          <td style="white-space:nowrap;display:flex;flex-wrap:wrap;gap:4px;align-items:center">
-            <!-- Edit button -->
-            <button class="btn btn-sm btn-outline" onclick="openEditModal({{ u.id }}, {{ u.name|tojson }}, {{ u.email|tojson }}, {{ u.role|tojson }}, {{ (u.dept_code or '')|tojson }})">Edit</button>
-
-            <!-- Reset PW -->
-            <form method="POST" action="{{ url_for('admin_user_reset_password', uid=u.id) }}" style="display:inline">
-              <button type="submit" class="btn btn-sm btn-outline" title="Reset password" onclick="return confirm('Reset password for {{ u.email }}?')">Reset PW</button>
-            </form>
-
-            <!-- Toggle Active -->
-            <form method="POST" action="{{ url_for('admin_user_toggle_active', uid=u.id) }}" style="display:inline">
-              <button type="submit" class="btn btn-sm btn-outline"
-                      {% if u.id == current_user.id %}disabled title="Cannot deactivate yourself"{% endif %}>
-                {{ 'Deactivate' if u.is_active else 'Activate' }}
-              </button>
-            </form>
-
-            <!-- Delete -->
-            {% set can_delete = (current_user.role == 'super_admin' and u.id != current_user.id) or
-                                (current_user.role == 'admin' and u.role not in ('super_admin', 'admin') and u.id != current_user.id) %}
-            {% if can_delete %}
-            <form method="POST" action="{{ url_for('admin_user_delete', uid=u.id) }}" style="display:inline"
-                  onsubmit="return confirm('Delete user {{ u.email }}? This cannot be undone.')">
-              <button type="submit" class="btn btn-sm btn-danger" style="background:#dc2626;color:#fff">Delete</button>
-            </form>
-            {% endif %}
+            <div class="action-row">
+              <button class="btn-xs" onclick="openEdit({{ u.id }},{{ u.name|tojson }},{{ u.email|tojson }},{{ u.role|tojson }},{{ (u.dept_code or '')|tojson }})">Edit</button>
+              <form method="POST" action="{{ url_for('admin_user_reset_password',uid=u.id) }}" style="display:contents" onsubmit="return confirm('Reset password for {{ u.email }}?')">
+                <button class="btn-xs">Reset PW</button>
+              </form>
+              <form method="POST" action="{{ url_for('admin_user_toggle_active',uid=u.id) }}" style="display:contents">
+                <button class="btn-xs" {% if u.id==current_user.id %}disabled{% endif %}>{{ 'Deactivate' if u.is_active else 'Activate' }}</button>
+              </form>
+              {% if (current_user.role=='super_admin' and u.id!=current_user.id) or (current_user.role=='admin' and u.role not in ('super_admin','admin') and u.id!=current_user.id) %}
+              <form method="POST" action="{{ url_for('admin_user_delete',uid=u.id) }}" style="display:contents" onsubmit="return confirm('Delete {{ u.email }}? Cannot be undone.')">
+                <button class="btn-xs danger">Delete</button>
+              </form>
+              {% endif %}
+            </div>
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="7" style="text-align:center;color:#999;padding:24px">No users yet.</td></tr>
+        <tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:2rem">No users yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
-</section>
 
-<!-- Edit User Modal -->
-<div id="edit-user-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:10px;padding:28px 32px;min-width:360px;max-width:480px;width:90%">
-    <h3 style="margin-top:0">Edit User</h3>
-    <form id="edit-user-form" method="POST" style="display:flex;flex-direction:column;gap:14px">
-      <div class="field">
-        <label>Name</label>
-        <input type="text" name="name" id="edit-name">
+  <!-- Create New User -->
+  <div class="admin-card">
+    <div class="admin-card-header"><h2>Create New User</h2></div>
+    <form method="POST" action="{{ url_for('admin_user_create') }}">
+      <div class="create-form">
+        <div class="fg"><label>Full Name</label><input type="text" name="name" placeholder="Jane Smith"></div>
+        <div class="fg"><label>Email <span style="color:#f87171">*</span></label><input type="email" name="email" required placeholder="jane@example.com"></div>
+        <div class="fg">
+          <label>Role</label>
+          <select name="role" id="new-role" onchange="toggleNewDept()">
+            {% if current_user.role=='super_admin' %}<option value="super_admin">Super Admin</option>{% endif %}
+            <option value="admin">Admin</option>
+            <option value="line_producer" selected>Line Producer</option>
+            <option value="dept_head">Department Head</option>
+          </select>
+        </div>
+        <div class="fg" id="new-dept-field" style="display:none">
+          <label>Department</label>
+          <select name="dept_code">
+            <option value="">— select —</option>
+            {% for code,name in coa_sections %}<option value="{{ code }}">{{ code }} — {{ name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="full"><button type="submit" class="btn btn-primary">Create User &amp; Send Invite</button></div>
       </div>
-      <div class="field">
-        <label>Email</label>
-        <input type="email" name="email" id="edit-email" required>
+    </form>
+  </div>
+
+  <!-- Project Access -->
+  <div class="admin-card">
+    <div class="admin-card-header"><h2>Project Access</h2></div>
+    {% if projects %}
+      {% for project in projects %}
+      {% set pas = project_access|selectattr('project_id','eq',project.id)|list %}
+      <div class="proj-access-row">
+        <div class="proj-access-name">{{ project.name }}</div>
+        <div class="access-chips" id="chips-{{ project.id }}">
+          {% for pa in pas %}{% set u=users|selectattr('id','eq',pa.user_id)|first %}{% if u %}
+          <span class="access-chip">{{ u.name or u.email }}<span class="chip-role">{{ pa.role }}</span>
+            <button onclick="removeAccess({{ project.id }},{{ pa.user_id }},this.closest('.access-chip'))">✕</button>
+          </span>
+          {% endif %}{% endfor %}
+          {% if not pas %}<span style="font-size:.78rem;color:var(--text-muted)">No users assigned</span>{% endif %}
+        </div>
+        <div class="add-row">
+          <select id="au-{{ project.id }}">
+            <option value="">Add user…</option>
+            {% for u in users %}{% set already=project_access|selectattr('project_id','eq',project.id)|selectattr('user_id','eq',u.id)|list|length>0 %}{% if not already %}
+            <option value="{{ u.id }}">{{ u.name or u.email }}</option>{% endif %}{% endfor %}
+          </select>
+          <select id="ar-{{ project.id }}"><option value="collaborator">Collaborator</option><option value="owner">Owner</option></select>
+          <button class="btn btn-sm btn-outline" onclick="addAccess({{ project.id }})">Add</button>
+        </div>
       </div>
-      <div class="field">
-        <label>Role</label>
-        <select name="role" id="edit-role" onchange="toggleEditDept()">
-          {% if current_user.role == 'super_admin' %}
-          <option value="super_admin">Super Admin</option>
-          {% endif %}
-          <option value="admin">Admin</option>
-          <option value="line_producer">Line Producer</option>
-          <option value="dept_head">Department Head</option>
-        </select>
+      {% endfor %}
+    {% else %}
+      <p style="color:var(--text-muted);font-size:.88rem">No projects yet. <a href="{{ url_for('project_new') }}">Create one →</a></p>
+    {% endif %}
+  </div>
+
+</div>
+
+<!-- Edit Modal -->
+<div id="edit-modal" class="edit-backdrop" onclick="if(event.target===this)closeEdit()">
+  <div class="edit-box">
+    <h3>Edit User</h3>
+    <form id="edit-form" method="POST">
+      <div class="edit-fields">
+        <div class="fg"><label>Full Name</label><input type="text" name="name" id="en"></div>
+        <div class="fg"><label>Email</label><input type="email" name="email" id="ee" required></div>
+        <div class="fg">
+          <label>Role</label>
+          <select name="role" id="er" onchange="toggleEditDept()">
+            {% if current_user.role=='super_admin' %}<option value="super_admin">Super Admin</option>{% endif %}
+            <option value="admin">Admin</option>
+            <option value="line_producer">Line Producer</option>
+            <option value="dept_head">Department Head</option>
+          </select>
+        </div>
+        <div class="fg" id="edit-dept-wrap" style="display:none">
+          <label>Department</label>
+          <select name="dept_code" id="ed">
+            <option value="">— select —</option>
+            {% for code,name in coa_sections %}<option value="{{ code }}">{{ code }} — {{ name }}</option>{% endfor %}
+          </select>
+        </div>
       </div>
-      <div class="field" id="edit-dept-field" style="display:none">
-        <label>Department</label>
-        <select name="dept_code" id="edit-dept-code">
-          <option value="">— select department —</option>
-          {% for code, name in coa_sections %}
-          <option value="{{ code }}">{{ name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:4px">
+      <div class="edit-actions">
         <button type="submit" class="btn btn-primary">Save</button>
-        <button type="button" class="btn btn-outline" onclick="closeEditModal()">Cancel</button>
+        <button type="button" class="btn btn-outline" onclick="closeEdit()">Cancel</button>
       </div>
     </form>
   </div>
 </div>
-
-<!-- Section C: Create New User -->
-<section style="margin-top:48px;max-width:520px">
-  <h2>Create New User</h2>
-  <form method="POST" action="{{ url_for('admin_user_create') }}" style="display:flex;flex-direction:column;gap:14px">
-    <div class="field">
-      <label>Name</label>
-      <input type="text" name="name" placeholder="Full Name">
-    </div>
-    <div class="field">
-      <label>Email <span style="color:#c00">*</span></label>
-      <input type="email" name="email" required placeholder="user@example.com">
-    </div>
-    <div class="field">
-      <label>Role</label>
-      <select name="role" id="new-role" onchange="toggleNewDept()">
-        {% if current_user.role == 'super_admin' %}
-        <option value="super_admin">Super Admin</option>
-        {% endif %}
-        <option value="admin">Admin</option>
-        <option value="line_producer" selected>Line Producer</option>
-        <option value="dept_head">Department Head</option>
-      </select>
-    </div>
-    <div class="field" id="new-dept-field" style="display:none">
-      <label>Department</label>
-      <select name="dept_code" id="new-dept-code">
-        <option value="">— select department —</option>
-        {% for code, name in coa_sections %}
-        <option value="{{ code }}">{{ name }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div>
-      <button type="submit" class="btn btn-primary">Create User</button>
-    </div>
-  </form>
-</section>
-
-<!-- Section D: Project Access Management -->
-<section style="margin-top:56px">
-  <h2>Project Access</h2>
-  {% if projects %}
-  <div style="display:flex;flex-direction:column;gap:24px;margin-top:16px">
-    {% for project in projects %}
-    {% set proj_accesses = project_access | selectattr('project_id', 'eq', project.id) | list %}
-    <div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px 20px">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap">
-        <strong>{{ project.name }}</strong>
-        <!-- Access chips -->
-        <div style="display:flex;flex-wrap:wrap;gap:6px" id="access-chips-{{ project.id }}">
-          {% for pa in proj_accesses %}
-          {% set u = users | selectattr('id', 'eq', pa.user_id) | first %}
-          {% if u %}
-          <span style="background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:12px;font-size:.82em;display:inline-flex;align-items:center;gap:4px">
-            {{ u.name or u.email }}
-            <span style="color:#666;font-size:.8em">({{ pa.role }})</span>
-            <button type="button" title="Remove access"
-                    style="border:none;background:none;color:#dc2626;cursor:pointer;font-size:.9em;padding:0 2px;line-height:1"
-                    onclick="removeAccess({{ project.id }}, {{ pa.user_id }}, this.closest('span'))">&#10005;</button>
-          </span>
-          {% endif %}
-          {% endfor %}
-        </div>
-      </div>
-      <!-- Add user form -->
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-        <select id="add-user-{{ project.id }}" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.9em">
-          <option value="">Add user…</option>
-          {% for u in users %}
-          {% set already_has = project_access | selectattr('project_id', 'eq', project.id) | selectattr('user_id', 'eq', u.id) | list | length > 0 %}
-          {% if not already_has %}
-          <option value="{{ u.id }}">{{ u.name or u.email }} ({{ u.display_role }})</option>
-          {% endif %}
-          {% endfor %}
-        </select>
-        <select id="add-role-{{ project.id }}" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.9em">
-          <option value="collaborator">Collaborator</option>
-          <option value="owner">Owner</option>
-        </select>
-        <button class="btn btn-sm btn-outline" onclick="addAccess({{ project.id }})">Add</button>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-  {% else %}
-  <p class="muted">No projects yet.</p>
-  {% endif %}
-</section>
-
 {% endblock %}
 
 {% block scripts %}
 <script>
-// Edit modal
-function openEditModal(uid, name, email, role, deptCode) {
-  const form = document.getElementById('edit-user-form');
-  form.action = `/admin/users/${uid}/edit`;
-  document.getElementById('edit-name').value  = name || '';
-  document.getElementById('edit-email').value = email || '';
-  const roleSelect = document.getElementById('edit-role');
-  if (roleSelect) {
-    for (let opt of roleSelect.options) {
-      opt.selected = (opt.value === role);
-    }
-  }
-  const deptSelect = document.getElementById('edit-dept-code');
-  if (deptSelect && deptCode) {
-    for (let opt of deptSelect.options) {
-      opt.selected = (opt.value == deptCode);
-    }
-  }
+function openEdit(uid,name,email,role,dept){
+  document.getElementById('edit-form').action=`/admin/users/${uid}/edit`;
+  document.getElementById('en').value=name||'';
+  document.getElementById('ee').value=email||'';
+  for(let o of document.getElementById('er').options) o.selected=(o.value===role);
+  const d=document.getElementById('ed'); if(d) for(let o of d.options) o.selected=(String(o.value)===String(dept));
   toggleEditDept();
-  const modal = document.getElementById('edit-user-modal');
-  modal.style.display = 'flex';
+  document.getElementById('edit-modal').classList.add('open');
 }
-
-function closeEditModal() {
-  document.getElementById('edit-user-modal').style.display = 'none';
+function closeEdit(){ document.getElementById('edit-modal').classList.remove('open'); }
+function toggleEditDept(){ document.getElementById('edit-dept-wrap').style.display=document.getElementById('er').value==='dept_head'?'':'none'; }
+function toggleNewDept(){ document.getElementById('new-dept-field').style.display=document.getElementById('new-role').value==='dept_head'?'':'none'; }
+async function addAccess(pid){
+  const uid=document.getElementById(`au-${pid}`).value;
+  const role=document.getElementById(`ar-${pid}`).value;
+  if(!uid){alert('Select a user first.');return;}
+  const fd=new FormData(); fd.append('user_id',uid); fd.append('role',role);
+  const r=await fetch(`/admin/projects/${pid}/access`,{method:'POST',body:fd});
+  if(r.ok) location.reload(); else alert('Failed.');
 }
-
-function toggleEditDept() {
-  const role = document.getElementById('edit-role').value;
-  document.getElementById('edit-dept-field').style.display = (role === 'dept_head') ? '' : 'none';
-}
-
-function toggleNewDept() {
-  const role = document.getElementById('new-role').value;
-  document.getElementById('new-dept-field').style.display = (role === 'dept_head') ? '' : 'none';
-}
-
-// Close modal when clicking backdrop
-document.getElementById('edit-user-modal').addEventListener('click', function(e) {
-  if (e.target === this) closeEditModal();
-});
-
-// Project access management
-async function addAccess(pid) {
-  const userSel = document.getElementById(`add-user-${pid}`);
-  const roleSel = document.getElementById(`add-role-${pid}`);
-  const userId  = userSel.value;
-  if (!userId) { alert('Select a user first.'); return; }
-  const fd = new FormData();
-  fd.append('user_id', userId);
-  fd.append('role', roleSel.value);
-  const res = await fetch(`/admin/projects/${pid}/access`, { method: 'POST', body: fd });
-  if (res.ok) { location.reload(); }
-  else { alert('Failed to add access.'); }
-}
-
-async function removeAccess(pid, uid, chipEl) {
-  if (!confirm('Remove this user from the project?')) return;
-  const fd = new FormData();
-  fd.append('user_id', uid);
-  const res = await fetch(`/admin/projects/${pid}/access/remove`, { method: 'POST', body: fd });
-  if (res.ok) { chipEl.remove(); }
-  else { alert('Failed to remove access.'); }
+async function removeAccess(pid,uid,chip){
+  if(!confirm('Remove this user from the project?')) return;
+  const fd=new FormData(); fd.append('user_id',uid);
+  const r=await fetch(`/admin/projects/${pid}/access/remove`,{method:'POST',body:fd});
+  if(r.ok) chip.remove(); else alert('Failed.');
 }
 </script>
 {% endblock %}

@@ -263,6 +263,71 @@ def logout():
     return redirect(url_for("login"))
 
 
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard"))
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        user = User.query.filter_by(email=email).first()
+        # Always show the same message to prevent email enumeration
+        if user and user.is_active:
+            token = secrets.token_urlsafe(32)
+            user.reset_token = token
+            user.reset_token_expires = datetime.utcnow() + timedelta(hours=2)
+            db.session.commit()
+            reset_url = f"https://fp-budget.onrender.com/reset-password/{token}"
+            sent = _send_email(
+                user.email,
+                "Reset your FPBudget password",
+                f"""Hi {user.name or user.email},
+
+A password reset was requested for your FPBudget account.
+
+Click the link below to set a new password (valid for 2 hours):
+{reset_url}
+
+If you didn't request this, ignore this email — your password won't change.
+
+— Framework Productions
+"""
+            )
+            if not sent:
+                # Mail not configured — show link directly (dev/fallback)
+                flash(f"Email not configured. Reset link: {reset_url}", "warning")
+                return redirect(url_for("forgot_password"))
+        flash("If that email is in our system, a reset link has been sent.", "success")
+        return redirect(url_for("login"))
+    return render_template("forgot_password.html")
+
+
+@app.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_password(token):
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard"))
+    user = User.query.filter_by(reset_token=token).first()
+    if not user or not user.reset_token_expires or user.reset_token_expires < datetime.utcnow():
+        flash("This reset link is invalid or has expired. Please request a new one.", "error")
+        return redirect(url_for("forgot_password"))
+    if request.method == "POST":
+        pw = request.form.get("new_password", "")
+        confirm = request.form.get("confirm_password", "")
+        if len(pw) < 8:
+            flash("Password must be at least 8 characters.", "error")
+            return redirect(url_for("reset_password", token=token))
+        if pw != confirm:
+            flash("Passwords do not match.", "error")
+            return redirect(url_for("reset_password", token=token))
+        user.set_password(pw)
+        user.reset_token = None
+        user.reset_token_expires = None
+        user.must_change_password = False
+        db.session.commit()
+        flash("Password updated. You can now log in.", "success")
+        return redirect(url_for("login"))
+    return render_template("reset_password.html", token=token)
+
+
 @app.route("/health")
 def health():
     return "ok"
