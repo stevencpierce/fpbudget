@@ -42,6 +42,7 @@ _PROD_STAFF_SUBGROUPS = [
     ("APOC",                       "Production"),
     ("Production Secretary",       "Production"),
     ("2nd 2nd AD",                 "Direction / AD"),
+    ("Second Unit Director",       "Direction / AD"),
     ("1st AD",                     "Direction / AD"),
     ("2nd AD",                     "Direction / AD"),
     ("Script Supervisor",          "Direction / AD"),
@@ -50,17 +51,22 @@ _PROD_STAFF_SUBGROUPS = [
     ("Office PA",                  "Direction / AD"),
     (" PA",                        "Direction / AD"),
     ("Director of Photography",    "Camera"),
+    ("Second Unit DP",             "Camera"),
     ("Camera Operator",            "Camera"),
     ("1st AC",                     "Camera"),
     ("2nd AC",                     "Camera"),
     ("DIT",                        "Camera"),
     ("Steadicam",                  "Camera"),
     ("Data Wrangler",              "Camera"),
+    ("Video Engineer",             "Camera"),
+    ("VTR Operator",               "Camera"),
     ("Gaffer",                     "Grip & Electric"),
     ("Key Grip",                   "Grip & Electric"),
     ("Best Boy Electric",          "Grip & Electric"),
     ("Best Boy Grip",              "Grip & Electric"),
     ("Generator Operator",         "Grip & Electric"),
+    ("Swing (Electric)",           "Grip & Electric"),
+    ("Swing (Grip)",               "Grip & Electric"),
     ("Electric",                   "Grip & Electric"),
     ("Grip",                       "Grip & Electric"),
     ("Sound Mixer",                "Sound"),
@@ -72,6 +78,7 @@ _PROD_STAFF_SUBGROUPS = [
     ("Props Master",               "Art"),
     ("Props Assistant",            "Art"),
     ("Key Makeup",                 "Hair & Makeup"),
+    ("HMU",                        "Hair & Makeup"),
     ("Makeup Artist",              "Hair & Makeup"),
     ("Hair Stylist",               "Hair & Makeup"),
     ("SFX Makeup",                 "Hair & Makeup"),
@@ -670,6 +677,13 @@ def budget_view(pid, bid):
     for sec in sections:
         sec["lines"] = _order_lines_with_children(sec["lines"])
 
+    # Sub-group lookup for department headers in Production Staff (1000) section.
+    # Falls back to description-based keyword match for lines without role_group set.
+    line_sub_groups = {}
+    for ln in lines:
+        if ln.account_code == 1000:
+            line_sub_groups[ln.id] = ln.role_group or _get_prod_staff_subgroup(ln.description)
+
     # Dept head filtering: restrict to their assigned dept_code only
     dept_filter = None
     if current_user.role == 'dept_head' and current_user.dept_code:
@@ -852,6 +866,7 @@ def budget_view(pid, bid):
         direct_contacts=direct_contacts,
         company_settings=company_settings,
         dept_filter=dept_filter,
+        line_sub_groups=line_sub_groups,
     )
 
 

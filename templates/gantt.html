@@ -294,8 +294,8 @@
     {% set ns.prev_sub_group = None %}
     {% endif %}
 
-    {# Sub-department header for Production Staff (account 1000) #}
-    {% if row.account_code == 1000 and row.sub_group and row.sub_group != ns.prev_sub_group %}
+    {# Sub-department header row when sub_group changes within a section #}
+    {% if row.sub_group and row.sub_group != ns.prev_sub_group %}
     <tr class="gantt-sub-dept-header">
       <td colspan="{{ date_range|length + 1 }}">{{ row.sub_group }}</td>
     </tr>

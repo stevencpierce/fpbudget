@@ -268,6 +268,22 @@ input:focus, select:focus { border-color: var(--accent); }
 .kit-fee-row .col-desc { padding-left: 1.5rem !important; }
 .kit-fee-row .col-desc::before { content: '↳ '; color: var(--muted); font-size: .8em; }
 
+/* Department sub-group header rows inside Production Staff section */
+.dept-group-header-row td {
+  padding: .25rem .6rem .15rem;
+  background: var(--bg-3, #1a1a2e);
+  border-top: 1px solid var(--border);
+  border-bottom: none;
+}
+.dept-group-label {
+  font-size: .65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--accent, #4f7ef8);
+  opacity: .75;
+}
+
 /* Inline edit */
 .editable {
   cursor: text;

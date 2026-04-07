@@ -310,7 +310,7 @@
 
   <div id="working-budget-wrap">
   {% for sec in sections %}
-  {% set ns = namespace(sec_subtotal=0, sec_ot=0, sec_fringe=0, sec_total=0, has_labor=false, line_counter=0, kit_total=0, kit_working=0, sec_agent=0) %}
+  {% set ns = namespace(sec_subtotal=0, sec_ot=0, sec_fringe=0, sec_total=0, has_labor=false, line_counter=0, kit_total=0, kit_working=0, sec_agent=0, prev_sub_group=None) %}
   {% for ln in sec.lines %}
     {% set res = line_results[ln.id] %}
     {% set ns.sec_subtotal = ns.sec_subtotal + res.subtotal %}
@@ -372,6 +372,14 @@
         {% set res = line_results[ln.id] %}
         {% set is_kit_fee = ln.description and ln.description.startswith('Kit Fee') %}
         {% set ns.line_counter = ns.line_counter + 1 %}
+        {# Sub-department group header for Production Staff section #}
+        {% if sec.code == 1000 and not is_kit_fee %}
+          {% set _sg = line_sub_groups.get(ln.id) %}
+          {% if _sg and _sg != ns.prev_sub_group %}
+        <tr class="dept-group-header-row"><td colspan="14"><span class="dept-group-label">{{ _sg }}</span></td></tr>
+          {% set ns.prev_sub_group = _sg %}
+          {% endif %}
+        {% endif %}
         <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }}" data-id="{{ ln.id }}"
             data-code="{{ ln.account_code }}" data-code-name="{{ ln.account_name }}"
             data-agent="{{ res.agent_amount | default(0) | float | round(2) }}">
@@ -5030,6 +5038,7 @@ async function qeAddSelected() {
         description:     item.label,
         is_labor:        isLabor,
         sort_order:      sortOrder,
+        role_group:      item.group || null,
         quantity:        qty,
         days:            days,
         rate:            isLabor ? rate : 0,
