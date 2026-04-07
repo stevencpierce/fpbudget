@@ -100,15 +100,15 @@
 <!-- Tabs + Mode switcher row -->
 <div class="tabs-row">
   <div class="tabs">
-    <button class="tab-btn {% if not sections %}{% else %}active{% endif %}" data-tab="topsheet">Top Sheet</button>
-    <button class="tab-btn {% if not sections %}active{% endif %}" data-tab="working">Budget</button>
+    {% if not dept_filter %}<button class="tab-btn {% if not sections %}{% else %}active{% endif %}" data-tab="topsheet">Top Sheet</button>{% endif %}
+    <button class="tab-btn {% if dept_filter or not sections %}active{% elif not sections %}active{% endif %}" data-tab="working">Budget</button>
     <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=budget.id) }}">Schedule</a>
     <button class="tab-btn" data-tab="contacts">Contacts</button>
     <button class="tab-btn" data-tab="locations">Locations</button>
     <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
     <button class="tab-btn" data-tab="actuals">Actuals</button>
     <button class="tab-btn" data-tab="import-tools">Tools</button>
-    <button class="tab-btn" data-tab="settings">⚙ Settings</button>
+    {% if not dept_filter %}<button class="tab-btn" data-tab="settings">⚙ Settings</button>{% endif %}
   </div>
   <div class="mode-switcher-seg">
     {% if current_estimated_bid %}

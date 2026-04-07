@@ -11,10 +11,15 @@ class User(db.Model, UserMixin):
     email                = db.Column(db.String(200), unique=True, nullable=False)
     name                 = db.Column(db.String(200), nullable=True)
     password_hash        = db.Column(db.String(256), nullable=False)
-    is_admin             = db.Column(db.Boolean, default=False, nullable=False)
+    role                 = db.Column(db.String(20), default="line_producer", nullable=False)
+    # "super_admin" | "admin" | "line_producer" | "dept_head"
+    dept_code            = db.Column(db.Integer, nullable=True)
+    # Only used when role == "dept_head". Stores the COA section code (e.g. 3000 for Grip & Electric)
     is_active            = db.Column(db.Boolean, default=True, nullable=False)
     must_change_password = db.Column(db.Boolean, default=False, nullable=False)
     created_at           = db.Column(db.DateTime, default=datetime.utcnow)
+    reset_token          = db.Column(db.String(100), nullable=True)
+    reset_token_expires  = db.Column(db.DateTime, nullable=True)
 
     def set_password(self, pw):
         from werkzeug.security import generate_password_hash
@@ -23,6 +28,19 @@ class User(db.Model, UserMixin):
     def check_password(self, pw):
         from werkzeug.security import check_password_hash
         return check_password_hash(self.password_hash, pw)
+
+    @property
+    def is_admin(self):
+        return self.role in ('super_admin', 'admin')
+
+    @property
+    def display_role(self):
+        return {
+            'super_admin': 'Super Admin',
+            'admin': 'Admin',
+            'line_producer': 'Line Producer',
+            'dept_head': 'Dept Head',
+        }.get(self.role, self.role)
 
 
 class ProjectAccess(db.Model):

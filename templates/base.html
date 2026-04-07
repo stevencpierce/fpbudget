@@ -15,11 +15,11 @@
       <a href="{{ url_for('location_db_list') }}">Locations</a>
       <a href="{{ url_for('template_list') }}">Templates</a>
       <a href="{{ url_for('fringe_config') }}">Fringes</a>
-      {% if current_user.is_authenticated and current_user.is_admin %}
+      {% if current_user.is_authenticated and current_user.role in ('super_admin', 'admin') %}
       <a href="{{ url_for('admin_panel') }}">Admin</a>
       {% endif %}
       {% if current_user.is_authenticated %}
-      <a href="{{ url_for('change_password') }}">Change Password</a>
+      <a href="{{ url_for('admin_me_password') }}">&#9881; Account</a>
       {% endif %}
       <a href="{{ url_for('logout') }}">Logout</a>
     </div>

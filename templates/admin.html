@@ -6,23 +6,32 @@
   <h1>Admin Panel</h1>
   <div style="display:flex;gap:16px;align-items:center">
     <span class="badge badge-info">{{ users|length }} user{{ 's' if users|length != 1 else '' }}</span>
-    <span class="badge badge-info">{{ project_count }} project{{ 's' if project_count != 1 else '' }}</span>
+    <span class="badge badge-info">{{ projects|length }} project{{ 's' if projects|length != 1 else '' }}</span>
   </div>
 </div>
 
+<!-- Flash messages -->
 {% with messages = get_flashed_messages(with_categories=true) %}
   {% for cat, msg in messages %}
-    {% if cat == 'temp_password' %}
-      <div class="flash flash-warning" style="background:#fffbe6;border:1px solid #f5c518;padding:12px 16px;border-radius:6px;margin-bottom:12px">
-        <strong>&#9888; Copy this password — it won't be shown again:</strong><br>
-        <code style="font-size:1.1em;letter-spacing:.05em">{{ msg }}</code>
+    {% if cat == 'temp_pw' %}
+      <div style="background:#fffbe6;border:2px solid #f5c518;padding:14px 18px;border-radius:8px;margin-bottom:16px;font-size:1em">
+        <strong>&#9888; Save this password — it will not be shown again:</strong><br>
+        <code style="font-size:1.15em;letter-spacing:.08em;background:#fff3cd;padding:2px 6px;border-radius:4px">{{ msg.replace('User created. Temporary password: ', '').replace('Password reset. New temporary password: ', '') }}</code>
+        <div style="font-size:.8em;color:#666;margin-top:4px">{{ msg }}</div>
       </div>
+    {% else %}
+      <div class="flash flash-{{ cat }}">{{ msg }}</div>
     {% endif %}
   {% endfor %}
 {% endwith %}
 
-<!-- Users Table -->
-<section style="margin-top:24px">
+<!-- Section A: My Account -->
+<section style="margin-top:16px;margin-bottom:32px">
+  <a href="{{ url_for('admin_me_password') }}" class="btn btn-outline">&#9881; Change My Password</a>
+</section>
+
+<!-- Section B: Users Table -->
+<section style="margin-top:8px">
   <h2>Users</h2>
   <div class="table-wrap" style="overflow-x:auto">
     <table class="data-table" style="width:100%;border-collapse:collapse">
@@ -30,23 +39,39 @@
         <tr>
           <th>Name</th>
           <th>Email</th>
-          <th>Admin</th>
+          <th>Role</th>
+          <th>Dept</th>
           <th>Status</th>
           <th>Projects</th>
-          <th>Created</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody>
         {% for u in users %}
-        <tr>
+        {% set proj_count = project_access | selectattr('user_id', 'eq', u.id) | list | length %}
+        <tr id="user-row-{{ u.id }}">
           <td>{{ u.name or '—' }}</td>
           <td>{{ u.email }}</td>
           <td>
-            {% if u.is_admin %}
-              <span class="badge badge-admin" style="background:#4f46e5;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Admin</span>
+            {% if u.role == 'super_admin' %}
+              <span class="badge" style="background:#7c3aed;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Super Admin</span>
+            {% elif u.role == 'admin' %}
+              <span class="badge" style="background:#4f46e5;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Admin</span>
+            {% elif u.role == 'line_producer' %}
+              <span class="badge" style="background:#0284c7;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Line Producer</span>
+            {% elif u.role == 'dept_head' %}
+              <span class="badge" style="background:#0891b2;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Dept Head</span>
             {% else %}
-              <span style="color:#999;font-size:.85em">—</span>
+              <span class="badge" style="background:#6b7280;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">{{ u.role }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if u.role == 'dept_head' and u.dept_code %}
+              {% for code, name in coa_sections %}
+                {% if code == u.dept_code %}<span style="font-size:.85em">{{ name }}</span>{% endif %}
+              {% endfor %}
+            {% else %}
+              <span style="color:#999">—</span>
             {% endif %}
           </td>
           <td>
@@ -56,30 +81,33 @@
               <span class="badge" style="background:#dc2626;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Inactive</span>
             {% endif %}
           </td>
-          <td style="text-align:center">{{ access_counts.get(u.id, 0) }}</td>
-          <td style="white-space:nowrap;font-size:.85em">{{ u.created_at.strftime('%Y-%m-%d') if u.created_at else '—' }}</td>
-          <td style="white-space:nowrap">
+          <td style="text-align:center">{{ proj_count }}</td>
+          <td style="white-space:nowrap;display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+            <!-- Edit button -->
+            <button class="btn btn-sm btn-outline" onclick="openEditModal({{ u.id }}, {{ u.name|tojson }}, {{ u.email|tojson }}, {{ u.role|tojson }}, {{ (u.dept_code or '')|tojson }})">Edit</button>
+
+            <!-- Reset PW -->
             <form method="POST" action="{{ url_for('admin_user_reset_password', uid=u.id) }}" style="display:inline">
-              <button type="submit" class="btn btn-sm btn-outline" title="Reset password">Reset PW</button>
+              <button type="submit" class="btn btn-sm btn-outline" title="Reset password" onclick="return confirm('Reset password for {{ u.email }}?')">Reset PW</button>
             </form>
+
+            <!-- Toggle Active -->
             <form method="POST" action="{{ url_for('admin_user_toggle_active', uid=u.id) }}" style="display:inline">
-              <button type="submit" class="btn btn-sm btn-outline">
+              <button type="submit" class="btn btn-sm btn-outline"
+                      {% if u.id == current_user.id %}disabled title="Cannot deactivate yourself"{% endif %}>
                 {{ 'Deactivate' if u.is_active else 'Activate' }}
               </button>
             </form>
-            <form method="POST" action="{{ url_for('admin_user_toggle_admin', uid=u.id) }}" style="display:inline">
-              <button type="submit" class="btn btn-sm btn-outline">
-                {{ 'Demote' if u.is_admin else 'Make Admin' }}
-              </button>
-            </form>
+
+            <!-- Delete -->
+            {% set can_delete = (current_user.role == 'super_admin' and u.id != current_user.id) or
+                                (current_user.role == 'admin' and u.role not in ('super_admin', 'admin') and u.id != current_user.id) %}
+            {% if can_delete %}
             <form method="POST" action="{{ url_for('admin_user_delete', uid=u.id) }}" style="display:inline"
-                  onsubmit="return confirm('Delete user {{ u.email }}?')">
-              <button type="submit" class="btn btn-sm btn-danger"
-                      {% if u.id == current_user.id %}disabled title="Cannot delete yourself"{% endif %}
-                      style="{% if u.id == current_user.id %}opacity:.4;cursor:not-allowed{% else %}background:#dc2626;color:#fff{% endif %}">
-                Delete
-              </button>
+                  onsubmit="return confirm('Delete user {{ u.email }}? This cannot be undone.')">
+              <button type="submit" class="btn btn-sm btn-danger" style="background:#dc2626;color:#fff">Delete</button>
             </form>
+            {% endif %}
           </td>
         </tr>
         {% else %}
@@ -90,25 +118,203 @@
   </div>
 </section>
 
-<!-- Create New User -->
-<section style="margin-top:40px;max-width:500px">
+<!-- Edit User Modal -->
+<div id="edit-user-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:10px;padding:28px 32px;min-width:360px;max-width:480px;width:90%">
+    <h3 style="margin-top:0">Edit User</h3>
+    <form id="edit-user-form" method="POST" style="display:flex;flex-direction:column;gap:14px">
+      <div class="field">
+        <label>Name</label>
+        <input type="text" name="name" id="edit-name">
+      </div>
+      <div class="field">
+        <label>Email</label>
+        <input type="email" name="email" id="edit-email" required>
+      </div>
+      <div class="field">
+        <label>Role</label>
+        <select name="role" id="edit-role" onchange="toggleEditDept()">
+          {% if current_user.role == 'super_admin' %}
+          <option value="super_admin">Super Admin</option>
+          {% endif %}
+          <option value="admin">Admin</option>
+          <option value="line_producer">Line Producer</option>
+          <option value="dept_head">Department Head</option>
+        </select>
+      </div>
+      <div class="field" id="edit-dept-field" style="display:none">
+        <label>Department</label>
+        <select name="dept_code" id="edit-dept-code">
+          <option value="">— select department —</option>
+          {% for code, name in coa_sections %}
+          <option value="{{ code }}">{{ name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="button" class="btn btn-outline" onclick="closeEditModal()">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Section C: Create New User -->
+<section style="margin-top:48px;max-width:520px">
   <h2>Create New User</h2>
-  <form method="POST" action="{{ url_for('admin_user_create') }}" style="display:flex;flex-direction:column;gap:12px">
+  <form method="POST" action="{{ url_for('admin_user_create') }}" style="display:flex;flex-direction:column;gap:14px">
+    <div class="field">
+      <label>Name</label>
+      <input type="text" name="name" placeholder="Full Name">
+    </div>
     <div class="field">
       <label>Email <span style="color:#c00">*</span></label>
       <input type="email" name="email" required placeholder="user@example.com">
     </div>
     <div class="field">
-      <label>Name</label>
-      <input type="text" name="name" placeholder="Full Name">
+      <label>Role</label>
+      <select name="role" id="new-role" onchange="toggleNewDept()">
+        {% if current_user.role == 'super_admin' %}
+        <option value="super_admin">Super Admin</option>
+        {% endif %}
+        <option value="admin">Admin</option>
+        <option value="line_producer" selected>Line Producer</option>
+        <option value="dept_head">Department Head</option>
+      </select>
     </div>
-    <div class="field" style="display:flex;align-items:center;gap:8px">
-      <input type="checkbox" name="is_admin" id="new-user-admin" value="1">
-      <label for="new-user-admin" style="margin:0">Admin access</label>
+    <div class="field" id="new-dept-field" style="display:none">
+      <label>Department</label>
+      <select name="dept_code" id="new-dept-code">
+        <option value="">— select department —</option>
+        {% for code, name in coa_sections %}
+        <option value="{{ code }}">{{ name }}</option>
+        {% endfor %}
+      </select>
     </div>
     <div>
       <button type="submit" class="btn btn-primary">Create User</button>
     </div>
   </form>
 </section>
+
+<!-- Section D: Project Access Management -->
+<section style="margin-top:56px">
+  <h2>Project Access</h2>
+  {% if projects %}
+  <div style="display:flex;flex-direction:column;gap:24px;margin-top:16px">
+    {% for project in projects %}
+    {% set proj_accesses = project_access | selectattr('project_id', 'eq', project.id) | list %}
+    <div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px 20px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+        <strong>{{ project.name }}</strong>
+        <!-- Access chips -->
+        <div style="display:flex;flex-wrap:wrap;gap:6px" id="access-chips-{{ project.id }}">
+          {% for pa in proj_accesses %}
+          {% set u = users | selectattr('id', 'eq', pa.user_id) | first %}
+          {% if u %}
+          <span style="background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:12px;font-size:.82em;display:inline-flex;align-items:center;gap:4px">
+            {{ u.name or u.email }}
+            <span style="color:#666;font-size:.8em">({{ pa.role }})</span>
+            <button type="button" title="Remove access"
+                    style="border:none;background:none;color:#dc2626;cursor:pointer;font-size:.9em;padding:0 2px;line-height:1"
+                    onclick="removeAccess({{ project.id }}, {{ pa.user_id }}, this.closest('span'))">&#10005;</button>
+          </span>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      <!-- Add user form -->
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <select id="add-user-{{ project.id }}" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.9em">
+          <option value="">Add user…</option>
+          {% for u in users %}
+          {% set already_has = project_access | selectattr('project_id', 'eq', project.id) | selectattr('user_id', 'eq', u.id) | list | length > 0 %}
+          {% if not already_has %}
+          <option value="{{ u.id }}">{{ u.name or u.email }} ({{ u.display_role }})</option>
+          {% endif %}
+          {% endfor %}
+        </select>
+        <select id="add-role-{{ project.id }}" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:.9em">
+          <option value="collaborator">Collaborator</option>
+          <option value="owner">Owner</option>
+        </select>
+        <button class="btn btn-sm btn-outline" onclick="addAccess({{ project.id }})">Add</button>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">No projects yet.</p>
+  {% endif %}
+</section>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Edit modal
+function openEditModal(uid, name, email, role, deptCode) {
+  const form = document.getElementById('edit-user-form');
+  form.action = `/admin/users/${uid}/edit`;
+  document.getElementById('edit-name').value  = name || '';
+  document.getElementById('edit-email').value = email || '';
+  const roleSelect = document.getElementById('edit-role');
+  if (roleSelect) {
+    for (let opt of roleSelect.options) {
+      opt.selected = (opt.value === role);
+    }
+  }
+  const deptSelect = document.getElementById('edit-dept-code');
+  if (deptSelect && deptCode) {
+    for (let opt of deptSelect.options) {
+      opt.selected = (opt.value == deptCode);
+    }
+  }
+  toggleEditDept();
+  const modal = document.getElementById('edit-user-modal');
+  modal.style.display = 'flex';
+}
+
+function closeEditModal() {
+  document.getElementById('edit-user-modal').style.display = 'none';
+}
+
+function toggleEditDept() {
+  const role = document.getElementById('edit-role').value;
+  document.getElementById('edit-dept-field').style.display = (role === 'dept_head') ? '' : 'none';
+}
+
+function toggleNewDept() {
+  const role = document.getElementById('new-role').value;
+  document.getElementById('new-dept-field').style.display = (role === 'dept_head') ? '' : 'none';
+}
+
+// Close modal when clicking backdrop
+document.getElementById('edit-user-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeEditModal();
+});
+
+// Project access management
+async function addAccess(pid) {
+  const userSel = document.getElementById(`add-user-${pid}`);
+  const roleSel = document.getElementById(`add-role-${pid}`);
+  const userId  = userSel.value;
+  if (!userId) { alert('Select a user first.'); return; }
+  const fd = new FormData();
+  fd.append('user_id', userId);
+  fd.append('role', roleSel.value);
+  const res = await fetch(`/admin/projects/${pid}/access`, { method: 'POST', body: fd });
+  if (res.ok) { location.reload(); }
+  else { alert('Failed to add access.'); }
+}
+
+async function removeAccess(pid, uid, chipEl) {
+  if (!confirm('Remove this user from the project?')) return;
+  const fd = new FormData();
+  fd.append('user_id', uid);
+  const res = await fetch(`/admin/projects/${pid}/access/remove`, { method: 'POST', body: fd });
+  if (res.ok) { chipEl.remove(); }
+  else { alert('Failed to remove access.'); }
+}
+</script>
 {% endblock %}

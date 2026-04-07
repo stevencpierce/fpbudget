@@ -201,7 +201,16 @@ def load_user(uid):
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not current_user.is_authenticated or not current_user.is_admin:
+        if not current_user.is_authenticated or current_user.role not in ('super_admin', 'admin'):
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated
+
+
+def super_admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated or current_user.role != 'super_admin':
             abort(403)
         return f(*args, **kwargs)
     return decorated
@@ -217,6 +226,9 @@ def login():
         user = User.query.filter_by(email=email).first()
         if user and user.is_active and user.check_password(password):
             login_user(user)
+            if user.must_change_password:
+                flash("Please set a new password to continue.", "warning")
+                return redirect(url_for("admin_me_password"))
             return redirect(url_for("dashboard"))
         flash("Invalid credentials.", "error")
     return render_template("login.html")
@@ -239,10 +251,7 @@ def health():
 @app.route("/")
 @login_required
 def dashboard():
-    if current_user.must_change_password:
-        flash("Please set a new password before continuing.", "warning")
-        return redirect(url_for("change_password"))
-    if current_user.is_admin:
+    if current_user.role in ('super_admin', 'admin'):
         projects = ProjectSheet.query.order_by(ProjectSheet.name).all()
     else:
         accessible_ids = [
@@ -505,9 +514,6 @@ def delete_budget(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>")
 @login_required
 def budget_view(pid, bid):
-    if current_user.must_change_password:
-        flash("Please set a new password before continuing.", "warning")
-        return redirect(url_for("change_password"))
     project  = ProjectSheet.query.get_or_404(pid)
     budget   = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     # Auto-promote: viewing a version makes it the active one
@@ -576,6 +582,12 @@ def budget_view(pid, bid):
     # Reorder each section so kit fee / child rows appear directly under their parent
     for sec in sections:
         sec["lines"] = _order_lines_with_children(sec["lines"])
+
+    # Dept head filtering: restrict to their assigned dept_code only
+    dept_filter = None
+    if current_user.role == 'dept_head' and current_user.dept_code:
+        dept_filter = current_user.dept_code
+        sections = [s for s in sections if s['code'] == dept_filter]
 
     fringes      = FringeConfig.query.filter_by(project_id=None).order_by(FringeConfig.fringe_type).all()
     crew_members = CrewMember.query.filter_by(active=True).order_by(CrewMember.name).all()
@@ -752,6 +764,7 @@ def budget_view(pid, bid):
         project_clients=project_clients,
         direct_contacts=direct_contacts,
         company_settings=company_settings,
+        dept_filter=dept_filter,
     )
 
 
@@ -3450,41 +3463,96 @@ def fromjson_filter(s):
 
 # ── Admin routes ──────────────────────────────────────────────────────────────
 
-@app.route("/admin", methods=["GET", "POST"])
+@app.route("/admin", methods=["GET"])
 @login_required
 @admin_required
 def admin_panel():
-    users = User.query.order_by(User.created_at.desc()).all()
-    project_count = ProjectSheet.query.count()
-    # Count projects per user
-    access_counts = {}
-    for pa in ProjectAccess.query.all():
-        access_counts[pa.user_id] = access_counts.get(pa.user_id, 0) + 1
+    users          = User.query.order_by(User.name).all()
+    projects       = ProjectSheet.query.order_by(ProjectSheet.name).all()
+    project_access = ProjectAccess.query.all()
     return render_template("admin.html",
                            users=users,
-                           project_count=project_count,
-                           access_counts=access_counts)
+                           projects=projects,
+                           project_access=project_access,
+                           coa_sections=FP_COA_SECTIONS)
 
 
 @app.route("/admin/users/create", methods=["POST"])
 @login_required
 @admin_required
 def admin_user_create():
-    email = request.form.get("email", "").strip().lower()
-    name  = request.form.get("name", "").strip()
-    is_admin = bool(request.form.get("is_admin"))
+    email     = request.form.get("email", "").strip().lower()
+    name      = request.form.get("name", "").strip()
+    role      = request.form.get("role", "line_producer")
+    dept_code = request.form.get("dept_code", type=int)
+
+    # Admin cannot create super_admin
+    if current_user.role == 'admin' and role == 'super_admin':
+        flash("Admins cannot create Super Admin accounts.", "error")
+        return redirect(url_for("admin_panel"))
+
+    valid_roles = ('super_admin', 'admin', 'line_producer', 'dept_head')
+    if role not in valid_roles:
+        role = 'line_producer'
+
     if not email:
         flash("Email is required.", "error")
         return redirect(url_for("admin_panel"))
     if User.query.filter_by(email=email).first():
         flash(f"A user with email {email} already exists.", "error")
         return redirect(url_for("admin_panel"))
+
     temp_pw = secrets.token_urlsafe(8)
-    u = User(email=email, name=name or None, is_admin=is_admin, must_change_password=True)
+    u = User(
+        email=email,
+        name=name or None,
+        role=role,
+        dept_code=dept_code if role == 'dept_head' else None,
+        must_change_password=True,
+    )
     u.set_password(temp_pw)
     db.session.add(u)
     db.session.commit()
-    flash(f"User {email} created. Temp password: {temp_pw}", "temp_password")
+    flash(f"User created. Temporary password: {temp_pw}", "temp_pw")
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/admin/users/<int:uid>/edit", methods=["POST"])
+@login_required
+@admin_required
+def admin_user_edit(uid):
+    u = User.query.get_or_404(uid)
+    # Admin cannot change a super_admin's role
+    if current_user.role == 'admin' and u.role == 'super_admin':
+        flash("Admins cannot edit Super Admin accounts.", "error")
+        return redirect(url_for("admin_panel"))
+
+    name      = request.form.get("name", "").strip()
+    email     = request.form.get("email", "").strip().lower()
+    role      = request.form.get("role", u.role)
+    dept_code = request.form.get("dept_code", type=int)
+
+    # Admin cannot assign super_admin role
+    if current_user.role == 'admin' and role == 'super_admin':
+        flash("Admins cannot assign the Super Admin role.", "error")
+        return redirect(url_for("admin_panel"))
+
+    valid_roles = ('super_admin', 'admin', 'line_producer', 'dept_head')
+    if role not in valid_roles:
+        role = u.role
+
+    if email and email != u.email:
+        existing = User.query.filter_by(email=email).first()
+        if existing and existing.id != uid:
+            flash(f"Email {email} is already in use.", "error")
+            return redirect(url_for("admin_panel"))
+        u.email = email
+
+    u.name      = name or u.name
+    u.role      = role
+    u.dept_code = dept_code if role == 'dept_head' else None
+    db.session.commit()
+    flash(f"User {u.email} updated.", "success")
     return redirect(url_for("admin_panel"))
 
 
@@ -3492,6 +3560,9 @@ def admin_user_create():
 @login_required
 @admin_required
 def admin_user_toggle_active(uid):
+    if uid == current_user.id:
+        flash("You cannot deactivate yourself.", "error")
+        return redirect(url_for("admin_panel"))
     u = User.query.get_or_404(uid)
     u.is_active = not u.is_active
     db.session.commit()
@@ -3509,7 +3580,7 @@ def admin_user_reset_password(uid):
     u.set_password(temp_pw)
     u.must_change_password = True
     db.session.commit()
-    flash(f"Password reset for {u.email}. New temp password: {temp_pw}", "temp_password")
+    flash(f"Password reset. New temporary password: {temp_pw}", "temp_pw")
     return redirect(url_for("admin_panel"))
 
 
@@ -3521,6 +3592,10 @@ def admin_user_delete(uid):
         flash("You cannot delete your own account.", "error")
         return redirect(url_for("admin_panel"))
     u = User.query.get_or_404(uid)
+    # Admin can only delete line_producer and dept_head; super_admin can delete anyone except self
+    if current_user.role == 'admin' and u.role in ('super_admin', 'admin'):
+        flash("Admins cannot delete admin or super_admin accounts.", "error")
+        return redirect(url_for("admin_panel"))
     ProjectAccess.query.filter_by(user_id=uid).delete()
     db.session.delete(u)
     db.session.commit()
@@ -3528,23 +3603,39 @@ def admin_user_delete(uid):
     return redirect(url_for("admin_panel"))
 
 
-@app.route("/admin/users/<int:uid>/toggle-admin", methods=["POST"])
+@app.route("/admin/projects/<int:pid>/access", methods=["POST"])
 @login_required
 @admin_required
-def admin_user_toggle_admin(uid):
-    u = User.query.get_or_404(uid)
-    u.is_admin = not u.is_admin
-    db.session.commit()
-    role = "admin" if u.is_admin else "regular user"
-    flash(f"{u.email} is now a {role}.", "success")
-    return redirect(url_for("admin_panel"))
+def admin_project_access_add(pid):
+    ProjectSheet.query.get_or_404(pid)
+    user_id = request.form.get("user_id", type=int)
+    role    = request.form.get("role", "collaborator")
+    if not user_id:
+        return jsonify({"error": "user_id required"}), 400
+    existing = ProjectAccess.query.filter_by(project_id=pid, user_id=user_id).first()
+    if not existing:
+        pa = ProjectAccess(project_id=pid, user_id=user_id, role=role)
+        db.session.add(pa)
+        db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/projects/<int:pid>/access/remove", methods=["POST"])
+@login_required
+@admin_required
+def admin_project_access_remove(pid):
+    user_id = request.form.get("user_id", type=int)
+    if user_id:
+        ProjectAccess.query.filter_by(project_id=pid, user_id=user_id).delete()
+        db.session.commit()
+    return jsonify({"ok": True})
 
 
 # ── Project sharing routes ─────────────────────────────────────────────────────
 
 def _user_can_access_project(pid):
     """Return True if the current user may access project pid."""
-    if current_user.is_admin:
+    if current_user.role in ('super_admin', 'admin'):
         return True
     return ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first() is not None
 
@@ -3588,26 +3679,28 @@ def project_share_remove(pid):
 
 # ── Password change route ──────────────────────────────────────────────────────
 
-@app.route("/profile/password", methods=["GET", "POST"])
+@app.route("/admin/me/password", methods=["GET", "POST"])
 @login_required
-def change_password():
+def admin_me_password():
     if request.method == "POST":
-        current_pw  = request.form.get("current_password", "")
-        new_pw      = request.form.get("new_password", "")
-        confirm_pw  = request.form.get("confirm_password", "")
+        current_pw = request.form.get("current_password", "")
+        new_pw     = request.form.get("new_password", "")
+        confirm_pw = request.form.get("confirm_password", "")
         if not current_user.check_password(current_pw):
             flash("Current password is incorrect.", "error")
-            return render_template("change_password.html")
-        if not new_pw or len(new_pw) < 6:
-            flash("New password must be at least 6 characters.", "error")
-            return render_template("change_password.html")
+            return redirect(url_for("admin_me_password"))
+        if not new_pw or len(new_pw) < 8:
+            flash("New password must be at least 8 characters.", "error")
+            return redirect(url_for("admin_me_password"))
         if new_pw != confirm_pw:
             flash("New passwords do not match.", "error")
-            return render_template("change_password.html")
+            return redirect(url_for("admin_me_password"))
         current_user.set_password(new_pw)
         current_user.must_change_password = False
         db.session.commit()
         flash("Password updated successfully.", "success")
+        if current_user.is_admin:
+            return redirect(url_for("admin_panel"))
         return redirect(url_for("dashboard"))
     return render_template("change_password.html")
 
@@ -3896,13 +3989,38 @@ with app.app_context():
     seed_standard_template(db.session)
     seed_payroll_profiles(db.session)
 
+    # ── User table role column migrations (replace is_admin with role) ────────
+    for _role_sql in [
+        "ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'line_producer'",
+        "ALTER TABLE users ADD COLUMN dept_code INTEGER",
+        "ALTER TABLE users ADD COLUMN reset_token VARCHAR(100)",
+        "ALTER TABLE users ADD COLUMN reset_token_expires TIMESTAMP",
+    ]:
+        try:
+            db.session.execute(text(_role_sql))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+    # Migrate old is_admin=1 rows to role='admin'
+    try:
+        db.session.execute(text("UPDATE users SET role='admin' WHERE is_admin=1 AND role='line_producer'"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
     # ── Seed admin user ───────────────────────────────────────────────────────
     def _seed_admin_user():
         if not User.query.filter_by(email=ADMIN_EMAIL).first():
-            u = User(email=ADMIN_EMAIL, name="Admin", is_admin=True)
+            u = User(email=ADMIN_EMAIL, name="Admin", role='super_admin')
             u.set_password(ADMIN_PASSWORD)
             db.session.add(u)
             db.session.commit()
+        else:
+            # Upgrade existing admin seed to super_admin if still default
+            existing = User.query.filter_by(email=ADMIN_EMAIL).first()
+            if existing and existing.role == 'line_producer':
+                existing.role = 'super_admin'
+                db.session.commit()
     _seed_admin_user()
 
 
