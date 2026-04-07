@@ -22,6 +22,10 @@
       <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-primary btn-sm">
         Open Budget
       </a>
+      <button class="btn btn-sm btn-outline"
+              onclick="openShareModal({{ p.id }}, '{{ p.name | e }}')">
+        Share
+      </button>
       <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
             onsubmit="return confirm('Delete {{ p.name }} and all its budgets?')">
         <button type="submit" class="btn btn-sm btn-ghost" title="Delete project">✕</button>
@@ -60,4 +64,77 @@
     </form>
   </div>
 </div>
+
+<!-- Share Modal -->
+<div id="share-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box" style="min-width:400px">
+    <h2>Share: <span id="share-project-name"></span></h2>
+
+    <div class="field" style="display:flex;gap:8px;align-items:center">
+      <input type="email" id="share-email-input" placeholder="collaborator@email.com" style="flex:1">
+      <button class="btn btn-primary btn-sm" onclick="addCollaborator()">Add</button>
+    </div>
+    <div id="share-error" style="color:var(--color-danger,#c00);font-size:.85em;margin-top:4px;display:none"></div>
+
+    <div id="share-collaborators" style="margin-top:16px"></div>
+
+    <div class="modal-actions" style="margin-top:16px">
+      <button type="button" class="btn btn-outline"
+              onclick="document.getElementById('share-modal').classList.add('hidden')">
+        Close
+      </button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _sharePid = null;
+
+function openShareModal(pid, name) {
+  _sharePid = pid;
+  document.getElementById('share-project-name').textContent = name;
+  document.getElementById('share-email-input').value = '';
+  document.getElementById('share-error').style.display = 'none';
+  document.getElementById('share-modal').classList.remove('hidden');
+  _loadCollaborators(pid);
+}
+
+function _loadCollaborators(pid) {
+  fetch('/projects/' + pid + '/share')
+    .then(r => r.text())
+    .then(html => {
+      // Extract the collaborator list from the returned page
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const list = doc.getElementById('collaborator-list');
+      document.getElementById('share-collaborators').innerHTML =
+        list ? list.outerHTML : '';
+    });
+}
+
+function addCollaborator() {
+  const email = document.getElementById('share-email-input').value.trim();
+  if (!email) return;
+  const errEl = document.getElementById('share-error');
+  errEl.style.display = 'none';
+  fetch('/projects/' + _sharePid + '/share', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'email=' + encodeURIComponent(email)
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) {
+      errEl.textContent = data.error;
+      errEl.style.display = 'block';
+    } else {
+      document.getElementById('share-email-input').value = '';
+      _loadCollaborators(_sharePid);
+    }
+  });
+}
+</script>
 {% endblock %}

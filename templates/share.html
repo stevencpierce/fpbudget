@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Share {{ project.name }} — FPBudget{% endblock %}
+
+{% block content %}
+<div style="max-width:560px;margin:40px auto">
+  <h1>Share: {{ project.name }}</h1>
+
+  <form method="POST" action="{{ url_for('project_share', pid=project.id) }}"
+        style="display:flex;gap:8px;align-items:center;margin-top:24px">
+    <input type="email" name="email" required placeholder="collaborator@email.com" style="flex:1">
+    <button type="submit" class="btn btn-primary">Add Collaborator</button>
+  </form>
+
+  <h2 style="margin-top:32px">Current Access</h2>
+  <div id="collaborator-list">
+    {% if access_list %}
+    <table class="data-table" style="width:100%;border-collapse:collapse;margin-top:12px">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for pa, u in access_list %}
+        <tr>
+          <td>{{ u.name or '—' }}</td>
+          <td>{{ u.email }}</td>
+          <td>{{ pa.role }}</td>
+          <td>
+            <form method="POST" action="{{ url_for('project_share_remove', pid=project.id) }}" style="display:inline">
+              <input type="hidden" name="user_id" value="{{ u.id }}">
+              <button type="submit" class="btn btn-sm btn-ghost" title="Remove"
+                      onclick="return confirm('Remove {{ u.email }} from this project?')">✕</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:#999;margin-top:12px">No collaborators yet.</p>
+    {% endif %}
+  </div>
+
+  <div style="margin-top:24px">
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline">Back to Projects</a>
+  </div>
+</div>
+{% endblock %}

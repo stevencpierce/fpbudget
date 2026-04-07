@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Admin Panel — FPBudget{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Admin Panel</h1>
+  <div style="display:flex;gap:16px;align-items:center">
+    <span class="badge badge-info">{{ users|length }} user{{ 's' if users|length != 1 else '' }}</span>
+    <span class="badge badge-info">{{ project_count }} project{{ 's' if project_count != 1 else '' }}</span>
+  </div>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+    {% if cat == 'temp_password' %}
+      <div class="flash flash-warning" style="background:#fffbe6;border:1px solid #f5c518;padding:12px 16px;border-radius:6px;margin-bottom:12px">
+        <strong>&#9888; Copy this password — it won't be shown again:</strong><br>
+        <code style="font-size:1.1em;letter-spacing:.05em">{{ msg }}</code>
+      </div>
+    {% endif %}
+  {% endfor %}
+{% endwith %}
+
+<!-- Users Table -->
+<section style="margin-top:24px">
+  <h2>Users</h2>
+  <div class="table-wrap" style="overflow-x:auto">
+    <table class="data-table" style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Admin</th>
+          <th>Status</th>
+          <th>Projects</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td>{{ u.name or '—' }}</td>
+          <td>{{ u.email }}</td>
+          <td>
+            {% if u.is_admin %}
+              <span class="badge badge-admin" style="background:#4f46e5;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Admin</span>
+            {% else %}
+              <span style="color:#999;font-size:.85em">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if u.is_active %}
+              <span class="badge" style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Active</span>
+            {% else %}
+              <span class="badge" style="background:#dc2626;color:#fff;padding:2px 8px;border-radius:12px;font-size:.8em">Inactive</span>
+            {% endif %}
+          </td>
+          <td style="text-align:center">{{ access_counts.get(u.id, 0) }}</td>
+          <td style="white-space:nowrap;font-size:.85em">{{ u.created_at.strftime('%Y-%m-%d') if u.created_at else '—' }}</td>
+          <td style="white-space:nowrap">
+            <form method="POST" action="{{ url_for('admin_user_reset_password', uid=u.id) }}" style="display:inline">
+              <button type="submit" class="btn btn-sm btn-outline" title="Reset password">Reset PW</button>
+            </form>
+            <form method="POST" action="{{ url_for('admin_user_toggle_active', uid=u.id) }}" style="display:inline">
+              <button type="submit" class="btn btn-sm btn-outline">
+                {{ 'Deactivate' if u.is_active else 'Activate' }}
+              </button>
+            </form>
+            <form method="POST" action="{{ url_for('admin_user_toggle_admin', uid=u.id) }}" style="display:inline">
+              <button type="submit" class="btn btn-sm btn-outline">
+                {{ 'Demote' if u.is_admin else 'Make Admin' }}
+              </button>
+            </form>
+            <form method="POST" action="{{ url_for('admin_user_delete', uid=u.id) }}" style="display:inline"
+                  onsubmit="return confirm('Delete user {{ u.email }}?')">
+              <button type="submit" class="btn btn-sm btn-danger"
+                      {% if u.id == current_user.id %}disabled title="Cannot delete yourself"{% endif %}
+                      style="{% if u.id == current_user.id %}opacity:.4;cursor:not-allowed{% else %}background:#dc2626;color:#fff{% endif %}">
+                Delete
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" style="text-align:center;color:#999;padding:24px">No users yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Create New User -->
+<section style="margin-top:40px;max-width:500px">
+  <h2>Create New User</h2>
+  <form method="POST" action="{{ url_for('admin_user_create') }}" style="display:flex;flex-direction:column;gap:12px">
+    <div class="field">
+      <label>Email <span style="color:#c00">*</span></label>
+      <input type="email" name="email" required placeholder="user@example.com">
+    </div>
+    <div class="field">
+      <label>Name</label>
+      <input type="text" name="name" placeholder="Full Name">
+    </div>
+    <div class="field" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" name="is_admin" id="new-user-admin" value="1">
+      <label for="new-user-admin" style="margin:0">Admin access</label>
+    </div>
+    <div>
+      <button type="submit" class="btn btn-primary">Create User</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

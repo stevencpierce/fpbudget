@@ -9,7 +9,7 @@ from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from weasyprint import HTML as WeasyprintHTML
 
-from models import (db, ProjectSheet, Transaction, Budget, BudgetLine,
+from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, BudgetLine,
                     FringeConfig, CrewMember, CrewAssignment, ScheduleDay,
                     BudgetTemplate, BudgetTemplateLine, TaxCredit, PayrollProfile,
                     ProductionDay, Location, LocationDay, CallSheetData,
@@ -187,16 +187,24 @@ def inject_globals():
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
-class AdminUser(UserMixin):
-    id    = 1
-    email = ADMIN_EMAIL
+from functools import wraps
+import secrets
 
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
 
 @login_manager.user_loader
 def load_user(uid):
-    return AdminUser() if str(uid) == "1" else None
+    return User.query.get(int(uid))
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not current_user.is_authenticated or not current_user.is_admin:
+            abort(403)
+        return f(*args, **kwargs)
+    return decorated
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -204,9 +212,11 @@ def login():
     if current_user.is_authenticated:
         return redirect(url_for("dashboard"))
     if request.method == "POST":
-        if (request.form.get("email", "").lower() == ADMIN_EMAIL.lower()
-                and request.form.get("password") == ADMIN_PASSWORD):
-            login_user(AdminUser())
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        user = User.query.filter_by(email=email).first()
+        if user and user.is_active and user.check_password(password):
+            login_user(user)
             return redirect(url_for("dashboard"))
         flash("Invalid credentials.", "error")
     return render_template("login.html")
@@ -229,7 +239,19 @@ def health():
 @app.route("/")
 @login_required
 def dashboard():
-    projects = ProjectSheet.query.order_by(ProjectSheet.name).all()
+    if current_user.must_change_password:
+        flash("Please set a new password before continuing.", "warning")
+        return redirect(url_for("change_password"))
+    if current_user.is_admin:
+        projects = ProjectSheet.query.order_by(ProjectSheet.name).all()
+    else:
+        accessible_ids = [
+            pa.project_id for pa in
+            ProjectAccess.query.filter_by(user_id=current_user.id).all()
+        ]
+        projects = ProjectSheet.query.filter(
+            ProjectSheet.id.in_(accessible_ids)
+        ).order_by(ProjectSheet.name).all()
     budget_counts = {}
     for b in Budget.query.all():
         budget_counts[b.project_id] = budget_counts.get(b.project_id, 0) + 1
@@ -254,6 +276,9 @@ def project_new():
     _fed40 = PayrollProfile.query.filter(PayrollProfile.name.ilike('%federal%')).first()
     b = Budget(project_id=p.id, name=f"{name} Budget", payroll_profile_id=_fed40.id if _fed40 else None, payroll_week_start=6,)
     db.session.add(b)
+    # Grant the creating user owner access
+    access = ProjectAccess(project_id=p.id, user_id=current_user.id, role="owner")
+    db.session.add(access)
     db.session.commit()
     flash(f"Project '{name}' created.", "success")
     # Redirect to Working Budget with settings=1 so settings modal auto-opens
@@ -480,6 +505,9 @@ def delete_budget(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>")
 @login_required
 def budget_view(pid, bid):
+    if current_user.must_change_password:
+        flash("Please set a new password before continuing.", "warning")
+        return redirect(url_for("change_password"))
     project  = ProjectSheet.query.get_or_404(pid)
     budget   = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     # Auto-promote: viewing a version makes it the active one
@@ -3420,6 +3448,170 @@ def fromjson_filter(s):
         return {}
 
 
+# ── Admin routes ──────────────────────────────────────────────────────────────
+
+@app.route("/admin", methods=["GET", "POST"])
+@login_required
+@admin_required
+def admin_panel():
+    users = User.query.order_by(User.created_at.desc()).all()
+    project_count = ProjectSheet.query.count()
+    # Count projects per user
+    access_counts = {}
+    for pa in ProjectAccess.query.all():
+        access_counts[pa.user_id] = access_counts.get(pa.user_id, 0) + 1
+    return render_template("admin.html",
+                           users=users,
+                           project_count=project_count,
+                           access_counts=access_counts)
+
+
+@app.route("/admin/users/create", methods=["POST"])
+@login_required
+@admin_required
+def admin_user_create():
+    email = request.form.get("email", "").strip().lower()
+    name  = request.form.get("name", "").strip()
+    is_admin = bool(request.form.get("is_admin"))
+    if not email:
+        flash("Email is required.", "error")
+        return redirect(url_for("admin_panel"))
+    if User.query.filter_by(email=email).first():
+        flash(f"A user with email {email} already exists.", "error")
+        return redirect(url_for("admin_panel"))
+    temp_pw = secrets.token_urlsafe(8)
+    u = User(email=email, name=name or None, is_admin=is_admin, must_change_password=True)
+    u.set_password(temp_pw)
+    db.session.add(u)
+    db.session.commit()
+    flash(f"User {email} created. Temp password: {temp_pw}", "temp_password")
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/admin/users/<int:uid>/toggle-active", methods=["POST"])
+@login_required
+@admin_required
+def admin_user_toggle_active(uid):
+    u = User.query.get_or_404(uid)
+    u.is_active = not u.is_active
+    db.session.commit()
+    status = "activated" if u.is_active else "deactivated"
+    flash(f"User {u.email} {status}.", "success")
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/admin/users/<int:uid>/reset-password", methods=["POST"])
+@login_required
+@admin_required
+def admin_user_reset_password(uid):
+    u = User.query.get_or_404(uid)
+    temp_pw = secrets.token_urlsafe(8)
+    u.set_password(temp_pw)
+    u.must_change_password = True
+    db.session.commit()
+    flash(f"Password reset for {u.email}. New temp password: {temp_pw}", "temp_password")
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/admin/users/<int:uid>/delete", methods=["POST"])
+@login_required
+@admin_required
+def admin_user_delete(uid):
+    if uid == current_user.id:
+        flash("You cannot delete your own account.", "error")
+        return redirect(url_for("admin_panel"))
+    u = User.query.get_or_404(uid)
+    ProjectAccess.query.filter_by(user_id=uid).delete()
+    db.session.delete(u)
+    db.session.commit()
+    flash(f"User {u.email} deleted.", "success")
+    return redirect(url_for("admin_panel"))
+
+
+@app.route("/admin/users/<int:uid>/toggle-admin", methods=["POST"])
+@login_required
+@admin_required
+def admin_user_toggle_admin(uid):
+    u = User.query.get_or_404(uid)
+    u.is_admin = not u.is_admin
+    db.session.commit()
+    role = "admin" if u.is_admin else "regular user"
+    flash(f"{u.email} is now a {role}.", "success")
+    return redirect(url_for("admin_panel"))
+
+
+# ── Project sharing routes ─────────────────────────────────────────────────────
+
+def _user_can_access_project(pid):
+    """Return True if the current user may access project pid."""
+    if current_user.is_admin:
+        return True
+    return ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first() is not None
+
+
+@app.route("/projects/<int:pid>/share", methods=["GET", "POST"])
+@login_required
+def project_share(pid):
+    if not _user_can_access_project(pid):
+        abort(403)
+    project = ProjectSheet.query.get_or_404(pid)
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        target = User.query.filter_by(email=email).first()
+        if not target:
+            return jsonify({"error": "No user with that email"})
+        existing = ProjectAccess.query.filter_by(project_id=pid, user_id=target.id).first()
+        if not existing:
+            pa = ProjectAccess(project_id=pid, user_id=target.id, role="collaborator")
+            db.session.add(pa)
+            db.session.commit()
+        return jsonify({"ok": True, "user": {"name": target.name or target.email, "email": target.email, "id": target.id}})
+    # GET — return share page
+    access_list = (db.session.query(ProjectAccess, User)
+                   .join(User, User.id == ProjectAccess.user_id)
+                   .filter(ProjectAccess.project_id == pid)
+                   .all())
+    return render_template("share.html", project=project, access_list=access_list)
+
+
+@app.route("/projects/<int:pid>/share/remove", methods=["POST"])
+@login_required
+def project_share_remove(pid):
+    if not _user_can_access_project(pid):
+        abort(403)
+    uid = request.form.get("user_id", type=int)
+    if uid:
+        ProjectAccess.query.filter_by(project_id=pid, user_id=uid).delete()
+        db.session.commit()
+    return redirect(url_for("project_share", pid=pid))
+
+
+# ── Password change route ──────────────────────────────────────────────────────
+
+@app.route("/profile/password", methods=["GET", "POST"])
+@login_required
+def change_password():
+    if request.method == "POST":
+        current_pw  = request.form.get("current_password", "")
+        new_pw      = request.form.get("new_password", "")
+        confirm_pw  = request.form.get("confirm_password", "")
+        if not current_user.check_password(current_pw):
+            flash("Current password is incorrect.", "error")
+            return render_template("change_password.html")
+        if not new_pw or len(new_pw) < 6:
+            flash("New password must be at least 6 characters.", "error")
+            return render_template("change_password.html")
+        if new_pw != confirm_pw:
+            flash("New passwords do not match.", "error")
+            return render_template("change_password.html")
+        current_user.set_password(new_pw)
+        current_user.must_change_password = False
+        db.session.commit()
+        flash("Password updated successfully.", "success")
+        return redirect(url_for("dashboard"))
+    return render_template("change_password.html")
+
+
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 with app.app_context():
@@ -3673,10 +3865,45 @@ with app.app_context():
         except Exception:
             db.session.rollback()
 
+    # ── Auth tables ───────────────────────────────────────────────────────────
+    for _auth_sql in [
+        """CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL UNIQUE,
+            name TEXT,
+            password_hash TEXT NOT NULL,
+            is_admin INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            must_change_password INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""",
+        """CREATE TABLE IF NOT EXISTS project_access (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL REFERENCES project_sheet(id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            role TEXT DEFAULT 'collaborator',
+            UNIQUE(project_id, user_id)
+        )""",
+    ]:
+        try:
+            db.session.execute(text(_auth_sql))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
     # ── Seeds (run after all migrations) ─────────────────────────────────────
     seed_fringes(db.session)
     seed_standard_template(db.session)
     seed_payroll_profiles(db.session)
+
+    # ── Seed admin user ───────────────────────────────────────────────────────
+    def _seed_admin_user():
+        if not User.query.filter_by(email=ADMIN_EMAIL).first():
+            u = User(email=ADMIN_EMAIL, name="Admin", is_admin=True)
+            u.set_password(ADMIN_PASSWORD)
+            db.session.add(u)
+            db.session.commit()
+    _seed_admin_user()
 
 
 if __name__ == "__main__":
