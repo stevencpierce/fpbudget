@@ -5016,7 +5016,12 @@ async function qeAddSelected() {
   for (const [, v] of _qeCart) {
     const { code, coa_name, item, qty, days, rate, kit, fringe, comp, agent_pct, rate_type } = v;
     const isLabor = item.isLabor;
-    await fetch(SAVE_URL, {
+    // Determine sort_order from item position in QE_CATEGORIES so lines always
+    // appear in the same order as the quick entry panel within each section.
+    const _cat = QE_CATEGORIES.find(c => c.code === code);
+    const _itemIdx = _cat ? _cat.items.findIndex(i => i.label === item.label) : 0;
+    const sortOrder = (_itemIdx >= 0 ? _itemIdx : 0) * 10;
+    const resp = await fetch(SAVE_URL, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
@@ -5024,6 +5029,7 @@ async function qeAddSelected() {
         account_name:    coa_name,
         description:     item.label,
         is_labor:        isLabor,
+        sort_order:      sortOrder,
         quantity:        qty,
         days:            days,
         rate:            isLabor ? rate : 0,
@@ -5034,17 +5040,20 @@ async function qeAddSelected() {
       })
     });
     if (isLabor && kit > 0) {
-      await fetch(SAVE_URL, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          account_code:    code,
-          account_name:    coa_name,
-          description:     `Kit Fee — ${item.label}`,
-          is_labor:        false,
-          estimated_total: kit * qty * days,
-        })
-      });
+      // Use the dedicated kit-fee endpoint so the row gets parent_line_id set
+      // and _order_lines_with_children() will place it directly under its parent.
+      const parentData = await resp.json();
+      if (parentData && parentData.id) {
+        await fetch(`/projects/${_pid}/budget/${_bid}/line/${parentData.id}/kit-fee`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            rate:     kit,
+            quantity: qty,
+            days:     days,
+          })
+        });
+      }
     }
   }
   closeCascade();

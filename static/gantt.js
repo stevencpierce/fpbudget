@@ -406,6 +406,17 @@ async function saveDay(cell, dayType, note, estOtHours) {
     const prev = cell.dataset.prevType || 'off';
     paintCell(cell, prev);
   } else {
+    // Auto-enable use_schedule on this line if it isn't already checked.
+    // Also zeroes est_ot so legacy manual OT doesn't carry into schedule mode.
+    const cb = document.querySelector(`.use-sched-cb[data-id="${lineId}"]`);
+    if (cb && !cb.checked) {
+      cb.checked = true;
+      fetch(`/projects/${_pid}/budget/${_bid}/line`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: parseInt(lineId), use_schedule: true, est_ot: 0})
+      });
+    }
     scheduleTotalsRefresh();
   }
 }
