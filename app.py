@@ -598,6 +598,20 @@ def delete_budget(pid, bid):
     if budget.version_status == 'current' and remaining:
         # Auto-promote the next version so nothing is left without a current
         remaining.version_status = 'current'
+
+    # Manually clean up FK-constrained child tables not covered by ORM cascade.
+    # Null out self-referential parent_line_id first so BudgetLine rows can delete cleanly.
+    BudgetLine.query.filter_by(budget_id=bid).update({"parent_line_id": None}, synchronize_session=False)
+    # Delete CallSheetRecipients (children of CallSheetSend) before CallSheetSend rows
+    send_ids = [s.id for s in CallSheetSend.query.filter_by(budget_id=bid).all()]
+    if send_ids:
+        CallSheetRecipient.query.filter(CallSheetRecipient.send_id.in_(send_ids)).delete(synchronize_session=False)
+    CallSheetSend.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    ProductionDay.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    LocationDay.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    CallSheetData.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    BudgetDirectContact.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+
     db.session.delete(budget)
     db.session.commit()
     if remaining:
