@@ -54,6 +54,17 @@
         <label>Project Name</label>
         <input type="text" name="name" required autofocus placeholder="e.g. GINTS Season 2">
       </div>
+      {% if all_templates %}
+      <div class="field">
+        <label>Start from Template <span style="font-weight:400;color:var(--text-muted)">(optional)</span></label>
+        <select name="template_id">
+          <option value="">— Blank budget —</option>
+          {% for t in all_templates %}
+          <option value="{{ t.id }}">{{ t.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
       <div class="modal-actions">
         <button type="button" class="btn btn-outline"
                 onclick="document.getElementById('new-project-modal').classList.add('hidden')">

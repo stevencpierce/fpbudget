@@ -358,7 +358,9 @@ def dashboard():
     budget_counts = {}
     for b in Budget.query.all():
         budget_counts[b.project_id] = budget_counts.get(b.project_id, 0) + 1
-    return render_template("dashboard.html", projects=projects, budget_counts=budget_counts)
+    all_templates = BudgetTemplate.query.order_by(BudgetTemplate.name).all()
+    return render_template("dashboard.html", projects=projects, budget_counts=budget_counts,
+                           all_templates=all_templates)
 
 
 @app.route("/projects/new", methods=["POST"])
@@ -372,6 +374,7 @@ def project_new():
     if existing:
         flash(f"Project '{name}' already exists.", "error")
         return redirect(url_for("dashboard"))
+    template_id = request.form.get("template_id", type=int)
     p = ProjectSheet(name=name)
     db.session.add(p)
     db.session.flush()
@@ -379,6 +382,27 @@ def project_new():
     _fed40 = PayrollProfile.query.filter(PayrollProfile.name.ilike('%federal%')).first()
     b = Budget(project_id=p.id, name=f"{name} Budget", payroll_profile_id=_fed40.id if _fed40 else None, payroll_week_start=6,)
     db.session.add(b)
+    db.session.flush()
+    # Apply template lines if one was selected
+    if template_id:
+        tmpl = BudgetTemplate.query.get(template_id)
+        if tmpl:
+            for i, tl in enumerate(sorted(tmpl.lines, key=lambda x: x.sort_order)):
+                db.session.add(BudgetLine(
+                    budget_id=b.id,
+                    account_code=tl.account_code,
+                    account_name=tl.account_name,
+                    description=tl.description or "",
+                    is_labor=tl.is_labor,
+                    quantity=float(tl.quantity or 1),
+                    days=float(tl.days or 1),
+                    rate=float(tl.rate or 0),
+                    rate_type=tl.rate_type,
+                    fringe_type=tl.fringe_type,
+                    agent_pct=tl.agent_pct,
+                    estimated_total=float(tl.estimated_total or 0),
+                    sort_order=i,
+                ))
     # Grant the creating user owner access
     access = ProjectAccess(project_id=p.id, user_id=current_user.id, role="owner")
     db.session.add(access)
@@ -415,7 +439,8 @@ def project_budget_redirect(pid):
     latest = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
     if latest:
         return redirect(url_for("budget_view", pid=pid, bid=latest.id))
-    return render_template("budget_new.html", project=project)
+    all_templates = BudgetTemplate.query.order_by(BudgetTemplate.name).all()
+    return render_template("budget_new.html", project=project, all_templates=all_templates)
 
 
 def _next_version_name(project_id, project_name):
@@ -594,15 +619,30 @@ def set_active_budget(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/delete", methods=["POST"])
 @login_required
 def _delete_budget_cascade(bid):
-    """Delete all FK-constrained child rows for a budget, then delete the budget itself.
-    Handles tables not covered by ORM cascade= relationships."""
+    """Fully explicit cascade delete for a budget.
+    Handles every FK-constrained child table in safe deletion order so
+    Postgres never sees a dangling reference mid-transaction."""
     budget = Budget.query.get(bid)
     if not budget:
         return
-    # Null out self-referential parent_line_id so BudgetLine cascade works cleanly
-    BudgetLine.query.filter_by(budget_id=bid).update({"parent_line_id": None}, synchronize_session=False)
-    # Delete CallSheetRecipients before CallSheetSend rows
-    send_ids = [s.id for s in CallSheetSend.query.filter_by(budget_id=bid).all()]
+
+    # Collect all budget_line IDs upfront
+    line_ids = [r[0] for r in db.session.query(BudgetLine.id).filter_by(budget_id=bid).all()]
+
+    if line_ids:
+        # Null FK references to budget_lines from other tables before deleting lines
+        BudgetLine.query.filter(BudgetLine.parent_line_id.in_(line_ids)).update(
+            {"parent_line_id": None}, synchronize_session=False)
+        Location.query.filter(Location.budget_line_id.in_(line_ids)).update(
+            {"budget_line_id": None}, synchronize_session=False)
+        # Delete children of budget_lines
+        ScheduleDay.query.filter(ScheduleDay.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
+        CrewAssignment.query.filter(CrewAssignment.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
+
+    # Delete budget-level tables in safe order
+    ScheduleDay.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    TaxCredit.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    send_ids = [r[0] for r in db.session.query(CallSheetSend.id).filter_by(budget_id=bid).all()]
     if send_ids:
         CallSheetRecipient.query.filter(CallSheetRecipient.send_id.in_(send_ids)).delete(synchronize_session=False)
     CallSheetSend.query.filter_by(budget_id=bid).delete(synchronize_session=False)
@@ -610,6 +650,8 @@ def _delete_budget_cascade(bid):
     LocationDay.query.filter_by(budget_id=bid).delete(synchronize_session=False)
     CallSheetData.query.filter_by(budget_id=bid).delete(synchronize_session=False)
     BudgetDirectContact.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    BudgetLine.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+
     db.session.delete(budget)
 
 
