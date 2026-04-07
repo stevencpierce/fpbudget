@@ -299,6 +299,7 @@
 <div class="tab-panel {% if not sections %}active{% endif %}" id="tab-working">
   <div class="working-toolbar">
     <button class="btn btn-outline btn-sm" onclick="addLineModal()">+ Single Line</button>
+    <button class="btn btn-primary btn-sm" onclick="openCascade()">⚡ Quick Entry</button>
     <span class="muted" style="font-size:.85rem">Changes save automatically.</span>
     <div class="wb-search-wrap" style="margin-left:auto">
       <input type="search" id="wb-search" class="wb-search-input" placeholder="Search lines…"
@@ -4352,5 +4353,764 @@ async function saveCompanySettings() {
     })
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// QUICK ENTRY — full item library keyed by COA code
+// Each item: { label, isLabor, rate, qty, days, kit, fringe, comp, unit }
+// ═══════════════════════════════════════════════════════════════════════════
+const QE_CATEGORIES = [
+  { code:100,   name:'Pre-Production Locations', items:[
+    { label:'Location Scout Day',       isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Tech Scout',               isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Pre-Production Office',    isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'week' },
+    { label:'Script Copies / Printing', isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    { label:'Office Supplies (Pre-Pro)',isLabor:false, rate:200,  qty:1, days:1, comp:'purchase',unit:'flat' },
+  ]},
+  { code:600,   name:'Above the Line', items:[
+    { label:'Director',          isLabor:true,  rate:1500, qty:1, days:1, kit:0, fringe:'E', comp:'labor' },
+    { label:'Executive Producer',isLabor:true,  rate:1200, qty:1, days:1, kit:0, fringe:'E', comp:'labor' },
+    { label:'Producer',          isLabor:true,  rate:1000, qty:1, days:1, kit:0, fringe:'E', comp:'labor' },
+    { label:'Creative Director', isLabor:true,  rate:1200, qty:1, days:1, kit:0, fringe:'E', comp:'labor' },
+    { label:'Writer Fee',        isLabor:false, rate:0,    qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:700,   name:'Talent', items:[
+    { label:'Principal Talent',  isLabor:true,  rate:825,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'S', agent_pct:10, comp:'labor' },
+    { label:'Host',              isLabor:true,  rate:1000, qty:1, days:1, kit:0, fringe:'N', unionFringe:'S', agent_pct:10, comp:'labor' },
+    { label:'Stunt Performer',   isLabor:true,  rate:825,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'S', agent_pct:10, comp:'labor' },
+    { label:'Extra / Background',isLabor:true,  rate:200,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'S', agent_pct:0,  comp:'labor' },
+    { label:'Voice Over Talent', isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'session' },
+  ]},
+  { code:800,   name:'Rehearsal', items:[
+    { label:'Rehearsal Space',   isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Choreographer',     isLabor:true,  rate:800,  qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
+    { label:'Table Read',        isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:900,   name:'Casting', items:[
+    { label:'Casting Director',  isLabor:true,  rate:900,  qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
+    { label:'Casting Associate', isLabor:true,  rate:650,  qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
+    { label:'Casting Space',     isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Casting Tapes',     isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:1000,  name:'Production Staff', items:[
+    // Production Management
+    { label:'Line Producer',              group:'Production',     isLabor:true, rate:1200, qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
+    { label:'UPM',                        group:'Production',     isLabor:true, rate:1000, qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
+    { label:'Production Supervisor',      group:'Production',     isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Production Coordinator',     group:'Production',     isLabor:true, rate:750,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'APOC',                       group:'Production',     isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Production Accountant',      group:'Production',     isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Payroll Coordinator',        group:'Production',     isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Travel Coordinator',         group:'Production',     isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Production Secretary',       group:'Production',     isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    // Direction / AD
+    { label:'1st AD',                     group:'Direction / AD', isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
+    { label:'2nd AD',                     group:'Direction / AD', isLabor:true, rate:750,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
+    { label:'2nd 2nd AD',                 group:'Direction / AD', isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
+    { label:'Script Supervisor',          group:'Direction / AD', isLabor:true, rate:750,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Key PA',                     group:'Direction / AD', isLabor:true, rate:350,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Set PA',                     group:'Direction / AD', isLabor:true, rate:300,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Office PA',                  group:'Direction / AD', isLabor:true, rate:300,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Second Unit Director',       group:'Direction / AD', isLabor:true, rate:1200, qty:1, days:1, kit:0, fringe:'N', unionFringe:'D', comp:'labor' },
+    // Camera
+    { label:'Director of Photography',    group:'Camera',         isLabor:true, rate:1200, qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Camera Operator',            group:'Camera',         isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'1st AC',                     group:'Camera',         isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'2nd AC',                     group:'Camera',         isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'DIT',                        group:'Camera',         isLabor:true, rate:850,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Steadicam Operator',         group:'Camera',         isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Data Wrangler',              group:'Camera',         isLabor:true, rate:700,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Second Unit DP',             group:'Camera',         isLabor:true, rate:1000, qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Video Engineer',             group:'Camera',         isLabor:true, rate:750,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'VTR Operator',               group:'Camera',         isLabor:true, rate:650,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
+    // Grip & Electric
+    { label:'Gaffer',                     group:'Grip & Electric',isLabor:true, rate:825,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Key Grip',                   group:'Grip & Electric',isLabor:true, rate:825,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Best Boy Electric',          group:'Grip & Electric',isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Best Boy Grip',              group:'Grip & Electric',isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Electric',                   group:'Grip & Electric',isLabor:true, rate:775,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Grip',                       group:'Grip & Electric',isLabor:true, rate:775,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Generator Operator',         group:'Grip & Electric',isLabor:true, rate:775,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Swing (Electric)',           group:'Grip & Electric',isLabor:true, rate:750,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Swing (Grip)',              group:'Grip & Electric',isLabor:true, rate:750,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    // Sound
+    { label:'Sound Mixer',                group:'Sound',          isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Boom Operator',              group:'Sound',          isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Utility Sound',              group:'Sound',          isLabor:true, rate:750,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    // Art Department
+    { label:'Production Designer',        group:'Art',            isLabor:true, rate:1000, qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Art Director',               group:'Art',            isLabor:true, rate:825,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Set Dresser',                group:'Art',            isLabor:true, rate:775,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Props Master',               group:'Art',            isLabor:true, rate:825,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Props Assistant',            group:'Art',            isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    // Hair & Makeup
+    { label:'Key Makeup Artist',          group:'Hair & Makeup',  isLabor:true, rate:825,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Makeup Artist',              group:'Hair & Makeup',  isLabor:true, rate:775,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Hair Stylist',               group:'Hair & Makeup',  isLabor:true, rate:825,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'HMU (Hair & Makeup)',        group:'Hair & Makeup',  isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'SFX Makeup Artist',          group:'Hair & Makeup',  isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    // Wardrobe
+    { label:'Wardrobe Stylist',           group:'Wardrobe',       isLabor:true, rate:825,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Wardrobe Assistant',         group:'Wardrobe',       isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    // Locations
+    { label:'Location Manager',           group:'Locations',      isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Location Assistant',         group:'Locations',      isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    // Transportation
+    { label:'Transportation Coordinator', group:'Transportation', isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Driver (Captain)',           group:'Transportation', isLabor:true, rate:700,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Driver',                     group:'Transportation', isLabor:true, rate:600,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+    // Control Room
+    { label:'Technical Director',         group:'Control Room',   isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Switcher Operator',          group:'Control Room',   isLabor:true, rate:750,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    // EPK / BTS
+    { label:'EPK Videographer',           group:'EPK / BTS',      isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'EPK Photographer',           group:'EPK / BTS',      isLabor:true, rate:750,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    // Craft Services
+    { label:'Craft Services Coordinator', group:'Craft Services', isLabor:true, rate:600,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
+  ]},
+  { code:1200,  name:'Post-Production Staff', items:[
+    { label:'Editor',                    isLabor:true, rate:900,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Assistant Editor',          isLabor:true, rate:650,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Post Production Supervisor',isLabor:true, rate:900,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Colorist',                  isLabor:true, rate:900,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'VFX Supervisor',            isLabor:true, rate:1000, qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Motion Graphics Designer',  isLabor:true, rate:850,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Sound Designer',            isLabor:true, rate:900,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
+  ]},
+  { code:2000,  name:'Camera Equipment', items:[
+    { label:'Camera Package Rental',    isLabor:false, rate:1500, qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Lens Kit Rental',          isLabor:false, rate:500,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Monitor Rental',           isLabor:false, rate:150,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Gimbal / Stabilizer',      isLabor:false, rate:200,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Drone Package',            isLabor:false, rate:800,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Teleprompter Rental',      isLabor:false, rate:300,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Media Cards / Hard Drives',isLabor:false, rate:300,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    { label:'Camera Expendables',       isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat' },
+  ]},
+  { code:3000,  name:'Grip & Electric', items:[
+    { label:'Lighting Package',         isLabor:false, rate:1500, qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Grip Package',             isLabor:false, rate:800,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Generator Rental',         isLabor:false, rate:400,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Additional Fixtures',      isLabor:false, rate:300,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Expendables (Gels/Tape)',  isLabor:false, rate:300,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    { label:'Extension Cords / Stingers',isLabor:false,rate:100, qty:1, days:1, comp:'purchase',unit:'flat' },
+  ]},
+  { code:3100,  name:'Processing', items:[
+    { label:'Hard Drives (Shoot)',        isLabor:false, rate:150,  qty:2, days:1, comp:'purchase',unit:'each' },
+    { label:'RAID / Backup System',       isLabor:false, rate:500,  qty:1, days:1, comp:'rental',  unit:'flat' },
+    { label:'Cloud Delivery / Transfer',  isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'LTO Archival',               isLabor:false, rate:400,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Encoder / Decoder Unit',     isLabor:false, rate:600,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Video Processor',            isLabor:false, rate:400,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Audio Processor',            isLabor:false, rate:300,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Signal Conversion Gear',     isLabor:false, rate:400,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Frame Sync / Converter',     isLabor:false, rate:300,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'SDI Distribution Amp',       isLabor:false, rate:200,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Fiber / Transport System',   isLabor:false, rate:500,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Playback / Replay System',   isLabor:false, rate:800,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Processing Expendables',     isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat' },
+  ]},
+  { code:3200,  name:'Control Room', items:[
+    { label:'Control Room Rental',       isLabor:false, rate:2000, qty:1, days:1, comp:'rental',  unit:'day' },
+    { label:'Video Playback System',     isLabor:false, rate:500,  qty:1, days:1, comp:'rental',  unit:'day' },
+    { label:'Switcher / Mixer Rental',   isLabor:false, rate:400,  qty:1, days:1, comp:'rental',  unit:'day' },
+    { label:'Broadcast Equipment',       isLabor:false, rate:1000, qty:1, days:1, comp:'rental',  unit:'day' },
+  ]},
+  { code:3300,  name:'Sound', items:[
+    { label:'Sound Package Rental',      isLabor:false, rate:600,  qty:1, days:1, comp:'rental',  unit:'day' },
+    { label:'Wireless Mic Kit',          isLabor:false, rate:200,  qty:1, days:1, comp:'rental',  unit:'day' },
+    { label:'Walkie Talkies',            isLabor:false, rate:200,  qty:1, days:1, comp:'rental',  unit:'day' },
+    { label:'IFB System',                isLabor:false, rate:150,  qty:1, days:1, comp:'rental',  unit:'day' },
+    { label:'Audio Playback System',     isLabor:false, rate:400,  qty:1, days:1, comp:'rental',  unit:'day' },
+    { label:'Sound Expendables',         isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat' },
+  ]},
+  { code:4000,  name:'Art', items:[
+    { label:'Props Purchase',           isLabor:false, rate:500,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    { label:'Props Rental',             isLabor:false, rate:300,  qty:1, days:1, comp:'rental',  unit:'flat' },
+    { label:'Set Dressing / Décor',     isLabor:false, rate:500,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    { label:'Fabrication / Build',      isLabor:false, rate:1000, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Printing / Signage',       isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Art Supplies',             isLabor:false, rate:200,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    { label:'Floral / Greenery',        isLabor:false, rate:400,  qty:1, days:1, comp:'purchase',unit:'flat' },
+  ]},
+  { code:4500,  name:'Hair & Makeup', items:[
+    { label:'Makeup Supplies / Kit',    isLabor:false, rate:200,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    { label:'Hair Supplies / Kit',      isLabor:false, rate:150,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    { label:'SFX Makeup Supplies',      isLabor:false, rate:400,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    { label:'Touch-Up Supplies',        isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat' },
+  ]},
+  { code:5000,  name:'Wardrobe', items:[
+    { label:'Wardrobe Purchase',        isLabor:false, rate:500,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    { label:'Wardrobe Rental',          isLabor:false, rate:300,  qty:1, days:1, comp:'rental',  unit:'flat' },
+    { label:'Alterations / Tailoring',  isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Laundry & Cleaning',       isLabor:false, rate:150,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Accessories',              isLabor:false, rate:200,  qty:1, days:1, comp:'purchase',unit:'flat' },
+  ]},
+  { code:6000,  name:'Transportation', items:[
+    { label:'Cargo Van Rental',         isLabor:false, rate:150,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Cube Truck Rental',        isLabor:false, rate:250,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Passenger Van Rental',     isLabor:false, rate:150,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Production Car',           isLabor:false, rate:100,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Fuel',                     isLabor:false, rate:100,  qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Parking',                  isLabor:false, rate:50,   qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Tolls',                    isLabor:false, rate:30,   qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Mileage Reimbursement',    isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:7000,  name:'Travel', items:[
+    { label:'Airfare',               isLabor:false, rate:600,  qty:1, days:1, comp:'expense', unit:'each'  },
+    { label:'Hotel',                 isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'night' },
+    { label:'Per Diem',              isLabor:false, rate:75,   qty:1, days:1, comp:'expense', unit:'day'   },
+    { label:'Ground Transportation', isLabor:false, rate:100,  qty:1, days:1, comp:'expense', unit:'day'   },
+    { label:'Car Service',           isLabor:false, rate:150,  qty:1, days:1, comp:'expense', unit:'trip'  },
+    { label:'Baggage Fees',          isLabor:false, rate:60,   qty:1, days:1, comp:'expense', unit:'each'  },
+    { label:'Travel Agent Fee',      isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'flat'  },
+  ]},
+  { code:7500,  name:'Shipping', items:[
+    { label:'Equipment Shipping',    isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Courier / Messenger',   isLabor:false, rate:100,  qty:1, days:1, comp:'expense', unit:'each' },
+    { label:'Overnight Shipping',    isLabor:false, rate:75,   qty:1, days:1, comp:'expense', unit:'each' },
+    { label:'Packaging Supplies',    isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat' },
+  ]},
+  { code:8000,  name:'Production Meals / Craft Services', items:[
+    { label:'Catering (Breakfast)',     isLabor:false, rate:20,   qty:30, days:1, comp:'expense', unit:'person/day' },
+    { label:'Catering (Lunch)',         isLabor:false, rate:25,   qty:30, days:1, comp:'expense', unit:'person/day' },
+    { label:'Craft Services (daily)',   isLabor:false, rate:300,  qty:1,  days:1, comp:'expense', unit:'day'        },
+    { label:'Craft Services Supplies',  isLabor:false, rate:150,  qty:1,  days:1, comp:'purchase',unit:'day'        },
+    { label:'Coffee Service',           isLabor:false, rate:100,  qty:1,  days:1, comp:'expense', unit:'day'        },
+    { label:'Catering Gratuity',        isLabor:false, rate:100,  qty:1,  days:1, comp:'expense', unit:'day'        },
+  ]},
+  { code:8500,  name:'Sanitation', items:[
+    { label:'Portable Toilets',      isLabor:false, rate:300,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'Cleaning Crew',         isLabor:false, rate:400,  qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Trash Removal',         isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Cleaning Supplies',     isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat' },
+  ]},
+  { code:9000,  name:'Location', items:[
+    { label:'Location Fee',          isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Permit Fee',            isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Police / Fire Support', isLabor:false, rate:800,  qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Location Hold Fee',     isLabor:false, rate:1000, qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Location Cleaning',     isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Damage Deposit',        isLabor:false, rate:1000, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Generator (Location)',  isLabor:false, rate:400,  qty:1, days:1, comp:'rental',  unit:'day'  },
+  ]},
+  { code:11000, name:'Post-Production Equipment', items:[
+    { label:'Edit System Rental',    isLabor:false, rate:200,  qty:1, days:1, comp:'rental',  unit:'day'  },
+    { label:'External Hard Drives',  isLabor:false, rate:150,  qty:2, days:1, comp:'purchase',unit:'each' },
+    { label:'RAID Array',            isLabor:false, rate:500,  qty:1, days:1, comp:'rental',  unit:'flat' },
+    { label:'Software Licenses',     isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:11500, name:'Post-Production Locations', items:[
+    { label:'Edit Suite Rental',     isLabor:false, rate:1000, qty:1, days:1, comp:'rental', unit:'day' },
+    { label:'Color Suite Rental',    isLabor:false, rate:1500, qty:1, days:1, comp:'rental', unit:'day' },
+    { label:'Mix Studio Rental',     isLabor:false, rate:1200, qty:1, days:1, comp:'rental', unit:'day' },
+    { label:'Screening Room',        isLabor:false, rate:800,  qty:1, days:1, comp:'rental', unit:'day' },
+  ]},
+  { code:11600, name:'Post-Production Services', items:[
+    { label:'Color Grading',         isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Audio Mix',             isLabor:false, rate:1500, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Transcription',         isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Closed Captions',       isLabor:false, rate:400,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Subtitles / Translation',isLabor:false,rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'VFX Work',              isLabor:false, rate:0,    qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Mastering / Encoding',  isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Delivery / Output',     isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:12000, name:'Licensing', items:[
+    { label:'Music License',         isLabor:false, rate:1000, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Stock Footage License', isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'each' },
+    { label:'Photo License',         isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'each' },
+    { label:'Archival Rights',       isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Clearance Research',    isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:12500, name:'Composition & Mastering', items:[
+    { label:'Composer Fee',          isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'flat'    },
+    { label:'Music Recording Session',isLabor:false,rate:1500, qty:1, days:1, comp:'expense', unit:'session' },
+    { label:'Studio Time',           isLabor:false, rate:1000, qty:1, days:1, comp:'rental',  unit:'day'     },
+    { label:'Mastering Fee',         isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat'    },
+  ]},
+  { code:13000, name:'Distribution', items:[
+    { label:'Festival Submission Fees',isLabor:false,rate:100, qty:5, days:1, comp:'expense', unit:'each' },
+    { label:'Distribution Platform Fee',isLabor:false,rate:500,qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'DCP (Digital Cinema Pkg)',isLabor:false,rate:800, qty:1, days:1, comp:'expense', unit:'each' },
+    { label:'Screener Copies',       isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:13200, name:'Software & Office Supplies', items:[
+    { label:'Production Software',   isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat'  },
+    { label:'Cloud Storage',         isLabor:false, rate:100,  qty:1, days:1, comp:'expense', unit:'month' },
+    { label:'Office Supplies',       isLabor:false, rate:200,  qty:1, days:1, comp:'purchase',unit:'flat'  },
+    { label:'Printer Ink / Paper',   isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat'  },
+    { label:'Phone & Internet',      isLabor:false, rate:150,  qty:1, days:1, comp:'expense', unit:'month' },
+  ]},
+  { code:14000, name:'Insurance', items:[
+    { label:'Production Insurance',       isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Equipment Insurance',        isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'E&O Insurance',              isLabor:false, rate:3000, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Workers Comp (% of labor)',  isLabor:false, rate:0,    qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'General Liability',          isLabor:false, rate:1500, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Auto / Vehicle Insurance',   isLabor:false, rate:400,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Umbrella / Excess',          isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'COI Fee',                    isLabor:false, rate:100,  qty:1, days:1, comp:'expense', unit:'each' },
+  ]},
+  { code:15000, name:'Administrative', items:[
+    { label:'Accounting / Bookkeeping',isLabor:false,rate:500, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Legal Fees',            isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Bank / Wire Fees',      isLabor:false, rate:50,   qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Contract Review',       isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:16000, name:'Marketing', items:[
+    { label:'Graphic Design',        isLabor:false, rate:1000, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Social Media Content',  isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Press Materials',       isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Advertising Placement', isLabor:false, rate:0,    qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Trailer / Sizzle Edit', isLabor:false, rate:1500, qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:17000, name:'EPK / Behind the Scenes', items:[
+    { label:'BTS Edit',              isLabor:false, rate:1000, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Still Photos (license)',isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'EPK Package',           isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:18000, name:'Title Sequence', items:[
+    { label:'Title Design',          isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Animation / Motion Graphics',isLabor:false,rate:2500,qty:1,days:1,comp:'expense',unit:'flat'},
+    { label:'Render Time',           isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:19000, name:'Residuals', items:[
+    { label:'SAG Residuals',         isLabor:false, rate:0, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'WGA Residuals',         isLabor:false, rate:0, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'DGA Residuals',         isLabor:false, rate:0, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Residual Administration',isLabor:false,rate:0, qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+  { code:20000, name:'Misc', items:[
+    { label:'Petty Cash',            isLabor:false, rate:500, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Contingency',           isLabor:false, rate:0,   qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Rush Charges',          isLabor:false, rate:0,   qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Miscellaneous',         isLabor:false, rate:0,   qty:1, days:1, comp:'expense', unit:'flat' },
+  ]},
+];
+
+// ── ROLE_LIBRARY kept for backward compat with any remaining references ──
+const ROLE_LIBRARY = QE_CATEGORIES.flatMap(cat =>
+  cat.items.map(item => ({
+    dept: cat.name, coa: cat.code, coa_name: cat.name, role: item.label,
+    rate: item.rate, kit: item.kit||0, fringe: item.fringe||'N', comp: item.comp
+  }))
+);
+
+const UNION_FRINGE  = { 'N':'I', 'E':'E', 'S':'S', 'L':'L', 'U':'U', 'I':'I' };
+const UNION_RATE_MULT = 1.20;
+
+// per-category union flags (code → boolean)
+// Categories with union implications: 700 (Talent/SAG), 1000 (Prod Staff/IATSE-DGA), 1200 (Post Staff/IATSE)
+const QE_UNION_LABELS = {
+  700:  { nonunion: 'Non-Union', union: 'SAG' },
+  1000: { nonunion: 'Non-Union', union: 'IATSE-DGA' },
+  1200: { nonunion: 'Non-Union', union: 'IATSE' },
+};
+let _qeUnionByCode = {}; // code → true (union) / false (non-union)
+
+// Persistent cart: key → { cat, item, qty, days, rate, kit, fringe, comp, unit, agent_pct }
+const _qeCart = new Map();
+let _qeCatCode = null; // currently displayed category code
+
+function openCascade() {
+  _qeUnionByCode = {};
+  _qeCart.clear();
+  _qeCatCode = null;
+  document.getElementById('qe-search').value = '';
+  buildQeSidebar();
+  renderQeCategory(null);
+  updateQeUI();
+  document.getElementById('cascade-panel').classList.remove('hidden');
+  document.getElementById('cascade-overlay').classList.remove('hidden');
+}
+
+function closeCascade() {
+  document.getElementById('cascade-panel').classList.add('hidden');
+  document.getElementById('cascade-overlay').classList.add('hidden');
+  if (_qeCart.size > 0) window.location.reload();
+}
+
+// per-category union toggle
+function setCatUnion(code, isUnion) {
+  _qeUnionByCode[code] = isUnion;
+  const btnNU = document.getElementById(`qe-union-nu-${code}`);
+  const btnU  = document.getElementById(`qe-union-u-${code}`);
+  if (btnNU) btnNU.classList.toggle('active', !isUnion);
+  if (btnU)  btnU.classList.toggle('active', isUnion);
+  if (_qeCatCode === code) renderQeCategory(code);
+}
+
+// ── Sidebar ────────────────────────────────────────────────────────────────
+function buildQeSidebar() {
+  const sidebar = document.getElementById('qe-sidebar');
+  sidebar.innerHTML = QE_CATEGORIES.map(cat => `
+    <button class="qe-cat-btn" data-code="${cat.code}" onclick="selectQeCategory(${cat.code})">
+      <span class="qe-cat-code">${cat.code}</span>
+      <span class="qe-cat-name">${cat.name}</span>
+      <span class="qe-cat-sel" id="qe-sel-${cat.code}"></span>
+    </button>
+  `).join('');
+}
+
+function selectQeCategory(code) {
+  _qeCatCode = code;
+  document.querySelectorAll('.qe-cat-btn').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.code) === code);
+  });
+  document.getElementById('qe-search').value = '';
+  renderQeCategory(code);
+}
+
+function renderQeCategory(code, searchQ) {
+  const mainBody = document.getElementById('qe-main-body');
+  const titleEl  = document.getElementById('qe-cat-title');
+  const codeEl   = document.getElementById('qe-cat-code');
+
+  if (code === null) {
+    titleEl.textContent = 'Select a category';
+    codeEl.textContent  = '';
+    mainBody.innerHTML  = `<div class="qe-welcome">
+      <p>Select a category from the left to see items.</p>
+      <p class="muted" style="margin-top:.4rem;font-size:.8rem">Selections persist as you move between categories.</p>
+    </div>`;
+    return;
+  }
+
+  const cat = QE_CATEGORIES.find(c => c.code === code);
+  if (!cat) return;
+
+  titleEl.textContent = cat.name;
+  codeEl.textContent  = cat.code;
+
+  // per-category union toggle UI
+  const unionLabel = QE_UNION_LABELS[code];
+  const isUnion    = _qeUnionByCode[code] || false;
+  const unionToggleHtml = unionLabel ? `
+    <div class="qe-union-toggle" style="margin-left:.75rem">
+      <button class="qe-union-btn ${!isUnion?'active':''}" id="qe-union-nu-${code}"
+              onclick="setCatUnion(${code}, false)">${unionLabel.nonunion}</button>
+      <button class="qe-union-btn ${isUnion?'active':''}" id="qe-union-u-${code}"
+              onclick="setCatUnion(${code}, true)">${unionLabel.union}</button>
+    </div>` : '';
+
+  // show agent% column only for Talent (code 700)
+  const showAgent = (code === 700);
+
+  let items = cat.items;
+  if (searchQ) {
+    const q = searchQ.toLowerCase();
+    items = items.filter(i => i.label.toLowerCase().includes(q));
+  }
+
+  // Build rows with optional group headers
+  let lastGroup = null;
+  const colCount = showAgent ? 9 : 8;
+  const rows = items.map((item, idx) => {
+    const key  = qeKey(code, item.label);
+    const cart = _qeCart.get(key);
+    const checked = !!cart;
+    const effRate    = cart ? cart.rate    : (isUnion && item.isLabor ? Math.round(item.rate * UNION_RATE_MULT) : item.rate);
+    const effFringe  = cart ? cart.fringe  : (isUnion && item.isLabor
+      ? (item.unionFringe || UNION_FRINGE[item.fringe||'N'] || 'I')
+      : (item.fringe||'N'));
+    const effQty     = cart ? cart.qty     : item.qty;
+    const effDays    = cart ? cart.days    : item.days;
+    const effKit     = cart ? cart.kit     : (item.kit || 0);
+    const effUnit    = cart ? cart.unit    : (item.unit || 'day');
+    const effComp    = cart ? cart.comp    : item.comp;
+    // agent_pct (stored as %, e.g. 10 means 10%)
+    const effAgent   = cart ? (cart.agent_pct || 0) : (item.agent_pct || 0);
+
+    const agentCell = showAgent && item.isLabor
+      ? `<td class="qe-td-agent"><input type="number" class="qe-input qe-agent" value="${effAgent}" min="0" step="5" max="100"></td>`
+      : (showAgent ? `<td class="qe-td-agent"><span class="muted" style="font-size:.75rem">—</span></td>` : '');
+
+    const laborFields = item.isLabor ? `
+      <td class="qe-td-qty"><input type="number" class="qe-input qe-qty" value="${effQty}" min="1" step="1"></td>
+      <td class="qe-td-days"><input type="number" class="qe-input qe-days" value="${effDays}" min="0.5" step="0.5"></td>
+      <td class="qe-td-rate"><div class="qe-rate-wrap"><span class="qe-dollar">$</span>
+        <input type="number" class="qe-input qe-rate" value="${effRate}" min="0" step="25">
+        <span class="qe-rate-lbl">/day</span></div></td>
+      <td class="qe-td-kit"><div class="qe-rate-wrap"><span class="qe-dollar">$</span>
+        <input type="number" class="qe-input qe-kit" value="${effKit}" min="0" step="25">
+        <span class="qe-rate-lbl">/day</span></div></td>
+      <td class="qe-td-fringe">
+        <select class="qe-select qe-fringe">
+          ${['E','N','L','U','S','I','D'].map(f=>`<option value="${f}" ${effFringe===f?'selected':''}>${f}</option>`).join('')}
+        </select>
+      </td>
+      ${agentCell}
+      <td class="qe-td-comp"><span class="qe-comp-badge labor">Labor</span></td>
+    ` : `
+      <td class="qe-td-qty"><input type="number" class="qe-input qe-qty" value="${effQty}" min="1" step="1"></td>
+      <td class="qe-td-days"><input type="number" class="qe-input qe-days" value="${effDays}" min="0.5" step="0.5"></td>
+      <td class="qe-td-rate"><div class="qe-rate-wrap"><span class="qe-dollar">$</span>
+        <input type="number" class="qe-input qe-rate" value="${effRate}" min="0" step="25">
+        <span class="qe-rate-lbl">/${effUnit}</span></div></td>
+      <td class="qe-td-kit"><span class="muted" style="font-size:.75rem">—</span></td>
+      <td class="qe-td-fringe"><span class="muted" style="font-size:.75rem">—</span></td>
+      ${agentCell}
+      <td class="qe-td-comp"><span class="qe-comp-badge ${effComp}">${effComp}</span></td>
+    `;
+
+    // Group header row
+    let groupHeader = '';
+    if (item.group && item.group !== lastGroup) {
+      lastGroup = item.group;
+      groupHeader = `<tr class="qe-group-header"><td colspan="${colCount}"><span class="qe-group-label">${item.group}</span></td></tr>`;
+    }
+
+    return groupHeader + `<tr class="qe-item-row ${checked?'qe-row-checked':''}" data-key="${key}" data-cat="${code}" data-idx="${idx}">
+      <td class="qe-td-check"><input type="checkbox" class="qe-cb" ${checked?'checked':''}></td>
+      <td class="qe-td-label"><span class="qe-item-label">${item.label}</span></td>
+      ${laborFields}
+    </tr>`;
+  }).join('');
+
+  const agentHeader = showAgent ? `<th class="qe-th-agent">Agent%</th>` : '';
+
+  mainBody.innerHTML = `
+    <div style="display:flex;align-items:center;margin-bottom:.5rem">
+      ${unionToggleHtml}
+    </div>
+    <table class="qe-table">
+      <thead>
+        <tr>
+          <th class="qe-th-check"><input type="checkbox" id="qe-cat-check-all" onchange="qeSelectAllInCategory(this.checked)" title="Select all in category"></th>
+          <th class="qe-th-label">Item</th>
+          <th class="qe-th-qty">Qty</th>
+          <th class="qe-th-days">Days</th>
+          <th class="qe-th-rate">Rate</th>
+          <th class="qe-th-kit">Kit Fee</th>
+          <th class="qe-th-fringe">Fringe</th>
+          ${agentHeader}
+          <th class="qe-th-comp">Type</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  // Attach checkbox listeners
+  mainBody.querySelectorAll('.qe-item-row').forEach(row => {
+    const cb = row.querySelector('.qe-cb');
+    cb.addEventListener('change', () => {
+      syncRowToCart(row, cb.checked);
+    });
+    // Sync fields to cart on any input change
+    row.querySelectorAll('input[type="number"], select').forEach(inp => {
+      inp.addEventListener('change', () => {
+        if (cb.checked) syncRowToCart(row, true);
+      });
+    });
+  });
+}
+
+function qeKey(code, label) { return `${code}::${label}`; }
+
+function syncRowToCart(row, checked) {
+  const key   = row.dataset.key;
+  const code  = parseInt(row.dataset.cat);
+  const cat   = QE_CATEGORIES.find(c => c.code === code);
+  const label = key.slice(key.indexOf('::') + 2);
+  const item  = cat.items.find(i => i.label === label);
+
+  row.classList.toggle('qe-row-checked', checked);
+
+  if (!checked) {
+    _qeCart.delete(key);
+  } else {
+    const qty       = parseFloat(row.querySelector('.qe-qty')?.value   || item.qty);
+    const days      = parseFloat(row.querySelector('.qe-days')?.value  || item.days);
+    const rate      = parseFloat(row.querySelector('.qe-rate')?.value  || item.rate);
+    const kit       = parseFloat(row.querySelector('.qe-kit')?.value   || 0);
+    const fringe    = row.querySelector('.qe-fringe')?.value || item.fringe || 'N';
+    const comp      = item.comp;
+    const unit      = item.unit || 'day';
+    // read agent% if column present
+    const agentEl   = row.querySelector('.qe-agent');
+    const agent_pct = agentEl ? parseFloat(agentEl.value || 0) : (item.agent_pct || 0);
+    // Union labor defaults to 8-hour day rate type
+    const isUnion   = _qeUnionByCode[code] || false;
+    const rate_type = item.isLabor ? (isUnion ? 'day_8' : 'day_10') : 'day_10';
+    _qeCart.set(key, { code, coa_name: cat.name, item, qty, days, rate, kit, fringe, comp, unit, agent_pct, rate_type });
+  }
+  updateQeUI();
+}
+
+function updateQeUI() {
+  const n = _qeCart.size;
+  document.getElementById('qe-selected-count').textContent = `${n} selected`;
+  document.getElementById('qe-count-badge').textContent = n;
+  document.getElementById('btn-add-selected').disabled = n === 0;
+
+  // Update sidebar badges
+  const countsByCode = {};
+  for (const [, v] of _qeCart) {
+    countsByCode[v.code] = (countsByCode[v.code] || 0) + 1;
+  }
+  QE_CATEGORIES.forEach(cat => {
+    const el = document.getElementById(`qe-sel-${cat.code}`);
+    if (!el) return;
+    const n = countsByCode[cat.code] || 0;
+    el.textContent = n > 0 ? n : '';
+    el.className = n > 0 ? 'qe-cat-sel has-sel' : 'qe-cat-sel';
+  });
+
+  // Update tray
+  const chips = document.getElementById('qe-tray-chips');
+  if (_qeCart.size === 0) {
+    chips.innerHTML = `<span class="muted" style="font-size:.8rem;padding:.2rem .4rem">No items selected yet</span>`;
+  } else {
+    chips.innerHTML = [..._qeCart.entries()].map(([key, v]) => `
+      <span class="qe-chip">
+        <span class="qe-chip-name">${v.item.label}</span>
+        <span class="qe-chip-code">${v.code}</span>
+        <button class="qe-chip-remove" onclick="qeRemoveFromCart('${key.replace(/'/g,"\\'")}')">✕</button>
+      </span>
+    `).join('');
+  }
+}
+
+function qeRemoveFromCart(key) {
+  _qeCart.delete(key);
+  // Uncheck in current view if visible
+  const row = document.querySelector(`.qe-item-row[data-key="${CSS.escape(key)}"]`);
+  if (row) {
+    const cb = row.querySelector('.qe-cb');
+    if (cb) cb.checked = false;
+    row.classList.remove('qe-row-checked');
+  }
+  updateQeUI();
+}
+
+function qeSelectAllInCategory(checked) {
+  if (_qeCatCode === null) return;
+  document.querySelectorAll('.qe-item-row').forEach(row => {
+    const cb = row.querySelector('.qe-cb');
+    if (cb) {
+      cb.checked = checked;
+      syncRowToCart(row, checked);
+    }
+  });
+}
+
+function qeClearAll() {
+  _qeCart.clear();
+  document.querySelectorAll('.qe-cb').forEach(cb => cb.checked = false);
+  document.querySelectorAll('.qe-item-row').forEach(r => r.classList.remove('qe-row-checked'));
+  updateQeUI();
+}
+
+function qeSearch(q) {
+  if (_qeCatCode === null) return;
+  renderQeCategory(_qeCatCode, q.trim() || undefined);
+}
+
+async function qeAddSelected() {
+  if (_qeCart.size === 0) return;
+  const btn = document.getElementById('btn-add-selected');
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+
+  // Save sequentially so kit fee rows are inserted immediately after their parent
+  for (const [, v] of _qeCart) {
+    const { code, coa_name, item, qty, days, rate, kit, fringe, comp, agent_pct, rate_type } = v;
+    const isLabor = item.isLabor;
+    await fetch(SAVE_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        account_code:    code,
+        account_name:    coa_name,
+        description:     item.label,
+        is_labor:        isLabor,
+        quantity:        qty,
+        days:            days,
+        rate:            isLabor ? rate : 0,
+        rate_type:       isLabor ? (rate_type || 'day_10') : 'day_10',
+        fringe_type:     isLabor ? fringe : 'N',
+        agent_pct:       isLabor ? (agent_pct || 0) / 100 : 0,
+        estimated_total: isLabor ? 0 : rate * qty * days,
+      })
+    });
+    if (isLabor && kit > 0) {
+      await fetch(SAVE_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          account_code:    code,
+          account_name:    coa_name,
+          description:     `Kit Fee — ${item.label}`,
+          is_labor:        false,
+          estimated_total: kit * qty * days,
+        })
+      });
+    }
+  }
+  closeCascade();
+}
 </script>
+
+<!-- ═══ QUICK ENTRY PANEL ═════════════════════════════════════════════════════ -->
+<div id="cascade-panel" class="cascade-panel hidden">
+
+  <!-- Header -->
+  <div class="qe-header">
+    <div class="qe-header-left">
+      <span class="qe-title">⚡ Quick Entry</span>
+      <input class="qe-search" id="qe-search" placeholder="Search all items…" oninput="qeSearch(this.value)">
+    </div>
+    <div class="qe-header-right">
+      <span id="qe-selected-count" class="qe-count">0 selected</span>
+      <button class="btn btn-primary btn-sm" id="btn-add-selected" onclick="qeAddSelected()">Add Selected</button>
+      <button class="btn btn-sm btn-ghost" onclick="closeCascade()">✕ Done</button>
+    </div>
+  </div>
+
+  <!-- Body: sidebar + main -->
+  <div class="qe-body">
+
+    <!-- Left sidebar: all COA categories -->
+    <div class="qe-sidebar" id="qe-sidebar">
+      <!-- populated by JS -->
+    </div>
+
+    <!-- Right: items for selected category -->
+    <div class="qe-main">
+      <div class="qe-main-header">
+        <div>
+          <strong id="qe-cat-title">Select a category</strong>
+          <span class="muted" id="qe-cat-code" style="font-size:.75rem;margin-left:.4rem"></span>
+        </div>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <button class="btn btn-xs btn-ghost" onclick="qeSelectAllInCategory(true)">Select All</button>
+          <button class="btn btn-xs btn-ghost" onclick="qeSelectAllInCategory(false)">Deselect All</button>
+        </div>
+      </div>
+      <div class="qe-main-body" id="qe-main-body">
+        <div class="qe-welcome">
+          <p>Select a category from the left to see items.</p>
+          <p class="muted" style="margin-top:.4rem;font-size:.8rem">Selections persist as you move between categories.</p>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /qe-body -->
+
+  <!-- Selection tray -->
+  <div class="qe-tray" id="qe-tray">
+    <div class="qe-tray-chips" id="qe-tray-chips">
+      <span class="muted" style="font-size:.8rem;padding:.2rem .4rem">No items selected yet</span>
+    </div>
+    <div class="qe-tray-actions">
+      <button class="btn btn-xs btn-ghost" onclick="qeClearAll()">Clear All</button>
+      <button class="btn btn-primary btn-sm" onclick="qeAddSelected()">
+        Add Selected (<span id="qe-count-badge">0</span>)
+      </button>
+    </div>
+  </div>
+
+</div>
+<div id="cascade-overlay" class="cascade-overlay hidden" onclick="closeCascade()"></div>
+
 {% endblock %}
