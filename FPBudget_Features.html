@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FPBudget — Feature Registry</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --card: #fff; --border: #e0e0e0;
+    --text: #1a1a1a; --muted: #666; --accent: #1a3a6b;
+    --green: #1a6b3a; --yellow: #8a6a00; --red: #b00020; --gray: #555;
+    --live: #e6f4ea; --live-text: #1a6b3a; --live-dot: #34a853;
+    --progress: #fff8e1; --progress-text: #8a6a00; --progress-dot: #f9ab00;
+    --planned: #e8eaf6; --planned-text: #1a3a6b; --planned-dot: #4a6fb5;
+    --issue: #fff0f0; --issue-text: #b00020; --issue-dot: #e53935;
+    --removed: #f5f5f5; --removed-text: #999; --removed-dot: #aaa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
+
+  header { background: var(--accent); color: #fff; padding: 1.5rem 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+  header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -.3px; }
+  header .meta { font-size: .8rem; opacity: .8; margin-top: .2rem; }
+  .header-links { display: flex; gap: .75rem; flex-wrap: wrap; }
+  .header-links a { background: rgba(255,255,255,.15); color: #fff; text-decoration: none; padding: .35rem .8rem; border-radius: 6px; font-size: .8rem; font-weight: 600; border: 1px solid rgba(255,255,255,.25); transition: background .15s; }
+  .header-links a:hover { background: rgba(255,255,255,.3); }
+
+  .controls { background: var(--card); border-bottom: 1px solid var(--border); padding: .75rem 2rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; position: sticky; top: 0; z-index: 100; }
+  .controls input { padding: .4rem .75rem; border: 1px solid var(--border); border-radius: 6px; font-size: .85rem; width: 260px; outline: none; }
+  .controls input:focus { border-color: var(--accent); }
+  .filter-btns { display: flex; gap: .4rem; flex-wrap: wrap; }
+  .filter-btn { padding: .3rem .7rem; border-radius: 20px; border: 1px solid var(--border); background: #fff; font-size: .78rem; cursor: pointer; transition: all .15s; font-weight: 500; }
+  .filter-btn:hover, .filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .stats { margin-left: auto; font-size: .8rem; color: var(--muted); white-space: nowrap; }
+
+  main { padding: 1.5rem 2rem 3rem; max-width: 1200px; margin: 0 auto; }
+  section { margin-bottom: 2rem; }
+  section h2 { font-size: .95rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: .75rem; padding-bottom: .4rem; border-bottom: 2px solid var(--border); display: flex; align-items: center; gap: .5rem; }
+  section h2 .section-count { font-weight: 400; font-size: .8rem; background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: .05rem .5rem; }
+
+  .feature-grid { display: flex; flex-direction: column; gap: .4rem; }
+  .feature-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: .65rem 1rem; display: flex; align-items: flex-start; gap: .75rem; transition: box-shadow .15s; cursor: default; }
+  .feature-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+  .feature-card.hidden { display: none; }
+
+  .status-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
+  .feature-card.live    .status-dot { background: var(--live-dot); }
+  .feature-card.progress .status-dot { background: var(--progress-dot); }
+  .feature-card.planned .status-dot { background: var(--planned-dot); }
+  .feature-card.issue   .status-dot { background: var(--issue-dot); }
+  .feature-card.removed .status-dot { background: var(--removed-dot); }
+
+  .feature-body { flex: 1; min-width: 0; }
+  .feature-name { font-weight: 600; font-size: .9rem; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+  .feature-desc { color: var(--muted); font-size: .83rem; margin-top: .1rem; line-height: 1.4; }
+  .feature-notes { font-size: .78rem; color: var(--issue-text); background: var(--issue); border-radius: 4px; padding: .2rem .5rem; margin-top: .3rem; display: inline-block; }
+
+  .badge { font-size: .68rem; font-weight: 700; padding: .15rem .45rem; border-radius: 4px; letter-spacing: .03em; text-transform: uppercase; }
+  .badge-live     { background: var(--live);     color: var(--live-text); }
+  .badge-progress { background: var(--progress); color: var(--progress-text); }
+  .badge-planned  { background: var(--planned);  color: var(--planned-text); }
+  .badge-issue    { background: var(--issue);    color: var(--issue-text); }
+  .badge-removed  { background: var(--removed);  color: var(--removed-text); }
+
+  .workflow { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem 1.5rem; margin-bottom: 2rem; }
+  .workflow h3 { font-size: .85rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: .75rem; }
+  .workflow-steps { display: flex; gap: 0; flex-wrap: wrap; }
+  .step { display: flex; align-items: center; gap: .5rem; padding: .5rem .85rem; background: var(--bg); border: 1px solid var(--border); font-size: .82rem; }
+  .step:first-child { border-radius: 6px 0 0 6px; }
+  .step:last-child  { border-radius: 0 6px 6px 0; }
+  .step + .step { border-left: none; }
+  .step-num { background: var(--accent); color: #fff; border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: .7rem; font-weight: 700; flex-shrink: 0; }
+  .step code { background: #eee; border-radius: 3px; padding: .05rem .3rem; font-family: monospace; font-size: .78rem; }
+
+  footer { text-align: center; padding: 2rem; font-size: .78rem; color: var(--muted); border-top: 1px solid var(--border); margin-top: 2rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>⚡ FPBudget — Feature Registry</h1>
+    <div class="meta">Framework Productions · Last updated: <span id="last-updated">see file date</span></div>
+  </div>
+  <div class="header-links">
+    <a href="https://fp-budget.onrender.com" target="_blank">🌐 Live App</a>
+    <a href="https://github.com/stevencpierce/fpbudget" target="_blank">🐙 GitHub</a>
+    <a href="https://dashboard.render.com" target="_blank">☁️ Render</a>
+  </div>
+</header>
+
+<div class="controls">
+  <input type="search" id="search" placeholder="Search features…" oninput="applyFilters()">
+  <div class="filter-btns">
+    <button class="filter-btn active" data-filter="all"     onclick="setFilter('all')">All</button>
+    <button class="filter-btn"        data-filter="live"    onclick="setFilter('live')">✅ Live</button>
+    <button class="filter-btn"        data-filter="progress" onclick="setFilter('progress')">🔧 In Progress</button>
+    <button class="filter-btn"        data-filter="planned" onclick="setFilter('planned')">📋 Planned</button>
+    <button class="filter-btn"        data-filter="issue"   onclick="setFilter('issue')">⚠️ Issues</button>
+  </div>
+  <div class="stats" id="stats"></div>
+</div>
+
+<main>
+
+  <div class="workflow">
+    <h3>Offline → Live Workflow</h3>
+    <div class="workflow-steps">
+      <div class="step"><span class="step-num">1</span> Work locally: <code>python app.py</code> → localhost:5000</div>
+      <div class="step"><span class="step-num">2</span> Test until feature is correct</div>
+      <div class="step"><span class="step-num">3</span> Commit: <code>git add -A && git commit -m "..."</code></div>
+      <div class="step"><span class="step-num">4</span> Push: <code>git push origin main</code></div>
+      <div class="step"><span class="step-num">5</span> Render auto-deploys in ~2 min</div>
+    </div>
+  </div>
+
+  <div id="feature-sections"></div>
+
+</main>
+
+<footer>FPBudget Feature Registry · Framework Productions · Open this file in any browser · Save a copy to Dropbox for reference</footer>
+
+<script>
+const FEATURES = [
+  // ── Projects & Budgets ──────────────────────────────────────────────────
+  { section: 'Projects & Budgets', status: 'live',    name: 'Project Dashboard',            desc: 'Landing page showing all productions with quick links to each budget.' },
+  { section: 'Projects & Budgets', status: 'live',    name: 'Create Project',                desc: 'Start a new production with a name and optional description.' },
+  { section: 'Projects & Budgets', status: 'live',    name: 'Multiple Budgets per Project',  desc: 'Each project can have several budget versions.' },
+  { section: 'Projects & Budgets', status: 'live',    name: 'Budget Modes',                  desc: 'Three modes: Estimated (baseline), Working (live forecast), Actual (real spend).' },
+  { section: 'Projects & Budgets', status: 'live',    name: 'Create Working Budget',         desc: 'Locks the Estimated as a frozen snapshot and opens a Working copy for live tracking.' },
+  { section: 'Projects & Budgets', status: 'live',    name: 'Budget Versioning',             desc: 'Each budget has a named version (e.g. "v1 Client Approved").' },
+
+  // ── Budget Entry ────────────────────────────────────────────────────────
+  { section: 'Budget Entry', status: 'live',    name: '⚡ Quick Entry Panel',       desc: 'Slide-over panel with all 29 COA departments and pre-filled suggested rates for every labor and expense item. Check multiple items across departments and add them all at once.' },
+  { section: 'Budget Entry', status: 'live',    name: '+ Single Line Modal',         desc: 'Add one line at a time — pick department, description, labor vs. flat, qty/days/rate.' },
+  { section: 'Budget Entry', status: 'live',    name: '+ Line per Section',          desc: 'Each department section has its own quick-add button that pre-selects that department.' },
+  { section: 'Budget Entry', status: 'live',    name: 'Inline Editing',              desc: 'Click any cell in a budget line to edit it in place — saves automatically.' },
+  { section: 'Budget Entry', status: 'live',    name: 'Labor Lines',                 desc: 'Full union/non-union labor math: qty × days × rate with ST/OT/DT, fringe, agent %.' },
+  { section: 'Budget Entry', status: 'live',    name: 'Non-Labor / Flat Lines',      desc: 'Expense lines: qty × days × unit rate, or a single flat dollar total.' },
+  { section: 'Budget Entry', status: 'live',    name: 'Delete Line',                 desc: 'Remove any line with a trash icon; prompts confirmation.' },
+  { section: 'Budget Entry', status: 'live',    name: 'Reorder Lines',               desc: 'Drag lines up/down within a section to reorder them.' },
+  { section: 'Budget Entry', status: 'live',    name: 'Search / Filter Lines',       desc: 'Search box filters all lines across all departments in real time.' },
+
+  // ── Rates & Math ────────────────────────────────────────────────────────
+  { section: 'Rates & Math', status: 'live',    name: 'Rate Types',                  desc: '10hr Day (default), 8hr Day, 12hr Day, Flat Day, Flat Project, Hourly, Custom.' },
+  { section: 'Rates & Math', status: 'live',    name: 'OT / DT Calculation',         desc: 'Auto-calculates overtime and double time based on rate type and hours worked.' },
+  { section: 'Rates & Math', status: 'live',    name: 'Fringe / Benefits',           desc: 'Assign a fringe bucket (None, Union, Employer, State, Local, Payroll) to each labor line.' },
+  { section: 'Rates & Math', status: 'live',    name: 'Agent %',                     desc: 'Optional agent commission percentage added per labor line.' },
+  { section: 'Rates & Math', status: 'live',    name: "Workers' Comp",               desc: 'Auto-calculated as a % of total labor; rate set in budget settings.' },
+  { section: 'Rates & Math', status: 'live',    name: 'Payroll Service Fee',          desc: 'Auto-calculated as a % of total labor; rate set in budget settings.' },
+  { section: 'Rates & Math', status: 'live',    name: 'Production Company Fee',       desc: 'Flat % added on top of all costs; shown separately or dispersed into line rates.' },
+  { section: 'Rates & Math', status: 'live',    name: 'Dispersed Fee Mode',           desc: 'Production fee is spread invisibly into every line rate — no fee line shown anywhere including exports.' },
+
+  // ── Top Sheet ───────────────────────────────────────────────────────────
+  { section: 'Top Sheet', status: 'live',    name: 'Top Sheet Summary',             desc: 'One-page summary showing every COA department with its total, subtotal, fee, and grand total.' },
+  { section: 'Top Sheet', status: 'live',    name: 'Estimated vs. Working Variance', desc: 'In working mode: frozen estimate column, live working total, and dollar variance per department.' },
+  { section: 'Top Sheet', status: 'live',    name: 'Department Drill-Down',         desc: 'Double-click any department row to jump directly to those detail lines.' },
+  { section: 'Top Sheet', status: 'live',    name: 'Tax Credit / Incentive Lines',  desc: 'Separate section below the grand total for tracking tax incentives.' },
+  { section: 'Top Sheet', status: 'live',    name: 'Collapsible Department Rows',   desc: 'Toggle detail lines for any department directly on the top sheet.' },
+
+  // ── Working Budget Tracking ─────────────────────────────────────────────
+  { section: 'Working Budget Tracking', status: 'live', name: 'Frozen Estimated Snapshot',   desc: 'When you create a Working budget, the Estimated column locks to that moment and never changes.' },
+  { section: 'Working Budget Tracking', status: 'live', name: 'Working Total Column',         desc: 'Shows live recalculated totals as you make changes to the working budget.' },
+  { section: 'Working Budget Tracking', status: 'live', name: 'Variance Column',              desc: 'Color-coded over/under variance between Estimated and Working per line and per section.' },
+  { section: 'Working Budget Tracking', status: 'live', name: 'Cross-Budget Reference',       desc: 'View the Working budget totals as a column while looking at the Estimated budget.' },
+  { section: 'Working Budget Tracking', status: 'live', name: 'Float Bar (bottom)',            desc: 'Sticky bar always showing Subtotal · Fee · Grand Total — updates live as you type.' },
+
+  // ── Schedule ────────────────────────────────────────────────────────────
+  { section: 'Schedule', status: 'live', name: 'Schedule Tab',               desc: 'Day-by-day calendar showing every production day with day type assignments.' },
+  { section: 'Schedule', status: 'live', name: 'Day Types',                  desc: 'Assign each day as Shoot, Travel, Prep, Strike, Hold, Off, etc.' },
+  { section: 'Schedule', status: 'live', name: 'Schedule-Driven Labor',      desc: 'Labor lines can link to the schedule — their days auto-populate from shoot day count.' },
+  { section: 'Schedule', status: 'live', name: 'OT from Schedule',           desc: 'When a day\'s hours exceed the rate-type threshold, OT is auto-calculated.' },
+  { section: 'Schedule', status: 'live', name: 'Estimated vs. Working Schedule', desc: 'Separate schedule grids for Estimated and Working budget modes.' },
+
+  // ── Crew / Contact Sheet ────────────────────────────────────────────────
+  { section: 'Crew & Contact Sheet', status: 'live', name: 'Crew Tab',              desc: 'Auto-generated contact sheet built from all labor lines in the budget.' },
+  { section: 'Crew & Contact Sheet', status: 'live', name: 'Contact Fields',        desc: 'Name, phone, email, role, department per crew member.' },
+  { section: 'Crew & Contact Sheet', status: 'live', name: 'Department Grouping',   desc: 'Crew grouped by COA department in alphabetical order.' },
+  { section: 'Crew & Contact Sheet', status: 'live', name: 'Multi-select for Export', desc: 'Ctrl/Cmd-click to select multiple crew; right-click to omit from printed sheet.' },
+  { section: 'Crew & Contact Sheet', status: 'live', name: 'Kit Fees on Crew',      desc: 'Kit fee amount tracked per crew assignment.' },
+
+  // ── Exports ─────────────────────────────────────────────────────────────
+  { section: 'Exports', status: 'live',    name: 'Top Sheet PDF',            desc: 'One-page landscape PDF in Movie Magic / Showbiz industry format.' },
+  { section: 'Exports', status: 'live',    name: 'Full Detail PDF',           desc: 'Multi-page PDF with every line item, section totals, and variance columns.' },
+  { section: 'Exports', status: 'live',    name: 'Top Sheet CSV',             desc: 'Comma-separated summary export for Excel / Numbers.' },
+  { section: 'Exports', status: 'live',    name: 'Line Detail CSV',           desc: 'Full line-by-line CSV export of all budget lines.' },
+  { section: 'Exports', status: 'live',    name: 'Company Header on PDF',     desc: 'PDF includes company name, address, phone, email from global Settings.' },
+  { section: 'Exports', status: 'live',    name: 'Production Details on PDF', desc: 'PDF includes client name, version, prepared-by info from budget Settings.' },
+  { section: 'Exports', status: 'live',    name: 'Dispersed Fee on PDF',      desc: 'When dispersed mode is on, no fee line appears anywhere in any export.' },
+  { section: 'Exports', status: 'planned', name: 'Gmail Draft Integration',   desc: 'Send budget PDF as a Gmail draft attachment for client approval workflows.' },
+
+  // ── Settings ─────────────────────────────────────────────────────────────
+  { section: 'Settings', status: 'live',  name: 'Budget Settings',           desc: 'Name, start/end date, target budget, company fee %, dispersed toggle, payroll settings.' },
+  { section: 'Settings', status: 'live',  name: 'Production Details',        desc: 'Client name, prepared-by name/title/email/phone stored on each individual budget.' },
+  { section: 'Settings', status: 'live',  name: 'Company Profile (global)',   desc: 'Company name, address, phone, email, website — used on all PDF exports.' },
+  { section: 'Settings', status: 'live',  name: 'Fringe Config',             desc: 'Set the % rate for each fringe bucket (Union, Employer, State, Local, Payroll).' },
+  { section: 'Settings', status: 'live',  name: 'Payroll Profiles',          desc: 'Named payroll setups (e.g. "ADP Weekly") with week-start day and payroll fee %.' },
+  { section: 'Settings', status: 'live',  name: 'Templates',                 desc: 'Save any budget as a reusable template; apply a template to a new budget.' },
+  { section: 'Settings', status: 'live',  name: 'FP Standard Template',      desc: 'Built-in template with all 29 COA sections pre-loaded at $0.' },
+  { section: 'Settings', status: 'issue', name: 'Template Apply UI',         desc: 'Apply Template dropdown exists but has empty options — picker not wired to live data yet.', notes: 'Route exists (budget_from_template). Needs template list passed to budget_view render context.' },
+
+  // ── Admin / System ───────────────────────────────────────────────────────
+  { section: 'Admin & System', status: 'live', name: 'Login / Auth',          desc: 'Email + password login; session-based auth via Flask-Login.' },
+  { section: 'Admin & System', status: 'live', name: 'Health Check',          desc: '/health endpoint for Render uptime monitoring.' },
+  { section: 'Admin & System', status: 'live', name: 'Auto DB Migrations',    desc: 'New database columns are added automatically on startup — no manual migration needed.' },
+  { section: 'Admin & System', status: 'live', name: 'Postgres + SQLite',     desc: 'Uses Postgres on Render (production) and SQLite locally (development) — same code.' },
+  { section: 'Admin & System', status: 'live', name: 'CSV Import',            desc: 'Upload a CSV to bulk-import budget lines into any section.' },
+];
+
+const STATUS_LABELS = { live: '✅ Live', progress: '🔧 In Progress', planned: '📋 Planned', issue: '⚠️ Issue', removed: '🗑️ Removed' };
+let _filter = 'all';
+
+function setFilter(f) {
+  _filter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === f));
+  applyFilters();
+}
+
+function applyFilters() {
+  const q = document.getElementById('search').value.toLowerCase().trim();
+  let visible = 0, total = FEATURES.length;
+  document.querySelectorAll('.feature-card').forEach(card => {
+    const matchFilter = _filter === 'all' || card.dataset.status === _filter;
+    const matchSearch = !q || card.dataset.search.includes(q);
+    const show = matchFilter && matchSearch;
+    card.classList.toggle('hidden', !show);
+    if (show) visible++;
+  });
+  document.querySelectorAll('section[data-section]').forEach(sec => {
+    const anyVisible = sec.querySelectorAll('.feature-card:not(.hidden)').length > 0;
+    sec.style.display = anyVisible ? '' : 'none';
+    const cnt = sec.querySelectorAll('.feature-card:not(.hidden)').length;
+    const badge = sec.querySelector('.section-count');
+    if (badge) badge.textContent = cnt;
+  });
+  document.getElementById('stats').textContent = `${visible} of ${total} features`;
+}
+
+function render() {
+  const sections = {};
+  FEATURES.forEach(f => { if (!sections[f.section]) sections[f.section] = []; sections[f.section].push(f); });
+  const icons = { 'Projects & Budgets':'📁', 'Budget Entry':'📝', 'Rates & Math':'🧮', 'Top Sheet':'📊', 'Working Budget Tracking':'📈', 'Schedule':'📅', 'Crew & Contact Sheet':'👥', 'Exports':'📤', 'Settings':'⚙️', 'Admin & System':'🔧' };
+  const container = document.getElementById('feature-sections');
+  Object.entries(sections).forEach(([sec, feats]) => {
+    const s = document.createElement('section');
+    s.dataset.section = sec;
+    const cnt = feats.length;
+    s.innerHTML = `<h2>${icons[sec]||'•'} ${sec} <span class="section-count">${cnt}</span></h2><div class="feature-grid"></div>`;
+    const grid = s.querySelector('.feature-grid');
+    feats.forEach(f => {
+      const card = document.createElement('div');
+      card.className = `feature-card ${f.status}`;
+      card.dataset.status = f.status;
+      card.dataset.search = `${f.name} ${f.desc} ${f.section} ${f.notes||''}`.toLowerCase();
+      card.innerHTML = `
+        <div class="status-dot"></div>
+        <div class="feature-body">
+          <div class="feature-name">
+            ${f.name}
+            <span class="badge badge-${f.status}">${STATUS_LABELS[f.status]||f.status}</span>
+          </div>
+          <div class="feature-desc">${f.desc}</div>
+          ${f.notes ? `<div class="feature-notes">⚠️ ${f.notes}</div>` : ''}
+        </div>`;
+      grid.appendChild(card);
+    });
+    container.appendChild(s);
+  });
+  document.getElementById('last-updated').textContent = new Date().toLocaleDateString('en-US', {month:'long', day:'numeric', year:'numeric'});
+  applyFilters();
+}
+
+render();
+</script>
+</body>
+</html>
