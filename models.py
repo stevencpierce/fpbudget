@@ -310,12 +310,14 @@ class BudgetTemplateLine(db.Model):
     account_name    = db.Column(db.String(100), nullable=False)
     description     = db.Column(db.String(300), nullable=True)
     is_labor        = db.Column(db.Boolean, default=False)
+    quantity        = db.Column(db.Numeric(8, 2), default=1)
+    days            = db.Column(db.Numeric(8, 2), default=1)
+    rate            = db.Column(db.Numeric(12, 2), default=0)
     rate_type       = db.Column(db.String(20), default="day_10")
     fringe_type     = db.Column(db.String(5), default="N")
     agent_pct       = db.Column(db.Numeric(6, 4), default=0)
     estimated_total = db.Column(db.Numeric(12, 2), default=0)
     sort_order      = db.Column(db.Integer, default=0)
-    __table_args__  = (db.UniqueConstraint("template_id", "account_code"),)
 
 
 class TaxCredit(db.Model):

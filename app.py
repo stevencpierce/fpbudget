@@ -392,9 +392,13 @@ def project_new():
 @login_required
 def project_delete(pid):
     p = ProjectSheet.query.get_or_404(pid)
-    # Delete all budgets for this project first
+    # Cascade-delete each budget and its FK-constrained children
     for b in Budget.query.filter_by(project_id=pid).all():
-        db.session.delete(b)
+        _delete_budget_cascade(b.id)
+    # Clean up project-level FK tables not on ORM cascade
+    ProjectAccess.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    ProjectUnion.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    ProjectClient.query.filter_by(project_id=pid).delete(synchronize_session=False)
     db.session.delete(p)
     db.session.commit()
     flash(f"Project '{p.name}' deleted.", "success")
@@ -589,6 +593,26 @@ def set_active_budget(pid, bid):
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/delete", methods=["POST"])
 @login_required
+def _delete_budget_cascade(bid):
+    """Delete all FK-constrained child rows for a budget, then delete the budget itself.
+    Handles tables not covered by ORM cascade= relationships."""
+    budget = Budget.query.get(bid)
+    if not budget:
+        return
+    # Null out self-referential parent_line_id so BudgetLine cascade works cleanly
+    BudgetLine.query.filter_by(budget_id=bid).update({"parent_line_id": None}, synchronize_session=False)
+    # Delete CallSheetRecipients before CallSheetSend rows
+    send_ids = [s.id for s in CallSheetSend.query.filter_by(budget_id=bid).all()]
+    if send_ids:
+        CallSheetRecipient.query.filter(CallSheetRecipient.send_id.in_(send_ids)).delete(synchronize_session=False)
+    CallSheetSend.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    ProductionDay.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    LocationDay.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    CallSheetData.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    BudgetDirectContact.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    db.session.delete(budget)
+
+
 def delete_budget(pid, bid):
     """Permanently delete a budget version. Not allowed for the active version."""
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
@@ -599,20 +623,7 @@ def delete_budget(pid, bid):
         # Auto-promote the next version so nothing is left without a current
         remaining.version_status = 'current'
 
-    # Manually clean up FK-constrained child tables not covered by ORM cascade.
-    # Null out self-referential parent_line_id first so BudgetLine rows can delete cleanly.
-    BudgetLine.query.filter_by(budget_id=bid).update({"parent_line_id": None}, synchronize_session=False)
-    # Delete CallSheetRecipients (children of CallSheetSend) before CallSheetSend rows
-    send_ids = [s.id for s in CallSheetSend.query.filter_by(budget_id=bid).all()]
-    if send_ids:
-        CallSheetRecipient.query.filter(CallSheetRecipient.send_id.in_(send_ids)).delete(synchronize_session=False)
-    CallSheetSend.query.filter_by(budget_id=bid).delete(synchronize_session=False)
-    ProductionDay.query.filter_by(budget_id=bid).delete(synchronize_session=False)
-    LocationDay.query.filter_by(budget_id=bid).delete(synchronize_session=False)
-    CallSheetData.query.filter_by(budget_id=bid).delete(synchronize_session=False)
-    BudgetDirectContact.query.filter_by(budget_id=bid).delete(synchronize_session=False)
-
-    db.session.delete(budget)
+    _delete_budget_cascade(bid)
     db.session.commit()
     if remaining:
         return jsonify({"ok": True, "redirect": url_for("budget_view", pid=pid, bid=remaining.id)})
@@ -1336,10 +1347,13 @@ def budget_from_template(pid, bid):
             account_name=tl.account_name,
             description=tl.description or "",
             is_labor=tl.is_labor,
+            quantity=float(tl.quantity or 1),
+            days=float(tl.days or 1),
+            rate=float(tl.rate or 0),
             rate_type=tl.rate_type,
             fringe_type=tl.fringe_type,
             agent_pct=tl.agent_pct,
-            estimated_total=tl.estimated_total,
+            estimated_total=float(tl.estimated_total or 0),
             sort_order=i,
         ))
     db.session.commit()
@@ -1367,21 +1381,22 @@ def save_as_template(pid, bid):
 
     lines = BudgetLine.query.filter_by(budget_id=bid).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
-    seen_codes = set()
     for i, ln in enumerate(lines):
-        if ln.account_code in seen_codes:
+        if ln.line_tag == 'kit_fee':  # skip auto-managed kit fee rows
             continue
-        seen_codes.add(ln.account_code)
         db.session.add(BudgetTemplateLine(
             template_id=tmpl.id,
             account_code=ln.account_code,
             account_name=ln.account_name,
             description=ln.description,
             is_labor=ln.is_labor,
+            quantity=float(ln.quantity or 1),
+            days=float(ln.days or 1),
+            rate=float(ln.rate or 0),
             rate_type=ln.rate_type,
             fringe_type=ln.fringe_type,
             agent_pct=ln.agent_pct,
-            estimated_total=ln.estimated_total,
+            estimated_total=float(ln.estimated_total or 0),
             sort_order=i,
         ))
     db.session.commit()
@@ -4216,6 +4231,96 @@ with app.app_context():
                 existing.role = 'super_admin'
                 db.session.commit()
     _seed_admin_user()
+
+    # ── BudgetTemplateLine: add qty/days/rate columns, drop unique constraint ──
+    for _tmpl_col in [
+        "ALTER TABLE budget_template_line ADD COLUMN quantity NUMERIC(8,2) DEFAULT 1",
+        "ALTER TABLE budget_template_line ADD COLUMN days NUMERIC(8,2) DEFAULT 1",
+        "ALTER TABLE budget_template_line ADD COLUMN rate NUMERIC(12,2) DEFAULT 0",
+    ]:
+        try:
+            db.session.execute(text(_tmpl_col))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    # Drop the unique(template_id, account_code) constraint so templates can hold
+    # multiple lines per COA section (e.g. multiple Production Staff / Camera lines).
+    try:
+        if 'postgresql' in str(db.engine.url).lower():
+            rows = db.session.execute(text(
+                "SELECT constraint_name FROM information_schema.table_constraints "
+                "WHERE table_name='budget_template_line' AND constraint_type='UNIQUE'"
+            )).fetchall()
+            for r in rows:
+                db.session.execute(text(
+                    f'ALTER TABLE budget_template_line DROP CONSTRAINT IF EXISTS "{r[0]}"'
+                ))
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+    # ── Seed pre-built production templates ───────────────────────────────────
+    def _seed_production_templates():
+        _SMALL_LIVE = "Small Live Production"
+        if BudgetTemplate.query.filter_by(name=_SMALL_LIVE).first():
+            return
+        tmpl = BudgetTemplate(name=_SMALL_LIVE,
+                              description="Single-day live event: small crew, control room, no post")
+        db.session.add(tmpl)
+        db.session.flush()
+        _lines = [
+            # code, name,                         desc,                       labor, qty, days, rate,   rt,        fringe, agent, sort
+            (100,  "Pre-Production Locations",    "Tech Scout",               False, 1,   1,    500,    "day_10",  "N",    0,     0),
+            (600,  "Above the Line",              "Director",                 True,  1,   1,    1500,   "day_10",  "E",    0,     10),
+            (700,  "Talent",                      "Host",                     True,  1,   1,    1000,   "day_10",  "N",    0.10,  20),
+            (1000, "Production Staff",            "UPM",                      True,  1,   1,    1000,   "day_10",  "N",    0,     30),
+            (1000, "Production Staff",            "Key PA",                   True,  1,   1,    350,    "day_10",  "N",    0,     40),
+            (1000, "Production Staff",            "Camera Operator",          True,  2,   1,    900,    "day_10",  "N",    0,     50),
+            (1000, "Production Staff",            "Video Engineer",            True,  1,   1,    750,    "day_10",  "N",    0,     60),
+            (1000, "Production Staff",            "Sound Mixer",              True,  1,   1,    900,    "day_10",  "N",    0,     70),
+            (2000, "Camera Equipment",            "Camera Package Rental",    False, 3,   1,    1500,   "day_10",  "N",    0,     80),
+            (2000, "Camera Equipment",            "Lens Kit Rental",          False, 3,   1,    500,    "day_10",  "N",    0,     90),
+            (2000, "Camera Equipment",            "Monitor Rental",           False, 4,   1,    150,    "day_10",  "N",    0,     100),
+            (2000, "Camera Equipment",            "Media Cards / Hard Drives",False, 1,   1,    300,    "day_10",  "N",    0,     110),
+            (2000, "Camera Equipment",            "Camera Expendables",       False, 1,   1,    100,    "day_10",  "N",    0,     120),
+            (3000, "Grip & Electric",             "Lighting Package",         False, 1,   1,    1500,   "day_10",  "N",    0,     130),
+            (3000, "Grip & Electric",             "Grip Package",             False, 1,   1,    800,    "day_10",  "N",    0,     140),
+            (3100, "Processing",                  "SDI Distribution Amp",     False, 1,   1,    200,    "day_10",  "N",    0,     150),
+            (3100, "Processing",                  "Encoder / Decoder Unit",   False, 1,   1,    600,    "day_10",  "N",    0,     160),
+            (3200, "Control Room",                "Control Room Rental",      False, 1,   1,    2000,   "day_10",  "N",    0,     170),
+            (3200, "Control Room",                "Video Playback System",    False, 1,   1,    500,    "day_10",  "N",    0,     180),
+            (3200, "Control Room",                "Switcher / Mixer Rental",  False, 1,   1,    400,    "day_10",  "N",    0,     190),
+            (3300, "Sound",                       "Sound Package Rental",     False, 1,   1,    600,    "day_10",  "N",    0,     200),
+            (3300, "Sound",                       "Wireless Mic Kit",         False, 1,   1,    200,    "day_10",  "N",    0,     210),
+            (6000, "Transportation",              "Production Car",           False, 1,   1,    100,    "day_10",  "N",    0,     220),
+            (6000, "Transportation",              "Fuel",                     False, 1,   1,    100,    "day_10",  "N",    0,     230),
+            (6000, "Transportation",              "Parking",                  False, 1,   1,    50,     "day_10",  "N",    0,     240),
+            (6000, "Transportation",              "Mileage Reimbursement",    False, 1,   1,    200,    "day_10",  "N",    0,     250),
+            (8000, "Production Meals / Craft Services", "Catering (Lunch)",   False, 30,  1,    25,     "day_10",  "N",    0,     260),
+        ]
+        for row in _lines:
+            code, acct, desc, labor, qty, days, rate, rt, fringe, agent, sort = row
+            est = 0 if labor else round(rate * qty * days, 2)
+            db.session.add(BudgetTemplateLine(
+                template_id=tmpl.id,
+                account_code=code,
+                account_name=acct,
+                description=desc,
+                is_labor=labor,
+                quantity=qty,
+                days=days,
+                rate=rate,
+                rate_type=rt,
+                fringe_type=fringe,
+                agent_pct=agent,
+                estimated_total=est,
+                sort_order=sort,
+            ))
+        db.session.commit()
+        logging.info(f"Seeded template: {_SMALL_LIVE}")
+
+    _seed_production_templates()
 
 
 if __name__ == "__main__":
