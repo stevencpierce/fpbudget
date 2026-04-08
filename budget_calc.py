@@ -371,6 +371,13 @@ def calc_days_ot_status(rate_type, schedule_days, payroll_profile=None, payroll_
 
     st_hours_per_day = RATE_TYPE_HOURS.get(rate_type)
     if not st_hours_per_day:
+        # Flat-rate lines (flat_day, flat_project, etc.) — no hourly OT calc,
+        # but still highlight cells where est_ot_hours was manually set.
+        for d in schedule_days:
+            if d.day_type not in ('work', 'travel'):
+                continue
+            if _float(getattr(d, 'est_ot_hours', None), 0.0) > 0:
+                result[d.date.isoformat()] = 'ot'
         return result
 
     week_start   = int(payroll_week_start or 0)

@@ -106,6 +106,45 @@ def _get_prod_staff_subgroup(description):
             return group
     return None
 
+# ── Talent sub-department keyword lookup ──────────────────────────────────────
+_TALENT_SUBGROUPS = [
+    ("Host",          "Host / Presenter"),
+    ("Co-Host",       "Host / Presenter"),
+    ("Presenter",     "Host / Presenter"),
+    ("Anchor",        "Host / Presenter"),
+    ("Correspondent", "Host / Presenter"),
+    ("Reporter",      "Host / Presenter"),
+    ("Lead",          "Principal Cast"),
+    ("Principal",     "Principal Cast"),
+    ("Series Regular","Principal Cast"),
+    ("Recurring",     "Supporting Cast"),
+    ("Supporting",    "Supporting Cast"),
+    ("Guest Star",    "Supporting Cast"),
+    ("Co-Star",       "Supporting Cast"),
+    ("Day Player",    "Day Players"),
+    ("Featured",      "Day Players"),
+    ("Under-5",       "Day Players"),
+    ("Stunt",         "Stunts"),
+    ("Stand-In",      "Background / Stand-Ins"),
+    ("Background",    "Background / Stand-Ins"),
+    ("Extra",         "Background / Stand-Ins"),
+    ("Atmosphere",    "Background / Stand-Ins"),
+    ("Voice",         "Voice-Over"),
+    ("VO ",           "Voice-Over"),
+    ("Spokesperson",  "Spokesperson"),
+    ("Influencer",    "Spokesperson"),
+]
+
+def _get_talent_subgroup(description):
+    """Return sub-department label for a Talent line, or None."""
+    if not description:
+        return None
+    desc_lower = description.lower()
+    for keyword, group in _TALENT_SUBGROUPS:
+        if keyword.lower() in desc_lower:
+            return group
+    return None
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -841,12 +880,14 @@ def budget_view(pid, bid):
     for sec in sections:
         sec["lines"] = _order_lines_with_children(sec["lines"])
 
-    # Sub-group lookup for department headers in Production Staff (1000) section.
+    # Sub-group lookup for department headers in Production Staff (1000) and Talent (700) sections.
     # Falls back to description-based keyword match for lines without role_group set.
     line_sub_groups = {}
     for ln in lines:
         if ln.account_code == 1000:
             line_sub_groups[ln.id] = ln.role_group or _get_prod_staff_subgroup(ln.description)
+        elif ln.account_code == 700:
+            line_sub_groups[ln.id] = ln.role_group or _get_talent_subgroup(ln.description)
 
     # Dept head filtering: restrict to their assigned dept_code only
     dept_filter = None
@@ -1817,7 +1858,12 @@ def gantt_view(pid, bid):
     for ln in labor_lines:
         qty = int(ln.quantity or 1)
         base_label = ln.description or ln.account_name
-        sub_group = _get_prod_staff_subgroup(ln.description) if ln.account_code == 1000 else None
+        if ln.account_code == 1000:
+            sub_group = ln.role_group or _get_prod_staff_subgroup(ln.description)
+        elif ln.account_code == 700:
+            sub_group = ln.role_group or _get_talent_subgroup(ln.description)
+        else:
+            sub_group = None
         sched_labels = json.loads(ln.schedule_labels) if ln.schedule_labels else {}
         if qty <= 1:
             custom = sched_labels.get("1") or sched_labels.get(1)
