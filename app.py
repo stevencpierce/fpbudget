@@ -245,6 +245,20 @@ def super_admin_required(f):
     return decorated
 
 
+_FORCE_PW_ALLOWED = {"profile", "logout", "login", "static",
+                     "reset_password", "forgot_password",
+                     "callsheet_view_public", "callsheet_confirm_public"}
+
+@app.before_request
+def enforce_password_change():
+    """Redirect users who must change their password to the profile page."""
+    if (current_user.is_authenticated
+            and getattr(current_user, 'must_change_password', False)
+            and request.endpoint not in _FORCE_PW_ALLOWED):
+        flash("Please set a new password before continuing.", "warning")
+        return redirect(url_for("profile"))
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if current_user.is_authenticated:
