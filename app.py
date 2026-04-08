@@ -2271,6 +2271,43 @@ def expand_gantt(pid, bid):
     return jsonify({"dates": sorted(new_dates)})
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/gantt/live")
+@login_required
+def gantt_live(pid, bid):
+    """Return compact schedule state for real-time collaborative patching."""
+    b = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    sched_mode = b.budget_mode if b.budget_mode in ('working', 'actual') else 'estimated'
+
+    days = ScheduleDay.query.filter_by(budget_id=bid, schedule_mode=sched_mode).all()
+    assignments = (CrewAssignment.query
+                   .join(BudgetLine, CrewAssignment.budget_line_id == BudgetLine.id)
+                   .filter(BudgetLine.budget_id == bid).all())
+
+    cells = {}
+    for d in days:
+        key = f"{d.budget_line_id}:{d.crew_instance or 1}:{d.date.isoformat()}"
+        cells[key] = {
+            "day_type":     d.day_type,
+            "est_ot_hours": float(d.est_ot_hours) if d.est_ot_hours else 0.0,
+            "cell_flags":   d.cell_flags or "{}",
+        }
+
+    crew = {}
+    for ca in assignments:
+        key = f"{ca.budget_line_id}:{ca.instance or 1}"
+        name = (ca.crew_member.name if ca.crew_member_id and ca.crew_member
+                else ca.name_override or "")
+        crew[key] = {"name": name, "crew_member_id": ca.crew_member_id}
+
+    editor = _budget_last_editor.get(bid)
+    return jsonify({
+        "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+        "cells": cells,
+        "crew":  crew,
+        "last_edit": {"name": editor["name"], "at": editor["at"].isoformat()} if editor else None,
+    })
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/gantt/totals")
 @login_required
 def gantt_totals(pid, bid):

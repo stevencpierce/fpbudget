@@ -20,6 +20,12 @@
       <span class="mode-badge {{ cur_mode.cls }}">{{ cur_mode.label }}</span>
     </div>
   </div>
+  <!-- Collab presence bar -->
+  <div id="gantt-collab-bar" style="display:flex;align-items:center;gap:8px;margin-right:8px">
+    <div id="gantt-collab-viewers" style="display:flex;gap:4px"></div>
+    <span id="gantt-collab-hint" style="font-size:.72rem;color:var(--text-muted)"></span>
+    <span id="gantt-sync-flash" style="font-size:.7rem;color:var(--green);opacity:0;transition:opacity .4s"></span>
+  </div>
   <div class="budget-header-right" style="display:flex;align-items:center;gap:.75rem;">
     <!-- Version picker dropdown -->
     {% set active_count = all_budgets | rejectattr('version_status', 'eq', 'archived') | list | length %}
@@ -567,6 +573,201 @@ initGantt({{ project.id }}, {{ budget.id }}, {{ budget.payroll_profile_id or 'nu
 <script>
 const LOC_DAY_TYPES = ['use', 'scout', 'hold', 'strike'];
 const LOC_DAY_LABELS = {use:'Use', scout:'Scout', hold:'Hold', strike:'Strike'};
+
+// ── Realtime Collaboration (Gantt) ──────────────────────────────────────────
+(function() {
+  const PRESENCE_URL = `/projects/${_GANTT_PID}/budget/${_GANTT_BID}/presence`;
+  const LIVE_URL     = `/projects/${_GANTT_PID}/budget/${_GANTT_BID}/gantt/live`;
+
+  // Keys recently edited by this user — skip remote patches for a grace period
+  const _myEdits = new Map();  // key → expiry timestamp
+  const EDIT_GRACE = 12000;    // 12s grace after last edit
+
+  function markEdited(key) {
+    _myEdits.set(key, Date.now() + EDIT_GRACE);
+  }
+  function wasRecentlyEdited(key) {
+    const exp = _myEdits.get(key);
+    if (!exp) return false;
+    if (Date.now() > exp) { _myEdits.delete(key); return false; }
+    return true;
+  }
+
+  // Intercept saveDay to mark cells as locally edited
+  const _origSaveDay = window.saveDay;
+  if (typeof _origSaveDay === 'function') {
+    window.saveDay = function(cell, dayType, note, estOtHours) {
+      const k = `${cell.dataset.line}:${cell.dataset.instance||1}:${cell.dataset.date}`;
+      markEdited(k);
+      return _origSaveDay.apply(this, arguments);
+    };
+  }
+  // Also intercept assignCrewToRow
+  const _origAssign = window.assignCrewToRow;
+  if (typeof _origAssign === 'function') {
+    window.assignCrewToRow = function(crewId, crewName, crewObj) {
+      if (window._crewPickerTarget) {
+        const {lineId, instance} = window._crewPickerTarget;
+        markEdited(`crew:${lineId}:${instance||1}`);
+      }
+      return _origAssign.apply(this, arguments);
+    };
+  }
+
+  // Presence ping
+  function pingPresence() {
+    fetch(PRESENCE_URL, { method: 'POST' })
+      .then(r => r.json())
+      .then(d => {
+        const el = document.getElementById('gantt-collab-viewers');
+        if (el) el.innerHTML = (d.viewers || []).map(v => {
+          const ini = v.name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
+          return `<span class="collab-avatar" title="${v.name} is also viewing">${ini}</span>`;
+        }).join('');
+        const hint = document.getElementById('gantt-collab-hint');
+        if (hint && d.last_edit) {
+          const s = Math.floor((Date.now() - new Date(d.last_edit.at)) / 1000);
+          const ago = s < 10 ? 'just now' : s < 60 ? `${s}s ago` : `${Math.floor(s/60)}m ago`;
+          hint.textContent = `${d.last_edit.name} edited ${ago}`;
+        } else if (hint) {
+          hint.textContent = '';
+        }
+      }).catch(() => {});
+  }
+
+  // Live cell patching
+  let _cellSnap = null;
+  let _crewSnap = null;
+
+  function patchCell(td, incoming) {
+    const cur = td.dataset.type || 'off';
+    if (cur === incoming.day_type &&
+        parseFloat(td.dataset.otHours||0) === incoming.est_ot_hours &&
+        (td.dataset.flags||'{}') === incoming.cell_flags) return false;  // no change
+
+    // Repaint day type
+    ALL_DAY_TYPES.forEach(dt => td.classList.remove('day-' + dt));
+    td.classList.add('day-' + incoming.day_type);
+    td.dataset.type = incoming.day_type;
+    td.dataset.otHours = incoming.est_ot_hours;
+    td.dataset.flags   = incoming.cell_flags;
+
+    // Rebuild contents (preserve flag dots from new flags)
+    const flags = JSON.parse(incoming.cell_flags || '{}');
+    let html = '';
+    if (incoming.day_type !== 'off') {
+      const lbl = incoming.day_type === 'work' ? 'WK' : incoming.day_type.substring(0,2).toUpperCase();
+      html += `<span class="cell-label">${lbl}</span>`;
+      if (incoming.est_ot_hours > 0) {
+        html += `<span class="cell-ot-badge">+${incoming.est_ot_hours}h</span>`;
+      }
+    }
+    if (flags.flight)       html += `<span class="flag-dot flag-flight" title="Flight"></span>`;
+    if (flags.mileage)      html += `<span class="flag-dot flag-mileage" title="Mileage"></span>`;
+    if (flags.car_rental)   html += `<span class="flag-dot flag-car-rental" title="Car Rental"></span>`;
+    if (flags.hotel) {
+      html += `<span class="flag-dot flag-hotel-l" title="Hotel"></span>`;
+      html += `<span class="flag-dot flag-hotel-r" title="Hotel"></span>`;
+    }
+    if (flags.working_meal) html += `<span class="flag-dot flag-working-meal" title="Working Meal"></span>`;
+    if (flags.per_diem)     html += `<span class="flag-dot flag-per-diem" title="Per Diem"></span>`;
+    td.innerHTML = html;
+    return true;
+  }
+
+  function livePatch() {
+    fetch(LIVE_URL)
+      .then(r => r.json())
+      .then(d => {
+        // Initialise snapshots on first poll
+        if (_cellSnap === null) { _cellSnap = d.cells; _crewSnap = d.crew; return; }
+
+        let patched = 0;
+
+        // Patch changed cells
+        for (const [key, incoming] of Object.entries(d.cells || {})) {
+          if (wasRecentlyEdited(key)) continue;
+          const prev = _cellSnap[key];
+          const changed = !prev ||
+            prev.day_type !== incoming.day_type ||
+            prev.est_ot_hours !== incoming.est_ot_hours ||
+            prev.cell_flags !== incoming.cell_flags;
+          if (!changed) continue;
+
+          const [lineId, instance, date] = key.split(':');
+          const td = document.querySelector(
+            `.gantt-cell[data-line="${lineId}"][data-instance="${instance}"][data-date="${date}"]`
+          );
+          if (td && patchCell(td, incoming)) patched++;
+        }
+
+        // Clear cells that were deleted remotely
+        for (const key of Object.keys(_cellSnap || {})) {
+          if (d.cells[key] || wasRecentlyEdited(key)) continue;
+          const [lineId, instance, date] = key.split(':');
+          const td = document.querySelector(
+            `.gantt-cell[data-line="${lineId}"][data-instance="${instance}"][data-date="${date}"]`
+          );
+          if (td && td.dataset.type !== 'off') {
+            patchCell(td, {day_type:'off', est_ot_hours:0, cell_flags:'{}'});
+            patched++;
+          }
+        }
+
+        // Patch changed crew assignments
+        for (const [key, incoming] of Object.entries(d.crew || {})) {
+          if (wasRecentlyEdited('crew:' + key)) continue;
+          const prev = _crewSnap ? _crewSnap[key] : null;
+          if (prev && prev.name === incoming.name) continue;
+
+          const [lineId, instance] = key.split(':');
+          const chip = document.querySelector(
+            `.gantt-crew-chip[data-line="${lineId}"][data-instance="${instance}"]`
+          );
+          if (chip && incoming.name) {
+            chip.innerHTML = `${incoming.name}<span class="crew-chip-remove" title="Remove">✕</span>`;
+            chip.title = incoming.name;
+            chip.classList.remove('unassigned');
+            patched++;
+          }
+        }
+
+        // Clear crew removed remotely
+        for (const key of Object.keys(_crewSnap || {})) {
+          if ((d.crew || {})[key] || wasRecentlyEdited('crew:' + key)) continue;
+          const [lineId, instance] = key.split(':');
+          const chip = document.querySelector(
+            `.gantt-crew-chip[data-line="${lineId}"][data-instance="${instance}"]`
+          );
+          if (chip && !chip.classList.contains('unassigned')) {
+            chip.innerHTML = '+ Assign';
+            chip.title = 'Click to assign crew member';
+            chip.classList.add('unassigned');
+            patched++;
+          }
+        }
+
+        _cellSnap = d.cells;
+        _crewSnap = d.crew;
+
+        if (patched > 0) {
+          // Refresh totals panel
+          if (typeof scheduleTotalsRefresh === 'function') scheduleTotalsRefresh();
+          // Flash sync indicator
+          const flash = document.getElementById('gantt-sync-flash');
+          if (flash) {
+            flash.textContent = '● synced';
+            flash.style.opacity = '1';
+            setTimeout(() => { flash.style.opacity = '0'; }, 1800);
+          }
+        }
+      }).catch(() => {});
+  }
+
+  pingPresence();
+  setInterval(pingPresence, 20000);
+  setInterval(livePatch, 6000);
+})();
 
 async function toggleLocDay(cell) {
   const locId  = cell.dataset.loc;
