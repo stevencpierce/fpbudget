@@ -555,8 +555,8 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
             total_week_count = round(total_week_count * qty)
             active_day_count = round(active_day_count * qty)
         base      = total_week_count * rate
-        legacy_ot = _float(line.est_ot)
-        subtotal  = base + legacy_ot
+        legacy_ot = 0.0  # est_ot is a manual-mode override; ignored in schedule-driven calc
+        subtotal  = base
         if cfg and cfg.is_flat:
             fringe_amount = active_day_count * _float(cfg.flat_amount)
         elif cfg:
@@ -597,9 +597,9 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
         dt_base  *= qty
         total_day_count = round(total_day_count * qty)
 
-    legacy_ot = _float(line.est_ot)
+    legacy_ot = 0.0  # est_ot is a manual-mode override; ignored in schedule-driven calc
     base      = st_base + ot_base + dt_base
-    subtotal  = base + legacy_ot
+    subtotal  = base
 
     if cfg and cfg.is_flat:
         # Flat fringe per person per day (e.g. Loan-Out $18/day)
