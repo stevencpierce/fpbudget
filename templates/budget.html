@@ -396,7 +396,9 @@
         {% endif %}
         <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }}" data-id="{{ ln.id }}"
             data-code="{{ ln.account_code }}" data-code-name="{{ ln.account_name }}"
-            data-agent="{{ res.agent_amount | default(0) | float | round(2) }}">
+            data-agent="{{ res.agent_amount | default(0) | float | round(2) }}"
+            data-rate-type="{{ ln.rate_type or 'day_10' }}"
+            data-qty="{{ ln.quantity | float }}" data-days="{{ ln.days | float }}">
           <td class="col-desc">
             <span class="line-number">{{ sec.code }}-{{ '%02d' % ns.line_counter }}</span><span class="editable" data-field="description"
                   data-id="{{ ln.id }}">{{ ln.description or '' }}</span>
@@ -3162,10 +3164,52 @@ function renderCalcDetail(d) {
 <!-- ── Budget Row Context Menu (right-click on labor rows) ─────────────────── -->
 <div id="budget-row-ctx-menu" class="budget-ctx-menu hidden">
   <button type="button" class="ctx-menu-item" id="ctx-add-kit-fee">🔧 Add Kit Fee</button>
+  <button type="button" class="ctx-menu-item" id="ctx-all-in-total">💰 Enter All-in Total</button>
   <hr class="ctx-divider">
   <button type="button" class="ctx-menu-item" id="ctx-set-role-group-talent">👤 Set Role: Talent</button>
   <button type="button" class="ctx-menu-item" id="ctx-set-role-group-atl">🎬 Set Role: Above the Line</button>
   <button type="button" class="ctx-menu-item" id="ctx-set-role-group-crew">🎥 Set Role: Crew</button>
+</div>
+
+<!-- ── All-in Total Reverse Calculator Modal ───────────────────────────────── -->
+<div id="all-in-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="document.getElementById('all-in-modal').classList.add('hidden')"></div>
+  <div class="modal-box" style="min-width:360px;max-width:420px">
+    <h2 style="margin-bottom:4px">All-in Total Calculator</h2>
+    <p style="font-size:.8rem;color:var(--text-muted);margin-bottom:16px">
+      Enter a desired total and get the day rate that produces it after OT.
+    </p>
+
+    <div class="field">
+      <label>Total Type</label>
+      <select id="all-in-type" onchange="allInRecalc()">
+        <option value="day">Per Day (single day all-in)</option>
+        <option value="project">Project Total (all days combined)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Desired Total ($)</label>
+      <input type="number" id="all-in-amount" min="0" step="1" placeholder="e.g. 1000"
+             oninput="allInRecalc()" style="font-size:1rem">
+    </div>
+
+    <div id="all-in-result" style="display:none;background:var(--bg-3);border:1px solid var(--border);
+         border-radius:var(--radius);padding:14px 16px;margin:12px 0">
+      <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:6px" id="all-in-formula"></div>
+      <div style="display:flex;align-items:baseline;gap:8px">
+        <span style="font-size:.82rem;color:var(--text-muted)">Day Rate to enter:</span>
+        <strong style="font-size:1.25rem;color:var(--accent)" id="all-in-rate-display"></strong>
+      </div>
+      <div style="font-size:.75rem;color:var(--text-muted);margin-top:6px" id="all-in-breakdown"></div>
+    </div>
+
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline"
+              onclick="document.getElementById('all-in-modal').classList.add('hidden')">Cancel</button>
+      <button type="button" class="btn btn-primary" id="all-in-apply-btn" disabled
+              onclick="allInApply()">Apply Rate</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -3246,6 +3290,18 @@ function renderCalcDetail(d) {
   document.getElementById('ctx-set-role-group-atl').addEventListener('click',    () => setRoleGroup('atl'));
   document.getElementById('ctx-set-role-group-crew').addEventListener('click',   () => setRoleGroup('crew'));
 
+  // ── All-in Total Calculator ──────────────────────────────────────────────
+  document.getElementById('ctx-all-in-total').addEventListener('click', function() {
+    menu.classList.add('hidden');
+    if (!_ctxLineId || !_ctxLineRow) return;
+    // Reset modal
+    document.getElementById('all-in-amount').value = '';
+    document.getElementById('all-in-result').style.display = 'none';
+    document.getElementById('all-in-apply-btn').disabled = true;
+    document.getElementById('all-in-modal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('all-in-amount').focus(), 50);
+  });
+
   // ── D/W toggle on each labor row ──────────────────────────────────────────
   document.addEventListener('click', async function(e) {
     const btn = e.target.closest('.days-unit-toggle');
@@ -3270,6 +3326,105 @@ function renderCalcDetail(d) {
 
 })();
 </script>
+
+<script>
+// ── All-in Total Reverse Calculator ───────────────────────────────────────
+// OT multiplier for a given rate_type: returns the factor by which a day rate
+// must be divided to find the ST-only rate that produces a given all-in total.
+// Formula: all_in_per_day = day_rate × OT_FACTOR
+const _OT_FACTORS = {
+  day_10:       1 + (2/8 * 1.5),        // 8 ST + 2 OT@1.5x  → 1.375
+  day_8:        1.0,                     // 8 ST only          → 1.0
+  day_12:       1 + (4/8 * 1.5),        // 8 ST + 4 OT@1.5x  → 1.75
+  flat_day:     1.0,
+  flat_project: 1.0,
+  hourly:       1.0,
+  custom:       1.0,
+};
+const _OT_LABELS = {
+  day_10:       '8 ST hrs + 2 OT hrs @1.5×',
+  day_8:        '8 ST hrs, no OT',
+  day_12:       '8 ST hrs + 4 OT hrs @1.5×',
+  flat_day:     'Flat rate, no OT',
+  flat_project: 'Flat project rate',
+  hourly:       'Hourly rate',
+  custom:       'Custom rate',
+};
+
+let _allInComputedRate = null;
+
+function allInRecalc() {
+  const amountEl = document.getElementById('all-in-amount');
+  const typeEl   = document.getElementById('all-in-type');
+  const resultEl = document.getElementById('all-in-result');
+  const applyBtn = document.getElementById('all-in-apply-btn');
+
+  const amount = parseFloat(amountEl.value);
+  if (!amount || amount <= 0 || !_ctxLineRow) {
+    resultEl.style.display = 'none';
+    applyBtn.disabled = true;
+    return;
+  }
+
+  const rateType = _ctxLineRow.dataset.rateType || 'day_10';
+  const qty      = parseFloat(_ctxLineRow.dataset.qty)  || 1;
+  const days     = parseFloat(_ctxLineRow.dataset.days) || 1;
+  const factor   = _OT_FACTORS[rateType] ?? 1.0;
+  const totalType = typeEl.value;
+
+  let perDayTotal, computedRate;
+  if (totalType === 'day') {
+    perDayTotal  = amount;
+    computedRate = amount / factor;
+  } else {
+    // Project total: all_in = rate × qty × days × factor
+    perDayTotal  = amount / (qty * days);
+    computedRate = perDayTotal / factor;
+  }
+
+  _allInComputedRate = Math.round(computedRate * 100) / 100;
+
+  const fmt = n => '$' + n.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const otLabel = _OT_LABELS[rateType] || rateType;
+
+  document.getElementById('all-in-rate-display').textContent = fmt(_allInComputedRate);
+  document.getElementById('all-in-formula').textContent =
+    `Rate type: ${rateType} (${otLabel}) · OT factor: ${factor.toFixed(4)}`;
+
+  let breakdown = `Day rate ${fmt(_allInComputedRate)} × ${factor.toFixed(3)} = ${fmt(perDayTotal)}/day`;
+  if (totalType === 'project') {
+    breakdown += ` × ${qty} × ${days} days = ${fmt(amount)} total`;
+  }
+  document.getElementById('all-in-breakdown').textContent = breakdown;
+
+  resultEl.style.display = 'block';
+  applyBtn.disabled = false;
+}
+
+async function allInApply() {
+  if (_allInComputedRate == null || !_ctxLineId) return;
+  const applyBtn = document.getElementById('all-in-apply-btn');
+  applyBtn.disabled = true;
+  applyBtn.textContent = 'Applying…';
+
+  const r = await fetch(SAVE_URL, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ id: _ctxLineId, rate: _allInComputedRate })
+  });
+  if (r.ok) {
+    const d = await r.json();
+    refreshLineRow(_ctxLineId, d);
+    refreshSectionTotals(_ctxLineRow.closest('table'));
+    document.getElementById('all-in-modal').classList.add('hidden');
+  } else {
+    applyBtn.disabled = false;
+    applyBtn.textContent = 'Apply Rate';
+    alert('Failed to save rate.');
+  }
+}
+</script>
+
 <script>
 // ── Location CRUD ─────────────────────────────────────────────────────────
 const LOC_SAVE_URL  = `/projects/${PID}/locations/save`;
