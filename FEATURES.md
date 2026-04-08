@@ -15,11 +15,14 @@
 | Status | Feature | Plain English Description |
 |--------|---------|--------------------------|
 | ✅ Live | Project Dashboard | Landing page showing all projects with quick links to each budget |
-| ✅ Live | Create Project | Start a new production project with a name and optional description |
+| ✅ Live | Create Project | Start a new production project with a name and optional budget template |
+| ✅ Live | Template on New Project | When creating a project, pick a pre-built template from a dropdown — lines auto-populate the first budget |
 | ✅ Live | Multiple Budgets per Project | Each project can have several budget versions (Estimated, Working, Actual) |
 | ✅ Live | Budget Modes | Three modes: Estimated (baseline), Working (live forecast), Actual (real spend) |
 | ✅ Live | Create Working Budget from Estimated | Locks the estimated as a frozen snapshot, opens a working copy for live tracking |
 | ✅ Live | Budget Versioning | Each budget has a version name (e.g. "v1 Client Approved") |
+| ✅ Live | Delete Budget / Project | Fully cascaded delete — removes all lines, schedule, call sheets, crew assignments, and related records without FK errors |
+| ✅ Live | Share Project | Invite collaborators by email; they get their own login-gated access to the project |
 
 ---
 
@@ -28,6 +31,8 @@
 | Status | Feature | Plain English Description |
 |--------|---------|--------------------------|
 | ✅ Live | ⚡ Quick Entry Panel | Slide-over panel with every COA department; pre-filled suggested rates for all labor and expense items; check multiple items across departments and add them all at once |
+| ✅ Live | QE Sorted Insertion | Lines added via Quick Entry appear in the correct department order (e.g. Talent: Principal → Host → Extra; Meals: Breakfast → Lunch) |
+| ✅ Live | QE Kit Fees Under Parent | Kit fees added via Quick Entry automatically attach below their parent labor line — not scattered through the section |
 | ✅ Live | + Single Line (modal) | Add one line at a time — pick department, description, labor vs. flat, qty/days/rate |
 | ✅ Live | + Line per Section | Each department section has its own quick-add button that pre-selects that department |
 | ✅ Live | Inline Editing | Click any cell in a budget line to edit it in place — saves automatically |
@@ -78,15 +83,18 @@
 
 ---
 
-## Schedule
+## Schedule (Gantt)
 
 | Status | Feature | Plain English Description |
 |--------|---------|--------------------------|
-| ✅ Live | Schedule Tab | Day-by-day calendar showing shoot days for the project |
-| ✅ Live | Day Types | Assign each day as Shoot, Travel, Prep, Strike, Hold, Off, etc. |
-| ✅ Live | Schedule-Driven Labor | Labor lines can be linked to the schedule — their days auto-populate from shoot days |
-| ✅ Live | OT from Schedule | When a day's hours exceed the rate-type threshold, OT is auto-calculated |
+| ✅ Live | Schedule Tab | Day-by-day Gantt grid showing all labor lines across shoot dates |
+| ✅ Live | Day Types | Click any cell to set day type: Shoot, Travel, Prep, Hold, Off, Half, Kill Fee |
+| ✅ Live | Schedule-Driven Labor | Toggle "Use Schedule" on any labor line — its days auto-count from the Gantt |
+| ✅ Live | Auto-Enable Use Schedule | When a day is clicked for the first time on a line, "Use Schedule" turns on automatically and manual OT is zeroed out |
+| ✅ Live | OT from Schedule | Per-day OT hours feed the labor calc engine |
+| ✅ Live | Department Sub-Group Headers | Production Staff section shows department headers (Camera, G&E, Production, etc.) in both the budget detail view and the Gantt |
 | ✅ Live | Estimated vs. Working Schedule | Separate schedule grids for Estimated and Working modes |
+| ✅ Live | + Assign Button | Each labor line has an Assign button to attach a specific crew member from the roster |
 
 ---
 
@@ -99,6 +107,53 @@
 | ✅ Live | Department Grouping | Crew grouped by COA department in alphabetical department order |
 | ✅ Live | Multi-select for Export | Ctrl/Cmd-click to select multiple crew; right-click to omit from printed sheet |
 | ✅ Live | Kit Fees on Crew | Kit fee amount tracked per crew assignment |
+
+---
+
+## Call Sheet
+
+| Status | Feature | Plain English Description |
+|--------|---------|--------------------------|
+| ✅ Live | Call Sheet View | Full two-page formatted call sheet for any shoot day — auto-populated from the schedule |
+| ✅ Live | Editable Fields | All call sheet fields (call times, weather, meals, notes, etc.) are editable inline and auto-save |
+| ✅ Live | Key Contacts Section | Director, DP, AD, UPM, and other key personnel with contact info; draggable order |
+| ✅ Live | Locations | Location cards with address, map link, and contacts per location |
+| ✅ Live | Crew Call Times | Per-person call time grid auto-populated from crew assignments |
+| ✅ Live | Department Notes | Optional notes per department printed on the call sheet |
+| ✅ Live | Extras Grid | Number of extras + call time per category |
+| ✅ Live | Advance Schedule | Text block for next-day/next-week advance info |
+| ✅ Live | Print / Export | Clean print-optimized CSS — header, page 1, page 2; all UI chrome hidden |
+| ✅ Live | ✉ Send Call Sheet via Email | Distribute call sheet to crew via email from contact@thefp.tv; each recipient gets a personal view/confirm link |
+| ✅ Live | View Tracking | When a recipient opens their email link, the server records a viewed timestamp |
+| ✅ Live | Confirmation Tracking | Each email includes a "Confirm My Call" button; confirmation is recorded with timestamp |
+| ✅ Live | Distribution History | Internal distribution panel shows all prior sends with version, timestamp, and per-recipient status badges (pending / sent / viewed / confirmed) |
+| ✅ Live | Public Confirm Page | Clean standalone page (no login required) — shows project, date, version, and confirm button |
+
+---
+
+## Templates
+
+| Status | Feature | Plain English Description |
+|--------|---------|--------------------------|
+| ✅ Live | Save as Template | Save any budget's lines as a reusable named template — all lines per COA section preserved (no deduplication) |
+| ✅ Live | Apply Template to Budget | Load a template into a budget to pre-populate lines with qty, days, and rate |
+| ✅ Live | Template on New Project | Template picker dropdown on the New Project modal; lines auto-apply to the first budget |
+| ✅ Live | Small Live Production Template | Built-in template: Director, Host, UPM, Key PA, 2× Camera Op, Video Engineer, Sound Mixer, camera/lens/monitor/media gear, lighting + grip package, AV/control room/streaming, production car, fuel/parking/mileage, lunch/catering |
+| ✅ Live | Template Editor | Create and edit templates from the Templates page; add/remove/edit individual lines |
+
+---
+
+## Settings
+
+| Status | Feature | Plain English Description |
+|--------|---------|--------------------------|
+| ✅ Live | Budget Settings | Name, start/end date, target budget, company fee %, dispersed toggle, payroll settings |
+| ✅ Live | Start Date Auto-fills End Date | Picking a start date defaults end date to +14 days if end is empty |
+| ✅ Live | Timezone Auto-detect | Default timezone auto-fills from the browser if no timezone is saved on the budget |
+| ✅ Live | Production Details (per budget) | Client name, prepared-by name/title/email/phone stored on each budget |
+| ✅ Live | Company Profile (global) | Company name, address, phone, email, website — used on all PDF exports |
+| ✅ Live | Fringe Config | Set the % rate for each fringe bucket (Union, Employer, State, Local, Payroll) |
+| ✅ Live | Payroll Profiles | Named payroll setups (e.g. "ADP Weekly") with week-start day and payroll fee % |
 
 ---
 
@@ -117,20 +172,6 @@
 
 ---
 
-## Settings
-
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Budget Settings | Name, start/end date, target budget, company fee %, dispersed toggle, payroll settings |
-| ✅ Live | Production Details (per budget) | Client name, prepared-by name/title/email/phone stored on each budget |
-| ✅ Live | Company Profile (global) | Company name, address, phone, email, website — used on all PDF exports |
-| ✅ Live | Fringe Config | Set the % rate for each fringe bucket (Union, Employer, State, Local, Payroll) |
-| ✅ Live | Payroll Profiles | Named payroll setups (e.g. "ADP Weekly") with week-start day and payroll fee % |
-| ✅ Live | Templates | Save any budget as a reusable template; apply a template to a new budget |
-| ✅ Live | FP Standard Template | Built-in template with all 29 COA sections pre-loaded at $0 |
-
----
-
 ## Admin / System
 
 | Status | Feature | Plain English Description |
@@ -140,14 +181,6 @@
 | ✅ Live | Auto DB Migrations | New database columns added automatically on startup — no manual migration needed |
 | ✅ Live | Postgres + SQLite | Uses Postgres on Render (production), SQLite locally (development) |
 | ✅ Live | CSV Import | Upload a CSV to bulk-import budget lines into any section |
-
----
-
-## Known Issues / In Progress
-
-| Status | Feature | Notes |
-|--------|---------|-------|
-| ⚠️ Known Issue | Template Apply UI | "Apply Template" dropdown in Settings tab has empty options — route exists but template picker not wired to live data |
 
 ---
 

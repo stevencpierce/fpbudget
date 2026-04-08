@@ -25,18 +25,21 @@
       <span class="mode-badge {{ cur_mode.cls }}">{{ cur_mode.label }}</span>
     </div>
   </div>
-  <!-- Collab: presence avatars + change banner -->
+  <!-- Collab: presence avatars + sync indicator -->
   <div id="collab-bar" style="display:flex;align-items:center;gap:8px;margin-right:8px">
     <div id="collab-viewers" style="display:flex;gap:4px"></div>
     <span id="collab-edit-hint" style="font-size:.72rem;color:var(--text-muted)"></span>
+    <span id="collab-sync-flash" style="font-size:.7rem;color:var(--green);opacity:0;transition:opacity .4s"></span>
   </div>
-  <div id="collab-changes-banner" style="display:none;position:fixed;bottom:72px;left:50%;transform:translateX(-50%);
-       background:#1e3a5f;border:1px solid #2563eb;color:#93c5fd;border-radius:8px;
-       padding:8px 18px;font-size:.82rem;z-index:900;display:flex;align-items:center;gap:10px">
-    <span id="collab-changes-msg"></span>
-    <button class="btn btn-sm btn-primary" onclick="location.reload()" style="padding:3px 10px">Refresh</button>
-    <button onclick="document.getElementById('collab-changes-banner').style.display='none'"
-            style="background:none;border:none;color:#93c5fd;cursor:pointer;font-size:.9rem">✕</button>
+  <!-- Structural-change toast (lines added/removed by someone else) -->
+  <div id="collab-struct-toast" style="display:none;position:fixed;bottom:24px;right:24px;
+       background:var(--bg-3);border:1px solid var(--border);color:var(--text);border-radius:8px;
+       padding:8px 14px;font-size:.8rem;z-index:900;display:flex;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)">
+    <span id="collab-struct-msg"></span>
+    <a href="#" onclick="window.location.reload();return false"
+       style="color:var(--accent);text-decoration:none;font-weight:500">Reload</a>
+    <button onclick="document.getElementById('collab-struct-toast').style.display='none'"
+            style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:.85rem;padding:0">✕</button>
   </div>
 
   <div class="budget-header-right">
@@ -5262,49 +5265,92 @@ async function qeAddSelected() {
 <script>
 // ── Realtime Collaboration ─────────────────────────────────────────────────
 const _PRESENCE_URL = `/projects/${PID}/budget/${BID}/presence`;
-const _POLL_URL     = `/projects/${PID}/budget/${BID}/poll`;
-const _PAGE_LOAD_TS = new Date().toISOString();
-let _lastKnownUpdatedAt = null;
-let _changesBannerShown = false;
+const _LIVE_URL     = `/projects/${PID}/budget/${BID}/live`;
+
+// IDs of lines I edited this session — skip patching these so my own edits aren't overwritten
+const _myEditedLines = new Set();
+
+// Snapshot of line_ids at page load (for structural-change detection)
+let _knownLineIds = null;
+let _structToastShown = false;
 
 function _collabPingPresence() {
   fetch(_PRESENCE_URL, { method: 'POST' })
     .then(r => r.json())
     .then(d => {
-      // Update viewer avatars
       const el = document.getElementById('collab-viewers');
       if (!el) return;
-      if (d.viewers && d.viewers.length) {
-        el.innerHTML = d.viewers.map(v => {
-          const initials = v.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
-          return `<span class="collab-avatar" title="${v.name} is also viewing">${initials}</span>`;
-        }).join('');
-      } else {
-        el.innerHTML = '';
-      }
-      // Show last-edit hint
+      el.innerHTML = (d.viewers || []).map(v => {
+        const initials = v.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+        return `<span class="collab-avatar" title="${v.name} is also viewing">${initials}</span>`;
+      }).join('');
       const hint = document.getElementById('collab-edit-hint');
       if (hint && d.last_edit) {
-        const ago = _timeAgo(new Date(d.last_edit.at));
-        hint.textContent = `${d.last_edit.name} edited ${ago}`;
+        hint.textContent = `${d.last_edit.name} edited ${_timeAgo(new Date(d.last_edit.at))}`;
+      } else if (hint) {
+        hint.textContent = '';
       }
     })
     .catch(() => {});
 }
 
-function _collabPoll() {
-  fetch(_POLL_URL)
+function _collabLivePatch() {
+  fetch(_LIVE_URL)
     .then(r => r.json())
     .then(d => {
-      if (!d.updated_at) return;
-      if (!_lastKnownUpdatedAt) { _lastKnownUpdatedAt = d.updated_at; return; }
-      if (d.updated_at > _lastKnownUpdatedAt && d.updated_at > _PAGE_LOAD_TS && !_changesBannerShown) {
-        const by = d.last_edit ? d.last_edit.name : 'Someone';
-        const ago = d.last_edit ? _timeAgo(new Date(d.last_edit.at)) : '';
-        document.getElementById('collab-changes-msg').textContent =
-          `${by} made changes ${ago} — refresh to see them`;
-        document.getElementById('collab-changes-banner').style.display = 'flex';
-        _changesBannerShown = true;
+      if (!d.lines) return;
+
+      // Initialise known line IDs on first poll
+      if (_knownLineIds === null) {
+        _knownLineIds = d.line_ids || [];
+        return;
+      }
+
+      // Detect structural changes (lines added or removed by someone else)
+      const incoming = d.line_ids || [];
+      const added   = incoming.filter(id => !_knownLineIds.includes(id));
+      const removed = _knownLineIds.filter(id => !incoming.includes(id));
+      if ((added.length || removed.length) && !_structToastShown) {
+        _structToastShown = true;
+        const who = d.last_edit ? d.last_edit.name : 'A collaborator';
+        const parts = [];
+        if (added.length)   parts.push(`${added.length} line${added.length > 1 ? 's' : ''} added`);
+        if (removed.length) parts.push(`${removed.length} line${removed.length > 1 ? 's' : ''} removed`);
+        document.getElementById('collab-struct-msg').textContent = `${who}: ${parts.join(', ')}`;
+        document.getElementById('collab-struct-toast').style.display = 'flex';
+        // Auto-dismiss after 12s
+        setTimeout(() => {
+          document.getElementById('collab-struct-toast').style.display = 'none';
+          _structToastShown = false;
+          _knownLineIds = incoming;
+        }, 12000);
+      }
+
+      // Silently patch changed lines (skip lines this user is actively editing)
+      let patched = 0;
+      for (const [idStr, res] of Object.entries(d.lines)) {
+        const id = parseInt(idStr);
+        if (_myEditedLines.has(id)) continue;
+        const row = document.querySelector(`.line-row[data-id="${id}"]`);
+        if (!row) continue;
+        // Compare current rendered subtotal to detect a real change
+        const subEl = row.querySelector('.line-subtotal');
+        const currentSub = subEl ? parseFloat(subEl.textContent.replace(/[$,]/g, '')) || 0 : -1;
+        if (Math.abs(currentSub - res.subtotal) < 0.005) continue;
+        refreshLineRow(id, res);
+        patched++;
+      }
+
+      if (patched > 0) {
+        // Refresh all section totals
+        document.querySelectorAll('.line-table').forEach(t => refreshSectionTotals(t));
+        // Flash sync indicator
+        const flash = document.getElementById('collab-sync-flash');
+        if (flash) {
+          flash.textContent = '● synced';
+          flash.style.opacity = '1';
+          setTimeout(() => { flash.style.opacity = '0'; }, 1800);
+        }
       }
     })
     .catch(() => {});
@@ -5318,10 +5364,16 @@ function _timeAgo(d) {
   return `${Math.floor(s/3600)}h ago`;
 }
 
-// Ping presence every 20s, poll for changes every 7s
+// Mark lines I edit so they're not overwritten by remote patches
+document.addEventListener('change', e => {
+  const row = e.target.closest('.line-row');
+  if (row) _myEditedLines.add(parseInt(row.dataset.id));
+});
+
+// Ping presence every 20s, live-patch every 6s
 _collabPingPresence();
 setInterval(_collabPingPresence, 20000);
-setInterval(_collabPoll, 7000);
+setInterval(_collabLivePatch, 6000);
 </script>
 
 <!-- ═══ QUICK ENTRY PANEL ═════════════════════════════════════════════════════ -->

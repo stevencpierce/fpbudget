@@ -404,6 +404,39 @@ def budget_poll(pid, bid):
         } if editor else None,
     })
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/live")
+@login_required
+def budget_live(pid, bid):
+    """Return per-line calc results for silent real-time patching."""
+    b = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    lines = BudgetLine.query.filter_by(budget_id=bid).order_by(BudgetLine.account_code, BudgetLine.sort_order).all()
+    fringe_cfgs = get_fringe_configs(db.session)
+    profile = b.payroll_profile
+    pw_start = b.payroll_week_start if b.payroll_week_start is not None else (
+        profile.payroll_week_start if profile else 6)
+    sched_mode = b.budget_mode if b.budget_mode in ('working', 'actual') else 'estimated'
+
+    line_results = {}
+    for ln in lines:
+        if ln.use_schedule:
+            sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
+            res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
+        else:
+            res = calc_line(ln, fringe_cfgs)
+        line_results[str(ln.id)] = {
+            "subtotal":     res["subtotal"],
+            "est_total":    res["est_total"],
+            "agent_amount": res.get("agent_amount", 0.0),
+        }
+
+    editor = _budget_last_editor.get(bid)
+    return jsonify({
+        "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+        "line_ids":   [ln.id for ln in lines],
+        "lines":      line_results,
+        "last_edit":  {"name": editor["name"], "at": editor["at"].isoformat()} if editor else None,
+    })
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 @app.route("/")

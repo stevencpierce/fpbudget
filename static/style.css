@@ -40,7 +40,7 @@
   --shadow:     0 2px 12px rgba(0,0,0,.1);
 }
 
-html { font-size: 14px; }
+html { font-size: 15.4px; }
 body {
   font-family: var(--font);
   background: var(--bg);
