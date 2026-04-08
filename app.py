@@ -2209,6 +2209,13 @@ def gantt_assign_crew(pid, bid):
             name_override=name_ov,
         ))
 
+    # Mirror instance-1 assignment back to BudgetLine.assigned_crew_id so budget tab stays in sync
+    if instance == 1:
+        ln = BudgetLine.query.filter_by(id=line_id, budget_id=bid).first()
+        if ln:
+            ln.assigned_crew_id = int(crew_id) if crew_id else None
+
+    _touch_budget(bid)
     db.session.commit()
     return jsonify({"ok": True, "name": name})
 
@@ -2559,11 +2566,21 @@ def assign_crew(pid, bid, lid):
     ln     = BudgetLine.query.get(lid)
     ln.assigned_crew_id = int(cid) if cid else None
     agent_pct_applied = None
-    if cid:
-        cm = CrewMember.query.get(int(cid))
-        if cm and cm.default_agent_pct:
-            ln.agent_pct = float(cm.default_agent_pct)
-            agent_pct_applied = float(cm.default_agent_pct)
+    cm = CrewMember.query.get(int(cid)) if cid else None
+    if cm and cm.default_agent_pct:
+        ln.agent_pct = float(cm.default_agent_pct)
+        agent_pct_applied = float(cm.default_agent_pct)
+    # Mirror to CrewAssignment (instance 1) so the gantt stays in sync
+    ca = CrewAssignment.query.filter_by(budget_line_id=lid, instance=1).first()
+    if not cid:
+        if ca:
+            db.session.delete(ca)
+    elif ca:
+        ca.crew_member_id = int(cid)
+        ca.name_override  = None
+    else:
+        db.session.add(CrewAssignment(budget_line_id=lid, instance=1,
+                                      crew_member_id=int(cid), name_override=None))
     _touch_budget(bid)
     db.session.commit()
     name = ln.assigned_crew.name if ln.assigned_crew else None
