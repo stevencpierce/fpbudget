@@ -125,7 +125,7 @@
     <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
       <div class="admin-stats">
         <div class="admin-stat"><strong>{{ users|length }}</strong>&nbsp;user{{ 's' if users|length!=1 }}</div>
-        <div class="admin-stat"><strong>{{ projects|length }}</strong>&nbsp;project{{ 's' if projects|length!=1 }}</div>
+        <div class="admin-stat"><a href="#project-access" style="color:inherit;text-decoration:none"><strong>{{ projects|length }}</strong>&nbsp;project{{ 's' if projects|length!=1 }}</a></div>
       </div>
       <a href="{{ url_for('profile') }}" class="btn btn-sm btn-outline">My Profile &amp; Password</a>
     </div>
@@ -224,7 +224,7 @@
   </div>
 
   <!-- Project Access -->
-  <div class="admin-card">
+  <div class="admin-card" id="project-access">
     <div class="admin-card-header"><h2>Project Access</h2></div>
     {% if projects %}
       {% for project in projects %}
