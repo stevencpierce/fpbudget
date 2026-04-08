@@ -699,8 +699,8 @@ input:focus, select:focus { border-color: var(--accent); }
 
 .qe-th-check  { width:32px; }
 .qe-th-label  { min-width:160px; }
-.qe-th-qty    { width:55px; }
-.qe-th-days   { width:55px; }
+.qe-th-qty    { width:63px; }
+.qe-th-days   { width:63px; }
 .qe-th-rate   { width:120px; }
 .qe-th-kit    { width:110px; }
 .qe-th-fringe { width:60px; }
