@@ -409,9 +409,11 @@ async function saveDay(cell, dayType, note, estOtHours) {
   } else {
     // Auto-enable use_schedule on this line if it isn't already checked.
     // Also zeroes est_ot so legacy manual OT doesn't carry into schedule mode.
-    const cb = document.querySelector(`.use-sched-cb[data-id="${lineId}"]`);
-    if (cb && !cb.checked) {
-      cb.checked = true;
+    // Use querySelectorAll so all instances of a multi-qty line get ticked.
+    const cbs = document.querySelectorAll(`.use-sched-cb[data-id="${lineId}"]`);
+    const anyUnchecked = Array.from(cbs).some(cb => !cb.checked);
+    cbs.forEach(cb => { cb.checked = true; });
+    if (anyUnchecked) {
       fetch(`/projects/${_pid}/budget/${_bid}/line`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
