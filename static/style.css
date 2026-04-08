@@ -266,6 +266,8 @@ input:focus, select:focus { border-color: var(--accent); }
 
 .col-code { width: 60px; }
 .col-num  { text-align: right; }
+.col-qty  { text-align: right; width: 60px; }
+.col-days { text-align: right; width: 72px; }
 .col-desc { }
 .col-pc   { }
 .col-rt   { }

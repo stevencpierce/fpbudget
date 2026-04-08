@@ -353,8 +353,8 @@
         <tr>
           <th class="col-desc">Description</th>
           <th class="col-pc col-labor-only" title="Payroll Company — which payroll co. processes this hire">Payroll Co.</th>
-          <th class="col-num">Qty</th>
-          <th class="col-num">Days</th>
+          <th class="col-qty">Qty</th>
+          <th class="col-days">Days</th>
           <th class="col-num">Rate</th>
           <th class="col-rt">{{ 'Type' if ns.has_labor else '' }}</th>
           <th class="col-num">{{ 'OT' if ns.has_labor else '' }}</th>
@@ -393,11 +393,11 @@
                   data-id="{{ ln.id }}">{{ ln.payroll_co or '' }}</span>
             {% else %}<span class="muted">—</span>{% endif %}
           </td>
-          <td class="col-num">
+          <td class="col-qty">
             <span class="editable num" data-field="quantity"
                   data-id="{{ ln.id }}">{% set _q = ln.quantity | float %}{{ _q | int if _q == (_q | int) else _q }}</span>
           </td>
-          <td class="col-num col-days-cell">
+          <td class="col-days col-days-cell">
             {% if ln.use_schedule %}
             <span class="sched-days" title="Driven by schedule ({{ res.day_count }} days)">
               {{ res.day_count if res.day_count is defined else ln.days | float | round(2) }}
