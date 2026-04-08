@@ -1696,8 +1696,33 @@
       <input type="text" id="ca-search" placeholder="Search crew…" oninput="filterCrewList(this.value)" autocomplete="off" style="width:100%">
     </div>
     <div id="ca-list" class="crew-assign-list"></div>
-    <div class="modal-actions">
+    <!-- Inline Add New Person form -->
+    <div id="ca-new-form" style="display:none;margin-top:.75rem;padding:.75rem;background:var(--bg-3);border:1px solid var(--border);border-radius:var(--radius)">
+      <div style="font-size:.78rem;font-weight:600;color:var(--accent);margin-bottom:.5rem">+ Add New Person to Database</div>
+      <div class="field" style="margin-bottom:.45rem">
+        <label style="font-size:.75rem">Name <span style="color:var(--danger)">*</span></label>
+        <input type="text" id="ca-new-name" placeholder="Full name" style="width:100%" autocomplete="off">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.45rem;margin-bottom:.45rem">
+        <div class="field">
+          <label style="font-size:.75rem">Phone</label>
+          <input type="tel" id="ca-new-phone" placeholder="Phone">
+        </div>
+        <div class="field">
+          <label style="font-size:.75rem">Email</label>
+          <input type="email" id="ca-new-email" placeholder="Email">
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:.5rem">
+        <label style="font-size:.75rem">Department</label>
+        <input type="text" id="ca-new-dept" placeholder="e.g. Camera, Sound">
+      </div>
+      <p id="ca-new-error" style="display:none;color:var(--danger);font-size:.78rem;margin-bottom:.35rem"></p>
+      <button type="button" class="btn btn-primary btn-sm" style="width:100%" onclick="saveAndAssignNewPerson()">Save & Assign</button>
+    </div>
+    <div class="modal-actions" style="margin-top:.6rem">
       <button type="button" class="btn btn-ghost" onclick="assignCrew(null)">Clear Assignment</button>
+      <button type="button" id="ca-add-new-btn" class="btn btn-outline btn-sm" onclick="toggleNewPersonForm()">+ New Person</button>
       <button type="button" class="btn btn-outline" onclick="document.getElementById('crew-assign-modal').classList.add('hidden')">Cancel</button>
     </div>
   </div>
@@ -3771,6 +3796,8 @@ const _crewList = [{% for cm in crew_members %}{id:{{ cm.id }},name:{{ cm.name |
 function openCrewAssign(lineId) {
   document.getElementById('ca-line-id').value = lineId;
   document.getElementById('ca-search').value = '';
+  document.getElementById('ca-new-form').style.display = 'none';
+  document.getElementById('ca-add-new-btn').textContent = '+ New Person';
   renderCrewList(_crewList);
   document.getElementById('crew-assign-modal').classList.remove('hidden');
   document.getElementById('ca-search').focus();
@@ -3778,16 +3805,76 @@ function openCrewAssign(lineId) {
 
 function filterCrewList(q) {
   const filtered = q ? _crewList.filter(c => c.name.toLowerCase().includes(q.toLowerCase()) || c.dept.toLowerCase().includes(q.toLowerCase())) : _crewList;
-  renderCrewList(filtered);
+  renderCrewList(filtered, q);
 }
 
-function renderCrewList(list) {
+function renderCrewList(list, q) {
   const el = document.getElementById('ca-list');
-  el.innerHTML = list.slice(0, 30).map(c =>
-    `<div class="crew-assign-item" onclick="assignCrew(${c.id},'${c.name.replace(/'/g,"\\'")}')">
-      <strong>${c.name}</strong>${c.dept ? ` <span class="muted" style="font-size:.75rem">${c.dept}</span>` : ''}
-    </div>`
-  ).join('') || '<div class="muted" style="padding:.5rem">No results</div>';
+  if (list.length === 0) {
+    el.innerHTML = '<div class="muted" style="padding:.5rem .7rem;font-size:.82rem">No match — fill in the form below to add them.</div>';
+    // Auto-expand the add form and pre-fill name from search
+    const newForm = document.getElementById('ca-new-form');
+    newForm.style.display = 'block';
+    document.getElementById('ca-add-new-btn').textContent = '− New Person';
+    if (q) document.getElementById('ca-new-name').value = q;
+  } else {
+    el.innerHTML = list.slice(0, 30).map(c =>
+      `<div class="crew-assign-item" onclick="assignCrew(${c.id},'${c.name.replace(/'/g,"\\'")}')">
+        <strong>${c.name}</strong>${c.dept ? ` <span class="muted" style="font-size:.75rem">${c.dept}</span>` : ''}
+      </div>`
+    ).join('');
+  }
+}
+
+function toggleNewPersonForm() {
+  const form = document.getElementById('ca-new-form');
+  const btn  = document.getElementById('ca-add-new-btn');
+  const open = form.style.display !== 'none';
+  form.style.display = open ? 'none' : 'block';
+  btn.textContent = open ? '+ New Person' : '− New Person';
+  if (!open) {
+    const q = document.getElementById('ca-search').value.trim();
+    if (q) document.getElementById('ca-new-name').value = q;
+    document.getElementById('ca-new-name').focus();
+  }
+}
+
+async function saveAndAssignNewPerson() {
+  const name = document.getElementById('ca-new-name').value.trim();
+  const errEl = document.getElementById('ca-new-error');
+  if (!name) {
+    errEl.textContent = 'Name is required.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  const payload = {
+    name,
+    phone:      document.getElementById('ca-new-phone').value.trim(),
+    email:      document.getElementById('ca-new-email').value.trim(),
+    department: document.getElementById('ca-new-dept').value.trim(),
+  };
+  const btn = document.querySelector('#ca-new-form .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const r = await fetch('/crew/new', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      errEl.textContent = 'Failed to create person. Please try again.';
+      errEl.style.display = 'block';
+      return;
+    }
+    const data = await r.json();
+    // Add to local list so future searches find them
+    _crewList.push({ id: data.id, name: data.name, dept: data.department || '' });
+    // Assign immediately
+    await assignCrew(data.id, data.name);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save & Assign'; }
+  }
 }
 
 async function assignCrew(crewId, crewName) {
@@ -3804,6 +3891,29 @@ async function assignCrew(crewId, crewName) {
       span.textContent = crewId ? crewName : '+ Assign';
       span.classList.toggle('no-assignment', !crewId);
       span.title = crewId ? crewName : 'Click to assign person';
+    }
+    const d = await res.json().catch(() => ({}));
+    // Prompt to apply default rate if the crew member has one
+    if (d.default_rate) {
+      const rateLabel = RATE_TYPE_LABELS[d.default_rate_type] || d.default_rate_type;
+      const apply = confirm(`${d.name} has a default rate of $${d.default_rate.toLocaleString()} (${rateLabel}) — apply it to this line?`);
+      if (apply) {
+        await fetch(`${SAVE_URL}/${lid}`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ rate: d.default_rate, rate_type: d.default_rate_type }),
+        });
+        reloadWithTab();
+        return;
+      }
+    }
+    // Refresh line totals (picks up agent_pct change without full reload)
+    if (d.subtotal !== undefined) {
+      const row = document.querySelector(`.line-row[data-id="${lid}"]`);
+      if (row) {
+        refreshLineRow(parseInt(lid), d);
+        refreshSectionTotals(row.closest('table'));
+      }
     }
   }
 }

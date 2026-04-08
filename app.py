@@ -1995,6 +1995,9 @@ def gantt_view(pid, bid):
         "id": c.id, "name": c.name,
         "department": c.department or "",
         "company": c.company or "",
+        "default_rate": float(c.default_rate) if c.default_rate else None,
+        "default_rate_type": c.default_rate_type or "day_10",
+        "default_agent_pct": float(c.default_agent_pct) if c.default_agent_pct else None,
     } for c in all_crew])
 
     # Top-sheet totals for floating budget bar
@@ -2548,15 +2551,43 @@ def set_location_day(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/assign-crew", methods=["POST"])
 @login_required
 def assign_crew(pid, bid, lid):
-    """Assign a crew member as the primary person on a budget line."""
+    """Assign a crew member as the primary person on a budget line.
+    Auto-applies the crew member's default_agent_pct to the line when set."""
     BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     data   = request.get_json(force=True)
     cid    = data.get("crew_id")
     ln     = BudgetLine.query.get(lid)
     ln.assigned_crew_id = int(cid) if cid else None
+    agent_pct_applied = None
+    if cid:
+        cm = CrewMember.query.get(int(cid))
+        if cm and cm.default_agent_pct:
+            ln.agent_pct = float(cm.default_agent_pct)
+            agent_pct_applied = float(cm.default_agent_pct)
+    _touch_budget(bid)
     db.session.commit()
     name = ln.assigned_crew.name if ln.assigned_crew else None
-    return jsonify({"ok": True, "crew_id": cid, "name": name})
+    # Return calc results so the UI can refresh totals without a full reload
+    fringe_cfgs = get_fringe_configs(db.session)
+    budget = Budget.query.get(bid)
+    if ln.use_schedule:
+        sched_mode = budget.budget_mode if budget.budget_mode in ('working', 'actual') else 'estimated'
+        sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
+        profile = budget.payroll_profile
+        pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
+            profile.payroll_week_start if profile else 6)
+        res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
+    else:
+        res = calc_line(ln, fringe_cfgs)
+    default_rate      = float(cm.default_rate)      if cid and cm and cm.default_rate      else None
+    default_rate_type = cm.default_rate_type or 'day_10' if cid and cm and cm.default_rate else None
+    return jsonify({"ok": True, "crew_id": cid, "name": name,
+                    "agent_pct": agent_pct_applied,
+                    "default_rate": default_rate,
+                    "default_rate_type": default_rate_type,
+                    "subtotal": res["subtotal"],
+                    "est_total": res["est_total"],
+                    "agent_amount": res.get("agent_amount", 0.0)})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/contacts/omit", methods=["POST"])
@@ -2715,6 +2746,12 @@ def crew_get_json(cid):
 @login_required
 def crew_delete(cid):
     m = CrewMember.query.get_or_404(cid)
+    # Null out FK references so the delete doesn't fail on constraint violations
+    BudgetLine.query.filter_by(assigned_crew_id=cid).update({"assigned_crew_id": None},
+                                                             synchronize_session=False)
+    CrewAssignment.query.filter_by(crew_member_id=cid).update({"crew_member_id": None},
+                                                               synchronize_session=False)
+    BudgetDirectContact.query.filter_by(crew_member_id=cid).delete(synchronize_session=False)
     db.session.delete(m)
     db.session.commit()
     flash("Crew member deleted.", "success")

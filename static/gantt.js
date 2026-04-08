@@ -92,8 +92,7 @@ function initGantt(pid, bid, activeProfileId) {
   // ── Close crew picker on outside mousedown ────────────────────────────────
   document.addEventListener('mousedown', e => {
     if (!e.target.closest('#crew-picker-popover') &&
-        !e.target.closest('.gantt-crew-chip') &&
-        !e.target.closest('#add-crew-modal')) {
+        !e.target.closest('.gantt-crew-chip')) {
       closeCrewPicker();
     }
   }, true);  // capture phase so it fires before any element handlers
@@ -1148,6 +1147,13 @@ function openCrewPicker(lineId, instance, el) {
   popover.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
   const searchInput = document.getElementById('crew-picker-search');
   searchInput.value = '';
+  // Reset inline add form
+  _showPickerNewForm(false);
+  ['cpf-name','cpf-phone','cpf-email','cpf-dept'].forEach(id => {
+    const el2 = document.getElementById(id); if (el2) el2.value = '';
+  });
+  const errEl = document.getElementById('cpf-error');
+  if (errEl) errEl.style.display = 'none';
   filterCrewPicker('');
   popover.classList.remove('hidden');
   setTimeout(() => searchInput.focus(), 50);
@@ -1160,7 +1166,9 @@ function filterCrewPicker(query) {
                        (c.company && c.company.toLowerCase().includes(q)));
   const list = document.getElementById('crew-picker-list');
   if (!filtered.length) {
-    list.innerHTML = '<div class="crew-picker-empty">No crew found</div>';
+    list.innerHTML = '<div class="crew-picker-empty">No match — add them below.</div>';
+    // Auto-show the inline add form and pre-fill name from search
+    _showPickerNewForm(true, query.trim());
     return;
   }
   list.innerHTML = filtered.slice(0, 30).map(c => `
@@ -1168,13 +1176,36 @@ function filterCrewPicker(query) {
       <span class="crew-picker-name">${c.name}</span>
       ${c.department ? `<span class="crew-picker-dept">${c.department}</span>` : ''}
     </div>`).join('');
-  // Attach click handlers after DOM insertion to avoid quote-escaping issues
   list.querySelectorAll('.crew-picker-item').forEach(el => {
-    el.addEventListener('click', () => assignCrewToRow(parseInt(el.dataset.id), el.dataset.name));
+    const crew = filtered.find(c => c.id === parseInt(el.dataset.id));
+    el.addEventListener('click', () => assignCrewToRow(parseInt(el.dataset.id), el.dataset.name, crew));
   });
 }
 
-async function assignCrewToRow(crewId, crewName) {
+function _showPickerNewForm(show, prefillName) {
+  const form = document.getElementById('crew-picker-new-form');
+  const btn  = document.getElementById('cpf-toggle-btn');
+  if (!form) return;
+  form.style.display = show ? 'block' : 'none';
+  if (btn) btn.textContent = show ? '− New Person' : '+ New Person';
+  if (show && prefillName) {
+    const nameEl = document.getElementById('cpf-name');
+    if (nameEl && !nameEl.value) nameEl.value = prefillName;
+  }
+  if (show) {
+    const nameEl = document.getElementById('cpf-name');
+    if (nameEl) setTimeout(() => nameEl.focus(), 50);
+  }
+}
+
+function togglePickerNewForm() {
+  const form = document.getElementById('crew-picker-new-form');
+  const open = form && form.style.display !== 'none';
+  const q = (document.getElementById('crew-picker-search') || {}).value || '';
+  _showPickerNewForm(!open, q.trim());
+}
+
+async function assignCrewToRow(crewId, crewName, crewObj) {
   if (!_crewPickerTarget) return;
   const { lineId, instance } = _crewPickerTarget;
 
@@ -1191,7 +1222,6 @@ async function assignCrewToRow(crewId, crewName) {
       chip.innerHTML = `${crewName}<span class="crew-chip-remove" title="Remove">✕</span>`;
       chip.title       = crewName;
       chip.classList.remove('unassigned');
-      // re-attach remove listener
       chip.querySelector('.crew-chip-remove').addEventListener('click', e => {
         e.stopPropagation();
         removeCrewFromRow(lineId, instance, chip);
@@ -1209,76 +1239,78 @@ async function assignCrewToRow(crewId, crewName) {
     body: JSON.stringify({ line_id: lineId, instance, crew_member_id: crewId }),
   });
   if (!r.ok) {
-    // Revert chip on failure
     if (chip) { chip.innerHTML = '! Error'; chip.title = 'Save failed — refresh to retry'; }
     console.error('Failed to save crew assignment', r.status);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ADD CREW MODAL
-// ─────────────────────────────────────────────────────────────────────────────
-
-function openAddCrewModal() {
-  // Hide the picker but keep _crewPickerTarget so we can assign after creation
-  document.getElementById('crew-picker-popover').classList.add('hidden');
-  // Clear form
-  ['ac-name','ac-phone','ac-email','ac-company','ac-department'].forEach(id => {
-    document.getElementById(id).value = '';
-  });
-  const err = document.getElementById('ac-error');
-  err.textContent = '';
-  err.classList.add('hidden');
-  document.getElementById('add-crew-modal').classList.remove('hidden');
-  setTimeout(() => document.getElementById('ac-name').focus(), 50);
-}
-
-function closeAddCrewModal() {
-  document.getElementById('add-crew-modal').classList.add('hidden');
-}
-
-async function submitAddCrew() {
-  const name = document.getElementById('ac-name').value.trim();
-  if (!name) {
-    const err = document.getElementById('ac-error');
-    err.textContent = 'Name is required.';
-    err.classList.remove('hidden');
     return;
   }
+
+  // Prompt for default rate if crew has one
+  if (crewId && crewObj && crewObj.default_rate) {
+    const rtLabel = {'day_10':'10hr Day','day_8':'8hr Day','day_12':'12hr Day',
+                     'flat_day':'Flat Day','flat_project':'Flat Project',
+                     'hourly':'Hourly','week':'Weekly'}[crewObj.default_rate_type] || crewObj.default_rate_type;
+    const apply = confirm(`${crewName} has a default rate of $${crewObj.default_rate.toLocaleString()} (${rtLabel}) — apply it to this line?`);
+    if (apply) {
+      await fetch(`/projects/${_pid}/budget/${_bid}/line/${lineId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rate: crewObj.default_rate, rate_type: crewObj.default_rate_type }),
+      });
+      // Refresh gantt section totals
+      if (typeof updateTotalsFromServer === 'function') updateTotalsFromServer();
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INLINE ADD CREW (inside picker popover)
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function submitPickerNewPerson() {
+  const name = (document.getElementById('cpf-name') || {}).value?.trim();
+  const errEl = document.getElementById('cpf-error');
+  if (!name) {
+    errEl.textContent = 'Name is required.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
 
   const payload = {
     name,
-    phone:      document.getElementById('ac-phone').value.trim(),
-    email:      document.getElementById('ac-email').value.trim(),
-    company:    document.getElementById('ac-company').value.trim(),
-    department: document.getElementById('ac-department').value.trim(),
+    phone:      (document.getElementById('cpf-phone') || {}).value?.trim() || '',
+    email:      (document.getElementById('cpf-email') || {}).value?.trim() || '',
+    department: (document.getElementById('cpf-dept')  || {}).value?.trim() || '',
   };
 
-  const r = await fetch('/crew/new', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  const btn = document.querySelector('#crew-picker-new-form .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
 
-  if (!r.ok) {
-    const err = document.getElementById('ac-error');
-    err.textContent = 'Failed to create crew member. Please try again.';
-    err.classList.remove('hidden');
-    return;
-  }
-
-  const data = await r.json();
-  closeAddCrewModal();
-
-  // Add to local ALL_CREW array so future picker searches find them
-  if (typeof ALL_CREW !== 'undefined') {
-    ALL_CREW.push({ id: data.id, name: data.name,
-                    department: data.department || '', company: data.company || '' });
-  }
-
-  // Assign them to the row that was targeted before opening the modal
-  if (_crewPickerTarget) {
-    await assignCrewToRow(data.id, data.name);
+  try {
+    const r = await fetch('/crew/new', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      errEl.textContent = 'Failed to create crew member. Please try again.';
+      errEl.style.display = 'block';
+      return;
+    }
+    const data = await r.json();
+    // Add to local ALL_CREW so future searches find them
+    if (typeof ALL_CREW !== 'undefined') {
+      ALL_CREW.push({ id: data.id, name: data.name,
+                      department: data.department || '', company: data.company || '' });
+    }
+    // Assign to targeted row
+    if (_crewPickerTarget) {
+      await assignCrewToRow(data.id, data.name);
+    } else {
+      closeCrewPicker();
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Save & Assign'; }
   }
 }
 

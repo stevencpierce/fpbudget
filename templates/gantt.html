@@ -446,47 +446,24 @@
     <button class="crew-picker-x" onclick="closeCrewPicker()" title="Close">✕</button>
   </div>
   <div id="crew-picker-list" class="crew-picker-list"></div>
-  <div class="crew-picker-footer">
-    <button class="btn btn-ghost btn-xs" onclick="assignCrewToRow(null, null)">✕ Clear</button>
-    <button class="btn btn-primary btn-xs" onclick="openAddCrewModal()">+ Add Crew</button>
+  <!-- Inline add-new-person form -->
+  <div id="crew-picker-new-form" style="display:none;padding:.55rem .6rem;border-top:1px solid var(--border);background:var(--bg-2)">
+    <div style="font-size:.72rem;font-weight:600;color:var(--accent);margin-bottom:.4rem">+ Add New Person to Database</div>
+    <div class="field" style="margin-bottom:.35rem">
+      <input type="text" id="cpf-name" placeholder="Full name *" autocomplete="off"
+             style="width:100%" onkeydown="if(event.key==='Enter') submitPickerNewPerson()">
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.35rem;margin-bottom:.35rem">
+      <input type="tel"   id="cpf-phone" placeholder="Phone" style="background:var(--bg-3);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.2rem .35rem;font-size:.78rem;width:100%">
+      <input type="email" id="cpf-email" placeholder="Email" style="background:var(--bg-3);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.2rem .35rem;font-size:.78rem;width:100%">
+    </div>
+    <input type="text" id="cpf-dept" placeholder="Department" style="background:var(--bg-3);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.2rem .35rem;font-size:.78rem;width:100%;margin-bottom:.35rem">
+    <p id="cpf-error" style="display:none;color:var(--danger);font-size:.75rem;margin-bottom:.3rem"></p>
+    <button class="btn btn-primary btn-xs" style="width:100%" onclick="submitPickerNewPerson()">Save &amp; Assign</button>
   </div>
-</div>
-
-<!-- Add Crew modal (inline, no page nav) -->
-<div id="add-crew-modal" class="modal hidden">
-  <div class="modal-overlay" onclick="closeAddCrewModal()"></div>
-  <div class="modal-box" style="max-width:420px">
-    <div class="modal-header">
-      <h3 style="margin:0">Add Crew Member</h3>
-      <button class="modal-close" onclick="closeAddCrewModal()">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="field"><label>Name <span style="color:var(--danger)">*</span></label>
-        <input type="text" id="ac-name" placeholder="Full name" autocomplete="off"
-               onkeydown="if(event.key==='Enter') submitAddCrew()">
-      </div>
-      <div class="field-row">
-        <div class="field"><label>Phone</label>
-          <input type="tel" id="ac-phone" placeholder="Phone">
-        </div>
-        <div class="field"><label>Email</label>
-          <input type="email" id="ac-email" placeholder="Email">
-        </div>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>Company</label>
-          <input type="text" id="ac-company" placeholder="Loan-out or agency">
-        </div>
-        <div class="field"><label>Department</label>
-          <input type="text" id="ac-department" placeholder="e.g. Camera">
-        </div>
-      </div>
-      <p id="ac-error" class="form-error hidden"></p>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeAddCrewModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="submitAddCrew()">Add &amp; Assign</button>
-    </div>
+  <div class="crew-picker-footer" style="display:flex;justify-content:space-between;align-items:center">
+    <button class="btn btn-ghost btn-xs" onclick="assignCrewToRow(null, null)">✕ Clear</button>
+    <button class="btn btn-outline btn-xs" id="cpf-toggle-btn" onclick="togglePickerNewForm()">+ New Person</button>
   </div>
 </div>
 
