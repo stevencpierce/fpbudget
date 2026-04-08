@@ -2,7 +2,8 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 .hidden { display: none !important; }
 
-:root {
+:root,
+[data-theme="dark"] {
   --bg:         #0f1117;
   --bg-2:       #1a1d27;
   --bg-3:       #22263a;
@@ -20,6 +21,23 @@
   --radius:     6px;
   --radius-lg:  10px;
   --shadow:     0 2px 12px rgba(0,0,0,.4);
+}
+
+[data-theme="light"] {
+  --bg:         #f4f5f7;
+  --bg-2:       #ffffff;
+  --bg-3:       #edf0f5;
+  --border:     #d0d5e0;
+  --text:       #1a1d2e;
+  --text-muted: #6b7280;
+  --accent:     #2563eb;
+  --accent-dim: #1d4ed8;
+  --green:      #16a34a;
+  --red:        #dc2626;
+  --yellow:     #d97706;
+  --blue:       #2563eb;
+  --orange:     #ea580c;
+  --shadow:     0 2px 12px rgba(0,0,0,.1);
 }
 
 html { font-size: 14px; }
@@ -54,9 +72,21 @@ a:hover { text-decoration: underline; }
   text-decoration: none;
 }
 
-.nav-links { display: flex; gap: 1.25rem; }
+.nav-links { display: flex; align-items: center; gap: 1.25rem; }
 .nav-links a { color: var(--text-muted); font-size: .875rem; }
 .nav-links a:hover { color: var(--text); text-decoration: none; }
+.theme-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 3px 10px;
+  font-size: .85rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  line-height: 1.4;
+  transition: border-color .15s, color .15s;
+}
+.theme-toggle:hover { color: var(--text); border-color: var(--text-muted); }
 
 /* ── Flash messages ────────────────────────────────────────────────────────── */
 .flash-container { padding: .5rem 1.5rem; }
@@ -3516,7 +3546,7 @@ tr:hover .cs-rep-btn { opacity: 1; }
   font-weight: 500;
   cursor: default;
 }
-.cs-status-pending   { background: #2a2d3a; color: #9ca3af; border: 1px solid #3a3d4a; }
+.cs-status-pending   { background: var(--bg-3); color: var(--text-muted); border: 1px solid var(--border); }
 .cs-status-sent      { background: #1e3a5f; color: #60a5fa; border: 1px solid #2563eb; }
 .cs-status-viewed    { background: #2d2a00; color: #fbbf24; border: 1px solid #d97706; }
 .cs-status-confirmed { background: #052e16; color: #4ade80; border: 1px solid #16a34a; }

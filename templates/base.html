@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}FPBudget{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script>
+    // Apply theme before CSS renders to prevent flash
+    (function(){
+      var t = localStorage.getItem('fpbudget-theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
 </head>
 <body>
   <nav class="navbar">
@@ -22,8 +29,27 @@
       <a href="{{ url_for('profile') }}">My Profile</a>
       {% endif %}
       <a href="{{ url_for('logout') }}">Logout</a>
+      <button class="theme-toggle" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle light/dark mode">
+        <span id="theme-icon">☀</span>
+      </button>
     </div>
   </nav>
+  <script>
+  function toggleTheme() {
+    var html = document.documentElement;
+    var current = html.getAttribute('data-theme') || 'dark';
+    var next = current === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    localStorage.setItem('fpbudget-theme', next);
+    document.getElementById('theme-icon').textContent = next === 'dark' ? '☀' : '🌙';
+  }
+  // Set correct icon on load
+  document.addEventListener('DOMContentLoaded', function() {
+    var t = localStorage.getItem('fpbudget-theme') || 'dark';
+    var icon = document.getElementById('theme-icon');
+    if (icon) icon.textContent = t === 'dark' ? '☀' : '🌙';
+  });
+  </script>
 
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
