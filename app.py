@@ -2323,7 +2323,16 @@ def location_delete(pid, lid):
 def location_db_list():
     """Global locations database (project_id=NULL)."""
     locations = Location.query.filter_by(project_id=None, active=True).order_by(Location.name).all()
-    return render_template("locations.html", locations=locations)
+    # Build {location_id: [project_name, ...]} via LocationDay
+    loc_projects = {}
+    rows = (db.session.query(LocationDay.location_id, ProjectSheet.name)
+            .join(Budget, Budget.id == LocationDay.budget_id)
+            .join(ProjectSheet, ProjectSheet.id == Budget.project_id)
+            .distinct().all())
+    for loc_id, proj_name in rows:
+        loc_projects.setdefault(loc_id, set()).add(proj_name)
+    loc_projects = {k: sorted(v) for k, v in loc_projects.items()}
+    return render_template("locations.html", locations=locations, loc_projects=loc_projects)
 
 
 @app.route("/locations/save", methods=["POST"])
@@ -2461,7 +2470,25 @@ def contacts_set_omit(pid, bid):
 @login_required
 def crew_list():
     members = CrewMember.query.order_by(CrewMember.department, CrewMember.name).all()
-    return render_template("crew.html", members=members)
+    # Build {crew_member_id: [project_name, ...]} via CrewAssignment and assigned_crew_id
+    crew_projects = {}
+    rows = (db.session.query(CrewAssignment.crew_member_id, ProjectSheet.name)
+            .join(BudgetLine, BudgetLine.id == CrewAssignment.budget_line_id)
+            .join(Budget, Budget.id == BudgetLine.budget_id)
+            .join(ProjectSheet, ProjectSheet.id == Budget.project_id)
+            .filter(CrewAssignment.crew_member_id.isnot(None))
+            .distinct().all())
+    for crew_id, proj_name in rows:
+        crew_projects.setdefault(crew_id, set()).add(proj_name)
+    rows2 = (db.session.query(BudgetLine.assigned_crew_id, ProjectSheet.name)
+             .join(Budget, Budget.id == BudgetLine.budget_id)
+             .join(ProjectSheet, ProjectSheet.id == Budget.project_id)
+             .filter(BudgetLine.assigned_crew_id.isnot(None))
+             .distinct().all())
+    for crew_id, proj_name in rows2:
+        crew_projects.setdefault(crew_id, set()).add(proj_name)
+    crew_projects = {k: sorted(v) for k, v in crew_projects.items()}
+    return render_template("crew.html", members=members, crew_projects=crew_projects)
 
 
 @app.route("/crew/new", methods=["POST"])

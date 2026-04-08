@@ -74,6 +74,12 @@
     {% if loc.notes %}
     <div class="location-card-notes muted">{{ loc.notes }}</div>
     {% endif %}
+    {% set projs = loc_projects.get(loc.id, []) %}
+    {% if projs %}
+    <div class="location-card-projects">
+      {% for p in projs %}<span class="proj-tag">{{ p }}</span>{% endfor %}
+    </div>
+    {% endif %}
   </div>
   {% endfor %}
 </div>

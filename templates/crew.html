@@ -23,6 +23,7 @@
       <th>Email</th>
       <th>Phone</th>
       <th>Active</th>
+      <th>Projects</th>
       <th></th>
     </tr>
   </thead>
@@ -39,6 +40,11 @@
       <td>{{ m.email or '—' }}</td>
       <td>{{ m.phone or '—' }}</td>
       <td>{{ '✓' if m.active else '—' }}</td>
+      <td>{% set projs = crew_projects.get(m.id, []) %}
+        {% if projs %}
+          {% for p in projs %}<span class="proj-tag">{{ p }}</span>{% endfor %}
+        {% else %}—{% endif %}
+      </td>
       <td>
         <button class="btn btn-xs btn-outline edit-crew-btn"
                 data-id="{{ m.id }}"

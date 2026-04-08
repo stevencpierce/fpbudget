@@ -2061,6 +2061,17 @@ a.tab-link:hover { background: var(--bg-3); }
 .contact-link:hover { text-decoration: underline; }
 .location-card-billing { font-size: .75rem; color: var(--green); margin-bottom: .2rem; }
 .location-card-notes { font-size: .78rem; font-style: italic; margin-top: .25rem; }
+.location-card-projects { display: flex; flex-wrap: wrap; gap: 4px; margin-top: .4rem; }
+.proj-tag {
+  display: inline-block;
+  font-size: .7rem;
+  padding: 2px 7px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
 .location-card-actions { display: flex; gap: .25rem; align-items: center; }
 .location-card-global { border-left: 3px solid var(--accent); opacity: .88; }
 .location-card-global .location-card-name::after { content: ' ↗'; font-size: .7rem; color: var(--accent); }
