@@ -25,6 +25,20 @@
       <span class="mode-badge {{ cur_mode.cls }}">{{ cur_mode.label }}</span>
     </div>
   </div>
+  <!-- Collab: presence avatars + change banner -->
+  <div id="collab-bar" style="display:flex;align-items:center;gap:8px;margin-right:8px">
+    <div id="collab-viewers" style="display:flex;gap:4px"></div>
+    <span id="collab-edit-hint" style="font-size:.72rem;color:var(--text-muted)"></span>
+  </div>
+  <div id="collab-changes-banner" style="display:none;position:fixed;bottom:72px;left:50%;transform:translateX(-50%);
+       background:#1e3a5f;border:1px solid #2563eb;color:#93c5fd;border-radius:8px;
+       padding:8px 18px;font-size:.82rem;z-index:900;display:flex;align-items:center;gap:10px">
+    <span id="collab-changes-msg"></span>
+    <button class="btn btn-sm btn-primary" onclick="location.reload()" style="padding:3px 10px">Refresh</button>
+    <button onclick="document.getElementById('collab-changes-banner').style.display='none'"
+            style="background:none;border:none;color:#93c5fd;cursor:pointer;font-size:.9rem">✕</button>
+  </div>
+
   <div class="budget-header-right">
     <!-- Version picker dropdown -->
     <div class="dropdown version-dropdown">
@@ -5085,6 +5099,71 @@ async function qeAddSelected() {
   }
   closeCascade();
 }
+</script>
+
+<script>
+// ── Realtime Collaboration ─────────────────────────────────────────────────
+const _PRESENCE_URL = `/projects/${PID}/budget/${BID}/presence`;
+const _POLL_URL     = `/projects/${PID}/budget/${BID}/poll`;
+const _PAGE_LOAD_TS = new Date().toISOString();
+let _lastKnownUpdatedAt = null;
+let _changesBannerShown = false;
+
+function _collabPingPresence() {
+  fetch(_PRESENCE_URL, { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      // Update viewer avatars
+      const el = document.getElementById('collab-viewers');
+      if (!el) return;
+      if (d.viewers && d.viewers.length) {
+        el.innerHTML = d.viewers.map(v => {
+          const initials = v.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+          return `<span class="collab-avatar" title="${v.name} is also viewing">${initials}</span>`;
+        }).join('');
+      } else {
+        el.innerHTML = '';
+      }
+      // Show last-edit hint
+      const hint = document.getElementById('collab-edit-hint');
+      if (hint && d.last_edit) {
+        const ago = _timeAgo(new Date(d.last_edit.at));
+        hint.textContent = `${d.last_edit.name} edited ${ago}`;
+      }
+    })
+    .catch(() => {});
+}
+
+function _collabPoll() {
+  fetch(_POLL_URL)
+    .then(r => r.json())
+    .then(d => {
+      if (!d.updated_at) return;
+      if (!_lastKnownUpdatedAt) { _lastKnownUpdatedAt = d.updated_at; return; }
+      if (d.updated_at > _lastKnownUpdatedAt && d.updated_at > _PAGE_LOAD_TS && !_changesBannerShown) {
+        const by = d.last_edit ? d.last_edit.name : 'Someone';
+        const ago = d.last_edit ? _timeAgo(new Date(d.last_edit.at)) : '';
+        document.getElementById('collab-changes-msg').textContent =
+          `${by} made changes ${ago} — refresh to see them`;
+        document.getElementById('collab-changes-banner').style.display = 'flex';
+        _changesBannerShown = true;
+      }
+    })
+    .catch(() => {});
+}
+
+function _timeAgo(d) {
+  const s = Math.floor((Date.now() - d) / 1000);
+  if (s < 10) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  return `${Math.floor(s/3600)}h ago`;
+}
+
+// Ping presence every 20s, poll for changes every 7s
+_collabPingPresence();
+setInterval(_collabPingPresence, 20000);
+setInterval(_collabPoll, 7000);
 </script>
 
 <!-- ═══ QUICK ENTRY PANEL ═════════════════════════════════════════════════════ -->

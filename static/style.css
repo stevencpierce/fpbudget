@@ -444,6 +444,23 @@ input:focus, select:focus { border-color: var(--accent); }
 .budget-header-right { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 .budget-header-left .breadcrumb { margin-bottom: .2rem; }
 
+/* ── Collab presence avatars ───────────────────────────────────────────────── */
+.collab-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: #fff;
+  font-size: .65rem;
+  font-weight: 700;
+  border: 2px solid var(--bg-2);
+  cursor: default;
+  letter-spacing: .02em;
+}
+
 /* ── Login ─────────────────────────────────────────────────────────────────── */
 .login-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
 .login-card {

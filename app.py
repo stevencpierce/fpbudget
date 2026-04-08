@@ -354,6 +354,56 @@ def health():
     return "ok"
 
 
+# ── Realtime collaboration: in-memory presence store ─────────────────────────
+# { bid: { user_id: {"name": str, "seen": datetime} } }
+_presence = {}
+_PRESENCE_TTL = 45   # seconds before a viewer is considered gone
+_budget_last_editor = {}  # { bid: {"name": str, "at": datetime} }
+
+def _presence_cleanup(bid):
+    cutoff = datetime.utcnow() - timedelta(seconds=_PRESENCE_TTL)
+    _presence.setdefault(bid, {})
+    _presence[bid] = {uid: v for uid, v in _presence[bid].items() if v["seen"] > cutoff}
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/presence", methods=["POST"])
+@login_required
+def budget_presence(pid, bid):
+    """Ping to register presence; returns list of current viewers."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _presence.setdefault(bid, {})
+    _presence[bid][current_user.id] = {
+        "name": current_user.name or current_user.email.split("@")[0],
+        "seen": datetime.utcnow(),
+    }
+    _presence_cleanup(bid)
+    viewers = [
+        {"id": uid, "name": v["name"]}
+        for uid, v in _presence[bid].items()
+        if uid != current_user.id
+    ]
+    editor = _budget_last_editor.get(bid)
+    return jsonify({
+        "viewers": viewers,
+        "last_edit": {
+            "name": editor["name"],
+            "at": editor["at"].isoformat(),
+        } if editor else None,
+    })
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/poll")
+@login_required
+def budget_poll(pid, bid):
+    """Return budget updated_at so clients can detect remote changes."""
+    b = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    editor = _budget_last_editor.get(bid)
+    return jsonify({
+        "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+        "last_edit": {
+            "name": editor["name"],
+            "at": editor["at"].isoformat(),
+        } if editor else None,
+    })
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -3548,8 +3598,14 @@ def callsheet_view(pid, bid, date_str=None):
 
 def _touch_budget(bid):
     """Update budget.updated_at to now. Call after any meaningful change."""
+    now = datetime.utcnow()
     db.session.execute(text("UPDATE budget SET updated_at = :now WHERE id = :id"),
-                       {"now": datetime.utcnow(), "id": bid})
+                       {"now": now, "id": bid})
+    try:
+        name = current_user.name or current_user.email.split("@")[0]
+    except Exception:
+        name = "someone"
+    _budget_last_editor[bid] = {"name": name, "at": now}
 
 
 def _budget_type(budget_mode):
