@@ -256,6 +256,10 @@ input:focus, select:focus { border-color: var(--accent); }
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
   font-weight: 500;
+  position: sticky;
+  top: 44px;
+  background: var(--bg-2);
+  z-index: 5;
 }
 .data-table td {
   padding: .45rem .6rem;
