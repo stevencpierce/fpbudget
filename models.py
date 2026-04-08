@@ -439,9 +439,10 @@ class CallSheetRecipient(db.Model):
     recipient_type = db.Column(db.String(30), nullable=False)  # crew|talent|client|union|support
     name          = db.Column(db.String(200), nullable=False)
     email         = db.Column(db.String(200), nullable=True)
+    viewed_at     = db.Column(db.DateTime, nullable=True)
     confirmed_at  = db.Column(db.DateTime, nullable=True)
     confirm_token = db.Column(db.String(64), nullable=True, unique=True)
-    # Status: pending | sent | confirmed | bounced
+    # Status: pending | sent | viewed | confirmed | bounced
     status        = db.Column(db.String(20), default='pending', nullable=False)
 
 

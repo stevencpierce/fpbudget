@@ -2801,6 +2801,7 @@ def callsheet_distribution(pid, bid, date_str):
         "recipients": [{
             "id": r.id, "name": r.name, "email": r.email or "",
             "type": r.recipient_type, "status": r.status,
+            "viewed_at": r.viewed_at.isoformat() if r.viewed_at else None,
             "confirmed_at": r.confirmed_at.isoformat() if r.confirmed_at else None,
         } for r in s.recipients],
     } for s in sends])
@@ -2809,37 +2810,117 @@ def callsheet_distribution(pid, bid, date_str):
 @app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/<date_str>/prepare-send", methods=["POST"])
 @login_required
 def callsheet_prepare_send(pid, bid, date_str):
-    """Stage a distribution: create a CallSheetSend record with recipients. Does not send yet."""
-    import secrets
+    """Create a CallSheetSend record with recipients and send emails."""
+    import secrets as _secrets_mod
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    project = ProjectSheet.query.get_or_404(pid)
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
     try:
         selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
         return jsonify({"error": "invalid date"}), 400
     data = request.get_json(force=True) or {}
+    version_label = data.get("version_label", "v1")
     send = CallSheetSend(
         budget_id=bid,
         date=selected_date,
         schedule_mode=sched_mode,
-        version_label=data.get("version_label", "v1"),
+        version_label=version_label,
         notes=data.get("notes", ""),
         sent_by=ADMIN_EMAIL,
+        sent_at=datetime.utcnow(),
     )
     db.session.add(send)
     db.session.flush()
-    for r in data.get("recipients", []):
+    recipients_in = data.get("recipients", [])
+    created_recs = []
+    for r in recipients_in:
+        token = _secrets_mod.token_urlsafe(32)
         rec = CallSheetRecipient(
             send_id=send.id,
             recipient_type=r.get("type", "crew"),
             name=r.get("name", ""),
             email=r.get("email", ""),
-            confirm_token=secrets.token_urlsafe(32),
+            confirm_token=token,
             status="pending",
         )
         db.session.add(rec)
+        created_recs.append((rec, r.get("email", "")))
     db.session.commit()
-    return jsonify({"ok": True, "send_id": send.id})
+
+    # Send emails to all recipients with a valid email address
+    date_display = selected_date.strftime("%A, %B %-d, %Y")
+    sent_count = 0
+    for rec, email in created_recs:
+        if not email:
+            continue
+        view_url = request.host_url.rstrip('/') + f"/callsheet/view/{rec.confirm_token}"
+        subject = f"Call Sheet — {project.name} — {date_display} ({version_label})"
+        body = (
+            f"Hi {rec.name},\n\n"
+            f"Your call sheet for {project.name} on {date_display} is ready.\n\n"
+            f"View & confirm your call: {view_url}\n\n"
+            f"Please confirm receipt by clicking the link above.\n\n"
+            f"— Framework Productions\n"
+            f"  contact@thefp.tv\n"
+        )
+        ok = _send_email(email, subject, body)
+        if ok:
+            rec.status = "sent"
+            sent_count += 1
+    db.session.commit()
+    return jsonify({"ok": True, "send_id": send.id, "sent": sent_count, "total": len(created_recs)})
+
+
+@app.route("/callsheet/view/<token>")
+def callsheet_view_public(token):
+    """Public link: mark as viewed, show confirm page."""
+    rec = CallSheetRecipient.query.filter_by(confirm_token=token).first_or_404()
+    if not rec.viewed_at:
+        rec.viewed_at = datetime.utcnow()
+        if rec.status == "sent":
+            rec.status = "viewed"
+        db.session.commit()
+    send = CallSheetSend.query.get(rec.send_id)
+    already_confirmed = rec.confirmed_at is not None
+    date_display = send.date.strftime("%A, %B %-d, %Y") if send else ""
+    budget = Budget.query.get(send.budget_id) if send else None
+    project = ProjectSheet.query.get(budget.project_id) if budget else None
+    project_name = project.name if project else ""
+    return render_template(
+        "callsheet_confirm.html",
+        rec=rec,
+        send=send,
+        already_confirmed=already_confirmed,
+        date_display=date_display,
+        project_name=project_name,
+        token=token,
+    )
+
+
+@app.route("/callsheet/confirm/<token>", methods=["POST"])
+def callsheet_confirm_public(token):
+    """Public link: record confirmation."""
+    rec = CallSheetRecipient.query.filter_by(confirm_token=token).first_or_404()
+    if not rec.confirmed_at:
+        rec.confirmed_at = datetime.utcnow()
+        rec.status = "confirmed"
+        if not rec.viewed_at:
+            rec.viewed_at = rec.confirmed_at
+        db.session.commit()
+    send = CallSheetSend.query.get(rec.send_id)
+    date_display = send.date.strftime("%A, %B %-d, %Y") if send else ""
+    budget = Budget.query.get(send.budget_id) if send else None
+    project = ProjectSheet.query.get(budget.project_id) if budget else None
+    return render_template(
+        "callsheet_confirm.html",
+        rec=rec,
+        send=send,
+        already_confirmed=True,
+        date_display=date_display,
+        project_name=project.name if project else "",
+        token=token,
+    )
 
 
 # ── Budget Templates ──────────────────────────────────────────────────────────
@@ -4273,6 +4354,13 @@ with app.app_context():
                 existing.role = 'super_admin'
                 db.session.commit()
     _seed_admin_user()
+
+    # ── CallSheetRecipient: add viewed_at column ──────────────────────────────
+    try:
+        db.session.execute(text("ALTER TABLE callsheet_recipient ADD COLUMN viewed_at TIMESTAMP"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
 
     # ── BudgetTemplateLine: add qty/days/rate columns, drop unique constraint ──
     for _tmpl_col in [

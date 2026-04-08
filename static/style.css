@@ -3492,24 +3492,34 @@ tr:hover .cs-rep-btn { opacity: 1; }
 }
 .cs-dist-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 1rem;
   margin-bottom: .75rem;
   border-bottom: 1px solid var(--border);
   padding-bottom: .6rem;
 }
-.cs-dist-header h3 { margin: 0; font-size: 1rem; }
-.cs-dist-body { display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; }
-.cs-dist-meta { display: flex; align-items: center; gap: .5rem; font-size: .85rem; }
-.cs-dist-coming-soon {
-  font-size: .7rem;
-  color: var(--text-muted);
+.cs-dist-header h3 { margin: 0; font-size: 1rem; flex: 1; }
+.cs-dist-new-send { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 8px; }
+.cs-dist-send-record {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: .1rem .4rem;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
 }
-.cs-dist-recipients-summary { font-size: .78rem; color: var(--text-muted); flex: 1; }
+/* Recipient status badges in history */
+.cs-recip-badge {
+  display: inline-block;
+  font-size: .72rem;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-weight: 500;
+  cursor: default;
+}
+.cs-status-pending   { background: #2a2d3a; color: #9ca3af; border: 1px solid #3a3d4a; }
+.cs-status-sent      { background: #1e3a5f; color: #60a5fa; border: 1px solid #2563eb; }
+.cs-status-viewed    { background: #2d2a00; color: #fbbf24; border: 1px solid #d97706; }
+.cs-status-confirmed { background: #052e16; color: #4ade80; border: 1px solid #16a34a; }
 
 /* ── % Edit Popup (top sheet quick edit) ──────────────────────────────────── */
 .pct-edit-popup {

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Call Sheet Confirmation — {{ project_name }}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f1117;
+      color: #e8e9ec;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: #1a1d27;
+      border: 1px solid #2a2d3a;
+      border-radius: 12px;
+      padding: 40px 48px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+    }
+    .logo {
+      font-size: .8rem;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+      color: #6b7280;
+      margin-bottom: 28px;
+    }
+    .icon {
+      font-size: 2.5rem;
+      margin-bottom: 16px;
+    }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .sub {
+      color: #9ca3af;
+      font-size: .9rem;
+      margin-bottom: 28px;
+      line-height: 1.5;
+    }
+    .detail-row {
+      background: #12151e;
+      border: 1px solid #2a2d3a;
+      border-radius: 8px;
+      padding: 14px 18px;
+      text-align: left;
+      margin-bottom: 24px;
+      font-size: .88rem;
+    }
+    .detail-row strong { color: #e8e9ec; }
+    .detail-row .label { color: #6b7280; font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 2px; }
+    .detail-pair { margin-bottom: 10px; }
+    .detail-pair:last-child { margin-bottom: 0; }
+    .btn-confirm {
+      display: inline-block;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 32px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      margin-bottom: 12px;
+      transition: background .15s;
+    }
+    .btn-confirm:hover { background: #1d4ed8; }
+    .confirmed-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: #052e16;
+      border: 1px solid #16a34a;
+      color: #4ade80;
+      border-radius: 8px;
+      padding: 12px 24px;
+      font-size: .95rem;
+      font-weight: 600;
+      width: 100%;
+      justify-content: center;
+      margin-bottom: 12px;
+    }
+    .footer-note {
+      font-size: .75rem;
+      color: #4b5563;
+      margin-top: 24px;
+    }
+    .framework-link { color: #4b5563; text-decoration: none; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">Framework Productions</div>
+
+  {% if already_confirmed %}
+    <div class="icon">✅</div>
+    <h1>You're Confirmed</h1>
+    <p class="sub">Thanks {{ rec.name }} — your call sheet has been confirmed.</p>
+  {% else %}
+    <div class="icon">📋</div>
+    <h1>Call Sheet Ready</h1>
+    <p class="sub">Please review and confirm your call for {{ date_display }}.</p>
+  {% endif %}
+
+  <div class="detail-row">
+    <div class="detail-pair">
+      <div class="label">Project</div>
+      <strong>{{ project_name }}</strong>
+    </div>
+    <div class="detail-pair">
+      <div class="label">Shoot Date</div>
+      <strong>{{ date_display }}</strong>
+    </div>
+    {% if send.version_label %}
+    <div class="detail-pair">
+      <div class="label">Version</div>
+      <strong>{{ send.version_label }}</strong>
+    </div>
+    {% endif %}
+    <div class="detail-pair">
+      <div class="label">Recipient</div>
+      <strong>{{ rec.name }}</strong>
+    </div>
+  </div>
+
+  {% if already_confirmed %}
+    <div class="confirmed-badge">
+      ✓ Confirmed {{ rec.confirmed_at.strftime('%-I:%M %p, %b %-d') if rec.confirmed_at else '' }}
+    </div>
+  {% else %}
+    <form method="POST" action="/callsheet/confirm/{{ token }}">
+      <button type="submit" class="btn-confirm">✓ Confirm My Call</button>
+    </form>
+  {% endif %}
+
+  <div class="footer-note">
+    Questions? Contact us at <a class="framework-link" href="mailto:contact@thefp.tv">contact@thefp.tv</a>
+  </div>
+</div>
+</body>
+</html>

@@ -788,22 +788,39 @@ Example:
 
 </div>{# /callsheet-wrapper #}
 
-{# ── Distribution panel (screen only, foundation for future send) ─────────── #}
-<div class="cs-distribution-panel cs-screen-only">
+{# ── Distribution panel (screen only) ─────────────────────────────────────── #}
+<div class="cs-distribution-panel cs-screen-only" id="cs-dist-panel">
   <div class="cs-dist-header">
     <h3>Distribution</h3>
-    <span class="muted" style="font-size:.78rem">Future: send call sheet via email to crew, cast, clients, unions</span>
+    <button class="btn btn-sm btn-ghost" onclick="csDistToggle()" id="cs-dist-toggle-btn" title="Expand">▸ Expand</button>
   </div>
-  <div class="cs-dist-body">
-    <div class="cs-dist-meta">
-      <span class="muted" style="font-size:.82rem">Call Sheet Version:</span>
-      <strong id="cs-dist-version-display">{{ cs_data.get('callsheet_version', 'v1') }}</strong>
-      <span class="cs-dist-coming-soon">Email send coming soon</span>
+
+  <div id="cs-dist-body" style="display:none">
+    {# Send history — loads via JS #}
+    <div id="cs-dist-history" style="margin-bottom:16px"></div>
+
+    {# New send form #}
+    <div class="cs-dist-new-send" id="cs-dist-new-send">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+        <label style="font-size:.8rem;color:var(--text-muted);white-space:nowrap">Version label:</label>
+        <input type="text" id="cs-dist-version-input"
+               value="{{ cs_data.get('callsheet_version', 'v1') }}"
+               style="width:90px;padding:4px 8px;font-size:.82rem" placeholder="v1">
+        <label style="font-size:.8rem;color:var(--text-muted);white-space:nowrap">Notes:</label>
+        <input type="text" id="cs-dist-notes-input"
+               style="flex:1;min-width:140px;padding:4px 8px;font-size:.82rem" placeholder="(optional)">
+      </div>
+      <div style="margin-bottom:10px">
+        <span style="font-size:.78rem;color:var(--text-muted)">Recipients from this call sheet:</span>
+        <div id="cs-dist-recipient-list" style="margin-top:6px;max-height:220px;overflow-y:auto"></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-sm btn-primary" id="cs-dist-send-btn" onclick="csSendCallSheet()">
+          ✉ Send Call Sheet
+        </button>
+        <span id="cs-dist-send-status" style="font-size:.82rem;color:var(--text-muted)"></span>
+      </div>
     </div>
-    <div class="cs-dist-recipients-summary">
-      <span class="muted" style="font-size:.78rem">Distribution will include: crew, cast, clients, union contacts, CC'd reps</span>
-    </div>
-    <button class="btn btn-sm btn-outline" disabled title="Email distribution coming soon">✉ Send Call Sheet</button>
   </div>
 </div>
 
@@ -811,6 +828,8 @@ Example:
 <script>
 // ── Constants ─────────────────────────────────────────────────────────────────
 const CS_SAVE_URL   = "{{ url_for('callsheet_save', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
+const CS_DIST_URL   = "{{ url_for('callsheet_distribution', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
+const CS_SEND_URL   = "{{ url_for('callsheet_prepare_send', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
 const CS_DATA       = {{ cs_data | tojson }};
 const KEY_CONTACTS_FALLBACK = {{ key_contacts | tojson }};
 const AVAILABLE_CONTACTS    = {{ available_contacts | tojson }};
@@ -1626,6 +1645,132 @@ function jumpToDate(sel) {
   if (dateStr) {
     window.location.href = "{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}/" + dateStr;
   }
+}
+
+// ── Distribution Panel ────────────────────────────────────────────────────────
+let _distOpen = false;
+
+function csDistToggle() {
+  _distOpen = !_distOpen;
+  document.getElementById('cs-dist-body').style.display = _distOpen ? 'block' : 'none';
+  document.getElementById('cs-dist-toggle-btn').textContent = _distOpen ? '▾ Collapse' : '▸ Expand';
+  if (_distOpen) {
+    csDistLoadHistory();
+    csDistBuildRecipientList();
+  }
+}
+
+function csDistLoadHistory() {
+  fetch(CS_DIST_URL)
+    .then(r => r.json())
+    .then(sends => {
+      const el = document.getElementById('cs-dist-history');
+      if (!sends.length) { el.innerHTML = '<p style="font-size:.78rem;color:var(--text-muted)">No sends yet.</p>'; return; }
+      const rows = sends.map(s => {
+        const dt = s.sent_at ? new Date(s.sent_at).toLocaleString() : '—';
+        const confirmed = s.recipients.filter(r => r.status === 'confirmed').length;
+        const viewed    = s.recipients.filter(r => r.status === 'viewed' || r.status === 'confirmed').length;
+        const total     = s.recipients.length;
+        const badges = s.recipients.map(r => {
+          let cls = 'cs-status-pending', label = 'pending';
+          if (r.status === 'sent')      { cls = 'cs-status-sent';      label = 'sent'; }
+          if (r.status === 'viewed')    { cls = 'cs-status-viewed';     label = 'viewed'; }
+          if (r.status === 'confirmed') { cls = 'cs-status-confirmed';  label = 'confirmed'; }
+          const name = r.name || r.email || '?';
+          const tooltip = r.email ? `${name} <${r.email}>\nStatus: ${label}` : `${name}\n(no email)`;
+          return `<span class="cs-recip-badge ${cls}" title="${tooltip.replace(/"/g,"&quot;")}">${name}</span>`;
+        }).join('');
+        return `<div class="cs-dist-send-record">
+          <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px">
+            <strong style="font-size:.83rem">${s.version_label || ''}</strong>
+            <span style="font-size:.75rem;color:var(--text-muted)">${dt}</span>
+            <span style="font-size:.75rem;color:var(--text-muted)">by ${s.sent_by || ''}</span>
+            <span style="font-size:.75rem;background:#1e3a5f;color:#60a5fa;border-radius:4px;padding:1px 6px">${confirmed}/${total} confirmed · ${viewed}/${total} viewed</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">${badges}</div>
+          ${s.notes ? `<div style="font-size:.75rem;color:var(--text-muted);margin-top:4px">${s.notes}</div>` : ''}
+        </div>`;
+      }).join('');
+      el.innerHTML = `<div style="margin-bottom:8px;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Send History</div>${rows}`;
+    })
+    .catch(() => {});
+}
+
+function csDistBuildRecipientList() {
+  // Collect all people listed on the call sheet who have email addresses
+  const people = [];
+  const seen = new Set();
+  function addPerson(name, email, type) {
+    if (!email) return;
+    const key = email.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    people.push({ name, email, type });
+  }
+  // Key contacts
+  (CS_DATA.key_personnel || KEY_CONTACTS_FALLBACK || []).forEach(p => {
+    if (p && p.name) addPerson(p.name, p.email || '', 'crew');
+  });
+  // Crew call times
+  (CS_DATA.crew_call_times || []).forEach(c => {
+    if (c && c.name) addPerson(c.name, c.email || '', 'crew');
+  });
+  // Available contacts fallback
+  (AVAILABLE_CONTACTS || []).forEach(c => {
+    if (c && c.name) addPerson(c.name, c.email || '', c.type || 'crew');
+  });
+
+  const el = document.getElementById('cs-dist-recipient-list');
+  if (!people.length) {
+    el.innerHTML = '<p style="font-size:.78rem;color:var(--text-muted)">No contacts with email addresses found on this call sheet.</p>';
+    return;
+  }
+  el.innerHTML = people.map((p, i) => `
+    <label style="display:flex;align-items:center;gap:8px;font-size:.82rem;padding:3px 0;cursor:pointer">
+      <input type="checkbox" class="cs-dist-recip-cb" data-idx="${i}"
+             data-name="${(p.name||'').replace(/"/g,'&quot;')}"
+             data-email="${(p.email||'').replace(/"/g,'&quot;')}"
+             data-type="${p.type||'crew'}"
+             ${p.email ? 'checked' : 'disabled'}>
+      <span>${p.name}</span>
+      ${p.email ? `<span style="color:var(--text-muted);font-size:.75rem">${p.email}</span>` : '<span style="color:var(--text-muted);font-size:.73rem">(no email)</span>'}
+    </label>
+  `).join('');
+}
+
+function csSendCallSheet() {
+  const btn = document.getElementById('cs-dist-send-btn');
+  const statusEl = document.getElementById('cs-dist-send-status');
+  const version = document.getElementById('cs-dist-version-input').value.trim() || 'v1';
+  const notes = document.getElementById('cs-dist-notes-input').value.trim();
+
+  const recipients = [];
+  document.querySelectorAll('.cs-dist-recip-cb:checked').forEach(cb => {
+    recipients.push({ name: cb.dataset.name, email: cb.dataset.email, type: cb.dataset.type });
+  });
+  if (!recipients.length) {
+    statusEl.textContent = 'No recipients selected.';
+    return;
+  }
+
+  btn.disabled = true;
+  statusEl.textContent = 'Sending…';
+  fetch(CS_SEND_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version_label: version, notes, recipients })
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.error) {
+      statusEl.textContent = 'Error: ' + d.error;
+    } else {
+      statusEl.textContent = `✓ Sent to ${d.sent} of ${d.total} recipient${d.total !== 1 ? 's' : ''}`;
+      csDistLoadHistory();
+    }
+    btn.disabled = false;
+  })
+  .catch(() => { statusEl.textContent = 'Send failed.'; btn.disabled = false; });
 }
 
 // ── Initialize ────────────────────────────────────────────────────────────────
