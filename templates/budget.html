@@ -503,16 +503,12 @@
           {% endif %}
           <td class="col-act">
             {% if ln.is_labor %}
-            <div class="budget-crew-tiles">
-              {% set sorted_cas = ln.crew_assignments | sort(attribute='instance') %}
-              {% if sorted_cas %}
-                {% for ca in sorted_cas %}
-                <span class="budget-crew-tile" title="{{ ca.crew_member.name if ca.crew_member else ca.name_override }}">{{ ca.crew_member.name if ca.crew_member else ca.name_override }}</span>
-                {% endfor %}
-              {% else %}
-              <span class="budget-crew-tile unassigned">—</span>
-              {% endif %}
-            </div>
+            <span class="assigned-crew-name {{ '' if ln.assigned_crew else 'no-assignment' }}"
+                  data-id="{{ ln.id }}"
+                  onclick="openCrewAssign({{ ln.id }})"
+                  title="{{ ln.assigned_crew.name if ln.assigned_crew else 'Click to assign person' }}">
+              {{ ln.assigned_crew.name if ln.assigned_crew else '+ Assign' }}
+            </span>
             <button class="btn btn-xs btn-outline calc-detail-btn"
                     data-pid="{{ project.id }}" data-bid="{{ budget.id }}" data-lid="{{ ln.id }}"
                     title="View OT / payroll calculation breakdown">OT Detail</button>
