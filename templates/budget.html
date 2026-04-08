@@ -36,7 +36,7 @@
        background:var(--bg-3);border:1px solid var(--border);color:var(--text);border-radius:8px;
        padding:8px 14px;font-size:.8rem;z-index:900;display:flex;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)">
     <span id="collab-struct-msg"></span>
-    <a href="#" onclick="window.location.reload();return false"
+    <a href="#" onclick="reloadWithTab();return false"
        style="color:var(--accent);text-decoration:none;font-weight:500">Reload</a>
     <button onclick="document.getElementById('collab-struct-toast').style.display='none'"
             style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:.85rem;padding:0">✕</button>
@@ -1924,6 +1924,16 @@ const COA_SECTIONS = {{ coa_sections | tojson }};
 const _budgetUndoStack = [];
 const BUDGET_MAX_UNDO = 50;
 
+// ── Tab-preserving reload ──────────────────────────────────────────────────
+function reloadWithTab() {
+  const activeBtn = document.querySelector('.tab-btn.active[data-tab]');
+  const tab = activeBtn ? activeBtn.dataset.tab : null;
+  const url = new URL(window.location);
+  if (tab) url.searchParams.set('tab', tab);
+  else url.searchParams.delete('tab');
+  window.location.href = url.toString();
+}
+
 // ── Tab switching ──────────────────────────────────────────────────────────
 document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -2743,7 +2753,7 @@ async function submitAddLine() {
   });
   if (!res.ok) { alert('Failed to add line'); return; }
   closeModal();
-  window.location.reload();
+  reloadWithTab();
 }
 
 function showNewBudgetModal() {
@@ -2759,7 +2769,7 @@ document.addEventListener('click', async e => {
   e.preventDefault();
   e.stopPropagation();
   const r = await fetch(`/projects/${PID}/budget/${btn.dataset.bid}/archive`, { method: 'POST' });
-  if (r.ok) { window.location.reload(); }
+  if (r.ok) { reloadWithTab(); }
 });
 
 // Delete (permanent)
@@ -2892,7 +2902,7 @@ function editTaxCredit(id) {
 async function deleteTaxCredit(id) {
   if (!confirm('Delete this tax credit?')) return;
   const res = await fetch(`${TC_URL}/${id}`, { method: 'DELETE' });
-  if (res.ok) window.location.reload();
+  if (res.ok) reloadWithTab();
   else alert('Failed to delete tax credit');
 }
 
@@ -2915,7 +2925,7 @@ async function saveTaxCredit() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload),
   });
-  if (res.ok) window.location.reload();
+  if (res.ok) reloadWithTab();
   else alert('Failed to save tax credit');
 }
 
@@ -3269,7 +3279,7 @@ function renderCalcDetail(d) {
       body: JSON.stringify({ rate, quantity: qty, days })
     });
     if (r.ok) {
-      window.location.reload();
+      reloadWithTab();
     } else {
       alert('Failed to add kit fee.');
     }
@@ -3533,7 +3543,7 @@ async function importLibLoc(data) {
     notes: data.notes || null, save_to_library: false,  // already in library
   };
   const res = await fetch(LOC_SAVE_URL, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
-  if (res.ok) window.location.reload();
+  if (res.ok) reloadWithTab();
   else alert('Failed to import location');
 }
 
@@ -3576,7 +3586,7 @@ function editLocation(id) {
 async function deleteLocation(id) {
   if (!confirm('Remove this location?')) return;
   const res = await fetch(`/projects/${PID}/locations/${id}/delete`, { method: 'POST' });
-  if (res.ok) window.location.reload();
+  if (res.ok) reloadWithTab();
   else alert('Failed to delete location');
 }
 
@@ -3612,7 +3622,7 @@ async function saveLocation() {
       body: JSON.stringify(payload),
     });
     if (res.ok) {
-      window.location.reload();
+      reloadWithTab();
     } else {
       const body = await res.json().catch(() => ({}));
       alert(body.error || `Save failed (HTTP ${res.status})`);
@@ -3723,12 +3733,12 @@ document.querySelectorAll('.cs-ctx-btn').forEach(btn => {
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({ entries, field: f, value: false })
         })
-      )).then(() => location.reload());
+      )).then(() => reloadWithTab());
     } else {
       fetch(CS_OMIT_URL, {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ entries, field, value: action === 'omit' })
-      }).then(() => location.reload());
+      }).then(() => reloadWithTab());
     }
   });
 });
@@ -3892,7 +3902,7 @@ function saveUnion() {
     receives_callsheet: document.getElementById('union-receives-cs').checked,
   };
   fetch(UNION_SAVE_URL, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
-    .then(r => r.json()).then(d => { if (d.ok) location.reload(); else alert(d.error || 'Error'); });
+    .then(r => r.json()).then(d => { if (d.ok) reloadWithTab(); else alert(d.error || 'Error'); });
 }
 
 function deleteUnion(uid, btn) {
@@ -3948,7 +3958,7 @@ function saveClient() {
     receives_callsheet: document.getElementById('client-receives-cs').checked,
   };
   fetch(CLIENT_SAVE_URL, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
-    .then(r => r.json()).then(d => { if (d.ok) location.reload(); else alert(d.error || 'Error'); });
+    .then(r => r.json()).then(d => { if (d.ok) reloadWithTab(); else alert(d.error || 'Error'); });
 }
 
 function deleteClient(cid, btn) {
@@ -3988,7 +3998,7 @@ function saveSupportContact() {
     cc_by_default: document.getElementById('support-cc-default').checked,
   };
   fetch(`/crew/${crewId}/support/save`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
-    .then(r => r.json()).then(d => { if (d.ok) { closeSupportModal(); location.reload(); } else alert(d.error || 'Error'); });
+    .then(r => r.json()).then(d => { if (d.ok) { closeSupportModal(); reloadWithTab(); } else alert(d.error || 'Error'); });
 }
 
 // ── Inline CS toggles ──────────────────────────────────────────────────────
@@ -4291,7 +4301,7 @@ function saveCrewEdit() {
   .then(d => {
     if (d.ok) {
       closeCrewEditModal();
-      window.location.reload();
+      reloadWithTab();
     } else {
       alert(d.error || 'Save failed');
     }
@@ -4328,14 +4338,14 @@ function saveNewContact() {
   })
   .then(r => r.json())
   .then(d => {
-    if (d.ok) { closeAddContactModal(); window.location.reload(); }
+    if (d.ok) { closeAddContactModal(); reloadWithTab(); }
     else { alert(d.error || 'Failed to add contact'); }
   });
 }
 function removeDirectContact(dcId) {
   if (!confirm('Remove this contact from the project?')) return;
   fetch(DIRECT_CONTACT_DEL_BASE + '/' + dcId, { method: 'POST' })
-    .then(() => window.location.reload());
+    .then(() => reloadWithTab());
 }
 
 // ── Representation / Support Contacts Modal ──────────────────────────────────
@@ -4426,7 +4436,7 @@ async function saveRepContact() {
   if (body.ok) {
     document.getElementById('rep-form').classList.add('hidden');
     await loadSupportContacts(_repCrewId);
-    window.location.reload();  // refresh Agent column
+    reloadWithTab();  // refresh Agent column
   } else {
     alert(body.error || 'Failed to save');
   }
@@ -4436,7 +4446,7 @@ async function deleteSupport(sid) {
   if (!confirm('Remove this contact?')) return;
   await fetch(`/crew/${_repCrewId}/support/${sid}/delete`, { method: 'POST' });
   await loadSupportContacts(_repCrewId);
-  window.location.reload();
+  reloadWithTab();
 }
 
 // ── Top Sheet Collapsible Sections ──────────────────────────────────────────
@@ -4928,7 +4938,7 @@ function openCascade() {
 function closeCascade() {
   document.getElementById('cascade-panel').classList.add('hidden');
   document.getElementById('cascade-overlay').classList.add('hidden');
-  if (_qeCart.size > 0) window.location.reload();
+  if (_qeCart.size > 0) reloadWithTab();
 }
 
 // per-category union toggle
