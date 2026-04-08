@@ -1374,7 +1374,7 @@
           <div class="field">
             <label>Start Date</label>
             <input type="date" id="set-start" value="{{ budget.start_date.isoformat() if budget.start_date else '' }}"
-                   oninput="autoSetEndDate(this.value)">
+                   oninput="autoSetEndDate(this.value)" onchange="autoSetEndDate(this.value)">
           </div>
           <div class="field">
             <label>End Date</label>
@@ -2903,9 +2903,8 @@ async function saveTaxCredit() {
 // ── Project Settings ──────────────────────────────────────────────────────
 const SETTINGS_URL = `{{ url_for('budget_settings', pid=project.id, bid=budget.id) }}`;
 function autoSetEndDate(startVal) {
+  if (!startVal) return;
   const endInput = document.getElementById('set-end');
-  // Only auto-fill if end date is currently empty
-  if (!startVal || endInput.value) return;
   const d = new Date(startVal + 'T00:00:00');
   d.setDate(d.getDate() + 14);
   endInput.value = d.toISOString().split('T')[0];
