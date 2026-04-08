@@ -498,6 +498,12 @@ input:focus, select:focus { border-color: var(--accent); }
   border: 1px solid var(--border);
   padding: 0;
 }
+.gantt-table thead th {
+  position: sticky;
+  top: 44px;      /* clear the sticky navbar */
+  z-index: 10;
+  background: var(--bg-2);
+}
 .gantt-row-label {
   min-width: 220px;
   max-width: 260px;
