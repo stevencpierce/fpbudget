@@ -247,7 +247,7 @@ input:focus, select:focus { border-color: var(--accent); }
 .data-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: .82rem;
+  font-size: .93rem;
 }
 .data-table th {
   text-align: left;
@@ -258,7 +258,7 @@ input:focus, select:focus { border-color: var(--accent); }
   font-weight: 500;
 }
 .data-table td {
-  padding: .4rem .6rem;
+  padding: .45rem .6rem;
   border-bottom: 1px solid rgba(46,51,73,.5);
   vertical-align: middle;
 }
