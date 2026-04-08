@@ -102,7 +102,9 @@ function initGantt(pid, bid, activeProfileId) {
   document.addEventListener('mousedown', e => {
     const cell = e.target.closest('.gantt-cell');
     if (!cell || e.button !== 0) return;
-    const ctrl = e.metaKey || e.ctrlKey;
+    // On Mac, Ctrl+click is right-click — only use Cmd (metaKey) to enter select mode
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    const ctrl = isMac ? e.metaKey : e.ctrlKey;
 
     if (ctrl && !_selectMode) {
       _activateSelectMode();

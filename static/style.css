@@ -496,7 +496,11 @@ input:focus, select:focus { border-color: var(--accent); }
   font-weight: 500;
 }
 
-.gantt-scroll-wrap { overflow-x: auto; }
+.gantt-scroll-wrap {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: calc(100vh - 190px); /* self-contained scroll region */
+}
 .gantt-table { border-collapse: collapse; font-size: .8rem; white-space: nowrap; }
 .gantt-table th, .gantt-table td {
   border: 1px solid var(--border);
@@ -504,7 +508,7 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 .gantt-table thead th {
   position: sticky;
-  top: 44px;      /* clear the sticky navbar */
+  top: 0;           /* top of the scroll wrap, not the viewport */
   z-index: 10;
   background: var(--bg-2);
 }

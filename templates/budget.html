@@ -3216,8 +3216,7 @@ function renderCalcDetail(d) {
 (function() {
   const _pid = {{ project.id }};
   const _bid = {{ budget.id }};
-  let _ctxLineId = null;
-  let _ctxLineRow = null;
+  // _ctxLineId and _ctxLineRow are declared globally so allInRecalc/allInApply can access them
 
   const menu = document.getElementById('budget-row-ctx-menu');
 
@@ -3328,6 +3327,10 @@ function renderCalcDetail(d) {
 </script>
 
 <script>
+// Expose ctx line refs for all-in modal (set by the IIFE context menu handler)
+let _ctxLineId  = null;
+let _ctxLineRow = null;
+
 // ── All-in Total Reverse Calculator ───────────────────────────────────────
 // OT multiplier for a given rate_type: returns the factor by which a day rate
 // must be divided to find the ST-only rate that produces a given all-in total.
