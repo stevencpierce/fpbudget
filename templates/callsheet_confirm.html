@@ -8,237 +8,542 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0f1117; color: #e8e9ec;
-      min-height: 100vh; padding: 24px 16px;
+      background: #0d0f14; color: #e8e9ec;
+      min-height: 100vh; padding: 0;
     }
-    .container { max-width: 520px; margin: 0 auto; }
 
-    /* ── Confirm card ── */
-    .card {
-      background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 12px;
-      padding: 36px 40px; text-align: center; margin-bottom: 24px;
+    /* ── Top confirm bar ── */
+    .confirm-bar {
+      background: #1a1d27; border-bottom: 1px solid #2a2d3a;
+      padding: 14px 20px; position: sticky; top: 0; z-index: 100;
     }
-    .logo { font-size: .75rem; letter-spacing: .15em; text-transform: uppercase; color: #6b7280; margin-bottom: 24px; }
-    .icon { font-size: 2.2rem; margin-bottom: 12px; }
-    h1 { font-size: 1.3rem; font-weight: 600; margin-bottom: 6px; }
-    .sub { color: #9ca3af; font-size: .88rem; margin-bottom: 22px; line-height: 1.5; }
-    .call-time-badge {
-      background: #0c1a3a; border: 1px solid #1d4ed8;
-      border-radius: 10px; padding: 14px 20px; margin-bottom: 20px;
+    .confirm-bar-inner {
+      max-width: 900px; margin: 0 auto;
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
     }
-    .call-time-badge .label { font-size: .7rem; text-transform: uppercase; letter-spacing: .1em; color: #6b7280; margin-bottom: 4px; }
-    .call-time-badge .time { font-size: 2rem; font-weight: 700; color: #60a5fa; line-height: 1; }
-    .detail-row {
-      background: #12151e; border: 1px solid #2a2d3a; border-radius: 8px;
-      padding: 12px 16px; text-align: left; margin-bottom: 18px; font-size: .86rem;
+    .confirm-bar .logo { font-size: .7rem; letter-spacing: .15em; text-transform: uppercase; color: #6b7280; flex-shrink: 0; }
+    .confirm-bar .recip-info { flex: 1; min-width: 0; }
+    .confirm-bar .recip-name { font-weight: 600; font-size: .95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .confirm-bar .recip-sub { font-size: .78rem; color: #9ca3af; margin-top: 2px; }
+    .confirm-bar .call-pill {
+      background: #0c1a3a; border: 1px solid #1d4ed8; border-radius: 8px;
+      padding: 6px 14px; text-align: center; flex-shrink: 0;
     }
-    .detail-pair { margin-bottom: 8px; }
-    .detail-pair:last-child { margin-bottom: 0; }
-    .detail-pair .label { color: #6b7280; font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 2px; }
-    .detail-pair strong { color: #e8e9ec; }
+    .confirm-bar .call-pill .pill-lbl { font-size: .6rem; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; }
+    .confirm-bar .call-pill .pill-time { font-size: 1.15rem; font-weight: 700; color: #60a5fa; line-height: 1.1; }
     .btn-confirm {
-      display: block; width: 100%; background: #2563eb; color: #fff;
-      border: none; border-radius: 8px; padding: 12px 24px;
-      font-size: 1rem; font-weight: 600; cursor: pointer; margin-bottom: 10px;
-      transition: background .15s;
+      background: #2563eb; color: #fff; border: none; border-radius: 8px;
+      padding: 9px 20px; font-size: .88rem; font-weight: 600; cursor: pointer;
+      transition: background .15s; flex-shrink: 0; white-space: nowrap;
     }
     .btn-confirm:hover { background: #1d4ed8; }
-    .confirmed-badge {
-      display: flex; align-items: center; justify-content: center; gap: 8px;
+    .confirmed-pill {
+      display: flex; align-items: center; gap: 6px;
       background: #052e16; border: 1px solid #16a34a; color: #4ade80;
-      border-radius: 8px; padding: 12px 20px; font-size: .92rem; font-weight: 600;
-      width: 100%; margin-bottom: 10px;
+      border-radius: 8px; padding: 8px 16px; font-size: .82rem; font-weight: 600;
+      flex-shrink: 0;
     }
-    .footer-note { font-size: .73rem; color: #4b5563; margin-top: 16px; }
-    .framework-link { color: #4b5563; text-decoration: none; }
 
-    /* ── Call sheet detail panels ── */
-    .section { background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; }
-    .section h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .1em; color: #6b7280; margin-bottom: 12px; border-bottom: 1px solid #252836; padding-bottom: 6px; }
-    .info-grid { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; font-size: .84rem; }
-    .info-grid .k { color: #6b7280; }
-    .info-grid .v { color: #e8e9ec; }
-    .loc-block { margin-bottom: 10px; }
-    .loc-block:last-child { margin-bottom: 0; }
-    .loc-name { font-weight: 600; font-size: .9rem; }
+    /* ── Call sheet body ── */
+    .cs-body { max-width: 900px; margin: 0 auto; padding: 24px 16px 48px; }
+
+    /* ── Page 1 header block ── */
+    .cs-header {
+      background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 10px;
+      padding: 20px 24px; margin-bottom: 16px;
+    }
+    .cs-header-top {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      flex-wrap: wrap; gap: 12px; margin-bottom: 14px;
+    }
+    .cs-project { font-size: 1.3rem; font-weight: 700; }
+    .cs-date-badge {
+      background: #0c1a3a; border: 1px solid #1d4ed8; border-radius: 8px;
+      padding: 8px 14px; text-align: center;
+    }
+    .cs-date-badge .db-day { font-size: .65rem; text-transform: uppercase; letter-spacing: .1em; color: #6b7280; }
+    .cs-date-badge .db-date { font-size: 1rem; font-weight: 700; color: #60a5fa; }
+    .cs-info-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 8px 20px; font-size: .84rem;
+    }
+    .cs-info-item .cii-lbl { font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; margin-bottom: 2px; }
+    .cs-info-item .cii-val { color: #e8e9ec; font-weight: 500; }
+    .cs-talent-call-big {
+      background: #0c1a3a; border: 1px solid #1d4ed8; border-radius: 10px;
+      padding: 18px 22px; text-align: center; margin-bottom: 16px;
+    }
+    .cs-talent-call-big .tb-lbl { font-size: .7rem; text-transform: uppercase; letter-spacing: .1em; color: #6b7280; margin-bottom: 6px; }
+    .cs-talent-call-big .tb-time { font-size: 3rem; font-weight: 800; color: #60a5fa; line-height: 1; }
+
+    /* ── Sections ── */
+    .cs-section {
+      background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 10px;
+      padding: 0; margin-bottom: 16px; overflow: hidden;
+    }
+    .cs-section-hdr {
+      font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em;
+      color: #6b7280; background: #12151e; padding: 8px 18px;
+      border-bottom: 1px solid #2a2d3a;
+    }
+    .cs-section-body { padding: 14px 18px; }
+
+    /* ── Locations ── */
+    .loc-row { padding: 6px 0; border-bottom: 1px solid #1c1f2c; font-size: .86rem; }
+    .loc-row:last-child { border-bottom: none; }
+    .loc-name { font-weight: 600; }
+    .loc-type { font-size: .72rem; color: #9ca3af; text-transform: uppercase; letter-spacing: .06em; margin-left: 6px; }
     .loc-addr { color: #9ca3af; font-size: .82rem; margin-top: 2px; }
-    .loc-contact { color: #9ca3af; font-size: .8rem; margin-top: 2px; }
-    .kp-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px 10px; font-size: .82rem; padding: 4px 0; border-bottom: 1px solid #252836; }
-    .kp-row:last-child { border-bottom: none; }
-    .kp-row .role { color: #9ca3af; }
-    .kp-row .phone { color: #60a5fa; }
-    .crew-section-hdr { font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: #6b7280; background: #12151e; padding: 4px 8px; margin: 8px -4px 4px; border-radius: 4px; }
-    .crew-row { display: grid; grid-template-columns: 1fr 1fr 80px; gap: 4px 10px; font-size: .82rem; padding: 3px 0; border-bottom: 1px solid #1c1f2c; }
-    .crew-row:last-child { border-bottom: none; }
-    .crew-row .ctime { text-align: right; font-weight: 600; color: #fbbf24; }
-    .dn-row { font-size: .84rem; padding: 4px 0; border-bottom: 1px solid #1c1f2c; }
+    .loc-contact { color: #60a5fa; font-size: .8rem; margin-top: 2px; }
+
+    /* ── Key contacts / Personnel table ── */
+    .kp-table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+    .kp-table tr { border-bottom: 1px solid #1c1f2c; }
+    .kp-table tr:last-child { border-bottom: none; }
+    .kp-table td { padding: 5px 4px; vertical-align: top; }
+    .kp-table .kp-role { color: #9ca3af; width: 40%; }
+    .kp-table .kp-name { color: #e8e9ec; width: 35%; }
+    .kp-table .kp-phone { color: #60a5fa; width: 25%; }
+    .kp-spacer { height: 6px; }
+
+    /* ── Crew call times ── */
+    .cct-sec-hdr {
+      font-size: .7rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .06em; color: #9ca3af; background: #12151e;
+      padding: 4px 8px; margin: 8px -4px 4px; border-radius: 4px;
+    }
+    .cct-row { display: grid; grid-template-columns: 1fr 1fr 80px; gap: 4px 10px; font-size: .83rem; padding: 4px 0; border-bottom: 1px solid #1c1f2c; }
+    .cct-row:last-child { border-bottom: none; }
+    .cct-row .cct-role { color: #9ca3af; }
+    .cct-row .cct-time { text-align: right; font-weight: 600; color: #fbbf24; }
+
+    /* ── Dept notes ── */
+    .dn-row { padding: 5px 0; border-bottom: 1px solid #1c1f2c; font-size: .84rem; }
     .dn-row:last-child { border-bottom: none; }
     .dn-dept { font-weight: 600; color: #9ca3af; }
+
+    /* ── Meals callout ── */
+    .meals-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+    .meal-item { background: #12151e; border: 1px solid #2a2d3a; border-radius: 8px; padding: 10px 14px; text-align: center; }
+    .meal-item .m-lbl { font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; margin-bottom: 4px; }
+    .meal-item .m-val { font-size: 1.1rem; font-weight: 700; color: #fbbf24; }
+
+    /* ── Notes ── */
+    .notes-text { font-size: .86rem; line-height: 1.65; color: #d1d5db; white-space: pre-wrap; }
+
+    /* ── Footer ── */
+    .cs-footer { text-align: center; font-size: .72rem; color: #374151; margin-top: 32px; padding-bottom: 16px; }
+    .cs-footer a { color: #374151; text-decoration: none; }
   </style>
 </head>
 <body>
-<div class="container">
 
-  <!-- ── Confirm card ── -->
-  <div class="card">
+{% set rtype = rec.recipient_type | lower if rec.recipient_type else 'crew' %}
+
+{# ── Sticky confirm bar ── #}
+<div class="confirm-bar">
+  <div class="confirm-bar-inner">
     <div class="logo">Framework Productions</div>
-
-    {% if already_confirmed %}
-      <div class="icon">✅</div>
-      <h1>You're Confirmed</h1>
-      <p class="sub">Thanks {{ rec.name }} — your call for {{ date_display }} has been confirmed.</p>
-    {% else %}
-      <div class="icon">📋</div>
-      <h1>Call Sheet Ready</h1>
-      <p class="sub">Please review and confirm your call for {{ date_display }}.</p>
-    {% endif %}
-
+    <div class="recip-info">
+      <div class="recip-name">{{ rec.name }}</div>
+      <div class="recip-sub">{{ project_name }} · {{ date_display }}</div>
+    </div>
     {% if personal_call %}
-    <div class="call-time-badge">
-      <div class="label">Your Call Time</div>
-      <div class="time">{{ personal_call }}</div>
+    <div class="call-pill">
+      <div class="pill-lbl">Your Call</div>
+      <div class="pill-time">{{ personal_call }}</div>
     </div>
     {% endif %}
-
-    <div class="detail-row">
-      <div class="detail-pair">
-        <div class="label">Project</div>
-        <strong>{{ project_name }}</strong>
-      </div>
-      <div class="detail-pair">
-        <div class="label">Shoot Date</div>
-        <strong>{{ date_display }}</strong>
-      </div>
-      {% if send and send.version_label %}
-      <div class="detail-pair">
-        <div class="label">Version</div>
-        <strong>{{ send.version_label }}</strong>
-      </div>
-      {% endif %}
-      <div class="detail-pair">
-        <div class="label">Recipient</div>
-        <strong>{{ rec.name }}</strong>
-      </div>
-    </div>
-
     {% if already_confirmed %}
-      <div class="confirmed-badge">
-        ✓ Confirmed {% if rec.confirmed_at %}{{ rec.confirmed_at.strftime('%-I:%M %p, %b %-d') }}{% endif %}
+      <div class="confirmed-pill">
+        ✓ Confirmed {% if rec.confirmed_at %}{{ rec.confirmed_at.strftime('%-I:%M %p') }}{% endif %}
       </div>
     {% else %}
-      <form method="POST" action="/callsheet/confirm/{{ token }}">
+      <form method="POST" action="/callsheet/confirm/{{ token }}" style="display:contents">
         <button type="submit" class="btn-confirm">✓ Confirm My Call</button>
       </form>
     {% endif %}
-
-    <div class="footer-note">
-      Questions? <a class="framework-link" href="mailto:contact@thefp.tv">contact@thefp.tv</a>
-    </div>
   </div>
+</div>
 
-  <!-- ── Call sheet details ── -->
-  {% set general_call = cs_data.get('general_crew_call','') %}
-  {% set wrap = cs_data.get('estimated_wrap_time','') %}
-  {% set weather = cs_data.get('weather','') %}
-  {% set sunrise = cs_data.get('sunrise','') %}
-  {% set sunset = cs_data.get('sunset','') %}
-  {% set meal1 = cs_data.get('first_meal_time','') %}
-  {% set meal2 = cs_data.get('second_meal_time','') %}
-  {% set add_notes = cs_data.get('additional_notes','') %}
+{# ── Call sheet variables ── #}
+{% set general_call = cs_data.get('general_crew_call','') %}
+{% set wrap         = cs_data.get('estimated_wrap_time','') %}
+{% set weather      = cs_data.get('weather','') %}
+{% set sunrise      = cs_data.get('sunrise','') %}
+{% set sunset       = cs_data.get('sunset','') %}
+{% set meal1        = cs_data.get('first_meal_time','') %}
+{% set meal2        = cs_data.get('second_meal_time','') %}
+{% set bkfst        = cs_data.get('courtesy_breakfast_time','') %}
+{% set add_notes    = cs_data.get('additional_notes','') %}
+{% set kp           = cs_data.get('key_personnel', []) %}
+{% set cct          = cs_data.get('crew_call_times', {}) %}
+{% set dn           = cs_data.get('dept_notes', []) %}
 
-  {% if general_call or wrap or weather or meal1 %}
-  <div class="section">
-    <h2>Day Info</h2>
-    <div class="info-grid">
-      {% if general_call %}<span class="k">Crew Call</span><span class="v">{{ general_call }}</span>{% endif %}
-      {% if wrap %}<span class="k">Est. Wrap</span><span class="v">{{ wrap }}</span>{% endif %}
-      {% if weather %}<span class="k">Weather</span><span class="v">{{ weather }}</span>{% endif %}
-      {% if sunrise %}<span class="k">Sunrise</span><span class="v">{{ sunrise }}</span>{% endif %}
-      {% if sunset %}<span class="k">Sunset</span><span class="v">{{ sunset }}</span>{% endif %}
-      {% if meal1 %}<span class="k">First Meal</span><span class="v">{{ meal1 }}</span>{% endif %}
-      {% if meal2 %}<span class="k">Second Meal</span><span class="v">{{ meal2 }}</span>{% endif %}
-    </div>
-  </div>
-  {% endif %}
+{# ── Helper: roles to show for talent ── #}
+{% set TALENT_ROLES = ['hair', 'makeup', 'hmu', 'h&m', 'h & m', 'wardrobe', 'styling', 'stylist',
+                       '1st ad', '2nd ad', 'assistant director', 'first ad', 'second ad',
+                       'line producer', 'producer', 'ep', 'executive producer',
+                       'production coordinator', 'coordinator'] %}
 
-  {% if cs_locations %}
-  <div class="section">
-    <h2>Locations</h2>
-    {% for loc in cs_locations %}
-    <div class="loc-block">
-      <div class="loc-name">{{ loc.name }}{% if loc.facility_name %} — {{ loc.facility_name }}{% endif %}</div>
-      {% if loc.address %}<div class="loc-addr">{{ loc.address }}</div>{% endif %}
-      {% if loc.contact_name %}
-      <div class="loc-contact">Contact: {{ loc.contact_name }}{% if loc.contact_phone %} · {{ loc.contact_phone }}{% endif %}</div>
-      {% endif %}
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
+<div class="cs-body">
 
-  {% set kp = cs_data.get('key_personnel', []) %}
-  {% if kp %}
-  <div class="section">
-    <h2>Key Contacts</h2>
-    {% for p in kp %}
-    {% if p and (p.get('name') or p.get('role')) and not p.get('is_spacer') %}
-    <div class="kp-row">
-      <span class="role">{{ p.get('role','') }}</span>
-      <span>{{ p.get('name','') }}</span>
-      <span class="phone">{{ p.get('phone','') }}</span>
+  {# ════════════════════════════════════════════════════════
+     TALENT VIEW  — stripped down, talent-focused
+  ════════════════════════════════════════════════════════ #}
+  {% if rtype == 'talent' %}
+
+    {# Big call time block #}
+    {% if personal_call %}
+    <div class="cs-talent-call-big">
+      <div class="tb-lbl">Your Call Time</div>
+      <div class="tb-time">{{ personal_call }}</div>
     </div>
     {% endif %}
-    {% endfor %}
-  </div>
-  {% endif %}
 
-  {% set cct = cs_data.get('crew_call_times', {}) %}
-  {% if cct %}
-  {% set sections = [] %}
-  {% set rows_by_sec = {} %}
-  {% for key, t in cct.items() %}
-    {% set parts = key.split('||') %}
-    {% set sec = parts[0] if parts|length > 0 else '' %}
-    {% set role = parts[1] if parts|length > 1 else '' %}
-    {% set name = parts[2] if parts|length > 2 else '' %}
-    {% if sec not in sections %}{% set _ = sections.append(sec) %}{% endif %}
-    {% if sec not in rows_by_sec %}{% set _ = rows_by_sec.update({sec: []}) %}{% endif %}
-    {% set _ = rows_by_sec[sec].append({'role': role, 'name': name, 'time': t}) %}
-  {% endfor %}
-  <div class="section">
-    <h2>Crew Call Times</h2>
-    {% for sec in sections %}
-      <div class="crew-section-hdr">{{ sec }}</div>
-      {% for r in rows_by_sec[sec] %}
-      <div class="crew-row">
-        <span class="role">{{ r.role }}</span>
-        <span>{{ r.name }}</span>
-        <span class="ctime">{{ r.time }}</span>
+    {# Header: project / date / wrap #}
+    <div class="cs-header">
+      <div class="cs-header-top">
+        <div class="cs-project">{{ project_name }}</div>
+        <div class="cs-date-badge">
+          <div class="db-day">Shoot Date</div>
+          <div class="db-date">{{ date_display }}</div>
+        </div>
       </div>
-      {% endfor %}
-    {% endfor %}
-  </div>
-  {% endif %}
+      <div class="cs-info-grid">
+        {% if general_call %}<div class="cs-info-item"><div class="cii-lbl">General Crew Call</div><div class="cii-val">{{ general_call }}</div></div>{% endif %}
+        {% if wrap %}<div class="cs-info-item"><div class="cii-lbl">Est. Wrap</div><div class="cii-val">{{ wrap }}</div></div>{% endif %}
+        {% if weather %}<div class="cs-info-item"><div class="cii-lbl">Weather</div><div class="cii-val">{{ weather }}</div></div>{% endif %}
+      </div>
+    </div>
 
-  {% set dn = cs_data.get('dept_notes', []) %}
-  {% if dn %}
-  <div class="section">
-    <h2>Department Notes</h2>
-    {% for d in dn %}
-    {% if d and d.get('dept') and d.get('note') %}
-    <div class="dn-row"><span class="dn-dept">{{ d.dept }}:</span> {{ d.note }}</div>
+    {# Locations #}
+    {% if cs_locations %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Locations</div>
+      <div class="cs-section-body">
+        {% for loc in cs_locations %}
+        <div class="loc-row">
+          <div><span class="loc-name">{{ loc.name }}</span>{% if loc.facility_name %}<span class="loc-type">{{ loc.facility_name }}</span>{% endif %}</div>
+          {% if loc.address %}<div class="loc-addr">{{ loc.address }}</div>{% endif %}
+          {% if loc.contact_name %}<div class="loc-contact">Contact: {{ loc.contact_name }}{% if loc.contact_phone %} · {{ loc.contact_phone }}{% endif %}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
     {% endif %}
-    {% endfor %}
-  </div>
-  {% endif %}
 
-  {% if add_notes %}
-  <div class="section">
-    <h2>Additional Notes</h2>
-    <p style="font-size:.84rem;line-height:1.6">{{ add_notes }}</p>
+    {# Meals #}
+    {% if meal1 or meal2 or bkfst %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Meals</div>
+      <div class="cs-section-body">
+        <div class="meals-grid">
+          {% if bkfst %}<div class="meal-item"><div class="m-lbl">Courtesy Breakfast</div><div class="m-val">{{ bkfst }}</div></div>{% endif %}
+          {% if meal1 %}<div class="meal-item"><div class="m-lbl">First Meal</div><div class="m-val">{{ meal1 }}</div></div>{% endif %}
+          {% if meal2 %}<div class="meal-item"><div class="m-lbl">Second Meal</div><div class="m-val">{{ meal2 }}</div></div>{% endif %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {# Key contacts — H&MU, Wardrobe, AD, Producer only #}
+    {% set filtered_kp = [] %}
+    {% for p in kp %}
+      {% if p and not p.get('is_spacer') and (p.get('name') or p.get('role')) %}
+        {% set role_lower = (p.get('role') or '') | lower %}
+        {% set show = false %}
+        {% for tr in TALENT_ROLES %}{% if tr in role_lower %}{% set show = true %}{% endif %}{% endfor %}
+        {% if show %}{% set _ = filtered_kp.append(p) %}{% endif %}
+      {% endif %}
+    {% endfor %}
+    {% if filtered_kp %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Key Contacts</div>
+      <div class="cs-section-body">
+        <table class="kp-table">
+          {% for p in filtered_kp %}
+          <tr>
+            <td class="kp-role">{{ p.get('role','') }}</td>
+            <td class="kp-name">{{ p.get('name','') }}</td>
+            <td class="kp-phone">{{ p.get('phone','') }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    {# Additional notes #}
+    {% if add_notes %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Notes</div>
+      <div class="cs-section-body"><p class="notes-text">{{ add_notes }}</p></div>
+    </div>
+    {% endif %}
+
+
+  {# ════════════════════════════════════════════════════════
+     CLIENT VIEW  — full sheet, no personal contact info
+  ════════════════════════════════════════════════════════ #}
+  {% elif rtype == 'client' %}
+
+    {# Header #}
+    <div class="cs-header">
+      <div class="cs-header-top">
+        <div class="cs-project">{{ project_name }}</div>
+        <div class="cs-date-badge">
+          <div class="db-day">Shoot Date</div>
+          <div class="db-date">{{ date_display }}</div>
+        </div>
+      </div>
+      <div class="cs-info-grid">
+        {% if general_call %}<div class="cs-info-item"><div class="cii-lbl">Crew Call</div><div class="cii-val">{{ general_call }}</div></div>{% endif %}
+        {% if wrap %}<div class="cs-info-item"><div class="cii-lbl">Est. Wrap</div><div class="cii-val">{{ wrap }}</div></div>{% endif %}
+        {% if weather %}<div class="cs-info-item"><div class="cii-lbl">Weather</div><div class="cii-val">{{ weather }}</div></div>{% endif %}
+        {% if sunrise %}<div class="cs-info-item"><div class="cii-lbl">Sunrise</div><div class="cii-val">{{ sunrise }}</div></div>{% endif %}
+        {% if sunset %}<div class="cs-info-item"><div class="cii-lbl">Sunset</div><div class="cii-val">{{ sunset }}</div></div>{% endif %}
+      </div>
+    </div>
+
+    {# Locations — keep contact info for clients #}
+    {% if cs_locations %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Locations</div>
+      <div class="cs-section-body">
+        {% for loc in cs_locations %}
+        <div class="loc-row">
+          <div><span class="loc-name">{{ loc.name }}</span>{% if loc.facility_name %}<span class="loc-type">{{ loc.facility_name }}</span>{% endif %}</div>
+          {% if loc.address %}<div class="loc-addr">{{ loc.address }}</div>{% endif %}
+          {% if loc.contact_name %}<div class="loc-contact">Contact: {{ loc.contact_name }}{% if loc.contact_phone %} · {{ loc.contact_phone }}{% endif %}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {# Meals #}
+    {% if meal1 or meal2 or bkfst %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Meals</div>
+      <div class="cs-section-body">
+        <div class="meals-grid">
+          {% if bkfst %}<div class="meal-item"><div class="m-lbl">Courtesy Breakfast</div><div class="m-val">{{ bkfst }}</div></div>{% endif %}
+          {% if meal1 %}<div class="meal-item"><div class="m-lbl">First Meal</div><div class="m-val">{{ meal1 }}</div></div>{% endif %}
+          {% if meal2 %}<div class="meal-item"><div class="m-lbl">Second Meal</div><div class="m-val">{{ meal2 }}</div></div>{% endif %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {# Key contacts — show role & name only, NO phone/email #}
+    {% set clean_kp = [] %}
+    {% for p in kp %}{% if p and not p.get('is_spacer') and (p.get('name') or p.get('role')) %}{% set _ = clean_kp.append(p) %}{% endif %}{% endfor %}
+    {% if clean_kp %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Key Personnel</div>
+      <div class="cs-section-body">
+        <table class="kp-table">
+          {% for p in clean_kp %}
+          <tr>
+            <td class="kp-role">{{ p.get('role','') }}</td>
+            <td class="kp-name" colspan="2">{{ p.get('name','') }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    {# Crew call times — role/name/time only, no phone #}
+    {% if cct %}
+    {% set sections = [] %}
+    {% set rows_by_sec = {} %}
+    {% for key, t in cct.items() %}
+      {% set parts = key.split('||') %}
+      {% set sec = parts[0] if parts|length > 0 else '' %}
+      {% set role = parts[1] if parts|length > 1 else '' %}
+      {% set name = parts[2] if parts|length > 2 else '' %}
+      {% if sec not in sections %}{% set _ = sections.append(sec) %}{% endif %}
+      {% if sec not in rows_by_sec %}{% set _ = rows_by_sec.update({sec: []}) %}{% endif %}
+      {% set _ = rows_by_sec[sec].append({'role': role, 'name': name, 'time': t}) %}
+    {% endfor %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Crew Call Times</div>
+      <div class="cs-section-body">
+        {% for sec in sections %}
+          <div class="cct-sec-hdr">{{ sec }}</div>
+          {% for r in rows_by_sec[sec] %}
+          <div class="cct-row">
+            <span class="cct-role">{{ r.role }}</span>
+            <span>{{ r.name }}</span>
+            <span class="cct-time">{{ r.time }}</span>
+          </div>
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {# Dept notes #}
+    {% set valid_dn = [] %}
+    {% for d in dn %}{% if d and d.get('dept') and d.get('note') %}{% set _ = valid_dn.append(d) %}{% endif %}{% endfor %}
+    {% if valid_dn %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Department Notes</div>
+      <div class="cs-section-body">
+        {% for d in valid_dn %}
+        <div class="dn-row"><span class="dn-dept">{{ d.dept }}:</span> {{ d.note }}</div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if add_notes %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Additional Notes</div>
+      <div class="cs-section-body"><p class="notes-text">{{ add_notes }}</p></div>
+    </div>
+    {% endif %}
+
+
+  {# ════════════════════════════════════════════════════════
+     CREW VIEW  — full call sheet, everything
+  ════════════════════════════════════════════════════════ #}
+  {% else %}
+
+    {# Header #}
+    <div class="cs-header">
+      <div class="cs-header-top">
+        <div class="cs-project">{{ project_name }}</div>
+        <div class="cs-date-badge">
+          <div class="db-day">Shoot Date</div>
+          <div class="db-date">{{ date_display }}</div>
+        </div>
+      </div>
+      <div class="cs-info-grid">
+        {% if general_call %}<div class="cs-info-item"><div class="cii-lbl">Crew Call</div><div class="cii-val">{{ general_call }}</div></div>{% endif %}
+        {% if wrap %}<div class="cs-info-item"><div class="cii-lbl">Est. Wrap</div><div class="cii-val">{{ wrap }}</div></div>{% endif %}
+        {% if weather %}<div class="cs-info-item"><div class="cii-lbl">Weather</div><div class="cii-val">{{ weather }}</div></div>{% endif %}
+        {% if sunrise %}<div class="cs-info-item"><div class="cii-lbl">Sunrise</div><div class="cii-val">{{ sunrise }}</div></div>{% endif %}
+        {% if sunset %}<div class="cs-info-item"><div class="cii-lbl">Sunset</div><div class="cii-val">{{ sunset }}</div></div>{% endif %}
+      </div>
+    </div>
+
+    {# Locations — full info #}
+    {% if cs_locations %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Locations</div>
+      <div class="cs-section-body">
+        {% for loc in cs_locations %}
+        <div class="loc-row">
+          <div><span class="loc-name">{{ loc.name }}</span>{% if loc.facility_name %}<span class="loc-type">{{ loc.facility_name }}</span>{% endif %}</div>
+          {% if loc.address %}<div class="loc-addr">{{ loc.address }}</div>{% endif %}
+          {% if loc.contact_name %}<div class="loc-contact">Contact: {{ loc.contact_name }}{% if loc.contact_phone %} · {{ loc.contact_phone }}{% endif %}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {# Meals #}
+    {% if meal1 or meal2 or bkfst %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Meals</div>
+      <div class="cs-section-body">
+        <div class="meals-grid">
+          {% if bkfst %}<div class="meal-item"><div class="m-lbl">Courtesy Breakfast</div><div class="m-val">{{ bkfst }}</div></div>{% endif %}
+          {% if meal1 %}<div class="meal-item"><div class="m-lbl">First Meal</div><div class="m-val">{{ meal1 }}</div></div>{% endif %}
+          {% if meal2 %}<div class="meal-item"><div class="m-lbl">Second Meal</div><div class="m-val">{{ meal2 }}</div></div>{% endif %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {# Key contacts — full with phone #}
+    {% set clean_kp = [] %}
+    {% for p in kp %}{% if p and not p.get('is_spacer') and (p.get('name') or p.get('role')) %}{% set _ = clean_kp.append(p) %}{% endif %}{% endfor %}
+    {% if clean_kp %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Key Contacts</div>
+      <div class="cs-section-body">
+        <table class="kp-table">
+          {% for p in clean_kp %}
+          <tr>
+            <td class="kp-role">{{ p.get('role','') }}</td>
+            <td class="kp-name">{{ p.get('name','') }}</td>
+            <td class="kp-phone">{{ p.get('phone','') }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    {# Crew call times — full #}
+    {% if cct %}
+    {% set sections = [] %}
+    {% set rows_by_sec = {} %}
+    {% for key, t in cct.items() %}
+      {% set parts = key.split('||') %}
+      {% set sec = parts[0] if parts|length > 0 else '' %}
+      {% set role = parts[1] if parts|length > 1 else '' %}
+      {% set name = parts[2] if parts|length > 2 else '' %}
+      {% if sec not in sections %}{% set _ = sections.append(sec) %}{% endif %}
+      {% if sec not in rows_by_sec %}{% set _ = rows_by_sec.update({sec: []}) %}{% endif %}
+      {% set _ = rows_by_sec[sec].append({'role': role, 'name': name, 'time': t}) %}
+    {% endfor %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Crew Call Times</div>
+      <div class="cs-section-body">
+        {% for sec in sections %}
+          <div class="cct-sec-hdr">{{ sec }}</div>
+          {% for r in rows_by_sec[sec] %}
+          <div class="cct-row {% if r.name | lower == rec.name | lower %}cct-row-me{% endif %}">
+            <span class="cct-role">{{ r.role }}</span>
+            <span>{{ r.name }}</span>
+            <span class="cct-time">{{ r.time }}</span>
+          </div>
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {# Dept notes #}
+    {% set valid_dn = [] %}
+    {% for d in dn %}{% if d and d.get('dept') and d.get('note') %}{% set _ = valid_dn.append(d) %}{% endif %}{% endfor %}
+    {% if valid_dn %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Department Notes</div>
+      <div class="cs-section-body">
+        {% for d in valid_dn %}
+        <div class="dn-row"><span class="dn-dept">{{ d.dept }}:</span> {{ d.note }}</div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if add_notes %}
+    <div class="cs-section">
+      <div class="cs-section-hdr">Additional Notes</div>
+      <div class="cs-section-body"><p class="notes-text">{{ add_notes }}</p></div>
+    </div>
+    {% endif %}
+
+  {% endif %}{# end recipient type switch #}
+
+  <div class="cs-footer">
+    Framework Productions · <a href="mailto:contact@thefp.tv">contact@thefp.tv</a>
   </div>
-  {% endif %}
 
 </div>
+
+<style>
+  /* Highlight recipient's own row in crew view */
+  .cct-row-me { background: #0c1a3a; border-radius: 4px; }
+  .cct-row-me .cct-time { color: #60a5fa; }
+</style>
+
 </body>
 </html>
