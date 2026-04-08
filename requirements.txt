@@ -8,3 +8,4 @@ werkzeug
 anthropic
 weasyprint
 Flask-Mail
+twilio

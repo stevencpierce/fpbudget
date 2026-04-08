@@ -439,6 +439,7 @@ class CallSheetRecipient(db.Model):
     recipient_type = db.Column(db.String(30), nullable=False)  # crew|talent|client|union|support
     name          = db.Column(db.String(200), nullable=False)
     email         = db.Column(db.String(200), nullable=True)
+    phone         = db.Column(db.String(50),  nullable=True)
     viewed_at     = db.Column(db.DateTime, nullable=True)
     confirmed_at  = db.Column(db.DateTime, nullable=True)
     confirm_token = db.Column(db.String(64), nullable=True, unique=True)

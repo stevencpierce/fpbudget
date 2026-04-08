@@ -3,149 +3,242 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Call Sheet Confirmation — {{ project_name }}</title>
+  <title>Call Sheet — {{ project_name }}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0f1117;
-      color: #e8e9ec;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
+      background: #0f1117; color: #e8e9ec;
+      min-height: 100vh; padding: 24px 16px;
     }
+    .container { max-width: 520px; margin: 0 auto; }
+
+    /* ── Confirm card ── */
     .card {
-      background: #1a1d27;
-      border: 1px solid #2a2d3a;
-      border-radius: 12px;
-      padding: 40px 48px;
-      max-width: 480px;
-      width: 100%;
-      text-align: center;
+      background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 12px;
+      padding: 36px 40px; text-align: center; margin-bottom: 24px;
     }
-    .logo {
-      font-size: .8rem;
-      letter-spacing: .15em;
-      text-transform: uppercase;
-      color: #6b7280;
-      margin-bottom: 28px;
+    .logo { font-size: .75rem; letter-spacing: .15em; text-transform: uppercase; color: #6b7280; margin-bottom: 24px; }
+    .icon { font-size: 2.2rem; margin-bottom: 12px; }
+    h1 { font-size: 1.3rem; font-weight: 600; margin-bottom: 6px; }
+    .sub { color: #9ca3af; font-size: .88rem; margin-bottom: 22px; line-height: 1.5; }
+    .call-time-badge {
+      background: #0c1a3a; border: 1px solid #1d4ed8;
+      border-radius: 10px; padding: 14px 20px; margin-bottom: 20px;
     }
-    .icon {
-      font-size: 2.5rem;
-      margin-bottom: 16px;
-    }
-    h1 {
-      font-size: 1.35rem;
-      font-weight: 600;
-      margin-bottom: 8px;
-    }
-    .sub {
-      color: #9ca3af;
-      font-size: .9rem;
-      margin-bottom: 28px;
-      line-height: 1.5;
-    }
+    .call-time-badge .label { font-size: .7rem; text-transform: uppercase; letter-spacing: .1em; color: #6b7280; margin-bottom: 4px; }
+    .call-time-badge .time { font-size: 2rem; font-weight: 700; color: #60a5fa; line-height: 1; }
     .detail-row {
-      background: #12151e;
-      border: 1px solid #2a2d3a;
-      border-radius: 8px;
-      padding: 14px 18px;
-      text-align: left;
-      margin-bottom: 24px;
-      font-size: .88rem;
+      background: #12151e; border: 1px solid #2a2d3a; border-radius: 8px;
+      padding: 12px 16px; text-align: left; margin-bottom: 18px; font-size: .86rem;
     }
-    .detail-row strong { color: #e8e9ec; }
-    .detail-row .label { color: #6b7280; font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 2px; }
-    .detail-pair { margin-bottom: 10px; }
+    .detail-pair { margin-bottom: 8px; }
     .detail-pair:last-child { margin-bottom: 0; }
+    .detail-pair .label { color: #6b7280; font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 2px; }
+    .detail-pair strong { color: #e8e9ec; }
     .btn-confirm {
-      display: inline-block;
-      background: #2563eb;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: 12px 32px;
-      font-size: 1rem;
-      font-weight: 600;
-      cursor: pointer;
-      width: 100%;
-      margin-bottom: 12px;
+      display: block; width: 100%; background: #2563eb; color: #fff;
+      border: none; border-radius: 8px; padding: 12px 24px;
+      font-size: 1rem; font-weight: 600; cursor: pointer; margin-bottom: 10px;
       transition: background .15s;
     }
     .btn-confirm:hover { background: #1d4ed8; }
     .confirmed-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      background: #052e16;
-      border: 1px solid #16a34a;
-      color: #4ade80;
-      border-radius: 8px;
-      padding: 12px 24px;
-      font-size: .95rem;
-      font-weight: 600;
-      width: 100%;
-      justify-content: center;
-      margin-bottom: 12px;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      background: #052e16; border: 1px solid #16a34a; color: #4ade80;
+      border-radius: 8px; padding: 12px 20px; font-size: .92rem; font-weight: 600;
+      width: 100%; margin-bottom: 10px;
     }
-    .footer-note {
-      font-size: .75rem;
-      color: #4b5563;
-      margin-top: 24px;
-    }
+    .footer-note { font-size: .73rem; color: #4b5563; margin-top: 16px; }
     .framework-link { color: #4b5563; text-decoration: none; }
+
+    /* ── Call sheet detail panels ── */
+    .section { background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; }
+    .section h2 { font-size: .78rem; text-transform: uppercase; letter-spacing: .1em; color: #6b7280; margin-bottom: 12px; border-bottom: 1px solid #252836; padding-bottom: 6px; }
+    .info-grid { display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; font-size: .84rem; }
+    .info-grid .k { color: #6b7280; }
+    .info-grid .v { color: #e8e9ec; }
+    .loc-block { margin-bottom: 10px; }
+    .loc-block:last-child { margin-bottom: 0; }
+    .loc-name { font-weight: 600; font-size: .9rem; }
+    .loc-addr { color: #9ca3af; font-size: .82rem; margin-top: 2px; }
+    .loc-contact { color: #9ca3af; font-size: .8rem; margin-top: 2px; }
+    .kp-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px 10px; font-size: .82rem; padding: 4px 0; border-bottom: 1px solid #252836; }
+    .kp-row:last-child { border-bottom: none; }
+    .kp-row .role { color: #9ca3af; }
+    .kp-row .phone { color: #60a5fa; }
+    .crew-section-hdr { font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: #6b7280; background: #12151e; padding: 4px 8px; margin: 8px -4px 4px; border-radius: 4px; }
+    .crew-row { display: grid; grid-template-columns: 1fr 1fr 80px; gap: 4px 10px; font-size: .82rem; padding: 3px 0; border-bottom: 1px solid #1c1f2c; }
+    .crew-row:last-child { border-bottom: none; }
+    .crew-row .ctime { text-align: right; font-weight: 600; color: #fbbf24; }
+    .dn-row { font-size: .84rem; padding: 4px 0; border-bottom: 1px solid #1c1f2c; }
+    .dn-row:last-child { border-bottom: none; }
+    .dn-dept { font-weight: 600; color: #9ca3af; }
   </style>
 </head>
 <body>
-<div class="card">
-  <div class="logo">Framework Productions</div>
+<div class="container">
 
-  {% if already_confirmed %}
-    <div class="icon">✅</div>
-    <h1>You're Confirmed</h1>
-    <p class="sub">Thanks {{ rec.name }} — your call sheet has been confirmed.</p>
-  {% else %}
-    <div class="icon">📋</div>
-    <h1>Call Sheet Ready</h1>
-    <p class="sub">Please review and confirm your call for {{ date_display }}.</p>
-  {% endif %}
+  <!-- ── Confirm card ── -->
+  <div class="card">
+    <div class="logo">Framework Productions</div>
 
-  <div class="detail-row">
-    <div class="detail-pair">
-      <div class="label">Project</div>
-      <strong>{{ project_name }}</strong>
-    </div>
-    <div class="detail-pair">
-      <div class="label">Shoot Date</div>
-      <strong>{{ date_display }}</strong>
-    </div>
-    {% if send.version_label %}
-    <div class="detail-pair">
-      <div class="label">Version</div>
-      <strong>{{ send.version_label }}</strong>
+    {% if already_confirmed %}
+      <div class="icon">✅</div>
+      <h1>You're Confirmed</h1>
+      <p class="sub">Thanks {{ rec.name }} — your call for {{ date_display }} has been confirmed.</p>
+    {% else %}
+      <div class="icon">📋</div>
+      <h1>Call Sheet Ready</h1>
+      <p class="sub">Please review and confirm your call for {{ date_display }}.</p>
+    {% endif %}
+
+    {% if personal_call %}
+    <div class="call-time-badge">
+      <div class="label">Your Call Time</div>
+      <div class="time">{{ personal_call }}</div>
     </div>
     {% endif %}
-    <div class="detail-pair">
-      <div class="label">Recipient</div>
-      <strong>{{ rec.name }}</strong>
+
+    <div class="detail-row">
+      <div class="detail-pair">
+        <div class="label">Project</div>
+        <strong>{{ project_name }}</strong>
+      </div>
+      <div class="detail-pair">
+        <div class="label">Shoot Date</div>
+        <strong>{{ date_display }}</strong>
+      </div>
+      {% if send and send.version_label %}
+      <div class="detail-pair">
+        <div class="label">Version</div>
+        <strong>{{ send.version_label }}</strong>
+      </div>
+      {% endif %}
+      <div class="detail-pair">
+        <div class="label">Recipient</div>
+        <strong>{{ rec.name }}</strong>
+      </div>
+    </div>
+
+    {% if already_confirmed %}
+      <div class="confirmed-badge">
+        ✓ Confirmed {% if rec.confirmed_at %}{{ rec.confirmed_at.strftime('%-I:%M %p, %b %-d') }}{% endif %}
+      </div>
+    {% else %}
+      <form method="POST" action="/callsheet/confirm/{{ token }}">
+        <button type="submit" class="btn-confirm">✓ Confirm My Call</button>
+      </form>
+    {% endif %}
+
+    <div class="footer-note">
+      Questions? <a class="framework-link" href="mailto:contact@thefp.tv">contact@thefp.tv</a>
     </div>
   </div>
 
-  {% if already_confirmed %}
-    <div class="confirmed-badge">
-      ✓ Confirmed {{ rec.confirmed_at.strftime('%-I:%M %p, %b %-d') if rec.confirmed_at else '' }}
+  <!-- ── Call sheet details ── -->
+  {% set general_call = cs_data.get('general_crew_call','') %}
+  {% set wrap = cs_data.get('estimated_wrap_time','') %}
+  {% set weather = cs_data.get('weather','') %}
+  {% set sunrise = cs_data.get('sunrise','') %}
+  {% set sunset = cs_data.get('sunset','') %}
+  {% set meal1 = cs_data.get('first_meal_time','') %}
+  {% set meal2 = cs_data.get('second_meal_time','') %}
+  {% set add_notes = cs_data.get('additional_notes','') %}
+
+  {% if general_call or wrap or weather or meal1 %}
+  <div class="section">
+    <h2>Day Info</h2>
+    <div class="info-grid">
+      {% if general_call %}<span class="k">Crew Call</span><span class="v">{{ general_call }}</span>{% endif %}
+      {% if wrap %}<span class="k">Est. Wrap</span><span class="v">{{ wrap }}</span>{% endif %}
+      {% if weather %}<span class="k">Weather</span><span class="v">{{ weather }}</span>{% endif %}
+      {% if sunrise %}<span class="k">Sunrise</span><span class="v">{{ sunrise }}</span>{% endif %}
+      {% if sunset %}<span class="k">Sunset</span><span class="v">{{ sunset }}</span>{% endif %}
+      {% if meal1 %}<span class="k">First Meal</span><span class="v">{{ meal1 }}</span>{% endif %}
+      {% if meal2 %}<span class="k">Second Meal</span><span class="v">{{ meal2 }}</span>{% endif %}
     </div>
-  {% else %}
-    <form method="POST" action="/callsheet/confirm/{{ token }}">
-      <button type="submit" class="btn-confirm">✓ Confirm My Call</button>
-    </form>
+  </div>
   {% endif %}
 
-  <div class="footer-note">
-    Questions? Contact us at <a class="framework-link" href="mailto:contact@thefp.tv">contact@thefp.tv</a>
+  {% if cs_locations %}
+  <div class="section">
+    <h2>Locations</h2>
+    {% for loc in cs_locations %}
+    <div class="loc-block">
+      <div class="loc-name">{{ loc.name }}{% if loc.facility_name %} — {{ loc.facility_name }}{% endif %}</div>
+      {% if loc.address %}<div class="loc-addr">{{ loc.address }}</div>{% endif %}
+      {% if loc.contact_name %}
+      <div class="loc-contact">Contact: {{ loc.contact_name }}{% if loc.contact_phone %} · {{ loc.contact_phone }}{% endif %}</div>
+      {% endif %}
+    </div>
+    {% endfor %}
   </div>
+  {% endif %}
+
+  {% set kp = cs_data.get('key_personnel', []) %}
+  {% if kp %}
+  <div class="section">
+    <h2>Key Contacts</h2>
+    {% for p in kp %}
+    {% if p and (p.get('name') or p.get('role')) and not p.get('is_spacer') %}
+    <div class="kp-row">
+      <span class="role">{{ p.get('role','') }}</span>
+      <span>{{ p.get('name','') }}</span>
+      <span class="phone">{{ p.get('phone','') }}</span>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% set cct = cs_data.get('crew_call_times', {}) %}
+  {% if cct %}
+  {% set sections = [] %}
+  {% set rows_by_sec = {} %}
+  {% for key, t in cct.items() %}
+    {% set parts = key.split('||') %}
+    {% set sec = parts[0] if parts|length > 0 else '' %}
+    {% set role = parts[1] if parts|length > 1 else '' %}
+    {% set name = parts[2] if parts|length > 2 else '' %}
+    {% if sec not in sections %}{% set _ = sections.append(sec) %}{% endif %}
+    {% if sec not in rows_by_sec %}{% set _ = rows_by_sec.update({sec: []}) %}{% endif %}
+    {% set _ = rows_by_sec[sec].append({'role': role, 'name': name, 'time': t}) %}
+  {% endfor %}
+  <div class="section">
+    <h2>Crew Call Times</h2>
+    {% for sec in sections %}
+      <div class="crew-section-hdr">{{ sec }}</div>
+      {% for r in rows_by_sec[sec] %}
+      <div class="crew-row">
+        <span class="role">{{ r.role }}</span>
+        <span>{{ r.name }}</span>
+        <span class="ctime">{{ r.time }}</span>
+      </div>
+      {% endfor %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% set dn = cs_data.get('dept_notes', []) %}
+  {% if dn %}
+  <div class="section">
+    <h2>Department Notes</h2>
+    {% for d in dn %}
+    {% if d and d.get('dept') and d.get('note') %}
+    <div class="dn-row"><span class="dn-dept">{{ d.dept }}:</span> {{ d.note }}</div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if add_notes %}
+  <div class="section">
+    <h2>Additional Notes</h2>
+    <p style="font-size:.84rem;line-height:1.6">{{ add_notes }}</p>
+  </div>
+  {% endif %}
+
 </div>
 </body>
 </html>

@@ -240,17 +240,173 @@ def inject_globals():
     return {"GOOGLE_MAPS_API_KEY": GOOGLE_MAPS_API_KEY}
 
 
-def _send_email(to, subject, body):
+def _send_email(to, subject, body, attachment_bytes=None, attachment_filename=None):
     """Send email — silently no-ops if mail not configured."""
     if not app.config.get('MAIL_USERNAME'):
         return False
     try:
         msg = MailMessage(subject, recipients=[to], body=body)
+        if attachment_bytes and attachment_filename:
+            msg.attach(attachment_filename, 'application/pdf', attachment_bytes)
         mail.send(msg)
         return True
     except Exception as e:
         logging.warning(f"Email send failed: {e}")
         return False
+
+
+def _send_sms(to_phone, body):
+    """Send SMS via Twilio — silently no-ops if not configured."""
+    sid   = os.getenv('TWILIO_ACCOUNT_SID', '')
+    token = os.getenv('TWILIO_AUTH_TOKEN', '')
+    from_num = os.getenv('TWILIO_FROM_NUMBER', '')
+    if not sid or not token or not from_num:
+        return False
+    # Normalize phone: strip everything except digits and leading +
+    import re as _re
+    digits = _re.sub(r'[^\d+]', '', to_phone.strip())
+    if not digits:
+        return False
+    if not digits.startswith('+'):
+        digits = '+1' + digits  # default to US
+    try:
+        from twilio.rest import Client as _TwilioClient
+        _TwilioClient(sid, token).messages.create(body=body, from_=from_num, to=digits)
+        return True
+    except Exception as e:
+        logging.warning(f"SMS send failed: {e}")
+        return False
+
+
+def _generate_callsheet_pdf(send_obj, project_name, date_display, cs_data, crew_rows, locations_today):
+    """Generate a PDF of the call sheet using weasyprint. Returns bytes or None."""
+    try:
+        import weasyprint
+        html_str = _render_callsheet_pdf_html(
+            send_obj=send_obj,
+            project_name=project_name,
+            date_display=date_display,
+            cs_data=cs_data,
+            crew_rows=crew_rows,
+            locations_today=locations_today,
+        )
+        pdf_bytes = weasyprint.HTML(string=html_str, base_url=None).write_pdf()
+        return pdf_bytes
+    except Exception as e:
+        logging.warning(f"PDF generation failed: {e}")
+        return None
+
+
+def _render_callsheet_pdf_html(send_obj, project_name, date_display, cs_data, crew_rows, locations_today):
+    """Render a lightweight HTML string suitable for PDF conversion."""
+    import html as _html
+    esc = _html.escape
+    kp  = cs_data.get('key_personnel') or []
+    cct = cs_data.get('crew_call_times') or {}
+    dn  = cs_data.get('dept_notes') or []
+    uc  = cs_data.get('useful_contacts') or []
+
+    def row(label, val):
+        if not val:
+            return ''
+        return f'<tr><td class="lbl">{esc(label)}</td><td>{esc(str(val))}</td></tr>'
+
+    # Build location blocks
+    loc_html = ''
+    for loc in (locations_today or []):
+        loc_html += f'<div class="loc-block"><strong>{esc(loc.name or "")}</strong>'
+        if getattr(loc, 'facility_name', None):
+            loc_html += f' — {esc(loc.facility_name)}'
+        if getattr(loc, 'address', None):
+            loc_html += f'<br><span class="sub">{esc(loc.address)}</span>'
+        if getattr(loc, 'contact_name', None):
+            loc_html += f'<br><span class="sub">Contact: {esc(loc.contact_name)}'
+            if getattr(loc, 'contact_phone', None):
+                loc_html += f' · {esc(loc.contact_phone)}'
+            loc_html += '</span>'
+        loc_html += '</div>'
+
+    # Build crew call time rows grouped by section
+    section_order = []
+    section_rows = {}
+    for key, t in cct.items():
+        parts = key.split('||', 2)
+        sec   = parts[0] if len(parts) > 0 else ''
+        role  = parts[1] if len(parts) > 1 else ''
+        name  = parts[2] if len(parts) > 2 else ''
+        if sec not in section_rows:
+            section_order.append(sec)
+            section_rows[sec] = []
+        section_rows[sec].append((role, name, t))
+
+    crew_html = ''
+    for sec in section_order:
+        crew_html += f'<tr class="sec-hdr"><td colspan="3">{esc(sec)}</td></tr>'
+        for role, name, t in section_rows[sec]:
+            crew_html += f'<tr><td>{esc(role)}</td><td>{esc(name)}</td><td class="time">{esc(t)}</td></tr>'
+
+    # Key personnel
+    kp_html = ''
+    for p in kp:
+        if not isinstance(p, dict) or (not p.get('name') and not p.get('role')):
+            continue
+        kp_html += f'<tr><td>{esc(p.get("role",""))}</td><td>{esc(p.get("name",""))}</td><td>{esc(p.get("phone",""))}</td></tr>'
+
+    # Dept notes
+    dnotes_html = ''
+    for d in dn:
+        if isinstance(d, dict) and d.get('dept') and d.get('note'):
+            dnotes_html += f'<div class="dnote"><strong>{esc(d["dept"])}:</strong> {esc(d["note"])}</div>'
+
+    version_label = getattr(send_obj, 'version_label', '') or ''
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+  body {{ font-family: Arial, sans-serif; font-size: 9pt; margin: 0; padding: 0; color: #111; }}
+  .page {{ padding: 18px 22px; }}
+  h1 {{ font-size: 14pt; margin: 0 0 2px; }}
+  .sub-head {{ font-size: 8pt; color: #555; margin-bottom: 10px; }}
+  h2 {{ font-size: 10pt; border-bottom: 1px solid #bbb; margin: 12px 0 4px; padding-bottom: 2px; text-transform: uppercase; letter-spacing: .04em; }}
+  table {{ width: 100%; border-collapse: collapse; margin-bottom: 8px; }}
+  td {{ padding: 2px 6px; vertical-align: top; font-size: 8.5pt; }}
+  .lbl {{ color: #555; width: 130px; white-space: nowrap; }}
+  .time {{ font-weight: bold; text-align: right; }}
+  .sec-hdr td {{ background: #eee; font-weight: bold; font-size: 8pt; padding: 3px 6px; }}
+  .loc-block {{ margin-bottom: 8px; font-size: 8.5pt; }}
+  .sub {{ color: #555; }}
+  .dnote {{ margin-bottom: 4px; font-size: 8.5pt; }}
+  .info-table td {{ border-bottom: 1px solid #f0f0f0; }}
+  .footer {{ font-size: 7pt; color: #888; margin-top: 16px; border-top: 1px solid #ddd; padding-top: 6px; }}
+</style>
+</head><body><div class="page">
+
+<h1>{esc(project_name)}</h1>
+<div class="sub-head">Call Sheet · {esc(date_display)}{' · ' + esc(version_label) if version_label else ''}</div>
+
+<h2>General</h2>
+<table class="info-table">
+  {row('General Crew Call', cs_data.get('general_crew_call',''))}
+  {row('Est. Wrap', cs_data.get('estimated_wrap_time',''))}
+  {row('Weather', cs_data.get('weather',''))}
+  {row('Sunrise', cs_data.get('sunrise',''))}
+  {row('Sunset', cs_data.get('sunset',''))}
+  {row('First Meal', cs_data.get('first_meal_time',''))}
+  {row('Second Meal', cs_data.get('second_meal_time',''))}
+</table>
+
+{'<h2>Locations</h2>' + loc_html if loc_html else ''}
+
+{'<h2>Key Contacts</h2><table><tr><td class="lbl">Role</td><td>Name</td><td>Phone</td></tr>' + kp_html + '</table>' if kp_html else ''}
+
+{'<h2>Crew Call Times</h2><table>' + crew_html + '</table>' if crew_html else ''}
+
+{'<h2>Department Notes</h2>' + dnotes_html if dnotes_html else ''}
+
+{'<p>' + esc(cs_data.get('additional_notes','')) + '</p>' if cs_data.get('additional_notes') else ''}
+
+<div class="footer">Sent by Framework Productions · contact@thefp.tv</div>
+</div></body></html>"""
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -453,7 +609,7 @@ def budget_live(pid, bid):
     profile = b.payroll_profile
     pw_start = b.payroll_week_start if b.payroll_week_start is not None else (
         profile.payroll_week_start if profile else 6)
-    sched_mode = b.budget_mode if b.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
 
     line_results = {}
     for ln in lines:
@@ -1224,6 +1380,82 @@ def add_kit_fee(pid, bid, lid):
     return jsonify({"ok": True, "id": ln.id, "description": ln.description,
                     "estimated_total": float(ln.estimated_total or 0),
                     "account_code": ln.account_code})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/line/insert", methods=["POST"])
+@login_required
+def line_insert(pid, bid):
+    """Insert a blank line above or below a reference line within the same section."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data     = request.get_json(force=True) or {}
+    ref_id   = int(data.get("reference_id") or 0)
+    position = data.get("position", "below")   # "above" | "below"
+
+    ref = BudgetLine.query.filter_by(id=ref_id, budget_id=bid).first_or_404()
+
+    # All lines in the same section, ordered by sort_order then id (stable tiebreak)
+    section_lines = BudgetLine.query.filter_by(
+        budget_id=bid, account_code=ref.account_code
+    ).order_by(BudgetLine.sort_order, BudgetLine.id).all()
+
+    ref_idx = next((i for i, ln in enumerate(section_lines) if ln.id == ref_id), 0)
+    insert_idx = ref_idx if position == "above" else ref_idx + 1
+
+    new_ln = BudgetLine(
+        budget_id    = bid,
+        account_code = ref.account_code,
+        account_name = ref.account_name,
+        description  = "",
+        is_labor     = ref.is_labor,
+        fringe_type  = ref.fringe_type if ref.is_labor else "N",
+        quantity     = 1,
+        days         = 1,
+        rate         = 0,
+        sort_order   = 0,
+    )
+    db.session.add(new_ln)
+    db.session.flush()
+
+    section_lines.insert(insert_idx, new_ln)
+    for i, ln in enumerate(section_lines):
+        ln.sort_order = i
+
+    db.session.commit()
+    _touch_budget(bid)
+    db.session.commit()
+    return jsonify({"ok": True, "id": new_ln.id})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/line/reorder", methods=["POST"])
+@login_required
+def line_reorder(pid, bid):
+    """Move a line to a new position within its section (same account_code)."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data    = request.get_json(force=True) or {}
+    line_id = int(data.get("line_id") or 0)
+    after_id = data.get("after_id")   # None → first in section; int → move after this line
+
+    ln = BudgetLine.query.filter_by(id=line_id, budget_id=bid).first_or_404()
+
+    section_lines = BudgetLine.query.filter_by(
+        budget_id=bid, account_code=ln.account_code
+    ).filter(BudgetLine.id != line_id).order_by(BudgetLine.sort_order, BudgetLine.id).all()
+
+    if after_id is None:
+        section_lines.insert(0, ln)
+    else:
+        after_id = int(after_id)
+        idx = next((i for i, sl in enumerate(section_lines) if sl.id == after_id),
+                   len(section_lines) - 1)
+        section_lines.insert(idx + 1, ln)
+
+    for i, sl in enumerate(section_lines):
+        sl.sort_order = i
+
+    db.session.commit()
+    _touch_budget(bid)
+    db.session.commit()
+    return jsonify({"ok": True})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/remove-instance", methods=["POST"])
@@ -2116,28 +2348,66 @@ def set_gantt_day(pid, bid):
     if cell_flags is not None:
         existing.cell_flags = json.dumps(cell_flags) if isinstance(cell_flags, dict) else cell_flags
 
+    # ── Primary commit — this is the one that MUST succeed ───────────────────
     db.session.commit()
-    _touch_budget(bid)
-    db.session.commit()
-    sync_schedule_driven_lines(bid, db.session)
+
+    # ── Everything below is best-effort; failures must NOT cause a 500 ───────
+    _post_save_error = None
+    saved_id         = existing.id        # cache before any potential rollback
+    saved_flags      = existing.cell_flags
+
+    try:
+        _touch_budget(bid)
+        db.session.commit()
+    except Exception as _te:
+        import traceback as _tb
+        _post_save_error = f"touch_budget: {_te}"
+        app.logger.error("_touch_budget failed in set_gantt_day: %s\n%s", _te, _tb.format_exc())
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
+    try:
+        sync_schedule_driven_lines(bid, db.session)
+    except Exception as _sdl_err:
+        import traceback as _tb
+        _post_save_error = (_post_save_error or "") + f" | sync_lines: {_sdl_err}"
+        app.logger.error("sync_schedule_driven_lines failed in set_gantt_day: %s\n%s",
+                         _sdl_err, _tb.format_exc())
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
 
     # Auto-enable use_schedule on the line when first day is added
     use_schedule_toggled = False
-    if line_id and day_type != 'off':
-        ln = BudgetLine.query.filter_by(id=line_id, budget_id=bid).first()
-        if ln and ln.is_labor and not ln.use_schedule:
-            # Only auto-enable when this is the very first scheduled day
-            day_count = ScheduleDay.query.filter_by(
-                budget_id=bid, budget_line_id=line_id, schedule_mode=sched_mode
-            ).count()
-            if day_count == 1:
-                ln.use_schedule = True
-                db.session.commit()
-                use_schedule_toggled = True
+    try:
+        if line_id and day_type != 'off':
+            ln = BudgetLine.query.filter_by(id=line_id, budget_id=bid).first()
+            if ln and ln.is_labor and not ln.use_schedule:
+                day_count = ScheduleDay.query.filter_by(
+                    budget_id=bid, budget_line_id=line_id, schedule_mode=sched_mode
+                ).count()
+                if day_count == 1:
+                    ln.use_schedule = True
+                    db.session.commit()
+                    use_schedule_toggled = True
+    except Exception as _ue:
+        import traceback as _tb
+        _post_save_error = (_post_save_error or "") + f" | use_sched: {_ue}"
+        app.logger.error("use_schedule toggle failed in set_gantt_day: %s\n%s", _ue, _tb.format_exc())
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
 
-    return jsonify({"ok": True, "id": existing.id, "day_type": day_type,
-                    "cell_flags": existing.cell_flags,
-                    "use_schedule_toggled": use_schedule_toggled})
+    resp = {"ok": True, "id": saved_id, "day_type": day_type,
+            "cell_flags": saved_flags,
+            "use_schedule_toggled": use_schedule_toggled}
+    if _post_save_error:
+        resp["_warn"] = _post_save_error  # visible in browser console, doesn't break JS
+    return jsonify(resp)
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/gantt/day", methods=["DELETE"])
@@ -2246,7 +2516,16 @@ def set_gantt_meal(pid, bid):
 
     setattr(row, field, value)
     db.session.commit()
-    sync_schedule_driven_lines(bid, db.session)
+    try:
+        sync_schedule_driven_lines(bid, db.session)
+    except Exception as _sdl_err:
+        import traceback
+        app.logger.error("sync_schedule_driven_lines failed in set_gantt_meal: %s\n%s",
+                         _sdl_err, traceback.format_exc())
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
     return jsonify({"ok": True, "date": date_str, "field": field, "value": value})
 
 
@@ -2276,7 +2555,7 @@ def expand_gantt(pid, bid):
 def gantt_live(pid, bid):
     """Return compact schedule state for real-time collaborative patching."""
     b = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
-    sched_mode = b.budget_mode if b.budget_mode in ('working', 'actual') else 'estimated'
+    sched_mode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
 
     days = ScheduleDay.query.filter_by(budget_id=bid, schedule_mode=sched_mode).all()
     assignments = (CrewAssignment.query
@@ -3102,35 +3381,95 @@ def callsheet_prepare_send(pid, bid, date_str):
             recipient_type=r.get("type", "crew"),
             name=r.get("name", ""),
             email=r.get("email", ""),
+            phone=r.get("phone", "") or None,
             confirm_token=token,
             status="pending",
         )
         db.session.add(rec)
-        created_recs.append((rec, r.get("email", "")))
+        created_recs.append((rec, r.get("email", ""), r.get("phone", "")))
     db.session.commit()
 
-    # Send emails to all recipients with a valid email address
     date_display = selected_date.strftime("%A, %B %-d, %Y")
-    sent_count = 0
-    for rec, email in created_recs:
-        if not email:
-            continue
+
+    # Build call sheet data for PDF / SMS context
+    cs_rec = CallSheetData.query.filter_by(
+        budget_id=bid, date=selected_date, schedule_mode=sched_mode).first()
+    cs_data_dict = json.loads(cs_rec.data_json) if cs_rec and cs_rec.data_json else {}
+
+    # Build locations list for PDF
+    from models import LocationDay, Location
+    loc_day_ids = [ld.location_id for ld in LocationDay.query.filter_by(
+        budget_id=bid, date=selected_date).all()]
+    pdf_locations = Location.query.filter(Location.id.in_(loc_day_ids)).all() if loc_day_ids else []
+
+    # Generate PDF (shared across all recipients for this send)
+    pdf_bytes = _generate_callsheet_pdf(
+        send_obj=send,
+        project_name=project.name,
+        date_display=date_display,
+        cs_data=cs_data_dict,
+        crew_rows=[],
+        locations_today=pdf_locations,
+    )
+    pdf_filename = f"CallSheet_{project.name.replace(' ','_')}_{selected_date.isoformat()}_{version_label}.pdf"
+
+    # Build first location summary for SMS
+    first_loc = pdf_locations[0] if pdf_locations else None
+    loc_sms_line = ""
+    if first_loc:
+        loc_sms_line = f"\nLocation: {first_loc.name or ''}"
+        if getattr(first_loc, 'address', None):
+            loc_sms_line += f"\n{first_loc.address}"
+
+    cct = cs_data_dict.get('crew_call_times') or {}
+    general_call = cs_data_dict.get('general_crew_call', '') or ''
+
+    sent_email = 0
+    sent_sms   = 0
+    for rec, email, phone in created_recs:
+        # Find this person's individual call time
+        personal_call = ''
+        name_lower = rec.name.lower()
+        for key, t in cct.items():
+            if key.split('||')[-1].strip().lower() == name_lower:
+                personal_call = t
+                break
+        call_display = personal_call or general_call or 'TBD'
+
         view_url = request.host_url.rstrip('/') + f"/callsheet/view/{rec.confirm_token}"
-        subject = f"Call Sheet — {project.name} — {date_display} ({version_label})"
+        subject  = f"Call Sheet — {project.name} — {date_display} ({version_label})"
         body = (
             f"Hi {rec.name},\n\n"
-            f"Your call sheet for {project.name} on {date_display} is ready.\n\n"
+            f"Your call sheet for {project.name} on {date_display} is ready.\n"
+            f"Your call time: {call_display}\n\n"
             f"View & confirm your call: {view_url}\n\n"
             f"Please confirm receipt by clicking the link above.\n\n"
-            f"— Framework Productions\n"
-            f"  contact@thefp.tv\n"
+            f"— Framework Productions · contact@thefp.tv\n"
         )
-        ok = _send_email(email, subject, body)
-        if ok:
-            rec.status = "sent"
-            sent_count += 1
+        if email:
+            ok = _send_email(email, subject, body,
+                             attachment_bytes=pdf_bytes,
+                             attachment_filename=pdf_filename)
+            if ok:
+                rec.status = "sent"
+                sent_email += 1
+
+        if phone:
+            sms_body = (
+                f"{project.name} — Call Sheet {date_display}\n"
+                f"Hi {rec.name}, your call: {call_display}"
+                f"{loc_sms_line}\n"
+                f"Confirm: {view_url}"
+            )
+            if _send_sms(phone, sms_body):
+                sent_sms += 1
+                if rec.status == "pending":
+                    rec.status = "sent"
+
     db.session.commit()
-    return jsonify({"ok": True, "send_id": send.id, "sent": sent_count, "total": len(created_recs)})
+    return jsonify({"ok": True, "send_id": send.id,
+                    "sent_email": sent_email, "sent_sms": sent_sms,
+                    "total": len(created_recs)})
 
 
 @app.route("/callsheet/view/<token>")
@@ -3148,6 +3487,33 @@ def callsheet_view_public(token):
     budget = Budget.query.get(send.budget_id) if send else None
     project = ProjectSheet.query.get(budget.project_id) if budget else None
     project_name = project.name if project else ""
+    # Fetch call sheet data to show on portal
+    cs_portal_data = {}
+    cs_locations = []
+    if send and budget:
+        sched_mode_p = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+        cs_rec = CallSheetData.query.filter_by(
+            budget_id=send.budget_id, date=send.date, schedule_mode=sched_mode_p).first()
+        if cs_rec and cs_rec.data_json:
+            try:
+                cs_portal_data = json.loads(cs_rec.data_json)
+            except Exception:
+                pass
+        from models import LocationDay, Location
+        loc_day_ids = [ld.location_id for ld in LocationDay.query.filter_by(
+            budget_id=send.budget_id, date=send.date).all()]
+        cs_locations = Location.query.filter(Location.id.in_(loc_day_ids)).all() if loc_day_ids else []
+
+    # Find this recipient's individual call time
+    cct = cs_portal_data.get('crew_call_times') or {}
+    personal_call = ''
+    name_lower = rec.name.lower()
+    for key, t in cct.items():
+        if key.split('||')[-1].strip().lower() == name_lower:
+            personal_call = t
+            break
+    personal_call = personal_call or cs_portal_data.get('general_crew_call', '') or ''
+
     return render_template(
         "callsheet_confirm.html",
         rec=rec,
@@ -3156,6 +3522,9 @@ def callsheet_view_public(token):
         date_display=date_display,
         project_name=project_name,
         token=token,
+        cs_data=cs_portal_data,
+        cs_locations=cs_locations,
+        personal_call=personal_call,
     )
 
 
@@ -3173,6 +3542,29 @@ def callsheet_confirm_public(token):
     date_display = send.date.strftime("%A, %B %-d, %Y") if send else ""
     budget = Budget.query.get(send.budget_id) if send else None
     project = ProjectSheet.query.get(budget.project_id) if budget else None
+    cs_portal_data = {}
+    cs_locations = []
+    if send and budget:
+        sched_mode_p = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+        cs_rec = CallSheetData.query.filter_by(
+            budget_id=send.budget_id, date=send.date, schedule_mode=sched_mode_p).first()
+        if cs_rec and cs_rec.data_json:
+            try:
+                cs_portal_data = json.loads(cs_rec.data_json)
+            except Exception:
+                pass
+        from models import LocationDay, Location
+        loc_day_ids = [ld.location_id for ld in LocationDay.query.filter_by(
+            budget_id=send.budget_id, date=send.date).all()]
+        cs_locations = Location.query.filter(Location.id.in_(loc_day_ids)).all() if loc_day_ids else []
+    cct = cs_portal_data.get('crew_call_times') or {}
+    personal_call = ''
+    name_lower = rec.name.lower()
+    for key, t in cct.items():
+        if key.split('||')[-1].strip().lower() == name_lower:
+            personal_call = t
+            break
+    personal_call = personal_call or cs_portal_data.get('general_crew_call', '') or ''
     return render_template(
         "callsheet_confirm.html",
         rec=rec,
@@ -3181,6 +3573,9 @@ def callsheet_confirm_public(token):
         date_display=date_display,
         project_name=project.name if project else "",
         token=token,
+        cs_data=cs_portal_data,
+        cs_locations=cs_locations,
+        personal_call=personal_call,
     )
 
 
@@ -3326,26 +3721,55 @@ def fringe_config_delete(fid):
 # ── Call Sheets ───────────────────────────────────────────────────────────────
 
 _QUOTE_FALLBACK = [
-    ('"Action is the foundational key to all success."', 'Pablo Picasso', 'person'),
-    ('"Whether you think you can, or you think you can\'t — you\'re right."', 'Henry Ford', 'person'),
-    ('"Get busy living, or get busy dying."', 'The Shawshank Redemption', 'film'),
-    ('"You talkin\' to me?"', 'Taxi Driver', 'film'),
-    ('"Winter is coming."', 'Game of Thrones', 'tv'),
-    ('"Clear eyes, full hearts, can\'t lose."', 'Friday Night Lights', 'tv'),
-    ('"Not all those who wander are lost."', 'J.R.R. Tolkien, The Fellowship of the Ring', 'book'),
-    ('"It was the best of times, it was the worst of times."', 'Charles Dickens, A Tale of Two Cities', 'book'),
-    ('"So it goes."', 'Kurt Vonnegut, Slaughterhouse-Five', 'book'),
-    ('"May the Force be with you."', 'Star Wars', 'film'),
-    ('"You can\'t handle the truth!"', 'A Few Good Men', 'film'),
-    ('"Here\'s looking at you, kid."', 'Casablanca', 'film'),
-    ('"After all, tomorrow is another day."', 'Gone with the Wind', 'film'),
-    ('"All we have to decide is what to do with the time that is given us."', 'J.R.R. Tolkien, The Fellowship of the Ring', 'book'),
-    ('"The greatest thing you\'ll ever learn is just to love, and be loved in return."', 'Moulin Rouge!', 'film'),
-    ('"Every moment is a fresh beginning."', 'T.S. Eliot', 'person'),
-    ('"In the middle of every difficulty lies opportunity."', 'Albert Einstein', 'person'),
-    ('"The show must go on."', 'Freddie Mercury / Queen', 'person'),
-    ('"Two roads diverged in a wood, and I — I took the one less traveled by."', 'Robert Frost', 'book'),
-    ('"It does not do to dwell on dreams and forget to live."', 'J.K. Rowling, Harry Potter and the Sorcerer\'s Stone', 'book'),
+    # ── Film ──────────────────────────────────────────────────────────────────
+    ('"Nobody puts Baby in a corner."', 'Dirty Dancing', 'film'),
+    ('"I\'m not even supposed to be here today."', 'Clerks', 'film'),
+    ('"You\'re gonna need a bigger boat."', 'Jaws', 'film'),
+    ('"I feel the need — the need for speed."', 'Top Gun', 'film'),
+    ('"That rug really tied the room together."', 'The Big Lebowski', 'film'),
+    ('"We accept the love we think we deserve."', 'The Perks of Being a Wallflower', 'film'),
+    ('"Strange things are afoot at the Circle K."', 'Bill & Ted\'s Excellent Adventure', 'film'),
+    ('"Roads? Where we\'re going we don\'t need roads."', 'Back to the Future', 'film'),
+    ('"Lighten up, Francis."', 'Stripes', 'film'),
+    ('"We\'re on a mission from God."', 'The Blues Brothers', 'film'),
+    ('"Never rat on your friends and always keep your mouth shut."', 'Goodfellas', 'film'),
+    ('"That\'s not a knife. THAT\'S a knife."', 'Crocodile Dundee', 'film'),
+    ('"I am the Dude. So that\'s what you call me."', 'The Big Lebowski', 'film'),
+    ('"Gentlemen, you can\'t fight in here — this is the War Room!"', 'Dr. Strangelove', 'film'),
+    ('"The stuff that dreams are made of."', 'The Maltese Falcon', 'film'),
+    # ── TV ────────────────────────────────────────────────────────────────────
+    ('"I am not a good man, but I\'m not nothing."', 'The Wire', 'tv'),
+    ('"How you doin\'?"', 'Friends — Joey Tribbiani', 'tv'),
+    ('"Bears. Beets. Battlestar Galactica."', 'The Office', 'tv'),
+    ('"What we do in the shadows is nobody\'s business but our own."', 'What We Do in the Shadows', 'tv'),
+    ('"Cool, cool, cool, cool, cool."', 'Brooklyn Nine-Nine — Jake Peralta', 'tv'),
+    ('"Nobody\'s walking out on this fun, old-fashioned family Christmas."', 'National Lampoon\'s Christmas Vacation', 'film'),
+    ('"The truth is out there."', 'The X-Files', 'tv'),
+    ('"We\'re all just walking each other home."', 'Dead to Me', 'tv'),
+    ('"Treat yo\'self."', 'Parks and Recreation', 'tv'),
+    ('"I am the danger."', 'Breaking Bad — Walter White', 'tv'),
+    # ── Books & Literary ──────────────────────────────────────────────────────
+    ('"I am not afraid of storms, for I am learning how to sail my ship."', 'Louisa May Alcott, Little Women', 'book'),
+    ('"It\'s a funny thing about comin\' home. Looks the same, smells the same, feels the same."', 'Benjamin Button (F. Scott Fitzgerald)', 'book'),
+    ('"We are all of us stars, and we deserve to twinkle."', 'Marilyn Monroe', 'person'),
+    ('"The edge of the world is wherever you stop."', 'Terry Pratchett', 'book'),
+    ('"There is no real ending. It\'s just the place where you stop the story."', 'Frank Herbert', 'book'),
+    ('"Writing is easy. You just open a vein and bleed."', 'Walter Wellesley "Red" Smith', 'person'),
+    ('"Never confuse movement with action."', 'Ernest Hemingway', 'person'),
+    ('"An idea that is not dangerous is unworthy of being called an idea at all."', 'Oscar Wilde', 'person'),
+    # ── People ────────────────────────────────────────────────────────────────
+    ('"I\'ve never had a humble opinion. If you\'ve got an opinion, why be humble about it?"', 'Joan Baez', 'person'),
+    ('"Everything is theoretically impossible, until it is done."', 'Robert A. Heinlein', 'person'),
+    ('"You\'re only given a little spark of madness. You mustn\'t lose it."', 'Robin Williams', 'person'),
+    ('"I\'d rather regret the things I\'ve done than the things I haven\'t."', 'Lucille Ball', 'person'),
+    ('"Normal is nothing more than a cycle on a washing machine."', 'Whoopi Goldberg', 'person'),
+    ('"You have to be odd to be number one."', 'Dr. Seuss', 'person'),
+    ('"If you obey all the rules, you miss all the fun."', 'Katharine Hepburn', 'person'),
+    ('"I figure if a girl wants to be a legend, she should go ahead and be one."', 'Calamity Jane', 'person'),
+    ('"I never lose. I either win or learn."', 'Nelson Mandela', 'person'),
+    ('"Do or do not. There is no try."', 'Yoda', 'film'),
+    ('"If everything seems under control, you\'re not going fast enough."', 'Mario Andretti', 'person'),
+    ('"The best time to plant a tree was 20 years ago. The second best time is now."', 'Chinese Proverb', 'book'),
 ]
 
 @app.route("/api/quote")
@@ -3366,7 +3790,10 @@ def get_quote():
         }
         source_desc = type_map.get(source_type, type_map['random'])
         prompt = (
-            f"Give me one short, memorable, inspiring quote from {source_desc}. "
+            f"Give me one short, clever, unexpected quote from {source_desc}. "
+            "Avoid the most famous or overused quotes — pick something lesser-known, "
+            "witty, or surprising that would make a film/TV production crew smile. "
+            "It can be funny, dry, or unexpectedly profound. "
             "Format it exactly as:\n"
             "\"[quote text]\"\n"
             "— [Source / Author]\n\n"
@@ -3728,6 +4155,21 @@ def callsheet_view(pid, bid, date_str=None):
         (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'estimated' and b.version_status != 'archived'), None
     )
 
+    # ── Confirmation status map for crew list ────────────────────────────────
+    # Most-recent send for this date; map name_lower → {status, viewed_at, confirmed_at}
+    confirm_status = {}
+    latest_send = CallSheetSend.query.filter_by(
+        budget_id=bid, date=selected_date, schedule_mode=sched_mode
+    ).order_by(CallSheetSend.sent_at.desc()).first()
+    if latest_send:
+        for rcp in latest_send.recipients:
+            key = rcp.name.strip().lower()
+            confirm_status[key] = {
+                "status":       rcp.status,
+                "viewed_at":    rcp.viewed_at.strftime("%-I:%M %p")  if rcp.viewed_at    else None,
+                "confirmed_at": rcp.confirmed_at.strftime("%-I:%M %p") if rcp.confirmed_at else None,
+            }
+
     return render_template("callsheet.html",
         project=project,
         budget=budget,
@@ -3760,6 +4202,7 @@ def callsheet_view(pid, bid, date_str=None):
         project_unions_cs=project_unions_cs,
         rep_contacts=rep_contacts,
         crew_p2_all=crew_p2_all,
+        confirm_status=confirm_status,
     )
 
 
@@ -4358,6 +4801,7 @@ with app.app_context():
         "ALTER TABLE budget ADD COLUMN prepared_by_title VARCHAR(100)",
         "ALTER TABLE budget ADD COLUMN prepared_by_email VARCHAR(200)",
         "ALTER TABLE budget ADD COLUMN prepared_by_phone VARCHAR(50)",
+        "ALTER TABLE callsheet_recipient ADD COLUMN phone VARCHAR(50)",
     ]
     for _sql in _migrations:
         try:
@@ -4659,6 +5103,81 @@ with app.app_context():
 
     # ── Seed pre-built production templates ───────────────────────────────────
     def _seed_production_templates():
+        # ── QA / Dev Test Budget ──────────────────────────────────────────────
+        _TEST = "QA Dev Test Budget"
+        if not BudgetTemplate.query.filter_by(name=_TEST).first():
+            tmpl_t = BudgetTemplate(name=_TEST,
+                                    description="Multi-dept test template: ATL, Talent (multiples), Staff, Camera, G&E, Sound, Art, HMU, Transport, Meals")
+            db.session.add(tmpl_t)
+            db.session.flush()
+            _test_lines = [
+                # code,  name,                         desc,                         labor, qty, days, rate,   rt,           fringe, agent, sort
+                # ── Above the Line ────────────────────────────────────────────
+                (600,  "Above the Line",               "Director / DP",              True,  1,   5,    2000,   "day_10",     "E",    0,     0),
+                (600,  "Above the Line",               "Executive Producer",          True,  1,   5,    1500,   "day_10",     "E",    0,     10),
+                # ── Talent ────────────────────────────────────────────────────
+                (700,  "Talent",                       "Principal Talent",            True,  2,   3,    1200,   "flat_day",   "S",    0.10,  20),
+                (700,  "Talent",                       "Supporting Talent",           True,  4,   2,    600,    "flat_day",   "S",    0.10,  30),
+                (700,  "Talent",                       "Voice Over Talent",           True,  1,   1,    2500,   "flat_project","N",   0.10,  40),
+                # ── Production Staff ──────────────────────────────────────────
+                (1000, "Production Staff",             "Line Producer",               True,  1,   5,    1200,   "day_10",     "N",    0,     50),
+                (1000, "Production Staff",             "1st AD",                      True,  1,   5,    900,    "day_10",     "N",    0,     60),
+                (1000, "Production Staff",             "2nd AD",                      True,  1,   5,    650,    "day_10",     "N",    0,     70),
+                (1000, "Production Staff",             "Production Coordinator",      True,  1,   5,    600,    "day_10",     "N",    0,     80),
+                (1000, "Production Staff",             "Production Assistant",        True,  3,   5,    300,    "day_10",     "N",    0,     90),
+                (1000, "Production Staff",             "Camera Operator",             True,  2,   5,    900,    "day_10",     "N",    0,     100),
+                (1000, "Production Staff",             "Gaffer",                      True,  1,   5,    850,    "day_10",     "I",    0,     110),
+                (1000, "Production Staff",             "Sound Mixer",                 True,  1,   5,    950,    "day_10",     "I",    0,     120),
+                (1200, "Post-Production Staff",        "Editor",                      True,  1,   10,   750,    "day_10",     "N",    0,     130),
+                # ── Camera Equipment ──────────────────────────────────────────
+                (2000, "Camera Equipment",             "Camera Package Rental",       False, 2,   5,    1500,   "day_10",     "N",    0,     140),
+                (2000, "Camera Equipment",             "Media / Hard Drives",         False, 1,   1,    350,    "day_10",     "N",    0,     150),
+                # ── Grip & Electric ───────────────────────────────────────────
+                (3000, "Grip & Electric",              "Lighting Package",            False, 1,   5,    1200,   "day_10",     "N",    0,     160),
+                (3000, "Grip & Electric",              "Grip Package",                False, 1,   5,    600,    "day_10",     "N",    0,     170),
+                # ── Sound ─────────────────────────────────────────────────────
+                (3300, "Sound",                        "Sound Package Rental",        False, 1,   5,    500,    "day_10",     "N",    0,     180),
+                # ── Art ───────────────────────────────────────────────────────
+                (4000, "Art",                          "Prop Rentals",                False, 1,   1,    800,    "day_10",     "N",    0,     190),
+                (4000, "Art",                          "Set Dressing Materials",      False, 1,   1,    500,    "day_10",     "N",    0,     200),
+                # ── Hair & Makeup ─────────────────────────────────────────────
+                (4500, "Hair & Makeup",                "Hair Stylist",                True,  1,   3,    700,    "day_10",     "N",    0,     210),
+                (4500, "Hair & Makeup",                "Makeup Artist",               True,  1,   3,    700,    "day_10",     "N",    0,     220),
+                # ── Transportation ────────────────────────────────────────────
+                (6000, "Transportation",               "15-Passenger Van Rental",     False, 1,   5,    200,    "day_10",     "N",    0,     230),
+                (6000, "Transportation",               "Fuel & Parking",              False, 1,   5,    80,     "day_10",     "N",    0,     240),
+                # ── Travel ────────────────────────────────────────────────────
+                (7000, "Travel",                       "Hotel — Crew (est.)",         False, 6,   4,    150,    "day_10",     "N",    0,     250),
+                # ── Production Meals / Craft Services ─────────────────────────
+                (8000, "Production Meals / Craft Services", "First Meal",             False, 15,  5,    25,     "day_10",     "N",    0,     260),
+                (8000, "Production Meals / Craft Services", "Craft Services",         False, 1,   5,    200,    "day_10",     "N",    0,     270),
+                # ── Location ──────────────────────────────────────────────────
+                (9000, "Location",                     "Studio / Stage Rental",       False, 1,   3,    2000,   "day_10",     "N",    0,     280),
+                # ── Administrative ────────────────────────────────────────────
+                (15000,"Administrative",               "Petty Cash / Miscellaneous",  False, 1,   1,    1000,   "day_10",     "N",    0,     290),
+            ]
+            for row in _test_lines:
+                code, acct, desc, labor, qty, days, rate, rt, fringe, agent, sort = row
+                est = 0 if labor else round(rate * qty * days, 2)
+                db.session.add(BudgetTemplateLine(
+                    template_id=tmpl_t.id,
+                    account_code=code,
+                    account_name=acct,
+                    description=desc,
+                    is_labor=labor,
+                    quantity=qty,
+                    days=days,
+                    rate=rate,
+                    rate_type=rt,
+                    fringe_type=fringe,
+                    agent_pct=agent,
+                    estimated_total=est,
+                    sort_order=sort,
+                ))
+            db.session.commit()
+            logging.info(f"Seeded template: {_TEST}")
+
+        # ── Small Live Production ─────────────────────────────────────────────
         _SMALL_LIVE = "Small Live Production"
         if BudgetTemplate.query.filter_by(name=_SMALL_LIVE).first():
             return

@@ -532,6 +532,9 @@
                     data-pid="{{ project.id }}" data-bid="{{ budget.id }}" data-lid="{{ ln.id }}"
                     title="View OT / payroll calculation breakdown">OT Detail</button>
             {% endif %}
+            <button class="btn btn-xs btn-ghost line-row-menu-btn"
+                    data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
+                    title="Insert / Move row" onclick="openLineRowMenu(this)">⋮</button>
             <button class="btn btn-xs btn-ghost del-line-btn" data-id="{{ ln.id }}"
                     title="Delete line">✕</button>
           </td>
@@ -3142,12 +3145,21 @@ function renderCalcDetail(d) {
   const fmt  = v => v == null ? '—' : '$' + parseFloat(v).toLocaleString('en-US',
     {minimumFractionDigits:2, maximumFractionDigits:2});
   const fmtH = v => v == null ? '—' : parseFloat(v).toFixed(1) + 'h';
+  const fmtR = v => v == null ? null : '$' + parseFloat(v).toLocaleString('en-US',
+    {minimumFractionDigits:2, maximumFractionDigits:2}) + '/hr';
   const hasHours = d.total_st_hours > 0 || d.total_ot_hours > 0 || d.total_dt_hours > 0;
+
+  const hourlyRates = d.st_hourly != null
+    ? `<span><strong>ST hrly:</strong> ${fmtR(d.st_hourly)}</span>
+       ${d.ot_hourly != null ? `<span class="ot-val"><strong>OT hrly:</strong> ${fmtR(d.ot_hourly)}</span>` : ''}
+       ${d.dt_hourly != null ? `<span class="dt-val"><strong>DT hrly:</strong> ${fmtR(d.dt_hourly)}</span>` : ''}`
+    : '';
 
   let html = `
     <div class="calc-meta">
       <span><strong>Rate:</strong> ${fmt(d.rate)} / ${(d.rate_type||'').replace('_',' ')}</span>
       ${d.hours_per_day ? `<span><strong>Hours/day:</strong> ${d.hours_per_day}</span>` : ''}
+      ${hourlyRates}
       <span><strong>Qty:</strong> ${d.qty}</span>
       <span><strong>Fringe:</strong> ${d.fringe_type}${!d.ot_applies ? ' <em class="no-ot">(OT exempt)</em>' : ''}</span>
     </div>
@@ -3207,6 +3219,29 @@ function renderCalcDetail(d) {
   <button type="button" class="ctx-menu-item" id="ctx-set-role-group-talent">👤 Set Role: Talent</button>
   <button type="button" class="ctx-menu-item" id="ctx-set-role-group-atl">🎬 Set Role: Above the Line</button>
   <button type="button" class="ctx-menu-item" id="ctx-set-role-group-crew">🎥 Set Role: Crew</button>
+</div>
+
+<!-- ── Line Row Context Dropdown (insert above/below, move) ────────────────── -->
+<div id="line-row-menu" class="line-row-menu hidden">
+  <button type="button" onclick="lineInsert('above')">Insert Row Above</button>
+  <button type="button" onclick="lineInsert('below')">Insert Row Below</button>
+  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
+  <button type="button" onclick="openLineMoveModal()">Move to…</button>
+</div>
+
+<!-- ── Move Line Modal ──────────────────────────────────────────────────────── -->
+<div id="line-move-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="closeLineMoveModal()"></div>
+  <div class="modal-box" style="min-width:340px;max-width:480px">
+    <h2 style="margin-bottom:4px">Move Row</h2>
+    <p style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">
+      Choose where to place this row within its section.
+    </p>
+    <div id="line-move-list" style="max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:.25rem"></div>
+    <div class="modal-actions" style="margin-top:12px">
+      <button type="button" class="btn btn-outline" onclick="closeLineMoveModal()">Cancel</button>
+    </div>
+  </div>
 </div>
 
 <!-- ── All-in Total Reverse Calculator Modal ───────────────────────────────── -->
@@ -5426,24 +5461,30 @@ function _collabLivePatch() {
         return;
       }
 
-      // Detect structural changes (lines added or removed by someone else)
+      // Detect structural changes (lines added or removed)
       const incoming = d.line_ids || [];
       const added   = incoming.filter(id => !_knownLineIds.includes(id));
       const removed = _knownLineIds.filter(id => !incoming.includes(id));
       if ((added.length || removed.length) && !_structToastShown) {
         _structToastShown = true;
-        const who = d.last_edit ? d.last_edit.name : 'A collaborator';
+        const activeTag = document.activeElement && document.activeElement.tagName;
+        const isEditing = (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT');
+        if (!isEditing) {
+          // No active editing — reload silently right away
+          reloadWithTab();
+          return;
+        }
+        // User is mid-edit — show toast so they can choose when to reload
         const parts = [];
         if (added.length)   parts.push(`${added.length} line${added.length > 1 ? 's' : ''} added`);
         if (removed.length) parts.push(`${removed.length} line${removed.length > 1 ? 's' : ''} removed`);
-        document.getElementById('collab-struct-msg').textContent = `${who}: ${parts.join(', ')}`;
+        document.getElementById('collab-struct-msg').textContent = `Budget updated: ${parts.join(', ')}`;
         document.getElementById('collab-struct-toast').style.display = 'flex';
-        // Auto-dismiss after 12s
         setTimeout(() => {
           document.getElementById('collab-struct-toast').style.display = 'none';
           _structToastShown = false;
           _knownLineIds = incoming;
-        }, 12000);
+        }, 20000);
       }
 
       // Silently patch changed lines (skip lines this user is actively editing)
@@ -5494,6 +5535,99 @@ document.addEventListener('change', e => {
 _collabPingPresence();
 setInterval(_collabPingPresence, 20000);
 setInterval(_collabLivePatch, 6000);
+</script>
+
+<!-- ── Insert / Move Row JS ─────────────────────────────────────────────────── -->
+<script>
+(function() {
+  const _pid = {{ project.id }};
+  const _bid = {{ budget.id }};
+
+  let _menuLineId  = null;
+  let _menuCode    = null;
+  const _menu = document.getElementById('line-row-menu');
+
+  window.openLineRowMenu = function(btn) {
+    _menuLineId = parseInt(btn.dataset.id);
+    _menuCode   = parseInt(btn.dataset.code);
+    _menu.classList.remove('hidden');
+    // Position with fixed coords (viewport-relative)
+    requestAnimationFrame(() => {
+      const rect = btn.getBoundingClientRect();
+      const mw = _menu.offsetWidth;
+      const mh = _menu.offsetHeight;
+      _menu.style.top  = Math.min(rect.bottom + 4, window.innerHeight - mh - 8) + 'px';
+      _menu.style.left = Math.max(4, Math.min(rect.left, window.innerWidth - mw - 8)) + 'px';
+    });
+  };
+
+  // Close on outside click
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#line-row-menu') && !e.target.closest('.line-row-menu-btn')) {
+      _menu.classList.add('hidden');
+    }
+  });
+
+  window.lineInsert = async function(position) {
+    _menu.classList.add('hidden');
+    if (!_menuLineId) return;
+    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/insert`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ reference_id: _menuLineId, position })
+    });
+    if (res.ok) reloadWithTab();
+    else alert('Insert failed');
+  };
+
+  window.openLineMoveModal = function() {
+    _menu.classList.add('hidden');
+    if (!_menuLineId || !_menuCode) return;
+
+    // Gather all lines in the same section from the DOM
+    const rows = Array.from(document.querySelectorAll(`.line-row[data-code="${_menuCode}"]`));
+    const list = document.getElementById('line-move-list');
+    list.innerHTML = '';
+
+    // "Move to first in section"
+    const topBtn = document.createElement('button');
+    topBtn.className = 'btn btn-sm btn-outline';
+    topBtn.style.cssText = 'text-align:left;width:100%';
+    topBtn.textContent = '↑ Move to top of section';
+    topBtn.onclick = () => doMove(null);
+    list.appendChild(topBtn);
+
+    rows.forEach(row => {
+      const id = parseInt(row.dataset.id);
+      if (id === _menuLineId) return;  // skip self
+      const desc = row.querySelector('.editable[data-field="description"]');
+      const label = (desc && desc.textContent.trim()) || `Line #${id}`;
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-sm btn-outline';
+      btn.style.cssText = 'text-align:left;width:100%';
+      btn.textContent = `After: ${label}`;
+      btn.onclick = () => doMove(id);
+      list.appendChild(btn);
+    });
+
+    document.getElementById('line-move-modal').classList.remove('hidden');
+  };
+
+  window.closeLineMoveModal = function() {
+    document.getElementById('line-move-modal').classList.add('hidden');
+  };
+
+  async function doMove(afterId) {
+    closeLineMoveModal();
+    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/reorder`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ line_id: _menuLineId, after_id: afterId })
+    });
+    if (res.ok) reloadWithTab();
+    else alert('Move failed');
+  }
+})();
 </script>
 
 <!-- ═══ QUICK ENTRY PANEL ═════════════════════════════════════════════════════ -->

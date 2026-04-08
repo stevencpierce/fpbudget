@@ -366,13 +366,13 @@ def calc_days_ot_status(rate_type, schedule_days, payroll_profile=None, payroll_
     from collections import defaultdict
 
     result = {}
-    if not payroll_profile or not ot_applies:
-        return result
 
     st_hours_per_day = RATE_TYPE_HOURS.get(rate_type)
-    if not st_hours_per_day:
-        # Flat-rate lines (flat_day, flat_project, etc.) — no hourly OT calc,
-        # but still highlight cells where est_ot_hours was manually set.
+
+    # Always highlight cells that have manually-set est_ot_hours, regardless of
+    # payroll profile or fringe type.  This covers flat-rate Talent lines, Exempt
+    # fringe, and any line whose budget has no payroll profile assigned.
+    if not st_hours_per_day or not payroll_profile or not ot_applies:
         for d in schedule_days:
             if d.day_type not in ('work', 'travel'):
                 continue
@@ -871,11 +871,24 @@ def calc_line_detail(line, schedule_days, fringe_configs, payroll_profile=None, 
     else:
         rule = 'No payroll profile — flat rate'
 
+    # Hourly rates (only meaningful when rate type has defined hours/day)
+    if use_hourly and hours_pd:
+        ot_mult_val = _float(eff_prof.ot_multiplier, 1.5) if eff_prof else 1.5
+        dt_mult_val = _float(eff_prof.dt_multiplier, 2.0) if eff_prof else 2.0
+        st_hourly = round(rate / hours_pd, 4)
+        ot_hourly = round(st_hourly * ot_mult_val, 4)
+        dt_hourly = round(st_hourly * dt_mult_val, 4)
+    else:
+        st_hourly = ot_hourly = dt_hourly = None
+
     return {
         'label':          line.description or line.account_name,
         'rate':           rate,
         'rate_type':      rate_type,
         'hours_per_day':  hours_pd,
+        'st_hourly':      st_hourly,
+        'ot_hourly':      ot_hourly,
+        'dt_hourly':      dt_hourly,
         'qty':            qty,
         'fringe_type':    line.fringe_type,
         'ot_applies':     ot_applies,

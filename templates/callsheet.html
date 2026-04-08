@@ -580,9 +580,11 @@ Example:
             <tbody>
               {% for r in dept_rows %}
               {% set crew_key = r.p2_section ~ '||' ~ r.role ~ '||' ~ r.name %}
-              <tr class="cs-crew-member-row">
+              {% set cs = confirm_status.get(r.name.lower(), {}) %}
+              {% set cs_status = cs.get('status', '') %}
+              <tr class="cs-crew-member-row{% if cs_status == 'confirmed' %} cs-row-confirmed{% elif cs_status == 'viewed' %} cs-row-viewed{% endif %}">
                 <td class="cs-dept-role">{{ r.role }}</td>
-                <td class="cs-dept-name">{{ r.name }}</td>
+                <td class="cs-dept-name">{{ r.name }}{% if cs_status == 'confirmed' %}<span class="cs-conf-badge cs-conf-confirmed cs-screen-only" title="Confirmed {{ cs.get('confirmed_at','') }}">✓ Confirmed</span>{% elif cs_status == 'viewed' %}<span class="cs-conf-badge cs-conf-viewed cs-screen-only" title="Viewed {{ cs.get('viewed_at','') }}">Viewed</span>{% elif cs_status in ('sent',) %}<span class="cs-conf-badge cs-conf-sent cs-screen-only">Sent</span>{% endif %}</td>
                 <td class="callsheet-time-cell cs-editable cs-crew-call-cell cs-dept-call"
                     contenteditable="true"
                     data-crew-key="{{ crew_key }}"
@@ -607,10 +609,12 @@ Example:
           <tbody>
             {% for r in crew_p2_all %}
             {% set crew_key = r.p2_section ~ '||' ~ r.role ~ '||' ~ r.name %}
-            <tr>
+            {% set cs = confirm_status.get(r.name.lower(), {}) %}
+            {% set cs_status = cs.get('status', '') %}
+            <tr class="{% if cs_status == 'confirmed' %}cs-row-confirmed{% elif cs_status == 'viewed' %}cs-row-viewed{% endif %}">
               <td class="muted" style="font-size:.78rem">{{ r.p2_section }}</td>
               <td>{{ r.role }}</td>
-              <td>{{ r.name }}</td>
+              <td>{{ r.name }}{% if cs_status == 'confirmed' %}<span class="cs-conf-badge cs-conf-confirmed cs-screen-only">✓</span>{% elif cs_status == 'viewed' %}<span class="cs-conf-badge cs-conf-viewed cs-screen-only">👁</span>{% endif %}</td>
               <td class="callsheet-time-cell cs-editable"
                   contenteditable="true"
                   data-crew-key="{{ crew_key }}"
@@ -811,12 +815,19 @@ Example:
                style="flex:1;min-width:140px;padding:4px 8px;font-size:.82rem" placeholder="(optional)">
       </div>
       <div style="margin-bottom:10px">
-        <span style="font-size:.78rem;color:var(--text-muted)">Recipients from this call sheet:</span>
-        <div id="cs-dist-recipient-list" style="margin-top:6px;max-height:220px;overflow-y:auto"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <span style="font-size:.78rem;color:var(--text-muted)">Select recipients — confirmed shown in green, viewed in yellow:</span>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-xs btn-ghost" onclick="csSelectAll(true)" style="font-size:.72rem">All</button>
+            <button class="btn btn-xs btn-ghost" onclick="csSelectAll(false)" style="font-size:.72rem">None</button>
+            <button class="btn btn-xs btn-ghost" onclick="csSelectUnconfirmed()" style="font-size:.72rem">Unconfirmed only</button>
+          </div>
+        </div>
+        <div id="cs-dist-recipient-list" style="margin-top:4px;max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:4px 8px"></div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn btn-sm btn-primary" id="cs-dist-send-btn" onclick="csSendCallSheet()">
-          ✉ Send Call Sheet
+          ✉ Send / Resend
         </button>
         <span id="cs-dist-send-status" style="font-size:.82rem;color:var(--text-muted)"></span>
       </div>
@@ -832,6 +843,7 @@ const CS_DIST_URL   = "{{ url_for('callsheet_distribution', pid=project.id, bid=
 const CS_SEND_URL   = "{{ url_for('callsheet_prepare_send', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
 const CS_DATA       = {{ cs_data | tojson }};
 const KEY_CONTACTS_FALLBACK = {{ key_contacts | tojson }};
+const CONFIRM_STATUS = {{ confirm_status | tojson }}; // {name_lower: {status,viewed_at,confirmed_at}}
 const AVAILABLE_CONTACTS    = {{ available_contacts | tojson }};
 
 // ── Auto-save ─────────────────────────────────────────────────────────────────
@@ -1700,42 +1712,70 @@ function csDistBuildRecipientList() {
   // Collect all people listed on the call sheet who have email addresses
   const people = [];
   const seen = new Set();
-  function addPerson(name, email, type) {
-    if (!email) return;
-    const key = email.toLowerCase();
-    if (seen.has(key)) return;
+  function addPerson(name, email, type, phone) {
+    const key = (email || name || '').toLowerCase();
+    if (!key || seen.has(key)) return;
     seen.add(key);
-    people.push({ name, email, type });
+    people.push({ name, email: email||'', phone: phone||'', type });
   }
   // Key contacts
   (CS_DATA.key_personnel || KEY_CONTACTS_FALLBACK || []).forEach(p => {
-    if (p && p.name) addPerson(p.name, p.email || '', 'crew');
+    if (p && p.name) addPerson(p.name, p.email || '', 'crew', p.phone || '');
   });
   // Crew call times
   (CS_DATA.crew_call_times || []).forEach(c => {
-    if (c && c.name) addPerson(c.name, c.email || '', 'crew');
+    if (c && c.name) addPerson(c.name, c.email || '', 'crew', c.phone || '');
   });
   // Available contacts fallback
   (AVAILABLE_CONTACTS || []).forEach(c => {
-    if (c && c.name) addPerson(c.name, c.email || '', c.type || 'crew');
+    if (c && c.name) addPerson(c.name, c.email || '', c.type || 'crew', c.phone || '');
   });
 
   const el = document.getElementById('cs-dist-recipient-list');
   if (!people.length) {
-    el.innerHTML = '<p style="font-size:.78rem;color:var(--text-muted)">No contacts with email addresses found on this call sheet.</p>';
+    el.innerHTML = '<p style="font-size:.78rem;color:var(--text-muted)">No contacts found on this call sheet.</p>';
     return;
   }
+
+  // Status badge HTML helper
+  function statusBadge(name) {
+    const st = CONFIRM_STATUS[(name||'').toLowerCase()];
+    if (!st) return '';
+    if (st.status === 'confirmed')
+      return `<span style="background:#052e16;color:#4ade80;border:1px solid #16a34a;border-radius:3px;font-size:.65rem;font-weight:600;padding:1px 5px;margin-left:4px">✓ Confirmed${st.confirmed_at ? ' ' + st.confirmed_at : ''}</span>`;
+    if (st.status === 'viewed')
+      return `<span style="background:#1c1500;color:#fbbf24;border:1px solid #d97706;border-radius:3px;font-size:.65rem;font-weight:600;padding:1px 5px;margin-left:4px">Viewed${st.viewed_at ? ' ' + st.viewed_at : ''}</span>`;
+    if (st.status === 'sent')
+      return `<span style="background:#0c1a3a;color:#60a5fa;border:1px solid #1d4ed8;border-radius:3px;font-size:.65rem;font-weight:600;padding:1px 5px;margin-left:4px">Sent</span>`;
+    return '';
+  }
+
   el.innerHTML = people.map((p, i) => `
-    <label style="display:flex;align-items:center;gap:8px;font-size:.82rem;padding:3px 0;cursor:pointer">
+    <label style="display:flex;align-items:center;gap:8px;font-size:.82rem;padding:4px 0;cursor:pointer;border-bottom:1px solid var(--border);flex-wrap:wrap">
       <input type="checkbox" class="cs-dist-recip-cb" data-idx="${i}"
              data-name="${(p.name||'').replace(/"/g,'&quot;')}"
              data-email="${(p.email||'').replace(/"/g,'&quot;')}"
+             data-phone="${(p.phone||'').replace(/"/g,'&quot;')}"
              data-type="${p.type||'crew'}"
-             ${p.email ? 'checked' : 'disabled'}>
-      <span>${p.name}</span>
-      ${p.email ? `<span style="color:var(--text-muted);font-size:.75rem">${p.email}</span>` : '<span style="color:var(--text-muted);font-size:.73rem">(no email)</span>'}
+             ${(p.email || p.phone) ? 'checked' : 'disabled'}>
+      <span>${p.name}${statusBadge(p.name)}</span>
+      <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
+        ${p.email ? `<span style="color:var(--text-muted);font-size:.73rem">✉ ${p.email}</span>` : ''}
+        ${p.phone ? `<span style="color:var(--text-muted);font-size:.73rem">📱 ${p.phone}</span>` : ''}
+        ${!p.email && !p.phone ? '<span style="color:var(--text-muted);font-size:.72rem">(no contact info)</span>' : ''}
+      </span>
     </label>
   `).join('');
+}
+
+function csSelectAll(checked) {
+  document.querySelectorAll('.cs-dist-recip-cb:not(:disabled)').forEach(cb => { cb.checked = checked; });
+}
+function csSelectUnconfirmed() {
+  document.querySelectorAll('.cs-dist-recip-cb:not(:disabled)').forEach(cb => {
+    const st = CONFIRM_STATUS[(cb.dataset.name||'').toLowerCase()];
+    cb.checked = !st || st.status !== 'confirmed';
+  });
 }
 
 function csSendCallSheet() {
@@ -1746,7 +1786,7 @@ function csSendCallSheet() {
 
   const recipients = [];
   document.querySelectorAll('.cs-dist-recip-cb:checked').forEach(cb => {
-    recipients.push({ name: cb.dataset.name, email: cb.dataset.email, type: cb.dataset.type });
+    recipients.push({ name: cb.dataset.name, email: cb.dataset.email, phone: cb.dataset.phone || '', type: cb.dataset.type });
   });
   if (!recipients.length) {
     statusEl.textContent = 'No recipients selected.';
@@ -1765,7 +1805,10 @@ function csSendCallSheet() {
     if (d.error) {
       statusEl.textContent = 'Error: ' + d.error;
     } else {
-      statusEl.textContent = `✓ Sent to ${d.sent} of ${d.total} recipient${d.total !== 1 ? 's' : ''}`;
+      const parts = [];
+      if (d.sent_email > 0) parts.push(`✉ ${d.sent_email} email${d.sent_email !== 1 ? 's' : ''}`);
+      if (d.sent_sms   > 0) parts.push(`📱 ${d.sent_sms} SMS`);
+      statusEl.textContent = parts.length ? `✓ Sent: ${parts.join(', ')}` : `Recorded (${d.total} recipients)`;
       csDistLoadHistory();
     }
     btn.disabled = false;

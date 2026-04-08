@@ -593,26 +593,8 @@ const LOC_DAY_LABELS = {use:'Use', scout:'Scout', hold:'Hold', strike:'Strike'};
     return true;
   }
 
-  // Intercept saveDay to mark cells as locally edited
-  const _origSaveDay = window.saveDay;
-  if (typeof _origSaveDay === 'function') {
-    window.saveDay = function(cell, dayType, note, estOtHours) {
-      const k = `${cell.dataset.line}:${cell.dataset.instance||1}:${cell.dataset.date}`;
-      markEdited(k);
-      return _origSaveDay.apply(this, arguments);
-    };
-  }
-  // Also intercept assignCrewToRow
-  const _origAssign = window.assignCrewToRow;
-  if (typeof _origAssign === 'function') {
-    window.assignCrewToRow = function(crewId, crewName, crewObj) {
-      if (window._crewPickerTarget) {
-        const {lineId, instance} = window._crewPickerTarget;
-        markEdited(`crew:${lineId}:${instance||1}`);
-      }
-      return _origAssign.apply(this, arguments);
-    };
-  }
+  // Expose markEdited globally so gantt.js can call it directly (scope-binding bypasses window wrappers)
+  window._ganttMarkCell = markEdited;
 
   // Presence ping
   function pingPresence() {

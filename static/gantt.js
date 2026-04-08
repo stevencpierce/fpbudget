@@ -269,7 +269,7 @@ function initGantt(pid, bid, activeProfileId) {
       document.getElementById('select-action-menu').classList.add('hidden');
       hidePayrollInfo();
       closeCrewPicker();
-      closeAddCrewModal();
+      _showPickerNewForm(false);
     }
   });
 }
@@ -373,6 +373,11 @@ async function saveDay(cell, dayType, note, estOtHours) {
   const lineId   = cell.dataset.line;
   const dateStr  = cell.dataset.date;
   const instance = parseInt(cell.dataset.instance || 1);
+
+  // Mark this cell as locally edited so the collab live-patch skips it for 12s
+  if (typeof window._ganttMarkCell === 'function') {
+    window._ganttMarkCell(`${lineId}:${instance}:${dateStr}`);
+  }
 
   if (dayType === 'off') {
     const r = await fetch(`/projects/${_pid}/budget/${_bid}/gantt/day`, {
@@ -615,7 +620,7 @@ async function toggleCellFlag(cell, flag) {
     if (btn.dataset.flag === flag) btn.classList.toggle('flag-active', !!flags[flag]);
   });
 
-  await fetch(`/projects/${_pid}/budget/${_bid}/gantt/day`, {
+  const r = await fetch(`/projects/${_pid}/budget/${_bid}/gantt/day`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({
@@ -623,6 +628,7 @@ async function toggleCellFlag(cell, flag) {
       day_type: dayType, crew_instance: instance, cell_flags: flags,
     })
   });
+  if (r.ok) scheduleTotalsRefresh();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -651,6 +657,7 @@ async function toggleMeal(cell) {
     body: JSON.stringify({ date: dateStr, field, value: newVal })
   });
   if (!r.ok) { cell.classList.toggle('meal-active', active); }
+  else scheduleTotalsRefresh();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1210,6 +1217,10 @@ function togglePickerNewForm() {
 async function assignCrewToRow(crewId, crewName, crewObj) {
   if (!_crewPickerTarget) return;
   const { lineId, instance } = _crewPickerTarget;
+
+  if (typeof window._ganttMarkCell === 'function') {
+    window._ganttMarkCell(`crew:${lineId}:${instance || 1}`);
+  }
 
   // Close and clear immediately — don't wait for the network
   document.getElementById('crew-picker-popover').classList.add('hidden');
