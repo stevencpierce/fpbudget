@@ -669,14 +669,48 @@ def health():
 @app.route("/admin/dbx-ls")
 @login_required
 def dbx_ls():
-    """Debug: list contents of the Dropbox ops root to verify paths."""
+    """Debug: list contents of the Dropbox ops root and find namespace IDs."""
     if current_user.role not in ('super_admin', 'admin'):
         abort(403)
     try:
+        import dropbox as _dbx_mod
         dbx = _dbx_client()
-        result = dbx.files_list_folder(_DBX_OPS_ROOT)
-        entries = [{"name": e.name, "type": type(e).__name__} for e in result.entries]
-        return jsonify({"path": _DBX_OPS_ROOT, "entries": entries})
+
+        # List root to find shared namespaces
+        root_result = dbx.files_list_folder("")
+        root_entries = []
+        for e in root_result.entries:
+            info = {"name": e.name, "type": type(e).__name__}
+            if hasattr(e, 'sharing_info') and e.sharing_info:
+                info["namespace_id"] = getattr(e.sharing_info, 'shared_folder_id', None)
+            root_entries.append(info)
+
+        # Also try listing the ops root directly
+        ops_entries = []
+        try:
+            ops_result = dbx.files_list_folder(_DBX_OPS_ROOT)
+            for e in ops_result.entries:
+                info = {"name": e.name, "type": type(e).__name__}
+                if hasattr(e, 'sharing_info') and e.sharing_info:
+                    info["namespace_id"] = getattr(e.sharing_info, 'shared_folder_id', None)
+                ops_entries.append(info)
+        except Exception as e2:
+            ops_entries = [{"error": str(e2)}]
+
+        # Get current user's namespace info
+        account = dbx.users_get_current_account()
+        namespace_info = {
+            "account_id": account.account_id,
+            "root_namespace_id": getattr(account.root_info, 'root_namespace_id', None) if hasattr(account, 'root_info') else None,
+            "home_namespace_id": getattr(account.root_info, 'home_namespace_id', None) if hasattr(account, 'root_info') else None,
+        }
+
+        return jsonify({
+            "namespace_info": namespace_info,
+            "root_entries": root_entries,
+            "ops_path": _DBX_OPS_ROOT,
+            "ops_entries": ops_entries,
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
