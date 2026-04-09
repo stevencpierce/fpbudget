@@ -9,3 +9,4 @@ anthropic
 weasyprint
 Flask-Mail
 twilio
+tzdata

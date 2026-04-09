@@ -266,7 +266,7 @@ def sync_schedule_driven_lines(budget_id, db_session):
     # Re-sort the meals section: Courtesy Breakfast → First Meal → Second Meal →
     # Working Meals → Craft Services → everything else (by current sort_order).
     meal_lines = {ln.line_tag: ln for ln in all_lines
-                  if int(getattr(ln, 'account_code', 0)) == 8000}
+                  if int(getattr(ln, 'account_code', None) or 0) == 8000}
     ordered_meal_lines = []
     for t in _MEAL_TAG_ORDER:
         if t in meal_lines:
@@ -274,7 +274,7 @@ def sync_schedule_driven_lines(budget_id, db_session):
     # Append any non-tagged 8000 lines (e.g. Craft Services) in their existing order
     non_tagged_8000 = sorted(
         [ln for ln in all_lines
-         if int(getattr(ln, 'account_code', 0)) == 8000
+         if int(getattr(ln, 'account_code', None) or 0) == 8000
          and ln.line_tag not in _MEAL_TAG_ORDER],
         key=lambda x: (x.sort_order or 0, x.id)
     )
