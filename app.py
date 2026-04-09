@@ -666,6 +666,21 @@ def health():
     return "ok"
 
 
+@app.route("/admin/dbx-ls")
+@login_required
+def dbx_ls():
+    """Debug: list contents of the Dropbox ops root to verify paths."""
+    if current_user.role not in ('super_admin', 'admin'):
+        abort(403)
+    try:
+        dbx = _dbx_client()
+        result = dbx.files_list_folder(_DBX_OPS_ROOT)
+        entries = [{"name": e.name, "type": type(e).__name__} for e in result.entries]
+        return jsonify({"path": _DBX_OPS_ROOT, "entries": entries})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Realtime collaboration: in-memory presence store ─────────────────────────
 # { bid: { user_id: {"name": str, "seen": datetime} } }
 _presence = {}
