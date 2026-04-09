@@ -826,15 +826,104 @@ def project_new():
     return redirect(url_for("budget_view", pid=p.id, bid=b.id) + "?tab=working&setup=1")
 
 
+def _archive_project_dropbox(p):
+    """Before deleting a project: move Dropbox folder to _ARCHIVED and upload budget PDFs."""
+    try:
+        has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
+        if not has_refresh and not os.getenv('DROPBOX_ACCESS_TOKEN'):
+            return
+        dbx = _dbx_client()
+        archive_root = f"{_DBX_OPS_ROOT}/_ARCHIVED"
+        from datetime import date as _date
+        stamp = _date.today().strftime("%Y-%m-%d")
+
+        # Move the project folder into _ARCHIVED if it exists
+        if p.dropbox_folder:
+            src  = f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
+            dest = f"{archive_root}/{stamp}_{p.dropbox_folder}"
+            try:
+                dbx.files_move_v2(src, dest, autorename=True)
+                logging.info(f"Archived Dropbox folder: {src} → {dest}")
+            except Exception as e:
+                logging.warning(f"Could not move Dropbox folder on delete: {e}")
+                # Still try to upload PDFs even if folder move failed
+                dest = f"{archive_root}/{stamp}_{p.dropbox_folder}"
+
+        else:
+            dest = f"{archive_root}/{stamp}_{p.name}"
+
+        # Export each budget version as a PDF and upload to archive
+        budgets = Budget.query.filter_by(project_id=p.id).all()
+        if budgets:
+            fringe_cfgs = get_fringe_configs(db.session)
+            for b in budgets:
+                try:
+                    b_lines = BudgetLine.query.filter_by(budget_id=b.id).order_by(
+                        BudgetLine.account_code, BudgetLine.sort_order).all()
+                    profile  = b.payroll_profile
+                    pw_start = b.payroll_week_start if b.payroll_week_start is not None else (
+                        profile.payroll_week_start if profile else 6)
+                    top_sheet = calc_top_sheet(b, b_lines, fringe_cfgs, {}, profile, pw_start)
+                    sched_mode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
+                    line_results = {}
+                    for ln in b_lines:
+                        if ln.use_schedule:
+                            sched = ScheduleDay.query.filter_by(
+                                budget_line_id=ln.id, schedule_mode=sched_mode).all()
+                            line_results[ln.id] = calc_line_from_schedule(
+                                ln, sched, fringe_cfgs, profile, pw_start)
+                        else:
+                            line_results[ln.id] = calc_line(ln, fringe_cfgs)
+                    from budget_calc import FP_COA_SECTIONS as _SECS
+                    def _sec(code):
+                        best = None
+                        for start, _ in _SECS:
+                            if code >= start: best = start
+                            else: break
+                        return best
+                    sec_map = dict(_SECS)
+                    secs_detail = {}
+                    for ln in b_lines:
+                        sk = _sec(ln.account_code)
+                        if sk not in secs_detail:
+                            secs_detail[sk] = {"code": sk, "name": sec_map.get(sk, ""), "lines": []}
+                        secs_detail[sk]["lines"].append(ln)
+                    secs_ordered = [secs_detail[sk] for sk, _ in _SECS if sk in secs_detail]
+                    company_settings = CompanySettings.query.get(1) or CompanySettings()
+                    dispersed = bool(b.company_fee_dispersed)
+                    fee_m = (1 + float(b.company_fee_pct)) if dispersed else 1.0
+                    html_str = render_template("budget_pdf.html",
+                        project=p, budget=b, top_sheet=top_sheet,
+                        detail_mode=False, dispersed=dispersed,
+                        company_settings=company_settings,
+                        is_working_view=b.budget_mode in ('working', 'actual'),
+                        sections_ordered=secs_ordered,
+                        line_results=line_results, fee_m=fee_m, today=_date.today(),
+                    )
+                    pdf_bytes = WeasyprintHTML(string=html_str, base_url="http://localhost").write_pdf()
+                    safe_name = re.sub(r"[^\w\-.]", "_", b.name)
+                    mode_lbl  = "Working" if b.budget_mode in ('working','actual') else "Estimated"
+                    pdf_key   = f"{dest}/budget_exports/{safe_name}_{mode_lbl}.pdf"
+                    dbx.files_upload(pdf_bytes, pdf_key, autorename=True)
+                    logging.info(f"Uploaded budget PDF to archive: {pdf_key}")
+                except Exception as e:
+                    logging.warning(f"Budget PDF archive failed for budget {b.id}: {e}")
+    except Exception as e:
+        logging.error(f"_archive_project_dropbox failed: {e}")
+
+
 @app.route("/projects/<int:pid>/delete", methods=["POST"])
 @login_required
 def project_delete(pid):
     p = ProjectSheet.query.get_or_404(pid)
+    # Archive to Dropbox before any DB deletion
+    _archive_project_dropbox(p)
     # Cascade-delete each budget and its FK-constrained children
     for b in Budget.query.filter_by(project_id=pid).all():
         _delete_budget_cascade(b.id)
     # Clean up project-level FK tables not on ORM cascade
     from models import Location
+    DocUpload.query.filter_by(project_id=pid).delete(synchronize_session=False)
     Location.query.filter_by(project_id=pid).delete(synchronize_session=False)
     ProjectAccess.query.filter_by(project_id=pid).delete(synchronize_session=False)
     ProjectUnion.query.filter_by(project_id=pid).delete(synchronize_session=False)
