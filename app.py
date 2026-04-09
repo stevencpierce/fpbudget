@@ -240,6 +240,19 @@ def inject_globals():
     return {"GOOGLE_MAPS_API_KEY": GOOGLE_MAPS_API_KEY}
 
 
+def _fmt_local(dt, tz_name=None):
+    """Format a UTC datetime in the given IANA timezone (defaults to America/New_York)."""
+    if dt is None:
+        return ''
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name or 'America/New_York')
+        local_dt = dt.replace(tzinfo=ZoneInfo('UTC')).astimezone(tz)
+        return local_dt.strftime('%-I:%M %p')
+    except Exception:
+        return dt.strftime('%-I:%M %p')
+
+
 def _send_email(to, subject, body, attachment_bytes=None, attachment_filename=None):
     """Send email — silently no-ops if mail not configured."""
     if not app.config.get('MAIL_USERNAME'):
@@ -384,16 +397,7 @@ def _render_callsheet_pdf_html(send_obj, project_name, date_display, cs_data, cr
 <h1>{esc(project_name)}</h1>
 <div class="sub-head">Call Sheet · {esc(date_display)}{' · ' + esc(version_label) if version_label else ''}</div>
 
-<h2>General</h2>
-<table class="info-table">
-  {row('General Crew Call', cs_data.get('general_crew_call',''))}
-  {row('Est. Wrap', cs_data.get('estimated_wrap_time',''))}
-  {row('Weather', cs_data.get('weather',''))}
-  {row('Sunrise', cs_data.get('sunrise',''))}
-  {row('Sunset', cs_data.get('sunset',''))}
-  {row('First Meal', cs_data.get('first_meal_time',''))}
-  {row('Second Meal', cs_data.get('second_meal_time',''))}
-</table>
+{"<h2>General</h2><table class='info-table'>" + "".join(filter(None, [row('General Crew Call', cs_data.get('general_crew_call','')), row('Est. Wrap', cs_data.get('estimated_wrap_time','')), row('Weather', cs_data.get('weather','')), row('Sunrise', cs_data.get('sunrise','')), row('Sunset', cs_data.get('sunset','')), row('Courtesy Breakfast', cs_data.get('courtesy_breakfast_time','')), row('First Meal', cs_data.get('first_meal_time','')), row('Second Meal', cs_data.get('second_meal_time',''))])) + "</table>" if any([cs_data.get('general_crew_call'), cs_data.get('estimated_wrap_time'), cs_data.get('first_meal_time'), cs_data.get('second_meal_time')]) else ''}
 
 {'<h2>Locations</h2>' + loc_html if loc_html else ''}
 
@@ -3426,6 +3430,7 @@ def callsheet_prepare_send(pid, bid, date_str):
 
     sent_email = 0
     sent_sms   = 0
+    recipient_results = []
     for rec, email, phone in created_recs:
         # Find this person's individual call time
         personal_call = ''
@@ -3446,11 +3451,13 @@ def callsheet_prepare_send(pid, bid, date_str):
             f"Please confirm receipt by clicking the link above.\n\n"
             f"— Framework Productions · contact@thefp.tv\n"
         )
+        email_ok = None
+        sms_ok   = None
         if email:
-            ok = _send_email(email, subject, body,
-                             attachment_bytes=pdf_bytes,
-                             attachment_filename=pdf_filename)
-            if ok:
+            email_ok = _send_email(email, subject, body,
+                                   attachment_bytes=pdf_bytes,
+                                   attachment_filename=pdf_filename)
+            if email_ok:
                 rec.status = "sent"
                 sent_email += 1
 
@@ -3461,15 +3468,24 @@ def callsheet_prepare_send(pid, bid, date_str):
                 f"{loc_sms_line}\n"
                 f"Confirm: {view_url}"
             )
-            if _send_sms(phone, sms_body):
+            sms_ok = _send_sms(phone, sms_body)
+            if sms_ok:
                 sent_sms += 1
                 if rec.status == "pending":
                     rec.status = "sent"
 
+        recipient_results.append({
+            "name":      rec.name,
+            "email_ok":  email_ok,   # True/False/None (None = not attempted)
+            "sms_ok":    sms_ok,     # True/False/None
+            "version":   version_label,
+        })
+
     db.session.commit()
     return jsonify({"ok": True, "send_id": send.id,
                     "sent_email": sent_email, "sent_sms": sent_sms,
-                    "total": len(created_recs)})
+                    "total": len(created_recs),
+                    "recipients": recipient_results})
 
 
 @app.route("/callsheet/view/<token>")
@@ -3514,6 +3530,7 @@ def callsheet_view_public(token):
             break
     personal_call = personal_call or cs_portal_data.get('general_crew_call', '') or ''
 
+    tz_name = (project.timezone if project and project.timezone else 'America/New_York')
     return render_template(
         "callsheet_confirm.html",
         rec=rec,
@@ -3525,6 +3542,9 @@ def callsheet_view_public(token):
         cs_data=cs_portal_data,
         cs_locations=cs_locations,
         personal_call=personal_call,
+        confirmed_local=_fmt_local(rec.confirmed_at, tz_name),
+        viewed_local=_fmt_local(rec.viewed_at, tz_name),
+        tz_name=tz_name,
     )
 
 
@@ -3565,6 +3585,7 @@ def callsheet_confirm_public(token):
             personal_call = t
             break
     personal_call = personal_call or cs_portal_data.get('general_crew_call', '') or ''
+    tz_name = (project.timezone if project and project.timezone else 'America/New_York')
     return render_template(
         "callsheet_confirm.html",
         rec=rec,
@@ -3576,6 +3597,9 @@ def callsheet_confirm_public(token):
         cs_data=cs_portal_data,
         cs_locations=cs_locations,
         personal_call=personal_call,
+        confirmed_local=_fmt_local(rec.confirmed_at, tz_name),
+        viewed_local=_fmt_local(rec.viewed_at, tz_name),
+        tz_name=tz_name,
     )
 
 
@@ -5149,7 +5173,7 @@ with app.app_context():
                 # ── Travel ────────────────────────────────────────────────────
                 (7000, "Travel",                       "Hotel — Crew (est.)",         False, 6,   4,    150,    "day_10",     "N",    0,     250),
                 # ── Production Meals / Craft Services ─────────────────────────
-                (8000, "Production Meals / Craft Services", "First Meal",             False, 15,  5,    25,     "day_10",     "N",    0,     260),
+                # First Meal / Second Meal / Courtesy Breakfast auto-created by sync when schedule meals checked
                 (8000, "Production Meals / Craft Services", "Craft Services",         False, 1,   5,    200,    "day_10",     "N",    0,     270),
                 # ── Location ──────────────────────────────────────────────────
                 (9000, "Location",                     "Studio / Stage Rental",       False, 1,   3,    2000,   "day_10",     "N",    0,     280),

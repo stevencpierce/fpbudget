@@ -1804,13 +1804,34 @@ function csSendCallSheet() {
   .then(d => {
     if (d.error) {
       statusEl.textContent = 'Error: ' + d.error;
-    } else {
-      const parts = [];
-      if (d.sent_email > 0) parts.push(`✉ ${d.sent_email} email${d.sent_email !== 1 ? 's' : ''}`);
-      if (d.sent_sms   > 0) parts.push(`📱 ${d.sent_sms} SMS`);
-      statusEl.textContent = parts.length ? `✓ Sent: ${parts.join(', ')}` : `Recorded (${d.total} recipients)`;
-      csDistLoadHistory();
+      btn.disabled = false;
+      return;
     }
+
+    // Uncheck all selected recipients after successful send
+    document.querySelectorAll('.cs-dist-recip-cb:checked').forEach(cb => { cb.checked = false; });
+
+    // Build per-recipient result lines
+    const resultsHtml = (d.recipients || []).map(r => {
+      const emailPart = r.email_ok === true  ? '<span style="color:#4ade80">✉ sent</span>'
+                      : r.email_ok === false ? '<span style="color:#f87171">✉ failed</span>'
+                      : '';
+      const smsPart   = r.sms_ok   === true  ? '<span style="color:#4ade80">📱 sent</span>'
+                      : r.sms_ok   === false ? '<span style="color:#f87171">📱 failed</span>'
+                      : '';
+      const parts = [emailPart, smsPart].filter(Boolean).join(' ');
+      return `<div style="display:flex;justify-content:space-between;font-size:.78rem;padding:2px 0;border-bottom:1px solid #1c1f2c">
+        <span>${r.name} <span style="color:#6b7280;font-size:.7rem">${r.version}</span></span>
+        <span>${parts || '<span style="color:#6b7280">recorded</span>'}</span>
+      </div>`;
+    }).join('');
+
+    const parts = [];
+    if (d.sent_email > 0) parts.push(`✉ ${d.sent_email}`);
+    if (d.sent_sms   > 0) parts.push(`📱 ${d.sent_sms}`);
+    statusEl.innerHTML = `<div style="color:#4ade80;margin-bottom:6px">✓ Sent ${parts.join(', ')} · ${d.total} recipients</div>${resultsHtml}`;
+
+    csDistLoadHistory();
     btn.disabled = false;
   })
   .catch(() => { statusEl.textContent = 'Send failed.'; btn.disabled = false; });

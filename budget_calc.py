@@ -113,26 +113,30 @@ def get_role_group(account_code):
 
 
 # ── Schedule-driven auto-created line definitions ─────────────────────────────
-# Maps line_tag → (account_code, account_name, description, default_unit_rate)
+# Maps line_tag → (account_code, account_name, description, default_unit_rate, section_sort_order)
+# section_sort_order controls ordering within account section (lower = first)
 SCHEDULE_LINE_DEFS = {
-    # Production Meals / Craft Services (8000)
-    "meal_courtesy_breakfast": (8000, "Production Meals / Craft Services", "Courtesy Breakfast",        12.00),
-    "meal_first":              (8000, "Production Meals / Craft Services", "First Meal",                25.00),
-    "meal_second":             (8000, "Production Meals / Craft Services", "Second Meal",               25.00),
-    "working_meal":            (8000, "Production Meals / Craft Services", "Working Meals",             25.00),
+    # Production Meals / Craft Services (8000) — must stay in this order
+    "meal_courtesy_breakfast": (8000, "Production Meals / Craft Services", "Courtesy Breakfast",        12.00, 1),
+    "meal_first":              (8000, "Production Meals / Craft Services", "First Meal",                25.00, 2),
+    "meal_second":             (8000, "Production Meals / Craft Services", "Second Meal",               25.00, 3),
+    "working_meal":            (8000, "Production Meals / Craft Services", "Working Meals",             25.00, 4),
     # Travel (7000)
-    "hotel_talent":            (7000, "Travel", "Hotel — Talent",                                      200.00),
-    "hotel_atl":               (7000, "Travel", "Hotel — Above the Line",                              250.00),
-    "hotel_crew":              (7000, "Travel", "Hotel — Crew",                                        150.00),
-    "flight_talent":           (7000, "Travel", "Flights — Talent",                                    500.00),
-    "flight_atl":              (7000, "Travel", "Flights — Above the Line",                            600.00),
-    "flight_crew":             (7000, "Travel", "Flights — Crew",                                      400.00),
-    "mileage_talent":          (7000, "Travel", "Mileage — Talent",                                     50.00),
-    "mileage_atl":             (7000, "Travel", "Mileage — Above the Line",                             50.00),
-    "mileage_crew":            (7000, "Travel", "Mileage — Crew",                                       50.00),
+    "hotel_talent":            (7000, "Travel", "Hotel — Talent",                                      200.00, 10),
+    "hotel_atl":               (7000, "Travel", "Hotel — Above the Line",                              250.00, 11),
+    "hotel_crew":              (7000, "Travel", "Hotel — Crew",                                        150.00, 12),
+    "flight_talent":           (7000, "Travel", "Flights — Talent",                                    500.00, 20),
+    "flight_atl":              (7000, "Travel", "Flights — Above the Line",                            600.00, 21),
+    "flight_crew":             (7000, "Travel", "Flights — Crew",                                      400.00, 22),
+    "mileage_talent":          (7000, "Travel", "Mileage — Talent",                                     50.00, 30),
+    "mileage_atl":             (7000, "Travel", "Mileage — Above the Line",                             50.00, 31),
+    "mileage_crew":            (7000, "Travel", "Mileage — Crew",                                       50.00, 32),
     # Per diem: foundation — quantity driven by per_diem cell_flag; meal offsets deferred
-    "per_diem":                (7000, "Travel", "Per Diem",                                             75.00),
+    "per_diem":                (7000, "Travel", "Per Diem",                                             75.00, 40),
 }
+
+# Canonical order for meals within the 8000 section
+_MEAL_TAG_ORDER = ["meal_courtesy_breakfast", "meal_first", "meal_second", "working_meal"]
 
 
 def sync_schedule_driven_lines(budget_id, db_session):
@@ -207,11 +211,27 @@ def sync_schedule_driven_lines(budget_id, db_session):
     existing_auto = {ln.line_tag: ln for ln in all_lines
                      if getattr(ln, 'line_tag', None) in SCHEDULE_LINE_DEFS}
 
+    # Adopt any untagged meal/travel lines that match description+account_code.
+    # This prevents duplicates when a template-seeded line already exists.
+    for tag, defn in SCHEDULE_LINE_DEFS.items():
+        if tag not in existing_auto:
+            ac, an, desc = defn[0], defn[1], defn[2]
+            orphan = next(
+                (ln for ln in all_lines
+                 if int(ln.account_code) == ac
+                 and (ln.description or '').strip().lower() == desc.lower()
+                 and not ln.line_tag),
+                None
+            )
+            if orphan:
+                orphan.line_tag = tag
+                existing_auto[tag] = orphan
+
     for tag, count in counts.items():
         if count == 0 and tag not in existing_auto:
             continue  # Don't create zero-count lines that were never used
 
-        ac, an, desc, default_rate = SCHEDULE_LINE_DEFS[tag]
+        ac, an, desc, default_rate, section_sort = SCHEDULE_LINE_DEFS[tag]
 
         if tag in existing_auto:
             ln = existing_auto[tag]
@@ -224,16 +244,43 @@ def sync_schedule_driven_lines(budget_id, db_session):
                 is_labor=False,
                 line_tag=tag,
                 unit_rate=default_rate,
-                sort_order=9000,
+                rate=default_rate,      # set rate so calc_line uses qty × days × rate
+                quantity=1,             # user sets headcount; sync only drives days
+                days=max(count, 1),
+                sort_order=section_sort,
             )
             db_session.add(ln)
             db_session.flush()
 
-        ln.quantity = count
-        unit_r = _float(getattr(ln, 'unit_rate', None), default_rate)
-        if unit_r == 0:
-            unit_r = default_rate
-        ln.estimated_total = count * unit_r
+        # Always update days = number of shoot days with this flag checked.
+        # quantity (headcount) and rate (per-person cost) are user-editable — don't overwrite.
+        ln.days = count if count > 0 else 1
+        unit_r = _float(getattr(ln, 'unit_rate', None), default_rate) or default_rate
+        # Ensure rate is set (may be 0 on older rows created before this fix)
+        if not _float(getattr(ln, 'rate', None)):
+            ln.rate = unit_r
+        qty_val = _float(getattr(ln, 'quantity', None), 1.0) or 1.0
+        effective_rate = _float(getattr(ln, 'rate', None)) or unit_r
+        ln.estimated_total = round(qty_val * count * effective_rate, 2)
+
+    # Re-sort the meals section: Courtesy Breakfast → First Meal → Second Meal →
+    # Working Meals → Craft Services → everything else (by current sort_order).
+    meal_lines = {ln.line_tag: ln for ln in all_lines
+                  if int(getattr(ln, 'account_code', 0)) == 8000}
+    ordered_meal_lines = []
+    for t in _MEAL_TAG_ORDER:
+        if t in meal_lines:
+            ordered_meal_lines.append(meal_lines[t])
+    # Append any non-tagged 8000 lines (e.g. Craft Services) in their existing order
+    non_tagged_8000 = sorted(
+        [ln for ln in all_lines
+         if int(getattr(ln, 'account_code', 0)) == 8000
+         and ln.line_tag not in _MEAL_TAG_ORDER],
+        key=lambda x: (x.sort_order or 0, x.id)
+    )
+    ordered_meal_lines.extend(non_tagged_8000)
+    for i, ln in enumerate(ordered_meal_lines):
+        ln.sort_order = i
 
     try:
         db_session.commit()

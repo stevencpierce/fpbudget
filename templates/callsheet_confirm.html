@@ -156,7 +156,7 @@
     {% endif %}
     {% if already_confirmed %}
       <div class="confirmed-pill">
-        ✓ Confirmed {% if rec.confirmed_at %}{{ rec.confirmed_at.strftime('%-I:%M %p') }}{% endif %}
+        ✓ Confirmed{% if confirmed_local %} {{ confirmed_local }}{% endif %}
       </div>
     {% else %}
       <form method="POST" action="/callsheet/confirm/{{ token }}" style="display:contents">
