@@ -123,6 +123,7 @@
     <button class="tab-btn" data-tab="contacts">Contacts</button>
     <button class="tab-btn" data-tab="locations">Locations</button>
     <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
+    <a class="tab-btn tab-link" href="{{ url_for('docs_project', pid=project.id) }}">Docs</a>
     <button class="tab-btn" data-tab="actuals">Actuals</button>
     <button class="tab-btn" data-tab="import-tools">Tools</button>
     {% if not dept_filter %}<button class="tab-btn" data-tab="settings">⚙ Settings</button>{% endif %}

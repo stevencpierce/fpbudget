@@ -310,14 +310,17 @@ def _provision_dropbox_folder(dropbox_folder):
     """Copy the project template tree to a new project folder. Returns path or None."""
     has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
     if not has_refresh and not os.getenv('DROPBOX_ACCESS_TOKEN'):
+        logging.warning("Dropbox provision skipped: no credentials set")
         return None
     try:
         src  = f"{_DBX_OPS_ROOT}/{_DBX_TEMPLATE_NAME}"
         dest = f"{_DBX_OPS_ROOT}/{dropbox_folder}"
+        logging.info(f"Dropbox provision: copying '{src}' → '{dest}'")
         _dbx_client().files_copy_v2(src, dest)
+        logging.info(f"Dropbox provision: success → {dest}")
         return dest
     except Exception as e:
-        logging.warning(f"Dropbox provision failed: {e}")
+        logging.error(f"Dropbox provision failed: {e}")
         return None
 
 
