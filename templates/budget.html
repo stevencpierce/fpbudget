@@ -3215,10 +3215,6 @@ function renderCalcDetail(d) {
 <div id="budget-row-ctx-menu" class="budget-ctx-menu hidden">
   <button type="button" class="ctx-menu-item" id="ctx-add-kit-fee">🔧 Add Kit Fee</button>
   <button type="button" class="ctx-menu-item" id="ctx-all-in-total">💰 Enter All-in Total</button>
-  <hr class="ctx-divider">
-  <button type="button" class="ctx-menu-item" id="ctx-set-role-group-talent">👤 Set Role: Talent</button>
-  <button type="button" class="ctx-menu-item" id="ctx-set-role-group-atl">🎬 Set Role: Above the Line</button>
-  <button type="button" class="ctx-menu-item" id="ctx-set-role-group-crew">🎥 Set Role: Crew</button>
 </div>
 
 <!-- ── Line Row Context Dropdown (insert above/below, move) ────────────────── -->
@@ -3344,23 +3340,6 @@ function renderCalcDetail(d) {
       alert('Failed to add kit fee.');
     }
   });
-
-  // Set Role Group helpers (updates role_group on the line for travel classification)
-  async function setRoleGroup(group) {
-    menu.classList.add('hidden');
-    if (!_ctxLineId) return;
-    await fetch(`/projects/${_pid}/budget/${_bid}/line`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ id: _ctxLineId, role_group: group })
-    });
-    const row = document.querySelector(`.line-row[data-id="${_ctxLineId}"]`);
-    if (row) row.dataset.roleGroup = group;
-  }
-
-  document.getElementById('ctx-set-role-group-talent').addEventListener('click', () => setRoleGroup('talent'));
-  document.getElementById('ctx-set-role-group-atl').addEventListener('click',    () => setRoleGroup('atl'));
-  document.getElementById('ctx-set-role-group-crew').addEventListener('click',   () => setRoleGroup('crew'));
 
   // ── All-in Total Calculator ──────────────────────────────────────────────
   document.getElementById('ctx-all-in-total').addEventListener('click', function() {
