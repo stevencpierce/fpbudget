@@ -716,6 +716,8 @@ def project_delete(pid):
     for b in Budget.query.filter_by(project_id=pid).all():
         _delete_budget_cascade(b.id)
     # Clean up project-level FK tables not on ORM cascade
+    from models import Location
+    Location.query.filter_by(project_id=pid).delete(synchronize_session=False)
     ProjectAccess.query.filter_by(project_id=pid).delete(synchronize_session=False)
     ProjectUnion.query.filter_by(project_id=pid).delete(synchronize_session=False)
     ProjectClient.query.filter_by(project_id=pid).delete(synchronize_session=False)
