@@ -918,6 +918,10 @@ def project_delete(pid):
     p = ProjectSheet.query.get_or_404(pid)
     # Archive to Dropbox before any DB deletion
     _archive_project_dropbox(p)
+    # Null out parent_budget_id self-references so Postgres allows deletion
+    Budget.query.filter_by(project_id=pid).update(
+        {"parent_budget_id": None}, synchronize_session=False)
+    db.session.flush()
     # Cascade-delete each budget and its FK-constrained children
     for b in Budget.query.filter_by(project_id=pid).all():
         _delete_budget_cascade(b.id)
@@ -1408,6 +1412,7 @@ def budget_view(pid, bid):
                 pass  # skip any line that fails to calc; column shows — for that line
 
     company_settings = CompanySettings.query.get(1) or CompanySettings()
+    doc_uploads = DocUpload.query.filter_by(project_id=pid).order_by(DocUpload.uploaded_at.desc()).all()
     return render_template("budget.html",
         project=project,
         budget=budget,
@@ -1441,6 +1446,7 @@ def budget_view(pid, bid):
         company_settings=company_settings,
         dept_filter=dept_filter,
         line_sub_groups=line_sub_groups,
+        doc_uploads=doc_uploads,
     )
 
 

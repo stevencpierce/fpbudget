@@ -123,7 +123,7 @@
     <button class="tab-btn" data-tab="contacts">Contacts</button>
     <button class="tab-btn" data-tab="locations">Locations</button>
     <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
-    <a class="tab-btn tab-link" href="{{ url_for('docs_project', pid=project.id) }}">Docs</a>
+    <button class="tab-btn" data-tab="docs">Docs</button>
     <button class="tab-btn" data-tab="actuals">Actuals</button>
     <button class="tab-btn" data-tab="import-tools">Tools</button>
     {% if not dept_filter %}<button class="tab-btn" data-tab="settings">⚙ Settings</button>{% endif %}
@@ -616,6 +616,150 @@
   </div>
   {% endif %}
 </div>
+
+<!-- ═══ DOCS ══════════════════════════════════════════════════════════════ -->
+<div class="tab-panel" id="tab-docs">
+  <div style="max-width:680px;margin:0 auto;padding:24px 16px 80px;">
+
+    <!-- Drop zone -->
+    <div id="docsDropZone" style="border:2px dashed var(--border);border-radius:12px;padding:36px 20px;text-align:center;cursor:pointer;background:var(--bg-card);position:relative;transition:border-color .2s;">
+      <input type="file" id="docsFileInput" multiple accept="image/*,application/pdf,.heic,.heif" style="position:absolute;inset:0;opacity:0;cursor:pointer;">
+      <div style="font-size:32px;margin-bottom:8px;">📎</div>
+      <div style="font-size:15px;font-weight:600;margin-bottom:4px;">Drop receipts or invoices here</div>
+      <div style="font-size:13px;color:var(--text-muted);">or <span style="color:#5b8af9">browse</span> · PDF, JPG, PNG, HEIC</div>
+    </div>
+
+    <!-- Camera/gallery row (mobile) -->
+    <div style="display:flex;gap:10px;margin-top:12px;">
+      <button onclick="docsOpenCamera()" style="flex:1;padding:11px;border-radius:8px;background:#1a2540;border:1px solid #2d4070;color:#5b8af9;font-size:14px;font-weight:500;cursor:pointer;">📷 Take Photo</button>
+      <button onclick="docsOpenGallery()" style="flex:1;padding:11px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border);color:var(--text-muted);font-size:14px;font-weight:500;cursor:pointer;">🖼 From Gallery</button>
+    </div>
+    <input type="file" id="docsCameraInput" accept="image/*" capture="environment" style="display:none">
+    <input type="file" id="docsGalleryInput" accept="image/*,application/pdf" multiple style="display:none">
+
+    <!-- Upload queue -->
+    <div id="docsQueue" style="margin-top:16px;display:flex;flex-direction:column;gap:8px;"></div>
+    <button id="docsBtnUpload" onclick="docsUploadAll()" disabled
+      style="width:100%;padding:13px;border-radius:10px;margin-top:12px;background:#5b8af9;border:none;color:#fff;font-size:15px;font-weight:600;cursor:pointer;">
+      Upload All
+    </button>
+
+    <!-- History -->
+    <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin:28px 0 10px;">Previously Uploaded</div>
+    <div id="docsHistory" style="display:flex;flex-direction:column;gap:8px;">
+      {% if doc_uploads %}
+        {% for u in doc_uploads %}
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:center;gap:12px;">
+          <div style="font-size:20px;width:32px;text-align:center;">{% if u.content_type and 'pdf' in u.content_type %}📄{% else %}🧾{% endif %}</div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ u.original_filename or 'Unnamed' }}</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
+              {{ u.uploaded_at.strftime('%b %-d, %Y') if u.uploaded_at else '' }}
+              {% if u.vendor %} · {{ u.vendor }}{% endif %}
+              {% if u.amount %} · ${{ '%.2f'|format(u.amount|float) }}{% endif %}
+            </div>
+          </div>
+          <span style="font-size:11px;padding:3px 9px;border-radius:20px;
+            {% if u.status == 'filed' %}background:#14291e;color:#22c55e;border:1px solid #1a4228;
+            {% elif u.status == 'duplicate' %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
+            {% elif u.status == 'error' %}background:#2a1414;color:#ef4444;border:1px solid #4a2020;
+            {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}">
+            {{ u.status|capitalize }}
+          </span>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div style="text-align:center;color:var(--text-muted);font-size:13px;padding:20px 0;">No uploads yet for this project.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const PROJ_ID = {{ project.id }};
+  const UPLOAD_URL = "{{ url_for('docs_upload_post', pid=project.id) }}";
+  let docsQueue = [];
+
+  function docsFmtSize(b){ return b<1048576?(b/1024).toFixed(1)+' KB':(b/1048576).toFixed(1)+' MB'; }
+
+  function docsRenderQueue(){
+    const el = document.getElementById('docsQueue');
+    el.innerHTML = '';
+    docsQueue.forEach((item,idx)=>{
+      const statusMap = {pending:['var(--text-muted)','Ready'],uploading:['#f59e0b','Uploading…'],done:['#22c55e','Uploaded ✓'],duplicate:['#a78bfa','Already uploaded'],error:['#ef4444','Failed']};
+      const [color, label] = statusMap[item.status] || statusMap.pending;
+      const div = document.createElement('div');
+      div.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:11px 13px;display:flex;align-items:center;gap:10px;';
+      div.innerHTML = `
+        <div style="width:40px;height:40px;border-radius:6px;background:var(--bg-input);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;overflow:hidden;">
+          ${item.thumbUrl ? `<img src="${item.thumbUrl}" style="width:100%;height:100%;object-fit:cover;">` : (item.file.type.includes('pdf') ? '📄' : '🖼')}
+        </div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.file.name}</div>
+          <div style="font-size:11px;color:var(--text-muted);">${docsFmtSize(item.file.size)}</div>
+          <div style="font-size:11px;color:${color};margin-top:2px;">${label}</div>
+        </div>
+        ${item.status!=='uploading'?`<button onclick="docsRemove(${idx})" style="background:none;border:none;color:var(--text-muted);font-size:18px;cursor:pointer;padding:4px;">×</button>`:''}`;
+      el.appendChild(div);
+    });
+    const btn = document.getElementById('docsBtnUpload');
+    btn.disabled = docsQueue.length===0 || docsQueue.every(i=>i.status==='done'||i.status==='duplicate');
+    btn.style.background = btn.disabled ? 'var(--bg-input)' : '#5b8af9';
+    btn.style.color = btn.disabled ? 'var(--text-muted)' : '#fff';
+    btn.style.cursor = btn.disabled ? 'not-allowed' : 'pointer';
+  }
+
+  window.docsRemove = function(idx){ docsQueue.splice(idx,1); docsRenderQueue(); };
+
+  function docsAddFiles(files){
+    for(const f of files){
+      const item={file:f,status:'pending',thumbUrl:null};
+      if(f.type.startsWith('image/')){const r=new FileReader();r.onload=e=>{item.thumbUrl=e.target.result;docsRenderQueue();};r.readAsDataURL(f);}
+      docsQueue.push(item);
+    }
+    docsRenderQueue();
+  }
+
+  const dz = document.getElementById('docsDropZone');
+  const fi = document.getElementById('docsFileInput');
+  dz.addEventListener('dragover',e=>{e.preventDefault();dz.style.borderColor='#5b8af9';});
+  dz.addEventListener('dragleave',()=>{dz.style.borderColor='';});
+  dz.addEventListener('drop',e=>{e.preventDefault();dz.style.borderColor='';docsAddFiles(Array.from(e.dataTransfer.files));});
+  fi.addEventListener('change',()=>{docsAddFiles(Array.from(fi.files));fi.value='';});
+
+  window.docsOpenCamera  = ()=>document.getElementById('docsCameraInput').click();
+  window.docsOpenGallery = ()=>document.getElementById('docsGalleryInput').click();
+  document.getElementById('docsCameraInput').addEventListener('change',function(){docsAddFiles(Array.from(this.files));this.value='';});
+  document.getElementById('docsGalleryInput').addEventListener('change',function(){docsAddFiles(Array.from(this.files));this.value='';});
+
+  async function docsUploadOne(item){
+    item.status='uploading'; docsRenderQueue();
+    const fd=new FormData(); fd.append('file',item.file);
+    try{
+      const r=await fetch(UPLOAD_URL,{method:'POST',body:fd});
+      const d=await r.json();
+      item.status=(d.status==='duplicate')?'duplicate':r.ok?'done':'error';
+      if(item.status==='done') docsPreppendHistory(item.file.name, d.upload_id);
+    }catch(e){item.status='error';}
+    docsRenderQueue();
+  }
+
+  window.docsUploadAll = async function(){
+    for(const item of docsQueue.filter(i=>i.status==='pending')) await docsUploadOne(item);
+  };
+
+  function docsPreppendHistory(filename, uid){
+    const h=document.getElementById('docsHistory');
+    const empty=h.querySelector('[data-empty]');
+    if(empty) empty.remove();
+    const div=document.createElement('div');
+    div.style.cssText='background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:center;gap:12px;';
+    div.innerHTML=`<div style="font-size:20px;width:32px;text-align:center;">🧾</div><div style="flex:1;"><div style="font-size:13px;font-weight:500;">${filename}</div><div style="font-size:11px;color:var(--text-muted);">Just now</div></div><span style="font-size:11px;padding:3px 9px;border-radius:20px;background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);">Pending</span>`;
+    h.prepend(div);
+  }
+})();
+</script>
 
 <!-- ═══ ACTUALS ════════════════════════════════════════════════════════════ -->
 <div class="tab-panel" id="tab-actuals">
