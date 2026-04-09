@@ -10,3 +10,5 @@ weasyprint
 Flask-Mail
 twilio
 tzdata
+boto3
+dropbox

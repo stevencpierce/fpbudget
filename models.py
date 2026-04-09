@@ -35,12 +35,17 @@ class User(db.Model, UserMixin):
         return self.role in ('super_admin', 'admin')
 
     @property
+    def is_docs_only(self):
+        return self.role == 'docs_only'
+
+    @property
     def display_role(self):
         return {
             'super_admin': 'Super Admin',
             'admin': 'Admin',
             'line_producer': 'Line Producer',
             'dept_head': 'Dept Head',
+            'docs_only': 'Docs / Receipts',
         }.get(self.role, self.role)
 
 
@@ -56,8 +61,10 @@ class ProjectAccess(db.Model):
 
 class ProjectSheet(db.Model):
     __tablename__ = "project_sheet"
-    id   = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(200), nullable=False)
+    id             = db.Column(db.Integer, primary_key=True)
+    name           = db.Column(db.String(200), nullable=False)
+    dropbox_folder = db.Column(db.String(300), nullable=True)   # relative slug under ops root
+    client_name    = db.Column(db.String(200), nullable=True)   # used for slug + display
 
 
 class Transaction(db.Model):
@@ -472,3 +479,41 @@ class CompanySettings(db.Model):
     phone           = db.Column(db.String(50),  nullable=True)
     email           = db.Column(db.String(200), nullable=True)
     website         = db.Column(db.String(200), nullable=True)
+
+
+class DocUpload(db.Model):
+    """A single document/receipt uploaded through the Docs module."""
+    __tablename__ = "doc_upload"
+    id               = db.Column(db.Integer, primary_key=True)
+    project_id       = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
+    uploader_id      = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    uploaded_at      = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # R2 storage
+    r2_key           = db.Column(db.String(500), nullable=True)   # object key in R2 bucket
+    original_filename = db.Column(db.String(300), nullable=True)
+    file_size        = db.Column(db.Integer, nullable=True)       # bytes
+    content_type     = db.Column(db.String(100), nullable=True)
+    file_hash        = db.Column(db.String(64), nullable=True)    # SHA-256 for dedup
+
+    # OCR / processing (Veryfi)
+    status           = db.Column(db.String(20), default='pending')
+    # pending | processing | review | done | error | duplicate
+    veryfi_data      = db.Column(db.Text, nullable=True)          # raw JSON from Veryfi
+    vendor           = db.Column(db.String(200), nullable=True)
+    amount           = db.Column(db.Numeric(10, 2), nullable=True)
+    doc_date         = db.Column(db.Date, nullable=True)
+    confidence       = db.Column(db.Numeric(5, 2), nullable=True) # 0-100
+    category         = db.Column(db.String(100), nullable=True)   # predicted COA category
+
+    # Filing to Dropbox
+    filed_filename   = db.Column(db.String(300), nullable=True)   # renamed file
+    filed_dropbox_path = db.Column(db.String(500), nullable=True) # full Dropbox path
+    filed_at         = db.Column(db.DateTime, nullable=True)
+    is_duplicate     = db.Column(db.Boolean, default=False)
+
+    # User note
+    note             = db.Column(db.String(500), nullable=True)
+
+    uploader  = db.relationship("User",         foreign_keys=[uploader_id])
+    project   = db.relationship("ProjectSheet", foreign_keys=[project_id])

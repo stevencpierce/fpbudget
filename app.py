@@ -15,7 +15,7 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     BudgetTemplate, BudgetTemplateLine, TaxCredit, PayrollProfile,
                     ProductionDay, Location, LocationDay, CallSheetData,
                     SupportContact, ProjectUnion, ProjectClient, CallSheetSend, CallSheetRecipient,
-                    BudgetDirectContact, CompanySettings)
+                    BudgetDirectContact, CompanySettings, DocUpload)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -253,6 +253,101 @@ def _fmt_local(dt, tz_name=None):
         return dt.strftime('%-I:%M %p')
 
 
+# ── Cloudflare R2 helpers ──────────────────────────────────────────────────────
+_R2_ACCOUNT_ID  = os.getenv('R2_ACCOUNT_ID', '')
+_R2_ACCESS_KEY  = os.getenv('R2_ACCESS_KEY_ID', '')
+_R2_SECRET      = os.getenv('R2_SECRET_ACCESS_KEY', '')
+_R2_BUCKET      = os.getenv('R2_BUCKET', 'fpbudget-docs')
+
+def _r2_client():
+    import boto3
+    return boto3.client(
+        's3',
+        endpoint_url=f"https://{_R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
+        aws_access_key_id=_R2_ACCESS_KEY,
+        aws_secret_access_key=_R2_SECRET,
+        region_name='auto',
+    )
+
+def _r2_upload(file_bytes, key, content_type='application/octet-stream'):
+    """Upload bytes to R2. Returns True on success."""
+    try:
+        _r2_client().put_object(Bucket=_R2_BUCKET, Key=key, Body=file_bytes, ContentType=content_type)
+        return True
+    except Exception as e:
+        logging.warning(f"R2 upload failed: {e}")
+        return False
+
+def _r2_presigned_url(key, expires=3600):
+    """Return a presigned URL for a private R2 object (expires in `expires` seconds)."""
+    try:
+        return _r2_client().generate_presigned_url(
+            'get_object', Params={'Bucket': _R2_BUCKET, 'Key': key}, ExpiresIn=expires)
+    except Exception as e:
+        logging.warning(f"R2 presigned URL failed: {e}")
+        return None
+
+
+# ── Dropbox helpers ────────────────────────────────────────────────────────────
+_DBX_OPS_ROOT      = os.getenv('DROPBOX_OPERATIONS_PATH', '/Steven Pierce/_FP OPERATIONS FOLDER')
+_DBX_TEMPLATE_NAME = os.getenv('DROPBOX_TEMPLATE_FOLDER', '!_PRODUCTION_PROJECT_TEMPLATE')
+
+def _dbx_client():
+    import dropbox as _dbx_mod
+    return _dbx_mod.Dropbox(os.getenv('DROPBOX_ACCESS_TOKEN', ''))
+
+def _provision_dropbox_folder(dropbox_folder):
+    """Copy the project template tree to a new project folder. Returns path or None."""
+    if not os.getenv('DROPBOX_ACCESS_TOKEN'):
+        return None
+    try:
+        src  = f"{_DBX_OPS_ROOT}/{_DBX_TEMPLATE_NAME}"
+        dest = f"{_DBX_OPS_ROOT}/{dropbox_folder}"
+        _dbx_client().files_copy_v2(src, dest)
+        return dest
+    except Exception as e:
+        logging.warning(f"Dropbox provision failed: {e}")
+        return None
+
+
+# ── Project folder slug generation ────────────────────────────────────────────
+def _make_project_slug(project_name, client_name=None, dt=None):
+    """Generate a Dropbox folder slug: YYYY-MM_ClientSlug_ProjectSlug"""
+    import re
+    from datetime import date as _date
+    dt = dt or _date.today()
+
+    def slugify(s, maxlen):
+        s = re.sub(r"[^a-zA-Z0-9 ]", "", (s or "").strip())
+        return "".join(w.capitalize() for w in s.split())[:maxlen]
+
+    month     = dt.strftime("%Y-%m")
+    c_slug    = slugify(client_name or "FP", 20)
+    p_slug    = slugify(project_name, 30)
+    return f"{month}_{c_slug}_{p_slug}"
+
+def _unique_project_slug(project_name, client_name=None, exclude_id=None):
+    """Return a slug guaranteed unique in the project_sheet table."""
+    from models import ProjectSheet as _PS
+    base = _make_project_slug(project_name, client_name)
+    slug = base
+    # Check DB for collision
+    q = _PS.query.filter(_PS.dropbox_folder == slug)
+    if exclude_id:
+        q = q.filter(_PS.id != exclude_id)
+    if not q.first():
+        return slug
+    # Fallback: append sequential number
+    for n in range(2, 99):
+        slug = f"{base}_{n}"
+        q = _PS.query.filter(_PS.dropbox_folder == slug)
+        if exclude_id:
+            q = q.filter(_PS.id != exclude_id)
+        if not q.first():
+            return slug
+    return base  # give up — extremely unlikely
+
+
 def _send_email(to, subject, body, attachment_bytes=None, attachment_filename=None):
     """Send email — silently no-ops if mail not configured."""
     if not app.config.get('MAIL_USERNAME'):
@@ -446,7 +541,9 @@ def super_admin_required(f):
 
 _FORCE_PW_ALLOWED = {"profile", "logout", "login", "static",
                      "reset_password", "forgot_password",
-                     "callsheet_view_public", "callsheet_confirm_public"}
+                     "callsheet_view_public", "callsheet_confirm_public",
+                     "docs_dashboard", "docs_project", "docs_upload_post",
+                     "docs_upload_status"}
 
 @app.before_request
 def enforce_password_change():
@@ -471,6 +568,8 @@ def login():
             if user.must_change_password:
                 flash("Please set a new password to continue.", "warning")
                 return redirect(url_for("profile"))
+            if user.role == 'docs_only':
+                return redirect(url_for("docs_dashboard"))
             return redirect(url_for("dashboard"))
         flash("Invalid credentials.", "error")
     return render_template("login.html")
@@ -671,9 +770,14 @@ def project_new():
         flash(f"Project '{name}' already exists.", "error")
         return redirect(url_for("dashboard"))
     template_id = request.form.get("template_id", type=int)
-    p = ProjectSheet(name=name)
+    client_name = request.form.get("client_name", "").strip() or None
+    p = ProjectSheet(name=name, client_name=client_name)
     db.session.add(p)
     db.session.flush()
+    # Generate unique Dropbox folder slug and provision the folder tree
+    slug = _unique_project_slug(name, client_name, exclude_id=p.id)
+    p.dropbox_folder = slug
+    _provision_dropbox_folder(slug)
     # Auto-create a default budget
     _fed40 = PayrollProfile.query.filter(PayrollProfile.name.ilike('%federal%')).first()
     b = Budget(project_id=p.id, name=f"{name} Budget", payroll_profile_id=_fed40.id if _fed40 else None, payroll_week_start=6,)
@@ -4828,6 +4932,9 @@ with app.app_context():
         "ALTER TABLE budget ADD COLUMN prepared_by_email VARCHAR(200)",
         "ALTER TABLE budget ADD COLUMN prepared_by_phone VARCHAR(50)",
         "ALTER TABLE callsheet_recipient ADD COLUMN phone VARCHAR(50)",
+        # Docs module: project_sheet new columns
+        "ALTER TABLE project_sheet ADD COLUMN dropbox_folder VARCHAR(300)",
+        "ALTER TABLE project_sheet ADD COLUMN client_name VARCHAR(200)",
     ]
     for _sql in _migrations:
         try:
@@ -5263,6 +5370,144 @@ with app.app_context():
         logging.info(f"Seeded template: {_SMALL_LIVE}")
 
     _seed_production_templates()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DOCS MODULE — Receipt / Document Upload
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _docs_accessible_projects(user):
+    """Return list of ProjectSheet rows visible to this user for docs."""
+    if user.role in ('super_admin', 'admin'):
+        return ProjectSheet.query.order_by(ProjectSheet.name).all()
+    owned = (db.session.query(ProjectSheet)
+             .join(ProjectAccess, ProjectAccess.project_id == ProjectSheet.id)
+             .filter(ProjectAccess.user_id == user.id)
+             .order_by(ProjectSheet.name).all())
+    return owned
+
+
+@app.route("/docs/")
+@login_required
+def docs_dashboard():
+    projects = _docs_accessible_projects(current_user)
+    # Attach upload counts
+    counts = {}
+    if projects:
+        pids = [p.id for p in projects]
+        rows = (db.session.query(DocUpload.project_id, func.count(DocUpload.id))
+                .filter(DocUpload.project_id.in_(pids))
+                .group_by(DocUpload.project_id).all())
+        counts = {pid: cnt for pid, cnt in rows}
+    return render_template("docs_dashboard.html", projects=projects, counts=counts)
+
+
+@app.route("/docs/<int:pid>/")
+@login_required
+def docs_project(pid):
+    project = ProjectSheet.query.get_or_404(pid)
+    # Access check
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access:
+            abort(403)
+    uploads = (DocUpload.query
+               .filter_by(project_id=pid)
+               .order_by(DocUpload.uploaded_at.desc()).all())
+    return render_template("docs_upload.html", project=project, uploads=uploads)
+
+
+@app.route("/docs/<int:pid>/upload", methods=["POST"])
+@login_required
+def docs_upload_post(pid):
+    project = ProjectSheet.query.get_or_404(pid)
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access:
+            return jsonify({"error": "Forbidden"}), 403
+
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "No file provided"}), 400
+
+    import hashlib, uuid as _uuid
+    data = f.read()
+    file_hash = hashlib.sha256(data).hexdigest()
+
+    # Duplicate check within this project
+    existing = DocUpload.query.filter_by(project_id=pid, file_hash=file_hash).first()
+    if existing:
+        return jsonify({
+            "status": "duplicate",
+            "upload_id": existing.id,
+            "message": "This file has already been uploaded."
+        }), 200
+
+    content_type = f.content_type or "application/octet-stream"
+    ext = os.path.splitext(f.filename)[1].lower() if f.filename else ""
+    r2_key = f"docs/{pid}/{_uuid.uuid4().hex}{ext}"
+
+    try:
+        _r2_upload(r2_key, data, content_type)
+    except Exception as e:
+        logging.exception("R2 upload failed")
+        return jsonify({"error": f"Upload failed: {str(e)}"}), 500
+
+    upload = DocUpload(
+        project_id=pid,
+        uploader_id=current_user.id,
+        r2_key=r2_key,
+        original_filename=f.filename,
+        file_size=len(data),
+        content_type=content_type,
+        file_hash=file_hash,
+        status="pending",
+    )
+    db.session.add(upload)
+    db.session.commit()
+
+    return jsonify({"status": "ok", "upload_id": upload.id}), 201
+
+
+@app.route("/docs/upload/<int:uid>/status")
+@login_required
+def docs_upload_status(uid):
+    upload = DocUpload.query.get_or_404(uid)
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(
+            project_id=upload.project_id, user_id=current_user.id).first()
+        if not access:
+            return jsonify({"error": "Forbidden"}), 403
+    return jsonify({
+        "id": upload.id,
+        "status": upload.status,
+        "original_filename": upload.original_filename,
+        "vendor": upload.vendor,
+        "amount": float(upload.amount) if upload.amount else None,
+        "doc_date": upload.doc_date.isoformat() if upload.doc_date else None,
+        "confidence": float(upload.confidence) if upload.confidence else None,
+        "category": upload.category,
+        "is_duplicate": upload.is_duplicate,
+        "filed_dropbox_path": upload.filed_dropbox_path,
+    })
+
+
+@app.route("/docs/upload/<int:uid>/delete", methods=["POST"])
+@login_required
+def docs_upload_delete(uid):
+    upload = DocUpload.query.get_or_404(uid)
+    if current_user.role not in ('super_admin', 'admin'):
+        if upload.uploader_id != current_user.id:
+            return jsonify({"error": "Forbidden"}), 403
+    pid = upload.project_id
+    # Remove from R2
+    try:
+        _r2_client().delete_object(Bucket=_R2_BUCKET, Key=upload.r2_key)
+    except Exception:
+        pass
+    db.session.delete(upload)
+    db.session.commit()
+    return jsonify({"status": "deleted"})
 
 
 if __name__ == "__main__":

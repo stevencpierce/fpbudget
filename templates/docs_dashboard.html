@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docs — FP Budget</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0d0f14; color: #e8e9ec;
+      min-height: 100vh;
+    }
+    .topbar {
+      background: #161920; border-bottom: 1px solid #2a2d36;
+      padding: 14px 20px;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .topbar-logo {
+      font-size: 17px; font-weight: 700; color: #e8e9ec; letter-spacing: .3px;
+    }
+    .topbar-logo span { color: #5b8af9; }
+    .topbar-sub { font-size: 13px; color: #6b7280; margin-left: 4px; }
+    .topbar-right { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+    .btn-sm {
+      background: #1e2230; color: #b0b8c8; border: 1px solid #2a2d36;
+      padding: 6px 14px; border-radius: 6px; font-size: 13px;
+      text-decoration: none; cursor: pointer;
+    }
+    .btn-sm:hover { background: #242838; color: #e8e9ec; }
+
+    .content { max-width: 680px; margin: 0 auto; padding: 24px 16px; }
+    .page-title { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+    .page-sub { font-size: 14px; color: #6b7280; margin-bottom: 24px; }
+
+    .project-list { display: flex; flex-direction: column; gap: 10px; }
+    .project-card {
+      background: #161920; border: 1px solid #2a2d36; border-radius: 10px;
+      padding: 16px 18px;
+      display: flex; align-items: center; gap: 14px;
+      text-decoration: none; color: inherit;
+      transition: border-color .15s, background .15s;
+    }
+    .project-card:hover { border-color: #5b8af9; background: #1a1e2a; }
+    .project-icon {
+      width: 40px; height: 40px; border-radius: 8px;
+      background: #1e2230; display: flex; align-items: center; justify-content: center;
+      font-size: 20px; flex-shrink: 0;
+    }
+    .project-info { flex: 1; min-width: 0; }
+    .project-name { font-size: 15px; font-weight: 600; color: #e8e9ec; }
+    .project-slug { font-size: 12px; color: #6b7280; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .upload-badge {
+      background: #1e2230; color: #8b95a8; border: 1px solid #2a2d36;
+      border-radius: 20px; padding: 3px 10px; font-size: 12px; flex-shrink: 0;
+    }
+    .upload-badge.has-uploads { background: #1a2540; color: #5b8af9; border-color: #2d4070; }
+
+    .empty-state {
+      text-align: center; padding: 60px 20px;
+      color: #4b5263;
+    }
+    .empty-state svg { margin-bottom: 16px; opacity: .4; }
+    .empty-state p { font-size: 15px; }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-logo">FP <span>Budget</span></div>
+  <div class="topbar-sub">/ Docs</div>
+  <div class="topbar-right">
+    {% if not current_user.is_docs_only %}
+      <a href="{{ url_for('index') }}" class="btn-sm">← Dashboard</a>
+    {% endif %}
+    <a href="{{ url_for('logout') }}" class="btn-sm">Sign out</a>
+  </div>
+</div>
+
+<div class="content">
+  <div class="page-title">Receipt Upload</div>
+  <div class="page-sub">Select a project to upload receipts or expense documents.</div>
+
+  {% if projects %}
+    <div class="project-list">
+      {% for p in projects %}
+        <a class="project-card" href="{{ url_for('docs_project', pid=p.id) }}">
+          <div class="project-icon">📁</div>
+          <div class="project-info">
+            <div class="project-name">{{ p.name }}</div>
+            {% if p.dropbox_folder %}
+              <div class="project-slug">{{ p.dropbox_folder }}</div>
+            {% elif p.client_name %}
+              <div class="project-slug">{{ p.client_name }}</div>
+            {% endif %}
+          </div>
+          {% set cnt = counts.get(p.id, 0) %}
+          <div class="upload-badge {% if cnt > 0 %}has-uploads{% endif %}">
+            {{ cnt }} upload{{ 's' if cnt != 1 else '' }}
+          </div>
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="empty-state">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
+      </svg>
+      <p>No projects assigned to your account yet.</p>
+    </div>
+  {% endif %}
+</div>
+
+</body>
+</html>
