@@ -294,11 +294,22 @@ _DBX_TEMPLATE_NAME = os.getenv('DROPBOX_TEMPLATE_FOLDER', '!_PRODUCTION_PROJECT_
 
 def _dbx_client():
     import dropbox as _dbx_mod
+    refresh_token = os.getenv('DROPBOX_REFRESH_TOKEN', '')
+    app_key       = os.getenv('DROPBOX_APP_KEY', '')
+    app_secret    = os.getenv('DROPBOX_APP_SECRET', '')
+    if refresh_token and app_key and app_secret:
+        return _dbx_mod.Dropbox(
+            oauth2_refresh_token=refresh_token,
+            app_key=app_key,
+            app_secret=app_secret,
+        )
+    # Fallback: legacy static access token (for local dev)
     return _dbx_mod.Dropbox(os.getenv('DROPBOX_ACCESS_TOKEN', ''))
 
 def _provision_dropbox_folder(dropbox_folder):
     """Copy the project template tree to a new project folder. Returns path or None."""
-    if not os.getenv('DROPBOX_ACCESS_TOKEN'):
+    has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
+    if not has_refresh and not os.getenv('DROPBOX_ACCESS_TOKEN'):
         return None
     try:
         src  = f"{_DBX_OPS_ROOT}/{_DBX_TEMPLATE_NAME}"
