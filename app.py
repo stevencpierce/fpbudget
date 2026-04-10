@@ -576,6 +576,8 @@ _FORCE_PW_ALLOWED = {"profile", "logout", "login", "static",
                      "docs_dashboard", "docs_project", "docs_upload_post",
                      "docs_upload_status"}
 
+_DOCS_ONLY_ALLOWED = _FORCE_PW_ALLOWED | {"docs_upload_delete"}
+
 @app.before_request
 def enforce_password_change():
     """Redirect users who must change their password to the profile page."""
@@ -584,6 +586,48 @@ def enforce_password_change():
             and request.endpoint not in _FORCE_PW_ALLOWED):
         flash("Please set a new password before continuing.", "warning")
         return redirect(url_for("profile"))
+
+
+@app.before_request
+def enforce_docs_only_role():
+    """Restrict docs_only users to docs routes only."""
+    if (current_user.is_authenticated
+            and getattr(current_user, 'role', None) == 'docs_only'
+            and request.endpoint
+            and request.endpoint not in _DOCS_ONLY_ALLOWED
+            and not request.endpoint.startswith('static')):
+        return redirect(url_for("docs_dashboard"))
+
+
+def _user_project_role(pid):
+    """Return the current user's effective role for a project.
+
+    Returns 'admin' for site admins, the ProjectAccess.role string for
+    project members, or None if the user has no access.
+    """
+    if current_user.role in ('super_admin', 'admin'):
+        return 'owner'
+    pa = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+    return pa.role if pa else None
+
+
+def _require_project_role(pid, min_role='viewer'):
+    """Abort 403 if user doesn't meet the minimum project role.
+
+    Role hierarchy: owner > editor > viewer > docs_only
+    """
+    _HIERARCHY = ['docs_only', 'viewer', 'editor', 'owner',
+                  'collaborator']  # legacy 'collaborator' treated as editor
+    role = _user_project_role(pid)
+    if role is None:
+        abort(403)
+    # Treat legacy 'collaborator' as 'editor'
+    if role == 'collaborator':
+        role = 'editor'
+    min_idx = _HIERARCHY.index(min_role) if min_role in _HIERARCHY else 1
+    cur_idx = _HIERARCHY.index(role) if role in _HIERARCHY else 0
+    if cur_idx < min_idx:
+        abort(403)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -4939,7 +4983,7 @@ def admin_user_create():
         flash("Admins cannot create Super Admin accounts.", "error")
         return redirect(url_for("admin_panel"))
 
-    valid_roles = ('super_admin', 'admin', 'line_producer', 'dept_head')
+    valid_roles = ('super_admin', 'admin', 'line_producer', 'dept_head', 'docs_only')
     if role not in valid_roles:
         role = 'line_producer'
 
@@ -5004,7 +5048,7 @@ def admin_user_edit(uid):
         flash("Admins cannot assign the Super Admin role.", "error")
         return redirect(url_for("admin_panel"))
 
-    valid_roles = ('super_admin', 'admin', 'line_producer', 'dept_head')
+    valid_roles = ('super_admin', 'admin', 'line_producer', 'dept_head', 'docs_only')
     if role not in valid_roles:
         role = u.role
 

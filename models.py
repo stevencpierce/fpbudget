@@ -54,7 +54,7 @@ class ProjectAccess(db.Model):
     id         = db.Column(db.Integer, primary_key=True)
     project_id = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
     user_id    = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
-    role       = db.Column(db.String(20), default="collaborator")  # "owner" or "collaborator"
+    role       = db.Column(db.String(20), default="editor")  # owner | editor | viewer | docs_only (legacy: collaborator→editor)
     __table_args__ = (db.UniqueConstraint("project_id", "user_id", name="uq_proj_user"),)
 
 # ── Mirrored shared tables (read-only from FPBudget) ─────────────────────────

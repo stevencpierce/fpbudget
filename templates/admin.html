@@ -62,6 +62,7 @@
   .role-admin        { background:rgba(79,70,229,.2);  color:#a5b4fc; border:1px solid rgba(79,70,229,.4); }
   .role-line_producer{ background:rgba(2,132,199,.2);  color:#7dd3fc; border:1px solid rgba(2,132,199,.4); }
   .role-dept_head    { background:rgba(8,145,178,.2);  color:#67e8f9; border:1px solid rgba(8,145,178,.4); }
+  .role-docs_only    { background:rgba(16,185,129,.15); color:#6ee7b7; border:1px solid rgba(16,185,129,.35); }
   .status-dot { display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:.35rem; }
   .dot-active   { background:#22c55e;box-shadow:0 0 5px #22c55e80; }
   .dot-inactive { background:#6b7280; }
@@ -209,6 +210,7 @@
             <option value="admin">Admin</option>
             <option value="line_producer" selected>Line Producer</option>
             <option value="dept_head">Department Head</option>
+            <option value="docs_only">Docs / Receipts Only</option>
           </select>
         </div>
         <div class="fg" id="new-dept-field" style="display:none">
@@ -239,7 +241,8 @@
         <div class="proj-access-name">{{ project.name }}</div>
         <div class="access-chips" id="chips-{{ project.id }}">
           {% for pa in pas %}{% set u=users|selectattr('id','eq',pa.user_id)|first %}{% if u %}
-          <span class="access-chip">{{ u.name or u.email }}<span class="chip-role">{{ pa.role }}</span>
+          {% set role_label = {'owner':'Owner','editor':'Editor','collaborator':'Editor','viewer':'Viewer','docs_only':'Docs Only'}.get(pa.role, pa.role) %}
+          <span class="access-chip">{{ u.name or u.email }}<span class="chip-role">{{ role_label }}</span>
             <button onclick="removeAccess({{ project.id }},{{ pa.user_id }},this.closest('.access-chip'))">✕</button>
           </span>
           {% endif %}{% endfor %}
@@ -251,7 +254,12 @@
             {% for u in users %}{% set already=project_access|selectattr('project_id','eq',project.id)|selectattr('user_id','eq',u.id)|list|length>0 %}{% if not already %}
             <option value="{{ u.id }}">{{ u.name or u.email }}</option>{% endif %}{% endfor %}
           </select>
-          <select id="ar-{{ project.id }}"><option value="collaborator">Collaborator</option><option value="owner">Owner</option></select>
+          <select id="ar-{{ project.id }}">
+            <option value="editor">Editor</option>
+            <option value="viewer">Viewer (read-only)</option>
+            <option value="docs_only">Docs Only</option>
+            <option value="owner">Owner</option>
+          </select>
           <button class="btn btn-sm btn-outline" onclick="addAccess({{ project.id }})">Add</button>
         </div>
       </div>
@@ -278,6 +286,7 @@
             <option value="admin">Admin</option>
             <option value="line_producer">Line Producer</option>
             <option value="dept_head">Department Head</option>
+            <option value="docs_only">Docs / Receipts Only</option>
           </select>
         </div>
         <div class="fg" id="edit-dept-wrap" style="display:none">
