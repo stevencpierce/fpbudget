@@ -45,60 +45,74 @@
   <div class="budget-header-right">
     <!-- Version picker dropdown -->
     <div class="dropdown version-dropdown">
-      {# Count version sets: Est+Work with the same name = one version #}
-      {% set _vnset = namespace(seen=[]) %}
-      {% for b in all_budgets if b.version_status != 'archived' %}
-        {% if b.name not in _vnset.seen %}{% set _ = _vnset.seen.append(b.name) %}{% endif %}
-      {% endfor %}
-      {% set version_count = _vnset.seen | length %}
+      {% set live_vg = version_groups | rejectattr('estimated', 'none') | list %}
       <button class="btn btn-sm btn-outline version-picker-btn">
-        {{ 'Version 1' if version_count == 1 else version_count | string + ' Versions' }} ▾
+        {{ 'v' + (budget.version_number | string) if budget.version_number else 'v1' }}
+        ({{ live_vg | length }} version{{ 's' if live_vg | length != 1 else '' }}) ▾
       </button>
       <div class="dropdown-menu version-menu">
         {% set archived_count = all_budgets | selectattr('version_status', 'eq', 'archived') | list | length %}
-        {% set status_label = {'current': 'Active', 'superseded': 'Previous', 'archived': 'Archived'} %}
 
-        {# Group active budgets by name (each unique name = one version set) #}
-        {% set _grp_seen = namespace(seen=[]) %}
-        {% for b in all_budgets if b.version_status != 'archived' %}
-          {% if b.name not in _grp_seen.seen %}
-            {% set _ = _grp_seen.seen.append(b.name) %}
-            {% set _grp_budgets = all_budgets | selectattr('name', 'equalto', b.name) | rejectattr('version_status', 'eq', 'archived') | list %}
-            <div class="version-group-header">
-              <span class="version-item-name">{{ b.name }}</span>
-              <span class="version-status-badge vs-{{ b.version_status }}">{{ status_label.get(b.version_status, '') }}</span>
-            </div>
-            {% for gb in _grp_budgets %}
-            {% set bm = MODE_META.get(gb.budget_mode, MODE_META['estimated']) %}
-            {% set is_cur = (gb.id == budget.id) %}
+        {% for vg in live_vg %}
+          {% set vn = vg.version_number %}
+          {% set est = vg.estimated %}
+          {% set wrk = vg.working %}
+          <div class="version-group-header">
+            <span class="version-item-name">v{{ vn }}</span>
+            <span class="version-status-badge vs-{{ 'current' if vg.is_current else 'superseded' }}">
+              {{ 'Current' if vg.is_current else 'Previous' }}
+            </span>
+          </div>
+          {# Estimated row #}
+          {% if est %}
+            {% set is_cur = (est.id == budget.id) %}
             <div class="version-item version-item-subrow {% if is_cur %}version-item-active{% endif %}">
-              <a href="{{ url_for('budget_view', pid=project.id, bid=gb.id) }}" class="version-item-link">
-                <span class="mode-badge {{ bm.cls }}" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem">{{ bm.short }}</span>
-                <span class="version-item-ts">{% if gb.updated_at %}{{ gb.updated_at | in_tz(budget.timezone) }}{% endif %}</span>
+              <a href="{{ url_for('budget_view', pid=project.id, bid=est.id) }}" class="version-item-link">
+                <span class="mode-badge mode-estimated" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem">EST</span>
+                <span class="version-item-ts">{% if est.updated_at %}{{ est.updated_at | in_tz(budget.timezone) }}{% endif %}</span>
               </a>
-              {% set _can_delete = (not is_cur) or (gb.budget_mode in ('working', 'actual')) %}
-              {% if _can_delete %}
               <div class="version-item-actions">
                 {% if not is_cur %}
-                <button class="btn btn-xs btn-ghost version-archive-btn"
-                        data-bid="{{ gb.id }}"
-                        title="Archive">⊘</button>
+                <button class="btn btn-xs btn-ghost version-archive-btn" data-bid="{{ est.id }}" title="Archive">⊘</button>
                 {% endif %}
+                {% if not vg.is_current %}
                 <button class="btn btn-xs btn-ghost version-delete-btn"
-                        data-bid="{{ gb.id }}" data-name="{{ gb.name }}"
-                        data-mode="{{ gb.budget_mode }}"
-                        title="Permanently delete">✕</button>
+                        data-bid="{{ est.id }}" data-name="{{ est.name }}" data-mode="{{ est.budget_mode }}"
+                        title="Delete">✕</button>
+                {% endif %}
               </div>
-              {% endif %}
             </div>
-            {% endfor %}
+          {% endif %}
+          {# Working row — show existing or offer to create #}
+          {% if wrk %}
+            {% set is_cur = (wrk.id == budget.id) %}
+            <div class="version-item version-item-subrow {% if is_cur %}version-item-active{% endif %}">
+              <a href="{{ url_for('budget_view', pid=project.id, bid=wrk.id) }}" class="version-item-link">
+                <span class="mode-badge mode-working" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem">WRK</span>
+                <span class="version-item-ts">{% if wrk.updated_at %}{{ wrk.updated_at | in_tz(budget.timezone) }}{% endif %}</span>
+              </a>
+              <div class="version-item-actions">
+                <button class="btn btn-xs btn-ghost version-delete-btn"
+                        data-bid="{{ wrk.id }}" data-name="{{ wrk.name }}" data-mode="{{ wrk.budget_mode }}"
+                        title="Delete">✕</button>
+              </div>
+            </div>
+          {% elif est and vg.is_current %}
+            <div class="version-item version-item-subrow version-item-create">
+              <form method="POST" action="{{ url_for('create_working_from_estimated', pid=project.id, bid=est.id) }}" style="flex:1">
+                <button type="submit" class="btn btn-xs btn-ghost" style="width:100%;text-align:left;padding:.2rem .5rem">
+                  <span class="mode-badge mode-working" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem">WRK</span>
+                  + Initialize Working v{{ vn }}
+                </button>
+              </form>
+            </div>
           {% endif %}
         {% endfor %}
 
         <div class="version-menu-footer">
           {% if archived_count > 0 %}
           <button class="btn btn-xs btn-ghost version-show-archived-btn" style="width:100%;margin-bottom:.35rem">
-            Show {{ archived_count }} archived version{{ 's' if archived_count != 1 else '' }}
+            Show {{ archived_count }} archived
           </button>
           {% endif %}
           <button class="btn btn-sm btn-outline" style="width:100%" onclick="showNewBudgetModal()">+ New Version</button>
@@ -133,17 +147,17 @@
     {% if not dept_filter %}<button class="tab-btn" data-tab="settings">⚙ Settings</button>{% endif %}
   </div>
   <div class="mode-switcher-seg">
-    {% if current_estimated_bid %}
-    <a href="{{ url_for('budget_view', pid=project.id, bid=current_estimated_bid) }}"
+    {% if peer_estimated_bid %}
+    <a href="{{ url_for('budget_view', pid=project.id, bid=peer_estimated_bid) }}"
        class="mode-seg-btn {% if budget.budget_mode not in ('working','actual') %}active mode-estimated{% endif %}">Estimated</a>
     {% else %}
     <span class="mode-seg-btn mode-seg-inactive" title="No estimated budget">Estimated</span>
     {% endif %}
-    {% if current_working_bid %}
-    <a href="{{ url_for('budget_view', pid=project.id, bid=current_working_bid) }}"
+    {% if peer_working_bid %}
+    <a href="{{ url_for('budget_view', pid=project.id, bid=peer_working_bid) }}"
        class="mode-seg-btn {% if budget.budget_mode in ('working','actual') %}active mode-working{% endif %}">Working</a>
     {% else %}
-    <span class="mode-seg-btn mode-seg-inactive" title="No Working budget — create one in the Budget tab">Working</span>
+    <span class="mode-seg-btn mode-seg-inactive" title="No Working budget for this version — initialize one from the version picker">Working</span>
     {% endif %}
   </div>
 </div>
@@ -161,10 +175,10 @@
   {% endif %}
   {% if not working_exists %}
   <div class="init-working-banner">
-    <strong>No Working Budget yet.</strong>
-    Estimated is your locked baseline. Create a Working budget to track your live forecast independently without touching the Estimated.
-    <form method="POST" action="{{ url_for('create_working_from_estimated', pid=project.id, bid=budget.id) }}" style="display:inline;margin:0">
-      <button type="submit" class="btn btn-sm btn-primary">Create Working Budget</button>
+    <strong>No Working Budget for v{{ budget.version_number or 1 }} yet.</strong>
+    The Estimated is your locked baseline. Create a paired Working budget to track the live forecast without touching the Estimated.
+    <form method="POST" action="{{ url_for('create_working_from_estimated', pid=project.id, bid=peer_estimated_bid) }}" style="display:inline;margin:0">
+      <button type="submit" class="btn btn-sm btn-primary">Initialize Working v{{ budget.version_number or 1 }}</button>
     </form>
   </div>
   {% endif %}
@@ -1727,57 +1741,27 @@
   <div class="modal-overlay" onclick="document.getElementById('new-budget-modal').classList.add('hidden')"></div>
   <div class="modal-box" style="max-width:420px">
     <h2>New Version — Copy From</h2>
-    <p class="muted" style="font-size:.82rem;margin-bottom:.75rem">Choose which version to copy. A new version with the same mode is created.</p>
+    <p class="muted" style="font-size:.82rem;margin-bottom:.75rem">
+      Creates a new <strong>Estimated v{{ (version_groups[0].version_number + 1) if version_groups else 1 }}</strong>
+      copied from the current Estimated. Once created, initialize a Working budget for the new version from the version picker.
+    </p>
 
-    {% set est_versions = [] %}
-    {% set work_versions = [] %}
-    {% for b in all_budgets %}
-      {% if b.version_status != 'archived' %}
-        {% if b.budget_mode == 'estimated' %}{% set _ = est_versions.append(b) %}{% endif %}
-        {% if b.budget_mode in ('working', 'actual') %}{% set _ = work_versions.append(b) %}{% endif %}
-      {% endif %}
-    {% endfor %}
-
-    {% if est_versions %}
-    <div class="version-source-group">
-      <div class="version-source-label">Estimated</div>
-      {% for b in est_versions %}
-      <form method="POST" action="{{ url_for('budget_new', pid=project.id) }}" style="margin-bottom:.3rem">
-        <input type="hidden" name="source_bid" value="{{ b.id }}">
-        <button type="submit" class="btn btn-outline version-option-btn version-option-sm {% if b.version_status == 'current' %}version-option-current{% endif %}">
-          <strong>{{ b.name }}</strong>
-          <span class="version-option-desc">{{ 'Active' if b.version_status == 'current' else 'Previous' }}{% if b.updated_at %} · {{ b.updated_at | in_tz(budget.timezone, '%b %-d') }}{% endif %}</span>
-        </button>
-      </form>
-      {% endfor %}
-    </div>
-    {% endif %}
-
-    {% if work_versions %}
-    <div class="version-source-group" {% if est_versions %}style="margin-top:.65rem"{% endif %}>
-      <div class="version-source-label">Working</div>
-      {% for b in work_versions %}
-      <form method="POST" action="{{ url_for('budget_new', pid=project.id) }}" style="margin-bottom:.3rem">
-        <input type="hidden" name="source_bid" value="{{ b.id }}">
-        <button type="submit" class="btn btn-outline version-option-btn version-option-sm {% if b.version_status == 'current' %}version-option-current{% endif %}">
-          <strong>{{ b.name }}</strong>
-          <span class="version-option-desc">{{ 'Active' if b.version_status == 'current' else 'Previous' }}{% if b.updated_at %} · {{ b.updated_at | in_tz(budget.timezone, '%b %-d') }}{% endif %}</span>
-        </button>
-      </form>
-      {% endfor %}
-    </div>
-    {% endif %}
-
-    {% if not has_working_budget %}
-    <div class="version-source-group" {% if est_versions %}style="margin-top:.65rem"{% endif %}>
-      <div class="version-source-label">Working</div>
-      <form method="POST" action="{{ url_for('create_working_from_estimated', pid=project.id, bid=current_estimated_bid or budget.id) }}">
-        <button type="submit" class="btn btn-outline version-option-btn version-option-sm">
-          <strong>Initialize Working Budget</strong>
-          <span class="version-option-desc">Creates a Working budget from the current Estimated — no new version number used.</span>
-        </button>
-      </form>
-    </div>
+    {% set cur_est = version_groups[0].estimated if version_groups else none %}
+    {% if cur_est %}
+    <form method="POST" action="{{ url_for('budget_new', pid=project.id) }}" style="margin-bottom:.3rem">
+      <input type="hidden" name="source_bid" value="{{ cur_est.id }}">
+      <button type="submit" class="btn btn-outline version-option-btn version-option-current" style="width:100%">
+        <strong>New Estimated v{{ (version_groups[0].version_number + 1) if version_groups else 1 }}</strong>
+        <span class="version-option-desc">Copied from {{ cur_est.name }}</span>
+      </button>
+    </form>
+    {% else %}
+    <form method="POST" action="{{ url_for('budget_new', pid=project.id) }}" style="margin-bottom:.3rem">
+      <button type="submit" class="btn btn-outline version-option-btn version-option-current" style="width:100%">
+        <strong>New Estimated v1</strong>
+        <span class="version-option-desc">Start from scratch</span>
+      </button>
+    </form>
     {% endif %}
 
     <div style="margin-top:1rem;text-align:right">

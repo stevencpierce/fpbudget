@@ -1175,56 +1175,36 @@ def project_budget_redirect(pid):
     return render_template("budget_new.html", project=project, all_templates=all_templates)
 
 
-def _next_version_name(project_id, project_name):
-    """Return a unique auto-incremented version name for this project.
-
-    Rules:
-    - Version number is based on the highest vN among non-archived budgets (so
-      deleted versions leave a gap that the next creation fills).
-    - If the generated name already exists (e.g. an archived v2 is still on record),
-      append a letter suffix: v2b, v2c, … to keep every name unique.
-    """
-    import re
+def _project_base_name(project_id, project_name):
+    """Return the base display name for version labels (strips trailing vN / Working vN)."""
+    import re as _re
     existing = Budget.query.filter_by(project_id=project_id).all()
-    if not existing:
-        return f"{project_name} Budget"
-
-    all_names   = {b.name for b in existing}                     # every name, including archived
-    live_names  = [b.name for b in existing if b.version_status != 'archived']
-
-    max_v = 1
-    base_name = None
-    for n in live_names:
-        m = re.search(r'^(.+?)\s+v(\d+)(?:[a-z])?$', n, re.IGNORECASE)
+    for b in existing:
+        m = _re.match(r'^(.+?)\s+(?:Working\s+)?v\d+$', b.name or '', _re.IGNORECASE)
         if m:
-            v = int(m.group(2))
-            if v > max_v:
-                max_v = v
-                base_name = m.group(1)
-        else:
-            if base_name is None:
-                base_name = n
-    if base_name is None:
-        # fall back: strip any trailing suffix from all_names
-        for n in sorted(all_names):
-            mm = re.search(r'^(.+?)\s+v\d+', n)
-            base_name = mm.group(1) if mm else n
-            break
-
-    candidate = f"{base_name} v{max_v + 1}"
-
-    # If that name is already taken (e.g. by an archived record), add b/c/d… suffix
-    if candidate in all_names:
-        for letter in 'bcdefghijklmnopqrstuvwxyz':
-            alt = f"{base_name} v{max_v + 1}{letter}"
-            if alt not in all_names:
-                candidate = alt
-                break
-
-    return candidate
+            return m.group(1)
+    return project_name
 
 
-def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None):
+def _next_version_number(project_id):
+    """Return the next integer version number for a new Estimated budget in this project."""
+    est_budgets = Budget.query.filter_by(project_id=project_id).filter(
+        Budget.budget_mode == 'estimated'
+    ).all()
+    if not est_budgets:
+        return 1
+    return max((b.version_number or 1) for b in est_budgets) + 1
+
+
+def _estimated_version_name(base_name, version_num):
+    return f"{base_name} v{version_num}"
+
+
+def _working_version_name(base_name, version_num):
+    return f"{base_name} Working v{version_num}"
+
+
+def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None, version_number=None):
     """Create a new Budget record copied from source and return it (not yet committed)."""
     _fed40 = PayrollProfile.query.filter(PayrollProfile.name.ilike('%federal%')).first()
     b = Budget(
@@ -1244,6 +1224,7 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None)
         updated_at=datetime.utcnow(),
         workers_comp_pct=source.workers_comp_pct if source else 0.03,
         payroll_fee_pct=source.payroll_fee_pct if source else 0.0175,
+        version_number=version_number,
     )
     db.session.add(b)
     db.session.flush()
@@ -1276,52 +1257,61 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None)
 @app.route("/projects/<int:pid>/budget/new", methods=["POST"])
 @login_required
 def budget_new(pid):
-    """Create a new budget version copied from a chosen source version."""
+    """Create a new Estimated budget version (always Estimated — Working is tied to it via create_working_from_estimated)."""
     project    = ProjectSheet.query.get_or_404(pid)
+    # Source: prefer the current Estimated so settings/lines carry forward
     source_bid = request.form.get("source_bid", type=int)
-
     source = (Budget.query.filter_by(id=source_bid, project_id=pid).first()
               if source_bid else
-              Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first())
+              Budget.query.filter(Budget.project_id == pid,
+                                  Budget.budget_mode == 'estimated',
+                                  Budget.version_status == 'current').first())
+    if source is None:
+        source = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
 
-    new_mode = source.budget_mode if source else "estimated"
-    btype    = _budget_type(new_mode)
+    next_vnum = _next_version_number(pid)
+    base_name = _project_base_name(pid, project.name)
+    new_name  = _estimated_version_name(base_name, next_vnum)
 
-    _supersede_current(pid, btype)
+    _supersede_current(pid, 'estimated')
     db.session.flush()
 
-    new_name = _next_version_name(pid, project.name)
-    b = _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=source.id if source else None)
+    b = _create_budget_from_source(pid, source, new_name, 'estimated',
+                                   parent_bid=source.id if source else None,
+                                   version_number=next_vnum)
     db.session.commit()
 
-    flash(f"Created {b.name} ({new_mode.capitalize()}) copied from {source.name if source else 'scratch'}.", "success")
+    flash(f"Created {b.name} — now add a Working budget when ready.", "success")
     return redirect(url_for("budget_view", pid=pid, bid=b.id))
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/create-working", methods=["POST"])
 @login_required
 def create_working_from_estimated(pid, bid):
-    """Create a new Working budget version from an existing Estimated budget."""
+    """Create a Working budget paired to this Estimated budget (shares its version_number)."""
     project = ProjectSheet.query.get_or_404(pid)
     source  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    if _budget_type(source.budget_mode) != 'estimated':
+        flash("Working budgets can only be created from an Estimated budget.", "error")
+        return redirect(url_for("budget_view", pid=pid, bid=bid))
     try:
+        vnum = source.version_number or 1
+        # Guard: a Working budget for this version already exists
+        existing_w = Budget.query.filter_by(project_id=pid, version_number=vnum).filter(
+            Budget.budget_mode.in_(('working', 'actual')),
+            Budget.version_status != 'archived'
+        ).first()
+        if existing_w:
+            flash(f"A Working budget for v{vnum} already exists. Archive it first to create a new one.", "error")
+            return redirect(url_for("budget_view", pid=pid, bid=bid))
+
         _supersede_current(pid, 'working')
         db.session.flush()
-        # Name working budgets as "BaseName Working v1", "v2", etc.
-        import re as _re
-        _base = _re.sub(r'\s+Working\s+v\d+$', '', source.name, flags=_re.IGNORECASE).strip()
-        _base = _re.sub(r'\s+v\d+$', '', _base, flags=_re.IGNORECASE).strip()
-        _existing_w = Budget.query.filter_by(project_id=pid).filter(
-            Budget.budget_mode.in_(('working', 'actual'))).all()
-        _w_nums = []
-        for _wb in _existing_w:
-            _m = _re.search(r'Working\s+v(\d+)$', _wb.name, _re.IGNORECASE)
-            if _m:
-                _w_nums.append(int(_m.group(1)))
-        _next_wv = max(_w_nums) + 1 if _w_nums else 1
-        w_name = f"{_base} Working v{_next_wv}"
-        w = _create_budget_from_source(pid, source, w_name, 'working', parent_bid=bid)
-        # Stamp the source so has_working_budget and working_initialized_at stay consistent
+
+        base_name = _project_base_name(pid, project.name)
+        w_name = _working_version_name(base_name, vnum)
+        w = _create_budget_from_source(pid, source, w_name, 'working',
+                                       parent_bid=bid, version_number=vnum)
         if not source.working_initialized_at:
             source.working_initialized_at = datetime.utcnow()
         db.session.commit()
@@ -1671,12 +1661,42 @@ def budget_view(pid, bid):
             except Exception:
                 pass  # skip any line that fails to calc; column shows — for that line
 
+    # Build version groups: list of {version_number, estimated, working, is_current}
+    # sorted descending so newest version is first.
+    _vn_map = {}
+    for _b in all_budgets:
+        _vn = _b.version_number or 1
+        if _vn not in _vn_map:
+            _vn_map[_vn] = {'version_number': _vn, 'estimated': None, 'working': None}
+        if _budget_type(_b.budget_mode) == 'estimated':
+            # prefer current over superseded
+            if _vn_map[_vn]['estimated'] is None or _b.version_status == 'current':
+                _vn_map[_vn]['estimated'] = _b
+        else:
+            if _vn_map[_vn]['working'] is None or _b.version_status == 'current':
+                _vn_map[_vn]['working'] = _b
+    _max_vn = max(_vn_map.keys()) if _vn_map else 1
+    for _vd in _vn_map.values():
+        _vd['is_current'] = (_vd['version_number'] == _max_vn)
+    version_groups = sorted(_vn_map.values(), key=lambda x: x['version_number'], reverse=True)
+
+    # Mode-switcher peers: same-version Estimated and Working for the budget being viewed
+    _cur_vn = budget.version_number or 1
+    _vn_peer = _vn_map.get(_cur_vn, {})
+    peer_estimated_bid = _vn_peer.get('estimated', {})
+    peer_estimated_bid = peer_estimated_bid.id if peer_estimated_bid else current_estimated_bid
+    peer_working_bid   = _vn_peer.get('working', {})
+    peer_working_bid   = peer_working_bid.id if peer_working_bid else None
+
     company_settings = CompanySettings.query.get(1) or CompanySettings()
     doc_uploads = DocUpload.query.filter_by(project_id=pid).order_by(DocUpload.uploaded_at.desc()).all()
     return render_template("budget.html",
         project=project,
         budget=budget,
         all_budgets=all_budgets,
+        version_groups=version_groups,
+        peer_estimated_bid=peer_estimated_bid,
+        peer_working_bid=peer_working_bid,
         lines=lines,
         line_results=line_results,
         sections=sections,
@@ -5369,6 +5389,8 @@ with app.app_context():
         "ALTER TABLE project_sheet ADD COLUMN dropbox_folder VARCHAR(300)",
         "ALTER TABLE project_sheet ADD COLUMN client_name VARCHAR(200)",
         "ALTER TABLE project_sheet ADD COLUMN status VARCHAR(20) DEFAULT 'active' NOT NULL",
+        # Budget versioning: shared version number for Estimated+Working pairs
+        "ALTER TABLE budget ADD COLUMN version_number INTEGER",
     ]
     for _sql in _migrations:
         try:
@@ -5376,6 +5398,29 @@ with app.app_context():
             db.session.commit()
         except Exception:
             db.session.rollback()
+
+    # Backfill version_number on existing budgets (one-time, skips already-set rows).
+    try:
+        import re as _re_vn
+        _unfilled = Budget.query.filter(Budget.version_number == None).all()
+        if _unfilled:
+            for _bv in _unfilled:
+                # Parse vN from name (e.g. "Project v2", "Project Working v3")
+                _m = _re_vn.search(r'\bv(\d+)\b', _bv.name or '', _re_vn.IGNORECASE)
+                if _m:
+                    _bv.version_number = int(_m.group(1))
+                elif _bv.parent_budget_id:
+                    # Working budget with no parseable number — inherit from parent
+                    _par = Budget.query.get(_bv.parent_budget_id)
+                    if _par and _par.version_number:
+                        _bv.version_number = _par.version_number
+                    else:
+                        _bv.version_number = 1
+                else:
+                    _bv.version_number = 1
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
 
     # Make location.project_id nullable so global library entries (project_id=NULL) can be saved.
     # SQLite cannot ALTER COLUMN constraints, so we recreate the table if still NOT NULL.

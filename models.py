@@ -117,6 +117,7 @@ class Budget(db.Model):
     updated_at      = db.Column(db.DateTime, default=datetime.utcnow, nullable=True)
     version_status  = db.Column(db.String(20), default='current', nullable=False)  # current | superseded | archived
     parent_budget_id = db.Column(db.Integer, db.ForeignKey('budget.id'), nullable=True)
+    version_number  = db.Column(db.Integer, nullable=True)   # shared by Estimated + its Working pair
     lines           = db.relationship("BudgetLine", backref="budget", lazy=True,
                                       cascade="all, delete-orphan")
     schedule_days   = db.relationship("ScheduleDay", backref="budget", lazy=True,
