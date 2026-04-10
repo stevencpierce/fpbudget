@@ -1150,8 +1150,19 @@ def create_working_from_estimated(pid, bid):
     try:
         _supersede_current(pid, 'working')
         db.session.flush()
-        # Working budget keeps the same version name — version numbers only increment for new scope versions
-        w_name = source.name
+        # Name working budgets as "BaseName Working v1", "v2", etc.
+        import re as _re
+        _base = _re.sub(r'\s+Working\s+v\d+$', '', source.name, flags=_re.IGNORECASE).strip()
+        _base = _re.sub(r'\s+v\d+$', '', _base, flags=_re.IGNORECASE).strip()
+        _existing_w = Budget.query.filter_by(project_id=pid).filter(
+            Budget.budget_mode.in_(('working', 'actual'))).all()
+        _w_nums = []
+        for _wb in _existing_w:
+            _m = _re.search(r'Working\s+v(\d+)$', _wb.name, _re.IGNORECASE)
+            if _m:
+                _w_nums.append(int(_m.group(1)))
+        _next_wv = max(_w_nums) + 1 if _w_nums else 1
+        w_name = f"{_base} Working v{_next_wv}"
         w = _create_budget_from_source(pid, source, w_name, 'working', parent_bid=bid)
         # Stamp the source so has_working_budget and working_initialized_at stay consistent
         if not source.working_initialized_at:
@@ -1191,8 +1202,6 @@ def set_active_budget(pid, bid):
     return jsonify({"ok": True, "redirect": url_for("budget_view", pid=pid, bid=bid)})
 
 
-@app.route("/projects/<int:pid>/budget/<int:bid>/delete", methods=["POST"])
-@login_required
 def _delete_budget_cascade(bid):
     """Fully explicit cascade delete for a budget.
     Handles every FK-constrained child table in safe deletion order so
@@ -1230,18 +1239,39 @@ def _delete_budget_cascade(bid):
     db.session.delete(budget)
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/delete", methods=["POST"])
+@login_required
 def delete_budget(pid, bid):
-    """Permanently delete a budget version. Not allowed for the active version."""
+    """Permanently delete a budget version.
+    Cannot delete the last Estimated budget for a project — it is the source of truth.
+    Deleting a Working budget while an Estimated exists is always allowed.
+    """
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
-    remaining = Budget.query.filter(
-        Budget.project_id == pid, Budget.id != bid
-    ).order_by(Budget.created_at.desc()).first()
+
+    # Guard: never delete the last estimated budget
+    if _budget_type(budget.budget_mode) == 'estimated':
+        est_count = Budget.query.filter_by(project_id=pid).filter(
+            Budget.budget_mode == 'estimated',
+            Budget.id != bid
+        ).count()
+        if est_count == 0:
+            return jsonify({"error": "Cannot delete the only Estimated budget. Delete the project instead."}), 400
+
+    # Find best redirect target: prefer remaining budget of same type, then any
+    remaining = (
+        Budget.query.filter(Budget.project_id == pid, Budget.id != bid,
+                            Budget.budget_mode == budget.budget_mode)
+        .order_by(Budget.created_at.desc()).first()
+        or Budget.query.filter(Budget.project_id == pid, Budget.id != bid)
+        .order_by(Budget.created_at.desc()).first()
+    )
+
     if budget.version_status == 'current' and remaining:
-        # Auto-promote the next version so nothing is left without a current
         remaining.version_status = 'current'
 
     _delete_budget_cascade(bid)
     db.session.commit()
+
     if remaining:
         return jsonify({"ok": True, "redirect": url_for("budget_view", pid=pid, bid=remaining.id)})
     return jsonify({"ok": True, "redirect": url_for("dashboard")})

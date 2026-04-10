@@ -76,13 +76,17 @@
                 <span class="mode-badge {{ bm.cls }}" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem">{{ bm.short }}</span>
                 <span class="version-item-ts">{% if gb.updated_at %}{{ gb.updated_at | in_tz(budget.timezone) }}{% endif %}</span>
               </a>
-              {% if not is_cur %}
+              {% set _can_delete = (not is_cur) or (gb.budget_mode in ('working', 'actual')) %}
+              {% if _can_delete %}
               <div class="version-item-actions">
+                {% if not is_cur %}
                 <button class="btn btn-xs btn-ghost version-archive-btn"
                         data-bid="{{ gb.id }}"
                         title="Archive">⊘</button>
+                {% endif %}
                 <button class="btn btn-xs btn-ghost version-delete-btn"
                         data-bid="{{ gb.id }}" data-name="{{ gb.name }}"
+                        data-mode="{{ gb.budget_mode }}"
                         title="Permanently delete">✕</button>
               </div>
               {% endif %}
@@ -2951,7 +2955,11 @@ document.addEventListener('click', async e => {
   if (!btn) return;
   e.preventDefault();
   e.stopPropagation();
-  if (!confirm(`Permanently delete "${btn.dataset.name}"? This cannot be undone.`)) return;
+  const isWorking = btn.dataset.mode && btn.dataset.mode !== 'estimated';
+  const msg = isWorking
+    ? `Delete Working budget "${btn.dataset.name}"?\n\nThis removes all working actuals and schedule data. The Estimated budget will be preserved.\n\nThis cannot be undone.`
+    : `Permanently delete "${btn.dataset.name}"? This cannot be undone.`;
+  if (!confirm(msg)) return;
   const r = await fetch(`/projects/${PID}/budget/${btn.dataset.bid}/delete`, { method: 'POST' });
   if (!r.ok) {
     const d = await r.json().catch(() => ({}));
