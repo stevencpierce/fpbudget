@@ -63,6 +63,7 @@
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=contacts">Contacts</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=locations">Locations</a>
     <span class="tab-btn active">Call Sheets</span>
+    <a class="tab-btn tab-link" href="{{ url_for('docs_project', pid=project.id) }}">Docs</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=actuals">Actuals</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=settings">⚙ Settings</a>
   </div>

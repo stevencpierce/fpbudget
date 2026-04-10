@@ -137,17 +137,30 @@
 
 <div class="topbar">
   <div class="topbar-logo">FP <span>Budget</span></div>
-  <div class="topbar-crumb">
-    / <a href="{{ url_for('docs_dashboard') }}">Docs</a>
-    / {{ project.name }}
-  </div>
+  <div class="topbar-crumb">/ {{ project.name }}</div>
   <div class="topbar-right">
     <a href="{{ url_for('logout') }}" class="btn-sm">Sign out</a>
   </div>
 </div>
 
+{% if budget and not current_user.is_docs_only %}
+<div class="tabs-row" style="background:var(--bg-nav,#161920);border-bottom:1px solid var(--border,#2a2d36);padding:0 16px;">
+  <div class="tabs">
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=topsheet">Top Sheet</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=working">Budget</a>
+    <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=budget.id) }}">Schedule</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=contacts">Contacts</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=locations">Locations</a>
+    <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
+    <span class="tab-btn active">Docs</span>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=actuals">Actuals</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=settings">⚙ Settings</a>
+  </div>
+</div>
+{% endif %}
+
 <div class="content">
-  <div class="page-title">{{ project.name }}</div>
+  <div class="page-title">{{ project.name }} — Docs</div>
   <div class="page-sub">Upload receipts, invoices, or expense documents.</div>
 
   <!-- Drop zone -->

@@ -5572,7 +5572,9 @@ def docs_project(pid):
     uploads = (DocUpload.query
                .filter_by(project_id=pid)
                .order_by(DocUpload.uploaded_at.desc()).all())
-    return render_template("docs_upload.html", project=project, uploads=uploads)
+    # Pass latest budget for tab bar (docs_only users won't see budget tabs)
+    budget = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
+    return render_template("docs_upload.html", project=project, uploads=uploads, budget=budget)
 
 
 @app.route("/docs/<int:pid>/upload", methods=["POST"])
