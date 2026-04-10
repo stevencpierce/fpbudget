@@ -289,8 +289,10 @@ def _r2_presigned_url(key, expires=3600):
 
 
 # ── Dropbox helpers ────────────────────────────────────────────────────────────
-_DBX_OPS_ROOT      = os.getenv('DROPBOX_OPERATIONS_PATH', '/Steven Pierce/_FP OPERATIONS FOLDER')
-_DBX_TEMPLATE_NAME = os.getenv('DROPBOX_TEMPLATE_FOLDER', '!_PRODUCTION_PROJECT_TEMPLATE')
+_DBX_TEMPLATE_NAME  = os.getenv('DROPBOX_TEMPLATE_FOLDER', '!_PRODUCTION_PROJECT_TEMPLATE')
+_DBX_NAMESPACE_ID   = os.getenv('DROPBOX_NAMESPACE_ID', '')   # shared folder namespace ID
+# Legacy path-based fallback (used only when namespace ID is not set)
+_DBX_OPS_ROOT       = os.getenv('DROPBOX_OPERATIONS_PATH', '/Steven Pierce/_FP OPERATIONS FOLDER')
 
 def _dbx_client():
     import dropbox as _dbx_mod
@@ -298,13 +300,29 @@ def _dbx_client():
     app_key       = os.getenv('DROPBOX_APP_KEY', '')
     app_secret    = os.getenv('DROPBOX_APP_SECRET', '')
     if refresh_token and app_key and app_secret:
-        return _dbx_mod.Dropbox(
+        dbx = _dbx_mod.Dropbox(
             oauth2_refresh_token=refresh_token,
             app_key=app_key,
             app_secret=app_secret,
         )
-    # Fallback: legacy static access token (for local dev)
-    return _dbx_mod.Dropbox(os.getenv('DROPBOX_ACCESS_TOKEN', ''))
+    else:
+        dbx = _dbx_mod.Dropbox(os.getenv('DROPBOX_ACCESS_TOKEN', ''))
+    # Route into the shared folder namespace so paths like /!_TEMPLATE work directly
+    if _DBX_NAMESPACE_ID:
+        from dropbox.common import PathRoot
+        dbx = dbx.with_path_root(PathRoot.namespace_id(_DBX_NAMESPACE_ID))
+    return dbx
+
+def _dbx_paths(dropbox_folder):
+    """Return (src, dest) paths for provision, adjusted for namespace mode."""
+    if _DBX_NAMESPACE_ID:
+        # Namespace root IS the ops folder — paths are relative to it
+        src  = f"/{_DBX_TEMPLATE_NAME}"
+        dest = f"/{dropbox_folder}"
+    else:
+        src  = f"{_DBX_OPS_ROOT}/{_DBX_TEMPLATE_NAME}"
+        dest = f"{_DBX_OPS_ROOT}/{dropbox_folder}"
+    return src, dest
 
 def _provision_dropbox_folder(dropbox_folder):
     """Copy the project template tree to a new project folder. Returns path or None."""
@@ -313,8 +331,7 @@ def _provision_dropbox_folder(dropbox_folder):
         logging.warning("Dropbox provision skipped: no credentials set")
         return None
     try:
-        src  = f"{_DBX_OPS_ROOT}/{_DBX_TEMPLATE_NAME}"
-        dest = f"{_DBX_OPS_ROOT}/{dropbox_folder}"
+        src, dest = _dbx_paths(dropbox_folder)
         logging.info(f"Dropbox provision: copying '{src}' → '{dest}'")
         _dbx_client().files_copy_v2(src, dest)
         logging.info(f"Dropbox provision: success → {dest}")
@@ -882,13 +899,13 @@ def _archive_project_dropbox(p):
         if not has_refresh and not os.getenv('DROPBOX_ACCESS_TOKEN'):
             return
         dbx = _dbx_client()
-        archive_root = f"{_DBX_OPS_ROOT}/_ARCHIVED"
+        archive_root = f"/_ARCHIVED" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_ARCHIVED"
         from datetime import date as _date
         stamp = _date.today().strftime("%Y-%m-%d")
 
         # Move the project folder into _ARCHIVED if it exists
         if p.dropbox_folder:
-            src  = f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
+            src  = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
             dest = f"{archive_root}/{stamp}_{p.dropbox_folder}"
             try:
                 dbx.files_move_v2(src, dest, autorename=True)
