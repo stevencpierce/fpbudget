@@ -4,7 +4,7 @@
 {% block content %}
 <div class="page-header">
   <h1>Crew Database</h1>
-  <button class="btn btn-primary" onclick="document.getElementById('add-crew-modal').classList.remove('hidden')">
+  <button class="btn btn-primary" onclick="openAddCrew()">
     + Add Crew Member
   </button>
 </div>
@@ -19,7 +19,7 @@
       <th class="col-num">Default Rate</th>
       <th>Rate Type</th>
       <th>Fringe</th>
-      <th>Agent%</th>
+      <th>Primary Agent</th>
       <th>Email</th>
       <th>Phone</th>
       <th>Active</th>
@@ -29,6 +29,7 @@
   </thead>
   <tbody>
     {% for m in members %}
+    {% set agent = agent_map.get(m.id) %}
     <tr>
       <td><strong>{{ m.name }}</strong></td>
       <td>{{ m.department or '—' }}</td>
@@ -36,7 +37,16 @@
       <td class="col-num">{{ m.default_rate | currency if m.default_rate else '—' }}</td>
       <td>{{ m.default_rate_type }}</td>
       <td>{{ m.default_fringe }}</td>
-      <td>{{ (m.default_agent_pct | float * 100) | round(1) }}%</td>
+      <td>
+        {% if agent %}
+          <span style="font-size:.85rem">{{ agent.name }}{% if agent.company %} <span style="color:var(--text-muted)">/ {{ agent.company }}</span>{% endif %}</span>
+          {% if agent.fee_pct %}<span class="proj-tag" style="margin-left:.3rem">{{ (agent.fee_pct * 100) | round(1) }}%</span>{% endif %}
+        {% elif m.default_agent_pct %}
+          <span style="font-size:.85rem;color:var(--text-muted)">{{ (m.default_agent_pct * 100) | round(1) }}%</span>
+        {% else %}
+          —
+        {% endif %}
+      </td>
       <td>{{ m.email or '—' }}</td>
       <td>{{ m.phone or '—' }}</td>
       <td>{{ '✓' if m.active else '—' }}</td>
@@ -46,11 +56,10 @@
         {% else %}—{% endif %}
       </td>
       <td>
-        <button class="btn btn-xs btn-outline edit-crew-btn"
-                data-id="{{ m.id }}"
-                data-crew='{{ {"name": m.name, "department": m.department or "", "company": m.company or "", "email": m.email or "", "phone": m.phone or "", "default_rate": m.default_rate | float if m.default_rate else 0, "default_rate_type": m.default_rate_type, "default_fringe": m.default_fringe, "default_agent_pct": m.default_agent_pct | float, "active": m.active} | tojson }}'>Edit</button>
+        <button class="btn btn-xs btn-outline"
+                onclick="openEditCrew({{ m.id }}, {{ {'name': m.name, 'department': m.department or '', 'company': m.company or '', 'email': m.email or '', 'phone': m.phone or '', 'default_rate': m.default_rate | float if m.default_rate else 0, 'default_rate_type': m.default_rate_type, 'default_fringe': m.default_fringe, 'default_agent_pct': m.default_agent_pct | float, 'active': m.active} | tojson }})">Edit</button>
         <form method="POST" action="{{ url_for('crew_delete', cid=m.id) }}" style="display:inline"
-              onsubmit="return confirm('Delete {{ m.name }}?')">
+              onsubmit="return confirm('Delete {{ m.name | e }}?')">
           <button type="submit" class="btn btn-xs btn-ghost">✕</button>
         </form>
       </td>
@@ -80,39 +89,149 @@
   </div>
 </div>
 
-<!-- Edit Modal -->
+<!-- Edit Modal (tabbed) -->
 <div id="edit-crew-modal" class="modal hidden">
   <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
-  <div class="modal-box">
-    <h2>Edit Crew Member</h2>
-    <form id="edit-crew-form" method="POST">
-      {% include "_crew_fields.html" %}
-      <div class="field-row">
-        <label class="checkbox-label">
-          <input type="checkbox" name="active" value="1" id="edit-active"> Active
-        </label>
+  <div class="modal-box" style="min-width:520px;max-width:600px">
+    <h2 id="edit-crew-title">Edit Crew Member</h2>
+
+    <!-- Tabs -->
+    <div class="crew-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:1.25rem">
+      <button class="crew-tab active" onclick="switchTab('info')" id="tab-info">Basic Info</button>
+      <button class="crew-tab" onclick="switchTab('agents')" id="tab-agents">Agents &amp; Reps</button>
+    </div>
+
+    <!-- Basic Info Tab -->
+    <div id="tab-panel-info">
+      <form id="edit-crew-form" method="POST">
+        {% include "_crew_fields.html" %}
+        <div class="field-row">
+          <label class="checkbox-label">
+            <input type="checkbox" name="active" value="1" id="edit-active"> Active
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline"
+                  onclick="document.getElementById('edit-crew-modal').classList.add('hidden')">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Agents & Reps Tab -->
+    <div id="tab-panel-agents" style="display:none">
+      <div id="agents-list" style="margin-bottom:1rem"></div>
+
+      <div id="agent-form" style="display:none;background:var(--surface,#1e1e1e);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem">
+        <div style="font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:.75rem">
+          <span id="agent-form-title">Add Contact</span>
+        </div>
+        <input type="hidden" id="af-id">
+        <div class="field-row-2" style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">
+          <div class="field">
+            <label>Role</label>
+            <select id="af-role" class="select-sm">
+              <option value="agent">Agent</option>
+              <option value="manager">Manager</option>
+              <option value="publicist">Publicist</option>
+              <option value="attorney">Attorney</option>
+              <option value="pa">Personal Assistant</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Name *</label>
+            <input type="text" id="af-name" placeholder="Contact name">
+          </div>
+          <div class="field">
+            <label>Company / Agency</label>
+            <input type="text" id="af-company" placeholder="e.g. CAA, WME">
+          </div>
+          <div class="field">
+            <label>Email</label>
+            <input type="email" id="af-email">
+          </div>
+          <div class="field">
+            <label>Phone</label>
+            <input type="text" id="af-phone">
+          </div>
+          <div class="field">
+            <label>Fee % <span style="font-weight:400;color:var(--text-muted)">(agents)</span></label>
+            <input type="number" id="af-fee" min="0" step="0.1" placeholder="e.g. 10">
+          </div>
+        </div>
+        <div style="display:flex;gap:.4rem;margin-top:.75rem;align-items:center">
+          <label class="checkbox-label" style="font-size:.82rem">
+            <input type="checkbox" id="af-notify"> CC on call sheets
+          </label>
+        </div>
+        <div style="display:flex;gap:.5rem;margin-top:.85rem">
+          <button class="btn btn-primary btn-sm" onclick="saveAgent()">Save</button>
+          <button class="btn btn-outline btn-sm" onclick="cancelAgentForm()">Cancel</button>
+          <div id="af-error" style="color:#f87171;font-size:.82rem;align-self:center;display:none"></div>
+        </div>
       </div>
-      <div class="modal-actions">
+
+      <button class="btn btn-outline btn-sm" onclick="showAgentForm()">+ Add Contact</button>
+
+      <div class="modal-actions" style="margin-top:1.25rem">
         <button type="button" class="btn btn-outline"
-                onclick="document.getElementById('edit-crew-modal').classList.add('hidden')">Cancel</button>
-        <button type="submit" class="btn btn-primary">Save</button>
+                onclick="document.getElementById('edit-crew-modal').classList.add('hidden')">Close</button>
       </div>
-    </form>
+    </div>
   </div>
 </div>
+
+<style>
+.crew-tab {
+  background: none; border: none; padding: .55rem 1.1rem;
+  font-size: .85rem; font-weight: 600; color: var(--text-muted);
+  cursor: pointer; border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.crew-tab.active { color: var(--text); border-bottom-color: var(--accent, #4f46e5); }
+.agent-card {
+  background: var(--surface, #1e1e1e); border: 1px solid var(--border);
+  border-radius: 8px; padding: .75rem 1rem; margin-bottom: .6rem;
+  display: flex; align-items: flex-start; gap: .75rem;
+}
+.agent-card-info { flex: 1; }
+.agent-card-name { font-weight: 600; font-size: .9rem; }
+.agent-card-meta { font-size: .78rem; color: var(--text-muted); margin-top: .15rem; }
+.agent-role-badge {
+  display: inline-block; padding: .15rem .55rem; border-radius: 12px;
+  font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  background: rgba(79,70,229,.15); color: #a5b4fc; border: 1px solid rgba(79,70,229,.3);
+  margin-right: .35rem;
+}
+.agent-role-badge.agent { background: rgba(245,158,11,.12); color: #fcd34d; border-color: rgba(245,158,11,.3); }
+.agent-role-badge.manager { background: rgba(16,185,129,.12); color: #6ee7b7; border-color: rgba(16,185,129,.3); }
+</style>
 {% endblock %}
 
 {% block scripts %}
 <script>
+let _editCrewId = null;
+const ROLE_LABELS = {
+  agent:'Agent', manager:'Manager', publicist:'Publicist',
+  attorney:'Attorney', pa:'P.A.', other:'Other'
+};
+
+function openAddCrew() {
+  document.getElementById('add-crew-modal').classList.remove('hidden');
+}
+
 function openEditCrew(id, m) {
+  _editCrewId = id;
+  document.getElementById('edit-crew-title').textContent = 'Edit — ' + m.name;
   const form = document.getElementById('edit-crew-form');
   form.action = `/crew/${id}/edit`;
-  form.querySelector('[name="name"]').value          = m.name || '';
-  form.querySelector('[name="department"]').value    = m.department || '';
-  form.querySelector('[name="company"]').value       = m.company || '';
-  form.querySelector('[name="email"]').value         = m.email || '';
-  form.querySelector('[name="phone"]').value         = m.phone || '';
-  form.querySelector('[name="default_rate"]').value  = m.default_rate || '';
+  form.querySelector('[name="name"]').value           = m.name || '';
+  form.querySelector('[name="department"]').value     = m.department || '';
+  form.querySelector('[name="company"]').value        = m.company || '';
+  form.querySelector('[name="email"]').value          = m.email || '';
+  form.querySelector('[name="phone"]').value          = m.phone || '';
+  form.querySelector('[name="default_rate"]').value   = m.default_rate || '';
   form.querySelector('[name="default_agent_pct"]').value = parseFloat(m.default_agent_pct||0)*100;
   const rtSel = form.querySelector('[name="default_rate_type"]');
   if (rtSel) setSelectVal(rtSel, m.default_rate_type);
@@ -120,21 +239,120 @@ function openEditCrew(id, m) {
   if (frSel) setSelectVal(frSel, m.default_fringe);
   const activeCb = document.getElementById('edit-active');
   if (activeCb) activeCb.checked = !!m.active;
+  switchTab('info');
   document.getElementById('edit-crew-modal').classList.remove('hidden');
 }
 
-document.addEventListener('click', e => {
-  const btn = e.target.closest('.edit-crew-btn');
-  if (!btn) return;
-  const id = btn.dataset.id;
-  const m  = JSON.parse(btn.dataset.crew);
-  openEditCrew(id, m);
-});
+function switchTab(tab) {
+  document.getElementById('tab-panel-info').style.display    = tab === 'info'   ? '' : 'none';
+  document.getElementById('tab-panel-agents').style.display  = tab === 'agents' ? '' : 'none';
+  document.getElementById('tab-info').classList.toggle('active',   tab === 'info');
+  document.getElementById('tab-agents').classList.toggle('active', tab === 'agents');
+  if (tab === 'agents' && _editCrewId) loadAgents(_editCrewId);
+}
+
+function loadAgents(cid) {
+  fetch(`/crew/${cid}/support`)
+    .then(r => r.json())
+    .then(list => {
+      const el = document.getElementById('agents-list');
+      if (!list.length) { el.innerHTML = '<p style="font-size:.85rem;color:var(--text-muted)">No contacts yet.</p>'; return; }
+      el.innerHTML = list.map(a => `
+        <div class="agent-card">
+          <div class="agent-card-info">
+            <div class="agent-card-name">
+              <span class="agent-role-badge ${a.role_type}">${ROLE_LABELS[a.role_type]||a.role_type}</span>
+              ${_esc(a.name)}
+              ${a.fee_pct ? `<span class="proj-tag" style="margin-left:.3rem">${parseFloat(a.fee_pct).toFixed(1)}%</span>` : ''}
+            </div>
+            <div class="agent-card-meta">
+              ${a.company ? _esc(a.company) + ' &nbsp;·&nbsp; ' : ''}
+              ${a.email ? `<a href="mailto:${_esc(a.email)}" style="color:inherit">${_esc(a.email)}</a> &nbsp;·&nbsp; ` : ''}
+              ${a.phone ? _esc(a.phone) : ''}
+              ${a.notify_callsheet ? ' &nbsp;·&nbsp; <span style="color:#6ee7b7;font-size:.75rem">CC callsheets</span>' : ''}
+            </div>
+          </div>
+          <div style="display:flex;gap:.3rem">
+            <button class="btn btn-xs btn-outline" onclick='editAgent(${JSON.stringify(a)})'>Edit</button>
+            <button class="btn btn-xs btn-ghost" onclick="deleteAgent(${a.id})" style="color:#f87171">✕</button>
+          </div>
+        </div>`).join('');
+    });
+}
+
+function showAgentForm(data) {
+  document.getElementById('agent-form-title').textContent = data ? 'Edit Contact' : 'Add Contact';
+  document.getElementById('af-id').value         = data ? data.id : '';
+  document.getElementById('af-name').value        = data ? data.name : '';
+  document.getElementById('af-company').value     = data ? data.company : '';
+  document.getElementById('af-email').value       = data ? data.email : '';
+  document.getElementById('af-phone').value       = data ? data.phone : '';
+  document.getElementById('af-fee').value         = data && data.fee_pct ? parseFloat(data.fee_pct).toFixed(1) : '';
+  document.getElementById('af-notify').checked    = data ? !!data.notify_callsheet : false;
+  document.getElementById('af-error').style.display = 'none';
+  if (data) setSelectVal(document.getElementById('af-role'), data.role_type);
+  document.getElementById('agent-form').style.display = '';
+  document.getElementById('af-name').focus();
+}
+
+function editAgent(a) { showAgentForm(a); }
+
+function cancelAgentForm() {
+  document.getElementById('agent-form').style.display = 'none';
+}
+
+function saveAgent() {
+  const name = document.getElementById('af-name').value.trim();
+  if (!name) { showAfError('Name required'); return; }
+  const fee = document.getElementById('af-fee').value;
+  const payload = {
+    id:              document.getElementById('af-id').value || undefined,
+    role_type:       document.getElementById('af-role').value,
+    name,
+    company:         document.getElementById('af-company').value.trim(),
+    email:           document.getElementById('af-email').value.trim(),
+    phone:           document.getElementById('af-phone').value.trim(),
+    fee_pct:         fee !== '' ? parseFloat(fee) : null,
+    notify_callsheet: document.getElementById('af-notify').checked,
+  };
+  fetch(`/crew/${_editCrewId}/support/save`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.error) { showAfError(d.error); return; }
+    cancelAgentForm();
+    loadAgents(_editCrewId);
+    // Reload page to update Agent column (or update inline)
+    if (payload.role_type === 'agent') {
+      const pctInput = document.querySelector('#edit-crew-form [name="default_agent_pct"]');
+      if (pctInput && fee !== '') pctInput.value = parseFloat(fee).toFixed(1);
+    }
+  });
+}
+
+function deleteAgent(sid) {
+  if (!confirm('Remove this contact?')) return;
+  fetch(`/crew/${_editCrewId}/support/${sid}/delete`, { method: 'POST' })
+    .then(r => r.json())
+    .then(() => loadAgents(_editCrewId));
+}
+
+function showAfError(msg) {
+  const el = document.getElementById('af-error');
+  el.textContent = msg; el.style.display = '';
+}
 
 function setSelectVal(sel, val) {
   for (let i = 0; i < sel.options.length; i++) {
     if (sel.options[i].value === val) { sel.selectedIndex = i; return; }
   }
+}
+
+function _esc(s) {
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 </script>
 {% endblock %}

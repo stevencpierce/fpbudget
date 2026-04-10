@@ -3451,7 +3451,14 @@ def crew_list():
     for crew_id, proj_name in rows2:
         crew_projects.setdefault(crew_id, set()).add(proj_name)
     crew_projects = {k: sorted(v) for k, v in crew_projects.items()}
-    return render_template("crew.html", members=members, crew_projects=crew_projects)
+    # Primary agent per crew member (role_type='agent', active)
+    agent_rows = SupportContact.query.filter_by(role_type='agent', active=True).all()
+    agent_map = {}  # crew_member_id → first agent SupportContact
+    for ag in agent_rows:
+        if ag.crew_member_id not in agent_map:
+            agent_map[ag.crew_member_id] = ag
+    return render_template("crew.html", members=members, crew_projects=crew_projects,
+                           agent_map=agent_map)
 
 
 @app.route("/crew/new", methods=["POST"])
@@ -3602,6 +3609,20 @@ def support_contact_save(cid):
     if not s.name:
         return jsonify({"error": "Name required"}), 400
     db.session.commit()
+    # When the primary agent's fee is set, keep CrewMember.default_agent_pct in sync
+    if s.role_type == 'agent' and s.fee_pct is not None:
+        cm = CrewMember.query.get(cid)
+        if cm:
+            # Only update if this is the only/first active agent or matches current default
+            other_agents = SupportContact.query.filter(
+                SupportContact.crew_member_id == cid,
+                SupportContact.role_type == 'agent',
+                SupportContact.active == True,
+                SupportContact.id != s.id,
+            ).first()
+            if not other_agents:
+                cm.default_agent_pct = s.fee_pct
+                db.session.commit()
     return jsonify({"ok": True, "id": s.id})
 
 
