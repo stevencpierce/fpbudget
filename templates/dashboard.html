@@ -49,7 +49,8 @@
   <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
   <div class="modal-box">
     <h2>New Project</h2>
-    <form method="POST" action="{{ url_for('project_new') }}">
+    <form method="POST" action="{{ url_for('project_new') }}" id="new-project-form">
+      <input type="hidden" name="timezone" id="new-project-tz">
       <div class="field">
         <label>Project Name</label>
         <input type="text" name="name" required autofocus placeholder="e.g. GINTS Season 2">
@@ -151,5 +152,13 @@ function addCollaborator() {
     }
   });
 }
+
+// Auto-fill device timezone into new project form
+(function() {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    document.getElementById('new-project-tz').value = tz || 'America/Los_Angeles';
+  } catch(e) {}
+})();
 </script>
 {% endblock %}

@@ -851,6 +851,7 @@ def project_new():
         return redirect(url_for("dashboard"))
     template_id = request.form.get("template_id", type=int)
     client_name = request.form.get("client_name", "").strip() or None
+    timezone    = request.form.get("timezone", "America/Los_Angeles").strip() or "America/Los_Angeles"
     p = ProjectSheet(name=name, client_name=client_name)
     db.session.add(p)
     db.session.flush()
@@ -858,9 +859,10 @@ def project_new():
     slug = _unique_project_slug(name, client_name, exclude_id=p.id)
     p.dropbox_folder = slug
     _provision_dropbox_folder(slug)
-    # Auto-create a default budget
+    # Auto-create a default budget with user's device timezone
     _fed40 = PayrollProfile.query.filter(PayrollProfile.name.ilike('%federal%')).first()
-    b = Budget(project_id=p.id, name=f"{name} Budget", payroll_profile_id=_fed40.id if _fed40 else None, payroll_week_start=6,)
+    b = Budget(project_id=p.id, name=f"{name} Budget", payroll_profile_id=_fed40.id if _fed40 else None,
+               payroll_week_start=6, timezone=timezone)
     db.session.add(b)
     db.session.flush()
     # Apply template lines if one was selected
@@ -3031,6 +3033,7 @@ def location_save(pid):
                    "contact_name", "contact_email", "contact_phone",
                    "dayof_name", "dayof_email", "dayof_phone",
                    "billing_type", "daily_rate", "notes", "budget_line_id"]
+    _title_fields = {"name", "facility_name", "contact_name", "dayof_name"}
     for f in _loc_fields:
         if f in data:
             val = data[f] if data[f] != "" else None
@@ -3038,6 +3041,8 @@ def location_save(pid):
                 val = _normalize_phone(val)
             elif f in _email_fields and val and not _validate_email(val):
                 return jsonify({"error": f"Invalid email: {val}"}), 400
+            elif f in _title_fields and val:
+                val = val.strip().title()
             setattr(loc, f, val)
 
     # Auto-sync to global library on new location (unless user opted out)

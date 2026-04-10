@@ -3800,6 +3800,17 @@ async function deleteLocation(id) {
   else alert('Failed to delete location');
 }
 
+// Auto-capitalize location name fields to Title Case
+['loc-name','loc-facility-name','loc-contact-name','loc-dayof-name'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('blur', () => {
+    if (!el.value.trim()) return;
+    el.value = el.value.trim().replace(/\w\S*/g, w =>
+      w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+  });
+});
+
 async function saveLocation() {
   const id = document.getElementById('loc-id').value;
   const name = document.getElementById('loc-name').value.trim();
