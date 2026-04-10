@@ -4094,10 +4094,12 @@ async function assignCrew(crewId, crewName) {
       const rateLabel = RATE_TYPE_LABELS[d.default_rate_type] || d.default_rate_type;
       const apply = confirm(`${d.name} has a default rate of $${d.default_rate.toLocaleString()} (${rateLabel}) — apply it to this line?`);
       if (apply) {
-        await fetch(`${SAVE_URL}/${lid}`, {
+        const ratePayload = { id: parseInt(lid), rate: d.default_rate, rate_type: d.default_rate_type };
+        if (d.default_fringe) ratePayload.fringe_type = d.default_fringe;
+        await fetch(SAVE_URL, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ rate: d.default_rate, rate_type: d.default_rate_type }),
+          body: JSON.stringify(ratePayload),
         });
         reloadWithTab();
         return;

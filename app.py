@@ -3396,10 +3396,12 @@ def assign_crew(pid, bid, lid):
         res = calc_line(ln, fringe_cfgs)
     default_rate      = float(cm.default_rate)      if cid and cm and cm.default_rate      else None
     default_rate_type = cm.default_rate_type or 'day_10' if cid and cm and cm.default_rate else None
+    default_fringe    = cm.default_fringe if cid and cm else None
     return jsonify({"ok": True, "crew_id": cid, "name": name,
                     "agent_pct": agent_pct_applied,
                     "default_rate": default_rate,
                     "default_rate_type": default_rate_type,
+                    "default_fringe": default_fringe,
                     "subtotal": res["subtotal"],
                     "est_total": res["est_total"],
                     "agent_amount": res.get("agent_amount", 0.0)})
