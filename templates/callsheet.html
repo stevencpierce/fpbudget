@@ -300,13 +300,13 @@
               <tr><td class="callsheet-time-cell cs-editable" id="cs-estimated-wrap" contenteditable="true" data-field="estimated_wrap_time" title="Edit time">{{ cs_data.get('estimated_wrap_time', 'TBD') }}</td><td>Estimated Wrap</td><td></td></tr>
               <tr class="callsheet-times-divider"><td colspan="3"></td></tr>
               <tr>
-                <td class="callsheet-time-cell cs-editable" id="cs-sunrise" contenteditable="true" data-field="sunrise" title="Click to edit — will auto-populate from location in a future update">{{ cs_data.get('sunrise', '—') }}</td>
-                <td>Sunrise <span class="cs-future-badge cs-screen-only" title="Will auto-populate from location + date in a future update">◌</span></td>
-                <td></td>
+                <td class="callsheet-time-cell cs-editable" id="cs-sunrise" contenteditable="true" data-field="sunrise" title="Click to edit">{{ cs_data.get('sunrise', '—') }}</td>
+                <td>Sunrise</td>
+                <td class="cs-screen-only"><button class="btn btn-xs btn-ghost" id="btn-autofill-sun" onclick="autoFillFromLocation()" title="Auto-fill sunrise, sunset, weather and hospital from shoot location">⟳</button></td>
               </tr>
               <tr>
-                <td class="callsheet-time-cell cs-editable" id="cs-sunset" contenteditable="true" data-field="sunset" title="Click to edit — will auto-populate from location in a future update">{{ cs_data.get('sunset', '—') }}</td>
-                <td>Sunset <span class="cs-future-badge cs-screen-only" title="Will auto-populate from location + date in a future update">◌</span></td>
+                <td class="callsheet-time-cell cs-editable" id="cs-sunset" contenteditable="true" data-field="sunset" title="Click to edit">{{ cs_data.get('sunset', '—') }}</td>
+                <td>Sunset</td>
                 <td></td>
               </tr>
             </tbody>
@@ -321,7 +321,7 @@
           {# Weather #}
           <div class="callsheet-section-title">
             Weather
-            <span class="cs-future-badge cs-screen-only" title="Will auto-populate from shoot location + date in a future update">◌</span>
+            <button class="btn btn-xs btn-ghost cs-screen-only" onclick="autoFillFromLocation()" title="Auto-fill weather from shoot location" style="margin-left:.4rem;font-size:.7rem">⟳ Auto-fill</button>
           </div>
           <div class="cs-info-field">
             <span class="cs-editable cs-weather-field" id="cs-weather" contenteditable="true"
@@ -336,7 +336,6 @@
           {# Nearest Hospital(s) #}
           <div class="callsheet-section-title" style="margin-top:.85rem">
             Nearest Hospital
-            <span class="cs-future-badge cs-screen-only" title="Will link to location records in a future update">◌</span>
           </div>
           <div id="hospital-container"></div>
           <div class="cs-row-toolbar cs-screen-only" style="margin-top:.25rem">
@@ -853,6 +852,8 @@ const CS_DATA       = {{ cs_data | tojson }};
 const KEY_CONTACTS_FALLBACK = {{ key_contacts | tojson }};
 const CONFIRM_STATUS = {{ confirm_status | tojson }}; // {name_lower: {status,viewed_at,confirmed_at}}
 const AVAILABLE_CONTACTS    = {{ available_contacts | tojson }};
+const SHOOT_DATE    = "{{ selected_date.strftime('%Y-%m-%d') }}";
+const SHOOT_LOCATIONS = {{ locations_today | map(attribute='address') | select | list | tojson }};
 
 // ── Auto-save ─────────────────────────────────────────────────────────────────
 let _saveTimer = null;
@@ -1223,6 +1224,115 @@ function removeHospitalRow(idx) {
 
 function collectHospitals() {
   return HOSPITAL_ROWS.map(h => ({ row_id: h.row_id, name: h.name || '', address: h.address || '', phone: h.phone || '' }));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUTO-FILL: sunrise/sunset, weather, nearest hospital from shoot location
+// Uses free public APIs — no keys required.
+// ═══════════════════════════════════════════════════════════════════════════════
+async function autoFillFromLocation() {
+  const addr = (SHOOT_LOCATIONS || [])[0];
+  if (!addr) { alert('No location address found for today. Add an address to the shoot location first.'); return; }
+
+  const btn = document.getElementById('btn-autofill-sun');
+  const origLabel = btn ? btn.textContent : '';
+  if (btn) { btn.textContent = '…'; btn.disabled = true; }
+
+  try {
+    // 1. Geocode address → lat/lng (Nominatim / OpenStreetMap)
+    const geoResp = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(addr)}`,
+      { headers: { 'Accept-Language': 'en' } }
+    );
+    const geoData = await geoResp.json();
+    if (!geoData.length) { alert('Could not geocode location: ' + addr); return; }
+    const lat = parseFloat(geoData[0].lat);
+    const lng = parseFloat(geoData[0].lon);
+
+    // Run remaining requests in parallel
+    const [sunResp, wxResp, hospResp] = await Promise.allSettled([
+      // 2. Sunrise/sunset (sunrise-sunset.org)
+      fetch(`https://api.sunrise-sunset.org/json?lat=${lat}&lng=${lng}&date=${SHOOT_DATE}&formatted=0`),
+      // 3. Weather (Open-Meteo — free, no key)
+      fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&start_date=${SHOOT_DATE}&end_date=${SHOOT_DATE}&wind_speed_unit=mph&temperature_unit=fahrenheit`),
+      // 4. Nearest hospital (Overpass — OpenStreetMap)
+      fetch(`https://overpass-api.de/api/interpreter`, {
+        method: 'POST',
+        body: `[out:json][timeout:10];(node["amenity"="hospital"](around:15000,${lat},${lng});way["amenity"="hospital"](around:15000,${lat},${lng}););out center 3;`
+      }),
+    ]);
+
+    // Sunrise / Sunset
+    if (sunResp.status === 'fulfilled' && sunResp.value.ok) {
+      const sun = await sunResp.value.json();
+      if (sun.status === 'OK') {
+        const toLocalTime = utcStr => {
+          const d = new Date(utcStr);
+          return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+        };
+        const sunriseEl = document.getElementById('cs-sunrise');
+        const sunsetEl  = document.getElementById('cs-sunset');
+        if (sunriseEl && (sunriseEl.textContent.trim() === '—' || !sunriseEl.textContent.trim())) {
+          sunriseEl.textContent = toLocalTime(sun.results.sunrise);
+        }
+        if (sunsetEl && (sunsetEl.textContent.trim() === '—' || !sunsetEl.textContent.trim())) {
+          sunsetEl.textContent = toLocalTime(sun.results.sunset);
+        }
+        scheduleAutoSave();
+      }
+    }
+
+    // Weather
+    if (wxResp.status === 'fulfilled' && wxResp.value.ok) {
+      const wx = await wxResp.value.json();
+      const daily = wx.daily;
+      if (daily && daily.temperature_2m_max && daily.temperature_2m_max[0] != null) {
+        const hi  = Math.round(daily.temperature_2m_max[0]);
+        const lo  = Math.round(daily.temperature_2m_min[0]);
+        const pop = daily.precipitation_probability_max ? daily.precipitation_probability_max[0] : null;
+        const WX_CODES = { 0:'Clear',1:'Mainly Clear',2:'Partly Cloudy',3:'Overcast',45:'Foggy',48:'Icy Fog',
+          51:'Light Drizzle',53:'Drizzle',55:'Heavy Drizzle',61:'Light Rain',63:'Rain',65:'Heavy Rain',
+          71:'Light Snow',73:'Snow',75:'Heavy Snow',80:'Rain Showers',81:'Rain Showers',82:'Heavy Showers',
+          95:'Thunderstorm',96:'Thunderstorm + Hail',99:'Thunderstorm + Hail' };
+        const desc = WX_CODES[daily.weathercode?.[0]] || 'Mixed';
+        const wxStr = `${desc}, High ${hi}°F / Low ${lo}°F${pop != null ? ', ' + pop + '% precip' : ''}`;
+        const wxEl = document.getElementById('cs-weather');
+        if (wxEl && !wxEl.textContent.trim()) {
+          wxEl.textContent = wxStr;
+          wxEl.nextElementSibling?.remove(); // remove placeholder span if present
+          scheduleAutoSave();
+        }
+      }
+    }
+
+    // Nearest hospital
+    if (hospResp.status === 'fulfilled' && hospResp.value.ok) {
+      const hosp = await hospResp.value.json();
+      const elements = (hosp.elements || []).slice(0, 2);
+      if (elements.length && HOSPITAL_ROWS.length === 1 && !HOSPITAL_ROWS[0].name) {
+        HOSPITAL_ROWS = elements.map(el => {
+          const tags = el.tags || {};
+          const hospLat = el.lat || (el.center && el.center.lat);
+          const hospLng = el.lon || (el.center && el.center.lon);
+          const distKm  = hospLat ? Math.round(Math.sqrt(Math.pow((hospLat-lat)*110.574,2)+Math.pow((hospLng-lng)*111.32*Math.cos(lat*Math.PI/180),2))*10)/10 : null;
+          return {
+            row_id:  _newHospId(),
+            name:    tags.name || tags['name:en'] || 'Hospital',
+            address: tags['addr:full'] || [tags['addr:housenumber'], tags['addr:street'], tags['addr:city']].filter(Boolean).join(' ') || (distKm ? `~${distKm} km away` : ''),
+            phone:   tags.phone || tags['contact:phone'] || '',
+          };
+        });
+        renderHospitals();
+        scheduleAutoSave();
+      }
+    }
+
+  } catch(err) {
+    console.error('Auto-fill error:', err);
+    alert('Auto-fill failed: ' + err.message);
+  } finally {
+    if (btn) { btn.textContent = origLabel; btn.disabled = false; }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
