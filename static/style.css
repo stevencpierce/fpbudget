@@ -3759,6 +3759,22 @@ tr.cs-row-viewed    { background: #1a1200; }
 /* ── Budget line table: fixed layout for column alignment across sections ─── */
 .line-table { table-layout: fixed; width: 100%; }
 
+/* Scrollable wrapper so tables don't overflow on tablet/phone */
+.section-block { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* Keep a minimum width so the table scrolls rather than squishing */
+@media (max-width: 1100px) {
+  .line-table { min-width: 860px; }
+  /* Always show the ⋮ menu button on touch devices — it's the primary context menu trigger */
+  .line-row-menu-btn { display: inline-flex !important; opacity: 1 !important; }
+}
+@media (max-width: 600px) {
+  .line-table { min-width: 700px; }
+  /* Hide Rate Type and Fringe selects on small phones — accessible via ⋮ menu */
+  .col-rt, .col-fr { width: 0 !important; max-width: 0 !important;
+    padding: 0 !important; overflow: hidden; border: none !important; }
+}
+
 /* Hidden columns: keep in layout (width:0) so fixed-table column positions stay consistent */
 .col-pc,
 .no-labor .col-labor-only,

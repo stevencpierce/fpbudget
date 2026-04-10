@@ -3442,27 +3442,45 @@ function renderCalcDetail(d) {
 
   const menu = document.getElementById('budget-row-ctx-menu');
 
-  // Right-click on any labor row opens the context menu
-  document.addEventListener('contextmenu', function(e) {
-    const row = e.target.closest('.labor-line');
-    if (!row) { menu.classList.add('hidden'); return; }
-    e.preventDefault();
+  function _showCtxMenuAt(row, x, y) {
     _ctxLineId  = parseInt(row.dataset.id);
     _ctxLineRow = row;
-
-    // Update use-estimator button label
-    // Show off-screen first so we can read true dimensions, then clamp
     menu.style.visibility = 'hidden';
     menu.style.left = '0px';
     menu.style.top  = '0px';
     menu.classList.remove('hidden');
     requestAnimationFrame(() => {
       const mw = menu.offsetWidth, mh = menu.offsetHeight;
-      menu.style.left = Math.max(4, Math.min(e.clientX + 4, window.innerWidth  - mw - 12)) + 'px';
-      menu.style.top  = Math.max(4, Math.min(e.clientY + 4, window.innerHeight - mh - 12)) + 'px';
+      menu.style.left = Math.max(4, Math.min(x + 4, window.innerWidth  - mw - 12)) + 'px';
+      menu.style.top  = Math.max(4, Math.min(y + 4, window.innerHeight - mh - 12)) + 'px';
       menu.style.visibility = '';
     });
+  }
+
+  // Right-click on any labor row opens the context menu
+  document.addEventListener('contextmenu', function(e) {
+    const row = e.target.closest('.labor-line');
+    if (!row) { menu.classList.add('hidden'); return; }
+    e.preventDefault();
+    _showCtxMenuAt(row, e.clientX, e.clientY);
   });
+
+  // Long-press (500ms) on touch devices — triggers context menu without right-click
+  let _lpTimer = null, _lpRow = null, _lpX = 0, _lpY = 0;
+  document.addEventListener('touchstart', function(e) {
+    const row = e.target.closest('.labor-line');
+    if (!row || e.target.closest('.editable') || e.target.closest('select')) return;
+    const t = e.touches[0];
+    _lpX = t.clientX; _lpY = t.clientY; _lpRow = row;
+    _lpTimer = setTimeout(() => {
+      if (_lpRow) {
+        e.preventDefault();
+        _showCtxMenuAt(_lpRow, _lpX, _lpY);
+      }
+    }, 500);
+  }, { passive: true });
+  document.addEventListener('touchend',   () => { clearTimeout(_lpTimer); _lpTimer = null; });
+  document.addEventListener('touchmove',  () => { clearTimeout(_lpTimer); _lpTimer = null; });
 
   // Close on outside click
   document.addEventListener('click', function(e) {
