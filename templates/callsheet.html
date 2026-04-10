@@ -797,10 +797,10 @@ Example:
 <div class="cs-distribution-panel cs-screen-only" id="cs-dist-panel">
   <div class="cs-dist-header">
     <h3>Distribution</h3>
-    <button class="btn btn-sm btn-ghost" onclick="csDistToggle()" id="cs-dist-toggle-btn" title="Expand">▸ Expand</button>
+    <button class="btn btn-sm btn-ghost" onclick="csDistToggle()" id="cs-dist-toggle-btn" title="Collapse">▾ Collapse</button>
   </div>
 
-  <div id="cs-dist-body" style="display:none">
+  <div id="cs-dist-body">
     {# Send history — loads via JS #}
     <div id="cs-dist-history" style="margin-bottom:16px"></div>
 
@@ -824,7 +824,7 @@ Example:
             <button class="btn btn-xs btn-ghost" onclick="csSelectUnconfirmed()" style="font-size:.72rem">Unconfirmed only</button>
           </div>
         </div>
-        <div id="cs-dist-recipient-list" style="margin-top:4px;max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:4px 8px"></div>
+        <div id="cs-dist-recipient-list" style="margin-top:4px;max-height:260px;overflow-y:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:6px;padding:4px 8px"></div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn btn-sm btn-primary" id="cs-dist-send-btn" onclick="csSendCallSheet()">
@@ -1661,7 +1661,7 @@ function jumpToDate(sel) {
 }
 
 // ── Distribution Panel ────────────────────────────────────────────────────────
-let _distOpen = false;
+let _distOpen = true;
 
 function csDistToggle() {
   _distOpen = !_distOpen;
@@ -1672,6 +1672,11 @@ function csDistToggle() {
     csDistBuildRecipientList();
   }
 }
+
+document.addEventListener('DOMContentLoaded', function() {
+  csDistLoadHistory();
+  csDistBuildRecipientList();
+});
 
 function csDistLoadHistory() {
   fetch(CS_DIST_URL)
@@ -1710,26 +1715,33 @@ function csDistLoadHistory() {
 }
 
 function csDistBuildRecipientList() {
-  // Collect all people listed on the call sheet who have email addresses
   const people = [];
   const seen = new Set();
   function addPerson(name, email, type, phone) {
-    const key = (email || name || '').toLowerCase();
+    const key = (email || name || '').toLowerCase().trim();
     if (!key || seen.has(key)) return;
     seen.add(key);
-    people.push({ name, email: email||'', phone: phone||'', type });
+    people.push({ name: name||'', email: email||'', phone: phone||'', type: type||'crew' });
   }
-  // Key contacts
+  // All crew assigned to budget lines (primary source)
+  (AVAILABLE_CONTACTS || []).forEach(c => {
+    if (c && c.name) addPerson(c.name, c.email || '', c.type || 'crew', c.phone || '');
+  });
+  // Key contacts from call sheet
   (CS_DATA.key_personnel || KEY_CONTACTS_FALLBACK || []).forEach(p => {
     if (p && p.name) addPerson(p.name, p.email || '', 'crew', p.phone || '');
   });
-  // Crew call times
+  // Crew call times (may have additional people)
   (CS_DATA.crew_call_times || []).forEach(c => {
     if (c && c.name) addPerson(c.name, c.email || '', 'crew', c.phone || '');
   });
-  // Available contacts fallback
-  (AVAILABLE_CONTACTS || []).forEach(c => {
-    if (c && c.name) addPerson(c.name, c.email || '', c.type || 'crew', c.phone || '');
+  // Project clients marked for call sheet
+  ({{ project_clients_cs | tojson }}).forEach(c => {
+    if (c && c.name) addPerson(c.name, c.email || '', 'client', c.phone || '');
+  });
+  // Reps who want call sheet notifications
+  ({{ rep_contacts | tojson }}).forEach(r => {
+    if (r && r.rep_name && r.notify_callsheet) addPerson(r.rep_name, r.rep_email || '', 'crew', r.rep_phone || '');
   });
 
   const el = document.getElementById('cs-dist-recipient-list');
