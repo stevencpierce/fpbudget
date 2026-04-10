@@ -969,7 +969,7 @@ def _archive_project_dropbox(p):
                     pdf_bytes = WeasyprintHTML(string=html_str, base_url="http://localhost").write_pdf()
                     safe_name = re.sub(r"[^\w\-.]", "_", b.name)
                     mode_lbl  = "Working" if b.budget_mode in ('working','actual') else "Estimated"
-                    pdf_key   = f"{dest}/budget_exports/{safe_name}_{mode_lbl}.pdf"
+                    pdf_key   = f"{dest}/01_ADMIN/BUDGET ESTIMATES/{safe_name}_{mode_lbl}.pdf"
                     dbx.files_upload(pdf_bytes, pdf_key, autorename=True)
                     logging.info(f"Uploaded budget PDF to archive: {pdf_key}")
                 except Exception as e:
@@ -5645,6 +5645,23 @@ def docs_upload_post(pid):
         logging.exception("R2 upload failed")
         return jsonify({"error": f"Upload failed: {str(e)}"}), 500
 
+    # File to Dropbox PROCESSED DOCUMENTS/{uploader_name}/ if project has a folder
+    dbx_filing_path = None
+    if project.dropbox_folder:
+        try:
+            import re as _re
+            _safe_user = _re.sub(r"[^\w\- ]", "", current_user.username or current_user.email.split("@")[0])
+            _proj_root = f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}"
+            dbx_filing_path = f"{_proj_root}/01_ADMIN/PROCESSED DOCUMENTS/{_safe_user}/{f.filename}"
+            _dbx = _dbx_client()
+            from dropbox.files import WriteMode as _WM
+            _dbx.files_upload(data, dbx_filing_path, autorename=True,
+                              mode=_WM('add'))
+            logging.info(f"Filed doc to Dropbox: {dbx_filing_path}")
+        except Exception as _e:
+            logging.warning(f"Dropbox filing failed (non-fatal): {_e}")
+            dbx_filing_path = None
+
     upload = DocUpload(
         project_id=pid,
         uploader_id=current_user.id,
@@ -5654,6 +5671,7 @@ def docs_upload_post(pid):
         content_type=content_type,
         file_hash=file_hash,
         status="pending",
+        filing_path=dbx_filing_path,
     )
     db.session.add(upload)
     db.session.commit()
