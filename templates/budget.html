@@ -66,6 +66,7 @@
           {# Estimated row #}
           {% if est %}
             {% set is_cur = (est.id == budget.id) %}
+            {% set est_count = version_groups | selectattr('estimated') | list | length %}
             <div class="version-item version-item-subrow {% if is_cur %}version-item-active{% endif %}">
               <a href="{{ url_for('budget_view', pid=project.id, bid=est.id) }}" class="version-item-link">
                 <span class="mode-badge mode-estimated" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem">EST</span>
@@ -75,7 +76,7 @@
                 {% if not is_cur %}
                 <button class="btn btn-xs btn-ghost version-archive-btn" data-bid="{{ est.id }}" title="Archive">⊘</button>
                 {% endif %}
-                {% if not vg.is_current %}
+                {% if est_count > 1 %}
                 <button class="btn btn-xs btn-ghost version-delete-btn"
                         data-bid="{{ est.id }}" data-name="{{ est.name }}" data-mode="{{ est.budget_mode }}"
                         title="Delete">✕</button>
