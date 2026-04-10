@@ -97,6 +97,9 @@
     background:rgba(79,70,229,.12);border:1px solid rgba(79,70,229,.3);
     color:#a5b4fc;padding:.18rem .6rem;border-radius:20px;font-size:.78rem;
   }
+  .access-chip.role-docs_only {
+    background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.3);color:#6ee7b7;
+  }
   .access-chip .chip-role { color:#64748b;font-size:.7rem; }
   .access-chip button { background:none;border:none;color:#f87171;cursor:pointer;font-size:.78rem;padding:0;line-height:1; }
   .add-row { display:flex;gap:.4rem;align-items:center;flex-wrap:wrap; }
@@ -242,7 +245,7 @@
         <div class="access-chips" id="chips-{{ project.id }}">
           {% for pa in pas %}{% set u=users|selectattr('id','eq',pa.user_id)|first %}{% if u %}
           {% set role_label = {'owner':'Owner','editor':'Editor','collaborator':'Editor','viewer':'Viewer','docs_only':'Docs Only'}.get(pa.role, pa.role) %}
-          <span class="access-chip">{{ u.name or u.email }}<span class="chip-role">{{ role_label }}</span>
+          <span class="access-chip role-{{ pa.role }}">{{ u.name or u.email }}<span class="chip-role">{{ role_label }}</span>
             <button onclick="removeAccess({{ project.id }},{{ pa.user_id }},this.closest('.access-chip'))">✕</button>
           </span>
           {% endif %}{% endfor %}

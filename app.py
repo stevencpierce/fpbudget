@@ -1163,6 +1163,11 @@ def admin_import_dropbox():
 def project_budget_redirect(pid):
     """Redirect to newest budget or create page."""
     project = ProjectSheet.query.get_or_404(pid)
+    if not _user_can_access_project(pid):
+        abort(403)
+    # docs_only project role → go straight to docs
+    if _user_project_role(pid) == 'docs_only':
+        return redirect(url_for("docs_project", pid=pid))
     latest = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
     if latest:
         return redirect(url_for("budget_view", pid=pid, bid=latest.id))
@@ -1434,6 +1439,13 @@ def delete_budget(pid, bid):
 def budget_view(pid, bid):
     project  = ProjectSheet.query.get_or_404(pid)
     budget   = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    # Access check — deny non-admins without project access
+    if not _user_can_access_project(pid):
+        abort(403)
+    # docs_only project role → redirect to docs section
+    proj_role = _user_project_role(pid)
+    if proj_role == 'docs_only':
+        return redirect(url_for("docs_project", pid=pid))
     # Auto-promote: viewing a version makes it the active one
     if budget.version_status != 'current':
         _supersede_current(pid, _budget_type(budget.budget_mode), exclude_id=bid)
@@ -5797,12 +5809,13 @@ with app.app_context():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _docs_accessible_projects(user):
-    """Return list of ProjectSheet rows visible to this user for docs."""
+    """Return active ProjectSheet rows visible to this user for docs."""
+    active_filter = (ProjectSheet.status == 'active')
     if user.role in ('super_admin', 'admin'):
-        return ProjectSheet.query.order_by(ProjectSheet.name).all()
+        return ProjectSheet.query.filter(active_filter).order_by(ProjectSheet.name).all()
     owned = (db.session.query(ProjectSheet)
              .join(ProjectAccess, ProjectAccess.project_id == ProjectSheet.id)
-             .filter(ProjectAccess.user_id == user.id)
+             .filter(ProjectAccess.user_id == user.id, active_filter)
              .order_by(ProjectSheet.name).all())
     return owned
 
