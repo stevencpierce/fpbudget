@@ -3791,6 +3791,9 @@ tr.cs-row-viewed    { background: #1a1200; }
 }
 
 /* ── Dropdown copy context menu ──────────────────────────────────────────── */
+/* Google Places Autocomplete dropdown above modals */
+.pac-container { z-index: 9999 !important; }
+
 .ctx-menu {
   background: var(--bg-2);
   border: 1px solid var(--border);

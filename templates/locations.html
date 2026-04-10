@@ -171,7 +171,30 @@
 {% endblock %}
 
 {% block scripts %}
+{% if GOOGLE_MAPS_API_KEY %}
+<script src="https://maps.googleapis.com/maps/api/js?key={{ GOOGLE_MAPS_API_KEY }}&libraries=places" async></script>
+{% endif %}
 <script>
+let _ldbPlacesAC = null;
+function _initLdbPlacesAC() {
+  if (_ldbPlacesAC) return;
+  if (typeof google === 'undefined' || !google.maps?.places?.Autocomplete) return;
+  const input = document.getElementById('ldb-address');
+  if (!input) return;
+  _ldbPlacesAC = new google.maps.places.Autocomplete(input, {
+    fields: ['formatted_address', 'name', 'url', 'place_id'],
+  });
+  _ldbPlacesAC.addListener('place_changed', () => {
+    const place = _ldbPlacesAC.getPlace();
+    if (!place.place_id) return;
+    if (place.formatted_address) input.value = place.formatted_address;
+    const mapEl = document.getElementById('ldb-map-url');
+    if (mapEl && !mapEl.value && place.url) mapEl.value = place.url;
+    const nameEl = document.getElementById('ldb-name');
+    if (nameEl && !nameEl.value && place.name) nameEl.value = place.name;
+  });
+}
+
 function openLocModal(data) {
   document.getElementById('loc-db-modal-title').textContent = data ? 'Edit Location' : 'Add Location';
   document.getElementById('ldb-id').value            = data ? data.id : '';
@@ -190,6 +213,7 @@ function openLocModal(data) {
   document.getElementById('ldb-daily-rate').value    = data ? (data.daily_rate || '') : '';
   document.getElementById('ldb-notes').value         = data ? (data.notes || '') : '';
   document.getElementById('loc-db-modal').classList.remove('hidden');
+  setTimeout(_initLdbPlacesAC, 100);
 }
 
 function closeLocModal() {

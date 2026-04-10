@@ -2077,6 +2077,9 @@
 {% endblock %}
 
 {% block scripts %}
+{% if GOOGLE_MAPS_API_KEY %}
+<script src="https://maps.googleapis.com/maps/api/js?key={{ GOOGLE_MAPS_API_KEY }}&libraries=places" async></script>
+{% endif %}
 <script>
 const PID = {{ project.id }};
 const BID = {{ budget.id }};
@@ -3757,12 +3760,33 @@ async function importLibLoc(data) {
   else alert('Failed to import location');
 }
 
+let _locPlacesAC = null;
+function _initLocPlacesAC() {
+  if (_locPlacesAC) return;
+  if (typeof google === 'undefined' || !google.maps?.places?.Autocomplete) return;
+  const input = document.getElementById('loc-address');
+  if (!input) return;
+  _locPlacesAC = new google.maps.places.Autocomplete(input, {
+    fields: ['formatted_address', 'name', 'url', 'place_id'],
+  });
+  _locPlacesAC.addListener('place_changed', () => {
+    const place = _locPlacesAC.getPlace();
+    if (!place.place_id) return;
+    if (place.formatted_address) input.value = place.formatted_address;
+    const mapEl = document.getElementById('loc-map-url');
+    if (mapEl && !mapEl.value && place.url) mapEl.value = place.url;
+    const nameEl = document.getElementById('loc-name');
+    if (nameEl && !nameEl.value && place.name) nameEl.value = place.name;
+  });
+}
+
 function openLocationModal(data) {
   document.getElementById('loc-modal-title').textContent = data ? 'Edit Location' : 'Add Location';
   // Always open to "New" tab; show Import tab only when adding new
   const tabs = document.getElementById('loc-modal-tabs');
   if (tabs) tabs.style.display = data ? 'none' : '';
   switchLocTab('new');
+  setTimeout(_initLocPlacesAC, 100);  // init after modal is visible
   document.getElementById('loc-id').value              = data ? data.id : '';
   document.getElementById('loc-name').value             = data ? data.name : '';
   document.getElementById('loc-facility-name').value    = data ? (data.facility_name||'') : '';
