@@ -1007,6 +1007,7 @@ function _newKpId() { return 'kp' + (_kpIdCounter++); }
 
 function initKeyPersonnel() {
   if (CS_DATA.key_personnel && CS_DATA.key_personnel.length > 0) {
+    // Use saved data
     KP_ROWS = CS_DATA.key_personnel.map(r => ({
       row_id: r.row_id || _newKpId(),
       is_spacer: !!r.is_spacer,
@@ -1016,22 +1017,8 @@ function initKeyPersonnel() {
       email: r.email || '',
       crew_member_id: r.crew_member_id || null,
     }));
-  } else if (KEY_CONTACTS_FALLBACK && KEY_CONTACTS_FALLBACK.length > 0) {
-    KP_ROWS = KEY_CONTACTS_FALLBACK.map(r => ({
-      row_id: _newKpId(),
-      is_spacer: false,
-      role: r.role || '',
-      name: r.name || '',
-      phone: r.phone || '',
-      email: r.email || '',
-      crew_member_id: null,
-    }));
-    // Ensure at least 5 rows for empty-state padding
-    while (KP_ROWS.length < 5) {
-      KP_ROWS.push({ row_id: _newKpId(), is_spacer: false, role: '', name: '', phone: '', email: '', crew_member_id: null });
-    }
   } else {
-    // Default: 5 empty rows
+    // First visit: start empty — user picks from dropdown
     for (let i = 0; i < 5; i++) {
       KP_ROWS.push({ row_id: _newKpId(), is_spacer: false, role: '', name: '', phone: '', email: '', crew_member_id: null });
     }
@@ -1509,18 +1496,8 @@ function initUsefulContacts() {
       crew_member_id: r.crew_member_id || null,
     }));
   } else {
-    // Seed from KP rows if no saved useful contacts
-    UC_ROWS = KP_ROWS.filter(r => !r.is_spacer && (r.name || r.role)).map(r => ({
-      row_id: _newUcId(),
-      role: r.role || '',
-      name: r.name || '',
-      phone: r.phone || '',
-      email: r.email || '',
-      crew_member_id: r.crew_member_id || null,
-    }));
-    if (UC_ROWS.length === 0) {
-      UC_ROWS = [{ row_id: _newUcId(), role: '', name: '', phone: '', email: '', crew_member_id: null }];
-    }
+    // First visit: start with one empty row — user picks from dropdown
+    UC_ROWS = [{ row_id: _newUcId(), role: '', name: '', phone: '', email: '', crew_member_id: null }];
   }
   renderUsefulContacts();
 }
