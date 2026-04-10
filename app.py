@@ -2037,6 +2037,28 @@ def delete_line(pid, bid, lid):
     return jsonify({"ok": True})
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/toggle-sync-omit", methods=["POST"])
+@login_required
+def toggle_sync_omit(pid, bid, lid):
+    """Toggle sync_omit on a schedule-driven line. When True the line is excluded from auto-recalc."""
+    ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
+    ln.sync_omit = not bool(ln.sync_omit)
+    if ln.sync_omit:
+        # Zero the line out immediately so it stops contributing to section totals
+        ln.estimated_total = 0
+        ln.quantity = 0
+    else:
+        # Re-enable: trigger a sync so the line gets correct values back
+        db.session.commit()
+        try:
+            sync_schedule_driven_lines(bid, db.session)
+        except Exception:
+            pass
+        return jsonify({"ok": True, "sync_omit": False})
+    db.session.commit()
+    return jsonify({"ok": True, "sync_omit": ln.sync_omit})
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/mode", methods=["POST"])
 @login_required
 def set_budget_mode(pid, bid):
@@ -5391,6 +5413,8 @@ with app.app_context():
         "ALTER TABLE project_sheet ADD COLUMN status VARCHAR(20) DEFAULT 'active' NOT NULL",
         # Budget versioning: shared version number for Estimated+Working pairs
         "ALTER TABLE budget ADD COLUMN version_number INTEGER",
+        # Meals/craft services: allow user to opt a schedule-driven line out of auto-sync
+        "ALTER TABLE budget_line ADD COLUMN sync_omit BOOLEAN DEFAULT 0",
     ]
     for _sql in _migrations:
         try:

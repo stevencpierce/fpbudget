@@ -117,6 +117,8 @@ def get_role_group(account_code):
 # section_sort_order controls ordering within account section (lower = first)
 SCHEDULE_LINE_DEFS = {
     # Production Meals / Craft Services (8000) — must stay in this order
+    # quantity = headcount (auto from schedule), days = shoot days with flag, rate = per-person cost
+    "craft_services":          (8000, "Production Meals / Craft Services", "Craft Services",            20.00, 0),
     "meal_courtesy_breakfast": (8000, "Production Meals / Craft Services", "Courtesy Breakfast",        12.00, 1),
     "meal_first":              (8000, "Production Meals / Craft Services", "First Meal",                25.00, 2),
     "meal_second":             (8000, "Production Meals / Craft Services", "Second Meal",               25.00, 3),
@@ -136,7 +138,7 @@ SCHEDULE_LINE_DEFS = {
 }
 
 # Canonical order for meals within the 8000 section
-_MEAL_TAG_ORDER = ["meal_courtesy_breakfast", "meal_first", "meal_second", "working_meal"]
+_MEAL_TAG_ORDER = ["craft_services", "meal_courtesy_breakfast", "meal_first", "meal_second", "working_meal"]
 
 
 def sync_schedule_driven_lines(budget_id, db_session):
@@ -170,6 +172,16 @@ def sync_schedule_driven_lines(budget_id, db_session):
 
     # Count flags from ScheduleDay rows (current schedule mode only)
     sched_days = db_session.query(ScheduleDay).filter_by(budget_id=budget_id, schedule_mode=sched_mode).all()
+
+    # Build date → crew headcount map (non-off days only)
+    date_headcount = {}
+    for sd in sched_days:
+        if sd.day_type != 'off':
+            date_headcount[sd.date] = date_headcount.get(sd.date, 0) + 1
+
+    # Craft services = every crew person on every shoot day (total person-days)
+    counts['craft_services'] = sum(date_headcount.values())
+
     for sd in sched_days:
         if sd.day_type == 'off':
             continue
@@ -194,18 +206,16 @@ def sync_schedule_driven_lines(budget_id, db_session):
             counts[f'mileage_{rg}'] += 1
         if flags.get('per_diem'):
             counts['per_diem'] += 1
-            # TODO: meal-offset logic plug-in point.
-            # Fetch ProductionDay for sd.date; if courtesy_breakfast is True, reduce
-            # breakfast component of per diem for that day, etc. Deferred to Phase 2.
 
-    # Count ProductionDay meals (production-wide, current schedule mode only)
+    # Count ProductionDay meals using per-day headcount (not flat +1)
     for pd in db_session.query(ProductionDay).filter_by(budget_id=budget_id, schedule_mode=sched_mode).all():
+        hc = date_headcount.get(pd.date, 1)
         if pd.courtesy_breakfast:
-            counts['meal_courtesy_breakfast'] += 1
+            counts['meal_courtesy_breakfast'] += hc
         if pd.first_meal:
-            counts['meal_first'] += 1
+            counts['meal_first'] += hc
         if pd.second_meal:
-            counts['meal_second'] += 1
+            counts['meal_second'] += hc
 
     # Existing auto lines by tag
     existing_auto = {ln.line_tag: ln for ln in all_lines
@@ -235,6 +245,9 @@ def sync_schedule_driven_lines(budget_id, db_session):
 
         if tag in existing_auto:
             ln = existing_auto[tag]
+            # User opted out of auto-calc for this line — leave it alone
+            if getattr(ln, 'sync_omit', False):
+                continue
         else:
             ln = BudgetLine(
                 budget_id=budget_id,

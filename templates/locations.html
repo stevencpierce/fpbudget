@@ -274,6 +274,17 @@ async function saveLoc() {
   }
 }
 
+// Auto-capitalize location name fields to Title Case on blur
+['ldb-name','ldb-contact-name','ldb-dayof-name'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('blur', () => {
+    if (!el.value.trim()) return;
+    el.value = el.value.trim().replace(/\w\S*/g, w =>
+      w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+  });
+});
+
 // Auto-fill name + address from a pasted Google Maps URL
 async function handleMapPaste(e) {
   const url = (e.clipboardData || window.clipboardData).getData('text').trim();

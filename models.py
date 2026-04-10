@@ -159,6 +159,8 @@ class BudgetLine(db.Model):
     parent_line_id  = db.Column(db.Integer, db.ForeignKey("budget_line.id"), nullable=True)
     # Identifies auto-managed lines: 'kit_fee' | 'hotel_talent' | 'meal_first' | etc.
     line_tag        = db.Column(db.String(50), nullable=True)
+    # If True, sync_schedule_driven_lines will not update this line (user opted out of auto-calc)
+    sync_omit       = db.Column(db.Boolean, default=False)
     # Travel role group override: 'talent' | 'atl' | 'crew'  (falls back to COA code)
     role_group      = db.Column(db.String(20), nullable=True)
     # Per-unit rate used by schedule-driven non-labor lines (e.g. $25/meal, $150/night)

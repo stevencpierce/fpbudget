@@ -3794,6 +3794,10 @@ tr.cs-row-viewed    { background: #1a1200; }
 /* Google Places Autocomplete dropdown above modals */
 .pac-container { z-index: 9999 !important; }
 
+/* ── Schedule-driven line omit state ─────────────────────────────────────── */
+tr.sync-omitted td { opacity: .45; text-decoration: line-through; }
+tr.sync-omitted td .editable { pointer-events: none; }
+
 /* ── Location search field ──────────────────────────────────────────────── */
 .loc-search-field {
   margin-bottom: 1rem;

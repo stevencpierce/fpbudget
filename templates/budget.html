@@ -417,11 +417,12 @@
           {% set ns.prev_sub_group = _sg %}
           {% endif %}
         {% endif %}
-        <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }}" data-id="{{ ln.id }}"
+        <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }} {{ 'sync-line' if ln.line_tag else '' }} {{ 'sync-omitted' if ln.sync_omit else '' }}" data-id="{{ ln.id }}"
             data-code="{{ ln.account_code }}" data-code-name="{{ ln.account_name }}"
             data-agent="{{ res.agent_amount | default(0) | float | round(2) }}"
             data-rate-type="{{ ln.rate_type or 'day_10' }}"
-            data-qty="{{ ln.quantity | float }}" data-days="{{ ln.days | float }}">
+            data-qty="{{ ln.quantity | float }}" data-days="{{ ln.days | float }}"
+            data-tag="{{ ln.line_tag or '' }}" data-sync-omit="{{ '1' if ln.sync_omit else '0' }}">
           <td class="col-desc">
             <span class="line-number">{{ sec.code }}-{{ '%02d' % ns.line_counter }}</span><span class="editable" data-field="description"
                   data-id="{{ ln.id }}">{{ ln.description or '' }}</span>
@@ -3359,6 +3360,11 @@ function renderCalcDetail(d) {
   <button type="button" class="ctx-menu-item" id="ctx-all-in-total">💰 Enter All-in Total</button>
 </div>
 
+<!-- ── Schedule-driven Line Context Menu (right-click on auto-managed lines) ── -->
+<div id="sync-line-ctx-menu" class="budget-ctx-menu hidden">
+  <button type="button" class="ctx-menu-item" id="ctx-toggle-sync-omit"></button>
+</div>
+
 <!-- ── Line Row Context Dropdown (insert above/below, move) ────────────────── -->
 <div id="line-row-menu" class="line-row-menu hidden">
   <button type="button" onclick="lineInsert('above')">Insert Row Above</button>
@@ -3535,6 +3541,67 @@ function renderCalcDetail(d) {
     }
   });
 
+})();
+</script>
+
+<script>
+// ── Schedule-driven line right-click (Craft Services, meals, etc.) ──────────
+(function() {
+  const _pid = {{ project.id }};
+  const _bid = {{ budget.id }};
+  const menu = document.getElementById('sync-line-ctx-menu');
+  const btn  = document.getElementById('ctx-toggle-sync-omit');
+  let _row = null;
+
+  function _showAt(row, x, y) {
+    _row = row;
+    const omitted = row.dataset.syncOmit === '1';
+    btn.textContent = omitted ? '↺ Re-enable auto-calc' : '⊘ Omit from auto-calc';
+    menu.style.visibility = 'hidden';
+    menu.style.left = '0px'; menu.style.top = '0px';
+    menu.classList.remove('hidden');
+    requestAnimationFrame(() => {
+      const mw = menu.offsetWidth, mh = menu.offsetHeight;
+      menu.style.left = Math.max(4, Math.min(x + 4, window.innerWidth  - mw - 12)) + 'px';
+      menu.style.top  = Math.max(4, Math.min(y + 4, window.innerHeight - mh - 12)) + 'px';
+      menu.style.visibility = '';
+    });
+  }
+
+  document.addEventListener('contextmenu', function(e) {
+    const row = e.target.closest('.sync-line');
+    if (!row || row.classList.contains('labor-line')) { menu.classList.add('hidden'); return; }
+    e.preventDefault();
+    _showAt(row, e.clientX, e.clientY);
+  });
+
+  // Long-press for touch
+  let _lpTimer = null, _lpRow = null, _lpX = 0, _lpY = 0;
+  document.addEventListener('touchstart', function(e) {
+    const row = e.target.closest('.sync-line');
+    if (!row || row.classList.contains('labor-line') || e.target.closest('.editable')) return;
+    const t = e.touches[0]; _lpX = t.clientX; _lpY = t.clientY; _lpRow = row;
+    _lpTimer = setTimeout(() => { if (_lpRow) _showAt(_lpRow, _lpX, _lpY); }, 500);
+  }, { passive: true });
+  document.addEventListener('touchend',  () => { clearTimeout(_lpTimer); _lpTimer = null; });
+  document.addEventListener('touchmove', () => { clearTimeout(_lpTimer); _lpTimer = null; });
+
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest('#sync-line-ctx-menu')) menu.classList.add('hidden');
+  });
+
+  btn.addEventListener('click', async function() {
+    menu.classList.add('hidden');
+    if (!_row) return;
+    const lid = parseInt(_row.dataset.id);
+    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/${lid}/toggle-sync-omit`, { method: 'POST' });
+    if (!res.ok) { alert('Failed to update line'); return; }
+    const data = await res.json();
+    _row.dataset.syncOmit = data.sync_omit ? '1' : '0';
+    _row.classList.toggle('sync-omitted', data.sync_omit);
+    // Reload to reflect recalculated totals
+    window.location.reload();
+  });
 })();
 </script>
 
