@@ -284,7 +284,7 @@
             </thead>
             <tbody>
               {% if prod_day and prod_day.courtesy_breakfast %}
-              <tr><td class="callsheet-time-cell cs-editable" id="cs-courtesy-breakfast-time" contenteditable="true" data-field="courtesy_breakfast_time" title="Edit time">{{ cs_data.get('courtesy_breakfast_time', 'TBD') }}</td><td>Courtesy Breakfast</td><td></td></tr>
+              <tr><td class="callsheet-time-cell cs-editable" id="cs-courtesy-breakfast-time" contenteditable="true" data-field="courtesy_breakfast_time" title="Edit time">{{ cs_data.get('courtesy_breakfast_time', 'TBD') }}</td><td>Courtesy Breakfast</td><td>{% if meal_counts.get('courtesy_breakfast') %}{{ meal_counts.courtesy_breakfast }} ppl{% endif %}</td></tr>
               {% endif %}
               <tr>
                 <td class="callsheet-time-cell cs-editable" id="cs-general-crew-call-kt" contenteditable="true" data-field="general_crew_call_kt" title="Edit time — also updates the main crew call header">{{ cs_data.get('general_crew_call', 'TBD') }}</td>
@@ -292,10 +292,10 @@
                 <td></td>
               </tr>
               {% if prod_day and prod_day.first_meal %}
-              <tr><td class="callsheet-time-cell cs-editable" id="cs-first-meal-time" contenteditable="true" data-field="first_meal_time" title="Edit time">{{ cs_data.get('first_meal_time', 'TBD') }}</td><td>First Meal</td><td></td></tr>
+              <tr><td class="callsheet-time-cell cs-editable" id="cs-first-meal-time" contenteditable="true" data-field="first_meal_time" title="Edit time">{{ cs_data.get('first_meal_time', 'TBD') }}</td><td>First Meal</td><td>{% if meal_counts.get('first_meal') %}{{ meal_counts.first_meal }} ppl{% endif %}</td></tr>
               {% endif %}
               {% if prod_day and prod_day.second_meal %}
-              <tr><td class="callsheet-time-cell cs-editable" id="cs-second-meal-time" contenteditable="true" data-field="second_meal_time" title="Edit time">{{ cs_data.get('second_meal_time', 'TBD') }}</td><td>Second Meal</td><td></td></tr>
+              <tr><td class="callsheet-time-cell cs-editable" id="cs-second-meal-time" contenteditable="true" data-field="second_meal_time" title="Edit time">{{ cs_data.get('second_meal_time', 'TBD') }}</td><td>Second Meal</td><td>{% if meal_counts.get('second_meal') %}{{ meal_counts.second_meal }} ppl{% endif %}</td></tr>
               {% endif %}
               <tr><td class="callsheet-time-cell cs-editable" id="cs-estimated-wrap" contenteditable="true" data-field="estimated_wrap_time" title="Edit time">{{ cs_data.get('estimated_wrap_time', 'TBD') }}</td><td>Estimated Wrap</td><td></td></tr>
               <tr class="callsheet-times-divider"><td colspan="3"></td></tr>
@@ -727,22 +727,29 @@ Example:
               <tr>
                 <td>Courtesy Breakfast</td>
                 <td>{% if prod_day and prod_day.courtesy_breakfast %}<span class="callsheet-meal-yes">Yes</span>{% else %}<span class="callsheet-meal-no">No</span>{% endif %}</td>
-                <td class="cs-editable" contenteditable="true" title="Edit count">—</td>
+                <td>{% set _c = meal_counts.get('courtesy_breakfast', 0) %}{% if _c %}{{ _c }}{% else %}—{% endif %}</td>
               </tr>
               <tr>
                 <td>First Meal</td>
                 <td>{% if prod_day and prod_day.first_meal %}<span class="callsheet-meal-yes">Yes</span>{% else %}<span class="callsheet-meal-no">No</span>{% endif %}</td>
-                <td class="cs-editable" contenteditable="true" title="Edit count">—</td>
+                <td>{% set _c = meal_counts.get('first_meal', 0) %}{% if _c %}{{ _c }}{% else %}—{% endif %}</td>
               </tr>
               <tr>
                 <td>Second Meal</td>
                 <td>{% if prod_day and prod_day.second_meal %}<span class="callsheet-meal-yes">Yes</span>{% else %}<span class="callsheet-meal-no">No</span>{% endif %}</td>
-                <td class="cs-editable" contenteditable="true" title="Edit count">—</td>
+                <td>{% set _c = meal_counts.get('second_meal', 0) %}{% if _c %}{{ _c }}{% else %}—{% endif %}</td>
               </tr>
+              {% if meal_counts.get('craft_services', 0) %}
+              <tr>
+                <td>Craft Services</td>
+                <td><span class="callsheet-meal-yes">Yes</span></td>
+                <td>{{ meal_counts.get('craft_services') }}</td>
+              </tr>
+              {% endif %}
             </tbody>
           </table>
           <div style="margin-top:.5rem;font-size:.75rem;color:var(--text-muted)">
-            Meal settings from Production Day. Update in Schedule view.
+            Meal settings from Production Day · Counts from budget.
           </div>
         </div>
       </div>

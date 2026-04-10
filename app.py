@@ -4253,6 +4253,20 @@ def callsheet_view(pid, bid, date_str=None):
     prod_day = ProductionDay.query.filter_by(
         budget_id=bid, date=selected_date, schedule_mode=sched_mode).first()
 
+    # Meal headcounts from budget lines
+    _meal_tag_map = {
+        'meal_courtesy_breakfast': 'courtesy_breakfast',
+        'meal_first':              'first_meal',
+        'meal_second':             'second_meal',
+        'working_meal':            'craft_services',
+    }
+    meal_counts = {}
+    for _ml in BudgetLine.query.filter_by(budget_id=bid).filter(
+            BudgetLine.line_tag.in_(list(_meal_tag_map.keys()))).all():
+        key = _meal_tag_map.get(_ml.line_tag)
+        if key:
+            meal_counts[key] = int(_ml.quantity or 0)
+
     # Build crew list grouped by COA section, with day type per instance
     days_by_line_inst = {}
     for d in days_today:
@@ -4508,6 +4522,7 @@ def callsheet_view(pid, bid, date_str=None):
         rep_contacts=rep_contacts,
         crew_p2_all=crew_p2_all,
         confirm_status=confirm_status,
+        meal_counts=meal_counts,
     )
 
 
