@@ -225,7 +225,13 @@
 
   <!-- Project Access -->
   <div class="admin-card" id="project-access">
-    <div class="admin-card-header"><h2>Project Access</h2></div>
+    <div class="admin-card-header">
+      <h2>Project Access</h2>
+      <form method="POST" action="{{ url_for('admin_import_dropbox') }}"
+            onsubmit="return confirm('Scan Dropbox for project folders and import any missing ones?')">
+        <button type="submit" class="btn btn-sm btn-outline">Import from Dropbox</button>
+      </form>
+    </div>
     {% if projects %}
       {% for project in projects %}
       {% set pas = project_access|selectattr('project_id','eq',project.id)|list %}

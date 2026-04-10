@@ -26,21 +26,95 @@
               onclick="openShareModal({{ p.id }}, '{{ p.name | e }}')">
         Share
       </button>
-      <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
-            onsubmit="return confirm('Delete {{ p.name }} and all its budgets?')">
-        <button type="submit" class="btn btn-sm btn-ghost" title="Delete project">✕</button>
-      </form>
+      <button class="btn btn-sm btn-outline" title="More actions"
+              onclick="toggleProjectMenu(event, {{ p.id }})">⋯</button>
+      <div id="proj-menu-{{ p.id }}" class="proj-menu hidden">
+        <form method="POST" action="{{ url_for('project_wrap', pid=p.id) }}"
+              onsubmit="return confirm('Wrap {{ p.name | e }}? The Dropbox folder will be moved to _WRAPPED PROJECTS.')">
+          <button type="submit" class="proj-menu-item">Wrap Project</button>
+        </form>
+        <form method="POST" action="{{ url_for('project_archive', pid=p.id) }}"
+              onsubmit="return confirm('Archive {{ p.name | e }}? The Dropbox folder will be moved to _archived.')">
+          <button type="submit" class="proj-menu-item">Archive Project</button>
+        </form>
+        <div class="proj-menu-divider"></div>
+        <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}"
+              onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets? This cannot be undone.')">
+          <button type="submit" class="proj-menu-item proj-menu-danger">Delete Project</button>
+        </form>
+      </div>
     </div>
   </div>
   {% endfor %}
 </div>
 {% else %}
 <div class="empty-state">
-  <p>No projects yet.</p>
+  <p>No active projects.</p>
   <button class="btn btn-primary"
           onclick="document.getElementById('new-project-modal').classList.remove('hidden')">
     Create First Project
   </button>
+</div>
+{% endif %}
+
+{% if wrapped_projects or archived_projects %}
+<div class="section-divider" style="margin:2.5rem 0 1.25rem">
+  <button class="btn btn-ghost btn-sm" onclick="toggleInactiveProjects()" id="inactive-toggle">
+    Show Wrapped &amp; Archived ({{ (wrapped_projects|length) + (archived_projects|length) }})
+  </button>
+</div>
+<div id="inactive-projects" style="display:none">
+  {% if wrapped_projects %}
+  <div style="margin-bottom:1.5rem">
+    <h3 style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin:0 0 .75rem">Wrapped</h3>
+    <div class="card-grid">
+      {% for p in wrapped_projects %}
+      <div class="project-card" style="opacity:.7">
+        <div class="project-card-name">{{ p.name }}</div>
+        <div class="project-card-meta">Wrapped</div>
+        <div class="project-card-actions">
+          <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-sm btn-outline">
+            View
+          </a>
+          <form method="POST" action="{{ url_for('project_reactivate', pid=p.id) }}" style="display:inline">
+            <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
+          </form>
+          <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
+                onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets?')">
+            <button type="submit" class="btn btn-sm btn-ghost" title="Delete project">✕</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if archived_projects %}
+  <div>
+    <h3 style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin:0 0 .75rem">Archived</h3>
+    <div class="card-grid">
+      {% for p in archived_projects %}
+      <div class="project-card" style="opacity:.6">
+        <div class="project-card-name">{{ p.name }}</div>
+        <div class="project-card-meta">Archived</div>
+        <div class="project-card-actions">
+          <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-sm btn-outline">
+            View
+          </a>
+          <form method="POST" action="{{ url_for('project_reactivate', pid=p.id) }}" style="display:inline">
+            <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
+          </form>
+          <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
+                onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets?')">
+            <button type="submit" class="btn btn-sm btn-ghost" title="Delete project">✕</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -103,6 +177,29 @@
     </div>
   </div>
 </div>
+
+<style>
+.proj-menu {
+  position: absolute;
+  background: var(--surface, #1e1e1e);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  z-index: 200;
+  min-width: 170px;
+  padding: .35rem 0;
+}
+.proj-menu.hidden { display: none; }
+.proj-menu-item {
+  display: block; width: 100%; text-align: left;
+  background: none; border: none; padding: .5rem 1rem;
+  font-size: .85rem; color: var(--text); cursor: pointer;
+}
+.proj-menu-item:hover { background: rgba(255,255,255,.06); }
+.proj-menu-danger { color: #f87171; }
+.proj-menu-divider { height: 1px; background: var(--border); margin: .3rem 0; }
+.project-card-actions { position: relative; }
+</style>
 {% endblock %}
 
 {% block scripts %}
@@ -122,7 +219,6 @@ function _loadCollaborators(pid) {
   fetch('/projects/' + pid + '/share')
     .then(r => r.text())
     .then(html => {
-      // Extract the collaborator list from the returned page
       const parser = new DOMParser();
       const doc = parser.parseFromString(html, 'text/html');
       const list = doc.getElementById('collaborator-list');
@@ -151,6 +247,31 @@ function addCollaborator() {
       _loadCollaborators(_sharePid);
     }
   });
+}
+
+function toggleProjectMenu(e, pid) {
+  e.stopPropagation();
+  const menu = document.getElementById('proj-menu-' + pid);
+  // Close any other open menus
+  document.querySelectorAll('.proj-menu').forEach(m => {
+    if (m !== menu) m.classList.add('hidden');
+  });
+  menu.classList.toggle('hidden');
+}
+
+// Close menus when clicking elsewhere
+document.addEventListener('click', function() {
+  document.querySelectorAll('.proj-menu').forEach(m => m.classList.add('hidden'));
+});
+
+function toggleInactiveProjects() {
+  const el = document.getElementById('inactive-projects');
+  const btn = document.getElementById('inactive-toggle');
+  const showing = el.style.display !== 'none';
+  el.style.display = showing ? 'none' : 'block';
+  btn.textContent = showing
+    ? btn.textContent.replace('Hide', 'Show')
+    : btn.textContent.replace('Show', 'Hide');
 }
 
 // Auto-fill device timezone into new project form

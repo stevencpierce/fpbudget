@@ -65,6 +65,7 @@ class ProjectSheet(db.Model):
     name           = db.Column(db.String(200), nullable=False)
     dropbox_folder = db.Column(db.String(300), nullable=True)   # relative slug under ops root
     client_name    = db.Column(db.String(200), nullable=True)   # used for slug + display
+    status         = db.Column(db.String(20), default='active', nullable=False)  # active | wrapped | archived
 
 
 class Transaction(db.Model):

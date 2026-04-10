@@ -821,20 +821,26 @@ def budget_live(pid, bid):
 @login_required
 def dashboard():
     if current_user.role in ('super_admin', 'admin'):
-        projects = ProjectSheet.query.order_by(ProjectSheet.name).all()
+        all_projects = ProjectSheet.query.order_by(ProjectSheet.name).all()
     else:
         accessible_ids = [
             pa.project_id for pa in
             ProjectAccess.query.filter_by(user_id=current_user.id).all()
         ]
-        projects = ProjectSheet.query.filter(
+        all_projects = ProjectSheet.query.filter(
             ProjectSheet.id.in_(accessible_ids)
         ).order_by(ProjectSheet.name).all()
+    projects         = [p for p in all_projects if getattr(p, 'status', 'active') == 'active']
+    wrapped_projects = [p for p in all_projects if getattr(p, 'status', 'active') == 'wrapped']
+    archived_projects= [p for p in all_projects if getattr(p, 'status', 'active') == 'archived']
     budget_counts = {}
     for b in Budget.query.all():
         budget_counts[b.project_id] = budget_counts.get(b.project_id, 0) + 1
     all_templates = BudgetTemplate.query.order_by(BudgetTemplate.name).all()
-    return render_template("dashboard.html", projects=projects, budget_counts=budget_counts,
+    return render_template("dashboard.html", projects=projects,
+                           wrapped_projects=wrapped_projects,
+                           archived_projects=archived_projects,
+                           budget_counts=budget_counts,
                            all_templates=all_templates)
 
 
@@ -1004,6 +1010,106 @@ def project_delete(pid):
     db.session.commit()
     flash(f"Project '{p.name}' deleted.", "success")
     return redirect(url_for("dashboard"))
+
+
+@app.route("/projects/<int:pid>/wrap", methods=["POST"])
+@login_required
+def project_wrap(pid):
+    p = ProjectSheet.query.get_or_404(pid)
+    if p.dropbox_folder:
+        try:
+            dbx = _dbx_client()
+            src  = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
+            wrap_root = f"/_WRAPPED PROJECTS" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_WRAPPED PROJECTS"
+            dest = f"{wrap_root}/{p.dropbox_folder}"
+            dbx.files_move_v2(src, dest, autorename=True)
+            logging.info(f"Wrapped project Dropbox folder: {src} → {dest}")
+        except Exception as e:
+            logging.warning(f"Could not move Dropbox folder on wrap: {e}")
+    p.status = 'wrapped'
+    db.session.commit()
+    flash(f"Project '{p.name}' wrapped.", "success")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/projects/<int:pid>/archive", methods=["POST"])
+@login_required
+def project_archive(pid):
+    p = ProjectSheet.query.get_or_404(pid)
+    if p.dropbox_folder:
+        try:
+            dbx = _dbx_client()
+            src  = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
+            arch_root = f"/_archived" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_archived"
+            dest = f"{arch_root}/{p.dropbox_folder}"
+            dbx.files_move_v2(src, dest, autorename=True)
+            logging.info(f"Archived project Dropbox folder: {src} → {dest}")
+        except Exception as e:
+            logging.warning(f"Could not move Dropbox folder on archive: {e}")
+    p.status = 'archived'
+    db.session.commit()
+    flash(f"Project '{p.name}' archived.", "success")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/projects/<int:pid>/reactivate", methods=["POST"])
+@login_required
+def project_reactivate(pid):
+    """Move project back to active (folder must be manually restored in Dropbox if needed)."""
+    p = ProjectSheet.query.get_or_404(pid)
+    p.status = 'active'
+    db.session.commit()
+    flash(f"Project '{p.name}' reactivated.", "success")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/admin/import-dropbox", methods=["POST"])
+@login_required
+def admin_import_dropbox():
+    """Scan Dropbox ops root for project folders and import any missing ones."""
+    if current_user.role not in ('super_admin', 'admin'):
+        abort(403)
+    try:
+        dbx = _dbx_client()
+        list_path = "" if _DBX_NAMESPACE_ID else _DBX_OPS_ROOT
+        result = dbx.files_list_folder(list_path)
+        folders = []
+        while True:
+            for entry in result.entries:
+                import dropbox as _dbx_mod
+                if isinstance(entry, _dbx_mod.files.FolderMetadata):
+                    fname = entry.name
+                    # Skip template/special folders (start with _ or !)
+                    if not fname.startswith('_') and not fname.startswith('!'):
+                        folders.append(fname)
+            if not result.has_more:
+                break
+            result = dbx.files_list_folder_continue(result.cursor)
+
+        imported = 0
+        skipped  = 0
+        for fname in folders:
+            existing = ProjectSheet.query.filter_by(dropbox_folder=fname).first()
+            if existing:
+                skipped += 1
+                continue
+            # Try to parse client/project from slug (YYYY-MM_Client_Project)
+            parts = fname.split('_', 2)
+            display_name = parts[2].replace('_', ' ') if len(parts) == 3 else fname
+            p = ProjectSheet(name=display_name, dropbox_folder=fname, status='active')
+            db.session.add(p)
+            db.session.flush()
+            # Grant importing user as owner
+            db.session.add(ProjectAccess(project_id=p.id, user_id=current_user.id, role='owner'))
+            imported += 1
+
+        db.session.commit()
+        flash(f"Dropbox import complete: {imported} imported, {skipped} already existed.", "success")
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"admin_import_dropbox failed: {e}")
+        flash(f"Import failed: {e}", "error")
+    return redirect(url_for("admin_panel"))
 
 
 # ── Budget ────────────────────────────────────────────────────────────────────
@@ -5183,6 +5289,7 @@ with app.app_context():
         # Docs module: project_sheet new columns
         "ALTER TABLE project_sheet ADD COLUMN dropbox_folder VARCHAR(300)",
         "ALTER TABLE project_sheet ADD COLUMN client_name VARCHAR(200)",
+        "ALTER TABLE project_sheet ADD COLUMN status VARCHAR(20) DEFAULT 'active' NOT NULL",
     ]
     for _sql in _migrations:
         try:
