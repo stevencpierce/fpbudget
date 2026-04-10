@@ -5662,6 +5662,7 @@ def docs_upload_post(pid):
             logging.warning(f"Dropbox filing failed (non-fatal): {_e}")
             dbx_filing_path = None
 
+    from datetime import datetime as _dt
     upload = DocUpload(
         project_id=pid,
         uploader_id=current_user.id,
@@ -5670,8 +5671,9 @@ def docs_upload_post(pid):
         file_size=len(data),
         content_type=content_type,
         file_hash=file_hash,
-        status="pending",
-        filing_path=dbx_filing_path,
+        status="filed" if dbx_filing_path else "pending",
+        filed_dropbox_path=dbx_filing_path,
+        filed_at=_dt.utcnow() if dbx_filing_path else None,
     )
     db.session.add(upload)
     db.session.commit()
