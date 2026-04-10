@@ -905,11 +905,10 @@ function getText(id) {
   return el ? el.textContent.trim() : '';
 }
 
-// ── HH:MM time normalization ──────────────────────────────────────────────────
+// ── Time normalization → H:MM AM/PM ───────────────────────────────────────────
 function normalizeTimeStr(raw) {
   const s = (raw || '').trim();
-  if (!s || s === 'TBD' || s === '—' || s === '-') return s;
-  // Strip AM/PM suffix, parse
+  if (!s || s.toUpperCase() === 'TBD' || s === '—' || s === '-') return 'TBD';
   const isPM = /pm/i.test(s);
   const isAM = /am/i.test(s);
   const stripped = s.replace(/[apm\s]/gi, '');
@@ -928,12 +927,24 @@ function normalizeTimeStr(raw) {
     h = parseInt(stripped.slice(0, 2), 10);
     m = parseInt(stripped.slice(2, 4), 10);
   }
-  if (isNaN(h) || isNaN(m)) return s; // can't parse — leave as-is
+  if (isNaN(h) || isNaN(m)) return s;
   if (isPM && h < 12) h += 12;
   if (isAM && h === 12) h = 0;
   h = Math.max(0, Math.min(23, h));
   m = Math.max(0, Math.min(59, m));
-  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+  // Output 12-hour H:MM AM/PM
+  const suffix = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return h12 + ':' + String(m).padStart(2, '0') + ' ' + suffix;
+}
+
+// General crew call: only TBD or a valid time
+function normalizeCrewCallStr(raw) {
+  const s = (raw || '').trim();
+  if (!s || s.toUpperCase() === 'TBD') return 'TBD';
+  const normalized = normalizeTimeStr(s);
+  // If normalizeTimeStr couldn't parse it, fall back to TBD
+  return normalized === s ? 'TBD' : normalized;
 }
 
 // ── Bind contenteditable auto-save ────────────────────────────────────────────
@@ -958,14 +969,24 @@ if (_advEl) _advEl.addEventListener('input', scheduleAutoSave);
   const ktEl = document.getElementById('cs-general-crew-call-kt');
   const hdrEl = document.getElementById('cs-crew-call');
   if (ktEl && hdrEl) {
-    // When Key Times row is edited, mirror to header
     ktEl.addEventListener('input', () => {
       hdrEl.textContent = ktEl.textContent.trim();
       propagateGeneralCrewCall(hdrEl.textContent.trim());
     });
-    // When header is edited, mirror to Key Times row
+    ktEl.addEventListener('blur', () => {
+      const norm = normalizeCrewCallStr(ktEl.textContent.trim());
+      ktEl.textContent = norm;
+      hdrEl.textContent = norm;
+      propagateGeneralCrewCall(norm);
+    });
     hdrEl.addEventListener('input', () => {
       ktEl.textContent = hdrEl.textContent.trim();
+    });
+    hdrEl.addEventListener('blur', () => {
+      const norm = normalizeCrewCallStr(hdrEl.textContent.trim());
+      hdrEl.textContent = norm;
+      ktEl.textContent = norm;
+      propagateGeneralCrewCall(norm);
     });
   }
 })();
