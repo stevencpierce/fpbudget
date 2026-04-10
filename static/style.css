@@ -3794,6 +3794,32 @@ tr.cs-row-viewed    { background: #1a1200; }
 /* Google Places Autocomplete dropdown above modals */
 .pac-container { z-index: 9999 !important; }
 
+/* ── Location search field ──────────────────────────────────────────────── */
+.loc-search-field {
+  margin-bottom: 1rem;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-1));
+  border: 1.5px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 8px;
+  padding: .75rem 1rem .65rem;
+}
+.loc-search-field input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: .35rem;
+}
+.loc-search-label {
+  font-size: .78rem;
+  font-weight: 700;
+  letter-spacing: .03em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+.loc-search-hint {
+  font-size: .72rem;
+  color: var(--muted);
+  margin-top: .3rem;
+}
+
 .ctx-menu {
   background: var(--bg-2);
   border: 1px solid var(--border);

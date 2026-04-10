@@ -119,17 +119,18 @@
         </select>
       </div>
     </div>
+    <div class="loc-search-field">
+      <div class="loc-search-label">📍 Search Google Maps</div>
+      <input type="text" id="ldb-address" placeholder="Type a place name or address…" autocomplete="off">
+      <div class="loc-search-hint">Selecting a result auto-fills name, address &amp; map link</div>
+    </div>
     <div class="field">
       <label>Facility / Business Name <span class="muted" style="font-weight:400;font-size:.8rem">(optional — official venue or company name)</span></label>
       <input type="text" id="ldb-facility-name" placeholder="e.g. Public Storage — 42nd St, Be Electric Studios">
     </div>
     <div class="field">
-      <label>Address</label>
-      <input type="text" id="ldb-address" placeholder="Full street address">
-    </div>
-    <div class="field">
-      <label>Google Maps URL <span class="muted" style="font-size:.78rem">(paste to auto-fill name + address)</span></label>
-      <input type="url" id="ldb-map-url" placeholder="https://maps.google.com/..." onpaste="handleMapPaste(event)">
+      <label>Google Maps URL</label>
+      <input type="url" id="ldb-map-url" placeholder="https://maps.google.com/…" onpaste="handleMapPaste(event)">
     </div>
     <div class="field-section-label">Main Contact (Venue / Negotiating)</div>
     <div class="field-row-3">
