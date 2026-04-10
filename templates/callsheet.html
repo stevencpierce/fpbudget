@@ -153,7 +153,9 @@
       <div class="callsheet-header-right-block">
         <div class="callsheet-date-display">{{ selected_date.strftime('%A, %B %d, %Y') }}</div>
         {% if shooting_day_num %}
-        <div class="callsheet-day-num">Shoot Day {{ shooting_day_num }} of {{ all_scheduled_dates|length }}</div>
+        <div class="callsheet-day-num">Shoot Day {{ shooting_day_num }} of {{ total_shoot_days }}</div>
+        {% elif primary_day_type and primary_day_type != 'work' %}
+        <div class="callsheet-day-num">{{ primary_day_type | title }} Day</div>
         {% else %}
         <div class="callsheet-day-num">Non-scheduled date</div>
         {% endif %}
@@ -542,7 +544,9 @@ Example:
       <div class="callsheet-p2-right">
         <div class="callsheet-date-display">{{ selected_date.strftime('%A, %B %d, %Y') }}</div>
         {% if shooting_day_num %}
-        <div class="callsheet-day-num">Shoot Day {{ shooting_day_num }} of {{ all_scheduled_dates|length }}</div>
+        <div class="callsheet-day-num">Shoot Day {{ shooting_day_num }} of {{ total_shoot_days }}</div>
+        {% elif primary_day_type and primary_day_type != 'work' %}
+        <div class="callsheet-day-num">{{ primary_day_type | title }} Day</div>
         {% endif %}
         <div class="callsheet-p2-version">
           CS <span class="cs-version-ref">{{ cs_data.get('callsheet_version', 'v1') }}</span>
@@ -791,7 +795,9 @@ Example:
     {# ── Confidentiality footer ────────────────────────────────────────────── #}
     <div class="callsheet-footer">
       Confidential — Framework Productions &nbsp;|&nbsp; {{ selected_date.strftime('%B %d, %Y') }}
-      {% if shooting_day_num %} &nbsp;|&nbsp; Shoot Day {{ shooting_day_num }} {% endif %}
+      {% if shooting_day_num %} &nbsp;|&nbsp; Shoot Day {{ shooting_day_num }} of {{ total_shoot_days }}
+      {% elif primary_day_type and primary_day_type != 'work' %} &nbsp;|&nbsp; {{ primary_day_type | title }} Day
+      {% endif %}
       &nbsp;|&nbsp; Not for distribution
     </div>
 

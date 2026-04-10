@@ -4252,9 +4252,30 @@ def callsheet_view(pid, bid, date_str=None):
         else:
             selected_date = all_scheduled_dates[0] if all_scheduled_dates else date.today()
 
+    # Determine day type for the selected date and compute shoot-day number
+    # Only "work" days count toward the shoot day number; travel/hold/half get their own label
+    _day_types_today = db.session.query(ScheduleDay.day_type).filter(
+        ScheduleDay.budget_id == bid,
+        ScheduleDay.schedule_mode == sched_mode,
+        ScheduleDay.date == selected_date,
+        ScheduleDay.day_type != 'off',
+    ).distinct().all()
+    _day_types_today = [r[0] for r in _day_types_today]
+    primary_day_type = _day_types_today[0] if _day_types_today else None
+
+    # Shoot day number = position among work days only
     shooting_day_num = None
-    if selected_date in all_scheduled_dates:
-        shooting_day_num = all_scheduled_dates.index(selected_date) + 1
+    _work_dates = [r[0] for r in db.session.query(ScheduleDay.date).filter(
+        ScheduleDay.budget_id == bid,
+        ScheduleDay.schedule_mode == sched_mode,
+        ScheduleDay.day_type == 'work',
+    ).distinct().order_by(ScheduleDay.date).all()]
+    _total_shoot_days = len(_work_dates)
+    if selected_date in _work_dates:
+        shooting_day_num = _work_dates.index(selected_date) + 1
+    elif selected_date in all_scheduled_dates and primary_day_type:
+        # Non-work day: show day-type label but no shoot day number
+        shooting_day_num = None
 
     # Schedule days for selected date
     days_today = ScheduleDay.query.filter(
@@ -4532,6 +4553,8 @@ def callsheet_view(pid, bid, date_str=None):
         selected_date=selected_date,
         all_scheduled_dates=all_scheduled_dates,
         shooting_day_num=shooting_day_num,
+        total_shoot_days=_total_shoot_days,
+        primary_day_type=primary_day_type,
         days_today=days_today,
         lines_by_id=lines_by_id,
         assignments=assignments,
