@@ -2077,13 +2077,13 @@
 <script src="https://maps.googleapis.com/maps/api/js?key={{ GOOGLE_MAPS_API_KEY }}&libraries=places" async></script>
 {% endif %}
 <script>
-const PID = {{ project.id }};
-const BID = {{ budget.id }};
-const SAVE_URL = `/projects/${PID}/budget/${BID}/line`;
-let _workingInitialized = {{ 'true' if working_exists else 'false' }};
-const _IS_WORKING_MODE = {{ 'true' if is_working_view else 'false' }};
+var PID = {{ project.id }};
+var BID = {{ budget.id }};
+var SAVE_URL = `/projects/${PID}/budget/${BID}/line`;
+var _workingInitialized = {{ 'true' if working_exists else 'false' }};
+var _IS_WORKING_MODE = {{ 'true' if is_working_view else 'false' }};
 
-const RATE_TYPE_LABELS = {
+var RATE_TYPE_LABELS = {
   'day_10':       '10hr Day',
   'day_8':        '8hr Day',
   'day_12':       '12hr Day',
@@ -2093,11 +2093,11 @@ const RATE_TYPE_LABELS = {
   'custom':       'Custom',
 };
 
-const COA_SECTIONS = {{ coa_sections | tojson }};
-const MY_ID    = {{ current_user.id }};
-const MY_NAME  = {{ (current_user.name or current_user.email) | tojson }};
-const MY_ROLE  = {{ current_user.role | tojson }};
-const MY_COLOR = [
+var COA_SECTIONS = {{ coa_sections | tojson }};
+var MY_ID    = {{ current_user.id }};
+var MY_NAME  = {{ (current_user.name or current_user.email) | tojson }};
+var MY_ROLE  = {{ current_user.role | tojson }};
+var MY_COLOR = [
   "#2563eb","#dc2626","#059669","#d97706","#7c3aed",
   "#db2777","#0891b2","#65a30d","#c026d3","#ea580c"
 ][MY_ID % 10];

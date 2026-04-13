@@ -82,6 +82,10 @@
     console.warn('[WS] Socket.IO client not loaded');
     return;
   }
+  if (typeof BID === 'undefined' || typeof MY_ID === 'undefined') {
+    console.error('[WS] BID or MY_ID not defined — collab.js loaded before budget template globals');
+    return;
+  }
 
   console.log('[WS] collab.js init, BID=' + BID + ', MY_ID=' + MY_ID);
 
