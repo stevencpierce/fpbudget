@@ -185,7 +185,7 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 # ── SocketIO ──────────────────────────────────────────────────────────────────
 try:
     from flask_socketio import SocketIO, emit, join_room, leave_room
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
     _HAS_SOCKETIO = True
 except ImportError:
     socketio = None
@@ -895,6 +895,14 @@ _AVATAR_COLORS = [
     "#2563eb", "#dc2626", "#059669", "#d97706", "#7c3aed",
     "#db2777", "#0891b2", "#65a30d", "#c026d3", "#ea580c",
 ]
+# Conflict detection: recent edits within a 2-second window
+# { (bid, line_id, field): {"user_id": int, "user_name": str, "role": str, "at": datetime} }
+_recent_edits = {}
+_CONFLICT_WINDOW = 2  # seconds
+_ROLE_PRIORITY = {
+    'super_admin': 4, 'admin': 3, 'line_producer': 2,
+    'dept_head': 1, 'docs_only': 0,
+}
 
 if _HAS_SOCKETIO:
     @socketio.on("connect")
@@ -940,6 +948,82 @@ if _HAS_SOCKETIO:
             for s, v in _socket_sessions.items() if v["budget_id"] == bid
         ]
         emit("presence_update", {"viewers": viewers}, room=room)
+
+    @socketio.on("editing_start")
+    def _ws_editing_start(data):
+        from flask import request as _req
+        bid = data.get("budget_id")
+        if not bid:
+            return
+        room = f"budget_{bid}"
+        emit("editing_start", data, room=room, include_self=False)
+
+    @socketio.on("editing_stop")
+    def _ws_editing_stop(data):
+        from flask import request as _req
+        bid = data.get("budget_id")
+        if not bid:
+            return
+        room = f"budget_{bid}"
+        emit("editing_stop", data, room=room, include_self=False)
+
+
+def _check_and_emit_conflicts(bid, line_id, data):
+    """Detect near-simultaneous edits on the same field and notify the loser."""
+    if not _HAS_SOCKETIO or not socketio:
+        return
+    try:
+        my_id = current_user.id
+        my_name = current_user.name or current_user.email.split("@")[0]
+        my_role = getattr(current_user, 'role', 'line_producer')
+    except Exception:
+        return
+    now = datetime.utcnow()
+    cutoff = now - timedelta(seconds=_CONFLICT_WINDOW)
+    editable_fields = {"rate", "quantity", "days", "estimated_total", "description",
+                       "rate_type", "fringe_type", "agent_pct", "est_ot", "note",
+                       "working_total", "manual_actual"}
+    for field in editable_fields:
+        if field not in data:
+            continue
+        key = (bid, line_id, field)
+        prev = _recent_edits.get(key)
+        if prev and prev["user_id"] != my_id and prev["at"] > cutoff:
+            # Conflict detected — determine winner by role priority
+            my_pri = _ROLE_PRIORITY.get(my_role, 1)
+            prev_pri = _ROLE_PRIORITY.get(prev["role"], 1)
+            if my_pri >= prev_pri:
+                # I win (or equal = last-write-wins) — notify previous editor
+                loser_sid = _find_sid_for_user(prev["user_id"], bid)
+                winner_name = my_name
+            else:
+                # Previous editor had higher role — notify me
+                loser_sid = _find_sid_for_user(my_id, bid)
+                winner_name = prev["user_name"]
+            if loser_sid:
+                socketio.emit("conflict_override", {
+                    "line_id": line_id,
+                    "field": field,
+                    "winner_name": winner_name,
+                }, room=loser_sid, namespace="/")
+        # Record this edit
+        _recent_edits[key] = {
+            "user_id": my_id, "user_name": my_name,
+            "role": my_role, "at": now,
+        }
+    # Prune old entries periodically (every ~50 edits)
+    if len(_recent_edits) > 200:
+        stale = now - timedelta(seconds=30)
+        for k in [k for k, v in _recent_edits.items() if v["at"] < stale]:
+            del _recent_edits[k]
+
+
+def _find_sid_for_user(user_id, bid):
+    """Find the socket SID for a given user in a budget room."""
+    for sid, info in _socket_sessions.items():
+        if info["user_id"] == user_id and info["budget_id"] == bid:
+            return sid
+    return None
 
 
 def _ws_emit_field_change(bid, line_id, result_data):
@@ -1967,6 +2051,8 @@ def upsert_line(pid, bid):
         result = calc_line(ln, fringe_cfgs)
 
     resp = {"id": ln.id, **result}
+    # Conflict detection: check if another user edited the same field within 2 seconds
+    _check_and_emit_conflicts(bid, ln.id, data)
     _ws_emit_field_change(bid, ln.id, resp)
     return jsonify(resp)
 

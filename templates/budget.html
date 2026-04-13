@@ -2096,6 +2096,13 @@ const RATE_TYPE_LABELS = {
 };
 
 const COA_SECTIONS = {{ coa_sections | tojson }};
+const MY_ID    = {{ current_user.id }};
+const MY_NAME  = {{ (current_user.name or current_user.email) | tojson }};
+const MY_ROLE  = {{ current_user.role | tojson }};
+const MY_COLOR = [
+  "#2563eb","#dc2626","#059669","#d97706","#7c3aed",
+  "#db2777","#0891b2","#65a30d","#c026d3","#ea580c"
+][MY_ID % 10];
 
 
 // ── Budget Undo Stack (CHANGE 5) ────────────────────────────────────────
@@ -2242,6 +2249,14 @@ function startEdit(span) {
   const originalVal = span.textContent.trim();
   const isNum  = span.classList.contains('num');
   const field  = span.dataset.field;
+  // Emit cursor presence
+  const _editRow = span.closest('.line-row');
+  if (_editRow && _socket && _socket.connected) {
+    _socket.emit('editing_start', {
+      budget_id: BID, line_id: parseInt(_editRow.dataset.id),
+      user_id: MY_ID, user_name: MY_NAME, color: MY_COLOR
+    });
+  }
   const isQtyDays = isNum && (field === 'quantity' || field === 'days');
   // Clear "derived" flag once user actively edits the rate — it becomes a real value
   if (field === 'rate' && span.dataset.derived) { delete span.dataset.derived; }
@@ -2366,6 +2381,13 @@ function startEdit(span) {
     }
   });
   input.addEventListener('blur', () => {
+    // Emit cursor stop
+    const _blurRow = span.closest('.line-row');
+    if (_blurRow && _socket && _socket.connected) {
+      _socket.emit('editing_stop', {
+        budget_id: BID, line_id: parseInt(_blurRow.dataset.id), user_id: MY_ID
+      });
+    }
     // Only save if value actually changed
     if (input.value.trim() === originalVal && !_confirmed) {
       span.textContent = originalVal;
@@ -5776,9 +5798,55 @@ try {
     const hint = document.getElementById('collab-edit-hint');
     if (hint) hint.textContent = `${data.user_name} edited just now`;
   });
+
+  // ── Conflict override notification ──────────────────────────────────────
+  _socket.on('conflict_override', data => {
+    _showConflictToast(data.field, data.winner_name);
+  });
+
+  // ── Cursor presence: show who is editing which row ──────────────────────
+  _socket.on('editing_start', data => {
+    const row = document.querySelector(`.line-row[data-id="${data.line_id}"]`);
+    if (!row) return;
+    row.style.borderLeft = `3px solid ${data.color || '#2563eb'}`;
+    row.dataset.editingBy = data.user_name;
+    let badge = row.querySelector('.edit-badge');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'edit-badge';
+      const firstTd = row.querySelector('td');
+      if (firstTd) firstTd.prepend(badge);
+    }
+    const initials = (data.user_name || '').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+    badge.textContent = initials;
+    badge.style.background = data.color || '#2563eb';
+    badge.title = `${data.user_name} is editing`;
+  });
+
+  _socket.on('editing_stop', data => {
+    const row = document.querySelector(`.line-row[data-id="${data.line_id}"]`);
+    if (!row) return;
+    row.style.borderLeft = '';
+    delete row.dataset.editingBy;
+    const badge = row.querySelector('.edit-badge');
+    if (badge) badge.remove();
+  });
 } catch(e) {
   // SocketIO not available — fall back to polling
   _socket = null;
+}
+
+// ── Conflict toast helper ─────────────────────────────────────────────────
+function _showConflictToast(field, winnerName) {
+  const existing = document.querySelector('.conflict-toast');
+  if (existing) existing.remove();
+  const toast = document.createElement('div');
+  toast.className = 'conflict-toast';
+  const label = (field || '').replace(/_/g, ' ');
+  toast.innerHTML = `Your change to <strong>${label}</strong> was overridden by <strong>${winnerName}</strong>.`
+    + `<button onclick="this.parentElement.remove()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;margin-left:8px;font-size:.85rem">✕</button>`;
+  document.body.appendChild(toast);
+  setTimeout(() => { if (toast.parentElement) toast.remove(); }, 4000);
 }
 
 // ── Fallback: polling for structural changes (lines added/removed) ───────────

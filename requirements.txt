@@ -13,4 +13,4 @@ tzdata
 boto3
 dropbox
 flask-socketio
-eventlet
+simple-websocket
