@@ -4551,10 +4551,12 @@ def callsheet_view(pid, bid, date_str=None):
     if _day_headcount:
         meal_counts['craft_services'] = _day_headcount
     # Working meals: per-person cell flag count for this day
+    def _parse_flags(cf):
+        try: return json.loads(cf) if cf else {}
+        except Exception: return {}
     _wm_count = sum(
         1 for d in days_today
-        if d.day_type != 'off' and d.cell_flags and
-           __import__('json').loads(d.cell_flags or '{}').get('working_meal')
+        if d.day_type != 'off' and _parse_flags(d.cell_flags).get('working_meal')
     )
     if _wm_count:
         meal_counts['working_meal'] = _wm_count
@@ -5423,7 +5425,7 @@ with app.app_context():
         # Budget versioning: shared version number for Estimated+Working pairs
         "ALTER TABLE budget ADD COLUMN version_number INTEGER",
         # Meals/craft services: allow user to opt a schedule-driven line out of auto-sync
-        "ALTER TABLE budget_line ADD COLUMN sync_omit BOOLEAN DEFAULT 0",
+        "ALTER TABLE budget_line ADD COLUMN sync_omit BOOLEAN DEFAULT false NOT NULL",
     ]
     for _sql in _migrations:
         try:
