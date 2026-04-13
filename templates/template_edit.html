@@ -38,7 +38,7 @@
       <td>
         <select class="inline-select f-rt">
           {% for rt in ['day_8','day_10','day_12','flat_day','flat_project','hourly','custom'] %}
-          <option value="{{ rt }}" {{ 'selected' if ln.rate_type == rt else '' }}>{{ rt }}</option>
+          <option value="{{ rt }}" {{ 'selected' if ln.rate_type == rt else '' }}>{{ rt | rate_type_label }}</option>
           {% endfor %}
         </select>
       </td>

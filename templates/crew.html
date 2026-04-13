@@ -35,7 +35,7 @@
       <td>{{ m.department or '—' }}</td>
       <td>{{ m.company or '—' }}</td>
       <td class="col-num">{{ m.default_rate | currency if m.default_rate else '—' }}</td>
-      <td>{{ m.default_rate_type }}</td>
+      <td>{{ m.default_rate_type | rate_type_label }}</td>
       <td>{{ m.default_fringe }}</td>
       <td>
         {% if agent %}

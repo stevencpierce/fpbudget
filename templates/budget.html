@@ -3302,7 +3302,7 @@ function renderCalcDetail(d) {
 
   let html = `
     <div class="calc-meta">
-      <span><strong>Rate:</strong> ${fmt(d.rate)} / ${(d.rate_type||'').replace('_',' ')}</span>
+      <span><strong>Rate:</strong> ${fmt(d.rate)} / ${RATE_TYPE_LABELS[d.rate_type] || d.rate_type}</span>
       ${d.hours_per_day ? `<span><strong>Hours/day:</strong> ${d.hours_per_day}</span>` : ''}
       ${hourlyRates}
       <span><strong>Qty:</strong> ${d.qty}</span>

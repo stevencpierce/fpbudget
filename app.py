@@ -661,6 +661,7 @@ def logout():
 @app.route("/forgot-password", methods=["GET", "POST"])
 def forgot_password():
     if current_user.is_authenticated:
+        flash("You're already logged in. Log out first to reset your password.", "info")
         return redirect(url_for("dashboard"))
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
@@ -5057,6 +5058,21 @@ def fromjson_filter(s):
         return {}
 
 
+_RATE_TYPE_LABELS = {
+    'day_10':       '10hr Day',
+    'day_8':        '8hr Day',
+    'day_12':       '12hr Day',
+    'flat_day':     'Flat Day',
+    'flat_project': 'Flat Project',
+    'hourly':       'Hourly',
+    'custom':       'Custom',
+}
+
+@app.template_filter("rate_type_label")
+def rate_type_label_filter(v):
+    return _RATE_TYPE_LABELS.get(v, v or '—')
+
+
 # ── Admin routes ──────────────────────────────────────────────────────────────
 
 @app.route("/admin", methods=["GET"])
@@ -6061,6 +6077,16 @@ def docs_upload_delete(uid):
     db.session.delete(upload)
     db.session.commit()
     return jsonify({"status": "deleted"})
+
+
+@app.errorhandler(404)
+def page_not_found(e):
+    return render_template("404.html"), 404
+
+
+@app.route("/projects")
+def projects_redirect():
+    return redirect(url_for("dashboard"))
 
 
 if __name__ == "__main__":
