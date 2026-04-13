@@ -3590,6 +3590,9 @@ tr:hover .cs-rep-btn { opacity: 1; }
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  max-height: 80vh;
 }
 .cs-dist-header {
   display: flex;
@@ -3770,13 +3773,18 @@ tr.cs-row-viewed    { background: #1a1200; }
 }
 /* iPad portrait: hide Payroll Co + tighten qty/days/rate so desc column has breathing room */
 @media (max-width: 900px) {
+  .section-block { max-width: 100vw; }
   .line-table { min-width: 640px; }
   .col-pc { width: 0 !important; max-width: 0 !important; padding: 0 !important;
             overflow: hidden; border: none !important; }
   .col-rt, .col-fr { width: 0 !important; max-width: 0 !important;
                      padding: 0 !important; overflow: hidden; border: none !important; }
+  .col-ot { width: 0 !important; max-width: 0 !important;
+            padding: 0 !important; overflow: hidden; border: none !important; }
   .col-qty  { width: 48px; }
   .col-days { width: 54px; }
+  .col-desc { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .col-desc .editable { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 @media (max-width: 600px) {
   .line-table { min-width: 520px; }

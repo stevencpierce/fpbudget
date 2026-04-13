@@ -556,7 +556,8 @@ def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not current_user.is_authenticated or current_user.role not in ('super_admin', 'admin'):
-            abort(403)
+            flash("Not authorized", "error")
+            return redirect(url_for('dashboard'))
         return f(*args, **kwargs)
     return decorated
 
@@ -729,13 +730,26 @@ def health():
 
 @app.route("/admin/dbx-ls")
 @login_required
+@admin_required
 def dbx_ls():
     """Debug: list contents of the Dropbox ops root and find namespace IDs."""
-    if current_user.role not in ('super_admin', 'admin'):
-        abort(403)
     try:
         import dropbox as _dbx_mod
         dbx = _dbx_client()
+
+        # Current config
+        config = {
+            "DROPBOX_NAMESPACE_ID": _DBX_NAMESPACE_ID or "(not set)",
+            "DROPBOX_OPERATIONS_PATH": _DBX_OPS_ROOT,
+            "path_mode": "namespace" if _DBX_NAMESPACE_ID else "legacy",
+        }
+
+        # Resolved path examples
+        resolved_paths = {
+            "sample_project_root": f"/SampleProject" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/SampleProject",
+            "archive_root": f"/_archived" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_archived",
+            "wrap_root": f"/_WRAPPED PROJECTS" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_WRAPPED PROJECTS",
+        }
 
         # List root to find shared namespaces
         root_result = dbx.files_list_folder("")
@@ -748,8 +762,9 @@ def dbx_ls():
 
         # Also try listing the ops root directly
         ops_entries = []
+        list_path = "" if _DBX_NAMESPACE_ID else _DBX_OPS_ROOT
         try:
-            ops_result = dbx.files_list_folder(_DBX_OPS_ROOT)
+            ops_result = dbx.files_list_folder(list_path)
             for e in ops_result.entries:
                 info = {"name": e.name, "type": type(e).__name__}
                 if hasattr(e, 'sharing_info') and e.sharing_info:
@@ -767,9 +782,11 @@ def dbx_ls():
         }
 
         return jsonify({
+            "config": config,
+            "resolved_paths": resolved_paths,
             "namespace_info": namespace_info,
             "root_entries": root_entries,
-            "ops_path": _DBX_OPS_ROOT,
+            "ops_path": list_path or "(namespace root)",
             "ops_entries": ops_entries,
         })
     except Exception as e:
@@ -1109,10 +1126,9 @@ def project_reactivate(pid):
 
 @app.route("/admin/import-dropbox", methods=["POST"])
 @login_required
+@admin_required
 def admin_import_dropbox():
     """Scan Dropbox ops root for project folders and import any missing ones."""
-    if current_user.role not in ('super_admin', 'admin'):
-        abort(403)
     try:
         dbx = _dbx_client()
         list_path = "" if _DBX_NAMESPACE_ID else _DBX_OPS_ROOT

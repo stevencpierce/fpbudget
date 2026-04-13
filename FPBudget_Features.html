@@ -2,16 +2,17 @@
 <html lang="en">
 <head><meta charset="UTF-8"><title>FPBudget Features</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:1000px;margin:40px auto;padding:0 24px;color:#1a1a2e;line-height:1.6}h1{color:#0f172a;border-bottom:3px solid #2563eb;padding-bottom:8px}h2{color:#1e3a8a;margin-top:2rem;border-bottom:1px solid #dbeafe;padding-bottom:4px}table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.9rem}th{background:#1e3a8a;color:#fff;padding:8px 12px;text-align:left}td{padding:7px 12px;border-bottom:1px solid #e2e8f0;vertical-align:top}tr:nth-child(even){background:#f8fafc}code{background:#f1f5f9;padding:2px 5px;border-radius:3px;font-size:.85em}pre{background:#0f172a;color:#e2e8f0;padding:16px;border-radius:8px;overflow-x:auto}blockquote{border-left:4px solid #2563eb;margin:0;padding:0 16px;color:#475569}.footer{margin-top:3rem;font-size:.8rem;color:#94a3b8}</style></head><body>
 <h1>FPBudget — Feature Registry</h1>
-<p><strong>App:</strong> FPBudget (Framework Productions Budget Planning)
-<strong>Live URL:</strong> https://fp-budget.onrender.com
-<strong>Repo:</strong> https://github.com/stevencpierce/fpbudget
-<strong>Stack:</strong> Flask · SQLAlchemy · SQLite/Postgres · WeasyPrint · Jinja2</p>
+<p><strong>App:</strong> FPBudget (Framework Productions Budget Planning)</p>
+<p><strong>Live URL:</strong> https://fp-budget.onrender.com</p>
+<p><strong>Repo:</strong> https://github.com/stevencpierce/fpbudget</p>
+<p><strong>Stack:</strong> Flask · SQLAlchemy · SQLite/Postgres · WeasyPrint · Jinja2</p>
+<p><strong>Last Updated:</strong> 2026-04-13</p>
 <blockquote>
-<p>Update this file whenever a feature is added, changed, or removed.
-Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Planned</code> · <code>⚠️ Known Issue</code> · <code>🗑️ Removed</code></p>
+<p>Update this file whenever a feature is added, changed, or removed.</p>
+<p>Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Planned</code> · <code>⚠️ Known Issue</code> · <code>🗑️ Removed</code></p>
 </blockquote>
 <hr />
-<h2>Projects &amp; Budgets</h2>
+<h2>Projects & Budgets</h2>
 <table>
 <thead>
 <tr>
@@ -29,7 +30,7 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <tr>
 <td>✅ Live</td>
 <td>Create Project</td>
-<td>Start a new production project with a name and optional budget template</td>
+<td>Start a new production project with a name, client name, and optional budget template</td>
 </tr>
 <tr>
 <td>✅ Live</td>
@@ -54,17 +55,42 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <tr>
 <td>✅ Live</td>
 <td>Budget Versioning</td>
-<td>Each budget has a version name (e.g. "v1 Client Approved")</td>
+<td>Estimated + Working share a version number; version_status tracks current / superseded / archived; parent budget linking for working budgets forked from estimated</td>
 </tr>
 <tr>
 <td>✅ Live</td>
-<td>Delete Budget / Project</td>
-<td>Fully cascaded delete — removes all lines, schedule, call sheets, crew assignments, and related records without FK errors</td>
+<td>Delete Budget</td>
+<td>Delete any budget version with confirmation; guards prevent deleting the last estimated budget; fully cascaded — removes all lines, schedule, crew assignments, and related records</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Delete Project</td>
+<td>Fully cascaded delete — removes all budgets, lines, schedule, call sheets, crew, and related records</td>
 </tr>
 <tr>
 <td>✅ Live</td>
 <td>Share Project</td>
 <td>Invite collaborators by email; they get their own login-gated access to the project</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Project Wrap</td>
+<td>Mark a project as wrapped/complete; associated Dropbox folder moves to <code>/_WRAPPED PROJECTS</code></td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Project Archive</td>
+<td>Archive a project to remove from active dashboard; Dropbox folder moves to <code>/_archived</code></td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Project Reactivate</td>
+<td>Restore a wrapped or archived project back to active status</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Dropbox Folder Import</td>
+<td>Admin bulk-import: scans Dropbox operations root for project folders and auto-creates ProjectSheet records; parses folder naming convention (YYYY-MM_Client_Project)</td>
 </tr>
 </tbody>
 </table>
@@ -81,18 +107,18 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <tbody>
 <tr>
 <td>✅ Live</td>
-<td>⚡ Quick Entry Panel</td>
+<td>Quick Entry Panel</td>
 <td>Slide-over panel with every COA department; pre-filled suggested rates for all labor and expense items; check multiple items across departments and add them all at once</td>
 </tr>
 <tr>
 <td>✅ Live</td>
 <td>QE Sorted Insertion</td>
-<td>Lines added via Quick Entry appear in the correct department order (e.g. Talent: Principal → Host → Extra; Meals: Breakfast → Lunch)</td>
+<td>Lines added via Quick Entry appear in the correct department order (e.g. Talent: Principal > Host > Extra; Meals: Breakfast > Lunch)</td>
 </tr>
 <tr>
 <td>✅ Live</td>
 <td>QE Kit Fees Under Parent</td>
-<td>Kit fees added via Quick Entry automatically attach below their parent labor line — not scattered through the section</td>
+<td>Kit fees added via Quick Entry automatically attach below their parent labor line</td>
 </tr>
 <tr>
 <td>✅ Live</td>
@@ -107,17 +133,17 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <tr>
 <td>✅ Live</td>
 <td>Inline Editing</td>
-<td>Click any cell in a budget line to edit it in place — saves automatically</td>
+<td>Click any cell in a budget line to edit it in place — saves automatically via AJAX</td>
 </tr>
 <tr>
 <td>✅ Live</td>
-<td>Labor Lines (qty × days × rate)</td>
+<td>Labor Lines (qty x days x rate)</td>
 <td>Full union/non-union labor math: ST/OT/DT, fringe, agent %</td>
 </tr>
 <tr>
 <td>✅ Live</td>
 <td>Non-Labor / Flat Lines</td>
-<td>Expense lines: qty × days × unit rate, or a single flat dollar amount</td>
+<td>Expense lines: qty x days x unit rate, or a single flat dollar amount</td>
 </tr>
 <tr>
 <td>✅ Live</td>
@@ -134,10 +160,15 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <td>Search / Filter Lines</td>
 <td>Search box filters all lines across all departments in real time</td>
 </tr>
+<tr>
+<td>✅ Live</td>
+<td>Sync-Omit Flag</td>
+<td>Flag a budget line to exclude it from schedule-driven recalculation; line zeroes out when omitted, restores on re-enable</td>
+</tr>
 </tbody>
 </table>
 <hr />
-<h2>Rates &amp; Math</h2>
+<h2>Rates & Math</h2>
 <table>
 <thead>
 <tr>
@@ -165,7 +196,7 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <tr>
 <td>✅ Live</td>
 <td>Agent %</td>
-<td>Optional agent commission percentage per labor line</td>
+<td>Optional agent commission percentage per labor line; on_top or inclusive fee modes</td>
 </tr>
 <tr>
 <td>✅ Live</td>
@@ -261,7 +292,7 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <tr>
 <td>✅ Live</td>
 <td>Float Bar (bottom)</td>
-<td>Sticky bar always showing Subtotal · Fee · Grand Total — updates live as you type</td>
+<td>Sticky bar always showing Subtotal / Fee / Grand Total — updates live as you type</td>
 </tr>
 </tbody>
 </table>
@@ -304,7 +335,7 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <tr>
 <td>✅ Live</td>
 <td>Department Sub-Group Headers</td>
-<td>Production Staff section shows department headers (Camera, G&amp;E, Production, etc.) in both the budget detail view and the Gantt</td>
+<td>Production Staff section shows department headers (Camera, G&E, Production, etc.) in both the budget detail view and the Gantt</td>
 </tr>
 <tr>
 <td>✅ Live</td>
@@ -315,6 +346,11 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <td>✅ Live</td>
 <td>+ Assign Button</td>
 <td>Each labor line has an Assign button to attach a specific crew member from the roster</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Production Days</td>
+<td>Shoot day count excludes travel/hold/prep days; tracks actual production days independently of calendar dates</td>
 </tr>
 </tbody>
 </table>
@@ -354,6 +390,16 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <td>Kit Fees on Crew</td>
 <td>Kit fee amount tracked per crew assignment</td>
 </tr>
+<tr>
+<td>✅ Live</td>
+<td>Agent System</td>
+<td>Crew members can have multiple support contacts (agents, managers, publicists, attorneys, PAs); tracks fee %, fee type (on_top/inclusive), and visibility flags; primary agent fee auto-syncs to crew default_agent_pct</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Apply Default Rate on Assign</td>
+<td>When assigning crew to a budget line, popup offers to apply default rate and fringe from the crew record</td>
+</tr>
 </tbody>
 </table>
 <hr />
@@ -379,8 +425,13 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 </tr>
 <tr>
 <td>✅ Live</td>
-<td>Key Contacts Section</td>
-<td>Director, DP, AD, UPM, and other key personnel with contact info; draggable order</td>
+<td>Key Personnel Section</td>
+<td>Director, DP, AD, UPM, and other key personnel with contact info; defaults empty on first visit, populated from crew data</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Useful Contacts Section</td>
+<td>Manually entered contacts or selected from project contact sheet; defaults empty on first visit</td>
 </tr>
 <tr>
 <td>✅ Live</td>
@@ -409,12 +460,37 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 </tr>
 <tr>
 <td>✅ Live</td>
+<td>Meal Counts from Live Headcount</td>
+<td>Meal counts derived from actual crew headcount for the shoot day (non-off ScheduleDay entries), not static budget quantities</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Time Standardization</td>
+<td>All times normalized to H:MM AM/PM format; general crew call restricted to TBD or a specific time</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Auto-Fetch Weather</td>
+<td>Fetches temperature, precipitation probability, and weather code from Open-Meteo for shoot date + location</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Auto-Fetch Sunrise / Sunset</td>
+<td>Fetches sunrise and sunset times from sunrise-sunset.org for the shoot location and date</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Auto-Fetch Nearest Hospital</td>
+<td>Finds nearest hospitals within 15km using OpenStreetMap Overpass API</td>
+</tr>
+<tr>
+<td>✅ Live</td>
 <td>Print / Export</td>
 <td>Clean print-optimized CSS — header, page 1, page 2; all UI chrome hidden</td>
 </tr>
 <tr>
 <td>✅ Live</td>
-<td>✉ Send Call Sheet via Email</td>
+<td>Send Call Sheet via Email</td>
 <td>Distribute call sheet to crew via email from contact@thefp.tv; each recipient gets a personal view/confirm link</td>
 </tr>
 <tr>
@@ -436,6 +512,34 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <td>✅ Live</td>
 <td>Public Confirm Page</td>
 <td>Clean standalone page (no login required) — shows project, date, version, and confirm button</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>Locations</h2>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>✅ Live</td>
+<td>Location Library</td>
+<td>Global reusable location database across all projects</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Google Maps Autocomplete</td>
+<td>Location name and address fields use Google Maps Places Autocomplete for address suggestions</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Auto Title Case</td>
+<td>Location name, facility, and contact fields auto-capitalize to Title Case on save</td>
 </tr>
 </tbody>
 </table>
@@ -468,7 +572,7 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <tr>
 <td>✅ Live</td>
 <td>Small Live Production Template</td>
-<td>Built-in template: Director, Host, UPM, Key PA, 2× Camera Op, Video Engineer, Sound Mixer, camera/lens/monitor/media gear, lighting + grip package, AV/control room/streaming, production car, fuel/parking/mileage, lunch/catering</td>
+<td>Built-in template: Director, Host, UPM, Key PA, 2x Camera Op, Video Engineer, Sound Mixer, camera/lens/monitor/media gear, lighting + grip package, AV/control room/streaming, production car, fuel/parking/mileage, lunch/catering</td>
 </tr>
 <tr>
 <td>✅ Live</td>
@@ -501,7 +605,7 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <tr>
 <td>✅ Live</td>
 <td>Timezone Auto-detect</td>
-<td>Default timezone auto-fills from the browser if no timezone is saved on the budget</td>
+<td>Default timezone auto-fills from the browser/device on project creation; defaults to America/Los_Angeles</td>
 </tr>
 <tr>
 <td>✅ Live</td>
@@ -579,6 +683,39 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 </tbody>
 </table>
 <hr />
+<h2>Documents (Docs Module)</h2>
+<table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>✅ Live</td>
+<td>Docs Tab</td>
+<td>Project-scoped document upload and management; accessible from budget views and project pages</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Upload to R2 + Dropbox</td>
+<td>Files uploaded to R2 cloud storage and auto-filed to Dropbox project folder (01_ADMIN/PROCESSED DOCUMENTS/{uploader}/)</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>File Deduplication</td>
+<td>SHA-256 hash check prevents duplicate uploads</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Docs Access Control</td>
+<td>Project role enforcement — docs_only users restricted to docs routes; admins access all project docs</td>
+</tr>
+</tbody>
+</table>
+<hr />
 <h2>Admin / System</h2>
 <table>
 <thead>
@@ -591,8 +728,38 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <tbody>
 <tr>
 <td>✅ Live</td>
-<td>Login / Auth</td>
-<td>Email + password login; session-based auth via Flask-Login</td>
+<td>Multi-User Auth</td>
+<td>DB-backed User model with email/password; Flask-Login session auth</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Role-Based Access</td>
+<td>User roles: super_admin, admin, editor, viewer, docs_only</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Per-Project Access</td>
+<td>ProjectAccess table scopes permissions per user per project (owner/collaborator)</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Admin Panel</td>
+<td>Create users, edit roles, assign project access, reset passwords at /admin/users</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>User Profile</td>
+<td>Update name/email/phone and change password at /profile</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Mandatory Password Change</td>
+<td>New users forced to change temporary password on first login</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Super Admin Bootstrap</td>
+<td>First-run seed from ADMIN_EMAIL/ADMIN_PASSWORD env vars</td>
 </tr>
 <tr>
 <td>✅ Live</td>
@@ -614,14 +781,27 @@ Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Pla
 <td>CSV Import</td>
 <td>Upload a CSV to bulk-import budget lines into any section</td>
 </tr>
+<tr>
+<td>✅ Live</td>
+<td>Dropbox Business Namespace Routing</td>
+<td>Supports Dropbox Business shared folders via namespace_id routing</td>
+</tr>
+<tr>
+<td>✅ Live</td>
+<td>Mobile / Tablet UX</td>
+<td>Budget table scroll wrapper for horizontal overflow; long-press (500ms) context menu for touch devices</td>
+</tr>
 </tbody>
 </table>
 <hr />
-<h2>Workflow: Offline → Live</h2>
-<p><code>1. Work locally:   python app.py   →   http://localhost:5000
+<h2>Workflow: Offline to Live</h2>
+<pre><code>1. Work locally:   python app.py   -&gt;   http://localhost:5000
 2. Test your changes until the feature works correctly
-3. Commit:         git add -A &amp;&amp; git commit -m "describe what you built"
+3. Commit:         git add -A && git commit -m "describe what you built"
 4. Push live:      git push origin main
-5. Render auto-deploys in ~2 minutes</code></p>
+5. Render auto-deploys in ~2 minutes
+</code></pre>
 <p>No manual deploy steps needed after initial setup.</p>
-<p class="footer">Generated 2026-04-08 11:19</p></body></html>
+<div class="footer">Generated from FEATURES.md — 2026-04-13</div>
+</body>
+</html>

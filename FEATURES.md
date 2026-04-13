@@ -4,6 +4,7 @@
 **Live URL:** https://fp-budget.onrender.com
 **Repo:** https://github.com/stevencpierce/fpbudget
 **Stack:** Flask · SQLAlchemy · SQLite/Postgres · WeasyPrint · Jinja2
+**Last Updated:** 2026-04-13
 
 > Update this file whenever a feature is added, changed, or removed.
 > Status: `✅ Live` · `🔧 In Progress` · `📋 Planned` · `⚠️ Known Issue` · `🗑️ Removed`
@@ -15,14 +16,19 @@
 | Status | Feature | Plain English Description |
 |--------|---------|--------------------------|
 | ✅ Live | Project Dashboard | Landing page showing all projects with quick links to each budget |
-| ✅ Live | Create Project | Start a new production project with a name and optional budget template |
+| ✅ Live | Create Project | Start a new production project with a name, client name, and optional budget template |
 | ✅ Live | Template on New Project | When creating a project, pick a pre-built template from a dropdown — lines auto-populate the first budget |
 | ✅ Live | Multiple Budgets per Project | Each project can have several budget versions (Estimated, Working, Actual) |
 | ✅ Live | Budget Modes | Three modes: Estimated (baseline), Working (live forecast), Actual (real spend) |
 | ✅ Live | Create Working Budget from Estimated | Locks the estimated as a frozen snapshot, opens a working copy for live tracking |
-| ✅ Live | Budget Versioning | Each budget has a version name (e.g. "v1 Client Approved") |
-| ✅ Live | Delete Budget / Project | Fully cascaded delete — removes all lines, schedule, call sheets, crew assignments, and related records without FK errors |
+| ✅ Live | Budget Versioning | Estimated + Working share a version number; version_status tracks current / superseded / archived; parent budget linking for working budgets forked from estimated |
+| ✅ Live | Delete Budget | Delete any budget version with confirmation; guards prevent deleting the last estimated budget; fully cascaded — removes all lines, schedule, crew assignments, and related records |
+| ✅ Live | Delete Project | Fully cascaded delete — removes all budgets, lines, schedule, call sheets, crew, and related records |
 | ✅ Live | Share Project | Invite collaborators by email; they get their own login-gated access to the project |
+| ✅ Live | Project Wrap | Mark a project as wrapped/complete; associated Dropbox folder moves to `/_WRAPPED PROJECTS` |
+| ✅ Live | Project Archive | Archive a project to remove from active dashboard; Dropbox folder moves to `/_archived` |
+| ✅ Live | Project Reactivate | Restore a wrapped or archived project back to active status |
+| ✅ Live | Dropbox Folder Import | Admin bulk-import: scans Dropbox operations root for project folders and auto-creates ProjectSheet records; parses folder naming convention (YYYY-MM_Client_Project) |
 
 ---
 
@@ -30,17 +36,18 @@
 
 | Status | Feature | Plain English Description |
 |--------|---------|--------------------------|
-| ✅ Live | ⚡ Quick Entry Panel | Slide-over panel with every COA department; pre-filled suggested rates for all labor and expense items; check multiple items across departments and add them all at once |
-| ✅ Live | QE Sorted Insertion | Lines added via Quick Entry appear in the correct department order (e.g. Talent: Principal → Host → Extra; Meals: Breakfast → Lunch) |
-| ✅ Live | QE Kit Fees Under Parent | Kit fees added via Quick Entry automatically attach below their parent labor line — not scattered through the section |
+| ✅ Live | Quick Entry Panel | Slide-over panel with every COA department; pre-filled suggested rates for all labor and expense items; check multiple items across departments and add them all at once |
+| ✅ Live | QE Sorted Insertion | Lines added via Quick Entry appear in the correct department order (e.g. Talent: Principal > Host > Extra; Meals: Breakfast > Lunch) |
+| ✅ Live | QE Kit Fees Under Parent | Kit fees added via Quick Entry automatically attach below their parent labor line |
 | ✅ Live | + Single Line (modal) | Add one line at a time — pick department, description, labor vs. flat, qty/days/rate |
 | ✅ Live | + Line per Section | Each department section has its own quick-add button that pre-selects that department |
-| ✅ Live | Inline Editing | Click any cell in a budget line to edit it in place — saves automatically |
-| ✅ Live | Labor Lines (qty × days × rate) | Full union/non-union labor math: ST/OT/DT, fringe, agent % |
-| ✅ Live | Non-Labor / Flat Lines | Expense lines: qty × days × unit rate, or a single flat dollar amount |
+| ✅ Live | Inline Editing | Click any cell in a budget line to edit it in place — saves automatically via AJAX |
+| ✅ Live | Labor Lines (qty x days x rate) | Full union/non-union labor math: ST/OT/DT, fringe, agent % |
+| ✅ Live | Non-Labor / Flat Lines | Expense lines: qty x days x unit rate, or a single flat dollar amount |
 | ✅ Live | Delete Line | Remove any line with a trash icon; prompts confirmation |
 | ✅ Live | Reorder Lines (drag) | Drag lines up/down within a section to reorder them |
 | ✅ Live | Search / Filter Lines | Search box filters all lines across all departments in real time |
+| ✅ Live | Sync-Omit Flag | Flag a budget line to exclude it from schedule-driven recalculation; line zeroes out when omitted, restores on re-enable |
 
 ---
 
@@ -51,7 +58,7 @@
 | ✅ Live | Rate Types | 10hr Day (default), 8hr Day, 12hr Day, Flat Day, Flat Project, Hourly, Custom |
 | ✅ Live | OT / DT Calculation | Auto-calculates overtime and double time based on rate type and hours |
 | ✅ Live | Fringe / Benefits | Assign a fringe bucket (None, Union, Employer, State, Local, Payroll) to each labor line |
-| ✅ Live | Agent % | Optional agent commission percentage per labor line |
+| ✅ Live | Agent % | Optional agent commission percentage per labor line; on_top or inclusive fee modes |
 | ✅ Live | Workers' Comp | Auto-calculated as a % of total labor; set in budget settings |
 | ✅ Live | Payroll Service Fee | Auto-calculated as a % of total labor; set in budget settings |
 | ✅ Live | Production Company Fee | Flat % added on top of all costs; shown separately or dispersed into line rates |
@@ -79,7 +86,7 @@
 | ✅ Live | Working Total Column | Shows live recalculated totals as you make changes |
 | ✅ Live | Variance Column | Color-coded over/under variance between Estimated and Working per line and per section |
 | ✅ Live | Cross-Budget Reference | View the Working budget's totals as a column while viewing the Estimated budget |
-| ✅ Live | Float Bar (bottom) | Sticky bar always showing Subtotal · Fee · Grand Total — updates live as you type |
+| ✅ Live | Float Bar (bottom) | Sticky bar always showing Subtotal / Fee / Grand Total — updates live as you type |
 
 ---
 
@@ -95,6 +102,7 @@
 | ✅ Live | Department Sub-Group Headers | Production Staff section shows department headers (Camera, G&E, Production, etc.) in both the budget detail view and the Gantt |
 | ✅ Live | Estimated vs. Working Schedule | Separate schedule grids for Estimated and Working modes |
 | ✅ Live | + Assign Button | Each labor line has an Assign button to attach a specific crew member from the roster |
+| ✅ Live | Production Days | Shoot day count excludes travel/hold/prep days; tracks actual production days independently of calendar dates |
 
 ---
 
@@ -107,6 +115,8 @@
 | ✅ Live | Department Grouping | Crew grouped by COA department in alphabetical department order |
 | ✅ Live | Multi-select for Export | Ctrl/Cmd-click to select multiple crew; right-click to omit from printed sheet |
 | ✅ Live | Kit Fees on Crew | Kit fee amount tracked per crew assignment |
+| ✅ Live | Agent System | Crew members can have multiple support contacts (agents, managers, publicists, attorneys, PAs); tracks fee %, fee type (on_top/inclusive), and visibility flags; primary agent fee auto-syncs to crew default_agent_pct |
+| ✅ Live | Apply Default Rate on Assign | When assigning crew to a budget line, popup offers to apply default rate and fringe from the crew record |
 
 ---
 
@@ -116,18 +126,34 @@
 |--------|---------|--------------------------|
 | ✅ Live | Call Sheet View | Full two-page formatted call sheet for any shoot day — auto-populated from the schedule |
 | ✅ Live | Editable Fields | All call sheet fields (call times, weather, meals, notes, etc.) are editable inline and auto-save |
-| ✅ Live | Key Contacts Section | Director, DP, AD, UPM, and other key personnel with contact info; draggable order |
+| ✅ Live | Key Personnel Section | Director, DP, AD, UPM, and other key personnel with contact info; defaults empty on first visit, populated from crew data |
+| ✅ Live | Useful Contacts Section | Manually entered contacts or selected from project contact sheet; defaults empty on first visit |
 | ✅ Live | Locations | Location cards with address, map link, and contacts per location |
 | ✅ Live | Crew Call Times | Per-person call time grid auto-populated from crew assignments |
 | ✅ Live | Department Notes | Optional notes per department printed on the call sheet |
 | ✅ Live | Extras Grid | Number of extras + call time per category |
 | ✅ Live | Advance Schedule | Text block for next-day/next-week advance info |
+| ✅ Live | Meal Counts from Live Headcount | Meal counts derived from actual crew headcount for the shoot day (non-off ScheduleDay entries), not static budget quantities |
+| ✅ Live | Time Standardization | All times normalized to H:MM AM/PM format; general crew call restricted to TBD or a specific time |
+| ✅ Live | Auto-Fetch Weather | Fetches temperature, precipitation probability, and weather code from Open-Meteo for shoot date + location |
+| ✅ Live | Auto-Fetch Sunrise / Sunset | Fetches sunrise and sunset times from sunrise-sunset.org for the shoot location and date |
+| ✅ Live | Auto-Fetch Nearest Hospital | Finds nearest hospitals within 15km using OpenStreetMap Overpass API |
 | ✅ Live | Print / Export | Clean print-optimized CSS — header, page 1, page 2; all UI chrome hidden |
-| ✅ Live | ✉ Send Call Sheet via Email | Distribute call sheet to crew via email from contact@thefp.tv; each recipient gets a personal view/confirm link |
+| ✅ Live | Send Call Sheet via Email | Distribute call sheet to crew via email from contact@thefp.tv; each recipient gets a personal view/confirm link |
 | ✅ Live | View Tracking | When a recipient opens their email link, the server records a viewed timestamp |
 | ✅ Live | Confirmation Tracking | Each email includes a "Confirm My Call" button; confirmation is recorded with timestamp |
 | ✅ Live | Distribution History | Internal distribution panel shows all prior sends with version, timestamp, and per-recipient status badges (pending / sent / viewed / confirmed) |
 | ✅ Live | Public Confirm Page | Clean standalone page (no login required) — shows project, date, version, and confirm button |
+
+---
+
+## Locations
+
+| Status | Feature | Plain English Description |
+|--------|---------|--------------------------|
+| ✅ Live | Location Library | Global reusable location database across all projects |
+| ✅ Live | Google Maps Autocomplete | Location name and address fields use Google Maps Places Autocomplete for address suggestions |
+| ✅ Live | Auto Title Case | Location name, facility, and contact fields auto-capitalize to Title Case on save |
 
 ---
 
@@ -138,7 +164,7 @@
 | ✅ Live | Save as Template | Save any budget's lines as a reusable named template — all lines per COA section preserved (no deduplication) |
 | ✅ Live | Apply Template to Budget | Load a template into a budget to pre-populate lines with qty, days, and rate |
 | ✅ Live | Template on New Project | Template picker dropdown on the New Project modal; lines auto-apply to the first budget |
-| ✅ Live | Small Live Production Template | Built-in template: Director, Host, UPM, Key PA, 2× Camera Op, Video Engineer, Sound Mixer, camera/lens/monitor/media gear, lighting + grip package, AV/control room/streaming, production car, fuel/parking/mileage, lunch/catering |
+| ✅ Live | Small Live Production Template | Built-in template: Director, Host, UPM, Key PA, 2x Camera Op, Video Engineer, Sound Mixer, camera/lens/monitor/media gear, lighting + grip package, AV/control room/streaming, production car, fuel/parking/mileage, lunch/catering |
 | ✅ Live | Template Editor | Create and edit templates from the Templates page; add/remove/edit individual lines |
 
 ---
@@ -149,7 +175,7 @@
 |--------|---------|--------------------------|
 | ✅ Live | Budget Settings | Name, start/end date, target budget, company fee %, dispersed toggle, payroll settings |
 | ✅ Live | Start Date Auto-fills End Date | Picking a start date defaults end date to +14 days if end is empty |
-| ✅ Live | Timezone Auto-detect | Default timezone auto-fills from the browser if no timezone is saved on the budget |
+| ✅ Live | Timezone Auto-detect | Default timezone auto-fills from the browser/device on project creation; defaults to America/Los_Angeles |
 | ✅ Live | Production Details (per budget) | Client name, prepared-by name/title/email/phone stored on each budget |
 | ✅ Live | Company Profile (global) | Company name, address, phone, email, website — used on all PDF exports |
 | ✅ Live | Fringe Config | Set the % rate for each fringe bucket (Union, Employer, State, Local, Payroll) |
@@ -172,22 +198,41 @@
 
 ---
 
+## Documents (Docs Module)
+
+| Status | Feature | Plain English Description |
+|--------|---------|--------------------------|
+| ✅ Live | Docs Tab | Project-scoped document upload and management; accessible from budget views and project pages |
+| ✅ Live | Upload to R2 + Dropbox | Files uploaded to R2 cloud storage and auto-filed to Dropbox project folder (01_ADMIN/PROCESSED DOCUMENTS/{uploader}/) |
+| ✅ Live | File Deduplication | SHA-256 hash check prevents duplicate uploads |
+| ✅ Live | Docs Access Control | Project role enforcement — docs_only users restricted to docs routes; admins access all project docs |
+
+---
+
 ## Admin / System
 
 | Status | Feature | Plain English Description |
 |--------|---------|--------------------------|
-| ✅ Live | Login / Auth | Email + password login; session-based auth via Flask-Login |
+| ✅ Live | Multi-User Auth | DB-backed User model with email/password; Flask-Login session auth |
+| ✅ Live | Role-Based Access | User roles: super_admin, admin, editor, viewer, docs_only |
+| ✅ Live | Per-Project Access | ProjectAccess table scopes permissions per user per project (owner/collaborator) |
+| ✅ Live | Admin Panel | Create users, edit roles, assign project access, reset passwords at /admin/users |
+| ✅ Live | User Profile | Update name/email/phone and change password at /profile |
+| ✅ Live | Mandatory Password Change | New users forced to change temporary password on first login |
+| ✅ Live | Super Admin Bootstrap | First-run seed from ADMIN_EMAIL/ADMIN_PASSWORD env vars |
 | ✅ Live | Health Check | `/health` endpoint for Render uptime monitoring |
 | ✅ Live | Auto DB Migrations | New database columns added automatically on startup — no manual migration needed |
 | ✅ Live | Postgres + SQLite | Uses Postgres on Render (production), SQLite locally (development) |
 | ✅ Live | CSV Import | Upload a CSV to bulk-import budget lines into any section |
+| ✅ Live | Dropbox Business Namespace Routing | Supports Dropbox Business shared folders via namespace_id routing |
+| ✅ Live | Mobile / Tablet UX | Budget table scroll wrapper for horizontal overflow; long-press (500ms) context menu for touch devices |
 
 ---
 
-## Workflow: Offline → Live
+## Workflow: Offline to Live
 
 ```
-1. Work locally:   python app.py   →   http://localhost:5000
+1. Work locally:   python app.py   ->   http://localhost:5000
 2. Test your changes until the feature works correctly
 3. Commit:         git add -A && git commit -m "describe what you built"
 4. Push live:      git push origin main

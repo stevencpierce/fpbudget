@@ -2205,6 +2205,8 @@ function startRename(el) {
 document.addEventListener('click', e => {
   const span = e.target.closest('.editable');
   if (!span || span.dataset.editing) return;
+  // On touch devices, skip edit if user is selecting text (long-press copy)
+  if ('ontouchstart' in window && window.getSelection().toString()) return;
   startEdit(span);
 });
 
@@ -3469,7 +3471,6 @@ function renderCalcDetail(d) {
     _lpX = t.clientX; _lpY = t.clientY; _lpRow = row;
     _lpTimer = setTimeout(() => {
       if (_lpRow) {
-        e.preventDefault();
         _showCtxMenuAt(_lpRow, _lpX, _lpY);
       }
     }, 500);

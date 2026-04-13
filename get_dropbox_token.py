@@ -17,8 +17,8 @@ auth_url = (
     f"&token_access_type=offline"
 )
 
-print(f"\nOpening browser to authorize. If it doesn't open, visit:\n{auth_url}\n")
-webbrowser.open(auth_url)
+print(f"\nCopy and paste this URL into your browser:\n\n{auth_url}\n")
+print("After authorizing, Dropbox will show you a code. Copy it.\n")
 
 code = input("Paste the authorization code from Dropbox: ").strip()
 
@@ -26,8 +26,8 @@ import urllib.request, urllib.parse, base64, json
 
 creds = base64.b64encode(f"{APP_KEY}:{APP_SECRET}".encode()).decode()
 data  = urllib.parse.urlencode({
-    "code":         code,
-    "grant_type":   "authorization_code",
+    "code":       code,
+    "grant_type": "authorization_code",
 }).encode()
 
 req = urllib.request.Request(
@@ -37,7 +37,12 @@ req = urllib.request.Request(
              "Content-Type": "application/x-www-form-urlencoded"},
 )
 
-resp = json.loads(urllib.request.urlopen(req).read())
+try:
+    resp = json.loads(urllib.request.urlopen(req).read())
+except urllib.error.HTTPError as e:
+    body = e.read().decode()
+    print(f"\n❌ Dropbox returned an error: {e.code}\n{body}")
+    raise
 
 print("\n✅ Add these to Render environment variables:\n")
 print(f"  DROPBOX_APP_KEY      = {APP_KEY}")

@@ -63,7 +63,7 @@
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=contacts">Contacts</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=locations">Locations</a>
     <span class="tab-btn active">Call Sheets</span>
-    <a class="tab-btn tab-link" href="{{ url_for('docs_project', pid=project.id) }}">Docs</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=docs">Docs</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=actuals">Actuals</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=settings">⚙ Settings</a>
   </div>
@@ -1784,9 +1784,11 @@ let _distOpen = true;
 
 function csDistToggle() {
   _distOpen = !_distOpen;
-  document.getElementById('cs-dist-body').style.display = _distOpen ? 'block' : 'none';
+  const body = document.getElementById('cs-dist-body');
+  body.style.display = _distOpen ? 'block' : 'none';
   document.getElementById('cs-dist-toggle-btn').textContent = _distOpen ? '▾ Collapse' : '▸ Expand';
   if (_distOpen) {
+    body.scrollTop = 0;
     csDistLoadHistory();
     csDistBuildRecipientList();
   }
