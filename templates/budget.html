@@ -5742,14 +5742,22 @@ function _timeAgo(d) {
 // ── SocketIO real-time collaboration ─────────────────────────────────────────
 let _socket = null;
 try {
-  _socket = io({ transports: ['websocket', 'polling'] });
+  _socket = io({
+    transports: ['websocket', 'polling'],
+    path: '/socket.io',
+  });
 
   _socket.on('connect', () => {
+    console.log('Socket connected:', _socket.id);
     _socket.emit('join_budget', {
       budget_id: BID,
-      user_id: {{ current_user.id }},
-      user_name: {{ (current_user.name or current_user.email) | tojson }},
+      user_id: MY_ID,
+      user_name: MY_NAME,
     });
+  });
+
+  _socket.on('connect_error', err => {
+    console.warn('Socket connect error:', err.message);
   });
 
   let _pendingViewers = null;

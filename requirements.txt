@@ -13,4 +13,5 @@ tzdata
 boto3
 dropbox
 flask-socketio
-simple-websocket
+gevent
+gevent-websocket

@@ -185,7 +185,7 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 # ── SocketIO ──────────────────────────────────────────────────────────────────
 try:
     from flask_socketio import SocketIO, emit, join_room, leave_room
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode="gevent")
     _HAS_SOCKETIO = True
 except ImportError:
     socketio = None
