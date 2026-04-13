@@ -1466,6 +1466,10 @@ def budget_view(pid, bid):
     proj_role = _user_project_role(pid)
     if proj_role == 'docs_only':
         return redirect(url_for("docs_project", pid=pid))
+    # Auto-sync budget dates from schedule if not yet set
+    if not budget.start_date:
+        _sync_budget_dates_from_schedule(bid)
+        db.session.commit()
     # Auto-promote: viewing a version makes it the active one
     if budget.version_status != 'current':
         _supersede_current(pid, _budget_type(budget.budget_mode), exclude_id=bid)
