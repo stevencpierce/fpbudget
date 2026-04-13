@@ -5740,6 +5740,8 @@ try {
 
   _socket.on('field_change', data => {
     if (!data.line_id || !data.data) return;
+    // Skip our own edits (emit comes from HTTP context, so include_self can't be used)
+    if (data.user_id === {{ current_user.id }}) return;
     const id = data.line_id;
     if (_myEditedLines.has(id)) return;
     const row = document.querySelector(`.line-row[data-id="${id}"]`);

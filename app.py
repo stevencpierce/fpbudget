@@ -943,19 +943,28 @@ if _HAS_SOCKETIO:
 
 
 def _ws_emit_field_change(bid, line_id, result_data):
-    """Broadcast a field change to all clients viewing this budget (except sender)."""
-    if not _HAS_SOCKETIO:
+    """Broadcast a field change to all clients viewing this budget."""
+    if not _HAS_SOCKETIO or not socketio:
         return
     try:
+        user_id = current_user.id
         user_name = current_user.name or current_user.email.split("@")[0]
     except Exception:
+        user_id = 0
         user_name = "someone"
-    socketio.emit("field_change", {
+    # Called from HTTP context (not a socket handler), so include_self
+    # is not applicable — emit to the full room. The sender's frontend
+    # already handles the response from the POST save, so duplicate
+    # updates are filtered out by _myEditedLines.
+    room = f"budget_{bid}"
+    payload = {
         "line_id": line_id,
         "data": result_data,
-        "user_id": current_user.id,
+        "user_id": user_id,
         "user_name": user_name,
-    }, room=f"budget_{bid}", include_self=False)
+    }
+    app.logger.info("WS field_change → room=%s line=%s user=%s", room, line_id, user_name)
+    socketio.emit("field_change", payload, room=room, namespace="/")
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
