@@ -4536,19 +4536,28 @@ def callsheet_view(pid, bid, date_str=None):
     prod_day = ProductionDay.query.filter_by(
         budget_id=bid, date=selected_date, schedule_mode=sched_mode).first()
 
-    # Meal headcounts from budget lines
-    _meal_tag_map = {
-        'meal_courtesy_breakfast': 'courtesy_breakfast',
-        'meal_first':              'first_meal',
-        'meal_second':             'second_meal',
-        'working_meal':            'craft_services',
-    }
+    # Meal headcounts — use actual crew count on this shoot day, not budget line quantity.
+    # days_today already contains non-off ScheduleDay rows for selected_date.
+    _day_headcount = len([d for d in days_today if d.day_type != 'off'])
     meal_counts = {}
-    for _ml in BudgetLine.query.filter_by(budget_id=bid).filter(
-            BudgetLine.line_tag.in_(list(_meal_tag_map.keys()))).all():
-        key = _meal_tag_map.get(_ml.line_tag)
-        if key:
-            meal_counts[key] = int(_ml.quantity or 0)
+    if prod_day:
+        if prod_day.courtesy_breakfast:
+            meal_counts['courtesy_breakfast'] = _day_headcount
+        if prod_day.first_meal:
+            meal_counts['first_meal'] = _day_headcount
+        if prod_day.second_meal:
+            meal_counts['second_meal'] = _day_headcount
+    # Craft services: always counts if anyone is scheduled
+    if _day_headcount:
+        meal_counts['craft_services'] = _day_headcount
+    # Working meals: per-person cell flag count for this day
+    _wm_count = sum(
+        1 for d in days_today
+        if d.day_type != 'off' and d.cell_flags and
+           __import__('json').loads(d.cell_flags or '{}').get('working_meal')
+    )
+    if _wm_count:
+        meal_counts['working_meal'] = _wm_count
 
     # Build crew list grouped by COA section, with day type per instance
     days_by_line_inst = {}

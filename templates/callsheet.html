@@ -1025,10 +1025,8 @@ function initKeyPersonnel() {
       crew_member_id: r.crew_member_id || null,
     }));
   } else {
-    // First visit: start empty — user picks from dropdown
-    for (let i = 0; i < 5; i++) {
-      KP_ROWS.push({ row_id: _newKpId(), is_spacer: false, role: '', name: '', phone: '', email: '', crew_member_id: null });
-    }
+    // First visit: start empty — user selects from crew dropdown
+    KP_ROWS = [];
   }
   renderKpTable();
 }
@@ -1612,8 +1610,8 @@ function initUsefulContacts() {
       crew_member_id: r.crew_member_id || null,
     }));
   } else {
-    // First visit: start with one empty row — user picks from dropdown
-    UC_ROWS = [{ row_id: _newUcId(), role: '', name: '', phone: '', email: '', crew_member_id: null }];
+    // First visit: start empty — user picks from dropdown
+    UC_ROWS = [];
   }
   renderUsefulContacts();
 }

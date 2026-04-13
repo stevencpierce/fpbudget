@@ -3768,10 +3768,19 @@ tr.cs-row-viewed    { background: #1a1200; }
   /* Always show the ⋮ menu button on touch devices — it's the primary context menu trigger */
   .line-row-menu-btn { display: inline-flex !important; opacity: 1 !important; }
 }
-@media (max-width: 600px) {
-  .line-table { min-width: 700px; }
-  /* Hide Rate Type and Fringe selects on small phones — accessible via ⋮ menu */
+/* iPad portrait: hide Payroll Co + tighten qty/days/rate so desc column has breathing room */
+@media (max-width: 900px) {
+  .line-table { min-width: 640px; }
+  .col-pc { width: 0 !important; max-width: 0 !important; padding: 0 !important;
+            overflow: hidden; border: none !important; }
   .col-rt, .col-fr { width: 0 !important; max-width: 0 !important;
+                     padding: 0 !important; overflow: hidden; border: none !important; }
+  .col-qty  { width: 48px; }
+  .col-days { width: 54px; }
+}
+@media (max-width: 600px) {
+  .line-table { min-width: 520px; }
+  .col-working, .col-variance { width: 0 !important; max-width: 0 !important;
     padding: 0 !important; overflow: hidden; border: none !important; }
 }
 
