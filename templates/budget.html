@@ -2074,6 +2074,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 {% if GOOGLE_MAPS_API_KEY %}
 <script src="https://maps.googleapis.com/maps/api/js?key={{ GOOGLE_MAPS_API_KEY }}&libraries=places" async></script>
 {% endif %}
@@ -5680,21 +5681,98 @@ const _myEditedLines = new Set();
 let _knownLineIds = null;
 let _structToastShown = false;
 
+// ── Avatar helpers ───────────────────────────────────────────────────────────
+function _renderViewers(viewers) {
+  const el = document.getElementById('collab-viewers');
+  if (!el) return;
+  const myId = {{ current_user.id }};
+  el.innerHTML = viewers.filter(v => v.user_id !== myId).map(v => {
+    const initials = v.user_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+    return `<span class="collab-avatar" title="${v.user_name} is viewing" style="background:${v.color || '#2563eb'}">${initials}</span>`;
+  }).join('');
+}
+
+function _flashSync() {
+  const flash = document.getElementById('collab-sync-flash');
+  if (flash) {
+    flash.textContent = '● synced';
+    flash.style.opacity = '1';
+    setTimeout(() => { flash.style.opacity = '0'; }, 1800);
+  }
+}
+
+function _timeAgo(d) {
+  const s = Math.floor((Date.now() - d) / 1000);
+  if (s < 10) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  return `${Math.floor(s/3600)}h ago`;
+}
+
+// ── SocketIO real-time collaboration ─────────────────────────────────────────
+let _socket = null;
+try {
+  _socket = io({ transports: ['websocket', 'polling'] });
+
+  _socket.on('connect', () => {
+    _socket.emit('join_budget', {
+      budget_id: BID,
+      user_id: {{ current_user.id }},
+      user_name: {{ (current_user.name or current_user.email) | tojson }},
+    });
+  });
+
+  _socket.on('presence_update', data => {
+    _renderViewers(data.viewers || []);
+  });
+
+  _socket.on('user_joined', data => {
+    const hint = document.getElementById('collab-edit-hint');
+    if (hint) hint.textContent = `${data.user_name} joined`;
+    setTimeout(() => { if (hint) hint.textContent = ''; }, 3000);
+  });
+
+  _socket.on('user_left', data => {
+    const hint = document.getElementById('collab-edit-hint');
+    if (hint) hint.textContent = `${data.user_name} left`;
+    setTimeout(() => { if (hint) hint.textContent = ''; }, 3000);
+  });
+
+  _socket.on('field_change', data => {
+    if (!data.line_id || !data.data) return;
+    const id = data.line_id;
+    if (_myEditedLines.has(id)) return;
+    const row = document.querySelector(`.line-row[data-id="${id}"]`);
+    if (!row) return;
+    refreshLineRow(id, data.data);
+    // Flash the row to indicate remote update
+    row.style.transition = 'background .3s';
+    row.style.background = 'rgba(37,99,235,.15)';
+    setTimeout(() => { row.style.background = ''; }, 1200);
+    document.querySelectorAll('.line-table').forEach(t => refreshSectionTotals(t));
+    _flashSync();
+    // Update edit hint
+    const hint = document.getElementById('collab-edit-hint');
+    if (hint) hint.textContent = `${data.user_name} edited just now`;
+  });
+} catch(e) {
+  // SocketIO not available — fall back to polling
+  _socket = null;
+}
+
+// ── Fallback: polling for structural changes (lines added/removed) ───────────
 function _collabPingPresence() {
+  if (_socket && _socket.connected) return; // SocketIO handles presence
   fetch(_PRESENCE_URL, { method: 'POST' })
     .then(r => r.json())
     .then(d => {
-      const el = document.getElementById('collab-viewers');
-      if (!el) return;
-      el.innerHTML = (d.viewers || []).map(v => {
-        const initials = v.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
-        return `<span class="collab-avatar" title="${v.name} is also viewing">${initials}</span>`;
-      }).join('');
+      const viewers = (d.viewers || []).map(v => ({
+        user_id: v.id, user_name: v.name, color: '#2563eb'
+      }));
+      _renderViewers(viewers);
       const hint = document.getElementById('collab-edit-hint');
       if (hint && d.last_edit) {
         hint.textContent = `${d.last_edit.name} edited ${_timeAgo(new Date(d.last_edit.at))}`;
-      } else if (hint) {
-        hint.textContent = '';
       }
     })
     .catch(() => {});
@@ -5721,11 +5799,9 @@ function _collabLivePatch() {
         const activeTag = document.activeElement && document.activeElement.tagName;
         const isEditing = (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT');
         if (!isEditing) {
-          // No active editing — reload silently right away
           reloadWithTab();
           return;
         }
-        // User is mid-edit — show toast so they can choose when to reload
         const parts = [];
         if (added.length)   parts.push(`${added.length} line${added.length > 1 ? 's' : ''} added`);
         if (removed.length) parts.push(`${removed.length} line${removed.length > 1 ? 's' : ''} removed`);
@@ -5738,42 +5814,28 @@ function _collabLivePatch() {
         }, 20000);
       }
 
-      // Silently patch changed lines (skip lines this user is actively editing)
+      // Skip field patching if SocketIO is connected — it handles that in real time
+      if (_socket && _socket.connected) return;
+
+      // Fallback: silently patch changed lines
       let patched = 0;
       for (const [idStr, res] of Object.entries(d.lines)) {
         const id = parseInt(idStr);
         if (_myEditedLines.has(id)) continue;
         const row = document.querySelector(`.line-row[data-id="${id}"]`);
         if (!row) continue;
-        // Compare current rendered subtotal to detect a real change
         const subEl = row.querySelector('.line-subtotal');
         const currentSub = subEl ? parseFloat(subEl.textContent.replace(/[$,]/g, '')) || 0 : -1;
         if (Math.abs(currentSub - res.subtotal) < 0.005) continue;
         refreshLineRow(id, res);
         patched++;
       }
-
       if (patched > 0) {
-        // Refresh all section totals
         document.querySelectorAll('.line-table').forEach(t => refreshSectionTotals(t));
-        // Flash sync indicator
-        const flash = document.getElementById('collab-sync-flash');
-        if (flash) {
-          flash.textContent = '● synced';
-          flash.style.opacity = '1';
-          setTimeout(() => { flash.style.opacity = '0'; }, 1800);
-        }
+        _flashSync();
       }
     })
     .catch(() => {});
-}
-
-function _timeAgo(d) {
-  const s = Math.floor((Date.now() - d) / 1000);
-  if (s < 10) return 'just now';
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s/60)}m ago`;
-  return `${Math.floor(s/3600)}h ago`;
 }
 
 // Mark lines I edit so they're not overwritten by remote patches
@@ -5782,10 +5844,11 @@ document.addEventListener('change', e => {
   if (row) _myEditedLines.add(parseInt(row.dataset.id));
 });
 
-// Ping presence every 20s, live-patch every 6s
+// Presence: polling fallback (skipped when SocketIO connected)
 _collabPingPresence();
 setInterval(_collabPingPresence, 20000);
-setInterval(_collabLivePatch, 6000);
+// Structural change detection: slower interval (SocketIO handles field changes)
+setInterval(_collabLivePatch, 30000);
 </script>
 
 <!-- ── Insert / Move Row JS ─────────────────────────────────────────────────── -->

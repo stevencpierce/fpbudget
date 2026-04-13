@@ -182,6 +182,15 @@ app = Flask(__name__)
 app.config["SECRET_KEY"]                     = os.getenv("SECRET_KEY", "fpbudget-dev-secret")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
+# ── SocketIO ──────────────────────────────────────────────────────────────────
+try:
+    from flask_socketio import SocketIO, emit, join_room, leave_room
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+    _HAS_SOCKETIO = True
+except ImportError:
+    socketio = None
+    _HAS_SOCKETIO = False
+
 _db_url = os.getenv("DATABASE_URL", "sqlite:///fp_budget.db").replace("postgres://", "postgresql://")
 if "postgresql" in _db_url:
     _sep = "&" if "?" in _db_url else "?"
@@ -876,6 +885,78 @@ def budget_live(pid, bid):
         "lines":      line_results,
         "last_edit":  {"name": editor["name"], "at": editor["at"].isoformat()} if editor else None,
     })
+
+# ── SocketIO event handlers ───────────────────────────────────────────────────
+
+# { sid: {"user_id": int, "user_name": str, "budget_id": int} }
+_socket_sessions = {}
+# Avatar color palette — consistent per user_id
+_AVATAR_COLORS = [
+    "#2563eb", "#dc2626", "#059669", "#d97706", "#7c3aed",
+    "#db2777", "#0891b2", "#65a30d", "#c026d3", "#ea580c",
+]
+
+if _HAS_SOCKETIO:
+    @socketio.on("connect")
+    def _ws_connect():
+        pass
+
+    @socketio.on("disconnect")
+    def _ws_disconnect():
+        from flask import request as _req
+        sid = _req.sid
+        info = _socket_sessions.pop(sid, None)
+        if info:
+            bid = info["budget_id"]
+            room = f"budget_{bid}"
+            emit("user_left", {"user_id": info["user_id"], "user_name": info["user_name"]}, room=room)
+            # Broadcast updated viewer list
+            viewers = [
+                {"user_id": v["user_id"], "user_name": v["user_name"],
+                 "color": _AVATAR_COLORS[v["user_id"] % len(_AVATAR_COLORS)]}
+                for s, v in _socket_sessions.items() if v["budget_id"] == bid
+            ]
+            emit("presence_update", {"viewers": viewers}, room=room)
+
+    @socketio.on("join_budget")
+    def _ws_join_budget(data):
+        from flask import request as _req
+        bid = data.get("budget_id")
+        uid = data.get("user_id")
+        uname = data.get("user_name", "")
+        if not bid or not uid:
+            return
+        room = f"budget_{bid}"
+        join_room(room)
+        _socket_sessions[_req.sid] = {
+            "user_id": uid, "user_name": uname, "budget_id": bid,
+        }
+        color = _AVATAR_COLORS[uid % len(_AVATAR_COLORS)]
+        emit("user_joined", {"user_id": uid, "user_name": uname, "color": color}, room=room)
+        # Send full viewer list
+        viewers = [
+            {"user_id": v["user_id"], "user_name": v["user_name"],
+             "color": _AVATAR_COLORS[v["user_id"] % len(_AVATAR_COLORS)]}
+            for s, v in _socket_sessions.items() if v["budget_id"] == bid
+        ]
+        emit("presence_update", {"viewers": viewers}, room=room)
+
+
+def _ws_emit_field_change(bid, line_id, result_data):
+    """Broadcast a field change to all clients viewing this budget (except sender)."""
+    if not _HAS_SOCKETIO:
+        return
+    try:
+        user_name = current_user.name or current_user.email.split("@")[0]
+    except Exception:
+        user_name = "someone"
+    socketio.emit("field_change", {
+        "line_id": line_id,
+        "data": result_data,
+        "user_id": current_user.id,
+        "user_name": user_name,
+    }, room=f"budget_{bid}", include_self=False)
+
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
@@ -1876,7 +1957,9 @@ def upsert_line(pid, bid):
     else:
         result = calc_line(ln, fringe_cfgs)
 
-    return jsonify({"id": ln.id, **result})
+    resp = {"id": ln.id, **result}
+    _ws_emit_field_change(bid, ln.id, resp)
+    return jsonify(resp)
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/kit-fee", methods=["POST"])
@@ -6124,4 +6207,7 @@ def projects_redirect():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5001)
+    if _HAS_SOCKETIO:
+        socketio.run(app, debug=True, port=5001)
+    else:
+        app.run(debug=True, port=5001)
