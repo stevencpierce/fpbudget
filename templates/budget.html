@@ -5741,14 +5741,16 @@ function _timeAgo(d) {
 
 // ── SocketIO real-time collaboration ─────────────────────────────────────────
 let _socket = null;
+console.log('[WS] Initializing Socket.IO, io defined:', typeof io);
 try {
   _socket = io({
     transports: ['websocket', 'polling'],
     path: '/socket.io',
   });
+  console.log('[WS] io() called, socket:', _socket ? 'created' : 'null');
 
   _socket.on('connect', () => {
-    console.log('Socket connected:', _socket.id);
+    console.log('[WS] Connected, id:', _socket.id);
     _socket.emit('join_budget', {
       budget_id: BID,
       user_id: MY_ID,
@@ -5757,7 +5759,11 @@ try {
   });
 
   _socket.on('connect_error', err => {
-    console.warn('Socket connect error:', err.message);
+    console.warn('[WS] Connect error:', err.message);
+  });
+
+  _socket.on('disconnect', reason => {
+    console.log('[WS] Disconnected:', reason);
   });
 
   let _pendingViewers = null;
@@ -5841,6 +5847,7 @@ try {
   });
 } catch(e) {
   // SocketIO not available — fall back to polling
+  console.error('[WS] Socket init failed:', e);
   _socket = null;
 }
 
