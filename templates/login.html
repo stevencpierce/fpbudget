@@ -23,11 +23,24 @@
         <label>Password</label>
         <input type="password" name="password" required>
       </div>
-      <button type="submit" class="btn btn-primary btn-block">Sign In</button>
+      <button type="submit" class="btn btn-primary btn-block" id="login-btn">Sign In</button>
+      <div id="login-loading" style="display:none;text-align:center;margin-top:.75rem;font-size:.85rem;color:var(--text-muted,#888)">
+        Starting up, this may take a moment...
+      </div>
       <div style="text-align:center;margin-top:1rem">
         <a href="{{ url_for('forgot_password') }}" style="font-size:.85rem;color:var(--text-muted,#888);text-decoration:none">Forgot your password?</a>
       </div>
     </form>
   </div>
+  <script>
+  document.querySelector('form').addEventListener('submit', function() {
+    var btn = document.getElementById('login-btn');
+    btn.disabled = true;
+    btn.textContent = 'Signing in...';
+    setTimeout(function() {
+      document.getElementById('login-loading').style.display = 'block';
+    }, 3000);
+  });
+  </script>
 </body>
 </html>

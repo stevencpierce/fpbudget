@@ -10,10 +10,25 @@
   </button>
 </div>
 
-{% if projects %}
-<div class="card-grid">
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
+  <input type="text" id="proj-search" placeholder="Search projects..." oninput="filterProjects()"
+         style="flex:1;min-width:180px;padding:6px 10px;font-size:.85rem">
+  <select id="proj-status-filter" onchange="filterProjects()" style="padding:6px 8px;font-size:.85rem">
+    <option value="active">Active</option>
+    <option value="wrapped">Wrapped</option>
+    <option value="archived">Archived</option>
+    <option value="all">All</option>
+  </select>
+  <select id="proj-sort" onchange="filterProjects()" style="padding:6px 8px;font-size:.85rem">
+    <option value="newest">Newest</option>
+    <option value="oldest">Oldest</option>
+    <option value="alpha">Alphabetical</option>
+  </select>
+</div>
+
+<div class="card-grid" id="proj-grid">
   {% for p in projects %}
-  <div class="project-card">
+  <div class="project-card" data-name="{{ p.name | lower }}" data-status="active" data-id="{{ p.id }}">
     <div class="project-card-name">{{ p.name }}</div>
     <div class="project-card-meta">
       {{ budget_counts.get(p.id, 0) }} budget{{ 's' if budget_counts.get(p.id, 0) != 1 else '' }}
@@ -46,77 +61,42 @@
     </div>
   </div>
   {% endfor %}
-</div>
-{% else %}
-<div class="empty-state">
-  <p>No active projects.</p>
-  <button class="btn btn-primary"
-          onclick="document.getElementById('new-project-modal').classList.remove('hidden')">
-    Create First Project
-  </button>
-</div>
-{% endif %}
-
-{% if wrapped_projects or archived_projects %}
-<div class="section-divider" style="margin:2.5rem 0 1.25rem">
-  <button class="btn btn-ghost btn-sm" onclick="toggleInactiveProjects()" id="inactive-toggle">
-    Show Wrapped &amp; Archived ({{ (wrapped_projects|length) + (archived_projects|length) }})
-  </button>
-</div>
-<div id="inactive-projects" style="display:none">
-  {% if wrapped_projects %}
-  <div style="margin-bottom:1.5rem">
-    <h3 style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin:0 0 .75rem">Wrapped</h3>
-    <div class="card-grid">
-      {% for p in wrapped_projects %}
-      <div class="project-card" style="opacity:.7">
-        <div class="project-card-name">{{ p.name }}</div>
-        <div class="project-card-meta">Wrapped</div>
-        <div class="project-card-actions">
-          <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-sm btn-outline">
-            View
-          </a>
-          <form method="POST" action="{{ url_for('project_reactivate', pid=p.id) }}" style="display:inline">
-            <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
-          </form>
-          <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
-                onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets?')">
-            <button type="submit" class="btn btn-sm btn-ghost" title="Delete project">✕</button>
-          </form>
-        </div>
-      </div>
-      {% endfor %}
+  {% for p in wrapped_projects %}
+  <div class="project-card" data-name="{{ p.name | lower }}" data-status="wrapped" data-id="{{ p.id }}" style="opacity:.7;display:none">
+    <div class="project-card-name">{{ p.name }}</div>
+    <div class="project-card-meta">Wrapped</div>
+    <div class="project-card-actions">
+      <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-sm btn-outline">View</a>
+      <form method="POST" action="{{ url_for('project_reactivate', pid=p.id) }}" style="display:inline">
+        <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
+      </form>
+      <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
+            onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets?')">
+        <button type="submit" class="btn btn-sm btn-ghost" title="Delete project">✕</button>
+      </form>
     </div>
   </div>
-  {% endif %}
-
-  {% if archived_projects %}
-  <div>
-    <h3 style="font-size:.75rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin:0 0 .75rem">Archived</h3>
-    <div class="card-grid">
-      {% for p in archived_projects %}
-      <div class="project-card" style="opacity:.6">
-        <div class="project-card-name">{{ p.name }}</div>
-        <div class="project-card-meta">Archived</div>
-        <div class="project-card-actions">
-          <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-sm btn-outline">
-            View
-          </a>
-          <form method="POST" action="{{ url_for('project_reactivate', pid=p.id) }}" style="display:inline">
-            <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
-          </form>
-          <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
-                onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets?')">
-            <button type="submit" class="btn btn-sm btn-ghost" title="Delete project">✕</button>
-          </form>
-        </div>
-      </div>
-      {% endfor %}
+  {% endfor %}
+  {% for p in archived_projects %}
+  <div class="project-card" data-name="{{ p.name | lower }}" data-status="archived" data-id="{{ p.id }}" style="opacity:.6;display:none">
+    <div class="project-card-name">{{ p.name }}</div>
+    <div class="project-card-meta">Archived</div>
+    <div class="project-card-actions">
+      <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-sm btn-outline">View</a>
+      <form method="POST" action="{{ url_for('project_reactivate', pid=p.id) }}" style="display:inline">
+        <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
+      </form>
+      <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
+            onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets?')">
+        <button type="submit" class="btn btn-sm btn-ghost" title="Delete project">✕</button>
+      </form>
     </div>
   </div>
-  {% endif %}
+  {% endfor %}
 </div>
-{% endif %}
+<div id="proj-empty" class="empty-state" style="display:none">
+  <p>No projects match your search.</p>
+</div>
 
 <!-- New Project Modal -->
 <div id="new-project-modal" class="modal hidden">
@@ -132,6 +112,17 @@
       <div class="field">
         <label>Client Name <span style="font-weight:400;color:var(--text-muted)">(optional — used for Dropbox folder)</span></label>
         <input type="text" name="client_name" placeholder="e.g. Nike">
+      </div>
+      <div class="field-row-3" style="gap:12px">
+        <div class="field">
+          <label>Start Date <span style="font-weight:400;color:var(--text-muted)">(optional)</span></label>
+          <input type="date" name="start_date" id="new-proj-start"
+                 oninput="const e=document.getElementById('new-proj-end');if(!e.value&&this.value){const d=new Date(this.value);d.setDate(d.getDate()+14);e.value=d.toISOString().slice(0,10)}">
+        </div>
+        <div class="field">
+          <label>End Date <span style="font-weight:400;color:var(--text-muted)">(optional)</span></label>
+          <input type="date" name="end_date" id="new-proj-end">
+        </div>
       </div>
       {% if all_templates %}
       <div class="field">
@@ -270,14 +261,33 @@ document.addEventListener('click', function() {
   document.querySelectorAll('.proj-menu').forEach(m => m.classList.add('hidden'));
 });
 
-function toggleInactiveProjects() {
-  const el = document.getElementById('inactive-projects');
-  const btn = document.getElementById('inactive-toggle');
-  const showing = el.style.display !== 'none';
-  el.style.display = showing ? 'none' : 'block';
-  btn.textContent = showing
-    ? btn.textContent.replace('Hide', 'Show')
-    : btn.textContent.replace('Show', 'Hide');
+function filterProjects() {
+  const q = document.getElementById('proj-search').value.toLowerCase();
+  const status = document.getElementById('proj-status-filter').value;
+  const sort = document.getElementById('proj-sort').value;
+  const grid = document.getElementById('proj-grid');
+  const cards = Array.from(grid.querySelectorAll('.project-card'));
+  let visible = 0;
+  cards.forEach(c => {
+    const name = c.dataset.name;
+    const st = c.dataset.status;
+    const matchQ = !q || name.includes(q);
+    const matchS = status === 'all' || st === status;
+    const show = matchQ && matchS;
+    c.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  // Sort visible cards
+  const sorted = cards.filter(c => c.style.display !== 'none');
+  if (sort === 'alpha') {
+    sorted.sort((a, b) => a.dataset.name.localeCompare(b.dataset.name));
+  } else if (sort === 'oldest') {
+    sorted.reverse();
+  }
+  sorted.forEach(c => grid.appendChild(c));
+  // Also re-append hidden ones at the end so DOM stays consistent
+  cards.filter(c => c.style.display === 'none').forEach(c => grid.appendChild(c));
+  document.getElementById('proj-empty').style.display = visible === 0 ? '' : 'none';
 }
 
 // Auto-fill device timezone into new project form

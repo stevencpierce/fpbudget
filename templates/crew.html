@@ -10,7 +10,18 @@
 </div>
 
 {% if members %}
-<table class="data-table">
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
+  <input type="text" id="crew-search" placeholder="Search by name, department, or company..."
+         oninput="filterCrew()" style="flex:1;min-width:200px;padding:6px 10px;font-size:.85rem">
+  <select id="crew-dept-filter" onchange="filterCrew()" style="padding:6px 8px;font-size:.85rem">
+    <option value="">All Departments</option>
+    {% set depts = members | map(attribute='department') | select | unique | sort %}
+    {% for d in depts %}
+    <option value="{{ d | lower }}">{{ d }}</option>
+    {% endfor %}
+  </select>
+</div>
+<table class="data-table" id="crew-table">
   <thead>
     <tr>
       <th>Name</th>
@@ -30,7 +41,7 @@
   <tbody>
     {% for m in members %}
     {% set agent = agent_map.get(m.id) %}
-    <tr>
+    <tr data-name="{{ m.name | lower }}" data-dept="{{ (m.department or '') | lower }}" data-company="{{ (m.company or '') | lower }}">
       <td><strong>{{ m.name }}</strong></td>
       <td>{{ m.department or '—' }}</td>
       <td>{{ m.company or '—' }}</td>
@@ -211,6 +222,18 @@
 
 {% block scripts %}
 <script>
+function filterCrew() {
+  const q = document.getElementById('crew-search').value.toLowerCase();
+  const dept = document.getElementById('crew-dept-filter').value;
+  const rows = document.querySelectorAll('#crew-table tbody tr');
+  rows.forEach(r => {
+    if (!r.dataset.name) return; // skip non-data rows
+    const matchQ = !q || r.dataset.name.includes(q) || r.dataset.dept.includes(q) || r.dataset.company.includes(q);
+    const matchD = !dept || r.dataset.dept === dept;
+    r.style.display = (matchQ && matchD) ? '' : 'none';
+  });
+}
+
 let _editCrewId = null;
 const ROLE_LABELS = {
   agent:'Agent', manager:'Manager', publicist:'Publicist',

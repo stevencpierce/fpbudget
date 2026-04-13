@@ -68,7 +68,7 @@
     </div>
     {% if loc.billing_type and loc.billing_type != 'info_only' %}
     <div class="location-card-billing">
-      {% if loc.daily_rate %}{{ loc.daily_rate | currency }}/{% endif %}{{ loc.billing_type | replace('_', ' ') }}
+      {% if loc.daily_rate %}{{ loc.daily_rate | currency }} / {{ loc.billing_type | replace('_', ' ') }}{% else %}<span class="muted">No rate set</span>{% endif %}
     </div>
     {% endif %}
     {% if loc.notes %}

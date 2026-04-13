@@ -920,6 +920,18 @@ def project_new():
     template_id = request.form.get("template_id", type=int)
     client_name = request.form.get("client_name", "").strip() or None
     timezone    = request.form.get("timezone", "America/Los_Angeles").strip() or "America/Los_Angeles"
+    # Optional start/end dates from the modal
+    start_date_str = request.form.get("start_date", "").strip()
+    end_date_str   = request.form.get("end_date", "").strip()
+    start_date = None
+    end_date   = None
+    try:
+        if start_date_str:
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+        if end_date_str:
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+    except ValueError:
+        pass
     p = ProjectSheet(name=name, client_name=client_name)
     db.session.add(p)
     db.session.flush()
@@ -930,7 +942,8 @@ def project_new():
     # Auto-create a default budget with user's device timezone
     _fed40 = PayrollProfile.query.filter(PayrollProfile.name.ilike('%federal%')).first()
     b = Budget(project_id=p.id, name=f"{name} Budget", payroll_profile_id=_fed40.id if _fed40 else None,
-               payroll_week_start=6, timezone=timezone)
+               payroll_week_start=6, timezone=timezone,
+               start_date=start_date, end_date=end_date)
     db.session.add(b)
     db.session.flush()
     # Apply template lines if one was selected
@@ -4852,6 +4865,23 @@ def _touch_budget(bid):
     except Exception:
         name = "someone"
     _budget_last_editor[bid] = {"name": name, "at": now}
+    # Auto-sync budget start/end dates from schedule
+    _sync_budget_dates_from_schedule(bid)
+
+
+def _sync_budget_dates_from_schedule(bid):
+    """Set budget.start_date / end_date from min/max of ScheduleDay dates."""
+    try:
+        row = db.session.query(
+            func.min(ScheduleDay.date), func.max(ScheduleDay.date)
+        ).filter(ScheduleDay.budget_id == bid).first()
+        if row and row[0]:
+            budget = Budget.query.get(bid)
+            if budget:
+                budget.start_date = row[0]
+                budget.end_date = row[1]
+    except Exception:
+        pass
 
 
 def _budget_type(budget_mode):
