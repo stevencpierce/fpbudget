@@ -36,8 +36,6 @@
        background:var(--bg-3);border:1px solid var(--border);color:var(--text);border-radius:8px;
        padding:8px 14px;font-size:.8rem;z-index:900;display:flex;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)">
     <span id="collab-struct-msg"></span>
-    <a href="#" onclick="reloadWithTab();return false"
-       style="color:var(--accent);text-decoration:none;font-weight:500">Reload</a>
     <button onclick="document.getElementById('collab-struct-toast').style.display='none'"
             style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:.85rem;padding:0">✕</button>
   </div>
@@ -5741,16 +5739,19 @@ function _timeAgo(d) {
 
 // ── SocketIO real-time collaboration ─────────────────────────────────────────
 let _socket = null;
-console.log('[WS] Initializing Socket.IO, io defined:', typeof io);
-try {
-  _socket = io({
-    transports: ['websocket', 'polling'],
-    path: '/socket.io',
-  });
-  console.log('[WS] io() called, socket:', _socket ? 'created' : 'null');
+</script>
+<script>
+// Isolated script block so any error here doesn't kill polling fallback
+(function() {
+  if (typeof io === 'undefined') { console.warn('[WS] io not loaded'); return; }
+  console.log('[WS] Calling io()...');
+  try {
+    _socket = io();
+  } catch(e) { console.error('[WS] io() threw:', e); return; }
+  console.log('[WS] Socket created:', _socket.id || '(connecting...)');
 
-  _socket.on('connect', () => {
-    console.log('[WS] Connected, id:', _socket.id);
+  _socket.on('connect', function() {
+    console.log('[WS] Connected:', _socket.id);
     _socket.emit('join_budget', {
       budget_id: BID,
       user_id: MY_ID,
@@ -5758,11 +5759,11 @@ try {
     });
   });
 
-  _socket.on('connect_error', err => {
+  _socket.on('connect_error', function(err) {
     console.warn('[WS] Connect error:', err.message);
   });
 
-  _socket.on('disconnect', reason => {
+  _socket.on('disconnect', function(reason) {
     console.log('[WS] Disconnected:', reason);
   });
 
@@ -5845,11 +5846,9 @@ try {
     const badge = row.querySelector('.edit-badge');
     if (badge) badge.remove();
   });
-} catch(e) {
-  // SocketIO not available — fall back to polling
-  console.error('[WS] Socket init failed:', e);
-  _socket = null;
-}
+})();
+</script>
+<script>
 
 // ── Conflict toast helper ─────────────────────────────────────────────────
 function _showConflictToast(field, winnerName) {
@@ -5948,11 +5947,15 @@ document.addEventListener('change', e => {
   if (row) _myEditedLines.add(parseInt(row.dataset.id));
 });
 
-// Presence: polling fallback (skipped when SocketIO connected)
-_collabPingPresence();
-setInterval(_collabPingPresence, 20000);
-// Structural change detection: slower interval (SocketIO handles field changes)
-setInterval(_collabLivePatch, 30000);
+// Presence + structural polling: only run if WebSocket didn't connect
+if (!_socket || !_socket.connected) {
+  _collabPingPresence();
+  setInterval(_collabPingPresence, 20000);
+  setInterval(_collabLivePatch, 30000);
+} else {
+  // Still check for structural changes (lines added/removed) periodically
+  setInterval(_collabLivePatch, 30000);
+}
 </script>
 
 <!-- ── Insert / Move Row JS ─────────────────────────────────────────────────── -->

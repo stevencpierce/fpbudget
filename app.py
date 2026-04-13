@@ -1026,6 +1026,20 @@ def _find_sid_for_user(user_id, bid):
     return None
 
 
+def _sanitize_for_json(obj):
+    """Recursively convert Decimal/date values to JSON-safe types."""
+    from decimal import Decimal as _Dec
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, _Dec):
+        return float(obj)
+    if hasattr(obj, 'isoformat'):
+        return obj.isoformat()
+    return obj
+
+
 def _ws_emit_field_change(bid, line_id, result_data):
     """Broadcast a field change to all clients viewing this budget."""
     if not _HAS_SOCKETIO or not socketio:
@@ -1036,19 +1050,18 @@ def _ws_emit_field_change(bid, line_id, result_data):
     except Exception:
         user_id = 0
         user_name = "someone"
-    # Called from HTTP context (not a socket handler), so include_self
-    # is not applicable — emit to the full room. The sender's frontend
-    # already handles the response from the POST save, so duplicate
-    # updates are filtered out by _myEditedLines.
     room = f"budget_{bid}"
     payload = {
         "line_id": line_id,
-        "data": result_data,
+        "data": _sanitize_for_json(result_data),
         "user_id": user_id,
         "user_name": user_name,
     }
-    app.logger.info("WS field_change → room=%s line=%s user=%s", room, line_id, user_name)
-    socketio.emit("field_change", payload, room=room, namespace="/")
+    try:
+        socketio.emit("field_change", payload, room=room, namespace="/")
+        app.logger.info("WS field_change → room=%s line=%s user=%s", room, line_id, user_name)
+    except Exception as e:
+        app.logger.error("WS field_change FAILED: %s", e)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
