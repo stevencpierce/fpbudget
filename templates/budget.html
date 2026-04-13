@@ -205,7 +205,7 @@
     <tbody>
       {% for row in top_sheet.rows %}
       {% set w = working_by_section.get(row.code, 0) %}
-      <tr ondblclick="goToSection({{ row.code }})" style="cursor:pointer" title="Double-click to go to section">
+      <tr data-ts-code="{{ row.code }}" ondblclick="goToSection({{ row.code }})" style="cursor:pointer" title="Double-click to go to section">
         <td class="col-code muted">{{ row.code }}</td>
         <td>
           {% if row.code in [14000, 15000] %}
@@ -257,7 +257,7 @@
     </tbody>
     <tfoot>
       {% set sub_w = working_by_section.values() | sum %}
-      <tr class="subtotal-row">
+      <tr class="subtotal-row" data-ts-row="subtotal">
         <td colspan="2"><strong>Subtotal (Before Prod. Fee)</strong></td>
         <td class="col-num"><strong>{{ top_sheet.subtotal_estimated | currency }}</strong></td>
         <td class="col-num {% if not working_exists %}muted{% endif %}"><strong>{{ sub_w | currency }}</strong></td>
@@ -270,7 +270,7 @@
       {% set fee_w = (sub_w * top_sheet.company_fee_pct) | round(2) if not top_sheet.company_fee_dispersed else 0 %}
       {% set fee_a = (top_sheet.subtotal_actual * top_sheet.company_fee_pct) | round(2) if not top_sheet.company_fee_dispersed else 0 %}
       {% set fee_var = top_sheet.company_fee - fee_a %}
-      <tr class="fee-row {% if top_sheet.company_fee_dispersed %}fee-row-dispersed{% endif %}">
+      <tr class="fee-row {% if top_sheet.company_fee_dispersed %}fee-row-dispersed{% endif %}" data-ts-row="fee" data-fee-pct="{{ top_sheet.company_fee_pct }}" data-dispersed="{{ 'true' if top_sheet.company_fee_dispersed else 'false' }}">
         <td colspan="2">
           Production Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(2) }}%)
           {% if top_sheet.company_fee_dispersed %}
@@ -291,7 +291,7 @@
           </span>
         </td>
       </tr>
-      <tr class="grand-total-row">
+      <tr class="grand-total-row" data-ts-row="grand">
         {% set grand_w = sub_w * (1 + (0 if top_sheet.company_fee_dispersed else top_sheet.company_fee_pct)) %}
         <td colspan="2"><strong>GRAND TOTAL</strong></td>
         <td class="col-num"><strong>{{ top_sheet.grand_total_estimated | currency }}</strong></td>
