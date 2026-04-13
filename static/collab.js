@@ -80,24 +80,64 @@
     if (data.user_id === MY_ID) return;
     if (typeof _myEditedLines !== 'undefined' && _myEditedLines.has(data.line_id)) return;
 
-    var row = document.querySelector('.line-row[data-id="' + data.line_id + '"]');
-    if (!row) return;
-
-    if (typeof refreshLineRow === 'function') {
-      refreshLineRow(data.line_id, data.data);
+    var row = document.querySelector('tr[data-id="' + data.line_id + '"]');
+    if (!row) {
+      console.warn('[WS] field_change: no row for line_id=' + data.line_id);
+      return;
     }
 
-    // Flash row blue
+    console.log('[WS] field_change: updating line', data.line_id, data.data);
+
+    // Try the full refresh function first, then direct DOM update as fallback
+    var refreshed = false;
+    try {
+      if (typeof refreshLineRow === 'function') {
+        refreshLineRow(data.line_id, data.data);
+        refreshed = true;
+      }
+    } catch(e) {
+      console.warn('[WS] refreshLineRow threw:', e);
+    }
+
+    // Direct DOM update as fallback (or supplement)
+    var d = data.data;
+    var fmt = function(v) {
+      return '$' + parseFloat(v || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    };
+
+    // Subtotal cell
+    var subEl = row.querySelector('.line-subtotal');
+    if (subEl && d.subtotal !== undefined) subEl.textContent = fmt(d.subtotal);
+
+    // Estimated total cell
+    var totEl = row.querySelector('.line-total strong');
+    if (totEl && d.est_total !== undefined) totEl.textContent = fmt(d.est_total);
+
+    // Working total cell
+    var workEl = row.querySelector('.line-working strong');
+    if (workEl && d.est_total !== undefined) workEl.textContent = fmt(d.est_total);
+
+    // Flash updated cells
+    var cells = [subEl, totEl, workEl].filter(Boolean);
+    cells.forEach(function(el) {
+      el.style.transition = 'background .3s';
+      el.style.background = 'rgba(37,99,235,.25)';
+      setTimeout(function() { el.style.background = ''; }, 1500);
+    });
+
+    // Flash row
     row.style.transition = 'background .3s';
-    row.style.background = 'rgba(37,99,235,.15)';
+    row.style.background = 'rgba(37,99,235,.08)';
     setTimeout(function() { row.style.background = ''; }, 1200);
 
     // Refresh section totals
-    if (typeof refreshSectionTotals === 'function') {
-      document.querySelectorAll('.line-table').forEach(function(t) {
-        refreshSectionTotals(t);
-      });
-    }
+    try {
+      if (typeof refreshSectionTotals === 'function') {
+        document.querySelectorAll('.line-table').forEach(function(t) {
+          refreshSectionTotals(t);
+        });
+      }
+    } catch(e) { /* ignore */ }
 
     if (typeof _flashSync === 'function') _flashSync();
 
@@ -116,7 +156,7 @@
   // ── Cursor presence ─────────────────────────────────────────────────────────
 
   socket.on('editing_start', function(data) {
-    var row = document.querySelector('.line-row[data-id="' + data.line_id + '"]');
+    var row = document.querySelector('tr[data-id="' + data.line_id + '"]');
     if (!row) return;
     row.style.borderLeft = '3px solid ' + (data.color || '#2563eb');
     row.dataset.editingBy = data.user_name;
@@ -134,7 +174,7 @@
   });
 
   socket.on('editing_stop', function(data) {
-    var row = document.querySelector('.line-row[data-id="' + data.line_id + '"]');
+    var row = document.querySelector('tr[data-id="' + data.line_id + '"]');
     if (!row) return;
     row.style.borderLeft = '';
     delete row.dataset.editingBy;
