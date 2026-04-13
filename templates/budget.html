@@ -5686,10 +5686,18 @@ function _renderViewers(viewers) {
   const el = document.getElementById('collab-viewers');
   if (!el) return;
   const myId = {{ current_user.id }};
-  el.innerHTML = viewers.filter(v => v.user_id !== myId).map(v => {
+  const others = viewers.filter(v => v.user_id !== myId);
+  const MAX_SHOW = 5;
+  const visible = others.slice(0, MAX_SHOW);
+  const overflow = others.length - MAX_SHOW;
+  let html = visible.map(v => {
     const initials = v.user_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
-    return `<span class="collab-avatar" title="${v.user_name} is viewing" style="background:${v.color || '#2563eb'}">${initials}</span>`;
+    return `<span class="collab-avatar" title="${v.user_name} is viewing" style="background:${v.color || '#2563eb'} !important">${initials}</span>`;
   }).join('');
+  if (overflow > 0) {
+    html += `<span class="collab-avatar collab-overflow" title="${overflow} more viewer${overflow > 1 ? 's' : ''}">+${overflow}</span>`;
+  }
+  el.innerHTML = html;
 }
 
 function _flashSync() {
@@ -5722,8 +5730,13 @@ try {
     });
   });
 
+  let _pendingViewers = null;
+  let _leaveTimer = null;
+
   _socket.on('presence_update', data => {
-    _renderViewers(data.viewers || []);
+    _pendingViewers = data.viewers || [];
+    // If a leave is pending, delay the render so avatar lingers
+    if (!_leaveTimer) _renderViewers(_pendingViewers);
   });
 
   _socket.on('user_joined', data => {
@@ -5735,7 +5748,13 @@ try {
   _socket.on('user_left', data => {
     const hint = document.getElementById('collab-edit-hint');
     if (hint) hint.textContent = `${data.user_name} left`;
-    setTimeout(() => { if (hint) hint.textContent = ''; }, 3000);
+    // Delay avatar removal by 5 seconds
+    clearTimeout(_leaveTimer);
+    _leaveTimer = setTimeout(() => {
+      _leaveTimer = null;
+      if (_pendingViewers) _renderViewers(_pendingViewers);
+      if (hint) hint.textContent = '';
+    }, 5000);
   });
 
   _socket.on('field_change', data => {
