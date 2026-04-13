@@ -232,6 +232,12 @@ function addCollaborator() {
   if (!email) return;
   const errEl = document.getElementById('share-error');
   errEl.style.display = 'none';
+  // Client-side email format validation
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    errEl.textContent = 'Please enter a valid email address.';
+    errEl.style.display = 'block';
+    return;
+  }
   fetch('/projects/' + _sharePid + '/share', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},

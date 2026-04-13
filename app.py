@@ -5299,7 +5299,7 @@ def project_share(pid):
         email = request.form.get("email", "").strip().lower()
         target = User.query.filter_by(email=email).first()
         if not target:
-            return jsonify({"error": "No user with that email"})
+            return jsonify({"error": "No account found with that email. Make sure they've been invited first."})
         existing = ProjectAccess.query.filter_by(project_id=pid, user_id=target.id).first()
         if not existing:
             pa = ProjectAccess(project_id=pid, user_id=target.id, role="collaborator")

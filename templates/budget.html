@@ -232,7 +232,7 @@
         <td class="col-code muted" style="font-size:.75rem"></td>
         <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Prod. Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(1) }}% dispersed)</td>
         <td class="col-num muted" style="font-size:.85rem">{{ row.fee_amount | currency }}</td>
-        <td class="col-num muted">—</td><td class="col-num muted">—</td><td class="col-num muted">—</td>
+        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
       {% if row.code == 14000 and top_sheet.workers_comp_amount > 0 %}
@@ -242,7 +242,7 @@
         <td class="col-code muted" style="font-size:.75rem"></td>
         <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
         <td class="col-num muted" style="font-size:.85rem">{{ top_sheet.workers_comp_amount | currency }}</td>
-        <td class="col-num muted">—</td><td class="col-num muted">—</td><td class="col-num muted">—</td>
+        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
       {% if row.code == 15000 and top_sheet.payroll_fee_amount > 0 %}
@@ -252,7 +252,7 @@
         <td class="col-code muted" style="font-size:.75rem"></td>
         <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}%)</td>
         <td class="col-num muted" style="font-size:.85rem">{{ top_sheet.payroll_fee_amount | currency }}</td>
-        <td class="col-num muted">—</td><td class="col-num muted">—</td><td class="col-num muted">—</td>
+        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
       {% endfor %}
@@ -269,6 +269,9 @@
             data-e="{{ top_sheet.subtotal_estimated }}"
             data-a="{{ top_sheet.subtotal_actual }}"></td>
       </tr>
+      {% set fee_w = (sub_w * top_sheet.company_fee_pct) | round(2) if not top_sheet.company_fee_dispersed else 0 %}
+      {% set fee_a = (top_sheet.subtotal_actual * top_sheet.company_fee_pct) | round(2) if not top_sheet.company_fee_dispersed else 0 %}
+      {% set fee_var = top_sheet.company_fee - fee_a %}
       <tr class="fee-row {% if top_sheet.company_fee_dispersed %}fee-row-dispersed{% endif %}">
         <td colspan="2">
           Production Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(2) }}%)
@@ -279,9 +282,16 @@
           {% endif %}
         </td>
         <td class="col-num">{{ top_sheet.company_fee | currency }}</td>
-        <td class="col-num muted">—</td>
-        <td class="col-num muted">—</td>
-        <td class="col-num muted">—</td>
+        <td class="col-num {% if not working_exists %}muted{% endif %}">{{ fee_w | currency }}</td>
+        <td class="col-num">{{ fee_a | currency }}</td>
+        <td class="col-num var-cell"
+            data-w="{{ fee_w }}"
+            data-e="{{ top_sheet.company_fee }}"
+            data-a="{{ fee_a }}">
+          <span class="{{ 'over' if fee_var < 0 else 'under' if fee_var > 0 else '' }}">
+            {{ fee_var | currency }}
+          </span>
+        </td>
       </tr>
       <tr class="grand-total-row">
         {% set grand_w = sub_w * (1 + (0 if top_sheet.company_fee_dispersed else top_sheet.company_fee_pct)) %}
