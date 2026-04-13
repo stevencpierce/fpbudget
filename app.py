@@ -2066,6 +2066,7 @@ def upsert_line(pid, bid):
     resp = {"id": ln.id, **result}
     # Conflict detection: check if another user edited the same field within 2 seconds
     _check_and_emit_conflicts(bid, ln.id, data)
+    print(f"[WS] POST /line saved line={ln.id}, emitting to room budget_{bid}")
     _ws_emit_field_change(bid, ln.id, resp)
     return jsonify(resp)
 

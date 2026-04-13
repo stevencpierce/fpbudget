@@ -5737,117 +5737,9 @@ function _timeAgo(d) {
   return `${Math.floor(s/3600)}h ago`;
 }
 
-// ── SocketIO real-time collaboration ─────────────────────────────────────────
-let _socket = null;
+// window._socket is set by collab.js
 </script>
-<script>
-// Isolated script block so any error here doesn't kill polling fallback
-(function() {
-  if (typeof io === 'undefined') { console.warn('[WS] io not loaded'); return; }
-  console.log('[WS] Calling io()...');
-  try {
-    _socket = io();
-  } catch(e) { console.error('[WS] io() threw:', e); return; }
-  console.log('[WS] Socket created:', _socket.id || '(connecting...)');
-
-  _socket.on('connect', function() {
-    console.log('[WS] Connected:', _socket.id);
-    _socket.emit('join_budget', {
-      budget_id: BID,
-      user_id: MY_ID,
-      user_name: MY_NAME,
-    });
-  });
-
-  _socket.on('connect_error', function(err) {
-    console.warn('[WS] Connect error:', err.message);
-  });
-
-  _socket.on('disconnect', function(reason) {
-    console.log('[WS] Disconnected:', reason);
-  });
-
-  let _pendingViewers = null;
-  let _leaveTimer = null;
-
-  _socket.on('presence_update', data => {
-    _pendingViewers = data.viewers || [];
-    // If a leave is pending, delay the render so avatar lingers
-    if (!_leaveTimer) _renderViewers(_pendingViewers);
-  });
-
-  _socket.on('user_joined', data => {
-    const hint = document.getElementById('collab-edit-hint');
-    if (hint) hint.textContent = `${data.user_name} joined`;
-    setTimeout(() => { if (hint) hint.textContent = ''; }, 3000);
-  });
-
-  _socket.on('user_left', data => {
-    const hint = document.getElementById('collab-edit-hint');
-    if (hint) hint.textContent = `${data.user_name} left`;
-    // Delay avatar removal by 5 seconds
-    clearTimeout(_leaveTimer);
-    _leaveTimer = setTimeout(() => {
-      _leaveTimer = null;
-      if (_pendingViewers) _renderViewers(_pendingViewers);
-      if (hint) hint.textContent = '';
-    }, 5000);
-  });
-
-  _socket.on('field_change', data => {
-    if (!data.line_id || !data.data) return;
-    // Skip our own edits (emit comes from HTTP context, so include_self can't be used)
-    if (data.user_id === {{ current_user.id }}) return;
-    const id = data.line_id;
-    if (_myEditedLines.has(id)) return;
-    const row = document.querySelector(`.line-row[data-id="${id}"]`);
-    if (!row) return;
-    refreshLineRow(id, data.data);
-    // Flash the row to indicate remote update
-    row.style.transition = 'background .3s';
-    row.style.background = 'rgba(37,99,235,.15)';
-    setTimeout(() => { row.style.background = ''; }, 1200);
-    document.querySelectorAll('.line-table').forEach(t => refreshSectionTotals(t));
-    _flashSync();
-    // Update edit hint
-    const hint = document.getElementById('collab-edit-hint');
-    if (hint) hint.textContent = `${data.user_name} edited just now`;
-  });
-
-  // ── Conflict override notification ──────────────────────────────────────
-  _socket.on('conflict_override', data => {
-    _showConflictToast(data.field, data.winner_name);
-  });
-
-  // ── Cursor presence: show who is editing which row ──────────────────────
-  _socket.on('editing_start', data => {
-    const row = document.querySelector(`.line-row[data-id="${data.line_id}"]`);
-    if (!row) return;
-    row.style.borderLeft = `3px solid ${data.color || '#2563eb'}`;
-    row.dataset.editingBy = data.user_name;
-    let badge = row.querySelector('.edit-badge');
-    if (!badge) {
-      badge = document.createElement('span');
-      badge.className = 'edit-badge';
-      const firstTd = row.querySelector('td');
-      if (firstTd) firstTd.prepend(badge);
-    }
-    const initials = (data.user_name || '').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
-    badge.textContent = initials;
-    badge.style.background = data.color || '#2563eb';
-    badge.title = `${data.user_name} is editing`;
-  });
-
-  _socket.on('editing_stop', data => {
-    const row = document.querySelector(`.line-row[data-id="${data.line_id}"]`);
-    if (!row) return;
-    row.style.borderLeft = '';
-    delete row.dataset.editingBy;
-    const badge = row.querySelector('.edit-badge');
-    if (badge) badge.remove();
-  });
-})();
-</script>
+<script src="{{ url_for('static', filename='collab.js') }}"></script>
 <script>
 
 // ── Conflict toast helper ─────────────────────────────────────────────────
@@ -5865,7 +5757,7 @@ function _showConflictToast(field, winnerName) {
 
 // ── Fallback: polling for structural changes (lines added/removed) ───────────
 function _collabPingPresence() {
-  if (_socket && _socket.connected) return; // SocketIO handles presence
+  if (window._socket && window._socket.connected) return; // SocketIO handles presence
   fetch(_PRESENCE_URL, { method: 'POST' })
     .then(r => r.json())
     .then(d => {
@@ -5918,7 +5810,7 @@ function _collabLivePatch() {
       }
 
       // Skip field patching if SocketIO is connected — it handles that in real time
-      if (_socket && _socket.connected) return;
+      if (window._socket && window._socket.connected) return;
 
       // Fallback: silently patch changed lines
       let patched = 0;
@@ -5948,14 +5840,16 @@ document.addEventListener('change', e => {
 });
 
 // Presence + structural polling: only run if WebSocket didn't connect
-if (!_socket || !_socket.connected) {
-  _collabPingPresence();
-  setInterval(_collabPingPresence, 20000);
+// (collab.js sets window._socket on success)
+setTimeout(function() {
+  if (!window._socket || !window._socket.connected) {
+    console.log('[WS] No socket — using polling fallback');
+    _collabPingPresence();
+    setInterval(_collabPingPresence, 20000);
+  }
+  // Always check for structural changes (lines added/removed)
   setInterval(_collabLivePatch, 30000);
-} else {
-  // Still check for structural changes (lines added/removed) periodically
-  setInterval(_collabLivePatch, 30000);
-}
+}, 2000);
 </script>
 
 <!-- ── Insert / Move Row JS ─────────────────────────────────────────────────── -->
