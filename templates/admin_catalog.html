@@ -3,7 +3,7 @@
 
 {% block content %}
 <style>
-  .cat-wrap { max-width: 1200px; margin: 0 auto; padding: 0 0 4rem; }
+  .cat-wrap { max-width: 1400px; margin: 0 auto; padding: 0 0 4rem; }
   .cat-page-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 1.5rem 0 1rem; border-bottom: 1px solid var(--border);
@@ -14,15 +14,31 @@
     margin-bottom: 1rem;
   }
   .cat-toolbar select, .cat-toolbar input { padding: 6px 10px; font-size: .85rem; }
+
+  /* Save indicator */
+  .cat-save-indicator {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: .78rem; color: var(--text-muted);
+    margin-left: auto;
+    padding: 4px 10px; border-radius: 4px;
+    transition: all .3s ease;
+  }
+  .cat-save-indicator.saving { color: #fbbf24; background: rgba(217,119,6,.12); }
+  .cat-save-indicator.saved  { color: #4ade80; background: rgba(22,163,74,.12); }
+  .cat-save-indicator.error  { color: #f87171; background: rgba(248,113,113,.15); }
+
+  .cat-scroll-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; }
   .cat-table {
-    width: 100%; border-collapse: collapse; font-size: .82rem;
+    border-collapse: collapse; font-size: .82rem;
     background: var(--bg, #141414);
+    min-width: 1440px;  /* force horizontal scroll rather than cramped columns */
   }
   .cat-table th {
     text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--border);
     color: var(--text-muted); font-weight: 600; font-size: .72rem;
     text-transform: uppercase; letter-spacing: .04em;
     background: var(--bg-2, #1a1a1a); position: sticky; top: 0; z-index: 1;
+    white-space: nowrap;
   }
   .cat-table td {
     padding: .4rem .6rem; border-bottom: 1px solid var(--border);
@@ -31,15 +47,30 @@
   .cat-table tr.inactive { opacity: .4; }
   .cat-table tr:hover { background: rgba(255,255,255,.02); }
   .cat-table input, .cat-table select {
-    width: 100%; padding: 3px 6px; font-size: .8rem;
+    width: 100%; padding: 4px 8px; font-size: .82rem;
     background: transparent; border: 1px solid transparent; color: var(--text);
     border-radius: 3px;
   }
   .cat-table input:focus, .cat-table select:focus {
     background: var(--bg-2); border-color: var(--accent, #4f7ef8); outline: none;
   }
-  .cat-table .col-rate, .cat-table .col-qty, .cat-table .col-days,
-  .cat-table .col-kit, .cat-table .col-agent { text-align: right; }
+  /* Explicit column widths so last columns aren't crushed */
+  .cat-table .col-drag   { width: 28px;  min-width: 28px; }
+  .cat-table .col-cat    { width: 180px; min-width: 180px; }
+  .cat-table .col-label  { width: 200px; min-width: 200px; }
+  .cat-table .col-group  { width: 140px; min-width: 140px; }
+  .cat-table .col-labor  { width: 60px;  min-width: 60px; text-align: center; }
+  .cat-table .col-rate   { width: 90px;  min-width: 90px;  text-align: right; }
+  .cat-table .col-qty    { width: 70px;  min-width: 70px;  text-align: right; }
+  .cat-table .col-days   { width: 70px;  min-width: 70px;  text-align: right; }
+  .cat-table .col-kit    { width: 80px;  min-width: 80px;  text-align: right; }
+  .cat-table .col-fringe { width: 120px; min-width: 120px; }
+  .cat-table .col-union  { width: 120px; min-width: 120px; }
+  .cat-table .col-agent  { width: 80px;  min-width: 80px;  text-align: right; }
+  .cat-table .col-comp   { width: 110px; min-width: 110px; }
+  .cat-table .col-unit   { width: 100px; min-width: 100px; }
+  .cat-table .col-act    { width: 40px;  min-width: 40px;  text-align: center; }
+
   .cat-drag-handle {
     cursor: grab; color: var(--text-muted); user-select: none;
     padding: 2px 6px; font-weight: 700;
@@ -56,8 +87,32 @@
     font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
     color: var(--text-muted);
   }
+  .cat-group-hdr td { padding: .55rem .6rem; }
+  .cat-group-hdr .cat-add-in-dept {
+    font-size: .7rem; font-weight: 500; text-transform: none;
+    letter-spacing: normal; color: var(--accent, #4f7ef8);
+    background: none; border: none; cursor: pointer; margin-left: .75rem;
+    padding: 2px 6px; border-radius: 3px;
+  }
+  .cat-group-hdr .cat-add-in-dept:hover { background: rgba(37,99,235,.14); }
+  .cat-empty-row td {
+    padding: .75rem .6rem; color: var(--text-muted); font-style: italic; font-size: .8rem;
+  }
   .sortable-ghost { opacity: .35; background: rgba(37,99,235,.2) !important; }
   .sortable-drag { box-shadow: 0 8px 24px rgba(0,0,0,.5); opacity: .95; }
+
+  /* Save toast */
+  .cat-toast {
+    position: fixed; bottom: 20px; right: 20px;
+    padding: 10px 16px; border-radius: 6px;
+    background: var(--bg-3, #1e1e1e); color: var(--text);
+    border: 1px solid var(--border); font-size: .85rem;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    animation: catFadeIn .2s ease;
+    z-index: 1100;
+  }
+  .cat-toast.success { border-color: #16a34a; }
+  .cat-toast.error   { border-color: #dc2626; }
 </style>
 
 <div class="cat-wrap">
@@ -74,7 +129,7 @@
   <div class="cat-toolbar">
     <label style="font-size:.85rem;color:var(--text-muted)">Filter:</label>
     <select id="cat-filter">
-      <option value="">All categories</option>
+      <option value="">All departments</option>
       {% for code, name in coa_sections %}
       <option value="{{ code }}">{{ code }} — {{ name }}</option>
       {% endfor %}
@@ -84,27 +139,28 @@
       <input type="checkbox" id="cat-show-inactive"> Show inactive
     </label>
     <button class="btn btn-sm btn-primary" id="cat-add-btn">+ Add Item</button>
+    <span id="cat-save-indicator" class="cat-save-indicator">✓ All changes saved</span>
   </div>
 
-  <div style="overflow-x:auto">
+  <div class="cat-scroll-wrap">
     <table class="cat-table" id="cat-table">
       <thead>
         <tr>
-          <th style="width:24px"></th>
-          <th>Category</th>
-          <th>Label</th>
-          <th>Group</th>
-          <th>Labor?</th>
+          <th class="col-drag"></th>
+          <th class="col-cat">Department</th>
+          <th class="col-label">Label</th>
+          <th class="col-group">Sub-group</th>
+          <th class="col-labor">Labor?</th>
           <th class="col-rate">Rate</th>
           <th class="col-qty">Qty</th>
           <th class="col-days">Days</th>
           <th class="col-kit">Kit</th>
-          <th>Fringe</th>
-          <th>Union</th>
+          <th class="col-fringe">Fringe (Non-Union)</th>
+          <th class="col-union">Fringe (Union)</th>
           <th class="col-agent">Agent %</th>
-          <th>Comp</th>
-          <th>Unit</th>
-          <th style="width:28px"></th>
+          <th class="col-comp">Line Type</th>
+          <th class="col-unit">Unit</th>
+          <th class="col-act"></th>
         </tr>
       </thead>
       <tbody id="cat-tbody">
