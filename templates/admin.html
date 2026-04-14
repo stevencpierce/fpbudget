@@ -177,15 +177,20 @@
           <td style="text-align:center;color:var(--text-muted)">{{ pc }}</td>
           <td>
             <div class="action-row">
-              <button class="btn-xs" onclick="openEdit({{ u.id }},{{ u.name|tojson }},{{ u.email|tojson }},{{ u.role|tojson }},{{ (u.dept_code or '')|tojson }})">Edit</button>
-              <form method="POST" action="{{ url_for('admin_user_reset_password',uid=u.id) }}" style="display:contents" onsubmit="return confirm('Reset password for {{ u.email }}?')">
+              <button class="btn-xs edit-user-btn"
+                      data-uid="{{ u.id }}"
+                      data-name="{{ u.name or '' }}"
+                      data-email="{{ u.email }}"
+                      data-role="{{ u.role }}"
+                      data-dept="{{ u.dept_code or '' }}">Edit</button>
+              <form method="POST" action="{{ url_for('admin_user_reset_password',uid=u.id) }}" style="display:contents" class="confirm-form" data-msg="Reset password for {{ u.email }}?">
                 <button class="btn-xs">Reset PW</button>
               </form>
               <form method="POST" action="{{ url_for('admin_user_toggle_active',uid=u.id) }}" style="display:contents">
                 <button class="btn-xs" {% if u.id==current_user.id %}disabled{% endif %}>{{ 'Deactivate' if u.is_active else 'Activate' }}</button>
               </form>
               {% if (current_user.role=='super_admin' and u.id!=current_user.id) or (current_user.role=='admin' and u.role not in ('super_admin','admin') and u.id!=current_user.id) %}
-              <form method="POST" action="{{ url_for('admin_user_delete',uid=u.id) }}" style="display:contents" onsubmit="return confirm('Delete {{ u.email }}? Cannot be undone.')">
+              <form method="POST" action="{{ url_for('admin_user_delete',uid=u.id) }}" style="display:contents" class="confirm-form" data-msg="Delete {{ u.email }}? Cannot be undone.">
                 <button class="btn-xs danger">Delete</button>
               </form>
               {% endif %}
@@ -208,7 +213,7 @@
         <div class="fg"><label>Email <span style="color:#f87171">*</span></label><input type="email" name="email" required placeholder="jane@example.com"></div>
         <div class="fg">
           <label>Role</label>
-          <select name="role" id="new-role" onchange="toggleNewDept()">
+          <select name="role" id="new-role">
             {% if current_user.role=='super_admin' %}<option value="super_admin">Super Admin</option>{% endif %}
             <option value="admin">Admin</option>
             <option value="line_producer" selected>Line Producer</option>
@@ -233,7 +238,7 @@
     <div class="admin-card-header">
       <h2>Project Access</h2>
       <form method="POST" action="{{ url_for('admin_import_dropbox') }}"
-            onsubmit="return confirm('Scan Dropbox for project folders and import any missing ones?')">
+            class="confirm-form" data-msg="Scan Dropbox for project folders and import any missing ones?">
         <button type="submit" class="btn btn-sm btn-outline">Import from Dropbox</button>
       </form>
     </div>
@@ -246,7 +251,7 @@
           {% for pa in pas %}{% set u=users|selectattr('id','eq',pa.user_id)|first %}{% if u %}
           {% set role_label = {'owner':'Owner','editor':'Editor','collaborator':'Editor','viewer':'Viewer','docs_only':'Docs Only'}.get(pa.role, pa.role) %}
           <span class="access-chip role-{{ pa.role }}">{{ u.name or u.email }}<span class="chip-role">{{ role_label }}</span>
-            <button onclick="removeAccess({{ project.id }},{{ pa.user_id }},this.closest('.access-chip'))">✕</button>
+            <button class="remove-access-btn" data-pid="{{ project.id }}" data-uid="{{ pa.user_id }}">✕</button>
           </span>
           {% endif %}{% endfor %}
           {% if not pas %}<span style="font-size:.78rem;color:var(--text-muted)">No users assigned</span>{% endif %}
@@ -263,7 +268,7 @@
             <option value="docs_only">Docs Only</option>
             <option value="owner">Owner</option>
           </select>
-          <button class="btn btn-sm btn-outline" onclick="addAccess({{ project.id }})">Add</button>
+          <button class="btn btn-sm btn-outline add-access-btn" data-pid="{{ project.id }}">Add</button>
         </div>
       </div>
       {% endfor %}
@@ -275,7 +280,7 @@
 </div>
 
 <!-- Edit Modal -->
-<div id="edit-modal" class="edit-backdrop" onclick="if(event.target===this)closeEdit()">
+<div id="edit-modal" class="edit-backdrop">
   <div class="edit-box">
     <h3>Edit User</h3>
     <form id="edit-form" method="POST">
@@ -284,7 +289,7 @@
         <div class="fg"><label>Email</label><input type="email" name="email" id="ee" required></div>
         <div class="fg">
           <label>Role</label>
-          <select name="role" id="er" onchange="toggleEditDept()">
+          <select name="role" id="er">
             {% if current_user.role=='super_admin' %}<option value="super_admin">Super Admin</option>{% endif %}
             <option value="admin">Admin</option>
             <option value="line_producer">Line Producer</option>
@@ -302,7 +307,7 @@
       </div>
       <div class="edit-actions">
         <button type="submit" class="btn btn-primary">Save</button>
-        <button type="button" class="btn btn-outline" onclick="closeEdit()">Cancel</button>
+        <button type="button" class="btn btn-outline" id="edit-cancel-btn">Cancel</button>
       </div>
     </form>
   </div>
