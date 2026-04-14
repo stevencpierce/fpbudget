@@ -2122,12 +2122,17 @@ def upsert_line(pid, bid):
         q        = float(ln.quantity or 1)
         d        = float(ln.days or 1)
         discount = float(ln.agent_pct or 0)   # stored as fraction (0.15 = 15%)
-        if r > 0:
+        if "rate" in data:
+            # User explicitly set the rate (including to 0) → always recompute total
             pre_discount = round(r * q * d, 2)
             ln.estimated_total = round(pre_discount * (1 - discount), 2)
-        # If rate is 0 but we have a flat total and qty/days were just changed, back-derive unit rate
-        elif float(ln.estimated_total or 0) > 0 and ("quantity" in data or "days" in data) and "rate" not in data:
-            # Derive unit rate from existing total ÷ (new qty × new days)
+        elif r > 0:
+            # Rate wasn't in this payload but is still positive → recompute total
+            # (qty / days / discount may have changed)
+            pre_discount = round(r * q * d, 2)
+            ln.estimated_total = round(pre_discount * (1 - discount), 2)
+        elif float(ln.estimated_total or 0) > 0 and ("quantity" in data or "days" in data):
+            # Rate is 0 but we have a flat total + qty/days changed → back-derive unit rate
             derived_rate = round(float(ln.estimated_total) / max(q * d, 1), 2)
             ln.rate = derived_rate
             ln.estimated_total = round(derived_rate * q * d * (1 - discount), 2)

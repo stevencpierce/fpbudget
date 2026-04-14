@@ -5852,10 +5852,12 @@ function _collabLivePatch() {
         }, 20000);
       }
 
-      // Skip field patching if SocketIO is connected — it handles that in real time
-      if (window._socket && window._socket.connected) return;
+      // Belt-and-suspenders: always poll for field changes even when socket is
+      // connected. If socket emit was missed (proxy / WS upgrade issue / race),
+      // polling catches up. Skipping polling when socket connects caused stale
+      // data for other clients.
 
-      // Fallback: silently patch changed lines
+      // Silently patch changed lines
       let patched = 0;
       for (const [idStr, res] of Object.entries(d.lines)) {
         const id = parseInt(idStr);
@@ -5876,22 +5878,29 @@ function _collabLivePatch() {
     .catch(() => {});
 }
 
-// Mark lines I edit so they're not overwritten by remote patches
+// Mark lines I edit so they're not overwritten by remote patches during
+// the brief window after save. Auto-clear after 4s so polling can catch up
+// if another user edited the same line afterward.
 document.addEventListener('change', e => {
   const row = e.target.closest('.line-row');
-  if (row) _myEditedLines.add(parseInt(row.dataset.id));
+  if (!row) return;
+  const id = parseInt(row.dataset.id);
+  _myEditedLines.add(id);
+  setTimeout(() => _myEditedLines.delete(id), 4000);
 });
 
-// Presence + structural polling: only run if WebSocket didn't connect
-// (collab.js sets window._socket on success)
+// Always run field-change polling as a backup — catches anything the socket
+// emits miss (Render free tier / proxy issues / serialization failures).
+// Presence: still socket-preferred; poll only when no socket connected.
 setTimeout(function() {
   if (!window._socket || !window._socket.connected) {
     console.log('[WS] No socket — using polling fallback');
     _collabPingPresence();
     setInterval(_collabPingPresence, 20000);
   }
-  // Always check for structural changes (lines added/removed)
-  setInterval(_collabLivePatch, 30000);
+  // Poll every 10s regardless of socket — this is the reliability net
+  _collabLivePatch();
+  setInterval(_collabLivePatch, 10000);
 }, 2000);
 </script>
 
