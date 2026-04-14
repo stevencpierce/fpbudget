@@ -1569,7 +1569,7 @@
           <div class="field">
             <label>Start Date</label>
             <input type="date" id="set-start" value="{{ budget.start_date.isoformat() if budget.start_date else '' }}"
-                   oninput="autoSetEndDate(this.value)" onchange="autoSetEndDate(this.value)">
+                   onchange="autoSetEndDate(this.value)">
           </div>
           <div class="field">
             <label>End Date</label>
@@ -3136,11 +3136,13 @@ async function saveTaxCredit() {
 // ── Project Settings ──────────────────────────────────────────────────────
 const SETTINGS_URL = `{{ url_for('budget_settings', pid=project.id, bid=budget.id) }}`;
 function autoSetEndDate(startVal) {
-  if (!startVal) return;
+  if (!startVal || !/^\d{4}-\d{2}-\d{2}$/.test(startVal)) return;
   const endInput = document.getElementById('set-end');
-  const d = new Date(startVal + 'T00:00:00');
+  if (endInput.value) return; // don't overwrite if already set
+  const d = new Date(startVal + 'T12:00:00');
+  if (isNaN(d)) return;
   d.setDate(d.getDate() + 14);
-  endInput.value = d.toISOString().split('T')[0];
+  endInput.value = d.toISOString().slice(0, 10);
 }
 
 (function initTimezoneDefault() {

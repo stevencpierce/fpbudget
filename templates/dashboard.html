@@ -117,7 +117,7 @@
         <div class="field">
           <label>Start Date <span style="font-weight:400;color:var(--text-muted)">(optional)</span></label>
           <input type="date" name="start_date" id="new-proj-start"
-                 oninput="const e=document.getElementById('new-proj-end');if(!e.value&&this.value){const d=new Date(this.value);d.setDate(d.getDate()+14);e.value=d.toISOString().slice(0,10)}">
+                 onchange="var e=document.getElementById('new-proj-end');if(!e.value&&this.value&&/^\d{4}-\d{2}-\d{2}$/.test(this.value)){var d=new Date(this.value+'T12:00:00');if(!isNaN(d)){d.setDate(d.getDate()+14);e.value=d.toISOString().slice(0,10)}}">
         </div>
         <div class="field">
           <label>End Date <span style="font-weight:400;color:var(--text-muted)">(optional)</span></label>
