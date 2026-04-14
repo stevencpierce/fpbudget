@@ -2586,46 +2586,99 @@ def _fuzzy_suggest_target(header):
 
 
 def _resolve_account_code(code_val, name_val):
-    """Return a valid FP_COA section start code from either a numeric code or a section name."""
-    # Try direct int parse
-    try:
-        if code_val is not None and str(code_val).strip():
-            c = int(float(str(code_val).strip()))
-            for start, _ in FP_COA_SECTIONS:
-                if c == start:
-                    return c
-            # If not exact match, find the section it belongs to
+    """Return a valid FP_COA section start code from a numeric code or section name.
+
+    Handles multiple code conventions:
+    - Raw FP code: 700 → 700 (Talent)
+    - Showbiz-style decimal: 7.00 → 700 (x100 multiplier)
+    - Short int: 20 → 2000 (x100 multiplier)
+    - Section range snap: 712 → 700 (Talent)
+    - Fuzzy section name match as last resort
+    """
+    section_codes = {c for c, _ in FP_COA_SECTIONS}
+    sorted_codes = sorted(section_codes)
+
+    if code_val is not None and str(code_val).strip():
+        raw = None
+        try:
+            raw = float(str(code_val).replace(',', '').strip())
+        except (ValueError, TypeError):
+            pass
+        if raw is not None and raw > 0:
+            # Try exact match at multiple scales
+            for candidate in [int(raw), int(raw * 100), int(raw * 1000)]:
+                if candidate in section_codes:
+                    return candidate
+            # Range snap: find the section that contains this code
+            # Use the scale that produces a sensible FP-range value (typically x100 if < 1000)
+            candidate = int(raw * 100) if raw < 1000 else int(raw)
             best = None
-            for start, _ in FP_COA_SECTIONS:
-                if c >= start:
-                    best = start
+            for c in sorted_codes:
+                if candidate >= c:
+                    best = c
                 else:
                     break
-            if best is not None:
+            if best is not None and candidate - best <= 500:
                 return best
-    except (ValueError, TypeError):
-        pass
+
     # Fall back to fuzzy-match section name
     if name_val:
         import difflib
         n = str(name_val).strip().lower()
-        best_code, best_score = None, 0.0
-        for start, sec_name in FP_COA_SECTIONS:
-            r = difflib.SequenceMatcher(None, n, sec_name.lower()).ratio()
-            if n in sec_name.lower() or sec_name.lower() in n:
-                r = max(r, 0.85)
-            if r > best_score:
-                best_score = r
-                best_code = start
-        if best_score >= 0.6:
-            return best_code
+        if n and not n.startswith('total'):
+            best_code, best_score = None, 0.0
+            for start, sec_name in FP_COA_SECTIONS:
+                sl = sec_name.lower()
+                r = difflib.SequenceMatcher(None, n, sl).ratio()
+                if n in sl or sl in n:
+                    r = max(r, 0.85)
+                # Word-level overlap bonus
+                n_words = set(w for w in n.split() if len(w) > 2)
+                s_words = set(w for w in sl.split() if len(w) > 2)
+                if n_words and s_words and n_words & s_words:
+                    r = max(r, 0.7)
+                if r > best_score:
+                    best_score = r
+                    best_code = start
+            if best_score >= 0.55:
+                return best_code
     return None
+
+
+def _dedupe_headers(raw_headers):
+    """Normalize CSV header row: strip, fill blanks, dedupe duplicates."""
+    seen = {}
+    out = []
+    for i, h in enumerate(raw_headers):
+        hh = (h or '').strip()
+        if not hh:
+            hh = f"Column {i + 1}"
+        if hh in seen:
+            seen[hh] += 1
+            hh = f"{hh} ({seen[hh]})"
+        else:
+            seen[hh] = 1
+        out.append(hh)
+    return out
+
+
+def _score_header_row(cells):
+    """Count how many cells in a row look like recognizable field names."""
+    score = 0
+    for cell in cells:
+        if not cell or not str(cell).strip():
+            continue
+        _, conf, _ = _fuzzy_suggest_target(str(cell))
+        if conf >= 0.6:
+            score += 1
+    return score
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/import/analyze", methods=["POST"])
 @login_required
 def import_csv_analyze(pid, bid):
-    """Analyze uploaded CSV and return suggested mappings + preview rows."""
+    """Analyze uploaded CSV: auto-detect header row, suggest column mappings,
+    preview first 10 data rows."""
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     f = request.files.get("file")
     if not f:
@@ -2636,12 +2689,27 @@ def import_csv_analyze(pid, bid):
     except UnicodeDecodeError:
         return jsonify({"error": "File must be UTF-8 encoded CSV"}), 400
 
-    reader = csv.DictReader(io.StringIO(content))
-    headers = reader.fieldnames or []
-    if not headers:
-        return jsonify({"error": "CSV has no headers"}), 400
-
+    reader = csv.reader(io.StringIO(content))
     all_rows = list(reader)
+    if not all_rows:
+        return jsonify({"error": "Empty CSV"}), 400
+
+    # Client may override auto-detection by passing header_row_index
+    requested_header_idx = request.form.get("header_row_index", type=int)
+
+    # Auto-detect header row: scan first 20 rows, pick the one with most field-like cells
+    scan_rows = all_rows[: min(20, len(all_rows))]
+    scores = [(idx, _score_header_row(row)) for idx, row in enumerate(scan_rows)]
+    scores.sort(key=lambda x: x[1], reverse=True)
+    best_score = scores[0][1] if scores else 0
+    auto_header_idx = scores[0][0] if best_score >= 2 else 0
+
+    header_idx = requested_header_idx if requested_header_idx is not None else auto_header_idx
+    if header_idx < 0 or header_idx >= len(all_rows):
+        header_idx = 0
+
+    raw_headers = all_rows[header_idx]
+    headers = _dedupe_headers(raw_headers)
 
     # Build fuzzy suggestions per header
     mappings = []
@@ -2656,30 +2724,38 @@ def import_csv_analyze(pid, bid):
 
     # Pre-load existing lines for duplicate detection
     existing_lines = BudgetLine.query.filter_by(budget_id=bid).all()
-    existing_index = {}   # (account_code, description_lower) -> line_id
+    existing_index = {}
     for ln in existing_lines:
         key = (int(ln.account_code or 0), (ln.description or '').strip().lower())
         existing_index[key] = ln.id
 
-    # Preview: first 10 rows, parse via suggested mapping
+    # Preview: first 10 data rows after the header
+    data_rows = all_rows[header_idx + 1:]
     mapping_dict = {m["csv_col"]: m["target"] for m in mappings if m["target"]}
     preview = []
-    for idx, row in enumerate(all_rows[:10]):
+    for idx, row in enumerate(data_rows[:10]):
+        row_dict = dict(zip(headers, row))
         parsed = {}
         for csv_col, target in mapping_dict.items():
-            parsed[target] = row.get(csv_col, '')
+            parsed[target] = row_dict.get(csv_col, '')
         resolved_code = _resolve_account_code(
             parsed.get('account_code'),
             parsed.get('account_name') or parsed.get('description'),
         )
         desc = (parsed.get('description') or '').strip().lower()
         dup_id = existing_index.get((resolved_code or 0, desc)) if resolved_code else None
+        # Mark row as likely junk (total/empty/section) for UI hinting
+        is_junk = _is_import_junk_row(parsed)
         preview.append({
             "row_index": idx,
-            "csv_row": row,
+            "csv_row": row_dict,
             "resolved_code": resolved_code,
             "duplicate_of_line_id": dup_id,
+            "is_junk": is_junk,
         })
+
+    # Return the first 20 raw rows for the header picker UI
+    raw_preview = [list(r) for r in all_rows[: min(20, len(all_rows))]]
 
     return jsonify({
         "headers": headers,
@@ -2689,9 +2765,35 @@ def import_csv_analyze(pid, bid):
             {"value": "", "label": "— skip this column —"},
             *[{"value": f, "label": f} for f in _CSV_TARGET_FIELDS],
         ],
-        "row_count": len(all_rows),
+        "row_count": len(data_rows),
         "coa_sections": [{"code": c, "name": n} for c, n in FP_COA_SECTIONS],
+        "raw_preview": raw_preview,
+        "header_row_index": header_idx,
+        "auto_detected_header_index": auto_header_idx,
     })
+
+
+def _is_import_junk_row(parsed):
+    """Return True if a parsed row should be auto-skipped as junk
+    (empty, total row, or section-header row)."""
+    desc = (parsed.get('description') or '').strip()
+    desc_low = desc.lower()
+    code_raw = str(parsed.get('account_code') or '').strip()
+    rate_raw = str(parsed.get('rate') or '').strip()
+    total_raw = str(parsed.get('estimated_total') or '').strip()
+
+    # Empty: no description and no rate and no total
+    if not desc and not rate_raw and not total_raw:
+        return True
+    # Total rows (by convention: code "99" or "99.00", or description starts with "total")
+    if code_raw in ('99', '99.0', '99.00'):
+        return True
+    if desc_low.startswith('total') or desc_low.startswith('subtotal'):
+        return True
+    # #REF!, #N/A, or similar error cells as description
+    if desc_low.startswith('#'):
+        return True
+    return False
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/import/apply", methods=["POST"])
@@ -2702,12 +2804,15 @@ def import_csv_apply(pid, bid):
     f = request.files.get("file")
     mapping_json = request.form.get("mapping", "{}")
     actions_json = request.form.get("row_actions", "[]")
+    header_row_index = request.form.get("header_row_index", 0, type=int)
+    auto_skip_junk = request.form.get("auto_skip_junk", "1") == "1"
+
     if not f:
         return jsonify({"error": "No file uploaded"}), 400
 
     try:
         mapping = json.loads(mapping_json)
-        row_actions = json.loads(actions_json)
+        row_actions = json.loads(actions_json) if actions_json else []
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid mapping or actions JSON"}), 400
 
@@ -2716,15 +2821,24 @@ def import_csv_apply(pid, bid):
     except UnicodeDecodeError:
         return jsonify({"error": "File must be UTF-8 encoded CSV"}), 400
 
-    reader = csv.DictReader(io.StringIO(content))
+    reader = csv.reader(io.StringIO(content))
     all_rows = list(reader)
+    if header_row_index < 0 or header_row_index >= len(all_rows):
+        return jsonify({"error": "Header row index out of range"}), 400
+
+    headers = _dedupe_headers(all_rows[header_row_index])
+    data_rows = [dict(zip(headers, row)) for row in all_rows[header_row_index + 1:]]
 
     # Helper coercions
     def _f(v, default=0.0):
         try:
             if v in (None, ''):
                 return default
-            return float(str(v).replace(',', '').replace('$', '').replace('%', '').strip())
+            s = str(v).replace(',', '').replace('$', '').replace('%', '').strip()
+            # Handle negatives in parentheses: (500) → -500
+            if s.startswith('(') and s.endswith(')'):
+                s = '-' + s[1:-1]
+            return float(s)
         except (ValueError, TypeError):
             return default
 
@@ -2734,10 +2848,11 @@ def import_csv_apply(pid, bid):
     added = 0
     updated = 0
     skipped = 0
+    auto_skipped_junk = 0
     errors = []
 
-    for idx, row in enumerate(all_rows):
-        # Determine per-row action
+    for idx, row_dict in enumerate(data_rows):
+        # Per-row action from preview (only covers first 10 rows; rest default to "new")
         action = row_actions[idx] if idx < len(row_actions) else "new"
         if action == "skip" or action is None:
             skipped += 1
@@ -2748,7 +2863,12 @@ def import_csv_apply(pid, bid):
         for csv_col, target in mapping.items():
             if not target:
                 continue
-            fields[target] = row.get(csv_col, '')
+            fields[target] = row_dict.get(csv_col, '')
+
+        # Auto-skip junk rows (totals, section headers, empties, #REF! rows)
+        if auto_skip_junk and _is_import_junk_row(fields):
+            auto_skipped_junk += 1
+            continue
 
         # Resolve account_code
         code = _resolve_account_code(
@@ -2756,7 +2876,7 @@ def import_csv_apply(pid, bid):
             fields.get('account_name') or fields.get('description'),
         )
         if not code:
-            errors.append(f"Row {idx + 2}: could not resolve account code")
+            errors.append(f"Row {idx + header_row_index + 2}: could not resolve account code")
             skipped += 1
             continue
 
@@ -2769,8 +2889,8 @@ def import_csv_apply(pid, bid):
             "account_name":    account_name,
             "description":     (fields.get('description') or '').strip(),
             "is_labor":        _b(fields.get('is_labor', '')),
-            "quantity":        _f(fields.get('quantity', 1), 1),
-            "days":            _f(fields.get('days', 1), 1),
+            "quantity":        _f(fields.get('quantity', 1), 1) or 1,
+            "days":            _f(fields.get('days', 1), 1) or 1,
             "rate":            _f(fields.get('rate', 0)),
             "rate_type":       (fields.get('rate_type') or 'day_10').strip() or 'day_10',
             "est_ot":          _f(fields.get('est_ot', 0)),
@@ -2784,7 +2904,7 @@ def import_csv_apply(pid, bid):
             if isinstance(action, dict) and action.get('update'):
                 ln = BudgetLine.query.filter_by(id=int(action['update']), budget_id=bid).first()
                 if not ln:
-                    errors.append(f"Row {idx + 2}: line to update not found")
+                    errors.append(f"Row {idx + header_row_index + 2}: line to update not found")
                     skipped += 1
                     continue
                 for k, v in values.items():
@@ -2794,7 +2914,7 @@ def import_csv_apply(pid, bid):
                 db.session.add(BudgetLine(budget_id=bid, **values))
                 added += 1
         except Exception as e:
-            errors.append(f"Row {idx + 2}: {e}")
+            errors.append(f"Row {idx + header_row_index + 2}: {e}")
             skipped += 1
 
     try:
@@ -2809,7 +2929,8 @@ def import_csv_apply(pid, bid):
         "added": added,
         "updated": updated,
         "skipped": skipped,
-        "errors": errors,
+        "auto_skipped_junk": auto_skipped_junk,
+        "errors": errors[:50],  # cap error list
     })
 
 

@@ -1412,17 +1412,27 @@
     <!-- Smart CSV Import Mapping Modal -->
     <div id="import-csv-modal" class="modal hidden">
       <div class="modal-overlay"></div>
-      <div class="modal-box" style="max-width:920px;max-height:88vh;overflow-y:auto">
+      <div class="modal-box" style="max-width:1000px;max-height:88vh;overflow-y:auto">
         <h2>Map CSV Columns</h2>
-        <p class="muted" id="import-csv-summary" style="margin-bottom:1rem"></p>
+        <p class="muted" id="import-csv-summary" style="margin-bottom:.75rem"></p>
 
-        <h3 style="margin:.5rem 0 .5rem;font-size:.95rem">Column Mapping</h3>
+        <h3 style="margin:.5rem 0 .5rem;font-size:.95rem">Header Row</h3>
+        <p class="muted" style="margin:0 0 .4rem;font-size:.78rem">
+          Click the row that contains your column names. Rows above it will be ignored.
+        </p>
+        <div id="import-csv-header-picker" class="import-header-picker" style="overflow-x:auto;max-height:240px;overflow-y:auto"></div>
+
+        <h3 style="margin:1.25rem 0 .5rem;font-size:.95rem">Column Mapping</h3>
         <table class="import-mapping-table" id="import-csv-mapping">
           <thead><tr><th>CSV Column</th><th>Maps To</th><th>Confidence</th><th>Sample Values</th></tr></thead>
           <tbody></tbody>
         </table>
 
         <h3 style="margin:1.25rem 0 .5rem;font-size:.95rem">Row Preview (first 10)</h3>
+        <p class="muted" style="margin:0 0 .4rem;font-size:.78rem">
+          Total rows, section headers, and empty rows are auto-skipped on import.
+          Junk rows are dimmed below.
+        </p>
         <div style="overflow-x:auto">
           <table class="import-preview-table" id="import-csv-preview">
             <thead><tr><th>#</th><th>Action</th><th>Account</th><th>Description</th><th>Qty</th><th>Days</th><th>Rate</th><th>Total</th></tr></thead>
@@ -1431,6 +1441,10 @@
         </div>
 
         <div class="modal-actions" style="margin-top:1.25rem">
+          <label style="font-size:.82rem;margin-right:auto;display:flex;align-items:center;gap:6px">
+            <input type="checkbox" id="import-csv-skip-junk" checked>
+            Auto-skip total/section/empty rows
+          </label>
           <button type="button" class="btn btn-outline" id="import-csv-cancel">Cancel</button>
           <button type="button" class="btn btn-primary" id="import-csv-apply-btn">Import Lines</button>
         </div>
