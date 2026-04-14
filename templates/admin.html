@@ -277,6 +277,20 @@
     {% endif %}
   </div>
 
+  {% if current_user.role == 'super_admin' %}
+  <div class="admin-card">
+    <div class="admin-card-header">
+      <h2>Global Quick Entry Catalog</h2>
+      <span class="badge" style="background:rgba(217,119,6,.18);color:#fbbf24;font-size:.7rem;padding:3px 8px;border-radius:4px;margin-left:.5rem;text-transform:uppercase;letter-spacing:.04em">Super Admin</span>
+    </div>
+    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
+      Roles, default rates, fringe types, and groupings used by the Quick Entry panel on every budget.
+      Changes apply globally and immediately.
+    </p>
+    <a href="{{ url_for('admin_catalog_view') }}" class="btn btn-primary">Open Catalog Editor →</a>
+  </div>
+  {% endif %}
+
 </div>
 
 <!-- Edit Modal -->

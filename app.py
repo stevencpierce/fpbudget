@@ -15,10 +15,10 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     BudgetTemplate, BudgetTemplateLine, TaxCredit, PayrollProfile,
                     ProductionDay, Location, LocationDay, CallSheetData,
                     SupportContact, ProjectUnion, ProjectClient, CallSheetSend, CallSheetRecipient,
-                    BudgetDirectContact, CompanySettings, DocUpload)
+                    BudgetDirectContact, CompanySettings, DocUpload, CatalogItem)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
-                         seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
+                         seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
                          calc_days_ot_status, _run_payroll_calc, calc_line_detail,
                          sync_schedule_driven_lines, SCHEDULE_LINE_DEFS, get_role_group,
                          _float as _bc_float)
@@ -5967,6 +5967,161 @@ def admin_project_access_remove(pid):
     return jsonify({"ok": True})
 
 
+# ── Global Quick Entry Catalog (Super Admin only) ─────────────────────────────
+
+def _catalog_item_to_dict(ci):
+    return {
+        "id": ci.id,
+        "category_code": ci.category_code,
+        "category_name": ci.category_name,
+        "label": ci.label,
+        "group_name": ci.group_name,
+        "is_labor": bool(ci.is_labor),
+        "rate": float(ci.rate or 0),
+        "qty": float(ci.qty or 1),
+        "days": float(ci.days or 1),
+        "kit_fee": float(ci.kit_fee or 0),
+        "fringe": ci.fringe,
+        "union_fringe": ci.union_fringe,
+        "agent_pct": float(ci.agent_pct or 0),
+        "comp": ci.comp,
+        "unit": ci.unit,
+        "sort_order": ci.sort_order or 0,
+        "is_active": bool(ci.is_active),
+    }
+
+
+@app.route("/api/catalog")
+@login_required
+def api_catalog():
+    """Return all active catalog items grouped by category. Available to any
+    logged-in user (Quick Entry on the budget page uses this)."""
+    items = CatalogItem.query.filter_by(is_active=True).order_by(
+        CatalogItem.category_code, CatalogItem.sort_order, CatalogItem.id
+    ).all()
+    by_cat = {}
+    for ci in items:
+        cat = by_cat.setdefault(ci.category_code, {
+            "code": ci.category_code,
+            "name": ci.category_name,
+            "items": [],
+        })
+        cat["items"].append(_catalog_item_to_dict(ci))
+    return jsonify({"categories": list(by_cat.values())})
+
+
+@app.route("/admin/catalog")
+@login_required
+@super_admin_required
+def admin_catalog_view():
+    """Super admin catalog editor page."""
+    items = CatalogItem.query.order_by(
+        CatalogItem.category_code, CatalogItem.sort_order, CatalogItem.id
+    ).all()
+    return render_template("admin_catalog.html",
+                           items=[_catalog_item_to_dict(i) for i in items],
+                           coa_sections=FP_COA_SECTIONS)
+
+
+@app.route("/admin/catalog/item", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_item_create():
+    data = request.get_json(force=True) or {}
+    try:
+        code = int(data.get("category_code") or 0)
+        label = (data.get("label") or "").strip()
+        if not code or not label:
+            return jsonify({"error": "category_code and label required"}), 400
+        # Resolve category_name from COA
+        cname = dict(FP_COA_SECTIONS).get(code, data.get("category_name") or "")
+        ci = CatalogItem(
+            category_code=code,
+            category_name=cname,
+            label=label,
+            group_name=(data.get("group_name") or None) or None,
+            is_labor=bool(data.get("is_labor", False)),
+            rate=float(data.get("rate") or 0),
+            qty=float(data.get("qty") or 1),
+            days=float(data.get("days") or 1),
+            kit_fee=float(data.get("kit_fee") or 0),
+            fringe=(data.get("fringe") or None) or None,
+            union_fringe=(data.get("union_fringe") or None) or None,
+            agent_pct=float(data.get("agent_pct") or 0),
+            comp=(data.get("comp") or "labor"),
+            unit=(data.get("unit") or "day"),
+            sort_order=int(data.get("sort_order") or 0),
+            is_active=True,
+        )
+        db.session.add(ci)
+        db.session.commit()
+        return jsonify(_catalog_item_to_dict(ci))
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/admin/catalog/item/<int:iid>", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_item_update(iid):
+    ci = CatalogItem.query.get_or_404(iid)
+    data = request.get_json(force=True) or {}
+    try:
+        # Allow updating any editable field
+        if "label" in data:
+            ci.label = (data["label"] or "").strip() or ci.label
+        if "category_code" in data:
+            code = int(data["category_code"])
+            ci.category_code = code
+            ci.category_name = dict(FP_COA_SECTIONS).get(code, ci.category_name)
+        if "group_name" in data:
+            ci.group_name = (data["group_name"] or None) or None
+        if "is_labor" in data:
+            ci.is_labor = bool(data["is_labor"])
+        for fld in ("rate", "qty", "days", "kit_fee", "agent_pct"):
+            if fld in data:
+                setattr(ci, fld, float(data[fld] or 0))
+        for fld in ("fringe", "union_fringe", "comp", "unit"):
+            if fld in data:
+                setattr(ci, fld, (data[fld] or None) or None)
+        if "sort_order" in data:
+            ci.sort_order = int(data["sort_order"] or 0)
+        if "is_active" in data:
+            ci.is_active = bool(data["is_active"])
+        db.session.commit()
+        return jsonify(_catalog_item_to_dict(ci))
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/admin/catalog/item/<int:iid>/delete", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_item_delete(iid):
+    """Soft delete via is_active=False."""
+    ci = CatalogItem.query.get_or_404(iid)
+    ci.is_active = False
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/catalog/reorder", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_reorder():
+    """Bulk sort_order update. Payload: {order: [id1, id2, id3, ...]}"""
+    data = request.get_json(force=True) or {}
+    order = data.get("order") or []
+    for i, iid in enumerate(order):
+        ci = CatalogItem.query.get(int(iid))
+        if ci:
+            ci.sort_order = i * 10
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
 # ── Project sharing routes ─────────────────────────────────────────────────────
 
 def _user_can_access_project(pid):
@@ -6385,6 +6540,11 @@ with app.app_context():
     seed_fringes(db.session)
     seed_standard_template(db.session)
     seed_payroll_profiles(db.session)
+    try:
+        seed_catalog(db.session)
+    except Exception as _e:
+        app.logger.warning("seed_catalog failed: %s", _e)
+        db.session.rollback()
 
     # ── User table role column migrations (replace is_admin with role) ────────
     for _role_sql in [

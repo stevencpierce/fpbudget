@@ -331,6 +331,33 @@ class BudgetTemplateLine(db.Model):
     sort_order      = db.Column(db.Integer, default=0)
 
 
+class CatalogItem(db.Model):
+    """Global Quick Entry catalog — roles/items available when adding budget lines.
+    Editable by super_admin via /admin/catalog. Seeded on first boot from
+    FP_CATALOG_SEED in budget_calc.py."""
+    __tablename__ = "catalog_item"
+    id            = db.Column(db.Integer, primary_key=True)
+    category_code = db.Column(db.Integer, nullable=False)          # COA section code
+    category_name = db.Column(db.String(100), nullable=False)
+    label         = db.Column(db.String(200), nullable=False)
+    group_name    = db.Column(db.String(100), nullable=True)       # Sub-group: Production, Camera...
+    is_labor      = db.Column(db.Boolean, default=False)
+    rate          = db.Column(db.Numeric(12, 2), default=0)
+    qty           = db.Column(db.Numeric(8, 2), default=1)
+    days          = db.Column(db.Numeric(8, 2), default=1)
+    kit_fee       = db.Column(db.Numeric(8, 2), default=0)
+    fringe        = db.Column(db.String(5), nullable=True)          # non-union fringe (N, E, etc.)
+    union_fringe  = db.Column(db.String(5), nullable=True)          # union variant (I, S, D, U)
+    agent_pct     = db.Column(db.Numeric(6, 4), default=0)
+    comp          = db.Column(db.String(20), default='labor')       # labor | expense | rental | purchase
+    unit          = db.Column(db.String(20), default='day')         # day | flat | week | session...
+    sort_order    = db.Column(db.Integer, default=0)
+    is_active     = db.Column(db.Boolean, default=True)
+    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at    = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (db.UniqueConstraint("category_code", "label", name="uq_catalog_item"),)
+
+
 class TaxCredit(db.Model):
     __tablename__ = "tax_credit"
     id           = db.Column(db.Integer, primary_key=True)

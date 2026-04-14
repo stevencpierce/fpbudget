@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Global Catalog — FPBudget{% endblock %}
+
+{% block content %}
+<style>
+  .cat-wrap { max-width: 1200px; margin: 0 auto; padding: 0 0 4rem; }
+  .cat-page-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1.5rem 0 1rem; border-bottom: 1px solid var(--border);
+    margin-bottom: 1.5rem; flex-wrap: wrap; gap: .75rem;
+  }
+  .cat-toolbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+  .cat-toolbar select, .cat-toolbar input { padding: 6px 10px; font-size: .85rem; }
+  .cat-table {
+    width: 100%; border-collapse: collapse; font-size: .82rem;
+    background: var(--bg, #141414);
+  }
+  .cat-table th {
+    text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--border);
+    color: var(--text-muted); font-weight: 600; font-size: .72rem;
+    text-transform: uppercase; letter-spacing: .04em;
+    background: var(--bg-2, #1a1a1a); position: sticky; top: 0; z-index: 1;
+  }
+  .cat-table td {
+    padding: .4rem .6rem; border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .cat-table tr.inactive { opacity: .4; }
+  .cat-table tr:hover { background: rgba(255,255,255,.02); }
+  .cat-table input, .cat-table select {
+    width: 100%; padding: 3px 6px; font-size: .8rem;
+    background: transparent; border: 1px solid transparent; color: var(--text);
+    border-radius: 3px;
+  }
+  .cat-table input:focus, .cat-table select:focus {
+    background: var(--bg-2); border-color: var(--accent, #4f7ef8); outline: none;
+  }
+  .cat-table .col-rate, .cat-table .col-qty, .cat-table .col-days,
+  .cat-table .col-kit, .cat-table .col-agent { text-align: right; }
+  .cat-drag-handle {
+    cursor: grab; color: var(--text-muted); user-select: none;
+    padding: 2px 6px; font-weight: 700;
+  }
+  .cat-drag-handle:hover { color: var(--text); }
+  .cat-drag-handle:active { cursor: grabbing; }
+  .cat-delete-btn {
+    background: none; border: none; color: #f87171; cursor: pointer;
+    font-size: .9rem; padding: 2px 6px;
+  }
+  .cat-delete-btn:hover { background: rgba(248,113,113,.12); border-radius: 4px; }
+  .cat-group-hdr {
+    background: var(--bg-2, #1a1a1a); font-weight: 600;
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--text-muted);
+  }
+  .sortable-ghost { opacity: .35; background: rgba(37,99,235,.2) !important; }
+  .sortable-drag { box-shadow: 0 8px 24px rgba(0,0,0,.5); opacity: .95; }
+</style>
+
+<div class="cat-wrap">
+  <div class="cat-page-header">
+    <h1 style="font-size:1.4rem;font-weight:700;margin:0">Global Quick Entry Catalog</h1>
+    <a href="{{ url_for('admin_panel') }}" class="btn btn-sm btn-outline">← Back to Admin</a>
+  </div>
+
+  <p class="muted" style="margin-bottom:1rem">
+    These roles, rates, and defaults power the <strong>Quick Entry</strong> panel when users add
+    budget lines. Edits apply globally to all projects. Drag <strong>⋮⋮</strong> to reorder within a category.
+  </p>
+
+  <div class="cat-toolbar">
+    <label style="font-size:.85rem;color:var(--text-muted)">Filter:</label>
+    <select id="cat-filter">
+      <option value="">All categories</option>
+      {% for code, name in coa_sections %}
+      <option value="{{ code }}">{{ code }} — {{ name }}</option>
+      {% endfor %}
+    </select>
+    <input type="text" id="cat-search" placeholder="Search label / group..." style="flex:1;min-width:180px">
+    <label style="font-size:.8rem;color:var(--text-muted);display:flex;align-items:center;gap:4px">
+      <input type="checkbox" id="cat-show-inactive"> Show inactive
+    </label>
+    <button class="btn btn-sm btn-primary" id="cat-add-btn">+ Add Item</button>
+  </div>
+
+  <div style="overflow-x:auto">
+    <table class="cat-table" id="cat-table">
+      <thead>
+        <tr>
+          <th style="width:24px"></th>
+          <th>Category</th>
+          <th>Label</th>
+          <th>Group</th>
+          <th>Labor?</th>
+          <th class="col-rate">Rate</th>
+          <th class="col-qty">Qty</th>
+          <th class="col-days">Days</th>
+          <th class="col-kit">Kit</th>
+          <th>Fringe</th>
+          <th>Union</th>
+          <th class="col-agent">Agent %</th>
+          <th>Comp</th>
+          <th>Unit</th>
+          <th style="width:28px"></th>
+        </tr>
+      </thead>
+      <tbody id="cat-tbody">
+        <!-- Rendered by admin-catalog.js -->
+      </tbody>
+    </table>
+  </div>
+
+  <p class="muted" style="margin-top:1rem;font-size:.78rem">
+    Tip: All edits save immediately on blur. Soft-delete hides items from Quick Entry but keeps
+    the row. Toggle <em>Show inactive</em> to restore or permanently clean up.
+  </p>
+</div>
+
+<script id="cat-initial-items" type="application/json">{{ items | tojson }}</script>
+<script id="cat-coa-sections" type="application/json">{{ coa_sections | tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script src="{{ url_for('static', filename='admin-catalog.js') }}"></script>
+{% endblock %}

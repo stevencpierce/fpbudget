@@ -1073,3 +1073,103 @@ def seed_standard_template(db_session):
             sort_order=i,
         ))
     db_session.commit()
+
+
+# ── Catalog seed ──────────────────────────────────────────────────────────────
+# (code, name, label, group, is_labor, rate, qty, days, kit, fringe, union_fringe,
+#  agent_pct, comp, unit)
+FP_CATALOG_SEED = [
+    # Above the Line (code 600)
+    (600,  "Above the Line",    "Director",                    None,            True,  1500, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (600,  "Above the Line",    "Executive Producer",          None,            True,  1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (600,  "Above the Line",    "Producer",                    None,            True,  1000, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (600,  "Above the Line",    "Creative Director",           None,            True,  1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+
+    # Talent (code 700)
+    (700,  "Talent",            "Principal Talent",            None,            True,  825,  1, 1, 0, "N", "S",  0.10, "labor", "day"),
+    (700,  "Talent",            "Host",                        None,            True,  1000, 1, 1, 0, "N", "S",  0.10, "labor", "day"),
+    (700,  "Talent",            "Extra / Background",          None,            True,  200,  1, 1, 0, "N", "S",  0.00, "labor", "day"),
+
+    # Production Staff (code 1000) — user's most recent edits
+    (1000, "Production Staff",  "Line Producer",               "Production",     True,  1200, 1, 1, 0, "N", "D",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "UPM",                         "Production",     True,  1000, 1, 1, 0, "N", "D",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Supervising Producer",        "Production",     True,  800,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Production Supervisor",       "Production",     True,  900,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Production Coordinator",      "Production",     True,  750,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Production Assistant",        "Production",     True,  350,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Live Director",               "Direction / AD", True,  700,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "1st AD",                      "Direction / AD", True,  900,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "2nd AD",                      "Direction / AD", True,  750,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Key PA",                      "Direction / AD", True,  350,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Director of Photography",     "Camera",         True,  1200, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Camera Operator",             "Camera",         True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Robotic Camera Operator",     "Camera",         True,  500,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "1st AC",                      "Camera",         True,  800,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "2nd AC",                      "Camera",         True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "DIT",                         "Camera",         True,  850,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Video Engineer",              "Camera",         True,  750,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Lighting Designer",           "Grip & Electric",True,  1000, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Gaffer",                      "Grip & Electric",True,  825,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Key Grip",                    "Grip & Electric",True,  825,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Sound Mixer",                 "Sound",          True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Boom Operator",               "Sound",          True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Technical Producer",          "Control Room",   True,  1000, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Technical Director",          "Control Room",   True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Graphics and Playback",       "Control Room",   True,  500,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1000, "Production Staff",  "Switcher Operator",           "Control Room",   True,  750,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+
+    # Post-Production Staff (code 1200)
+    (1200, "Post-Production Staff", "Editor",                  None,            True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1200, "Post-Production Staff", "Assistant Editor",        None,            True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (1200, "Post-Production Staff", "Colorist",                None,            True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+
+    # Camera Equipment (code 2000, non-labor rentals)
+    (2000, "Camera Equipment",  "Camera Package Rental",       None,            False, 1500, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2000, "Camera Equipment",  "Lens Kit Rental",             None,            False, 500,  1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2000, "Camera Equipment",  "Media / Hard Drives",         None,            False, 300,  1, 1, 0, None, None, 0.00, "purchase","flat"),
+
+    # Grip & Electric (code 3000)
+    (3000, "Grip & Electric",   "Lighting Package",            None,            False, 1500, 1, 1, 0, None, None, 0.00, "rental", "day"),
+    (3000, "Grip & Electric",   "Grip Package",                None,            False, 800,  1, 1, 0, None, None, 0.00, "rental", "day"),
+
+    # Sound (code 3300)
+    (3300, "Sound",             "Sound Package Rental",        None,            False, 500,  1, 1, 0, None, None, 0.00, "rental", "day"),
+
+    # Travel (code 7000)
+    (7000, "Travel",            "Flight",                      None,            False, 500,  1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (7000, "Travel",            "Hotel Night",                 None,            False, 200,  1, 1, 0, None, None, 0.00, "expense", "day"),
+]
+
+
+def seed_catalog(db_session):
+    """Seed the global Quick Entry catalog. Idempotent: only adds missing items."""
+    from models import CatalogItem
+    existing_keys = {(c.category_code, c.label) for c in CatalogItem.query.all()}
+    added = 0
+    for i, row in enumerate(FP_CATALOG_SEED):
+        (code, cname, label, group, is_labor, rate, qty, days, kit,
+         fringe, union_fringe, agent_pct, comp, unit) = row
+        if (code, label) in existing_keys:
+            continue
+        db_session.add(CatalogItem(
+            category_code=code,
+            category_name=cname,
+            label=label,
+            group_name=group,
+            is_labor=is_labor,
+            rate=rate,
+            qty=qty,
+            days=days,
+            kit_fee=kit,
+            fringe=fringe,
+            union_fringe=union_fringe,
+            agent_pct=agent_pct,
+            comp=comp,
+            unit=unit,
+            sort_order=i * 10,
+            is_active=True,
+        ))
+        added += 1
+    if added:
+        db_session.commit()
+    return added
