@@ -1401,14 +1401,40 @@
 
     <div class="card">
       <h3>Import CSV</h3>
-      <p class="muted">Upload a working budget CSV to populate lines.</p>
-      <form method="POST" enctype="multipart/form-data"
-            action="{{ url_for('import_csv', pid=project.id, bid=budget.id) }}">
-        <div class="field">
-          <input type="file" name="file" accept=".csv" required>
+      <p class="muted">Upload a budget CSV from Movie Magic, Showbiz, Excel, or another FPBudget export. Columns are auto-mapped &mdash; confirm in the next step.</p>
+      <input type="file" id="import-csv-file" accept=".csv" style="display:none"
+             data-analyze-url="{{ url_for('import_csv_analyze', pid=project.id, bid=budget.id) }}"
+             data-apply-url="{{ url_for('import_csv_apply', pid=project.id, bid=budget.id) }}">
+      <button class="btn btn-primary" id="import-csv-btn">Upload &amp; Map CSV</button>
+      <span id="import-csv-status" class="muted" style="margin-left:.75rem;font-size:.85rem"></span>
+    </div>
+
+    <!-- Smart CSV Import Mapping Modal -->
+    <div id="import-csv-modal" class="modal hidden">
+      <div class="modal-overlay"></div>
+      <div class="modal-box" style="max-width:920px;max-height:88vh;overflow-y:auto">
+        <h2>Map CSV Columns</h2>
+        <p class="muted" id="import-csv-summary" style="margin-bottom:1rem"></p>
+
+        <h3 style="margin:.5rem 0 .5rem;font-size:.95rem">Column Mapping</h3>
+        <table class="import-mapping-table" id="import-csv-mapping">
+          <thead><tr><th>CSV Column</th><th>Maps To</th><th>Confidence</th><th>Sample Values</th></tr></thead>
+          <tbody></tbody>
+        </table>
+
+        <h3 style="margin:1.25rem 0 .5rem;font-size:.95rem">Row Preview (first 10)</h3>
+        <div style="overflow-x:auto">
+          <table class="import-preview-table" id="import-csv-preview">
+            <thead><tr><th>#</th><th>Action</th><th>Account</th><th>Description</th><th>Qty</th><th>Days</th><th>Rate</th><th>Total</th></tr></thead>
+            <tbody></tbody>
+          </table>
         </div>
-        <button type="submit" class="btn btn-primary">Import</button>
-      </form>
+
+        <div class="modal-actions" style="margin-top:1.25rem">
+          <button type="button" class="btn btn-outline" id="import-csv-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="import-csv-apply-btn">Import Lines</button>
+        </div>
+      </div>
     </div>
 
     <div class="card">
@@ -5742,6 +5768,7 @@ function _timeAgo(d) {
 // window._socket is set by collab.js
 </script>
 <script src="{{ url_for('static', filename='collab.js') }}"></script>
+<script src="{{ url_for('static', filename='import-csv.js') }}"></script>
 <script>
 
 // ── Conflict toast helper ─────────────────────────────────────────────────

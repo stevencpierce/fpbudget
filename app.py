@@ -1251,6 +1251,10 @@ def _archive_project_dropbox(p):
 @app.route("/projects/<int:pid>/delete", methods=["POST"])
 @login_required
 def project_delete(pid):
+    # Only super_admin can permanently delete projects
+    if getattr(current_user, 'role', None) != 'super_admin':
+        flash("Only a super admin can permanently delete projects.", "error")
+        return redirect(url_for("dashboard"))
     p = ProjectSheet.query.get_or_404(pid)
     # Archive to Dropbox before any DB deletion
     _archive_project_dropbox(p)
@@ -1311,6 +1315,83 @@ def project_archive(pid):
     p.status = 'archived'
     db.session.commit()
     flash(f"Project '{p.name}' archived.", "success")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/projects/bulk-delete", methods=["POST"])
+@login_required
+def projects_bulk_delete():
+    """Delete multiple projects at once. Expects form field 'project_ids' (repeatable)."""
+    if getattr(current_user, 'role', None) != 'super_admin':
+        flash("Only a super admin can permanently delete projects.", "error")
+        return redirect(url_for("dashboard"))
+    from models import Location
+    ids = request.form.getlist("project_ids")
+    if not ids:
+        flash("No projects selected.", "warning")
+        return redirect(url_for("dashboard"))
+    deleted_names = []
+    for raw in ids:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        p = ProjectSheet.query.get(pid)
+        if not p:
+            continue
+        try:
+            _archive_project_dropbox(p)
+        except Exception as e:
+            logging.warning(f"Dropbox archive on bulk delete failed for {p.name}: {e}")
+        # Null out self-referencing parent_budget_id so Postgres allows deletion
+        Budget.query.filter_by(project_id=pid).update(
+            {"parent_budget_id": None}, synchronize_session=False)
+        db.session.flush()
+        for b in Budget.query.filter_by(project_id=pid).all():
+            _delete_budget_cascade(b.id)
+        DocUpload.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        Location.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        ProjectAccess.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        ProjectUnion.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        ProjectClient.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        deleted_names.append(p.name)
+        db.session.delete(p)
+    db.session.commit()
+    n = len(deleted_names)
+    flash(f"Deleted {n} project{'s' if n != 1 else ''}.", "success")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/projects/bulk-archive", methods=["POST"])
+@login_required
+def projects_bulk_archive():
+    """Archive multiple projects at once. Expects form field 'project_ids' (repeatable)."""
+    ids = request.form.getlist("project_ids")
+    if not ids:
+        flash("No projects selected.", "warning")
+        return redirect(url_for("dashboard"))
+    archived = 0
+    for raw in ids:
+        try:
+            pid = int(raw)
+        except (TypeError, ValueError):
+            continue
+        p = ProjectSheet.query.get(pid)
+        if not p:
+            continue
+        if p.dropbox_folder:
+            try:
+                dbx = _dbx_client()
+                src = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
+                arch_root = f"/_archived" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_archived"
+                dest = f"{arch_root}/{p.dropbox_folder}"
+                dbx.files_move_v2(src, dest, autorename=True)
+            except Exception as e:
+                logging.warning(f"Could not move Dropbox folder on bulk archive: {e}")
+        p.status = 'archived'
+        archived += 1
+    db.session.commit()
+    flash(f"Archived {archived} project{'s' if archived != 1 else ''}.", "success")
     return redirect(url_for("dashboard"))
 
 
@@ -2455,42 +2536,290 @@ def export_pdf(pid, bid):
     )
 
 
+# ── Smart CSV import ──────────────────────────────────────────────────────────
+# Fuzzy synonym map: target_field -> list of header strings (lowercased) that should match
+_CSV_FIELD_SYNONYMS = {
+    'account_code':    ['account code', 'acct code', 'acct', 'coa', 'coa code', 'code', 'category code', 'chart code', 'section code'],
+    'account_name':    ['account', 'account name', 'category', 'section', 'department', 'dept', 'coa name'],
+    'description':     ['description', 'line item', 'item', 'line', 'detail', 'position', 'role'],
+    'is_labor':        ['is labor', 'labor', 'is_labor'],
+    'quantity':        ['qty', 'quantity', 'count', '#', 'units', 'people', 'num', 'number'],
+    'days':            ['days', 'day', 'weeks', 'week'],
+    'rate':            ['rate', 'daily', 'day rate', 'unit rate', 'price', 'amount', 'weekly rate', 'daily rate', '$'],
+    'rate_type':       ['rate type', 'period', 'unit', 'rate_type'],
+    'fringe_type':     ['fringe', 'fringe type', 'union', 'fringe_type'],
+    'agent_pct':       ['agent', 'agent pct', 'agent %', 'commission', 'agent fee', 'agent_pct'],
+    'est_ot':          ['ot', 'overtime', 'est ot', 'est_ot'],
+    'estimated_total': ['total', 'estimated', 'flat', 'flat total', 'line total', 'budget', 'estimated total', 'subtotal'],
+    'note':            ['note', 'notes', 'comment', 'comments', 'remark', 'remarks'],
+}
+
+_CSV_TARGET_FIELDS = list(_CSV_FIELD_SYNONYMS.keys())
+
+
+def _fuzzy_suggest_target(header):
+    """Return (best_target, confidence, [alternatives]) for a CSV header."""
+    import difflib
+    h = (header or '').strip().lower()
+    if not h:
+        return (None, 0.0, [])
+    scores = []
+    for target, synonyms in _CSV_FIELD_SYNONYMS.items():
+        # Best match across all synonyms for this target
+        best = 0.0
+        for syn in synonyms:
+            r = difflib.SequenceMatcher(None, h, syn).ratio()
+            if r > best:
+                best = r
+        # Exact contains bonus
+        if any(syn == h for syn in synonyms):
+            best = 1.0
+        elif any(syn in h or h in syn for syn in synonyms):
+            best = max(best, 0.85)
+        scores.append((target, best))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    best_target, best_score = scores[0]
+    if best_score < 0.55:
+        return (None, best_score, [t for t, _ in scores[1:3]])
+    alternatives = [t for t, s in scores[1:3] if s >= 0.4]
+    return (best_target, round(best_score, 2), alternatives)
+
+
+def _resolve_account_code(code_val, name_val):
+    """Return a valid FP_COA section start code from either a numeric code or a section name."""
+    # Try direct int parse
+    try:
+        if code_val is not None and str(code_val).strip():
+            c = int(float(str(code_val).strip()))
+            for start, _ in FP_COA_SECTIONS:
+                if c == start:
+                    return c
+            # If not exact match, find the section it belongs to
+            best = None
+            for start, _ in FP_COA_SECTIONS:
+                if c >= start:
+                    best = start
+                else:
+                    break
+            if best is not None:
+                return best
+    except (ValueError, TypeError):
+        pass
+    # Fall back to fuzzy-match section name
+    if name_val:
+        import difflib
+        n = str(name_val).strip().lower()
+        best_code, best_score = None, 0.0
+        for start, sec_name in FP_COA_SECTIONS:
+            r = difflib.SequenceMatcher(None, n, sec_name.lower()).ratio()
+            if n in sec_name.lower() or sec_name.lower() in n:
+                r = max(r, 0.85)
+            if r > best_score:
+                best_score = r
+                best_code = start
+        if best_score >= 0.6:
+            return best_code
+    return None
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/import/analyze", methods=["POST"])
+@login_required
+def import_csv_analyze(pid, bid):
+    """Analyze uploaded CSV and return suggested mappings + preview rows."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    try:
+        content = f.read().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return jsonify({"error": "File must be UTF-8 encoded CSV"}), 400
+
+    reader = csv.DictReader(io.StringIO(content))
+    headers = reader.fieldnames or []
+    if not headers:
+        return jsonify({"error": "CSV has no headers"}), 400
+
+    all_rows = list(reader)
+
+    # Build fuzzy suggestions per header
+    mappings = []
+    for h in headers:
+        target, confidence, alternatives = _fuzzy_suggest_target(h)
+        mappings.append({
+            "csv_col": h,
+            "target": target,
+            "confidence": confidence,
+            "alternatives": alternatives,
+        })
+
+    # Pre-load existing lines for duplicate detection
+    existing_lines = BudgetLine.query.filter_by(budget_id=bid).all()
+    existing_index = {}   # (account_code, description_lower) -> line_id
+    for ln in existing_lines:
+        key = (int(ln.account_code or 0), (ln.description or '').strip().lower())
+        existing_index[key] = ln.id
+
+    # Preview: first 10 rows, parse via suggested mapping
+    mapping_dict = {m["csv_col"]: m["target"] for m in mappings if m["target"]}
+    preview = []
+    for idx, row in enumerate(all_rows[:10]):
+        parsed = {}
+        for csv_col, target in mapping_dict.items():
+            parsed[target] = row.get(csv_col, '')
+        resolved_code = _resolve_account_code(
+            parsed.get('account_code'),
+            parsed.get('account_name') or parsed.get('description'),
+        )
+        desc = (parsed.get('description') or '').strip().lower()
+        dup_id = existing_index.get((resolved_code or 0, desc)) if resolved_code else None
+        preview.append({
+            "row_index": idx,
+            "csv_row": row,
+            "resolved_code": resolved_code,
+            "duplicate_of_line_id": dup_id,
+        })
+
+    return jsonify({
+        "headers": headers,
+        "mappings": mappings,
+        "preview_rows": preview,
+        "target_fields": [
+            {"value": "", "label": "— skip this column —"},
+            *[{"value": f, "label": f} for f in _CSV_TARGET_FIELDS],
+        ],
+        "row_count": len(all_rows),
+        "coa_sections": [{"code": c, "name": n} for c, n in FP_COA_SECTIONS],
+    })
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/import/apply", methods=["POST"])
+@login_required
+def import_csv_apply(pid, bid):
+    """Apply confirmed column mapping + per-row actions from a CSV upload."""
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    f = request.files.get("file")
+    mapping_json = request.form.get("mapping", "{}")
+    actions_json = request.form.get("row_actions", "[]")
+    if not f:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    try:
+        mapping = json.loads(mapping_json)
+        row_actions = json.loads(actions_json)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid mapping or actions JSON"}), 400
+
+    try:
+        content = f.read().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return jsonify({"error": "File must be UTF-8 encoded CSV"}), 400
+
+    reader = csv.DictReader(io.StringIO(content))
+    all_rows = list(reader)
+
+    # Helper coercions
+    def _f(v, default=0.0):
+        try:
+            if v in (None, ''):
+                return default
+            return float(str(v).replace(',', '').replace('$', '').replace('%', '').strip())
+        except (ValueError, TypeError):
+            return default
+
+    def _b(v):
+        return str(v).strip().lower() in ("true", "1", "yes", "y", "labor")
+
+    added = 0
+    updated = 0
+    skipped = 0
+    errors = []
+
+    for idx, row in enumerate(all_rows):
+        # Determine per-row action
+        action = row_actions[idx] if idx < len(row_actions) else "new"
+        if action == "skip" or action is None:
+            skipped += 1
+            continue
+
+        # Build field dict from mapping
+        fields = {}
+        for csv_col, target in mapping.items():
+            if not target:
+                continue
+            fields[target] = row.get(csv_col, '')
+
+        # Resolve account_code
+        code = _resolve_account_code(
+            fields.get('account_code'),
+            fields.get('account_name') or fields.get('description'),
+        )
+        if not code:
+            errors.append(f"Row {idx + 2}: could not resolve account code")
+            skipped += 1
+            continue
+
+        # Account name fallback to COA section name
+        section_name_map = dict(FP_COA_SECTIONS)
+        account_name = (fields.get('account_name') or '').strip() or section_name_map.get(code, '')
+
+        values = {
+            "account_code":    code,
+            "account_name":    account_name,
+            "description":     (fields.get('description') or '').strip(),
+            "is_labor":        _b(fields.get('is_labor', '')),
+            "quantity":        _f(fields.get('quantity', 1), 1),
+            "days":            _f(fields.get('days', 1), 1),
+            "rate":            _f(fields.get('rate', 0)),
+            "rate_type":       (fields.get('rate_type') or 'day_10').strip() or 'day_10',
+            "est_ot":          _f(fields.get('est_ot', 0)),
+            "fringe_type":     (fields.get('fringe_type') or 'N').strip()[:1].upper() or 'N',
+            "agent_pct":       _f(fields.get('agent_pct', 0)),
+            "estimated_total": _f(fields.get('estimated_total', 0)),
+            "note":            (fields.get('note') or '').strip(),
+        }
+
+        try:
+            if isinstance(action, dict) and action.get('update'):
+                ln = BudgetLine.query.filter_by(id=int(action['update']), budget_id=bid).first()
+                if not ln:
+                    errors.append(f"Row {idx + 2}: line to update not found")
+                    skipped += 1
+                    continue
+                for k, v in values.items():
+                    setattr(ln, k, v)
+                updated += 1
+            else:  # "new" or anything else
+                db.session.add(BudgetLine(budget_id=bid, **values))
+                added += 1
+        except Exception as e:
+            errors.append(f"Row {idx + 2}: {e}")
+            skipped += 1
+
+    try:
+        db.session.commit()
+        _touch_budget(bid)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": f"Database error: {e}"}), 500
+
+    return jsonify({
+        "added": added,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+    })
+
+
+# Legacy import route — kept for backward compatibility but redirects to the new UI
 @app.route("/projects/<int:pid>/budget/<int:bid>/import", methods=["POST"])
 @login_required
 def import_csv(pid, bid):
-    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
-    f = request.files.get("file")
-    if not f:
-        flash("No file uploaded.", "error")
-        return redirect(url_for("budget_view", pid=pid, bid=bid))
-
-    reader = csv.DictReader(io.StringIO(f.read().decode("utf-8-sig")))
-    added = 0
-    for row in reader:
-        try:
-            ln = BudgetLine(
-                budget_id=bid,
-                account_code=int(row.get("account_code", 0)),
-                account_name=row.get("account_name") or row.get("description", ""),
-                description=row.get("description", ""),
-                is_labor=str(row.get("is_labor", "")).lower() in ("true", "1", "yes"),
-                quantity=float(row.get("quantity", 1) or 1),
-                days=float(row.get("days", 1) or 1),
-                rate=float(row.get("rate", 0) or 0),
-                rate_type=row.get("rate_type", "day_10"),
-                est_ot=float(row.get("est_ot", 0) or 0),
-                fringe_type=row.get("fringe_type", "N"),
-                agent_pct=float(row.get("agent_pct", 0) or 0),
-                estimated_total=float(row.get("estimated_total", 0) or 0),
-                note=row.get("note", ""),
-            )
-            db.session.add(ln)
-            added += 1
-        except Exception as e:
-            logging.warning(f"CSV import row skip: {e}")
-    db.session.commit()
-    flash(f"Imported {added} lines.", "success")
-    return redirect(url_for("budget_view", pid=pid, bid=bid))
+    """Legacy naive import — redirects users to the new smart import UI."""
+    flash("Please use the new Import CSV button to map columns.", "info")
+    return redirect(url_for("budget_view", pid=pid, bid=bid) + "?tab=settings")
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/from-template", methods=["POST"])

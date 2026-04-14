@@ -26,9 +26,36 @@
   </select>
 </div>
 
+<!-- Bulk action bar (appears when any project card is checked) -->
+<div id="bulk-bar" class="bulk-bar hidden">
+  <label class="bulk-bar-check">
+    <input type="checkbox" id="bulk-select-all" onchange="toggleSelectAll(this)">
+    <span id="bulk-count">0 selected</span>
+  </label>
+  <div class="bulk-bar-actions">
+    <button type="button" class="btn btn-sm btn-outline" onclick="bulkAction('archive')">
+      Archive Selected
+    </button>
+    {% if current_user.role == 'super_admin' %}
+    <button type="button" class="btn btn-sm btn-ghost bulk-danger" onclick="bulkAction('delete')">
+      Delete Selected
+    </button>
+    {% endif %}
+    <button type="button" class="btn btn-sm btn-ghost" onclick="clearSelection()">
+      Clear
+    </button>
+  </div>
+</div>
+
+<!-- Hidden forms for bulk actions (submitted via JS) -->
+<form id="bulk-delete-form" method="POST" action="{{ url_for('projects_bulk_delete') }}" style="display:none"></form>
+<form id="bulk-archive-form" method="POST" action="{{ url_for('projects_bulk_archive') }}" style="display:none"></form>
+
 <div class="card-grid" id="proj-grid">
   {% for p in projects %}
   <div class="project-card" data-name="{{ p.name | lower }}" data-status="active" data-id="{{ p.id }}">
+    <input type="checkbox" class="project-card-check" value="{{ p.id }}"
+           onclick="event.stopPropagation()" onchange="updateBulkBar()">
     <div class="project-card-name">{{ p.name }}</div>
     <div class="project-card-meta">
       {{ budget_counts.get(p.id, 0) }} budget{{ 's' if budget_counts.get(p.id, 0) != 1 else '' }}
@@ -52,17 +79,21 @@
               onsubmit="return confirm('Archive {{ p.name | e }}? The Dropbox folder will be moved to _archived.')">
           <button type="submit" class="proj-menu-item">Archive Project</button>
         </form>
+        {% if current_user.role == 'super_admin' %}
         <div class="proj-menu-divider"></div>
         <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}"
               onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets? This cannot be undone.')">
           <button type="submit" class="proj-menu-item proj-menu-danger">Delete Project</button>
         </form>
+        {% endif %}
       </div>
     </div>
   </div>
   {% endfor %}
   {% for p in wrapped_projects %}
   <div class="project-card" data-name="{{ p.name | lower }}" data-status="wrapped" data-id="{{ p.id }}" style="opacity:.7;display:none">
+    <input type="checkbox" class="project-card-check" value="{{ p.id }}"
+           onclick="event.stopPropagation()" onchange="updateBulkBar()">
     <div class="project-card-name">{{ p.name }}</div>
     <div class="project-card-meta">Wrapped</div>
     <div class="project-card-actions">
@@ -70,15 +101,19 @@
       <form method="POST" action="{{ url_for('project_reactivate', pid=p.id) }}" style="display:inline">
         <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
       </form>
+      {% if current_user.role == 'super_admin' %}
       <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
             onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets?')">
-        <button type="submit" class="btn btn-sm btn-ghost" title="Delete project">✕</button>
+        <button type="submit" class="btn btn-sm btn-ghost" title="Permanently delete (super admin)">✕</button>
       </form>
+      {% endif %}
     </div>
   </div>
   {% endfor %}
   {% for p in archived_projects %}
   <div class="project-card" data-name="{{ p.name | lower }}" data-status="archived" data-id="{{ p.id }}" style="opacity:.6;display:none">
+    <input type="checkbox" class="project-card-check" value="{{ p.id }}"
+           onclick="event.stopPropagation()" onchange="updateBulkBar()">
     <div class="project-card-name">{{ p.name }}</div>
     <div class="project-card-meta">Archived</div>
     <div class="project-card-actions">
@@ -86,10 +121,12 @@
       <form method="POST" action="{{ url_for('project_reactivate', pid=p.id) }}" style="display:inline">
         <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
       </form>
+      {% if current_user.role == 'super_admin' %}
       <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
-            onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets?')">
-        <button type="submit" class="btn btn-sm btn-ghost" title="Delete project">✕</button>
+            onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets? This cannot be undone.')">
+        <button type="submit" class="btn btn-sm btn-ghost" title="Permanently delete (super admin only)">✕ Delete forever</button>
       </form>
+      {% endif %}
     </div>
   </div>
   {% endfor %}
@@ -190,6 +227,55 @@
 .proj-menu-danger { color: #f87171; }
 .proj-menu-divider { height: 1px; background: var(--border); margin: .3rem 0; }
 .project-card-actions { position: relative; }
+
+/* Multi-select checkboxes on cards */
+.project-card { position: relative; }
+.project-card-check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent, #4f7ef8);
+  cursor: pointer;
+  z-index: 2;
+}
+.project-card.is-selected {
+  outline: 2px solid var(--accent, #4f7ef8);
+  outline-offset: -2px;
+}
+
+/* Bulk action bar */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  background: rgba(79, 126, 248, 0.12);
+  border: 1px solid var(--accent, #4f7ef8);
+  border-radius: 8px;
+  animation: bulk-slide-in 0.15s ease-out;
+}
+.bulk-bar.hidden { display: none; }
+.bulk-bar-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: .9rem;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+.bulk-bar-check input { accent-color: var(--accent, #4f7ef8); width: 16px; height: 16px; }
+.bulk-bar-actions { display: flex; gap: 8px; }
+.bulk-danger { color: #f87171; }
+.bulk-danger:hover { background: rgba(248, 113, 113, 0.1); }
+@keyframes bulk-slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 </style>
 {% endblock %}
 
@@ -296,6 +382,94 @@ function filterProjects() {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     document.getElementById('new-project-tz').value = tz || 'America/Los_Angeles';
   } catch(e) {}
+})();
+
+// ---------------------------------------------------------------------------
+// Multi-select / bulk actions
+// ---------------------------------------------------------------------------
+function _getCheckedCards() {
+  return Array.from(document.querySelectorAll('.project-card-check:checked'));
+}
+
+function _getVisibleCheckboxes() {
+  return Array.from(document.querySelectorAll('.project-card'))
+    .filter(c => c.style.display !== 'none')
+    .map(c => c.querySelector('.project-card-check'))
+    .filter(Boolean);
+}
+
+function updateBulkBar() {
+  const checked = _getCheckedCards();
+  const bar = document.getElementById('bulk-bar');
+  const countEl = document.getElementById('bulk-count');
+  const selectAll = document.getElementById('bulk-select-all');
+  // Apply visual selected state to cards
+  document.querySelectorAll('.project-card').forEach(c => {
+    const cb = c.querySelector('.project-card-check');
+    if (cb && cb.checked) c.classList.add('is-selected');
+    else c.classList.remove('is-selected');
+  });
+  if (checked.length > 0) {
+    bar.classList.remove('hidden');
+    countEl.textContent = checked.length + ' selected';
+  } else {
+    bar.classList.add('hidden');
+  }
+  // Sync the "select all" checkbox with the visible set
+  const visible = _getVisibleCheckboxes();
+  const allChecked = visible.length > 0 && visible.every(cb => cb.checked);
+  const someChecked = visible.some(cb => cb.checked);
+  selectAll.checked = allChecked;
+  selectAll.indeterminate = someChecked && !allChecked;
+}
+
+function toggleSelectAll(sourceCheckbox) {
+  const want = sourceCheckbox.checked;
+  _getVisibleCheckboxes().forEach(cb => { cb.checked = want; });
+  updateBulkBar();
+}
+
+function clearSelection() {
+  document.querySelectorAll('.project-card-check').forEach(cb => { cb.checked = false; });
+  updateBulkBar();
+}
+
+function bulkAction(action) {
+  const checked = _getCheckedCards();
+  if (checked.length === 0) return;
+  const count = checked.length;
+  const label = count + ' project' + (count !== 1 ? 's' : '');
+  let msg;
+  if (action === 'delete') {
+    msg = 'Permanently DELETE ' + label + ' and all their budgets?\n\nThis cannot be undone.';
+  } else {
+    msg = 'Archive ' + label + '? The Dropbox folders will be moved to _archived.';
+  }
+  if (!confirm(msg)) return;
+  // Build the target form with hidden inputs for each selected ID
+  const formId = action === 'delete' ? 'bulk-delete-form' : 'bulk-archive-form';
+  const form = document.getElementById(formId);
+  // Clear any previous hidden inputs
+  form.innerHTML = '';
+  checked.forEach(cb => {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = 'project_ids';
+    input.value = cb.value;
+    form.appendChild(input);
+  });
+  form.submit();
+}
+
+// Re-sync bulk bar when filters change (hidden cards shouldn't count)
+(function() {
+  const origFilter = window.filterProjects;
+  if (typeof origFilter === 'function') {
+    window.filterProjects = function() {
+      origFilter.apply(this, arguments);
+      updateBulkBar();
+    };
+  }
 })();
 </script>
 {% endblock %}

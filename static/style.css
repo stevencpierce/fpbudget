@@ -511,6 +511,51 @@ input:focus, select:focus { border-color: var(--accent); }
   gap: 6px;
 }
 
+/* ── Smart CSV Import Modal ──────────────────────────────────────────────── */
+.import-mapping-table,
+.import-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .85rem;
+}
+.import-mapping-table th,
+.import-preview-table th {
+  text-align: left;
+  padding: .4rem .5rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.import-mapping-table td,
+.import-preview-table td {
+  padding: .4rem .5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.import-mapping-table select.import-target-sel {
+  width: 100%;
+  padding: 4px 8px;
+  font-size: .85rem;
+}
+.import-preview-table select.import-action-sel {
+  padding: 3px 6px;
+  font-size: .8rem;
+}
+.import-preview-table tr.duplicate { background: rgba(217, 119, 6, .08); }
+.import-confidence-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: .72rem;
+  font-weight: 600;
+}
+.import-confidence-badge.conf-high { background: rgba(22, 163, 74, .18); color: #4ade80; }
+.import-confidence-badge.conf-med  { background: rgba(217, 119, 6, .18); color: #fbbf24; }
+.import-confidence-badge.conf-low  { background: rgba(220, 38, 38, .18); color: #f87171; }
+
 /* ── Login ─────────────────────────────────────────────────────────────────── */
 .login-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
 .login-card {
