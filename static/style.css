@@ -908,13 +908,38 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 .qe-chip-remove:hover { color:var(--red); }
 
-/* ── Line Numbers (Feature 2) ────────────────────────────────────────────── */
+/* ── Line Numbers (Feature 2) + drag handle ────────────────────────────── */
 .line-number {
   font-size: .7rem;
   color: var(--text-muted);
   font-family: monospace;
   margin-right: .4rem;
   user-select: none;
+  cursor: grab;
+  padding: 2px 4px;
+  border-radius: 3px;
+  display: inline-block;
+  transition: background .15s;
+}
+.line-number:hover {
+  background: rgba(255,255,255,.08);
+  color: var(--text);
+}
+.line-number:active { cursor: grabbing; }
+.kit-fee-row .line-number { cursor: default; }
+.kit-fee-row .line-number:hover { background: none; color: var(--text-muted); }
+
+/* Sortable.js visual states */
+.sortable-ghost {
+  opacity: .35;
+  background: var(--accent-dim, rgba(37,99,235,.2)) !important;
+}
+.sortable-drag {
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  opacity: .95;
+}
+.sortable-chosen {
+  background: rgba(37,99,235,.08);
 }
 
 /* ── Section Pulse (Feature 3) ──────────────────────────────────────────── */
