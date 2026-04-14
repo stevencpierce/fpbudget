@@ -296,23 +296,88 @@
     });
   }
 
-  // ── Add Item modal (inline prompt version) ─────────────────────────────
-  addBtn.addEventListener('click', function() {
-    var code = prompt('Category code (e.g. 1000 for Production Staff):');
-    if (!code) return;
-    var label = prompt('Label (e.g. "Sound Recordist"):');
-    if (!label) return;
-    var isLabor = confirm('Is this a LABOR line (OK) or a rental/expense (Cancel)?');
-    var rate = parseFloat(prompt('Default rate ($):', '0') || '0');
-    _create({
-      category_code: parseInt(code),
+  // ── Add Item modal ─────────────────────────────────────────────────────
+  var modal       = document.getElementById('cat-add-modal');
+  var modalBody   = {
+    category: document.getElementById('cat-add-category'),
+    label:    document.getElementById('cat-add-label'),
+    group:    document.getElementById('cat-add-group'),
+    comp:     document.getElementById('cat-add-comp'),
+    unit:     document.getElementById('cat-add-unit'),
+    rate:     document.getElementById('cat-add-rate'),
+    qty:      document.getElementById('cat-add-qty'),
+    days:     document.getElementById('cat-add-days'),
+    fringe:   document.getElementById('cat-add-fringe'),
+    union:    document.getElementById('cat-add-union'),
+    agent:    document.getElementById('cat-add-agent'),
+    labor:    document.getElementById('cat-add-labor'),
+  };
+
+  function _openAddModal() {
+    // Reset form
+    modalBody.category.value = '';
+    modalBody.label.value    = '';
+    modalBody.group.value    = '';
+    modalBody.comp.value     = 'labor';
+    modalBody.unit.value     = 'day';
+    modalBody.rate.value     = '0';
+    modalBody.qty.value      = '1';
+    modalBody.days.value     = '1';
+    modalBody.fringe.value   = 'N';
+    modalBody.union.value    = '';
+    modalBody.agent.value    = '0';
+    modalBody.labor.checked  = true;
+    modal.style.display = 'flex';
+    setTimeout(function() { modalBody.category.focus(); }, 50);
+  }
+
+  function _closeAddModal() { modal.style.display = 'none'; }
+
+  // Keep comp in sync with labor checkbox — labor line defaults to 'labor' comp,
+  // non-labor defaults to 'expense'. User can still override.
+  modalBody.labor.addEventListener('change', function() {
+    if (modalBody.labor.checked) {
+      modalBody.comp.value = 'labor';
+      if (!modalBody.fringe.value) modalBody.fringe.value = 'N';
+    } else {
+      modalBody.comp.value = 'expense';
+      modalBody.fringe.value = '';
+      modalBody.union.value = '';
+      modalBody.agent.value = '0';
+    }
+  });
+
+  addBtn.addEventListener('click', _openAddModal);
+  document.getElementById('cat-add-close').addEventListener('click', _closeAddModal);
+  document.getElementById('cat-add-overlay').addEventListener('click', _closeAddModal);
+  document.getElementById('cat-add-cancel').addEventListener('click', _closeAddModal);
+
+  document.getElementById('cat-add-save').addEventListener('click', function() {
+    var code = parseInt(modalBody.category.value);
+    var label = modalBody.label.value.trim();
+    if (!code) { alert('Please select a department.'); modalBody.category.focus(); return; }
+    if (!label) { alert('Please enter a label.'); modalBody.label.focus(); return; }
+    var payload = {
+      category_code: code,
       label: label,
-      is_labor: isLabor,
-      rate: rate,
-      comp: isLabor ? 'labor' : 'expense',
-      unit: 'day',
-      fringe: isLabor ? 'N' : null,
-    });
+      group_name: modalBody.group.value.trim() || null,
+      is_labor: modalBody.labor.checked,
+      rate: parseFloat(modalBody.rate.value) || 0,
+      qty: parseFloat(modalBody.qty.value) || 1,
+      days: parseFloat(modalBody.days.value) || 1,
+      fringe: modalBody.fringe.value || null,
+      union_fringe: modalBody.union.value || null,
+      agent_pct: (parseFloat(modalBody.agent.value) || 0) / 100,
+      comp: modalBody.comp.value,
+      unit: modalBody.unit.value,
+    };
+    _create(payload);
+    _closeAddModal();
+  });
+
+  // Escape closes modal
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && modal.style.display === 'flex') _closeAddModal();
   });
 
   // ── Filters ─────────────────────────────────────────────────────────────

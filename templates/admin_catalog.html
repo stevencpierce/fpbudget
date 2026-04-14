@@ -119,6 +119,206 @@
   </p>
 </div>
 
+<!-- Add Item Modal -->
+<div id="cat-add-modal" class="cat-modal" style="display:none">
+  <div class="cat-modal-overlay" id="cat-add-overlay"></div>
+  <div class="cat-modal-box">
+    <div class="cat-modal-header">
+      <h2 style="margin:0;font-size:1.1rem">Add Catalog Item</h2>
+      <button type="button" class="cat-modal-close" id="cat-add-close" aria-label="Close">✕</button>
+    </div>
+
+    <div class="cat-modal-body">
+      <div class="cat-field">
+        <label>Department / Category</label>
+        <select id="cat-add-category" required>
+          <option value="">— Select department —</option>
+          {% for code, name in coa_sections %}
+          <option value="{{ code }}">{{ code }} — {{ name }}</option>
+          {% endfor %}
+        </select>
+        <p class="cat-hint">Where this item lives in the Chart of Accounts.</p>
+      </div>
+
+      <div class="cat-field">
+        <label>Label</label>
+        <input type="text" id="cat-add-label" placeholder="e.g. Sound Recordist, Generator Rental" required>
+        <p class="cat-hint">How it appears in the Quick Entry panel.</p>
+      </div>
+
+      <div class="cat-field">
+        <label>Sub-group <span class="cat-optional">(optional)</span></label>
+        <input type="text" id="cat-add-group" list="cat-group-options" placeholder="e.g. Camera, Sound, Grip & Electric">
+        <datalist id="cat-group-options">
+          <option value="Production"></option>
+          <option value="Direction / AD"></option>
+          <option value="Camera"></option>
+          <option value="Grip & Electric"></option>
+          <option value="Sound"></option>
+          <option value="Art"></option>
+          <option value="Hair & Makeup"></option>
+          <option value="Wardrobe"></option>
+          <option value="Locations"></option>
+          <option value="Transportation"></option>
+          <option value="Control Room"></option>
+          <option value="EPK / BTS"></option>
+          <option value="Craft Services"></option>
+        </datalist>
+        <p class="cat-hint">Clusters similar roles inside the department (Production Staff).</p>
+      </div>
+
+      <div class="cat-field cat-field-row">
+        <div style="flex:1">
+          <label>Line Type</label>
+          <select id="cat-add-comp">
+            <option value="labor">Labor</option>
+            <option value="expense">Expense</option>
+            <option value="rental">Rental</option>
+            <option value="purchase">Purchase</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label>Unit</label>
+          <select id="cat-add-unit">
+            <option value="day">Day</option>
+            <option value="flat">Flat</option>
+            <option value="week">Week</option>
+            <option value="session">Session</option>
+            <option value="night">Night</option>
+            <option value="each">Each</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="cat-field cat-field-row">
+        <div style="flex:1">
+          <label>Default Rate ($)</label>
+          <input type="number" id="cat-add-rate" value="0" min="0" step="25">
+        </div>
+        <div style="flex:1">
+          <label>Default Qty</label>
+          <input type="number" id="cat-add-qty" value="1" min="0" step="0.25">
+        </div>
+        <div style="flex:1">
+          <label>Default Days</label>
+          <input type="number" id="cat-add-days" value="1" min="0" step="0.25">
+        </div>
+      </div>
+
+      <div class="cat-field cat-field-row">
+        <div style="flex:1">
+          <label>Fringe (Non-Union)</label>
+          <select id="cat-add-fringe">
+            <option value="">— None —</option>
+            <option value="E">E (Exempt)</option>
+            <option value="N" selected>N (Non-Union)</option>
+            <option value="L">L (Loan-Out)</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label>Fringe (Union)</label>
+          <select id="cat-add-union">
+            <option value="">— None —</option>
+            <option value="U">U (Union)</option>
+            <option value="S">S (SAG)</option>
+            <option value="I">I (IATSE)</option>
+            <option value="D">D (DGA)</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label>Agent %</label>
+          <input type="number" id="cat-add-agent" value="0" min="0" max="50" step="0.5">
+        </div>
+      </div>
+
+      <div class="cat-field">
+        <label class="cat-checkbox">
+          <input type="checkbox" id="cat-add-labor" checked>
+          <span>This is a <strong>labor</strong> line (person/role with a daily rate)</span>
+        </label>
+        <p class="cat-hint">Uncheck for equipment rentals, fees, and other non-person expenses.</p>
+      </div>
+    </div>
+
+    <div class="cat-modal-actions">
+      <button type="button" class="btn btn-outline" id="cat-add-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="cat-add-save">Add Item</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.cat-modal {
+  position: fixed; inset: 0; z-index: 1200;
+  display: flex; align-items: flex-start; justify-content: center;
+  overflow-y: auto; padding: 4vh 1rem;
+}
+.cat-modal-overlay {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,.7); backdrop-filter: blur(2px);
+}
+.cat-modal-box {
+  position: relative;
+  background: var(--bg, #141414);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 100%; max-width: 620px;
+  box-shadow: 0 24px 60px rgba(0,0,0,.6);
+  animation: catFadeIn .18s ease;
+}
+@keyframes catFadeIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.cat-modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 1rem 1.25rem; border-bottom: 1px solid var(--border);
+}
+.cat-modal-close {
+  background: none; border: none; color: var(--text-muted);
+  cursor: pointer; font-size: 1rem; padding: 4px 8px;
+}
+.cat-modal-close:hover { color: var(--text); }
+.cat-modal-body { padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
+.cat-modal-actions {
+  display: flex; justify-content: flex-end; gap: .5rem;
+  padding: .9rem 1.25rem; border-top: 1px solid var(--border);
+}
+.cat-field label {
+  display: block;
+  font-size: .78rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: .35rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.cat-field input, .cat-field select {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: .88rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-2, #1a1a1a);
+  color: var(--text);
+}
+.cat-field input:focus, .cat-field select:focus {
+  outline: none; border-color: var(--accent, #4f7ef8);
+}
+.cat-field-row { display: flex; gap: .75rem; }
+.cat-field-row > div { min-width: 0; }
+.cat-hint {
+  margin: .3rem 0 0; font-size: .72rem; color: var(--text-muted);
+}
+.cat-optional { color: var(--text-muted); font-weight: 400; text-transform: none; font-size: .72rem; }
+.cat-checkbox {
+  display: flex; align-items: center; gap: 8px;
+  text-transform: none; letter-spacing: normal; font-size: .85rem;
+  font-weight: 400; color: var(--text); cursor: pointer;
+}
+.cat-checkbox input { width: 16px; height: 16px; accent-color: var(--accent, #4f7ef8); }
+</style>
+
 <script id="cat-initial-items" type="application/json">{{ items | tojson }}</script>
 <script id="cat-coa-sections" type="application/json">{{ coa_sections | tojson }}</script>
 {% endblock %}
