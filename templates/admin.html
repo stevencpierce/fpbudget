@@ -310,32 +310,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-function openEdit(uid,name,email,role,dept){
-  document.getElementById('edit-form').action=`/admin/users/${uid}/edit`;
-  document.getElementById('en').value=name||'';
-  document.getElementById('ee').value=email||'';
-  for(let o of document.getElementById('er').options) o.selected=(o.value===role);
-  const d=document.getElementById('ed'); if(d) for(let o of d.options) o.selected=(String(o.value)===String(dept));
-  toggleEditDept();
-  document.getElementById('edit-modal').classList.add('open');
-}
-function closeEdit(){ document.getElementById('edit-modal').classList.remove('open'); }
-function toggleEditDept(){ document.getElementById('edit-dept-wrap').style.display=document.getElementById('er').value==='dept_head'?'':'none'; }
-function toggleNewDept(){ document.getElementById('new-dept-field').style.display=document.getElementById('new-role').value==='dept_head'?'':'none'; }
-async function addAccess(pid){
-  const uid=document.getElementById(`au-${pid}`).value;
-  const role=document.getElementById(`ar-${pid}`).value;
-  if(!uid){alert('Select a user first.');return;}
-  const fd=new FormData(); fd.append('user_id',uid); fd.append('role',role);
-  const r=await fetch(`/admin/projects/${pid}/access`,{method:'POST',body:fd});
-  if(r.ok) location.reload(); else alert('Failed.');
-}
-async function removeAccess(pid,uid,chip){
-  if(!confirm('Remove this user from the project?')) return;
-  const fd=new FormData(); fd.append('user_id',uid);
-  const r=await fetch(`/admin/projects/${pid}/access/remove`,{method:'POST',body:fd});
-  if(r.ok) chip.remove(); else alert('Failed.');
-}
-</script>
+<script src="{{ url_for('static', filename='admin.js') }}"></script>
 {% endblock %}
