@@ -5037,10 +5037,10 @@ const QE_CATEGORIES = [
     { label:'Office Supplies (Pre-Pro)',isLabor:false, rate:200,  qty:1, days:1, comp:'purchase',unit:'flat' },
   ]},
   { code:600,   name:'Above the Line', items:[
-    { label:'Director',          isLabor:true,  rate:1500, qty:1, days:1, kit:0, fringe:'E', comp:'labor' },
-    { label:'Executive Producer',isLabor:true,  rate:1200, qty:1, days:1, kit:0, fringe:'E', comp:'labor' },
-    { label:'Producer',          isLabor:true,  rate:1000, qty:1, days:1, kit:0, fringe:'E', comp:'labor' },
-    { label:'Creative Director', isLabor:true,  rate:1200, qty:1, days:1, kit:0, fringe:'E', comp:'labor' },
+    { label:'Director',          isLabor:true,  rate:1500, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
+    { label:'Executive Producer',isLabor:true,  rate:1200, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
+    { label:'Producer',          isLabor:true,  rate:1000, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
+    { label:'Creative Director', isLabor:true,  rate:1200, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
     { label:'Writer Fee',        isLabor:false, rate:0,    qty:1, days:1, comp:'expense', unit:'flat' },
   ]},
   { code:700,   name:'Talent', items:[
@@ -5065,6 +5065,7 @@ const QE_CATEGORIES = [
     // Production Management
     { label:'Line Producer',              group:'Production',     isLabor:true, rate:1200, qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
     { label:'UPM',                        group:'Production',     isLabor:true, rate:1000, qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
+    { label:'Supervising Producer',       group:'Production',     isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
     { label:'Production Supervisor',      group:'Production',     isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
     { label:'Production Coordinator',     group:'Production',     isLabor:true, rate:750,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
     { label:'APOC',                       group:'Production',     isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
@@ -5073,6 +5074,7 @@ const QE_CATEGORIES = [
     { label:'Travel Coordinator',         group:'Production',     isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
     { label:'Production Secretary',       group:'Production',     isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
     // Direction / AD
+    { label:'Live Director',              group:'Direction / AD', isLabor:true, rate:700,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
     { label:'1st AD',                     group:'Direction / AD', isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
     { label:'2nd AD',                     group:'Direction / AD', isLabor:true, rate:750,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
     { label:'2nd 2nd AD',                 group:'Direction / AD', isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
@@ -5084,6 +5086,7 @@ const QE_CATEGORIES = [
     // Camera
     { label:'Director of Photography',    group:'Camera',         isLabor:true, rate:1200, qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
     { label:'Camera Operator',            group:'Camera',         isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Robotic Camera Operator',    group:'Camera',         isLabor:true, rate:500,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
     { label:'1st AC',                     group:'Camera',         isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
     { label:'2nd AC',                     group:'Camera',         isLabor:true, rate:650,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
     { label:'DIT',                        group:'Camera',         isLabor:true, rate:850,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
@@ -5093,6 +5096,7 @@ const QE_CATEGORIES = [
     { label:'Video Engineer',             group:'Camera',         isLabor:true, rate:750,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
     { label:'VTR Operator',               group:'Camera',         isLabor:true, rate:650,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'I', comp:'labor' },
     // Grip & Electric
+    { label:'Lighting Designer',          group:'Grip & Electric',isLabor:true, rate:1000, qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
     { label:'Gaffer',                     group:'Grip & Electric',isLabor:true, rate:825,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
     { label:'Key Grip',                   group:'Grip & Electric',isLabor:true, rate:825,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
     { label:'Best Boy Electric',          group:'Grip & Electric',isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
@@ -5129,7 +5133,9 @@ const QE_CATEGORIES = [
     { label:'Driver (Captain)',           group:'Transportation', isLabor:true, rate:700,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
     { label:'Driver',                     group:'Transportation', isLabor:true, rate:600,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'N', comp:'labor' },
     // Control Room
+    { label:'Technical Producer',         group:'Control Room',   isLabor:true, rate:1000, qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
     { label:'Technical Director',         group:'Control Room',   isLabor:true, rate:900,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
+    { label:'Graphics and Playback',      group:'Control Room',   isLabor:true, rate:500,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
     { label:'Switcher Operator',          group:'Control Room',   isLabor:true, rate:750,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
     // EPK / BTS
     { label:'EPK Videographer',           group:'EPK / BTS',      isLabor:true, rate:800,  qty:1, days:1, kit:0,   fringe:'N', unionFringe:'I', comp:'labor' },
