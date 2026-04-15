@@ -1044,8 +1044,15 @@ def calc_line_detail(line, schedule_days, fringe_configs, payroll_profile=None, 
 
 
 def seed_fringes(db_session):
-    """Seed global fringe defaults. Creates missing rows and updates ot_applies on existing rows."""
+    """Seed global fringe defaults. Creates missing rows and syncs all default
+    fields on existing rows whose rate is still the original 0 placeholder.
+
+    Historical note: earlier versions of this app seeded N / U / S / I / D
+    with rate=0, so every labor line using them computed a $0 fringe. We
+    overwrite any row whose current rate is 0 but whose default is non-zero,
+    and always keep ot_applies current."""
     from models import FringeConfig
+    from decimal import Decimal
     for ft, label, rate, is_flat, flat_amt, ot_applies in FP_FRINGE_DEFAULTS:
         existing = db_session.query(FringeConfig).filter_by(
             project_id=None, fringe_type=ft
@@ -1063,6 +1070,23 @@ def seed_fringes(db_session):
         else:
             # Always sync ot_applies in case column was just added
             existing.ot_applies = ot_applies
+            # Heal stale rows: if rate is still 0 but the default is non-zero,
+            # overwrite the rate and flat config. Don't touch rows that admins
+            # have deliberately customized to a non-zero value.
+            try:
+                cur_rate = float(existing.rate or 0)
+            except Exception:
+                cur_rate = 0.0
+            try:
+                cur_flat = float(existing.flat_amount or 0)
+            except Exception:
+                cur_flat = 0.0
+            default_nonzero = (rate and rate > 0) or (is_flat and flat_amt and flat_amt > 0)
+            if default_nonzero and cur_rate == 0 and cur_flat == 0:
+                existing.rate        = Decimal(str(rate))
+                existing.is_flat     = is_flat
+                existing.flat_amount = (Decimal(str(flat_amt)) if flat_amt is not None else None)
+                existing.label       = label
     db_session.commit()
 
 
