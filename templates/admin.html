@@ -289,6 +289,35 @@
     </p>
     <a href="{{ url_for('admin_catalog_view') }}" class="btn btn-primary">Open Catalog Editor →</a>
   </div>
+
+  <div class="admin-card">
+    <div class="admin-card-header">
+      <h2>One-Time Migrations</h2>
+      <span class="badge" style="background:rgba(217,119,6,.18);color:#fbbf24;font-size:.7rem;padding:3px 8px;border-radius:4px;margin-left:.5rem;text-transform:uppercase;letter-spacing:.04em">Super Admin</span>
+    </div>
+    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
+      Data cleanup migrations that apply across every budget in the system.
+      Review the preview count before running — these changes are not reversible.
+    </p>
+
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:.75rem;background:var(--bg-2,#1a1a1a);border:1px solid var(--border);border-radius:6px">
+      <div style="flex:1;min-width:260px">
+        <strong style="font-size:.9rem">Split multi-quantity labor lines into A/B/C</strong>
+        <p style="color:var(--text-muted);font-size:.78rem;margin:.3rem 0 0">
+          Finds every labor line with quantity > 1 and splits it into independent
+          named lines (Line A / B / C...). Schedule days and crew assignments
+          transfer to the correct per-person line by crew_instance. Safe to
+          re-run — already-split lines are skipped.
+        </p>
+        <div id="split-labor-preview" style="font-size:.82rem;margin-top:.5rem"></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-sm btn-outline" id="split-labor-preview-btn">Preview</button>
+        <button class="btn btn-sm btn-primary" id="split-labor-run-btn" disabled>Run Migration</button>
+      </div>
+    </div>
+    <div id="split-labor-result" style="margin-top:.75rem;font-size:.85rem"></div>
+  </div>
   {% endif %}
 
 </div>

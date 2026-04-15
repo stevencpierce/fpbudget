@@ -69,6 +69,97 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   });
 
+  // ── One-time migration: split multi-qty labor lines ─────────────────────────
+  var splitPreviewBtn = document.getElementById('split-labor-preview-btn');
+  var splitRunBtn     = document.getElementById('split-labor-run-btn');
+  var splitPreviewEl  = document.getElementById('split-labor-preview');
+  var splitResultEl   = document.getElementById('split-labor-result');
+
+  if (splitPreviewBtn) {
+    splitPreviewBtn.addEventListener('click', function() {
+      splitPreviewBtn.disabled = true;
+      splitPreviewBtn.textContent = 'Scanning…';
+      splitPreviewEl.innerHTML = '';
+      splitResultEl.innerHTML = '';
+      fetch('/admin/migrate/split-labor/preview')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          splitPreviewBtn.disabled = false;
+          splitPreviewBtn.textContent = 'Re-scan';
+          if (data.error) {
+            splitPreviewEl.innerHTML = '<span style="color:#f87171">Error: ' + data.error + '</span>';
+            return;
+          }
+          if (!data.total_affected_lines) {
+            splitPreviewEl.innerHTML = '<span style="color:#4ade80">✓ Nothing to split — all labor lines are already single-qty or already split.</span>';
+            return;
+          }
+          var html = '<div style="margin-top:.4rem">';
+          html += '<strong>' + data.total_affected_lines + ' line(s)</strong> across ';
+          html += '<strong>' + data.budgets.length + ' budget(s)</strong> will be split into ';
+          html += '<strong>' + (data.total_new_lines + data.total_affected_lines) + ' total lines</strong> ';
+          html += '(' + data.total_new_lines + ' new).</div>';
+          html += '<details style="margin-top:.4rem"><summary style="cursor:pointer;font-size:.78rem;color:var(--text-muted)">Show details</summary>';
+          html += '<ul style="margin:.4rem 0 0;padding-left:1.2rem;font-size:.78rem;color:var(--text-muted)">';
+          data.budgets.forEach(function(b) {
+            html += '<li><strong>' + (b.budget_name || ('Budget #' + b.budget_id)) + '</strong>: ';
+            html += b.line_count + ' line(s) → ' + (b.line_count + b.total_new_lines) + ' total';
+            html += '<ul style="margin:.2rem 0;padding-left:1.2rem">';
+            b.lines.slice(0, 10).forEach(function(l) {
+              html += '<li>' + (l.description || '(no label)') + ' — qty ' + l.quantity + '</li>';
+            });
+            if (b.lines.length > 10) html += '<li>… and ' + (b.lines.length - 10) + ' more</li>';
+            html += '</ul></li>';
+          });
+          html += '</ul></details>';
+          splitPreviewEl.innerHTML = html;
+          splitRunBtn.disabled = false;
+        })
+        .catch(function(e) {
+          splitPreviewBtn.disabled = false;
+          splitPreviewBtn.textContent = 'Preview';
+          splitPreviewEl.innerHTML = '<span style="color:#f87171">Error: ' + e.message + '</span>';
+        });
+    });
+  }
+
+  if (splitRunBtn) {
+    splitRunBtn.addEventListener('click', function() {
+      if (!confirm('Split multi-qty labor lines into A/B/C rows across ALL budgets? This change cannot be automatically undone.')) return;
+      splitRunBtn.disabled = true;
+      splitRunBtn.textContent = 'Running…';
+      splitResultEl.innerHTML = '';
+      fetch('/admin/migrate/split-labor', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          splitRunBtn.textContent = 'Run Migration';
+          if (data.error) {
+            splitResultEl.innerHTML = '<span style="color:#f87171">Error: ' + data.error + '</span>';
+            splitRunBtn.disabled = false;
+            return;
+          }
+          var html = '<div style="background:rgba(22,163,74,.12);border:1px solid #16a34a;color:#4ade80;padding:.6rem .8rem;border-radius:5px">';
+          html += '✓ Done. Split <strong>' + data.split_count + '</strong> line(s), created ';
+          html += '<strong>' + data.new_lines + '</strong> new line(s) across ';
+          html += '<strong>' + data.budgets_affected + '</strong> budget(s).';
+          html += '</div>';
+          if (data.errors && data.errors.length) {
+            html += '<div style="margin-top:.4rem;font-size:.8rem;color:#fbbf24">⚠ Errors:<ul>';
+            data.errors.forEach(function(e) { html += '<li>' + e + '</li>'; });
+            html += '</ul></div>';
+          }
+          splitResultEl.innerHTML = html;
+          // Disable further runs until a fresh preview confirms there's still work
+          splitRunBtn.disabled = true;
+          splitPreviewEl.innerHTML = '';
+        })
+        .catch(function(e) {
+          splitRunBtn.disabled = false;
+          splitResultEl.innerHTML = '<span style="color:#f87171">Error: ' + e.message + '</span>';
+        });
+    });
+  }
+
 });
 
 // ── Helper functions ────────────────────────────────────────────────────────

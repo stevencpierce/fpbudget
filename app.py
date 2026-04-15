@@ -3241,10 +3241,23 @@ def gantt_view(pid, bid):
         budget.version_status = 'current'
         db.session.commit()
 
-    # All labor lines, ordered to match the Working Budget tab
+    # All labor lines, ordered to match the Working Budget tab exactly.
+    # Group by section, then cluster each section by sub-group so the Gantt
+    # mirrors the budget layout (no duplicate Direction/AD sections, etc.)
     all_lines = BudgetLine.query.filter_by(budget_id=bid).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
-    labor_lines = [ln for ln in all_lines if ln.is_labor]
+    labor_lines_raw = [ln for ln in all_lines if ln.is_labor]
+    # Cluster by sub-group within each account_code
+    _by_section = {}
+    _section_order = []
+    for ln in labor_lines_raw:
+        if ln.account_code not in _by_section:
+            _by_section[ln.account_code] = []
+            _section_order.append(ln.account_code)
+        _by_section[ln.account_code].append(ln)
+    labor_lines = []
+    for code in _section_order:
+        labor_lines.extend(_cluster_by_subgroup(_by_section[code]))
 
     # Determine which schedule to show based on budget mode
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
@@ -5690,6 +5703,52 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
 
 
 
+def _infer_line_subgroup(ln):
+    """Infer a line's sub-group (Direction / AD, Camera, etc.) from its
+    role_group field OR by keyword-matching the description against
+    _PROD_STAFF_SUBGROUPS / _TALENT_SUBGROUPS. Returns None for sections
+    that don't use sub-groups."""
+    rg = getattr(ln, 'role_group', None)
+    if rg:
+        return rg
+    code = int(getattr(ln, 'account_code', 0) or 0)
+    if code == 1000:
+        for kw, grp in _PROD_STAFF_SUBGROUPS:
+            if kw.lower() in (ln.description or '').lower():
+                return grp
+    elif code == 700:
+        try:
+            return _get_talent_subgroup(ln.description)
+        except Exception:
+            return None
+    return None
+
+
+def _cluster_by_subgroup(lines):
+    """Cluster a list of lines by their sub-group, preserving first-appearance
+    order of each group. Used to keep same-group lines together so we don't
+    render duplicate sub-department headers when new lines are added later.
+    Only clusters lines in sub-grouped sections (currently 1000 Production Staff).
+    Other sections pass through unchanged."""
+    is_subgrouped = any(
+        int(getattr(ln, 'account_code', 0) or 0) == 1000 for ln in lines
+    )
+    if not is_subgrouped:
+        return list(lines)
+    group_order = []
+    buckets = {}
+    for ln in lines:
+        g = _infer_line_subgroup(ln) or ''
+        if g not in buckets:
+            buckets[g] = []
+            group_order.append(g)
+        buckets[g].append(ln)
+    ordered = []
+    for g in group_order:
+        ordered.extend(sorted(buckets[g], key=lambda x: (x.sort_order or 0, x.id)))
+    return ordered
+
+
 def _order_lines_with_children(lines):
     """Return lines reordered so:
     1. Lines with the same role_group are clustered together (no duplicate
@@ -5706,45 +5765,7 @@ def _order_lines_with_children(lines):
         else:
             parents.append(ln)
 
-    # Determine if this is a sub-grouped section (1000 = Production Staff).
-    # For sub-grouped sections, cluster by role_group preserving first-appearance
-    # order so existing organization is maintained and new additions fall into
-    # the existing cluster rather than creating a duplicate header.
-    is_subgrouped_section = any(
-        int(getattr(ln, 'account_code', 0) or 0) == 1000 for ln in parents
-    )
-
-    if is_subgrouped_section:
-        # Infer role_group from explicit field OR description keyword match
-        def _infer_group(ln):
-            rg = getattr(ln, 'role_group', None)
-            if rg:
-                return rg
-            # Production Staff sub-group inference by description keyword
-            if int(getattr(ln, 'account_code', 0) or 0) == 1000:
-                for kw, grp in _PROD_STAFF_SUBGROUPS:
-                    if kw.lower() in (ln.description or '').lower():
-                        return grp
-            return None
-
-        # Bucket by inferred group, preserving first-appearance order
-        group_order = []
-        buckets = {}
-        for ln in parents:
-            g = _infer_group(ln) or ''  # None/'' all share one bucket
-            if g not in buckets:
-                buckets[g] = []
-                group_order.append(g)
-            buckets[g].append(ln)
-
-        # Sort WITHIN each bucket by (sort_order, id) for stable order
-        ordered_parents = []
-        for g in group_order:
-            ordered_parents.extend(
-                sorted(buckets[g], key=lambda x: (x.sort_order or 0, x.id))
-            )
-    else:
-        ordered_parents = parents
+    ordered_parents = _cluster_by_subgroup(parents)
 
     result = []
     for ln in ordered_parents:
@@ -6177,6 +6198,236 @@ def admin_catalog_reorder():
             ci.sort_order = i * 10
     db.session.commit()
     return jsonify({"ok": True})
+
+
+# ── One-time migrations (Super Admin) ─────────────────────────────────────────
+
+def _seq_suffix(n):
+    """0 → A, 1 → B, ..., 25 → Z, 26 → AA, ..."""
+    s = ''
+    n = max(0, int(n))
+    while True:
+        s = chr(65 + (n % 26)) + s
+        n = (n // 26) - 1
+        if n < 0:
+            break
+    return s
+
+
+def _is_already_split(desc):
+    """Return True if description looks like it was already split
+    (ends with space + 1-3 uppercase letters, e.g. 'Camera Op A' or 'PA AB')."""
+    if not desc:
+        return False
+    d = desc.rstrip()
+    # Look at the last whitespace-delimited token
+    parts = d.rsplit(' ', 1)
+    if len(parts) != 2:
+        return False
+    tail = parts[1]
+    if not (1 <= len(tail) <= 3):
+        return False
+    return tail.isupper() and tail.isalpha()
+
+
+def _split_labor_line(line, db_session):
+    """Split a single labor line with qty>1 into individual A/B/C lines.
+    Moves ScheduleDay + CrewAssignment rows by crew_instance/instance so each
+    split line owns its person's schedule. Returns number of NEW lines created."""
+    from sqlalchemy import func as _func
+
+    if not line.is_labor:
+        return 0
+    qty = int(float(line.quantity or 1))
+    if qty <= 1:
+        return 0
+    if getattr(line, 'line_tag', None):
+        return 0  # sync-driven auto lines
+    base_desc = (line.description or '').rstrip()
+    if not base_desc:
+        return 0
+    if _is_already_split(base_desc):
+        return 0
+
+    # How many splits — at least qty, or max crew_instance if schedule has drift
+    max_inst = db_session.query(_func.max(ScheduleDay.crew_instance)).filter(
+        ScheduleDay.budget_line_id == line.id
+    ).scalar() or 1
+    num_splits = max(qty, int(max_inst))
+
+    # Rename original line to "{base} A" and collapse qty to 1
+    line.description = base_desc + ' ' + _seq_suffix(0)
+    line.quantity = 1
+    # Recompute estimated_total for the now-single-qty line
+    try:
+        r = float(line.rate or 0)
+        d = float(line.days or 1)
+        disc = float(line.agent_pct or 0)
+        if not line.is_labor:
+            line.estimated_total = round(r * 1 * d * (1 - disc), 2)
+    except Exception:
+        pass
+
+    new_count = 0
+    for i in range(1, num_splits):
+        new_line = BudgetLine(
+            budget_id=line.budget_id,
+            account_code=line.account_code,
+            account_name=line.account_name,
+            description=base_desc + ' ' + _seq_suffix(i),
+            is_labor=True,
+            quantity=1,
+            days=line.days,
+            rate=line.rate,
+            rate_type=line.rate_type,
+            est_ot=line.est_ot,
+            fringe_type=line.fringe_type,
+            agent_pct=line.agent_pct,
+            estimated_total=line.estimated_total,
+            note=line.note,
+            payroll_co=line.payroll_co,
+            use_schedule=line.use_schedule,
+            role_group=line.role_group,
+            unit_rate=line.unit_rate,
+            days_unit=line.days_unit,
+            days_per_week=line.days_per_week,
+            working_total=line.working_total,
+            manual_actual=line.manual_actual,
+            sort_order=(line.sort_order or 0) + i,
+        )
+        db_session.add(new_line)
+        db_session.flush()
+
+        # Move ScheduleDay rows for crew_instance=(i+1) to the new line
+        instance_to_move = i + 1
+        sched_rows = db_session.query(ScheduleDay).filter(
+            ScheduleDay.budget_line_id == line.id,
+            ScheduleDay.crew_instance == instance_to_move,
+        ).all()
+        for sr in sched_rows:
+            sr.budget_line_id = new_line.id
+            sr.crew_instance = 1
+
+        # Move CrewAssignment rows the same way
+        ca_rows = db_session.query(CrewAssignment).filter(
+            CrewAssignment.budget_line_id == line.id,
+            CrewAssignment.instance == instance_to_move,
+        ).all()
+        for ca in ca_rows:
+            ca.budget_line_id = new_line.id
+            ca.instance = 1
+
+        new_count += 1
+
+    db_session.flush()
+    return new_count
+
+
+def _find_split_candidates():
+    """Return list of (budget, line) tuples where line is eligible for split."""
+    candidates = []
+    all_lines = BudgetLine.query.filter(
+        BudgetLine.is_labor == True,
+        BudgetLine.quantity > 1,
+    ).all()
+    for ln in all_lines:
+        if getattr(ln, 'line_tag', None):
+            continue
+        if _is_already_split(ln.description or ''):
+            continue
+        candidates.append(ln)
+    return candidates
+
+
+@app.route("/admin/migrate/split-labor/preview")
+@login_required
+@super_admin_required
+def admin_migrate_split_labor_preview():
+    """Count how many labor lines would be split (dry run)."""
+    candidates = _find_split_candidates()
+    # Group by budget for reporting
+    by_budget = {}
+    for ln in candidates:
+        b = Budget.query.get(ln.budget_id)
+        key = (ln.budget_id, b.name if b else f"budget#{ln.budget_id}")
+        by_budget.setdefault(key, []).append({
+            'line_id': ln.id,
+            'description': ln.description,
+            'quantity': int(float(ln.quantity or 1)),
+            'account_code': ln.account_code,
+        })
+    summary = [
+        {
+            'budget_id': k[0],
+            'budget_name': k[1],
+            'line_count': len(v),
+            'total_new_lines': sum(x['quantity'] - 1 for x in v),
+            'lines': v,
+        }
+        for k, v in by_budget.items()
+    ]
+    summary.sort(key=lambda x: x['budget_name'].lower())
+    total_lines = len(candidates)
+    total_new = sum(int(float(ln.quantity or 1)) - 1 for ln in candidates)
+    return jsonify({
+        'total_affected_lines': total_lines,
+        'total_new_lines': total_new,
+        'budgets': summary,
+    })
+
+
+@app.route("/admin/migrate/split-labor", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_migrate_split_labor_run():
+    """Execute the one-time labor-line split migration."""
+    candidates = _find_split_candidates()
+    if not candidates:
+        return jsonify({'ok': True, 'split_count': 0, 'new_lines': 0,
+                        'message': 'Nothing to do.'})
+
+    split_count = 0
+    new_lines = 0
+    errors = []
+    affected_budgets = set()
+    for ln in candidates:
+        try:
+            added = _split_labor_line(ln, db.session)
+            if added > 0:
+                split_count += 1
+                new_lines += added
+                affected_budgets.add(ln.budget_id)
+        except Exception as e:
+            errors.append(f"Line #{ln.id}: {e}")
+            db.session.rollback()
+
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Commit failed: {e}'}), 500
+
+    # Re-run schedule sync for affected budgets so meals/flights recalc
+    # with the correct per-person counts
+    sync_errors = []
+    for bid in affected_budgets:
+        try:
+            sync_schedule_driven_lines(bid, db.session)
+        except Exception as e:
+            sync_errors.append(f"bid={bid}: {e}")
+            db.session.rollback()
+
+    app.logger.info("[labor-split] split=%d new_lines=%d budgets=%d errors=%d",
+                    split_count, new_lines, len(affected_budgets), len(errors))
+
+    return jsonify({
+        'ok': True,
+        'split_count': split_count,
+        'new_lines': new_lines,
+        'budgets_affected': len(affected_budgets),
+        'errors': errors[:20],
+        'sync_errors': sync_errors[:20],
+    })
 
 
 # ── Project sharing routes ─────────────────────────────────────────────────────
