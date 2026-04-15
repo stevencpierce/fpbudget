@@ -6635,6 +6635,15 @@ def profile():
 with app.app_context():
     db.create_all()
 
+    # Short statement timeout so ALTER TABLE migrations fail fast if the
+    # old container still holds a lock during zero-downtime deploys.
+    # Without this, new worker hangs forever → Render port-scan timeout.
+    try:
+        db.session.execute(text("SET statement_timeout = '5s'"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
     # ── Migrations (run before any seed that touches these tables) ────────────
     _migrations = [
         # schedule_day columns
@@ -6942,9 +6951,28 @@ with app.app_context():
             db.session.rollback()
 
     # ── Seeds (run after all migrations) ─────────────────────────────────────
-    seed_fringes(db.session)
-    seed_standard_template(db.session)
-    seed_payroll_profiles(db.session)
+    # Clear the statement timeout before seeds — seed_catalog inserts 200+
+    # rows and should not be killed mid-flight.
+    try:
+        db.session.execute(text("SET statement_timeout = 0"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    try:
+        seed_fringes(db.session)
+    except Exception as _e:
+        app.logger.warning("seed_fringes failed: %s", _e)
+        db.session.rollback()
+    try:
+        seed_standard_template(db.session)
+    except Exception as _e:
+        app.logger.warning("seed_standard_template failed: %s", _e)
+        db.session.rollback()
+    try:
+        seed_payroll_profiles(db.session)
+    except Exception as _e:
+        app.logger.warning("seed_payroll_profiles failed: %s", _e)
+        db.session.rollback()
     try:
         seed_catalog(db.session)
     except Exception as _e:
