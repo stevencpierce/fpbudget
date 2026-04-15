@@ -3,6 +3,10 @@ services:
     name: fp-budget
     runtime: python
     buildCommand: pip install -r requirements.txt
+    # Run migrations + seeds in a separate container BEFORE the web container
+    # starts. This avoids blocking the gevent worker with synchronous psycopg2
+    # calls — which was hanging deploys (worker couldn't answer health checks).
+    preDeployCommand: RUN_BOOT_TASKS=1 python -c "import app"
     startCommand: gunicorn -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:$PORT --timeout 120 wsgi:app
     healthCheckPath: /health
     envVars:

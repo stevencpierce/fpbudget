@@ -7282,10 +7282,22 @@ def _do_boot_work():
     _seed_production_templates()
 
 
-# Kick off boot tasks in a background thread so the gunicorn worker can
-# bind its port immediately. Under gevent this is a greenlet.
-import threading as _boot_threading
-_boot_threading.Thread(target=_run_boot_tasks, daemon=True, name="boot-tasks").start()
+# Boot tasks (migrations + seeds) used to run in the web worker on import.
+# That fails under gevent because psycopg2 is NOT greenlet-aware: every DB
+# call in _do_boot_work blocks the entire event loop, so gunicorn can't
+# answer health checks and Render aborts the deploy. Even with the work
+# inside threading.Thread (which is a greenlet under gevent), psycopg2 still
+# blocks.
+#
+# Solution: run boot tasks in Render's preDeployCommand (separate container,
+# runs to completion before the web container starts) and skip them entirely
+# in the web worker. Set RUN_BOOT_TASKS=1 to force them in-process (e.g. for
+# local dev or one-off shell sessions).
+if os.environ.get('RUN_BOOT_TASKS') == '1':
+    _run_boot_tasks()
+else:
+    logging.info("[BOOT] Skipping in-process boot tasks (RUN_BOOT_TASKS != 1). "
+                 "Migrations should run via preDeployCommand.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
