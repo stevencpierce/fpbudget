@@ -428,6 +428,9 @@
         <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }} {{ 'sync-line' if ln.line_tag else '' }} {{ 'sync-omitted' if ln.sync_omit else '' }}" data-id="{{ ln.id }}"
             data-code="{{ ln.account_code }}" data-code-name="{{ ln.account_name }}"
             data-agent="{{ res.agent_amount | default(0) | float | round(2) }}"
+            data-ot="{{ res.ot_amount | default(0) | float | round(2) }}"
+            data-fringe="{{ res.fringe_amount | default(0) | float | round(2) }}"
+            data-subtotal="{{ res.subtotal | default(0) | float | round(2) }}"
             data-rate-type="{{ ln.rate_type or 'day_10' }}"
             data-qty="{{ ln.quantity | float }}" data-days="{{ ln.days | float }}"
             data-tag="{{ ln.line_tag or '' }}" data-sync-omit="{{ '1' if ln.sync_omit else '0' }}">
@@ -2601,6 +2604,12 @@ function refreshLineRow(id, data) {
   const sub  = row.querySelector('.line-subtotal');
   if (sub) sub.textContent = fmtCurrency(data.subtotal || 0);
 
+  // Keep data-attrs fresh so refreshSectionTotals can sum them live
+  if (data.subtotal !== undefined)      row.dataset.subtotal = (data.subtotal || 0);
+  if (data.ot_amount !== undefined)     row.dataset.ot       = (data.ot_amount || 0);
+  if (data.fringe_amount !== undefined) row.dataset.fringe   = (data.fringe_amount || 0);
+  if (data.agent_amount !== undefined)  row.dataset.agent    = (data.agent_amount || 0);
+
   const fm = feeMult();
   if (_IS_WORKING_MODE) {
     // Working col = live est_total (the <strong> inside line-working), shown fee-inflated
@@ -2758,7 +2767,7 @@ function refreshSectionTotals(table) {
   const tfoot = table.querySelector('tfoot');
   if (!tfoot) return;
 
-  let liveTotal = 0, kitTotal = 0, agentTotal = 0;
+  let liveTotal = 0, kitTotal = 0, agentTotal = 0, otTotal = 0, fringeTotal = 0, subtotalTotal = 0;
   tbody.querySelectorAll('.line-row').forEach(row => {
     // Always read the BASE value (data-base) for section sum; inflate in display
     let base = 0;
@@ -2771,7 +2780,10 @@ function refreshSectionTotals(table) {
     }
     liveTotal += base;
     if (row.classList.contains('kit-fee-row')) kitTotal += base;
-    agentTotal += parseFloat(row.dataset.agent || 0);
+    agentTotal    += parseFloat(row.dataset.agent    || 0);
+    otTotal       += parseFloat(row.dataset.ot       || 0);
+    fringeTotal   += parseFloat(row.dataset.fringe   || 0);
+    subtotalTotal += parseFloat(row.dataset.subtotal || 0);
   });
   const fm = feeMult();
 
@@ -2785,6 +2797,20 @@ function refreshSectionTotals(table) {
     agentEst.textContent = fmtCurrency(agentTotal);
     const agentRow = tfoot.querySelector('.agent-fee-subtotal-row');
     if (agentRow) agentRow.style.display = agentTotal > 0 ? '' : 'none';
+  }
+
+  // Update OT / Fringe / Subtotal cells on the "Section breakdown" row.
+  // These cells are the 7th, 8th, 9th td (OT / Fringe / Subtotal columns).
+  const breakdownRow = tfoot.querySelector('.section-subtotal-row');
+  if (breakdownRow) {
+    const cells = breakdownRow.querySelectorAll('td.col-num');
+    // cells[0] = col 6 (Type, empty spacer)
+    // cells[1] = OT
+    // cells[2] = Fringe
+    // cells[3] = Subtotal
+    if (cells[1]) cells[1].textContent = otTotal       ? fmtCurrency(otTotal       * fm) : '';
+    if (cells[2]) cells[2].textContent = fringeTotal   ? fmtCurrency(fringeTotal   * fm) : '';
+    if (cells[3]) cells[3].textContent = subtotalTotal ? fmtCurrency(subtotalTotal * fm) : '';
   }
 
   if (_IS_WORKING_MODE) {
