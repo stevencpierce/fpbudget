@@ -5502,7 +5502,10 @@ function renderQeCategory(code, searchQ) {
       : (showAgent ? `<td class="qe-td-agent"><span class="muted" style="font-size:.75rem">—</span></td>` : '');
 
     const laborFields = item.isLabor ? `
-      <td class="qe-td-qty"><input type="number" class="qe-input qe-qty" value="${effQty}" min="1" step="1"></td>
+      <td class="qe-td-qty">
+        <input type="number" class="qe-input qe-qty" value="${effQty}" min="1" step="1"
+               title="People — values above 1 create separate lines (A, B, C...)">
+      </td>
       <td class="qe-td-days"><input type="number" class="qe-input qe-days" value="${effDays}" min="0.5" step="0.5"></td>
       <td class="qe-td-rate"><div class="qe-rate-wrap"><span class="qe-dollar">$</span>
         <input type="number" class="qe-input qe-rate" value="${effRate}" min="0" step="25">
@@ -5682,6 +5685,17 @@ function qeSearch(q) {
   renderQeCategory(_qeCatCode, q.trim() || undefined);
 }
 
+// Convert 0 → A, 1 → B, ..., 25 → Z, 26 → AA, 27 → AB, ...
+function _seqSuffix(n) {
+  let s = '';
+  n = Math.max(0, n | 0);
+  do {
+    s = String.fromCharCode(65 + (n % 26)) + s;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return s;
+}
+
 async function qeAddSelected() {
   if (_qeCart.size === 0) return;
   const btn = document.getElementById('btn-add-selected');
@@ -5696,40 +5710,75 @@ async function qeAddSelected() {
     // appear in the same order as the quick entry panel within each section.
     const _cat = QE_CATEGORIES.find(c => c.code === code);
     const _itemIdx = _cat ? _cat.items.findIndex(i => i.label === item.label) : 0;
-    const sortOrder = (_itemIdx >= 0 ? _itemIdx : 0) * 10;
-    const resp = await fetch(SAVE_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        account_code:    code,
-        account_name:    coa_name,
-        description:     item.label,
-        is_labor:        isLabor,
-        sort_order:      sortOrder,
-        role_group:      item.group || null,
-        quantity:        qty,
-        days:            days,
-        rate:            isLabor ? rate : 0,
-        rate_type:       isLabor ? (rate_type || 'day_10') : 'day_10',
-        fringe_type:     isLabor ? fringe : 'N',
-        agent_pct:       isLabor ? (agent_pct || 0) / 100 : 0,
-        estimated_total: isLabor ? 0 : rate * qty * days,
-      })
-    });
-    if (isLabor && kit > 0) {
-      // Use the dedicated kit-fee endpoint so the row gets parent_line_id set
-      // and _order_lines_with_children() will place it directly under its parent.
-      const parentData = await resp.json();
-      if (parentData && parentData.id) {
-        await fetch(`/projects/${_pid}/budget/${_bid}/line/${parentData.id}/kit-fee`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            rate:     kit,
-            quantity: qty,
-            days:     days,
-          })
-        });
+    let baseSortOrder = (_itemIdx >= 0 ? _itemIdx : 0) * 10;
+
+    // If a line with the same role_group already exists in this section, place
+    // the new lines at the END of that cluster so they don't create a duplicate
+    // sub-department header. Scan existing DOM rows in the budget for this code.
+    if (isLabor && item.group) {
+      const sameGroupRows = document.querySelectorAll(
+        '.line-row[data-code="' + code + '"]'
+      );
+      let maxSortInGroup = -1;
+      sameGroupRows.forEach(function(r) {
+        // Match on the displayed sub-group label by checking if description contains a known role
+        // We use a simpler check: if the row has a data-sort attribute OR we can infer from index.
+        // For now, just bump baseSortOrder past the existing max so the new lines come last.
+        const idx = parseInt(r.dataset.sortOrder || r.getAttribute('data-sort') || '0');
+        if (idx > maxSortInGroup) maxSortInGroup = idx;
+      });
+      // Nudge the baseSortOrder so it lands after any existing lines in this code.
+      // The role_group clustering on the backend will place it in the right bucket.
+      if (maxSortInGroup >= 0) baseSortOrder = Math.max(baseSortOrder, maxSortInGroup + 10);
+    }
+
+    // ── SPLIT labor lines with qty > 1 into separate named lines ──
+    // Example: "Robotic Camera Operator" qty=3
+    //   → "Robotic Camera Operator A", "B", "C" — each quantity=1, independent
+    // Non-labor items keep qty as a multiplier on a single line.
+    const shouldSplit = isLabor && qty > 1;
+    const numLines    = shouldSplit ? qty : 1;
+    const perLineQty  = shouldSplit ? 1 : qty;
+
+    for (let i = 0; i < numLines; i++) {
+      const suffix      = shouldSplit ? ' ' + _seqSuffix(i) : '';
+      const description = item.label + suffix;
+      const sortOrder   = baseSortOrder + i;
+
+      const resp = await fetch(SAVE_URL, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          account_code:    code,
+          account_name:    coa_name,
+          description:     description,
+          is_labor:        isLabor,
+          sort_order:      sortOrder,
+          role_group:      item.group || null,
+          quantity:        perLineQty,
+          days:            days,
+          rate:            isLabor ? rate : 0,
+          rate_type:       isLabor ? (rate_type || 'day_10') : 'day_10',
+          fringe_type:     isLabor ? fringe : 'N',
+          agent_pct:       isLabor ? (agent_pct || 0) / 100 : 0,
+          estimated_total: isLabor ? 0 : rate * perLineQty * days,
+        })
+      });
+
+      if (isLabor && kit > 0) {
+        // Kit fee per person — one per split line
+        const parentData = await resp.json();
+        if (parentData && parentData.id) {
+          await fetch(`/projects/${_pid}/budget/${_bid}/line/${parentData.id}/kit-fee`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              rate:     kit,
+              quantity: 1,
+              days:     days,
+            })
+          });
+        }
       }
     }
   }

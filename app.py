@@ -5691,7 +5691,12 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
 
 
 def _order_lines_with_children(lines):
-    """Return lines reordered so kit-fee/child rows appear immediately after their parent."""
+    """Return lines reordered so:
+    1. Lines with the same role_group are clustered together (no duplicate
+       sub-department headers when new Quick Entry lines are added later)
+    2. Kit-fee/child rows appear immediately after their parent
+    Ordering within each group is stable by (sort_order, id).
+    """
     children_by_parent = {}
     parents = []
     for ln in lines:
@@ -5700,12 +5705,54 @@ def _order_lines_with_children(lines):
             children_by_parent.setdefault(pid, []).append(ln)
         else:
             parents.append(ln)
+
+    # Determine if this is a sub-grouped section (1000 = Production Staff).
+    # For sub-grouped sections, cluster by role_group preserving first-appearance
+    # order so existing organization is maintained and new additions fall into
+    # the existing cluster rather than creating a duplicate header.
+    is_subgrouped_section = any(
+        int(getattr(ln, 'account_code', 0) or 0) == 1000 for ln in parents
+    )
+
+    if is_subgrouped_section:
+        # Infer role_group from explicit field OR description keyword match
+        def _infer_group(ln):
+            rg = getattr(ln, 'role_group', None)
+            if rg:
+                return rg
+            # Production Staff sub-group inference by description keyword
+            if int(getattr(ln, 'account_code', 0) or 0) == 1000:
+                for kw, grp in _PROD_STAFF_SUBGROUPS:
+                    if kw.lower() in (ln.description or '').lower():
+                        return grp
+            return None
+
+        # Bucket by inferred group, preserving first-appearance order
+        group_order = []
+        buckets = {}
+        for ln in parents:
+            g = _infer_group(ln) or ''  # None/'' all share one bucket
+            if g not in buckets:
+                buckets[g] = []
+                group_order.append(g)
+            buckets[g].append(ln)
+
+        # Sort WITHIN each bucket by (sort_order, id) for stable order
+        ordered_parents = []
+        for g in group_order:
+            ordered_parents.extend(
+                sorted(buckets[g], key=lambda x: (x.sort_order or 0, x.id))
+            )
+    else:
+        ordered_parents = parents
+
     result = []
-    for ln in parents:
+    for ln in ordered_parents:
         result.append(ln)
         result.extend(children_by_parent.get(ln.id, []))
+
     # Orphaned children (parent in different section) go at end
-    all_parent_ids = {ln.id for ln in parents}
+    all_parent_ids = {ln.id for ln in ordered_parents}
     for pid, kids in children_by_parent.items():
         if pid not in all_parent_ids:
             result.extend(kids)
