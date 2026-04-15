@@ -473,8 +473,9 @@ def calc_line(line, fringe_configs):
 
     cfg = fringe_configs.get(line.fringe_type)
     if cfg and cfg.is_flat:
-        # Flat fringe per person per billing unit
-        fringe_amount = _float(line.quantity) * eff_days * _float(cfg.flat_amount)
+        # Flat fringe per person (per row), NOT per day. A loan-out admin
+        # fee is charged once per person regardless of day count.
+        fringe_amount = _float(line.quantity, 1.0) * _float(cfg.flat_amount)
     elif cfg:
         fringe_amount = subtotal * _float(cfg.rate)
     else:
@@ -701,7 +702,9 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
         legacy_ot = 0.0  # est_ot is a manual-mode override; ignored in schedule-driven calc
         subtotal  = base
         if cfg and cfg.is_flat:
-            fringe_amount = active_day_count * _float(cfg.flat_amount)
+            # Flat fringe: once per person, not per day
+            _persons = max(num_instances, int(qty or 1))
+            fringe_amount = _persons * _float(cfg.flat_amount)
         elif cfg:
             fringe_amount = subtotal * _float(cfg.rate)
         else:
@@ -745,8 +748,9 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
     subtotal  = base
 
     if cfg and cfg.is_flat:
-        # Flat fringe per person per day (e.g. Loan-Out $18/day)
-        fringe_amount = total_day_count * _float(cfg.flat_amount)
+        # Flat fringe: once per person, not per day (e.g. Loan-Out $18/person)
+        _persons = max(num_instances, int(qty or 1))
+        fringe_amount = _persons * _float(cfg.flat_amount)
     elif cfg:
         fringe_amount = subtotal * _float(cfg.rate)
     else:

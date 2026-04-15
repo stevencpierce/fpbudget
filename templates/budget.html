@@ -457,10 +457,12 @@
             <span class="editable num" data-field="days" data-id="{{ ln.id }}">{% set _d = ln.days | float %}{{ _d | int if _d == (_d | int) else _d }}</span>
             {% endif %}
             {% if not ln.use_schedule %}
-            <button class="days-unit-toggle btn btn-xs {% if ln.days_unit == 'weeks' %}active{% endif %}"
+            {% set _u = (ln.days_unit or 'days') %}
+            {% set _u_labels = {'days':'D','weeks':'W','x':'X','per':'Per','allow':'Allow','est':'EST','lb':'LB','hrs':'Hrs','flat':'Flat','mo':'Mo','mi':'Mi','ea':'Ea'} %}
+            <button class="days-unit-toggle btn btn-xs {% if _u == 'weeks' %}active{% endif %}"
                     data-id="{{ ln.id }}"
-                    data-unit="{{ ln.days_unit or 'days' }}"
-                    title="Toggle Days / Weeks">{{ 'W' if ln.days_unit == 'weeks' else 'D' }}</button>
+                    data-unit="{{ _u }}"
+                    title="Right-click to change unit (Days / Weeks / X / Per / Allow / EST / LB / Custom…)">{{ _u_labels.get(_u, _u[:4] | upper) }}</button>
             {% endif %}
           </td>
           <td class="col-num col-rate-cell">
@@ -3071,10 +3073,23 @@ document.addEventListener('click', async e => {
   const res = await fetch(`/projects/${PID}/budget/${BID}/line/${id}`, {method:'DELETE'});
   if (res.ok) {
     const row = document.querySelector(`.line-row[data-id="${id}"]`);
+    const table = row ? row.closest('table') : null;
     if (row) row.remove();
-    const table = row?.closest('table');
+    // Also drop any child kit-fee rows attached to this parent
+    document.querySelectorAll(`.kit-fee-row[data-parent-id="${id}"]`).forEach(r => r.remove());
     if (table) refreshSectionTotals(table);
-    else updateFloatBar();
+    updateFloatBar();
+    // Record the deletion locally so the live-patch poller doesn't see
+    // this as a remote "removed" line and force a full reloadWithTab()
+    // (which was scrolling the view back to the top).
+    try {
+      if (Array.isArray(_knownLineIds)) {
+        const idx = _knownLineIds.indexOf(id);
+        if (idx !== -1) _knownLineIds.splice(idx, 1);
+      }
+      _myEditedLines.add(id);
+      setTimeout(() => _myEditedLines.delete(id), 15000);
+    } catch(_) {}
   }
 });
 
@@ -3747,26 +3762,131 @@ function renderCalcDetail(d) {
     setTimeout(() => document.getElementById('all-in-amount').focus(), 50);
   });
 
-  // ── D/W toggle on each labor row ──────────────────────────────────────────
-  document.addEventListener('click', async function(e) {
+  // ── Days-unit RIGHT-CLICK menu on each row ───────────────────────────────
+  // Previously was a click-to-cycle D/W toggle. Now opens a popup on
+  // right-click with a selectable list of denominations (Days, Weeks, X,
+  // Per, Allow, EST, LB, Hrs, Flat, Mo, Mi, Ea) plus a Custom… option
+  // that prompts for a free-form label. Left-click is a no-op (easier
+  // to right-click without accidentally changing it).
+  const _UNIT_OPTIONS = [
+    { code: 'days',  label: 'Days',   short: 'D'   },
+    { code: 'weeks', label: 'Weeks',  short: 'W'   },
+    { code: 'hrs',   label: 'Hours',  short: 'Hrs' },
+    { code: 'flat',  label: 'Flat',   short: 'Flat'},
+    { code: 'x',     label: 'X',      short: 'X'   },
+    { code: 'per',   label: 'Per',    short: 'Per' },
+    { code: 'allow', label: 'Allow',  short: 'Allow'},
+    { code: 'est',   label: 'EST',    short: 'EST' },
+    { code: 'lb',    label: 'LB',     short: 'LB'  },
+    { code: 'mo',    label: 'Month',  short: 'Mo'  },
+    { code: 'mi',    label: 'Mile',   short: 'Mi'  },
+    { code: 'ea',    label: 'Each',   short: 'Ea'  },
+  ];
+
+  function _shortForUnit(u) {
+    if (!u) return 'D';
+    const hit = _UNIT_OPTIONS.find(o => o.code === u);
+    if (hit) return hit.short;
+    // Custom value: show first 4 chars, uppercase
+    return String(u).slice(0,4).toUpperCase();
+  }
+
+  // Build menu element once
+  let _unitMenu = document.getElementById('days-unit-menu');
+  if (!_unitMenu) {
+    _unitMenu = document.createElement('div');
+    _unitMenu.id = 'days-unit-menu';
+    _unitMenu.className = 'ctx-menu hidden';
+    _unitMenu.style.cssText = 'position:fixed;z-index:9999;background:var(--card,#1d2230);'
+      + 'border:1px solid var(--border,#333);border-radius:6px;'
+      + 'box-shadow:0 6px 20px rgba(0,0,0,.55);padding:4px 0;min-width:160px;font-size:.85rem';
+    _unitMenu.innerHTML = _UNIT_OPTIONS.map(o =>
+      `<div class="ctx-menu-item" data-unit="${o.code}"
+             style="padding:6px 14px;cursor:pointer"
+             onmouseover="this.style.background='rgba(255,255,255,.08)'"
+             onmouseout="this.style.background='transparent'">${o.label}</div>`
+    ).join('')
+      + '<div style="height:1px;background:var(--border,#333);margin:4px 0"></div>'
+      + `<div class="ctx-menu-item" data-unit="__custom__"
+             style="padding:6px 14px;cursor:pointer;font-style:italic"
+             onmouseover="this.style.background='rgba(255,255,255,.08)'"
+             onmouseout="this.style.background='transparent'">Custom…</div>`;
+    document.body.appendChild(_unitMenu);
+  }
+
+  let _unitBtnActive = null;
+
+  function _hideUnitMenu() {
+    _unitMenu.classList.add('hidden');
+    _unitBtnActive = null;
+  }
+
+  async function _saveUnit(btn, newUnit) {
+    const lid = parseInt(btn.dataset.id);
+    btn.dataset.unit = newUnit;
+    btn.textContent  = _shortForUnit(newUnit);
+    btn.classList.toggle('active', newUnit === 'weeks');
+    try {
+      const r = await fetch(`/projects/${_pid}/budget/${_bid}/line`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ id: lid, days_unit: newUnit })
+      });
+      if (r.ok) {
+        const data = await r.json();
+        if (typeof refreshLineRow === 'function') refreshLineRow(lid, data);
+      }
+    } catch(_) {}
+  }
+
+  // Right-click on the unit button → open menu
+  document.addEventListener('contextmenu', function(e) {
     const btn = e.target.closest('.days-unit-toggle');
     if (!btn) return;
+    e.preventDefault();
     e.stopPropagation();
-    const lid     = parseInt(btn.dataset.id);
-    const current = btn.dataset.unit || 'days';
-    const newUnit = current === 'days' ? 'weeks' : 'days';
-    btn.dataset.unit = newUnit;
-    btn.textContent  = newUnit === 'weeks' ? 'W' : 'D';
-    btn.classList.toggle('active', newUnit === 'weeks');
-    const r = await fetch(`/projects/${_pid}/budget/${_bid}/line`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ id: lid, days_unit: newUnit })
-    });
-    if (r.ok) {
-      const data = await r.json();
-      refreshLineRow(lid, data);
+    _unitBtnActive = btn;
+    // Position: snap inside viewport
+    _unitMenu.classList.remove('hidden');
+    const mw = _unitMenu.offsetWidth || 160;
+    const mh = _unitMenu.offsetHeight || 260;
+    const x = Math.min(e.clientX, window.innerWidth  - mw - 8);
+    const y = Math.min(e.clientY, window.innerHeight - mh - 8);
+    _unitMenu.style.left = x + 'px';
+    _unitMenu.style.top  = y + 'px';
+  });
+
+  // Swallow left-click on the unit button so it doesn't do anything surprising
+  document.addEventListener('click', function(e) {
+    const btn = e.target.closest('.days-unit-toggle');
+    if (btn) { e.stopPropagation(); return; }
+    // Click outside menu closes it
+    if (!e.target.closest('#days-unit-menu')) _hideUnitMenu();
+  });
+
+  // Menu item click
+  _unitMenu.addEventListener('click', function(e) {
+    const item = e.target.closest('.ctx-menu-item');
+    if (!item || !_unitBtnActive) return;
+    const btn = _unitBtnActive;
+    const choice = item.dataset.unit;
+    _hideUnitMenu();
+    if (choice === '__custom__') {
+      const custom = prompt('Custom unit label (e.g. "Rolls", "Pack", "Shoot"):',
+                            btn.dataset.unit && !_UNIT_OPTIONS.find(o => o.code === btn.dataset.unit)
+                              ? btn.dataset.unit : '');
+      if (custom === null) return;
+      const cleaned = String(custom).trim().slice(0, 20);
+      if (!cleaned) return;
+      _saveUnit(btn, cleaned.toLowerCase());
+    } else {
+      _saveUnit(btn, choice);
     }
+  });
+
+  // Escape closes
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') _hideUnitMenu();
   });
 
 })();
@@ -5911,7 +6031,11 @@ async function qeAddSelected() {
           role_group:      item.group || null,
           quantity:        perLineQty,
           days:            days,
-          rate:            isLabor ? rate : 0,
+          // Non-labor rows must persist the user-entered rate so the
+          // visible row shows the right rate/qty/days after save. Backend
+          // auto-recomputes estimated_total = rate * qty * days for
+          // non-labor lines, so sending both is safe.
+          rate:            rate,
           rate_type:       isLabor ? (rate_type || 'day_10') : 'day_10',
           fringe_type:     isLabor ? fringe : 'N',
           agent_pct:       isLabor ? (agent_pct || 0) / 100 : 0,

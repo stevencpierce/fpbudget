@@ -6633,16 +6633,37 @@ def profile():
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 with app.app_context():
-    db.create_all()
+    # Install a per-connection statement_timeout via engine event so that
+    # EVERY connection pulled from the pool during boot has a 5-second
+    # ceiling. Previous approach (`SET statement_timeout` on session) was
+    # ineffective: `SET` is connection-scoped, but each `db.session.commit()`
+    # returned the connection to the pool, and the next `execute` could
+    # land on a different pooled connection that still had timeout=0.
+    # When the old container held a row lock during a zero-downtime deploy,
+    # the new worker's ALTER TABLE hung forever → Render port-scan timeout.
+    from sqlalchemy import event as _sa_event
 
-    # Short statement timeout so ALTER TABLE migrations fail fast if the
-    # old container still holds a lock during zero-downtime deploys.
-    # Without this, new worker hangs forever → Render port-scan timeout.
+    _is_pg = 'postgresql' in str(db.engine.url).lower()
+
+    def _boot_set_timeout(dbapi_conn, _conn_record):
+        if not _is_pg:
+            return
+        try:
+            cur = dbapi_conn.cursor()
+            cur.execute("SET statement_timeout = 5000")  # 5 seconds, in ms
+            cur.close()
+        except Exception:
+            pass
+
+    _sa_event.listen(db.engine, "connect", _boot_set_timeout)
+    # Any already-pooled connections need the setting too. dispose() closes
+    # them so they'll be re-opened through the listener.
     try:
-        db.session.execute(text("SET statement_timeout = '5s'"))
-        db.session.commit()
+        db.engine.dispose()
     except Exception:
-        db.session.rollback()
+        pass
+
+    db.create_all()
 
     # ── Migrations (run before any seed that touches these tables) ────────────
     _migrations = [
@@ -6951,13 +6972,18 @@ with app.app_context():
             db.session.rollback()
 
     # ── Seeds (run after all migrations) ─────────────────────────────────────
-    # Clear the statement timeout before seeds — seed_catalog inserts 200+
-    # rows and should not be killed mid-flight.
+    # Remove the boot-time statement_timeout listener and recycle the pool
+    # so subsequent connections (seeds + request handlers) have the default
+    # timeout (0 = unlimited). seed_catalog inserts 200+ rows and must not
+    # be killed mid-flight.
     try:
-        db.session.execute(text("SET statement_timeout = 0"))
-        db.session.commit()
+        _sa_event.remove(db.engine, "connect", _boot_set_timeout)
     except Exception:
-        db.session.rollback()
+        pass
+    try:
+        db.engine.dispose()
+    except Exception:
+        pass
     try:
         seed_fringes(db.session)
     except Exception as _e:
