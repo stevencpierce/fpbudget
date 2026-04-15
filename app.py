@@ -1,4 +1,21 @@
 import os, logging, json, csv, io, re
+
+# ── R2 / botocore checksum env vars ──────────────────────────────────────────
+# MUST be set BEFORE boto3/botocore is ever imported. botocore reads these
+# during module init and caches them. Cloudflare R2 rejects the new
+# flexible-checksum trailers (Content-CRC32 etc.) introduced in botocore
+# 1.36; boto3's retry path re-issues the request inside the same exception
+# handler, which under the gevent monkey-patched threadlocals walks itself
+# into "maximum recursion depth exceeded" instead of returning a normal
+# error. Setting these env vars disables checksums regardless of the
+# Config object that's passed to boto3.client (which we also still set as
+# a belt-and-suspenders guard, because new botocore versions sometimes
+# rename the kwargs and the env vars are the stable interface).
+os.environ.setdefault('AWS_REQUEST_CHECKSUM_CALCULATION',  'when_required')
+os.environ.setdefault('AWS_RESPONSE_CHECKSUM_VALIDATION',  'when_required')
+# Some installs honour the older opt-in name; set both for safety.
+os.environ.setdefault('AWS_S3_DISABLE_DEFAULT_CHECKSUMS',  'true')
+
 from flask_mail import Mail, Message as MailMessage
 from datetime import date, datetime, timedelta
 from flask import (Flask, render_template, redirect, url_for, request,
@@ -274,28 +291,39 @@ _R2_ACCESS_KEY  = os.getenv('R2_ACCESS_KEY_ID', '')
 _R2_SECRET      = os.getenv('R2_SECRET_ACCESS_KEY', '')
 _R2_BUCKET      = os.getenv('R2_BUCKET', 'fpbudget-docs')
 
+_R2_VERSION_LOGGED = False
+
 def _r2_client():
-    import boto3
+    import boto3, botocore
     from botocore.config import Config
-    # R2 / S3-compatible stores don't accept botocore 1.36+ default flexible
-    # checksums (Content-CRC32 etc.) — botocore retries in a loop and blows
-    # the stack ("maximum recursion depth exceeded"). Pin s3v4 signing and
-    # disable request checksums unless explicitly required.
-    try:
-        cfg = Config(
-            signature_version='s3v4',
-            s3={'addressing_style': 'path'},
-            request_checksum_calculation='when_required',
-            response_checksum_validation='when_required',
-            retries={'max_attempts': 3, 'mode': 'standard'},
+    global _R2_VERSION_LOGGED
+    if not _R2_VERSION_LOGGED:
+        logging.warning(
+            "[R2] boto3=%s botocore=%s checksum_env=%s",
+            getattr(boto3, '__version__', '?'),
+            getattr(botocore, '__version__', '?'),
+            os.environ.get('AWS_REQUEST_CHECKSUM_CALCULATION'),
         )
-    except TypeError:
-        # Older botocore (< 1.36) doesn't accept request_checksum_calculation.
-        cfg = Config(
-            signature_version='s3v4',
-            s3={'addressing_style': 'path'},
-            retries={'max_attempts': 3, 'mode': 'standard'},
-        )
+        _R2_VERSION_LOGGED = True
+
+    # Build Config kwargs incrementally so unknown kwargs on older botocore
+    # don't blow away the entire config (the previous try/except wrapped
+    # the WHOLE Config(), so any version mismatch silently fell back to a
+    # config WITHOUT the checksum suppression and the recursion bug came
+    # back). Try each new kwarg individually.
+    base_kwargs = dict(
+        signature_version='s3v4',
+        s3={'addressing_style': 'path'},
+        retries={'max_attempts': 3, 'mode': 'standard'},
+    )
+    for opt_kwarg in ('request_checksum_calculation', 'response_checksum_validation'):
+        try:
+            Config(**{**base_kwargs, opt_kwarg: 'when_required'})
+            base_kwargs[opt_kwarg] = 'when_required'
+        except TypeError:
+            logging.warning("[R2] botocore Config does not accept %s — env var fallback active", opt_kwarg)
+
+    cfg = Config(**base_kwargs)
     return boto3.client(
         's3',
         endpoint_url=f"https://{_R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
@@ -310,8 +338,15 @@ def _r2_upload(file_bytes, key, content_type='application/octet-stream'):
     try:
         _r2_client().put_object(Bucket=_R2_BUCKET, Key=key, Body=file_bytes, ContentType=content_type)
         return True
-    except Exception as e:
-        logging.warning(f"R2 upload failed: {e}")
+    except RecursionError:
+        # botocore got into a retry loop (usually checksum-related on R2).
+        # Surface the cause clearly so we don't waste another debugging
+        # cycle thinking the env var fix is in place when it isn't.
+        logging.exception("[R2] RecursionError — checksum suppression NOT effective. "
+                          "Verify boto3/botocore version and AWS_REQUEST_CHECKSUM_CALCULATION env.")
+        return False
+    except Exception:
+        logging.exception("R2 upload failed")
         return False
 
 
