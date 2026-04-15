@@ -3,7 +3,7 @@ services:
     name: fp-budget
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:$PORT --timeout 120 app:app
+    startCommand: gunicorn -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:$PORT --timeout 120 wsgi:app
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
