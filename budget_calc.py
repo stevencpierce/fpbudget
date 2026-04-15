@@ -170,8 +170,15 @@ def sync_schedule_driven_lines(budget_id, db_session):
 
     counts = {tag: 0 for tag in SCHEDULE_LINE_DEFS}
 
-    # Count flags from ScheduleDay rows (current schedule mode only)
-    sched_days = db_session.query(ScheduleDay).filter_by(budget_id=budget_id, schedule_mode=sched_mode).all()
+    # Count flags from ScheduleDay rows (current schedule mode only).
+    # ALSO accept NULL schedule_mode rows (legacy data pre-schedule_mode column)
+    # so older budgets still sync meal/travel totals.
+    from sqlalchemy import or_ as _or
+    sched_days = db_session.query(ScheduleDay).filter(
+        ScheduleDay.budget_id == budget_id,
+        _or(ScheduleDay.schedule_mode == sched_mode,
+            ScheduleDay.schedule_mode == None),
+    ).all()
 
     # Build date → crew headcount map (non-off days only)
     date_headcount = {}
@@ -207,9 +214,15 @@ def sync_schedule_driven_lines(budget_id, db_session):
         if flags.get('per_diem'):
             counts['per_diem'] += 1
 
-    # Count ProductionDay meals using per-day headcount (not flat +1)
-    for pd in db_session.query(ProductionDay).filter_by(budget_id=budget_id, schedule_mode=sched_mode).all():
-        hc = date_headcount.get(pd.date, 1)
+    # Count ProductionDay meals using per-day headcount (not flat +1).
+    # ALSO accept NULL schedule_mode legacy rows.
+    prod_days = db_session.query(ProductionDay).filter(
+        ProductionDay.budget_id == budget_id,
+        _or(ProductionDay.schedule_mode == sched_mode,
+            ProductionDay.schedule_mode == None),
+    ).all()
+    for pd in prod_days:
+        hc = date_headcount.get(pd.date, 1) or 1
         if pd.courtesy_breakfast:
             counts['meal_courtesy_breakfast'] += hc
         if pd.first_meal:
@@ -299,6 +312,16 @@ def sync_schedule_driven_lines(budget_id, db_session):
         db_session.commit()
     except Exception:
         db_session.rollback()
+
+    # Log summary so Render logs show what this sync actually did
+    try:
+        import logging as _log
+        nz = {k: v for k, v in counts.items() if v > 0}
+        if nz:
+            _log.info("[sync] budget=%s mode=%s sched_days=%d prod_days=%d counts=%s",
+                      budget_id, sched_mode, len(sched_days), len(prod_days), nz)
+    except Exception:
+        pass
 
 
 def _float(val, default=0.0):

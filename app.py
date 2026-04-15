@@ -1749,6 +1749,17 @@ def budget_view(pid, bid):
         _supersede_current(pid, _budget_type(budget.budget_mode), exclude_id=bid)
         budget.version_status = 'current'
         db.session.commit()
+
+    # Catch-up: reconcile schedule-driven auto lines (meals, flights, hotel,
+    # mileage, per diem) every time budget view loads. Ensures any flags/meals
+    # set on the Gantt are reflected in the budget lines even if a prior sync
+    # failed silently.
+    try:
+        sync_schedule_driven_lines(bid, db.session)
+    except Exception as _se:
+        app.logger.warning("budget_view sync_schedule_driven_lines failed: %s", _se)
+        db.session.rollback()
+
     all_budgets = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).all()
 
     lines = BudgetLine.query.filter_by(budget_id=bid).order_by(
@@ -3588,19 +3599,18 @@ def set_gantt_day(pid, bid):
         except Exception:
             pass
 
-    # Auto-enable use_schedule on the line when first day is added
+    # Auto-enable use_schedule on the line whenever a schedule day exists.
+    # Previously only fired on the FIRST day — so if the flag got flipped off
+    # for any reason, subsequent schedule edits silently stopped driving the
+    # labor line total.
     use_schedule_toggled = False
     try:
         if line_id and day_type != 'off':
             ln = BudgetLine.query.filter_by(id=line_id, budget_id=bid).first()
             if ln and ln.is_labor and not ln.use_schedule:
-                day_count = ScheduleDay.query.filter_by(
-                    budget_id=bid, budget_line_id=line_id, schedule_mode=sched_mode
-                ).count()
-                if day_count == 1:
-                    ln.use_schedule = True
-                    db.session.commit()
-                    use_schedule_toggled = True
+                ln.use_schedule = True
+                db.session.commit()
+                use_schedule_toggled = True
     except Exception as _ue:
         import traceback as _tb
         _post_save_error = (_post_save_error or "") + f" | use_sched: {_ue}"
