@@ -295,9 +295,22 @@ def _r2_upload(file_bytes, key, content_type='application/octet-stream'):
 
 
 def _r2_download(key):
-    """Download bytes from R2 by key. Raises on failure."""
-    resp = _r2_client().get_object(Bucket=_R2_BUCKET, Key=key)
-    return resp['Body'].read()
+    """Download bytes from R2 by key. Returns (bytes, None) on success or
+    (None, error_message) on failure — never raises, so callers don't have
+    to deal with boto3's recursion/retry quirks on missing objects."""
+    try:
+        resp = _r2_client().get_object(Bucket=_R2_BUCKET, Key=key)
+        return (resp['Body'].read(), None)
+    except Exception as e:
+        # Common cases: NoSuchKey (the file was never actually stored — happens
+        # for rows created before the arg-swap bug fix), credentials missing,
+        # or a genuine network error. Collapse all into a friendly string.
+        msg = str(e).lower()
+        if 'nosuchkey' in msg or 'not found' in msg or '404' in msg:
+            return (None, "File data missing from storage. Delete this row and re-upload.")
+        if 'recursion' in msg or 'endpoint' in msg:
+            return (None, "R2 storage is unreachable (check R2 env vars on Render).")
+        return (None, f"R2 fetch failed: {str(e)[:200]}")
 
 
 def _r2_presigned_url(key, expires=3600):
@@ -7290,10 +7303,9 @@ def docs_upload_retry_filing(uid):
         return jsonify({"error": "Project has no Dropbox folder configured"}), 400
 
     # Re-fetch bytes from R2
-    try:
-        data = _r2_download(upload.r2_key)
-    except Exception as e:
-        return jsonify({"error": f"R2 fetch failed: {e}"}), 500
+    data, err = _r2_download(upload.r2_key)
+    if err or data is None:
+        return jsonify({"error": err or "R2 fetch failed"}), 500
 
     try:
         import re as _re
