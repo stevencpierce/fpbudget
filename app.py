@@ -6631,8 +6631,31 @@ def profile():
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
+#
+# CRITICAL: Render uses zero-downtime deploys. The new gunicorn worker must
+# bind its port within ~90 seconds or Render aborts the deploy. If ANYTHING
+# in this block blocks (DB lock held by the old container, Dropbox token
+# refresh, slow DNS, gevent+psycopg2 interactions), the port never binds and
+# the deploy times out. We therefore run the entire boot block in a
+# background thread so the worker binds its port immediately and the
+# migrations/seeds happen async. Under gevent, threading.Thread is patched
+# to a greenlet that yields on I/O so this is safe and lightweight.
 
-with app.app_context():
+def _run_boot_tasks():
+    import sys as _sys, traceback as _tb
+    _log = lambda msg: print(f"[BOOT] {msg}", file=_sys.stderr, flush=True)
+    try:
+        _log("starting migrations + seeds")
+        _do_boot_work()
+        _log("startup complete")
+    except Exception:
+        _log("FAILED:\n" + _tb.format_exc())
+
+
+def _do_boot_work():
+  # NOTE: body indented at 2 spaces so the original `with app.app_context():`
+  # block below keeps its 4-space inner indent without a giant reformat.
+  with app.app_context():
     # Install a per-connection statement_timeout via engine event so that
     # EVERY connection pulled from the pool during boot has a 5-second
     # ceiling. Previous approach (`SET statement_timeout` on session) was
@@ -7222,6 +7245,12 @@ with app.app_context():
         logging.info(f"Seeded template: {_SMALL_LIVE}")
 
     _seed_production_templates()
+
+
+# Kick off boot tasks in a background thread so the gunicorn worker can
+# bind its port immediately. Under gevent this is a greenlet.
+import threading as _boot_threading
+_boot_threading.Thread(target=_run_boot_tasks, daemon=True, name="boot-tasks").start()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
