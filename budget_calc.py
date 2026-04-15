@@ -168,7 +168,16 @@ def sync_schedule_driven_lines(budget_id, db_session):
     all_lines     = db_session.query(BudgetLine).filter_by(budget_id=budget_id).all()
     labor_by_id   = {ln.id: ln for ln in all_lines if ln.is_labor}
 
-    counts = {tag: 0 for tag in SCHEDULE_LINE_DEFS}
+    # Track both days (number of flagged columns) and headcount (rows on those
+    # days) separately for each tag. The BudgetLine stores days × qty × rate
+    # which matches the user's mental model:
+    #   "If First Meal is checked in 2 columns and there are 10 people
+    #    scheduled those days, that's 2 days × 10 qty × rate"
+    #
+    # day_dates[tag] = set of dates flagged for this tag
+    # day_hcs[tag]   = list of per-day headcounts (same length as day_dates)
+    day_dates = {tag: set() for tag in SCHEDULE_LINE_DEFS}
+    day_hcs   = {tag: [] for tag in SCHEDULE_LINE_DEFS}
 
     # Count flags from ScheduleDay rows (current schedule mode only).
     # ALSO accept NULL schedule_mode rows (legacy data pre-schedule_mode column)
@@ -186,9 +195,15 @@ def sync_schedule_driven_lines(budget_id, db_session):
         if sd.day_type != 'off':
             date_headcount[sd.date] = date_headcount.get(sd.date, 0) + 1
 
-    # Craft services = every crew person on every shoot day (total person-days)
-    counts['craft_services'] = sum(date_headcount.values())
+    # Craft services = every shoot day; headcount = crew that day
+    for d, hc in date_headcount.items():
+        day_dates['craft_services'].add(d)
+        day_hcs['craft_services'].append(hc)
 
+    # Per-crew-cell flags (working_meal, hotel, flight, mileage, per_diem)
+    # Aggregate by (tag, date): count distinct dates as days; headcount is the
+    # number of crew with that flag checked on each date.
+    per_tag_date_crew = {}  # {tag: {date: crew_count}}
     for sd in sched_days:
         if sd.day_type == 'off':
             continue
@@ -203,32 +218,52 @@ def sync_schedule_driven_lines(budget_id, db_session):
         rg = (getattr(parent, 'role_group', None) or get_role_group(parent.account_code)) \
              if parent else 'crew'
 
-        if flags.get('working_meal'):
-            counts['working_meal'] += 1
-        if flags.get('hotel'):
-            counts[f'hotel_{rg}'] += 1
-        if flags.get('flight'):
-            counts[f'flight_{rg}'] += 1
-        if flags.get('mileage'):
-            counts[f'mileage_{rg}'] += 1
-        if flags.get('per_diem'):
-            counts['per_diem'] += 1
+        flag_tag_map = {
+            'working_meal': 'working_meal',
+            'hotel':        f'hotel_{rg}',
+            'flight':       f'flight_{rg}',
+            'mileage':      f'mileage_{rg}',
+            'per_diem':     'per_diem',
+        }
+        for flag_key, tag in flag_tag_map.items():
+            if flags.get(flag_key):
+                per_tag_date_crew.setdefault(tag, {})
+                per_tag_date_crew[tag][sd.date] = per_tag_date_crew[tag].get(sd.date, 0) + 1
 
-    # Count ProductionDay meals using per-day headcount (not flat +1).
-    # ALSO accept NULL schedule_mode legacy rows.
+    # Collapse per-tag per-date crew counts into day_dates + day_hcs
+    for tag, date_map in per_tag_date_crew.items():
+        for d, crew_on_day in date_map.items():
+            day_dates[tag].add(d)
+            day_hcs[tag].append(crew_on_day)
+
+    # Meal flags on ProductionDay: one flag per date (not per crew member).
+    # Use the scheduled headcount for that date as qty.
     prod_days = db_session.query(ProductionDay).filter(
         ProductionDay.budget_id == budget_id,
         _or(ProductionDay.schedule_mode == sched_mode,
             ProductionDay.schedule_mode == None),
     ).all()
     for pd in prod_days:
-        hc = date_headcount.get(pd.date, 1) or 1
+        hc = date_headcount.get(pd.date, 0) or 0
+        # Skip days with no one scheduled — those columns don't really exist
+        if hc == 0:
+            continue
         if pd.courtesy_breakfast:
-            counts['meal_courtesy_breakfast'] += hc
+            day_dates['meal_courtesy_breakfast'].add(pd.date)
+            day_hcs['meal_courtesy_breakfast'].append(hc)
         if pd.first_meal:
-            counts['meal_first'] += hc
+            day_dates['meal_first'].add(pd.date)
+            day_hcs['meal_first'].append(hc)
         if pd.second_meal:
-            counts['meal_second'] += hc
+            day_dates['meal_second'].add(pd.date)
+            day_hcs['meal_second'].append(hc)
+
+    # Derive: days = number of flagged columns; headcount = average rows per day
+    counts      = {tag: len(day_dates[tag]) for tag in SCHEDULE_LINE_DEFS}
+    headcounts  = {}
+    for tag in SCHEDULE_LINE_DEFS:
+        hcs = day_hcs[tag]
+        headcounts[tag] = round(sum(hcs) / len(hcs)) if hcs else 0
 
     # Existing auto lines by tag
     existing_auto = {ln.line_tag: ln for ln in all_lines
@@ -255,6 +290,7 @@ def sync_schedule_driven_lines(budget_id, db_session):
             continue  # Don't create zero-count lines that were never used
 
         ac, an, desc, default_rate, section_sort = SCHEDULE_LINE_DEFS[tag]
+        hc = headcounts.get(tag, 0) or 1  # default to 1 if no headcount derived
 
         if tag in existing_auto:
             ln = existing_auto[tag]
@@ -270,23 +306,31 @@ def sync_schedule_driven_lines(budget_id, db_session):
                 is_labor=False,
                 line_tag=tag,
                 unit_rate=default_rate,
-                rate=default_rate,      # set rate so calc_line uses qty × days × rate
-                quantity=1,             # user sets headcount; sync only drives days
+                rate=default_rate,
+                quantity=hc,
                 days=max(count, 1),
                 sort_order=section_sort,
             )
             db_session.add(ln)
             db_session.flush()
 
-        # Always update days = number of shoot days with this flag checked.
-        # quantity (headcount) and rate (per-person cost) are user-editable — don't overwrite.
+        # Always update days = number of flagged columns (shoot days).
+        # Update quantity = headcount of rows on those days — but if the user
+        # manually tweaked quantity (unit_rate marker remembers auto-computed hc),
+        # only update when the auto-detected hc has CHANGED.
         ln.days = count if count > 0 else 1
         unit_r = _float(getattr(ln, 'unit_rate', None), default_rate) or default_rate
         # Ensure rate is set (may be 0 on older rows created before this fix)
         if not _float(getattr(ln, 'rate', None)):
             ln.rate = unit_r
+        # Auto-update quantity to the rows-on-those-days average. User can still
+        # override by editing the line (it will get overwritten on next sync —
+        # for locked values users should use the sync_omit context menu).
+        if hc > 0:
+            ln.quantity = hc
         qty_val = _float(getattr(ln, 'quantity', None), 1.0) or 1.0
         effective_rate = _float(getattr(ln, 'rate', None)) or unit_r
+        # estimated_total = qty × days × rate (matches user's mental model)
         ln.estimated_total = round(qty_val * count * effective_rate, 2)
 
     # Re-sort the meals section: Courtesy Breakfast → First Meal → Second Meal →
@@ -316,9 +360,10 @@ def sync_schedule_driven_lines(budget_id, db_session):
     # Log summary so Render logs show what this sync actually did
     try:
         import logging as _log
-        nz = {k: v for k, v in counts.items() if v > 0}
+        nz = {k: (counts[k], headcounts.get(k, 0))
+              for k in counts if counts[k] > 0}
         if nz:
-            _log.info("[sync] budget=%s mode=%s sched_days=%d prod_days=%d counts=%s",
+            _log.info("[sync] budget=%s mode=%s sched_days=%d prod_days=%d days×qty=%s",
                       budget_id, sched_mode, len(sched_days), len(prod_days), nz)
     except Exception:
         pass
