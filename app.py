@@ -276,12 +276,33 @@ _R2_BUCKET      = os.getenv('R2_BUCKET', 'fpbudget-docs')
 
 def _r2_client():
     import boto3
+    from botocore.config import Config
+    # R2 / S3-compatible stores don't accept botocore 1.36+ default flexible
+    # checksums (Content-CRC32 etc.) — botocore retries in a loop and blows
+    # the stack ("maximum recursion depth exceeded"). Pin s3v4 signing and
+    # disable request checksums unless explicitly required.
+    try:
+        cfg = Config(
+            signature_version='s3v4',
+            s3={'addressing_style': 'path'},
+            request_checksum_calculation='when_required',
+            response_checksum_validation='when_required',
+            retries={'max_attempts': 3, 'mode': 'standard'},
+        )
+    except TypeError:
+        # Older botocore (< 1.36) doesn't accept request_checksum_calculation.
+        cfg = Config(
+            signature_version='s3v4',
+            s3={'addressing_style': 'path'},
+            retries={'max_attempts': 3, 'mode': 'standard'},
+        )
     return boto3.client(
         's3',
         endpoint_url=f"https://{_R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
         aws_access_key_id=_R2_ACCESS_KEY,
         aws_secret_access_key=_R2_SECRET,
         region_name='auto',
+        config=cfg,
     )
 
 def _r2_upload(file_bytes, key, content_type='application/octet-stream'):

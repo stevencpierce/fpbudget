@@ -10,7 +10,8 @@ weasyprint
 Flask-Mail
 twilio
 tzdata
-boto3
+boto3>=1.36.0
+botocore>=1.36.0
 dropbox
 flask-socketio
 gevent
