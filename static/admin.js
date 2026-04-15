@@ -123,6 +123,42 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
+  // ── One-time: Resync schedule-driven lines for ALL budgets ─────────────────
+  var resyncBtn     = document.getElementById('resync-all-btn');
+  var resyncResult  = document.getElementById('resync-all-result');
+  if (resyncBtn) {
+    resyncBtn.addEventListener('click', function() {
+      if (!confirm('Resync meals, flights, hotel, mileage, per diem, working meals, and craft services across EVERY budget? Safe to run — this rebuilds the auto-created lines from the current schedule.')) return;
+      resyncBtn.disabled = true;
+      resyncBtn.textContent = 'Running…';
+      resyncResult.innerHTML = '';
+      fetch('/admin/migrate/resync-all', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          resyncBtn.disabled = false;
+          resyncBtn.textContent = 'Resync All Budgets';
+          if (data.error) {
+            resyncResult.innerHTML = '<span style="color:#f87171">Error: ' + data.error + '</span>';
+            return;
+          }
+          var html = '<div style="background:rgba(22,163,74,.12);border:1px solid #16a34a;color:#4ade80;padding:.6rem .8rem;border-radius:5px">';
+          html += '✓ Resynced <strong>' + data.resynced + '</strong> / ' + data.total_budgets + ' budget(s).';
+          html += '</div>';
+          if (data.errors && data.errors.length) {
+            html += '<div style="margin-top:.4rem;font-size:.8rem;color:#fbbf24">⚠ ' + data.errors.length + ' error(s):<ul style="margin:.2rem 0;padding-left:1.2rem">';
+            data.errors.forEach(function(e) { html += '<li>' + e + '</li>'; });
+            html += '</ul></div>';
+          }
+          resyncResult.innerHTML = html;
+        })
+        .catch(function(e) {
+          resyncBtn.disabled = false;
+          resyncBtn.textContent = 'Resync All Budgets';
+          resyncResult.innerHTML = '<span style="color:#f87171">Error: ' + e.message + '</span>';
+        });
+    });
+  }
+
   if (splitRunBtn) {
     splitRunBtn.addEventListener('click', function() {
       if (!confirm('Split multi-qty labor lines into A/B/C rows across ALL budgets? This change cannot be automatically undone.')) return;

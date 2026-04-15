@@ -1284,6 +1284,32 @@ def project_delete(pid):
     return redirect(url_for("dashboard"))
 
 
+@app.route("/projects/<int:pid>/rename", methods=["POST"])
+@login_required
+def project_rename(pid):
+    """Rename a project. Admin or super_admin only."""
+    if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+        flash("Only admins can rename projects.", "error")
+        return redirect(url_for("dashboard"))
+    p = ProjectSheet.query.get_or_404(pid)
+    new_name = (request.form.get("name") or "").strip()
+    if not new_name:
+        flash("Project name cannot be empty.", "error")
+        return redirect(url_for("dashboard"))
+    # Uniqueness check (excluding this project)
+    collision = ProjectSheet.query.filter(
+        ProjectSheet.name == new_name, ProjectSheet.id != pid
+    ).first()
+    if collision:
+        flash(f"A project named '{new_name}' already exists.", "error")
+        return redirect(url_for("dashboard"))
+    old_name = p.name
+    p.name = new_name
+    db.session.commit()
+    flash(f"Renamed '{old_name}' → '{new_name}'.", "success")
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/projects/<int:pid>/wrap", methods=["POST"])
 @login_required
 def project_wrap(pid):
@@ -6373,6 +6399,36 @@ def admin_migrate_split_labor_preview():
         'total_affected_lines': total_lines,
         'total_new_lines': total_new,
         'budgets': summary,
+    })
+
+
+@app.route("/admin/migrate/resync-all", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_migrate_resync_all():
+    """One-time: re-run sync_schedule_driven_lines for every budget in the
+    system. Reconciles meals, flights, hotel, mileage, per diem, working meals,
+    and craft services against the current schedule + production days."""
+    total_budgets = Budget.query.count()
+    resynced = 0
+    errors = []
+    for b in Budget.query.all():
+        try:
+            sync_schedule_driven_lines(b.id, db.session)
+            resynced += 1
+        except Exception as e:
+            errors.append(f"bid={b.id} ({b.name}): {e}")
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+    app.logger.info("[resync-all] resynced=%d total=%d errors=%d",
+                    resynced, total_budgets, len(errors))
+    return jsonify({
+        'ok': True,
+        'total_budgets': total_budgets,
+        'resynced': resynced,
+        'errors': errors[:20],
     })
 
 

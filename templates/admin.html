@@ -317,6 +317,23 @@
       </div>
     </div>
     <div id="split-labor-result" style="margin-top:.75rem;font-size:.85rem"></div>
+
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:.75rem;background:var(--bg-2,#1a1a1a);border:1px solid var(--border);border-radius:6px;margin-top:.75rem">
+      <div style="flex:1;min-width:260px">
+        <strong style="font-size:.9rem">Resync schedule-driven lines across every budget</strong>
+        <p style="color:var(--text-muted);font-size:.78rem;margin:.3rem 0 0">
+          Re-runs the meals / flights / hotel / mileage / per diem / working
+          meals / craft services sync for every budget in the system. Rebuilds
+          auto-created budget lines from the current schedule + production day
+          flags. Safe to run any time — idempotent.
+        </p>
+        <div id="resync-all-preview" style="font-size:.82rem;margin-top:.5rem"></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-sm btn-primary" id="resync-all-btn">Resync All Budgets</button>
+      </div>
+    </div>
+    <div id="resync-all-result" style="margin-top:.75rem;font-size:.85rem"></div>
   </div>
   {% endif %}
 

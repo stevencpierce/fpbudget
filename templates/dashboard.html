@@ -71,6 +71,13 @@
       <button class="btn btn-sm btn-outline" title="More actions"
               onclick="toggleProjectMenu(event, {{ p.id }})">⋯</button>
       <div id="proj-menu-{{ p.id }}" class="proj-menu hidden">
+        {% if current_user.role in ('super_admin', 'admin') %}
+        <form method="POST" action="{{ url_for('project_rename', pid=p.id) }}" class="proj-rename-form">
+          <input type="hidden" name="name" value="">
+          <button type="button" class="proj-menu-item proj-rename-btn"
+                  data-pid="{{ p.id }}" data-name="{{ p.name | e }}">Rename Project</button>
+        </form>
+        {% endif %}
         <form method="POST" action="{{ url_for('project_wrap', pid=p.id) }}"
               onsubmit="return confirm('Wrap {{ p.name | e }}? The Dropbox folder will be moved to _WRAPPED PROJECTS.')">
           <button type="submit" class="proj-menu-item">Wrap Project</button>
@@ -345,6 +352,24 @@ function toggleProjectMenu(e, pid) {
 // Close menus when clicking elsewhere
 document.addEventListener('click', function() {
   document.querySelectorAll('.proj-menu').forEach(m => m.classList.add('hidden'));
+});
+
+// Rename Project — prompt for new name, inject into form, submit
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.proj-rename-btn');
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const current = btn.dataset.name || '';
+  const next = prompt('Rename project:', current);
+  if (next === null) return;               // cancelled
+  const trimmed = next.trim();
+  if (!trimmed) { alert('Name cannot be empty.'); return; }
+  if (trimmed === current) return;         // no change
+  const form = btn.closest('form.proj-rename-form');
+  if (!form) return;
+  form.querySelector('input[name="name"]').value = trimmed;
+  form.submit();
 });
 
 function filterProjects() {
