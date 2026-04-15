@@ -3839,6 +3839,42 @@ function renderCalcDetail(d) {
     } catch(_) {}
   }
 
+  // Build the menu HTML, optionally including any custom unit values
+  // already in use anywhere on this budget so they auto-populate as
+  // dropdown choices for the rest of the project.
+  function _renderUnitMenu() {
+    const stdCodes = new Set(_UNIT_OPTIONS.map(o => o.code));
+    const customs = new Set();
+    document.querySelectorAll('.days-unit-toggle').forEach(b => {
+      const u = (b.dataset.unit || '').trim();
+      if (u && !stdCodes.has(u)) customs.add(u);
+    });
+    let html = _UNIT_OPTIONS.map(o =>
+      `<div class="ctx-menu-item" data-unit="${o.code}"
+             style="padding:6px 14px;cursor:pointer"
+             onmouseover="this.style.background='rgba(255,255,255,.08)'"
+             onmouseout="this.style.background='transparent'">${o.label}</div>`
+    ).join('');
+    if (customs.size > 0) {
+      html += '<div style="height:1px;background:var(--border,#333);margin:4px 0"></div>'
+            + '<div style="padding:2px 14px;font-size:.7rem;color:var(--text-muted,#888);'
+            + 'text-transform:uppercase;letter-spacing:.05em">This project</div>';
+      [...customs].sort().forEach(u => {
+        const safe = u.replace(/"/g,'&quot;').replace(/</g,'&lt;');
+        html += `<div class="ctx-menu-item" data-unit="${safe}"
+                  style="padding:6px 14px;cursor:pointer"
+                  onmouseover="this.style.background='rgba(255,255,255,.08)'"
+                  onmouseout="this.style.background='transparent'">${safe.charAt(0).toUpperCase() + safe.slice(1)}</div>`;
+      });
+    }
+    html += '<div style="height:1px;background:var(--border,#333);margin:4px 0"></div>'
+          + `<div class="ctx-menu-item" data-unit="__custom__"
+              style="padding:6px 14px;cursor:pointer;font-style:italic"
+              onmouseover="this.style.background='rgba(255,255,255,.08)'"
+              onmouseout="this.style.background='transparent'">Custom…</div>`;
+    _unitMenu.innerHTML = html;
+  }
+
   // Right-click on the unit button → open menu
   document.addEventListener('contextmenu', function(e) {
     const btn = e.target.closest('.days-unit-toggle');
@@ -3846,6 +3882,7 @@ function renderCalcDetail(d) {
     e.preventDefault();
     e.stopPropagation();
     _unitBtnActive = btn;
+    _renderUnitMenu();
     // Position: snap inside viewport
     _unitMenu.classList.remove('hidden');
     const mw = _unitMenu.offsetWidth || 160;
@@ -5849,11 +5886,24 @@ function renderQeCategory(code, searchQ) {
     cb.addEventListener('change', () => {
       syncRowToCart(row, cb.checked);
     });
-    // Sync fields to cart on any input change
+    // Sync fields to cart on any input change. If the row isn't checked
+    // yet, auto-check it — editing a qty/rate/days means the user intends
+    // to add this item, so don't make them check the box separately.
     row.querySelectorAll('input[type="number"], select').forEach(inp => {
       inp.addEventListener('change', () => {
-        if (cb.checked) syncRowToCart(row, true);
+        if (!cb.checked) cb.checked = true;
+        syncRowToCart(row, true);
       });
+      // Also fire on 'input' (as-you-type) for number fields so the check
+      // appears instantly, not only after blur.
+      if (inp.type === 'number') {
+        inp.addEventListener('input', () => {
+          if (!cb.checked) {
+            cb.checked = true;
+            syncRowToCart(row, true);
+          }
+        });
+      }
     });
   });
 }
