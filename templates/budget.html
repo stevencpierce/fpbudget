@@ -703,7 +703,8 @@
     <div id="docsHistory" style="display:flex;flex-direction:column;gap:8px;">
       {% if doc_uploads %}
         {% for u in doc_uploads %}
-        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:center;gap:12px;">
+        <div class="doc-row" data-upload-id="{{ u.id }}" data-status="{{ u.status }}"
+             style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:center;gap:12px;">
           <div style="font-size:20px;width:32px;text-align:center;">{% if u.content_type and 'pdf' in u.content_type %}📄{% else %}🧾{% endif %}</div>
           <div style="flex:1;min-width:0;">
             <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ u.original_filename or 'Unnamed' }}</div>
@@ -713,13 +714,23 @@
               {% if u.amount %} · ${{ '%.2f'|format(u.amount|float) }}{% endif %}
             </div>
           </div>
-          <span style="font-size:11px;padding:3px 9px;border-radius:20px;
+          <span class="doc-status-badge" style="font-size:11px;padding:3px 9px;border-radius:20px;
             {% if u.status == 'filed' %}background:#14291e;color:#22c55e;border:1px solid #1a4228;
             {% elif u.status == 'duplicate' %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
             {% elif u.status == 'error' %}background:#2a1414;color:#ef4444;border:1px solid #4a2020;
             {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}">
             {{ u.status|capitalize }}
           </span>
+          {% if u.status == 'pending' %}
+          <button class="doc-retry-btn" title="Retry filing to Dropbox"
+                  style="background:#1a2540;border:1px solid #2d4070;color:#5b8af9;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;">
+            ↻ Retry
+          </button>
+          {% endif %}
+          <button class="doc-delete-btn" title="Delete this document"
+                  style="background:none;border:none;color:#ef4444;cursor:pointer;padding:4px 8px;font-size:14px;">
+            ✕
+          </button>
         </div>
         {% endfor %}
       {% else %}
@@ -808,10 +819,61 @@
     const empty=h.querySelector('[data-empty]');
     if(empty) empty.remove();
     const div=document.createElement('div');
+    div.className = 'doc-row';
+    div.dataset.uploadId = uid;
+    div.dataset.status = 'filed';
     div.style.cssText='background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:center;gap:12px;';
-    div.innerHTML=`<div style="font-size:20px;width:32px;text-align:center;">🧾</div><div style="flex:1;"><div style="font-size:13px;font-weight:500;">${filename}</div><div style="font-size:11px;color:var(--text-muted);">Just now</div></div><span style="font-size:11px;padding:3px 9px;border-radius:20px;background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);">Pending</span>`;
+    div.innerHTML=`<div style="font-size:20px;width:32px;text-align:center;">🧾</div><div style="flex:1;"><div style="font-size:13px;font-weight:500;">${filename}</div><div style="font-size:11px;color:var(--text-muted);">Just now</div></div><span class="doc-status-badge" style="font-size:11px;padding:3px 9px;border-radius:20px;background:#14291e;color:#22c55e;border:1px solid #1a4228;">Filed</span><button class="doc-delete-btn" title="Delete this document" style="background:none;border:none;color:#ef4444;cursor:pointer;padding:4px 8px;font-size:14px;">✕</button>`;
     h.prepend(div);
   }
+
+  // ── Delete + Retry Filing handlers (event-delegated) ─────────────────────
+  document.addEventListener('click', async function(e) {
+    const row = e.target.closest('.doc-row');
+    if (!row) return;
+    const uid = row.dataset.uploadId;
+    if (!uid) return;
+
+    if (e.target.closest('.doc-delete-btn')) {
+      e.preventDefault();
+      e.stopPropagation();
+      const name = row.querySelector('div > div > div')?.textContent?.trim() || 'this document';
+      if (!confirm(`Delete ${name}? This removes it from the software but does NOT delete the copy already filed to Dropbox.`)) return;
+      const r = await fetch('/docs/upload/' + uid + '/delete', { method: 'POST' });
+      if (r.ok) {
+        row.style.transition = 'opacity .3s';
+        row.style.opacity = '0';
+        setTimeout(() => row.remove(), 300);
+      } else {
+        const d = await r.json().catch(() => ({}));
+        alert('Delete failed: ' + (d.error || r.status));
+      }
+      return;
+    }
+
+    if (e.target.closest('.doc-retry-btn')) {
+      e.preventDefault();
+      e.stopPropagation();
+      const btn = e.target.closest('.doc-retry-btn');
+      btn.disabled = true;
+      btn.textContent = '⟳ Filing…';
+      const r = await fetch('/docs/upload/' + uid + '/retry-filing', { method: 'POST' });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) {
+        // Flip the badge to "Filed" and remove the retry button
+        const badge = row.querySelector('.doc-status-badge');
+        if (badge) {
+          badge.textContent = 'Filed';
+          badge.style.cssText = 'font-size:11px;padding:3px 9px;border-radius:20px;background:#14291e;color:#22c55e;border:1px solid #1a4228;';
+        }
+        btn.remove();
+      } else {
+        btn.disabled = false;
+        btn.textContent = '↻ Retry';
+        alert('Retry failed: ' + (d.error || r.status));
+      }
+    }
+  });
 })();
 </script>
 
