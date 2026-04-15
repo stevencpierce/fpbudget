@@ -209,6 +209,9 @@
             <div class="history-name">{{ u.original_filename or 'Unnamed file' }}</div>
             <div class="history-meta">
               {{ u.uploaded_at.strftime('%b %-d, %Y') if u.uploaded_at else '' }}
+              {% if u.uploader %}
+                · <span title="{{ u.uploader.email }}">{{ u.uploader.name or u.uploader.email.split('@')[0] }}</span>
+              {% endif %}
               {% if u.vendor %} · {{ u.vendor }}{% endif %}
               {% if u.amount %} · ${{ '%.2f'|format(u.amount|float) }}{% endif %}
             </div>

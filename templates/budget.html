@@ -710,6 +710,9 @@
             <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ u.original_filename or 'Unnamed' }}</div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
               {{ u.uploaded_at.strftime('%b %-d, %Y') if u.uploaded_at else '' }}
+              {% if u.uploader %}
+                · <span title="{{ u.uploader.email }}">{{ u.uploader.name or u.uploader.email.split('@')[0] }}</span>
+              {% endif %}
               {% if u.vendor %} · {{ u.vendor }}{% endif %}
               {% if u.amount %} · ${{ '%.2f'|format(u.amount|float) }}{% endif %}
             </div>
