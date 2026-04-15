@@ -2191,6 +2191,12 @@ document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
     btn.classList.add('active');
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
     _showFloatBar(btn.dataset.tab === 'working');
+    // Persist the active tab in the URL so page refresh keeps you here
+    try {
+      const u = new URL(window.location);
+      u.searchParams.set('tab', btn.dataset.tab);
+      history.replaceState(null, '', u.toString());
+    } catch(e) { /* older browsers — safe to ignore */ }
   });
 });
 

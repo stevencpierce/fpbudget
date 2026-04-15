@@ -293,6 +293,13 @@ def _r2_upload(file_bytes, key, content_type='application/octet-stream'):
         logging.warning(f"R2 upload failed: {e}")
         return False
 
+
+def _r2_download(key):
+    """Download bytes from R2 by key. Raises on failure."""
+    resp = _r2_client().get_object(Bucket=_R2_BUCKET, Key=key)
+    return resp['Body'].read()
+
+
 def _r2_presigned_url(key, expires=3600):
     """Return a presigned URL for a private R2 object (expires in `expires` seconds)."""
     try:
@@ -7207,18 +7214,26 @@ def docs_upload_post(pid):
     ext = os.path.splitext(f.filename)[1].lower() if f.filename else ""
     r2_key = f"docs/{pid}/{_uuid.uuid4().hex}{ext}"
 
-    try:
-        _r2_upload(r2_key, data, content_type)
-    except Exception as e:
-        logging.exception("R2 upload failed")
-        return jsonify({"error": f"Upload failed: {str(e)}"}), 500
+    # Arguments: (file_bytes, key, content_type). Previous call had args
+    # swapped, so R2 was receiving the key as the body and vice-versa —
+    # uploads appeared to "succeed" but the function silently returned False
+    # because R2 rejected them.
+    if not _r2_upload(data, r2_key, content_type):
+        return jsonify({"error": "Upload to R2 storage failed"}), 500
 
     # File to Dropbox PROCESSED DOCUMENTS/{uploader_name}/ if project has a folder
     dbx_filing_path = None
+    dbx_filing_error = None
     if project.dropbox_folder:
         try:
             import re as _re
-            _safe_user = _re.sub(r"[^\w\- ]", "", current_user.username or current_user.email.split("@")[0])
+            # User model has `name` + `email` — NOT `username` (previous bug
+            # raised AttributeError silently, which is why every upload was
+            # stuck at "pending").
+            _raw_user = (getattr(current_user, 'name', None)
+                         or (current_user.email or '').split('@')[0]
+                         or 'unknown')
+            _safe_user = _re.sub(r"[^\w\- ]", "", _raw_user) or "unknown"
             _proj_root = f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}"
             dbx_filing_path = f"{_proj_root}/01_ADMIN/PROCESSED DOCUMENTS/{_safe_user}/{f.filename}"
             _dbx = _dbx_client()
@@ -7227,7 +7242,8 @@ def docs_upload_post(pid):
                               mode=_WM('add'))
             logging.info(f"Filed doc to Dropbox: {dbx_filing_path}")
         except Exception as _e:
-            logging.warning(f"Dropbox filing failed (non-fatal): {_e}")
+            logging.warning(f"Dropbox filing failed: {_e}")
+            dbx_filing_error = str(_e)
             dbx_filing_path = None
 
     from datetime import datetime as _dt
@@ -7246,7 +7262,60 @@ def docs_upload_post(pid):
     db.session.add(upload)
     db.session.commit()
 
-    return jsonify({"status": "ok", "upload_id": upload.id}), 201
+    resp = {"status": "ok", "upload_id": upload.id}
+    if dbx_filing_error:
+        resp["warning"] = f"Filed to R2 but Dropbox filing failed: {dbx_filing_error}"
+    return jsonify(resp), 201
+
+
+@app.route("/docs/upload/<int:uid>/retry-filing", methods=["POST"])
+@login_required
+def docs_upload_retry_filing(uid):
+    """Retry filing an already-uploaded doc to Dropbox. Used when the initial
+    upload succeeded to R2 but the Dropbox filing failed (common for legacy
+    'pending' rows from before the current_user.username bug fix)."""
+    upload = DocUpload.query.get_or_404(uid)
+    # Access check
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(
+            project_id=upload.project_id, user_id=current_user.id).first()
+        if not access:
+            return jsonify({"error": "Forbidden"}), 403
+    if upload.status == 'filed':
+        return jsonify({"ok": True, "already_filed": True,
+                        "path": upload.filed_dropbox_path})
+
+    project = ProjectSheet.query.get(upload.project_id)
+    if not project or not project.dropbox_folder:
+        return jsonify({"error": "Project has no Dropbox folder configured"}), 400
+
+    # Re-fetch bytes from R2
+    try:
+        data = _r2_download(upload.r2_key)
+    except Exception as e:
+        return jsonify({"error": f"R2 fetch failed: {e}"}), 500
+
+    try:
+        import re as _re
+        from datetime import datetime as _dt
+        uploader = User.query.get(upload.uploader_id)
+        _raw_user = (getattr(uploader, 'name', None)
+                     or (uploader.email or '').split('@')[0]
+                     or 'unknown') if uploader else 'unknown'
+        _safe_user = _re.sub(r"[^\w\- ]", "", _raw_user) or "unknown"
+        _proj_root = f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}"
+        dbx_filing_path = f"{_proj_root}/01_ADMIN/PROCESSED DOCUMENTS/{_safe_user}/{upload.original_filename}"
+        _dbx = _dbx_client()
+        from dropbox.files import WriteMode as _WM
+        _dbx.files_upload(data, dbx_filing_path, autorename=True, mode=_WM('add'))
+        upload.status = 'filed'
+        upload.filed_dropbox_path = dbx_filing_path
+        upload.filed_at = _dt.utcnow()
+        db.session.commit()
+        return jsonify({"ok": True, "path": dbx_filing_path})
+    except Exception as e:
+        logging.exception("Retry filing failed")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/docs/upload/<int:uid>/status")
