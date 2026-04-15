@@ -20,5 +20,9 @@ boto3>=1.35,<1.36
 botocore>=1.35,<1.36
 dropbox
 flask-socketio
-gevent
+# gevent >=24.10 — older versions monkey-patch ssl.SSLContext incorrectly
+# on Python 3.12+, causing infinite recursion in
+# `super(SSLContext, SSLContext).options.__set__` when ANY HTTPS client
+# (boto3/urllib3/requests) initializes. This took down every R2 upload.
+gevent>=24.10
 gevent-websocket

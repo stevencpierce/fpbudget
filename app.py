@@ -292,8 +292,16 @@ _R2_SECRET      = os.getenv('R2_SECRET_ACCESS_KEY', '')
 _R2_BUCKET      = os.getenv('R2_BUCKET', 'fpbudget-docs')
 
 _R2_VERSION_LOGGED = False
+_R2_CLIENT_CACHE = None
 
 def _r2_client():
+    # Cache the client at module level. Building a boto3 client is expensive
+    # (~100-500ms) and every build walks botocore's endpoint/SSL init — which
+    # is exactly where the gevent ssl-monkey-patch recursion bug hits on
+    # Python 3.12+. One build per worker, not per request.
+    global _R2_CLIENT_CACHE
+    if _R2_CLIENT_CACHE is not None:
+        return _R2_CLIENT_CACHE
     import boto3, botocore
     from botocore.config import Config
     global _R2_VERSION_LOGGED
@@ -324,7 +332,7 @@ def _r2_client():
             logging.warning("[R2] botocore Config does not accept %s — env var fallback active", opt_kwarg)
 
     cfg = Config(**base_kwargs)
-    return boto3.client(
+    _R2_CLIENT_CACHE = boto3.client(
         's3',
         endpoint_url=f"https://{_R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
         aws_access_key_id=_R2_ACCESS_KEY,
@@ -332,6 +340,7 @@ def _r2_client():
         region_name='auto',
         config=cfg,
     )
+    return _R2_CLIENT_CACHE
 
 def _r2_upload(file_bytes, key, content_type='application/octet-stream'):
     """Upload bytes to R2. Returns True on success."""
