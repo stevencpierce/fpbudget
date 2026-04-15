@@ -10,8 +10,14 @@ weasyprint
 Flask-Mail
 twilio
 tzdata
-boto3>=1.36.0
-botocore>=1.36.0
+# Pinned BELOW 1.36 — botocore 1.36 introduced default flexible request
+# checksums (CRC32) that Cloudflare R2 rejects, sending botocore into an
+# infinite retry/recursion loop on every upload. The env-var + Config()
+# suppression we tried (AWS_REQUEST_CHECKSUM_CALCULATION=when_required, etc.)
+# was unreliable in practice. Easiest durable fix: stay on 1.35.x where
+# checksums are off by default. Revisit when R2 supports flexible checksums.
+boto3>=1.35,<1.36
+botocore>=1.35,<1.36
 dropbox
 flask-socketio
 gevent
