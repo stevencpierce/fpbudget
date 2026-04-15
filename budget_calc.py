@@ -215,8 +215,16 @@ def sync_schedule_driven_lines(budget_id, db_session):
                 flags = {}
 
         parent = labor_by_id.get(sd.budget_line_id)
-        rg = (getattr(parent, 'role_group', None) or get_role_group(parent.account_code)) \
-             if parent else 'crew'
+        # Travel role_group is a classifier: 'talent' | 'atl' | 'crew'.
+        # Must be derived from account_code, NOT from parent.role_group which
+        # stores the sub-department name ('Direction / AD', 'Camera', 'Sound')
+        # — those produce invalid tag keys like 'flight_Direction / AD'.
+        rg = get_role_group(parent.account_code) if parent else 'crew'
+
+        # Guard: rg must be one of 'talent' | 'atl' | 'crew' to yield a valid tag.
+        # If anything else (shouldn't happen, but defensive), default to 'crew'.
+        if rg not in ('talent', 'atl', 'crew'):
+            rg = 'crew'
 
         flag_tag_map = {
             'working_meal': 'working_meal',
@@ -226,7 +234,7 @@ def sync_schedule_driven_lines(budget_id, db_session):
             'per_diem':     'per_diem',
         }
         for flag_key, tag in flag_tag_map.items():
-            if flags.get(flag_key):
+            if flags.get(flag_key) and tag in SCHEDULE_LINE_DEFS:
                 per_tag_date_crew.setdefault(tag, {})
                 per_tag_date_crew[tag][sd.date] = per_tag_date_crew[tag].get(sd.date, 0) + 1
 
