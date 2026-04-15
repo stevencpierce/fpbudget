@@ -579,10 +579,13 @@
         {% endif %}
       {% endfor %}
       <tfoot>
+        {# Per-category subtotals (kit / agent / section breakdowns) all align under their matching column. #}
         {% if ns.kit_total > 0 %}
         <tr class="kit-fee-subtotal-row">
-          <td colspan="10" class="col-desc" style="font-size:.78rem;color:var(--text-muted);padding-left:1.6rem;font-style:italic">Kit Fees subtotal</td>
+          <td colspan="8" class="col-desc" style="font-size:.78rem;color:var(--text-muted);padding-left:1.6rem;font-style:italic;text-align:right">Kit Fees subtotal</td>
           <td class="col-num kit-est-total" style="font-size:.78rem;color:var(--text-muted)">{{ ns.kit_total | currency }}</td>
+          <td class="col-num" style="font-size:.78rem;color:var(--text-muted)"></td>
+          <td class="col-num" style="font-size:.78rem;color:var(--text-muted)">{{ ns.kit_total | currency }}</td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-size:.78rem;color:var(--text-muted)">{{ ns.kit_working | currency }}</td>
           <td class="col-num col-variance"></td>
           <td></td>
@@ -590,15 +593,17 @@
         {% endif %}
         {% if ns.sec_agent > 0 %}
         <tr class="agent-fee-subtotal-row">
-          <td colspan="10" class="col-desc" style="font-size:.78rem;color:var(--text-muted);padding-left:1.6rem;font-style:italic">Agent Fees subtotal</td>
+          <td colspan="8" class="col-desc" style="font-size:.78rem;color:var(--text-muted);padding-left:1.6rem;font-style:italic;text-align:right">Agent Fees subtotal</td>
           <td class="col-num agent-est-total" style="font-size:.78rem;color:var(--text-muted)">{{ ns.sec_agent | currency }}</td>
+          <td class="col-num" style="font-size:.78rem;color:var(--text-muted)"></td>
+          <td class="col-num" style="font-size:.78rem;color:var(--text-muted)">{{ ns.sec_agent | currency }}</td>
           <td class="col-num col-working" style="font-size:.78rem;color:var(--text-muted)"></td>
           <td class="col-num col-variance"></td>
           <td></td>
         </tr>
         {% endif %}
         <tr class="section-subtotal-row">
-          <td colspan="5" class="col-desc muted" style="font-size:.75rem;font-style:italic">Section totals</td>
+          <td colspan="5" class="col-desc muted" style="font-size:.75rem;font-style:italic;text-align:right">Section breakdown</td>
           <td class="col-num muted"></td>
           <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_ot * _fee_m) | currency if ns.sec_ot else '' }}</td>
           <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_fringe * _fee_m) | currency if ns.sec_fringe else '' }}</td>
@@ -616,6 +621,25 @@
           {% else %}
           <td class="col-num sec-est-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _fee_m) | currency }}</strong></td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-size:.8rem"><strong>{{ sec_working.total | currency }}</strong></td>
+          <td class="col-num col-variance"></td>
+          {% endif %}
+          <td></td>
+        </tr>
+        {# Full section total — matches the Top Sheet row for this section. #}
+        <tr class="section-grand-total-row">
+          <td colspan="10" class="col-desc" style="padding:.55rem .6rem;font-weight:700;font-size:.88rem;text-align:right;letter-spacing:.02em;text-transform:uppercase;color:var(--text)">
+            Total {{ sec.name }}
+          </td>
+          {% if is_working_view %}
+          <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem"><strong data-base="{{ sec_working.total }}">{{ (sec_working.total * _fee_m) | currency }}</strong></td>
+          <td class="col-num col-working sec-grand-working" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _fee_m) | currency }}</strong></td>
+          <td class="col-num col-variance sec-grand-variance" style="font-weight:700;font-size:.88rem">
+            {% set _gv = (ns.sec_total - sec_working.total) * _fee_m %}
+            <span class="{% if _gv > 0.005 %}var-pos{% elif _gv < -0.005 %}var-neg{% else %}var-zero{% endif %}">{{ _gv | currency }}</span>
+          </td>
+          {% else %}
+          <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _fee_m) | currency }}</strong></td>
+          <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-weight:700;font-size:.95rem"><strong>{{ sec_working.total | currency }}</strong></td>
           <td class="col-num col-variance"></td>
           {% endif %}
           <td></td>
@@ -2800,6 +2824,33 @@ function refreshSectionTotals(table) {
       const feeTotalEl = feeRow.querySelector('.sec-fee-total');
       if (feeTotalEl) feeTotalEl.textContent = fmtCurrency(liveTotal * _FLOAT_FEE_PCT);
     }
+
+    // Update the BIG "Total [Section]" grand-total row
+    const grandEst = tfoot.querySelector('.sec-grand-est strong');
+    if (grandEst) {
+      // In working mode, the Estimated column shows the frozen estimate total
+      let frozenSum = 0;
+      tbody.querySelectorAll('.line-frozen-est .frozen-est').forEach(el => {
+        frozenSum += parseFloat(el.dataset.raw) || 0;
+      });
+      grandEst.dataset.base = frozenSum;
+      grandEst.textContent = fmtCurrency(frozenSum * fm);
+    }
+    const grandWorking = tfoot.querySelector('.sec-grand-working strong');
+    if (grandWorking) {
+      grandWorking.dataset.base = liveTotal;
+      grandWorking.textContent = fmtCurrency(liveTotal * fm);
+    }
+    const grandVar = tfoot.querySelector('.sec-grand-variance span');
+    if (grandVar) {
+      let frozenSum = 0;
+      tbody.querySelectorAll('.line-frozen-est .frozen-est').forEach(el => {
+        frozenSum += parseFloat(el.dataset.raw) || 0;
+      });
+      const gv = (liveTotal - frozenSum) * fm;
+      grandVar.textContent = fmtCurrency(gv);
+      grandVar.className = gv > 0.005 ? 'var-pos' : gv < -0.005 ? 'var-neg' : 'var-zero';
+    }
   } else {
     // Update section estimated total (base stored in data-base, display inflated)
     const secEst = tfoot.querySelector('.sec-est-total strong');
@@ -2821,6 +2872,13 @@ function refreshSectionTotals(table) {
       feeRow.style.display = _FLOAT_DISPERSED ? '' : 'none';
       const feeTotalEl = feeRow.querySelector('.sec-fee-total');
       if (feeTotalEl) feeTotalEl.textContent = fmtCurrency(liveTotal * _FLOAT_FEE_PCT);
+    }
+
+    // Update the BIG "Total [Section]" grand-total row (non-working mode)
+    const grandEst = tfoot.querySelector('.sec-grand-est strong');
+    if (grandEst) {
+      grandEst.dataset.base = liveTotal;
+      grandEst.textContent = fmtCurrency(liveTotal * fm);
     }
   }
 

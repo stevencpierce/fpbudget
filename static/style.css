@@ -297,6 +297,16 @@ input:focus, select:focus { border-color: var(--accent); }
 .section-total-badge { font-size: .8rem; font-weight: 600; color: var(--text-muted); margin-left: auto; padding: .1rem .5rem; background: var(--bg-2); border-radius: var(--radius); border: 1px solid var(--border); }
 .line-table { border: 1px solid var(--border); }
 .section-subtotal-row td { background: var(--bg-3); border-top: 1px solid var(--border); }
+.section-grand-total-row td {
+  background: var(--bg-2, #1a1a1a);
+  border-top: 2px solid var(--accent, #4f7ef8);
+  border-bottom: 1px solid var(--border);
+}
+.section-grand-total-row td:first-child { padding-right: 1rem !important; }
+.kit-fee-subtotal-row td, .agent-fee-subtotal-row td {
+  background: rgba(255,255,255,.015);
+  border-top: 1px dashed var(--border);
+}
 .kit-fee-subtotal-row td { background: var(--bg-3); border-top: 1px dashed var(--border); font-size: .78rem; }
 .agent-fee-subtotal-row td { background: var(--bg-3); border-top: 1px dashed var(--border); font-size: .78rem; }
 .labor-line td { background: rgba(79,126,248,.03); }
