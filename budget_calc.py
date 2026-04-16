@@ -7,44 +7,96 @@ from decimal import Decimal
 
 # ── COA sections (used for Top Sheet grouping) ────────────────────────────────
 
+# FP_COA_SECTIONS — Movie Magic / ShowBiz-aligned chart of accounts.
+# Account numbers are IMMUTABLE once set. Future additions may only assign new
+# codes; existing codes cannot be renumbered again without a full migration.
+# The 2026-04-renumber migration (see app.py) replaced an older 100-20500
+# scheme with this structure. Legacy → new mapping is in COA_LEGACY_MAPPING.
 FP_COA_SECTIONS = [
-    (100,   "Pre-Production Locations"),
-    (600,   "Above the Line"),
-    (700,   "Talent"),
-    (800,   "Rehearsal"),
-    (900,   "Casting"),
-    (1000,  "Production Staff"),
-    (1200,  "Post-Production Staff"),
-    (2000,  "Camera Equipment"),
-    (3000,  "Grip & Electric"),
-    (3100,  "Processing"),
-    (3200,  "Control Room"),
-    (3300,  "Sound"),
-    (4000,  "Art"),
-    (4500,  "Hair & Makeup"),
-    (5000,  "Wardrobe"),
-    (6000,  "Transportation"),
-    (7000,  "Travel"),
-    (7500,  "Shipping"),
-    (8000,  "Production Meals / Craft Services"),
-    (8500,  "Sanitation"),
-    (9000,  "Location"),
-    (11000, "Post-Production Equipment"),
-    (11500, "Post-Production Locations"),
-    (11600, "Post-Production Services"),
-    (12000, "Licensing"),
-    (12500, "Composition & Mastering"),
-    (13000, "Distribution"),
-    (13200, "Software & Office Supplies"),
-    (14000, "Insurance"),
-    (15000, "Administrative"),
-    (16000, "Marketing"),
-    (17000, "EPK / Behind the Scenes"),
-    (18000, "Title Sequence"),
-    (19000, "Residuals"),
-    (20000, "Misc"),
-    (20500, "Production Company Fee"),
+    (1000,  "Development Costs"),
+    (1100,  "Development Labor"),
+    (2000,  "Production Staff"),
+    (2100,  "Talent"),
+    (2200,  "Casting"),
+    (2300,  "Rehearsal"),
+    (2600,  "Camera Equipment"),
+    (2700,  "Grip & Electric Equipment"),
+    (2800,  "Sound Equipment"),
+    (2900,  "Control Room Equipment"),
+    (3000,  "Art & Sets Costs"),
+    (3100,  "Hair, Makeup & Wardrobe Costs"),
+    (3300,  "Locations"),
+    (3400,  "Transportation"),
+    (3500,  "Travel"),
+    (3600,  "Shipping"),
+    (3700,  "Production Meals & Craft Services"),
+    (3800,  "Sanitation"),
+    (4000,  "Post-Production Staff"),
+    (4500,  "Post-Production Equipment"),
+    (4600,  "Post-Production Facilities"),
+    (4700,  "Post-Production Services"),
+    (4800,  "Music & Composition"),
+    (4900,  "Title Sequence"),
+    (5000,  "Processing & Lab"),
+    (6000,  "Insurance"),
+    (6100,  "Licensing"),
+    (6200,  "Distribution"),
+    (6300,  "Marketing & EPK"),
+    (6400,  "Web Build & Software Development"),
+    (6500,  "Administrative"),
+    (6600,  "Residuals"),
+    (6700,  "Miscellaneous"),
+    (6800,  "Production Company Fee"),
 ]
+
+# Convenience dict: new_code → new_name.
+FP_COA_NAMES = dict(FP_COA_SECTIONS)
+
+# ── COA legacy mapping (2026-04 renumber) ─────────────────────────────────────
+# old_code → new_code. Used by the boot-time migration to rewrite every
+# budget_line / budget_template_line / catalog_item / users.dept_code row.
+# Three merges land two old codes into one new code:
+#   100+9000 → 3300 (Locations)
+#   4500+5000 → 3100 (Hair, Makeup & Wardrobe)
+#   16000+17000 → 6300 (Marketing & EPK)
+COA_LEGACY_MAPPING = {
+    100:   3300,   # Pre-Production Locations → Locations (merge)
+    600:   2000,   # Above the Line → Production Staff (ATL rolls into prod staff per spec)
+    700:   2100,   # Talent
+    800:   2300,   # Rehearsal
+    900:   2200,   # Casting
+    1000:  2000,   # Production Staff (kept bucket, new code) — merges with old 600
+    1200:  4000,   # Post-Production Staff
+    2000:  2600,   # Camera Equipment
+    3000:  2700,   # Grip & Electric → Grip & Electric Equipment
+    3100:  5000,   # Processing → Processing & Lab
+    3200:  2900,   # Control Room → Control Room Equipment
+    3300:  2800,   # Sound → Sound Equipment
+    4000:  3000,   # Art → Art & Sets Costs
+    4500:  3100,   # Hair & Makeup → Hair, Makeup & Wardrobe (merge with old 5000)
+    5000:  3100,   # Wardrobe → Hair, Makeup & Wardrobe (merge with old 4500)
+    6000:  3400,   # Transportation
+    7000:  3500,   # Travel
+    7500:  3600,   # Shipping
+    8000:  3700,   # Production Meals / Craft Services → Production Meals & Craft Services
+    8500:  3800,   # Sanitation
+    9000:  3300,   # Location → Locations (merge with old 100)
+    11000: 4500,   # Post-Production Equipment
+    11500: 4600,   # Post-Production Locations → Post-Production Facilities
+    11600: 4700,   # Post-Production Services
+    12000: 6100,   # Licensing
+    12500: 4800,   # Composition & Mastering → Music & Composition
+    13000: 6200,   # Distribution
+    13200: 6400,   # Software & Office Supplies → Web Build & Software Development
+    14000: 6000,   # Insurance
+    15000: 6500,   # Administrative
+    16000: 6300,   # Marketing → Marketing & EPK (merge with old 17000)
+    17000: 6300,   # EPK / Behind the Scenes → Marketing & EPK (merge with old 16000)
+    18000: 4900,   # Title Sequence
+    19000: 6600,   # Residuals
+    20000: 6700,   # Misc → Miscellaneous
+    20500: 6800,   # Production Company Fee
+}
 
 # ── Default fringe rates (seeded on startup) ─────────────────────────────────
 
@@ -105,7 +157,10 @@ DAY_TYPE_MULTIPLIERS = {
 
 # ── Role group classification (for travel budget linking) ─────────────────────
 
-_ROLE_GROUP_CODES = {700: "talent", 600: "atl"}
+# New COA: Talent = 2100; ATL roles now live inside Production Staff (2000).
+# Travel role-group classifier now relies on free-text description / role tags
+# for the ATL signal (see app.py helpers), since 2000 holds all crew + ATL.
+_ROLE_GROUP_CODES = {2100: "talent"}
 
 def get_role_group(account_code):
     """Map a COA code to a travel role group: 'talent' | 'atl' | 'crew'."""
@@ -115,26 +170,28 @@ def get_role_group(account_code):
 # ── Schedule-driven auto-created line definitions ─────────────────────────────
 # Maps line_tag → (account_code, account_name, description, default_unit_rate, section_sort_order)
 # section_sort_order controls ordering within account section (lower = first)
+# Schedule-driven auto-created lines now pin to the new Meals (3700) and
+# Travel (3500) section codes. Names also updated to match FP_COA_NAMES.
 SCHEDULE_LINE_DEFS = {
-    # Production Meals / Craft Services (8000) — must stay in this order
+    # Production Meals & Craft Services (3700) — must stay in this order
     # quantity = headcount (auto from schedule), days = shoot days with flag, rate = per-person cost
-    "craft_services":          (8000, "Production Meals / Craft Services", "Craft Services",            20.00, 0),
-    "meal_courtesy_breakfast": (8000, "Production Meals / Craft Services", "Courtesy Breakfast",        12.00, 1),
-    "meal_first":              (8000, "Production Meals / Craft Services", "First Meal",                25.00, 2),
-    "meal_second":             (8000, "Production Meals / Craft Services", "Second Meal",               25.00, 3),
-    "working_meal":            (8000, "Production Meals / Craft Services", "Working Meals",             25.00, 4),
-    # Travel (7000)
-    "hotel_talent":            (7000, "Travel", "Hotel — Talent",                                      200.00, 10),
-    "hotel_atl":               (7000, "Travel", "Hotel — Above the Line",                              250.00, 11),
-    "hotel_crew":              (7000, "Travel", "Hotel — Crew",                                        150.00, 12),
-    "flight_talent":           (7000, "Travel", "Flights — Talent",                                    500.00, 20),
-    "flight_atl":              (7000, "Travel", "Flights — Above the Line",                            600.00, 21),
-    "flight_crew":             (7000, "Travel", "Flights — Crew",                                      400.00, 22),
-    "mileage_talent":          (7000, "Travel", "Mileage — Talent",                                     50.00, 30),
-    "mileage_atl":             (7000, "Travel", "Mileage — Above the Line",                             50.00, 31),
-    "mileage_crew":            (7000, "Travel", "Mileage — Crew",                                       50.00, 32),
+    "craft_services":          (3700, "Production Meals & Craft Services", "Craft Services",            20.00, 0),
+    "meal_courtesy_breakfast": (3700, "Production Meals & Craft Services", "Courtesy Breakfast",        12.00, 1),
+    "meal_first":              (3700, "Production Meals & Craft Services", "First Meal",                25.00, 2),
+    "meal_second":             (3700, "Production Meals & Craft Services", "Second Meal",               25.00, 3),
+    "working_meal":            (3700, "Production Meals & Craft Services", "Working Meals",             25.00, 4),
+    # Travel (3500)
+    "hotel_talent":            (3500, "Travel", "Hotel — Talent",                                      200.00, 10),
+    "hotel_atl":               (3500, "Travel", "Hotel — Above the Line",                              250.00, 11),
+    "hotel_crew":              (3500, "Travel", "Hotel — Crew",                                        150.00, 12),
+    "flight_talent":           (3500, "Travel", "Flights — Talent",                                    500.00, 20),
+    "flight_atl":              (3500, "Travel", "Flights — Above the Line",                            600.00, 21),
+    "flight_crew":             (3500, "Travel", "Flights — Crew",                                      400.00, 22),
+    "mileage_talent":          (3500, "Travel", "Mileage — Talent",                                     50.00, 30),
+    "mileage_atl":             (3500, "Travel", "Mileage — Above the Line",                             50.00, 31),
+    "mileage_crew":            (3500, "Travel", "Mileage — Crew",                                       50.00, 32),
     # Per diem: foundation — quantity driven by per_diem cell_flag; meal offsets deferred
-    "per_diem":                (7000, "Travel", "Per Diem",                                             75.00, 40),
+    "per_diem":                (3500, "Travel", "Per Diem",                                             75.00, 40),
 }
 
 # Canonical order for meals within the 8000 section
@@ -344,19 +401,19 @@ def sync_schedule_driven_lines(budget_id, db_session):
     # Re-sort the meals section: Courtesy Breakfast → First Meal → Second Meal →
     # Working Meals → Craft Services → everything else (by current sort_order).
     meal_lines = {ln.line_tag: ln for ln in all_lines
-                  if int(getattr(ln, 'account_code', None) or 0) == 8000}
+                  if int(getattr(ln, 'account_code', None) or 0) == 3700}
     ordered_meal_lines = []
     for t in _MEAL_TAG_ORDER:
         if t in meal_lines:
             ordered_meal_lines.append(meal_lines[t])
-    # Append any non-tagged 8000 lines (e.g. Craft Services) in their existing order
-    non_tagged_8000 = sorted(
+    # Append any non-tagged 3700 lines (e.g. Craft Services) in their existing order
+    non_tagged_3700 = sorted(
         [ln for ln in all_lines
-         if int(getattr(ln, 'account_code', None) or 0) == 8000
+         if int(getattr(ln, 'account_code', None) or 0) == 3700
          and ln.line_tag not in _MEAL_TAG_ORDER],
         key=lambda x: (x.sort_order or 0, x.id)
     )
-    ordered_meal_lines.extend(non_tagged_8000)
+    ordered_meal_lines.extend(non_tagged_3700)
     for i, ln in enumerate(ordered_meal_lines):
         ln.sort_order = i
 
@@ -823,11 +880,12 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         if sec is not None and sec in section_map:
             section_map[sec]["estimated"] += line_totals[ln.id]["est_total"]
 
-    # Inject auto-calculated amounts into their home sections
-    if workers_comp_amount and 14000 in section_map:
-        section_map[14000]["estimated"] += workers_comp_amount
-    if payroll_fee_amount and 15000 in section_map:
-        section_map[15000]["estimated"] += payroll_fee_amount
+    # Inject auto-calculated amounts into their home sections.
+    # 2026-04 renumber: Insurance moved 14000 → 6000; Administrative 15000 → 6500.
+    if workers_comp_amount and 6000 in section_map:
+        section_map[6000]["estimated"] += workers_comp_amount
+    if payroll_fee_amount and 6500 in section_map:
+        section_map[6500]["estimated"] += payroll_fee_amount
 
     for code, actual_sum in actuals_by_code.items():
         if code is None:
@@ -1113,49 +1171,24 @@ def seed_payroll_profiles(db_session):
     db_session.commit()
 
 
-def seed_standard_template(db_session):
-    """Seed the 'FP Standard' budget template with all COA lines at $0."""
-    from models import BudgetTemplate, BudgetTemplateLine
+# Which sections carry labor by default (for the FP Standard template). Any
+# section not listed here seeds non-labor (False).
+IS_LABOR_MAP = {
+    1100: True,   # Development Labor
+    2000: True,   # Production Staff
+    2100: True,   # Talent
+    2200: True,   # Casting
+    4000: True,   # Post-Production Staff
+}
 
-    # Full COA from the Framework Productions chart of accounts
-    COA = [
-        (100,   "Pre-Production Locations",    False),
-        (600,   "Above the Line",              True),
-        (700,   "Talent",                      True),
-        (800,   "Rehearsal",                   False),
-        (900,   "Casting",                     True),
-        (1000,  "Production Staff",            True),
-        (1200,  "Post-Production Staff",       True),
-        (2000,  "Camera Equipment",            False),
-        (3000,  "Grip & Electric",             True),
-        (3100,  "Processing",                  False),
-        (3200,  "Control Room",                False),
-        (3300,  "Sound",                       True),
-        (4000,  "Art",                         False),
-        (4500,  "Hair & Makeup",               True),
-        (5000,  "Wardrobe",                    False),
-        (6000,  "Transportation",              False),
-        (7000,  "Travel",                      False),
-        (7500,  "Shipping",                    False),
-        (8000,  "Production Meals / Craft Services", False),
-        (8500,  "Sanitation",                  False),
-        (9000,  "Location",                    False),
-        (11000, "Post-Production Equipment",   False),
-        (11500, "Post-Production Locations",   False),
-        (11600, "Post-Production Services",    False),
-        (12000, "Licensing",                   False),
-        (12500, "Composition & Mastering",     False),
-        (13000, "Distribution",                False),
-        (13200, "Software & Office Supplies",  False),
-        (14000, "Insurance",                   False),
-        (15000, "Administrative",              False),
-        (16000, "Marketing",                   False),
-        (17000, "EPK / Behind the Scenes",     False),
-        (18000, "Title Sequence",              False),
-        (19000, "Residuals",                   False),
-        (20000, "Misc",                        False),
-        (20500, "Production Company Fee",      False),
-    ]
+
+def seed_standard_template(db_session):
+    """Seed the 'FP Standard' budget template with all COA lines at $0.
+
+    Derives from FP_COA_SECTIONS + IS_LABOR_MAP so the COA has a single
+    source of truth (no parallel hardcoded list to drift).
+    """
+    from models import BudgetTemplate, BudgetTemplateLine
 
     existing = db_session.query(BudgetTemplate).filter_by(name="FP Standard").first()
     if existing:
@@ -1168,12 +1201,12 @@ def seed_standard_template(db_session):
     db_session.add(tmpl)
     db_session.flush()
 
-    for i, (code, name, is_labor) in enumerate(COA):
+    for i, (code, name) in enumerate(FP_COA_SECTIONS):
         db_session.add(BudgetTemplateLine(
             template_id=tmpl.id,
             account_code=code,
             account_name=name,
-            is_labor=is_labor,
+            is_labor=IS_LABOR_MAP.get(code, False),
             sort_order=i,
         ))
     db_session.commit()
@@ -1183,65 +1216,67 @@ def seed_standard_template(db_session):
 # (code, name, label, group, is_labor, rate, qty, days, kit, fringe, union_fringe,
 #  agent_pct, comp, unit)
 FP_CATALOG_SEED = [
-    # Above the Line (code 600)
-    (600,  "Above the Line",    "Director",                    None,            True,  1500, 1, 1, 0, "N", None, 0.00, "labor", "day"),
-    (600,  "Above the Line",    "Executive Producer",          None,            True,  1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
-    (600,  "Above the Line",    "Producer",                    None,            True,  1000, 1, 1, 0, "N", None, 0.00, "labor", "day"),
-    (600,  "Above the Line",    "Creative Director",           None,            True,  1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    # ATL roles now live in Production Staff (2000). ATL can ALSO appear on
+    # 1100 (Development Labor) and 4000 (Post-Production Staff) as separate
+    # lines per phase — see "phase" field on CatalogItem (Phase 2).
+    (2000, "Production Staff",  "Director",                    "Direction / AD", True,  1500, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (2000, "Production Staff",  "Executive Producer",          "Production",     True,  1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (2000, "Production Staff",  "Producer",                    "Production",     True,  1000, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (2000, "Production Staff",  "Creative Director",           "Production",     True,  1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
 
-    # Talent (code 700)
-    (700,  "Talent",            "Principal Talent",            None,            True,  825,  1, 1, 0, "N", "S",  0.10, "labor", "day"),
-    (700,  "Talent",            "Host",                        None,            True,  1000, 1, 1, 0, "N", "S",  0.10, "labor", "day"),
-    (700,  "Talent",            "Extra / Background",          None,            True,  200,  1, 1, 0, "N", "S",  0.00, "labor", "day"),
+    # Talent (2100)
+    (2100, "Talent",            "Principal Talent",            None,            True,  825,  1, 1, 0, "N", "S",  0.10, "labor", "day"),
+    (2100, "Talent",            "Host",                        None,            True,  1000, 1, 1, 0, "N", "S",  0.10, "labor", "day"),
+    (2100, "Talent",            "Extra / Background",          None,            True,  200,  1, 1, 0, "N", "S",  0.00, "labor", "day"),
 
-    # Production Staff (code 1000) — user's most recent edits
-    (1000, "Production Staff",  "Line Producer",               "Production",     True,  1200, 1, 1, 0, "N", "D",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "UPM",                         "Production",     True,  1000, 1, 1, 0, "N", "D",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Supervising Producer",        "Production",     True,  800,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Production Supervisor",       "Production",     True,  900,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Production Coordinator",      "Production",     True,  750,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Production Assistant",        "Production",     True,  350,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Live Director",               "Direction / AD", True,  700,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "1st AD",                      "Direction / AD", True,  900,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "2nd AD",                      "Direction / AD", True,  750,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Key PA",                      "Direction / AD", True,  350,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Director of Photography",     "Camera",         True,  1200, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Camera Operator",             "Camera",         True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Robotic Camera Operator",     "Camera",         True,  500,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "1st AC",                      "Camera",         True,  800,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "2nd AC",                      "Camera",         True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "DIT",                         "Camera",         True,  850,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Video Engineer",              "Camera",         True,  750,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Lighting Designer",           "Grip & Electric",True,  1000, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Gaffer",                      "Grip & Electric",True,  825,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Key Grip",                    "Grip & Electric",True,  825,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Sound Mixer",                 "Sound",          True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Boom Operator",               "Sound",          True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Technical Producer",          "Control Room",   True,  1000, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Technical Director",          "Control Room",   True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Graphics and Playback",       "Control Room",   True,  500,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1000, "Production Staff",  "Switcher Operator",           "Control Room",   True,  750,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    # Production Staff crew roles (2000)
+    (2000, "Production Staff",  "Line Producer",               "Production",     True,  1200, 1, 1, 0, "N", "D",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "UPM",                         "Production",     True,  1000, 1, 1, 0, "N", "D",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Supervising Producer",        "Production",     True,  800,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Production Supervisor",       "Production",     True,  900,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Production Coordinator",      "Production",     True,  750,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Production Assistant",        "Production",     True,  350,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Live Director",               "Direction / AD", True,  700,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "1st AD",                      "Direction / AD", True,  900,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "2nd AD",                      "Direction / AD", True,  750,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Key PA",                      "Direction / AD", True,  350,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Director of Photography",     "Camera",         True,  1200, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Camera Operator",             "Camera",         True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Robotic Camera Operator",     "Camera",         True,  500,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "1st AC",                      "Camera",         True,  800,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "2nd AC",                      "Camera",         True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "DIT",                         "Camera",         True,  850,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Video Engineer",              "Camera",         True,  750,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Lighting Designer",           "Grip & Electric",True,  1000, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Gaffer",                      "Grip & Electric",True,  825,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Key Grip",                    "Grip & Electric",True,  825,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Sound Mixer",                 "Sound",          True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Boom Operator",               "Sound",          True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Technical Producer",          "Control Room",   True,  1000, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Technical Director",          "Control Room",   True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Graphics and Playback",       "Control Room",   True,  500,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (2000, "Production Staff",  "Switcher Operator",           "Control Room",   True,  750,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
 
-    # Post-Production Staff (code 1200)
-    (1200, "Post-Production Staff", "Editor",                  None,            True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1200, "Post-Production Staff", "Assistant Editor",        None,            True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (1200, "Post-Production Staff", "Colorist",                None,            True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    # Post-Production Staff (4000)
+    (4000, "Post-Production Staff", "Editor",                  None,            True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (4000, "Post-Production Staff", "Assistant Editor",        None,            True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    (4000, "Post-Production Staff", "Colorist",                None,            True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
 
-    # Camera Equipment (code 2000, non-labor rentals)
-    (2000, "Camera Equipment",  "Camera Package Rental",       None,            False, 1500, 1, 1, 0, None, None, 0.00, "rental",  "day"),
-    (2000, "Camera Equipment",  "Lens Kit Rental",             None,            False, 500,  1, 1, 0, None, None, 0.00, "rental",  "day"),
-    (2000, "Camera Equipment",  "Media / Hard Drives",         None,            False, 300,  1, 1, 0, None, None, 0.00, "purchase","flat"),
+    # Camera Equipment (2600, non-labor rentals)
+    (2600, "Camera Equipment",  "Camera Package Rental",       None,            False, 1500, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2600, "Camera Equipment",  "Lens Kit Rental",             None,            False, 500,  1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2600, "Camera Equipment",  "Media / Hard Drives",         None,            False, 300,  1, 1, 0, None, None, 0.00, "purchase","flat"),
 
-    # Grip & Electric (code 3000)
-    (3000, "Grip & Electric",   "Lighting Package",            None,            False, 1500, 1, 1, 0, None, None, 0.00, "rental", "day"),
-    (3000, "Grip & Electric",   "Grip Package",                None,            False, 800,  1, 1, 0, None, None, 0.00, "rental", "day"),
+    # Grip & Electric Equipment (2700)
+    (2700, "Grip & Electric Equipment", "Lighting Package",    None,            False, 1500, 1, 1, 0, None, None, 0.00, "rental", "day"),
+    (2700, "Grip & Electric Equipment", "Grip Package",        None,            False, 800,  1, 1, 0, None, None, 0.00, "rental", "day"),
 
-    # Sound (code 3300)
-    (3300, "Sound",             "Sound Package Rental",        None,            False, 500,  1, 1, 0, None, None, 0.00, "rental", "day"),
+    # Sound Equipment (2800)
+    (2800, "Sound Equipment",   "Sound Package Rental",        None,            False, 500,  1, 1, 0, None, None, 0.00, "rental", "day"),
 
-    # Travel (code 7000)
-    (7000, "Travel",            "Flight",                      None,            False, 500,  1, 1, 0, None, None, 0.00, "expense", "flat"),
-    (7000, "Travel",            "Hotel Night",                 None,            False, 200,  1, 1, 0, None, None, 0.00, "expense", "day"),
+    # Travel (3500)
+    (3500, "Travel",            "Flight",                      None,            False, 500,  1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (3500, "Travel",            "Hotel Night",                 None,            False, 200,  1, 1, 0, None, None, 0.00, "expense", "day"),
 ]
 
 

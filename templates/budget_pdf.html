@@ -213,7 +213,7 @@
     {# Auto-calc lines (Workers Comp / Payroll Fee) — always shown regardless of dispersed #}
     {% if top_sheet.workers_comp_amount > 0 %}
     <tr class="auto-line">
-      <td class="code">14000*</td>
+      <td class="code">6000*</td>
       <td>Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of labor)</td>
       <td class="num">{{ currency(top_sheet.workers_comp_amount) }}</td>
       {% if is_working_view %}<td class="num">{{ currency(top_sheet.workers_comp_amount) }}</td><td class="num">—</td>{% endif %}
@@ -221,7 +221,7 @@
     {% endif %}
     {% if top_sheet.payroll_fee_amount > 0 %}
     <tr class="auto-line">
-      <td class="code">15000*</td>
+      <td class="code">6500*</td>
       <td>Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}%)</td>
       <td class="num">{{ currency(top_sheet.payroll_fee_amount) }}</td>
       {% if is_working_view %}<td class="num">{{ currency(top_sheet.payroll_fee_amount) }}</td><td class="num">—</td>{% endif %}

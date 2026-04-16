@@ -358,6 +358,34 @@ class CatalogItem(db.Model):
     __table_args__ = (db.UniqueConstraint("category_code", "label", name="uq_catalog_item"),)
 
 
+class CoaMigrationLog(db.Model):
+    """One row per named COA migration that has been applied. Acts as the
+    'migration already ran' guard so a restarted container doesn't re-apply
+    the renumber. Immutable once a row exists."""
+    __tablename__ = "coa_migration_log"
+    id          = db.Column(db.Integer, primary_key=True)
+    migration_key = db.Column(db.String(80), unique=True, nullable=False)
+    applied_at  = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    applied_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    notes       = db.Column(db.Text, nullable=True)
+
+
+class CoaChangeLog(db.Model):
+    """Immutable audit of every COA code change. Seeded with the 36 rows
+    of the 2026-04 renumber; subsequent manual edits (via /admin/catalog)
+    append here as well. General Rule: every change to the COA is logged
+    with timestamp and user ID."""
+    __tablename__ = "coa_change_log"
+    id                 = db.Column(db.Integer, primary_key=True)
+    account_code_old   = db.Column(db.Integer, nullable=True)
+    account_code_new   = db.Column(db.Integer, nullable=False)
+    account_name_old   = db.Column(db.String(100), nullable=True)
+    account_name_new   = db.Column(db.String(100), nullable=True)
+    changed_at         = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    changed_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    change_reason      = db.Column(db.String(200), nullable=True)
+
+
 class TaxCredit(db.Model):
     __tablename__ = "tax_credit"
     id           = db.Column(db.Integer, primary_key=True)

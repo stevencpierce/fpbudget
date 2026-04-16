@@ -216,6 +216,59 @@ def _get_talent_subgroup(description):
             return group
     return None
 
+
+# ── COA section helpers ──────────────────────────────────────────────────────
+# All business logic that used to pin integer account codes (700, 1000, 14000,
+# 15000, ...) now goes through these helpers. The helpers resolve codes by
+# section NAME from FP_COA_SECTIONS at startup, so any future renumber would
+# only need the list updated — these helpers would still work.
+#
+# The 2026-04 renumber immutably fixed codes as follows:
+#   2000 = Production Staff (crew + ATL roles per phase)
+#   2100 = Talent
+#   4000 = Post-Production Staff
+#   6000 = Insurance      (Workers' Comp auto-inject target)
+#   6500 = Administrative (Payroll Fee auto-inject target)
+#   3500 = Travel
+#   3700 = Production Meals & Craft Services
+
+def _coa_code_by_name(name, default=None):
+    for code, sec_name in FP_COA_SECTIONS:
+        if sec_name == name:
+            return code
+    return default
+
+# Module-level constants resolved at import time. If FP_COA_SECTIONS changes,
+# restart required (same as before).
+COA_CODE_PROD_STAFF = _coa_code_by_name("Production Staff", 2000)
+COA_CODE_TALENT     = _coa_code_by_name("Talent", 2100)
+COA_CODE_POST_STAFF = _coa_code_by_name("Post-Production Staff", 4000)
+COA_CODE_INSURANCE  = _coa_code_by_name("Insurance", 6000)           # WC auto-inject
+COA_CODE_ADMIN      = _coa_code_by_name("Administrative", 6500)       # Payroll Fee auto-inject
+COA_CODE_TRAVEL     = _coa_code_by_name("Travel", 3500)
+COA_CODE_MEALS      = _coa_code_by_name("Production Meals & Craft Services", 3700)
+COA_CODE_DEV_LABOR  = _coa_code_by_name("Development Labor", 1100)
+
+# Known ATL role labels (used ONLY for display grouping — call sheets, PDF).
+# Authoritative ATL classification lives on CatalogItem.group_name /
+# RoleTagMapping once Task 2 lands; this set is the fallback for existing
+# BudgetLines with no catalog link.
+_ATL_ROLE_LABELS = {
+    "director", "executive producer", "producer", "creative director",
+    "writer", "co-producer", "co-executive producer", "line producer",
+}
+
+def _is_atl_line(ln):
+    """True if a BudgetLine describes an ATL role (description-based fallback)."""
+    desc = (getattr(ln, 'description', None) or '').strip().lower()
+    if not desc:
+        return False
+    for token in _ATL_ROLE_LABELS:
+        if token in desc:
+            return True
+    return False
+
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -1985,9 +2038,9 @@ def budget_view(pid, bid):
     # Falls back to description-based keyword match for lines without role_group set.
     line_sub_groups = {}
     for ln in lines:
-        if ln.account_code == 1000:
+        if ln.account_code == COA_CODE_PROD_STAFF:
             line_sub_groups[ln.id] = ln.role_group or _get_prod_staff_subgroup(ln.description)
-        elif ln.account_code == 700:
+        elif ln.account_code == COA_CODE_TALENT:
             line_sub_groups[ln.id] = ln.role_group or _get_talent_subgroup(ln.description)
 
     # Dept head filtering: restrict to their assigned dept_code only
@@ -2058,9 +2111,9 @@ def budget_view(pid, bid):
     _wc_pct = float(getattr(budget, 'workers_comp_pct', 0) or 0)
     _pf_pct = float(getattr(budget, 'payroll_fee_pct',  0) or 0)
     if _wc_pct:
-        working_by_section[14000] = working_by_section.get(14000, 0.0) + round(working_gross_labor * _wc_pct, 2)
+        working_by_section[COA_CODE_INSURANCE] = working_by_section.get(COA_CODE_INSURANCE, 0.0) + round(working_gross_labor * _wc_pct, 2)
     if _pf_pct:
-        working_by_section[15000] = working_by_section.get(15000, 0.0) + round(working_gross_labor * _pf_pct, 2)
+        working_by_section[COA_CODE_ADMIN] = working_by_section.get(COA_CODE_ADMIN, 0.0) + round(working_gross_labor * _pf_pct, 2)
 
     # Manual actuals sum per section (from BudgetLine.manual_actual)
     manual_by_section = {}
@@ -2616,10 +2669,10 @@ def export_csv(pid, bid):
             w.writerow([row["code"], row["account"],
                         row["estimated"], row["actual"], row["variance"], round(pct, 1)])
         if ts.get("workers_comp_amount", 0):
-            w.writerow(["14000*", f"Workers' Comp ({ts['workers_comp_pct']*100:.2f}% of labor)",
+            w.writerow([f"{COA_CODE_INSURANCE}*", f"Workers' Comp ({ts['workers_comp_pct']*100:.2f}% of labor)",
                         ts["workers_comp_amount"], "", "", ""])
         if ts.get("payroll_fee_amount", 0):
-            w.writerow(["15000*", f"Payroll Service Fee ({ts['payroll_fee_pct']*100:.2f}%)",
+            w.writerow([f"{COA_CODE_ADMIN}*", f"Payroll Service Fee ({ts['payroll_fee_pct']*100:.2f}%)",
                         ts["payroll_fee_amount"], "", "", ""])
         if not ts.get("company_fee_dispersed"):
             w.writerow(["", "Company Fee", ts["company_fee"], "", "", ""])
@@ -3481,9 +3534,9 @@ def gantt_view(pid, bid):
     for ln in labor_lines:
         qty = int(ln.quantity or 1)
         base_label = ln.description or ln.account_name
-        if ln.account_code == 1000:
+        if ln.account_code == COA_CODE_PROD_STAFF:
             sub_group = ln.role_group or _get_prod_staff_subgroup(ln.description)
-        elif ln.account_code == 700:
+        elif ln.account_code == COA_CODE_TALENT:
             sub_group = ln.role_group or _get_talent_subgroup(ln.description)
         else:
             sub_group = None
@@ -5475,10 +5528,20 @@ def callsheet_view(pid, bid, date_str=None):
                     'account_code': ln.account_code,
                 })
 
-    # Separate ATL/Talent from crew
-    atl_rows     = [r for r in crew_rows if r['account_code'] < 700]
-    talent_rows  = [r for r in crew_rows if 700 <= r['account_code'] < 800]
-    crew_rows_bg = [r for r in crew_rows if r['account_code'] >= 1000]
+    # Separate ATL/Talent from crew.
+    # 2026-04 renumber: ATL no longer has its own section code — ATL roles
+    # live inside Production Staff (COA_CODE_PROD_STAFF=2000). We identify
+    # them by role-name match against _ATL_ROLE_LABELS. Talent is its own
+    # section (COA_CODE_TALENT=2100). Everything else labor-like is BG crew.
+    def _row_is_atl(r):
+        if r['account_code'] != COA_CODE_PROD_STAFF:
+            return False
+        role = (r.get('role') or '').strip().lower()
+        return any(tok in role for tok in _ATL_ROLE_LABELS)
+    atl_rows     = [r for r in crew_rows if _row_is_atl(r)]
+    talent_rows  = [r for r in crew_rows if r['account_code'] == COA_CODE_TALENT]
+    crew_rows_bg = [r for r in crew_rows
+                    if r['account_code'] != COA_CODE_TALENT and not _row_is_atl(r)]
 
     # ── Build Page 2 unified crew list (ATL + Talent + Production Staff) ────
     _P2_SECTION_SORT = {
@@ -5500,11 +5563,13 @@ def callsheet_view(pid, bid, date_str=None):
     }
 
     def _p2_section_for_row(r):
-        if r['account_code'] < 700:
+        # 2026-04 renumber: "Above the Line" is no longer a section code;
+        # ATL roles live in Production Staff. Detect by role name.
+        if _row_is_atl(r):
             return "Above the Line"
-        if 700 <= r['account_code'] < 800:
+        if r['account_code'] == COA_CODE_TALENT:
             return "Talent"
-        # account_code >= 1000 — use subgroup or section_name
+        # Production Staff or anything else — use subgroup or section_name
         sg = _get_prod_staff_subgroup(r['role'])
         return sg if sg else r['section_name']
 
@@ -5871,11 +5936,11 @@ def _infer_line_subgroup(ln):
     if rg:
         return rg
     code = int(getattr(ln, 'account_code', 0) or 0)
-    if code == 1000:
+    if code == COA_CODE_PROD_STAFF:
         for kw, grp in _PROD_STAFF_SUBGROUPS:
             if kw.lower() in (ln.description or '').lower():
                 return grp
-    elif code == 700:
+    elif code == COA_CODE_TALENT:
         try:
             return _get_talent_subgroup(ln.description)
         except Exception:
@@ -5890,7 +5955,7 @@ def _cluster_by_subgroup(lines):
     Only clusters lines in sub-grouped sections (currently 1000 Production Staff).
     Other sections pass through unchanged."""
     is_subgrouped = any(
-        int(getattr(ln, 'account_code', 0) or 0) == 1000 for ln in lines
+        int(getattr(ln, 'account_code', 0) or 0) == COA_CODE_PROD_STAFF for ln in lines
     )
     if not is_subgrouped:
         return list(lines)
@@ -6858,6 +6923,112 @@ def _do_boot_work():
         except Exception:
             db.session.rollback()
 
+    # ── 2026-04 COA renumber ─────────────────────────────────────────────────
+    # One-time remap of legacy COA codes to the new Movie Magic / ShowBiz-
+    # aligned numbering. Guarded by CoaMigrationLog so rerunning boot is a
+    # no-op. Runs in a single transaction — if ANY step fails, the entire
+    # renumber rolls back and the deploy aborts (better than half-migrated).
+    try:
+        from models import CoaMigrationLog as _CML, CoaChangeLog as _CCL
+        from budget_calc import COA_LEGACY_MAPPING, FP_COA_NAMES
+        _COA_RENUMBER_KEY = '2026-04-renumber'
+        _already_applied = _CML.query.filter_by(migration_key=_COA_RENUMBER_KEY).first()
+        if not _already_applied:
+            logging.warning("[COA] Running 2026-04 renumber migration…")
+            # Build deterministic old→new mapping list for logging + UPDATE.
+            _mapping_rows = sorted(COA_LEGACY_MAPPING.items())
+
+            # STEP 1: Dedupe merge-collisions on catalog_item. For each
+            # (new_code, label) that would collide, suffix the second row
+            # with " (legacy)" so the unique constraint holds.
+            _new_code_labels = {}  # (new_code, label) -> first catalog_item.id
+            try:
+                _rows = db.session.execute(text(
+                    "SELECT id, category_code, label FROM catalog_item"
+                )).fetchall()
+                for _cid, _old_code, _label in _rows:
+                    _new_code = COA_LEGACY_MAPPING.get(int(_old_code or 0), int(_old_code or 0))
+                    _key = (_new_code, _label)
+                    if _key in _new_code_labels:
+                        _new_label = f"{_label} (legacy)"
+                        db.session.execute(text(
+                            "UPDATE catalog_item SET label = :nl WHERE id = :cid"
+                        ), {"nl": _new_label, "cid": _cid})
+                        logging.warning(f"[COA] Catalog merge collision: renamed id={_cid} '{_label}' → '{_new_label}'")
+                    else:
+                        _new_code_labels[_key] = _cid
+            except Exception as _e:
+                logging.warning(f"[COA] collision-dedupe skipped (catalog_item missing?): {_e}")
+
+            # STEP 2: UPDATE all tables holding COA codes using a single
+            # CASE expression so we don't double-migrate (e.g. old 1000 →
+            # new 2000, then old 2000 → new 2600 would move things twice
+            # if run sequentially).
+            _tables_to_remap = [
+                ("budget_line",           "account_code", "account_name"),
+                ("budget_template_line",  "account_code", "account_name"),
+                ("catalog_item",          "category_code", "category_name"),
+                ("users",                 "dept_code",    None),
+            ]
+            for _tbl, _code_col, _name_col in _tables_to_remap:
+                _case_code_parts = []
+                _case_name_parts = []
+                _in_params = {}
+                for i, (_old, _new) in enumerate(_mapping_rows):
+                    _case_code_parts.append(f"WHEN :old{i} THEN :new{i}")
+                    _in_params[f"old{i}"] = _old
+                    _in_params[f"new{i}"] = _new
+                    if _name_col:
+                        _case_name_parts.append(f"WHEN :old{i} THEN :nnm{i}")
+                        _in_params[f"nnm{i}"] = FP_COA_NAMES.get(_new, None)
+                _code_case = "CASE " + _code_col + " " + " ".join(_case_code_parts) + f" ELSE {_code_col} END"
+                _in_list = ", ".join(f":old{i}" for i in range(len(_mapping_rows)))
+                if _name_col:
+                    _name_case = "CASE " + _code_col + " " + " ".join(_case_name_parts) + f" ELSE {_name_col} END"
+                    _stmt = (f"UPDATE {_tbl} SET {_code_col} = {_code_case}, "
+                             f"{_name_col} = {_name_case} "
+                             f"WHERE {_code_col} IN ({_in_list})")
+                else:
+                    _stmt = (f"UPDATE {_tbl} SET {_code_col} = {_code_case} "
+                             f"WHERE {_code_col} IN ({_in_list})")
+                try:
+                    _res = db.session.execute(text(_stmt), _in_params)
+                    logging.warning(f"[COA] remapped {_tbl}.{_code_col}: rowcount={_res.rowcount}")
+                except Exception as _e:
+                    logging.error(f"[COA] FAILED to remap {_tbl}: {_e}")
+                    raise
+
+            # STEP 3: Log every old→new pair in coa_change_log for audit.
+            for _old, _new in _mapping_rows:
+                db.session.add(_CCL(
+                    account_code_old=_old,
+                    account_code_new=_new,
+                    account_name_old=None,  # old names not tracked
+                    account_name_new=FP_COA_NAMES.get(_new, None),
+                    changed_by_user_id=None,  # automated migration
+                    change_reason='2026-04 renumber (MMB/ShowBiz alignment)',
+                ))
+
+            # STEP 4: Insert migration-log row so this never re-runs.
+            db.session.add(_CML(
+                migration_key=_COA_RENUMBER_KEY,
+                applied_by_user_id=None,
+                notes=('Renumbered legacy 100-20500 COA to MMB/ShowBiz-aligned '
+                       '1000-6800 structure. NOTE: transaction.account_code was '
+                       'NOT touched — the external QBO sync app must apply the '
+                       'same mapping before its next sync.'),
+            ))
+            db.session.commit()
+            logging.warning("[COA] 2026-04 renumber migration COMPLETE")
+        else:
+            logging.info(f"[COA] renumber already applied at {_already_applied.applied_at}; skipping")
+    except Exception as _e:
+        logging.exception(f"[COA] renumber migration FAILED: {_e}")
+        db.session.rollback()
+        # Re-raise so the preDeployCommand exits non-zero and Render aborts
+        # the deploy — we don't want a half-migrated production state.
+        raise
+
     # Backfill version_number on existing budgets (one-time, skips already-set rows).
     try:
         import re as _re_vn
@@ -7211,50 +7382,49 @@ def _do_boot_work():
             db.session.add(tmpl_t)
             db.session.flush()
             _test_lines = [
-                # code,  name,                         desc,                         labor, qty, days, rate,   rt,           fringe, agent, sort
-                # ── Above the Line ────────────────────────────────────────────
-                (600,  "Above the Line",               "Director / DP",              True,  1,   5,    2000,   "day_10",     "E",    0,     0),
-                (600,  "Above the Line",               "Executive Producer",          True,  1,   5,    1500,   "day_10",     "E",    0,     10),
-                # ── Talent ────────────────────────────────────────────────────
-                (700,  "Talent",                       "Principal Talent",            True,  2,   3,    1200,   "flat_day",   "S",    0.10,  20),
-                (700,  "Talent",                       "Supporting Talent",           True,  4,   2,    600,    "flat_day",   "S",    0.10,  30),
-                (700,  "Talent",                       "Voice Over Talent",           True,  1,   1,    2500,   "flat_project","N",   0.10,  40),
-                # ── Production Staff ──────────────────────────────────────────
-                (1000, "Production Staff",             "Line Producer",               True,  1,   5,    1200,   "day_10",     "N",    0,     50),
-                (1000, "Production Staff",             "1st AD",                      True,  1,   5,    900,    "day_10",     "N",    0,     60),
-                (1000, "Production Staff",             "2nd AD",                      True,  1,   5,    650,    "day_10",     "N",    0,     70),
-                (1000, "Production Staff",             "Production Coordinator",      True,  1,   5,    600,    "day_10",     "N",    0,     80),
-                (1000, "Production Staff",             "Production Assistant",        True,  3,   5,    300,    "day_10",     "N",    0,     90),
-                (1000, "Production Staff",             "Camera Operator",             True,  2,   5,    900,    "day_10",     "N",    0,     100),
-                (1000, "Production Staff",             "Gaffer",                      True,  1,   5,    850,    "day_10",     "I",    0,     110),
-                (1000, "Production Staff",             "Sound Mixer",                 True,  1,   5,    950,    "day_10",     "I",    0,     120),
-                (1200, "Post-Production Staff",        "Editor",                      True,  1,   10,   750,    "day_10",     "N",    0,     130),
-                # ── Camera Equipment ──────────────────────────────────────────
-                (2000, "Camera Equipment",             "Camera Package Rental",       False, 2,   5,    1500,   "day_10",     "N",    0,     140),
-                (2000, "Camera Equipment",             "Media / Hard Drives",         False, 1,   1,    350,    "day_10",     "N",    0,     150),
-                # ── Grip & Electric ───────────────────────────────────────────
-                (3000, "Grip & Electric",              "Lighting Package",            False, 1,   5,    1200,   "day_10",     "N",    0,     160),
-                (3000, "Grip & Electric",              "Grip Package",                False, 1,   5,    600,    "day_10",     "N",    0,     170),
-                # ── Sound ─────────────────────────────────────────────────────
-                (3300, "Sound",                        "Sound Package Rental",        False, 1,   5,    500,    "day_10",     "N",    0,     180),
-                # ── Art ───────────────────────────────────────────────────────
-                (4000, "Art",                          "Prop Rentals",                False, 1,   1,    800,    "day_10",     "N",    0,     190),
-                (4000, "Art",                          "Set Dressing Materials",      False, 1,   1,    500,    "day_10",     "N",    0,     200),
-                # ── Hair & Makeup ─────────────────────────────────────────────
-                (4500, "Hair & Makeup",                "Hair Stylist",                True,  1,   3,    700,    "day_10",     "N",    0,     210),
-                (4500, "Hair & Makeup",                "Makeup Artist",               True,  1,   3,    700,    "day_10",     "N",    0,     220),
-                # ── Transportation ────────────────────────────────────────────
-                (6000, "Transportation",               "15-Passenger Van Rental",     False, 1,   5,    200,    "day_10",     "N",    0,     230),
-                (6000, "Transportation",               "Fuel & Parking",              False, 1,   5,    80,     "day_10",     "N",    0,     240),
-                # ── Travel ────────────────────────────────────────────────────
-                (7000, "Travel",                       "Hotel — Crew (est.)",         False, 6,   4,    150,    "day_10",     "N",    0,     250),
-                # ── Production Meals / Craft Services ─────────────────────────
-                # First Meal / Second Meal / Courtesy Breakfast auto-created by sync when schedule meals checked
-                (8000, "Production Meals / Craft Services", "Craft Services",         False, 1,   5,    200,    "day_10",     "N",    0,     270),
-                # ── Location ──────────────────────────────────────────────────
-                (9000, "Location",                     "Studio / Stage Rental",       False, 1,   3,    2000,   "day_10",     "N",    0,     280),
-                # ── Administrative ────────────────────────────────────────────
-                (15000,"Administrative",               "Petty Cash / Miscellaneous",  False, 1,   1,    1000,   "day_10",     "N",    0,     290),
+                # code,  name,                             desc,                         labor, qty, days, rate,   rt,           fringe, agent, sort
+                # ── ATL roles live in Production Staff (2000) per 2026-04 renumber ──
+                (2000, "Production Staff",                 "Director / DP",              True,  1,   5,    2000,   "day_10",     "E",    0,     0),
+                (2000, "Production Staff",                 "Executive Producer",         True,  1,   5,    1500,   "day_10",     "E",    0,     10),
+                # ── Talent (2100) ────────────────────────────────────────────
+                (2100, "Talent",                           "Principal Talent",           True,  2,   3,    1200,   "flat_day",   "S",    0.10,  20),
+                (2100, "Talent",                           "Supporting Talent",          True,  4,   2,    600,    "flat_day",   "S",    0.10,  30),
+                (2100, "Talent",                           "Voice Over Talent",          True,  1,   1,    2500,   "flat_project","N",   0.10,  40),
+                # ── Production Staff (2000) ──────────────────────────────────
+                (2000, "Production Staff",                 "Line Producer",              True,  1,   5,    1200,   "day_10",     "N",    0,     50),
+                (2000, "Production Staff",                 "1st AD",                     True,  1,   5,    900,    "day_10",     "N",    0,     60),
+                (2000, "Production Staff",                 "2nd AD",                     True,  1,   5,    650,    "day_10",     "N",    0,     70),
+                (2000, "Production Staff",                 "Production Coordinator",     True,  1,   5,    600,    "day_10",     "N",    0,     80),
+                (2000, "Production Staff",                 "Production Assistant",       True,  3,   5,    300,    "day_10",     "N",    0,     90),
+                (2000, "Production Staff",                 "Camera Operator",            True,  2,   5,    900,    "day_10",     "N",    0,     100),
+                (2000, "Production Staff",                 "Gaffer",                     True,  1,   5,    850,    "day_10",     "I",    0,     110),
+                (2000, "Production Staff",                 "Sound Mixer",                True,  1,   5,    950,    "day_10",     "I",    0,     120),
+                (4000, "Post-Production Staff",            "Editor",                     True,  1,   10,   750,    "day_10",     "N",    0,     130),
+                # ── Camera Equipment (2600) ──────────────────────────────────
+                (2600, "Camera Equipment",                 "Camera Package Rental",      False, 2,   5,    1500,   "day_10",     "N",    0,     140),
+                (2600, "Camera Equipment",                 "Media / Hard Drives",        False, 1,   1,    350,    "day_10",     "N",    0,     150),
+                # ── Grip & Electric Equipment (2700) ─────────────────────────
+                (2700, "Grip & Electric Equipment",        "Lighting Package",           False, 1,   5,    1200,   "day_10",     "N",    0,     160),
+                (2700, "Grip & Electric Equipment",        "Grip Package",               False, 1,   5,    600,    "day_10",     "N",    0,     170),
+                # ── Sound Equipment (2800) ───────────────────────────────────
+                (2800, "Sound Equipment",                  "Sound Package Rental",       False, 1,   5,    500,    "day_10",     "N",    0,     180),
+                # ── Art & Sets Costs (3000) ──────────────────────────────────
+                (3000, "Art & Sets Costs",                 "Prop Rentals",               False, 1,   1,    800,    "day_10",     "N",    0,     190),
+                (3000, "Art & Sets Costs",                 "Set Dressing Materials",     False, 1,   1,    500,    "day_10",     "N",    0,     200),
+                # ── Hair, Makeup & Wardrobe (3100) ───────────────────────────
+                (3100, "Hair, Makeup & Wardrobe Costs",    "Hair Stylist",               True,  1,   3,    700,    "day_10",     "N",    0,     210),
+                (3100, "Hair, Makeup & Wardrobe Costs",    "Makeup Artist",              True,  1,   3,    700,    "day_10",     "N",    0,     220),
+                # ── Transportation (3400) ────────────────────────────────────
+                (3400, "Transportation",                   "15-Passenger Van Rental",    False, 1,   5,    200,    "day_10",     "N",    0,     230),
+                (3400, "Transportation",                   "Fuel & Parking",             False, 1,   5,    80,     "day_10",     "N",    0,     240),
+                # ── Travel (3500) ────────────────────────────────────────────
+                (3500, "Travel",                           "Hotel — Crew (est.)",        False, 6,   4,    150,    "day_10",     "N",    0,     250),
+                # ── Production Meals & Craft Services (3700) ─────────────────
+                (3700, "Production Meals & Craft Services","Craft Services",             False, 1,   5,    200,    "day_10",     "N",    0,     270),
+                # ── Locations (3300) ─────────────────────────────────────────
+                (3300, "Locations",                        "Studio / Stage Rental",      False, 1,   3,    2000,   "day_10",     "N",    0,     280),
+                # ── Administrative (6500) ────────────────────────────────────
+                (6500, "Administrative",                   "Petty Cash / Miscellaneous", False, 1,   1,    1000,   "day_10",     "N",    0,     290),
             ]
             for row in _test_lines:
                 code, acct, desc, labor, qty, days, rate, rt, fringe, agent, sort = row
@@ -7286,34 +7456,34 @@ def _do_boot_work():
         db.session.add(tmpl)
         db.session.flush()
         _lines = [
-            # code, name,                         desc,                       labor, qty, days, rate,   rt,        fringe, agent, sort
-            (100,  "Pre-Production Locations",    "Tech Scout",               False, 1,   1,    500,    "day_10",  "N",    0,     0),
-            (600,  "Above the Line",              "Director",                 True,  1,   1,    1500,   "day_10",  "E",    0,     10),
-            (700,  "Talent",                      "Host",                     True,  1,   1,    1000,   "day_10",  "N",    0.10,  20),
-            (1000, "Production Staff",            "UPM",                      True,  1,   1,    1000,   "day_10",  "N",    0,     30),
-            (1000, "Production Staff",            "Key PA",                   True,  1,   1,    350,    "day_10",  "N",    0,     40),
-            (1000, "Production Staff",            "Camera Operator",          True,  2,   1,    900,    "day_10",  "N",    0,     50),
-            (1000, "Production Staff",            "Video Engineer",            True,  1,   1,    750,    "day_10",  "N",    0,     60),
-            (1000, "Production Staff",            "Sound Mixer",              True,  1,   1,    900,    "day_10",  "N",    0,     70),
-            (2000, "Camera Equipment",            "Camera Package Rental",    False, 3,   1,    1500,   "day_10",  "N",    0,     80),
-            (2000, "Camera Equipment",            "Lens Kit Rental",          False, 3,   1,    500,    "day_10",  "N",    0,     90),
-            (2000, "Camera Equipment",            "Monitor Rental",           False, 4,   1,    150,    "day_10",  "N",    0,     100),
-            (2000, "Camera Equipment",            "Media Cards / Hard Drives",False, 1,   1,    300,    "day_10",  "N",    0,     110),
-            (2000, "Camera Equipment",            "Camera Expendables",       False, 1,   1,    100,    "day_10",  "N",    0,     120),
-            (3000, "Grip & Electric",             "Lighting Package",         False, 1,   1,    1500,   "day_10",  "N",    0,     130),
-            (3000, "Grip & Electric",             "Grip Package",             False, 1,   1,    800,    "day_10",  "N",    0,     140),
-            (3100, "Processing",                  "SDI Distribution Amp",     False, 1,   1,    200,    "day_10",  "N",    0,     150),
-            (3100, "Processing",                  "Encoder / Decoder Unit",   False, 1,   1,    600,    "day_10",  "N",    0,     160),
-            (3200, "Control Room",                "Control Room Rental",      False, 1,   1,    2000,   "day_10",  "N",    0,     170),
-            (3200, "Control Room",                "Video Playback System",    False, 1,   1,    500,    "day_10",  "N",    0,     180),
-            (3200, "Control Room",                "Switcher / Mixer Rental",  False, 1,   1,    400,    "day_10",  "N",    0,     190),
-            (3300, "Sound",                       "Sound Package Rental",     False, 1,   1,    600,    "day_10",  "N",    0,     200),
-            (3300, "Sound",                       "Wireless Mic Kit",         False, 1,   1,    200,    "day_10",  "N",    0,     210),
-            (6000, "Transportation",              "Production Car",           False, 1,   1,    100,    "day_10",  "N",    0,     220),
-            (6000, "Transportation",              "Fuel",                     False, 1,   1,    100,    "day_10",  "N",    0,     230),
-            (6000, "Transportation",              "Parking",                  False, 1,   1,    50,     "day_10",  "N",    0,     240),
-            (6000, "Transportation",              "Mileage Reimbursement",    False, 1,   1,    200,    "day_10",  "N",    0,     250),
-            (8000, "Production Meals / Craft Services", "Catering (Lunch)",   False, 30,  1,    25,     "day_10",  "N",    0,     260),
+            # code, name,                              desc,                       labor, qty, days, rate,   rt,        fringe, agent, sort
+            (3300, "Locations",                        "Tech Scout",               False, 1,   1,    500,    "day_10",  "N",    0,     0),
+            (2000, "Production Staff",                 "Director",                 True,  1,   1,    1500,   "day_10",  "E",    0,     10),
+            (2100, "Talent",                           "Host",                     True,  1,   1,    1000,   "day_10",  "N",    0.10,  20),
+            (2000, "Production Staff",                 "UPM",                      True,  1,   1,    1000,   "day_10",  "N",    0,     30),
+            (2000, "Production Staff",                 "Key PA",                   True,  1,   1,    350,    "day_10",  "N",    0,     40),
+            (2000, "Production Staff",                 "Camera Operator",          True,  2,   1,    900,    "day_10",  "N",    0,     50),
+            (2000, "Production Staff",                 "Video Engineer",           True,  1,   1,    750,    "day_10",  "N",    0,     60),
+            (2000, "Production Staff",                 "Sound Mixer",              True,  1,   1,    900,    "day_10",  "N",    0,     70),
+            (2600, "Camera Equipment",                 "Camera Package Rental",    False, 3,   1,    1500,   "day_10",  "N",    0,     80),
+            (2600, "Camera Equipment",                 "Lens Kit Rental",          False, 3,   1,    500,    "day_10",  "N",    0,     90),
+            (2600, "Camera Equipment",                 "Monitor Rental",           False, 4,   1,    150,    "day_10",  "N",    0,     100),
+            (2600, "Camera Equipment",                 "Media Cards / Hard Drives",False, 1,   1,    300,    "day_10",  "N",    0,     110),
+            (2600, "Camera Equipment",                 "Camera Expendables",       False, 1,   1,    100,    "day_10",  "N",    0,     120),
+            (2700, "Grip & Electric Equipment",        "Lighting Package",         False, 1,   1,    1500,   "day_10",  "N",    0,     130),
+            (2700, "Grip & Electric Equipment",        "Grip Package",             False, 1,   1,    800,    "day_10",  "N",    0,     140),
+            (5000, "Processing & Lab",                 "SDI Distribution Amp",     False, 1,   1,    200,    "day_10",  "N",    0,     150),
+            (5000, "Processing & Lab",                 "Encoder / Decoder Unit",   False, 1,   1,    600,    "day_10",  "N",    0,     160),
+            (2900, "Control Room Equipment",           "Control Room Rental",      False, 1,   1,    2000,   "day_10",  "N",    0,     170),
+            (2900, "Control Room Equipment",           "Video Playback System",    False, 1,   1,    500,    "day_10",  "N",    0,     180),
+            (2900, "Control Room Equipment",           "Switcher / Mixer Rental",  False, 1,   1,    400,    "day_10",  "N",    0,     190),
+            (2800, "Sound Equipment",                  "Sound Package Rental",     False, 1,   1,    600,    "day_10",  "N",    0,     200),
+            (2800, "Sound Equipment",                  "Wireless Mic Kit",         False, 1,   1,    200,    "day_10",  "N",    0,     210),
+            (3400, "Transportation",                   "Production Car",           False, 1,   1,    100,    "day_10",  "N",    0,     220),
+            (3400, "Transportation",                   "Fuel",                     False, 1,   1,    100,    "day_10",  "N",    0,     230),
+            (3400, "Transportation",                   "Parking",                  False, 1,   1,    50,     "day_10",  "N",    0,     240),
+            (3400, "Transportation",                   "Mileage Reimbursement",    False, 1,   1,    200,    "day_10",  "N",    0,     250),
+            (3700, "Production Meals & Craft Services","Catering (Lunch)",         False, 30,  1,    25,     "day_10",  "N",    0,     260),
         ]
         for row in _lines:
             code, acct, desc, labor, qty, days, rate, rt, fringe, agent, sort = row
