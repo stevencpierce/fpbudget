@@ -13,7 +13,7 @@ from decimal import Decimal
 # The 2026-04-renumber migration (see app.py) replaced an older 100-20500
 # scheme with this structure. Legacy → new mapping is in COA_LEGACY_MAPPING.
 FP_COA_SECTIONS = [
-    (1000,  "Development Costs"),
+    (1000,  "Development Rights & Story"),
     (1100,  "Development Labor"),
     (2000,  "Production Staff"),
     (2100,  "Talent"),
@@ -24,7 +24,8 @@ FP_COA_SECTIONS = [
     (2800,  "Sound Equipment"),
     (2900,  "Control Room Equipment"),
     (3000,  "Art & Sets Costs"),
-    (3100,  "Hair, Makeup & Wardrobe Costs"),
+    (3100,  "Hair & Makeup Costs"),
+    (3200,  "Wardrobe Costs"),
     (3300,  "Locations"),
     (3400,  "Transportation"),
     (3500,  "Travel"),
@@ -55,10 +56,11 @@ FP_COA_NAMES = dict(FP_COA_SECTIONS)
 # ── COA legacy mapping (2026-04 renumber) ─────────────────────────────────────
 # old_code → new_code. Used by the boot-time migration to rewrite every
 # budget_line / budget_template_line / catalog_item / users.dept_code row.
-# Three merges land two old codes into one new code:
+# Two merges land two old codes into one new code:
 #   100+9000 → 3300 (Locations)
-#   4500+5000 → 3100 (Hair, Makeup & Wardrobe)
 #   16000+17000 → 6300 (Marketing & EPK)
+# (Old 4500 Hair & Makeup and old 5000 Wardrobe stay separate: 4500→3100,
+#  5000→3200. This was revised from the original merge-into-3100 plan.)
 COA_LEGACY_MAPPING = {
     100:   3300,   # Pre-Production Locations → Locations (merge)
     600:   2000,   # Above the Line → Production Staff (ATL rolls into prod staff per spec)
@@ -73,8 +75,8 @@ COA_LEGACY_MAPPING = {
     3200:  2900,   # Control Room → Control Room Equipment
     3300:  2800,   # Sound → Sound Equipment
     4000:  3000,   # Art → Art & Sets Costs
-    4500:  3100,   # Hair & Makeup → Hair, Makeup & Wardrobe (merge with old 5000)
-    5000:  3100,   # Wardrobe → Hair, Makeup & Wardrobe (merge with old 4500)
+    4500:  3100,   # Hair & Makeup → Hair & Makeup Costs
+    5000:  3200,   # Wardrobe → Wardrobe Costs
     6000:  3400,   # Transportation
     7000:  3500,   # Travel
     7500:  3600,   # Shipping
@@ -1216,9 +1218,17 @@ def seed_standard_template(db_session):
 # (code, name, label, group, is_labor, rate, qty, days, kit, fringe, union_fringe,
 #  agent_pct, comp, unit)
 FP_CATALOG_SEED = [
-    # ATL roles now live in Production Staff (2000). ATL can ALSO appear on
-    # 1100 (Development Labor) and 4000 (Post-Production Staff) as separate
-    # lines per phase — see "phase" field on CatalogItem (Phase 2).
+    # Development Labor (1100) — key personnel only. These are the same roles
+    # that can ALSO appear on 2000 (Production Staff) and 4000 (Post-Production
+    # Staff) as separate lines per phase — see "phase" field on CatalogItem.
+    (1100, "Development Labor", "Development Executive Producer", "Development",   True, 1500, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (1100, "Development Labor", "Development Producer",           "Development",   True, 1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (1100, "Development Labor", "Showrunner",                     "Development",   True, 1500, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (1100, "Development Labor", "Writer (Development)",           "Development",   True, 1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (1100, "Development Labor", "Creative Director (Dev)",        "Development",   True, 1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (1100, "Development Labor", "Story Consultant",               "Development",   True,  800, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+
+    # Production Staff (2000) — ATL executive roles.
     (2000, "Production Staff",  "Director",                    "Direction / AD", True,  1500, 1, 1, 0, "N", None, 0.00, "labor", "day"),
     (2000, "Production Staff",  "Executive Producer",          "Production",     True,  1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
     (2000, "Production Staff",  "Producer",                    "Production",     True,  1000, 1, 1, 0, "N", None, 0.00, "labor", "day"),
@@ -1366,10 +1376,11 @@ QE_CATEGORIES_FROZEN = [
     # 3000 Art & Sets Costs
     (3000, "Art & Sets Costs", "Prop Rentals"),
     (3000, "Art & Sets Costs", "Set Dressing Materials"),
-    # 3100 Hair, Makeup & Wardrobe Costs (merged old 4500 + 5000)
-    (3100, "Hair, Makeup & Wardrobe Costs", "Hair Stylist"),
-    (3100, "Hair, Makeup & Wardrobe Costs", "Makeup Artist"),
-    (3100, "Hair, Makeup & Wardrobe Costs (wardrobe)", "Wardrobe Stylist"),
+    # 3100 Hair & Makeup Costs
+    (3100, "Hair & Makeup Costs", "Hair Stylist"),
+    (3100, "Hair & Makeup Costs", "Makeup Artist"),
+    # 3200 Wardrobe Costs
+    (3200, "Wardrobe Costs", "Wardrobe Stylist"),
     # 3400 Transportation
     (3400, "Transportation", "Production Car"),
     (3400, "Transportation", "15-Passenger Van Rental"),

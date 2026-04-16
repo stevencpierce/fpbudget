@@ -312,7 +312,8 @@ def _guess_mmb_target(ci):
         2800: ('2600-00', 'Production Sound'),
         2900: ('2550-00', 'Technical / Control Room'),
         3000: ('2400-00', 'Art Department'),
-        3100: ('2800-00', 'Wardrobe / Makeup'),
+        3100: ('2800-00', 'Hair & Makeup'),
+        3200: ('2850-00', 'Wardrobe'),
         3300: ('2200-00', 'Locations'),
         3400: ('2900-00', 'Transportation'),
         3500: ('4000-00', 'Travel & Living'),
@@ -366,7 +367,8 @@ def _guess_showbiz_target(ci):
         2800: ('2600', 'Sound'),
         2900: ('2700', 'Technical / Control Room'),
         3000: ('2300', 'Art Department'),
-        3100: ('2800', 'Wardrobe / Makeup'),
+        3100: ('2800', 'Hair & Makeup'),
+        3200: ('2850', 'Wardrobe'),
         3300: ('2250', 'Locations'),
         3400: ('2900', 'Transportation'),
         3500: ('4000', 'Travel & Living'),
@@ -7856,9 +7858,11 @@ def _do_boot_work():
                 # ── Art & Sets Costs (3000) ──────────────────────────────────
                 (3000, "Art & Sets Costs",                 "Prop Rentals",               False, 1,   1,    800,    "day_10",     "N",    0,     190),
                 (3000, "Art & Sets Costs",                 "Set Dressing Materials",     False, 1,   1,    500,    "day_10",     "N",    0,     200),
-                # ── Hair, Makeup & Wardrobe (3100) ───────────────────────────
-                (3100, "Hair, Makeup & Wardrobe Costs",    "Hair Stylist",               True,  1,   3,    700,    "day_10",     "N",    0,     210),
-                (3100, "Hair, Makeup & Wardrobe Costs",    "Makeup Artist",              True,  1,   3,    700,    "day_10",     "N",    0,     220),
+                # ── Hair & Makeup (3100) ─────────────────────────────────────
+                (3100, "Hair & Makeup Costs",              "Hair Stylist",               True,  1,   3,    700,    "day_10",     "N",    0,     210),
+                (3100, "Hair & Makeup Costs",              "Makeup Artist",              True,  1,   3,    700,    "day_10",     "N",    0,     220),
+                # ── Wardrobe (3200) ──────────────────────────────────────────
+                (3200, "Wardrobe Costs",                   "Wardrobe Stylist",           True,  1,   3,    700,    "day_10",     "N",    0,     225),
                 # ── Transportation (3400) ────────────────────────────────────
                 (3400, "Transportation",                   "15-Passenger Van Rental",    False, 1,   5,    200,    "day_10",     "N",    0,     230),
                 (3400, "Transportation",                   "Fuel & Parking",             False, 1,   5,    80,     "day_10",     "N",    0,     240),

@@ -5360,19 +5360,23 @@ async function saveCompanySettings() {
 // Each item: { label, isLabor, rate, qty, days, kit, fringe, comp, unit }
 // ═══════════════════════════════════════════════════════════════════════════
 const QE_CATEGORIES = [
-  { code:3300,  name:'Locations', items:[
-    { label:'Location Scout Day',       isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'day'  },
-    { label:'Tech Scout',               isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'day'  },
-    { label:'Pre-Production Office',    isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'week' },
-    { label:'Script Copies / Printing', isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat' },
-    { label:'Office Supplies (Pre-Pro)',isLabor:false, rate:200,  qty:1, days:1, comp:'purchase',unit:'flat' },
+  { code:1000,  name:'Development Rights & Story', items:[
+    { label:'Story Rights / Option',         isLabor:false, rate:5000, qty:1, days:1, comp:'expense',  unit:'flat' },
+    { label:'Research',                      isLabor:false, rate:1000, qty:1, days:1, comp:'expense',  unit:'flat' },
+    { label:'Pitch Deck',                    isLabor:false, rate:1500, qty:1, days:1, comp:'expense',  unit:'flat' },
+    { label:'Sizzle / Proof-of-Concept Edit',isLabor:false, rate:3000, qty:1, days:1, comp:'expense',  unit:'flat' },
+    { label:'Legal (Development)',           isLabor:false, rate:1500, qty:1, days:1, comp:'expense',  unit:'flat' },
+    { label:'Development Office / Admin',    isLabor:false, rate:1000, qty:1, days:1, comp:'expense',  unit:'month'},
+    { label:'Treatment / Outline',           isLabor:false, rate:500,  qty:1, days:1, comp:'expense',  unit:'flat' },
+    { label:'Script Copies (Dev)',           isLabor:false, rate:100,  qty:1, days:1, comp:'purchase', unit:'flat' },
   ]},
-  { code:2000,  name:'Production Staff', items:[
-    { label:'Director',          isLabor:true,  rate:1500, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
-    { label:'Executive Producer',isLabor:true,  rate:1200, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
-    { label:'Producer',          isLabor:true,  rate:1000, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
-    { label:'Creative Director', isLabor:true,  rate:1200, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
-    { label:'Writer Fee',        isLabor:false, rate:0,    qty:1, days:1, comp:'expense', unit:'flat' },
+  { code:1100,  name:'Development Labor', items:[
+    { label:'Development Executive Producer',isLabor:true,  rate:1500, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
+    { label:'Development Producer',          isLabor:true,  rate:1200, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
+    { label:'Showrunner',                    isLabor:true,  rate:1500, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
+    { label:'Writer (Development)',          isLabor:true,  rate:1200, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
+    { label:'Creative Director (Dev)',       isLabor:true,  rate:1200, qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
+    { label:'Story Consultant',              isLabor:true,  rate:800,  qty:1, days:1, kit:0, fringe:'N', comp:'labor' },
   ]},
   { code:2100,  name:'Talent', items:[
     { label:'Principal Talent',  isLabor:true,  rate:825,  qty:1, days:1, kit:0, fringe:'N', unionFringe:'S', agent_pct:10, comp:'labor' },
@@ -5392,7 +5396,13 @@ const QE_CATEGORIES = [
     { label:'Casting Space',     isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'day'  },
     { label:'Casting Tapes',     isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'flat' },
   ]},
-  { code:2000,  name:'Production Staff (crew)', items:[
+  { code:2000,  name:'Production Staff', items:[
+    // ATL Executives
+    { label:'Director',                   group:'Executives',     isLabor:true, rate:1500, qty:1, days:1, kit:0, fringe:'N', unionFringe:'D', comp:'labor' },
+    { label:'Executive Producer',         group:'Executives',     isLabor:true, rate:1200, qty:1, days:1, kit:0, fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Producer',                   group:'Executives',     isLabor:true, rate:1000, qty:1, days:1, kit:0, fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Creative Director',          group:'Executives',     isLabor:true, rate:1200, qty:1, days:1, kit:0, fringe:'N', unionFringe:'N', comp:'labor' },
+    { label:'Writer Fee',                 group:'Executives',     isLabor:false,rate:0,    qty:1, days:1, comp:'expense', unit:'flat' },
     // Production Management
     { label:'Line Producer',              group:'Production',     isLabor:true, rate:1200, qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
     { label:'UPM',                        group:'Production',     isLabor:true, rate:1000, qty:1, days:1, kit:0,   fringe:'N', unionFringe:'D', comp:'labor' },
@@ -5539,13 +5549,13 @@ const QE_CATEGORIES = [
     { label:'Art Supplies',             isLabor:false, rate:200,  qty:1, days:1, comp:'purchase',unit:'flat' },
     { label:'Floral / Greenery',        isLabor:false, rate:400,  qty:1, days:1, comp:'purchase',unit:'flat' },
   ]},
-  { code:3100,  name:'Hair, Makeup & Wardrobe Costs', items:[
+  { code:3100,  name:'Hair & Makeup Costs', items:[
     { label:'Makeup Supplies / Kit',    isLabor:false, rate:200,  qty:1, days:1, comp:'purchase',unit:'flat' },
     { label:'Hair Supplies / Kit',      isLabor:false, rate:150,  qty:1, days:1, comp:'purchase',unit:'flat' },
     { label:'SFX Makeup Supplies',      isLabor:false, rate:400,  qty:1, days:1, comp:'purchase',unit:'flat' },
     { label:'Touch-Up Supplies',        isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat' },
   ]},
-  { code:3100,  name:'Hair, Makeup & Wardrobe Costs (wardrobe)', items:[
+  { code:3200,  name:'Wardrobe Costs', items:[
     { label:'Wardrobe Purchase',        isLabor:false, rate:500,  qty:1, days:1, comp:'purchase',unit:'flat' },
     { label:'Wardrobe Rental',          isLabor:false, rate:300,  qty:1, days:1, comp:'rental',  unit:'flat' },
     { label:'Alterations / Tailoring',  isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'flat' },
@@ -5591,14 +5601,21 @@ const QE_CATEGORIES = [
     { label:'Trash Removal',         isLabor:false, rate:200,  qty:1, days:1, comp:'expense', unit:'day'  },
     { label:'Cleaning Supplies',     isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat' },
   ]},
-  { code:3300,  name:'Locations (on-shoot)', items:[
-    { label:'Location Fee',          isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'day'  },
-    { label:'Permit Fee',            isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
-    { label:'Police / Fire Support', isLabor:false, rate:800,  qty:1, days:1, comp:'expense', unit:'day'  },
-    { label:'Location Hold Fee',     isLabor:false, rate:1000, qty:1, days:1, comp:'expense', unit:'day'  },
-    { label:'Location Cleaning',     isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
-    { label:'Damage Deposit',        isLabor:false, rate:1000, qty:1, days:1, comp:'expense', unit:'flat' },
-    { label:'Generator (Location)',  isLabor:false, rate:400,  qty:1, days:1, comp:'rental',  unit:'day'  },
+  { code:3300,  name:'Locations', items:[
+    // Pre-production
+    { label:'Location Scout Day',       isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Tech Scout',               isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Pre-Production Office',    isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'week' },
+    { label:'Script Copies / Printing', isLabor:false, rate:100,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    { label:'Office Supplies (Pre-Pro)',isLabor:false, rate:200,  qty:1, days:1, comp:'purchase',unit:'flat' },
+    // On-shoot
+    { label:'Location Fee',             isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Permit Fee',               isLabor:false, rate:500,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Police / Fire Support',    isLabor:false, rate:800,  qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Location Hold Fee',        isLabor:false, rate:1000, qty:1, days:1, comp:'expense', unit:'day'  },
+    { label:'Location Cleaning',        isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Damage Deposit',           isLabor:false, rate:1000, qty:1, days:1, comp:'expense', unit:'flat' },
+    { label:'Generator (Location)',     isLabor:false, rate:400,  qty:1, days:1, comp:'rental',  unit:'day'  },
   ]},
   { code:4500,  name:'Post-Production Equipment', items:[
     { label:'Edit System Rental',    isLabor:false, rate:200,  qty:1, days:1, comp:'rental',  unit:'day'  },
@@ -5670,8 +5687,6 @@ const QE_CATEGORIES = [
     { label:'Press Materials',       isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
     { label:'Advertising Placement', isLabor:false, rate:0,    qty:1, days:1, comp:'expense', unit:'flat' },
     { label:'Trailer / Sizzle Edit', isLabor:false, rate:1500, qty:1, days:1, comp:'expense', unit:'flat' },
-  ]},
-  { code:6300,  name:'Marketing & EPK (BTS)', items:[
     { label:'BTS Edit',              isLabor:false, rate:1000, qty:1, days:1, comp:'expense', unit:'flat' },
     { label:'Still Photos (license)',isLabor:false, rate:300,  qty:1, days:1, comp:'expense', unit:'flat' },
     { label:'EPK Package',           isLabor:false, rate:2000, qty:1, days:1, comp:'expense', unit:'flat' },
@@ -5707,12 +5722,11 @@ const UNION_FRINGE  = { 'N':'I', 'E':'E', 'S':'S', 'L':'L', 'U':'U', 'I':'I' };
 const UNION_RATE_MULT = 1.20;
 
 // per-category union flags (code → boolean)
-// Categories with union implications: 700 (Talent/SAG), 1000 (Prod Staff/IATSE-DGA), 1200 (Post Staff/IATSE)
-// 2026-04 renumber: 700→2100 (Talent), 1000→2000 (Production Staff),
-// 1200→4000 (Post-Production Staff).
+// Categories with union implications: 2100 (Talent/SAG), 4000 (Post Staff/IATSE).
+// Production Staff (2000) intentionally has NO union toggle — crew union status
+// is tracked per-role via the unionFringe field on individual items instead.
 const QE_UNION_LABELS = {
   2100: { nonunion: 'Non-Union', union: 'SAG' },
-  2000: { nonunion: 'Non-Union', union: 'IATSE-DGA' },
   4000: { nonunion: 'Non-Union', union: 'IATSE' },
 };
 let _qeUnionByCode = {}; // code → true (union) / false (non-union)
