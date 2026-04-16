@@ -2177,14 +2177,35 @@ def budget_view(pid, bid):
     for sec in sections:
         sec["lines"] = _order_lines_with_children(sec["lines"])
 
-    # Sub-group lookup for department headers in Production Staff (1000) and Talent (700) sections.
-    # Falls back to description-based keyword match for lines without role_group set.
+    # Sub-group lookup for department headers in Production Staff (2000) and
+    # Talent (2100) sections. Priority order:
+    #   1. ln.role_group (explicitly set)
+    #   2. Linked CatalogItem.group_name (for lines added via Quick Entry
+    #      where role_group wasn't forwarded to the save payload)
+    #   3. Keyword match on description (legacy lines with no catalog link)
+    # Bulk-load catalog group names in one query to avoid per-line lookups.
     line_sub_groups = {}
+    _cat_ids = [ln.catalog_item_id for ln in lines
+                if getattr(ln, 'catalog_item_id', None)]
+    _cat_group_by_id = {}
+    if _cat_ids:
+        _cat_rows = CatalogItem.query.filter(CatalogItem.id.in_(_cat_ids)).all()
+        _cat_group_by_id = {c.id: c.group_name for c in _cat_rows if c.group_name}
     for ln in lines:
         if ln.account_code == COA_CODE_PROD_STAFF:
-            line_sub_groups[ln.id] = ln.role_group or _get_prod_staff_subgroup(ln.description)
+            sg = (ln.role_group or '').strip() or None
+            if not sg and getattr(ln, 'catalog_item_id', None):
+                sg = _cat_group_by_id.get(ln.catalog_item_id)
+            if not sg:
+                sg = _get_prod_staff_subgroup(ln.description)
+            line_sub_groups[ln.id] = sg
         elif ln.account_code == COA_CODE_TALENT:
-            line_sub_groups[ln.id] = ln.role_group or _get_talent_subgroup(ln.description)
+            sg = (ln.role_group or '').strip() or None
+            if not sg and getattr(ln, 'catalog_item_id', None):
+                sg = _cat_group_by_id.get(ln.catalog_item_id)
+            if not sg:
+                sg = _get_talent_subgroup(ln.description)
+            line_sub_groups[ln.id] = sg
 
     # Dept head filtering: restrict to their assigned dept_code only
     dept_filter = None
@@ -2490,6 +2511,24 @@ def upsert_line(pid, bid):
             else:
                 setattr(ln, f, val)
 
+    # Backfill role_group from the linked CatalogItem when the line has a
+    # catalog_item_id but no role_group set. Fixes cases where QE adds a new
+    # custom role (e.g. admin-added "Utility" under Grip & Electric) and the
+    # client didn't forward group_name on the save payload — without this
+    # backfill the budget page falls through to the keyword-based subgroup
+    # guesser which doesn't know custom labels and places them under the
+    # wrong sub-header (Utility would fall into Sound by proximity of sort
+    # order). Safe: only runs when role_group is missing AND a catalog link
+    # exists AND that catalog row has a non-empty group_name.
+    try:
+        if getattr(ln, 'catalog_item_id', None) and not (getattr(ln, 'role_group', None) or '').strip():
+            _ci = db.session.get(CatalogItem, ln.catalog_item_id)
+            if _ci and (_ci.group_name or '').strip():
+                ln.role_group = _ci.group_name
+    except Exception:
+        # Don't break line save over a subgroup backfill lookup.
+        pass
+
     # Auto-compute estimated_total for non-labor lines (rate × qty × days, less discount)
     if not ln.is_labor:
         r        = float(ln.rate or 0)
@@ -2618,13 +2657,18 @@ def line_duplicate(pid, bid, lid):
 
     Copies all value fields (rate/days/fringe/agent/schedule config/etc.) but
     CLEARS individual assignment (assigned_crew_id=NULL, no CrewAssignment
-    rows). Also duplicates the source line's ScheduleDay rows so the new line
-    lands on the same shoot calendar as the original (crew_member_id on those
-    schedule rows is cleared — the duplicate starts unassigned).
+    rows). The source line's ScheduleDay rows are copied only when the
+    caller sets duplicate_schedule=true in the POST body (default). When
+    false, the duplicate starts with no schedule days — the user can build
+    a fresh schedule for it.
     """
     from models import ScheduleDay
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     src = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
+
+    _req_body = request.get_json(silent=True) or {}
+    # Default true for backward compat with callers that don't pass the flag.
+    duplicate_schedule = bool(_req_body.get("duplicate_schedule", True))
 
     try:
         # Build the new row with every value field copied from src, but with
@@ -2676,25 +2720,26 @@ def line_duplicate(pid, bid, lid):
         for i, ln in enumerate(section_lines):
             ln.sort_order = i
 
-        # Duplicate the source line's ScheduleDay rows so the new line lands on
-        # the same production calendar. crew_member_id is cleared — the copy
-        # starts with no individual attached.
-        src_sched = ScheduleDay.query.filter_by(budget_line_id=src.id).all()
-        for sd in src_sched:
-            db.session.add(ScheduleDay(
-                budget_id       = sd.budget_id,
-                budget_line_id  = new_ln.id,
-                crew_member_id  = None,                  # <-- cleared
-                date            = sd.date,
-                episode         = sd.episode,
-                day_type        = sd.day_type,
-                rate_multiplier = sd.rate_multiplier,
-                note            = sd.note,
-                crew_instance   = sd.crew_instance,
-                est_ot_hours    = sd.est_ot_hours,
-                cell_flags      = sd.cell_flags,
-                schedule_mode   = sd.schedule_mode,
-            ))
+        # Duplicate the source line's ScheduleDay rows when requested.
+        # crew_member_id is cleared — the copy starts with no individual
+        # attached even if the schedule days are copied.
+        if duplicate_schedule:
+            src_sched = ScheduleDay.query.filter_by(budget_line_id=src.id).all()
+            for sd in src_sched:
+                db.session.add(ScheduleDay(
+                    budget_id       = sd.budget_id,
+                    budget_line_id  = new_ln.id,
+                    crew_member_id  = None,                  # <-- cleared
+                    date            = sd.date,
+                    episode         = sd.episode,
+                    day_type        = sd.day_type,
+                    rate_multiplier = sd.rate_multiplier,
+                    note            = sd.note,
+                    crew_instance   = sd.crew_instance,
+                    est_ot_hours    = sd.est_ot_hours,
+                    cell_flags      = sd.cell_flags,
+                    schedule_mode   = sd.schedule_mode,
+                ))
 
         # NOTE: CrewAssignment rows are intentionally NOT copied. The duplicate
         # is a fresh unassigned role — user fills it in via the normal flow.

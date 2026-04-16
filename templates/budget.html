@@ -465,8 +465,15 @@
             {% else %}<span class="muted">—</span>{% endif %}
           </td>
           <td class="col-qty">
-            <span class="editable num" data-field="quantity"
-                  data-id="{{ ln.id }}">{% set _q = ln.quantity | float %}{{ _q | int if _q == (_q | int) else _q }}</span>
+            {% if ln.is_labor %}
+              {# Labor lines are always 1 person per line — qty is hidden.
+                 To add more instances, use Duplicate Row or add via Quick
+                 Entry with qty>1 (creates separate A/B/C named lines). #}
+              <span class="muted" style="font-size:.75rem" title="One person per labor line. Use Duplicate Row or Quick Entry qty to add more.">—</span>
+            {% else %}
+              <span class="editable num" data-field="quantity"
+                    data-id="{{ ln.id }}">{% set _q = ln.quantity | float %}{{ _q | int if _q == (_q | int) else _q }}</span>
+            {% endif %}
           </td>
           <td class="col-days col-days-cell">
             {% if ln.use_schedule %}
@@ -5919,8 +5926,8 @@ function renderQeCategory(code, searchQ) {
 
     const laborFields = item.isLabor ? `
       <td class="qe-td-qty">
-        <span class="muted" style="font-size:.75rem" title="Labor always adds one line per role — use Duplicate on the budget line to add more instances.">1</span>
-        <input type="hidden" class="qe-qty" value="1">
+        <input type="number" class="qe-input qe-qty" value="${effQty}" min="1" step="1"
+               title="People — values above 1 create separate lines (A, B, C...)">
       </td>
       <td class="qe-td-days"><input type="number" class="qe-input qe-days" value="${effDays}" min="0.5" step="0.5"></td>
       <td class="qe-td-rate"><div class="qe-rate-wrap"><span class="qe-dollar">$</span>
@@ -6161,15 +6168,19 @@ async function qeAddSelected() {
       if (maxSortInGroup >= 0) baseSortOrder = Math.max(baseSortOrder, maxSortInGroup + 10);
     }
 
-    // Labor lines always create exactly ONE row per Quick Entry item —
-    // users click the "Duplicate" option in the line row menu to add more
-    // instances of the same role. Non-labor items keep qty as a multiplier
-    // on a single line.
-    const numLines   = 1;
-    const perLineQty = isLabor ? 1 : qty;
+    // Labor lines with qty > 1 are SPLIT into that many separate named
+    // lines with letter suffixes (A, B, C ...). Each resulting line has
+    // quantity=1 and can be independently scheduled + assigned to a person.
+    // Non-labor items keep qty as a multiplier on a single line.
+    // (Users can also click "Duplicate Row" on the budget to copy a line
+    // later, but setting qty up-front in QE is faster for bulk adds.)
+    const shouldSplit = isLabor && qty > 1;
+    const numLines    = shouldSplit ? qty : 1;
+    const perLineQty  = shouldSplit ? 1 : qty;
 
     for (let i = 0; i < numLines; i++) {
-      const description = item.label;
+      const suffix      = shouldSplit ? ' ' + _seqSuffix(i) : '';
+      const description = item.label + suffix;
       const sortOrder   = baseSortOrder + i;
 
       const resp = await fetch(SAVE_URL, {
@@ -6426,6 +6437,31 @@ setTimeout(function() {
     });
   };
 
+  // Right-click on any budget line row opens the same context menu as the
+  // ⋮ button — just faster. Position the menu at the cursor instead of the
+  // button. Works for both labor and non-labor lines.
+  document.addEventListener('contextmenu', function(e) {
+    const row = e.target.closest('.line-row');
+    if (!row) return;
+    // Kit-fee child rows follow their parent — no independent menu.
+    if (row.classList.contains('kit-fee-row')) return;
+    const id   = parseInt(row.dataset.id || '0');
+    const code = parseInt(row.dataset.code || '0');
+    if (!id) return;
+    e.preventDefault();
+    _menuLineId = id;
+    _menuCode   = code;
+    _menu.classList.remove('hidden');
+    const cgBtn = document.getElementById('line-menu-change-group-btn');
+    if (cgBtn) cgBtn.style.display = (code === 2000) ? '' : 'none';
+    requestAnimationFrame(() => {
+      const mw = _menu.offsetWidth;
+      const mh = _menu.offsetHeight;
+      _menu.style.top  = Math.min(e.clientY, window.innerHeight - mh - 8) + 'px';
+      _menu.style.left = Math.min(e.clientX, window.innerWidth - mw - 8) + 'px';
+    });
+  });
+
   window.openChangeGroupModal = function() {
     _menu.classList.add('hidden');
     if (!_menuLineId || !_menuCode) return;
@@ -6501,9 +6537,20 @@ setTimeout(function() {
   window.lineDuplicate = async function() {
     _menu.classList.add('hidden');
     if (!_menuLineId) return;
-    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/${_menuLineId}/duplicate`, {
+    // Ask whether to also duplicate the schedule. Cancel aborts entirely.
+    // OK / Cancel on window.confirm maps cleanly to yes / no on a simple
+    // two-choice prompt without needing a custom modal.
+    const lidForPrompt = _menuLineId;
+    const dupeSched = window.confirm(
+      'Duplicate this row.\n\n' +
+      'Also duplicate the schedule days associated with this line?\n\n' +
+      '• OK     — copy the line AND its schedule days\n' +
+      '• Cancel — copy the line only (fresh schedule)'
+    );
+    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/${lidForPrompt}/duplicate`, {
       method: 'POST',
-      headers: {'Content-Type':'application/json'}
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ duplicate_schedule: !!dupeSched })
     });
     if (res.ok) reloadWithTab();
     else {
