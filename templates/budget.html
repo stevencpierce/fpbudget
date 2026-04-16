@@ -5796,8 +5796,10 @@ async function loadQeCatalog() {
 // Toggle: when true, Quick Entry hydrates from /api/catalog (DB is the
 // source of truth — admin catalog edits go live immediately). When false,
 // QE uses the hardcoded QE_CATEGORIES above and ignores the DB catalog.
-// Flip this to true once /admin/catalog is fully seeded and verified.
-const QE_USE_DB_CATALOG = false;
+// Flipped true on 2026-04-16 after catalog was reseeded and verified via
+// /admin/catalog. The hardcoded QE_CATEGORIES above remains as a fallback
+// if /api/catalog ever fails to respond.
+const QE_USE_DB_CATALOG = true;
 
 async function openCascade() {
   _qeUnionByCode = {};
