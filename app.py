@@ -2734,6 +2734,79 @@ def line_reorder(pid, bid):
     for i, sl in enumerate(section_lines):
         sl.sort_order = i
 
+    # Adopt role_group from the dropped position's immediate neighbors. This
+    # ensures cross-group drags land cleanly — e.g. dragging "Executive
+    # Producer" (role_group='Executives') into the middle of the
+    # "Direction / AD" rows updates its group to 'Direction / AD' instead of
+    # leaving a fragmented "Executives" header mid-section. Logic:
+    #   - If the row IMMEDIATELY before and after the dropped row share the
+    #     same role_group, the moved row adopts it.
+    #   - If the row is at a section boundary (first or last), it adopts
+    #     whichever single neighbor exists.
+    #   - If neighbors disagree, leave role_group unchanged (the user is
+    #     likely placing it on a group boundary intentionally).
+    try:
+        new_idx = next((i for i, sl in enumerate(section_lines) if sl.id == ln.id), None)
+        if new_idx is not None:
+            before = section_lines[new_idx - 1].role_group if new_idx > 0 else None
+            after  = section_lines[new_idx + 1].role_group if new_idx + 1 < len(section_lines) else None
+            target = None
+            if before is not None and after is not None:
+                if before == after:
+                    target = before
+            elif before is not None:
+                target = before
+            elif after is not None:
+                target = after
+            if target is not None and ln.role_group != target:
+                ln.role_group = target
+    except Exception:
+        # If neighbor inference fails for any reason, silently keep the
+        # existing role_group rather than breaking the reorder.
+        pass
+
+    db.session.commit()
+    _touch_budget(bid)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/set-group", methods=["POST"])
+@login_required
+def line_set_group(pid, bid, lid):
+    """Explicitly set a line's role_group and re-seat its sort_order so it
+    lands at the bottom of that group cluster. Used by the "Change Group…"
+    option in the line row context menu — lets users move rows into groups
+    that currently have no members (and therefore no visible drop target)."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data  = request.get_json(force=True) or {}
+    group = (data.get("role_group") or "").strip() or None
+
+    ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
+    ln.role_group = group
+
+    # Re-seat sort_order: place the line at the end of the chosen group's
+    # cluster. If the group has no existing members, place the line at the
+    # end of the section (so it picks up the group label visibly).
+    section_lines = BudgetLine.query.filter_by(
+        budget_id=bid, account_code=ln.account_code
+    ).filter(BudgetLine.id != ln.id).order_by(
+        BudgetLine.sort_order, BudgetLine.id
+    ).all()
+
+    # Find last index of a row with this role_group; insert after it.
+    last_match = -1
+    for i, sl in enumerate(section_lines):
+        if sl.role_group == group:
+            last_match = i
+    if last_match >= 0:
+        section_lines.insert(last_match + 1, ln)
+    else:
+        section_lines.append(ln)
+
+    for i, sl in enumerate(section_lines):
+        sl.sort_order = i
+
     db.session.commit()
     _touch_budget(bid)
     db.session.commit()

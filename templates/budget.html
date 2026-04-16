@@ -3636,6 +3636,23 @@ function renderCalcDetail(d) {
   <button type="button" onclick="lineDuplicate()">Duplicate Row</button>
   <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
   <button type="button" onclick="openLineMoveModal()">Move to…</button>
+  <button type="button" id="line-menu-change-group-btn" onclick="openChangeGroupModal()" style="display:none">Change Group…</button>
+</div>
+
+<!-- ── Change Group Modal (section 2000 role_group picker) ─────────────────── -->
+<div id="change-group-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="closeChangeGroupModal()"></div>
+  <div class="modal-box" style="min-width:320px;max-width:440px">
+    <h2 style="margin-bottom:4px">Change Group</h2>
+    <p style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">
+      Move this line into a different sub-group (e.g. Executives, Camera, Grip &amp; Electric).
+      Useful when the target group currently has no rows.
+    </p>
+    <div id="change-group-list" style="max-height:360px;overflow-y:auto;display:flex;flex-direction:column;gap:.25rem"></div>
+    <div class="modal-actions" style="margin-top:12px">
+      <button type="button" class="btn btn-outline" onclick="closeChangeGroupModal()">Cancel</button>
+    </div>
+  </div>
 </div>
 
 <!-- ── Move Line Modal ──────────────────────────────────────────────────────── -->
@@ -6385,6 +6402,11 @@ setTimeout(function() {
     _menuLineId = parseInt(btn.dataset.id);
     _menuCode   = parseInt(btn.dataset.code);
     _menu.classList.remove('hidden');
+    // Show the "Change Group…" option only for sections that use role_group
+    // sub-headers (currently just 2000 Production Staff). Keeps the menu
+    // compact for sections where sub-grouping isn't in use.
+    const cgBtn = document.getElementById('line-menu-change-group-btn');
+    if (cgBtn) cgBtn.style.display = (_menuCode === 2000) ? '' : 'none';
     // Position with fixed coords (viewport-relative)
     requestAnimationFrame(() => {
       const rect = btn.getBoundingClientRect();
@@ -6394,6 +6416,59 @@ setTimeout(function() {
       _menu.style.left = Math.max(4, Math.min(rect.left, window.innerWidth - mw - 8)) + 'px';
     });
   };
+
+  window.openChangeGroupModal = function() {
+    _menu.classList.add('hidden');
+    if (!_menuLineId || !_menuCode) return;
+    const modal = document.getElementById('change-group-modal');
+    const list  = document.getElementById('change-group-list');
+    list.innerHTML = '';
+
+    // Gather candidate groups: every distinct group name from QE_CATEGORIES
+    // for this category code, plus any role_group values already in use on
+    // existing rows (in case admin added custom groups).
+    const fromQE = new Set();
+    const _cat = (QE_CATEGORIES || []).find(c => c.code === _menuCode);
+    if (_cat) (_cat.items || []).forEach(it => { if (it.group) fromQE.add(it.group); });
+    document.querySelectorAll(`.line-row[data-code="${_menuCode}"]`).forEach(r => {
+      // data-group attr isn't rendered today; skip — QE list is canonical.
+    });
+    const groups = Array.from(fromQE).sort();
+
+    if (groups.length === 0) {
+      list.innerHTML = '<div class="muted" style="padding:8px">No sub-groups defined for this section.</div>';
+    } else {
+      groups.forEach(g => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-sm btn-outline';
+        b.style.cssText = 'text-align:left;width:100%';
+        b.textContent = g;
+        b.onclick = () => applyChangeGroup(g);
+        list.appendChild(b);
+      });
+    }
+    modal.classList.remove('hidden');
+  };
+
+  window.closeChangeGroupModal = function() {
+    document.getElementById('change-group-modal').classList.add('hidden');
+  };
+
+  async function applyChangeGroup(group) {
+    if (!_menuLineId) return;
+    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/${_menuLineId}/set-group`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ role_group: group })
+    });
+    if (res.ok) {
+      closeChangeGroupModal();
+      reloadWithTab();
+    } else {
+      alert('Change group failed');
+    }
+  }
 
   // Close on outside click
   document.addEventListener('click', e => {
