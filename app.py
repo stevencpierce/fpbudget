@@ -6805,6 +6805,121 @@ def admin_catalog_reseed():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/admin/catalog/stats")
+@login_required
+@super_admin_required
+def admin_catalog_stats():
+    """Diagnostic: return counts per category_code in the CatalogItem
+    table, flagging any that are legacy (pre-renumber) codes. Useful
+    for diagnosing why QE might render unexpected codes."""
+    from budget_calc import COA_LEGACY_MAPPING, FP_COA_NAMES
+    rows = db.session.execute(text(
+        "SELECT category_code, category_name, COUNT(*) AS n "
+        "FROM catalog_item "
+        "GROUP BY category_code, category_name "
+        "ORDER BY category_code"
+    )).fetchall()
+    legacy_codes = set(COA_LEGACY_MAPPING.keys())
+    current_codes = set(FP_COA_NAMES.keys())
+    stats = []
+    for code, name, n in rows:
+        code = int(code or 0)
+        stats.append({
+            "code": code,
+            "name": name,
+            "count": int(n),
+            "is_legacy": code in legacy_codes,
+            "is_current": code in current_codes,
+            "expected_name": FP_COA_NAMES.get(code) if code in current_codes else None,
+            "legacy_maps_to": COA_LEGACY_MAPPING.get(code) if code in legacy_codes else None,
+        })
+    return jsonify({
+        "total_rows": sum(s["count"] for s in stats),
+        "sections": stats,
+        "current_codes": sorted(current_codes),
+        "legacy_codes": sorted(legacy_codes),
+    })
+
+
+@app.route("/admin/catalog/repair-codes", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_repair_codes():
+    """Repair CatalogItem rows that are at legacy (pre-renumber) codes.
+    Remaps each row's category_code/category_name to the current
+    post-renumber value. If a (new_code, label) row already exists,
+    the legacy duplicate is hard-deleted to avoid violating the unique
+    constraint."""
+    from budget_calc import COA_LEGACY_MAPPING, FP_COA_NAMES
+
+    remapped = 0
+    deleted_dupes = 0
+    name_fixed = 0
+    errors = []
+
+    # Snapshot existing (code, label) pairs so we can detect target collisions.
+    existing = {
+        (int(ci.category_code), ci.label): ci.id
+        for ci in CatalogItem.query.all()
+    }
+
+    for ci in list(CatalogItem.query.all()):
+        old_code = int(ci.category_code or 0)
+        label    = ci.label
+
+        # Case A — legacy code. Remap to new code, update name.
+        if old_code in COA_LEGACY_MAPPING:
+            new_code = COA_LEGACY_MAPPING[old_code]
+            new_name = FP_COA_NAMES.get(new_code, ci.category_name)
+            # If a row already exists at (new_code, label), this legacy row
+            # would collide on commit — delete it instead.
+            target_id = existing.get((new_code, label))
+            if target_id and target_id != ci.id:
+                try:
+                    db.session.delete(ci)
+                    db.session.commit()
+                    deleted_dupes += 1
+                    existing.pop((old_code, label), None)
+                except Exception as e:
+                    db.session.rollback()
+                    errors.append(f"delete {ci.id} ({old_code}, {label!r}): {e}")
+                continue
+            try:
+                ci.category_code = new_code
+                ci.category_name = new_name
+                db.session.commit()
+                existing.pop((old_code, label), None)
+                existing[(new_code, label)] = ci.id
+                remapped += 1
+            except Exception as e:
+                db.session.rollback()
+                errors.append(f"remap {ci.id} {old_code}→{new_code} {label!r}: {e}")
+            continue
+
+        # Case B — current code but stale name. Sync category_name with
+        # FP_COA_NAMES so "Hair, Makeup & Wardrobe Costs" becomes
+        # "Hair & Makeup Costs" on 3100 rows, for example.
+        if old_code in FP_COA_NAMES:
+            expected_name = FP_COA_NAMES[old_code]
+            if ci.category_name != expected_name:
+                try:
+                    ci.category_name = expected_name
+                    db.session.commit()
+                    name_fixed += 1
+                except Exception as e:
+                    db.session.rollback()
+                    errors.append(f"rename {ci.id} ({old_code}): {e}")
+
+    return jsonify({
+        "ok": True,
+        "remapped": remapped,
+        "deleted_duplicates": deleted_dupes,
+        "names_fixed": name_fixed,
+        "error_count": len(errors),
+        "errors": errors[:20],
+    })
+
+
 # ── Role Tag Mapping editor (Super Admin) ────────────────────────────────────
 # Translates internal role_tag → MMB/ShowBiz target accounts. Super admin
 # refines the seeded defaults here. Export routines (Task 3) read the same
