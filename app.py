@@ -618,8 +618,16 @@ def _r2_presigned_url(key, expires=3600):
 # ── Dropbox helpers ────────────────────────────────────────────────────────────
 _DBX_TEMPLATE_NAME  = os.getenv('DROPBOX_TEMPLATE_FOLDER', '!_PRODUCTION_PROJECT_TEMPLATE')
 _DBX_NAMESPACE_ID   = os.getenv('DROPBOX_NAMESPACE_ID', '')   # shared folder namespace ID
-# Legacy path-based fallback (used only when namespace ID is not set)
-_DBX_OPS_ROOT       = os.getenv('DROPBOX_OPERATIONS_PATH', '/Steven Pierce/_FP OPERATIONS FOLDER')
+# Legacy path-based fallback (used only when namespace ID is not set).
+# Paths are relative to the authenticated Dropbox user's root — if the app
+# is connected as Steven, the prefix `/Steven Pierce/` would DUPLICATE and
+# land everything under `Steven Pierce/Steven Pierce/...`. Keep it root-
+# relative.
+_DBX_OPS_ROOT       = os.getenv('DROPBOX_OPERATIONS_PATH', '/_FP OPERATIONS FOLDER')
+# Archive and Wrap destinations live as SIBLINGS of _FP OPERATIONS FOLDER
+# (not children). Both exist at the top of the Dropbox user root.
+_DBX_ARCHIVE_ROOT   = os.getenv('DROPBOX_ARCHIVE_PATH',   '/_ARCHIVED')
+_DBX_WRAP_ROOT      = os.getenv('DROPBOX_WRAP_PATH',      '/_WRAPPED PROJECTS')
 
 def _dbx_client():
     import dropbox as _dbx_mod
@@ -1075,8 +1083,8 @@ def dbx_ls():
         # Resolved path examples
         resolved_paths = {
             "sample_project_root": f"/SampleProject" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/SampleProject",
-            "archive_root": f"/_ARCHIVED" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_ARCHIVED",
-            "wrap_root": f"/_WRAPPED PROJECTS" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_WRAPPED PROJECTS",
+            "archive_root": _DBX_ARCHIVE_ROOT,
+            "wrap_root":    _DBX_WRAP_ROOT,
         }
 
         # List root to find shared namespaces
@@ -1487,7 +1495,7 @@ def _archive_project_dropbox(p):
         if not has_refresh and not os.getenv('DROPBOX_ACCESS_TOKEN'):
             return
         dbx = _dbx_client()
-        archive_root = f"/_ARCHIVED" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_ARCHIVED"
+        archive_root = _DBX_ARCHIVE_ROOT
         from datetime import date as _date
         stamp = _date.today().strftime("%Y-%m-%d")
 
@@ -1630,7 +1638,7 @@ def project_wrap(pid):
         try:
             dbx = _dbx_client()
             src  = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
-            wrap_root = f"/_WRAPPED PROJECTS" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_WRAPPED PROJECTS"
+            wrap_root = _DBX_WRAP_ROOT
             # Prefix destination folder with YYYY-MM-DD to match the _ARCHIVED
             # flow — easier chronological sort in Dropbox.
             from datetime import date as _date
@@ -1654,8 +1662,10 @@ def project_archive(pid):
         try:
             dbx = _dbx_client()
             src  = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
-            arch_root = f"/_archived" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_archived"
-            dest = f"{arch_root}/{p.dropbox_folder}"
+            # _ARCHIVED lives as a SIBLING of _FP OPERATIONS FOLDER, not a child.
+            from datetime import date as _date
+            stamp = _date.today().strftime("%Y-%m-%d")
+            dest = f"{_DBX_ARCHIVE_ROOT}/{stamp}_{p.dropbox_folder}"
             dbx.files_move_v2(src, dest, autorename=True)
             logging.info(f"Archived project Dropbox folder: {src} → {dest}")
         except Exception as e:
@@ -1731,8 +1741,9 @@ def projects_bulk_archive():
             try:
                 dbx = _dbx_client()
                 src = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
-                arch_root = f"/_archived" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_archived"
-                dest = f"{arch_root}/{p.dropbox_folder}"
+                from datetime import date as _date
+                stamp = _date.today().strftime("%Y-%m-%d")
+                dest = f"{_DBX_ARCHIVE_ROOT}/{stamp}_{p.dropbox_folder}"
                 dbx.files_move_v2(src, dest, autorename=True)
             except Exception as e:
                 logging.warning(f"Could not move Dropbox folder on bulk archive: {e}")
