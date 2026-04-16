@@ -6665,6 +6665,106 @@ def admin_role_mapping_update(mid):
     return jsonify(_role_mapping_to_dict(m))
 
 
+@app.route("/admin/reports/qe-audit.csv")
+@login_required
+@super_admin_required
+def admin_qe_audit_csv():
+    """Task 4: one-time audit comparing JS QE_CATEGORIES_FROZEN against
+    CatalogItem rows in the DB. Produces a CSV the super admin can use to
+    reconcile the two sources of truth before they're formally unified
+    (Phase 2 will replace the JS array with a /api/catalog fetch).
+
+    Statuses emitted:
+      - 'Missing from catalog'       — in QE but not in CatalogItem
+      - 'Missing from departments'   — in CatalogItem but not in QE
+      - 'Duplicate within department'— (code, label) appears twice in QE
+      - 'Duplicate across departments' — same label under two or more codes
+    """
+    from budget_calc import QE_CATEGORIES_FROZEN
+    import csv as _csv, io as _io
+    from collections import Counter, defaultdict
+
+    # Build QE structures
+    qe_pairs = [(int(c), lbl) for (c, _name, lbl) in QE_CATEGORIES_FROZEN]
+    qe_dept_name = {int(c): name for (c, name, _lbl) in QE_CATEGORIES_FROZEN}
+    qe_pair_counts = Counter(qe_pairs)
+    qe_labels_by_code = defaultdict(set)
+    for c, lbl in qe_pairs:
+        qe_labels_by_code[c].add(lbl)
+    qe_codes_by_label = defaultdict(set)
+    for c, lbl in qe_pairs:
+        qe_codes_by_label[lbl].add(c)
+
+    # CatalogItem index
+    ci_pairs = set()
+    ci_by_pair = {}
+    for ci in CatalogItem.query.all():
+        key = (int(ci.category_code or 0), ci.label or "")
+        ci_pairs.add(key)
+        ci_by_pair[key] = ci
+
+    # Build report rows
+    report = []
+
+    # 1. Missing from catalog
+    for c, lbl in set(qe_pairs):
+        if (c, lbl) not in ci_pairs:
+            report.append({
+                "Department": f"{c} — {qe_dept_name.get(c, '')}",
+                "Quick Entry Item": lbl,
+                "Status": "Missing from catalog",
+                "Recommended Action": "Add to global catalog (/admin/catalog) or remove from QE_CATEGORIES",
+            })
+
+    # 2. Missing from departments
+    qe_pair_set = set(qe_pairs)
+    for key in ci_pairs:
+        if key not in qe_pair_set:
+            c, lbl = key
+            report.append({
+                "Department": f"{c} — {dict(FP_COA_SECTIONS).get(c, '')}",
+                "Quick Entry Item": lbl,
+                "Status": "Missing from departments",
+                "Recommended Action": "Add to Quick Entry panel (templates/budget.html QE_CATEGORIES) or mark catalog row is_active=False",
+            })
+
+    # 3. Duplicate within department
+    for (c, lbl), cnt in qe_pair_counts.items():
+        if cnt > 1:
+            report.append({
+                "Department": f"{c} — {qe_dept_name.get(c, '')}",
+                "Quick Entry Item": lbl,
+                "Status": "Duplicate within department",
+                "Recommended Action": f"Appears {cnt} times; remove duplicates — keep newest entry",
+            })
+
+    # 4. Duplicate across departments
+    for lbl, codes in qe_codes_by_label.items():
+        if len(codes) > 1:
+            for c in sorted(codes):
+                report.append({
+                    "Department": f"{c} — {qe_dept_name.get(c, '')}",
+                    "Quick Entry Item": lbl,
+                    "Status": "Duplicate across departments",
+                    "Recommended Action": f"Also appears under code(s) {sorted(codes - {c})}; confirm canonical section",
+                })
+
+    # Sort for easy review
+    report.sort(key=lambda r: (r["Status"], r["Department"], r["Quick Entry Item"]))
+
+    # Emit CSV
+    out = _io.StringIO()
+    w = _csv.DictWriter(out, fieldnames=["Department", "Quick Entry Item",
+                                         "Status", "Recommended Action"])
+    w.writeheader()
+    for row in report:
+        w.writerow(row)
+
+    out.seek(0)
+    return Response(out.read().encode('utf-8'), mimetype="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=qe_audit.csv"})
+
+
 @app.route("/admin/role-mapping/bulk-import", methods=["POST"])
 @login_required
 @super_admin_required

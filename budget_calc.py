@@ -1280,6 +1280,152 @@ FP_CATALOG_SEED = [
 ]
 
 
+# ── QE Categories frozen snapshot ─────────────────────────────────────────────
+# Mirrors the current JS QE_CATEGORIES in templates/budget.html at commit
+# e3410e6 (Task 1 renumber + Task 3 exports applied). Used by the Task 4
+# audit report to diff against CatalogItem rows in the DB.
+#
+# Format: list of (category_code:int, category_name:str, label:str).
+# Only labels live here — no rates/qty/etc. — because the audit compares
+# existence, not values.
+QE_CATEGORIES_FROZEN = [
+    # 3300 Locations (merged old 100 Pre-Prod Locations)
+    (3300, "Locations", "Tech Scout"),
+    (3300, "Locations", "Permit Runner"),
+    (3300, "Locations", "Scout Day"),
+    # 2000 Production Staff (absorbs old 600 ATL + old 1000 crew)
+    (2000, "Production Staff", "Director"),
+    (2000, "Production Staff", "Executive Producer"),
+    (2000, "Production Staff", "Producer"),
+    (2000, "Production Staff", "Creative Director"),
+    (2000, "Production Staff", "Writer Fee"),
+    # 2100 Talent
+    (2100, "Talent", "Principal Talent"),
+    (2100, "Talent", "Host"),
+    (2100, "Talent", "Stunt Performer"),
+    (2100, "Talent", "Extra / Background"),
+    (2100, "Talent", "Voice Over"),
+    # 2300 Rehearsal
+    (2300, "Rehearsal", "Rehearsal Stage Rental"),
+    (2300, "Rehearsal", "Rehearsal Day Rate"),
+    # 2200 Casting
+    (2200, "Casting", "Casting Director"),
+    (2200, "Casting", "Casting Session Fee"),
+    # 2000 Production Staff (crew roles from old 1000)
+    (2000, "Production Staff (crew)", "Line Producer"),
+    (2000, "Production Staff (crew)", "UPM"),
+    (2000, "Production Staff (crew)", "Supervising Producer"),
+    (2000, "Production Staff (crew)", "Production Supervisor"),
+    (2000, "Production Staff (crew)", "Production Coordinator"),
+    (2000, "Production Staff (crew)", "Production Assistant"),
+    (2000, "Production Staff (crew)", "Live Director"),
+    (2000, "Production Staff (crew)", "1st AD"),
+    (2000, "Production Staff (crew)", "2nd AD"),
+    (2000, "Production Staff (crew)", "Key PA"),
+    (2000, "Production Staff (crew)", "Director of Photography"),
+    (2000, "Production Staff (crew)", "Camera Operator"),
+    (2000, "Production Staff (crew)", "Robotic Camera Operator"),
+    (2000, "Production Staff (crew)", "1st AC"),
+    (2000, "Production Staff (crew)", "2nd AC"),
+    (2000, "Production Staff (crew)", "DIT"),
+    (2000, "Production Staff (crew)", "Video Engineer"),
+    (2000, "Production Staff (crew)", "Lighting Designer"),
+    (2000, "Production Staff (crew)", "Gaffer"),
+    (2000, "Production Staff (crew)", "Key Grip"),
+    (2000, "Production Staff (crew)", "Sound Mixer"),
+    (2000, "Production Staff (crew)", "Boom Operator"),
+    (2000, "Production Staff (crew)", "Technical Producer"),
+    (2000, "Production Staff (crew)", "Technical Director"),
+    (2000, "Production Staff (crew)", "Graphics and Playback"),
+    (2000, "Production Staff (crew)", "Switcher Operator"),
+    # 4000 Post-Production Staff
+    (4000, "Post-Production Staff", "Editor"),
+    (4000, "Post-Production Staff", "Assistant Editor"),
+    (4000, "Post-Production Staff", "Post Supervisor"),
+    (4000, "Post-Production Staff", "Colorist"),
+    (4000, "Post-Production Staff", "VFX Supervisor"),
+    (4000, "Post-Production Staff", "Motion Graphics Artist"),
+    (4000, "Post-Production Staff", "Sound Designer"),
+    # 2600 Camera Equipment
+    (2600, "Camera Equipment", "Camera Package Rental"),
+    (2600, "Camera Equipment", "Lens Kit Rental"),
+    (2600, "Camera Equipment", "Media / Hard Drives"),
+    # 2700 Grip & Electric Equipment
+    (2700, "Grip & Electric Equipment", "Lighting Package"),
+    (2700, "Grip & Electric Equipment", "Grip Package"),
+    # 5000 Processing & Lab
+    (5000, "Processing & Lab", "SDI Distribution Amp"),
+    (5000, "Processing & Lab", "Encoder / Decoder Unit"),
+    # 2900 Control Room Equipment
+    (2900, "Control Room Equipment", "Control Room Rental"),
+    (2900, "Control Room Equipment", "Video Playback System"),
+    (2900, "Control Room Equipment", "Switcher / Mixer Rental"),
+    # 2800 Sound Equipment
+    (2800, "Sound Equipment", "Sound Package Rental"),
+    (2800, "Sound Equipment", "Wireless Mic Kit"),
+    # 3000 Art & Sets Costs
+    (3000, "Art & Sets Costs", "Prop Rentals"),
+    (3000, "Art & Sets Costs", "Set Dressing Materials"),
+    # 3100 Hair, Makeup & Wardrobe Costs (merged old 4500 + 5000)
+    (3100, "Hair, Makeup & Wardrobe Costs", "Hair Stylist"),
+    (3100, "Hair, Makeup & Wardrobe Costs", "Makeup Artist"),
+    (3100, "Hair, Makeup & Wardrobe Costs (wardrobe)", "Wardrobe Stylist"),
+    # 3400 Transportation
+    (3400, "Transportation", "Production Car"),
+    (3400, "Transportation", "15-Passenger Van Rental"),
+    (3400, "Transportation", "Fuel"),
+    (3400, "Transportation", "Parking"),
+    (3400, "Transportation", "Mileage Reimbursement"),
+    # 3500 Travel
+    (3500, "Travel", "Flight"),
+    (3500, "Travel", "Hotel Night"),
+    # 3600 Shipping
+    (3600, "Shipping", "FedEx / UPS"),
+    # 3700 Production Meals & Craft Services
+    (3700, "Production Meals & Craft Services", "Craft Services"),
+    (3700, "Production Meals & Craft Services", "Catering (Lunch)"),
+    # 3800 Sanitation
+    (3800, "Sanitation", "Restroom Trailer"),
+    # 3300 Locations (on-shoot from old 9000)
+    (3300, "Locations (on-shoot)", "Studio / Stage Rental"),
+    (3300, "Locations (on-shoot)", "Location Fee"),
+    # 4500 Post-Production Equipment
+    (4500, "Post-Production Equipment", "Edit Suite Rental"),
+    # 4600 Post-Production Facilities
+    (4600, "Post-Production Facilities", "Color Bay"),
+    (4600, "Post-Production Facilities", "Audio Mix Stage"),
+    # 4700 Post-Production Services
+    (4700, "Post-Production Services", "Online Conform"),
+    (4700, "Post-Production Services", "Closed Captioning"),
+    # 6100 Licensing
+    (6100, "Licensing", "Music License"),
+    (6100, "Licensing", "Stock Footage License"),
+    # 4800 Music & Composition
+    (4800, "Music & Composition", "Composer Fee"),
+    (4800, "Music & Composition", "Music Supervisor"),
+    # 6200 Distribution
+    (6200, "Distribution", "Delivery to Network"),
+    # 6400 Web Build & Software Development
+    (6400, "Web Build & Software Development", "Software Subscriptions"),
+    (6400, "Web Build & Software Development", "Office Supplies"),
+    # 6000 Insurance
+    (6000, "Insurance", "Production Insurance"),
+    (6000, "Insurance", "Errors & Omissions"),
+    # 6500 Administrative
+    (6500, "Administrative", "Office Rental"),
+    (6500, "Administrative", "Bookkeeping"),
+    # 6300 Marketing & EPK (merged old 16000 + 17000)
+    (6300, "Marketing & EPK", "Marketing Campaign"),
+    (6300, "Marketing & EPK (BTS)", "BTS Photographer"),
+    # 4900 Title Sequence
+    (4900, "Title Sequence", "Title Sequence Design"),
+    # 6600 Residuals
+    (6600, "Residuals", "Talent Residuals"),
+    # 6700 Miscellaneous
+    (6700, "Miscellaneous", "Contingency"),
+]
+
+
 def seed_catalog(db_session):
     """Seed the global Quick Entry catalog. Idempotent: only adds missing items."""
     from models import CatalogItem
