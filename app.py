@@ -1075,7 +1075,7 @@ def dbx_ls():
         # Resolved path examples
         resolved_paths = {
             "sample_project_root": f"/SampleProject" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/SampleProject",
-            "archive_root": f"/_archived" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_archived",
+            "archive_root": f"/_ARCHIVED" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_ARCHIVED",
             "wrap_root": f"/_WRAPPED PROJECTS" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_WRAPPED PROJECTS",
         }
 
@@ -1631,7 +1631,11 @@ def project_wrap(pid):
             dbx = _dbx_client()
             src  = f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}"
             wrap_root = f"/_WRAPPED PROJECTS" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/_WRAPPED PROJECTS"
-            dest = f"{wrap_root}/{p.dropbox_folder}"
+            # Prefix destination folder with YYYY-MM-DD to match the _ARCHIVED
+            # flow — easier chronological sort in Dropbox.
+            from datetime import date as _date
+            stamp = _date.today().strftime("%Y-%m-%d")
+            dest = f"{wrap_root}/{stamp}_{p.dropbox_folder}"
             dbx.files_move_v2(src, dest, autorename=True)
             logging.info(f"Wrapped project Dropbox folder: {src} → {dest}")
         except Exception as e:
