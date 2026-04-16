@@ -1218,75 +1218,350 @@ def seed_standard_template(db_session):
 # (code, name, label, group, is_labor, rate, qty, days, kit, fringe, union_fringe,
 #  agent_pct, comp, unit)
 FP_CATALOG_SEED = [
-    # Development Labor (1100) — key personnel only. These are the same roles
-    # that can ALSO appear on 2000 (Production Staff) and 4000 (Post-Production
-    # Staff) as separate lines per phase — see "phase" field on CatalogItem.
-    (1100, "Development Labor", "Development Executive Producer", "Development",   True, 1500, 1, 1, 0, "N", None, 0.00, "labor", "day"),
-    (1100, "Development Labor", "Development Producer",           "Development",   True, 1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
-    (1100, "Development Labor", "Showrunner",                     "Development",   True, 1500, 1, 1, 0, "N", None, 0.00, "labor", "day"),
-    (1100, "Development Labor", "Writer (Development)",           "Development",   True, 1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
-    (1100, "Development Labor", "Creative Director (Dev)",        "Development",   True, 1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
-    (1100, "Development Labor", "Story Consultant",               "Development",   True,  800, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    # ── 1000 Development Rights & Story ──────────────────────────────────────
+    (1000, "Development Rights & Story", "Story Rights / Option",          None, False, 5000, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (1000, "Development Rights & Story", "Research",                       None, False, 1000, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (1000, "Development Rights & Story", "Pitch Deck",                     None, False, 1500, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (1000, "Development Rights & Story", "Sizzle / Proof-of-Concept Edit", None, False, 3000, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (1000, "Development Rights & Story", "Legal (Development)",            None, False, 1500, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (1000, "Development Rights & Story", "Development Office / Admin",     None, False, 1000, 1, 1, 0, None, None, 0.00, "expense",  "month"),
+    (1000, "Development Rights & Story", "Treatment / Outline",            None, False,  500, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (1000, "Development Rights & Story", "Script Copies (Dev)",            None, False,  100, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
 
-    # Production Staff (2000) — ATL executive roles.
-    (2000, "Production Staff",  "Director",                    "Direction / AD", True,  1500, 1, 1, 0, "N", None, 0.00, "labor", "day"),
-    (2000, "Production Staff",  "Executive Producer",          "Production",     True,  1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
-    (2000, "Production Staff",  "Producer",                    "Production",     True,  1000, 1, 1, 0, "N", None, 0.00, "labor", "day"),
-    (2000, "Production Staff",  "Creative Director",           "Production",     True,  1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    # ── 1100 Development Labor (key personnel only) ──────────────────────────
+    (1100, "Development Labor", "Development Executive Producer", "Development", True, 1500, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (1100, "Development Labor", "Development Producer",           "Development", True, 1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (1100, "Development Labor", "Showrunner",                     "Development", True, 1500, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (1100, "Development Labor", "Writer (Development)",           "Development", True, 1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (1100, "Development Labor", "Creative Director (Dev)",        "Development", True, 1200, 1, 1, 0, "N", None, 0.00, "labor", "day"),
+    (1100, "Development Labor", "Story Consultant",               "Development", True,  800, 1, 1, 0, "N", None, 0.00, "labor", "day"),
 
-    # Talent (2100)
-    (2100, "Talent",            "Principal Talent",            None,            True,  825,  1, 1, 0, "N", "S",  0.10, "labor", "day"),
-    (2100, "Talent",            "Host",                        None,            True,  1000, 1, 1, 0, "N", "S",  0.10, "labor", "day"),
-    (2100, "Talent",            "Extra / Background",          None,            True,  200,  1, 1, 0, "N", "S",  0.00, "labor", "day"),
+    # ── 2000 Production Staff — ATL Executives ───────────────────────────────
+    (2000, "Production Staff", "Director",                  "Executives", True, 1500, 1, 1, 0, "N", "D", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Executive Producer",        "Executives", True, 1200, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Producer",                  "Executives", True, 1000, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Creative Director",         "Executives", True, 1200, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Writer Fee",                "Executives", False,   0, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    # ── 2000 Production Staff — Production Management ────────────────────────
+    (2000, "Production Staff", "Line Producer",             "Production", True, 1200, 1, 1, 0, "N", "D", 0.00, "labor", "day"),
+    (2000, "Production Staff", "UPM",                       "Production", True, 1000, 1, 1, 0, "N", "D", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Supervising Producer",      "Production", True,  800, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Production Supervisor",     "Production", True,  900, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Production Coordinator",    "Production", True,  750, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "APOC",                      "Production", True,  800, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Production Accountant",     "Production", True,  900, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Payroll Coordinator",       "Production", True,  650, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Travel Coordinator",        "Production", True,  650, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Production Secretary",      "Production", True,  650, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — Direction / AD ───────────────────────────────
+    (2000, "Production Staff", "Live Director",             "Direction / AD", True,  700, 1, 1, 0, "N", "D", 0.00, "labor", "day"),
+    (2000, "Production Staff", "1st AD",                    "Direction / AD", True,  900, 1, 1, 0, "N", "D", 0.00, "labor", "day"),
+    (2000, "Production Staff", "2nd AD",                    "Direction / AD", True,  750, 1, 1, 0, "N", "D", 0.00, "labor", "day"),
+    (2000, "Production Staff", "2nd 2nd AD",                "Direction / AD", True,  650, 1, 1, 0, "N", "D", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Script Supervisor",         "Direction / AD", True,  750, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Key PA",                    "Direction / AD", True,  350, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Set PA",                    "Direction / AD", True,  300, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Office PA",                 "Direction / AD", True,  300, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Second Unit Director",      "Direction / AD", True, 1200, 1, 1, 0, "N", "D", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — Camera ───────────────────────────────────────
+    (2000, "Production Staff", "Director of Photography",   "Camera", True, 1200, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Camera Operator",           "Camera", True,  900, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Robotic Camera Operator",   "Camera", True,  500, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "1st AC",                    "Camera", True,  800, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "2nd AC",                    "Camera", True,  650, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "DIT",                       "Camera", True,  850, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Steadicam Operator",        "Camera", True,  900, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Data Wrangler",             "Camera", True,  700, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Second Unit DP",            "Camera", True, 1000, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Video Engineer",            "Camera", True,  750, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "VTR Operator",              "Camera", True,  650, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — Grip & Electric ──────────────────────────────
+    (2000, "Production Staff", "Lighting Designer",         "Grip & Electric", True, 1000, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Gaffer",                    "Grip & Electric", True,  825, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Key Grip",                  "Grip & Electric", True,  825, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Best Boy Electric",         "Grip & Electric", True,  800, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Best Boy Grip",             "Grip & Electric", True,  800, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Electric",                  "Grip & Electric", True,  775, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Grip",                      "Grip & Electric", True,  775, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Generator Operator",        "Grip & Electric", True,  775, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Swing (Electric)",          "Grip & Electric", True,  750, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Swing (Grip)",              "Grip & Electric", True,  750, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — Sound ────────────────────────────────────────
+    (2000, "Production Staff", "Sound Mixer",               "Sound", True,  900, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Boom Operator",             "Sound", True,  650, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Utility Sound",             "Sound", True,  750, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — Art Department ───────────────────────────────
+    (2000, "Production Staff", "Production Designer",       "Art", True, 1000, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Art Director",              "Art", True,  825, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Set Dresser",               "Art", True,  775, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Props Master",              "Art", True,  825, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Props Assistant",           "Art", True,  650, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — Hair & Makeup ────────────────────────────────
+    (2000, "Production Staff", "Key Makeup Artist",         "Hair & Makeup", True, 825, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Makeup Artist",             "Hair & Makeup", True, 775, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Hair Stylist",              "Hair & Makeup", True, 825, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "HMU (Hair & Makeup)",       "Hair & Makeup", True, 800, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "SFX Makeup Artist",         "Hair & Makeup", True, 900, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — Wardrobe ─────────────────────────────────────
+    (2000, "Production Staff", "Wardrobe Stylist",          "Wardrobe", True, 825, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Wardrobe Assistant",        "Wardrobe", True, 650, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — Locations ────────────────────────────────────
+    (2000, "Production Staff", "Location Manager",          "Locations", True, 900, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Location Assistant",        "Locations", True, 650, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — Transportation ───────────────────────────────
+    (2000, "Production Staff", "Transportation Coordinator","Transportation", True, 800, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Driver (Captain)",          "Transportation", True, 700, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Driver",                    "Transportation", True, 600, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — Control Room ─────────────────────────────────
+    (2000, "Production Staff", "Technical Producer",        "Control Room", True, 1000, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Technical Director",        "Control Room", True,  900, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Graphics and Playback",     "Control Room", True,  500, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "Switcher Operator",         "Control Room", True,  750, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — EPK / BTS ────────────────────────────────────
+    (2000, "Production Staff", "EPK Videographer",          "EPK / BTS", True, 800, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (2000, "Production Staff", "EPK Photographer",          "EPK / BTS", True, 750, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    # ── 2000 Production Staff — Craft Services ───────────────────────────────
+    (2000, "Production Staff", "Craft Services Coordinator","Craft Services", True, 600, 1, 1, 0, "N", "N", 0.00, "labor", "day"),
 
-    # Production Staff crew roles (2000)
-    (2000, "Production Staff",  "Line Producer",               "Production",     True,  1200, 1, 1, 0, "N", "D",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "UPM",                         "Production",     True,  1000, 1, 1, 0, "N", "D",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Supervising Producer",        "Production",     True,  800,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Production Supervisor",       "Production",     True,  900,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Production Coordinator",      "Production",     True,  750,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Production Assistant",        "Production",     True,  350,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Live Director",               "Direction / AD", True,  700,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "1st AD",                      "Direction / AD", True,  900,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "2nd AD",                      "Direction / AD", True,  750,  1, 1, 0, "N", "D",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Key PA",                      "Direction / AD", True,  350,  1, 1, 0, "N", "N",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Director of Photography",     "Camera",         True,  1200, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Camera Operator",             "Camera",         True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Robotic Camera Operator",     "Camera",         True,  500,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "1st AC",                      "Camera",         True,  800,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "2nd AC",                      "Camera",         True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "DIT",                         "Camera",         True,  850,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Video Engineer",              "Camera",         True,  750,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Lighting Designer",           "Grip & Electric",True,  1000, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Gaffer",                      "Grip & Electric",True,  825,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Key Grip",                    "Grip & Electric",True,  825,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Sound Mixer",                 "Sound",          True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Boom Operator",               "Sound",          True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Technical Producer",          "Control Room",   True,  1000, 1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Technical Director",          "Control Room",   True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Graphics and Playback",       "Control Room",   True,  500,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (2000, "Production Staff",  "Switcher Operator",           "Control Room",   True,  750,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    # ── 2100 Talent ──────────────────────────────────────────────────────────
+    (2100, "Talent", "Principal Talent",   None, True,  825, 1, 1, 0, "N", "S", 0.10, "labor",   "day"),
+    (2100, "Talent", "Host",                None, True, 1000, 1, 1, 0, "N", "S", 0.10, "labor",   "day"),
+    (2100, "Talent", "Stunt Performer",     None, True,  825, 1, 1, 0, "N", "S", 0.10, "labor",   "day"),
+    (2100, "Talent", "Extra / Background",  None, True,  200, 1, 1, 0, "N", "S", 0.00, "labor",   "day"),
+    (2100, "Talent", "Voice Over Talent",   None, False, 500, 1, 1, 0, None, None, 0.00, "expense","session"),
 
-    # Post-Production Staff (4000)
-    (4000, "Post-Production Staff", "Editor",                  None,            True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (4000, "Post-Production Staff", "Assistant Editor",        None,            True,  650,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
-    (4000, "Post-Production Staff", "Colorist",                None,            True,  900,  1, 1, 0, "N", "I",  0.00, "labor", "day"),
+    # ── 2200 Casting ─────────────────────────────────────────────────────────
+    (2200, "Casting", "Casting Director",  None, True,  900, 1, 1, 0, "N", None, 0.00, "labor",   "day"),
+    (2200, "Casting", "Casting Associate", None, True,  650, 1, 1, 0, "N", None, 0.00, "labor",   "day"),
+    (2200, "Casting", "Casting Space",     None, False, 500, 1, 1, 0, None, None, 0.00, "expense", "day"),
+    (2200, "Casting", "Casting Tapes",     None, False, 200, 1, 1, 0, None, None, 0.00, "expense", "flat"),
 
-    # Camera Equipment (2600, non-labor rentals)
-    (2600, "Camera Equipment",  "Camera Package Rental",       None,            False, 1500, 1, 1, 0, None, None, 0.00, "rental",  "day"),
-    (2600, "Camera Equipment",  "Lens Kit Rental",             None,            False, 500,  1, 1, 0, None, None, 0.00, "rental",  "day"),
-    (2600, "Camera Equipment",  "Media / Hard Drives",         None,            False, 300,  1, 1, 0, None, None, 0.00, "purchase","flat"),
+    # ── 2300 Rehearsal ───────────────────────────────────────────────────────
+    (2300, "Rehearsal", "Rehearsal Space", None, False, 500, 1, 1, 0, None, None, 0.00, "expense", "day"),
+    (2300, "Rehearsal", "Choreographer",   None, True,  800, 1, 1, 0, "N", None, 0.00, "labor",   "day"),
+    (2300, "Rehearsal", "Table Read",      None, False, 300, 1, 1, 0, None, None, 0.00, "expense", "flat"),
 
-    # Grip & Electric Equipment (2700)
-    (2700, "Grip & Electric Equipment", "Lighting Package",    None,            False, 1500, 1, 1, 0, None, None, 0.00, "rental", "day"),
-    (2700, "Grip & Electric Equipment", "Grip Package",        None,            False, 800,  1, 1, 0, None, None, 0.00, "rental", "day"),
+    # ── 2600 Camera Equipment ────────────────────────────────────────────────
+    (2600, "Camera Equipment", "Camera Package Rental",     None, False, 1500, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2600, "Camera Equipment", "Lens Kit Rental",           None, False,  500, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2600, "Camera Equipment", "Monitor Rental",            None, False,  150, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2600, "Camera Equipment", "Gimbal / Stabilizer",       None, False,  200, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2600, "Camera Equipment", "Drone Package",             None, False,  800, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2600, "Camera Equipment", "Teleprompter Rental",       None, False,  300, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2600, "Camera Equipment", "Media Cards / Hard Drives", None, False,  300, 1, 1, 0, None, None, 0.00, "purchase","flat"),
+    (2600, "Camera Equipment", "Camera Expendables",        None, False,  100, 1, 1, 0, None, None, 0.00, "purchase","flat"),
 
-    # Sound Equipment (2800)
-    (2800, "Sound Equipment",   "Sound Package Rental",        None,            False, 500,  1, 1, 0, None, None, 0.00, "rental", "day"),
+    # ── 2700 Grip & Electric Equipment ───────────────────────────────────────
+    (2700, "Grip & Electric Equipment", "Lighting Package",          None, False, 1500, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2700, "Grip & Electric Equipment", "Grip Package",              None, False,  800, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2700, "Grip & Electric Equipment", "Generator Rental",          None, False,  400, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2700, "Grip & Electric Equipment", "Additional Fixtures",       None, False,  300, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2700, "Grip & Electric Equipment", "Expendables (Gels/Tape)",   None, False,  300, 1, 1, 0, None, None, 0.00, "purchase","flat"),
+    (2700, "Grip & Electric Equipment", "Extension Cords / Stingers",None, False,  100, 1, 1, 0, None, None, 0.00, "purchase","flat"),
 
-    # Travel (3500)
-    (3500, "Travel",            "Flight",                      None,            False, 500,  1, 1, 0, None, None, 0.00, "expense", "flat"),
-    (3500, "Travel",            "Hotel Night",                 None,            False, 200,  1, 1, 0, None, None, 0.00, "expense", "day"),
+    # ── 2800 Sound Equipment ─────────────────────────────────────────────────
+    (2800, "Sound Equipment", "Sound Package Rental",   None, False, 600, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2800, "Sound Equipment", "Wireless Mic Kit",       None, False, 200, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2800, "Sound Equipment", "Walkie Talkies",         None, False, 200, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2800, "Sound Equipment", "IFB System",             None, False, 150, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2800, "Sound Equipment", "Audio Playback System",  None, False, 400, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (2800, "Sound Equipment", "Sound Expendables",      None, False, 100, 1, 1, 0, None, None, 0.00, "purchase","flat"),
+
+    # ── 2900 Control Room Equipment ──────────────────────────────────────────
+    (2900, "Control Room Equipment", "Control Room Rental",     None, False, 2000, 1, 1, 0, None, None, 0.00, "rental", "day"),
+    (2900, "Control Room Equipment", "Video Playback System",   None, False,  500, 1, 1, 0, None, None, 0.00, "rental", "day"),
+    (2900, "Control Room Equipment", "Switcher / Mixer Rental", None, False,  400, 1, 1, 0, None, None, 0.00, "rental", "day"),
+    (2900, "Control Room Equipment", "Broadcast Equipment",     None, False, 1000, 1, 1, 0, None, None, 0.00, "rental", "day"),
+
+    # ── 3000 Art & Sets Costs ────────────────────────────────────────────────
+    (3000, "Art & Sets Costs", "Props Purchase",      None, False,  500, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (3000, "Art & Sets Costs", "Props Rental",        None, False,  300, 1, 1, 0, None, None, 0.00, "rental",   "flat"),
+    (3000, "Art & Sets Costs", "Set Dressing / Décor",None, False,  500, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (3000, "Art & Sets Costs", "Fabrication / Build", None, False, 1000, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (3000, "Art & Sets Costs", "Printing / Signage",  None, False,  300, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (3000, "Art & Sets Costs", "Art Supplies",        None, False,  200, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (3000, "Art & Sets Costs", "Floral / Greenery",   None, False,  400, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+
+    # ── 3100 Hair & Makeup Costs ─────────────────────────────────────────────
+    (3100, "Hair & Makeup Costs", "Makeup Supplies / Kit", None, False, 200, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (3100, "Hair & Makeup Costs", "Hair Supplies / Kit",   None, False, 150, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (3100, "Hair & Makeup Costs", "SFX Makeup Supplies",   None, False, 400, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (3100, "Hair & Makeup Costs", "Touch-Up Supplies",     None, False, 100, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+
+    # ── 3200 Wardrobe Costs ──────────────────────────────────────────────────
+    (3200, "Wardrobe Costs", "Wardrobe Purchase",       None, False, 500, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (3200, "Wardrobe Costs", "Wardrobe Rental",         None, False, 300, 1, 1, 0, None, None, 0.00, "rental",   "flat"),
+    (3200, "Wardrobe Costs", "Alterations / Tailoring", None, False, 200, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (3200, "Wardrobe Costs", "Laundry & Cleaning",      None, False, 150, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (3200, "Wardrobe Costs", "Accessories",             None, False, 200, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+
+    # ── 3300 Locations (pre-pro + on-shoot merged) ───────────────────────────
+    (3300, "Locations", "Location Scout Day",        None, False,  500, 1, 1, 0, None, None, 0.00, "expense",  "day"),
+    (3300, "Locations", "Tech Scout",                None, False,  500, 1, 1, 0, None, None, 0.00, "expense",  "day"),
+    (3300, "Locations", "Pre-Production Office",     None, False, 2000, 1, 1, 0, None, None, 0.00, "expense",  "week"),
+    (3300, "Locations", "Script Copies / Printing",  None, False,  100, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (3300, "Locations", "Office Supplies (Pre-Pro)", None, False,  200, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (3300, "Locations", "Location Fee",              None, False, 2000, 1, 1, 0, None, None, 0.00, "expense",  "day"),
+    (3300, "Locations", "Permit Fee",                None, False,  500, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (3300, "Locations", "Police / Fire Support",     None, False,  800, 1, 1, 0, None, None, 0.00, "expense",  "day"),
+    (3300, "Locations", "Location Hold Fee",         None, False, 1000, 1, 1, 0, None, None, 0.00, "expense",  "day"),
+    (3300, "Locations", "Location Cleaning",         None, False,  300, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (3300, "Locations", "Damage Deposit",            None, False, 1000, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (3300, "Locations", "Generator (Location)",      None, False,  400, 1, 1, 0, None, None, 0.00, "rental",   "day"),
+
+    # ── 3400 Transportation ──────────────────────────────────────────────────
+    (3400, "Transportation", "Cargo Van Rental",      None, False, 150, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (3400, "Transportation", "Cube Truck Rental",     None, False, 250, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (3400, "Transportation", "Passenger Van Rental",  None, False, 150, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (3400, "Transportation", "Production Car",        None, False, 100, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (3400, "Transportation", "Fuel",                  None, False, 100, 1, 1, 0, None, None, 0.00, "expense", "day"),
+    (3400, "Transportation", "Parking",               None, False,  50, 1, 1, 0, None, None, 0.00, "expense", "day"),
+    (3400, "Transportation", "Tolls",                 None, False,  30, 1, 1, 0, None, None, 0.00, "expense", "day"),
+    (3400, "Transportation", "Mileage Reimbursement", None, False, 200, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+
+    # ── 3500 Travel ──────────────────────────────────────────────────────────
+    (3500, "Travel", "Airfare",               None, False, 600, 1, 1, 0, None, None, 0.00, "expense", "each"),
+    (3500, "Travel", "Hotel",                 None, False, 200, 1, 1, 0, None, None, 0.00, "expense", "night"),
+    (3500, "Travel", "Per Diem",              None, False,  75, 1, 1, 0, None, None, 0.00, "expense", "day"),
+    (3500, "Travel", "Ground Transportation", None, False, 100, 1, 1, 0, None, None, 0.00, "expense", "day"),
+    (3500, "Travel", "Car Service",           None, False, 150, 1, 1, 0, None, None, 0.00, "expense", "trip"),
+    (3500, "Travel", "Baggage Fees",          None, False,  60, 1, 1, 0, None, None, 0.00, "expense", "each"),
+    (3500, "Travel", "Travel Agent Fee",      None, False, 200, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+
+    # ── 3600 Shipping ────────────────────────────────────────────────────────
+    (3600, "Shipping", "Equipment Shipping", None, False, 500, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (3600, "Shipping", "Courier / Messenger",None, False, 100, 1, 1, 0, None, None, 0.00, "expense",  "each"),
+    (3600, "Shipping", "Overnight Shipping", None, False,  75, 1, 1, 0, None, None, 0.00, "expense",  "each"),
+    (3600, "Shipping", "Packaging Supplies", None, False, 100, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+
+    # ── 3700 Production Meals & Craft Services ───────────────────────────────
+    (3700, "Production Meals & Craft Services", "Catering (Breakfast)",    None, False,  20, 30, 1, 0, None, None, 0.00, "expense", "person/day"),
+    (3700, "Production Meals & Craft Services", "Catering (Lunch)",        None, False,  25, 30, 1, 0, None, None, 0.00, "expense", "person/day"),
+    (3700, "Production Meals & Craft Services", "Craft Services (daily)",  None, False, 300, 1, 1, 0, None, None, 0.00, "expense", "day"),
+    (3700, "Production Meals & Craft Services", "Craft Services Supplies", None, False, 150, 1, 1, 0, None, None, 0.00, "purchase","day"),
+    (3700, "Production Meals & Craft Services", "Coffee Service",          None, False, 100, 1, 1, 0, None, None, 0.00, "expense", "day"),
+    (3700, "Production Meals & Craft Services", "Catering Gratuity",       None, False, 100, 1, 1, 0, None, None, 0.00, "expense", "day"),
+
+    # ── 3800 Sanitation ──────────────────────────────────────────────────────
+    (3800, "Sanitation", "Portable Toilets",  None, False, 300, 1, 1, 0, None, None, 0.00, "rental",   "day"),
+    (3800, "Sanitation", "Cleaning Crew",     None, False, 400, 1, 1, 0, None, None, 0.00, "expense",  "day"),
+    (3800, "Sanitation", "Trash Removal",     None, False, 200, 1, 1, 0, None, None, 0.00, "expense",  "day"),
+    (3800, "Sanitation", "Cleaning Supplies", None, False, 100, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+
+    # ── 4000 Post-Production Staff ───────────────────────────────────────────
+    (4000, "Post-Production Staff", "Editor",                     None, True,  900, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (4000, "Post-Production Staff", "Assistant Editor",           None, True,  650, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (4000, "Post-Production Staff", "Post Production Supervisor", None, True,  900, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (4000, "Post-Production Staff", "Colorist",                   None, True,  900, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (4000, "Post-Production Staff", "VFX Supervisor",             None, True, 1000, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (4000, "Post-Production Staff", "Motion Graphics Designer",   None, True,  850, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+    (4000, "Post-Production Staff", "Sound Designer",             None, True,  900, 1, 1, 0, "N", "I", 0.00, "labor", "day"),
+
+    # ── 4500 Post-Production Equipment ───────────────────────────────────────
+    (4500, "Post-Production Equipment", "Edit System Rental",   None, False, 200, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (4500, "Post-Production Equipment", "External Hard Drives", None, False, 150, 2, 1, 0, None, None, 0.00, "purchase","each"),
+    (4500, "Post-Production Equipment", "RAID Array",           None, False, 500, 1, 1, 0, None, None, 0.00, "rental",  "flat"),
+    (4500, "Post-Production Equipment", "Software Licenses",    None, False, 300, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+
+    # ── 4600 Post-Production Facilities ──────────────────────────────────────
+    (4600, "Post-Production Facilities", "Edit Suite Rental",  None, False, 1000, 1, 1, 0, None, None, 0.00, "rental", "day"),
+    (4600, "Post-Production Facilities", "Color Suite Rental", None, False, 1500, 1, 1, 0, None, None, 0.00, "rental", "day"),
+    (4600, "Post-Production Facilities", "Mix Studio Rental",  None, False, 1200, 1, 1, 0, None, None, 0.00, "rental", "day"),
+    (4600, "Post-Production Facilities", "Screening Room",     None, False,  800, 1, 1, 0, None, None, 0.00, "rental", "day"),
+
+    # ── 4700 Post-Production Services ────────────────────────────────────────
+    (4700, "Post-Production Services", "Color Grading",           None, False, 2000, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (4700, "Post-Production Services", "Audio Mix",               None, False, 1500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (4700, "Post-Production Services", "Transcription",           None, False,  300, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (4700, "Post-Production Services", "Closed Captions",         None, False,  400, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (4700, "Post-Production Services", "Subtitles / Translation", None, False,  500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (4700, "Post-Production Services", "VFX Work",                None, False,    0, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (4700, "Post-Production Services", "Mastering / Encoding",    None, False,  500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (4700, "Post-Production Services", "Delivery / Output",       None, False,  300, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+
+    # ── 4800 Music & Composition ─────────────────────────────────────────────
+    (4800, "Music & Composition", "Composer Fee",            None, False, 2000, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (4800, "Music & Composition", "Music Recording Session", None, False, 1500, 1, 1, 0, None, None, 0.00, "expense", "session"),
+    (4800, "Music & Composition", "Studio Time",             None, False, 1000, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (4800, "Music & Composition", "Mastering Fee",           None, False,  500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+
+    # ── 4900 Title Sequence ──────────────────────────────────────────────────
+    (4900, "Title Sequence", "Title Design",                None, False, 2000, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (4900, "Title Sequence", "Animation / Motion Graphics", None, False, 2500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (4900, "Title Sequence", "Render Time",                 None, False,  200, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+
+    # ── 5000 Processing & Lab ────────────────────────────────────────────────
+    (5000, "Processing & Lab", "Hard Drives (Shoot)",       None, False, 150, 2, 1, 0, None, None, 0.00, "purchase","each"),
+    (5000, "Processing & Lab", "RAID / Backup System",      None, False, 500, 1, 1, 0, None, None, 0.00, "rental",  "flat"),
+    (5000, "Processing & Lab", "Cloud Delivery / Transfer", None, False, 200, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (5000, "Processing & Lab", "LTO Archival",              None, False, 400, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (5000, "Processing & Lab", "Encoder / Decoder Unit",    None, False, 600, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (5000, "Processing & Lab", "Video Processor",           None, False, 400, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (5000, "Processing & Lab", "Audio Processor",           None, False, 300, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (5000, "Processing & Lab", "Signal Conversion Gear",    None, False, 400, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (5000, "Processing & Lab", "Frame Sync / Converter",    None, False, 300, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (5000, "Processing & Lab", "SDI Distribution Amp",      None, False, 200, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (5000, "Processing & Lab", "Fiber / Transport System",  None, False, 500, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (5000, "Processing & Lab", "Playback / Replay System",  None, False, 800, 1, 1, 0, None, None, 0.00, "rental",  "day"),
+    (5000, "Processing & Lab", "Processing Expendables",    None, False, 100, 1, 1, 0, None, None, 0.00, "purchase","flat"),
+
+    # ── 6000 Insurance ───────────────────────────────────────────────────────
+    (6000, "Insurance", "Production Insurance",      None, False, 2000, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6000, "Insurance", "Equipment Insurance",       None, False,  500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6000, "Insurance", "E&O Insurance",             None, False, 3000, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6000, "Insurance", "Workers Comp (% of labor)", None, False,    0, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6000, "Insurance", "General Liability",         None, False, 1500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6000, "Insurance", "Auto / Vehicle Insurance",  None, False,  400, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6000, "Insurance", "Umbrella / Excess",         None, False,  500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6000, "Insurance", "COI Fee",                   None, False,  100, 1, 1, 0, None, None, 0.00, "expense", "each"),
+
+    # ── 6100 Licensing ───────────────────────────────────────────────────────
+    (6100, "Licensing", "Music License",         None, False, 1000, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6100, "Licensing", "Stock Footage License", None, False,  500, 1, 1, 0, None, None, 0.00, "expense", "each"),
+    (6100, "Licensing", "Photo License",         None, False,  200, 1, 1, 0, None, None, 0.00, "expense", "each"),
+    (6100, "Licensing", "Archival Rights",       None, False,  500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6100, "Licensing", "Clearance Research",    None, False,  500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+
+    # ── 6200 Distribution ────────────────────────────────────────────────────
+    (6200, "Distribution", "Festival Submission Fees",  None, False, 100, 5, 1, 0, None, None, 0.00, "expense", "each"),
+    (6200, "Distribution", "Distribution Platform Fee", None, False, 500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6200, "Distribution", "DCP (Digital Cinema Pkg)",  None, False, 800, 1, 1, 0, None, None, 0.00, "expense", "each"),
+    (6200, "Distribution", "Screener Copies",           None, False, 200, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+
+    # ── 6300 Marketing & EPK (merged) ────────────────────────────────────────
+    (6300, "Marketing & EPK", "Graphic Design",         None, False, 1000, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6300, "Marketing & EPK", "Social Media Content",   None, False,  500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6300, "Marketing & EPK", "Press Materials",        None, False,  300, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6300, "Marketing & EPK", "Advertising Placement",  None, False,    0, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6300, "Marketing & EPK", "Trailer / Sizzle Edit",  None, False, 1500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6300, "Marketing & EPK", "BTS Edit",               None, False, 1000, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6300, "Marketing & EPK", "Still Photos (license)", None, False,  300, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6300, "Marketing & EPK", "EPK Package",            None, False, 2000, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+
+    # ── 6400 Web Build & Software Development ────────────────────────────────
+    (6400, "Web Build & Software Development", "Production Software", None, False, 500, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (6400, "Web Build & Software Development", "Cloud Storage",       None, False, 100, 1, 1, 0, None, None, 0.00, "expense",  "month"),
+    (6400, "Web Build & Software Development", "Office Supplies",     None, False, 200, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (6400, "Web Build & Software Development", "Printer Ink / Paper", None, False, 100, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (6400, "Web Build & Software Development", "Phone & Internet",    None, False, 150, 1, 1, 0, None, None, 0.00, "expense",  "month"),
+
+    # ── 6500 Administrative ──────────────────────────────────────────────────
+    (6500, "Administrative", "Accounting / Bookkeeping", None, False, 500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6500, "Administrative", "Legal Fees",               None, False, 500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6500, "Administrative", "Bank / Wire Fees",         None, False,  50, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6500, "Administrative", "Contract Review",          None, False, 300, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+
+    # ── 6600 Residuals ───────────────────────────────────────────────────────
+    (6600, "Residuals", "SAG Residuals",          None, False, 0, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6600, "Residuals", "WGA Residuals",          None, False, 0, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6600, "Residuals", "DGA Residuals",          None, False, 0, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6600, "Residuals", "Residual Administration",None, False, 0, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+
+    # ── 6700 Miscellaneous ───────────────────────────────────────────────────
+    (6700, "Miscellaneous", "Petty Cash",     None, False, 500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6700, "Miscellaneous", "Contingency",    None, False,   0, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6700, "Miscellaneous", "Rush Charges",   None, False,   0, 1, 1, 0, None, None, 0.00, "expense", "flat"),
+    (6700, "Miscellaneous", "Miscellaneous",  None, False,   0, 1, 1, 0, None, None, 0.00, "expense", "flat"),
 ]
 
 
