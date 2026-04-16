@@ -2813,6 +2813,50 @@ def export_csv(pid, bid):
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
 
 
+# ── Task 3: MMB / ShowBiz exports + preview ──────────────────────────────────
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/export.mmb.txt")
+@login_required
+def export_mmb(pid, bid):
+    """Movie Magic Budgeting tab-delimited export. Import into MMB via
+    'File → Import → From Tab-Delimited'."""
+    _require_project_role(pid, 'editor')
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    from external_export import export_mmb_tab
+    data = export_mmb_tab(budget)
+    fname = f"{(budget.name or 'budget').replace(' ', '_')}_MMB.txt"
+    return Response(data, mimetype="text/tab-separated-values",
+                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/export.showbiz.txt")
+@login_required
+def export_showbiz(pid, bid):
+    """ShowBiz Budgeting tab-delimited export."""
+    _require_project_role(pid, 'editor')
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    from external_export import export_showbiz_tab
+    data = export_showbiz_tab(budget)
+    fname = f"{(budget.name or 'budget').replace(' ', '_')}_ShowBiz.txt"
+    return Response(data, mimetype="text/tab-separated-values",
+                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/preview/<target>")
+@login_required
+def export_preview(pid, bid, target):
+    """Returns JSON for the right-drawer preview. target ∈ {mmb, showbiz}."""
+    _require_project_role(pid, 'editor')
+    if target not in ('mmb', 'showbiz'):
+        return jsonify({"error": "Unknown target"}), 400
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    from external_export import preview_mmb, preview_showbiz
+    data = preview_mmb(budget) if target == 'mmb' else preview_showbiz(budget)
+    data["budget_name"] = budget.name
+    data["target"] = target
+    return jsonify(data)
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/export.pdf")
 @login_required
 def export_pdf(pid, bid):

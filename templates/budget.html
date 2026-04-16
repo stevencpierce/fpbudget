@@ -126,6 +126,26 @@
         <div class="dropdown-divider"></div>
         <a href="{{ url_for('export_csv', pid=project.id, bid=budget.id) }}">Top Sheet CSV</a>
         <a href="{{ url_for('export_csv', pid=project.id, bid=budget.id, type='working') }}">Line Detail CSV</a>
+        <div class="dropdown-divider"></div>
+        <a href="{{ url_for('export_mmb', pid=project.id, bid=budget.id) }}">Movie Magic Budgeting (.txt)</a>
+        <a href="{{ url_for('export_showbiz', pid=project.id, bid=budget.id) }}">ShowBiz Budgeting (.txt)</a>
+        <div class="dropdown-divider"></div>
+        <a href="#" data-preview-target="mmb"     onclick="openExportPreview(event, 'mmb')">Preview as Movie Magic…</a>
+        <a href="#" data-preview-target="showbiz" onclick="openExportPreview(event, 'showbiz')">Preview as ShowBiz…</a>
+      </div>
+    </div>
+
+    <!-- Export Preview drawer -->
+    <div id="export-preview-overlay" class="export-preview-overlay" onclick="closeExportPreview()"></div>
+    <div id="export-preview-drawer" class="export-preview-drawer">
+      <div class="export-preview-header">
+        <h3 id="export-preview-title" style="margin:0;font-size:1rem">Preview</h3>
+        <div style="display:flex;gap:8px">
+          <button type="button" class="btn btn-sm" onclick="closeExportPreview()">Close</button>
+        </div>
+      </div>
+      <div id="export-preview-body" class="export-preview-body">
+        <p class="muted" style="padding:1rem">Loading…</p>
       </div>
     </div>
   </div>
@@ -6450,5 +6470,107 @@ setTimeout(function() {
 
 </div>
 <div id="cascade-overlay" class="cascade-overlay hidden" onclick="closeCascade()"></div>
+
+<style>
+  /* Task 3: Export preview drawer */
+  .export-preview-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 500;
+    display: none;
+  }
+  .export-preview-drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 620px; max-width: 92vw;
+    background: var(--bg, #141414); z-index: 501; transform: translateX(100%);
+    transition: transform .22s ease-out; display: flex; flex-direction: column;
+    box-shadow: -6px 0 28px rgba(0,0,0,.5);
+  }
+  .export-preview-drawer.is-open { transform: translateX(0); }
+  .export-preview-overlay.is-open { display: block; }
+  .export-preview-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: .85rem 1rem; border-bottom: 1px solid var(--border);
+  }
+  .export-preview-body {
+    padding: .75rem 1rem; overflow: auto; flex: 1; font-size: .85rem;
+  }
+  .export-preview-body table { border-collapse: collapse; width: 100%; }
+  .export-preview-body th {
+    text-align: left; font-size: .7rem; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--text-muted); padding: 4px 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .export-preview-body td { padding: 3px 6px; border-bottom: 1px dashed rgba(255,255,255,.06); }
+  .export-preview-body .ep-section-row td {
+    background: var(--bg-2, #1a1a1a); font-weight: 600;
+    border-bottom: 1px solid var(--border); padding: 6px;
+  }
+  .export-preview-body .ep-subtotal-row td {
+    font-weight: 600; color: var(--text-muted); padding-top: 6px;
+  }
+  .export-preview-body .ep-grand-row td {
+    font-weight: 700; border-top: 2px solid var(--border); padding: 8px 6px;
+    font-size: .95rem;
+  }
+  .export-preview-body .ep-num { text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+
+<script>
+  function _epFmtUSD(n) {
+    if (n == null || isNaN(n)) return '';
+    return '$' + Number(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  }
+  function _epEscape(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function openExportPreview(ev, target) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    var title = (target === 'mmb') ? 'Preview as Movie Magic' : 'Preview as ShowBiz';
+    document.getElementById('export-preview-title').textContent = title;
+    document.getElementById('export-preview-body').innerHTML =
+      '<p class="muted" style="padding:1rem">Loading…</p>';
+    document.getElementById('export-preview-overlay').classList.add('is-open');
+    document.getElementById('export-preview-drawer').classList.add('is-open');
+    var url = '/projects/' + PID + '/budget/' + BID + '/preview/' + target;
+    fetch(url).then(function (r) { return r.json(); }).then(function (data) {
+      if (data.error) {
+        document.getElementById('export-preview-body').innerHTML =
+          '<p class="muted" style="padding:1rem">Error: ' + _epEscape(data.error) + '</p>';
+        return;
+      }
+      var html = ['<table><thead><tr>',
+        '<th style="width:80px">Acct</th>',
+        '<th>Description</th>',
+        '<th class="ep-num">Qty</th>',
+        '<th class="ep-num">Rate</th>',
+        '<th style="width:50px">Fringe</th>',
+        '<th class="ep-num">Amount</th>',
+        '</tr></thead><tbody>'];
+      (data.sections || []).forEach(function (sec) {
+        html.push('<tr class="ep-section-row"><td>' + _epEscape(sec.code) +
+                  '</td><td colspan="4">' + _epEscape(sec.name) +
+                  '</td><td class="ep-num">' + _epFmtUSD(sec.subtotal) + '</td></tr>');
+        (sec.lines || []).forEach(function (ln) {
+          html.push('<tr><td class="muted" style="font-size:.75rem">' + _epEscape(sec.code) +
+                    '</td><td>' + _epEscape(ln.description) +
+                    '</td><td class="ep-num">' + (ln.qty || '') +
+                    '</td><td class="ep-num">' + _epFmtUSD(ln.rate) +
+                    '</td><td>' + _epEscape(ln.fringe || '') +
+                    '</td><td class="ep-num">' + _epFmtUSD(ln.amount) + '</td></tr>');
+        });
+      });
+      html.push('<tr class="ep-grand-row"><td colspan="5">GRAND TOTAL</td>' +
+                '<td class="ep-num">' + _epFmtUSD(data.grand_total) + '</td></tr>');
+      html.push('</tbody></table>');
+      document.getElementById('export-preview-body').innerHTML = html.join('');
+    }).catch(function (e) {
+      document.getElementById('export-preview-body').innerHTML =
+        '<p class="muted" style="padding:1rem">Preview failed: ' + _epEscape(e.message || e) + '</p>';
+    });
+  }
+  function closeExportPreview() {
+    document.getElementById('export-preview-overlay').classList.remove('is-open');
+    document.getElementById('export-preview-drawer').classList.remove('is-open');
+  }
+</script>
 
 {% endblock %}
