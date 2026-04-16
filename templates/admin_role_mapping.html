@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Role Tag Mapping — FPBudget{% endblock %}
+
+{% block content %}
+<style>
+  .rtm-wrap { max-width: 1400px; margin: 0 auto; padding: 0 0 4rem; }
+  .rtm-page-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1.5rem 0 1rem; border-bottom: 1px solid var(--border);
+    margin-bottom: 1.5rem; flex-wrap: wrap; gap: .75rem;
+  }
+  .rtm-toolbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+  .rtm-toolbar select, .rtm-toolbar input { padding: 6px 10px; font-size: .85rem; }
+  .rtm-save-indicator {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: .78rem; color: var(--text-muted); margin-left: auto;
+    padding: 4px 10px; border-radius: 4px; transition: all .3s ease;
+  }
+  .rtm-save-indicator.saving { color: #fbbf24; background: rgba(217,119,6,.12); }
+  .rtm-save-indicator.saved  { color: #4ade80; background: rgba(22,163,74,.12); }
+  .rtm-save-indicator.error  { color: #f87171; background: rgba(248,113,113,.15); }
+
+  .rtm-scroll-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; }
+  .rtm-table {
+    border-collapse: collapse; font-size: .82rem;
+    background: var(--bg, #141414);
+    min-width: 1180px;
+  }
+  .rtm-table th {
+    text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--border);
+    color: var(--text-muted); font-weight: 600; font-size: .72rem;
+    text-transform: uppercase; letter-spacing: .04em;
+    background: var(--bg-2, #1a1a1a); position: sticky; top: 0; z-index: 1;
+    white-space: nowrap;
+  }
+  .rtm-table td {
+    padding: .4rem .6rem; border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .rtm-table tr:hover { background: rgba(255,255,255,.02); }
+  .rtm-table input {
+    width: 100%; padding: 4px 8px; font-size: .82rem;
+    background: transparent; border: 1px solid transparent; color: var(--text);
+    border-radius: 3px;
+  }
+  .rtm-table input:focus {
+    background: var(--bg-2); border-color: var(--accent, #4f7ef8); outline: none;
+  }
+  .rtm-table .col-tag     { width: 180px; min-width: 180px; }
+  .rtm-table .col-label   { width: 220px; min-width: 220px; }
+  .rtm-table .col-int-c   { width: 70px;  min-width: 70px;  text-align: right; color: var(--text-muted); }
+  .rtm-table .col-int-n   { width: 140px; min-width: 140px; color: var(--text-muted); }
+  .rtm-table .col-mmb-c   { width: 100px; min-width: 100px; }
+  .rtm-table .col-mmb-n   { width: 170px; min-width: 170px; }
+  .rtm-table .col-sb-c    { width: 100px; min-width: 100px; }
+  .rtm-table .col-sb-n    { width: 170px; min-width: 170px; }
+  .rtm-table .col-notes   { width: 200px; min-width: 200px; }
+  .rtm-muted { color: var(--text-muted); font-size: .75rem; }
+  .rtm-count-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    background: var(--bg-2); color: var(--text-muted); font-size: .72rem;
+  }
+</style>
+
+<div class="rtm-wrap">
+  <div class="rtm-page-header">
+    <div>
+      <h1 style="margin:0;font-size:1.35rem">Role Tag Mapping</h1>
+      <p class="rtm-muted" style="margin:4px 0 0">
+        Maps each internal role tag to its MMB and ShowBiz target account number.
+        Export routines read this table to route lines to the correct external account.
+      </p>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="rtm-count-pill">{{ mappings|length }} role{{ 's' if mappings|length != 1 else '' }}</span>
+      <a href="{{ url_for('admin_panel') }}" class="btn btn-sm">← Back to Admin</a>
+    </div>
+  </div>
+
+  <div class="rtm-toolbar">
+    <select id="rtm-filter-section">
+      <option value="">All internal sections</option>
+      {% for code, name in coa_sections %}
+      <option value="{{ code }}">{{ code }} — {{ name }}</option>
+      {% endfor %}
+    </select>
+    <input id="rtm-filter-search" type="text" placeholder="Search role or account…" style="min-width:260px" />
+    <span id="rtm-save" class="rtm-save-indicator"></span>
+  </div>
+
+  <div class="rtm-scroll-wrap">
+    <table class="rtm-table" id="rtm-table">
+      <thead>
+        <tr>
+          <th class="col-tag">role_tag</th>
+          <th class="col-label">Label</th>
+          <th class="col-int-c">Int #</th>
+          <th class="col-int-n">Int Name</th>
+          <th class="col-mmb-c">MMB #</th>
+          <th class="col-mmb-n">MMB Name</th>
+          <th class="col-sb-c">ShowBiz #</th>
+          <th class="col-sb-n">ShowBiz Name</th>
+          <th class="col-notes">Notes</th>
+        </tr>
+      </thead>
+      <tbody id="rtm-tbody">
+        {% for m in mappings %}
+        <tr data-id="{{ m.id }}" data-section="{{ m.internal_account_code }}" data-haystack="{{ (m.role_tag ~ ' ' ~ (m.label or '') ~ ' ' ~ (m.mmb_account_code or '') ~ ' ' ~ (m.showbiz_account_code or '')) | lower }}">
+          <td class="col-tag"><span class="rtm-muted">{{ m.role_tag }}</span></td>
+          <td class="col-label">{{ m.label or '—' }}</td>
+          <td class="col-int-c">{{ m.internal_account_code }}</td>
+          <td class="col-int-n">{{ m.internal_account_name or '—' }}</td>
+          <td class="col-mmb-c"><input type="text" data-field="mmb_account_code"     value="{{ m.mmb_account_code or '' }}" /></td>
+          <td class="col-mmb-n"><input type="text" data-field="mmb_account_name"     value="{{ m.mmb_account_name or '' }}" /></td>
+          <td class="col-sb-c"><input type="text"  data-field="showbiz_account_code" value="{{ m.showbiz_account_code or '' }}" /></td>
+          <td class="col-sb-n"><input type="text"  data-field="showbiz_account_name" value="{{ m.showbiz_account_name or '' }}" /></td>
+          <td class="col-notes"><input type="text" data-field="notes"                value="{{ m.notes or '' }}" /></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div style="margin-top:1.25rem;padding:.75rem 1rem;background:var(--bg-2);border-radius:6px;font-size:.82rem;color:var(--text-muted)">
+    <strong>Bulk import:</strong>
+    <form id="rtm-bulk-form" enctype="multipart/form-data" style="display:inline;margin-left:8px">
+      <input type="file" id="rtm-bulk-file" accept=".csv" />
+      <button type="submit" class="btn btn-sm">Upload CSV</button>
+    </form>
+    <span class="rtm-muted" style="margin-left:12px">Columns: role_tag, mmb_account_code, mmb_account_name, showbiz_account_code, showbiz_account_name, notes</span>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='admin-role-mapping.js') }}"></script>
+{% endblock %}

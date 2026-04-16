@@ -168,6 +168,13 @@ class BudgetLine(db.Model):
     assigned_crew_id = db.Column(db.Integer, db.ForeignKey("crew_member.id"), nullable=True)
     assigned_crew    = db.relationship("CrewMember", foreign_keys=[assigned_crew_id])
 
+    # Link back to the CatalogItem row this line was created from (when added
+    # via Quick Entry). Used by export logic to resolve role_tag → MMB /
+    # ShowBiz target account via RoleTagMapping. NULL for legacy rows and
+    # for lines added via free-text entry; exports fall back to fuzzy match
+    # on (account_code, description) when NULL.
+    catalog_item_id  = db.Column(db.Integer, db.ForeignKey("catalog_item.id"), nullable=True)
+
     # Three-phase system columns
     working_total   = db.Column(db.Numeric(14, 2), nullable=True)  # Working forecast (snapshot + evolving)
     manual_actual   = db.Column(db.Numeric(14, 2), nullable=True)  # Manual actual override per line
@@ -355,7 +362,37 @@ class CatalogItem(db.Model):
     is_active     = db.Column(db.Boolean, default=True)
     created_at    = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at    = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Stable opaque slug — e.g. 'director_of_photography'. Written once on
+    # create (auto-generated from label if not provided); export logic keys
+    # on this, so it MUST survive label edits.
+    role_tag      = db.Column(db.String(80), nullable=True, unique=True)
+    # Which production phase this row covers. ATL roles (Director,
+    # Executive Producer, Producer, Writer) can appear three times — once
+    # per phase — so {role_tag} alone isn't unique; {role_tag, phase} is.
+    # Values: 'development' | 'production' | 'post' | NULL (no phase).
+    phase         = db.Column(db.String(20), nullable=True)
     __table_args__ = (db.UniqueConstraint("category_code", "label", name="uq_catalog_item"),)
+
+
+class RoleTagMapping(db.Model):
+    """Translates internal role_tag → external budgeting-system account codes.
+    One row per role_tag. Edited by super admin via /admin/role-mapping.
+    Export logic (Task 3) reads this to route each line to the correct
+    MMB / ShowBiz account on export.
+    """
+    __tablename__ = "role_tag_mapping"
+    id                    = db.Column(db.Integer, primary_key=True)
+    role_tag              = db.Column(db.String(80), nullable=False, unique=True)
+    internal_account_code = db.Column(db.Integer, nullable=False)
+    internal_account_name = db.Column(db.String(100), nullable=True)
+    # MMB often uses decimal account codes (e.g. '2110.01'); keep as string.
+    mmb_account_code      = db.Column(db.String(20), nullable=True)
+    mmb_account_name      = db.Column(db.String(100), nullable=True)
+    showbiz_account_code  = db.Column(db.String(20), nullable=True)
+    showbiz_account_name  = db.Column(db.String(100), nullable=True)
+    notes                 = db.Column(db.Text, nullable=True)
+    updated_at            = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_by_user_id    = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
 
 
 class CoaMigrationLog(db.Model):

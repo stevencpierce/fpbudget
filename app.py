@@ -269,6 +269,132 @@ def _is_atl_line(ln):
     return False
 
 
+# ── Best-guess MMB / ShowBiz target mappings ────────────────────────────────
+# Used by the Task 2 seed to populate initial RoleTagMapping rows. Super
+# admin refines in /admin/role-mapping. Numbers follow Movie Magic /
+# ShowBiz industry conventions; they are DEFAULTS only — production
+# budgets will override per their specific MMB/ShowBiz template.
+#
+# MMB structure reference (abridged):
+#   1100-1899   Above-the-Line (1100=Writer, 1300=Producer, 1500=Director)
+#   2000-2899   Below-the-Line Production (2000=Prod Staff, 2100=Extra Talent,
+#                                          2300=Camera, 2500=Set Construction,
+#                                          2800=Wardrobe, Makeup, etc.)
+#   3000-3899   Post-Production (3000=Film Editing, 3200=Music, 3400=Sound)
+#   4000-4899   Other (Insurance, Publicity, Legal, etc.)
+#
+# ShowBiz structure: very similar with slightly different numbering (e.g.
+# 1100=Writers, 1300=Producers, 2000=Extras, 2200=Production Staff, etc.).
+# Export/writer modules will document exact column layouts per format.
+
+def _guess_mmb_target(ci):
+    """Return (mmb_code:str, mmb_name:str) for a CatalogItem row."""
+    code = int(getattr(ci, 'category_code', 0) or 0)
+    label = (getattr(ci, 'label', '') or '').lower()
+    # Check ATL labels FIRST — they should land in the MMB ATL range
+    # regardless of which internal bucket they live in (could be 1100/2000/4000).
+    if 'director' in label and 'asst' not in label and 'of photography' not in label:
+        return ('1500-00', 'Director')
+    if 'producer' in label:
+        if 'executive' in label:
+            return ('1310-00', 'Executive Producer')
+        return ('1300-00', 'Producer')
+    if 'writer' in label:
+        return ('1100-00', 'Writer')
+    # Internal COA → MMB target
+    _INTERNAL_TO_MMB = {
+        2000: ('2000-00', 'Production Staff'),
+        2100: ('2100-00', 'Principal Talent'),
+        2200: ('2200-00', 'Casting'),
+        2300: ('2300-00', 'Extra Talent'),  # rehearsal-adjacent
+        2600: ('2300-00', 'Camera Equipment'),
+        2700: ('2500-00', 'Set Lighting / Grip'),
+        2800: ('2600-00', 'Production Sound'),
+        2900: ('2550-00', 'Technical / Control Room'),
+        3000: ('2400-00', 'Art Department'),
+        3100: ('2800-00', 'Wardrobe / Makeup'),
+        3300: ('2200-00', 'Locations'),
+        3400: ('2900-00', 'Transportation'),
+        3500: ('4000-00', 'Travel & Living'),
+        3600: ('4100-00', 'Shipping'),
+        3700: ('2700-00', 'Crafts / Food'),
+        3800: ('2900-00', 'Sanitation / Other'),
+        4000: ('3000-00', 'Post-Production Editorial'),
+        4500: ('3100-00', 'Post-Production Equipment'),
+        4600: ('3200-00', 'Post-Production Facilities'),
+        4700: ('3300-00', 'Post-Production Services'),
+        4800: ('3400-00', 'Music'),
+        4900: ('3500-00', 'Titles / Stock Footage'),
+        5000: ('3600-00', 'Lab / Processing'),
+        6000: ('4500-00', 'Insurance'),
+        6100: ('4400-00', 'Legal / Accounting'),
+        6200: ('4600-00', 'Distribution'),
+        6300: ('4700-00', 'Publicity'),
+        6400: ('4300-00', 'Office / Admin'),
+        6500: ('4300-00', 'General Administration'),
+        6600: ('4200-00', 'Residuals'),
+        6700: ('4800-00', 'Miscellaneous'),
+        6800: ('4999-00', 'Producer Fee'),
+        1000: ('5100-00', 'Development Costs'),
+        1100: ('5100-00', 'Development Labor'),
+    }
+    return _INTERNAL_TO_MMB.get(code, ('', ''))
+
+
+def _guess_showbiz_target(ci):
+    """Return (showbiz_code:str, showbiz_name:str) for a CatalogItem row.
+    ShowBiz numbering is close to MMB but not identical — using its own
+    variant. Super admin refines in /admin/role-mapping.
+    """
+    code = int(getattr(ci, 'category_code', 0) or 0)
+    label = (getattr(ci, 'label', '') or '').lower()
+    if 'director' in label and 'asst' not in label and 'of photography' not in label:
+        return ('1500', 'Director')
+    if 'producer' in label:
+        if 'executive' in label:
+            return ('1310', 'Executive Producer')
+        return ('1300', 'Producer')
+    if 'writer' in label:
+        return ('1100', 'Writer')
+    _INTERNAL_TO_SHOWBIZ = {
+        2000: ('2200', 'Production Staff'),
+        2100: ('2000', 'Principal Talent'),
+        2200: ('2050', 'Casting'),
+        2300: ('2000', 'Extras & Rehearsal'),
+        2600: ('2350', 'Camera'),
+        2700: ('2500', 'Grip / Electric'),
+        2800: ('2600', 'Sound'),
+        2900: ('2700', 'Technical / Control Room'),
+        3000: ('2300', 'Art Department'),
+        3100: ('2800', 'Wardrobe / Makeup'),
+        3300: ('2250', 'Locations'),
+        3400: ('2900', 'Transportation'),
+        3500: ('4000', 'Travel & Living'),
+        3600: ('4100', 'Shipping'),
+        3700: ('2700', 'Food'),
+        3800: ('2950', 'Sanitation / Other'),
+        4000: ('3100', 'Editorial'),
+        4500: ('3150', 'Post Equipment'),
+        4600: ('3200', 'Post Facilities'),
+        4700: ('3250', 'Post Services'),
+        4800: ('3400', 'Music'),
+        4900: ('3500', 'Titles / Stock'),
+        5000: ('3600', 'Lab / Processing'),
+        6000: ('4400', 'Insurance'),
+        6100: ('4500', 'Legal / Accounting'),
+        6200: ('4600', 'Distribution'),
+        6300: ('4700', 'Publicity'),
+        6400: ('4300', 'Office / Admin'),
+        6500: ('4300', 'Administration'),
+        6600: ('4200', 'Residuals'),
+        6700: ('4800', 'Miscellaneous'),
+        6800: ('4950', 'Producer Fee'),
+        1000: ('5100', 'Development Costs'),
+        1100: ('5100', 'Development Labor'),
+    }
+    return _INTERNAL_TO_SHOWBIZ.get(code, ('', ''))
+
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -2336,7 +2462,9 @@ def upsert_line(pid, bid):
               "est_ot", "fringe_type", "agent_pct", "note", "use_schedule",
               "parent_line_id", "line_tag", "role_group", "unit_rate",
               "days_unit", "days_per_week",
-              "working_total", "manual_actual"]
+              "working_total", "manual_actual",
+              # Task 2: catalog linkage for exports
+              "catalog_item_id"]
     for f in fields:
         if f in data:
             val = data[f]
@@ -6424,6 +6552,107 @@ def admin_catalog_reorder():
     return jsonify({"ok": True})
 
 
+# ── Role Tag Mapping editor (Super Admin) ────────────────────────────────────
+# Translates internal role_tag → MMB/ShowBiz target accounts. Super admin
+# refines the seeded defaults here. Export routines (Task 3) read the same
+# table.
+
+def _role_mapping_to_dict(m):
+    return {
+        "id":                     m.id,
+        "role_tag":               m.role_tag,
+        "internal_account_code":  m.internal_account_code,
+        "internal_account_name":  m.internal_account_name,
+        "mmb_account_code":       m.mmb_account_code or "",
+        "mmb_account_name":       m.mmb_account_name or "",
+        "showbiz_account_code":   m.showbiz_account_code or "",
+        "showbiz_account_name":   m.showbiz_account_name or "",
+        "notes":                  m.notes or "",
+        "updated_at":             m.updated_at.isoformat() if m.updated_at else None,
+    }
+
+
+@app.route("/admin/role-mapping")
+@login_required
+@super_admin_required
+def admin_role_mapping_view():
+    """Super admin page for editing role_tag → MMB/ShowBiz account mappings."""
+    from models import RoleTagMapping as _RTM
+    # Include label from CatalogItem via role_tag join for display.
+    rows = db.session.query(_RTM, CatalogItem.label).outerjoin(
+        CatalogItem, CatalogItem.role_tag == _RTM.role_tag
+    ).order_by(_RTM.internal_account_code, _RTM.role_tag).all()
+    mappings = []
+    for m, label in rows:
+        d = _role_mapping_to_dict(m)
+        d["label"] = label or ""
+        mappings.append(d)
+    return render_template("admin_role_mapping.html",
+                           mappings=mappings, coa_sections=FP_COA_SECTIONS)
+
+
+@app.route("/api/role-mapping")
+@login_required
+def api_role_mapping():
+    """JSON endpoint for export routines + admin editor. All logged-in users
+    can READ (needed by budget.html export logic); only super admin writes."""
+    from models import RoleTagMapping as _RTM
+    rows = _RTM.query.order_by(_RTM.internal_account_code, _RTM.role_tag).all()
+    return jsonify({"mappings": [_role_mapping_to_dict(m) for m in rows]})
+
+
+@app.route("/admin/role-mapping/<int:mid>", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_role_mapping_update(mid):
+    from models import RoleTagMapping as _RTM
+    m = _RTM.query.get_or_404(mid)
+    data = request.get_json(force=True) or {}
+    for f in ("mmb_account_code", "mmb_account_name",
+              "showbiz_account_code", "showbiz_account_name", "notes"):
+        if f in data:
+            setattr(m, f, (data[f] or None) if data[f] != "" else None)
+    m.updated_by_user_id = current_user.id
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
+    return jsonify(_role_mapping_to_dict(m))
+
+
+@app.route("/admin/role-mapping/bulk-import", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_role_mapping_bulk_import():
+    """CSV bulk import. Columns: role_tag, mmb_account_code, mmb_account_name,
+    showbiz_account_code, showbiz_account_name, notes. Missing role_tags are
+    ignored (no new mappings created — admin creates those via the catalog
+    editor which auto-seeds)."""
+    from models import RoleTagMapping as _RTM
+    import csv as _csv, io as _io
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "No CSV file provided"}), 400
+    reader = _csv.DictReader(_io.StringIO(f.read().decode("utf-8-sig")))
+    updated = 0
+    for row in reader:
+        rt = (row.get("role_tag") or "").strip()
+        if not rt:
+            continue
+        m = _RTM.query.filter_by(role_tag=rt).first()
+        if not m:
+            continue
+        for k in ("mmb_account_code", "mmb_account_name",
+                  "showbiz_account_code", "showbiz_account_name", "notes"):
+            if k in row:
+                setattr(m, k, (row[k] or None))
+        m.updated_by_user_id = current_user.id
+        updated += 1
+    db.session.commit()
+    return jsonify({"ok": True, "updated": updated})
+
+
 # ── One-time migrations (Super Admin) ─────────────────────────────────────────
 
 def _seq_suffix(n):
@@ -6915,6 +7144,10 @@ def _do_boot_work():
         "ALTER TABLE budget ADD COLUMN version_number INTEGER",
         # Meals/craft services: allow user to opt a schedule-driven line out of auto-sync
         "ALTER TABLE budget_line ADD COLUMN sync_omit BOOLEAN DEFAULT false NOT NULL",
+        # Task 2: role-tag + phase on catalog_item, catalog_item FK on budget_line.
+        "ALTER TABLE catalog_item ADD COLUMN role_tag VARCHAR(80)",
+        "ALTER TABLE catalog_item ADD COLUMN phase VARCHAR(20)",
+        "ALTER TABLE budget_line ADD COLUMN catalog_item_id INTEGER REFERENCES catalog_item(id)",
     ]
     for _sql in _migrations:
         try:
@@ -7289,6 +7522,59 @@ def _do_boot_work():
         seed_catalog(db.session)
     except Exception as _e:
         app.logger.warning("seed_catalog failed: %s", _e)
+        db.session.rollback()
+
+    # ── Task 2: backfill role_tag on existing CatalogItem rows + seed
+    # RoleTagMapping with best-guess MMB/ShowBiz targets for super admin. ────
+    try:
+        import re as _re_rt
+        from models import RoleTagMapping as _RTM
+        _ci_rows = CatalogItem.query.filter(CatalogItem.role_tag.is_(None)).all()
+        if _ci_rows:
+            logging.info(f"[role_tag backfill] generating tags for {len(_ci_rows)} CatalogItem rows")
+            _seen = {c.role_tag for c in CatalogItem.query.filter(CatalogItem.role_tag.isnot(None)).all()}
+            for _ci in _ci_rows:
+                _slug_base = _re_rt.sub(r'[^a-z0-9]+', '_', (_ci.label or '').lower()).strip('_') or 'role'
+                _slug = _slug_base
+                _n = 2
+                while _slug in _seen:
+                    _slug = f"{_slug_base}_{_n}"
+                    _n += 1
+                _seen.add(_slug)
+                _ci.role_tag = _slug[:80]
+            db.session.commit()
+
+        # Seed RoleTagMapping rows where missing. Best-guess MMB targets
+        # follow the MMB account structure: 2000-series prod, 2100 talent,
+        # 2500 equipment, 3000 post. Super admin refines via editor.
+        _existing_mappings = {m.role_tag for m in _RTM.query.all()}
+        _all_labor_items = CatalogItem.query.filter_by(is_labor=True).filter(
+            CatalogItem.role_tag.isnot(None)
+        ).all()
+        _added = 0
+        for _ci in _all_labor_items:
+            if _ci.role_tag in _existing_mappings:
+                continue
+            # Best-guess MMB target based on internal section. Numbers
+            # follow standard MMB examples; super admin refines.
+            _mmb_code, _mmb_name = _guess_mmb_target(_ci)
+            _sb_code, _sb_name = _guess_showbiz_target(_ci)
+            db.session.add(_RTM(
+                role_tag=_ci.role_tag,
+                internal_account_code=_ci.category_code,
+                internal_account_name=_ci.category_name,
+                mmb_account_code=_mmb_code,
+                mmb_account_name=_mmb_name,
+                showbiz_account_code=_sb_code,
+                showbiz_account_name=_sb_name,
+                updated_by_user_id=None,
+            ))
+            _added += 1
+        if _added:
+            db.session.commit()
+            logging.info(f"[role_tag mapping] seeded {_added} default RoleTagMapping rows")
+    except Exception as _e:
+        logging.exception(f"role_tag seed failed: {_e}")
         db.session.rollback()
 
     # ── User table role column migrations (replace is_admin with role) ────────

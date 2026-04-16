@@ -6092,6 +6092,11 @@ async function qeAddSelected() {
           fringe_type:     isLabor ? fringe : 'N',
           agent_pct:       isLabor ? (agent_pct || 0) / 100 : 0,
           estimated_total: isLabor ? 0 : rate * perLineQty * days,
+          // Task 2: link line back to the CatalogItem for exports. The
+          // JS QE_CATEGORIES currently doesn't carry DB ids (Phase 2
+          // replaces this array with /api/catalog data). Forward the id
+          // when present; backend tolerates null/undefined.
+          catalog_item_id: (item.id != null ? item.id : null),
         })
       });
 
