@@ -1713,34 +1713,65 @@ QE_CATEGORIES_FROZEN = [
 
 
 def seed_catalog(db_session):
-    """Seed the global Quick Entry catalog. Idempotent: only adds missing items."""
+    """Seed the global Quick Entry catalog from FP_CATALOG_SEED.
+
+    Idempotent: only inserts (code, label) pairs that are NOT already in
+    the DB. Each row is committed in its own transaction so one bad row
+    (e.g. constraint violation) never blocks the rest of the batch.
+    Failures are logged with the offending row so they can be diagnosed
+    instead of silently vanishing.
+
+    Returns (added:int, failed:list[tuple[row, err]]).
+    """
+    import logging
     from models import CatalogItem
+
     existing_keys = {(c.category_code, c.label) for c in CatalogItem.query.all()}
     added = 0
+    failed = []
+
     for i, row in enumerate(FP_CATALOG_SEED):
-        (code, cname, label, group, is_labor, rate, qty, days, kit,
-         fringe, union_fringe, agent_pct, comp, unit) = row
+        try:
+            (code, cname, label, group, is_labor, rate, qty, days, kit,
+             fringe, union_fringe, agent_pct, comp, unit) = row
+        except Exception as e:
+            logging.warning("seed_catalog: bad row shape at idx %d: %s (%s)", i, row, e)
+            failed.append((row, str(e)))
+            continue
+
         if (code, label) in existing_keys:
             continue
-        db_session.add(CatalogItem(
-            category_code=code,
-            category_name=cname,
-            label=label,
-            group_name=group,
-            is_labor=is_labor,
-            rate=rate,
-            qty=qty,
-            days=days,
-            kit_fee=kit,
-            fringe=fringe,
-            union_fringe=union_fringe,
-            agent_pct=agent_pct,
-            comp=comp,
-            unit=unit,
-            sort_order=i * 10,
-            is_active=True,
-        ))
-        added += 1
-    if added:
-        db_session.commit()
-    return added
+
+        try:
+            db_session.add(CatalogItem(
+                category_code=code,
+                category_name=cname,
+                label=label,
+                group_name=group,
+                is_labor=is_labor,
+                rate=rate,
+                qty=qty,
+                days=days,
+                kit_fee=kit,
+                fringe=fringe,
+                union_fringe=union_fringe,
+                agent_pct=agent_pct,
+                comp=comp,
+                unit=unit,
+                sort_order=i * 10,
+                is_active=True,
+            ))
+            # Per-row commit so a later row failing can't roll back earlier
+            # successful inserts.
+            db_session.commit()
+            added += 1
+            existing_keys.add((code, label))
+        except Exception as e:
+            db_session.rollback()
+            logging.warning("seed_catalog: failed to insert (%s, %r): %s", code, label, e)
+            failed.append((row, str(e)))
+
+    if added or failed:
+        logging.info("seed_catalog: inserted=%d failed=%d total_seed=%d",
+                     added, len(failed), len(FP_CATALOG_SEED))
+    return added, failed

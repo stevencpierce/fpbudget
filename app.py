@@ -6783,6 +6783,28 @@ def admin_catalog_reorder():
     return jsonify({"ok": True})
 
 
+@app.route("/admin/catalog/reseed", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_reseed():
+    """Force a re-seed from FP_CATALOG_SEED. Idempotent — only inserts
+    items not already in the DB. Each row commits independently so one
+    bad row doesn't block the rest. Returns a count and any failures."""
+    from budget_calc import seed_catalog as _seed
+    try:
+        added, failed = _seed(db.session)
+        return jsonify({
+            "ok": True,
+            "added": added,
+            "failed_count": len(failed),
+            "failures": [{"row": list(r[0]) if isinstance(r[0], tuple) else str(r[0]),
+                          "error": r[1]} for r in failed[:20]],  # first 20
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Role Tag Mapping editor (Super Admin) ────────────────────────────────────
 # Translates internal role_tag → MMB/ShowBiz target accounts. Super admin
 # refines the seeded defaults here. Export routines (Task 3) read the same

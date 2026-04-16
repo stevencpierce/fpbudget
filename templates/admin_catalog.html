@@ -139,8 +139,47 @@
       <input type="checkbox" id="cat-show-inactive"> Show inactive
     </label>
     <button class="btn btn-sm btn-primary" id="cat-add-btn">+ Add Item</button>
+    <button class="btn btn-sm btn-outline" id="cat-reseed-btn"
+            title="Insert any missing items from the default Quick Entry list. Idempotent — existing items are never touched.">
+      ⟳ Reseed from defaults
+    </button>
     <span id="cat-save-indicator" class="cat-save-indicator">✓ All changes saved</span>
   </div>
+
+  <script>
+    document.getElementById('cat-reseed-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('cat-reseed-btn');
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Reseeding…';
+      try {
+        const r = await fetch('/admin/catalog/reseed', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await r.json();
+        if (r.ok) {
+          let msg = `Reseed complete. Added ${data.added} item(s).`;
+          if (data.failed_count) {
+            msg += `\n\nFailures: ${data.failed_count}`;
+            if (data.failures && data.failures.length) {
+              msg += '\n\nFirst few errors:\n' +
+                     data.failures.map(f => `• ${JSON.stringify(f.row)}: ${f.error}`).join('\n');
+            }
+          }
+          alert(msg);
+          if (data.added > 0) location.reload();
+        } else {
+          alert('Reseed failed: ' + (data.error || 'unknown error'));
+        }
+      } catch (e) {
+        alert('Reseed request failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
+  </script>
 
   <div class="cat-scroll-wrap">
     <table class="cat-table" id="cat-table">

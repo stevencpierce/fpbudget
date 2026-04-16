@@ -5793,15 +5793,22 @@ async function loadQeCatalog() {
   }
 }
 
+// Toggle: when true, Quick Entry hydrates from /api/catalog (DB is the
+// source of truth — admin catalog edits go live immediately). When false,
+// QE uses the hardcoded QE_CATEGORIES above and ignores the DB catalog.
+// Flip this to true once /admin/catalog is fully seeded and verified.
+const QE_USE_DB_CATALOG = false;
+
 async function openCascade() {
   _qeUnionByCode = {};
   _qeCart.clear();
   _qeCatCode = null;
   document.getElementById('qe-search').value = '';
-  // Show the panel immediately so there's no flash-of-empty while loading
   document.getElementById('cascade-panel').classList.remove('hidden');
   document.getElementById('cascade-overlay').classList.remove('hidden');
-  await loadQeCatalog();
+  if (QE_USE_DB_CATALOG) {
+    await loadQeCatalog();
+  }
   buildQeSidebar();
   renderQeCategory(null);
   updateQeUI();
