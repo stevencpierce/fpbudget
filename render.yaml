@@ -7,7 +7,12 @@ services:
     # starts. This avoids blocking the gevent worker with synchronous psycopg2
     # calls — which was hanging deploys (worker couldn't answer health checks).
     preDeployCommand: RUN_BOOT_TASKS=1 python -c "import app"
-    startCommand: gunicorn -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:$PORT --timeout 120 wsgi:app
+    # Custom worker: gevent WebSocket without the ssl monkey-patch. On
+    # Python 3.12+, gevent's ssl patch blows up outbound HTTPS with
+    # SSLContext recursion and SSLSocket super() type-check errors. Render
+    # terminates TLS upstream so inbound is plain HTTP; outbound HTTPS
+    # (Dropbox, Anthropic) runs fine on synchronous stdlib ssl.
+    startCommand: gunicorn -k gunicorn_workers.GeventWebSocketNoSSLWorker -w 1 --bind 0.0.0.0:$PORT --timeout 120 wsgi:app
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
