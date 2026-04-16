@@ -179,22 +179,44 @@
     tr.appendChild(_selectTd(it, 'comp', COMP_OPTS, 'col-comp'));
     tr.appendChild(_selectTd(it, 'unit', UNIT_OPTS, 'col-unit'));
 
-    // Delete/restore button
+    // Hide / Restore / Purge actions
     tr.appendChild(_td(function(td) {
       td.className = 'col-act';
-      var btn = document.createElement('button');
-      btn.className = 'cat-delete-btn';
-      btn.textContent = it.is_active ? '✕' : '↺';
-      btn.title = it.is_active ? 'Hide from Quick Entry' : 'Restore';
-      btn.addEventListener('click', function() {
-        if (it.is_active) {
-          if (!confirm('Hide "' + it.label + '" from Quick Entry?')) return;
+      td.style.whiteSpace = 'nowrap';
+      if (it.is_active) {
+        // Active row → offer hide (soft delete)
+        var hideBtn = document.createElement('button');
+        hideBtn.className = 'cat-delete-btn';
+        hideBtn.textContent = '✕';
+        hideBtn.title = 'Hide from Quick Entry (reversible)';
+        hideBtn.addEventListener('click', function() {
+          if (!confirm('Hide "' + it.label + '" from Quick Entry?\n\nThis is reversible — toggle "Show inactive" to restore later.')) return;
           _delete(it.id);
-        } else {
+        });
+        td.appendChild(hideBtn);
+      } else {
+        // Inactive row → offer restore + permanent delete
+        var restoreBtn = document.createElement('button');
+        restoreBtn.className = 'cat-delete-btn';
+        restoreBtn.textContent = '↺';
+        restoreBtn.style.color = '#4ade80';
+        restoreBtn.title = 'Restore';
+        restoreBtn.addEventListener('click', function() {
           _patch(it.id, { is_active: true });
-        }
-      });
-      td.appendChild(btn);
+        });
+        td.appendChild(restoreBtn);
+
+        var purgeBtn = document.createElement('button');
+        purgeBtn.className = 'cat-delete-btn';
+        purgeBtn.textContent = '🗑';
+        purgeBtn.title = 'Delete permanently (irreversible)';
+        purgeBtn.style.marginLeft = '2px';
+        purgeBtn.addEventListener('click', function() {
+          if (!confirm('Permanently DELETE "' + it.label + '" (code ' + it.category_code + ')?\n\nThis cannot be undone. Use this to clean up legacy pre-migration rows.')) return;
+          _purge(it.id);
+        });
+        td.appendChild(purgeBtn);
+      }
     }));
 
     return tr;
@@ -331,6 +353,24 @@
         render();
       }).catch(function(e) {
         _saveErr(e.message || 'Delete failed');
+      });
+  }
+
+  function _purge(id) {
+    _saveStart();
+    fetch('/admin/catalog/item/' + id + '/purge', { method: 'POST' })
+      .then(function(r) {
+        if (!r.ok) return r.json().then(function(d) { throw new Error(d.error || 'HTTP ' + r.status); });
+        return r.json();
+      }).then(function() {
+        // Remove from local items array entirely
+        for (var i = items.length - 1; i >= 0; i--) {
+          if (items[i].id === id) { items.splice(i, 1); break; }
+        }
+        _saveOk('Item deleted');
+        render();
+      }).catch(function(e) {
+        _saveErr(e.message || 'Purge failed');
       });
   }
 

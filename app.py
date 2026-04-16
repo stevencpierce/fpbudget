@@ -6696,11 +6696,38 @@ def admin_catalog_item_create():
             return jsonify({"error": "category_code and label required"}), 400
         # Resolve category_name from COA
         cname = dict(FP_COA_SECTIONS).get(code, data.get("category_name") or "")
+        group_name = (data.get("group_name") or None) or None
+
+        # Auto-compute sort_order so the new item lands inside its existing
+        # sub-group cluster. Previously we defaulted to 0, which placed every
+        # new row at the TOP of the section, breaking the "Direction / AD"
+        # cluster rendering (new row rendered its own group header instead of
+        # joining the existing one). Logic:
+        #   1. If caller provided sort_order explicitly, honor it.
+        #   2. Else if any row already exists with the same (code, group_name),
+        #      place the new row 10 after that cluster's MAX sort_order so it
+        #      becomes the LAST member of that group.
+        #   3. Else (first row in this group or ungrouped), append to the end
+        #      of the whole section — 10 after the MAX sort_order at this code.
+        if "sort_order" in data and data.get("sort_order") is not None:
+            sort_order = int(data.get("sort_order") or 0)
+        else:
+            same_group_q = CatalogItem.query.filter_by(
+                category_code=code, group_name=group_name
+            ).order_by(CatalogItem.sort_order.desc()).first()
+            if same_group_q:
+                sort_order = int(same_group_q.sort_order or 0) + 10
+            else:
+                last_in_cat = CatalogItem.query.filter_by(
+                    category_code=code
+                ).order_by(CatalogItem.sort_order.desc()).first()
+                sort_order = (int(last_in_cat.sort_order or 0) + 10) if last_in_cat else 0
+
         ci = CatalogItem(
             category_code=code,
             category_name=cname,
             label=label,
-            group_name=(data.get("group_name") or None) or None,
+            group_name=group_name,
             is_labor=bool(data.get("is_labor", False)),
             rate=float(data.get("rate") or 0),
             qty=float(data.get("qty") or 1),
@@ -6711,7 +6738,7 @@ def admin_catalog_item_create():
             agent_pct=float(data.get("agent_pct") or 0),
             comp=(data.get("comp") or "labor"),
             unit=(data.get("unit") or "day"),
-            sort_order=int(data.get("sort_order") or 0),
+            sort_order=sort_order,
             is_active=True,
         )
         db.session.add(ci)
@@ -6761,11 +6788,38 @@ def admin_catalog_item_update(iid):
 @login_required
 @super_admin_required
 def admin_catalog_item_delete(iid):
-    """Soft delete via is_active=False."""
+    """Soft delete via is_active=False. Preserves the row so it can be
+    restored later via toggle_active. Use /purge for irreversible hard
+    delete (e.g. cleaning up legacy pre-renumber rows)."""
     ci = CatalogItem.query.get_or_404(iid)
     ci.is_active = False
     db.session.commit()
     return jsonify({"ok": True})
+
+
+@app.route("/admin/catalog/item/<int:iid>/purge", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_item_purge(iid):
+    """Hard delete — permanently remove the row from the DB. Irreversible.
+    Any budget_line rows that reference this CatalogItem via catalog_item_id
+    have that FK cleared (set to NULL) so existing budgets aren't orphaned
+    or broken — exports fall back to fuzzy match on (account_code,
+    description) when catalog_item_id is NULL."""
+    ci = CatalogItem.query.get_or_404(iid)
+    try:
+        # Null out any FK references from budget_line so we don't violate the
+        # FK constraint on delete.
+        db.session.execute(
+            text("UPDATE budget_line SET catalog_item_id = NULL WHERE catalog_item_id = :iid"),
+            {"iid": iid}
+        )
+        db.session.delete(ci)
+        db.session.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
 
 
 @app.route("/admin/catalog/reorder", methods=["POST"])
