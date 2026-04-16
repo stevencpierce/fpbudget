@@ -1,33 +1,52 @@
 import os, logging, json, csv, io, re
 
-# ── ssl.SSLContext.options recursion fix ──────────────────────────────────────
-# Python 3.12+ introduced a Python-level `options` property setter on
-# ssl.SSLContext that does `super(SSLContext, SSLContext).options.__set__`.
-# The `SSLContext` name is re-resolved from ssl.py's module globals at each
-# call, so if ANY library (gevent's monkey-patch, truststore, certifi-win32,
-# some urllib3 shims) has rebound `ssl.SSLContext` to a subclass, super()
-# walks back to the original SSLContext whose setter does the same thing —
-# infinite recursion. We observed exactly this pattern in production on
-# Python 3.13 with RecursionError after 950+ frames in ssl.py:561, blowing
-# up every boto3 client build (R2 uploads, presigned URLs, anything that
-# goes through botocore.httpsession.create_urllib3_context).
+# ── ssl.SSLContext property recursion fix ─────────────────────────────────────
+# Python 3.12+ rewrote several SSLContext property setters (options,
+# verify_mode, verify_flags, minimum_version, maximum_version) as
+# Python-level getters/setters that do
+# `super(SSLContext, SSLContext).<attr>.__set__(self, value)`. The
+# `SSLContext` name is re-resolved from ssl.py's module globals at every
+# call, so if ANY library (gevent's monkey-patch, truststore, etc.) has
+# rebound `ssl.SSLContext` to a subclass, super() walks back to the original
+# SSLContext whose setter does the same thing — infinite recursion. We
+# observed this repeatedly in production on Python 3.13 (ssl.py:561 for
+# `options`, ssl.py:679 for `verify_mode`) blowing up every boto3 client
+# build and any urllib3-based HTTPS call (Dropbox SDK, Anthropic SDK, etc.).
 #
-# Fix: replace the broken Python-level setter with a direct call to the
-# C-level `_ssl._SSLContext.options` slot descriptor, which cannot recurse.
+# Fix: replace each broken Python-level property with one that forwards
+# directly to the C-level `_ssl._SSLContext` slot descriptor. Cannot
+# recurse because C-level setters aren't re-entering Python code.
+#
 # Must happen BEFORE boto3/urllib3/requests/dropbox/anthropic are imported.
 import ssl as _ssl_mod
 try:
     import _ssl as _c_ssl_mod
-    _c_options_desc = _c_ssl_mod._SSLContext.options  # slot descriptor
-    def _ssl_options_get(self):
-        return _c_options_desc.__get__(self, type(self))
-    def _ssl_options_set(self, value):
-        _c_options_desc.__set__(self, value)
-    _ssl_mod.SSLContext.options = property(_ssl_options_get, _ssl_options_set)
+    _C_SSL = _c_ssl_mod._SSLContext
+    def _make_passthrough_property(attr_name):
+        desc = getattr(_C_SSL, attr_name)
+        def _get(self): return desc.__get__(self, type(self))
+        def _set(self, value): desc.__set__(self, value)
+        return property(_get, _set)
+    for _attr in ('options', 'verify_mode', 'verify_flags',
+                  'minimum_version', 'maximum_version',
+                  'check_hostname', 'post_handshake_auth',
+                  'security_level'):
+        try:
+            # Only patch if the C-level descriptor actually exists (older
+            # Python builds may not have all of these).
+            getattr(_C_SSL, _attr)
+        except AttributeError:
+            continue
+        try:
+            setattr(_ssl_mod.SSLContext, _attr, _make_passthrough_property(_attr))
+        except (TypeError, AttributeError) as _e:
+            import sys as _sys
+            print(f"[ssl-fix] could not patch SSLContext.{_attr}: {_e!r}",
+                  file=_sys.stderr)
 except Exception as _e:
-    # Log once at startup — this is critical, so don't silently pass
     import sys as _sys
-    print(f"[ssl-fix] WARNING: could not patch SSLContext.options: {_e!r}", file=_sys.stderr)
+    print(f"[ssl-fix] fatal: could not set up SSLContext patches: {_e!r}",
+          file=_sys.stderr)
 
 # ── R2 / botocore checksum env vars ──────────────────────────────────────────
 # MUST be set BEFORE boto3/botocore is ever imported. botocore reads these
@@ -7414,16 +7433,14 @@ def docs_upload_post(pid):
 
     content_type = f.content_type or "application/octet-stream"
     ext = os.path.splitext(f.filename)[1].lower() if f.filename else ""
+    # r2_key kept as a unique filing id (for DocUpload.r2_key column, and
+    # for potential future R2 reintroduction). NOT uploaded to R2 anymore —
+    # R2 path was chronically unreliable on this deploy (botocore/gevent/ssl
+    # interactions). Source of truth is now Dropbox; the Analyzer app handles
+    # downstream processing from there.
     r2_key = f"docs/{pid}/{_uuid.uuid4().hex}{ext}"
 
-    # Arguments: (file_bytes, key, content_type). Previous call had args
-    # swapped, so R2 was receiving the key as the body and vice-versa —
-    # uploads appeared to "succeed" but the function silently returned False
-    # because R2 rejected them.
-    if not _r2_upload(data, r2_key, content_type):
-        return jsonify({"error": "Upload to R2 storage failed"}), 500
-
-    # File to Dropbox PROCESSED DOCUMENTS/{uploader_name}/ if project has a folder
+    # File directly to Dropbox PROCESSED DOCUMENTS/{uploader_name}/
     dbx_filing_path = None
     dbx_filing_error = None
     if project.dropbox_folder:
@@ -7464,10 +7481,17 @@ def docs_upload_post(pid):
     db.session.add(upload)
     db.session.commit()
 
-    resp = {"status": "ok", "upload_id": upload.id}
-    if dbx_filing_error:
-        resp["warning"] = f"Filed to R2 but Dropbox filing failed: {dbx_filing_error}"
-    return jsonify(resp), 201
+    # If neither Dropbox succeeded nor the project has a folder, the file
+    # has nowhere to go. Tell the user instead of silently saving a ghost row.
+    if not dbx_filing_path:
+        db.session.delete(upload)
+        db.session.commit()
+        err = (dbx_filing_error
+               or "Project has no Dropbox folder configured — cannot file.")
+        return jsonify({"error": f"Upload failed: {err}"}), 500
+
+    return jsonify({"status": "ok", "upload_id": upload.id,
+                    "filed_path": dbx_filing_path}), 201
 
 
 @app.route("/docs/upload/<int:uid>/retry-filing", methods=["POST"])
