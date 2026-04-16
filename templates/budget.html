@@ -5359,7 +5359,11 @@ async function saveCompanySettings() {
 // QUICK ENTRY — full item library keyed by COA code
 // Each item: { label, isLabor, rate, qty, days, kit, fringe, comp, unit }
 // ═══════════════════════════════════════════════════════════════════════════
-const QE_CATEGORIES = [
+// QE_CATEGORIES is the runtime Quick Entry catalog. The array below is the
+// FALLBACK used if /api/catalog fetch fails — normally openCascade() replaces
+// this with live DB data from the CatalogItem table so edits made in
+// /admin/catalog show up immediately without a deploy.
+let QE_CATEGORIES = [
   { code:1000,  name:'Development Rights & Story', items:[
     { label:'Story Rights / Option',         isLabor:false, rate:5000, qty:1, days:1, comp:'expense',  unit:'flat' },
     { label:'Research',                      isLabor:false, rate:1000, qty:1, days:1, comp:'expense',  unit:'flat' },
@@ -5735,16 +5739,54 @@ let _qeUnionByCode = {}; // code → true (union) / false (non-union)
 const _qeCart = new Map();
 let _qeCatCode = null; // currently displayed category code
 
-function openCascade() {
+// Load the live Quick Entry catalog from the server. Transforms the
+// /api/catalog response shape (snake_case, grouped by category) into the
+// QE_CATEGORIES shape (camelCase, array of {code,name,items}). On failure,
+// silently leaves QE_CATEGORIES at its hardcoded fallback.
+async function loadQeCatalog() {
+  try {
+    const r = await fetch('/api/catalog', { credentials: 'same-origin' });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data || !Array.isArray(data.categories) || data.categories.length === 0) return;
+    QE_CATEGORIES = data.categories
+      .slice()
+      .sort((a, b) => a.code - b.code)
+      .map(cat => ({
+        code: cat.code,
+        name: cat.name,
+        items: (cat.items || []).map(it => ({
+          label:       it.label,
+          isLabor:     !!it.is_labor,
+          rate:        Number(it.rate) || 0,
+          qty:         Number(it.qty)  || 1,
+          days:        Number(it.days) || 1,
+          kit:         Number(it.kit_fee) || 0,
+          fringe:      it.fringe || 'N',
+          unionFringe: it.union_fringe || undefined,
+          agent_pct:   Number(it.agent_pct) || 0,
+          comp:        it.comp || (it.is_labor ? 'labor' : 'expense'),
+          unit:        it.unit || (it.is_labor ? 'day' : 'flat'),
+          group:       it.group_name || undefined,
+        })),
+      }));
+  } catch (e) {
+    console.warn('QE: /api/catalog fetch failed, using fallback list', e);
+  }
+}
+
+async function openCascade() {
   _qeUnionByCode = {};
   _qeCart.clear();
   _qeCatCode = null;
   document.getElementById('qe-search').value = '';
+  // Show the panel immediately so there's no flash-of-empty while loading
+  document.getElementById('cascade-panel').classList.remove('hidden');
+  document.getElementById('cascade-overlay').classList.remove('hidden');
+  await loadQeCatalog();
   buildQeSidebar();
   renderQeCategory(null);
   updateQeUI();
-  document.getElementById('cascade-panel').classList.remove('hidden');
-  document.getElementById('cascade-overlay').classList.remove('hidden');
 }
 
 function closeCascade() {
