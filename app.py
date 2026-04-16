@@ -1,5 +1,34 @@
 import os, logging, json, csv, io, re
 
+# ── ssl.SSLContext.options recursion fix ──────────────────────────────────────
+# Python 3.12+ introduced a Python-level `options` property setter on
+# ssl.SSLContext that does `super(SSLContext, SSLContext).options.__set__`.
+# The `SSLContext` name is re-resolved from ssl.py's module globals at each
+# call, so if ANY library (gevent's monkey-patch, truststore, certifi-win32,
+# some urllib3 shims) has rebound `ssl.SSLContext` to a subclass, super()
+# walks back to the original SSLContext whose setter does the same thing —
+# infinite recursion. We observed exactly this pattern in production on
+# Python 3.13 with RecursionError after 950+ frames in ssl.py:561, blowing
+# up every boto3 client build (R2 uploads, presigned URLs, anything that
+# goes through botocore.httpsession.create_urllib3_context).
+#
+# Fix: replace the broken Python-level setter with a direct call to the
+# C-level `_ssl._SSLContext.options` slot descriptor, which cannot recurse.
+# Must happen BEFORE boto3/urllib3/requests/dropbox/anthropic are imported.
+import ssl as _ssl_mod
+try:
+    import _ssl as _c_ssl_mod
+    _c_options_desc = _c_ssl_mod._SSLContext.options  # slot descriptor
+    def _ssl_options_get(self):
+        return _c_options_desc.__get__(self, type(self))
+    def _ssl_options_set(self, value):
+        _c_options_desc.__set__(self, value)
+    _ssl_mod.SSLContext.options = property(_ssl_options_get, _ssl_options_set)
+except Exception as _e:
+    # Log once at startup — this is critical, so don't silently pass
+    import sys as _sys
+    print(f"[ssl-fix] WARNING: could not patch SSLContext.options: {_e!r}", file=_sys.stderr)
+
 # ── R2 / botocore checksum env vars ──────────────────────────────────────────
 # MUST be set BEFORE boto3/botocore is ever imported. botocore reads these
 # during module init and caches them. Cloudflare R2 rejects the new
