@@ -2611,6 +2611,103 @@ def line_insert(pid, bid):
     return jsonify({"ok": True, "id": new_ln.id})
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/duplicate", methods=["POST"])
+@login_required
+def line_duplicate(pid, bid, lid):
+    """Duplicate a budget line, placing the new row directly below the source.
+
+    Copies all value fields (rate/days/fringe/agent/schedule config/etc.) but
+    CLEARS individual assignment (assigned_crew_id=NULL, no CrewAssignment
+    rows). Also duplicates the source line's ScheduleDay rows so the new line
+    lands on the same shoot calendar as the original (crew_member_id on those
+    schedule rows is cleared — the duplicate starts unassigned).
+    """
+    from models import ScheduleDay
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    src = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
+
+    try:
+        # Build the new row with every value field copied from src, but with
+        # assigned_crew_id cleared and a fresh sort_order (placed just after src).
+        new_ln = BudgetLine(
+            budget_id        = src.budget_id,
+            account_code     = src.account_code,
+            account_name     = src.account_name,
+            description      = src.description,
+            is_labor         = src.is_labor,
+            estimated_total  = src.estimated_total,
+            payroll_co       = src.payroll_co,
+            quantity         = src.quantity,
+            days             = src.days,
+            rate             = src.rate,
+            rate_type        = src.rate_type,
+            est_ot           = src.est_ot,
+            fringe_type      = src.fringe_type,
+            agent_pct        = src.agent_pct,
+            note             = src.note,
+            use_schedule     = src.use_schedule,
+            days_unit        = src.days_unit,
+            days_per_week    = src.days_per_week,
+            parent_line_id   = src.parent_line_id,
+            line_tag         = src.line_tag,
+            sync_omit        = src.sync_omit,
+            role_group       = src.role_group,
+            unit_rate        = src.unit_rate,
+            assigned_crew_id = None,                     # <-- cleared
+            catalog_item_id  = src.catalog_item_id,
+            working_total    = src.working_total,
+            manual_actual    = src.manual_actual,
+            schedule_labels  = src.schedule_labels,
+            sort_order       = 0,                        # placeholder, reseated below
+        )
+        db.session.add(new_ln)
+        db.session.flush()                               # populate new_ln.id
+
+        # Re-seat sort_order so the copy sits immediately after the source in
+        # its section. Fetch all section rows, re-index sequentially, inserting
+        # the new line directly after the source.
+        section_lines = BudgetLine.query.filter_by(
+            budget_id=bid, account_code=src.account_code
+        ).filter(BudgetLine.id != new_ln.id).order_by(
+            BudgetLine.sort_order, BudgetLine.id
+        ).all()
+        src_idx = next((i for i, ln in enumerate(section_lines) if ln.id == src.id), 0)
+        section_lines.insert(src_idx + 1, new_ln)
+        for i, ln in enumerate(section_lines):
+            ln.sort_order = i
+
+        # Duplicate the source line's ScheduleDay rows so the new line lands on
+        # the same production calendar. crew_member_id is cleared — the copy
+        # starts with no individual attached.
+        src_sched = ScheduleDay.query.filter_by(budget_line_id=src.id).all()
+        for sd in src_sched:
+            db.session.add(ScheduleDay(
+                budget_id       = sd.budget_id,
+                budget_line_id  = new_ln.id,
+                crew_member_id  = None,                  # <-- cleared
+                date            = sd.date,
+                episode         = sd.episode,
+                day_type        = sd.day_type,
+                rate_multiplier = sd.rate_multiplier,
+                note            = sd.note,
+                crew_instance   = sd.crew_instance,
+                est_ot_hours    = sd.est_ot_hours,
+                cell_flags      = sd.cell_flags,
+                schedule_mode   = sd.schedule_mode,
+            ))
+
+        # NOTE: CrewAssignment rows are intentionally NOT copied. The duplicate
+        # is a fresh unassigned role — user fills it in via the normal flow.
+
+        db.session.commit()
+        _touch_budget(bid)
+        db.session.commit()
+        return jsonify({"ok": True, "id": new_ln.id})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/reorder", methods=["POST"])
 @login_required
 def line_reorder(pid, bid):

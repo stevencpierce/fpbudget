@@ -3629,10 +3629,11 @@ function renderCalcDetail(d) {
   <button type="button" class="ctx-menu-item" id="ctx-toggle-sync-omit"></button>
 </div>
 
-<!-- ── Line Row Context Dropdown (insert above/below, move) ────────────────── -->
+<!-- ── Line Row Context Dropdown (insert above/below, duplicate, move) ─────── -->
 <div id="line-row-menu" class="line-row-menu hidden">
   <button type="button" onclick="lineInsert('above')">Insert Row Above</button>
   <button type="button" onclick="lineInsert('below')">Insert Row Below</button>
+  <button type="button" onclick="lineDuplicate()">Duplicate Row</button>
   <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
   <button type="button" onclick="openLineMoveModal()">Move to…</button>
 </div>
@@ -5892,8 +5893,8 @@ function renderQeCategory(code, searchQ) {
 
     const laborFields = item.isLabor ? `
       <td class="qe-td-qty">
-        <input type="number" class="qe-input qe-qty" value="${effQty}" min="1" step="1"
-               title="People — values above 1 create separate lines (A, B, C...)">
+        <span class="muted" style="font-size:.75rem" title="Labor always adds one line per role — use Duplicate on the budget line to add more instances.">1</span>
+        <input type="hidden" class="qe-qty" value="1">
       </td>
       <td class="qe-td-days"><input type="number" class="qe-input qe-days" value="${effDays}" min="0.5" step="0.5"></td>
       <td class="qe-td-rate"><div class="qe-rate-wrap"><span class="qe-dollar">$</span>
@@ -6134,17 +6135,15 @@ async function qeAddSelected() {
       if (maxSortInGroup >= 0) baseSortOrder = Math.max(baseSortOrder, maxSortInGroup + 10);
     }
 
-    // ── SPLIT labor lines with qty > 1 into separate named lines ──
-    // Example: "Robotic Camera Operator" qty=3
-    //   → "Robotic Camera Operator A", "B", "C" — each quantity=1, independent
-    // Non-labor items keep qty as a multiplier on a single line.
-    const shouldSplit = isLabor && qty > 1;
-    const numLines    = shouldSplit ? qty : 1;
-    const perLineQty  = shouldSplit ? 1 : qty;
+    // Labor lines always create exactly ONE row per Quick Entry item —
+    // users click the "Duplicate" option in the line row menu to add more
+    // instances of the same role. Non-labor items keep qty as a multiplier
+    // on a single line.
+    const numLines   = 1;
+    const perLineQty = isLabor ? 1 : qty;
 
     for (let i = 0; i < numLines; i++) {
-      const suffix      = shouldSplit ? ' ' + _seqSuffix(i) : '';
-      const description = item.label + suffix;
+      const description = item.label;
       const sortOrder   = baseSortOrder + i;
 
       const resp = await fetch(SAVE_URL, {
@@ -6413,6 +6412,21 @@ setTimeout(function() {
     });
     if (res.ok) reloadWithTab();
     else alert('Insert failed');
+  };
+
+  window.lineDuplicate = async function() {
+    _menu.classList.add('hidden');
+    if (!_menuLineId) return;
+    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/${_menuLineId}/duplicate`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'}
+    });
+    if (res.ok) reloadWithTab();
+    else {
+      let msg = 'Duplicate failed';
+      try { const j = await res.json(); if (j && j.error) msg += ': ' + j.error; } catch(e){}
+      alert(msg);
+    }
   };
 
   window.openLineMoveModal = function() {
