@@ -5952,20 +5952,10 @@ async function loadQeCatalog() {
   }
 }
 
-// ═══ PERMANENT POLICY (user direction 2026-04-17) ═════════════════════════
-// Quick Entry ALWAYS reads from the Global Quick Entry Catalog (the DB via
-// /api/catalog). Super admin's /admin/catalog page is the single source of
-// truth for QE content. DO NOT flip this back to false without an explicit
-// instruction from the user.
-//
-// Safe to flip because the 2026-04-17-catalog-resync boot migration wipes
-// every existing catalog_item row and reseeds from FP_CATALOG_SEED on
-// first boot after this deploy. FP_CATALOG_SEED is kept 1:1 with the
-// hardcoded QE_CATEGORIES above (264 items each, verified zero diff).
-// Hardcoded list remains only as an emergency fallback if /api/catalog
-// errors out.
-// ═══════════════════════════════════════════════════════════════════════════
-const QE_USE_DB_CATALOG = true;
+// QE reads from the hardcoded QE_CATEGORIES array above. The 264-item
+// list in JS is the source of truth. Do not change without explicit
+// user instruction.
+const QE_USE_DB_CATALOG = false;
 
 async function openCascade() {
   _qeUnionByCode = {};
