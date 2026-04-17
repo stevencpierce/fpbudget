@@ -248,11 +248,22 @@ def sync_schedule_driven_lines(budget_id, db_session):
             ScheduleDay.schedule_mode == None),
     ).all()
 
-    # Build date → crew headcount map (non-off days only)
+    # Build date → crew headcount map (non-off days only). Used for craft
+    # services, per-diem, hotel, flight, mileage — things that apply to
+    # everyone present that day including travel / hold / half.
     date_headcount = {}
+    # SEPARATE map: date → WORKING headcount only (day_type == 'work').
+    # Used for meal calculations (courtesy breakfast / first meal /
+    # second meal). Per user 2026-04-17: meals should only count people
+    # actually working on that day — travel / hold / off / half / kill_fee
+    # crew aren't on set to eat the meal, so they shouldn't inflate the
+    # meal line qty.
+    date_working_headcount = {}
     for sd in sched_days:
         if sd.day_type != 'off':
             date_headcount[sd.date] = date_headcount.get(sd.date, 0) + 1
+        if sd.day_type == 'work':
+            date_working_headcount[sd.date] = date_working_headcount.get(sd.date, 0) + 1
 
     # Craft services = every shoot day; headcount = crew that day
     for d, hc in date_headcount.items():
@@ -311,8 +322,11 @@ def sync_schedule_driven_lines(budget_id, db_session):
             ProductionDay.schedule_mode == None),
     ).all()
     for pd in prod_days:
-        hc = date_headcount.get(pd.date, 0) or 0
-        # Skip days with no one scheduled — those columns don't really exist
+        # Meals use the STRICT working headcount (day_type == 'work' only)
+        # — travel / hold / half / kill_fee crew aren't on set eating.
+        hc = date_working_headcount.get(pd.date, 0) or 0
+        # Skip days with no one actually working — meal columns on those days
+        # don't correspond to real meals served.
         if hc == 0:
             continue
         if pd.courtesy_breakfast:
