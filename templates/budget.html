@@ -6537,17 +6537,29 @@ setTimeout(function() {
   window.lineDuplicate = async function() {
     _menu.classList.add('hidden');
     if (!_menuLineId) return;
-    // Ask whether to also duplicate the schedule. Cancel aborts entirely.
-    // OK / Cancel on window.confirm maps cleanly to yes / no on a simple
-    // two-choice prompt without needing a custom modal.
-    const lidForPrompt = _menuLineId;
-    const dupeSched = window.confirm(
-      'Duplicate this row.\n\n' +
-      'Also duplicate the schedule days associated with this line?\n\n' +
-      '• OK     — copy the line AND its schedule days\n' +
-      '• Cancel — copy the line only (fresh schedule)'
-    );
-    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/${lidForPrompt}/duplicate`, {
+    // Only labor and location lines have schedules worth asking about.
+    // Equipment / expense / admin lines get duplicated silently — there's
+    // no schedule to copy or skip, so no dialog.
+    const row = document.querySelector(`.line-row[data-id="${_menuLineId}"]`);
+    const isLabor = !!(row && row.classList.contains('labor-line'));
+    const codeAttr = row && row.dataset && row.dataset.code;
+    const isLocation = (parseInt(codeAttr || '0') === 3300);
+    const promptsSchedule = isLabor || isLocation;
+
+    let dupeSched = true;   // default for schedule-bearing lines when user hits OK
+    if (promptsSchedule) {
+      dupeSched = window.confirm(
+        'Duplicate this row.\n\n' +
+        'Also duplicate the schedule days associated with this line?\n\n' +
+        '• OK     — copy the line AND its schedule days\n' +
+        '• Cancel — copy the line only (fresh schedule)'
+      );
+    } else {
+      // Non-labor / non-location — nothing to ask; just duplicate.
+      dupeSched = false;
+    }
+
+    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/${_menuLineId}/duplicate`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ duplicate_schedule: !!dupeSched })
