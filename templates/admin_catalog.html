@@ -140,12 +140,17 @@
     </label>
     <button class="btn btn-sm btn-primary" id="cat-add-btn">+ Add Item</button>
     <button class="btn btn-sm btn-outline" id="cat-repair-btn"
-            title="Repair + reseed: remap any legacy account codes to the new structure, fix stale category names, then add any missing items from defaults. Safe to click repeatedly.">
-      ⟳ Repair &amp; Reseed
+            title="Idempotent: inserts any FP_CATALOG_SEED items that are missing from the DB. Safe to click repeatedly. Existing items are never touched.">
+      ⟳ Reseed Missing Defaults
     </button>
+    <!-- Purge Legacy Duplicates button REMOVED 2026-04 — auto-deletion
+         was too aggressive and wiped user-customized rows. Use the
+         checkbox multi-select + "🗑 Delete Selected" below for manual,
+         reviewable cleanup instead. -->
     <button class="btn btn-sm btn-outline" id="cat-purge-legacy-btn"
-            title="Hard-delete every catalog row at a legacy (pre-renumber) code when a new-code row with the same label already exists. Safe: legacy-only items (no new-code twin) are left alone.">
-      ✂ Purge Legacy Duplicates
+            style="display:none"
+            title="[DISABLED] Auto-purge was too aggressive — caused data loss.">
+      ✂ Purge Legacy Duplicates (disabled)
     </button>
     <button class="btn btn-sm" id="cat-bulk-delete-btn"
             style="display:none;background:#dc2626;color:#fff;border-color:#dc2626"
@@ -244,45 +249,36 @@
       }
     });
 
+    // Safe reseed: ONLY adds missing items from FP_CATALOG_SEED. Does NOT
+    // delete, remap, or rename any existing rows. Use this to restore
+    // items that were accidentally deleted. Any item you've customized
+    // stays untouched — seed_catalog() skips (code, label) pairs that
+    // already exist.
     document.getElementById('cat-repair-btn').addEventListener('click', async () => {
       const btn = document.getElementById('cat-repair-btn');
       const original = btn.textContent;
       btn.disabled = true;
-      btn.textContent = 'Repairing…';
+      btn.textContent = 'Reseeding…';
       try {
-        // Step 1 — repair legacy codes + fix stale category names
-        const r1 = await fetch('/admin/catalog/repair-codes', {
+        const r = await fetch('/admin/catalog/reseed', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' }
         });
-        const d1 = await r1.json();
-        if (!r1.ok) { alert('Repair failed: ' + (d1.error || 'unknown')); return; }
+        const d = await r.json();
+        if (!r.ok) { alert('Reseed failed: ' + (d.error || 'unknown')); return; }
 
-        btn.textContent = 'Reseeding…';
-        // Step 2 — reseed any missing items from FP_CATALOG_SEED
-        const r2 = await fetch('/admin/catalog/reseed', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
-        const d2 = await r2.json();
-        if (!r2.ok) { alert('Reseed failed: ' + (d2.error || 'unknown')); return; }
-
-        let msg = 'Repair & Reseed complete.\n\n';
-        msg += `• Legacy codes remapped: ${d1.remapped}\n`;
-        msg += `• Legacy duplicates deleted: ${d1.deleted_duplicates}\n`;
-        msg += `• Category names updated: ${d1.names_fixed}\n`;
-        msg += `• New items inserted: ${d2.added}\n`;
-        const totalErrors = (d1.error_count || 0) + (d2.failed_count || 0);
-        if (totalErrors) {
-          msg += `\nErrors: ${totalErrors}`;
-          const errs = [
-            ...(d1.errors || []),
-            ...((d2.failures || []).map(f => `${JSON.stringify(f.row)}: ${f.error}`))
-          ].slice(0, 15);
-          if (errs.length) msg += '\n\nFirst few:\n• ' + errs.join('\n• ');
+        let msg = `Reseed complete. Added ${d.added} missing item(s).`;
+        if (d.added === 0) msg += '\n\nNothing to add — every seed item already exists in the catalog.';
+        if (d.failed_count) {
+          msg += `\n\nFailures: ${d.failed_count}`;
+          if (d.failures && d.failures.length) {
+            msg += '\n\nFirst few:\n• ' + d.failures.slice(0, 10).map(
+              f => `${JSON.stringify(f.row)}: ${f.error}`
+            ).join('\n• ');
+          }
         }
         alert(msg);
-        location.reload();
+        if (d.added > 0) location.reload();
       } catch (e) {
         alert('Request failed: ' + e.message);
       } finally {
