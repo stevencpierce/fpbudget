@@ -227,7 +227,13 @@
       {% if is_working_view %}<td class="num">{{ currency(top_sheet.payroll_fee_amount) }}</td><td class="num">—</td>{% endif %}
     </tr>
     {% endif %}
-    {# Subtotal #}
+    {# Subtotal — only shown when NOT dispersed. When the fee is dispersed,
+       the section rows above already include fee baked in, so showing a
+       separate "subtotal before fee" creates a visible pre-fee vs
+       grand-total gap which defeats the whole point of dispersal. Per
+       user 2026-04-17: when dispersed, subtotal should collapse into
+       grand total (one row, no visible fee gap). #}
+    {% if not dispersed %}
     <tr class="subtotal-row">
       <td class="code"></td>
       <td>SUBTOTAL</td>
@@ -235,7 +241,6 @@
       {% if is_working_view %}<td class="num">{{ currency(top_sheet.subtotal_estimated) }}</td><td class="num">—</td>{% endif %}
     </tr>
     {# Fee row — only when NOT dispersed #}
-    {% if not dispersed %}
     <tr class="fee-row">
       <td class="code"></td>
       <td>Production Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(1) }}%)</td>
@@ -291,8 +296,16 @@
     {% set ns.sec_work = ns.sec_work + res.est_total %}
     <tr>
       <td>{{ ln.description or ln.account_name }}</td>
-      <td class="num">{{ ln.quantity | float | int if (ln.quantity | float) == (ln.quantity | float | int) else ln.quantity | float }}</td>
+      {# Qty column: hide for labor (one person per line — Qty=1 is noise). #}
+      <td class="num">{% if ln.is_labor %}—{% else %}{{ ln.quantity | float | int if (ln.quantity | float) == (ln.quantity | float | int) else ln.quantity | float }}{% endif %}</td>
+      {# Days column: use schedule-computed day_count when the line is
+         schedule-driven. Prevents "Days = 1" showing up for labor lines
+         that are actually working 5 days per the gantt schedule. #}
+      {% if ln.use_schedule and res.day_count is defined %}
+      <td class="num">{{ res.day_count | int if (res.day_count | float) == (res.day_count | int) else res.day_count | float }}</td>
+      {% else %}
       <td class="num">{{ ln.days | float | int if (ln.days | float) == (ln.days | float | int) else ln.days | float }}</td>
+      {% endif %}
       <td class="num">${{ "{:,.2f}".format(ln.rate | float * fee_m) }}</td>
       <td class="num">{% if res.ot_amount %}{{ currency(res.ot_amount * fee_m) }}{% else %}—{% endif %}</td>
       <td class="num">{% if res.fringe_amount %}{{ currency(res.fringe_amount * fee_m) }}{% else %}—{% endif %}</td>
