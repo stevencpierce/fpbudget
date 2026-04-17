@@ -247,6 +247,7 @@ COA_CODE_INSURANCE  = _coa_code_by_name("Insurance", 6000)           # WC auto-i
 COA_CODE_ADMIN      = _coa_code_by_name("Administrative", 6500)       # Payroll Fee auto-inject
 COA_CODE_TRAVEL     = _coa_code_by_name("Travel", 3500)
 COA_CODE_MEALS      = _coa_code_by_name("Production Meals & Craft Services", 3700)
+COA_CODE_LOCATIONS  = _coa_code_by_name("Locations", 3300)
 COA_CODE_DEV_LABOR  = _coa_code_by_name("Development Labor", 1100)
 
 # Known ATL role labels (used ONLY for display grouping — call sheets, PDF).
@@ -2177,6 +2178,22 @@ def budget_view(pid, bid):
     for sec in sections:
         sec["lines"] = _order_lines_with_children(sec["lines"])
 
+    # Assigned-location lookup for Locations (3300) lines. Location has a
+    # budget_line_id FK; we pull the reverse relation in one query so the
+    # template can render the assigned location's name next to each 3300
+    # line (same UX as assigned-crew on labor lines).
+    line_assigned_location = {}
+    _loc_line_ids = [ln.id for ln in lines if ln.account_code == COA_CODE_LOCATIONS]
+    if _loc_line_ids:
+        _locs = Location.query.filter(Location.budget_line_id.in_(_loc_line_ids)).all()
+        for _lc in _locs:
+            if _lc.budget_line_id:
+                line_assigned_location[_lc.budget_line_id] = {
+                    "id": _lc.id,
+                    "name": _lc.name,
+                    "facility_name": _lc.facility_name or "",
+                }
+
     # Sub-group lookup for department headers in Production Staff (2000) and
     # Talent (2100) sections. Priority order:
     #   1. ln.role_group (explicitly set)
@@ -2421,6 +2438,7 @@ def budget_view(pid, bid):
         company_settings=company_settings,
         dept_filter=dept_filter,
         line_sub_groups=line_sub_groups,
+        line_assigned_location=line_assigned_location,
         doc_uploads=doc_uploads,
     )
 
@@ -4589,6 +4607,67 @@ def location_save(pid):
 
     db.session.commit()
     return jsonify({"ok": True, "id": loc.id, "name": loc.name})
+
+
+@app.route("/projects/<int:pid>/locations/picker-list")
+@login_required
+def location_picker_list(pid):
+    """JSON list of candidate locations to assign to a budget line.
+    Returns project-specific locations first (source='project') then
+    global library locations (source='library'). Used by the Assign
+    Location modal on 3300 budget lines."""
+    ProjectSheet.query.get_or_404(pid)
+    proj = Location.query.filter_by(project_id=pid, active=True).order_by(Location.name).all()
+    libs = Location.query.filter_by(project_id=None, active=True).order_by(Location.name).all()
+
+    def _row(l, source):
+        return {
+            "id": l.id,
+            "name": l.name,
+            "facility_name": l.facility_name or "",
+            "location_type": l.location_type or "",
+            "address": l.address or "",
+            "source": source,
+            "assigned_to_line_id": l.budget_line_id,
+        }
+
+    return jsonify({
+        "project": [_row(l, "project") for l in proj],
+        "library": [_row(l, "library") for l in libs],
+    })
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/assign-location", methods=["POST"])
+@login_required
+def line_assign_location(pid, bid, lid):
+    """Assign a Location to a budget line. One location per line: if the
+    line had a previous location assigned, its FK is cleared. Pass
+    location_id=null to clear the current assignment without assigning
+    a new one."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
+    data = request.get_json(force=True) or {}
+    location_id = data.get("location_id")
+
+    try:
+        # Clear any existing assignment for this line.
+        Location.query.filter_by(budget_line_id=lid).update({"budget_line_id": None})
+
+        assigned = None
+        if location_id is not None and location_id != "":
+            loc = Location.query.get(int(location_id))
+            if not loc:
+                return jsonify({"error": f"location {location_id} not found"}), 404
+            loc.budget_line_id = lid
+            assigned = {"id": loc.id, "name": loc.name, "facility_name": loc.facility_name or ""}
+
+        db.session.commit()
+        _touch_budget(bid)
+        db.session.commit()
+        return jsonify({"ok": True, "assigned": assigned})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 400
 
 
 @app.route("/projects/<int:pid>/locations/library")

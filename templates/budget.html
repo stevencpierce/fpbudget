@@ -592,6 +592,14 @@
             <button class="btn btn-xs btn-outline calc-detail-btn"
                     data-pid="{{ project.id }}" data-bid="{{ budget.id }}" data-lid="{{ ln.id }}"
                     title="View OT / payroll calculation breakdown">OT Detail</button>
+            {% elif sec.code == 3300 %}
+              {% set _loc = line_assigned_location.get(ln.id) if line_assigned_location else none %}
+              <span class="assigned-location-name {{ '' if _loc else 'no-assignment' }}"
+                    data-id="{{ ln.id }}"
+                    onclick="openAssignLocation({{ ln.id }})"
+                    title="{{ _loc.name if _loc else 'Click to assign a location' }}">
+                {{ _loc.name if _loc else '+ Assign Location' }}
+              </span>
             {% endif %}
             <button class="btn btn-xs btn-ghost line-row-menu-btn"
                     data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
@@ -2030,6 +2038,33 @@
       <button type="button" class="btn btn-ghost" onclick="assignCrew(null)">Clear Assignment</button>
       <button type="button" id="ca-add-new-btn" class="btn btn-outline btn-sm" onclick="toggleNewPersonForm()">+ New Person</button>
       <button type="button" class="btn btn-outline" onclick="document.getElementById('crew-assign-modal').classList.add('hidden')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Assign Location Modal (for 3300 budget lines) ════════════════════════ -->
+<div id="assign-location-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="closeAssignLocation()"></div>
+  <div class="modal-box" style="min-width:420px;max-width:560px">
+    <h2 style="margin-bottom:4px">Assign Location</h2>
+    <p style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">
+      Pick a location to link to this budget line, or create a new one.
+    </p>
+    <input type="hidden" id="al-line-id">
+    <input type="text" id="al-search" placeholder="Search name / facility / address…"
+           style="width:100%;padding:7px 10px;margin-bottom:10px;font-size:.9rem;
+                  border:1px solid var(--border);border-radius:5px;background:var(--bg-2,#1a1a1a);color:var(--text)">
+    <div id="al-list"
+         style="max-height:360px;overflow-y:auto;display:flex;flex-direction:column;gap:.2rem;
+                border:1px solid var(--border);border-radius:5px;padding:4px">
+      <div class="muted" style="padding:12px;font-size:.82rem">Loading locations…</div>
+    </div>
+    <div class="modal-actions" style="margin-top:12px;display:flex;gap:.4rem;flex-wrap:wrap">
+      <a href="{{ url_for('location_list', pid=project.id) }}" target="_blank"
+         class="btn btn-sm btn-outline">+ Add / Manage Locations (new tab)</a>
+      <button type="button" class="btn btn-sm btn-outline" id="al-clear-btn"
+              title="Remove the current location assignment from this line">Clear Assignment</button>
+      <button type="button" class="btn btn-sm btn-outline" style="margin-left:auto" onclick="closeAssignLocation()">Cancel</button>
     </div>
   </div>
 </div>
@@ -4505,6 +4540,123 @@ function openCrewAssign(lineId) {
   document.getElementById('crew-assign-modal').classList.remove('hidden');
   document.getElementById('ca-search').focus();
 }
+
+// ── Assign Location modal (3300 budget lines) ─────────────────────────────
+let _locPickerList = { project: [], library: [] };
+
+async function openAssignLocation(lineId) {
+  document.getElementById('al-line-id').value = lineId;
+  document.getElementById('al-search').value = '';
+  const listEl = document.getElementById('al-list');
+  listEl.innerHTML = '<div class="muted" style="padding:12px;font-size:.82rem">Loading locations…</div>';
+  document.getElementById('assign-location-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('al-search').focus(), 30);
+
+  try {
+    const r = await fetch(`/projects/${PID}/locations/picker-list`);
+    if (!r.ok) { listEl.innerHTML = '<div class="muted" style="padding:12px">Failed to load locations.</div>'; return; }
+    _locPickerList = await r.json();
+    _renderLocPicker('');
+  } catch (e) {
+    listEl.innerHTML = '<div class="muted" style="padding:12px">Error: ' + e.message + '</div>';
+  }
+}
+
+function closeAssignLocation() {
+  document.getElementById('assign-location-modal').classList.add('hidden');
+}
+
+function _renderLocPicker(query) {
+  const listEl = document.getElementById('al-list');
+  const q = (query || '').toLowerCase().trim();
+  const match = (l) => !q || [
+    l.name, l.facility_name, l.address, l.location_type
+  ].some(v => (v || '').toLowerCase().includes(q));
+
+  const proj = (_locPickerList.project || []).filter(match);
+  const libs = (_locPickerList.library || []).filter(match);
+
+  function section(title, items, source) {
+    if (!items.length) return '';
+    return `<div style="padding:6px 8px 2px;font-size:.7rem;color:var(--text-muted);
+                        text-transform:uppercase;letter-spacing:.04em">${title}</div>` +
+      items.map(l => {
+        const takenByOther = l.assigned_to_line_id && String(l.assigned_to_line_id) !== document.getElementById('al-line-id').value;
+        const taken = takenByOther ? ' <span style="color:var(--text-muted);font-size:.7rem">(assigned to another line)</span>' : '';
+        const sub = [l.facility_name, l.location_type].filter(Boolean).join(' · ');
+        return `<div class="al-item" data-id="${l.id}"
+                     style="padding:7px 10px;cursor:pointer;border-radius:4px;
+                            background:rgba(0,0,0,.15);display:flex;align-items:center;
+                            gap:6px;font-size:.85rem"
+                     onclick="_pickLocation(${l.id})"
+                     onmouseover="this.style.background='rgba(79,126,248,.18)'"
+                     onmouseout="this.style.background='rgba(0,0,0,.15)'">
+                  <strong>${(l.name || '').replace(/</g,'&lt;')}</strong>
+                  ${sub ? `<span class="muted" style="font-size:.72rem">${sub.replace(/</g,'&lt;')}</span>` : ''}
+                  ${taken}
+                </div>`;
+      }).join('');
+  }
+
+  let html = section('This Project', proj, 'project') + section('Global Library', libs, 'library');
+  if (!html) html = '<div class="muted" style="padding:12px;font-size:.82rem">No matching locations. Use "+ Add / Manage Locations" below to create one, then reopen this dialog.</div>';
+  listEl.innerHTML = html;
+}
+
+async function _pickLocation(locId) {
+  const lid = document.getElementById('al-line-id').value;
+  if (!lid) return;
+  const res = await fetch(`/projects/${PID}/budget/${BID}/line/${lid}/assign-location`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ location_id: locId }),
+  });
+  if (res.ok) {
+    const d = await res.json();
+    closeAssignLocation();
+    const span = document.querySelector(`.assigned-location-name[data-id="${lid}"]`);
+    if (span && d.assigned) {
+      span.textContent = d.assigned.name;
+      span.classList.remove('no-assignment');
+      span.title = d.assigned.name;
+    }
+  } else {
+    let msg = 'Assign failed';
+    try { const j = await res.json(); if (j && j.error) msg += ': ' + j.error; } catch(e){}
+    alert(msg);
+  }
+}
+
+// Search input
+document.addEventListener('input', function(e) {
+  if (e.target && e.target.id === 'al-search') _renderLocPicker(e.target.value);
+});
+
+// Clear button
+document.addEventListener('click', function(e) {
+  if (e.target && e.target.id === 'al-clear-btn') {
+    const lid = document.getElementById('al-line-id').value;
+    if (!lid) return;
+    if (!confirm('Clear the location assignment on this line?')) return;
+    fetch(`/projects/${PID}/budget/${BID}/line/${lid}/assign-location`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ location_id: null }),
+    }).then(r => {
+      if (r.ok) {
+        closeAssignLocation();
+        const span = document.querySelector(`.assigned-location-name[data-id="${lid}"]`);
+        if (span) {
+          span.textContent = '+ Assign Location';
+          span.classList.add('no-assignment');
+          span.title = 'Click to assign a location';
+        }
+      } else {
+        alert('Clear failed');
+      }
+    });
+  }
+});
 
 function filterCrewList(q) {
   const filtered = q ? _crewList.filter(c => c.name.toLowerCase().includes(q.toLowerCase()) || c.dept.toLowerCase().includes(q.toLowerCase())) : _crewList;

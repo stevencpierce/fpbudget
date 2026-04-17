@@ -2354,6 +2354,18 @@ a.tab-link:hover { background: var(--bg-3); }
 .assigned-crew-name.no-assignment { color: var(--text-muted); font-style: italic; }
 .assigned-crew-name:hover { text-decoration: underline; }
 
+/* Location assignment span — mirrors .assigned-crew-name but for 3300 lines */
+.assigned-location-name {
+  font-size: .75rem;
+  cursor: pointer;
+  color: var(--accent);
+  white-space: nowrap;
+  display: inline-block;
+  margin-right: .3rem;
+}
+.assigned-location-name.no-assignment { color: var(--text-muted); font-style: italic; }
+.assigned-location-name:hover { text-decoration: underline; }
+
 /* Budget crew tiles (crew assigned via schedule) */
 .budget-crew-tiles {
   display: flex;
