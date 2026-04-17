@@ -314,6 +314,29 @@ def sync_schedule_driven_lines(budget_id, db_session):
             day_dates[tag].add(d)
             day_hcs[tag].append(crew_on_day)
 
+    # Diagnostic logging so we can see whether mileage / hotel / flight flags
+    # are being picked up from the schedule. Appears in Render logs as
+    # "[SYNC] budget=<id> mileage_crew=(N days, M crew-days) ..." whenever
+    # sync_schedule_driven_lines runs (i.e. every schedule edit).
+    try:
+        import logging as _logsync
+        _tags_of_interest = [t for t in SCHEDULE_LINE_DEFS
+                             if t.startswith('mileage_') or t.startswith('hotel_')
+                             or t.startswith('flight_') or t == 'per_diem'
+                             or t == 'working_meal']
+        _sync_summary = []
+        for t in _tags_of_interest:
+            ndays = len(day_dates.get(t, set()))
+            crew_days = sum(day_hcs.get(t, []) or [])
+            if ndays or crew_days:
+                _sync_summary.append(f"{t}=({ndays}d, {crew_days}cd)")
+        if _sync_summary:
+            _logsync.warning("[SYNC] budget=%s %s", budget_id, " ".join(_sync_summary))
+        else:
+            _logsync.warning("[SYNC] budget=%s no flags detected in schedule", budget_id)
+    except Exception:
+        pass
+
     # Meal flags on ProductionDay: one flag per date (not per crew member).
     # Use the scheduled headcount for that date as qty.
     prod_days = db_session.query(ProductionDay).filter(
