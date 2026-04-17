@@ -7094,6 +7094,228 @@ def admin_catalog_purge_legacy_duplicates():
     })
 
 
+@app.route("/admin/catalog/rehouse-staff-from/<int:from_code>", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_rehouse_staff(from_code):
+    """Targeted one-shot: for every CatalogItem currently at `from_code`
+    whose label canonically belongs at code 2000 (Production Staff) per
+    FP_CATALOG_SEED, either MOVE it to 2000 or DELETE it if a (2000, label)
+    row already exists.
+
+    Used to clean up sections like 2600 Camera Equipment that got
+    contaminated with staff roles (Camera Operator, DP, 1st AC, etc.) —
+    those belong in 2000 Production Staff under the Camera sub-group.
+
+    Pass ?dry_run=1 to preview without mutating. Default is apply.
+
+    Label matching is case-insensitive + whitespace-trimmed. Only labels
+    that EXIST in FP_CATALOG_SEED at code 2000 are considered — this
+    protects unrelated custom labels at `from_code` from being swept up.
+    """
+    from budget_calc import FP_CATALOG_SEED, FP_COA_NAMES
+
+    dry_run = request.args.get("dry_run") == "1" or (request.get_json(silent=True) or {}).get("dry_run")
+
+    def _norm(s):
+        return (s or '').strip().lower()
+
+    # Build the canonical set of labels that belong at code 2000.
+    staff_labels = set()
+    # Preserve the seed's canonical group_name for each label so we can
+    # populate role_group on moved rows (Camera, Sound, Art, etc.).
+    staff_group_by_label = {}
+    for tup in FP_CATALOG_SEED:
+        try:
+            code, _cname, label, group = int(tup[0]), tup[1], tup[2], tup[3]
+        except Exception:
+            continue
+        if code == 2000:
+            staff_labels.add(_norm(label))
+            if group:
+                staff_group_by_label[_norm(label)] = group
+
+    # Index existing rows at code 2000 for collision check.
+    existing_2000 = {_norm(ci.label): ci.id for ci in CatalogItem.query.filter_by(category_code=2000).all()}
+
+    candidates = CatalogItem.query.filter_by(category_code=from_code).all()
+    will_move = []
+    will_delete = []
+    will_skip = []
+
+    for ci in candidates:
+        nlabel = _norm(ci.label)
+        if nlabel not in staff_labels:
+            will_skip.append({"id": ci.id, "label": ci.label, "reason": "label is not a known 2000 role"})
+            continue
+        if nlabel in existing_2000 and existing_2000[nlabel] != ci.id:
+            will_delete.append({
+                "id": ci.id,
+                "from_code": from_code,
+                "label": ci.label,
+                "kept_id_at_2000": existing_2000[nlabel],
+            })
+        else:
+            will_move.append({
+                "id": ci.id,
+                "from_code": from_code,
+                "label": ci.label,
+                "new_group": staff_group_by_label.get(nlabel),
+            })
+
+    if dry_run:
+        return jsonify({
+            "ok": True,
+            "dry_run": True,
+            "from_code": from_code,
+            "move_count": len(will_move),
+            "delete_count": len(will_delete),
+            "skip_count": len(will_skip),
+            "will_move": will_move,
+            "will_delete": will_delete,
+            "will_skip": will_skip[:50],
+        })
+
+    # APPLY — per-row commits so one failure doesn't rollback the batch.
+    moved_count = 0
+    deleted_count = 0
+    errors = []
+    new_name_2000 = FP_COA_NAMES.get(2000, "Production Staff")
+
+    for m in will_move:
+        try:
+            ci = CatalogItem.query.get(m["id"])
+            if ci is None:
+                continue
+            ci.category_code = 2000
+            ci.category_name = new_name_2000
+            # Populate/overwrite group_name from the canonical seed group
+            if m.get("new_group"):
+                ci.group_name = m["new_group"]
+            db.session.commit()
+            moved_count += 1
+        except Exception as e:
+            db.session.rollback()
+            errors.append(f"move {m['id']} {m['label']!r}: {e}")
+
+    for d in will_delete:
+        try:
+            ci = CatalogItem.query.get(d["id"])
+            if ci is None:
+                continue
+            # Null FK references before hard delete.
+            db.session.execute(
+                text("UPDATE budget_line SET catalog_item_id = NULL WHERE catalog_item_id = :iid"),
+                {"iid": ci.id}
+            )
+            db.session.delete(ci)
+            db.session.commit()
+            deleted_count += 1
+        except Exception as e:
+            db.session.rollback()
+            errors.append(f"delete {d['id']} {d['label']!r}: {e}")
+
+    return jsonify({
+        "ok": True,
+        "dry_run": False,
+        "from_code": from_code,
+        "moved_count": moved_count,
+        "deleted_count": deleted_count,
+        "skip_count": len(will_skip),
+        "error_count": len(errors),
+        "errors": errors[:20],
+        "moved": will_move[:50],
+        "deleted": will_delete[:50],
+    })
+
+
+@app.route("/admin/catalog/bulk-move", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_bulk_move():
+    """Move a list of CatalogItem ids to a different category_code in one
+    request. Body: {ids: [...], to_code: 2000}. For each row:
+      - If (to_code, label) already exists in DB → SKIP (returned in
+        collisions list) so we don't violate the (code, label) unique
+        constraint. User can decide to delete the duplicate via bulk
+        delete if they really want.
+      - Else → update category_code + category_name (synced from
+        FP_COA_NAMES) + auto-compute sort_order to land at the end
+        of the destination section.
+
+    Does NOT touch group_name — moving across sections typically means
+    the group label is still valid (e.g. Camera → Camera). User can
+    edit the group cell inline on the admin table afterwards.
+    """
+    from budget_calc import FP_COA_NAMES
+    data = request.get_json(force=True) or {}
+    ids = data.get("ids") or []
+    try:
+        ids = [int(x) for x in ids]
+        to_code = int(data.get("to_code"))
+    except Exception:
+        return jsonify({"error": "ids must be a list of integers and to_code required"}), 400
+    if not ids:
+        return jsonify({"ok": True, "moved": 0})
+    if to_code not in FP_COA_NAMES:
+        return jsonify({"error": f"to_code {to_code} is not a known COA section"}), 400
+
+    new_name = FP_COA_NAMES[to_code]
+
+    # Pre-index existing (to_code, label) to detect collisions.
+    existing_at_target = {
+        (ci.label or '').strip().lower(): ci.id
+        for ci in CatalogItem.query.filter_by(category_code=to_code).all()
+    }
+
+    # Compute the starting sort_order for new arrivals (end of target section).
+    last_in_target = CatalogItem.query.filter_by(
+        category_code=to_code
+    ).order_by(CatalogItem.sort_order.desc()).first()
+    next_sort = (int(last_in_target.sort_order or 0) + 10) if last_in_target else 0
+
+    moved = 0
+    collisions = []
+    errors = []
+
+    for iid in ids:
+        try:
+            ci = CatalogItem.query.get(iid)
+            if ci is None:
+                continue
+            if int(ci.category_code or 0) == to_code:
+                continue  # already there
+            norm_label = (ci.label or '').strip().lower()
+            collide_id = existing_at_target.get(norm_label)
+            if collide_id and collide_id != ci.id:
+                collisions.append({
+                    "id": ci.id,
+                    "label": ci.label,
+                    "from_code": int(ci.category_code or 0),
+                    "existing_at_target_id": collide_id,
+                })
+                continue
+            ci.category_code = to_code
+            ci.category_name = new_name
+            ci.sort_order = next_sort
+            next_sort += 10
+            db.session.commit()
+            existing_at_target[norm_label] = ci.id
+            moved += 1
+        except Exception as e:
+            db.session.rollback()
+            errors.append(f"id={iid}: {e}")
+
+    return jsonify({
+        "ok": True,
+        "moved": moved,
+        "collision_count": len(collisions),
+        "collisions": collisions[:50],
+        "error_count": len(errors),
+        "errors": errors[:20],
+    })
+
+
 @app.route("/admin/catalog/bulk-delete", methods=["POST"])
 @login_required
 @super_admin_required
