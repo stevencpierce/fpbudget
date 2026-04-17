@@ -686,8 +686,11 @@ def _provision_dropbox_folder(dropbox_folder):
 
 @app.route("/admin/dropbox/status")
 @login_required
-@super_admin_required
 def admin_dropbox_status():
+    # Super admin check inline — super_admin_required decorator is defined
+    # further down in this module, can't apply it at import time here.
+    if not current_user.is_authenticated or getattr(current_user, 'role', None) != 'super_admin':
+        return jsonify({"error": "super admin only"}), 403
     """Diagnostic: show current Dropbox config + test connection + check
     the template folder exists. Super-admin only. Paste the JSON back to
     the engineer when project folders aren't being created."""
