@@ -143,6 +143,15 @@
             title="Repair + reseed: remap any legacy account codes to the new structure, fix stale category names, then add any missing items from defaults. Safe to click repeatedly.">
       ⟳ Repair &amp; Reseed
     </button>
+    <button class="btn btn-sm btn-outline" id="cat-purge-legacy-btn"
+            title="Hard-delete every catalog row at a legacy (pre-renumber) code when a new-code row with the same label already exists. Safe: legacy-only items (no new-code twin) are left alone.">
+      ✂ Purge Legacy Duplicates
+    </button>
+    <button class="btn btn-sm" id="cat-bulk-delete-btn"
+            style="display:none;background:#dc2626;color:#fff;border-color:#dc2626"
+            title="Permanently delete every checked row. Irreversible.">
+      🗑 Delete Selected <span id="cat-bulk-count"></span>
+    </button>
     <a href="/admin/catalog/stats" target="_blank"
        class="btn btn-sm btn-ghost"
        title="Diagnostic: see what codes exist in the catalog DB (JSON)">stats</a>
@@ -150,6 +159,91 @@
   </div>
 
   <script>
+    // ── Purge Legacy Duplicates ─────────────────────────────────────────────
+    document.getElementById('cat-purge-legacy-btn').addEventListener('click', async () => {
+      if (!confirm('Hard-delete every catalog row at a LEGACY account code when a matching row at the NEW code already exists?\n\nLegacy-only items (no new-code twin) will NOT be deleted — they stay available for manual cleanup.\n\nThis is irreversible.')) return;
+      const btn = document.getElementById('cat-purge-legacy-btn');
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Purging…';
+      try {
+        const r = await fetch('/admin/catalog/purge-legacy-duplicates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const d = await r.json();
+        if (!r.ok) { alert('Purge failed: ' + (d.error || 'unknown')); return; }
+        let msg = `Purge complete. Deleted ${d.deleted_count} legacy duplicate(s).`;
+        if (d.error_count) msg += `\nErrors: ${d.error_count}`;
+        if (d.deleted && d.deleted.length) {
+          msg += '\n\nExamples:\n' + d.deleted.slice(0, 10).map(x =>
+            `• ${x.legacy_code} → ${x.new_code}  "${x.label}"`
+          ).join('\n');
+        }
+        alert(msg);
+        if (d.deleted_count > 0) location.reload();
+      } catch (e) {
+        alert('Request failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
+
+    // ── Bulk Delete ────────────────────────────────────────────────────────
+    function _getCheckedIds() {
+      return Array.from(document.querySelectorAll('.cat-row-check:checked'))
+        .map(cb => parseInt(cb.dataset.id))
+        .filter(n => n > 0);
+    }
+    function _updateBulkDeleteBtn() {
+      const ids = _getCheckedIds();
+      const btn = document.getElementById('cat-bulk-delete-btn');
+      const countSpan = document.getElementById('cat-bulk-count');
+      if (ids.length > 0) {
+        btn.style.display = '';
+        if (countSpan) countSpan.textContent = '(' + ids.length + ')';
+      } else {
+        btn.style.display = 'none';
+      }
+    }
+    // Delegate — rows are rendered dynamically by admin-catalog.js
+    document.addEventListener('change', (e) => {
+      if (e.target.matches('.cat-row-check')) _updateBulkDeleteBtn();
+    });
+    // Check / uncheck all
+    document.getElementById('cat-check-all').addEventListener('change', (e) => {
+      const v = e.target.checked;
+      document.querySelectorAll('.cat-row-check').forEach(cb => { cb.checked = v; });
+      _updateBulkDeleteBtn();
+    });
+
+    document.getElementById('cat-bulk-delete-btn').addEventListener('click', async () => {
+      const ids = _getCheckedIds();
+      if (!ids.length) return;
+      if (!confirm(`Permanently DELETE ${ids.length} checked item(s)?\n\nThis cannot be undone.`)) return;
+      const btn = document.getElementById('cat-bulk-delete-btn');
+      btn.disabled = true;
+      btn.textContent = 'Deleting…';
+      try {
+        const r = await fetch('/admin/catalog/bulk-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: ids })
+        });
+        const d = await r.json();
+        if (!r.ok) { alert('Bulk delete failed: ' + (d.error || 'unknown')); return; }
+        let msg = `Deleted ${d.deleted} item(s).`;
+        if (d.error_count) msg += `\nErrors: ${d.error_count}`;
+        alert(msg);
+        location.reload();
+      } catch (e) {
+        alert('Request failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     document.getElementById('cat-repair-btn').addEventListener('click', async () => {
       const btn = document.getElementById('cat-repair-btn');
       const original = btn.textContent;
@@ -203,6 +297,9 @@
       <thead>
         <tr>
           <th class="col-drag"></th>
+          <th class="col-check" style="width:32px;text-align:center">
+            <input type="checkbox" id="cat-check-all" title="Check / uncheck all visible rows">
+          </th>
           <th class="col-cat">Department</th>
           <th class="col-label">Label</th>
           <th class="col-group">Sub-group</th>

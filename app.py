@@ -6940,6 +6940,140 @@ def admin_catalog_stats():
     })
 
 
+@app.route("/admin/catalog/purge-legacy-duplicates", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_purge_legacy_duplicates():
+    """For each CatalogItem at a legacy (pre-renumber) code, if a row
+    already exists at the mapped new code with the same label, HARD
+    DELETE the legacy row. Leaves legacy-only rows (no new-code twin)
+    alone — those are handled by /admin/catalog/repair-codes which
+    remaps them. Returns per-row report.
+
+    Uses case-insensitive, whitespace-trimmed label comparison so minor
+    variance ("Director " vs "Director") still collapses."""
+    from budget_calc import COA_LEGACY_MAPPING, FP_COA_NAMES
+
+    # Build a lookup of (new_code, normalized_label) → id for fast collision
+    # detection. Only considers rows currently at current codes.
+    current_codes = set(FP_COA_NAMES.keys())
+
+    def _norm(s):
+        return (s or '').strip().lower()
+
+    new_index = {}  # (new_code, norm_label) -> [ids]
+    for ci in CatalogItem.query.all():
+        code = int(ci.category_code or 0)
+        if code in current_codes and code not in COA_LEGACY_MAPPING:
+            new_index.setdefault((code, _norm(ci.label)), []).append(ci.id)
+        elif code in current_codes:
+            # Code is BOTH legacy and current (e.g. 1000, 2000, 3100) —
+            # treat as current. Legacy-duplicate detection in that case
+            # is still handled below because we walk legacy rows by
+            # matching NEW code to same row's code.
+            new_index.setdefault((code, _norm(ci.label)), []).append(ci.id)
+
+    deleted = []
+    errors = []
+
+    for ci in list(CatalogItem.query.all()):
+        code = int(ci.category_code or 0)
+        if code not in COA_LEGACY_MAPPING:
+            continue
+        new_code = COA_LEGACY_MAPPING[code]
+        key = (new_code, _norm(ci.label))
+        # Collision = at least one row at the NEW code with the same label
+        # that is NOT this row itself.
+        peer_ids = [i for i in new_index.get(key, []) if i != ci.id]
+        if not peer_ids:
+            continue
+        try:
+            # Null out any FK refs from budget_line first.
+            db.session.execute(
+                text("UPDATE budget_line SET catalog_item_id = NULL WHERE catalog_item_id = :iid"),
+                {"iid": ci.id}
+            )
+            db.session.delete(ci)
+            db.session.commit()
+            deleted.append({
+                "id": ci.id,
+                "legacy_code": code,
+                "new_code": new_code,
+                "label": ci.label,
+                "kept_id": peer_ids[0],
+            })
+        except Exception as e:
+            db.session.rollback()
+            errors.append(f"delete {ci.id} ({code} {ci.label!r}): {e}")
+
+    return jsonify({
+        "ok": True,
+        "deleted_count": len(deleted),
+        "error_count": len(errors),
+        "deleted": deleted[:50],  # first 50 for inspection
+        "errors": errors[:20],
+    })
+
+
+@app.route("/admin/catalog/bulk-delete", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_bulk_delete():
+    """Hard-delete a list of CatalogItem ids in one request. Body:
+    {ids: [1, 2, 3, ...]}. Nulls out any budget_line.catalog_item_id FKs
+    that reference the deleted rows (same behavior as single purge)."""
+    data = request.get_json(force=True) or {}
+    ids = data.get("ids") or []
+    try:
+        ids = [int(x) for x in ids]
+    except Exception:
+        return jsonify({"error": "ids must be a list of integers"}), 400
+    if not ids:
+        return jsonify({"ok": True, "deleted": 0})
+
+    deleted = 0
+    errors = []
+    # Null FK references in one statement to avoid N separate updates.
+    try:
+        db.session.execute(
+            text("UPDATE budget_line SET catalog_item_id = NULL "
+                 "WHERE catalog_item_id = ANY(:ids)"),
+            {"ids": ids}
+        )
+        db.session.commit()
+    except Exception:
+        # Non-PG fallback — loop per-id.
+        db.session.rollback()
+        for iid in ids:
+            try:
+                db.session.execute(
+                    text("UPDATE budget_line SET catalog_item_id = NULL WHERE catalog_item_id = :iid"),
+                    {"iid": iid}
+                )
+            except Exception:
+                pass
+        db.session.commit()
+
+    for iid in ids:
+        try:
+            ci = CatalogItem.query.get(iid)
+            if ci is None:
+                continue
+            db.session.delete(ci)
+            db.session.commit()
+            deleted += 1
+        except Exception as e:
+            db.session.rollback()
+            errors.append(f"id={iid}: {e}")
+
+    return jsonify({
+        "ok": True,
+        "deleted": deleted,
+        "error_count": len(errors),
+        "errors": errors[:20],
+    })
+
+
 @app.route("/admin/catalog/repair-codes", methods=["POST"])
 @login_required
 @super_admin_required

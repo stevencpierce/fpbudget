@@ -74,7 +74,7 @@
       var hdr = document.createElement('tr');
       hdr.className = 'cat-group-hdr';
       var hdrTd = document.createElement('td');
-      hdrTd.colSpan = 15;
+      hdrTd.colSpan = 16;
       hdrTd.textContent = code + ' — ' + name;
       var addBtn = document.createElement('button');
       addBtn.className = 'cat-add-in-dept';
@@ -92,7 +92,7 @@
         var emptyRow = document.createElement('tr');
         emptyRow.className = 'cat-empty-row';
         var emptyTd = document.createElement('td');
-        emptyTd.colSpan = 15;
+        emptyTd.colSpan = 16;
         emptyTd.textContent = q || filter
           ? 'No items match the current filter.'
           : 'No items yet — use "+ Add to ' + name + '" above.';
@@ -119,6 +119,19 @@
       h.textContent = '⋮⋮';
       h.title = 'Drag to reorder within this department';
       td.appendChild(h);
+    }));
+
+    // Multi-select checkbox (drives the "Delete Selected" toolbar button)
+    tr.appendChild(_td(function(td) {
+      td.className = 'col-check';
+      td.style.textAlign = 'center';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'cat-row-check';
+      cb.dataset.id = it.id;
+      cb.style.width = 'auto';
+      cb.title = 'Select for bulk delete';
+      td.appendChild(cb);
     }));
 
     // Category dropdown
