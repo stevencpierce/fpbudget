@@ -139,28 +139,6 @@
       <input type="checkbox" id="cat-show-inactive"> Show inactive
     </label>
     <button class="btn btn-sm btn-primary" id="cat-add-btn">+ Add Item</button>
-    <button class="btn btn-sm btn-outline" id="cat-repair-btn"
-            title="Idempotent: inserts any FP_CATALOG_SEED items that are missing from the DB. Safe to click repeatedly. Existing items are never touched.">
-      ⟳ Reseed Missing Defaults
-    </button>
-    <button class="btn btn-sm" id="cat-wipe-reseed-btn"
-            style="background:#dc2626;color:#fff;border-color:#dc2626"
-            title="DELETE every catalog row and repopulate from the canonical hardcoded Quick Entry list (264 items). Irreversible — existing customizations will be lost. Confirms twice.">
-      💣 Wipe &amp; Reseed from QE List
-    </button>
-    <button class="btn btn-sm btn-outline" id="cat-rehouse-2600-btn"
-            title="Move any staff roles accidentally sitting at 2600 Camera Equipment into 2000 Production Staff. Previews first — you confirm before anything changes.">
-      🚚 Move Staff out of 2600
-    </button>
-    <!-- Purge Legacy Duplicates button REMOVED 2026-04 — auto-deletion
-         was too aggressive and wiped user-customized rows. Use the
-         checkbox multi-select + "🗑 Delete Selected" below for manual,
-         reviewable cleanup instead. -->
-    <button class="btn btn-sm btn-outline" id="cat-purge-legacy-btn"
-            style="display:none"
-            title="[DISABLED] Auto-purge was too aggressive — caused data loss.">
-      ✂ Purge Legacy Duplicates (disabled)
-    </button>
     <select id="cat-bulk-move-select" style="display:none;padding:6px 10px;font-size:.85rem"
             title="Move every checked row to a different department">
       <option value="">📦 Move Selected to…</option>
@@ -173,162 +151,27 @@
             title="Permanently delete every checked row. Irreversible.">
       🗑 Delete Selected <span id="cat-bulk-count"></span>
     </button>
-    <a href="/admin/catalog/stats" target="_blank"
-       class="btn btn-sm btn-ghost"
-       title="Diagnostic: see what codes exist in the catalog DB (JSON)">stats</a>
     <span id="cat-save-indicator" class="cat-save-indicator">✓ All changes saved</span>
   </div>
 
   <script>
-    // ── Wipe & Reseed from hardcoded QE list (destructive) ──────────────────
-    document.getElementById('cat-wipe-reseed-btn').addEventListener('click', async () => {
-      // Double confirm because this is irreversible.
-      if (!confirm('DELETE every row from the Global Quick Entry Catalog and replace it with the 264-item canonical QE list?\n\nThis is IRREVERSIBLE. Any customized rates / rows you added will be lost.\n\nContinue?')) return;
-      if (!confirm('Really sure?\n\nThis wipes the catalog table entirely and re-inserts the default list. Any budget_line catalog_item_id links are cleared (existing budgets will fall back to fuzzy match, no budget data is lost).')) return;
-      const btn = document.getElementById('cat-wipe-reseed-btn');
-      const original = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = 'Wiping…';
-      try {
-        const r = await fetch('/admin/catalog/wipe-and-reseed', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
-        const d = await r.json();
-        if (!r.ok) { alert('Wipe & reseed FAILED: ' + (d.error || 'unknown')); return; }
-        let msg = 'Catalog reset complete.\n\n';
-        msg += `• Deleted: ${d.deleted} old row(s)\n`;
-        msg += `• budget_line FKs cleared: ${d.fks_nulled}\n`;
-        msg += `• Inserted from QE list: ${d.inserted} row(s)\n`;
-        if (d.failed_count) {
-          msg += `\nFailures: ${d.failed_count}`;
-          if (d.failures && d.failures.length) {
-            msg += '\n\nFirst few:\n• ' + d.failures.slice(0, 10).map(
-              f => `${JSON.stringify(f.row)}: ${f.error}`
-            ).join('\n• ');
-          }
-        }
-        alert(msg);
-        location.reload();
-      } catch (e) {
-        alert('Request failed: ' + e.message);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = original;
-      }
-    });
-
-    // ── Rehouse staff rows out of 2600 → 2000 ───────────────────────────────
-    document.getElementById('cat-rehouse-2600-btn').addEventListener('click', async () => {
-      const btn = document.getElementById('cat-rehouse-2600-btn');
-      const original = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = 'Previewing…';
-      try {
-        // Step 1 — DRY-RUN preview
-        const r1 = await fetch('/admin/catalog/rehouse-staff-from/2600?dry_run=1', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
-        const p = await r1.json();
-        if (!r1.ok) { alert('Preview failed: ' + (p.error || 'unknown')); return; }
-
-        if (p.move_count === 0 && p.delete_count === 0) {
-          alert('Nothing to do.\n\n' +
-                'No staff-role labels were found sitting at code 2600. ' +
-                (p.skip_count ? `Skipped ${p.skip_count} unrelated item(s) at 2600.` : ''));
-          return;
-        }
-
-        let summary = 'PREVIEW — about to modify code 2600:\n\n';
-        summary += `• Move to 2000: ${p.move_count} item(s)\n`;
-        summary += `• Delete (duplicates already at 2000): ${p.delete_count} item(s)\n`;
-        summary += `• Skip (not staff roles, left alone at 2600): ${p.skip_count} item(s)\n\n`;
-        const samples = [
-          ...(p.will_move || []).slice(0, 8).map(x => `  MOVE:   "${x.label}"  ${x.new_group ? '→ group ' + x.new_group : ''}`),
-          ...(p.will_delete || []).slice(0, 8).map(x => `  DELETE: "${x.label}"  (kept id ${x.kept_id_at_2000})`),
-        ];
-        if (samples.length) summary += 'Examples:\n' + samples.join('\n') + '\n\n';
-        summary += 'Proceed?';
-
-        if (!confirm(summary)) return;
-
-        // Step 2 — APPLY
-        btn.textContent = 'Applying…';
-        const r2 = await fetch('/admin/catalog/rehouse-staff-from/2600', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
-        const d = await r2.json();
-        if (!r2.ok) { alert('Apply failed: ' + (d.error || 'unknown')); return; }
-
-        let msg = 'Done.\n\n';
-        msg += `• Moved to 2000: ${d.moved_count}\n`;
-        msg += `• Deleted duplicates: ${d.deleted_count}\n`;
-        if (d.error_count) {
-          msg += `\nErrors: ${d.error_count}`;
-          if (d.errors && d.errors.length) {
-            msg += '\n\nFirst few:\n• ' + d.errors.join('\n• ');
-          }
-        }
-        alert(msg);
-        location.reload();
-      } catch (e) {
-        alert('Request failed: ' + e.message);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = original;
-      }
-    });
-
-    // ── Purge Legacy Duplicates ─────────────────────────────────────────────
-    document.getElementById('cat-purge-legacy-btn').addEventListener('click', async () => {
-      if (!confirm('Hard-delete every catalog row at a LEGACY account code when a matching row at the NEW code already exists?\n\nLegacy-only items (no new-code twin) will NOT be deleted — they stay available for manual cleanup.\n\nThis is irreversible.')) return;
-      const btn = document.getElementById('cat-purge-legacy-btn');
-      const original = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = 'Purging…';
-      try {
-        const r = await fetch('/admin/catalog/purge-legacy-duplicates', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
-        const d = await r.json();
-        if (!r.ok) { alert('Purge failed: ' + (d.error || 'unknown')); return; }
-        let msg = `Purge complete. Deleted ${d.deleted_count} legacy duplicate(s).`;
-        if (d.error_count) msg += `\nErrors: ${d.error_count}`;
-        if (d.deleted && d.deleted.length) {
-          msg += '\n\nExamples:\n' + d.deleted.slice(0, 10).map(x =>
-            `• ${x.legacy_code} → ${x.new_code}  "${x.label}"`
-          ).join('\n');
-        }
-        alert(msg);
-        if (d.deleted_count > 0) location.reload();
-      } catch (e) {
-        alert('Request failed: ' + e.message);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = original;
-      }
-    });
-
-    // ── Bulk Delete ────────────────────────────────────────────────────────
+    // ── Bulk multi-select (checkbox + move + delete) ────────────────────────
     function _getCheckedIds() {
       return Array.from(document.querySelectorAll('.cat-row-check:checked'))
         .map(cb => parseInt(cb.dataset.id))
         .filter(n => n > 0);
     }
-    function _updateBulkDeleteBtn() {
+    function _updateBulkBtns() {
       const ids = _getCheckedIds();
-      const btn = document.getElementById('cat-bulk-delete-btn');
+      const delBtn = document.getElementById('cat-bulk-delete-btn');
       const moveSel = document.getElementById('cat-bulk-move-select');
       const countSpan = document.getElementById('cat-bulk-count');
       if (ids.length > 0) {
-        btn.style.display = '';
+        delBtn.style.display = '';
         if (moveSel) { moveSel.style.display = ''; moveSel.value = ''; }
         if (countSpan) countSpan.textContent = '(' + ids.length + ')';
       } else {
-        btn.style.display = 'none';
+        delBtn.style.display = 'none';
         if (moveSel) moveSel.style.display = 'none';
       }
     }
@@ -356,11 +199,7 @@
         if (!r.ok) { alert('Move failed: ' + (d.error || 'unknown')); return; }
         let msg = `Moved ${d.moved} item(s) to ${optText}.`;
         if (d.collision_count) {
-          msg += `\n\nSkipped ${d.collision_count} duplicate(s):`;
-          (d.collisions || []).slice(0, 10).forEach(c => {
-            msg += `\n• "${c.label}" (id ${c.id}) — label already exists at target as id ${c.existing_at_target_id}`;
-          });
-          msg += '\n\nIf you want to replace the duplicates, check + Delete the existing target rows first, then run the move again.';
+          msg += `\n\nSkipped ${d.collision_count} duplicate(s).`;
         }
         if (d.error_count) msg += `\n\nErrors: ${d.error_count}`;
         alert(msg);
@@ -372,15 +211,16 @@
         sel.value = '';
       }
     });
-    // Delegate — rows are rendered dynamically by admin-catalog.js
+
+    // Delegate: rows render dynamically via admin-catalog.js
     document.addEventListener('change', (e) => {
-      if (e.target.matches('.cat-row-check')) _updateBulkDeleteBtn();
+      if (e.target.matches('.cat-row-check')) _updateBulkBtns();
     });
     // Check / uncheck all
     document.getElementById('cat-check-all').addEventListener('change', (e) => {
       const v = e.target.checked;
       document.querySelectorAll('.cat-row-check').forEach(cb => { cb.checked = v; });
-      _updateBulkDeleteBtn();
+      _updateBulkBtns();
     });
 
     document.getElementById('cat-bulk-delete-btn').addEventListener('click', async () => {
@@ -406,44 +246,6 @@
         alert('Request failed: ' + e.message);
       } finally {
         btn.disabled = false;
-      }
-    });
-
-    // Safe reseed: ONLY adds missing items from FP_CATALOG_SEED. Does NOT
-    // delete, remap, or rename any existing rows. Use this to restore
-    // items that were accidentally deleted. Any item you've customized
-    // stays untouched — seed_catalog() skips (code, label) pairs that
-    // already exist.
-    document.getElementById('cat-repair-btn').addEventListener('click', async () => {
-      const btn = document.getElementById('cat-repair-btn');
-      const original = btn.textContent;
-      btn.disabled = true;
-      btn.textContent = 'Reseeding…';
-      try {
-        const r = await fetch('/admin/catalog/reseed', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
-        const d = await r.json();
-        if (!r.ok) { alert('Reseed failed: ' + (d.error || 'unknown')); return; }
-
-        let msg = `Reseed complete. Added ${d.added} missing item(s).`;
-        if (d.added === 0) msg += '\n\nNothing to add — every seed item already exists in the catalog.';
-        if (d.failed_count) {
-          msg += `\n\nFailures: ${d.failed_count}`;
-          if (d.failures && d.failures.length) {
-            msg += '\n\nFirst few:\n• ' + d.failures.slice(0, 10).map(
-              f => `${JSON.stringify(f.row)}: ${f.error}`
-            ).join('\n• ');
-          }
-        }
-        alert(msg);
-        if (d.added > 0) location.reload();
-      } catch (e) {
-        alert('Request failed: ' + e.message);
-      } finally {
-        btn.disabled = false;
-        btn.textContent = original;
       }
     });
   </script>

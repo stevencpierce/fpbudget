@@ -5923,9 +5923,11 @@ let _qeCatCode = null; // currently displayed category code
 async function loadQeCatalog() {
   try {
     const r = await fetch('/api/catalog', { credentials: 'same-origin' });
-    if (!r.ok) return;
+    if (!r.ok) return;                     // HTTP error → leave fallback
     const data = await r.json();
-    if (!data || !Array.isArray(data.categories) || data.categories.length === 0) return;
+    if (!data || !Array.isArray(data.categories)) return;  // malformed → leave fallback
+    // An EMPTY catalog is a valid state (user explicitly cleared it) —
+    // replace QE_CATEGORIES with the empty array so QE shows "no items".
     QE_CATEGORIES = data.categories
       .slice()
       .sort((a, b) => a.code - b.code)
@@ -5952,10 +5954,13 @@ async function loadQeCatalog() {
   }
 }
 
-// QE reads from the hardcoded QE_CATEGORIES array above. The 264-item
-// list in JS is the source of truth. Do not change without explicit
-// user instruction.
-const QE_USE_DB_CATALOG = false;
+// Quick Entry ALWAYS reads from the Global Quick Entry Catalog (the
+// catalog_item DB table, exposed via /api/catalog). Super admin's
+// /admin/catalog page is the single source of truth for QE content.
+// When the DB is empty, the QE panel shows zero items (the user is
+// expected to populate the catalog manually). DO NOT flip back to
+// false without an explicit instruction from the user.
+const QE_USE_DB_CATALOG = true;
 
 async function openCascade() {
   _qeUnionByCode = {};
