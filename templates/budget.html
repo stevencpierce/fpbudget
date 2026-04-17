@@ -486,10 +486,38 @@
             {% if not ln.use_schedule %}
             {% set _u = (ln.days_unit or 'days') %}
             {% set _u_labels = {'days':'D','weeks':'W','x':'X','per':'Per','allow':'Allow','est':'EST','lb':'LB','hrs':'Hrs','flat':'Flat','mo':'Mo','mi':'Mi','ea':'Ea'} %}
-            <button class="days-unit-toggle btn btn-xs {% if _u == 'weeks' %}active{% endif %}"
-                    data-id="{{ ln.id }}"
-                    data-unit="{{ _u }}"
-                    title="Right-click to change unit (Days / Weeks / X / Per / Allow / EST / LB / Custom…)">{{ _u_labels.get(_u, _u[:4] | upper) }}</button>
+            {% if ln.is_labor %}
+              {# Labor keeps the compact D/W toggle button (right-click for full menu). #}
+              <button class="days-unit-toggle btn btn-xs {% if _u == 'weeks' %}active{% endif %}"
+                      data-id="{{ ln.id }}"
+                      data-unit="{{ _u }}"
+                      title="Right-click to change unit (Days / Weeks / X / Per / Allow / EST / LB / Custom…)">{{ _u_labels.get(_u, _u[:4] | upper) }}</button>
+            {% else %}
+              {# Non-labor: dropdown select — more discoverable than right-click. #}
+              <select class="days-unit-select inline-select"
+                      data-id="{{ ln.id }}"
+                      data-unit="{{ _u }}"
+                      style="margin-left:.25rem;width:auto;min-width:64px;font-size:.72rem"
+                      title="Unit for this non-labor line">
+                <option value="days"  {% if _u == 'days'  %}selected{% endif %}>Days</option>
+                <option value="weeks" {% if _u == 'weeks' %}selected{% endif %}>Weeks</option>
+                <option value="hrs"   {% if _u == 'hrs'   %}selected{% endif %}>Hours</option>
+                <option value="flat"  {% if _u == 'flat'  %}selected{% endif %}>Flat</option>
+                <option value="ea"    {% if _u == 'ea'    %}selected{% endif %}>Each</option>
+                <option value="per"   {% if _u == 'per'   %}selected{% endif %}>Per</option>
+                <option value="x"     {% if _u == 'x'     %}selected{% endif %}>X</option>
+                <option value="allow" {% if _u == 'allow' %}selected{% endif %}>Allow</option>
+                <option value="est"   {% if _u == 'est'   %}selected{% endif %}>EST</option>
+                <option value="lb"    {% if _u == 'lb'    %}selected{% endif %}>LB</option>
+                <option value="mo"    {% if _u == 'mo'    %}selected{% endif %}>Months</option>
+                <option value="mi"    {% if _u == 'mi'    %}selected{% endif %}>Miles</option>
+                {# If the line has a custom unit not in the list above, include it so it's selectable. #}
+                {% if _u not in ['days','weeks','hrs','flat','ea','per','x','allow','est','lb','mo','mi'] %}
+                <option value="{{ _u }}" selected>{{ _u }}</option>
+                {% endif %}
+                <option value="__custom__">Custom…</option>
+              </select>
+            {% endif %}
             {% endif %}
           </td>
           <td class="col-num col-rate-cell">
@@ -3953,6 +3981,57 @@ function renderCalcDetail(d) {
               onmouseover="this.style.background='rgba(255,255,255,.08)'"
               onmouseout="this.style.background='transparent'">Custom…</div>`;
     _unitMenu.innerHTML = html;
+  }
+
+  // Non-labor <select> change — save new unit the same way as the menu.
+  document.addEventListener('change', function(e) {
+    const sel = e.target.closest('.days-unit-select');
+    if (!sel) return;
+    const newUnit = sel.value;
+    // "Custom…" option opens a prompt for free-text entry.
+    if (newUnit === '__custom__') {
+      const prev = sel.dataset.unit || 'days';
+      const custom = prompt('Custom unit label (e.g. "Rolls", "Pack", "Shoot"):', '');
+      if (custom === null) {
+        // Restore previous selection
+        sel.value = prev;
+        return;
+      }
+      const cleaned = String(custom).trim().slice(0, 20);
+      if (!cleaned) { sel.value = prev; return; }
+      const newCode = cleaned.toLowerCase();
+      // Add the custom option to the dropdown if it's not already there, then select it
+      let opt = Array.from(sel.options).find(o => o.value === newCode);
+      if (!opt) {
+        opt = document.createElement('option');
+        opt.value = newCode;
+        opt.textContent = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+        // Insert before the Custom… option so it stays at the bottom
+        const customOpt = Array.from(sel.options).find(o => o.value === '__custom__');
+        sel.insertBefore(opt, customOpt);
+      }
+      sel.value = newCode;
+      sel.dataset.unit = newCode;
+      _saveSelectUnit(sel, newCode);
+      return;
+    }
+    sel.dataset.unit = newUnit;
+    _saveSelectUnit(sel, newUnit);
+  });
+
+  async function _saveSelectUnit(sel, newUnit) {
+    const lid = parseInt(sel.dataset.id);
+    try {
+      const r = await fetch(`/projects/${_pid}/budget/${_bid}/line`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ id: lid, days_unit: newUnit })
+      });
+      if (r.ok) {
+        const data = await r.json();
+        if (typeof refreshLineRow === 'function') refreshLineRow(lid, data);
+      }
+    } catch(_) {}
   }
 
   // Right-click on the unit button → open menu
