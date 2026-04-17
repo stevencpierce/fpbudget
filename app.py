@@ -8264,6 +8264,60 @@ def _do_boot_work():
         # the deploy — we don't want a half-migrated production state.
         raise
 
+    # ── 2026-04-17 Catalog resync ────────────────────────────────────────────
+    # One-time wipe + reseed of CatalogItem from FP_CATALOG_SEED. Per user:
+    # "take what's in the hardcoded Quick Entry, delete everything from the
+    # Global Quick Entry Catalog, copy the hardcoded list into the DB, then
+    # flip QE to read from the DB." FP_CATALOG_SEED is already identical to
+    # the hardcoded QE_CATEGORIES (264 items each, zero diff), so this makes
+    # the DB match the hardcoded list exactly.
+    #
+    # Guarded by CoaMigrationLog so it runs exactly ONCE per database. Any
+    # failures are logged but don't abort boot — the app still starts with
+    # the DB in whatever state it ended up in (safe: worst case QE uses
+    # the JS fallback via QE_USE_DB_CATALOG=false until next deploy).
+    try:
+        from models import CoaMigrationLog as _CML2
+        from budget_calc import seed_catalog as _seed
+        _KEY = '2026-04-17-catalog-resync'
+        if not _CML2.query.filter_by(migration_key=_KEY).first():
+            logging.warning("[CATALOG RESYNC] Wiping CatalogItem and reseeding from FP_CATALOG_SEED…")
+            # Null FK references from budget_line so the DELETE doesn't break
+            # existing budgets. Export fuzzy-matches on (code, label) when
+            # catalog_item_id is NULL, so budgets continue working.
+            db.session.execute(text(
+                "UPDATE budget_line SET catalog_item_id = NULL "
+                "WHERE catalog_item_id IS NOT NULL"
+            ))
+            # Wipe every CatalogItem row.
+            _deleted = db.session.execute(text("DELETE FROM catalog_item")).rowcount
+            db.session.commit()
+            logging.warning(f"[CATALOG RESYNC] Deleted {_deleted} existing catalog rows")
+            # Reseed from FP_CATALOG_SEED (264 items). seed_catalog() is
+            # idempotent and handles errors per-row internally.
+            _added, _failed = _seed(db.session)
+            logging.warning(
+                f"[CATALOG RESYNC] Inserted {_added} rows from FP_CATALOG_SEED "
+                f"({len(_failed)} failed)"
+            )
+            # Mark the migration as applied so it never re-runs.
+            db.session.add(_CML2(
+                migration_key=_KEY,
+                applied_by_user_id=None,
+                notes=(f'Wiped {_deleted} catalog_item rows and reseeded '
+                       f'{_added} from FP_CATALOG_SEED. Quick Entry now '
+                       f'reads from the Global Quick Entry Catalog (DB) via '
+                       f'QE_USE_DB_CATALOG=true.'),
+            ))
+            db.session.commit()
+            logging.warning("[CATALOG RESYNC] complete")
+        else:
+            logging.info("[CATALOG RESYNC] already applied; skipping")
+    except Exception as _e:
+        # Best-effort: log and continue. Don't break boot.
+        logging.exception(f"[CATALOG RESYNC] FAILED: {_e}")
+        db.session.rollback()
+
     # Backfill version_number on existing budgets (one-time, skips already-set rows).
     try:
         import re as _re_vn
