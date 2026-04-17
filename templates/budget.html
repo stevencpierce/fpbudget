@@ -268,9 +268,26 @@
           data-ts-section="6500"
           oncontextmenu="editAutoLinePct(event, 'payroll_fee')" title="Right-click to edit %">
         <td class="col-code muted" style="font-size:.75rem"></td>
-        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}%)</td>
+        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
         <td class="col-num muted" style="font-size:.85rem">{{ top_sheet.payroll_fee_amount | currency }}</td>
         <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
+      </tr>
+      {# Debug / sanity-check row: the labor total that WC + Payroll Fee are
+         both multiplied against. If this number looks wrong you'll know the
+         WC / PF amounts above are wrong too. Appears under the 6500 section
+         once, only when PF > 0 so it doesn't clutter otherwise. #}
+      <tr class="auto-line-row" data-ts-section="6500"
+          style="background:var(--bg-2,#f7f7f9);font-style:italic"
+          title="Sum of labor subtotals (base rate × qty × days + OT) across every labor line in this budget. Excludes fringe + agent %.">
+        <td class="col-code muted" style="font-size:.7rem"></td>
+        <td class="muted" style="font-size:.75rem;padding-left:1.75rem">
+          Labor total (base for WC + Payroll Fee %):
+          <strong style="color:var(--text)">${{ "{:,.2f}".format(top_sheet.gross_labor_wages) }}</strong>
+        </td>
+        <td class="col-num muted" style="font-size:.75rem">&mdash;</td>
+        <td class="col-num muted" style="font-size:.75rem">&mdash;</td>
+        <td class="col-num muted" style="font-size:.75rem">&mdash;</td>
+        <td class="col-num muted" style="font-size:.75rem">&mdash;</td>
       </tr>
       {% endif %}
       {% endfor %}
