@@ -7229,6 +7229,47 @@ def admin_catalog_rehouse_staff(from_code):
     })
 
 
+@app.route("/admin/catalog/wipe-and-reseed", methods=["POST"])
+@login_required
+@super_admin_required
+def admin_catalog_wipe_and_reseed():
+    """Destructive one-shot: DELETE every row in catalog_item, then reseed
+    from FP_CATALOG_SEED (which is kept 1:1 with the hardcoded QE list).
+
+    Exists so the user can fix catalog drift immediately without waiting
+    on a boot migration. Any budget_line.catalog_item_id FKs are NULLed
+    before the delete so existing budgets aren't broken — exports
+    fall back to fuzzy (account_code, description) match when FK is NULL.
+    """
+    from budget_calc import seed_catalog as _seed
+    try:
+        # NULL FK references from budget_line so the DELETE doesn't violate
+        # the FK constraint.
+        _nulled = db.session.execute(text(
+            "UPDATE budget_line SET catalog_item_id = NULL "
+            "WHERE catalog_item_id IS NOT NULL"
+        )).rowcount
+        # Wipe.
+        _deleted = db.session.execute(text("DELETE FROM catalog_item")).rowcount
+        db.session.commit()
+
+        # Reseed. Expansion error handling already per-row internally.
+        _added, _failed = _seed(db.session)
+
+        return jsonify({
+            "ok": True,
+            "deleted": _deleted,
+            "fks_nulled": _nulled,
+            "inserted": _added,
+            "failed_count": len(_failed),
+            "failures": [{"row": list(r[0]) if isinstance(r[0], tuple) else str(r[0]),
+                          "error": r[1]} for r in _failed[:20]],
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/admin/catalog/bulk-move", methods=["POST"])
 @login_required
 @super_admin_required

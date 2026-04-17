@@ -143,6 +143,11 @@
             title="Idempotent: inserts any FP_CATALOG_SEED items that are missing from the DB. Safe to click repeatedly. Existing items are never touched.">
       ⟳ Reseed Missing Defaults
     </button>
+    <button class="btn btn-sm" id="cat-wipe-reseed-btn"
+            style="background:#dc2626;color:#fff;border-color:#dc2626"
+            title="DELETE every catalog row and repopulate from the canonical hardcoded Quick Entry list (264 items). Irreversible — existing customizations will be lost. Confirms twice.">
+      💣 Wipe &amp; Reseed from QE List
+    </button>
     <button class="btn btn-sm btn-outline" id="cat-rehouse-2600-btn"
             title="Move any staff roles accidentally sitting at 2600 Camera Equipment into 2000 Production Staff. Previews first — you confirm before anything changes.">
       🚚 Move Staff out of 2600
@@ -175,6 +180,44 @@
   </div>
 
   <script>
+    // ── Wipe & Reseed from hardcoded QE list (destructive) ──────────────────
+    document.getElementById('cat-wipe-reseed-btn').addEventListener('click', async () => {
+      // Double confirm because this is irreversible.
+      if (!confirm('DELETE every row from the Global Quick Entry Catalog and replace it with the 264-item canonical QE list?\n\nThis is IRREVERSIBLE. Any customized rates / rows you added will be lost.\n\nContinue?')) return;
+      if (!confirm('Really sure?\n\nThis wipes the catalog table entirely and re-inserts the default list. Any budget_line catalog_item_id links are cleared (existing budgets will fall back to fuzzy match, no budget data is lost).')) return;
+      const btn = document.getElementById('cat-wipe-reseed-btn');
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Wiping…';
+      try {
+        const r = await fetch('/admin/catalog/wipe-and-reseed', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const d = await r.json();
+        if (!r.ok) { alert('Wipe & reseed FAILED: ' + (d.error || 'unknown')); return; }
+        let msg = 'Catalog reset complete.\n\n';
+        msg += `• Deleted: ${d.deleted} old row(s)\n`;
+        msg += `• budget_line FKs cleared: ${d.fks_nulled}\n`;
+        msg += `• Inserted from QE list: ${d.inserted} row(s)\n`;
+        if (d.failed_count) {
+          msg += `\nFailures: ${d.failed_count}`;
+          if (d.failures && d.failures.length) {
+            msg += '\n\nFirst few:\n• ' + d.failures.slice(0, 10).map(
+              f => `${JSON.stringify(f.row)}: ${f.error}`
+            ).join('\n• ');
+          }
+        }
+        alert(msg);
+        location.reload();
+      } catch (e) {
+        alert('Request failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    });
+
     // ── Rehouse staff rows out of 2600 → 2000 ───────────────────────────────
     document.getElementById('cat-rehouse-2600-btn').addEventListener('click', async () => {
       const btn = document.getElementById('cat-rehouse-2600-btn');
