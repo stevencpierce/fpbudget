@@ -294,10 +294,24 @@
     {% set frozen = (ln.working_total | float) if ln.working_total is not none else res.est_total %}
     {% set ns.sec_est = ns.sec_est + frozen %}
     {% set ns.sec_work = ns.sec_work + res.est_total %}
+    {% set _meal_tags = ['craft_services','meal_courtesy_breakfast','meal_first','meal_second','working_meal'] %}
+    {% set _is_meal = ln.line_tag in _meal_tags %}
     <tr>
-      <td>{{ ln.description or ln.account_name }}</td>
-      {# Qty column: hide for labor (one person per line — Qty=1 is noise). #}
-      <td class="num">{% if ln.is_labor %}—{% else %}{{ ln.quantity | float | int if (ln.quantity | float) == (ln.quantity | float | int) else ln.quantity | float }}{% endif %}</td>
+      <td>
+        {{ ln.description or ln.account_name }}
+        {% if _is_meal and (ln.days|float) > 0 and (ln.quantity|float) > 0 and not ln.sync_omit %}
+          {% set _total_meals = (ln.quantity|float * ln.days|float) | round(0) | int %}
+          {% set _days_disp = ln.days|float|int if (ln.days|float) == (ln.days|float|int) else ln.days|float %}
+          <div style="font-size:6.5pt;color:#777;font-style:italic;margin-top:1pt">
+            {{ _days_disp }} day{{ 's' if _days_disp != 1 else '' }} catering for {{ _total_meals }} meal{{ 's' if _total_meals != 1 else '' }}
+          </div>
+        {% endif %}
+      </td>
+      {# Qty column: hide for labor (one person per line — Qty=1 is noise).
+         For meal lines also shown as '—' since the total-meals math is
+         in the subtitle above; the per-row qty/days are accounting
+         breakdown, not what the user cares about. #}
+      <td class="num">{% if ln.is_labor or _is_meal %}—{% else %}{{ ln.quantity | float | int if (ln.quantity | float) == (ln.quantity | float | int) else ln.quantity | float }}{% endif %}</td>
       {# Days column: use schedule-computed day_count when the line is
          schedule-driven. Prevents "Days = 1" showing up for labor lines
          that are actually working 5 days per the gantt schedule. #}

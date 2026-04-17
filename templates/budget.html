@@ -474,6 +474,18 @@
           <td class="col-desc">
             <span class="line-number">{{ sec.code }}-{{ '%02d' % ns.line_counter }}</span><span class="editable" data-field="description"
                   data-id="{{ ln.id }}">{{ ln.description or '' }}</span>
+            {# Meal / craft-services summary: show 'X days catering for Y meals'
+               when the line is schedule-driven. Y = total people-days across
+               flagged dates (qty is the avg working headcount, days is count
+               of flagged dates, so qty × days = total meals served). #}
+            {% set _meal_tags = ['craft_services','meal_courtesy_breakfast','meal_first','meal_second','working_meal'] %}
+            {% if ln.line_tag in _meal_tags and (ln.days|float) > 0 and (ln.quantity|float) > 0 and not ln.sync_omit %}
+              {% set _total_meals = (ln.quantity|float * ln.days|float) | round(0) | int %}
+              {% set _days_disp = ln.days|float|int if (ln.days|float) == (ln.days|float|int) else ln.days|float %}
+              <div class="muted" style="font-size:.72rem;margin-top:.1rem;font-style:italic">
+                {{ _days_disp }} day{{ 's' if _days_disp != 1 else '' }} catering for {{ _total_meals }} meal{{ 's' if _total_meals != 1 else '' }}
+              </div>
+            {% endif %}
           </td>
           <td class="col-pc col-labor-only">
             {% if ln.is_labor %}
