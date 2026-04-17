@@ -48,6 +48,44 @@ except Exception as _e:
     print(f"[ssl-fix] fatal: could not set up SSLContext patches: {_e!r}",
           file=_sys.stderr)
 
+# ── ssl.SSLSocket._create super() type-check fix ──────────────────────────────
+# Python 3.13 ssl.py line ~34 inside SSLSocket._create classmethod:
+#     super(SSLSocket, self).__init__(**kwargs)
+# The name `SSLSocket` is resolved from ssl.py's module globals at call
+# time. If ANYTHING rebinds `ssl.SSLSocket` (gevent even with ssl=False,
+# truststore, any class-registration path), the super() check fails with:
+#     TypeError: super(type, obj): obj (instance of SSLSocket) is not an
+#                instance or subtype of type (SSLSocket)
+# because Python sees two different class objects both named SSLSocket.
+#
+# We observed this in production on Python 3.13 as soon as the Dropbox
+# SDK (which goes through requests → urllib3) tried to open an HTTPS
+# connection. Even with our NoSSLWorker (monkey.patch_all(ssl=False)),
+# something further down still rebinds SSLSocket.
+#
+# Fix: wrap SSLSocket._create so that BEFORE it runs, we temporarily set
+# ssl.SSLSocket = cls (the actual class of the instance about to be made).
+# The super(SSLSocket, self) inside the original body then resolves to
+# cls, which self IS an instance of — so the type check always passes.
+# Restore the previous value afterwards so nothing else downstream is
+# disturbed.
+try:
+    _orig_ssl_socket_create = _ssl_mod.SSLSocket._create.__func__
+
+    def _safe_ssl_socket_create(cls, *args, **kwargs):
+        _saved_sslsocket = _ssl_mod.SSLSocket
+        _ssl_mod.SSLSocket = cls
+        try:
+            return _orig_ssl_socket_create(cls, *args, **kwargs)
+        finally:
+            _ssl_mod.SSLSocket = _saved_sslsocket
+
+    _ssl_mod.SSLSocket._create = classmethod(_safe_ssl_socket_create)
+except Exception as _e:
+    import sys as _sys
+    print(f"[ssl-fix] could not patch SSLSocket._create: {_e!r}",
+          file=_sys.stderr)
+
 # ── R2 / botocore checksum env vars ──────────────────────────────────────────
 # MUST be set BEFORE boto3/botocore is ever imported. botocore reads these
 # during module init and caches them. Cloudflare R2 rejects the new
