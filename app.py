@@ -666,17 +666,84 @@ def _provision_dropbox_folder(dropbox_folder):
     """Copy the project template tree to a new project folder. Returns path or None."""
     has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
     if not has_refresh and not os.getenv('DROPBOX_ACCESS_TOKEN'):
-        logging.warning("Dropbox provision skipped: no credentials set")
+        logging.warning("[DBX PROVISION] skipped — no credentials set")
         return None
     try:
         src, dest = _dbx_paths(dropbox_folder)
-        logging.info(f"Dropbox provision: copying '{src}' → '{dest}'")
+        logging.warning(f"[DBX PROVISION] copying '{src}' → '{dest}' "
+                        f"(OPS_ROOT={_DBX_OPS_ROOT!r}, TEMPLATE={_DBX_TEMPLATE_NAME!r}, "
+                        f"NAMESPACE={_DBX_NAMESPACE_ID!r})")
         _dbx_client().files_copy_v2(src, dest)
-        logging.info(f"Dropbox provision: success → {dest}")
+        logging.warning(f"[DBX PROVISION] success → {dest}")
         return dest
     except Exception as e:
-        logging.error(f"Dropbox provision failed: {e}")
+        # Log with full type + message so Render logs clearly show what broke.
+        import traceback as _tb
+        logging.error(f"[DBX PROVISION] FAILED for slug={dropbox_folder!r}: "
+                      f"{type(e).__name__}: {e}\n{_tb.format_exc()}")
         return None
+
+
+@app.route("/admin/dropbox/status")
+@login_required
+@super_admin_required
+def admin_dropbox_status():
+    """Diagnostic: show current Dropbox config + test connection + check
+    the template folder exists. Super-admin only. Paste the JSON back to
+    the engineer when project folders aren't being created."""
+    out = {
+        "env": {
+            "DROPBOX_REFRESH_TOKEN_set": bool(os.getenv('DROPBOX_REFRESH_TOKEN')),
+            "DROPBOX_APP_KEY_set":       bool(os.getenv('DROPBOX_APP_KEY')),
+            "DROPBOX_ACCESS_TOKEN_set":  bool(os.getenv('DROPBOX_ACCESS_TOKEN')),
+            "DROPBOX_OPERATIONS_PATH":   os.getenv('DROPBOX_OPERATIONS_PATH'),
+            "DROPBOX_TEMPLATE_FOLDER":   os.getenv('DROPBOX_TEMPLATE_FOLDER'),
+            "DROPBOX_NAMESPACE_ID":      os.getenv('DROPBOX_NAMESPACE_ID'),
+            "DROPBOX_ARCHIVE_PATH":      os.getenv('DROPBOX_ARCHIVE_PATH'),
+            "DROPBOX_WRAP_PATH":         os.getenv('DROPBOX_WRAP_PATH'),
+        },
+        "resolved": {
+            "_DBX_OPS_ROOT":      _DBX_OPS_ROOT,
+            "_DBX_TEMPLATE_NAME": _DBX_TEMPLATE_NAME,
+            "_DBX_NAMESPACE_ID":  _DBX_NAMESPACE_ID,
+            "_DBX_ARCHIVE_ROOT":  _DBX_ARCHIVE_ROOT,
+            "template_source_path": (f"/{_DBX_TEMPLATE_NAME}" if _DBX_NAMESPACE_ID
+                                     else f"{_DBX_OPS_ROOT}/{_DBX_TEMPLATE_NAME}"),
+        },
+        "connection": None,
+        "template_folder_exists": None,
+        "template_folder_error": None,
+    }
+    # Try authenticating + listing the template folder.
+    has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
+    if not has_refresh and not os.getenv('DROPBOX_ACCESS_TOKEN'):
+        out["connection"] = "NO CREDENTIALS"
+        return jsonify(out)
+    try:
+        dbx = _dbx_client()
+        # Sanity: who are we authed as
+        try:
+            acct = dbx.users_get_current_account()
+            out["connection"] = {
+                "status": "connected",
+                "account_email":  getattr(acct, 'email', None),
+                "account_name":   getattr(getattr(acct, 'name', None), 'display_name', None),
+            }
+        except Exception as _ae:
+            out["connection"] = f"auth failed: {type(_ae).__name__}: {_ae}"
+            return jsonify(out)
+        # Try to stat the template folder.
+        template_path = out["resolved"]["template_source_path"]
+        try:
+            md = dbx.files_get_metadata(template_path)
+            out["template_folder_exists"] = True
+            out["template_folder_path_on_dropbox"] = getattr(md, 'path_display', None)
+        except Exception as _te:
+            out["template_folder_exists"] = False
+            out["template_folder_error"] = f"{type(_te).__name__}: {_te}"
+    except Exception as e:
+        out["connection"] = f"unexpected: {type(e).__name__}: {e}"
+    return jsonify(out)
 
 
 # ── Project folder slug generation ────────────────────────────────────────────
