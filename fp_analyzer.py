@@ -129,23 +129,56 @@ def get_veryfi_client():
 
 IGNORED_PREFIXES = ("_", "!", ".")
 
+
+# ── Namespace-aware helpers (FPBudget integration) ──────────────────────────
+# When DROPBOX_NAMESPACE_ID is set, FPBudget scopes all Dropbox calls to a
+# shared-folder namespace whose root IS the operations folder (_FP OPERATIONS
+# FOLDER). In that mode, prepending DROPBOX_OPERATIONS_PATH to every file
+# path duplicates the Steven Pierce/ folder and drops files at the wrong
+# spot. We therefore:
+#   1. Scope the client via with_path_root(namespace_id) so paths resolve
+#      against the shared-folder root instead of the user's personal root.
+#   2. Return "" (empty) from _ops_prefix() when in namespace mode, so
+#      path builders don't double-prefix.
+_DBX_NAMESPACE_ID_ENV = os.getenv("DROPBOX_NAMESPACE_ID", "").strip()
+
+
+def _ops_prefix() -> str:
+    """Prefix to prepend to project folder names when building Dropbox paths.
+    Empty string in namespace mode (paths relative to the namespace root);
+    the env-configured operations path when running in user-root mode."""
+    if _DBX_NAMESPACE_ID_ENV:
+        return ""
+    return os.getenv("DROPBOX_OPERATIONS_PATH", "").rstrip("/")
+
+
 def get_dropbox_client():
     refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
     app_key       = os.getenv("DROPBOX_APP_KEY")
     app_secret    = os.getenv("DROPBOX_APP_SECRET")
     if refresh_token and app_key and app_secret:
-        return dropbox.Dropbox(
+        dbx = dropbox.Dropbox(
             oauth2_refresh_token=refresh_token,
             app_key=app_key,
             app_secret=app_secret,
         )
-    # Fallback to short-lived token
-    token = (os.getenv("DROPBOX_ACCESS_TOKEN") or "").strip().replace("\n", "").replace(" ", "")
-    return dropbox.Dropbox(token)
+    else:
+        # Fallback to short-lived token
+        token = (os.getenv("DROPBOX_ACCESS_TOKEN") or "").strip().replace("\n", "").replace(" ", "")
+        dbx = dropbox.Dropbox(token)
+    # Scope the client to the shared-folder namespace when configured so
+    # paths resolve against that folder's root (not the user's personal root).
+    if _DBX_NAMESPACE_ID_ENV:
+        try:
+            from dropbox.common import PathRoot
+            dbx = dbx.with_path_root(PathRoot.namespace_id(_DBX_NAMESPACE_ID_ENV))
+        except Exception as _e:
+            log.error(f"Failed to apply namespace root {_DBX_NAMESPACE_ID_ENV}: {_e}")
+    return dbx
 
 
 def list_projects():
-    ops_path = os.getenv("DROPBOX_OPERATIONS_PATH", "").rstrip("/")
+    ops_path = _ops_prefix()
     try:
         dbx    = get_dropbox_client()
         result = dbx.files_list_folder(ops_path)
@@ -425,7 +458,7 @@ def handle_duplicates_auto(batch_token, project_name, user_name):
         return 0
 
     dbx          = get_dropbox_client()
-    ops          = os.getenv("DROPBOX_OPERATIONS_PATH", "").rstrip("/")
+    ops          = _ops_prefix()
     discard_ids  = set()
     dup_results  = []
 
@@ -466,7 +499,7 @@ def mark_known_dupes(batch_token, known_hashes, project_name, user_name):
     discard_ids = set()
     dup_results = []
     dbx = get_dropbox_client()
-    ops = os.getenv("DROPBOX_OPERATIONS_PATH", "").rstrip("/")
+    ops = _ops_prefix()
 
     for item in items:
         if item.get("file_hash") not in known_hashes:
@@ -508,7 +541,7 @@ def auto_file_high_confidence(batch_token, project_name, user_name):
         return 0
 
     dbx        = get_dropbox_client()
-    ops        = os.getenv("DROPBOX_OPERATIONS_PATH", "").rstrip("/")
+    ops        = _ops_prefix()
     auto_res   = []
     remove_ids = set()
 
@@ -577,7 +610,7 @@ def file_confirmed(batch_token, confirmations, project_name, user_name):
     """
     items   = _pending.pop(batch_token, [])
     dbx     = get_dropbox_client()
-    ops     = os.getenv("DROPBOX_OPERATIONS_PATH", "").rstrip("/")
+    ops     = _ops_prefix()
     results = []
 
     for item in items:
