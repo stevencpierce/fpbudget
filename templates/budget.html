@@ -793,7 +793,7 @@
     </button>
 
     <!-- History -->
-    <div style="display:flex;align-items:center;justify-content:space-between;margin:28px 0 10px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:28px 0 6px;">
       <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;">Previously Uploaded</div>
       {# Super-admin testing tool: wipe every DocUpload for this project and
          move its Dropbox files to /_TRASH/. Only visible to super_admin role. #}
@@ -806,13 +806,55 @@
       </button>
       {% endif %}
     </div>
+
+    {# Sort toolbar: client-side reorder by column. Each row below carries
+       data-sort-* attributes that _docsSort() reads. Default order is
+       date-desc (most recent first). Clicking 'Sort by' reorders the DOM
+       rows inside #docsHistory without hitting the server. #}
+    {% if doc_uploads %}
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:11px;color:var(--text-muted);">
+      <span>Sort by:</span>
+      <select id="docs-sort-by"
+              style="font-size:11px;padding:3px 6px;border-radius:4px;
+                     background:var(--bg-card);border:1px solid var(--border);color:var(--text);">
+        <option value="date">Upload date</option>
+        <option value="uploader">Uploader</option>
+        <option value="filename">Filename</option>
+        <option value="original">Original filename</option>
+        <option value="type">Doc type</option>
+        <option value="vendor">Vendor</option>
+        <option value="amount">Amount</option>
+        <option value="size">File size</option>
+        <option value="status">Status</option>
+      </select>
+      <button type="button" id="docs-sort-dir"
+              data-dir="desc"
+              style="font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer;
+                     background:var(--bg-card);border:1px solid var(--border);color:var(--text);"
+              title="Toggle ascending / descending">↓ Newest first</button>
+      <span id="docs-count" style="margin-left:auto">{{ doc_uploads|length }} item{{ 's' if doc_uploads|length != 1 else '' }}</span>
+    </div>
+    {% endif %}
     <div id="docsHistory" style="display:flex;flex-direction:column;gap:8px;">
       {% if doc_uploads %}
         {% for u in doc_uploads %}
         {% set _display_name = u.filed_filename or u.original_filename or 'Unnamed file' %}
+        {% set _orig_name    = u.original_filename or '' %}
         {% set _was_renamed  = u.filed_filename and u.original_filename and u.filed_filename != u.original_filename %}
         {% set _can_rename   = (u.status == 'done' or u.status == 'filed') and u.filed_dropbox_path %}
+        {% set _uploader_label = (u.uploader.name or u.uploader.email.split('@')[0]) if u.uploader else '' %}
+        {% set _size_kb = (u.file_size / 1024) if u.file_size else 0 %}
+        {% set _size_display = ('%.1f KB'|format(_size_kb)) if _size_kb < 1024 else ('%.1f MB'|format(_size_kb / 1024)) %}
         <div class="doc-row" data-upload-id="{{ u.id }}" data-status="{{ u.status }}"
+             data-sort-date="{{ u.uploaded_at.isoformat() if u.uploaded_at else '' }}"
+             data-sort-uploader="{{ _uploader_label|lower }}"
+             data-sort-filename="{{ _display_name|lower }}"
+             data-sort-original="{{ _orig_name|lower }}"
+             data-sort-type="{{ (u.category or '')|lower }}"
+             data-sort-vendor="{{ (u.vendor or '')|lower }}"
+             data-sort-amount="{{ u.amount|float if u.amount else 0 }}"
+             data-sort-size="{{ u.file_size or 0 }}"
+             data-sort-status="{{ u.status or '' }}"
              style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;">
           <div style="font-size:20px;width:32px;text-align:center;padding-top:2px;">{% if u.content_type and 'pdf' in u.content_type %}📄{% else %}🧾{% endif %}</div>
           <div style="flex:1;min-width:0;">
@@ -827,18 +869,21 @@
             </div>
             {% if _was_renamed %}
             <div style="font-size:11px;color:#6b7280;font-style:italic;margin-top:1px;" title="Original filename as uploaded">
-              uploaded as: {{ u.original_filename }}
+              📎 uploaded as: {{ u.original_filename }}
             </div>
             {% endif %}
             <div style="font-size:11px;color:var(--text-muted);margin-top:3px;">
               {% if u.uploader %}
-                👤 <span title="{{ u.uploader.email }}">{{ u.uploader.name or u.uploader.email.split('@')[0] }}</span>
+                👤 <span title="{{ u.uploader.email }}">{{ _uploader_label }}</span>
               {% endif %}
               {% if u.uploaded_at %}
                 · 📅 {{ u.uploaded_at.strftime('%b %-d, %Y · %-I:%M %p') }}
               {% endif %}
               {% if u.category %}
                 · 🏷 <strong>{{ u.category }}</strong>
+              {% endif %}
+              {% if u.file_size %}
+                · 📦 {{ _size_display }}
               {% endif %}
             </div>
             {% if u.vendor or u.amount or u.doc_date %}
@@ -1112,6 +1157,70 @@
     };
     span.addEventListener('keydown', onKey);
     span.addEventListener('blur', onBlur);
+  }
+
+  // ── Client-side sort of the uploaded-docs list ─────────────────────────
+  // Reads data-sort-* attributes on each .doc-row and reorders the DOM.
+  // Numeric columns (amount, size) are compared as numbers; date column
+  // sorts on the ISO timestamp; everything else is lexicographic.
+  function _docsSort() {
+    const by  = document.getElementById('docs-sort-by');
+    const dir = document.getElementById('docs-sort-dir');
+    if (!by || !dir) return;
+    const key    = by.value;
+    const desc   = dir.dataset.dir === 'desc';
+    const NUMERIC = new Set(['amount', 'size']);
+    const list   = document.getElementById('docsHistory');
+    if (!list) return;
+    const rows = Array.from(list.querySelectorAll('.doc-row'));
+    rows.sort((a, b) => {
+      const av = a.dataset['sort' + key.charAt(0).toUpperCase() + key.slice(1)] || '';
+      const bv = b.dataset['sort' + key.charAt(0).toUpperCase() + key.slice(1)] || '';
+      let cmp;
+      if (NUMERIC.has(key)) {
+        cmp = (parseFloat(av) || 0) - (parseFloat(bv) || 0);
+      } else if (key === 'date') {
+        // Lexicographic works on ISO 8601 timestamps.
+        cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      } else {
+        cmp = av.localeCompare(bv);
+      }
+      return desc ? -cmp : cmp;
+    });
+    rows.forEach(r => list.appendChild(r));  // appendChild reorders in place
+  }
+
+  // Wire up the sort dropdown + direction toggle.
+  const _sortBy  = document.getElementById('docs-sort-by');
+  const _sortDir = document.getElementById('docs-sort-dir');
+  if (_sortBy && _sortDir) {
+    // Labels shown on the direction toggle per column (makes intent clear —
+    // "Newest first" is way more scannable than "↓ desc" for date).
+    const DIR_LABELS = {
+      date:     { desc: '↓ Newest first',  asc: '↑ Oldest first' },
+      uploader: { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      filename: { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      original: { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      type:     { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      vendor:   { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      amount:   { desc: '↓ Largest first', asc: '↑ Smallest first' },
+      size:     { desc: '↓ Largest first', asc: '↑ Smallest first' },
+      status:   { desc: '↓ Z → A',          asc: '↑ A → Z' },
+    };
+    function _updateDirLabel() {
+      const l = DIR_LABELS[_sortBy.value] || { desc: '↓ Desc', asc: '↑ Asc' };
+      _sortDir.textContent = _sortDir.dataset.dir === 'desc' ? l.desc : l.asc;
+    }
+    _sortBy.addEventListener('change', () => { _updateDirLabel(); _docsSort(); });
+    _sortDir.addEventListener('click', () => {
+      _sortDir.dataset.dir = _sortDir.dataset.dir === 'desc' ? 'asc' : 'desc';
+      _updateDirLabel();
+      _docsSort();
+    });
+    // Initial sort on page load (default: date desc — matches the server
+    // order so the page doesn't visually flicker).
+    _updateDirLabel();
+    _docsSort();
   }
 
   // ── Super-admin wipe button ──────────────────────────────────────────
