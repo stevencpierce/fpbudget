@@ -793,30 +793,73 @@
     </button>
 
     <!-- History -->
-    <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin:28px 0 10px;">Previously Uploaded</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:28px 0 10px;">
+      <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;">Previously Uploaded</div>
+      {# Super-admin testing tool: wipe every DocUpload for this project and
+         move its Dropbox files to /_TRASH/. Only visible to super_admin role. #}
+      {% if current_user.role == 'super_admin' %}
+      <button type="button" id="btn-wipe-docs"
+              style="font-size:11px;padding:4px 10px;border-radius:6px;
+                     background:#2a1414;color:#ef4444;border:1px solid #4a2020;cursor:pointer;"
+              title="Super admin only: delete every DocUpload row for this project and move its Dropbox files to /_TRASH/. Use for clean-start testing.">
+        🗑 Wipe all receipts (test)
+      </button>
+      {% endif %}
+    </div>
     <div id="docsHistory" style="display:flex;flex-direction:column;gap:8px;">
       {% if doc_uploads %}
         {% for u in doc_uploads %}
+        {% set _display_name = u.filed_filename or u.original_filename or 'Unnamed file' %}
+        {% set _was_renamed  = u.filed_filename and u.original_filename and u.filed_filename != u.original_filename %}
+        {% set _can_rename   = (u.status == 'done' or u.status == 'filed') and u.filed_dropbox_path %}
         <div class="doc-row" data-upload-id="{{ u.id }}" data-status="{{ u.status }}"
-             style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:center;gap:12px;">
-          <div style="font-size:20px;width:32px;text-align:center;">{% if u.content_type and 'pdf' in u.content_type %}📄{% else %}🧾{% endif %}</div>
+             style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;">
+          <div style="font-size:20px;width:32px;text-align:center;padding-top:2px;">{% if u.content_type and 'pdf' in u.content_type %}📄{% else %}🧾{% endif %}</div>
           <div style="flex:1;min-width:0;">
-            <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ u.original_filename or 'Unnamed' }}</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
-              {{ u.uploaded_at.strftime('%b %-d, %Y') if u.uploaded_at else '' }}
-              {% if u.uploader %}
-                · <span title="{{ u.uploader.email }}">{{ u.uploader.name or u.uploader.email.split('@')[0] }}</span>
-              {% endif %}
-              {% if u.vendor %} · {{ u.vendor }}{% endif %}
-              {% if u.amount %} · ${{ '%.2f'|format(u.amount|float) }}{% endif %}
+            <div style="font-size:13px;font-weight:500;">
+              <span class="doc-filename {% if _can_rename %}editable-filename{% endif %}"
+                    data-id="{{ u.id }}"
+                    data-original="{{ _display_name }}"
+                    {% if _can_rename %}title="Click to rename — Dropbox will update too"
+                       style="cursor:pointer;border-bottom:1px dashed transparent;padding:1px 2px;border-radius:2px;"
+                    {% endif %}>{{ _display_name }}</span>
+              {% if _can_rename %}<span class="rename-hint" style="font-size:10px;color:#6b7280;margin-left:4px;opacity:0;">✎</span>{% endif %}
             </div>
+            {% if _was_renamed %}
+            <div style="font-size:11px;color:#6b7280;font-style:italic;margin-top:1px;" title="Original filename as uploaded">
+              uploaded as: {{ u.original_filename }}
+            </div>
+            {% endif %}
+            <div style="font-size:11px;color:var(--text-muted);margin-top:3px;">
+              {% if u.uploader %}
+                👤 <span title="{{ u.uploader.email }}">{{ u.uploader.name or u.uploader.email.split('@')[0] }}</span>
+              {% endif %}
+              {% if u.uploaded_at %}
+                · 📅 {{ u.uploaded_at.strftime('%b %-d, %Y · %-I:%M %p') }}
+              {% endif %}
+              {% if u.category %}
+                · 🏷 <strong>{{ u.category }}</strong>
+              {% endif %}
+            </div>
+            {% if u.vendor or u.amount or u.doc_date %}
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
+              {% if u.vendor %}🏢 {{ u.vendor }}{% endif %}
+              {% if u.amount %}{% if u.vendor %} · {% endif %}💵 ${{ '%.2f'|format(u.amount|float) }}{% endif %}
+              {% if u.doc_date %}{% if u.vendor or u.amount %} · {% endif %}🗓 {{ u.doc_date.strftime('%b %-d, %Y') }}{% endif %}
+            </div>
+            {% endif %}
           </div>
-          <span class="doc-status-badge" style="font-size:11px;padding:3px 9px;border-radius:20px;
-            {% if u.status == 'filed' %}background:#14291e;color:#22c55e;border:1px solid #1a4228;
+          <span class="doc-status-badge" style="font-size:11px;padding:3px 9px;border-radius:20px;white-space:nowrap;
+            {% if u.status == 'filed' or u.status == 'done' %}background:#14291e;color:#22c55e;border:1px solid #1a4228;
+            {% elif u.status == 'review' %}background:#2a2414;color:#fbbf24;border:1px solid #4a3a1a;
             {% elif u.status == 'duplicate' %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
             {% elif u.status == 'error' %}background:#2a1414;color:#ef4444;border:1px solid #4a2020;
-            {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}">
-            {{ u.status|capitalize }}
+            {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}"
+            title="{% if u.confidence %}OCR confidence: {{ u.confidence }}%{% endif %}{% if u.filed_dropbox_path %} · Dropbox: {{ u.filed_dropbox_path }}{% endif %}">
+            {% if u.status == 'done' or u.status == 'filed' %}Filed
+            {% elif u.status == 'review' %}⚠ Review
+              {% if u.confidence %} {{ u.confidence | int }}%{% endif %}
+            {% else %}{{ u.status|capitalize }}{% endif %}
           </span>
           {% if u.status == 'pending' %}
           <button class="doc-retry-btn" title="Retry filing to Dropbox"
@@ -834,6 +877,26 @@
         <div style="text-align:center;color:var(--text-muted);font-size:13px;padding:20px 0;">No uploads yet for this project.</div>
       {% endif %}
     </div>
+
+    <style>
+      /* Docs-tab filename rename (click-to-edit) */
+      #tab-docs .doc-filename.editable-filename:hover {
+        border-bottom-color: #6b7280 !important;
+        background: rgba(255,255,255,.03);
+      }
+      #tab-docs .doc-filename:hover ~ .rename-hint,
+      #tab-docs .doc-row:hover .rename-hint { opacity: 0.8 !important; }
+      #tab-docs .doc-filename.editing {
+        display: inline-block;
+        background: #1e2230;
+        border: 1px solid #4f7ef8 !important;
+        border-radius: 3px;
+        padding: 2px 4px;
+        outline: none;
+        min-width: 200px;
+        white-space: normal !important;
+      }
+    </style>
   </div>
 </div>
 
@@ -971,6 +1034,119 @@
       }
     }
   });
+
+  // ── Inline filename rename (click filed filename) ─────────────────────
+  document.getElementById('docsHistory').addEventListener('click', (e) => {
+    const span = e.target.closest('.editable-filename');
+    if (!span || span.classList.contains('editing')) return;
+    _docsStartRename(span);
+  });
+
+  function _docsStartRename(span) {
+    const uploadId = parseInt(span.dataset.id);
+    const currentName = span.textContent.trim();
+    span.classList.add('editing');
+    span.contentEditable = 'plaintext-only';
+    span.focus();
+    // Select name portion before extension so typing replaces readable
+    // text but keeps the extension intact.
+    const range = document.createRange();
+    const sel = window.getSelection();
+    const dot = currentName.lastIndexOf('.');
+    const textNode = span.firstChild;
+    if (textNode && dot > 0) {
+      range.setStart(textNode, 0);
+      range.setEnd(textNode, dot);
+    } else if (textNode) {
+      range.selectNodeContents(textNode);
+    }
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    const commit = async () => {
+      span.contentEditable = 'false';
+      span.classList.remove('editing');
+      const newName = span.textContent.trim();
+      if (!newName || newName === currentName) {
+        span.textContent = currentName;
+        return;
+      }
+      if (newName.includes('/') || newName.includes('\\') || newName.length > 200) {
+        alert('Invalid filename — no slashes, ≤ 200 chars.');
+        span.textContent = currentName;
+        return;
+      }
+      try {
+        const r = await fetch('/docs/upload/' + uploadId + '/rename', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ new_filename: newName })
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          alert('Rename failed: ' + (d.error || 'unknown'));
+          span.textContent = currentName;
+          return;
+        }
+        const finalName = d.new_filename || newName;
+        span.textContent = finalName;
+        span.dataset.original = finalName;
+      } catch (err) {
+        alert('Rename request failed: ' + err.message);
+        span.textContent = currentName;
+      }
+    };
+    const cancel = () => {
+      span.contentEditable = 'false';
+      span.classList.remove('editing');
+      span.textContent = currentName;
+    };
+    const onKey = (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); span.removeEventListener('keydown', onKey); span.removeEventListener('blur', onBlur); commit(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); span.removeEventListener('keydown', onKey); span.removeEventListener('blur', onBlur); cancel(); }
+    };
+    const onBlur = () => {
+      span.removeEventListener('keydown', onKey);
+      span.removeEventListener('blur', onBlur);
+      commit();
+    };
+    span.addEventListener('keydown', onKey);
+    span.addEventListener('blur', onBlur);
+  }
+
+  // ── Super-admin wipe button ──────────────────────────────────────────
+  const _wipeBtn = document.getElementById('btn-wipe-docs');
+  if (_wipeBtn) {
+    _wipeBtn.addEventListener('click', async () => {
+      if (!confirm("Delete EVERY receipt/doc on this project?\n\n" +
+                   "• All DocUpload rows removed from the database\n" +
+                   "• Filed Dropbox files moved to /_TRASH/\n\n" +
+                   "This is a testing tool. Proceed?")) return;
+      if (!confirm("Really sure? Only affects THIS project's docs.")) return;
+      _wipeBtn.disabled = true;
+      _wipeBtn.textContent = 'Wiping…';
+      try {
+        const r = await fetch('/admin/docs/project/' + PROJ_ID + '/wipe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        const d = await r.json();
+        if (!r.ok) { alert('Wipe failed: ' + (d.error || 'unknown')); return; }
+        let msg = 'Wipe complete.\n\n';
+        msg += '• DocUpload rows deleted: ' + d.deleted_count + '\n';
+        msg += '• Dropbox files moved to trash: ' + d.moved_count + '\n';
+        if (d.error_count) msg += '\nErrors: ' + d.error_count;
+        if (d.trash_folder) msg += '\n\nTrash folder: ' + d.trash_folder;
+        alert(msg);
+        location.reload();
+      } catch (e) {
+        alert('Request failed: ' + e.message);
+      } finally {
+        _wipeBtn.disabled = false;
+        _wipeBtn.textContent = '🗑 Wipe all receipts (test)';
+      }
+    });
+  }
 })();
 </script>
 
