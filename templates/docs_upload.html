@@ -199,7 +199,21 @@
   <button class="btn-upload-all" id="btnUploadAll" disabled onclick="uploadAll()">Upload All</button>
 
   <!-- History -->
-  <div class="section-title">Previously Uploaded</div>
+  <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
+    <span>Previously Uploaded</span>
+    {# Super-admin testing tool: wipe every DocUpload for this project and
+       move its Dropbox file to /_TRASH/{date}_{slug}/. For clean-start
+       iteration during development. Double-confirmed + server-gated by
+       role check — non-super-admins get 403 even if they find the URL. #}
+    {% if current_user.role == 'super_admin' %}
+    <button type="button" id="btn-wipe-docs"
+            style="font-size:11px;padding:4px 10px;border-radius:6px;
+                   background:#2a1414;color:#ef4444;border:1px solid #4a2020;cursor:pointer"
+            title="Super admin only: delete every DocUpload row for this project and move its filed Dropbox files to /_TRASH/. Use for clean-start testing.">
+      🗑 Wipe all receipts (test)
+    </button>
+    {% endif %}
+  </div>
   <div class="history-list" id="historyList">
     {% if uploads %}
       {% for u in uploads %}
@@ -241,6 +255,46 @@
 <script>
 const PROJECT_ID = {{ project.id }};
 const UPLOAD_URL = "{{ url_for('docs_upload_post', pid=project.id) }}";
+
+// ── Super-admin wipe button (testing only) ─────────────────────────────────
+const _wipeBtn = document.getElementById('btn-wipe-docs');
+if (_wipeBtn) {
+  _wipeBtn.addEventListener('click', async () => {
+    if (!confirm("Delete EVERY receipt/doc on this project?\n\n" +
+                 "• All DocUpload rows removed from the database\n" +
+                 "• Filed Dropbox files moved to /_TRASH/\n\n" +
+                 "This is a testing tool. Proceed?")) return;
+    if (!confirm("Really sure? This affects only THIS project's docs.")) return;
+
+    _wipeBtn.disabled = true;
+    _wipeBtn.textContent = 'Wiping…';
+    try {
+      const r = await fetch(`/admin/docs/project/${PROJECT_ID}/wipe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const d = await r.json();
+      if (!r.ok) { alert('Wipe failed: ' + (d.error || 'unknown')); return; }
+      let msg = `Wipe complete.\n\n`;
+      msg += `• DocUpload rows deleted: ${d.deleted_count}\n`;
+      msg += `• Dropbox files moved to trash: ${d.moved_count}\n`;
+      if (d.error_count) {
+        msg += `\nErrors: ${d.error_count}`;
+        if (d.errors && d.errors.length) {
+          msg += '\nFirst few:\n• ' + d.errors.slice(0, 5).join('\n• ');
+        }
+      }
+      if (d.trash_folder) msg += `\n\nTrash folder: ${d.trash_folder}`;
+      alert(msg);
+      location.reload();
+    } catch (e) {
+      alert('Request failed: ' + e.message);
+    } finally {
+      _wipeBtn.disabled = false;
+      _wipeBtn.textContent = '🗑 Wipe all receipts (test)';
+    }
+  });
+}
 
 let queue = []; // {file, id, status, thumbUrl}
 

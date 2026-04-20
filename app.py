@@ -760,6 +760,148 @@ def admin_dropbox_status():
     return jsonify(out)
 
 
+@app.route("/admin/veryfi/status")
+@login_required
+def admin_veryfi_status():
+    """Diagnostic: check Veryfi env vars + try a lightweight API call.
+    Mirrors /admin/dropbox/status — paste the JSON back when uploads fail
+    with 401/other Veryfi errors."""
+    if not current_user.is_authenticated or getattr(current_user, 'role', None) != 'super_admin':
+        return jsonify({"error": "super admin only"}), 403
+    out = {
+        "env": {
+            "VERYFI_CLIENT_ID_set":     bool(os.getenv('VERYFI_CLIENT_ID')),
+            "VERYFI_CLIENT_SECRET_set": bool(os.getenv('VERYFI_CLIENT_SECRET')),
+            "VERYFI_USERNAME_set":      bool(os.getenv('VERYFI_USERNAME')),
+            "VERYFI_API_KEY_set":       bool(os.getenv('VERYFI_API_KEY')),
+        },
+        "client_init": None,
+        "test_call": None,
+    }
+    missing = [k for k, v in out["env"].items() if not v]
+    if missing:
+        out["client_init"] = f"MISSING ENV VARS: {', '.join(missing)}"
+        return jsonify(out)
+    try:
+        import veryfi
+        client = veryfi.Client(
+            client_id=os.getenv("VERYFI_CLIENT_ID"),
+            client_secret=os.getenv("VERYFI_CLIENT_SECRET"),
+            username=os.getenv("VERYFI_USERNAME"),
+            api_key=os.getenv("VERYFI_API_KEY"),
+        )
+        out["client_init"] = "ok"
+        # Hit a lightweight endpoint that doesn't cost a document credit.
+        # get_categories is a read-only listing call.
+        try:
+            cats = client.get_categories()
+            # Some SDK versions return a list, others a dict. Normalize.
+            if isinstance(cats, list):
+                out["test_call"] = {
+                    "status": "ok",
+                    "category_count": len(cats),
+                    "sample": cats[:3],
+                }
+            elif isinstance(cats, dict):
+                out["test_call"] = {
+                    "status": "ok",
+                    "keys": list(cats.keys())[:10],
+                }
+            else:
+                out["test_call"] = {"status": "ok", "type": str(type(cats))}
+        except Exception as _te:
+            out["test_call"] = f"{type(_te).__name__}: {_te}"
+    except Exception as e:
+        out["client_init"] = f"{type(e).__name__}: {e}"
+    return jsonify(out)
+
+
+@app.route("/admin/docs/project/<int:pid>/wipe", methods=["POST"])
+@login_required
+def admin_docs_wipe_project(pid):
+    """Super admin testing tool: delete every DocUpload row for a project
+    and move each filed Dropbox file to /_TRASH/{date}_{slug}/. Lets us
+    do clean-start iteration while the Analyzer pipeline is still
+    being refined. Dropbox files are MOVED (not deleted) so there's a
+    recovery window if we trash something we shouldn't have.
+    """
+    if not current_user.is_authenticated or getattr(current_user, 'role', None) != 'super_admin':
+        return jsonify({"error": "super admin only"}), 403
+
+    project = ProjectSheet.query.get_or_404(pid)
+    uploads = DocUpload.query.filter_by(project_id=pid).all()
+
+    deleted_count = 0
+    moved_count   = 0
+    errors        = []
+    trash_root    = None
+
+    # Only bother with Dropbox if we have credentials.
+    dbx = None
+    has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
+    if has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN'):
+        try:
+            dbx = _dbx_client()
+        except Exception as _de:
+            logging.warning(f"[DOCS WIPE] dropbox client init failed: {_de}")
+            dbx = None
+
+    if dbx and uploads:
+        # Build a dated trash folder specific to this wipe so we can find
+        # the files again if a mistake was made.
+        from datetime import datetime as _dt
+        _stamp = _dt.utcnow().strftime("%Y-%m-%d_%H%M%S")
+        _slug  = project.dropbox_folder or f"project-{pid}"
+        trash_root = f"/_TRASH/{_stamp}_{_slug}"
+        # Ensure trash folder exists (Dropbox auto-creates parent folders
+        # on move, so this is best-effort).
+        try:
+            dbx.files_create_folder_v2(trash_root, autorename=False)
+        except Exception:
+            pass  # already exists or Dropbox handles it via move autocreate
+
+    for up in uploads:
+        # Step 1: move the filed Dropbox file to trash, if present.
+        if up.filed_dropbox_path and dbx and trash_root:
+            try:
+                src  = up.filed_dropbox_path
+                # Preserve a trace of the original path in the trash name
+                # so we can hand-restore if needed.
+                _safe_path_frag = src.lstrip('/').replace('/', '_')
+                dest = f"{trash_root}/{_safe_path_frag}"
+                dbx.files_move_v2(src, dest, autorename=True)
+                moved_count += 1
+            except Exception as _me:
+                errors.append(f"upload {up.id}: dropbox move failed: {_me}")
+        # Step 2: delete the DB row regardless of Dropbox outcome.
+        try:
+            db.session.delete(up)
+            deleted_count += 1
+        except Exception as _re:
+            errors.append(f"upload {up.id}: db delete failed: {_re}")
+
+    try:
+        db.session.commit()
+    except Exception as _ce:
+        db.session.rollback()
+        errors.append(f"commit failed: {_ce}")
+        return jsonify({
+            "error": f"Commit failed, wipe partial: {_ce}",
+            "deleted_count": 0,
+            "moved_count": moved_count,
+            "errors": errors[:20],
+        }), 500
+
+    return jsonify({
+        "ok":            True,
+        "deleted_count": deleted_count,
+        "moved_count":   moved_count,
+        "trash_folder":  trash_root,
+        "error_count":   len(errors),
+        "errors":        errors[:20],
+    })
+
+
 # ── Project folder slug generation ────────────────────────────────────────────
 def _make_project_slug(project_name, client_name=None, dt=None):
     """Generate a Dropbox folder slug: YYYY-MM_ClientSlug_ProjectSlug"""
