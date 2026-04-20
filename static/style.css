@@ -196,7 +196,7 @@ a:hover { text-decoration: underline; }
 .field label { font-size: .8rem; color: var(--text-muted); }
 .field-row  { display: flex; align-items: center; gap: .75rem; margin-bottom: .5rem; }
 .field-row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; margin-bottom: .5rem; }
-.field-row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .75rem; margin-bottom: .5rem; }
+.field-row-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .75rem; margin-bottom: .5rem; }
 
 input[type="text"],
 input[type="number"],
@@ -291,6 +291,17 @@ input:focus, select:focus { border-color: var(--accent); }
   border-radius: var(--radius) var(--radius) 0 0;
   border: 1px solid var(--border);
   border-bottom: none;
+  /* Anchor-link + scroll offsets: when jumping to a section via link,
+     leave room below the 44px fixed app header so the section title
+     + column header aren't hidden. */
+  scroll-margin-top: 48px;
+}
+/* When a budget section is scrolled into view, keep the first data row
+   clear of the 44px fixed app header + the ~30px sticky column header.
+   Previously the first row could sit under the sticky thead and look
+   cut off. */
+.line-table tbody tr.line-row:first-child {
+  scroll-margin-top: 90px;
 }
 .section-code { font-size: .75rem; color: var(--text-muted); width: 42px; }
 .section-name { font-weight: 600; font-size: .875rem; flex: 1; }
@@ -1824,7 +1835,10 @@ a.tab-link:hover { background: var(--bg-3); }
 }
 .settings-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  /* Min 380px so the 3-column Start/End/Target row inside Budget Info
+     has room to show all three labels without the Target Budget field
+     getting clipped behind the Display box. */
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
   gap: 1.5rem;
   margin-bottom: 1.5rem;
 }

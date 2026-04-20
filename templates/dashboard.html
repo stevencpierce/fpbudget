@@ -71,13 +71,25 @@
       <button class="btn btn-sm btn-outline" title="More actions"
               onclick="toggleProjectMenu(event, {{ p.id }})">⋯</button>
       <div id="proj-menu-{{ p.id }}" class="proj-menu hidden">
-        {% if current_user.role in ('super_admin', 'admin') %}
+        {% set _is_admin       = current_user.role in ('super_admin', 'admin') %}
+        {% set _is_super_admin = current_user.role == 'super_admin' %}
+
+        {# Rename — admin+ only. Always rendered so non-admins see why
+           they can't click it (greyed-out with "Admin Only" badge)
+           instead of a confusing empty menu. #}
+        {% if _is_admin %}
         <form method="POST" action="{{ url_for('project_rename', pid=p.id) }}" class="proj-rename-form">
           <input type="hidden" name="name" value="">
           <button type="button" class="proj-menu-item proj-rename-btn"
                   data-pid="{{ p.id }}" data-name="{{ p.name | e }}">Rename Project</button>
         </form>
+        {% else %}
+        <button type="button" class="proj-menu-item proj-menu-disabled" disabled
+                title="Admin only">
+          Rename Project <span class="proj-menu-adminonly">Admin Only</span>
+        </button>
         {% endif %}
+
         <form method="POST" action="{{ url_for('project_wrap', pid=p.id) }}"
               onsubmit="return confirm('Wrap {{ p.name | e }}? The Dropbox folder will be moved to _WRAPPED PROJECTS.')">
           <button type="submit" class="proj-menu-item">Wrap Project</button>
@@ -86,12 +98,21 @@
               onsubmit="return confirm('Archive {{ p.name | e }}? The Dropbox folder will be moved to _archived.')">
           <button type="submit" class="proj-menu-item">Archive Project</button>
         </form>
-        {% if current_user.role == 'super_admin' %}
+
         <div class="proj-menu-divider"></div>
+        {# Delete — super_admin only. Same pattern: render for everyone
+           so the menu always has the same layout, grey out when the
+           user can't actually use it. #}
+        {% if _is_super_admin %}
         <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}"
               onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets? This cannot be undone.')">
           <button type="submit" class="proj-menu-item proj-menu-danger">Delete Project</button>
         </form>
+        {% else %}
+        <button type="button" class="proj-menu-item proj-menu-disabled" disabled
+                title="Super admin only">
+          Delete Project <span class="proj-menu-adminonly">Admin Only</span>
+        </button>
         {% endif %}
       </div>
     </div>
@@ -233,6 +254,27 @@
 .proj-menu-item:hover { background: rgba(255,255,255,.06); }
 .proj-menu-danger { color: #f87171; }
 .proj-menu-divider { height: 1px; background: var(--border); margin: .3rem 0; }
+/* Disabled (permission-gated) menu items — shown so non-admins see the
+   full menu layout rather than an empty black box, but non-clickable. */
+.proj-menu-item.proj-menu-disabled {
+  color: var(--text-muted, #888);
+  cursor: not-allowed;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .5rem;
+}
+.proj-menu-item.proj-menu-disabled:hover { background: transparent; }
+.proj-menu-adminonly {
+  font-size: .65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted, #777);
+  background: rgba(255,255,255,.06);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
 .project-card-actions { position: relative; }
 
 /* Multi-select checkboxes on cards */
