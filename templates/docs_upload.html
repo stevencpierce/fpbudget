@@ -121,10 +121,13 @@
       font-size: 11px; padding: 3px 9px; border-radius: 20px; flex-shrink: 0;
     }
     .status-pill.pending   { background: #1e2230; color: #6b7280; border: 1px solid #2a2d36; }
-    .status-pill.filed     { background: #14291e; color: #22c55e; border: 1px solid #1a4228; }
+    .status-pill.filed,
+    .status-pill.done      { background: #14291e; color: #22c55e; border: 1px solid #1a4228; }
     .status-pill.error     { background: #2a1414; color: #ef4444; border: 1px solid #4a2020; }
     .status-pill.duplicate { background: #1e1a2a; color: #a78bfa; border: 1px solid #2d2a40; }
     .status-pill.processing { background: #1a2030; color: #f59e0b; border: 1px solid #2a3040; }
+    /* Low-confidence OCR: amber warning, visually distinct from 'filed' green */
+    .status-pill.review    { background: #2a2414; color: #fbbf24; border: 1px solid #4a3a1a; }
 
     .empty-history { text-align: center; color: #4b5263; font-size: 13px; padding: 20px 0; }
 
@@ -216,8 +219,12 @@
               {% if u.amount %} · ${{ '%.2f'|format(u.amount|float) }}{% endif %}
             </div>
           </div>
-          <div class="status-pill {{ u.status }}">
-            {% if u.status == 'filed' %}Filed
+          <div class="status-pill {{ u.status }}"
+               title="{% if u.confidence %}OCR confidence: {{ u.confidence }}%{% endif %}{% if u.category %} · Type: {{ u.category }}{% endif %}">
+            {% if u.status == 'done' or u.status == 'filed' %}Filed
+              {% if u.category %}<span style="font-size:.7rem;opacity:.7">· {{ u.category }}</span>{% endif %}
+            {% elif u.status == 'review' %}⚠ Review needed
+              {% if u.confidence %}<span style="font-size:.7rem;opacity:.7">{{ u.confidence | int }}%</span>{% endif %}
             {% elif u.status == 'duplicate' %}Duplicate
             {% elif u.status == 'error' %}Error
             {% elif u.status == 'processing' %}Processing

@@ -9087,39 +9087,86 @@ def docs_upload_post(pid):
 
     content_type = f.content_type or "application/octet-stream"
     ext = os.path.splitext(f.filename)[1].lower() if f.filename else ""
-    # r2_key kept as a unique filing id (for DocUpload.r2_key column, and
-    # for potential future R2 reintroduction). NOT uploaded to R2 anymore —
-    # R2 path was chronically unreliable on this deploy (botocore/gevent/ssl
-    # interactions). Source of truth is now Dropbox; the Analyzer app handles
-    # downstream processing from there.
+    # r2_key kept as a unique filing id (for DocUpload.r2_key column).
+    # The actual R2 upload was removed — source of truth is Dropbox.
     r2_key = f"docs/{pid}/{_uuid.uuid4().hex}{ext}"
 
-    # File directly to Dropbox PROCESSED DOCUMENTS/{uploader_name}/
-    dbx_filing_path = None
-    dbx_filing_error = None
-    if project.dropbox_folder:
-        try:
-            import re as _re
-            # User model has `name` + `email` — NOT `username` (previous bug
-            # raised AttributeError silently, which is why every upload was
-            # stuck at "pending").
-            _raw_user = (getattr(current_user, 'name', None)
-                         or (current_user.email or '').split('@')[0]
-                         or 'unknown')
-            _safe_user = _re.sub(r"[^\w\- ]", "", _raw_user) or "unknown"
-            _proj_root = f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}"
-            dbx_filing_path = f"{_proj_root}/01_ADMIN/PROCESSED DOCUMENTS/{_safe_user}/{f.filename}"
-            _dbx = _dbx_client()
-            from dropbox.files import WriteMode as _WM
-            _dbx.files_upload(data, dbx_filing_path, autorename=True,
-                              mode=_WM('add'))
-            logging.info(f"Filed doc to Dropbox: {dbx_filing_path}")
-        except Exception as _e:
-            logging.warning(f"Dropbox filing failed: {_e}")
-            dbx_filing_error = str(_e)
-            dbx_filing_path = None
+    # Project must have a Dropbox folder set up for the Analyzer to file
+    # to. If it doesn't, bail early so we don't save a ghost upload row.
+    if not project.dropbox_folder:
+        return jsonify({
+            "error": "Project has no Dropbox folder configured — cannot file."
+        }), 500
 
+    # ── FP Document Analyzer integration (2026-04-20) ────────────────────
+    # Route every upload through the embedded fp_analyzer: Veryfi OCR →
+    # doc-type detection → auto-file to the correct 01_ADMIN subfolder
+    # when confidence ≥ threshold. Low-confidence docs come back as
+    # status='review' and the user finishes filing via the review UI.
+    import re as _re
     from datetime import datetime as _dt
+    from fp_analyzer import analyze_and_file_single
+    import json as _json
+
+    _raw_user = (getattr(current_user, 'name', None)
+                 or (current_user.email or '').split('@')[0]
+                 or 'unknown')
+    _safe_user = _re.sub(r"[^\w\- ]", "", _raw_user) or "unknown"
+
+    try:
+        result = analyze_and_file_single(
+            file_bytes=data,
+            filename=f.filename,
+            project_name=project.dropbox_folder,   # Analyzer files under /{ops_root}/{project_name}/...
+            user_name=_safe_user,
+        )
+    except Exception as _ae:
+        logging.exception("Analyzer pipeline crashed")
+        return jsonify({"error": f"Analyzer failed: {_ae}"}), 500
+
+    status_map = {
+        "filed":         "done",          # auto-filed to correct folder
+        "needs_review":  "review",        # low-confidence → user picks in review UI
+        "error":         "error",         # OCR / conversion failure
+    }
+    upload_status = status_map.get(result.get("status"), "error")
+
+    # Extract structured OCR data from the Veryfi response if present so
+    # we can display vendor/amount/date on the docs dashboard and wire
+    # into the receipt-matching flow later.
+    vr = {}
+    try:
+        # analyze_and_file_single doesn't return vr directly; needs_review
+        # items keep it in _pending[batch_token]. Pull it out for storage.
+        if result.get("needs_review") and result.get("batch_token") and result.get("item_id"):
+            from fp_analyzer import _pending as _an_pending
+            _bt   = result["batch_token"]
+            _iid  = result["item_id"]
+            items = _an_pending.get(_bt, [])
+            item  = next((it for it in items if it.get("id") == _iid), None)
+            if item:
+                vr = item.get("vr") or {}
+    except Exception:
+        vr = {}
+
+    vendor_name = None
+    amount      = None
+    doc_date    = None
+    if vr:
+        v = vr.get("vendor") or {}
+        vendor_name = v.get("name") or v.get("raw_name")
+        try:
+            amount = float(vr.get("total")) if vr.get("total") is not None else None
+        except Exception:
+            amount = None
+        try:
+            from datetime import datetime as _dt_mod
+            _d = vr.get("date") or ""
+            doc_date = _dt_mod.strptime(_d[:10], "%Y-%m-%d").date() if _d else None
+        except Exception:
+            doc_date = None
+
+    # Persist the upload row with whatever we got back from the Analyzer.
     upload = DocUpload(
         project_id=pid,
         uploader_id=current_user.id,
@@ -9128,24 +9175,50 @@ def docs_upload_post(pid):
         file_size=len(data),
         content_type=content_type,
         file_hash=file_hash,
-        status="filed" if dbx_filing_path else "pending",
-        filed_dropbox_path=dbx_filing_path,
-        filed_at=_dt.utcnow() if dbx_filing_path else None,
+        status=upload_status,
+        veryfi_data=_json.dumps(vr) if vr else None,
+        vendor=vendor_name,
+        amount=amount,
+        doc_date=doc_date,
+        # confidence column is 0-100; Analyzer returns 0-1
+        confidence=round(float(result.get("confidence") or 0) * 100, 2),
+        category=result.get("doc_type"),
+        filed_filename=result.get("new_filename") or None,
+        filed_dropbox_path=result.get("filed_path"),
+        filed_at=_dt.utcnow() if result.get("filed_path") else None,
+        is_duplicate=bool(result.get("duplicate")),
     )
     db.session.add(upload)
     db.session.commit()
 
-    # If neither Dropbox succeeded nor the project has a folder, the file
-    # has nowhere to go. Tell the user instead of silently saving a ghost row.
-    if not dbx_filing_path:
-        db.session.delete(upload)
-        db.session.commit()
-        err = (dbx_filing_error
-               or "Project has no Dropbox folder configured — cannot file.")
-        return jsonify({"error": f"Upload failed: {err}"}), 500
-
-    return jsonify({"status": "ok", "upload_id": upload.id,
-                    "filed_path": dbx_filing_path}), 201
+    # Build a structured client response so the upload UI can show the
+    # correct state (filed with path, or needs review, or error).
+    if result.get("status") == "filed":
+        return jsonify({
+            "status":      "ok",
+            "upload_id":   upload.id,
+            "filed_path":  result.get("filed_path"),
+            "doc_type":    result.get("doc_type"),
+            "confidence":  result.get("confidence"),
+            "duplicate":   bool(result.get("duplicate")),
+            "message":     f"Filed as {result.get('doc_type')} ({int((result.get('confidence') or 0) * 100)}% confidence).",
+        }), 201
+    if result.get("status") == "needs_review":
+        return jsonify({
+            "status":      "review",
+            "upload_id":   upload.id,
+            "doc_type":    result.get("doc_type"),
+            "confidence":  result.get("confidence"),
+            "new_filename": result.get("new_filename"),
+            "message":     f"OCR complete but confidence too low to auto-file "
+                           f"({int((result.get('confidence') or 0) * 100)}%). Review required.",
+        }), 202
+    # status == 'error'
+    return jsonify({
+        "status":   "error",
+        "upload_id": upload.id,
+        "error":    result.get("error") or "Unknown analyzer error",
+    }), 500
 
 
 @app.route("/docs/upload/<int:uid>/retry-filing", methods=["POST"])

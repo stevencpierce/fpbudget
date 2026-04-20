@@ -34,3 +34,12 @@ flask-socketio
 # client initializes.
 gevent>=24.10,<26
 gevent-websocket
+
+# FP Document Analyzer (fp_analyzer.py) — OCR + doc-type detection
+# + auto-filing pipeline, copied from FPReceiptRouter. Used by the
+# /docs/<pid>/upload route to run receipts/invoices/contracts
+# through Veryfi and file them into the correct Dropbox subfolder
+# of the project. Needs VERYFI_CLIENT_ID/CLIENT_SECRET/USERNAME/API_KEY
+# env vars set on the Render web service.
+veryfi
+pillow-heif
