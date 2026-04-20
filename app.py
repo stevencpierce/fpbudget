@@ -860,19 +860,58 @@ def admin_docs_wipe_project(pid):
         except Exception:
             pass  # already exists or Dropbox handles it via move autocreate
 
+    # When the app is in namespace mode, paths stored on DocUpload rows
+    # may have been written by BOTH generations of fp_analyzer:
+    #   (a) pre-namespace-fix: stored as '/Steven Pierce/_FP OPERATIONS FOLDER/...'
+    #       (absolute user-root path). Passing this through the
+    #       namespace-scoped client double-prepends → not_found.
+    #   (b) post-namespace-fix: stored as '/{project}/...' (relative to
+    #       the namespace root). Works as-is.
+    # Strip the OPS prefix from (a)-style paths before calling move so
+    # both generations end up at the same working path for the wipe.
+    _ops_prefix_str = (_DBX_OPS_ROOT or "").rstrip("/") if _DBX_NAMESPACE_ID else ""
+
+    def _normalize_for_namespace(p):
+        """If p starts with the legacy ops prefix under namespace mode,
+        strip it so the namespace client can locate the file."""
+        if not p:
+            return p
+        if _ops_prefix_str and p.startswith(_ops_prefix_str + "/"):
+            return p[len(_ops_prefix_str):]  # leave leading '/'
+        return p
+
     for up in uploads:
         # Step 1: move the filed Dropbox file to trash, if present.
         if up.filed_dropbox_path and dbx and trash_root:
+            original_src = up.filed_dropbox_path
+            src = _normalize_for_namespace(original_src)
+            _safe_path_frag = original_src.lstrip('/').replace('/', '_')
+            dest = f"{trash_root}/{_safe_path_frag}"
+            moved_ok = False
+            # Try the normalized path first (covers both new and old uploads
+            # after we've stripped the legacy prefix).
             try:
-                src  = up.filed_dropbox_path
-                # Preserve a trace of the original path in the trash name
-                # so we can hand-restore if needed.
-                _safe_path_frag = src.lstrip('/').replace('/', '_')
-                dest = f"{trash_root}/{_safe_path_frag}"
                 dbx.files_move_v2(src, dest, autorename=True)
+                moved_ok = True
+            except Exception as _me1:
+                err1 = str(_me1)
+                # Fallback: try the original path verbatim. Covers edge
+                # cases where the stored path is already correctly
+                # namespace-relative and wasn't touched by the strip.
+                if src != original_src:
+                    try:
+                        dbx.files_move_v2(original_src, dest, autorename=True)
+                        moved_ok = True
+                    except Exception as _me2:
+                        errors.append(
+                            f"upload {up.id} ({original_src}): "
+                            f"both paths failed — normalized: {err1}; "
+                            f"original: {_me2}"
+                        )
+                else:
+                    errors.append(f"upload {up.id} ({original_src}): {err1}")
+            if moved_ok:
                 moved_count += 1
-            except Exception as _me:
-                errors.append(f"upload {up.id}: dropbox move failed: {_me}")
         # Step 2: delete the DB row regardless of Dropbox outcome.
         try:
             db.session.delete(up)
