@@ -20,9 +20,17 @@ boto3>=1.35,<1.36
 botocore>=1.35,<1.36
 dropbox
 flask-socketio
-# gevent >=24.10 — older versions monkey-patch ssl.SSLContext incorrectly
-# on Python 3.12+, causing infinite recursion in
-# `super(SSLContext, SSLContext).options.__set__` when ANY HTTPS client
-# (boto3/urllib3/requests) initializes. This took down every R2 upload.
-gevent>=24.10
+# gevent: upper-bounded at <26 on 2026-04-17. gevent 26.x breaks our
+# custom GeventWebSocketNoSSLWorker — the gunicorn worker hangs during
+# module import and never binds its port. gevent-websocket (required
+# for our socketio transport) has been unmaintained since 2017 and
+# doesn't track gevent's API changes past v25. Stay in the 24.x /
+# 25.x range until we either fork gevent-websocket or move to
+# python-socketio's built-in transport.
+#
+# Lower bound 24.10 still applies — older versions monkey-patch
+# ssl.SSLContext incorrectly on Python 3.12+, causing infinite recursion
+# in `super(SSLContext, SSLContext).options.__set__` when any HTTPS
+# client initializes.
+gevent>=24.10,<26
 gevent-websocket
