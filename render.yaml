@@ -7,13 +7,14 @@ services:
     # starts. This avoids blocking the gevent worker with synchronous psycopg2
     # calls — which was hanging deploys (worker couldn't answer health checks).
     preDeployCommand: RUN_BOOT_TASKS=1 python -c "import app"
-    # TEMPORARY: reverted to the stock GeventWebSocketWorker (2026-04-17)
-    # because our custom GeventWebSocketNoSSLWorker started hanging on
-    # port bind after gevent auto-upgraded to 26.4.0. The stock worker
-    # monkey-patches ssl which breaks Dropbox's TLS handshake with a
-    # super(SSLSocket, self) type-check error — that's a known-trade-off.
-    # Will revisit once we pin gevent to a compatible version.
-    startCommand: gunicorn -k geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:$PORT --timeout 120 app:app
+    # Stock gunicorn sync worker — no gevent, no monkey-patching, no
+    # SSL recursion issues, no dependency on the unmaintained
+    # gevent-websocket package. Flask-SocketIO falls back to long-
+    # polling transport which is plenty for our collaboration
+    # features at current scale. Trade-off for a rock-solid deploy.
+    # Workers=2 so two requests can be in flight concurrently.
+    # Timeout 120s handles our largest PDF exports / migrations.
+    startCommand: gunicorn -w 2 --bind 0.0.0.0:$PORT --timeout 120 app:app
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
