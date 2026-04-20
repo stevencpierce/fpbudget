@@ -1841,11 +1841,72 @@ def projects_bulk_archive():
 @app.route("/projects/<int:pid>/reactivate", methods=["POST"])
 @login_required
 def project_reactivate(pid):
-    """Move project back to active (folder must be manually restored in Dropbox if needed)."""
+    """Move project back to active AND restore its Dropbox folder back to
+    the ops root. Searches _ARCHIVED and _WRAPPED PROJECTS for an entry
+    whose name ends with the project's slug (archives are prefixed with
+    a YYYY-MM-DD date stamp like '2026-04-16_2026-04_Client_Project').
+    Moves the most recent match back to the ops root, stripping the date
+    prefix."""
     p = ProjectSheet.query.get_or_404(pid)
     p.status = 'active'
     db.session.commit()
-    flash(f"Project '{p.name}' reactivated.", "success")
+
+    dbx_note = ""
+    try:
+        has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
+        if (has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN')) and p.dropbox_folder:
+            dbx = _dbx_client()
+            slug = p.dropbox_folder
+
+            # Destination = ops root under the same slug name.
+            dest = f"/{slug}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{slug}"
+
+            # Candidate source roots to search: _ARCHIVED first, then
+            # _WRAPPED PROJECTS. Archived folders are named
+            # '{YYYY-MM-DD}_{slug}' (or similar stamp prefix). We match on
+            # anything ending with '_{slug}' OR exactly equal to slug.
+            _wrap_root = os.getenv('DROPBOX_WRAP_PATH', '/_WRAPPED PROJECTS')
+            search_roots = [_DBX_ARCHIVE_ROOT, _wrap_root]
+            found_src = None
+            found_from = None
+            for root in search_roots:
+                try:
+                    res = dbx.files_list_folder(root)
+                    entries = list(res.entries)
+                    while getattr(res, 'has_more', False):
+                        res = dbx.files_list_folder_continue(res.cursor)
+                        entries.extend(res.entries)
+                    # Match by suffix (date_prefix + underscore + slug) or exact name
+                    candidates = [e for e in entries
+                                  if getattr(e, 'name', '').endswith(f"_{slug}")
+                                  or getattr(e, 'name', '') == slug]
+                    # Pick the most recent (archives are date-prefixed so sort desc)
+                    candidates.sort(key=lambda e: getattr(e, 'name', ''), reverse=True)
+                    if candidates:
+                        found_src = getattr(candidates[0], 'path_display', None) or f"{root}/{candidates[0].name}"
+                        found_from = root
+                        break
+                except Exception as _le:
+                    logging.warning(f"[DBX REACTIVATE] could not list {root}: {_le}")
+                    continue
+
+            if found_src:
+                try:
+                    dbx.files_move_v2(found_src, dest, autorename=True)
+                    logging.warning(f"[DBX REACTIVATE] moved {found_src} → {dest}")
+                    dbx_note = f" Dropbox folder restored from {found_from}."
+                except Exception as _me:
+                    logging.error(f"[DBX REACTIVATE] move failed {found_src} → {dest}: {_me}")
+                    dbx_note = f" (Dropbox move failed — folder still in {found_from}. Error: {_me})"
+            else:
+                logging.warning(f"[DBX REACTIVATE] no archived/wrapped folder found for slug={slug!r}")
+                dbx_note = (f" (no archived folder found matching '{slug}' — "
+                            f"you may need to restore it manually in Dropbox.)")
+    except Exception as _e:
+        logging.exception(f"[DBX REACTIVATE] unexpected: {_e}")
+        dbx_note = f" (Dropbox restore errored: {_e})"
+
+    flash(f"Project '{p.name}' reactivated.{dbx_note}", "success")
     return redirect(url_for("dashboard"))
 
 
