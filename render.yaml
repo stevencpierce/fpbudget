@@ -7,14 +7,17 @@ services:
     # starts. This avoids blocking the gevent worker with synchronous psycopg2
     # calls — which was hanging deploys (worker couldn't answer health checks).
     preDeployCommand: RUN_BOOT_TASKS=1 python -c "import app"
-    # Stock gunicorn sync worker — no gevent, no monkey-patching, no
-    # SSL recursion issues, no dependency on the unmaintained
-    # gevent-websocket package. Flask-SocketIO falls back to long-
-    # polling transport which is plenty for our collaboration
-    # features at current scale. Trade-off for a rock-solid deploy.
-    # Workers=2 so two requests can be in flight concurrently.
-    # Timeout 120s handles our largest PDF exports / migrations.
-    startCommand: gunicorn -w 2 --bind 0.0.0.0:$PORT --timeout 120 app:app
+    # gthread worker (2 processes × 8 threads = 16 concurrent slots).
+    # Plain sync workers saturated immediately because Flask-SocketIO
+    # polling sends ~2 requests/sec per open browser tab; workers
+    # queued up and some responses got cross-contaminated / truncated
+    # (style.css returning 218KB of budget HTML, etc.).
+    #
+    # gthread = real OS threads inside each worker. No gevent
+    # monkey-patching, no SSL recursion, no dependency drama. Perfect
+    # for a sync Flask app that does mostly database I/O + needs to
+    # handle many concurrent HTTP requests.
+    startCommand: gunicorn -k gthread -w 2 --threads 8 --bind 0.0.0.0:$PORT --timeout 120 app:app
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
