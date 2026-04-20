@@ -442,9 +442,14 @@ app.config["SECRET_KEY"]                     = os.getenv("SECRET_KEY", "fpbudget
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 # ── SocketIO ──────────────────────────────────────────────────────────────────
+# async_mode='threading' (2026-04-20): we run under gunicorn's stock sync
+# worker now (no gevent) so threading is the only async driver that works.
+# This also forces the engineio layer to stop attempting websocket upgrades
+# — all client traffic uses long-polling transport, which our sync worker
+# handles fine. Gevent upgrades would 500 under the sync worker.
 try:
     from flask_socketio import SocketIO, emit, join_room, leave_room
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode="gevent")
+    socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
     _HAS_SOCKETIO = True
 except ImportError:
     socketio = None
