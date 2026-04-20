@@ -129,6 +129,42 @@
     /* Low-confidence OCR: amber warning, visually distinct from 'filed' green */
     .status-pill.review    { background: #2a2414; color: #fbbf24; border: 1px solid #4a3a1a; }
 
+    /* Click-to-edit filename on filed documents */
+    .doc-filename.editable-filename {
+      cursor: pointer;
+      border-bottom: 1px dashed transparent;
+      padding: 1px 2px;
+      border-radius: 2px;
+    }
+    .doc-filename.editable-filename:hover {
+      border-bottom-color: #6b7280;
+      background: rgba(255,255,255,.03);
+    }
+    .doc-filename.editing {
+      display: inline-block;
+      background: #1e2230;
+      border: 1px solid #4f7ef8;
+      border-radius: 3px;
+      padding: 2px 4px;
+      outline: none;
+      min-width: 200px;
+    }
+    .rename-hint {
+      font-size: 10px;
+      color: #6b7280;
+      margin-left: 4px;
+      opacity: 0;
+      transition: opacity .15s;
+    }
+    .history-name:hover .rename-hint { opacity: 0.8; }
+    /* Original-filename subtitle (when differs from OCR'd name) */
+    .history-original {
+      font-size: 11px;
+      color: #6b7280;
+      font-style: italic;
+      margin-top: 1px;
+    }
+
     .empty-history { text-align: center; color: #4b5263; font-size: 13px; padding: 20px 0; }
 
     @media (min-width: 600px) {
@@ -217,26 +253,53 @@
   <div class="history-list" id="historyList">
     {% if uploads %}
       {% for u in uploads %}
+        {% set _display_name = u.filed_filename or u.original_filename or 'Unnamed file' %}
+        {% set _was_renamed = u.filed_filename and u.original_filename and u.filed_filename != u.original_filename %}
+        {% set _can_rename = (u.status == 'done' or u.status == 'filed') and u.filed_dropbox_path %}
         <div class="history-item" id="hist-{{ u.id }}">
           <div class="history-icon">
             {% if u.content_type and 'pdf' in u.content_type %}📄
             {% else %}🧾{% endif %}
           </div>
-          <div class="history-info">
-            <div class="history-name">{{ u.original_filename or 'Unnamed file' }}</div>
-            <div class="history-meta">
-              {{ u.uploaded_at.strftime('%b %-d, %Y') if u.uploaded_at else '' }}
-              {% if u.uploader %}
-                · <span title="{{ u.uploader.email }}">{{ u.uploader.name or u.uploader.email.split('@')[0] }}</span>
-              {% endif %}
-              {% if u.vendor %} · {{ u.vendor }}{% endif %}
-              {% if u.amount %} · ${{ '%.2f'|format(u.amount|float) }}{% endif %}
+          <div class="history-info" style="min-width:0;flex:1">
+            <div class="history-name">
+              <span class="doc-filename {% if _can_rename %}editable-filename{% endif %}"
+                    data-id="{{ u.id }}"
+                    data-original="{{ _display_name }}"
+                    {% if _can_rename %}title="Click to rename — Dropbox will update too"{% endif %}>{{ _display_name }}</span>
+              {% if _can_rename %}<span class="rename-hint">✎</span>{% endif %}
             </div>
+            {% if _was_renamed %}
+            <div class="history-original" title="Original filename as uploaded">
+              uploaded as: {{ u.original_filename }}
+            </div>
+            {% endif %}
+            <div class="history-meta">
+              {# Who uploaded #}
+              {% if u.uploader %}
+                👤 <span title="{{ u.uploader.email }}">{{ u.uploader.name or u.uploader.email.split('@')[0] }}</span>
+              {% endif %}
+              {# When — full date + time #}
+              {% if u.uploaded_at %}
+                · 📅 {{ u.uploaded_at.strftime('%b %-d, %Y · %-I:%M %p') }}
+              {% endif %}
+              {# What it was filed as (doc type / category from OCR) #}
+              {% if u.category %}
+                · 🏷 <strong>{{ u.category }}</strong>
+              {% endif %}
+              {# OCR-extracted vendor/amount on their own sub-line for scanability #}
+            </div>
+            {% if u.vendor or u.amount or u.doc_date %}
+            <div class="history-meta">
+              {% if u.vendor %}🏢 {{ u.vendor }}{% endif %}
+              {% if u.amount %}{% if u.vendor %} · {% endif %}💵 ${{ '%.2f'|format(u.amount|float) }}{% endif %}
+              {% if u.doc_date %}{% if u.vendor or u.amount %} · {% endif %}🗓 {{ u.doc_date.strftime('%b %-d, %Y') }}{% endif %}
+            </div>
+            {% endif %}
           </div>
           <div class="status-pill {{ u.status }}"
-               title="{% if u.confidence %}OCR confidence: {{ u.confidence }}%{% endif %}{% if u.category %} · Type: {{ u.category }}{% endif %}">
+               title="{% if u.confidence %}OCR confidence: {{ u.confidence }}%{% endif %}{% if u.filed_dropbox_path %} · Dropbox: {{ u.filed_dropbox_path }}{% endif %}">
             {% if u.status == 'done' or u.status == 'filed' %}Filed
-              {% if u.category %}<span style="font-size:.7rem;opacity:.7">· {{ u.category }}</span>{% endif %}
             {% elif u.status == 'review' %}⚠ Review needed
               {% if u.confidence %}<span style="font-size:.7rem;opacity:.7">{{ u.confidence | int }}%</span>{% endif %}
             {% elif u.status == 'duplicate' %}Duplicate
@@ -255,6 +318,94 @@
 <script>
 const PROJECT_ID = {{ project.id }};
 const UPLOAD_URL = "{{ url_for('docs_upload_post', pid=project.id) }}";
+
+// ── Inline rename: click filed filename to edit, Enter/blur to save ────────
+// Renames the Dropbox file AND updates DocUpload.filed_filename +
+// filed_dropbox_path. Only active on rows with .editable-filename class
+// (server-gated: only filed documents get the class).
+document.addEventListener('click', (e) => {
+  const span = e.target.closest('.editable-filename');
+  if (!span || span.classList.contains('editing')) return;
+  _startRename(span);
+});
+
+function _startRename(span) {
+  const uploadId  = parseInt(span.dataset.id);
+  const currentName = span.textContent.trim();
+  span.classList.add('editing');
+  // Convert the span into an inline input. We don't use <input> elements
+  // because contenteditable preserves selection + focus neatly.
+  span.contentEditable = 'plaintext-only';
+  span.focus();
+  // Select the name portion before the extension so typing replaces
+  // the human-editable part but keeps '.pdf'.
+  const range = document.createRange();
+  const sel = window.getSelection();
+  const dot = currentName.lastIndexOf('.');
+  const textNode = span.firstChild;
+  if (textNode && dot > 0) {
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, dot);
+  } else if (textNode) {
+    range.selectNodeContents(textNode);
+  }
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  const commit = async () => {
+    span.contentEditable = 'false';
+    span.classList.remove('editing');
+    const newName = span.textContent.trim();
+    if (!newName || newName === currentName) {
+      span.textContent = currentName;
+      return;
+    }
+    // Client-side sanity: no path separators, reasonable length.
+    if (newName.includes('/') || newName.includes('\\') || newName.length > 200) {
+      alert('Invalid filename — cannot contain / or \\, and must be ≤ 200 chars.');
+      span.textContent = currentName;
+      return;
+    }
+    try {
+      const r = await fetch(`/docs/upload/${uploadId}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ new_filename: newName })
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        alert('Rename failed: ' + (d.error || 'unknown'));
+        span.textContent = currentName;
+        return;
+      }
+      // Server may have autorenamed if there was a name collision in Dropbox.
+      const finalName = d.new_filename || newName;
+      span.textContent = finalName;
+      span.dataset.original = finalName;
+    } catch (err) {
+      alert('Rename request failed: ' + err.message);
+      span.textContent = currentName;
+    }
+  };
+
+  const cancel = () => {
+    span.contentEditable = 'false';
+    span.classList.remove('editing');
+    span.textContent = currentName;
+  };
+
+  const onKey = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); span.removeEventListener('keydown', onKey); span.removeEventListener('blur', onBlur); commit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); span.removeEventListener('keydown', onKey); span.removeEventListener('blur', onBlur); cancel(); }
+  };
+  const onBlur = () => {
+    span.removeEventListener('keydown', onKey);
+    span.removeEventListener('blur', onBlur);
+    commit();
+  };
+  span.addEventListener('keydown', onKey);
+  span.addEventListener('blur', onBlur);
+}
 
 // ── Super-admin wipe button (testing only) ─────────────────────────────────
 const _wipeBtn = document.getElementById('btn-wipe-docs');

@@ -9453,6 +9453,95 @@ def docs_upload_delete(uid):
     return jsonify({"status": "deleted"})
 
 
+@app.route("/docs/upload/<int:uid>/rename", methods=["POST"])
+@login_required
+def docs_upload_rename(uid):
+    """Rename a filed document. Updates DocUpload.filed_filename +
+    filed_dropbox_path AND renames the file in Dropbox so the two stay
+    in sync. Only works when the upload has been filed to Dropbox (has
+    a filed_dropbox_path). Dropbox's files_move_v2 with autorename=True
+    handles name collisions — we store whatever final name Dropbox used.
+
+    Permission: project members + admins. Non-uploader non-admins
+    cannot rename someone else's upload.
+    """
+    upload = DocUpload.query.get_or_404(uid)
+
+    # Auth: admins can rename anything; regular users only their own.
+    if current_user.role not in ('super_admin', 'admin'):
+        if upload.uploader_id != current_user.id:
+            return jsonify({"error": "Forbidden"}), 403
+
+    if not upload.filed_dropbox_path:
+        return jsonify({
+            "error": "This document isn't filed in Dropbox yet — can't rename."
+        }), 400
+
+    data = request.get_json(force=True) or {}
+    new_filename = (data.get("new_filename") or "").strip()
+    if not new_filename:
+        return jsonify({"error": "Filename required"}), 400
+    # Sanity guards
+    if "/" in new_filename or "\\" in new_filename:
+        return jsonify({"error": "Filename cannot contain / or \\"}), 400
+    if len(new_filename) > 200:
+        return jsonify({"error": "Filename too long (>200 chars)"}), 400
+    # Strip any leading/trailing whitespace and disallow control chars.
+    if any(ord(c) < 32 for c in new_filename):
+        return jsonify({"error": "Filename contains control characters"}), 400
+
+    # Auto-append the original extension if the new name doesn't carry one.
+    # e.g., user types 'VendorX_Receipt' on a '.pdf' file → 'VendorX_Receipt.pdf'.
+    import os as _os
+    old_path   = upload.filed_dropbox_path
+    old_name   = _os.path.basename(old_path)
+    parent_dir = _os.path.dirname(old_path) or "/"
+    _, old_ext = _os.path.splitext(old_name)
+    _, new_ext = _os.path.splitext(new_filename)
+    if old_ext and not new_ext:
+        new_filename = new_filename + old_ext
+
+    if new_filename == old_name:
+        return jsonify({
+            "ok": True,
+            "new_filename":  new_filename,
+            "new_path":      old_path,
+            "message":       "Filename unchanged — no move needed.",
+        })
+
+    new_path = f"{parent_dir}/{new_filename}"
+
+    # Do the Dropbox move. autorename=True: if another file already has
+    # this name in the same folder, Dropbox appends ' (2)' etc. — we
+    # capture the final path it actually ended up at.
+    try:
+        dbx = _dbx_client()
+        res = dbx.files_move_v2(old_path, new_path, autorename=True)
+        final_path = getattr(getattr(res, 'metadata', None), 'path_display', None) or new_path
+        final_name = _os.path.basename(final_path)
+    except Exception as e:
+        logging.exception(f"Rename failed: {old_path} → {new_path}")
+        return jsonify({
+            "error": f"Dropbox move failed: {type(e).__name__}: {e}"
+        }), 500
+
+    upload.filed_filename     = final_name
+    upload.filed_dropbox_path = final_path
+    from datetime import datetime as _dt
+    # Touch filed_at so the row shows a "recently modified" sort if needed.
+    upload.filed_at = _dt.utcnow()
+    db.session.commit()
+
+    logging.info(f"Renamed upload {uid}: {old_path} → {final_path}")
+    return jsonify({
+        "ok":           True,
+        "new_filename": final_name,
+        "new_path":     final_path,
+        "message":      "Renamed." if final_name == new_filename
+                        else f"Renamed (Dropbox autorenamed to avoid collision: {final_name}).",
+    })
+
+
 @app.errorhandler(404)
 def page_not_found(e):
     return render_template("404.html"), 404
