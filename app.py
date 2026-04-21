@@ -675,7 +675,7 @@ _FORCE_PW_ALLOWED = {"profile", "logout", "login", "static",
                      "reset_password", "forgot_password",
                      "callsheet_view_public", "callsheet_confirm_public",
                      "docs_dashboard", "docs_project", "docs_upload_post",
-                     "docs_upload_status"}
+                     "docs_upload_status", "docs_upload_view", "docs_upload_rename"}
 
 _DOCS_ONLY_ALLOWED = _FORCE_PW_ALLOWED | {"docs_upload_delete"}
 
@@ -7511,6 +7511,58 @@ def docs_upload_status(uid):
         "is_duplicate": upload.is_duplicate,
         "filed_dropbox_path": upload.filed_dropbox_path,
     })
+
+
+@app.route("/docs/upload/<int:uid>/view")
+@login_required
+def docs_upload_view(uid):
+    upload = DocUpload.query.get_or_404(uid)
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(
+            project_id=upload.project_id, user_id=current_user.id).first()
+        if not access:
+            return "Forbidden", 403
+    url = _r2_presigned_url(upload.r2_key, expires=300)
+    if not url:
+        return "Could not generate view URL — file may be missing from storage.", 500
+    return redirect(url)
+
+
+@app.route("/docs/upload/<int:uid>/rename", methods=["POST"])
+@login_required
+def docs_upload_rename(uid):
+    upload = DocUpload.query.get_or_404(uid)
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(
+            project_id=upload.project_id, user_id=current_user.id).first()
+        if not access:
+            return jsonify({"error": "Forbidden"}), 403
+    new_name = ((request.get_json(force=True) or {}).get('filename') or '').strip()
+    if not new_name:
+        return jsonify({"error": "filename required"}), 400
+
+    dbx_new_path = None
+    dbx_error = None
+    if upload.filed_dropbox_path:
+        try:
+            import re as _re
+            old_path = upload.filed_dropbox_path
+            new_path = old_path.rsplit('/', 1)[0] + '/' + new_name
+            result = _dbx_client().files_move_v2(old_path, new_path, autorename=True)
+            dbx_new_path = result.metadata.path_display
+            upload.filed_dropbox_path = dbx_new_path
+        except Exception as e:
+            dbx_error = str(e)
+            logging.warning(f"Dropbox rename failed for upload {uid}: {e}")
+
+    upload.original_filename = new_name
+    db.session.commit()
+    resp = {"ok": True, "filename": new_name}
+    if dbx_new_path:
+        resp["dropbox_path"] = dbx_new_path
+    if dbx_error:
+        resp["dbx_warning"] = f"Renamed in app but Dropbox rename failed: {dbx_error}"
+    return jsonify(resp)
 
 
 @app.route("/docs/upload/<int:uid>/delete", methods=["POST"])

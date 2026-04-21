@@ -28,7 +28,7 @@
     }
     .btn-sm:hover { background: #242838; color: #e8e9ec; }
 
-    .content { max-width: 680px; margin: 0 auto; padding: 24px 16px 80px; }
+    .content { max-width: 760px; margin: 0 auto; padding: 24px 16px 80px; }
     .page-title { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
     .page-sub { font-size: 13px; color: #6b7280; margin-bottom: 24px; }
 
@@ -102,23 +102,54 @@
     .btn-upload-all:hover { background: #4a79e8; }
     .btn-upload-all:disabled { background: #2a2d36; color: #4b5263; cursor: not-allowed; }
 
-    /* ── Uploads history ── */
+    /* ── Section title ── */
     .section-title {
       font-size: 13px; font-weight: 600; color: #6b7280; text-transform: uppercase;
       letter-spacing: .5px; margin: 32px 0 12px;
     }
-    .history-list { display: flex; flex-direction: column; gap: 8px; }
-    .history-item {
-      background: #161920; border: 1px solid #2a2d36; border-radius: 8px;
-      padding: 12px 14px;
-      display: flex; align-items: center; gap: 12px;
+
+    /* ── Upload history table ── */
+    .history-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .upload-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .upload-table th {
+      text-align: left; color: #6b7280; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .5px;
+      padding: 0 12px 10px; border-bottom: 1px solid #2a2d36;
+      white-space: nowrap;
     }
-    .history-icon { font-size: 22px; flex-shrink: 0; width: 36px; text-align: center; }
-    .history-info { flex: 1; min-width: 0; }
-    .history-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .history-meta { font-size: 11px; color: #6b7280; margin-top: 2px; }
+    .upload-table th.sortable { cursor: pointer; user-select: none; }
+    .upload-table th.sortable:hover { color: #e8e9ec; }
+    .upload-table th.sort-asc::after  { content: " ↑"; color: #5b8af9; }
+    .upload-table th.sort-desc::after { content: " ↓"; color: #5b8af9; }
+    .upload-table td {
+      padding: 10px 12px; border-bottom: 1px solid #1e2130; vertical-align: middle;
+    }
+    .upload-table tr:last-child td { border-bottom: none; }
+    .upload-table tbody tr:hover td { background: #191d28; }
+    .fname-cell { max-width: 240px; min-width: 140px; }
+    .fname-display {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      cursor: pointer; font-weight: 500; color: #e8e9ec;
+    }
+    .fname-display:hover { color: #5b8af9; text-decoration: underline; }
+    .fname-input {
+      width: 100%; background: #1e2230; border: 1px solid #5b8af9; border-radius: 4px;
+      color: #e8e9ec; font-size: 13px; padding: 4px 8px; outline: none;
+      font-family: inherit;
+    }
+    .action-btns { display: flex; gap: 6px; }
+    .btn-action {
+      background: #1e2230; border: 1px solid #2a2d36; color: #b0b8c8;
+      border-radius: 5px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+      text-decoration: none; display: inline-flex; align-items: center; gap: 4px;
+      white-space: nowrap; font-family: inherit;
+    }
+    .btn-action:hover { background: #242838; color: #e8e9ec; }
+    .btn-action.danger:hover { background: #2a1414; color: #ef4444; border-color: #4a2020; }
+
+    /* ── Status pills ── */
     .status-pill {
-      font-size: 11px; padding: 3px 9px; border-radius: 20px; flex-shrink: 0;
+      font-size: 11px; padding: 3px 9px; border-radius: 20px; display: inline-block;
     }
     .status-pill.pending   { background: #1e2230; color: #6b7280; border: 1px solid #2a2d36; }
     .status-pill.filed     { background: #14291e; color: #22c55e; border: 1px solid #1a4228; }
@@ -197,37 +228,62 @@
 
   <!-- History -->
   <div class="section-title">Previously Uploaded</div>
-  <div class="history-list" id="historyList">
-    {% if uploads %}
-      {% for u in uploads %}
-        <div class="history-item" id="hist-{{ u.id }}">
-          <div class="history-icon">
-            {% if u.content_type and 'pdf' in u.content_type %}📄
-            {% else %}🧾{% endif %}
-          </div>
-          <div class="history-info">
-            <div class="history-name">{{ u.original_filename or 'Unnamed file' }}</div>
-            <div class="history-meta">
-              {{ u.uploaded_at.strftime('%b %-d, %Y') if u.uploaded_at else '' }}
-              {% if u.uploader %}
-                · <span title="{{ u.uploader.email }}">{{ u.uploader.name or u.uploader.email.split('@')[0] }}</span>
-              {% endif %}
-              {% if u.vendor %} · {{ u.vendor }}{% endif %}
-              {% if u.amount %} · ${{ '%.2f'|format(u.amount|float) }}{% endif %}
-            </div>
-          </div>
-          <div class="status-pill {{ u.status }}">
-            {% if u.status == 'filed' %}Filed
-            {% elif u.status == 'duplicate' %}Duplicate
-            {% elif u.status == 'error' %}Error
-            {% elif u.status == 'processing' %}Processing
-            {% else %}Pending{% endif %}
-          </div>
-        </div>
-      {% endfor %}
-    {% else %}
-      <div class="empty-history">No uploads yet for this project.</div>
-    {% endif %}
+  <div class="history-wrap">
+    <table class="upload-table" id="historyTable">
+      <thead>
+        <tr>
+          <th class="sortable" data-col="name">File Name</th>
+          <th class="sortable" data-col="date">Uploaded</th>
+          <th class="sortable" data-col="uploader">By</th>
+          <th class="sortable" data-col="status">Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="historyBody">
+        {% if uploads %}
+          {% for u in uploads %}
+          <tr id="hist-{{ u.id }}"
+              data-name="{{ (u.original_filename or '') | lower }}"
+              data-date="{{ u.uploaded_at.isoformat() if u.uploaded_at else '' }}"
+              data-uploader="{{ ((u.uploader.name or u.uploader.email.split('@')[0]) if u.uploader else '') | lower }}"
+              data-status="{{ u.status }}">
+            <td class="fname-cell">
+              <div class="fname-display"
+                   title="{{ u.original_filename or 'Unnamed' }}"
+                   onclick="editFilename({{ u.id }}, this)">{{ u.original_filename or 'Unnamed' }}</div>
+              <input class="fname-input" style="display:none" type="text"
+                     value="{{ u.original_filename or '' }}"
+                     onblur="saveFilename({{ u.id }}, this)"
+                     onkeydown="if(event.key==='Enter')this.blur();if(event.key==='Escape')cancelEdit({{ u.id }}, this)">
+            </td>
+            <td style="white-space:nowrap;color:#9ca3af">{{ u.uploaded_at.strftime('%b %-d, %Y') if u.uploaded_at else '—' }}</td>
+            <td style="white-space:nowrap;color:#9ca3af">
+              {% if u.uploader %}{{ u.uploader.name or u.uploader.email.split('@')[0] }}{% else %}—{% endif %}
+            </td>
+            <td>
+              <span class="status-pill {{ u.status }}">
+                {% if u.status == 'filed' %}Filed
+                {% elif u.status == 'duplicate' %}Duplicate
+                {% elif u.status == 'error' %}Error
+                {% elif u.status == 'processing' %}Processing
+                {% else %}Pending{% endif %}
+              </span>
+            </td>
+            <td>
+              <div class="action-btns">
+                <a class="btn-action" href="{{ url_for('docs_upload_view', uid=u.id) }}" target="_blank">View</a>
+                <button class="btn-action danger" onclick="deleteUpload({{ u.id }})">Delete</button>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr id="history-empty-row">
+            <td colspan="5" class="empty-history">No uploads yet for this project.</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -338,7 +394,6 @@ async function uploadOne(item) {
     } else if (resp.ok) {
       item.status = 'done';
       item.upload_id = data.upload_id;
-      // Prepend to history
       prependHistory(item.file.name, data.upload_id);
     } else {
       item.status = 'error';
@@ -357,21 +412,119 @@ async function uploadAll() {
 }
 
 function prependHistory(filename, upload_id) {
-  const list = document.getElementById('historyList');
-  const emptyEl = list.querySelector('.empty-history');
-  if (emptyEl) emptyEl.remove();
+  const emptyRow = document.getElementById('history-empty-row');
+  if (emptyRow) emptyRow.remove();
+  const tbody = document.getElementById('historyBody');
+  const esc = filename.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const tr = document.createElement('tr');
+  tr.id = 'hist-' + upload_id;
+  tr.dataset.name = filename.toLowerCase();
+  tr.dataset.date = new Date().toISOString();
+  tr.dataset.uploader = '';
+  tr.dataset.status = 'pending';
+  tr.innerHTML = `
+    <td class="fname-cell">
+      <div class="fname-display" title="${esc}" onclick="editFilename(${upload_id}, this)">${esc}</div>
+      <input class="fname-input" style="display:none" type="text" value="${esc}"
+             onblur="saveFilename(${upload_id}, this)"
+             onkeydown="if(event.key==='Enter')this.blur();if(event.key==='Escape')cancelEdit(${upload_id}, this)">
+    </td>
+    <td style="white-space:nowrap;color:#9ca3af">Just now</td>
+    <td style="white-space:nowrap;color:#9ca3af">—</td>
+    <td><span class="status-pill pending">Pending</span></td>
+    <td>
+      <div class="action-btns">
+        <a class="btn-action" href="/docs/upload/${upload_id}/view" target="_blank">View</a>
+        <button class="btn-action danger" onclick="deleteUpload(${upload_id})">Delete</button>
+      </div>
+    </td>`;
+  tbody.prepend(tr);
+}
 
-  const div = document.createElement('div');
-  div.className = 'history-item';
-  div.id = 'hist-' + upload_id;
-  div.innerHTML = `
-    <div class="history-icon">🧾</div>
-    <div class="history-info">
-      <div class="history-name">${filename}</div>
-      <div class="history-meta">Just now</div>
-    </div>
-    <div class="status-pill pending">Pending</div>`;
-  list.prepend(div);
+// ── Sort ──────────────────────────────────────────────────────────────────
+document.querySelectorAll('#historyTable th.sortable').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col;
+    const asc = !th.classList.contains('sort-asc');
+    document.querySelectorAll('#historyTable th').forEach(t => t.classList.remove('sort-asc','sort-desc'));
+    th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+    const tbody = document.getElementById('historyBody');
+    Array.from(tbody.querySelectorAll('tr'))
+      .sort((a, b) => {
+        const av = a.dataset[col] || '', bv = b.dataset[col] || '';
+        return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+      })
+      .forEach(r => tbody.appendChild(r));
+  });
+});
+
+// ── Inline filename edit ──────────────────────────────────────────────────
+function editFilename(uid, displayEl) {
+  const input = displayEl.nextElementSibling;
+  displayEl.style.display = 'none';
+  input.style.display = 'block';
+  input._original = input.value;
+  input.focus();
+  input.select();
+}
+
+function cancelEdit(uid, input) {
+  input.value = input._original;
+  input.style.display = 'none';
+  input.previousElementSibling.style.display = '';
+}
+
+async function saveFilename(uid, input) {
+  const newName = input.value.trim();
+  const displayEl = input.previousElementSibling;
+  if (!newName || newName === input._original) {
+    cancelEdit(uid, input);
+    return;
+  }
+  try {
+    const resp = await fetch(`/docs/upload/${uid}/rename`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({filename: newName})
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      displayEl.textContent = newName;
+      displayEl.title = newName;
+      displayEl.closest('tr').dataset.name = newName.toLowerCase();
+      input._original = newName;
+      if (data.dbx_warning) console.warn(data.dbx_warning);
+    } else {
+      alert('Rename failed: ' + (data.error || 'Unknown error'));
+      cancelEdit(uid, input);
+      return;
+    }
+  } catch(e) {
+    alert('Rename failed');
+    cancelEdit(uid, input);
+    return;
+  }
+  input.style.display = 'none';
+  displayEl.style.display = '';
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────
+async function deleteUpload(uid) {
+  if (!confirm('Delete this upload? This cannot be undone.')) return;
+  try {
+    const resp = await fetch(`/docs/upload/${uid}/delete`, {method: 'POST'});
+    const data = await resp.json();
+    if (data.status === 'deleted') {
+      const row = document.getElementById('hist-' + uid);
+      if (row) row.remove();
+      if (!document.querySelector('#historyBody tr')) {
+        document.getElementById('historyBody').innerHTML =
+          '<tr id="history-empty-row"><td colspan="5" class="empty-history">No uploads yet for this project.</td></tr>';
+      }
+    }
+  } catch(e) {
+    alert('Delete failed');
+  }
 }
 </script>
 </body>
