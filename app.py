@@ -4598,6 +4598,137 @@ def set_gantt_day(pid, bid):
     return jsonify(resp)
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/gantt/days", methods=["POST"])
+@login_required
+def set_gantt_days_batch(pid, bid):
+    """Batch upsert of ScheduleDay rows — one transaction, one totals sync.
+
+    Used by the gantt paste flow to avoid N separate round-trips
+    (each of which also triggered _touch_budget + sync_schedule_driven_lines).
+    """
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data   = request.get_json(force=True) or {}
+    days   = data.get("days") or []
+    if not isinstance(days, list) or not days:
+        return jsonify({"error": "days array required"}), 400
+
+    sched_mode        = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    affected_line_ids = set()
+    applied           = 0
+
+    for spec in days:
+        try:
+            line_id = int(spec.get("line_id") or 0) or None
+        except (TypeError, ValueError):
+            line_id = None
+        date_str = spec.get("date")
+        if not line_id or not date_str:
+            continue
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        day_type = spec.get("day_type", "work")
+        try:
+            crew_instance = int(spec.get("crew_instance") or 1)
+        except (TypeError, ValueError):
+            crew_instance = 1
+        note       = spec.get("note")
+        episode    = spec.get("episode")
+        cell_flags = spec.get("cell_flags")
+
+        existing = ScheduleDay.query.filter_by(
+            budget_id=bid, budget_line_id=line_id,
+            crew_instance=crew_instance, date=d,
+            schedule_mode=sched_mode).first()
+
+        if day_type == "off":
+            if existing:
+                db.session.delete(existing)
+            affected_line_ids.add(line_id)
+            applied += 1
+            continue
+
+        if not existing:
+            existing = ScheduleDay(budget_id=bid, budget_line_id=line_id,
+                                   crew_instance=crew_instance, date=d,
+                                   schedule_mode=sched_mode)
+            db.session.add(existing)
+
+        existing.day_type = day_type
+        if episode is not None:
+            existing.episode = episode
+        if note is not None:
+            existing.note = note
+        try:
+            est_ot_hours = spec.get("est_ot_hours")
+            if est_ot_hours is not None:
+                existing.est_ot_hours = float(est_ot_hours)
+        except (TypeError, ValueError):
+            pass
+        if cell_flags is not None:
+            existing.cell_flags = json.dumps(cell_flags) if isinstance(cell_flags, dict) else cell_flags
+
+        affected_line_ids.add(line_id)
+        applied += 1
+
+    # Primary commit — this is the one that MUST succeed
+    db.session.commit()
+
+    _post_save_error = None
+
+    # One touch for the whole batch
+    try:
+        _touch_budget(bid)
+        db.session.commit()
+    except Exception as _te:
+        import traceback as _tb
+        _post_save_error = f"touch_budget: {_te}"
+        app.logger.error("_touch_budget failed in set_gantt_days_batch: %s\n%s", _te, _tb.format_exc())
+        try: db.session.rollback()
+        except Exception: pass
+
+    # One schedule-driven-line sync for the whole batch
+    try:
+        sync_schedule_driven_lines(bid, db.session)
+    except Exception as _sdl_err:
+        import traceback as _tb
+        _post_save_error = (_post_save_error or "") + f" | sync_lines: {_sdl_err}"
+        app.logger.error("sync_schedule_driven_lines failed in set_gantt_days_batch: %s\n%s",
+                         _sdl_err, _tb.format_exc())
+        try: db.session.rollback()
+        except Exception: pass
+
+    # Auto-enable use_schedule on any affected labor lines (mirror set_gantt_day behavior,
+    # including zeroing est_ot so legacy manual OT doesn't carry into schedule mode).
+    toggled_line_ids = []
+    try:
+        if affected_line_ids:
+            lines = BudgetLine.query.filter(
+                BudgetLine.id.in_(affected_line_ids),
+                BudgetLine.budget_id == bid,
+                BudgetLine.is_labor == True,
+                BudgetLine.use_schedule == False,
+            ).all()
+            for ln in lines:
+                ln.use_schedule = True
+                ln.est_ot       = 0
+                toggled_line_ids.append(ln.id)
+            if toggled_line_ids:
+                db.session.commit()
+    except Exception as _ue:
+        import traceback as _tb
+        _post_save_error = (_post_save_error or "") + f" | use_sched: {_ue}"
+        app.logger.error("use_schedule toggle failed in set_gantt_days_batch: %s\n%s", _ue, _tb.format_exc())
+        try: db.session.rollback()
+        except Exception: pass
+
+    resp = {"ok": True, "applied": applied, "use_schedule_toggled_lines": toggled_line_ids}
+    if _post_save_error:
+        resp["_warn"] = _post_save_error
+    return jsonify(resp)
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/gantt/day", methods=["DELETE"])
 @login_required
 def clear_gantt_day(pid, bid):
@@ -6875,7 +7006,7 @@ def rate_type_label_filter(v):
 @admin_required
 def admin_panel():
     users          = User.query.order_by(User.name).all()
-    projects       = ProjectSheet.query.order_by(ProjectSheet.name).all()
+    projects       = ProjectSheet.query.filter(ProjectSheet.status != 'archived').order_by(ProjectSheet.name).all()
     project_access = ProjectAccess.query.all()
     return render_template("admin.html",
                            users=users,

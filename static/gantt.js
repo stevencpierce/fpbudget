@@ -824,7 +824,9 @@ async function pasteSelection() {
   const targetRows = [...new Set(selectedItems.map(i => `${i.lineId}:${i.instance}`))].sort();
   const targetCols = [...new Set(selectedItems.map(i => i.date))].sort();
   const undoBatch  = [];
+  const payload    = [];
 
+  // Phase 1: paint all cells locally for instant visual feedback, collect batch payload
   for (let ri = 0; ri < targetRows.length; ri++) {
     const [lineId, instance] = targetRows[ri].split(':');
     for (let ci = 0; ci < targetCols.length; ci++) {
@@ -841,22 +843,58 @@ async function pasteSelection() {
       const prev = cell.dataset.type || 'off';
       undoBatch.push({ lineId, instance: parseInt(instance), date,
                        prevType: prev, newType: src.dayType });
+
       paintCell(cell, src.dayType);
-      await saveDay(cell, src.dayType, src.note || null, src.estOtHours ?? undefined);
-      // Paste flags (saved separately after day type is set)
       if (src.flags && Object.keys(src.flags).length > 0 && src.dayType !== 'off') {
         cell.dataset.flags = JSON.stringify(src.flags);
         _renderFlagDots(cell, src.flags);
-        await fetch(`/projects/${_pid}/budget/${_bid}/gantt/day`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            line_id: parseInt(lineId), date, day_type: src.dayType,
-            crew_instance: parseInt(instance), cell_flags: src.flags,
-          })
-        });
+      } else if (src.dayType === 'off') {
+        cell.dataset.flags = '';
       }
+
+      const spec = {
+        line_id:       parseInt(lineId),
+        date,
+        day_type:      src.dayType,
+        crew_instance: parseInt(instance),
+      };
+      if (src.note !== undefined && src.note !== null)               spec.note         = src.note;
+      if (src.estOtHours !== undefined && src.estOtHours !== null)   spec.est_ot_hours = src.estOtHours;
+      if (src.flags && Object.keys(src.flags).length > 0)            spec.cell_flags   = src.flags;
+      payload.push(spec);
     }
+  }
+
+  if (payload.length === 0) return;
+
+  // Phase 2: single batched network call
+  try {
+    const r = await fetch(`/projects/${_pid}/budget/${_bid}/gantt/days`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ days: payload })
+    });
+    if (!r.ok) {
+      console.error('Gantt batch paste failed', r.status);
+      // Revert all painted cells
+      for (const entry of undoBatch) {
+        const cell = document.querySelector(
+          `.gantt-cell[data-line="${entry.lineId}"][data-instance="${entry.instance}"][data-date="${entry.date}"]`
+        );
+        if (cell) paintCell(cell, entry.prevType);
+      }
+      return;
+    }
+    const data = await r.json().catch(() => ({}));
+    // Reflect server-side use_schedule auto-toggles in the UI
+    const toggled = data.use_schedule_toggled_lines || [];
+    toggled.forEach(lineId => {
+      document.querySelectorAll(`.use-sched-cb[data-id="${lineId}"]`)
+        .forEach(cb => { cb.checked = true; });
+    });
+  } catch (err) {
+    console.error('Gantt batch paste error', err);
+    return;
   }
 
   if (undoBatch.length > 0) pushUndo(undoBatch);
