@@ -1027,7 +1027,27 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     # let super-admins and project editors tick boxes in budget Settings
     # to exempt specific sections per project.
     import json as _json_fee
-    _raw_excl = getattr(budget, 'fee_excluded_sections', None)
+    # Column may be missing in production if the boot migration failed to
+    # land. Try the ORM attribute first; if the column doesn't exist on
+    # this Budget instance, read via raw SQL; if that ALSO fails, treat
+    # as empty so the site stays up.
+    _raw_excl = None
+    try:
+        _raw_excl = getattr(budget, 'fee_excluded_sections', None)
+    except Exception:
+        _raw_excl = None
+    if _raw_excl is None:
+        try:
+            from models import db as _db_for_fee
+            from sqlalchemy import text as _text_for_fee
+            _row = _db_for_fee.session.execute(
+                _text_for_fee("SELECT fee_excluded_sections FROM budget WHERE id = :i"),
+                {"i": budget.id}
+            ).fetchone()
+            if _row:
+                _raw_excl = _row[0]
+        except Exception:
+            _raw_excl = None
     try:
         _excluded_codes = set(int(c) for c in (_json_fee.loads(_raw_excl) if _raw_excl else []))
     except Exception:
