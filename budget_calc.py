@@ -1037,15 +1037,27 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     except Exception:
         _raw_excl = None
     if _raw_excl is None:
+        # Use a FRESH engine connection (not the ORM session) — if the
+        # column is missing, Postgres aborts the transaction, and doing
+        # that on the shared session poisons every subsequent query with
+        # InFailedSqlTransaction. A dedicated connection isolates the
+        # failure so the main request continues cleanly.
         try:
             from models import db as _db_for_fee
             from sqlalchemy import text as _text_for_fee
-            _row = _db_for_fee.session.execute(
-                _text_for_fee("SELECT fee_excluded_sections FROM budget WHERE id = :i"),
-                {"i": budget.id}
-            ).fetchone()
-            if _row:
-                _raw_excl = _row[0]
+            with _db_for_fee.engine.connect() as _conn_fee:
+                try:
+                    _row = _conn_fee.execute(
+                        _text_for_fee("SELECT fee_excluded_sections FROM budget WHERE id = :i"),
+                        {"i": budget.id}
+                    ).fetchone()
+                    if _row:
+                        _raw_excl = _row[0]
+                except Exception:
+                    # Column missing or other error — swallow. The isolated
+                    # connection's transaction is already rolled back when
+                    # we exit the with-block.
+                    _raw_excl = None
         except Exception:
             _raw_excl = None
     try:
