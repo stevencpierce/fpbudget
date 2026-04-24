@@ -8831,6 +8831,49 @@ def _do_boot_work():
         except Exception:
             db.session.rollback()
 
+    # ── Essential-column healing pass ─────────────────────────────────────
+    # The migrations above each run under the 5-second per-connection
+    # statement_timeout installed for boot. In production we've seen the
+    # timeout trip a single ALTER (likely an exclusive-lock stall from a
+    # conflicting connection), silently skip it, and then every request
+    # 500s because the ORM SELECTs the missing column.
+    #
+    # This block re-runs a small set of RECENT / CRITICAL column adds
+    # using IF NOT EXISTS (Postgres 9.6+) on a DEDICATED connection with
+    # a much longer timeout. Idempotent — safe to keep in place forever.
+    _essential_cols = [
+        # Prod Company Fee per-section exemptions (2026-04-24)
+        "ALTER TABLE budget ADD COLUMN IF NOT EXISTS fee_excluded_sections TEXT",
+        # Per-budget fee disperse
+        "ALTER TABLE budget ADD COLUMN IF NOT EXISTS company_fee_dispersed BOOLEAN DEFAULT FALSE NOT NULL",
+        # Workers' Comp / Payroll Fee percentages
+        "ALTER TABLE budget ADD COLUMN IF NOT EXISTS workers_comp_pct NUMERIC(8,6) DEFAULT 0.03",
+        "ALTER TABLE budget ADD COLUMN IF NOT EXISTS payroll_fee_pct NUMERIC(8,6) DEFAULT 0.0175",
+    ]
+    if _is_pg:
+        try:
+            # Raw connection so we can bump statement_timeout past the 5s
+            # boot default for just these statements. Essential-column
+            # healing must NOT be subject to the watchdog — a locked
+            # deploy is better than a broken one.
+            _raw_conn = db.engine.raw_connection()
+            try:
+                _raw_cur = _raw_conn.cursor()
+                _raw_cur.execute("SET statement_timeout = 60000")  # 60s
+                for _sql in _essential_cols:
+                    try:
+                        _raw_cur.execute(_sql)
+                        _raw_conn.commit()
+                        logging.warning(f"[BOOT] essential-col OK: {_sql}")
+                    except Exception as _ee:
+                        _raw_conn.rollback()
+                        logging.error(f"[BOOT] essential-col FAILED: {_sql} → {_ee}")
+                _raw_cur.close()
+            finally:
+                _raw_conn.close()
+        except Exception as _ec:
+            logging.error(f"[BOOT] essential-col pass could not open raw conn: {_ec}")
+
     # ── 2026-04 COA renumber ─────────────────────────────────────────────────
     # One-time remap of legacy COA codes to the new Movie Magic / ShowBiz-
     # aligned numbering. Guarded by CoaMigrationLog so rerunning boot is a
