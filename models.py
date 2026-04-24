@@ -92,6 +92,14 @@ class Budget(db.Model):
     budget_mode     = db.Column(db.String(20), default="estimated")  # estimated | schedule | hybrid
     company_fee_pct       = db.Column(db.Numeric(6, 4), default=0.18)
     company_fee_dispersed = db.Column(db.Boolean, default=False, nullable=False)
+    # JSON-encoded array of COA section codes that are EXCLUDED from the
+    # production-company fee base. Default (NULL / empty) = every section
+    # contributes to the fee (mirrors pre-2026-04 behavior). Edited from
+    # the budget Settings panel per user request 2026-04-24 so prodcos
+    # can zero-fee insurance / distribution / fee-on-fee etc. MMB/ShowBiz
+    # equivalent: "Fee applies to A through K" — our app just makes that
+    # per-section rather than a fixed range.
+    fee_excluded_sections = db.Column(db.Text, nullable=True)
     created_at      = db.Column(db.DateTime, default=datetime.utcnow)
     # Project settings
     start_date      = db.Column(db.Date, nullable=True)

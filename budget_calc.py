@@ -192,8 +192,23 @@ SCHEDULE_LINE_DEFS = {
     "mileage_talent":          (3500, "Travel", "Mileage — Talent",                                     50.00, 30),
     "mileage_atl":             (3500, "Travel", "Mileage — Above the Line",                             50.00, 31),
     "mileage_crew":            (3500, "Travel", "Mileage — Crew",                                       50.00, 32),
-    # Per diem: foundation — quantity driven by per_diem cell_flag; meal offsets deferred
-    "per_diem":                (3500, "Travel", "Per Diem",                                             75.00, 40),
+    # Per Diem — four variants so users can pay partial-day per diems when
+    # only one meal is on per diem (e.g. late arrival: dinner only). Rates
+    # follow the rough GSA ratio 20 / 30 / 50 for B/L/D, with $75 = full day.
+    # Each variant is its own BudgetLine so the top sheet shows them
+    # separately and the user can edit rates per variant.
+    "per_diem_full":           (3500, "Travel", "Per Diem — Full Day",                                   75.00, 40),
+    "per_diem_breakfast":      (3500, "Travel", "Per Diem — Breakfast",                                  15.00, 41),
+    "per_diem_lunch":          (3500, "Travel", "Per Diem — Lunch",                                      25.00, 42),
+    "per_diem_dinner":         (3500, "Travel", "Per Diem — Dinner",                                     35.00, 43),
+}
+
+# Legacy cell_flag keys → canonical SCHEDULE_LINE_DEFS tag. The old schedule
+# UI shipped a single `per_diem` boolean flag; existing data in ScheduleDay
+# .cell_flags still uses that key. Map it to the new "full day" variant so
+# no migration is needed and old rows still roll into the budget.
+LEGACY_FLAG_ALIASES = {
+    "per_diem": "per_diem_full",
 }
 
 # Canonical order for meals within the 8000 section
@@ -297,12 +312,23 @@ def sync_schedule_driven_lines(budget_id, db_session):
             rg = 'crew'
 
         flag_tag_map = {
-            'working_meal': 'working_meal',
-            'hotel':        f'hotel_{rg}',
-            'flight':       f'flight_{rg}',
-            'mileage':      f'mileage_{rg}',
-            'per_diem':     'per_diem',
+            'working_meal':       'working_meal',
+            'hotel':              f'hotel_{rg}',
+            'flight':             f'flight_{rg}',
+            'mileage':            f'mileage_{rg}',
+            # Per Diem — four variants. Each has its own cell_flag and its
+            # own budget line so partial-day per diems (e.g. dinner only
+            # on a travel-in day) don't overcount.
+            'per_diem_full':      'per_diem_full',
+            'per_diem_breakfast': 'per_diem_breakfast',
+            'per_diem_lunch':     'per_diem_lunch',
+            'per_diem_dinner':    'per_diem_dinner',
         }
+        # Normalize legacy per_diem flag (before variants existed) to full-day
+        # so older schedules continue to populate the budget.
+        if flags.get('per_diem') and not any(flags.get(k) for k in
+            ('per_diem_full', 'per_diem_breakfast', 'per_diem_lunch', 'per_diem_dinner')):
+            flags['per_diem_full'] = True
         for flag_key, tag in flag_tag_map.items():
             if flags.get(flag_key) and tag in SCHEDULE_LINE_DEFS:
                 per_tag_date_crew.setdefault(tag, {})
@@ -322,7 +348,7 @@ def sync_schedule_driven_lines(budget_id, db_session):
         import logging as _logsync
         _tags_of_interest = [t for t in SCHEDULE_LINE_DEFS
                              if t.startswith('mileage_') or t.startswith('hotel_')
-                             or t.startswith('flight_') or t == 'per_diem'
+                             or t.startswith('flight_') or t.startswith('per_diem')
                              or t == 'working_meal']
         _sync_summary = []
         for t in _tags_of_interest:
@@ -738,11 +764,36 @@ def _run_payroll_calc(rate, rate_type, qty, schedule_days, payroll_profile, payr
             dt_base += hourly_rate * dt_mult * dt_hrs
 
     else:
+        # Flat-rate branch: flat_day / flat_project / week / no-profile / etc.
+        #
+        # Historical bug: this branch ignored ScheduleDay.est_ot_hours
+        # entirely, so any manually-entered "+2h OT" bubble on the schedule
+        # never reached the budget. Fix: honor est_ot_hours even without a
+        # payroll profile. We derive an implied hourly rate from the
+        # rate_type so the OT dollars are defensible:
+        #   flat_day / day_*      → rate / 8
+        #   week                  → rate / 40
+        #   flat_project / hourly → rate / 8  (fallback; user can override)
+        # Multiplier defaults to payroll_profile.ot_multiplier if present,
+        # otherwise the industry-standard 1.5× for ST→OT.
+        _rt = (rate_type or '').lower()
+        if _rt == 'week':
+            _implied_hourly = (rate / 40.0) if rate else 0.0
+        else:
+            _implied_hourly = (rate / 8.0) if rate else 0.0
+        _ot_mult_flat = _float(getattr(payroll_profile, 'ot_multiplier', None), 1.5) or 1.5
+
         for d in sorted_days:
             mult = DAY_TYPE_MULTIPLIERS.get(d.day_type, 0.0)
             if d.day_type == 'custom':
                 mult = _float(d.rate_multiplier, 1.0)
             st_base += rate * mult
+            # Add manual OT hours for this day (work / travel only — it
+            # doesn't make sense to pay OT on an off / kill_fee day).
+            if d.day_type in ('work', 'travel'):
+                _ot_hrs = _float(getattr(d, 'est_ot_hours', None), 0.0)
+                if _ot_hrs > 0:
+                    ot_base += _implied_hourly * _ot_mult_flat * _ot_hrs
 
     return st_base * qty, ot_base * qty, dt_base * qty, day_count
 
@@ -795,8 +846,21 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
             total_week_count = round(total_week_count * qty)
             active_day_count = round(active_day_count * qty)
         base      = total_week_count * rate
-        legacy_ot = 0.0  # est_ot is a manual-mode override; ignored in schedule-driven calc
-        subtotal  = base
+        # Weekly flat rate was ignoring manual est_ot_hours. Per user report
+        # 2026-04-24: OT typed into a scheduled day ("+2h") must land in
+        # the budget even for weekly-rate lines. Derive hourly rate from
+        # weekly rate / 40 (standard work week) and apply default 1.5× OT.
+        _weekly_ot_hrs = 0.0
+        for i_days in inst_map.values():
+            for d in i_days:
+                if d.day_type in ('work', 'travel'):
+                    _weekly_ot_hrs += _float(getattr(d, 'est_ot_hours', None), 0.0)
+        _weekly_hourly = (rate / 40.0) if rate else 0.0
+        legacy_ot = _weekly_hourly * 1.5 * _weekly_ot_hrs
+        # Scale to match the qty-scaling done above for the base.
+        if num_instances == 1 and qty > 1:
+            legacy_ot *= qty
+        subtotal  = base + legacy_ot
         if cfg and cfg.is_flat:
             # Flat fringe: once per person, not per day
             _persons = max(num_instances, int(qty or 1))
@@ -955,21 +1019,53 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     fee_pct     = float(budget.company_fee_pct)
     dispersed   = bool(getattr(budget, 'company_fee_dispersed', False))
 
+    # Sections the user has excluded from the Prod Company Fee base.
+    # Default = empty (every section contributes). MMB/ShowBiz convention
+    # is "A through K" — fee on labor + equipment, NOT on insurance /
+    # administrative / distribution etc. Rather than hard-code which
+    # sections are "pass-through", we default-include all sections but
+    # let super-admins and project editors tick boxes in budget Settings
+    # to exempt specific sections per project.
+    import json as _json_fee
+    _raw_excl = getattr(budget, 'fee_excluded_sections', None)
+    try:
+        _excluded_codes = set(int(c) for c in (_json_fee.loads(_raw_excl) if _raw_excl else []))
+    except Exception:
+        _excluded_codes = set()
+    # The Prod Company Fee line itself (6800) is ALWAYS excluded — you
+    # can't charge a production fee on the production fee line.
+    _excluded_codes.add(6800)
+
+    # Mark each row with its fee-eligibility so the template can render
+    # a plain-English "(fee-exempt)" tag inline. `fee_applies` is the
+    # authoritative flag; templates should read this rather than reach
+    # back into budget.fee_excluded_sections.
+    for row in rows:
+        row["fee_applies"] = row["code"] not in _excluded_codes
+
+    # Fee base = sum of estimated ACROSS ELIGIBLE SECTIONS ONLY.
+    fee_base = sum(r["estimated"] for r in rows if r["fee_applies"])
+
     if dispersed:
-        # Spread the fee proportionally into each section row
+        # Spread the fee proportionally into each ELIGIBLE section row.
+        # Excluded rows keep their raw total and show $0 fee_amount so
+        # the dispersed breakdown line is honest.
         for row in rows:
             raw = row["estimated"]
-            fee_amt = round(raw * fee_pct, 2)
             row["raw_estimated"] = raw
-            row["fee_amount"]    = fee_amt
-            row["estimated"]     = round(raw + fee_amt, 2)
-        company_fee_est = round(subtotal_est * fee_pct, 2)
+            if row["fee_applies"]:
+                fee_amt = round(raw * fee_pct, 2)
+                row["fee_amount"] = fee_amt
+                row["estimated"]  = round(raw + fee_amt, 2)
+            else:
+                row["fee_amount"] = 0.0
+        company_fee_est = round(fee_base * fee_pct, 2)
         grand_total_est = round(subtotal_est + company_fee_est, 2)
     else:
         for row in rows:
             row["raw_estimated"] = row["estimated"]
             row["fee_amount"]    = 0.0
-        company_fee_est = round(subtotal_est * fee_pct, 2)
+        company_fee_est = round(fee_base * fee_pct, 2)
         grand_total_est = round(subtotal_est + company_fee_est, 2)
 
     grand_total_act = subtotal_act   # no fee on actuals (pass-through)
@@ -981,6 +1077,8 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         "subtotal_actual":    round(subtotal_act, 2),
         "company_fee_pct":    fee_pct,
         "company_fee":        round(company_fee_est, 2),
+        "company_fee_base":   round(fee_base, 2),
+        "company_fee_excluded_codes": sorted(_excluded_codes),
         "company_fee_dispersed": dispersed,
         "grand_total_estimated": round(grand_total_est, 2),
         "grand_total_actual":    round(grand_total_act, 2),

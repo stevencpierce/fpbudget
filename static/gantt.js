@@ -595,9 +595,27 @@ function _renderFlagDots(cell, flags) {
     s.className = 'flag-dot flag-working-meal'; s.title = 'Working Meal';
     cell.appendChild(s);
   }
-  if (flags.per_diem) {
+  // Per diem: four variants, each with its own dot color so the schedule
+  // view shows at-a-glance whether the day is a full-day per diem or a
+  // partial one. Legacy `per_diem` flag → full-day dot for back-compat.
+  if (flags.per_diem_full || flags.per_diem) {
     const s = document.createElement('span');
-    s.className = 'flag-dot flag-per-diem'; s.title = 'Per Diem';
+    s.className = 'flag-dot flag-per-diem'; s.title = 'Per Diem — Full Day';
+    cell.appendChild(s);
+  }
+  if (flags.per_diem_breakfast) {
+    const s = document.createElement('span');
+    s.className = 'flag-dot flag-per-diem-b'; s.title = 'Per Diem — Breakfast';
+    cell.appendChild(s);
+  }
+  if (flags.per_diem_lunch) {
+    const s = document.createElement('span');
+    s.className = 'flag-dot flag-per-diem-l'; s.title = 'Per Diem — Lunch';
+    cell.appendChild(s);
+  }
+  if (flags.per_diem_dinner) {
+    const s = document.createElement('span');
+    s.className = 'flag-dot flag-per-diem-d'; s.title = 'Per Diem — Dinner';
     cell.appendChild(s);
   }
 }

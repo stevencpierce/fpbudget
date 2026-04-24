@@ -941,6 +941,168 @@ def admin_docs_wipe_project(pid):
     })
 
 
+@app.route("/admin/docs/project/<int:pid>/reconcile", methods=["POST"])
+@login_required
+def admin_docs_reconcile_project(pid):
+    """Walk the project's Dropbox doc folders and create DocUpload rows
+    for any files present in Dropbox but missing from our DB.
+
+    Motivation: if a user closes the browser tab mid-upload batch, the
+    file can land in Dropbox (the Analyzer runs synchronously inside the
+    request, but the browser may abort before the response is handled
+    and the DocUpload row still commits — OR, in the legacy / pre-OCR
+    pipeline, some files were filed manually). This tool gives us a way
+    to reconcile the two sources of truth.
+
+    Strategy:
+      * For every subfolder in DOCUMENT_TYPES (+ the default receipts
+        folder), list files recursively under the project root.
+      * For each file, check whether a DocUpload row already references
+        its path (filed_dropbox_path) for THIS project.
+      * If not, create a status='filed' DocUpload row with whatever we
+        can derive (filename, size, content-type, category from subfolder
+        name). uploader_id = current user (best effort).
+
+    Returns counts + sample orphan list. Does NOT move or re-OCR files.
+    """
+    if not current_user.is_authenticated or getattr(current_user, 'role', None) != 'super_admin':
+        return jsonify({"error": "super admin only"}), 403
+
+    project = ProjectSheet.query.get_or_404(pid)
+    if not project.dropbox_folder:
+        return jsonify({"error": "Project has no Dropbox folder configured"}), 400
+
+    from fp_analyzer import DOCUMENT_TYPES
+    try:
+        dbx = _dbx_client()
+    except Exception as e:
+        return jsonify({"error": f"Dropbox client init failed: {e}"}), 500
+
+    # Build the project root. Namespace vs legacy mode matters here —
+    # mirrors the pattern used in docs_upload_retry_filing.
+    proj_root = (f"/{project.dropbox_folder}"
+                 if _DBX_NAMESPACE_ID
+                 else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+
+    # Collect the set of doc-type subfolders we care about. DOCUMENT_TYPES
+    # gives us canonical paths; de-dupe because several types share a
+    # folder (invoice + contract → CONTRACTS & INVOICES).
+    subfolders = set(DOCUMENT_TYPES.values())
+    subfolders.add("01_ADMIN/RECEIPTS FOLDER")  # Analyzer's default fallback
+
+    # Pre-load existing filed paths so we can do set-membership checks
+    # without re-hitting the DB per file.
+    existing_paths = {
+        (u.filed_dropbox_path or "").lower()
+        for u in DocUpload.query.with_entities(DocUpload.filed_dropbox_path)
+                                .filter_by(project_id=pid).all()
+        if u.filed_dropbox_path
+    }
+
+    created = 0
+    scanned = 0
+    errors  = []
+    sample  = []
+
+    from datetime import datetime as _dt
+    import mimetypes as _mt
+
+    for sub in sorted(subfolders):
+        folder_path = f"{proj_root}/{sub}"
+        # Reverse-map subfolder → doc_type label for the category column.
+        # Pick the first matching key (most DOCUMENT_TYPES values are
+        # unique; shared ones collapse to whichever key sorts first).
+        doc_type_for_folder = next(
+            (k for k, v in DOCUMENT_TYPES.items() if v == sub),
+            None,
+        )
+
+        try:
+            res = dbx.files_list_folder(folder_path, recursive=True)
+        except Exception as _le:
+            _msg = str(_le)
+            if "not_found" in _msg:
+                continue  # folder doesn't exist for this project; skip silently
+            errors.append(f"list {folder_path}: {_msg}")
+            continue
+
+        while True:
+            for entry in res.entries:
+                # Skip folders and deleted-metadata entries.
+                if not hasattr(entry, 'size'):
+                    continue
+                scanned += 1
+                path_lower_key = (entry.path_display or "").lower()
+                if path_lower_key in existing_paths:
+                    continue
+                # Also check the namespace-normalized variant to handle
+                # rows saved with the legacy ops prefix under namespace mode.
+                if _DBX_NAMESPACE_ID and _DBX_OPS_ROOT:
+                    alt = (_DBX_OPS_ROOT.rstrip('/') + (entry.path_display or "")).lower()
+                    if alt in existing_paths:
+                        continue
+
+                filename = entry.name or ""
+                ext = os.path.splitext(filename)[1].lower()
+                guessed_ct = _mt.guess_type(filename)[0] or "application/octet-stream"
+
+                try:
+                    new_row = DocUpload(
+                        project_id=pid,
+                        uploader_id=current_user.id,
+                        uploaded_at=getattr(entry, 'server_modified', None) or _dt.utcnow(),
+                        r2_key=None,
+                        original_filename=filename,
+                        filed_filename=filename,
+                        filed_dropbox_path=entry.path_display,
+                        filed_at=getattr(entry, 'server_modified', None) or _dt.utcnow(),
+                        file_size=getattr(entry, 'size', None),
+                        content_type=guessed_ct,
+                        status='filed',
+                        category=doc_type_for_folder,
+                        note="Reconciled from Dropbox scan",
+                    )
+                    db.session.add(new_row)
+                    created += 1
+                    if len(sample) < 15:
+                        sample.append({
+                            "filename": filename,
+                            "path":     entry.path_display,
+                            "doc_type": doc_type_for_folder,
+                        })
+                except Exception as _ce:
+                    errors.append(f"create row for {entry.path_display}: {_ce}")
+
+            if not res.has_more:
+                break
+            try:
+                res = dbx.files_list_folder_continue(res.cursor)
+            except Exception as _ce:
+                errors.append(f"continue {folder_path}: {_ce}")
+                break
+
+    try:
+        db.session.commit()
+    except Exception as _ce:
+        db.session.rollback()
+        return jsonify({
+            "error": f"Commit failed: {_ce}",
+            "created": 0,
+            "scanned": scanned,
+            "errors": errors[:20],
+        }), 500
+
+    return jsonify({
+        "ok":       True,
+        "scanned":  scanned,
+        "created":  created,
+        "existing": len(existing_paths),
+        "sample":   sample,
+        "errors":   errors[:20],
+        "proj_root": proj_root,
+    })
+
+
 # ── Project folder slug generation ────────────────────────────────────────────
 def _make_project_slug(project_name, client_name=None, dt=None):
     """Generate a Dropbox folder slug: YYYY-MM_ClientSlug_ProjectSlug"""
@@ -4033,6 +4195,18 @@ def budget_settings(pid, bid):
     if "payroll_fee_pct" in data:
         v = data.get("payroll_fee_pct")
         budget.payroll_fee_pct = float(v) / 100 if v is not None and v != '' else 0.0175
+    if "fee_excluded_sections" in data:
+        # Frontend sends an array of account-code ints (the sections the
+        # user ticked as "exempt" in Settings). Empty array = fee applies
+        # to every section (default). We store as JSON text; empty list
+        # serialises to "[]" so calc_top_sheet's parse path handles both.
+        raw = data.get("fee_excluded_sections") or []
+        try:
+            codes = sorted({int(c) for c in raw})
+        except (TypeError, ValueError):
+            codes = []
+        import json as _j
+        budget.fee_excluded_sections = _j.dumps(codes) if codes else None
     if "client_name" in data:
         budget.client_name = data["client_name"].strip() or None
     if "prepared_by" in data:
@@ -8622,6 +8796,10 @@ def _do_boot_work():
         "ALTER TABLE crew_assignment ADD COLUMN role_number TEXT",
         # Company fee disperse option
         "ALTER TABLE budget ADD COLUMN company_fee_dispersed BOOLEAN DEFAULT 0 NOT NULL",
+        # Per-project section exclusions from the production-company fee
+        # base. NULL / empty = every section contributes (default). User
+        # edits from budget Settings → "Sections exempt from Prod Co Fee".
+        "ALTER TABLE budget ADD COLUMN fee_excluded_sections TEXT",
         # Location facility name
         "ALTER TABLE location ADD COLUMN facility_name TEXT",
         # Per-instance schedule display labels

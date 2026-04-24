@@ -1528,7 +1528,27 @@ body.gantt-select-mode .gantt-cell {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #9b59b6;
+  background: #9b59b6;    /* full-day = purple */
+  position: absolute;
+}
+/* Partial-day per diem variants. Stacked along the bottom edge so a cell
+   can show multiple at once (e.g. breakfast + dinner but not lunch). */
+.flag-dot.flag-per-diem-b {
+  bottom: 3px; right: 18px;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: #f39c12;    /* breakfast = amber */
+  position: absolute;
+}
+.flag-dot.flag-per-diem-l {
+  bottom: 3px; right: 26px;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: #3498db;    /* lunch = blue */
+  position: absolute;
+}
+.flag-dot.flag-per-diem-d {
+  bottom: 3px; right: 34px;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: #e74c3c;    /* dinner = red */
   position: absolute;
 }
 

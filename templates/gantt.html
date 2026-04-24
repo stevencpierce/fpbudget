@@ -383,7 +383,10 @@
           <span class="flag-dot flag-hotel-r" title="Hotel"></span>
         {% endif %}
         {% if flags.get('working_meal') %}<span class="flag-dot flag-working-meal" title="Working Meal"></span>{% endif %}
-        {% if flags.get('per_diem') %}<span class="flag-dot flag-per-diem" title="Per Diem"></span>{% endif %}
+        {% if flags.get('per_diem_full') or flags.get('per_diem') %}<span class="flag-dot flag-per-diem" title="Per Diem — Full Day"></span>{% endif %}
+        {% if flags.get('per_diem_breakfast') %}<span class="flag-dot flag-per-diem-b" title="Per Diem — Breakfast"></span>{% endif %}
+        {% if flags.get('per_diem_lunch') %}<span class="flag-dot flag-per-diem-l" title="Per Diem — Lunch"></span>{% endif %}
+        {% if flags.get('per_diem_dinner') %}<span class="flag-dot flag-per-diem-d" title="Per Diem — Dinner"></span>{% endif %}
       </td>
       {% endfor %}
     </tr>
@@ -436,7 +439,11 @@
   <div class="day-picker-flags" id="day-picker-flags">
     <span class="flag-toggle-label">Meals:</span>
     <button class="flag-toggle-btn" data-flag="working_meal">🍽 Working Meal</button>
-    <button class="flag-toggle-btn" data-flag="per_diem">💰 Per Diem</button>
+    <span class="flag-toggle-label">Per Diem:</span>
+    <button class="flag-toggle-btn" data-flag="per_diem_full">💰 Full Day</button>
+    <button class="flag-toggle-btn" data-flag="per_diem_breakfast">🥐 Breakfast</button>
+    <button class="flag-toggle-btn" data-flag="per_diem_lunch">🥪 Lunch</button>
+    <button class="flag-toggle-btn" data-flag="per_diem_dinner">🍽 Dinner</button>
     <span class="flag-toggle-label">Travel:</span>
     <button class="flag-toggle-btn" data-flag="flight">✈ Flight</button>
     <button class="flag-toggle-btn" data-flag="mileage">🚗 Mileage</button>
@@ -487,7 +494,10 @@
   <div class="select-action-divider"></div>
   <div class="select-action-section">Toggle flag on all:</div>
   <button class="select-action-btn" data-action="flag" data-value="working_meal">🍽 Working Meal</button>
-  <button class="select-action-btn" data-action="flag" data-value="per_diem">💰 Per Diem</button>
+  <button class="select-action-btn" data-action="flag" data-value="per_diem_full">💰 Per Diem — Full</button>
+  <button class="select-action-btn" data-action="flag" data-value="per_diem_breakfast">🥐 Per Diem — Breakfast</button>
+  <button class="select-action-btn" data-action="flag" data-value="per_diem_lunch">🥪 Per Diem — Lunch</button>
+  <button class="select-action-btn" data-action="flag" data-value="per_diem_dinner">🍽 Per Diem — Dinner</button>
   <button class="select-action-btn" data-action="flag" data-value="hotel">🏨 Hotel</button>
   <button class="select-action-btn" data-action="flag" data-value="flight">✈ Flight</button>
   <button class="select-action-btn" data-action="flag" data-value="mileage">🚗 Mileage</button>
@@ -652,8 +662,11 @@ const LOC_DAY_LABELS = {use:'Use', scout:'Scout', hold:'Hold', strike:'Strike'};
       html += `<span class="flag-dot flag-hotel-l" title="Hotel"></span>`;
       html += `<span class="flag-dot flag-hotel-r" title="Hotel"></span>`;
     }
-    if (flags.working_meal) html += `<span class="flag-dot flag-working-meal" title="Working Meal"></span>`;
-    if (flags.per_diem)     html += `<span class="flag-dot flag-per-diem" title="Per Diem"></span>`;
+    if (flags.working_meal)       html += `<span class="flag-dot flag-working-meal" title="Working Meal"></span>`;
+    if (flags.per_diem_full || flags.per_diem) html += `<span class="flag-dot flag-per-diem" title="Per Diem — Full Day"></span>`;
+    if (flags.per_diem_breakfast) html += `<span class="flag-dot flag-per-diem-b" title="Per Diem — Breakfast"></span>`;
+    if (flags.per_diem_lunch)     html += `<span class="flag-dot flag-per-diem-l" title="Per Diem — Lunch"></span>`;
+    if (flags.per_diem_dinner)    html += `<span class="flag-dot flag-per-diem-d" title="Per Diem — Dinner"></span>`;
     td.innerHTML = html;
     return true;
   }

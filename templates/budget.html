@@ -232,6 +232,14 @@
           <button class="ts-collapse-btn" onclick="toggleTsSection({{ row.code }}, this)" title="Show/hide detail lines">▸</button>
           {% endif %}
           {{ row.account }}
+          {# Plain-text annotation when this section is exempt from the
+             Production Company Fee (user-configured in Settings, plus 6800
+             which is always self-exempt). Keeps the math transparent: you
+             can see at a glance that the fee line below didn't touch this
+             row. #}
+          {% if row.fee_applies is defined and not row.fee_applies %}
+            <span class="muted" style="font-size:.75rem;font-style:italic;margin-left:.4rem;color:#f59e0b">(Prod Co Fee exempt)</span>
+          {% endif %}
         </td>
         <td class="col-num">{{ row.estimated | currency }}</td>
         <td class="col-num {% if not working_exists %}muted{% endif %}">{{ w | currency }}</td>
@@ -406,13 +414,43 @@
       {% set ns.kit_working = ns.kit_working + ((ln.working_total | float) if ln.working_total is not none else res.est_total) %}
     {% endif %}
   {% endfor %}
+  {# Auto-calc injections: keep line-by-line section totals in SYNC with
+     the Top Sheet. calc_top_sheet adds Workers' Comp into 6000 (Insurance)
+     and Payroll Service Fee into 6500 (Administrative) as percentages of
+     gross labor wages. Without this block the section badge under the
+     line items would show ONLY the BudgetLine sum and disagree with the
+     Top Sheet. Mirror the same values here so both views match. #}
+  {% if sec.code == 6000 and top_sheet.workers_comp_amount %}
+    {% set ns.sec_total = ns.sec_total + top_sheet.workers_comp_amount %}
+  {% endif %}
+  {% if sec.code == 6500 and top_sheet.payroll_fee_amount %}
+    {% set ns.sec_total = ns.sec_total + top_sheet.payroll_fee_amount %}
+  {% endif %}
+  {# Fee-exempt badge: read the exclusion list from top_sheet so the
+     line-items header is kept in sync with the Top Sheet without each
+     template needing to parse budget.fee_excluded_sections itself. #}
+  {% set _fee_exempt = (top_sheet.company_fee_excluded_codes or []) | list %}
+  {% set _sec_fee_exempt = sec.code in _fee_exempt %}
+  {# Per-section dispersed multiplier: when the fee is dispersed into
+     section totals, exempt sections must NOT be inflated. Using this
+     local multiplier keeps the math correct on the line-items badges
+     (dispersed mode inflates eligible sections but leaves exempt ones
+     at their raw total, matching calc_top_sheet's row.fee_amount=0 for
+     exempt rows). #}
+  {% set _sec_fee_m = 1.0 if _sec_fee_exempt else _fee_m %}
   <div class="section-block" data-section="{{ sec.code }}">
     <div class="section-header">
       <span class="section-code">{{ sec.code }}</span>
       <span class="section-name">{{ sec.name }}</span>
+      {% if _sec_fee_exempt %}
+      <span class="muted" style="font-size:.72rem;font-style:italic;margin-left:.5rem;color:#f59e0b"
+            title="This section is marked exempt from the Production Company Fee in Settings — its total passes through without the fee markup.">
+        (Prod Co Fee exempt)
+      </span>
+      {% endif %}
       <button class="btn btn-xs btn-ghost add-line-btn"
               onclick="addLineInSection({{ sec.code }}, '{{ sec.name }}')">+ Line</button>
-      <span class="section-total-badge">{{ (ns.sec_total * _fee_m) | currency }}</span>
+      <span class="section-total-badge">{{ (ns.sec_total * _sec_fee_m) | currency }}</span>
     </div>
     <table class="data-table line-table {{ 'has-labor' if ns.has_labor else 'no-labor' }} {{ 'has-working' if working_exists else '' }}">
       <colgroup>
@@ -577,7 +615,7 @@
           <td class="col-num">
             {% if ln.is_labor %}
             {% if ln.use_schedule and res.ot_amount is defined and res.ot_amount > 0 %}
-            <span class="sched-ot" title="OT computed from schedule">{{ (res.ot_amount * _fee_m) | currency }}</span>
+            <span class="sched-ot" title="OT computed from schedule">{{ (res.ot_amount * _sec_fee_m) | currency }}</span>
             {% else %}
             <span class="editable num" data-field="est_ot"
                   data-id="{{ ln.id }}">{{ ln.est_ot | float | round(2) }}</span>
@@ -595,10 +633,10 @@
             {% endif %}
           </td>
           <td class="col-num line-subtotal">
-            {% if ln.is_labor %}{{ (res.subtotal * _fee_m) | currency }}
+            {% if ln.is_labor %}{{ (res.subtotal * _sec_fee_m) | currency }}
             {% else %}
               {% set _nl_pre = (ln.quantity|float) * (ln.days|float) * (ln.rate|float) %}
-              {% if _nl_pre > 0 %}{{ (_nl_pre * _fee_m) | round(2) | currency }}{% else %}{{ (res.est_total * _fee_m) | currency }}{% endif %}
+              {% if _nl_pre > 0 %}{{ (_nl_pre * _sec_fee_m) | round(2) | currency }}{% else %}{{ (res.est_total * _sec_fee_m) | currency }}{% endif %}
             {% endif %}
           </td>
           <td class="col-num">
@@ -613,22 +651,22 @@
           {% if is_working_view %}
           {% set _frozen = (ln.working_total | float) if ln.working_total is not none else res.est_total %}
           <td class="col-num line-total line-frozen-est">
-            <span class="frozen-est" data-raw="{{ _frozen }}">{{ (_frozen * _fee_m) | currency }}</span>
+            <span class="frozen-est" data-raw="{{ _frozen }}">{{ (_frozen * _sec_fee_m) | currency }}</span>
           </td>
           <td class="col-num col-working line-working">
-            <strong data-base="{{ res.est_total }}">{{ (res.est_total * _fee_m) | currency }}</strong>
+            <strong data-base="{{ res.est_total }}">{{ (res.est_total * _sec_fee_m) | currency }}</strong>
           </td>
-          {% set _variance = (res.est_total - _frozen) * _fee_m %}
+          {% set _variance = (res.est_total - _frozen) * _sec_fee_m %}
           <td class="col-num col-variance line-variance">
             <span class="{% if _variance > 0.005 %}var-pos{% elif _variance < -0.005 %}var-neg{% else %}var-zero{% endif %}">{{ _variance | currency }}</span>
           </td>
           {% else %}
-          <td class="col-num line-total"><strong data-base="{{ res.est_total }}">{{ (res.est_total * _fee_m) | currency }}</strong></td>
+          <td class="col-num line-total"><strong data-base="{{ res.est_total }}">{{ (res.est_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-working line-working">
             {% if working_exists %}
               {% set _wlt = working_line_totals.get((ln.account_code, ln.sort_order), none) %}
               {% if _wlt is not none %}
-              <span class="muted" style="font-size:.85rem" title="Current Working budget total for this line">{{ (_wlt * _fee_m) | currency }}</span>
+              <span class="muted" style="font-size:.85rem" title="Current Working budget total for this line">{{ (_wlt * _sec_fee_m) | currency }}</span>
               {% else %}
               <span class="muted" style="font-size:.75rem">—</span>
               {% endif %}
@@ -666,6 +704,59 @@
           </td>
         </tr>
         {% endfor %}
+        {# Auto-calc display rows under the last real line in sections
+           6000 (Insurance → Workers' Comp) and 6500 (Administrative →
+           Payroll Service Fee). These are not BudgetLines — they live in
+           the Budget row itself as percentages and are computed in
+           calc_top_sheet. We render them here so the line-by-line view
+           mirrors the Top Sheet one-to-one. Right-click opens the same
+           % editor used on the Top Sheet auto-rows. #}
+        {% if sec.code == 6000 and top_sheet.workers_comp_amount > 0 %}
+        <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
+            oncontextmenu="editAutoLinePct(event, 'workers_comp')"
+            title="Right-click to edit the Workers' Comp %. This line is computed from gross labor wages; it isn't a Budget Line row.">
+          <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
+            <span class="line-number">{{ sec.code }}-WC</span>
+            Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)
+          </td>
+          <td class="col-pc col-labor-only"></td>
+          <td class="col-qty"></td>
+          <td class="col-days"></td>
+          <td class="col-num"></td>
+          <td class="col-rt"></td>
+          <td class="col-num"></td>
+          <td class="col-fr"></td>
+          <td class="col-num">{{ top_sheet.workers_comp_amount | currency }}</td>
+          <td class="col-num"></td>
+          <td class="col-num">{{ (top_sheet.workers_comp_amount * _sec_fee_m) | currency }}</td>
+          <td class="col-num col-working">{{ (top_sheet.workers_comp_amount * _sec_fee_m) | currency }}</td>
+          <td class="col-num col-variance"></td>
+          <td class="col-act"></td>
+        </tr>
+        {% endif %}
+        {% if sec.code == 6500 and top_sheet.payroll_fee_amount > 0 %}
+        <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
+            oncontextmenu="editAutoLinePct(event, 'payroll_fee')"
+            title="Right-click to edit the Payroll Service Fee %. This line is computed from gross labor wages; it isn't a Budget Line row.">
+          <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
+            <span class="line-number">{{ sec.code }}-PF</span>
+            Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)
+          </td>
+          <td class="col-pc col-labor-only"></td>
+          <td class="col-qty"></td>
+          <td class="col-days"></td>
+          <td class="col-num"></td>
+          <td class="col-rt"></td>
+          <td class="col-num"></td>
+          <td class="col-fr"></td>
+          <td class="col-num">{{ top_sheet.payroll_fee_amount | currency }}</td>
+          <td class="col-num"></td>
+          <td class="col-num">{{ (top_sheet.payroll_fee_amount * _sec_fee_m) | currency }}</td>
+          <td class="col-num col-working">{{ (top_sheet.payroll_fee_amount * _sec_fee_m) | currency }}</td>
+          <td class="col-num col-variance"></td>
+          <td class="col-act"></td>
+        </tr>
+        {% endif %}
       </tbody>
       {% set sec_working = namespace(total=0) %}
       {% for ln in sec.lines %}
@@ -675,6 +766,15 @@
           {% set sec_working.total = sec_working.total + line_results[ln.id].est_total %}
         {% endif %}
       {% endfor %}
+      {# Mirror the Top Sheet injection into the Working-column section
+         total so the "Working" badge under line items matches the Top
+         Sheet's Working column. #}
+      {% if sec.code == 6000 and top_sheet.workers_comp_amount %}
+        {% set sec_working.total = sec_working.total + top_sheet.workers_comp_amount %}
+      {% endif %}
+      {% if sec.code == 6500 and top_sheet.payroll_fee_amount %}
+        {% set sec_working.total = sec_working.total + top_sheet.payroll_fee_amount %}
+      {% endif %}
       <tfoot>
         {# Per-category subtotals (kit / agent / section breakdowns) all align under their matching column. #}
         {% if ns.kit_total > 0 %}
@@ -701,21 +801,21 @@
         <tr class="section-subtotal-row">
           <td colspan="5" class="col-desc muted" style="font-size:.75rem;font-style:italic;text-align:right">Section breakdown</td>
           <td class="col-num muted"></td>
-          <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_ot * _fee_m) | currency if ns.sec_ot else '' }}</td>
-          <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_fringe * _fee_m) | currency if ns.sec_fringe else '' }}</td>
-          <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_subtotal * _fee_m) | currency if ns.sec_subtotal else '' }}</td>
+          <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_ot * _sec_fee_m) | currency if ns.sec_ot else '' }}</td>
+          <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_fringe * _sec_fee_m) | currency if ns.sec_fringe else '' }}</td>
+          <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_subtotal * _sec_fee_m) | currency if ns.sec_subtotal else '' }}</td>
           <td class="col-num muted"></td>
           {% if is_working_view %}
           <td class="col-num sec-est-total" style="font-size:.8rem">
-            <span class="frozen-est" data-raw="{{ sec_working.total }}">{{ (sec_working.total * _fee_m) | currency }}</span>
+            <span class="frozen-est" data-raw="{{ sec_working.total }}">{{ (sec_working.total * _sec_fee_m) | currency }}</span>
           </td>
-          <td class="col-num col-working sec-working-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _fee_m) | currency }}</strong></td>
-          {% set _sec_var = (ns.sec_total - sec_working.total) * _fee_m %}
+          <td class="col-num col-working sec-working-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
+          {% set _sec_var = (ns.sec_total - sec_working.total) * _sec_fee_m %}
           <td class="col-num col-variance sec-variance-total" style="font-size:.8rem">
             <span class="{% if _sec_var > 0.005 %}var-pos{% elif _sec_var < -0.005 %}var-neg{% else %}var-zero{% endif %}">{{ _sec_var | currency }}</span>
           </td>
           {% else %}
-          <td class="col-num sec-est-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _fee_m) | currency }}</strong></td>
+          <td class="col-num sec-est-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-size:.8rem"><strong>{{ sec_working.total | currency }}</strong></td>
           <td class="col-num col-variance"></td>
           {% endif %}
@@ -727,14 +827,14 @@
             Total {{ sec.name }}
           </td>
           {% if is_working_view %}
-          <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem"><strong data-base="{{ sec_working.total }}">{{ (sec_working.total * _fee_m) | currency }}</strong></td>
-          <td class="col-num col-working sec-grand-working" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _fee_m) | currency }}</strong></td>
+          <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem"><strong data-base="{{ sec_working.total }}">{{ (sec_working.total * _sec_fee_m) | currency }}</strong></td>
+          <td class="col-num col-working sec-grand-working" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-variance sec-grand-variance" style="font-weight:700;font-size:.88rem">
-            {% set _gv = (ns.sec_total - sec_working.total) * _fee_m %}
+            {% set _gv = (ns.sec_total - sec_working.total) * _sec_fee_m %}
             <span class="{% if _gv > 0.005 %}var-pos{% elif _gv < -0.005 %}var-neg{% else %}var-zero{% endif %}">{{ _gv | currency }}</span>
           </td>
           {% else %}
-          <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _fee_m) | currency }}</strong></td>
+          <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-weight:700;font-size:.95rem"><strong>{{ sec_working.total | currency }}</strong></td>
           <td class="col-num col-variance"></td>
           {% endif %}
@@ -798,12 +898,20 @@
       {# Super-admin testing tool: wipe every DocUpload for this project and
          move its Dropbox files to /_TRASH/. Only visible to super_admin role. #}
       {% if current_user.role == 'super_admin' %}
-      <button type="button" id="btn-wipe-docs"
-              style="font-size:11px;padding:4px 10px;border-radius:6px;
-                     background:#2a1414;color:#ef4444;border:1px solid #4a2020;cursor:pointer;"
-              title="Super admin only: delete every DocUpload row for this project and move its Dropbox files to /_TRASH/. Use for clean-start testing.">
-        🗑 Wipe all receipts (test)
-      </button>
+      <div style="display:flex;gap:6px;">
+        <button type="button" id="btn-scan-docs"
+                style="font-size:11px;padding:4px 10px;border-radius:6px;
+                       background:#14291e;color:#22c55e;border:1px solid #1a4228;cursor:pointer;"
+                title="Super admin only: walk this project's Dropbox doc folders and create DocUpload rows for any files present in Dropbox but missing from the DB. Catches interrupted uploads and manually-filed docs.">
+          🔍 Scan Dropbox
+        </button>
+        <button type="button" id="btn-wipe-docs"
+                style="font-size:11px;padding:4px 10px;border-radius:6px;
+                       background:#2a1414;color:#ef4444;border:1px solid #4a2020;cursor:pointer;"
+                title="Super admin only: delete every DocUpload row for this project and move its Dropbox files to /_TRASH/. Use for clean-start testing.">
+          🗑 Wipe all receipts (test)
+        </button>
+      </div>
       {% endif %}
     </div>
 
@@ -957,7 +1065,7 @@
     const el = document.getElementById('docsQueue');
     el.innerHTML = '';
     docsQueue.forEach((item,idx)=>{
-      const statusMap = {pending:['var(--text-muted)','Ready'],uploading:['#f59e0b','Uploading…'],done:['#22c55e','Uploaded ✓'],duplicate:['#a78bfa','Already uploaded'],error:['#ef4444','Failed']};
+      const statusMap = {pending:['var(--text-muted)','Ready'],uploading:['#f59e0b','Uploading…'],done:['#22c55e','Uploaded ✓'],review:['#fbbf24','⚠ Needs review'],duplicate:['#a78bfa','Already uploaded'],error:['#ef4444', item.errorMsg ? ('Failed — ' + item.errorMsg) : 'Failed']};
       const [color, label] = statusMap[item.status] || statusMap.pending;
       const div = document.createElement('div');
       div.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:11px 13px;display:flex;align-items:center;gap:10px;';
@@ -1009,9 +1117,24 @@
     try{
       const r=await fetch(UPLOAD_URL,{method:'POST',body:fd});
       const d=await r.json();
-      item.status=(d.status==='duplicate')?'duplicate':r.ok?'done':'error';
-      if(item.status==='done') docsPreppendHistory(item.file.name, d.upload_id);
-    }catch(e){item.status='error';}
+      // HTTP status -> item status:
+      //   200 + {status:'duplicate'}  → duplicate badge
+      //   201 (filed)                 → done
+      //   202 (review)                → review
+      //   4xx/5xx                     → error
+      if (d && d.status === 'duplicate') {
+        item.status = 'duplicate';
+      } else if (r.status === 201) {
+        item.status = 'done';
+        docsPreppendHistory(item.file, d);
+      } else if (r.status === 202) {
+        item.status = 'review';
+        docsPreppendHistory(item.file, d, /*review=*/true);
+      } else {
+        item.status = 'error';
+        item.errorMsg = (d && d.error) || ('HTTP ' + r.status);
+      }
+    }catch(e){item.status='error'; item.errorMsg=e.message;}
     docsRenderQueue();
   }
 
@@ -1019,17 +1142,88 @@
     for(const item of docsQueue.filter(i=>i.status==='pending')) await docsUploadOne(item);
   };
 
-  function docsPreppendHistory(filename, uid){
-    const h=document.getElementById('docsHistory');
-    const empty=h.querySelector('[data-empty]');
-    if(empty) empty.remove();
-    const div=document.createElement('div');
-    div.className = 'doc-row';
+  // Build a fully-populated history row for a just-completed upload.
+  // Mirrors the server-rendered markup in the {% for u in doc_uploads %}
+  // loop so the sort toolbar's data-sort-* attributes keep working and
+  // the metadata (uploader, doc type, vendor/amount, file size) is
+  // visible without a page reload. Also swaps out the "No uploads yet"
+  // empty-state block if it's still in the DOM.
+  function _esc(s){ return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function _fmtSize(b){ if(!b) return ''; return b<1048576 ? (b/1024).toFixed(1)+' KB' : (b/1048576).toFixed(1)+' MB'; }
+  function _fmtMoney(n){ return Number(n).toFixed(2); }
+
+  const CURRENT_USER_NAME = {{ (current_user.name or (current_user.email.split('@')[0] if current_user.email else 'you'))|tojson }};
+
+  function docsPreppendHistory(file, d, review){
+    const h = document.getElementById('docsHistory');
+    // Replace empty-state placeholder the first time a row is added.
+    const empty = h.querySelector('[data-empty]') || h.querySelector('div[style*="No uploads yet"]');
+    if (empty) empty.remove();
+
+    const uid       = d.upload_id;
+    const isReview  = !!review || d.status === 'review';
+    const isFiled   = !isReview;
+    const filename  = file.name;
+    const displayName = d.new_filename || filename;
+    const docType   = d.doc_type || '';
+    const conf      = d.confidence != null ? Math.round(d.confidence * 100) : null;
+    const now       = new Date();
+    const nowIso    = now.toISOString();
+    const dateStr   = now.toLocaleString(undefined, {month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+    const sizeStr   = _fmtSize(file.size);
+    const isPdf     = (file.type || '').includes('pdf');
+    const icon      = isPdf ? '📄' : '🧾';
+    const uploader  = CURRENT_USER_NAME || '';
+
+    const badgeCss = isFiled
+      ? 'background:#14291e;color:#22c55e;border:1px solid #1a4228;'
+      : 'background:#2a2414;color:#fbbf24;border:1px solid #4a3a1a;';
+    const badgeLabel = isFiled ? 'Filed' : ('⚠ Review' + (conf != null ? ' ' + conf + '%' : ''));
+
+    const div = document.createElement('div');
+    div.className        = 'doc-row';
     div.dataset.uploadId = uid;
-    div.dataset.status = 'filed';
-    div.style.cssText='background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:center;gap:12px;';
-    div.innerHTML=`<div style="font-size:20px;width:32px;text-align:center;">🧾</div><div style="flex:1;"><div style="font-size:13px;font-weight:500;">${filename}</div><div style="font-size:11px;color:var(--text-muted);">Just now</div></div><span class="doc-status-badge" style="font-size:11px;padding:3px 9px;border-radius:20px;background:#14291e;color:#22c55e;border:1px solid #1a4228;">Filed</span><button class="doc-delete-btn" title="Delete this document" style="background:none;border:none;color:#ef4444;cursor:pointer;padding:4px 8px;font-size:14px;">✕</button>`;
+    div.dataset.status   = isFiled ? 'filed' : 'review';
+    div.dataset.sortDate     = nowIso;
+    div.dataset.sortUploader = uploader.toLowerCase();
+    div.dataset.sortFilename = displayName.toLowerCase();
+    div.dataset.sortOriginal = filename.toLowerCase();
+    div.dataset.sortType     = docType.toLowerCase();
+    div.dataset.sortVendor   = '';
+    div.dataset.sortAmount   = 0;
+    div.dataset.sortSize     = file.size || 0;
+    div.dataset.sortStatus   = isFiled ? 'filed' : 'review';
+    div.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;';
+
+    const wasRenamed = displayName && displayName !== filename;
+    const renameRow  = wasRenamed
+      ? `<div style="font-size:11px;color:#6b7280;font-style:italic;margin-top:1px;">📎 uploaded as: ${_esc(filename)}</div>`
+      : '';
+
+    div.innerHTML = `
+      <div style="font-size:20px;width:32px;text-align:center;padding-top:2px;">${icon}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:500;">
+          <span class="doc-filename ${isFiled ? 'editable-filename' : ''}" data-id="${uid}" data-original="${_esc(displayName)}"
+                ${isFiled ? 'title="Click to rename — Dropbox will update too" style="cursor:pointer;border-bottom:1px dashed transparent;padding:1px 2px;border-radius:2px;"' : ''}>${_esc(displayName)}</span>
+          ${isFiled ? '<span class="rename-hint" style="font-size:10px;color:#6b7280;margin-left:4px;opacity:0;">✎</span>' : ''}
+        </div>
+        ${renameRow}
+        <div style="font-size:11px;color:var(--text-muted);margin-top:3px;">
+          ${uploader ? `👤 ${_esc(uploader)} · ` : ''}📅 ${_esc(dateStr)}${docType ? ` · 🏷 <strong>${_esc(docType)}</strong>` : ''}${sizeStr ? ` · 📦 ${sizeStr}` : ''}
+        </div>
+      </div>
+      <span class="doc-status-badge" style="font-size:11px;padding:3px 9px;border-radius:20px;white-space:nowrap;${badgeCss}">${badgeLabel}</span>
+      <button class="doc-delete-btn" title="Delete this document" style="background:none;border:none;color:#ef4444;cursor:pointer;padding:4px 8px;font-size:14px;">✕</button>
+    `;
     h.prepend(div);
+
+    // Keep the count chip + sort toolbar in sync.
+    const countEl = document.getElementById('docs-count');
+    if (countEl) {
+      const n = h.querySelectorAll('.doc-row').length;
+      countEl.textContent = n + ' item' + (n === 1 ? '' : 's');
+    }
   }
 
   // ── Delete + Retry Filing handlers (event-delegated) ─────────────────────
@@ -1253,6 +1447,41 @@
       } finally {
         _wipeBtn.disabled = false;
         _wipeBtn.textContent = '🗑 Wipe all receipts (test)';
+      }
+    });
+  }
+
+  // ── Super-admin scan-Dropbox button ────────────────────────────────────
+  // Walks the project's Dropbox doc folders and creates DocUpload rows for
+  // any files present on Dropbox but missing from the DB. Catches
+  // interrupted-upload cases (tab closed before the response landed) and
+  // any legacy manually-filed docs. Server-side at
+  // /admin/docs/project/<pid>/reconcile; returns counts + sample list.
+  const _scanBtn = document.getElementById('btn-scan-docs');
+  if (_scanBtn) {
+    _scanBtn.addEventListener('click', async () => {
+      _scanBtn.disabled = true;
+      _scanBtn.textContent = '⏳ Scanning…';
+      try {
+        const r = await fetch('/admin/docs/project/' + PROJ_ID + '/reconcile', { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) { alert('Scan failed: ' + (d.error || 'unknown')); return; }
+        let msg = 'Dropbox scan complete.\n\n';
+        msg += '• Files scanned: '    + d.scanned  + '\n';
+        msg += '• Already tracked: '  + d.existing + '\n';
+        msg += '• New rows created: ' + d.created  + '\n';
+        if (d.errors && d.errors.length) msg += '\nWarnings: ' + d.errors.length;
+        if (d.sample && d.sample.length) {
+          msg += '\n\nSample:';
+          for (const s of d.sample.slice(0, 8)) msg += '\n  • ' + s.filename + ' (' + (s.doc_type||'?') + ')';
+        }
+        alert(msg);
+        if (d.created > 0) location.reload();
+      } catch (e) {
+        alert('Request failed: ' + e.message);
+      } finally {
+        _scanBtn.disabled = false;
+        _scanBtn.textContent = '🔍 Scan Dropbox';
       }
     });
   }
@@ -2101,6 +2330,36 @@
                 <span class="muted" style="font-size:.8rem">Instead of a separate fee line, the markup is spread proportionally into each budget section (rounded to the nearest dollar). The grand total is identical — useful for client-facing budgets where the fee should not appear as a line item.</span>
               </span>
             </label>
+          </div>
+        </div>
+        {# Per-project section exemptions for the Production Company Fee.
+           Default = none ticked → fee applies to every section. Ticking a
+           section makes its total pass through without the fee markup,
+           matching the MMB/ShowBiz "A through K" convention where fee is
+           only applied to labor + equipment, not to insurance, admin,
+           distribution, etc. Stored as JSON array on budget.fee_excluded_sections. #}
+        <div class="field">
+          <label>Sections exempt from Production Company Fee
+            <span class="muted" style="font-weight:400;font-size:.8rem">(check to make a section a pass-through — no fee charged on it)</span>
+          </label>
+          <div id="fee-excl-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:.35rem .9rem;padding:.6rem .8rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-2);max-height:260px;overflow-y:auto">
+            {% set excluded_codes = top_sheet.company_fee_excluded_codes or [] %}
+            {% for sec_code, sec_name in coa_sections %}
+              {# 6800 (Prod Company Fee itself) is always excluded — show
+                 it disabled so users understand why it's not editable. #}
+              {% set is_self = sec_code == 6800 %}
+              <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;font-size:.82rem;cursor:{{ 'not-allowed' if is_self else 'pointer' }};{{ 'opacity:.55;' if is_self else '' }}">
+                <input type="checkbox" class="fee-excl-check" value="{{ sec_code }}"
+                       {% if sec_code in excluded_codes %}checked{% endif %}
+                       {% if is_self %}disabled{% endif %}>
+                <span><span class="muted" style="font-family:monospace">{{ sec_code }}</span> {{ sec_name }}{% if is_self %} <span class="muted">(always exempt)</span>{% endif %}</span>
+              </label>
+            {% endfor %}
+          </div>
+          <div style="margin-top:.4rem;font-size:.78rem;color:var(--text-muted)">
+            Fee base: <strong id="fee-base-display">{{ top_sheet.company_fee_base | currency }}</strong>
+            · Current fee: <strong>{{ top_sheet.company_fee | currency }}</strong>
+            {% if excluded_codes %}· <span style="color:#f59e0b">{{ excluded_codes|length }} section{{ 's' if excluded_codes|length != 1 else '' }} exempt</span>{% endif %}
           </div>
         </div>
         <div class="field">
@@ -3790,6 +4049,12 @@ async function saveSettings() {
     prepared_by_title:  document.getElementById('set-prepared-by-title')?.value || '',
     prepared_by_email:  document.getElementById('set-prepared-by-email')?.value || '',
     prepared_by_phone:  document.getElementById('set-prepared-by-phone')?.value || '',
+    // Fee exclusions — collect all checked section codes from the
+    // "Sections exempt from Prod Company Fee" checklist. Empty array =
+    // default (fee applies to every section).
+    fee_excluded_sections: Array.from(
+      document.querySelectorAll('#fee-excl-grid .fee-excl-check:checked')
+    ).map(el => parseInt(el.value, 10)).filter(n => !isNaN(n)),
   };
 
   await saveCompanySettings();
