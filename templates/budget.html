@@ -1143,8 +1143,8 @@
   };
 
   // Build a fully-populated history row for a just-completed upload.
-  // Mirrors the server-rendered markup in the {% for u in doc_uploads %}
-  // loop so the sort toolbar's data-sort-* attributes keep working and
+  // Mirrors the server-rendered markup in the doc_uploads Jinja loop
+  // so the sort toolbar's data-sort-* attributes keep working and
   // the metadata (uploader, doc type, vendor/amount, file size) is
   // visible without a page reload. Also swaps out the "No uploads yet"
   // empty-state block if it's still in the DOM.
