@@ -1027,39 +1027,7 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     # let super-admins and project editors tick boxes in budget Settings
     # to exempt specific sections per project.
     import json as _json_fee
-    # Column may be missing in production if the boot migration failed to
-    # land. Try the ORM attribute first; if the column doesn't exist on
-    # this Budget instance, read via raw SQL; if that ALSO fails, treat
-    # as empty so the site stays up.
-    _raw_excl = None
-    try:
-        _raw_excl = getattr(budget, 'fee_excluded_sections', None)
-    except Exception:
-        _raw_excl = None
-    if _raw_excl is None:
-        # Use a FRESH engine connection (not the ORM session) — if the
-        # column is missing, Postgres aborts the transaction, and doing
-        # that on the shared session poisons every subsequent query with
-        # InFailedSqlTransaction. A dedicated connection isolates the
-        # failure so the main request continues cleanly.
-        try:
-            from models import db as _db_for_fee
-            from sqlalchemy import text as _text_for_fee
-            with _db_for_fee.engine.connect() as _conn_fee:
-                try:
-                    _row = _conn_fee.execute(
-                        _text_for_fee("SELECT fee_excluded_sections FROM budget WHERE id = :i"),
-                        {"i": budget.id}
-                    ).fetchone()
-                    if _row:
-                        _raw_excl = _row[0]
-                except Exception:
-                    # Column missing or other error — swallow. The isolated
-                    # connection's transaction is already rolled back when
-                    # we exit the with-block.
-                    _raw_excl = None
-        except Exception:
-            _raw_excl = None
+    _raw_excl = getattr(budget, 'fee_excluded_sections', None)
     try:
         _excluded_codes = set(int(c) for c in (_json_fee.loads(_raw_excl) if _raw_excl else []))
     except Exception:

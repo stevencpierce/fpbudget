@@ -4198,32 +4198,14 @@ def budget_settings(pid, bid):
     if "fee_excluded_sections" in data:
         # Frontend sends an array of account-code ints (the sections the
         # user ticked as "exempt" in Settings). Empty array = fee applies
-        # to every section. Written via raw SQL so the settings save
-        # doesn't fail if the column migration hasn't landed yet — the
-        # column is intentionally NOT declared on the Budget ORM model
-        # for that reason (see models.py comment on company_fee_dispersed).
+        # to every section (default). Stored as JSON text on the budget row.
         raw = data.get("fee_excluded_sections") or []
         try:
             codes = sorted({int(c) for c in raw})
         except (TypeError, ValueError):
             codes = []
         import json as _j_fee
-        _val = _j_fee.dumps(codes) if codes else None
-        # Write on a FRESH engine connection so a missing column doesn't
-        # poison the ORM session's transaction (which would block the
-        # rest of this settings save with InFailedSqlTransaction).
-        try:
-            with db.engine.connect() as _conn_fee_w:
-                try:
-                    _conn_fee_w.execute(
-                        text("UPDATE budget SET fee_excluded_sections = :v WHERE id = :i"),
-                        {"v": _val, "i": budget.id}
-                    )
-                    _conn_fee_w.commit()
-                except Exception as _ue:
-                    logging.warning(f"[SETTINGS] fee_excluded_sections write failed ({_ue}); skipping")
-        except Exception as _uec:
-            logging.warning(f"[SETTINGS] fee_excluded_sections connect failed ({_uec}); skipping")
+        budget.fee_excluded_sections = _j_fee.dumps(codes) if codes else None
     if "client_name" in data:
         budget.client_name = data["client_name"].strip() or None
     if "prepared_by" in data:

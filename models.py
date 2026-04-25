@@ -92,13 +92,13 @@ class Budget(db.Model):
     budget_mode     = db.Column(db.String(20), default="estimated")  # estimated | schedule | hybrid
     company_fee_pct       = db.Column(db.Numeric(6, 4), default=0.18)
     company_fee_dispersed = db.Column(db.Boolean, default=False, nullable=False)
-    # Prod Company Fee per-section exemptions (fee_excluded_sections TEXT,
-    # JSON array) — column NOT declared on the ORM because the boot
-    # migration failed to add it on 2026-04-24 and the ORM SELECT 500'd
-    # every request. Read/write via raw SQL with graceful fallback in
-    # app.py's budget-settings handler and budget_calc.calc_top_sheet.
-    # Once the column is confirmed to exist in production, re-add the
-    # Column() declaration here.
+    # JSON-encoded array of COA section codes EXCLUDED from the
+    # production-company fee base. NULL / empty = every section
+    # contributes (default). Edited via budget Settings → "Sections
+    # exempt from Prod Co Fee".  Column added manually via psql on
+    # 2026-04-25 after the boot migration kept failing under the 5s
+    # statement_timeout watchdog.
+    fee_excluded_sections = db.Column(db.Text, nullable=True)
     created_at      = db.Column(db.DateTime, default=datetime.utcnow)
     # Project settings
     start_date      = db.Column(db.Date, nullable=True)
