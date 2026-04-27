@@ -5661,9 +5661,20 @@ def travel_add_day(pid, bid):
     except Exception:
         return jsonify({"error": "Invalid date"}), 400
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
-    sd = ScheduleDay.query.filter_by(
-        budget_id=bid, budget_line_id=line_id,
-        crew_instance=instance, date=date_obj, schedule_mode=sched_mode
+    # Search for an existing row at this cell — accept either the current
+    # schedule_mode OR a legacy NULL row (pre-mode-column data). Without
+    # the NULL match we'd create a duplicate when an old budget already
+    # has a row for this person+date but with NULL mode → user reports
+    # "the row I added doesn't show up" because the dedup logic in
+    # /travel/grid then picked the legacy row over the new one.
+    from sqlalchemy import or_ as _or_add
+    sd = ScheduleDay.query.filter(
+        ScheduleDay.budget_id == bid,
+        ScheduleDay.budget_line_id == line_id,
+        ScheduleDay.crew_instance == instance,
+        ScheduleDay.date == date_obj,
+        _or_add(ScheduleDay.schedule_mode == sched_mode,
+                ScheduleDay.schedule_mode == None),
     ).first()
     if not sd:
         sd = ScheduleDay(
@@ -5673,10 +5684,45 @@ def travel_add_day(pid, bid):
         )
         db.session.add(sd)
         db.session.commit()
-    elif sd.day_type == 'off':
-        sd.day_type = 'travel'
+    else:
+        # Promote legacy NULL → mode-tagged so the row "belongs" to the
+        # active schedule and shows up in the Travel grid (the grid
+        # filters by mode-or-NULL with dedup).
+        if sd.schedule_mode is None:
+            sd.schedule_mode = sched_mode
+        # Anything off becomes travel (the user explicitly added them
+        # as a traveler today). Don't downgrade work/hold/half — those
+        # can carry travel flags without changing day_type.
+        if sd.day_type == 'off':
+            sd.day_type = 'travel'
         db.session.commit()
     return jsonify({"ok": True, "schedule_day_id": sd.id})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/lines.json")
+@login_required
+def budget_lines_json(pid, bid):
+    """Lightweight crew/lines list for the Travel tab's Add Travel Day
+    dropdown when the Budget tab DOM hasn't been built yet (i.e. user
+    landed on Travel tab via URL). Avoids the gotcha where the dropdown
+    was empty until the user visited Budget tab once to populate it."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    rows = BudgetLine.query.filter_by(budget_id=bid).order_by(
+        BudgetLine.account_code, BudgetLine.sort_order).all()
+    out = []
+    for ln in rows:
+        crew_name = None
+        if getattr(ln, 'assigned_crew', None) and ln.assigned_crew.name:
+            crew_name = ln.assigned_crew.name
+        out.append({
+            "id":            ln.id,
+            "description":   ln.description or '',
+            "account_code":  ln.account_code,
+            "is_labor":      bool(ln.is_labor),
+            "quantity":      float(ln.quantity or 1),
+            "assigned_crew": crew_name,
+        })
+    return jsonify({"lines": out})
 
 
 # ─────────────────────────────────────────────────────────────────────────────

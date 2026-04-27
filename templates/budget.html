@@ -1009,27 +1009,17 @@
     <div id="travel-totals" style="display:flex;gap:1.25rem;flex-wrap:wrap;background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:.65rem 1rem;font-size:.85rem;margin-bottom:.9rem">
       <span class="muted">Loading totals…</span>
     </div>
-    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card)">
-      <table id="travel-table" class="data-table" style="width:100%;font-size:.86rem">
-        <thead>
-          <tr style="background:var(--bg-2)">
-            <th style="text-align:left;padding:.55rem .8rem">Person</th>
-            <th style="text-align:left;padding:.55rem .6rem">Role</th>
-            <th style="text-align:left;padding:.55rem .6rem">Date</th>
-            <th style="text-align:left;padding:.55rem .6rem">Day</th>
-            <th style="text-align:center;padding:.55rem .4rem" title="Flight">✈ Flight</th>
-            <th style="text-align:center;padding:.55rem .4rem" title="Hotel">🏨 Hotel</th>
-            <th style="text-align:center;padding:.55rem .4rem" title="Car Rental">🚗 Car</th>
-            <th style="text-align:center;padding:.55rem .4rem" title="Mileage">🚙 Mi</th>
-            <th style="text-align:left;padding:.55rem .6rem" title="Per Diem">💰 Per Diem</th>
-            <th style="text-align:center;padding:.55rem .4rem">Notes</th>
-          </tr>
-        </thead>
-        <tbody id="travel-tbody">
-          <tr><td colspan="10" class="muted" style="padding:1rem;text-align:center">Loading…</td></tr>
-        </tbody>
-      </table>
+    <!-- Day-card layout: each date is its own card with all that day's
+         travelers grouped inside. Easier scanning than a flat table. -->
+    <div id="travel-days" style="display:flex;flex-direction:column;gap:14px">
+      <div class="muted" style="padding:1rem;text-align:center">Loading…</div>
     </div>
+    <p class="muted" style="margin-top:.9rem;font-size:.78rem">
+      Click ✈ / 🏨 / 🚗 / 🚙 next to a person to enter reservation details
+      (confirmation #s, flight times, etc.) — those flow into the call sheet
+      email for that day. Use "+ Add to this day" to put another crew member
+      on a date that already has travelers.
+    </p>
     <p class="muted" style="margin-top:.9rem;font-size:.78rem">
       Click a 🏨 / ✈ / 🚗 / 🚙 cell to enter the reservation details — confirmation #s, flight times, etc.
       Those details flow into the call sheet email for that crew member on that day.
@@ -8640,14 +8630,14 @@ setTimeout(function() {
     const onlyFlagged = document.getElementById('travel-only-flagged')?.checked;
     const showAll = onlyFlagged ? '0' : '1';
     document.getElementById('travel-totals').innerHTML = '<span class="muted">Loading…</span>';
-    document.getElementById('travel-tbody').innerHTML =
-      '<tr><td colspan="10" class="muted" style="padding:1rem;text-align:center">Loading…</td></tr>';
+    document.getElementById('travel-days').innerHTML =
+      '<div class="muted" style="padding:1rem;text-align:center">Loading…</div>';
     try {
       const r = await fetch(TRAVEL_GRID_URL + '?show_all=' + showAll, { credentials: 'same-origin' });
       if (!r.ok) {
         const txt = await r.text().catch(() => '');
-        document.getElementById('travel-tbody').innerHTML =
-          `<tr><td colspan="10" style="padding:1rem;color:#ef4444">Server returned ${r.status}: ${_esc(txt.slice(0,200))}</td></tr>`;
+        document.getElementById('travel-days').innerHTML =
+          `<div style="padding:1rem;color:#ef4444">Server returned ${r.status}: ${_esc(txt.slice(0,200))}</div>`;
         document.getElementById('travel-totals').innerHTML =
           `<span style="color:#ef4444">Failed (HTTP ${r.status})</span>`;
         return;
@@ -8656,8 +8646,8 @@ setTimeout(function() {
       renderTravelGrid();
     } catch (err) {
       console.error('loadTravelGrid failed', err);
-      document.getElementById('travel-tbody').innerHTML =
-        `<tr><td colspan="10" style="padding:1rem;color:#ef4444">Error: ${_esc(err.message || err)}</td></tr>`;
+      document.getElementById('travel-days').innerHTML =
+        `<div style="padding:1rem;color:#ef4444">Error: ${_esc(err.message || err)}</div>`;
       document.getElementById('travel-totals').innerHTML =
         `<span style="color:#ef4444">Error: ${_esc(err.message || err)}</span>`;
     }
@@ -8667,76 +8657,111 @@ setTimeout(function() {
     if (!_travelData) return;
     const rows = _travelData.rows || [];
     const rates = _travelData.rates || {};
-    if (rows.length === 0) {
-      document.getElementById('travel-tbody').innerHTML =
-        '<tr><td colspan="10" class="muted" style="padding:1.2rem;text-align:center">' +
-        'No travel cells flagged on the schedule. Use "+ Add Travel Day" to start.' +
-        '</td></tr>';
-      document.getElementById('travel-totals').innerHTML =
-        '<span class="muted">No travel costs yet.</span>';
-      return;
-    }
 
-    // Running totals — count instances × rate per kind for the summary bar.
+    // Running totals (computed on ALL rows, displayed in the top summary bar).
     let flightCount=0, hotelCount=0, carCount=0, mileageMiles=0;
     const pdCounts = {full:0, breakfast:0, lunch:0, dinner:0};
-
-    let html = '';
-    let lastDate = null;
     rows.forEach(r => {
       if (r.flags.flight) flightCount++;
       if (r.flags.hotel)  hotelCount++;
       if (r.flags.car_rental) carCount++;
       if (r.detail.mileage && r.detail.mileage.miles) mileageMiles += parseFloat(r.detail.mileage.miles);
       if (r.flags.per_diem) pdCounts[r.flags.per_diem] = (pdCounts[r.flags.per_diem]||0) + 1;
-
-      const sameDate = r.date === lastDate;
-      const sep = sameDate ? '' : 'border-top:2px solid var(--border)';
-      lastDate = r.date;
-
-      const dayBadge = (() => {
-        const colors = {work:'#22c55e', travel:'#3498db', hold:'#a78bfa', half:'#f59e0b', kill_fee:'#ef4444', custom:'#9b59b6', off:'var(--text-muted)'};
-        const c = colors[r.day_type] || 'var(--text-muted)';
-        return `<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${c}22;color:${c};border:1px solid ${c}55;text-transform:uppercase">${_esc(r.day_type)}</span>`;
-      })();
-
-      const cb = (flag, isOn, kind) => {
-        const handler = `travelToggleFlag(${r.line_id}, ${r.instance}, '${r.date}', '${flag}')`;
-        const detailHandler = kind ? `event.stopPropagation(); openTravelDetail(${r.schedule_day_id}, '${kind}')` : '';
-        const hasDetail = kind && r.detail[kind];
-        const dot = hasDetail ? '<span style="color:#22c55e;font-size:8px;margin-left:2px" title="Reservation details on file">●</span>' : '';
-        const detailBtn = (kind && isOn) ? `<button onclick="${detailHandler}" style="background:none;border:none;color:#5b8af9;cursor:pointer;padding:0 2px;font-size:11px" title="Edit details">✎</button>` : '';
-        return `<input type="checkbox" ${isOn ? 'checked' : ''} onclick="${handler}">${dot}${detailBtn}`;
-      };
-
-      const pdSelect = `
-        <select onchange="travelSetPerDiem(${r.line_id}, ${r.instance}, '${r.date}', this.value)" style="font-size:.78rem;padding:1px 4px;background:var(--bg-input);border:1px solid var(--border);color:var(--text)">
-          <option value=""${r.flags.per_diem===''?' selected':''}>—</option>
-          <option value="full"${r.flags.per_diem==='full'?' selected':''}>Full</option>
-          <option value="breakfast"${r.flags.per_diem==='breakfast'?' selected':''}>Bkfst</option>
-          <option value="lunch"${r.flags.per_diem==='lunch'?' selected':''}>Lunch</option>
-          <option value="dinner"${r.flags.per_diem==='dinner'?' selected':''}>Dinner</option>
-        </select>
-      `;
-
-      html += `<tr style="${sep}">
-        <td><strong>${_esc(r.person)}</strong></td>
-        <td class="muted">${_esc(r.role)}</td>
-        <td>${_esc(r.date)}</td>
-        <td>${dayBadge}</td>
-        <td style="text-align:center">${cb('flight',     r.flags.flight,     'flight')}</td>
-        <td style="text-align:center">${cb('hotel',      r.flags.hotel,      'hotel')}</td>
-        <td style="text-align:center">${cb('car_rental', r.flags.car_rental, 'car_rental')}</td>
-        <td style="text-align:center">${cb('mileage',    r.flags.mileage,    'mileage')}</td>
-        <td>${pdSelect}</td>
-        <td style="text-align:center;color:var(--text-muted);font-size:.75rem">${
-          (r.detail.flight && r.detail.flight.notes)
-          || (r.detail.hotel && r.detail.hotel.notes)
-          || ''
-        }</td>
-      </tr>`;
     });
-    document.getElementById('travel-tbody').innerHTML = html;
+
+    // Group rows by date so we can render each day as its own card.
+    const byDate = {};
+    rows.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r); });
+    const dates = Object.keys(byDate).sort();
+
+    if (dates.length === 0) {
+      document.getElementById('travel-days').innerHTML =
+        '<div class="muted" style="padding:1.2rem;text-align:center;background:var(--bg-card);border:1px solid var(--border);border-radius:8px">' +
+        'No travel days yet. Use "+ Add Travel Day" above to get started.' +
+        '</div>';
+      document.getElementById('travel-totals').innerHTML =
+        '<span class="muted">No travel costs yet.</span>';
+      return;
+    }
+
+    // Per-row inline controls (checkboxes, per-diem select, detail buttons).
+    const dayBadge = (dt) => {
+      const colors = {work:'#22c55e', travel:'#3498db', hold:'#a78bfa', half:'#f59e0b', kill_fee:'#ef4444', custom:'#9b59b6', off:'var(--text-muted)'};
+      const c = colors[dt] || 'var(--text-muted)';
+      return `<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${c}22;color:${c};border:1px solid ${c}55;text-transform:uppercase;white-space:nowrap">${_esc(dt)}</span>`;
+    };
+    const cb = (r, flag, isOn, kind, label, emoji) => {
+      const handler = `travelToggleFlag(${r.line_id}, ${r.instance}, '${r.date}', '${flag}')`;
+      const detailHandler = kind ? `event.stopPropagation(); openTravelDetail(${r.schedule_day_id}, '${kind}')` : '';
+      const hasDetail = kind && r.detail[kind];
+      const detailBtn = (kind && isOn)
+        ? `<button onclick="${detailHandler}" style="background:none;border:none;color:#5b8af9;cursor:pointer;padding:0 2px;font-size:11px" title="Edit reservation details">✎</button>`
+        : '';
+      const detailDot = hasDetail
+        ? '<span style="color:#22c55e;font-size:9px" title="Details on file">●</span>'
+        : '';
+      const activeStyle = isOn
+        ? 'background:#1a2540;color:#5b8af9;border:1px solid #2d4070'
+        : 'background:transparent;color:var(--text-muted);border:1px solid var(--border)';
+      return `<label style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:5px;cursor:pointer;font-size:11px;${activeStyle}" title="${label}">
+                <input type="checkbox" ${isOn?'checked':''} onclick="${handler}" style="margin:0">
+                ${emoji} ${label}${detailDot}${detailBtn}
+              </label>`;
+    };
+    const pdSelect = (r) => `
+      <select onchange="travelSetPerDiem(${r.line_id}, ${r.instance}, '${r.date}', this.value)"
+              style="font-size:11px;padding:3px 6px;border-radius:5px;background:var(--bg-input);border:1px solid var(--border);color:var(--text)">
+        <option value=""          ${r.flags.per_diem===''        ?' selected':''}>💰 No PD</option>
+        <option value="full"      ${r.flags.per_diem==='full'    ?' selected':''}>💰 Full</option>
+        <option value="breakfast" ${r.flags.per_diem==='breakfast'?' selected':''}>💰 B</option>
+        <option value="lunch"     ${r.flags.per_diem==='lunch'   ?' selected':''}>💰 L</option>
+        <option value="dinner"    ${r.flags.per_diem==='dinner'  ?' selected':''}>💰 D</option>
+      </select>`;
+
+    // Pretty date heading: "Mon Jun 7, 2027" without timezone weirdness.
+    const fmtDate = (iso) => {
+      const [y,m,d] = iso.split('-').map(n => parseInt(n,10));
+      const date = new Date(y, m-1, d);
+      return date.toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric', year:'numeric'});
+    };
+
+    let html = '';
+    dates.forEach(date => {
+      const dayRows = byDate[date];
+      const flagged = dayRows.filter(r => r.flags.flight || r.flags.hotel || r.flags.car_rental || r.flags.mileage || r.flags.per_diem).length;
+      html += `
+        <div class="travel-day-card" style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg-2);border-bottom:1px solid var(--border)">
+            <strong style="font-size:14px">${_esc(fmtDate(date))}</strong>
+            <span class="muted" style="font-size:11px">${dayRows.length} crew · ${flagged} flagged</span>
+            <button class="btn btn-xs" onclick="openAddTravelForDate('${date}')"
+                    style="margin-left:auto;font-size:11px"
+                    title="Add another crew member to this date">+ Add to this day</button>
+          </div>
+          <div style="display:flex;flex-direction:column">
+      `;
+      dayRows.forEach((r, idx) => {
+        const sep = idx > 0 ? 'border-top:1px solid var(--border)' : '';
+        html += `
+          <div style="display:grid;grid-template-columns:minmax(200px,260px) auto 1fr;gap:12px;padding:10px 14px;align-items:center;${sep}">
+            <div style="min-width:0">
+              <div><strong>${_esc(r.person)}</strong></div>
+              <div class="muted" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_esc(r.role)}</div>
+            </div>
+            <div>${dayBadge(r.day_type)}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end">
+              ${cb(r, 'flight',     r.flags.flight,     'flight',     'Flight', '✈')}
+              ${cb(r, 'hotel',      r.flags.hotel,      'hotel',      'Hotel',  '🏨')}
+              ${cb(r, 'car_rental', r.flags.car_rental, 'car_rental', 'Car',    '🚗')}
+              ${cb(r, 'mileage',    r.flags.mileage,    'mileage',    'Mileage','🚙')}
+              ${pdSelect(r)}
+            </div>
+          </div>
+        `;
+      });
+      html += '</div></div>';
+    });
+    document.getElementById('travel-days').innerHTML = html;
 
     // Summary bar — instance counts and approximate $ totals using crew
     // rates as a default (the real auto-line uses role-group rates and
@@ -8890,25 +8915,77 @@ setTimeout(function() {
   });
 
   // ── Add Travel Day ─────────────────────────────────────────────────────
-  document.getElementById('travel-add-day-btn')?.addEventListener('click', () => {
-    // Populate the line dropdown with all labor lines (assigned crew names).
+  function _populateAddTravelLines() {
+    // Pull every labor line in the budget. For lines with quantity > 1
+    // (multi-instance roles, e.g. 2 Camera Operators), expand into one
+    // dropdown entry per instance so users can target a specific person.
+    // Falls back to the budget's line ORM payload via a fetch if the
+    // Budget tab DOM isn't rendered yet — fixes the bug where opening
+    // Add Travel Day from the Travel tab showed a near-empty dropdown.
     const sel = document.getElementById('add-travel-line');
     sel.innerHTML = '<option value="">— select a person —</option>';
+
+    let added = 0;
     document.querySelectorAll('#working-budget-wrap .line-row.labor-line').forEach(row => {
       const lid = row.dataset.id;
       const desc = row.querySelector('.editable[data-field="description"]')?.textContent.trim() || '';
       const crewNm = row.querySelector('.assigned-crew-name')?.textContent.trim() || '';
-      if (lid && desc) {
-        const label = crewNm && crewNm !== '+ Assign' ? `${desc} — ${crewNm}` : desc;
+      const qty = Math.max(1, parseInt(row.dataset.qty || '1', 10) || 1);
+      if (!lid || !desc) return;
+      for (let inst = 1; inst <= qty; inst++) {
+        const baseLabel = (crewNm && crewNm !== '+ Assign') ? `${desc} — ${crewNm}` : desc;
+        const label = (qty > 1) ? `${baseLabel}  (instance ${inst})` : baseLabel;
         const opt = document.createElement('option');
-        opt.value = lid + ':1';
+        opt.value = lid + ':' + inst;
         opt.textContent = label;
         sel.appendChild(opt);
+        added++;
       }
     });
+
+    // Fallback: if the Budget tab DOM hasn't been built yet (user landed
+    // on Travel tab from URL), fetch a lightweight list from the server.
+    // Avoids the "dropdown empty until you visit Budget tab once" gotcha.
+    if (added === 0) {
+      const opt = document.createElement('option');
+      opt.disabled = true;
+      opt.textContent = '(loading crew list…)';
+      sel.appendChild(opt);
+      fetch(`/projects/${PID}/budget/${BID}/lines.json`, { credentials: 'same-origin' })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (!data || !data.lines) return;
+          // Clear and rebuild
+          sel.innerHTML = '<option value="">— select a person —</option>';
+          data.lines.filter(ln => ln.is_labor).forEach(ln => {
+            const qty = Math.max(1, parseInt(ln.quantity || 1, 10) || 1);
+            const baseLabel = ln.assigned_crew ? `${ln.description} — ${ln.assigned_crew}` : ln.description;
+            for (let inst = 1; inst <= qty; inst++) {
+              const opt = document.createElement('option');
+              opt.value = ln.id + ':' + inst;
+              opt.textContent = (qty > 1) ? `${baseLabel}  (instance ${inst})` : baseLabel;
+              sel.appendChild(opt);
+            }
+          });
+        })
+        .catch(() => { /* ignore — keep existing fallback option */ });
+    }
+  }
+
+  document.getElementById('travel-add-day-btn')?.addEventListener('click', () => {
+    _populateAddTravelLines();
     document.getElementById('add-travel-date').value = '';
     document.getElementById('travel-add-day-overlay').classList.remove('hidden');
   });
+
+  // openAddTravelForDate — invoked from per-day card "+ Add to this day"
+  // button. Same modal but with the date pre-filled so the user only
+  // picks the person.
+  window.openAddTravelForDate = function(dateIso) {
+    _populateAddTravelLines();
+    document.getElementById('add-travel-date').value = dateIso;
+    document.getElementById('travel-add-day-overlay').classList.remove('hidden');
+  };
 
   window.closeAddTravelDay = function(ev) {
     if (ev && ev.target && ev.target.id !== 'travel-add-day-overlay') return;
