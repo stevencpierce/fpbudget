@@ -99,14 +99,15 @@ class Budget(db.Model):
     # 2026-04-25 after the boot migration kept failing under the 5s
     # statement_timeout watchdog.
     fee_excluded_sections = db.Column(db.Text, nullable=True)
-    # fee_exclude_fringes BOOLEAN — Column NOT declared on the ORM until
-    # production confirms the column exists. Boot migration kept failing
-    # on 2026-04-27 (same drift as fee_excluded_sections). Reads/writes
-    # via raw SQL on isolated connections in calc_top_sheet and the
-    # settings-save handler. Default behavior when the column is missing:
-    # exclude fringes (the industry-standard default), so user-visible
-    # math is correct even without the column. Re-add Column() once the
-    # ALTER lands in production.
+    # Industry standard: Production Company Fee does NOT compound on top
+    # of fringes (P&W, P/H/W, etc.) — fringes are treated as a labor
+    # pass-through cost. Default TRUE: every line's fringe_amount is
+    # subtracted from the section total before computing the fee.
+    # Column is guaranteed present by the per-worker essential-column
+    # pass at the bottom of app.py, which runs IF-NOT-EXISTS on every
+    # gunicorn web-worker boot. Safe to declare on the ORM again now.
+    fee_exclude_fringes = db.Column(db.Boolean, default=True, nullable=False,
+                                     server_default='1')
     created_at      = db.Column(db.DateTime, default=datetime.utcnow)
     # Project settings
     start_date      = db.Column(db.Date, nullable=True)

@@ -4273,22 +4273,9 @@ def budget_settings(pid, bid):
         budget.fee_excluded_sections = _j_fee.dumps(codes) if codes else None
     if "fee_exclude_fringes" in data:
         # Default-ON: fringes on labor lines are excluded from the Prod
-        # Co Fee base. Written via raw SQL on a dedicated connection so
-        # a missing column doesn't poison the rest of the settings save
-        # (column is currently NOT on the ORM model — see models.py).
-        _val_efr = bool(data.get("fee_exclude_fringes"))
-        try:
-            with db.engine.connect() as _conn_efr_w:
-                try:
-                    _conn_efr_w.execute(
-                        text("UPDATE budget SET fee_exclude_fringes = :v WHERE id = :i"),
-                        {"v": _val_efr, "i": budget.id}
-                    )
-                    _conn_efr_w.commit()
-                except Exception as _ue:
-                    logging.warning(f"[SETTINGS] fee_exclude_fringes write failed ({_ue}); skipping")
-        except Exception as _uec:
-            logging.warning(f"[SETTINGS] fee_exclude_fringes connect failed ({_uec}); skipping")
+        # Co Fee base. User can disable per-budget if their prodco does
+        # charge fee on fringes (rare).
+        budget.fee_exclude_fringes = bool(data.get("fee_exclude_fringes"))
     if "client_name" in data:
         budget.client_name = data["client_name"].strip() or None
     if "prepared_by" in data:
@@ -9630,6 +9617,49 @@ if os.environ.get('RUN_BOOT_TASKS') == '1':
 else:
     logging.info("[BOOT] Skipping in-process boot tasks (RUN_BOOT_TASKS != 1). "
                  "Migrations should run via preDeployCommand.")
+
+
+# ── Belt-and-suspenders: per-worker essential-column pass ─────────────────────
+# Twice now (fee_excluded_sections in late April, fee_exclude_fringes today)
+# the preDeployCommand migration silently dropped a critical column add and
+# every page 500'd because the ORM SELECTed a missing column. The pattern:
+# preDeploy's 5-second statement_timeout watchdog killed the ALTER, the
+# loop swallowed the error, and the web container started anyway against
+# the missing column.
+#
+# Defense-in-depth: each gunicorn web worker also runs an ultra-narrow
+# IF-NOT-EXISTS pass against a small list of recently-added columns,
+# WITHOUT the timeout watchdog. Idempotent. If preDeploy worked, this is
+# microseconds wasted. If preDeploy didn't, the worker self-heals and
+# the site comes up correctly.
+def _web_worker_essential_columns():
+    try:
+        is_pg = 'postgresql' in str(db.engine.url).lower()
+        if not is_pg:
+            return  # SQLite (local dev) handles this via db.create_all()
+        conn = db.engine.raw_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SET statement_timeout = 30000")  # 30s — generous
+            for sql in [
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS fee_excluded_sections TEXT",
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS fee_exclude_fringes BOOLEAN DEFAULT TRUE NOT NULL",
+            ]:
+                try:
+                    cur.execute(sql)
+                    conn.commit()
+                    logging.info(f"[WORKER-BOOT] essential-col OK: {sql}")
+                except Exception as _e:
+                    conn.rollback()
+                    logging.error(f"[WORKER-BOOT] essential-col FAILED: {sql} → {_e}")
+            cur.close()
+        finally:
+            conn.close()
+    except Exception as _ec:
+        logging.error(f"[WORKER-BOOT] essential-col pass could not open conn: {_ec}")
+
+with app.app_context():
+    _web_worker_essential_columns()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
