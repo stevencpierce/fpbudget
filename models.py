@@ -296,6 +296,13 @@ class ProductionDay(db.Model):
     courtesy_breakfast  = db.Column(db.Boolean, default=False)
     first_meal          = db.Column(db.Boolean, default=False)
     second_meal         = db.Column(db.Boolean, default=False)
+    # is_production_day: marks days that are actual on-set production
+    # days vs prep / remote / travel-only / etc. Per-user-request the
+    # downstream calcs (insurance daily rate, location day count, certain
+    # auto-injected lines) should only apply to true production days.
+    # Set from the new "Production Day" row at the top of the Schedule.
+    is_production_day   = db.Column(db.Boolean, default=False, nullable=False,
+                                      server_default='0')
     __table_args__      = (db.UniqueConstraint("budget_id", "date", "schedule_mode", name="uq_prod_day"),)
 
 

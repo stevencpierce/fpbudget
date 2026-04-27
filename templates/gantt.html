@@ -242,6 +242,27 @@
   </thead>
   <tbody>
 
+    {# Production Day row — marks days that are real on-set production
+       days vs prep / remote / travel-only. Tied to ProductionDay.is_
+       production_day; downstream calcs use this as a "days on set"
+       counter. Click any cell to toggle. #}
+    <tr class="gantt-meal-row" data-meal="is_production_day">
+      <td class="gantt-row-label gantt-meal-label" style="font-weight:600">
+        <span class="gantt-line-desc" style="color:#22c55e">⭐ Production Day</span>
+      </td>
+      {% for d in date_range %}
+      {% set is_week_start = d.isoformat() in week_boundary_dates %}
+      {% set meal_data = meal_map.get(d.isoformat(), {}) %}
+      {% set active = meal_data.get('is_production_day', False) %}
+      <td class="gantt-meal-cell {{ 'meal-active production-day-active' if active else '' }} {{ 'week-start-col' if is_week_start else '' }}"
+          data-date="{{ d.isoformat() }}" data-meal="is_production_day"
+          onclick="toggleMeal(this)"
+          title="Click to mark this date as a production day">
+        {% if active %}<span class="meal-dot" style="color:#22c55e">⭐</span>{% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+
     <!-- ── Working Meal rows (production-wide per-day flags) ── -->
     <tr class="gantt-meal-row" data-meal="courtesy_breakfast">
       <td class="gantt-row-label gantt-meal-label">

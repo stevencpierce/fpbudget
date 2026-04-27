@@ -4597,12 +4597,48 @@ async function submitAddLine() {
     payload.estimated_total = nlRate > 0 ? nlRate * nlQty * nlDays : flat;
   }
 
-  const res  = await fetch(SAVE_URL, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload)
-  });
-  if (!res.ok) { alert('Failed to add line'); return; }
+  let res;
+  try {
+    res = await fetch(SAVE_URL, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+  } catch (e) {
+    alert('Failed to add line — network error: ' + (e.message || e));
+    return;
+  }
+  if (!res.ok) {
+    // Surface the ACTUAL error so we can debug. Common causes:
+    //  - 409 estimated_protected: editing the Estimated budget while
+    //    a Working budget exists; backend wants explicit override.
+    //  - 5xx: traceback on the server side (deploy drift, schema, etc.)
+    let detail = `HTTP ${res.status}`;
+    try {
+      const d = await res.clone().json();
+      // Estimated-protected: prompt user to confirm override and retry
+      if (d.estimated_protected) {
+        if (confirm((d.message || 'A Working budget exists. Editing Estimated will not affect Working.') + '\n\nProceed anyway?')) {
+          payload.override_estimated = true;
+          const r2 = await fetch(SAVE_URL, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (r2.ok) { closeModal(); reloadWithTab(code); return; }
+          const d2 = await r2.json().catch(() => ({}));
+          alert('Failed to add line: ' + (d2.error || d2.message || `HTTP ${r2.status}`));
+          return;
+        }
+        return;  // user cancelled
+      }
+      detail = d.error || d.message || JSON.stringify(d).slice(0, 300) || detail;
+    } catch (_e) {
+      try { detail = await res.text(); detail = detail.slice(0, 300); } catch {}
+    }
+    alert('Failed to add line: ' + detail);
+    return;
+  }
   closeModal();
   // Pass the target section so the post-reload handler scrolls back to
   // it (and briefly highlights the new row) instead of dropping the
@@ -4901,19 +4937,30 @@ async function saveSettings() {
 
   // ── Travel grid ────────────────────────────────────────────────────────
   async function loadTravelGrid() {
-    // UI inverts the server param: server param `show_all` = include
-    // un-flagged crew. Front-end default = ON (show everyone), toggle
-    // is "Only flagged" which means "set show_all=0".
     const onlyFlagged = document.getElementById('travel-only-flagged')?.checked;
     const showAll = onlyFlagged ? '0' : '1';
-    const r = await fetch(TRAVEL_GRID_URL + '?show_all=' + showAll);
-    if (!r.ok) {
+    document.getElementById('travel-totals').innerHTML = '<span class="muted">Loading…</span>';
+    document.getElementById('travel-tbody').innerHTML =
+      '<tr><td colspan="10" class="muted" style="padding:1rem;text-align:center">Loading…</td></tr>';
+    try {
+      const r = await fetch(TRAVEL_GRID_URL + '?show_all=' + showAll, { credentials: 'same-origin' });
+      if (!r.ok) {
+        const txt = await r.text().catch(() => '');
+        document.getElementById('travel-tbody').innerHTML =
+          `<tr><td colspan="10" style="padding:1rem;color:#ef4444">Server returned ${r.status}: ${_esc(txt.slice(0,200))}</td></tr>`;
+        document.getElementById('travel-totals').innerHTML =
+          `<span style="color:#ef4444">Failed (HTTP ${r.status})</span>`;
+        return;
+      }
+      _travelData = await r.json();
+      renderTravelGrid();
+    } catch (err) {
+      console.error('loadTravelGrid failed', err);
       document.getElementById('travel-tbody').innerHTML =
-        '<tr><td colspan="10" class="muted" style="padding:1rem;text-align:center">Failed to load.</td></tr>';
-      return;
+        `<tr><td colspan="10" style="padding:1rem;color:#ef4444">Error: ${_esc(err.message || err)}</td></tr>`;
+      document.getElementById('travel-totals').innerHTML =
+        `<span style="color:#ef4444">Error: ${_esc(err.message || err)}</span>`;
     }
-    _travelData = await r.json();
-    renderTravelGrid();
   }
 
   function renderTravelGrid() {
@@ -5187,15 +5234,29 @@ async function saveSettings() {
 
   // ── Catering grid ──────────────────────────────────────────────────────
   async function loadCateringGrid() {
-    const r = await fetch(CATERING_GRID_URL);
-    if (!r.ok) {
+    document.getElementById('catering-totals').innerHTML = '<span class="muted">Loading…</span>';
+    document.getElementById('catering-tbody').innerHTML =
+      '<tr><td colspan="9" class="muted" style="padding:1rem;text-align:center">Loading…</td></tr>';
+    try {
+      const r = await fetch(CATERING_GRID_URL, { credentials: 'same-origin' });
+      if (!r.ok) {
+        const txt = await r.text().catch(() => '');
+        document.getElementById('catering-tbody').innerHTML =
+          `<tr><td colspan="9" style="padding:1rem;color:#ef4444">Server returned ${r.status}: ${_esc(txt.slice(0,200))}</td></tr>`;
+        document.getElementById('catering-totals').innerHTML =
+          `<span style="color:#ef4444">Failed (HTTP ${r.status})</span>`;
+        return;
+      }
+      _cateringData = await r.json();
+      renderCateringGrid();
+      renderCateringBills();
+    } catch (err) {
+      console.error('loadCateringGrid failed', err);
       document.getElementById('catering-tbody').innerHTML =
-        '<tr><td colspan="9" class="muted" style="padding:1rem;text-align:center">Failed to load.</td></tr>';
-      return;
+        `<tr><td colspan="9" style="padding:1rem;color:#ef4444">Error: ${_esc(err.message || err)}</td></tr>`;
+      document.getElementById('catering-totals').innerHTML =
+        `<span style="color:#ef4444">Error: ${_esc(err.message || err)}</span>`;
     }
-    _cateringData = await r.json();
-    renderCateringGrid();
-    renderCateringBills();
   }
 
   function renderCateringGrid() {
@@ -5328,25 +5389,53 @@ async function saveSettings() {
     await loadCateringGrid();
   };
 
-  // ── Tab activation hooks: lazy-load when first opened ──────────────────
+  // ── Tab activation hooks: load data the FIRST time the panel becomes
+  //    active, regardless of whether activation came from a real click,
+  //    a programmatic btn.click() from the URL handler, or pre-active
+  //    state at page load. MutationObserver on the panel's class list
+  //    is the only reliable way to catch all three.
   let _travelLoaded = false, _cateringLoaded = false;
+  function _watchPanel(tabName, loader, loadedFlag) {
+    const panel = document.getElementById('tab-' + tabName);
+    if (!panel) return;
+    const fire = () => {
+      if (!window['_'+tabName+'Loaded'] && panel.classList.contains('active')) {
+        window['_'+tabName+'Loaded'] = true;
+        loader();
+      }
+    };
+    new MutationObserver(fire).observe(panel, { attributes: true, attributeFilter: ['class'] });
+    fire();  // catch initial state if user landed directly on this tab
+  }
+  // Use module-scoped flags via closures instead of window globals
   document.querySelector('.tab-btn[data-tab="travel"]')?.addEventListener('click', () => {
     if (!_travelLoaded) { _travelLoaded = true; loadTravelGrid(); }
   });
   document.querySelector('.tab-btn[data-tab="catering"]')?.addEventListener('click', () => {
     if (!_cateringLoaded) { _cateringLoaded = true; loadCateringGrid(); }
   });
-
-  // If the tab was activated by the URL ?tab=travel|catering handler that
-  // ran before this IIFE registered the listener, the click event was
-  // dispatched with no Travel/Catering loader attached. Result: tab
-  // visible, "Loading totals..." stuck forever. Catch up here by
-  // checking which tab is currently active and triggering the loader.
-  if (document.querySelector('.tab-btn[data-tab="travel"].active')) {
-    _travelLoaded = true; loadTravelGrid();
+  // MutationObserver fallback for URL-driven activation (where the click
+  // event fires before this IIFE registers the listener). Watches for the
+  // .active class to land on the panel and triggers the loader once.
+  const _travelPanel = document.getElementById('tab-travel');
+  if (_travelPanel) {
+    const fireT = () => {
+      if (!_travelLoaded && _travelPanel.classList.contains('active')) {
+        _travelLoaded = true; loadTravelGrid();
+      }
+    };
+    new MutationObserver(fireT).observe(_travelPanel, { attributes: true, attributeFilter: ['class'] });
+    fireT();
   }
-  if (document.querySelector('.tab-btn[data-tab="catering"].active')) {
-    _cateringLoaded = true; loadCateringGrid();
+  const _cateringPanel = document.getElementById('tab-catering');
+  if (_cateringPanel) {
+    const fireC = () => {
+      if (!_cateringLoaded && _cateringPanel.classList.contains('active')) {
+        _cateringLoaded = true; loadCateringGrid();
+      }
+    };
+    new MutationObserver(fireC).observe(_cateringPanel, { attributes: true, attributeFilter: ['class'] });
+    fireC();
   }
 })();
 

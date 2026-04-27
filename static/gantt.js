@@ -673,10 +673,17 @@ async function toggleMeal(cell) {
   const newVal  = !active;
 
   cell.classList.toggle('meal-active', newVal);
+  // Production-day rows use a green star (⭐) marker; meal rows use the
+  // standard purple dot (●). Pick the symbol based on the field name.
+  const isProductionDay = field === 'is_production_day';
+  const symbol = isProductionDay ? '⭐' : '●';
+  cell.classList.toggle('production-day-active', newVal && isProductionDay);
   const dot = cell.querySelector('.meal-dot');
   if (newVal && !dot) {
     const s = document.createElement('span');
-    s.className = 'meal-dot'; s.textContent = '●';
+    s.className = 'meal-dot';
+    s.textContent = symbol;
+    if (isProductionDay) s.style.color = '#22c55e';
     cell.appendChild(s);
   } else if (!newVal && dot) {
     dot.remove();

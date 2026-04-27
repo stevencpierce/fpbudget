@@ -4614,6 +4614,7 @@ def gantt_view(pid, bid):
         "courtesy_breakfast": bool(pd.courtesy_breakfast),
         "first_meal":          bool(pd.first_meal),
         "second_meal":         bool(pd.second_meal),
+        "is_production_day":   bool(getattr(pd, 'is_production_day', False)),
     } for pd in prod_days}
 
     # Expand each labor line by its quantity into individual rows
@@ -5163,7 +5164,7 @@ def set_gantt_meal(pid, bid):
     value     = bool(data.get("value", False))
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
 
-    if not date_str or field not in ("courtesy_breakfast", "first_meal", "second_meal"):
+    if not date_str or field not in ("courtesy_breakfast", "first_meal", "second_meal", "is_production_day"):
         return jsonify({"error": "date and valid field required"}), 400
 
     try:
@@ -5798,6 +5799,7 @@ def catering_grid(pid, bid):
             "date":                  d.isoformat(),
             "working_count":         working_count,
             "all_count":             all_count,
+            "is_production_day":     bool(getattr(pd, 'is_production_day', False)),
             "flags": {
                 "courtesy_breakfast": cb,
                 "first_meal":         m1,
@@ -10572,6 +10574,8 @@ def _web_worker_essential_columns():
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_mode VARCHAR(10) DEFAULT 'pct' NOT NULL",
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_pct  NUMERIC(8,6) DEFAULT 0.015",
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_flat NUMERIC(12,2) DEFAULT 0",
+                # Production day flag on ProductionDay (set from Schedule)
+                "ALTER TABLE production_day ADD COLUMN IF NOT EXISTS is_production_day BOOLEAN DEFAULT FALSE NOT NULL",
                 # One-time backfill for existing budgets that were created
                 # before Production Liability Insurance defaulted ON. Only
                 # touches rows that look untouched (mode='off' AND pct=0
