@@ -114,9 +114,15 @@ class Budget(db.Model):
     # gives the user the option to skip it entirely, charge it as a
     # percentage of labor wages, or as a flat dollar amount per project.
     # Default is 'off' so existing budgets are untouched.
-    production_insurance_mode = db.Column(db.String(10), default='off',
-                                           nullable=False, server_default='off')
-    production_insurance_pct  = db.Column(db.Numeric(8, 6), default=0)
+    # Default ON at 1.5% of labor wages — industry-typical for general
+    # production liability + E&O on a small-mid project. User can switch
+    # to flat mode or off explicitly per project. New budgets get this
+    # default; existing budgets are backfilled by the worker-boot
+    # essential-cols pass below.
+    production_insurance_mode = db.Column(db.String(10), default='pct',
+                                           nullable=False, server_default='pct')
+    production_insurance_pct  = db.Column(db.Numeric(8, 6), default=0.015,
+                                           server_default='0.015')
     production_insurance_flat = db.Column(db.Numeric(12, 2), default=0)
     created_at      = db.Column(db.DateTime, default=datetime.utcnow)
     # Project settings
@@ -292,6 +298,63 @@ class ProductionDay(db.Model):
     second_meal         = db.Column(db.Boolean, default=False)
     __table_args__      = (db.UniqueConstraint("budget_id", "date", "schedule_mode", name="uq_prod_day"),)
 
+
+class TravelDetail(db.Model):
+    """Per-(person, date, kind) travel detail — flight number,
+    confirmations, hotel reservation info, etc. Lives alongside the
+    ScheduleDay cell_flags: the flag determines IF travel applies
+    on that cell, this row carries the WHAT (numbers, times, vendors).
+    Users edit these from the new Travel tab; values flow into the
+    call sheet email render so confirmations land in the crew's inbox.
+    """
+    __tablename__ = "travel_detail"
+    id              = db.Column(db.Integer, primary_key=True)
+    schedule_day_id = db.Column(db.Integer, db.ForeignKey("schedule_day.id"), nullable=False)
+    kind            = db.Column(db.String(20), nullable=False)
+    # flight | hotel | car_rental | mileage
+    confirmation_no = db.Column(db.String(100), nullable=True)
+    notes           = db.Column(db.Text,        nullable=True)
+    # Flight-specific
+    airline         = db.Column(db.String(100), nullable=True)
+    flight_no       = db.Column(db.String(50),  nullable=True)
+    depart_at       = db.Column(db.DateTime,    nullable=True)
+    arrive_at       = db.Column(db.DateTime,    nullable=True)
+    depart_airport  = db.Column(db.String(10),  nullable=True)  # IATA code
+    arrive_airport  = db.Column(db.String(10),  nullable=True)
+    # Hotel-specific
+    hotel_name      = db.Column(db.String(200), nullable=True)
+    hotel_address   = db.Column(db.String(300), nullable=True)
+    check_in        = db.Column(db.Date,        nullable=True)
+    check_out       = db.Column(db.Date,        nullable=True)
+    room_type       = db.Column(db.String(100), nullable=True)
+    # Car-rental-specific
+    rental_co       = db.Column(db.String(100), nullable=True)
+    pickup_at       = db.Column(db.DateTime,    nullable=True)
+    return_at       = db.Column(db.DateTime,    nullable=True)
+    pickup_location = db.Column(db.String(200), nullable=True)
+    # Mileage-specific
+    miles           = db.Column(db.Numeric(8, 2), nullable=True)
+    route           = db.Column(db.String(300), nullable=True)
+    updated_at      = db.Column(db.DateTime,    default=datetime.utcnow,
+                                onupdate=datetime.utcnow)
+    __table_args__  = (db.UniqueConstraint("schedule_day_id", "kind", name="uq_travel_detail"),)
+
+
+class CateringBill(db.Model):
+    """Caterer bill entry — daily or weekly amounts the user gets from
+    their catering vendor. The Catering tab shows expected meal cost
+    (per-person × per-day × rate) alongside actual billed amount so
+    the user can see drift between budget and reality.
+    """
+    __tablename__ = "catering_bill"
+    id            = db.Column(db.Integer, primary_key=True)
+    budget_id     = db.Column(db.Integer, db.ForeignKey("budget.id"), nullable=False)
+    period_start  = db.Column(db.Date, nullable=False)
+    period_end    = db.Column(db.Date, nullable=False)
+    vendor        = db.Column(db.String(200), nullable=True)
+    amount        = db.Column(db.Numeric(12, 2), nullable=False, default=0)
+    note          = db.Column(db.Text, nullable=True)
+    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 class Location(db.Model):

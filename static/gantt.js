@@ -213,6 +213,8 @@ function initGantt(pid, bid, activeProfileId) {
         applyTypeToSelection(value);
       } else if (action === 'flag') {
         applyFlagToSelection(value);
+      } else if (action === 'delete-all') {
+        deleteSelection();
       }
     });
   });
@@ -259,6 +261,17 @@ function initGantt(pid, bid, activeProfileId) {
       if (ctrl && e.key === 'v' && _clipboard) {
         e.preventDefault();
         pasteSelection();
+      }
+      // Delete / Backspace: clear EVERYTHING on the selected cells —
+      // day type goes back to 'off', cell_flags wiped, OT cleared,
+      // notes wiped. Equivalent to right-clicking each cell and
+      // picking "Off" + clearing every flag, but in one keystroke.
+      if ((e.key === 'Delete' || e.key === 'Backspace') && _selection.size > 0) {
+        // Don't intercept if user is typing in an input (e.g. picker note)
+        const t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        e.preventDefault();
+        deleteSelection();
       }
     }
 
@@ -821,6 +834,54 @@ function copySelection() {
     badge.textContent = `✓ Copied ${items.length} cell${items.length > 1 ? 's' : ''} — select target then Cmd+V to paste`;
     setTimeout(() => { badge.textContent = orig; }, 2500);
   }
+}
+
+// Delete: wipe day_type + flags + OT + note on every selected cell.
+// One bulk action so the user can sweep large rectangles clean. Saved
+// to the server cell-by-cell using the existing /gantt/day DELETE
+// endpoint (full row removal). Pushed onto the undo stack so a single
+// Cmd+Z restores everything.
+async function deleteSelection() {
+  if (_selection.size === 0) return;
+  const cells = _getSelectedCells();
+  if (!cells.length) return;
+  if (!confirm(`Delete ${cells.length} cell${cells.length !== 1 ? 's' : ''}? This clears day type, flags, OT, and notes.`)) return;
+
+  // Snapshot for undo BEFORE we wipe.
+  const undoBatch = cells.map(cell => ({
+    lineId:   cell.dataset.line,
+    instance: parseInt(cell.dataset.instance || 1),
+    date:     cell.dataset.date,
+    prevType: cell.dataset.type || 'off',
+    prevFlags: cell.dataset.flags || '{}',
+    prevOt:   parseFloat(cell.dataset.otHours || 0),
+    prevNote: cell.title || '',
+  }));
+
+  for (const cell of cells) {
+    cell.dataset.type    = 'off';
+    cell.dataset.flags   = '{}';
+    cell.dataset.otHours = '0';
+    cell.title = '';
+    paintCell(cell, 'off');
+    _renderFlagDots(cell, {});
+    updateOtBadge(cell, 0);
+    try {
+      await fetch(`/projects/${_pid}/budget/${_bid}/gantt/day`, {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          line_id: parseInt(cell.dataset.line),
+          date: cell.dataset.date,
+          crew_instance: parseInt(cell.dataset.instance || 1),
+        })
+      });
+    } catch (e) {
+      console.warn('Delete cell failed', e);
+    }
+  }
+  pushUndo(undoBatch);
+  scheduleTotalsRefresh();
 }
 
 async function pasteSelection() {
