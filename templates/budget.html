@@ -4917,7 +4917,18 @@ async function saveSettings() {
 }
 
 // ── Travel + Catering tabs ──────────────────────────────────────────────
+// Wrap the entire IIFE in try/catch so a runtime error inside doesn't
+// leave the tabs silently broken. Error is surfaced visibly in the
+// totals bar so we can debug from a screenshot.
 (function() {
+  try {
+  // Sanity check: if PID/BID aren't defined, abort cleanly. They're set
+  // in an earlier <script> block; missing means a deeper page-init issue.
+  if (typeof PID === 'undefined' || typeof BID === 'undefined') {
+    console.error('Travel/Catering: PID/BID not defined yet');
+    return;
+  }
+  console.log('[Travel/Catering] IIFE starting, PID=' + PID + ' BID=' + BID);
   const TRAVEL_GRID_URL    = `/projects/${PID}/budget/${BID}/travel/grid`;
   const TRAVEL_TOGGLE_URL  = `/projects/${PID}/budget/${BID}/travel/toggle`;
   const TRAVEL_DETAIL_URL  = `/projects/${PID}/budget/${BID}/travel/detail`;
@@ -5436,6 +5447,23 @@ async function saveSettings() {
     };
     new MutationObserver(fireC).observe(_cateringPanel, { attributes: true, attributeFilter: ['class'] });
     fireC();
+  }
+  console.log('[Travel/Catering] IIFE ready; observers attached');
+  } catch (err) {
+    console.error('[Travel/Catering] IIFE crashed:', err);
+    // Show the error visibly so a screenshot tells us what broke.
+    try {
+      const tt = document.getElementById('travel-totals');
+      if (tt) tt.innerHTML = '<span style="color:#ef4444">JS error: ' + (err.message || err) + '</span>';
+      const ct = document.getElementById('catering-totals');
+      if (ct) ct.innerHTML = '<span style="color:#ef4444">JS error: ' + (err.message || err) + '</span>';
+      // Also pop a small banner at the bottom of the screen — visible
+      // regardless of which tab is active.
+      const banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;bottom:16px;right:16px;background:#2a1414;color:#ef4444;border:1px solid #ef4444;padding:10px 14px;border-radius:6px;z-index:9999;max-width:480px;font-size:12px;font-family:monospace';
+      banner.textContent = 'Travel/Catering JS error: ' + (err.message || err);
+      document.body.appendChild(banner);
+    } catch (_) { /* swallow */ }
   }
 })();
 

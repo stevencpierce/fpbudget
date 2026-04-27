@@ -301,8 +301,10 @@ class ProductionDay(db.Model):
     # downstream calcs (insurance daily rate, location day count, certain
     # auto-injected lines) should only apply to true production days.
     # Set from the new "Production Day" row at the top of the Schedule.
+    # server_default uses SQLA `text` so Postgres ('false') and SQLite
+    # ('0') both accept the literal as a default expression.
     is_production_day   = db.Column(db.Boolean, default=False, nullable=False,
-                                      server_default='0')
+                                      server_default=db.text('false'))
     __table_args__      = (db.UniqueConstraint("budget_id", "date", "schedule_mode", name="uq_prod_day"),)
 
 
