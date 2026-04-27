@@ -4916,556 +4916,10 @@ async function saveSettings() {
   }
 }
 
-// ── Travel + Catering tabs ──────────────────────────────────────────────
-// Wrap the entire IIFE in try/catch so a runtime error inside doesn't
-// leave the tabs silently broken. Error is surfaced visibly in the
-// totals bar so we can debug from a screenshot.
-(function() {
-  try {
-  // Sanity check: if PID/BID aren't defined, abort cleanly. They're set
-  // in an earlier <script> block; missing means a deeper page-init issue.
-  if (typeof PID === 'undefined' || typeof BID === 'undefined') {
-    console.error('Travel/Catering: PID/BID not defined yet');
-    return;
-  }
-  console.log('[Travel/Catering] IIFE starting, PID=' + PID + ' BID=' + BID);
-  const TRAVEL_GRID_URL    = `/projects/${PID}/budget/${BID}/travel/grid`;
-  const TRAVEL_TOGGLE_URL  = `/projects/${PID}/budget/${BID}/travel/toggle`;
-  const TRAVEL_DETAIL_URL  = `/projects/${PID}/budget/${BID}/travel/detail`;
-  const TRAVEL_ADD_URL     = `/projects/${PID}/budget/${BID}/travel/add`;
-  const CATERING_GRID_URL  = `/projects/${PID}/budget/${BID}/catering/grid`;
-  const CATERING_MEAL_URL  = `/projects/${PID}/budget/${BID}/catering/meal-toggle`;
-  const CATERING_BILL_URL  = `/projects/${PID}/budget/${BID}/catering/bill`;
-
-  let _travelData   = null;
-  let _cateringData = null;
-  let _detailContext = null;  // { sd_id, kind, current_detail }
-
-  const _esc = s => String(s == null ? '' : s)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  const _fmt = n => '$' + parseFloat(n || 0).toLocaleString('en-US',
-    {minimumFractionDigits:2, maximumFractionDigits:2});
-
-  // ── Travel grid ────────────────────────────────────────────────────────
-  async function loadTravelGrid() {
-    const onlyFlagged = document.getElementById('travel-only-flagged')?.checked;
-    const showAll = onlyFlagged ? '0' : '1';
-    document.getElementById('travel-totals').innerHTML = '<span class="muted">Loading…</span>';
-    document.getElementById('travel-tbody').innerHTML =
-      '<tr><td colspan="10" class="muted" style="padding:1rem;text-align:center">Loading…</td></tr>';
-    try {
-      const r = await fetch(TRAVEL_GRID_URL + '?show_all=' + showAll, { credentials: 'same-origin' });
-      if (!r.ok) {
-        const txt = await r.text().catch(() => '');
-        document.getElementById('travel-tbody').innerHTML =
-          `<tr><td colspan="10" style="padding:1rem;color:#ef4444">Server returned ${r.status}: ${_esc(txt.slice(0,200))}</td></tr>`;
-        document.getElementById('travel-totals').innerHTML =
-          `<span style="color:#ef4444">Failed (HTTP ${r.status})</span>`;
-        return;
-      }
-      _travelData = await r.json();
-      renderTravelGrid();
-    } catch (err) {
-      console.error('loadTravelGrid failed', err);
-      document.getElementById('travel-tbody').innerHTML =
-        `<tr><td colspan="10" style="padding:1rem;color:#ef4444">Error: ${_esc(err.message || err)}</td></tr>`;
-      document.getElementById('travel-totals').innerHTML =
-        `<span style="color:#ef4444">Error: ${_esc(err.message || err)}</span>`;
-    }
-  }
-
-  function renderTravelGrid() {
-    if (!_travelData) return;
-    const rows = _travelData.rows || [];
-    const rates = _travelData.rates || {};
-    if (rows.length === 0) {
-      document.getElementById('travel-tbody').innerHTML =
-        '<tr><td colspan="10" class="muted" style="padding:1.2rem;text-align:center">' +
-        'No travel cells flagged on the schedule. Use "+ Add Travel Day" to start.' +
-        '</td></tr>';
-      document.getElementById('travel-totals').innerHTML =
-        '<span class="muted">No travel costs yet.</span>';
-      return;
-    }
-
-    // Running totals — count instances × rate per kind for the summary bar.
-    let flightCount=0, hotelCount=0, carCount=0, mileageMiles=0;
-    const pdCounts = {full:0, breakfast:0, lunch:0, dinner:0};
-
-    let html = '';
-    let lastDate = null;
-    rows.forEach(r => {
-      if (r.flags.flight) flightCount++;
-      if (r.flags.hotel)  hotelCount++;
-      if (r.flags.car_rental) carCount++;
-      if (r.detail.mileage && r.detail.mileage.miles) mileageMiles += parseFloat(r.detail.mileage.miles);
-      if (r.flags.per_diem) pdCounts[r.flags.per_diem] = (pdCounts[r.flags.per_diem]||0) + 1;
-
-      const sameDate = r.date === lastDate;
-      const sep = sameDate ? '' : 'border-top:2px solid var(--border)';
-      lastDate = r.date;
-
-      const dayBadge = (() => {
-        const colors = {work:'#22c55e', travel:'#3498db', hold:'#a78bfa', half:'#f59e0b', kill_fee:'#ef4444', custom:'#9b59b6', off:'var(--text-muted)'};
-        const c = colors[r.day_type] || 'var(--text-muted)';
-        return `<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${c}22;color:${c};border:1px solid ${c}55;text-transform:uppercase">${_esc(r.day_type)}</span>`;
-      })();
-
-      const cb = (flag, isOn, kind) => {
-        const handler = `travelToggleFlag(${r.line_id}, ${r.instance}, '${r.date}', '${flag}')`;
-        const detailHandler = kind ? `event.stopPropagation(); openTravelDetail(${r.schedule_day_id}, '${kind}')` : '';
-        const hasDetail = kind && r.detail[kind];
-        const dot = hasDetail ? '<span style="color:#22c55e;font-size:8px;margin-left:2px" title="Reservation details on file">●</span>' : '';
-        const detailBtn = (kind && isOn) ? `<button onclick="${detailHandler}" style="background:none;border:none;color:#5b8af9;cursor:pointer;padding:0 2px;font-size:11px" title="Edit details">✎</button>` : '';
-        return `<input type="checkbox" ${isOn ? 'checked' : ''} onclick="${handler}">${dot}${detailBtn}`;
-      };
-
-      const pdSelect = `
-        <select onchange="travelSetPerDiem(${r.line_id}, ${r.instance}, '${r.date}', this.value)" style="font-size:.78rem;padding:1px 4px;background:var(--bg-input);border:1px solid var(--border);color:var(--text)">
-          <option value=""${r.flags.per_diem===''?' selected':''}>—</option>
-          <option value="full"${r.flags.per_diem==='full'?' selected':''}>Full</option>
-          <option value="breakfast"${r.flags.per_diem==='breakfast'?' selected':''}>Bkfst</option>
-          <option value="lunch"${r.flags.per_diem==='lunch'?' selected':''}>Lunch</option>
-          <option value="dinner"${r.flags.per_diem==='dinner'?' selected':''}>Dinner</option>
-        </select>
-      `;
-
-      html += `<tr style="${sep}">
-        <td><strong>${_esc(r.person)}</strong></td>
-        <td class="muted">${_esc(r.role)}</td>
-        <td>${_esc(r.date)}</td>
-        <td>${dayBadge}</td>
-        <td style="text-align:center">${cb('flight',     r.flags.flight,     'flight')}</td>
-        <td style="text-align:center">${cb('hotel',      r.flags.hotel,      'hotel')}</td>
-        <td style="text-align:center">${cb('car_rental', r.flags.car_rental, 'car_rental')}</td>
-        <td style="text-align:center">${cb('mileage',    r.flags.mileage,    'mileage')}</td>
-        <td>${pdSelect}</td>
-        <td style="text-align:center;color:var(--text-muted);font-size:.75rem">${
-          (r.detail.flight && r.detail.flight.notes)
-          || (r.detail.hotel && r.detail.hotel.notes)
-          || ''
-        }</td>
-      </tr>`;
-    });
-    document.getElementById('travel-tbody').innerHTML = html;
-
-    // Summary bar — instance counts and approximate $ totals using crew
-    // rates as a default (the real auto-line uses role-group rates and
-    // is the source of truth; this is just a quick-glance estimate).
-    const flightTotal = flightCount * (rates.flight_crew || 0);
-    const hotelTotal  = hotelCount  * (rates.hotel_crew  || 0);
-    const carTotal    = carCount    * 50;  // car rental rate placeholder
-    const mileageTotal = mileageMiles * 0.67;  // IRS standard rate
-    const pdTotal = (pdCounts.full * (rates.per_diem_full||0)
-                    + pdCounts.breakfast * (rates.per_diem_breakfast||0)
-                    + pdCounts.lunch     * (rates.per_diem_lunch||0)
-                    + pdCounts.dinner    * (rates.per_diem_dinner||0));
-    document.getElementById('travel-totals').innerHTML = `
-      <span><strong>${flightCount}</strong> flights ≈ <strong>${_fmt(flightTotal)}</strong></span>
-      <span><strong>${hotelCount}</strong> hotel-nights ≈ <strong>${_fmt(hotelTotal)}</strong></span>
-      <span><strong>${carCount}</strong> car rentals</span>
-      <span><strong>${mileageMiles.toFixed(0)}</strong> miles</span>
-      <span><strong>${pdCounts.full + pdCounts.breakfast + pdCounts.lunch + pdCounts.dinner}</strong> per-diem days ≈ <strong>${_fmt(pdTotal)}</strong></span>
-      <span class="muted" style="font-size:.78rem;margin-left:auto">Source of truth = budget auto-lines</span>
-    `;
-  }
-
-  window.travelToggleFlag = async function(line_id, instance, date, flag) {
-    const cb = event.target;
-    const value = cb.checked;
-    cb.disabled = true;
-    try {
-      const r = await fetch(TRAVEL_TOGGLE_URL, {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({line_id, instance, date, flag, value})
-      });
-      if (!r.ok) { alert('Toggle failed'); cb.checked = !value; return; }
-      // Reload so the ✎ pencil + dot appear/disappear correctly.
-      await loadTravelGrid();
-    } finally {
-      cb.disabled = false;
-    }
-  };
-
-  window.travelSetPerDiem = async function(line_id, instance, date, mode) {
-    const r = await fetch(TRAVEL_TOGGLE_URL, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({line_id, instance, date, flag:'per_diem', per_diem_mode:mode, value:!!mode})
-    });
-    if (!r.ok) alert('Per diem update failed');
-    await loadTravelGrid();
-  };
-
-  // ── Travel detail modal (flight/hotel/car/mileage entry) ───────────────
-  window.openTravelDetail = function(sd_id, kind) {
-    // Find the row in cached data so we can pre-fill the form.
-    const row = _travelData?.rows?.find(r => r.schedule_day_id === sd_id);
-    const detail = row?.detail?.[kind] || {};
-    _detailContext = { sd_id, kind, detail };
-
-    const titleMap = {flight:'Flight', hotel:'Hotel', car_rental:'Car Rental', mileage:'Mileage'};
-    document.getElementById('travel-detail-title').textContent =
-      `${titleMap[kind]} — ${row?.person || ''} ${row?.date || ''}`;
-
-    const fld = (label, name, type, value, extra) =>
-      `<div class="field" style="margin-bottom:.55rem">
-         <label style="display:block;font-size:.76rem;color:var(--text-muted);margin-bottom:.25rem">${label}</label>
-         <input type="${type}" data-fld="${name}" value="${_esc(value || '')}" style="width:100%" ${extra || ''}>
-       </div>`;
-    const txt = (label, name, value) =>
-      `<div class="field" style="margin-bottom:.55rem">
-         <label style="display:block;font-size:.76rem;color:var(--text-muted);margin-bottom:.25rem">${label}</label>
-         <textarea data-fld="${name}" rows="2" style="width:100%;resize:vertical">${_esc(value || '')}</textarea>
-       </div>`;
-
-    let body = '';
-    if (kind === 'flight') {
-      body = `
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
-          ${fld('Airline', 'airline', 'text', detail.airline)}
-          ${fld('Flight #', 'flight_no', 'text', detail.flight_no)}
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
-          ${fld('From (airport code)', 'depart_airport', 'text', detail.depart_airport, 'maxlength="10"')}
-          ${fld('To (airport code)',   'arrive_airport', 'text', detail.arrive_airport, 'maxlength="10"')}
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
-          ${fld('Depart',  'depart_at', 'datetime-local', (detail.depart_at||'').slice(0,16))}
-          ${fld('Arrive',  'arrive_at', 'datetime-local', (detail.arrive_at||'').slice(0,16))}
-        </div>
-        ${fld('Confirmation #', 'confirmation_no', 'text', detail.confirmation_no)}
-        ${txt('Notes',          'notes', detail.notes)}
-      `;
-    } else if (kind === 'hotel') {
-      body = `
-        ${fld('Hotel name',     'hotel_name',     'text', detail.hotel_name)}
-        ${fld('Address',        'hotel_address',  'text', detail.hotel_address)}
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
-          ${fld('Check-in',  'check_in',  'date', detail.check_in)}
-          ${fld('Check-out', 'check_out', 'date', detail.check_out)}
-        </div>
-        ${fld('Room type',      'room_type',      'text', detail.room_type)}
-        ${fld('Confirmation #', 'confirmation_no','text', detail.confirmation_no)}
-        ${txt('Notes',          'notes', detail.notes)}
-      `;
-    } else if (kind === 'car_rental') {
-      body = `
-        ${fld('Rental company', 'rental_co',       'text', detail.rental_co)}
-        ${fld('Pickup location','pickup_location', 'text', detail.pickup_location)}
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
-          ${fld('Pickup', 'pickup_at', 'datetime-local', (detail.pickup_at||'').slice(0,16))}
-          ${fld('Return', 'return_at', 'datetime-local', (detail.return_at||'').slice(0,16))}
-        </div>
-        ${fld('Confirmation #', 'confirmation_no','text', detail.confirmation_no)}
-        ${txt('Notes',          'notes', detail.notes)}
-      `;
-    } else if (kind === 'mileage') {
-      body = `
-        <div style="display:grid;grid-template-columns:1fr 2fr;gap:.5rem">
-          ${fld('Miles', 'miles', 'number', detail.miles, 'step="0.1" min="0"')}
-          ${fld('Route', 'route', 'text',   detail.route)}
-        </div>
-        ${txt('Notes', 'notes', detail.notes)}
-      `;
-    }
-    document.getElementById('travel-detail-body').innerHTML = body;
-    document.getElementById('travel-detail-overlay').classList.remove('hidden');
-  };
-
-  window.closeTravelDetail = function(ev) {
-    if (ev && ev.target && ev.target.id !== 'travel-detail-overlay') return;
-    document.getElementById('travel-detail-overlay').classList.add('hidden');
-    _detailContext = null;
-  };
-
-  document.getElementById('travel-detail-save-btn')?.addEventListener('click', async () => {
-    if (!_detailContext) return;
-    const payload = { schedule_day_id: _detailContext.sd_id, kind: _detailContext.kind };
-    document.querySelectorAll('#travel-detail-body [data-fld]').forEach(el => {
-      payload[el.dataset.fld] = el.value;
-    });
-    const btn = document.getElementById('travel-detail-save-btn');
-    btn.disabled = true; btn.textContent = 'Saving…';
-    try {
-      const r = await fetch(TRAVEL_DETAIL_URL, {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(payload),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { alert('Save failed: ' + (d.error || r.status)); return; }
-      closeTravelDetail();
-      await loadTravelGrid();
-    } finally {
-      btn.disabled = false; btn.textContent = 'Save';
-    }
-  });
-
-  // ── Add Travel Day ─────────────────────────────────────────────────────
-  document.getElementById('travel-add-day-btn')?.addEventListener('click', () => {
-    // Populate the line dropdown with all labor lines (assigned crew names).
-    const sel = document.getElementById('add-travel-line');
-    sel.innerHTML = '<option value="">— select a person —</option>';
-    document.querySelectorAll('#working-budget-wrap .line-row.labor-line').forEach(row => {
-      const lid = row.dataset.id;
-      const desc = row.querySelector('.editable[data-field="description"]')?.textContent.trim() || '';
-      const crewNm = row.querySelector('.assigned-crew-name')?.textContent.trim() || '';
-      if (lid && desc) {
-        const label = crewNm && crewNm !== '+ Assign' ? `${desc} — ${crewNm}` : desc;
-        const opt = document.createElement('option');
-        opt.value = lid + ':1';
-        opt.textContent = label;
-        sel.appendChild(opt);
-      }
-    });
-    document.getElementById('add-travel-date').value = '';
-    document.getElementById('travel-add-day-overlay').classList.remove('hidden');
-  });
-
-  window.closeAddTravelDay = function(ev) {
-    if (ev && ev.target && ev.target.id !== 'travel-add-day-overlay') return;
-    document.getElementById('travel-add-day-overlay').classList.add('hidden');
-  };
-
-  document.getElementById('add-travel-save-btn')?.addEventListener('click', async () => {
-    const sel  = document.getElementById('add-travel-line').value;
-    const date = document.getElementById('add-travel-date').value;
-    if (!sel || !date) { alert('Pick a person and a date.'); return; }
-    const [line_id, instance] = sel.split(':');
-    const r = await fetch(TRAVEL_ADD_URL, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({line_id: parseInt(line_id), instance: parseInt(instance), date}),
-    });
-    if (!r.ok) { alert('Add failed'); return; }
-    closeAddTravelDay();
-    await loadTravelGrid();
-  });
-
-  document.getElementById('travel-only-flagged')?.addEventListener('change', loadTravelGrid);
-  document.getElementById('travel-refresh-btn')?.addEventListener('click', loadTravelGrid);
-
-  // ── Catering grid ──────────────────────────────────────────────────────
-  async function loadCateringGrid() {
-    document.getElementById('catering-totals').innerHTML = '<span class="muted">Loading…</span>';
-    document.getElementById('catering-tbody').innerHTML =
-      '<tr><td colspan="9" class="muted" style="padding:1rem;text-align:center">Loading…</td></tr>';
-    try {
-      const r = await fetch(CATERING_GRID_URL, { credentials: 'same-origin' });
-      if (!r.ok) {
-        const txt = await r.text().catch(() => '');
-        document.getElementById('catering-tbody').innerHTML =
-          `<tr><td colspan="9" style="padding:1rem;color:#ef4444">Server returned ${r.status}: ${_esc(txt.slice(0,200))}</td></tr>`;
-        document.getElementById('catering-totals').innerHTML =
-          `<span style="color:#ef4444">Failed (HTTP ${r.status})</span>`;
-        return;
-      }
-      _cateringData = await r.json();
-      renderCateringGrid();
-      renderCateringBills();
-    } catch (err) {
-      console.error('loadCateringGrid failed', err);
-      document.getElementById('catering-tbody').innerHTML =
-        `<tr><td colspan="9" style="padding:1rem;color:#ef4444">Error: ${_esc(err.message || err)}</td></tr>`;
-      document.getElementById('catering-totals').innerHTML =
-        `<span style="color:#ef4444">Error: ${_esc(err.message || err)}</span>`;
-    }
-  }
-
-  function renderCateringGrid() {
-    if (!_cateringData) return;
-    const days = _cateringData.days || [];
-    const bills = _cateringData.bills || [];
-    if (days.length === 0) {
-      document.getElementById('catering-tbody').innerHTML =
-        '<tr><td colspan="9" class="muted" style="padding:1.2rem;text-align:center">No working days scheduled yet.</td></tr>';
-    }
-
-    let totalExpected = 0, totalMeals = 0;
-    let html = '';
-    days.forEach((d, idx) => {
-      totalExpected += d.expected_cost;
-      const mealCount = (d.flags.courtesy_breakfast?d.working_count:0)
-                      + (d.flags.first_meal?d.working_count:0)
-                      + (d.flags.second_meal?d.working_count:0)
-                      + d.working_meal_people.length;
-      totalMeals += mealCount;
-      const cb = (flag, isOn) => `<input type="checkbox" ${isOn?'checked':''}
-        onclick="cateringMealToggle('${d.date}','${flag}',this.checked)">`;
-      const expandId = 'cat-detail-' + idx;
-      html += `<tr>
-        <td style="text-align:center">
-          <button class="btn btn-xs btn-ghost" onclick="document.getElementById('${expandId}').classList.toggle('hidden')" title="Toggle people detail">▾</button>
-        </td>
-        <td><strong>${_esc(d.date)}</strong></td>
-        <td style="text-align:right">${d.working_count}</td>
-        <td style="text-align:center">${cb('courtesy_breakfast', d.flags.courtesy_breakfast)}</td>
-        <td style="text-align:center">${cb('first_meal',         d.flags.first_meal)}</td>
-        <td style="text-align:center">${cb('second_meal',        d.flags.second_meal)}</td>
-        <td style="text-align:center">${d.working_meal_people.length}</td>
-        <td style="text-align:center">${d.per_diem_people.length}</td>
-        <td style="text-align:right"><strong>${_fmt(d.expected_cost)}</strong></td>
-      </tr>
-      <tr id="${expandId}" class="catering-detail-row hidden">
-        <td colspan="9">
-          ${d.working_count > 0 ? `<div style="margin-bottom:.4rem"><strong>Working crew (${d.working_count}):</strong> ${d.working_crew.map(p => _esc(p.person||p.role)).join(', ')}</div>` : ''}
-          ${d.working_meal_people.length > 0 ? `<div style="margin-bottom:.4rem"><strong>Working meal:</strong> ${d.working_meal_people.map(p => _esc(p.person||p.role)).join(', ')}</div>` : ''}
-          ${d.per_diem_people.length > 0 ? `<div><strong>Per Diem:</strong> ${d.per_diem_people.map(p => _esc(p.person||p.role) + ' (' + p.kind + ')').join(', ')}</div>` : ''}
-          ${d.working_count===0 && d.working_meal_people.length===0 && d.per_diem_people.length===0 ? '<span class="muted">No people on any meal list this day.</span>' : ''}
-        </td>
-      </tr>`;
-    });
-    if (html) document.getElementById('catering-tbody').innerHTML = html;
-
-    const totalBilled = bills.reduce((acc, b) => acc + parseFloat(b.amount || 0), 0);
-    const drift = totalBilled - totalExpected;
-    document.getElementById('catering-totals').innerHTML = `
-      <span><strong>${days.length}</strong> meal days · <strong>${totalMeals}</strong> meals served</span>
-      <span>Expected: <strong>${_fmt(totalExpected)}</strong></span>
-      <span>Caterer billed: <strong>${_fmt(totalBilled)}</strong></span>
-      <span style="color:${drift>0.5?'#ef4444':drift<-0.5?'#22c55e':'var(--text-muted)'}">Drift: <strong>${_fmt(drift)}</strong></span>
-    `;
-  }
-
-  function renderCateringBills() {
-    const bills = _cateringData?.bills || [];
-    const tbody = document.getElementById('catering-bills-tbody');
-    if (!bills.length) {
-      tbody.innerHTML = '<tr><td colspan="5" class="muted" style="padding:.7rem 1rem;text-align:center;font-size:.82rem">No caterer bills entered yet.</td></tr>';
-      return;
-    }
-    tbody.innerHTML = bills.map(b => `
-      <tr>
-        <td style="padding:.5rem .8rem"><strong>${_esc(b.period_start)}</strong> → ${_esc(b.period_end)}</td>
-        <td>${_esc(b.vendor || '—')}</td>
-        <td style="text-align:right;font-weight:600">${_fmt(b.amount)}</td>
-        <td class="muted">${_esc(b.note || '')}</td>
-        <td style="text-align:center">
-          <button class="btn btn-xs btn-ghost" onclick='openCateringBill(${JSON.stringify(b).replace(/'/g, "&#39;")})'>Edit</button>
-          <button class="btn btn-xs btn-ghost" style="color:#ef4444" onclick="deleteCateringBill(${b.id})">✕</button>
-        </td>
-      </tr>
-    `).join('');
-  }
-
-  window.cateringMealToggle = async function(date, flag, value) {
-    const r = await fetch(CATERING_MEAL_URL, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({date, flag, value}),
-    });
-    if (!r.ok) alert('Meal toggle failed');
-    await loadCateringGrid();
-  };
-
-  window.openCateringBill = function(bill) {
-    document.getElementById('catering-bill-title').textContent = bill ? 'Edit Caterer Bill' : 'Add Caterer Bill';
-    document.getElementById('cb-id').value     = bill?.id || '';
-    document.getElementById('cb-start').value  = bill?.period_start || '';
-    document.getElementById('cb-end').value    = bill?.period_end   || '';
-    document.getElementById('cb-vendor').value = bill?.vendor || '';
-    document.getElementById('cb-amount').value = bill?.amount || '';
-    document.getElementById('cb-note').value   = bill?.note   || '';
-    document.getElementById('catering-bill-overlay').classList.remove('hidden');
-  };
-
-  window.closeCateringBill = function(ev) {
-    if (ev && ev.target && ev.target.id !== 'catering-bill-overlay') return;
-    document.getElementById('catering-bill-overlay').classList.add('hidden');
-  };
-
-  document.getElementById('catering-add-bill-btn')?.addEventListener('click', () => openCateringBill(null));
-  document.getElementById('catering-refresh-btn')?.addEventListener('click', loadCateringGrid);
-
-  document.getElementById('cb-save-btn')?.addEventListener('click', async () => {
-    const payload = {
-      id:           document.getElementById('cb-id').value || null,
-      period_start: document.getElementById('cb-start').value,
-      period_end:   document.getElementById('cb-end').value,
-      vendor:       document.getElementById('cb-vendor').value,
-      amount:       document.getElementById('cb-amount').value,
-      note:         document.getElementById('cb-note').value,
-    };
-    if (!payload.period_start || !payload.period_end) { alert('Set both period dates.'); return; }
-    const r = await fetch(CATERING_BILL_URL, {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(payload),
-    });
-    if (!r.ok) { alert('Save failed'); return; }
-    closeCateringBill();
-    await loadCateringGrid();
-  });
-
-  window.deleteCateringBill = async function(id) {
-    if (!confirm('Delete this caterer bill?')) return;
-    const r = await fetch(CATERING_BILL_URL + '/' + id, { method: 'DELETE' });
-    if (!r.ok) { alert('Delete failed'); return; }
-    await loadCateringGrid();
-  };
-
-  // ── Tab activation hooks: load data the FIRST time the panel becomes
-  //    active, regardless of whether activation came from a real click,
-  //    a programmatic btn.click() from the URL handler, or pre-active
-  //    state at page load. MutationObserver on the panel's class list
-  //    is the only reliable way to catch all three.
-  let _travelLoaded = false, _cateringLoaded = false;
-  function _watchPanel(tabName, loader, loadedFlag) {
-    const panel = document.getElementById('tab-' + tabName);
-    if (!panel) return;
-    const fire = () => {
-      if (!window['_'+tabName+'Loaded'] && panel.classList.contains('active')) {
-        window['_'+tabName+'Loaded'] = true;
-        loader();
-      }
-    };
-    new MutationObserver(fire).observe(panel, { attributes: true, attributeFilter: ['class'] });
-    fire();  // catch initial state if user landed directly on this tab
-  }
-  // Use module-scoped flags via closures instead of window globals
-  document.querySelector('.tab-btn[data-tab="travel"]')?.addEventListener('click', () => {
-    if (!_travelLoaded) { _travelLoaded = true; loadTravelGrid(); }
-  });
-  document.querySelector('.tab-btn[data-tab="catering"]')?.addEventListener('click', () => {
-    if (!_cateringLoaded) { _cateringLoaded = true; loadCateringGrid(); }
-  });
-  // MutationObserver fallback for URL-driven activation (where the click
-  // event fires before this IIFE registers the listener). Watches for the
-  // .active class to land on the panel and triggers the loader once.
-  const _travelPanel = document.getElementById('tab-travel');
-  if (_travelPanel) {
-    const fireT = () => {
-      if (!_travelLoaded && _travelPanel.classList.contains('active')) {
-        _travelLoaded = true; loadTravelGrid();
-      }
-    };
-    new MutationObserver(fireT).observe(_travelPanel, { attributes: true, attributeFilter: ['class'] });
-    fireT();
-  }
-  const _cateringPanel = document.getElementById('tab-catering');
-  if (_cateringPanel) {
-    const fireC = () => {
-      if (!_cateringLoaded && _cateringPanel.classList.contains('active')) {
-        _cateringLoaded = true; loadCateringGrid();
-      }
-    };
-    new MutationObserver(fireC).observe(_cateringPanel, { attributes: true, attributeFilter: ['class'] });
-    fireC();
-  }
-  console.log('[Travel/Catering] IIFE ready; observers attached');
-  } catch (err) {
-    console.error('[Travel/Catering] IIFE crashed:', err);
-    // Show the error visibly so a screenshot tells us what broke.
-    try {
-      const tt = document.getElementById('travel-totals');
-      if (tt) tt.innerHTML = '<span style="color:#ef4444">JS error: ' + (err.message || err) + '</span>';
-      const ct = document.getElementById('catering-totals');
-      if (ct) ct.innerHTML = '<span style="color:#ef4444">JS error: ' + (err.message || err) + '</span>';
-      // Also pop a small banner at the bottom of the screen — visible
-      // regardless of which tab is active.
-      const banner = document.createElement('div');
-      banner.style.cssText = 'position:fixed;bottom:16px;right:16px;background:#2a1414;color:#ef4444;border:1px solid #ef4444;padding:10px 14px;border-radius:6px;z-index:9999;max-width:480px;font-size:12px;font-family:monospace';
-      banner.textContent = 'Travel/Catering JS error: ' + (err.message || err);
-      document.body.appendChild(banner);
-    } catch (_) { /* swallow */ }
-  }
-})();
+// ── Travel + Catering tabs — moved to a dedicated <script> tag below to
+//    isolate from parse errors elsewhere in this 1900-line script block.
+//    Stub kept here so the position in the file doesn't move radically.
+/* Travel + Catering IIFE relocated; see <script> block at end of body. */
 
 // ── Auto-calc displays (Workers' Comp / Payroll Fee in Settings) ──────────
 (function() {
@@ -9151,6 +8605,556 @@ setTimeout(function() {
     document.getElementById('export-preview-overlay').classList.remove('is-open');
     document.getElementById('export-preview-drawer').classList.remove('is-open');
   }
+</script>
+
+<!-- Travel + Catering: dedicated <script> tag so a parse error in the
+     huge shared script block above can't silently kill these loaders.
+     Loaded LAST so PID/BID and DOM are guaranteed available. -->
+<script>
+(function() {
+  try {
+  if (typeof PID === 'undefined' || typeof BID === 'undefined') {
+    console.error('[Travel/Catering] PID/BID not defined');
+    return;
+  }
+  console.log('[Travel/Catering] dedicated tag starting');
+  const TRAVEL_GRID_URL    = `/projects/${PID}/budget/${BID}/travel/grid`;
+  const TRAVEL_TOGGLE_URL  = `/projects/${PID}/budget/${BID}/travel/toggle`;
+  const TRAVEL_DETAIL_URL  = `/projects/${PID}/budget/${BID}/travel/detail`;
+  const TRAVEL_ADD_URL     = `/projects/${PID}/budget/${BID}/travel/add`;
+  const CATERING_GRID_URL  = `/projects/${PID}/budget/${BID}/catering/grid`;
+  const CATERING_MEAL_URL  = `/projects/${PID}/budget/${BID}/catering/meal-toggle`;
+  const CATERING_BILL_URL  = `/projects/${PID}/budget/${BID}/catering/bill`;
+
+  let _travelData   = null;
+  let _cateringData = null;
+  let _detailContext = null;  // { sd_id, kind, current_detail }
+
+  const _esc = s => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const _fmt = n => '$' + parseFloat(n || 0).toLocaleString('en-US',
+    {minimumFractionDigits:2, maximumFractionDigits:2});
+
+  // ── Travel grid ────────────────────────────────────────────────────────
+  async function loadTravelGrid() {
+    const onlyFlagged = document.getElementById('travel-only-flagged')?.checked;
+    const showAll = onlyFlagged ? '0' : '1';
+    document.getElementById('travel-totals').innerHTML = '<span class="muted">Loading…</span>';
+    document.getElementById('travel-tbody').innerHTML =
+      '<tr><td colspan="10" class="muted" style="padding:1rem;text-align:center">Loading…</td></tr>';
+    try {
+      const r = await fetch(TRAVEL_GRID_URL + '?show_all=' + showAll, { credentials: 'same-origin' });
+      if (!r.ok) {
+        const txt = await r.text().catch(() => '');
+        document.getElementById('travel-tbody').innerHTML =
+          `<tr><td colspan="10" style="padding:1rem;color:#ef4444">Server returned ${r.status}: ${_esc(txt.slice(0,200))}</td></tr>`;
+        document.getElementById('travel-totals').innerHTML =
+          `<span style="color:#ef4444">Failed (HTTP ${r.status})</span>`;
+        return;
+      }
+      _travelData = await r.json();
+      renderTravelGrid();
+    } catch (err) {
+      console.error('loadTravelGrid failed', err);
+      document.getElementById('travel-tbody').innerHTML =
+        `<tr><td colspan="10" style="padding:1rem;color:#ef4444">Error: ${_esc(err.message || err)}</td></tr>`;
+      document.getElementById('travel-totals').innerHTML =
+        `<span style="color:#ef4444">Error: ${_esc(err.message || err)}</span>`;
+    }
+  }
+
+  function renderTravelGrid() {
+    if (!_travelData) return;
+    const rows = _travelData.rows || [];
+    const rates = _travelData.rates || {};
+    if (rows.length === 0) {
+      document.getElementById('travel-tbody').innerHTML =
+        '<tr><td colspan="10" class="muted" style="padding:1.2rem;text-align:center">' +
+        'No travel cells flagged on the schedule. Use "+ Add Travel Day" to start.' +
+        '</td></tr>';
+      document.getElementById('travel-totals').innerHTML =
+        '<span class="muted">No travel costs yet.</span>';
+      return;
+    }
+
+    // Running totals — count instances × rate per kind for the summary bar.
+    let flightCount=0, hotelCount=0, carCount=0, mileageMiles=0;
+    const pdCounts = {full:0, breakfast:0, lunch:0, dinner:0};
+
+    let html = '';
+    let lastDate = null;
+    rows.forEach(r => {
+      if (r.flags.flight) flightCount++;
+      if (r.flags.hotel)  hotelCount++;
+      if (r.flags.car_rental) carCount++;
+      if (r.detail.mileage && r.detail.mileage.miles) mileageMiles += parseFloat(r.detail.mileage.miles);
+      if (r.flags.per_diem) pdCounts[r.flags.per_diem] = (pdCounts[r.flags.per_diem]||0) + 1;
+
+      const sameDate = r.date === lastDate;
+      const sep = sameDate ? '' : 'border-top:2px solid var(--border)';
+      lastDate = r.date;
+
+      const dayBadge = (() => {
+        const colors = {work:'#22c55e', travel:'#3498db', hold:'#a78bfa', half:'#f59e0b', kill_fee:'#ef4444', custom:'#9b59b6', off:'var(--text-muted)'};
+        const c = colors[r.day_type] || 'var(--text-muted)';
+        return `<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${c}22;color:${c};border:1px solid ${c}55;text-transform:uppercase">${_esc(r.day_type)}</span>`;
+      })();
+
+      const cb = (flag, isOn, kind) => {
+        const handler = `travelToggleFlag(${r.line_id}, ${r.instance}, '${r.date}', '${flag}')`;
+        const detailHandler = kind ? `event.stopPropagation(); openTravelDetail(${r.schedule_day_id}, '${kind}')` : '';
+        const hasDetail = kind && r.detail[kind];
+        const dot = hasDetail ? '<span style="color:#22c55e;font-size:8px;margin-left:2px" title="Reservation details on file">●</span>' : '';
+        const detailBtn = (kind && isOn) ? `<button onclick="${detailHandler}" style="background:none;border:none;color:#5b8af9;cursor:pointer;padding:0 2px;font-size:11px" title="Edit details">✎</button>` : '';
+        return `<input type="checkbox" ${isOn ? 'checked' : ''} onclick="${handler}">${dot}${detailBtn}`;
+      };
+
+      const pdSelect = `
+        <select onchange="travelSetPerDiem(${r.line_id}, ${r.instance}, '${r.date}', this.value)" style="font-size:.78rem;padding:1px 4px;background:var(--bg-input);border:1px solid var(--border);color:var(--text)">
+          <option value=""${r.flags.per_diem===''?' selected':''}>—</option>
+          <option value="full"${r.flags.per_diem==='full'?' selected':''}>Full</option>
+          <option value="breakfast"${r.flags.per_diem==='breakfast'?' selected':''}>Bkfst</option>
+          <option value="lunch"${r.flags.per_diem==='lunch'?' selected':''}>Lunch</option>
+          <option value="dinner"${r.flags.per_diem==='dinner'?' selected':''}>Dinner</option>
+        </select>
+      `;
+
+      html += `<tr style="${sep}">
+        <td><strong>${_esc(r.person)}</strong></td>
+        <td class="muted">${_esc(r.role)}</td>
+        <td>${_esc(r.date)}</td>
+        <td>${dayBadge}</td>
+        <td style="text-align:center">${cb('flight',     r.flags.flight,     'flight')}</td>
+        <td style="text-align:center">${cb('hotel',      r.flags.hotel,      'hotel')}</td>
+        <td style="text-align:center">${cb('car_rental', r.flags.car_rental, 'car_rental')}</td>
+        <td style="text-align:center">${cb('mileage',    r.flags.mileage,    'mileage')}</td>
+        <td>${pdSelect}</td>
+        <td style="text-align:center;color:var(--text-muted);font-size:.75rem">${
+          (r.detail.flight && r.detail.flight.notes)
+          || (r.detail.hotel && r.detail.hotel.notes)
+          || ''
+        }</td>
+      </tr>`;
+    });
+    document.getElementById('travel-tbody').innerHTML = html;
+
+    // Summary bar — instance counts and approximate $ totals using crew
+    // rates as a default (the real auto-line uses role-group rates and
+    // is the source of truth; this is just a quick-glance estimate).
+    const flightTotal = flightCount * (rates.flight_crew || 0);
+    const hotelTotal  = hotelCount  * (rates.hotel_crew  || 0);
+    const carTotal    = carCount    * 50;  // car rental rate placeholder
+    const mileageTotal = mileageMiles * 0.67;  // IRS standard rate
+    const pdTotal = (pdCounts.full * (rates.per_diem_full||0)
+                    + pdCounts.breakfast * (rates.per_diem_breakfast||0)
+                    + pdCounts.lunch     * (rates.per_diem_lunch||0)
+                    + pdCounts.dinner    * (rates.per_diem_dinner||0));
+    document.getElementById('travel-totals').innerHTML = `
+      <span><strong>${flightCount}</strong> flights ≈ <strong>${_fmt(flightTotal)}</strong></span>
+      <span><strong>${hotelCount}</strong> hotel-nights ≈ <strong>${_fmt(hotelTotal)}</strong></span>
+      <span><strong>${carCount}</strong> car rentals</span>
+      <span><strong>${mileageMiles.toFixed(0)}</strong> miles</span>
+      <span><strong>${pdCounts.full + pdCounts.breakfast + pdCounts.lunch + pdCounts.dinner}</strong> per-diem days ≈ <strong>${_fmt(pdTotal)}</strong></span>
+      <span class="muted" style="font-size:.78rem;margin-left:auto">Source of truth = budget auto-lines</span>
+    `;
+  }
+
+  window.travelToggleFlag = async function(line_id, instance, date, flag) {
+    const cb = event.target;
+    const value = cb.checked;
+    cb.disabled = true;
+    try {
+      const r = await fetch(TRAVEL_TOGGLE_URL, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({line_id, instance, date, flag, value})
+      });
+      if (!r.ok) { alert('Toggle failed'); cb.checked = !value; return; }
+      // Reload so the ✎ pencil + dot appear/disappear correctly.
+      await loadTravelGrid();
+    } finally {
+      cb.disabled = false;
+    }
+  };
+
+  window.travelSetPerDiem = async function(line_id, instance, date, mode) {
+    const r = await fetch(TRAVEL_TOGGLE_URL, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({line_id, instance, date, flag:'per_diem', per_diem_mode:mode, value:!!mode})
+    });
+    if (!r.ok) alert('Per diem update failed');
+    await loadTravelGrid();
+  };
+
+  // ── Travel detail modal (flight/hotel/car/mileage entry) ───────────────
+  window.openTravelDetail = function(sd_id, kind) {
+    // Find the row in cached data so we can pre-fill the form.
+    const row = _travelData?.rows?.find(r => r.schedule_day_id === sd_id);
+    const detail = row?.detail?.[kind] || {};
+    _detailContext = { sd_id, kind, detail };
+
+    const titleMap = {flight:'Flight', hotel:'Hotel', car_rental:'Car Rental', mileage:'Mileage'};
+    document.getElementById('travel-detail-title').textContent =
+      `${titleMap[kind]} — ${row?.person || ''} ${row?.date || ''}`;
+
+    const fld = (label, name, type, value, extra) =>
+      `<div class="field" style="margin-bottom:.55rem">
+         <label style="display:block;font-size:.76rem;color:var(--text-muted);margin-bottom:.25rem">${label}</label>
+         <input type="${type}" data-fld="${name}" value="${_esc(value || '')}" style="width:100%" ${extra || ''}>
+       </div>`;
+    const txt = (label, name, value) =>
+      `<div class="field" style="margin-bottom:.55rem">
+         <label style="display:block;font-size:.76rem;color:var(--text-muted);margin-bottom:.25rem">${label}</label>
+         <textarea data-fld="${name}" rows="2" style="width:100%;resize:vertical">${_esc(value || '')}</textarea>
+       </div>`;
+
+    let body = '';
+    if (kind === 'flight') {
+      body = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+          ${fld('Airline', 'airline', 'text', detail.airline)}
+          ${fld('Flight #', 'flight_no', 'text', detail.flight_no)}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+          ${fld('From (airport code)', 'depart_airport', 'text', detail.depart_airport, 'maxlength="10"')}
+          ${fld('To (airport code)',   'arrive_airport', 'text', detail.arrive_airport, 'maxlength="10"')}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+          ${fld('Depart',  'depart_at', 'datetime-local', (detail.depart_at||'').slice(0,16))}
+          ${fld('Arrive',  'arrive_at', 'datetime-local', (detail.arrive_at||'').slice(0,16))}
+        </div>
+        ${fld('Confirmation #', 'confirmation_no', 'text', detail.confirmation_no)}
+        ${txt('Notes',          'notes', detail.notes)}
+      `;
+    } else if (kind === 'hotel') {
+      body = `
+        ${fld('Hotel name',     'hotel_name',     'text', detail.hotel_name)}
+        ${fld('Address',        'hotel_address',  'text', detail.hotel_address)}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+          ${fld('Check-in',  'check_in',  'date', detail.check_in)}
+          ${fld('Check-out', 'check_out', 'date', detail.check_out)}
+        </div>
+        ${fld('Room type',      'room_type',      'text', detail.room_type)}
+        ${fld('Confirmation #', 'confirmation_no','text', detail.confirmation_no)}
+        ${txt('Notes',          'notes', detail.notes)}
+      `;
+    } else if (kind === 'car_rental') {
+      body = `
+        ${fld('Rental company', 'rental_co',       'text', detail.rental_co)}
+        ${fld('Pickup location','pickup_location', 'text', detail.pickup_location)}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
+          ${fld('Pickup', 'pickup_at', 'datetime-local', (detail.pickup_at||'').slice(0,16))}
+          ${fld('Return', 'return_at', 'datetime-local', (detail.return_at||'').slice(0,16))}
+        </div>
+        ${fld('Confirmation #', 'confirmation_no','text', detail.confirmation_no)}
+        ${txt('Notes',          'notes', detail.notes)}
+      `;
+    } else if (kind === 'mileage') {
+      body = `
+        <div style="display:grid;grid-template-columns:1fr 2fr;gap:.5rem">
+          ${fld('Miles', 'miles', 'number', detail.miles, 'step="0.1" min="0"')}
+          ${fld('Route', 'route', 'text',   detail.route)}
+        </div>
+        ${txt('Notes', 'notes', detail.notes)}
+      `;
+    }
+    document.getElementById('travel-detail-body').innerHTML = body;
+    document.getElementById('travel-detail-overlay').classList.remove('hidden');
+  };
+
+  window.closeTravelDetail = function(ev) {
+    if (ev && ev.target && ev.target.id !== 'travel-detail-overlay') return;
+    document.getElementById('travel-detail-overlay').classList.add('hidden');
+    _detailContext = null;
+  };
+
+  document.getElementById('travel-detail-save-btn')?.addEventListener('click', async () => {
+    if (!_detailContext) return;
+    const payload = { schedule_day_id: _detailContext.sd_id, kind: _detailContext.kind };
+    document.querySelectorAll('#travel-detail-body [data-fld]').forEach(el => {
+      payload[el.dataset.fld] = el.value;
+    });
+    const btn = document.getElementById('travel-detail-save-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const r = await fetch(TRAVEL_DETAIL_URL, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert('Save failed: ' + (d.error || r.status)); return; }
+      closeTravelDetail();
+      await loadTravelGrid();
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save';
+    }
+  });
+
+  // ── Add Travel Day ─────────────────────────────────────────────────────
+  document.getElementById('travel-add-day-btn')?.addEventListener('click', () => {
+    // Populate the line dropdown with all labor lines (assigned crew names).
+    const sel = document.getElementById('add-travel-line');
+    sel.innerHTML = '<option value="">— select a person —</option>';
+    document.querySelectorAll('#working-budget-wrap .line-row.labor-line').forEach(row => {
+      const lid = row.dataset.id;
+      const desc = row.querySelector('.editable[data-field="description"]')?.textContent.trim() || '';
+      const crewNm = row.querySelector('.assigned-crew-name')?.textContent.trim() || '';
+      if (lid && desc) {
+        const label = crewNm && crewNm !== '+ Assign' ? `${desc} — ${crewNm}` : desc;
+        const opt = document.createElement('option');
+        opt.value = lid + ':1';
+        opt.textContent = label;
+        sel.appendChild(opt);
+      }
+    });
+    document.getElementById('add-travel-date').value = '';
+    document.getElementById('travel-add-day-overlay').classList.remove('hidden');
+  });
+
+  window.closeAddTravelDay = function(ev) {
+    if (ev && ev.target && ev.target.id !== 'travel-add-day-overlay') return;
+    document.getElementById('travel-add-day-overlay').classList.add('hidden');
+  };
+
+  document.getElementById('add-travel-save-btn')?.addEventListener('click', async () => {
+    const sel  = document.getElementById('add-travel-line').value;
+    const date = document.getElementById('add-travel-date').value;
+    if (!sel || !date) { alert('Pick a person and a date.'); return; }
+    const [line_id, instance] = sel.split(':');
+    const r = await fetch(TRAVEL_ADD_URL, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({line_id: parseInt(line_id), instance: parseInt(instance), date}),
+    });
+    if (!r.ok) { alert('Add failed'); return; }
+    closeAddTravelDay();
+    await loadTravelGrid();
+  });
+
+  document.getElementById('travel-only-flagged')?.addEventListener('change', loadTravelGrid);
+  document.getElementById('travel-refresh-btn')?.addEventListener('click', loadTravelGrid);
+
+  // ── Catering grid ──────────────────────────────────────────────────────
+  async function loadCateringGrid() {
+    document.getElementById('catering-totals').innerHTML = '<span class="muted">Loading…</span>';
+    document.getElementById('catering-tbody').innerHTML =
+      '<tr><td colspan="9" class="muted" style="padding:1rem;text-align:center">Loading…</td></tr>';
+    try {
+      const r = await fetch(CATERING_GRID_URL, { credentials: 'same-origin' });
+      if (!r.ok) {
+        const txt = await r.text().catch(() => '');
+        document.getElementById('catering-tbody').innerHTML =
+          `<tr><td colspan="9" style="padding:1rem;color:#ef4444">Server returned ${r.status}: ${_esc(txt.slice(0,200))}</td></tr>`;
+        document.getElementById('catering-totals').innerHTML =
+          `<span style="color:#ef4444">Failed (HTTP ${r.status})</span>`;
+        return;
+      }
+      _cateringData = await r.json();
+      renderCateringGrid();
+      renderCateringBills();
+    } catch (err) {
+      console.error('loadCateringGrid failed', err);
+      document.getElementById('catering-tbody').innerHTML =
+        `<tr><td colspan="9" style="padding:1rem;color:#ef4444">Error: ${_esc(err.message || err)}</td></tr>`;
+      document.getElementById('catering-totals').innerHTML =
+        `<span style="color:#ef4444">Error: ${_esc(err.message || err)}</span>`;
+    }
+  }
+
+  function renderCateringGrid() {
+    if (!_cateringData) return;
+    const days = _cateringData.days || [];
+    const bills = _cateringData.bills || [];
+    if (days.length === 0) {
+      document.getElementById('catering-tbody').innerHTML =
+        '<tr><td colspan="9" class="muted" style="padding:1.2rem;text-align:center">No working days scheduled yet.</td></tr>';
+    }
+
+    let totalExpected = 0, totalMeals = 0;
+    let html = '';
+    days.forEach((d, idx) => {
+      totalExpected += d.expected_cost;
+      const mealCount = (d.flags.courtesy_breakfast?d.working_count:0)
+                      + (d.flags.first_meal?d.working_count:0)
+                      + (d.flags.second_meal?d.working_count:0)
+                      + d.working_meal_people.length;
+      totalMeals += mealCount;
+      const cb = (flag, isOn) => `<input type="checkbox" ${isOn?'checked':''}
+        onclick="cateringMealToggle('${d.date}','${flag}',this.checked)">`;
+      const expandId = 'cat-detail-' + idx;
+      html += `<tr>
+        <td style="text-align:center">
+          <button class="btn btn-xs btn-ghost" onclick="document.getElementById('${expandId}').classList.toggle('hidden')" title="Toggle people detail">▾</button>
+        </td>
+        <td><strong>${_esc(d.date)}</strong></td>
+        <td style="text-align:right">${d.working_count}</td>
+        <td style="text-align:center">${cb('courtesy_breakfast', d.flags.courtesy_breakfast)}</td>
+        <td style="text-align:center">${cb('first_meal',         d.flags.first_meal)}</td>
+        <td style="text-align:center">${cb('second_meal',        d.flags.second_meal)}</td>
+        <td style="text-align:center">${d.working_meal_people.length}</td>
+        <td style="text-align:center">${d.per_diem_people.length}</td>
+        <td style="text-align:right"><strong>${_fmt(d.expected_cost)}</strong></td>
+      </tr>
+      <tr id="${expandId}" class="catering-detail-row hidden">
+        <td colspan="9">
+          ${d.working_count > 0 ? `<div style="margin-bottom:.4rem"><strong>Working crew (${d.working_count}):</strong> ${d.working_crew.map(p => _esc(p.person||p.role)).join(', ')}</div>` : ''}
+          ${d.working_meal_people.length > 0 ? `<div style="margin-bottom:.4rem"><strong>Working meal:</strong> ${d.working_meal_people.map(p => _esc(p.person||p.role)).join(', ')}</div>` : ''}
+          ${d.per_diem_people.length > 0 ? `<div><strong>Per Diem:</strong> ${d.per_diem_people.map(p => _esc(p.person||p.role) + ' (' + p.kind + ')').join(', ')}</div>` : ''}
+          ${d.working_count===0 && d.working_meal_people.length===0 && d.per_diem_people.length===0 ? '<span class="muted">No people on any meal list this day.</span>' : ''}
+        </td>
+      </tr>`;
+    });
+    if (html) document.getElementById('catering-tbody').innerHTML = html;
+
+    const totalBilled = bills.reduce((acc, b) => acc + parseFloat(b.amount || 0), 0);
+    const drift = totalBilled - totalExpected;
+    document.getElementById('catering-totals').innerHTML = `
+      <span><strong>${days.length}</strong> meal days · <strong>${totalMeals}</strong> meals served</span>
+      <span>Expected: <strong>${_fmt(totalExpected)}</strong></span>
+      <span>Caterer billed: <strong>${_fmt(totalBilled)}</strong></span>
+      <span style="color:${drift>0.5?'#ef4444':drift<-0.5?'#22c55e':'var(--text-muted)'}">Drift: <strong>${_fmt(drift)}</strong></span>
+    `;
+  }
+
+  function renderCateringBills() {
+    const bills = _cateringData?.bills || [];
+    const tbody = document.getElementById('catering-bills-tbody');
+    if (!bills.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="muted" style="padding:.7rem 1rem;text-align:center;font-size:.82rem">No caterer bills entered yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = bills.map(b => `
+      <tr>
+        <td style="padding:.5rem .8rem"><strong>${_esc(b.period_start)}</strong> → ${_esc(b.period_end)}</td>
+        <td>${_esc(b.vendor || '—')}</td>
+        <td style="text-align:right;font-weight:600">${_fmt(b.amount)}</td>
+        <td class="muted">${_esc(b.note || '')}</td>
+        <td style="text-align:center">
+          <button class="btn btn-xs btn-ghost" onclick='openCateringBill(${JSON.stringify(b).replace(/'/g, "&#39;")})'>Edit</button>
+          <button class="btn btn-xs btn-ghost" style="color:#ef4444" onclick="deleteCateringBill(${b.id})">✕</button>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  window.cateringMealToggle = async function(date, flag, value) {
+    const r = await fetch(CATERING_MEAL_URL, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({date, flag, value}),
+    });
+    if (!r.ok) alert('Meal toggle failed');
+    await loadCateringGrid();
+  };
+
+  window.openCateringBill = function(bill) {
+    document.getElementById('catering-bill-title').textContent = bill ? 'Edit Caterer Bill' : 'Add Caterer Bill';
+    document.getElementById('cb-id').value     = bill?.id || '';
+    document.getElementById('cb-start').value  = bill?.period_start || '';
+    document.getElementById('cb-end').value    = bill?.period_end   || '';
+    document.getElementById('cb-vendor').value = bill?.vendor || '';
+    document.getElementById('cb-amount').value = bill?.amount || '';
+    document.getElementById('cb-note').value   = bill?.note   || '';
+    document.getElementById('catering-bill-overlay').classList.remove('hidden');
+  };
+
+  window.closeCateringBill = function(ev) {
+    if (ev && ev.target && ev.target.id !== 'catering-bill-overlay') return;
+    document.getElementById('catering-bill-overlay').classList.add('hidden');
+  };
+
+  document.getElementById('catering-add-bill-btn')?.addEventListener('click', () => openCateringBill(null));
+  document.getElementById('catering-refresh-btn')?.addEventListener('click', loadCateringGrid);
+
+  document.getElementById('cb-save-btn')?.addEventListener('click', async () => {
+    const payload = {
+      id:           document.getElementById('cb-id').value || null,
+      period_start: document.getElementById('cb-start').value,
+      period_end:   document.getElementById('cb-end').value,
+      vendor:       document.getElementById('cb-vendor').value,
+      amount:       document.getElementById('cb-amount').value,
+      note:         document.getElementById('cb-note').value,
+    };
+    if (!payload.period_start || !payload.period_end) { alert('Set both period dates.'); return; }
+    const r = await fetch(CATERING_BILL_URL, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) { alert('Save failed'); return; }
+    closeCateringBill();
+    await loadCateringGrid();
+  });
+
+  window.deleteCateringBill = async function(id) {
+    if (!confirm('Delete this caterer bill?')) return;
+    const r = await fetch(CATERING_BILL_URL + '/' + id, { method: 'DELETE' });
+    if (!r.ok) { alert('Delete failed'); return; }
+    await loadCateringGrid();
+  };
+
+  // ── Tab activation hooks: load data the FIRST time the panel becomes
+  //    active, regardless of whether activation came from a real click,
+  //    a programmatic btn.click() from the URL handler, or pre-active
+  //    state at page load. MutationObserver on the panel's class list
+  //    is the only reliable way to catch all three.
+  let _travelLoaded = false, _cateringLoaded = false;
+  function _watchPanel(tabName, loader, loadedFlag) {
+    const panel = document.getElementById('tab-' + tabName);
+    if (!panel) return;
+    const fire = () => {
+      if (!window['_'+tabName+'Loaded'] && panel.classList.contains('active')) {
+        window['_'+tabName+'Loaded'] = true;
+        loader();
+      }
+    };
+    new MutationObserver(fire).observe(panel, { attributes: true, attributeFilter: ['class'] });
+    fire();  // catch initial state if user landed directly on this tab
+  }
+  // Use module-scoped flags via closures instead of window globals
+  document.querySelector('.tab-btn[data-tab="travel"]')?.addEventListener('click', () => {
+    if (!_travelLoaded) { _travelLoaded = true; loadTravelGrid(); }
+  });
+  document.querySelector('.tab-btn[data-tab="catering"]')?.addEventListener('click', () => {
+    if (!_cateringLoaded) { _cateringLoaded = true; loadCateringGrid(); }
+  });
+  // MutationObserver fallback for URL-driven activation (where the click
+  // event fires before this IIFE registers the listener). Watches for the
+  // .active class to land on the panel and triggers the loader once.
+  const _travelPanel = document.getElementById('tab-travel');
+  if (_travelPanel) {
+    const fireT = () => {
+      if (!_travelLoaded && _travelPanel.classList.contains('active')) {
+        _travelLoaded = true; loadTravelGrid();
+      }
+    };
+    new MutationObserver(fireT).observe(_travelPanel, { attributes: true, attributeFilter: ['class'] });
+    fireT();
+  }
+  const _cateringPanel = document.getElementById('tab-catering');
+  if (_cateringPanel) {
+    const fireC = () => {
+      if (!_cateringLoaded && _cateringPanel.classList.contains('active')) {
+        _cateringLoaded = true; loadCateringGrid();
+      }
+    };
+    new MutationObserver(fireC).observe(_cateringPanel, { attributes: true, attributeFilter: ['class'] });
+    fireC();
+  }
+  console.log('[Travel/Catering] IIFE ready; observers attached');
+  } catch (err) {
+    console.error('[Travel/Catering] IIFE crashed:', err);
+    // Show the error visibly so a screenshot tells us what broke.
+    try {
+      const tt = document.getElementById('travel-totals');
+      if (tt) tt.innerHTML = '<span style="color:#ef4444">JS error: ' + (err.message || err) + '</span>';
+      const ct = document.getElementById('catering-totals');
+      if (ct) ct.innerHTML = '<span style="color:#ef4444">JS error: ' + (err.message || err) + '</span>';
+      // Also pop a small banner at the bottom of the screen — visible
+      // regardless of which tab is active.
+      const banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;bottom:16px;right:16px;background:#2a1414;color:#ef4444;border:1px solid #ef4444;padding:10px 14px;border-radius:6px;z-index:9999;max-width:480px;font-size:12px;font-family:monospace';
+      banner.textContent = 'Travel/Catering JS error: ' + (err.message || err);
+      document.body.appendChild(banner);
+    } catch (_) { /* swallow */ }
+  }
+})();
 </script>
 
 {% endblock %}
