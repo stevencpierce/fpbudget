@@ -5272,6 +5272,188 @@ def set_schedule_label(pid, bid, lid):
     return jsonify({"ok": True})
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/schedule-detail")
+@login_required
+def line_schedule_detail(pid, bid, lid):
+    """Audit breakdown for a schedule-driven non-labor line (per diem,
+    hotel, flight, mileage, working meal, craft services, breakfast /
+    first meal / second meal). Returns one row per (date, person)
+    showing exactly which days and crew triggered the auto-calc.
+
+    Lets the user click a "Schedule Detail" button on a per-diem line
+    and SEE the math — "this $1,200 came from 4 people × 4 days at $75
+    plus Steven Pierce had per-diem on Mar 3 too" — instead of having
+    to trust the schedule sync silently.
+
+    Identifies who-where-when by scanning ScheduleDay rows for the same
+    schedule_mode whose cell_flags carry the matching boolean. For meal
+    flags (courtesy_breakfast / first_meal / second_meal) the source is
+    ProductionDay, intersected with the WORKING headcount on that date.
+    """
+    from budget_calc import SCHEDULE_LINE_DEFS, get_role_group
+    import json as _json_sd
+
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    line   = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
+    if not line.line_tag or line.line_tag not in SCHEDULE_LINE_DEFS:
+        return jsonify({"error": "Not a schedule-driven line"}), 400
+
+    tag = line.line_tag
+    _ac, _aname, label, _default_rate, _sort = SCHEDULE_LINE_DEFS[tag]
+    rate = float(line.rate or line.unit_rate or _default_rate)
+
+    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    from sqlalchemy import or_ as _or_sd
+    sched_days = ScheduleDay.query.filter(
+        ScheduleDay.budget_id == bid,
+        _or_sd(ScheduleDay.schedule_mode == sched_mode,
+               ScheduleDay.schedule_mode == None),  # legacy NULL rows
+    ).all()
+
+    # Pre-fetch all parent labor lines + crew assignments for this budget
+    # so we can resolve role names and crew names efficiently.
+    all_lines = BudgetLine.query.filter_by(budget_id=bid).all()
+    line_by_id = {ln.id: ln for ln in all_lines}
+    crew_assignments = CrewAssignment.query.filter(
+        CrewAssignment.budget_line_id.in_([ln.id for ln in all_lines if ln.is_labor])
+    ).all()
+    # Map (budget_line_id, instance) → CrewAssignment so we can pull the
+    # actual person on that schedule cell.
+    ca_by_key = {(ca.budget_line_id, ca.instance or 1): ca for ca in crew_assignments}
+
+    def _person_for_sched_day(sd):
+        """Return (role_label, person_name, day_type) for a schedule cell."""
+        parent = line_by_id.get(sd.budget_line_id)
+        role   = (parent.description or parent.account_name or '—') if parent else '—'
+        ca     = ca_by_key.get((sd.budget_line_id, sd.crew_instance or 1))
+        name   = None
+        if ca:
+            if ca.crew_member and ca.crew_member.name:
+                name = ca.crew_member.name
+            elif ca.name_override:
+                name = ca.name_override
+        return role, (name or '—'), (sd.day_type or 'off')
+
+    rows = []  # one entry per (date, role, person)
+
+    if tag == 'craft_services':
+        # Every non-off scheduled cell counts as a craft-services serving.
+        for sd in sched_days:
+            if sd.day_type == 'off':
+                continue
+            role, name, dt = _person_for_sched_day(sd)
+            rows.append({
+                "date":     sd.date.isoformat(),
+                "role":     role,
+                "person":   name,
+                "day_type": dt,
+                "amount":   round(rate, 2),
+            })
+    elif tag in ('meal_courtesy_breakfast', 'meal_first', 'meal_second'):
+        # ProductionDay flag controls "is the meal happening on this date";
+        # ScheduleDay headcount controls "who eats it" (work day_type only).
+        prod_flag_attr = {
+            'meal_courtesy_breakfast': 'courtesy_breakfast',
+            'meal_first':              'first_meal',
+            'meal_second':             'second_meal',
+        }[tag]
+        prod_days = ProductionDay.query.filter(
+            ProductionDay.budget_id == bid,
+            _or_sd(ProductionDay.schedule_mode == sched_mode,
+                   ProductionDay.schedule_mode == None),
+        ).all()
+        meal_dates = {pd.date for pd in prod_days if getattr(pd, prod_flag_attr, False)}
+        for sd in sched_days:
+            if sd.day_type != 'work':       # meals only feed working crew
+                continue
+            if sd.date not in meal_dates:
+                continue
+            role, name, dt = _person_for_sched_day(sd)
+            rows.append({
+                "date":     sd.date.isoformat(),
+                "role":     role,
+                "person":   name,
+                "day_type": dt,
+                "amount":   round(rate, 2),
+            })
+    else:
+        # Per-cell flags. Map each tag back to the cell_flag key it
+        # corresponds to, then walk every ScheduleDay whose flags match.
+        # Hotel/flight/mileage are role-group-prefixed (hotel_crew etc),
+        # so we must also confirm the parent line's role group matches.
+        flag_for_tag = {
+            'working_meal':       'working_meal',
+            'per_diem_full':      'per_diem_full',
+            'per_diem_breakfast': 'per_diem_breakfast',
+            'per_diem_lunch':     'per_diem_lunch',
+            'per_diem_dinner':    'per_diem_dinner',
+        }
+        required_rg = None  # 'talent' | 'atl' | 'crew' | None
+        if tag.startswith('hotel_'):    flag = 'hotel';   required_rg = tag.split('_', 1)[1]
+        elif tag.startswith('flight_'):  flag = 'flight';  required_rg = tag.split('_', 1)[1]
+        elif tag.startswith('mileage_'): flag = 'mileage'; required_rg = tag.split('_', 1)[1]
+        else:
+            flag = flag_for_tag.get(tag)
+
+        if flag:
+            # Legacy 'per_diem' alias → per_diem_full
+            for sd in sched_days:
+                if sd.day_type == 'off':
+                    continue
+                try:
+                    flags = _json_sd.loads(sd.cell_flags) if sd.cell_flags else {}
+                except (ValueError, TypeError):
+                    flags = {}
+                # Legacy per_diem flag → per_diem_full
+                if flag == 'per_diem_full' and flags.get('per_diem') and not flags.get('per_diem_full'):
+                    flags['per_diem_full'] = True
+                if not flags.get(flag):
+                    continue
+                # Role group check for hotel/flight/mileage
+                if required_rg:
+                    parent = line_by_id.get(sd.budget_line_id)
+                    rg = get_role_group(parent.account_code) if parent else 'crew'
+                    if rg not in ('talent', 'atl', 'crew'):
+                        rg = 'crew'
+                    if rg != required_rg:
+                        continue
+                role, name, dt = _person_for_sched_day(sd)
+                rows.append({
+                    "date":     sd.date.isoformat(),
+                    "role":     role,
+                    "person":   name,
+                    "day_type": dt,
+                    "amount":   round(rate, 2),
+                })
+
+    # Group by date for the UI's outer accordion.
+    by_date = {}
+    for r in rows:
+        by_date.setdefault(r["date"], []).append(r)
+    days = []
+    for d in sorted(by_date.keys()):
+        items = by_date[d]
+        days.append({
+            "date":     d,
+            "count":    len(items),
+            "subtotal": round(sum(i["amount"] for i in items), 2),
+            "items":    items,
+        })
+
+    return jsonify({
+        "line_id":  lid,
+        "line_tag": tag,
+        "label":    line.description or label,
+        "rate":     round(rate, 2),
+        "rate_unit": "per person per day",
+        "days":     days,
+        "total_days":   len(days),
+        "total_count":  len(rows),
+        "total_amount": round(sum(r["amount"] for r in rows), 2),
+        "stored_total": float(line.estimated_total or 0),
+    })
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/calc")
 @login_required
 def line_calc_detail(pid, bid, lid):

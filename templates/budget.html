@@ -759,6 +759,17 @@
                 {{ _loc.name if _loc else '+ Assign Location' }}
               </span>
             {% endif %}
+            {# Schedule Detail button for ANY non-labor line whose qty was
+               auto-derived from the schedule (per diem, hotel, flight,
+               mileage, working meal, craft services, breakfast / first /
+               second meal). Mirrors the OT Detail button on labor lines —
+               clicking shows day-by-day, role-by-role, person-by-person
+               breakdown so the user can audit the calculation. #}
+            {% if (not ln.is_labor) and ln.line_tag %}
+            <button class="btn btn-xs btn-outline schedule-detail-btn"
+                    data-pid="{{ project.id }}" data-bid="{{ budget.id }}" data-lid="{{ ln.id }}"
+                    title="View per-day, per-person breakdown of this auto-calculated line">Schedule Detail</button>
+            {% endif %}
             <button class="btn btn-xs btn-ghost line-row-menu-btn"
                     data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
                     title="Insert / Move row" onclick="openLineRowMenu(this)">⋮</button>
@@ -4704,6 +4715,17 @@ async function saveSettings() {
     openCalcDetail(pid, bid, lid);
   });
 
+  // Schedule Detail button — same panel chrome, different endpoint.
+  // Reuses the OT-detail panel + overlay and renders a who-where-when
+  // breakdown for schedule-driven non-labor lines (per diem, meals,
+  // hotel, flight, mileage, etc).
+  document.addEventListener('click', function(e) {
+    const btn = e.target.closest('.schedule-detail-btn');
+    if (!btn) return;
+    const pid = btn.dataset.pid, bid = btn.dataset.bid, lid = btn.dataset.lid;
+    openScheduleDetail(pid, bid, lid);
+  });
+
   // Close on Escape
   document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') closeCalcDetail();
@@ -4734,6 +4756,113 @@ function closeCalcDetail() {
   panel.classList.add('hidden');
   overlay.classList.remove('visible');
   overlay.classList.add('hidden');
+}
+
+// ── Schedule Detail (per-day, per-person audit for schedule-driven lines) ──
+function openScheduleDetail(pid, bid, lid) {
+  const panel   = document.getElementById('calc-detail-panel');
+  const overlay = document.getElementById('calc-detail-overlay');
+  const body    = document.getElementById('calc-detail-body');
+  document.getElementById('calc-detail-title').textContent = 'Schedule Detail';
+  body.innerHTML = '<div class="calc-detail-loading">Loading…</div>';
+  panel.classList.remove('hidden');
+  panel.classList.add('visible');
+  overlay.classList.remove('hidden');
+  overlay.classList.add('visible');
+
+  fetch(`/projects/${pid}/budget/${bid}/line/${lid}/schedule-detail`)
+    .then(r => r.json())
+    .then(d => renderScheduleDetail(d))
+    .catch(() => { body.innerHTML = '<p class="muted">Failed to load.</p>'; });
+}
+
+function renderScheduleDetail(d) {
+  if (d.error) {
+    document.getElementById('calc-detail-body').innerHTML =
+      `<p class="muted">${d.error}</p>`;
+    return;
+  }
+  document.getElementById('calc-detail-title').textContent =
+    `${d.label} — Schedule Detail`;
+
+  const fmt = v => v == null ? '—' : '$' + parseFloat(v).toLocaleString('en-US',
+    {minimumFractionDigits:2, maximumFractionDigits:2});
+  const _esc = s => String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const _dayBadge = dt => {
+    const colors = {
+      work:'#22c55e', travel:'#3498db', hold:'#a78bfa',
+      half:'#f59e0b', kill_fee:'#ef4444', custom:'#9b59b6'
+    };
+    const c = colors[dt] || 'var(--text-muted)';
+    return `<span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${c}22;color:${c};border:1px solid ${c}55;text-transform:uppercase;letter-spacing:.4px">${_esc(dt)}</span>`;
+  };
+
+  // Sanity-check banner: stored line total should equal the sum of all
+  // (date × person × rate) breakdown rows. If they disagree, it means
+  // someone manually edited the line's qty/days/rate and the breakdown
+  // is now informational rather than authoritative — call that out so
+  // the user knows to re-sync if they want them re-aligned.
+  const computed = parseFloat(d.total_amount || 0);
+  const stored   = parseFloat(d.stored_total || 0);
+  const drift    = Math.abs(computed - stored);
+  let banner = '';
+  if (drift > 0.5) {
+    banner = `
+      <div style="padding:8px 12px;border-radius:6px;margin-bottom:12px;
+                  background:#2a2414;color:#fbbf24;border:1px solid #4a3a1a;font-size:.82rem">
+        ⚠ Line total ${fmt(stored)} differs from breakdown sum ${fmt(computed)}.
+        Manually edited qty / days / rate? The breakdown shows what the
+        schedule WOULD compute — not what's stored.
+      </div>`;
+  }
+
+  let html = `
+    ${banner}
+    <div class="calc-meta">
+      <span><strong>Rate:</strong> ${fmt(d.rate)} <span class="muted">(${_esc(d.rate_unit || 'per unit')})</span></span>
+      <span><strong>Days flagged:</strong> ${d.total_days}</span>
+      <span><strong>Total instances:</strong> ${d.total_count}</span>
+      <span><strong>Total:</strong> <strong>${fmt(d.total_amount)}</strong></span>
+    </div>`;
+
+  if (!d.days || d.days.length === 0) {
+    html += `<p class="muted" style="margin-top:1rem">No schedule data found for this line. ` +
+            `Check that the matching cell flag is set on the schedule.</p>`;
+  } else {
+    html += `<table class="calc-weeks-table" style="margin-top:.75rem">
+      <thead><tr>
+        <th>Date</th><th>Role</th><th>Person</th><th>Day type</th><th style="text-align:right">Amount</th>
+      </tr></thead><tbody>`;
+    for (const day of d.days) {
+      // First row of the day group prints the date + day subtotal.
+      // Subsequent rows in the same date leave date column blank for clarity.
+      day.items.forEach((item, idx) => {
+        const dateCell = idx === 0
+          ? `<td rowspan="${day.items.length}" style="font-weight:600;vertical-align:top">
+               ${_esc(day.date)}
+               <div class="muted" style="font-size:.7rem;font-weight:400;margin-top:2px">
+                 ${day.count} · ${fmt(day.subtotal)}
+               </div>
+             </td>` : '';
+        html += `<tr>
+          ${dateCell}
+          <td>${_esc(item.role)}</td>
+          <td>${_esc(item.person)}</td>
+          <td>${_dayBadge(item.day_type)}</td>
+          <td style="text-align:right">${fmt(item.amount)}</td>
+        </tr>`;
+      });
+    }
+    html += `</tbody>
+      <tfoot><tr>
+        <td colspan="4" style="text-align:right;font-weight:600">Total</td>
+        <td style="text-align:right;font-weight:600">${fmt(d.total_amount)}</td>
+      </tr></tfoot>
+    </table>`;
+  }
+
+  document.getElementById('calc-detail-body').innerHTML = html;
 }
 
 function renderCalcDetail(d) {
