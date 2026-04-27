@@ -4161,20 +4161,30 @@ const _AUTO_WORKERS_COMP  = {{ top_sheet.workers_comp_amount | float }};
 const _AUTO_PAYROLL_FEE   = {{ top_sheet.payroll_fee_amount  | float }};
 
 function updateFloatBar() {
+  // Sum each section's data-base (which ALREADY includes Workers' Comp,
+  // Production Liability Insurance, and Payroll Service Fee — see the
+  // ns.sec_total injection in the section block). Used to also add
+  // _AUTO_WORKERS_COMP + _AUTO_PAYROLL_FEE manually but that
+  // double-counted them, inflating the Budget tab's grand total by
+  // exactly (WC + PF) vs the Top Sheet. User report 2026-04-27 —
+  // "the total changes when I switch tabs". Now consistent.
+  //
+  // Fee base is also section-aware: exempt sections (data-fee-exempt=
+  // "1") don't contribute. Without this, Budget-tab fee disagreed with
+  // Top-Sheet's per-section-aware fee_base.
   let subtotal = 0;
-  // Always read the BASE total (data-base attr) so fee can be shown separately in the bar
-  if (_IS_WORKING_MODE) {
-    document.querySelectorAll('#working-budget-wrap .sec-working-total strong').forEach(el => {
-      subtotal += parseFloat(el.dataset.base !== undefined ? el.dataset.base : el.textContent.replace(/[$,]/g,'')) || 0;
-    });
-  } else {
-    document.querySelectorAll('#working-budget-wrap .sec-est-total strong').forEach(el => {
-      subtotal += parseFloat(el.dataset.base !== undefined ? el.dataset.base : el.textContent.replace(/[$,]/g,'')) || 0;
-    });
-  }
-  // Add auto-calculated amounts (Workers' Comp + Payroll Fee) that aren't budget line rows
-  subtotal += _AUTO_WORKERS_COMP + _AUTO_PAYROLL_FEE;
-  const fee   = subtotal * _FLOAT_FEE_PCT;
+  let feeBase  = 0;
+  const sectionBlocks = document.querySelectorAll('#working-budget-wrap .section-block');
+  const _selector = _IS_WORKING_MODE ? '.sec-working-total strong' : '.sec-est-total strong';
+  sectionBlocks.forEach(block => {
+    const exempt = block.dataset.feeExempt === '1';
+    const el = block.querySelector(_selector);
+    if (!el) return;
+    const v = parseFloat(el.dataset.base !== undefined ? el.dataset.base : el.textContent.replace(/[$,]/g,'')) || 0;
+    subtotal += v;
+    if (!exempt) feeBase += v;
+  });
+  const fee   = feeBase * _FLOAT_FEE_PCT;
   const grand = subtotal + fee;
   const subEl   = document.getElementById('float-subtotal');
   const feeEl   = document.getElementById('float-fee');
