@@ -2662,12 +2662,31 @@ def budget_view(pid, bid):
         budget.working_initialized_at = datetime.utcnow()
         db.session.commit()
 
-    # Compute per-line totals
+    # Compute per-line totals. Use the same mode-OR-NULL-with-dedupe
+    # pattern used by sync_schedule_driven_lines and calc_top_sheet so
+    # every calc path agrees on which ScheduleDay rows are authoritative.
+    # Without this, a legacy budget (rows still NULL-mode) computed labor
+    # against zero rows here while sync still saw the NULL rows for
+    # auto-line counts → top sheet and budget tab diverged.
     line_results = {}
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    _all_sd = ScheduleDay.query.filter(
+        ScheduleDay.budget_id == bid,
+        db.or_(ScheduleDay.schedule_mode == sched_mode,
+               ScheduleDay.schedule_mode == None),
+    ).all()
+    _bucket = {}  # line_id → {(instance, date): sd}
+    for _d in _all_sd:
+        _b = _bucket.setdefault(_d.budget_line_id, {})
+        _k = (_d.crew_instance or 1, _d.date)
+        _ex = _b.get(_k)
+        if _ex is None:
+            _b[_k] = _d
+        elif _ex.schedule_mode is None and _d.schedule_mode == sched_mode:
+            _b[_k] = _d
     for ln in lines:
         if ln.use_schedule:
-            sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
+            sched = list(_bucket.get(ln.id, {}).values())
             line_results[ln.id] = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
         else:
             line_results[ln.id] = calc_line(ln, fringe_cfgs)

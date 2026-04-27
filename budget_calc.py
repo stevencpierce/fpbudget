@@ -973,13 +973,35 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         grand_total_estimated, grand_total_actual, company_fee
         workers_comp_amount, payroll_fee_amount, gross_labor_wages
     """
-    # Compute per-line totals — filter schedule days by the correct schedule_mode
+    # Compute per-line totals — filter schedule days by the correct
+    # schedule_mode. Apply the same legacy-NULL-then-dedupe pattern used
+    # by sync_schedule_driven_lines so labor calc, schedule sync, and
+    # the audit endpoint all see the SAME per-cell row set. Without
+    # this consistency, a budget mid-migration (some rows tagged, some
+    # NULL) computes labor totals against one row population and
+    # per-diem totals against another → top sheet and budget diverge.
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+
+    # Pre-bucket every ScheduleDay on this budget by line_id, deduping
+    # (line_id, instance, date) keys with mode-tagged rows beating
+    # legacy NULL rows. One pass over budget.schedule_days; per-line
+    # filter is then a dict lookup.
+    _line_bucket = {}  # line_id → { (instance, date) : sd }
+    for d in budget.schedule_days:
+        if d.schedule_mode != sched_mode and d.schedule_mode is not None:
+            continue
+        bucket = _line_bucket.setdefault(d.budget_line_id, {})
+        key = (d.crew_instance or 1, d.date)
+        existing = bucket.get(key)
+        if existing is None:
+            bucket[key] = d
+        elif existing.schedule_mode is None and d.schedule_mode == sched_mode:
+            bucket[key] = d  # mode-tagged wins over legacy NULL
+
     line_totals = {}
     for ln in lines:
         if ln.use_schedule:
-            sched = [d for d in budget.schedule_days
-                     if d.budget_line_id == ln.id and d.schedule_mode == sched_mode]
+            sched = list(_line_bucket.get(ln.id, {}).values())
             result = calc_line_from_schedule(ln, sched, fringe_configs, payroll_profile, payroll_week_start)
         else:
             result = calc_line(ln, fringe_configs)
