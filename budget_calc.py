@@ -1057,7 +1057,34 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     # fee_exclude_fringes Budget flag — TRUE by default — subtracts
     # each section's labor-fringe total from the base before the fee
     # multiplier is applied, in both flat and dispersed modes.
-    exclude_fringes = bool(getattr(budget, 'fee_exclude_fringes', True))
+    #
+    # Column may not exist in the DB if the boot migration hasn't
+    # landed yet. Read via isolated engine connection so a missing
+    # column doesn't poison the request's ORM session. Falls back to
+    # TRUE (the user-visible default) when read fails.
+    exclude_fringes = True
+    try:
+        _v = getattr(budget, 'fee_exclude_fringes', None)
+        if _v is not None:
+            exclude_fringes = bool(_v)
+    except Exception:
+        pass
+    if not hasattr(budget, '__fee_exclude_fringes_loaded__'):
+        try:
+            from models import db as _db_efr
+            from sqlalchemy import text as _text_efr
+            with _db_efr.engine.connect() as _conn_efr:
+                try:
+                    _row = _conn_efr.execute(
+                        _text_efr("SELECT fee_exclude_fringes FROM budget WHERE id = :i"),
+                        {"i": budget.id}
+                    ).fetchone()
+                    if _row and _row[0] is not None:
+                        exclude_fringes = bool(_row[0])
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _row_fee_base(row):
         """Eligible portion of a row that the fee SHOULD apply to."""

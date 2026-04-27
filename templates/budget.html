@@ -2392,7 +2392,7 @@
              scopes how the section totals are computed. #}
           <label style="display:flex;align-items:center;gap:.55rem;margin:0 0 .55rem;font-weight:400;cursor:pointer">
             <input type="checkbox" id="set-fee-exclude-fringes"
-                   {% if budget.fee_exclude_fringes %}checked{% endif %}>
+                   {% if top_sheet.company_fee_exclude_fringes %}checked{% endif %}>
             <span>
               <strong style="font-weight:600">Exclude fringes from fee base</strong>
               <span class="muted" style="font-size:.8rem;margin-left:.4rem">(industry default — keeps the Prod Co Fee from compounding on P&amp;W / P/H/W fringes)</span>

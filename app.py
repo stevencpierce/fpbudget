@@ -4273,9 +4273,22 @@ def budget_settings(pid, bid):
         budget.fee_excluded_sections = _j_fee.dumps(codes) if codes else None
     if "fee_exclude_fringes" in data:
         # Default-ON: fringes on labor lines are excluded from the Prod
-        # Co Fee base. User can disable per-budget if their prodco does
-        # charge fee on fringes (rare).
-        budget.fee_exclude_fringes = bool(data.get("fee_exclude_fringes"))
+        # Co Fee base. Written via raw SQL on a dedicated connection so
+        # a missing column doesn't poison the rest of the settings save
+        # (column is currently NOT on the ORM model — see models.py).
+        _val_efr = bool(data.get("fee_exclude_fringes"))
+        try:
+            with db.engine.connect() as _conn_efr_w:
+                try:
+                    _conn_efr_w.execute(
+                        text("UPDATE budget SET fee_exclude_fringes = :v WHERE id = :i"),
+                        {"v": _val_efr, "i": budget.id}
+                    )
+                    _conn_efr_w.commit()
+                except Exception as _ue:
+                    logging.warning(f"[SETTINGS] fee_exclude_fringes write failed ({_ue}); skipping")
+        except Exception as _uec:
+            logging.warning(f"[SETTINGS] fee_exclude_fringes connect failed ({_uec}); skipping")
     if "client_name" in data:
         budget.client_name = data["client_name"].strip() or None
     if "prepared_by" in data:
