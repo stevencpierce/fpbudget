@@ -998,8 +998,9 @@
       <h2 style="margin:0;font-size:1.1rem">✈ Travel</h2>
       <span class="muted" style="font-size:.85rem">Per-person flights, hotels, mileage, and per diems. Edits sync with the Schedule.</span>
       <span style="margin-left:auto;display:flex;gap:.55rem;align-items:center">
-        <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text-muted);cursor:pointer">
-          <input type="checkbox" id="travel-show-all"> Show all crew
+        <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text-muted);cursor:pointer"
+               title="When checked, hides crew who haven't been marked for any travel item yet — leaving only flagged people">
+          <input type="checkbox" id="travel-only-flagged"> Only flagged
         </label>
         <button class="btn btn-sm btn-primary" id="travel-add-day-btn">+ Add Travel Day</button>
         <button class="btn btn-sm" id="travel-refresh-btn" title="Reload">↻</button>
@@ -3739,10 +3740,12 @@ function startRename(el) {
     const btn = document.querySelector(`.tab-btn[data-tab="${tabParam}"]`);
     const panel = document.getElementById('tab-' + tabParam);
     if (btn && panel) {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-      btn.classList.add('active');
-      panel.classList.add('active');
+      // Trigger the full click handler instead of just toggling classes
+      // so secondary listeners (Travel grid loader, Catering grid loader,
+      // float-bar refresh, etc.) fire on URL-driven tab activation.
+      // Without this, navigating from /gantt → ?tab=travel showed an
+      // empty Travel tab because the load-on-click handler never ran.
+      btn.click();
     }
   }
   const gotoCode = params.get('goto');
@@ -4898,7 +4901,11 @@ async function saveSettings() {
 
   // ── Travel grid ────────────────────────────────────────────────────────
   async function loadTravelGrid() {
-    const showAll = document.getElementById('travel-show-all')?.checked ? '1' : '0';
+    // UI inverts the server param: server param `show_all` = include
+    // un-flagged crew. Front-end default = ON (show everyone), toggle
+    // is "Only flagged" which means "set show_all=0".
+    const onlyFlagged = document.getElementById('travel-only-flagged')?.checked;
+    const showAll = onlyFlagged ? '0' : '1';
     const r = await fetch(TRAVEL_GRID_URL + '?show_all=' + showAll);
     if (!r.ok) {
       document.getElementById('travel-tbody').innerHTML =
@@ -5175,7 +5182,7 @@ async function saveSettings() {
     await loadTravelGrid();
   });
 
-  document.getElementById('travel-show-all')?.addEventListener('change', loadTravelGrid);
+  document.getElementById('travel-only-flagged')?.addEventListener('change', loadTravelGrid);
   document.getElementById('travel-refresh-btn')?.addEventListener('click', loadTravelGrid);
 
   // ── Catering grid ──────────────────────────────────────────────────────

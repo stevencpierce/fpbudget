@@ -227,6 +227,15 @@ input:focus, select:focus { border-color: var(--accent); }
   margin-bottom: 1rem;
 }
 .tab-btn {
+  /* inline-flex so <button>, <a>, and <span> all anchor on the same
+     baseline. Previously the <a class="tab-link"> tabs (Schedule, Call
+     Sheets) sat 2-3 px higher than the <button> tabs because anchor
+     elements default to baseline alignment while buttons baseline at
+     the text middle. inline-flex + align-items:center forces every
+     variant to share the same vertical center. */
+  display: inline-flex;
+  align-items: center;
+  line-height: 1.2;
   padding: .5rem 1rem;
   background: none;
   border: none;
@@ -236,6 +245,8 @@ input:focus, select:focus { border-color: var(--accent); }
   font-size: .875rem;
   transition: color .12s, border-color .12s;
   margin-bottom: -1px;
+  font-family: inherit;
+  text-decoration: none;
 }
 .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
 .tab-btn:hover  { color: var(--text); }

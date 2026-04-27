@@ -93,6 +93,8 @@
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=topsheet">Top Sheet</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=working">Budget</a>
     <span class="tab-btn active">Schedule</span>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=travel">✈ Travel</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=catering">🍽 Catering</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=contacts">Contacts</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=locations">Locations</a>
     <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
