@@ -320,7 +320,7 @@
           data-ts-section="6000"
           title="Edit in Settings → Production Insurance">
         <td class="col-code muted" style="font-size:.75rem"></td>
-        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Production Insurance
+        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Production Liability Insurance
           {% if top_sheet.production_insurance_mode == 'pct' %}
             ({{ (top_sheet.production_insurance_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)
           {% elif top_sheet.production_insurance_mode == 'flat' %}
@@ -787,6 +787,7 @@
            % editor used on the Top Sheet auto-rows. #}
         {% if sec.code == 6000 and top_sheet.workers_comp_amount > 0 %}
         <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
+            data-auto-amount="{{ top_sheet.workers_comp_amount | float }}"
             oncontextmenu="editAutoLinePct(event, 'workers_comp')"
             title="Right-click to edit the Workers' Comp %. This line is computed from gross labor wages; it isn't a Budget Line row.">
           <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
@@ -815,11 +816,12 @@
            than a quick % editor since the mode picker has more state. #}
         {% if sec.code == 6000 and top_sheet.production_insurance_amount > 0 %}
         <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
+            data-auto-amount="{{ top_sheet.production_insurance_amount | float }}"
             oncontextmenu="event.preventDefault(); window.location.hash='settings'; document.querySelector('[data-tab=\'settings\']')?.click();"
-            title="Open Settings to change Production Insurance mode / value. This line is computed from the Budget settings; it isn't a Budget Line row.">
+            title="Open Settings to change Production Liability Insurance mode / value. This line is computed from the Budget settings; it isn't a Budget Line row.">
           <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
-            <span class="line-number">{{ sec.code }}-PI</span>
-            Production Insurance
+            <span class="line-number">{{ sec.code }}-PLI</span>
+            Production Liability Insurance
             {% if top_sheet.production_insurance_mode == 'pct' %}
               ({{ (top_sheet.production_insurance_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)
             {% elif top_sheet.production_insurance_mode == 'flat' %}
@@ -843,6 +845,7 @@
         {% endif %}
         {% if sec.code == 6500 and top_sheet.payroll_fee_amount > 0 %}
         <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
+            data-auto-amount="{{ top_sheet.payroll_fee_amount | float }}"
             oncontextmenu="editAutoLinePct(event, 'payroll_fee')"
             title="Right-click to edit the Payroll Service Fee %. This line is computed from gross labor wages; it isn't a Budget Line row.">
           <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
@@ -2847,7 +2850,7 @@
            Payroll Service Fee, but with a mode picker so the user can
            pick % of labor / flat $ / off. Off = excluded entirely. #}
         <div class="field">
-          <label>Production Insurance <span class="muted" style="font-weight:400;font-size:.8rem">(auto-calculated → Insurance)</span></label>
+          <label>Production Liability Insurance <span class="muted" style="font-weight:400;font-size:.8rem">(auto-calculated → Insurance)</span></label>
           <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
             <select id="set-pi-mode" style="width:120px"
                     onchange="
@@ -4051,6 +4054,16 @@ function refreshSectionTotals(table) {
 
   let liveTotal = 0, kitTotal = 0, agentTotal = 0, otTotal = 0, fringeTotal = 0, subtotalTotal = 0;
   tbody.querySelectorAll('.line-row').forEach(row => {
+    // Auto-calc rows (Workers' Comp, Production Liability Insurance,
+    // Payroll Service Fee) carry their amount on data-auto-amount —
+    // they don't have the .line-total / .line-working <strong> tags
+    // a regular BudgetLine row uses. Pick that up so section badges
+    // and grand-total rows include the auto-calc amount.
+    if (row.classList.contains('auto-calc-line')) {
+      const auto = parseFloat(row.dataset.autoAmount || 0);
+      liveTotal += auto;
+      return;
+    }
     // Always read the BASE value (data-base) for section sum; inflate in display
     let base = 0;
     if (_IS_WORKING_MODE) {

@@ -5453,13 +5453,25 @@ def line_schedule_detail(pid, bid, lid):
                     "amount":   round(rate, 2),
                 })
 
-    # Group by date for the UI's outer accordion.
+    # Group by date for the UI's outer accordion. Within each day, sort
+    # the items by (role, person) so the column layout stays VISUALLY
+    # CONSISTENT across days — without this, an unassigned (—) cell
+    # ends up at the top one day and the bottom of another, making the
+    # whole table jitter as the eye scans down. Empty/dash values sort
+    # to the bottom (using '~' as a tail sentinel since '~' > letters).
     by_date = {}
     for r in rows:
         by_date.setdefault(r["date"], []).append(r)
+    def _sort_key(it):
+        role = (it.get("role") or '').strip()
+        pers = (it.get("person") or '').strip()
+        return (
+            role.lower() if role and role != '—' else '~',
+            pers.lower() if pers and pers != '—' else '~',
+        )
     days = []
     for d in sorted(by_date.keys()):
-        items = by_date[d]
+        items = sorted(by_date[d], key=_sort_key)
         days.append({
             "date":     d,
             "count":    len(items),
