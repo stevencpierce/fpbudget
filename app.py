@@ -2698,6 +2698,33 @@ def budget_view(pid, bid):
     for sec in sections:
         sec["lines"] = _order_lines_with_children(sec["lines"])
 
+    # Auto-calc-only sections: 6000 (Workers' Comp / Production Insurance)
+    # and 6500 (Payroll Service Fee) can have non-zero totals even with
+    # no BudgetLines (e.g. user deleted their old manual placeholder
+    # rows expecting the auto-line to stand in). Inject empty section
+    # blocks so the line-by-line view still renders the auto-calc rows
+    # instead of silently hiding the section entirely.
+    def _ensure_section(code):
+        if code in seen:
+            return
+        new_sec = {"code": code, "name": _section_name(code), "lines": []}
+        seen[code] = new_sec
+        # Insert in COA order — find first existing section with a higher
+        # code and splice in front of it; otherwise append.
+        inserted = False
+        for i, s in enumerate(sections):
+            if s["code"] > code:
+                sections.insert(i, new_sec)
+                inserted = True
+                break
+        if not inserted:
+            sections.append(new_sec)
+    if (top_sheet.get("workers_comp_amount") or 0) > 0 \
+            or (top_sheet.get("production_insurance_amount") or 0) > 0:
+        _ensure_section(6000)
+    if (top_sheet.get("payroll_fee_amount") or 0) > 0:
+        _ensure_section(6500)
+
     # Assigned-location lookup for Locations (3300) lines. Location has a
     # budget_line_id FK; we pull the reverse relation in one query so the
     # template can render the assigned location's name next to each 3300
