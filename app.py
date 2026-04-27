@@ -10206,6 +10206,97 @@ def docs_upload_verify(uid):
     })
 
 
+@app.route("/docs/upload/<int:uid>/raw", methods=["GET"])
+@login_required
+def docs_upload_raw(uid):
+    """Stream the filed Dropbox file through our server with inline
+    Content-Disposition so it embeds in <img> / <iframe> / <embed>.
+
+    Why we need this: Dropbox's temp-link content URLs serve files with
+    `Content-Disposition: attachment` AND `X-Frame-Options: DENY`. The
+    first triggers a download in <a> tags; the second blocks the URL in
+    <iframe>. Browsers ignore Content-Disposition for <img src>, so
+    images sometimes worked, but PDFs never did. Routing through our
+    server gives us full control of headers and works for every type.
+
+    Auth: same project-membership check as the rest of the docs
+    endpoints. Streaming uses dbx.files_download() which returns the
+    raw bytes — for receipts (typically <2 MB) this is fine memory-wise
+    and avoids chunked-streaming complications.
+    """
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+
+    if not upload.filed_dropbox_path:
+        return jsonify({"error": "No filed file"}), 404
+
+    _ops_prefix_str = (_DBX_OPS_ROOT or "").rstrip("/") if _DBX_NAMESPACE_ID else ""
+    raw_path  = upload.filed_dropbox_path
+    norm_path = raw_path
+    if _ops_prefix_str and norm_path.startswith(_ops_prefix_str + "/"):
+        norm_path = norm_path[len(_ops_prefix_str):]
+
+    try:
+        dbx = _dbx_client()
+    except Exception as e:
+        return jsonify({"error": f"Dropbox init failed: {e}"}), 500
+
+    last_err = None
+    for path_try in (norm_path, raw_path) if norm_path != raw_path else (norm_path,):
+        try:
+            md, resp = dbx.files_download(path_try)
+            content = resp.content
+            # Pick a Content-Type the browser will actually render. The
+            # stored content_type was sometimes octet-stream which
+            # disables inline display in many browsers — re-derive from
+            # the filename when possible.
+            import mimetypes as _mt2
+            fname = upload.filed_filename or upload.original_filename or md.name
+            guessed_ct = _mt2.guess_type(fname)[0]
+            ct = (upload.content_type
+                  if upload.content_type and upload.content_type != "application/octet-stream"
+                  else (guessed_ct or "application/octet-stream"))
+
+            # On-the-fly HEIC → JPEG conversion so iPhone receipts
+            # display in browsers (Chrome/Firefox can't render HEIC
+            # natively). pillow_heif registers the opener; Pillow does
+            # the actual JPEG encode.
+            _ext = (os.path.splitext(fname)[1] or '').lower()
+            if _ext in ('.heic', '.heif'):
+                try:
+                    import pillow_heif  # noqa: F401  (registers Pillow opener)
+                    from PIL import Image
+                    import io as _io_heic
+                    img = Image.open(_io_heic.BytesIO(content))
+                    out = _io_heic.BytesIO()
+                    img.convert("RGB").save(out, format="JPEG", quality=85)
+                    content = out.getvalue()
+                    ct = "image/jpeg"
+                except Exception as _he:
+                    logging.warning(f"[docs/raw] HEIC convert failed for upload {uid}: {_he}")
+                    # Fall through with original bytes — browser will
+                    # show "broken image" but at least the request 200s.
+
+            from flask import make_response
+            resp_out = make_response(content)
+            resp_out.headers["Content-Type"]        = ct
+            # inline = render in browser; quote the filename so commas
+            # and unicode characters don't break header parsing.
+            from urllib.parse import quote as _q
+            resp_out.headers["Content-Disposition"] = \
+                f"inline; filename=\"{_q(fname)}\""
+            resp_out.headers["Cache-Control"]       = "private, max-age=300"
+            return resp_out
+        except Exception as e:
+            last_err = e
+            continue
+    return jsonify({
+        "error": f"Could not fetch file: {type(last_err).__name__}: {last_err}",
+    }), 500
+
+
 @app.route("/docs/upload/<int:uid>/preview-link", methods=["GET"])
 @login_required
 def docs_upload_preview_link(uid):

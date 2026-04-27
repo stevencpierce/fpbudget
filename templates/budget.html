@@ -1707,52 +1707,55 @@
     const previewEl = document.getElementById('docDetailPreview');
     previewEl.innerHTML = '<p class="muted" style="padding:1rem">Loading preview…</p>';
 
-    // Pull doc + temp link in parallel.
-    let linkData = null, verifyData = null;
+    // Pull doc metadata in parallel with the verify check. The actual
+    // file bytes are streamed by the browser when it loads the
+    // /raw URL we set as the img/iframe src — no AJAX needed for
+    // those, since the proxy endpoint sets the correct Content-Type
+    // and inline disposition for the browser to render directly.
+    let verifyData = null, linkData = null;
     try {
-      const [linkR, verifyR] = await Promise.all([
-        fetch('/docs/upload/' + uid + '/preview-link', { credentials: 'same-origin' }),
+      const [verifyR, linkR] = await Promise.all([
         fetch('/docs/upload/' + uid + '/verify',       { credentials: 'same-origin' }),
+        fetch('/docs/upload/' + uid + '/preview-link', { credentials: 'same-origin' }),
       ]);
-      linkData   = await linkR.json().catch(() => null);
       verifyData = await verifyR.json().catch(() => null);
+      linkData   = await linkR.json().catch(() => null);
     } catch (e) { /* fall through */ }
 
-    if (linkData && linkData.url) {
-      // Decide preview type from BOTH content-type and the displayed
-      // filename — content_type was sometimes stored as octet-stream
-      // for HEIC/PDF uploads, which made the modal show "preview not
-      // supported" even though the file was renderable. Filename
-      // extension is the more reliable signal at this point.
-      const fn  = (linkData.filename || '').toLowerCase();
-      const ct  = (linkData.content_type || '').toLowerCase();
-      const isPdf   = ct.includes('pdf')   || fn.endsWith('.pdf');
-      const isImage = ct.startsWith('image/')
-                      || /\.(jpe?g|png|gif|heic|heif|webp|bmp|tiff?)$/i.test(fn);
-      if (isImage) {
-        previewEl.innerHTML = '<img src="' + linkData.url +
-          '" alt="preview" style="max-width:100%;max-height:80vh;display:block;margin:auto;">';
-      } else if (isPdf) {
-        previewEl.innerHTML = '<iframe src="' + linkData.url +
-          '" style="border:0;width:100%;height:100%;min-height:540px;"></iframe>';
-      } else {
-        // Last resort: try img anyway — browsers will show a broken-
-        // image icon if it's truly unsupported, which is clearer than
-        // a plain message.
-        previewEl.innerHTML =
-          '<div style="padding:1rem;text-align:center">' +
-            '<img src="' + linkData.url + '" alt="preview" ' +
-                 'style="max-width:100%;max-height:70vh;display:block;margin:0 auto 1rem;" ' +
-                 'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'block\';">' +
-            '<p class="muted" style="display:none">' +
-              'Preview not supported for this file type. ' +
-              '<a href="' + linkData.url + '" target="_blank" style="color:#5b8af9">Open in new tab ↗</a>' +
-            '</p>' +
-          '</div>';
-      }
+    // Use OUR /raw proxy URL — Dropbox content URLs send
+    // X-Frame-Options: DENY (breaks iframe) and Content-Disposition:
+    // attachment (download instead of preview). Routing through the
+    // server lets us serve the bytes inline with the right Content-Type.
+    const rawUrl = '/docs/upload/' + uid + '/raw';
+    const fn = (linkData && linkData.filename ? linkData.filename : '').toLowerCase();
+    const ct = (linkData && linkData.content_type ? linkData.content_type : '').toLowerCase();
+    const isPdf   = ct.includes('pdf')   || fn.endsWith('.pdf');
+    const isImage = ct.startsWith('image/')
+                    || /\.(jpe?g|png|gif|heic|heif|webp|bmp|tiff?)$/i.test(fn);
+
+    if (isImage) {
+      previewEl.innerHTML = '<img src="' + rawUrl +
+        '" alt="preview" style="max-width:100%;max-height:80vh;display:block;margin:auto;">';
+    } else if (isPdf) {
+      // <embed> renders PDFs through the browser's plugin path and
+      // ignores X-Frame-Options (which Dropbox raw responses include).
+      // Fallback to <iframe> if the browser doesn't support embed for
+      // PDF (rare in 2026 but still possible on stripped browsers).
+      previewEl.innerHTML =
+        '<embed src="' + rawUrl + '" type="application/pdf" ' +
+               'style="border:0;width:100%;height:100%;min-height:540px;display:block;">';
     } else {
-      previewEl.innerHTML = '<p class="muted" style="padding:1rem;color:#ef4444">' +
-        'Preview unavailable: ' + ((linkData && linkData.error) || 'unknown error') + '</p>';
+      // Unknown type: try img with onerror fallback to "open in new tab".
+      previewEl.innerHTML =
+        '<div style="padding:1rem;text-align:center">' +
+          '<img src="' + rawUrl + '" alt="preview" ' +
+               'style="max-width:100%;max-height:70vh;display:block;margin:0 auto 1rem;" ' +
+               'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'block\';">' +
+          '<p class="muted" style="display:none">' +
+            'Preview not supported for this file type. ' +
+            '<a href="' + rawUrl + '" target="_blank" style="color:#5b8af9">Open in new tab ↗</a>' +
+          '</p>' +
+        '</div>';
     }
 
     // Verification banner — green on success, red if Dropbox doesn't
