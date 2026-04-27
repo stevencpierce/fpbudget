@@ -501,7 +501,8 @@
      at their raw total, matching calc_top_sheet's row.fee_amount=0 for
      exempt rows). #}
   {% set _sec_fee_m = 1.0 if _sec_fee_exempt else _fee_m %}
-  <div class="section-block" data-section="{{ sec.code }}">
+  <div class="section-block" data-section="{{ sec.code }}"
+       data-fee-exempt="{{ '1' if _sec_fee_exempt else '0' }}">
     <div class="section-header">
       <span class="section-code">{{ sec.code }}</span>
       <span class="section-name">{{ sec.name }}</span>
@@ -4080,7 +4081,17 @@ function refreshSectionTotals(table) {
     fringeTotal   += parseFloat(row.dataset.fringe   || 0);
     subtotalTotal += parseFloat(row.dataset.subtotal || 0);
   });
-  const fm = feeMult();
+  // Section-aware fee multiplier: when the fee is dispersed across
+  // sections, exempt sections (insurance / admin / distribution etc
+  // depending on the user's per-budget settings) MUST stay at 1.0×
+  // — the Jinja initial render already does this via _sec_fee_m, but
+  // the JS recompute used the global feeMult() unconditionally and
+  // re-inflated exempt sections after page load. Read the marker
+  // attribute that Jinja stamps on each section-block so JS and Jinja
+  // agree row-by-row.
+  const _block = table.closest('.section-block');
+  const _isExempt = _block && _block.dataset.feeExempt === '1';
+  const fm = _isExempt ? 1.0 : feeMult();
 
   // Update kit fee subtotal
   const kitEst = tfoot.querySelector('.kit-est-total');
@@ -4140,9 +4151,9 @@ function refreshSectionTotals(table) {
     // Update section fee row (shows fee portion = base × fee_pct)
     const feeRow = tfoot.querySelector('.section-fee-row');
     if (feeRow) {
-      feeRow.style.display = _FLOAT_DISPERSED ? '' : 'none';
+      feeRow.style.display = (_FLOAT_DISPERSED && !_isExempt) ? '' : 'none';
       const feeTotalEl = feeRow.querySelector('.sec-fee-total');
-      if (feeTotalEl) feeTotalEl.textContent = fmtCurrency(liveTotal * _FLOAT_FEE_PCT);
+      if (feeTotalEl) feeTotalEl.textContent = fmtCurrency(liveTotal * (_isExempt ? 0 : _FLOAT_FEE_PCT));
     }
 
     // Update the BIG "Total [Section]" grand-total row
@@ -4189,9 +4200,9 @@ function refreshSectionTotals(table) {
     // Update section fee row (shows fee portion = base × fee_pct)
     const feeRow = tfoot.querySelector('.section-fee-row');
     if (feeRow) {
-      feeRow.style.display = _FLOAT_DISPERSED ? '' : 'none';
+      feeRow.style.display = (_FLOAT_DISPERSED && !_isExempt) ? '' : 'none';
       const feeTotalEl = feeRow.querySelector('.sec-fee-total');
-      if (feeTotalEl) feeTotalEl.textContent = fmtCurrency(liveTotal * _FLOAT_FEE_PCT);
+      if (feeTotalEl) feeTotalEl.textContent = fmtCurrency(liveTotal * (_isExempt ? 0 : _FLOAT_FEE_PCT));
     }
 
     // Update the BIG "Total [Section]" grand-total row (non-working mode)
