@@ -962,6 +962,19 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     workers_comp_amount = round(gross_labor_wages * workers_comp_pct, 2)
     payroll_fee_amount  = round(gross_labor_wages * payroll_fee_pct,  2)
 
+    # Production Insurance — same auto-line shape as WC, but with a
+    # mode picker so the user can choose between % of labor, flat $, or
+    # turning it off entirely. Lands in section 6000 (Insurance) like WC.
+    pi_mode = (getattr(budget, 'production_insurance_mode', 'off') or 'off').lower()
+    pi_pct  = _float(getattr(budget, 'production_insurance_pct',  0) or 0)
+    pi_flat = _float(getattr(budget, 'production_insurance_flat', 0) or 0)
+    if pi_mode == 'pct':
+        production_insurance_amount = round(gross_labor_wages * pi_pct, 2)
+    elif pi_mode == 'flat':
+        production_insurance_amount = round(pi_flat, 2)
+    else:
+        production_insurance_amount = 0.0
+
     # Group by COA section (by account_code range)
     # Build a lookup: section_start → {estimated, actual, account_name}
     section_map = {}
@@ -992,6 +1005,8 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     # 2026-04 renumber: Insurance moved 14000 → 6000; Administrative 15000 → 6500.
     if workers_comp_amount and 6000 in section_map:
         section_map[6000]["estimated"] += workers_comp_amount
+    if production_insurance_amount and 6000 in section_map:
+        section_map[6000]["estimated"] += production_insurance_amount
     if payroll_fee_amount and 6500 in section_map:
         section_map[6500]["estimated"] += payroll_fee_amount
 
@@ -1116,6 +1131,10 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         "workers_comp_amount":   workers_comp_amount,
         "payroll_fee_pct":       payroll_fee_pct,
         "payroll_fee_amount":    payroll_fee_amount,
+        "production_insurance_mode":   pi_mode,
+        "production_insurance_pct":    pi_pct,
+        "production_insurance_flat":   pi_flat,
+        "production_insurance_amount": production_insurance_amount,
     }
 
 

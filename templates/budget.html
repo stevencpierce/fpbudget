@@ -315,6 +315,22 @@
         <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
+      {% if row.code == 6000 and top_sheet.production_insurance_amount > 0 %}
+      <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9)"
+          data-ts-section="6000"
+          title="Edit in Settings → Production Insurance">
+        <td class="col-code muted" style="font-size:.75rem"></td>
+        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Production Insurance
+          {% if top_sheet.production_insurance_mode == 'pct' %}
+            ({{ (top_sheet.production_insurance_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)
+          {% elif top_sheet.production_insurance_mode == 'flat' %}
+            (flat amount)
+          {% endif %}
+        </td>
+        <td class="col-num muted" style="font-size:.85rem">{{ top_sheet.production_insurance_amount | currency }}</td>
+        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
+      </tr>
+      {% endif %}
       {% if row.code == 6500 and top_sheet.payroll_fee_amount > 0 %}
       <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
           data-ts-section="6500"
@@ -466,6 +482,9 @@
      Top Sheet. Mirror the same values here so both views match. #}
   {% if sec.code == 6000 and top_sheet.workers_comp_amount %}
     {% set ns.sec_total = ns.sec_total + top_sheet.workers_comp_amount %}
+  {% endif %}
+  {% if sec.code == 6000 and top_sheet.production_insurance_amount %}
+    {% set ns.sec_total = ns.sec_total + top_sheet.production_insurance_amount %}
   {% endif %}
   {% if sec.code == 6500 and top_sheet.payroll_fee_amount %}
     {% set ns.sec_total = ns.sec_total + top_sheet.payroll_fee_amount %}
@@ -778,6 +797,39 @@
           <td class="col-act"></td>
         </tr>
         {% endif %}
+        {# Production Insurance — same shape as Workers' Comp, modes
+           are 'pct' (% of labor) or 'flat' ($ amount). Mode label
+           follows the line so the user can tell at a glance how it's
+           being computed. Right-click opens the Settings panel rather
+           than a quick % editor since the mode picker has more state. #}
+        {% if sec.code == 6000 and top_sheet.production_insurance_amount > 0 %}
+        <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
+            oncontextmenu="event.preventDefault(); window.location.hash='settings'; document.querySelector('[data-tab=\'settings\']')?.click();"
+            title="Open Settings to change Production Insurance mode / value. This line is computed from the Budget settings; it isn't a Budget Line row.">
+          <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
+            <span class="line-number">{{ sec.code }}-PI</span>
+            Production Insurance
+            {% if top_sheet.production_insurance_mode == 'pct' %}
+              ({{ (top_sheet.production_insurance_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)
+            {% elif top_sheet.production_insurance_mode == 'flat' %}
+              (flat amount)
+            {% endif %}
+          </td>
+          <td class="col-pc col-labor-only"></td>
+          <td class="col-qty"></td>
+          <td class="col-days"></td>
+          <td class="col-num"></td>
+          <td class="col-rt"></td>
+          <td class="col-num"></td>
+          <td class="col-fr"></td>
+          <td class="col-num">{{ top_sheet.production_insurance_amount | currency }}</td>
+          <td class="col-num"></td>
+          <td class="col-num">{{ (top_sheet.production_insurance_amount * _sec_fee_m) | currency }}</td>
+          <td class="col-num col-working">{{ (top_sheet.production_insurance_amount * _sec_fee_m) | currency }}</td>
+          <td class="col-num col-variance"></td>
+          <td class="col-act"></td>
+        </tr>
+        {% endif %}
         {% if sec.code == 6500 and top_sheet.payroll_fee_amount > 0 %}
         <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
             oncontextmenu="editAutoLinePct(event, 'payroll_fee')"
@@ -815,6 +867,9 @@
          Sheet's Working column. #}
       {% if sec.code == 6000 and top_sheet.workers_comp_amount %}
         {% set sec_working.total = sec_working.total + top_sheet.workers_comp_amount %}
+      {% endif %}
+      {% if sec.code == 6000 and top_sheet.production_insurance_amount %}
+        {% set sec_working.total = sec_working.total + top_sheet.production_insurance_amount %}
       {% endif %}
       {% if sec.code == 6500 and top_sheet.payroll_fee_amount %}
         {% set sec_working.total = sec_working.total + top_sheet.payroll_fee_amount %}
@@ -2777,6 +2832,36 @@
             <span class="muted" id="payroll-fee-display" style="font-size:.85rem">= {{ top_sheet.payroll_fee_amount | currency }}</span>
           </div>
         </div>
+        {# Production Insurance — same auto-calc shape as Workers' Comp +
+           Payroll Service Fee, but with a mode picker so the user can
+           pick % of labor / flat $ / off. Off = excluded entirely. #}
+        <div class="field">
+          <label>Production Insurance <span class="muted" style="font-weight:400;font-size:.8rem">(auto-calculated → Insurance)</span></label>
+          <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+            <select id="set-pi-mode" style="width:120px"
+                    onchange="
+                      document.getElementById('pi-pct-wrap').style.display  = (this.value === 'pct')  ? 'flex' : 'none';
+                      document.getElementById('pi-flat-wrap').style.display = (this.value === 'flat') ? 'flex' : 'none';
+                    ">
+              <option value="off"  {% if top_sheet.production_insurance_mode == 'off'  %}selected{% endif %}>Off</option>
+              <option value="pct"  {% if top_sheet.production_insurance_mode == 'pct'  %}selected{% endif %}>% of labor</option>
+              <option value="flat" {% if top_sheet.production_insurance_mode == 'flat' %}selected{% endif %}>Flat amount</option>
+            </select>
+            <span id="pi-pct-wrap" style="display:{% if top_sheet.production_insurance_mode == 'pct' %}flex{% else %}none{% endif %};align-items:center;gap:.4rem">
+              <input type="number" id="set-pi-pct"
+                     value="{{ ((top_sheet.production_insurance_pct or 0) | float * 100) | round(2) }}"
+                     min="0" max="100" step="0.1" style="width:90px">
+              <span class="muted">%</span>
+            </span>
+            <span id="pi-flat-wrap" style="display:{% if top_sheet.production_insurance_mode == 'flat' %}flex{% else %}none{% endif %};align-items:center;gap:.4rem">
+              <span class="muted">$</span>
+              <input type="number" id="set-pi-flat"
+                     value="{{ (top_sheet.production_insurance_flat or 0) | float | round(2) }}"
+                     min="0" step="100" style="width:120px">
+            </span>
+            <span class="muted" style="font-size:.85rem">= {{ top_sheet.production_insurance_amount | currency }}</span>
+          </div>
+        </div>
         <div class="field">
           <label>Notes</label>
           <textarea id="set-notes" rows="3" placeholder="Project notes, scope, client info…">{{ budget.notes or '' }}</textarea>
@@ -4497,6 +4582,9 @@ async function saveSettings() {
     timezone:           document.getElementById('set-timezone').value,
     workers_comp_pct:   parseFloat(document.getElementById('set-workers-comp').value) || 0,
     payroll_fee_pct:    parseFloat(document.getElementById('set-payroll-fee').value) || 0,
+    production_insurance_mode: document.getElementById('set-pi-mode')?.value || 'off',
+    production_insurance_pct:  parseFloat(document.getElementById('set-pi-pct')?.value) || 0,
+    production_insurance_flat: parseFloat(document.getElementById('set-pi-flat')?.value) || 0,
     client_name:        document.getElementById('set-client-name')?.value     || '',
     prepared_by:        document.getElementById('set-prepared-by')?.value     || '',
     prepared_by_title:  document.getElementById('set-prepared-by-title')?.value || '',

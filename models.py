@@ -108,6 +108,16 @@ class Budget(db.Model):
     # gunicorn web-worker boot. Safe to declare on the ORM again now.
     fee_exclude_fringes = db.Column(db.Boolean, default=True, nullable=False,
                                      server_default='1')
+    # Production Insurance — modeled the same way as Workers' Comp and
+    # Payroll Service Fee: an auto-calculated line that injects into the
+    # Insurance (6000) section. Mode picker ('off' / 'pct' / 'flat')
+    # gives the user the option to skip it entirely, charge it as a
+    # percentage of labor wages, or as a flat dollar amount per project.
+    # Default is 'off' so existing budgets are untouched.
+    production_insurance_mode = db.Column(db.String(10), default='off',
+                                           nullable=False, server_default='off')
+    production_insurance_pct  = db.Column(db.Numeric(8, 6), default=0)
+    production_insurance_flat = db.Column(db.Numeric(12, 2), default=0)
     created_at      = db.Column(db.DateTime, default=datetime.utcnow)
     # Project settings
     start_date      = db.Column(db.Date, nullable=True)

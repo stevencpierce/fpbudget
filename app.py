@@ -4295,6 +4295,25 @@ def budget_settings(pid, bid):
     if "payroll_fee_pct" in data:
         v = data.get("payroll_fee_pct")
         budget.payroll_fee_pct = float(v) / 100 if v is not None and v != '' else 0.0175
+    # Production Insurance: mode + pct + flat. Stored independently;
+    # calc_top_sheet picks which input to use based on mode.
+    if "production_insurance_mode" in data:
+        m = (data.get("production_insurance_mode") or 'off').strip().lower()
+        if m not in ('off', 'pct', 'flat'):
+            m = 'off'
+        budget.production_insurance_mode = m
+    if "production_insurance_pct" in data:
+        v = data.get("production_insurance_pct")
+        try:
+            budget.production_insurance_pct = (float(v) / 100) if v not in (None, '', 'null') else 0
+        except (TypeError, ValueError):
+            budget.production_insurance_pct = 0
+    if "production_insurance_flat" in data:
+        v = data.get("production_insurance_flat")
+        try:
+            budget.production_insurance_flat = float(v) if v not in (None, '', 'null') else 0
+        except (TypeError, ValueError):
+            budget.production_insurance_flat = 0
     if "fee_excluded_sections" in data:
         # Frontend sends an array of account-code ints (the sections the
         # user ticked as "exempt" in Settings). Empty array = fee applies
@@ -9679,6 +9698,10 @@ def _web_worker_essential_columns():
             for sql in [
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS fee_excluded_sections TEXT",
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS fee_exclude_fringes BOOLEAN DEFAULT TRUE NOT NULL",
+                # Production Insurance auto-calc (off / % of labor / flat $)
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_mode VARCHAR(10) DEFAULT 'off' NOT NULL",
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_pct  NUMERIC(8,6) DEFAULT 0",
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_flat NUMERIC(12,2) DEFAULT 0",
             ]:
                 try:
                     cur.execute(sql)
