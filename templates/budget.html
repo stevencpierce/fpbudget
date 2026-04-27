@@ -5336,6 +5336,18 @@ async function saveSettings() {
   document.querySelector('.tab-btn[data-tab="catering"]')?.addEventListener('click', () => {
     if (!_cateringLoaded) { _cateringLoaded = true; loadCateringGrid(); }
   });
+
+  // If the tab was activated by the URL ?tab=travel|catering handler that
+  // ran before this IIFE registered the listener, the click event was
+  // dispatched with no Travel/Catering loader attached. Result: tab
+  // visible, "Loading totals..." stuck forever. Catch up here by
+  // checking which tab is currently active and triggering the loader.
+  if (document.querySelector('.tab-btn[data-tab="travel"].active')) {
+    _travelLoaded = true; loadTravelGrid();
+  }
+  if (document.querySelector('.tab-btn[data-tab="catering"].active')) {
+    _cateringLoaded = true; loadCateringGrid();
+  }
 })();
 
 // ── Auto-calc displays (Workers' Comp / Payroll Fee in Settings) ──────────
