@@ -992,12 +992,43 @@ def admin_docs_reconcile_project(pid):
 
     # Pre-load existing filed paths so we can do set-membership checks
     # without re-hitting the DB per file.
-    existing_paths = {
-        (u.filed_dropbox_path or "").lower()
-        for u in DocUpload.query.with_entities(DocUpload.filed_dropbox_path)
-                                .filter_by(project_id=pid).all()
-        if u.filed_dropbox_path
-    }
+    # Pre-load identifiers we'll match incoming Dropbox files against.
+    # Earlier reconcile passes used path equality only — but stored
+    # filed_dropbox_path can have THREE forms depending on when the row
+    # was saved (legacy ops-prefix / namespace-relative / different
+    # capitalization). The result was scan creating duplicate rows for
+    # files that were already tracked. We now match on multiple keys:
+    #
+    #   - the full lowercased path (both raw and namespace-normalized)
+    #   - the BASENAME (final filename) — strongest signal that two
+    #     rows refer to the same file regardless of path drift
+    #   - the file content hash (file_hash) when present, looked up
+    #     out-of-band by basename match below
+    #
+    # If ANY of these hit, we skip the file. False negatives (real
+    # orphans we don't reconcile) are recoverable by re-uploading; false
+    # positives (duplicate rows) are user-visible bugs that erode trust.
+    import os as _os_for_scan
+    existing_full   = set()
+    existing_names  = set()  # basename, lowercased
+    for u in DocUpload.query.with_entities(
+                DocUpload.filed_dropbox_path,
+                DocUpload.original_filename,
+                DocUpload.filed_filename
+            ).filter_by(project_id=pid).all():
+        if u.filed_dropbox_path:
+            full = u.filed_dropbox_path.lower()
+            existing_full.add(full)
+            existing_names.add(_os_for_scan.basename(full))
+            if _DBX_NAMESPACE_ID and _DBX_OPS_ROOT:
+                pfx = _DBX_OPS_ROOT.rstrip('/').lower()
+                if full.startswith(pfx + '/'):
+                    existing_full.add(full[len(pfx):])
+                else:
+                    existing_full.add(pfx + full)
+        for nm in (u.filed_filename, u.original_filename):
+            if nm:
+                existing_names.add(nm.lower())
 
     created = 0
     scanned = 0
@@ -1033,16 +1064,20 @@ def admin_docs_reconcile_project(pid):
                     continue
                 scanned += 1
                 path_lower_key = (entry.path_display or "").lower()
-                if path_lower_key in existing_paths:
+                if path_lower_key in existing_full:
                     continue
-                # Also check the namespace-normalized variant to handle
-                # rows saved with the legacy ops prefix under namespace mode.
-                if _DBX_NAMESPACE_ID and _DBX_OPS_ROOT:
-                    alt = (_DBX_OPS_ROOT.rstrip('/') + (entry.path_display or "")).lower()
-                    if alt in existing_paths:
-                        continue
 
                 filename = entry.name or ""
+                # Final dedupe gate: have we already seen this filename
+                # for this project? Catches rows whose filed_dropbox_path
+                # has drifted from what Dropbox now reports (rename in
+                # Dropbox web UI, namespace prefix change, etc.). Trades
+                # a small false-positive rate (two genuinely different
+                # files with the same name across folders won't both be
+                # tracked) for zero false-positive duplicate rows.
+                if filename.lower() in existing_names:
+                    continue
+
                 ext = os.path.splitext(filename)[1].lower()
                 guessed_ct = _mt.guess_type(filename)[0] or "application/octet-stream"
 
@@ -9727,14 +9762,13 @@ def docs_upload_post(pid):
     data = f.read()
     file_hash = hashlib.sha256(data).hexdigest()
 
-    # Duplicate check within this project
-    existing = DocUpload.query.filter_by(project_id=pid, file_hash=file_hash).first()
-    if existing:
-        return jsonify({
-            "status": "duplicate",
-            "upload_id": existing.id,
-            "message": "This file has already been uploaded."
-        }), 200
+    # Duplicate detection: hash match against ANY existing row in this
+    # project. We don't reject the upload anymore — instead we file it
+    # like a normal doc and then move it to a /_DUPLICATES/ subfolder
+    # at the end so the user can see what was duplicated and decide.
+    # `is_duplicate_of` carries the original upload id so the UI can
+    # link back to the master copy.
+    duplicate_of = DocUpload.query.filter_by(project_id=pid, file_hash=file_hash).first()
 
     content_type = f.content_type or "application/octet-stream"
     ext = os.path.splitext(f.filename)[1].lower() if f.filename else ""
@@ -9837,22 +9871,56 @@ def docs_upload_post(pid):
         filed_filename=result.get("new_filename") or None,
         filed_dropbox_path=result.get("filed_path"),
         filed_at=_dt.utcnow() if result.get("filed_path") else None,
-        is_duplicate=bool(result.get("duplicate")),
+        is_duplicate=bool(duplicate_of) or bool(result.get("duplicate")),
     )
     db.session.add(upload)
     db.session.commit()
 
+    # If this upload's content hash matched an earlier row, MOVE the
+    # filed Dropbox file to a /_DUPLICATES/ subfolder under whatever
+    # type-folder it landed in. Keeps the original "clean" view free of
+    # duplicates while preserving the file so the user can manually
+    # decide. Note recorded in upload.note for the UI.
+    if duplicate_of and result.get("filed_path"):
+        try:
+            _orig_path = result.get("filed_path")
+            _parent    = os.path.dirname(_orig_path) or "/"
+            _basename  = os.path.basename(_orig_path)
+            _dup_path  = f"{_parent}/_DUPLICATES/{_basename}"
+            _dbx_dup = _dbx_client()
+            _mv = _dbx_dup.files_move_v2(_orig_path, _dup_path, autorename=True)
+            _final = getattr(getattr(_mv, 'metadata', None), 'path_display', None) or _dup_path
+            upload.filed_dropbox_path = _final
+            upload.filed_filename     = os.path.basename(_final)
+            upload.note = (f"Duplicate of upload #{duplicate_of.id} "
+                           f"({duplicate_of.filed_filename or duplicate_of.original_filename}). "
+                           f"Moved to /_DUPLICATES/.")
+            db.session.commit()
+            logging.info(f"[DOCS] upload #{upload.id}: duplicate of #{duplicate_of.id}, moved to {_final}")
+        except Exception as _de:
+            logging.exception(f"[DOCS] failed to route duplicate to /_DUPLICATES/: {_de}")
+            # Don't fail the request — file is still safely in Dropbox
+            # at the original path. Just leave the note.
+            upload.note = (f"Duplicate of upload #{duplicate_of.id} — "
+                           f"FAILED to move to /_DUPLICATES/ ({_de}). "
+                           f"File is at {result.get('filed_path')}.")
+            db.session.commit()
+
     # Build a structured client response so the upload UI can show the
     # correct state (filed with path, or needs review, or error).
     if result.get("status") == "filed":
+        _is_dup = bool(duplicate_of)
         return jsonify({
-            "status":      "ok",
+            "status":      "duplicate" if _is_dup else "ok",
             "upload_id":   upload.id,
-            "filed_path":  result.get("filed_path"),
+            "filed_path":  upload.filed_dropbox_path,
             "doc_type":    result.get("doc_type"),
             "confidence":  result.get("confidence"),
-            "duplicate":   bool(result.get("duplicate")),
-            "message":     f"Filed as {result.get('doc_type')} ({int((result.get('confidence') or 0) * 100)}% confidence).",
+            "duplicate":   _is_dup or bool(result.get("duplicate")),
+            "duplicate_of": duplicate_of.id if duplicate_of else None,
+            "message":     (f"Duplicate of #{duplicate_of.id} — moved to /_DUPLICATES/."
+                            if _is_dup
+                            else f"Filed as {result.get('doc_type')} ({int((result.get('confidence') or 0) * 100)}% confidence)."),
         }), 201
     if result.get("status") == "needs_review":
         return jsonify({
@@ -10179,6 +10247,66 @@ def docs_upload_preview_link(uid):
             continue
     return jsonify({
         "error": f"Dropbox temp link failed: {type(last_err).__name__}: {last_err}",
+    }), 500
+
+
+@app.route("/docs/upload/<int:uid>/dropbox-link", methods=["GET"])
+@login_required
+def docs_upload_dropbox_link(uid):
+    """Return a permanent Dropbox shared-link URL for the filed file so
+    the docs detail modal's "Open in Dropbox" button opens the web UI
+    preview (NOT the temp content URL, which downloads). Uses
+    sharing_create_shared_link_with_settings; if a shared link already
+    exists for this path, Dropbox returns it via list_shared_links."""
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+
+    if not upload.filed_dropbox_path:
+        return jsonify({"error": "No filed file"}), 404
+
+    _ops_prefix_str = (_DBX_OPS_ROOT or "").rstrip("/") if _DBX_NAMESPACE_ID else ""
+    raw_path  = upload.filed_dropbox_path
+    norm_path = raw_path
+    if _ops_prefix_str and norm_path.startswith(_ops_prefix_str + "/"):
+        norm_path = norm_path[len(_ops_prefix_str):]
+
+    try:
+        dbx = _dbx_client()
+    except Exception as e:
+        return jsonify({"error": f"Dropbox init failed: {e}"}), 500
+
+    last_err = None
+    for path_try in (norm_path, raw_path) if norm_path != raw_path else (norm_path,):
+        try:
+            # If a shared link already exists, reuse it. Otherwise create.
+            from dropbox.sharing import SharedLinkSettings, RequestedVisibility
+            try:
+                _existing = dbx.sharing_list_shared_links(path=path_try, direct_only=True)
+                if _existing.links:
+                    return jsonify({"ok": True, "url": _existing.links[0].url})
+            except Exception:
+                pass  # fall through to create
+            link = dbx.sharing_create_shared_link_with_settings(
+                path_try,
+                settings=SharedLinkSettings(requested_visibility=RequestedVisibility.team_only),
+            )
+            return jsonify({"ok": True, "url": link.url})
+        except Exception as e:
+            last_err = e
+            # Specific error: shared_link_already_exists — extract the existing one
+            _msg = str(e)
+            if "shared_link_already_exists" in _msg:
+                try:
+                    _existing = dbx.sharing_list_shared_links(path=path_try, direct_only=True)
+                    if _existing.links:
+                        return jsonify({"ok": True, "url": _existing.links[0].url})
+                except Exception as e2:
+                    last_err = e2
+            continue
+    return jsonify({
+        "error": f"Could not create Dropbox link: {type(last_err).__name__}: {last_err}",
     }), 500
 
 

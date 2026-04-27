@@ -1019,11 +1019,12 @@
                     {% endif %}>{{ _display_name }}</span>
               {% if _can_rename %}<span class="rename-hint" style="font-size:10px;color:#6b7280;margin-left:4px;opacity:0;">✎</span>{% endif %}
             </div>
-            {# Always show original filename as a subtitle (was previously
-               only shown when Veryfi renamed the file). User wants the
-               original visible at all times so they can match what they
-               uploaded against what landed in Dropbox. #}
-            {% if _orig_name %}
+            {# Show the original filename as a subtitle whenever it
+               differs from what's now in Dropbox (i.e. Veryfi renamed
+               it). When the filed name and original are the same — or
+               when scan-reconcile created the row from an existing
+               Dropbox file — there's nothing useful to show. #}
+            {% if _orig_name and _was_renamed %}
             <div style="font-size:11px;color:#6b7280;font-style:italic;margin-top:1px;" title="Original filename as uploaded">
               📎 uploaded as: {{ _orig_name }}
             </div>
@@ -1048,13 +1049,15 @@
             {% endif %}
           </div>
           <span class="doc-status-badge" style="font-size:11px;padding:3px 9px;border-radius:20px;white-space:nowrap;
-            {% if u.status == 'filed' or u.status == 'done' %}background:#14291e;color:#22c55e;border:1px solid #1a4228;
+            {% if u.is_duplicate %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
+            {% elif u.status == 'filed' or u.status == 'done' %}background:#14291e;color:#22c55e;border:1px solid #1a4228;
             {% elif u.status == 'review' %}background:#2a2414;color:#fbbf24;border:1px solid #4a3a1a;
             {% elif u.status == 'duplicate' %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
             {% elif u.status == 'error' %}background:#2a1414;color:#ef4444;border:1px solid #4a2020;
             {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}"
-            title="{% if u.confidence %}OCR confidence: {{ u.confidence }}%{% endif %}{% if u.filed_dropbox_path %} · Dropbox: {{ u.filed_dropbox_path }}{% endif %}">
-            {% if u.status == 'done' or u.status == 'filed' %}Filed
+            title="{% if u.confidence %}OCR confidence: {{ u.confidence }}%{% endif %}{% if u.filed_dropbox_path %} · Dropbox: {{ u.filed_dropbox_path }}{% endif %}{% if u.note %} · {{ u.note }}{% endif %}">
+            {% if u.is_duplicate %}🔁 Duplicate
+            {% elif u.status == 'done' or u.status == 'filed' %}Filed
             {% elif u.status == 'review' %}⚠ Review
               {% if u.confidence %} {{ u.confidence | int }}%{% endif %}
             {% else %}{{ u.status|capitalize }}{% endif %}
@@ -1716,17 +1719,36 @@
     } catch (e) { /* fall through */ }
 
     if (linkData && linkData.url) {
-      const ct = (linkData.content_type || '').toLowerCase();
-      if (ct.includes('pdf')) {
-        previewEl.innerHTML = '<iframe src="' + linkData.url +
-          '" style="border:0;width:100%;height:100%;min-height:540px;"></iframe>';
-      } else if (ct.startsWith('image/') || /\.(jpe?g|png|gif|heic|webp)(\?|$)/i.test(linkData.url)) {
+      // Decide preview type from BOTH content-type and the displayed
+      // filename — content_type was sometimes stored as octet-stream
+      // for HEIC/PDF uploads, which made the modal show "preview not
+      // supported" even though the file was renderable. Filename
+      // extension is the more reliable signal at this point.
+      const fn  = (linkData.filename || '').toLowerCase();
+      const ct  = (linkData.content_type || '').toLowerCase();
+      const isPdf   = ct.includes('pdf')   || fn.endsWith('.pdf');
+      const isImage = ct.startsWith('image/')
+                      || /\.(jpe?g|png|gif|heic|heif|webp|bmp|tiff?)$/i.test(fn);
+      if (isImage) {
         previewEl.innerHTML = '<img src="' + linkData.url +
           '" alt="preview" style="max-width:100%;max-height:80vh;display:block;margin:auto;">';
+      } else if (isPdf) {
+        previewEl.innerHTML = '<iframe src="' + linkData.url +
+          '" style="border:0;width:100%;height:100%;min-height:540px;"></iframe>';
       } else {
-        previewEl.innerHTML = '<p class="muted" style="padding:1rem">' +
-          'Preview not supported for this file type. ' +
-          '<a href="' + linkData.url + '" target="_blank" style="color:#5b8af9">Open in new tab ↗</a></p>';
+        // Last resort: try img anyway — browsers will show a broken-
+        // image icon if it's truly unsupported, which is clearer than
+        // a plain message.
+        previewEl.innerHTML =
+          '<div style="padding:1rem;text-align:center">' +
+            '<img src="' + linkData.url + '" alt="preview" ' +
+                 'style="max-width:100%;max-height:70vh;display:block;margin:0 auto 1rem;" ' +
+                 'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'block\';">' +
+            '<p class="muted" style="display:none">' +
+              'Preview not supported for this file type. ' +
+              '<a href="' + linkData.url + '" target="_blank" style="color:#5b8af9">Open in new tab ↗</a>' +
+            '</p>' +
+          '</div>';
       }
     } else {
       previewEl.innerHTML = '<p class="muted" style="padding:1rem;color:#ef4444">' +
@@ -1748,10 +1770,34 @@
       vEl.style.display = 'block';
     }
 
-    // Build the dropbox.com link from the row's dataset path. Best
-    // effort — Dropbox's app URL scheme accepts the namespace path.
-    document.getElementById('docDetailDropboxLink').href =
-      (linkData && linkData.url) ? linkData.url : '#';
+    // Fetch a REAL Dropbox shared-link URL for the "Open in Dropbox"
+    // button. The temp link from /preview-link is a content URL that
+    // browsers download instead of preview, so we hit /dropbox-link
+    // which calls sharing_create_shared_link_with_settings to produce
+    // a dropbox.com URL that opens the web preview. Done in parallel
+    // with the temp link, but exposed via a separate button so the
+    // image/iframe doesn't have to wait on the shared-link round-trip.
+    const dbxBtn = document.getElementById('docDetailDropboxLink');
+    dbxBtn.href = '#';
+    dbxBtn.style.opacity = '0.5';
+    dbxBtn.textContent = 'Loading link…';
+    fetch('/docs/upload/' + uid + '/dropbox-link', { credentials: 'same-origin' })
+      .then(r => r.json())
+      .then(d => {
+        if (d && d.ok && d.url) {
+          dbxBtn.href = d.url;
+          dbxBtn.style.opacity = '1';
+          dbxBtn.textContent = 'Open in Dropbox ↗';
+        } else {
+          dbxBtn.style.opacity = '0.4';
+          dbxBtn.textContent = 'Open in Dropbox (unavailable)';
+          dbxBtn.title = (d && d.error) || 'Could not generate link';
+        }
+      })
+      .catch(() => {
+        dbxBtn.style.opacity = '0.4';
+        dbxBtn.textContent = 'Open in Dropbox (network error)';
+      });
 
     // Pull the saved metadata (vendor / amount / doc_date / category /
     // note) by hitting /update with no body — actually safer to re-pull
