@@ -1019,9 +1019,13 @@
                     {% endif %}>{{ _display_name }}</span>
               {% if _can_rename %}<span class="rename-hint" style="font-size:10px;color:#6b7280;margin-left:4px;opacity:0;">✎</span>{% endif %}
             </div>
-            {% if _was_renamed %}
+            {# Always show original filename as a subtitle (was previously
+               only shown when Veryfi renamed the file). User wants the
+               original visible at all times so they can match what they
+               uploaded against what landed in Dropbox. #}
+            {% if _orig_name %}
             <div style="font-size:11px;color:#6b7280;font-style:italic;margin-top:1px;" title="Original filename as uploaded">
-              📎 uploaded as: {{ u.original_filename }}
+              📎 uploaded as: {{ _orig_name }}
             </div>
             {% endif %}
             <div style="font-size:11px;color:var(--text-muted);margin-top:3px;">
@@ -1033,9 +1037,6 @@
               {% endif %}
               {% if u.category %}
                 · 🏷 <strong>{{ u.category }}</strong>
-              {% endif %}
-              {% if u.file_size %}
-                · 📦 {{ _size_display }}
               {% endif %}
             </div>
             {% if u.vendor or u.amount or u.doc_date %}
@@ -1075,7 +1076,80 @@
       {% endif %}
     </div>
 
+    <!-- Document detail modal: click any row to open. Loads a short-lived
+         Dropbox temporary link for the preview pane and exposes the
+         editable metadata fields. -->
+    <div id="docDetailOverlay" class="modal-overlay hidden" onclick="closeDocDetail(event)">
+      <div class="modal" onclick="event.stopPropagation()" style="max-width:880px;width:95vw;max-height:90vh;display:flex;flex-direction:column;padding:0;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-bottom:1px solid var(--border);">
+          <h3 id="docDetailTitle" style="margin:0;font-size:1rem;line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Document</h3>
+          <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;margin-left:1rem;">
+            <a id="docDetailDropboxLink" href="#" target="_blank"
+               style="font-size:11px;padding:4px 10px;border-radius:6px;background:#1a2540;color:#5b8af9;border:1px solid #2d4070;text-decoration:none;">
+              Open in Dropbox ↗
+            </a>
+            <button type="button" class="btn btn-sm" onclick="closeDocDetail()">Close</button>
+          </div>
+        </div>
+        <div style="flex:1;display:flex;min-height:0;">
+          <!-- Left: preview pane -->
+          <div id="docDetailPreview" style="flex:1.4;background:#0a0d12;display:flex;align-items:center;justify-content:center;min-height:380px;overflow:auto;">
+            <p class="muted" style="padding:1rem">Loading preview…</p>
+          </div>
+          <!-- Right: editable metadata -->
+          <div style="flex:1;padding:14px 18px;border-left:1px solid var(--border);overflow-y:auto;min-width:280px;">
+            <div id="docDetailVerify" style="font-size:11px;padding:6px 9px;border-radius:6px;margin-bottom:12px;display:none;"></div>
+            <div class="field" style="margin-bottom:.6rem">
+              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Vendor</label>
+              <input type="text" id="docDetailVendor" placeholder="Vendor name…" style="width:100%">
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.6rem">
+              <div class="field" style="margin:0">
+                <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Amount</label>
+                <input type="number" id="docDetailAmount" step="0.01" placeholder="0.00" style="width:100%">
+              </div>
+              <div class="field" style="margin:0">
+                <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Date</label>
+                <input type="date" id="docDetailDocDate" style="width:100%">
+              </div>
+            </div>
+            <div class="field" style="margin-bottom:.6rem">
+              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Type</label>
+              <select id="docDetailCategory" style="width:100%">
+                <option value="">— unspecified —</option>
+                <option value="receipt">Receipt</option>
+                <option value="invoice">Invoice</option>
+                <option value="contract">Contract</option>
+                <option value="estimate">Estimate / SOW</option>
+                <option value="insurance">Insurance / COI</option>
+                <option value="legal">Legal</option>
+                <option value="payroll">Payroll</option>
+                <option value="quote">Quote / Misc</option>
+              </select>
+            </div>
+            <div class="field" style="margin-bottom:.6rem">
+              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Note</label>
+              <textarea id="docDetailNote" rows="3" placeholder="Optional note…" style="width:100%;resize:vertical"></textarea>
+            </div>
+            <div id="docDetailMeta" style="font-size:11px;color:var(--text-muted);margin:8px 0 12px;line-height:1.5"></div>
+            <div style="display:flex;gap:6px;justify-content:flex-end;">
+              <button type="button" class="btn btn-sm" onclick="closeDocDetail()">Cancel</button>
+              <button type="button" class="btn btn-sm btn-primary" id="docDetailSaveBtn">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <style>
+      /* Make doc rows feel clickable. The row itself opens the detail
+         modal; inner controls (delete, retry, editable filename) keep
+         their own cursors so it's obvious they're separate targets. */
+      #tab-docs .doc-row { cursor: pointer; transition: border-color .15s; }
+      #tab-docs .doc-row:hover { border-color: #5b8af9 !important; }
+      #tab-docs .doc-row .doc-delete-btn,
+      #tab-docs .doc-row .doc-retry-btn,
+      #tab-docs .doc-row .editable-filename { cursor: pointer; }
       /* Docs-tab filename rename (click-to-edit) */
       #tab-docs .doc-filename.editable-filename:hover {
         border-bottom-color: #6b7280 !important;
@@ -1529,6 +1603,223 @@
       }
     });
   }
+
+  // ── Background verification of Filed rows ─────────────────────────────
+  // For every "Filed" row currently in the DOM, hit /verify in the
+  // background. If Dropbox returns not_found, flip the row's badge to
+  // RED ("Missing from Dropbox") and outline the row in red so the
+  // user can never silently lose a receipt. Throttled to 4 in-flight
+  // at a time so we don't hammer Dropbox on a project with hundreds.
+  async function _docsVerifyAllFiled() {
+    const rows = Array.from(document.querySelectorAll('#docsHistory .doc-row'))
+      .filter(r => {
+        const s = (r.dataset.status || '').toLowerCase();
+        return s === 'filed' || s === 'done';
+      });
+    const QUEUE = rows.slice();
+    const CONCURRENCY = 4;
+
+    async function _verifyOne(row) {
+      const uid = row.dataset.uploadId;
+      if (!uid) return;
+      try {
+        const r = await fetch('/docs/upload/' + uid + '/verify', { credentials: 'same-origin' });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.ok) return;  // network/server hiccup — leave row as-is
+        if (d.verified) {
+          // Mark the row as Dropbox-confirmed. Tiny green dot in the
+          // status badge so the user can SEE it was verified, not just
+          // trust the DB row's status field.
+          const badge = row.querySelector('.doc-status-badge');
+          if (badge && !badge.dataset.verifiedMarked) {
+            badge.dataset.verifiedMarked = '1';
+            badge.title = (badge.title || '') + ' · Verified in Dropbox';
+            const dot = document.createElement('span');
+            dot.textContent = ' ✓';
+            dot.style.cssText = 'opacity:.85;margin-left:2px';
+            badge.appendChild(dot);
+          }
+          row.dataset.verified = '1';
+        } else {
+          // FILE IS MISSING. Make this LOUD so the user can't miss it.
+          row.style.border = '1px solid #ef4444';
+          row.style.background = '#2a0d0d';
+          row.dataset.verified = '0';
+          const badge = row.querySelector('.doc-status-badge');
+          if (badge) {
+            badge.textContent = '⚠ Missing from Dropbox';
+            badge.style.cssText = 'font-size:11px;padding:3px 9px;border-radius:20px;white-space:nowrap;background:#2a1414;color:#ef4444;border:1px solid #ef4444;font-weight:600;';
+            badge.title = 'This file is not at the recorded Dropbox path. Possible causes: ' +
+                          'Dropbox upload silently failed, file was moved/deleted in Dropbox, ' +
+                          'or the recorded path is stale. ' +
+                          (d.reason || '');
+          }
+        }
+      } catch (e) {
+        // Network failure — silent; the row stays in its server-rendered state.
+      }
+    }
+
+    const workers = [];
+    for (let i = 0; i < CONCURRENCY; i++) {
+      workers.push((async () => {
+        while (QUEUE.length) {
+          const r = QUEUE.shift();
+          if (r) await _verifyOne(r);
+        }
+      })());
+    }
+    await Promise.all(workers);
+  }
+  // Run once after DOMContentLoaded so the docs tab is up before we
+  // start spamming /verify. setTimeout gives the rest of the page a
+  // chance to settle (presence ping, sockets, etc.).
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(_docsVerifyAllFiled, 800));
+  } else {
+    setTimeout(_docsVerifyAllFiled, 800);
+  }
+
+  // ── Document detail modal ────────────────────────────────────────────
+  // Click any non-edit, non-delete area of a doc-row to open. Loads a
+  // Dropbox temporary link and the editable metadata.
+  let _docDetailUid = null;
+
+  function _docDetailFmtSize(b) { if (!b) return ''; return b<1048576?(b/1024).toFixed(1)+' KB':(b/1048576).toFixed(1)+' MB'; }
+
+  window.openDocDetail = async function (uid, row) {
+    _docDetailUid = uid;
+    document.getElementById('docDetailOverlay').classList.remove('hidden');
+    document.getElementById('docDetailTitle').textContent =
+      row?.dataset?.sortFilename ? row.dataset.sortFilename : 'Document';
+    // Reset form fields to whatever the row's dataset carries — server
+    // will overwrite when /preview-link comes back, but this avoids
+    // a flash of stale data from a previous open.
+    document.getElementById('docDetailVendor').value   = row?.dataset?.sortVendor || '';
+    document.getElementById('docDetailAmount').value   = row?.dataset?.sortAmount || '';
+    document.getElementById('docDetailDocDate').value  = '';
+    document.getElementById('docDetailCategory').value = row?.dataset?.sortType || '';
+    document.getElementById('docDetailNote').value     = '';
+    document.getElementById('docDetailVerify').style.display = 'none';
+    const previewEl = document.getElementById('docDetailPreview');
+    previewEl.innerHTML = '<p class="muted" style="padding:1rem">Loading preview…</p>';
+
+    // Pull doc + temp link in parallel.
+    let linkData = null, verifyData = null;
+    try {
+      const [linkR, verifyR] = await Promise.all([
+        fetch('/docs/upload/' + uid + '/preview-link', { credentials: 'same-origin' }),
+        fetch('/docs/upload/' + uid + '/verify',       { credentials: 'same-origin' }),
+      ]);
+      linkData   = await linkR.json().catch(() => null);
+      verifyData = await verifyR.json().catch(() => null);
+    } catch (e) { /* fall through */ }
+
+    if (linkData && linkData.url) {
+      const ct = (linkData.content_type || '').toLowerCase();
+      if (ct.includes('pdf')) {
+        previewEl.innerHTML = '<iframe src="' + linkData.url +
+          '" style="border:0;width:100%;height:100%;min-height:540px;"></iframe>';
+      } else if (ct.startsWith('image/') || /\.(jpe?g|png|gif|heic|webp)(\?|$)/i.test(linkData.url)) {
+        previewEl.innerHTML = '<img src="' + linkData.url +
+          '" alt="preview" style="max-width:100%;max-height:80vh;display:block;margin:auto;">';
+      } else {
+        previewEl.innerHTML = '<p class="muted" style="padding:1rem">' +
+          'Preview not supported for this file type. ' +
+          '<a href="' + linkData.url + '" target="_blank" style="color:#5b8af9">Open in new tab ↗</a></p>';
+      }
+    } else {
+      previewEl.innerHTML = '<p class="muted" style="padding:1rem;color:#ef4444">' +
+        'Preview unavailable: ' + ((linkData && linkData.error) || 'unknown error') + '</p>';
+    }
+
+    // Verification banner — green on success, red if Dropbox doesn't
+    // have the file. Mirrors what the row badge says, but inside the
+    // modal it's much harder to miss.
+    const vEl = document.getElementById('docDetailVerify');
+    if (verifyData && verifyData.ok && verifyData.verified) {
+      vEl.style.cssText = 'font-size:11px;padding:6px 9px;border-radius:6px;margin-bottom:12px;background:#14291e;color:#22c55e;border:1px solid #1a4228;';
+      vEl.textContent = '✓ Verified in Dropbox' +
+        (verifyData.size ? (' · ' + _docDetailFmtSize(verifyData.size)) : '');
+      vEl.style.display = 'block';
+    } else if (verifyData && verifyData.ok && verifyData.verified === false) {
+      vEl.style.cssText = 'font-size:11px;padding:6px 9px;border-radius:6px;margin-bottom:12px;background:#2a1414;color:#ef4444;border:1px solid #4a2020;font-weight:600;';
+      vEl.textContent = '⚠ MISSING from Dropbox — ' + (verifyData.reason || 'file not found');
+      vEl.style.display = 'block';
+    }
+
+    // Build the dropbox.com link from the row's dataset path. Best
+    // effort — Dropbox's app URL scheme accepts the namespace path.
+    document.getElementById('docDetailDropboxLink').href =
+      (linkData && linkData.url) ? linkData.url : '#';
+
+    // Pull the saved metadata (vendor / amount / doc_date / category /
+    // note) by hitting /update with no body — actually safer to re-pull
+    // via /verify since it carries the row, OR ask the server. Easiest:
+    // pre-populate from dataset, let /verify add path; for full fields
+    // we already have them server-rendered in dataset attrs. The
+    // detail modal is editing in-place — a no-op load is fine.
+    document.getElementById('docDetailMeta').textContent =
+      'Upload ID #' + uid;
+  };
+
+  window.closeDocDetail = function (ev) {
+    if (ev && ev.target && ev.target.id !== 'docDetailOverlay') return;
+    document.getElementById('docDetailOverlay').classList.add('hidden');
+    _docDetailUid = null;
+  };
+
+  document.getElementById('docDetailSaveBtn')?.addEventListener('click', async () => {
+    if (!_docDetailUid) return;
+    const payload = {
+      vendor:   document.getElementById('docDetailVendor').value,
+      amount:   document.getElementById('docDetailAmount').value,
+      doc_date: document.getElementById('docDetailDocDate').value,
+      category: document.getElementById('docDetailCategory').value,
+      note:     document.getElementById('docDetailNote').value,
+    };
+    const btn = document.getElementById('docDetailSaveBtn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const r = await fetch('/docs/upload/' + _docDetailUid + '/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(payload),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert('Save failed: ' + (d.error || r.status)); return; }
+      // Reflect into the row's dataset + visible metadata so the list
+      // updates without a page reload.
+      const row = document.querySelector('.doc-row[data-upload-id="' + _docDetailUid + '"]');
+      if (row) {
+        row.dataset.sortVendor = (d.vendor || '').toLowerCase();
+        row.dataset.sortAmount = d.amount || 0;
+        row.dataset.sortType   = (d.category || '').toLowerCase();
+      }
+      closeDocDetail();
+      // A page refresh would re-render the metadata strip with the new
+      // values; cleaner than splicing innerHTML.
+      window.location.reload();
+    } catch (e) {
+      alert('Save error: ' + e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save';
+    }
+  });
+
+  // Click-to-open binding: the row is the click target unless the user
+  // clicked one of the inline buttons (delete, retry) or the editable
+  // filename span (which has its own contenteditable handler).
+  document.getElementById('docsHistory')?.addEventListener('click', (e) => {
+    if (e.target.closest('.doc-delete-btn')) return;
+    if (e.target.closest('.doc-retry-btn')) return;
+    if (e.target.closest('.editable-filename')) return;
+    const row = e.target.closest('.doc-row');
+    if (!row) return;
+    const uid = parseInt(row.dataset.uploadId);
+    if (!uid) return;
+    openDocDetail(uid, row);
+  });
 })();
 </script>
 

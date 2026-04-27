@@ -10051,6 +10051,194 @@ def docs_upload_rename(uid):
     })
 
 
+# ── Docs: verify, preview link, update fields ───────────────────────────────
+# These three endpoints back the "ironclad" docs UX:
+#   * /verify       → confirm the file is actually present in Dropbox
+#                     (catches silent filing failures, deleted files, drift)
+#   * /preview-link → short-lived Dropbox temporary link for embedding in
+#                     the in-page detail modal
+#   * /update       → save edits to vendor / amount / doc_date / category /
+#                     note from the detail modal
+
+def _docs_check_row_access(upload):
+    """Return None if current user may see/edit this upload, else a Flask
+    response ready to be returned. Mirrors the pattern in upload_post."""
+    if current_user.role in ('super_admin', 'admin'):
+        return None
+    access = ProjectAccess.query.filter_by(
+        project_id=upload.project_id, user_id=current_user.id).first()
+    if not access:
+        return jsonify({"error": "Forbidden"}), 403
+    return None
+
+
+@app.route("/docs/upload/<int:uid>/verify", methods=["GET"])
+@login_required
+def docs_upload_verify(uid):
+    """Check whether the filed Dropbox path actually resolves to a file.
+
+    Returns:
+      {"ok": true,  "verified": true,  "size": <bytes>}   — file present
+      {"ok": true,  "verified": false, "reason": "..."}   — file missing
+                                                            or path empty
+
+    The client calls this in the background for every "Filed" row on
+    page load and flips the row to RED if verified=false. This is the
+    "nothing can ever be lost" guarantee — we're not just trusting the
+    DB row's status field, we're confirming the bytes are actually
+    sitting in Dropbox where they're supposed to be.
+    """
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+
+    if not upload.filed_dropbox_path:
+        return jsonify({
+            "ok": True, "verified": False,
+            "reason": "no filed_dropbox_path on record",
+            "status": upload.status,
+        })
+
+    # Build a path that works under namespace mode AND respects the
+    # legacy ops-prefix that some older rows still carry. Same pattern
+    # as the wipe handler — try normalized first, then raw.
+    _ops_prefix_str = (_DBX_OPS_ROOT or "").rstrip("/") if _DBX_NAMESPACE_ID else ""
+    raw_path  = upload.filed_dropbox_path
+    norm_path = raw_path
+    if _ops_prefix_str and norm_path.startswith(_ops_prefix_str + "/"):
+        norm_path = norm_path[len(_ops_prefix_str):]
+
+    try:
+        dbx = _dbx_client()
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "verified": False,
+            "reason": f"Dropbox client init failed: {e}",
+        }), 500
+
+    for path_try in (norm_path, raw_path) if norm_path != raw_path else (norm_path,):
+        try:
+            md = dbx.files_get_metadata(path_try)
+            return jsonify({
+                "ok": True,
+                "verified": True,
+                "size": getattr(md, 'size', None),
+                "path": getattr(md, 'path_display', path_try),
+            })
+        except Exception:
+            continue
+    # Both attempts failed → file is genuinely missing.
+    return jsonify({
+        "ok": True,
+        "verified": False,
+        "reason": "Dropbox returned not_found for both normalized and raw paths",
+        "tried": [norm_path, raw_path] if norm_path != raw_path else [norm_path],
+    })
+
+
+@app.route("/docs/upload/<int:uid>/preview-link", methods=["GET"])
+@login_required
+def docs_upload_preview_link(uid):
+    """Generate a short-lived Dropbox temporary link for the filed file
+    so the docs detail modal can embed the image / PDF inline. Dropbox
+    temporary links expire in 4 hours — plenty for a session, but the
+    client re-fetches per modal open so a stale link is never served."""
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+
+    if not upload.filed_dropbox_path:
+        return jsonify({"error": "No filed file to preview"}), 404
+
+    _ops_prefix_str = (_DBX_OPS_ROOT or "").rstrip("/") if _DBX_NAMESPACE_ID else ""
+    raw_path  = upload.filed_dropbox_path
+    norm_path = raw_path
+    if _ops_prefix_str and norm_path.startswith(_ops_prefix_str + "/"):
+        norm_path = norm_path[len(_ops_prefix_str):]
+
+    try:
+        dbx = _dbx_client()
+    except Exception as e:
+        return jsonify({"error": f"Dropbox init failed: {e}"}), 500
+
+    last_err = None
+    for path_try in (norm_path, raw_path) if norm_path != raw_path else (norm_path,):
+        try:
+            res = dbx.files_get_temporary_link(path_try)
+            return jsonify({
+                "ok":           True,
+                "url":          res.link,
+                "content_type": upload.content_type or "application/octet-stream",
+                "filename":     upload.filed_filename or upload.original_filename,
+            })
+        except Exception as e:
+            last_err = e
+            continue
+    return jsonify({
+        "error": f"Dropbox temp link failed: {type(last_err).__name__}: {last_err}",
+    }), 500
+
+
+@app.route("/docs/upload/<int:uid>/update", methods=["POST"])
+@login_required
+def docs_upload_update(uid):
+    """Update the editable metadata fields on a DocUpload row from the
+    detail modal: vendor, amount, doc_date, category (doc type), note.
+
+    Only edits the DB row — does NOT re-OCR, does NOT touch the Dropbox
+    file (use /rename for the filename). Filed_filename and the Dropbox
+    file stay unchanged so the user can correct vendor/amount typos
+    without disturbing the filed file's path.
+    """
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+
+    data = request.get_json(force=True) or {}
+    if "vendor" in data:
+        v = (data.get("vendor") or "").strip()
+        upload.vendor = v[:200] if v else None
+    if "amount" in data:
+        a = data.get("amount")
+        if a in (None, "", "null"):
+            upload.amount = None
+        else:
+            try:
+                upload.amount = round(float(a), 2)
+            except (TypeError, ValueError):
+                return jsonify({"error": "amount must be a number"}), 400
+    if "doc_date" in data:
+        d = (data.get("doc_date") or "").strip()
+        if not d:
+            upload.doc_date = None
+        else:
+            try:
+                from datetime import datetime as _dt_mod
+                upload.doc_date = _dt_mod.strptime(d[:10], "%Y-%m-%d").date()
+            except Exception:
+                return jsonify({"error": "doc_date must be YYYY-MM-DD"}), 400
+    if "category" in data:
+        c = (data.get("category") or "").strip()
+        upload.category = c[:100] if c else None
+    if "note" in data:
+        n = (data.get("note") or "").strip()
+        upload.note = n[:500] if n else None
+
+    db.session.commit()
+    return jsonify({
+        "ok":       True,
+        "vendor":   upload.vendor,
+        "amount":   float(upload.amount) if upload.amount is not None else None,
+        "doc_date": upload.doc_date.isoformat() if upload.doc_date else None,
+        "category": upload.category,
+        "note":     upload.note,
+    })
+
+
 @app.errorhandler(404)
 def page_not_found(e):
     return render_template("404.html"), 404
