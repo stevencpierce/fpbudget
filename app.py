@@ -86,7 +86,8 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     BudgetTemplate, BudgetTemplateLine, TaxCredit, PayrollProfile,
                     ProductionDay, Location, LocationDay, CallSheetData,
                     SupportContact, ProjectUnion, ProjectClient, CallSheetSend, CallSheetRecipient,
-                    BudgetDirectContact, CompanySettings, DocUpload, CatalogItem)
+                    BudgetDirectContact, CompanySettings, DocUpload, CatalogItem,
+                    TravelDetail, CateringBill)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
