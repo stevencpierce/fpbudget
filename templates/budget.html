@@ -121,17 +121,61 @@
     <div class="dropdown">
       <button class="btn btn-sm btn-outline">Export ▾</button>
       <div class="dropdown-menu">
-        <a href="{{ url_for('export_pdf', pid=project.id, bid=budget.id) }}" target="_blank">Top Sheet PDF</a>
-        <a href="{{ url_for('export_pdf', pid=project.id, bid=budget.id) }}?detail=1" target="_blank">Full Detail PDF</a>
+        {# Each export now opens an options dialog (suppress zeros, fee
+           dispersed override). The dialog assembles query params and
+           triggers the download. Direct links removed so the user can't
+           bypass the options inadvertently. #}
+        <a href="#" onclick="openExportOptions(event, 'pdf', 'topsheet')">Top Sheet PDF…</a>
+        <a href="#" onclick="openExportOptions(event, 'pdf', 'detail')">Full Detail PDF…</a>
         <div class="dropdown-divider"></div>
-        <a href="{{ url_for('export_csv', pid=project.id, bid=budget.id) }}">Top Sheet CSV</a>
-        <a href="{{ url_for('export_csv', pid=project.id, bid=budget.id, type='working') }}">Line Detail CSV</a>
+        <a href="#" onclick="openExportOptions(event, 'csv', 'topsheet')">Top Sheet CSV…</a>
+        <a href="#" onclick="openExportOptions(event, 'csv', 'working')">Line Detail CSV…</a>
         <div class="dropdown-divider"></div>
-        <a href="{{ url_for('export_mmb', pid=project.id, bid=budget.id) }}">Movie Magic Budgeting (.txt)</a>
-        <a href="{{ url_for('export_showbiz', pid=project.id, bid=budget.id) }}">ShowBiz Budgeting (.txt)</a>
+        <a href="#" onclick="openExportOptions(event, 'mmb', null)">Movie Magic Budgeting (.txt)…</a>
+        <a href="#" onclick="openExportOptions(event, 'showbiz', null)">ShowBiz Budgeting (.txt)…</a>
         <div class="dropdown-divider"></div>
         <a href="#" data-preview-target="mmb"     onclick="openExportPreview(event, 'mmb')">Preview as Movie Magic…</a>
         <a href="#" data-preview-target="showbiz" onclick="openExportPreview(event, 'showbiz')">Preview as ShowBiz…</a>
+      </div>
+    </div>
+
+    <!-- Export Options modal — collects per-export overrides without
+         touching the saved budget settings. Submits to the right
+         download URL with query params: ?suppress_zeros=1&fee_dispersed=1 -->
+    <div id="export-options-overlay" class="modal-overlay hidden" onclick="closeExportOptions(event)">
+      <div class="modal" onclick="event.stopPropagation()" style="max-width:480px">
+        <h3 style="margin:0 0 .75rem">Export Options</h3>
+        <p class="muted" style="margin:0 0 1rem;font-size:.85rem" id="export-opts-target">Format: —</p>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:.5rem;font-weight:400;cursor:pointer">
+            <input type="checkbox" id="export-opt-suppress-zeros">
+            <span>
+              <strong style="font-weight:600">Suppress zero lines</strong>
+              <span class="muted" style="font-size:.8rem;display:block;margin-top:2px">Hide rows whose total is $0 from the export. Section totals still reflect the full data.</span>
+            </span>
+          </label>
+        </div>
+        <div class="field">
+          <label style="display:block;font-weight:600;margin-bottom:.4rem">Production Company Fee</label>
+          <div style="display:flex;flex-direction:column;gap:.35rem;font-weight:400">
+            <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer">
+              <input type="radio" name="export-opt-fee" value="" checked>
+              <span>Use current budget setting <span class="muted" id="export-opt-fee-current" style="font-size:.8rem"></span></span>
+            </label>
+            <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer">
+              <input type="radio" name="export-opt-fee" value="0">
+              <span>Show as <strong>separate line</strong> at the bottom</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer">
+              <input type="radio" name="export-opt-fee" value="1">
+              <span><strong>Disperse</strong> across section totals (no separate line)</span>
+            </label>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1rem">
+          <button type="button" class="btn btn-sm" onclick="closeExportOptions()">Cancel</button>
+          <button type="button" class="btn btn-sm btn-primary" id="btn-export-go">Export</button>
+        </div>
       </div>
     </div>
 
@@ -2079,19 +2123,19 @@
       <h3>Export Budget</h3>
       <p class="muted" style="font-size:.82rem">PDF exports match industry standards (Showbiz / Movie Magic). Fee is {% if budget.company_fee_dispersed %}dispersed — no fee line shown.{% else %}shown as a line item.{% endif %}</p>
       <div style="display:flex;flex-direction:column;gap:.5rem;margin-top:.75rem">
-        <a href="{{ url_for('export_pdf', pid=project.id, bid=budget.id) }}"
-           class="btn btn-primary btn-sm" target="_blank">
+        <a href="#" onclick="openExportOptions(event, 'pdf', 'topsheet')"
+           class="btn btn-primary btn-sm">
           ↓ Top Sheet PDF
         </a>
-        <a href="{{ url_for('export_pdf', pid=project.id, bid=budget.id) }}?detail=1"
-           class="btn btn-outline btn-sm" target="_blank">
+        <a href="#" onclick="openExportOptions(event, 'pdf', 'detail')"
+           class="btn btn-outline btn-sm">
           ↓ Full Detail PDF
         </a>
-        <a href="{{ url_for('export_csv', pid=project.id, bid=budget.id) }}?type=topsheet"
+        <a href="#" onclick="openExportOptions(event, 'csv', 'topsheet')"
            class="btn btn-ghost btn-sm">
           ↓ Top Sheet CSV
         </a>
-        <a href="{{ url_for('export_csv', pid=project.id, bid=budget.id) }}?type=working"
+        <a href="#" onclick="openExportOptions(event, 'csv', 'working')"
            class="btn btn-ghost btn-sm">
           ↓ Line Detail CSV
         </a>
@@ -2342,6 +2386,18 @@
           <label>Sections exempt from Production Company Fee
             <span class="muted" style="font-weight:400;font-size:.8rem">(check to make a section a pass-through — no fee charged on it)</span>
           </label>
+          {# Default-ON: exclude fringes from the fee base. Industry standard —
+             prodcos don't charge their fee on top of P&W / P/H/W fringes.
+             Render BEFORE the section checklist because it conceptually
+             scopes how the section totals are computed. #}
+          <label style="display:flex;align-items:center;gap:.55rem;margin:0 0 .55rem;font-weight:400;cursor:pointer">
+            <input type="checkbox" id="set-fee-exclude-fringes"
+                   {% if budget.fee_exclude_fringes %}checked{% endif %}>
+            <span>
+              <strong style="font-weight:600">Exclude fringes from fee base</strong>
+              <span class="muted" style="font-size:.8rem;margin-left:.4rem">(industry default — keeps the Prod Co Fee from compounding on P&amp;W / P/H/W fringes)</span>
+            </span>
+          </label>
           <div id="fee-excl-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:.35rem .9rem;padding:.6rem .8rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-2);max-height:260px;overflow-y:auto">
             {% set excluded_codes = top_sheet.company_fee_excluded_codes or [] %}
             {% for sec_code, sec_name in coa_sections %}
@@ -2359,6 +2415,9 @@
           <div style="margin-top:.4rem;font-size:.78rem;color:var(--text-muted)">
             Fee base: <strong id="fee-base-display">{{ top_sheet.company_fee_base | currency }}</strong>
             · Current fee: <strong>{{ top_sheet.company_fee | currency }}</strong>
+            {% if top_sheet.company_fee_exclude_fringes and top_sheet.company_fee_total_fringes %}
+              · <span style="color:#22c55e" title="Total fringes subtracted from the fee base">{{ top_sheet.company_fee_total_fringes | currency }} fringes excluded</span>
+            {% endif %}
             {% if excluded_codes %}· <span style="color:#f59e0b">{{ excluded_codes|length }} section{{ 's' if excluded_codes|length != 1 else '' }} exempt</span>{% endif %}
           </div>
         </div>
@@ -4109,6 +4168,7 @@ async function saveSettings() {
     fee_excluded_sections: Array.from(
       document.querySelectorAll('#fee-excl-grid .fee-excl-check:checked')
     ).map(el => parseInt(el.value, 10)).filter(n => !isNaN(n)),
+    fee_exclude_fringes: document.getElementById('set-fee-exclude-fringes')?.checked ?? true,
   };
 
   await saveCompanySettings();
@@ -7597,6 +7657,74 @@ setTimeout(function() {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
+  // ── Export Options modal ─────────────────────────────────────────────
+  // Caller passes (event, format, variant) where:
+  //   format   : 'pdf' | 'csv' | 'mmb' | 'showbiz'
+  //   variant  : for pdf/csv only — 'topsheet' | 'detail' | 'working'
+  // Modal collects suppress_zeros + fee-dispersed override, then builds
+  // the right URL with query params and triggers the download.
+  let _exportPending = null;
+  window.openExportOptions = function (ev, format, variant) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    _exportPending = { format: format, variant: variant };
+    const labelMap = {
+      pdf:     (variant === 'detail' ? 'Full Detail PDF' : 'Top Sheet PDF'),
+      csv:     (variant === 'working' ? 'Line Detail CSV' : 'Top Sheet CSV'),
+      mmb:     'Movie Magic Budgeting (.txt)',
+      showbiz: 'ShowBiz Budgeting (.txt)',
+    };
+    document.getElementById('export-opts-target').textContent =
+      'Format: ' + (labelMap[format] || format);
+    // Reset checkboxes/radios to defaults each open.
+    document.getElementById('export-opt-suppress-zeros').checked = false;
+    document.querySelectorAll('input[name="export-opt-fee"]').forEach(r => {
+      r.checked = (r.value === '');
+    });
+    // Show what the saved budget setting is in the "Use current" label.
+    const _isDispNow = {{ 'true' if budget.company_fee_dispersed else 'false' }};
+    document.getElementById('export-opt-fee-current').textContent =
+      _isDispNow ? '(currently: dispersed)' : '(currently: separate line)';
+    document.getElementById('export-options-overlay').classList.remove('hidden');
+  };
+
+  window.closeExportOptions = function (ev) {
+    if (ev && ev.target && ev.target.id !== 'export-options-overlay') return;
+    document.getElementById('export-options-overlay').classList.add('hidden');
+    _exportPending = null;
+  };
+
+  document.getElementById('btn-export-go')?.addEventListener('click', () => {
+    if (!_exportPending) return;
+    const { format, variant } = _exportPending;
+    const params = new URLSearchParams();
+    if (document.getElementById('export-opt-suppress-zeros').checked) {
+      params.set('suppress_zeros', '1');
+    }
+    const feeRadio = document.querySelector('input[name="export-opt-fee"]:checked');
+    if (feeRadio && feeRadio.value !== '') {
+      params.set('fee_dispersed', feeRadio.value);
+    }
+    let url;
+    if (format === 'pdf') {
+      url = '/projects/' + PID + '/budget/' + BID + '/export.pdf';
+      if (variant === 'detail') params.set('detail', '1');
+    } else if (format === 'csv') {
+      url = '/projects/' + PID + '/budget/' + BID + '/export.csv';
+      if (variant) params.set('type', variant);
+    } else if (format === 'mmb') {
+      url = '/projects/' + PID + '/budget/' + BID + '/export.mmb.txt';
+    } else if (format === 'showbiz') {
+      url = '/projects/' + PID + '/budget/' + BID + '/export.showbiz.txt';
+    } else { return; }
+    const qs = params.toString();
+    const full = qs ? (url + '?' + qs) : url;
+    // Open PDFs in a new tab so the user can see the result; keep
+    // download-style files inline-navigated so the browser handles them.
+    if (format === 'pdf') window.open(full, '_blank');
+    else window.location.href = full;
+    closeExportOptions();
+  });
+
   function openExportPreview(ev, target) {
     if (ev && ev.preventDefault) ev.preventDefault();
     var title = (target === 'mmb') ? 'Preview as Movie Magic' : 'Preview as ShowBiz';

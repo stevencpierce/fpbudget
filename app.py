@@ -3523,6 +3523,14 @@ def export_csv(pid, bid):
         BudgetLine.account_code, BudgetLine.sort_order).all()
     fringe_cfgs = get_fringe_configs(db.session)
 
+    # Per-export overrides from the Export Options dialog. Apply on the
+    # in-memory budget object so calc_top_sheet picks them up — these
+    # are NOT persisted (the user can change settings per-export without
+    # mutating the saved budget).
+    suppress_zeros = request.args.get("suppress_zeros") == "1"
+    if "fee_dispersed" in request.args:
+        budget.company_fee_dispersed = request.args.get("fee_dispersed") == "1"
+
     output = io.StringIO()
     w = csv.writer(output)
 
@@ -3531,6 +3539,12 @@ def export_csv(pid, bid):
                     "est_ot", "fringe", "subtotal", "agent_pct", "total"])
         for ln in lines:
             res = calc_line(ln, fringe_cfgs)
+            # Suppress-zeros option: skip rows whose total rounds to $0
+            # so the export matches the user's expectation of "live data
+            # only". Section totals are recomputed from the surviving
+            # rows so the bottom line stays consistent.
+            if suppress_zeros and round(float(res["total"] or 0), 2) == 0:
+                continue
             w.writerow([ln.account_code, ln.account_name, ln.description or "",
                         float(ln.quantity or 0), float(ln.days or 0),
                         float(ln.rate or 0), float(ln.est_ot or 0),
@@ -3548,6 +3562,10 @@ def export_csv(pid, bid):
 
         w.writerow(["code", "account", "estimated", "actual", "variance", "pct_used"])
         for row in ts["rows"]:
+            # Suppress-zeros: skip section rows that net to $0 estimated AND $0 actual.
+            if suppress_zeros and round(float(row["estimated"] or 0), 2) == 0 \
+                              and round(float(row["actual"] or 0), 2) == 0:
+                continue
             pct = (row["actual"] / row["estimated"] * 100) if row["estimated"] else 0
             w.writerow([row["code"], row["account"],
                         row["estimated"], row["actual"], row["variance"], round(pct, 1)])
@@ -3578,7 +3596,8 @@ def export_mmb(pid, bid):
     _require_project_role(pid, 'editor')
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     from external_export import export_mmb_tab
-    data = export_mmb_tab(budget)
+    suppress_zeros = request.args.get("suppress_zeros") == "1"
+    data = export_mmb_tab(budget, suppress_zeros=suppress_zeros)
     fname = f"{(budget.name or 'budget').replace(' ', '_')}_MMB.txt"
     return Response(data, mimetype="text/tab-separated-values",
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
@@ -3590,8 +3609,9 @@ def export_showbiz(pid, bid):
     """ShowBiz Budgeting tab-delimited export."""
     _require_project_role(pid, 'editor')
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    suppress_zeros = request.args.get("suppress_zeros") == "1"
     from external_export import export_showbiz_tab
-    data = export_showbiz_tab(budget)
+    data = export_showbiz_tab(budget, suppress_zeros=suppress_zeros)
     fname = f"{(budget.name or 'budget').replace(' ', '_')}_ShowBiz.txt"
     return Response(data, mimetype="text/tab-separated-values",
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
@@ -3620,6 +3640,13 @@ def export_pdf(pid, bid):
     lines   = BudgetLine.query.filter_by(budget_id=bid).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
     fringe_cfgs = get_fringe_configs(db.session)
+
+    # Per-export overrides from the Export Options dialog (see export_csv
+    # for the same pattern). Applied to the in-memory Budget without
+    # persisting so the saved settings stay untouched.
+    suppress_zeros = request.args.get("suppress_zeros") == "1"
+    if "fee_dispersed" in request.args:
+        budget.company_fee_dispersed = request.args.get("fee_dispersed") == "1"
     profile  = budget.payroll_profile
     pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
         profile.payroll_week_start if profile else 6)
@@ -3672,6 +3699,23 @@ def export_pdf(pid, bid):
 
     fee_m = (1 + float(budget.company_fee_pct)) if dispersed else 1.0
 
+    # Filter out zero-total lines + zero-total sections when suppress_zeros
+    # is on. Done at the template-data level so the math (top sheet,
+    # company fee, grand total) still uses the full budget — only the
+    # printed list shrinks.
+    if suppress_zeros:
+        for sec in sections_ordered:
+            sec["lines"] = [
+                ln for ln in sec["lines"]
+                if round(float(line_results.get(ln.id, {}).get("est_total") or 0), 2) != 0
+            ]
+        sections_ordered = [s for s in sections_ordered if s["lines"]]
+        top_sheet["rows"] = [
+            r for r in top_sheet["rows"]
+            if round(float(r.get("estimated") or 0), 2) != 0
+            or round(float(r.get("actual") or 0), 2) != 0
+        ]
+
     html_str = render_template("budget_pdf.html",
         project=project,
         budget=budget,
@@ -3683,6 +3727,7 @@ def export_pdf(pid, bid):
         sections_ordered=sections_ordered,
         line_results=line_results,
         fee_m=fee_m,
+        suppress_zeros=suppress_zeros,
         today=date.today(),
     )
 
@@ -4226,6 +4271,11 @@ def budget_settings(pid, bid):
             codes = []
         import json as _j_fee
         budget.fee_excluded_sections = _j_fee.dumps(codes) if codes else None
+    if "fee_exclude_fringes" in data:
+        # Default-ON: fringes on labor lines are excluded from the Prod
+        # Co Fee base. User can disable per-budget if their prodco does
+        # charge fee on fringes (rare).
+        budget.fee_exclude_fringes = bool(data.get("fee_exclude_fringes"))
     if "client_name" in data:
         budget.client_name = data["client_name"].strip() or None
     if "prepared_by" in data:
@@ -8819,6 +8869,10 @@ def _do_boot_work():
         # base. NULL / empty = every section contributes (default). User
         # edits from budget Settings → "Sections exempt from Prod Co Fee".
         "ALTER TABLE budget ADD COLUMN fee_excluded_sections TEXT",
+        # Default-true: exclude fringe amounts on labor lines from the
+        # Prod Co Fee base. Industry standard — prodcos don't charge
+        # their fee on top of P&W / P/H/W fringes.
+        "ALTER TABLE budget ADD COLUMN fee_exclude_fringes BOOLEAN DEFAULT TRUE NOT NULL",
         # Location facility name
         "ALTER TABLE location ADD COLUMN facility_name TEXT",
         # Per-instance schedule display labels
@@ -8863,6 +8917,8 @@ def _do_boot_work():
     _essential_cols = [
         # Prod Company Fee per-section exemptions (2026-04-24)
         "ALTER TABLE budget ADD COLUMN IF NOT EXISTS fee_excluded_sections TEXT",
+        # Fringe exclusion from Prod Co Fee base (2026-04-27)
+        "ALTER TABLE budget ADD COLUMN IF NOT EXISTS fee_exclude_fringes BOOLEAN DEFAULT TRUE NOT NULL",
         # Per-budget fee disperse
         "ALTER TABLE budget ADD COLUMN IF NOT EXISTS company_fee_dispersed BOOLEAN DEFAULT FALSE NOT NULL",
         # Workers' Comp / Payroll Fee percentages

@@ -99,6 +99,14 @@ class Budget(db.Model):
     # 2026-04-25 after the boot migration kept failing under the 5s
     # statement_timeout watchdog.
     fee_excluded_sections = db.Column(db.Text, nullable=True)
+    # Industry standard: Production Company Fee does NOT compound on top
+    # of fringes (P&W, P/H/W, etc) — fringes are treated as a labor
+    # pass-through cost. Default TRUE: every line's fringe_amount is
+    # subtracted from the section total before computing the fee. User
+    # can disable per-budget from Settings if their prodco does charge
+    # fee on fringes.
+    fee_exclude_fringes   = db.Column(db.Boolean, default=True, nullable=False,
+                                       server_default='1')
     created_at      = db.Column(db.DateTime, default=datetime.utcnow)
     # Project settings
     start_date      = db.Column(db.Date, nullable=True)

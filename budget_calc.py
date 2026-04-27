@@ -978,10 +978,15 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
                 break
         return best
 
+    # Track per-section fringe totals separately so we can subtract them
+    # from the Prod Co Fee base when fee_exclude_fringes is on (default).
+    section_fringe = {start: 0.0 for start, _ in FP_COA_SECTIONS}
     for ln in lines:
         sec = section_for_code(ln.account_code)
         if sec is not None and sec in section_map:
             section_map[sec]["estimated"] += line_totals[ln.id]["est_total"]
+            if ln.is_labor:
+                section_fringe[sec] += float(line_totals[ln.id].get("fringe_amount", 0) or 0)
 
     # Inject auto-calculated amounts into their home sections.
     # 2026-04 renumber: Insurance moved 14000 → 6000; Administrative 15000 → 6500.
@@ -1040,21 +1045,42 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     # a plain-English "(fee-exempt)" tag inline. `fee_applies` is the
     # authoritative flag; templates should read this rather than reach
     # back into budget.fee_excluded_sections.
+    # `fringe_in_section` carries the labor-fringe portion of that
+    # section's total so the fee-base math can subtract it without the
+    # template needing to know how it was computed.
     for row in rows:
         row["fee_applies"] = row["code"] not in _excluded_codes
+        row["fringe_in_section"] = round(section_fringe.get(row["code"], 0.0), 2)
 
-    # Fee base = sum of estimated ACROSS ELIGIBLE SECTIONS ONLY.
-    fee_base = sum(r["estimated"] for r in rows if r["fee_applies"])
+    # Industry-standard default: fringes (P&W, P/H/W, etc.) on labor
+    # lines pass through without the Prod Co Fee marked up on them. The
+    # fee_exclude_fringes Budget flag — TRUE by default — subtracts
+    # each section's labor-fringe total from the base before the fee
+    # multiplier is applied, in both flat and dispersed modes.
+    exclude_fringes = bool(getattr(budget, 'fee_exclude_fringes', True))
+
+    def _row_fee_base(row):
+        """Eligible portion of a row that the fee SHOULD apply to."""
+        if not row["fee_applies"]:
+            return 0.0
+        base = row["estimated"]
+        if exclude_fringes:
+            base -= row["fringe_in_section"]
+        return max(base, 0.0)
+
+    # Fee base = sum of (eligible portion - fringes) across rows.
+    fee_base = sum(_row_fee_base(r) for r in rows)
 
     if dispersed:
-        # Spread the fee proportionally into each ELIGIBLE section row.
-        # Excluded rows keep their raw total and show $0 fee_amount so
-        # the dispersed breakdown line is honest.
+        # Spread the fee proportionally into each ELIGIBLE section row,
+        # but only on the row's NON-fringe portion when fringes are
+        # excluded. Excluded rows keep their raw total and $0 fee_amount.
         for row in rows:
             raw = row["estimated"]
             row["raw_estimated"] = raw
-            if row["fee_applies"]:
-                fee_amt = round(raw * fee_pct, 2)
+            row_base = _row_fee_base(row)
+            if row_base > 0:
+                fee_amt = round(row_base * fee_pct, 2)
                 row["fee_amount"] = fee_amt
                 row["estimated"]  = round(raw + fee_amt, 2)
             else:
@@ -1079,6 +1105,8 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         "company_fee":        round(company_fee_est, 2),
         "company_fee_base":   round(fee_base, 2),
         "company_fee_excluded_codes": sorted(_excluded_codes),
+        "company_fee_exclude_fringes": exclude_fringes,
+        "company_fee_total_fringes":   round(sum(section_fringe.values()), 2),
         "company_fee_dispersed": dispersed,
         "grand_total_estimated": round(grand_total_est, 2),
         "grand_total_actual":    round(grand_total_act, 2),

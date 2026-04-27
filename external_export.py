@@ -242,8 +242,12 @@ def _group_rows(rows):
 
 # ── Tab-delimited MMB export ──────────────────────────────────────────────────
 
-def export_mmb_tab(budget) -> bytes:
+def export_mmb_tab(budget, suppress_zeros: bool = False) -> bytes:
     rows = _build_rows(budget, target='mmb')
+    if suppress_zeros:
+        # Drop rows whose dollar amount rounds to $0 — saves the user
+        # having to clean noise out of the import on the MMB side.
+        rows = [r for r in rows if round(float(r.get('amount') or 0), 2) != 0]
     groups = _group_rows(rows)
     buf = io.StringIO()
     w = csv.writer(buf, delimiter='\t', lineterminator='\n')
@@ -274,8 +278,10 @@ def export_mmb_tab(budget) -> bytes:
 
 # ── Tab-delimited ShowBiz export ──────────────────────────────────────────────
 
-def export_showbiz_tab(budget) -> bytes:
+def export_showbiz_tab(budget, suppress_zeros: bool = False) -> bytes:
     rows = _build_rows(budget, target='showbiz')
+    if suppress_zeros:
+        rows = [r for r in rows if round(float(r.get('amount') or 0), 2) != 0]
     groups = _group_rows(rows)
     buf = io.StringIO()
     w = csv.writer(buf, delimiter='\t', lineterminator='\n')
