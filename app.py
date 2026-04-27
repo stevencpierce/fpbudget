@@ -10577,6 +10577,45 @@ def _web_worker_essential_columns():
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_flat NUMERIC(12,2) DEFAULT 0",
                 # Production day flag on ProductionDay (set from Schedule)
                 "ALTER TABLE production_day ADD COLUMN IF NOT EXISTS is_production_day BOOLEAN DEFAULT FALSE NOT NULL",
+                # Travel + Catering tables (added 2026-04-27 for Travel/Catering tabs).
+                # CREATE TABLE IF NOT EXISTS so the migration is idempotent and
+                # safe to run on every worker boot.
+                """CREATE TABLE IF NOT EXISTS travel_detail (
+                     id              SERIAL PRIMARY KEY,
+                     schedule_day_id INTEGER NOT NULL REFERENCES schedule_day(id),
+                     kind            VARCHAR(20) NOT NULL,
+                     confirmation_no VARCHAR(100),
+                     notes           TEXT,
+                     airline         VARCHAR(100),
+                     flight_no       VARCHAR(50),
+                     depart_at       TIMESTAMP,
+                     arrive_at       TIMESTAMP,
+                     depart_airport  VARCHAR(10),
+                     arrive_airport  VARCHAR(10),
+                     hotel_name      VARCHAR(200),
+                     hotel_address   VARCHAR(300),
+                     check_in        DATE,
+                     check_out       DATE,
+                     room_type       VARCHAR(100),
+                     rental_co       VARCHAR(100),
+                     pickup_at       TIMESTAMP,
+                     return_at       TIMESTAMP,
+                     pickup_location VARCHAR(200),
+                     miles           NUMERIC(8,2),
+                     route           VARCHAR(300),
+                     updated_at      TIMESTAMP,
+                     CONSTRAINT uq_travel_detail UNIQUE (schedule_day_id, kind)
+                   )""",
+                """CREATE TABLE IF NOT EXISTS catering_bill (
+                     id           SERIAL PRIMARY KEY,
+                     budget_id    INTEGER NOT NULL REFERENCES budget(id),
+                     period_start DATE NOT NULL,
+                     period_end   DATE NOT NULL,
+                     vendor       VARCHAR(200),
+                     amount       NUMERIC(12,2) NOT NULL DEFAULT 0,
+                     note         TEXT,
+                     created_at   TIMESTAMP
+                   )""",
                 # One-time backfill for existing budgets that were created
                 # before Production Liability Insurance defaulted ON. Only
                 # touches rows that look untouched (mode='off' AND pct=0
