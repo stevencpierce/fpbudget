@@ -5331,11 +5331,25 @@ def line_schedule_detail(pid, bid, lid):
 
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
     from sqlalchemy import or_ as _or_sd
-    sched_days = ScheduleDay.query.filter(
+    _raw_sd = ScheduleDay.query.filter(
         ScheduleDay.budget_id == bid,
         _or_sd(ScheduleDay.schedule_mode == sched_mode,
                ScheduleDay.schedule_mode == None),  # legacy NULL rows
     ).all()
+    # Dedupe (line, instance, date) — see sync_schedule_driven_lines for
+    # the matching fix in budget_calc.py. Without this, legacy budgets
+    # whose ScheduleDay rows still carry NULL schedule_mode get every
+    # flag counted twice (once for the NULL row, once for the
+    # mode-tagged row written on a more recent edit).
+    _sd_dedup = {}
+    for _s in _raw_sd:
+        _k = (_s.budget_line_id, _s.crew_instance or 1, _s.date)
+        _ex = _sd_dedup.get(_k)
+        if _ex is None:
+            _sd_dedup[_k] = _s
+        elif _ex.schedule_mode is None and _s.schedule_mode == sched_mode:
+            _sd_dedup[_k] = _s
+    sched_days = list(_sd_dedup.values())
 
     # Pre-fetch all parent labor lines + crew assignments for this budget
     # so we can resolve role names and crew names efficiently.
@@ -5349,9 +5363,15 @@ def line_schedule_detail(pid, bid, lid):
     ca_by_key = {(ca.budget_line_id, ca.instance or 1): ca for ca in crew_assignments}
 
     def _person_for_sched_day(sd):
-        """Return (role_label, person_name, day_type) for a schedule cell."""
+        """Return (role_label, person_name, day_type, orphan?) for a
+        schedule cell. orphan=True means the parent BudgetLine no longer
+        exists — these are ghost flags from deleted lines that the
+        schedule sync has been silently counting. Surfacing them lets
+        the user clean them up via re-toggling the flag in the schedule."""
         parent = line_by_id.get(sd.budget_line_id)
-        role   = (parent.description or parent.account_name or '—') if parent else '—'
+        if not parent:
+            return '⚠ Orphan (deleted line)', '—', (sd.day_type or 'off'), True
+        role   = parent.description or parent.account_name or '—'
         ca     = ca_by_key.get((sd.budget_line_id, sd.crew_instance or 1))
         name   = None
         if ca:
@@ -5359,7 +5379,7 @@ def line_schedule_detail(pid, bid, lid):
                 name = ca.crew_member.name
             elif ca.name_override:
                 name = ca.name_override
-        return role, (name or '—'), (sd.day_type or 'off')
+        return role, (name or '—'), (sd.day_type or 'off'), False
 
     rows = []  # one entry per (date, role, person)
 
@@ -5368,13 +5388,14 @@ def line_schedule_detail(pid, bid, lid):
         for sd in sched_days:
             if sd.day_type == 'off':
                 continue
-            role, name, dt = _person_for_sched_day(sd)
+            role, name, dt, _orphan = _person_for_sched_day(sd)
             rows.append({
                 "date":     sd.date.isoformat(),
                 "role":     role,
                 "person":   name,
                 "day_type": dt,
                 "amount":   round(rate, 2),
+            "orphan":   _orphan,
             })
     elif tag in ('meal_courtesy_breakfast', 'meal_first', 'meal_second'):
         # ProductionDay flag controls "is the meal happening on this date";
@@ -5395,13 +5416,14 @@ def line_schedule_detail(pid, bid, lid):
                 continue
             if sd.date not in meal_dates:
                 continue
-            role, name, dt = _person_for_sched_day(sd)
+            role, name, dt, _orphan = _person_for_sched_day(sd)
             rows.append({
                 "date":     sd.date.isoformat(),
                 "role":     role,
                 "person":   name,
                 "day_type": dt,
                 "amount":   round(rate, 2),
+            "orphan":   _orphan,
             })
     else:
         # Per-cell flags. Map each tag back to the cell_flag key it
@@ -5444,13 +5466,14 @@ def line_schedule_detail(pid, bid, lid):
                         rg = 'crew'
                     if rg != required_rg:
                         continue
-                role, name, dt = _person_for_sched_day(sd)
+                role, name, dt, _orphan = _person_for_sched_day(sd)
                 rows.append({
                     "date":     sd.date.isoformat(),
                     "role":     role,
                     "person":   name,
                     "day_type": dt,
                     "amount":   round(rate, 2),
+                "orphan":   _orphan,
                 })
 
     # Group by date for the UI's outer accordion. Within each day, sort
@@ -5465,8 +5488,12 @@ def line_schedule_detail(pid, bid, lid):
     def _sort_key(it):
         role = (it.get("role") or '').strip()
         pers = (it.get("person") or '').strip()
+        # Orphan rows (deleted parent lines) sort to the bottom so the
+        # eye lands on real entries first.
+        orphan_bucket = 1 if it.get("orphan") else 0
         return (
-            role.lower() if role and role != '—' else '~',
+            orphan_bucket,
+            role.lower() if role and role != '—' and not it.get("orphan") else '~',
             pers.lower() if pers and pers != '—' else '~',
         )
     days = []

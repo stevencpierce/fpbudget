@@ -257,11 +257,33 @@ def sync_schedule_driven_lines(budget_id, db_session):
     # ALSO accept NULL schedule_mode rows (legacy data pre-schedule_mode column)
     # so older budgets still sync meal/travel totals.
     from sqlalchemy import or_ as _or
-    sched_days = db_session.query(ScheduleDay).filter(
+    sched_days_raw = db_session.query(ScheduleDay).filter(
         ScheduleDay.budget_id == budget_id,
         _or(ScheduleDay.schedule_mode == sched_mode,
             ScheduleDay.schedule_mode == None),
     ).all()
+
+    # ── Deduplicate (line, instance, date) ────────────────────────────────
+    # User report 2026-04-27: flight count came back as 8 when only 4
+    # cells were flagged. Cause: when a budget was started before the
+    # schedule_mode column existed, its ScheduleDay rows have
+    # schedule_mode=NULL. Subsequent edits saved rows with the modern
+    # mode tag. The fetcher then returned BOTH for the same cell —
+    # every flag got counted twice. Same issue inflated meal headcount,
+    # hotel/per-diem totals, etc. across the board.
+    #
+    # Fix: keep one row per (line, instance, date), preferring the mode-
+    # tagged row over the legacy NULL when both exist (the mode-tagged
+    # one represents the user's most recent intent).
+    _dedup = {}
+    for _sd in sched_days_raw:
+        _key = (_sd.budget_line_id, _sd.crew_instance or 1, _sd.date)
+        _existing = _dedup.get(_key)
+        if _existing is None:
+            _dedup[_key] = _sd
+        elif _existing.schedule_mode is None and _sd.schedule_mode == sched_mode:
+            _dedup[_key] = _sd  # mode-tagged wins over legacy NULL
+    sched_days = list(_dedup.values())
 
     # Build date → crew headcount map (non-off days only). Used for craft
     # services, per-diem, hotel, flight, mileage — things that apply to
@@ -365,11 +387,21 @@ def sync_schedule_driven_lines(budget_id, db_session):
 
     # Meal flags on ProductionDay: one flag per date (not per crew member).
     # Use the scheduled headcount for that date as qty.
-    prod_days = db_session.query(ProductionDay).filter(
+    prod_days_raw = db_session.query(ProductionDay).filter(
         ProductionDay.budget_id == budget_id,
         _or(ProductionDay.schedule_mode == sched_mode,
             ProductionDay.schedule_mode == None),
     ).all()
+    # Same dedupe as ScheduleDay above — prefer mode-tagged over legacy NULL
+    # for any (date) collision so meals don't count twice on legacy budgets.
+    _pd_dedup = {}
+    for _pd in prod_days_raw:
+        _existing = _pd_dedup.get(_pd.date)
+        if _existing is None:
+            _pd_dedup[_pd.date] = _pd
+        elif _existing.schedule_mode is None and _pd.schedule_mode == sched_mode:
+            _pd_dedup[_pd.date] = _pd
+    prod_days = list(_pd_dedup.values())
     for pd in prod_days:
         # Meals use the STRICT working headcount (day_type == 'work' only)
         # — travel / hold / half / kill_fee crew aren't on set eating.
