@@ -2955,6 +2955,26 @@ def upsert_line(pid, bid):
     else:
         ln = BudgetLine(budget_id=bid)
         db.session.add(ln)
+        # Default sort_order for newly-created lines = MAX(sort_order)+10
+        # in the SAME (budget, account_code) section. Without this, new
+        # rows defaulted to 0 and showed up at the TOP of the section,
+        # ahead of every existing line — which is what the user reported
+        # as "jumps me to the top" / "lands in the middle". Only applied
+        # when the client didn't explicitly pass a sort_order; existing
+        # batch flows that compute their own ordering (drag-reorder,
+        # kit-fee insert, schedule split) still win.
+        if not data.get("sort_order"):
+            _new_code = data.get("account_code")
+            if _new_code is not None:
+                _max = (db.session.query(db.func.max(BudgetLine.sort_order))
+                        .filter(BudgetLine.budget_id == bid,
+                                BudgetLine.account_code == int(_new_code))
+                        .scalar())
+                ln.sort_order = (int(_max or 0)) + 10
+                # Strip a falsy sort_order from the incoming payload so
+                # the field-assignment loop below doesn't overwrite our
+                # computed value back to 0.
+                data.pop("sort_order", None)
 
     # Quantity-reduce conflict check: when reducing quantity on a scheduled labor line,
     # the caller must confirm which schedule instances to remove first.
