@@ -271,16 +271,22 @@
   <thead>
     <tr>
       <th style="width:28%">Description</th>
-      {# Combined Qty / Payroll header. Per user 2026-04-28: Qty is
-         meaningless on labor lines (one person per line), so for labor
-         we show the Payroll Co. instead. Non-labor rows still show
-         numeric Qty in the same column. #}
-      <th class="num" style="width:48pt">{% if sec.has_labor %}Payroll{% else %}Qty{% endif %}</th>
+      {# Qty/Payroll column: only render when at least one cell would
+         have content. Labor section with payroll_co set → "Payroll".
+         Non-labor section with non-trivial qty → "Qty". Otherwise the
+         column is hidden entirely. #}
+      {% if sec.has_payroll %}
+      <th class="num" style="width:60pt">Payroll</th>
+      {% elif sec.has_qty %}
+      <th class="num" style="width:36pt">Qty</th>
+      {% endif %}
       <th class="num" style="width:40pt">Days</th>
       <th class="num" style="width:64pt">Rate{% if dispersed %}<br><span style="font-weight:400;font-size:6.5pt;opacity:.7">incl. fee</span>{% endif %}</th>
-      <th class="num" style="width:44pt">OT</th>
-      <th class="num" style="width:46pt">Fringe</th>
+      {% if sec.has_ot %}    <th class="num" style="width:44pt">OT</th>{% endif %}
+      {% if sec.has_fringe %}<th class="num" style="width:46pt">Fringe</th>{% endif %}
       <th class="num" style="width:58pt">Subtotal</th>
+      {% if sec.has_agent %}   <th class="num" style="width:42pt">Agent%</th>
+      {% elif sec.has_discount %}<th class="num" style="width:42pt">Disc%</th>{% endif %}
       {% if is_working_view %}
       <th class="num" style="width:66pt">Estimated</th>
       <th class="num" style="width:66pt">Working</th>
@@ -311,16 +317,13 @@
           </div>
         {% endif %}
       </td>
-      {# Combined Qty / Payroll cell. For labor: show payroll_co (or —);
-         for non-labor: show numeric quantity. Meal lines always show —
-         (the meal-count subtitle above carries the actual info). #}
-      <td class="num">
-        {% if ln.is_labor %}
-          {{ ln.payroll_co or '—' }}
-        {% elif _is_meal %}—{% else %}
-          {{ ln.quantity | float | int if (ln.quantity | float) == (ln.quantity | float | int) else ln.quantity | float }}
-        {% endif %}
-      </td>
+      {# Cell mirror of the conditional headers above. Only render if
+         the section showed the column. #}
+      {% if sec.has_payroll %}
+      <td class="num">{% if ln.is_labor %}{{ ln.payroll_co or '' }}{% endif %}</td>
+      {% elif sec.has_qty %}
+      <td class="num">{% if ln.is_labor or _is_meal %}{% else %}{{ ln.quantity | float | int if (ln.quantity | float) == (ln.quantity | float | int) else ln.quantity | float }}{% endif %}</td>
+      {% endif %}
       {# Days column: use schedule-computed day_count when the line is
          schedule-driven. Prevents "Days = 1" showing up for labor lines
          that are actually working 5 days per the gantt schedule. #}
@@ -330,12 +333,18 @@
       <td class="num">{{ ln.days | float | int if (ln.days | float) == (ln.days | float | int) else ln.days | float }}</td>
       {% endif %}
       <td class="num">${{ "{:,.2f}".format(ln.rate | float * fee_m) }}</td>
-      {# OT and Fringe are labor-only concepts — for non-labor rows
-         render a blank cell instead of "—" to keep the PDF clean
-         (per user request 2026-04-28). #}
-      <td class="num">{% if ln.is_labor %}{% if res.ot_amount %}{{ currency(res.ot_amount * fee_m) }}{% else %}—{% endif %}{% endif %}</td>
-      <td class="num">{% if ln.is_labor %}{% if res.fringe_amount %}{{ currency(res.fringe_amount * fee_m) }}{% else %}—{% endif %}{% endif %}</td>
+      {% if sec.has_ot %}
+      <td class="num">{% if ln.is_labor and res.ot_amount %}{{ currency(res.ot_amount * fee_m) }}{% endif %}</td>
+      {% endif %}
+      {% if sec.has_fringe %}
+      <td class="num">{% if ln.is_labor and res.fringe_amount %}{{ currency(res.fringe_amount * fee_m) }}{% endif %}</td>
+      {% endif %}
       <td class="num">{{ currency(res.subtotal * fee_m) }}</td>
+      {% if sec.has_agent %}
+      <td class="num">{% if ln.is_labor and ln.agent_pct %}{{ (ln.agent_pct | float * 100) | round(1) }}%{% endif %}</td>
+      {% elif sec.has_discount %}
+      <td class="num">{% if (not ln.is_labor) and ln.agent_pct %}{{ (ln.agent_pct | float * 100) | round(1) }}%{% endif %}</td>
+      {% endif %}
       {% if is_working_view %}
       <td class="num">{{ currency(frozen * fee_m) }}</td>
       <td class="num">{{ currency(res.est_total * fee_m) }}</td>
@@ -352,12 +361,21 @@
       {% set ns_sub.ot     = ns_sub.ot     + (_r.ot_amount or 0) %}
       {% set ns_sub.fringe = ns_sub.fringe + (_r.fringe_amount or 0) %}
     {% endfor %}
+    {# colspan accounts for: Description (1) + Qty/Payroll if shown (1)
+       + Days (1) + Rate (1) = up to 4. We collapse to 3 columns of
+       label, then leave Rate column blank, so total leading columns =
+       1 (label group) covering Description + (Qty/Payroll if any).
+       Simpler: span everything before Subtotal. #}
+    {# Description + (Payroll/Qty if shown) + Days + Rate + (OT?) + (Fringe?) #}
+    {% set _lead_cols = 1
+       + (1 if (sec.has_payroll or sec.has_qty) else 0)
+       + 2
+       + (1 if sec.has_ot else 0)
+       + (1 if sec.has_fringe else 0) %}
     <tr class="section-sub">
-      <td colspan="3" style="text-align:right;padding-right:6pt;font-size:7.5pt;letter-spacing:0.3px">SECTION TOTAL</td>
-      <td class="num"></td>
-      <td class="num">{% if ns_sub.ot %}{{ currency(ns_sub.ot * fee_m) }}{% endif %}</td>
-      <td class="num">{% if ns_sub.fringe %}{{ currency(ns_sub.fringe * fee_m) }}{% endif %}</td>
+      <td colspan="{{ _lead_cols }}" style="text-align:right;padding-right:6pt;font-size:7.5pt;letter-spacing:0.3px">SECTION TOTAL</td>
       <td class="num">{{ currency(ns_sub.subtot * fee_m) }}</td>
+      {% if sec.has_agent or sec.has_discount %}<td class="num"></td>{% endif %}
       {% if is_working_view %}
       <td class="num">{{ currency(ns.sec_est * fee_m) }}</td>
       <td class="num">{{ currency(ns.sec_work * fee_m) }}</td>

@@ -472,7 +472,7 @@
 
   <div id="working-budget-wrap">
   {% for sec in sections %}
-  {% set ns = namespace(sec_subtotal=0, sec_ot=0, sec_fringe=0, sec_total=0, has_labor=false, line_counter=0, kit_total=0, kit_working=0, sec_agent=0, prev_sub_group=None) %}
+  {% set ns = namespace(sec_subtotal=0, sec_ot=0, sec_fringe=0, sec_total=0, has_labor=false, has_agent_or_disc=false, line_counter=0, kit_total=0, kit_working=0, sec_agent=0, prev_sub_group=None) %}
   {% for ln in sec.lines %}
     {% set res = line_results[ln.id] %}
     {% set ns.sec_subtotal = ns.sec_subtotal + res.subtotal %}
@@ -480,6 +480,10 @@
     {% set ns.sec_fringe = ns.sec_fringe + res.fringe_amount %}
     {% set ns.sec_total = ns.sec_total + res.est_total %}
     {% set ns.sec_agent = ns.sec_agent + (res.agent_amount | default(0) | float) %}
+    {# Track whether ANY line in this section has a non-zero agent_pct
+       (or, for non-labor, a discount). Used to conditionally hide the
+       column header when nothing's set. #}
+    {% if (ln.agent_pct | default(0) | float) > 0 %}{% set ns.has_agent_or_disc = true %}{% endif %}
     {% if ln.is_labor %}{% set ns.has_labor = true %}{% endif %}
     {% if ln.line_tag == 'kit_fee' %}
       {% set ns.kit_total = ns.kit_total + res.est_total %}
@@ -539,7 +543,7 @@
         <col style="width:65px"><!-- ot -->
         <col style="width:80px"><!-- fringe -->
         <col style="width:95px"><!-- subtotal -->
-        <col style="width:65px"><!-- agent%/disc% -->
+        <col style="width:{{ '65px' if ns.has_agent_or_disc else '0' }}"><!-- agent%/disc% (collapsed when no line has a value) -->
         <col style="width:115px"><!-- estimated -->
         <col style="width:{{ '90px' if working_exists else '0' }}"><!-- working -->
         <col style="width:{{ '85px' if is_working_view else '0' }}"><!-- variance -->
@@ -556,7 +560,7 @@
           <th class="col-num">{{ 'OT' if ns.has_labor else '' }}</th>
           <th class="col-fr">{{ 'Fringe' if ns.has_labor else '' }}</th>
           <th class="col-num">Subtotal</th>
-          <th class="col-num">{{ 'Agent%' if ns.has_labor else 'Disc%' }}</th>
+          <th class="col-num{% if not ns.has_agent_or_disc %} col-empty{% endif %}">{% if ns.has_agent_or_disc %}{{ 'Agent%' if ns.has_labor else 'Disc%' }}{% endif %}</th>
           <th class="col-num {% if is_working_view %}frozen-est-header{% endif %}">Estimated</th>
           <th class="col-num col-working">Working</th>
           <th class="col-num col-variance">{% if is_working_view %}Variance{% endif %}</th>

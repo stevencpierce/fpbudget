@@ -4028,6 +4028,7 @@ tr.cs-row-viewed    { background: #1a1200; }
    and the new .has-labor .col-qty rule below hides Qty for labor sections. */
 .no-labor .col-labor-only,
 .line-table.has-labor .col-qty,
+.col-empty,
 .line-table:not(.has-working) .col-working,
 .line-table:not(.has-working) .col-variance {
   width: 0 !important;

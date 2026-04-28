@@ -3617,28 +3617,46 @@ def export_csv(pid, bid):
     w = csv.writer(output)
 
     if mode == "working":
-        # Combined "qty_or_payroll" column: payroll co. for labor lines,
-        # numeric quantity for non-labor (per user request 2026-04-28 —
-        # qty=1 on every labor line is noise). OT + Fringe are labor-only
-        # concepts and now blank out for non-labor rows.
-        w.writerow(["code", "account", "description", "qty_or_payroll", "days", "rate",
-                    "est_ot", "fringe", "subtotal", "agent_pct", "total"])
+        # Build per-line values once so we can decide which columns to
+        # include based on actual data presence (per user 2026-04-28:
+        # don't render Payroll / OT / Fringe / Agent% columns if every
+        # row's cell would be empty).
+        rows_data = []
         for ln in lines:
             res = calc_line(ln, fringe_cfgs)
-            # Suppress-zeros option: skip rows whose total rounds to $0
-            # so the export matches the user's expectation of "live data
-            # only". Section totals are recomputed from the surviving
-            # rows so the bottom line stays consistent.
             if suppress_zeros and round(float(res["total"] or 0), 2) == 0:
                 continue
-            qty_or_payroll = (ln.payroll_co or '') if ln.is_labor else float(ln.quantity or 0)
-            est_ot = (float(ln.est_ot or 0) if ln.is_labor else '')
-            fringe = (ln.fringe_type if ln.is_labor else '')
-            w.writerow([ln.account_code, ln.account_name, ln.description or "",
-                        qty_or_payroll, float(ln.days or 0),
-                        float(ln.rate or 0), est_ot,
-                        fringe, res["subtotal"],
-                        float(ln.agent_pct or 0), res["total"]])
+            rows_data.append((ln, res))
+        any_payroll = any((ln.payroll_co or '').strip() for ln, _ in rows_data if ln.is_labor)
+        any_qty     = any(float(ln.quantity or 0) and float(ln.quantity or 0) != 1
+                          for ln, _ in rows_data if not ln.is_labor)
+        any_ot      = any(float(ln.est_ot or 0) for ln, _ in rows_data if ln.is_labor)
+        any_fringe  = any((ln.fringe_type or '').strip() for ln, _ in rows_data if ln.is_labor)
+        any_agent   = any(float(ln.agent_pct or 0) for ln, _ in rows_data)
+
+        # Build header row dynamically based on which columns have any data.
+        header = ["code", "account", "description"]
+        if any_payroll: header.append("payroll")
+        if any_qty:     header.append("qty")
+        header += ["days", "rate"]
+        if any_ot:     header.append("est_ot")
+        if any_fringe: header.append("fringe")
+        header.append("subtotal")
+        if any_agent:  header.append("agent_pct")
+        header.append("total")
+        w.writerow(header)
+
+        for ln, res in rows_data:
+            row = [ln.account_code, ln.account_name, ln.description or ""]
+            if any_payroll: row.append(ln.payroll_co or '' if ln.is_labor else '')
+            if any_qty:     row.append(float(ln.quantity or 0) if not ln.is_labor else '')
+            row += [float(ln.days or 0), float(ln.rate or 0)]
+            if any_ot:     row.append(float(ln.est_ot or 0) if ln.is_labor else '')
+            if any_fringe: row.append(ln.fringe_type if ln.is_labor else '')
+            row.append(res["subtotal"])
+            if any_agent:  row.append(float(ln.agent_pct or 0) if ln.agent_pct else '')
+            row.append(res["total"])
+            w.writerow(row)
     else:
         actuals_raw = db.session.query(
             Transaction.account_code, func.sum(Transaction.amount)
@@ -3781,11 +3799,33 @@ def export_pdf(pid, bid):
         if sk not in sections_detail:
             sections_detail[sk] = {"code": sk, "name": section_name_map.get(sk, ""), "lines": []}
         sections_detail[sk]["lines"].append(ln)
-    # Tag each section with has_labor so the PDF template can swap the
-    # Qty column header for "Payroll" on labor sections (per user
-    # request 2026-04-28).
+    # Tag each section with column-visibility booleans so the PDF can
+    # collapse columns that have no data — per user request 2026-04-28
+    # the export shouldn't render Payroll / OT / Fringe / Agent% / Disc%
+    # column headers if every cell would be empty.
     for sec in sections_detail.values():
-        sec["has_labor"] = any(getattr(_l, 'is_labor', False) for _l in sec["lines"])
+        labor_lines    = [_l for _l in sec["lines"] if getattr(_l, 'is_labor', False)]
+        nonlabor_lines = [_l for _l in sec["lines"] if not getattr(_l, 'is_labor', False)]
+        sec["has_labor"]    = bool(labor_lines)
+        # Show "Payroll" in place of "Qty" only when a labor line in
+        # this section actually has a payroll_co value. Otherwise
+        # fall back to "Qty" (filled for non-labor rows).
+        sec["has_payroll"]  = any((_l.payroll_co or '').strip()
+                                   for _l in labor_lines)
+        # Hide Qty entirely if no non-labor line has a meaningful qty
+        # (everything == 1 or empty). Lets purely-labor sections drop
+        # the col without affecting non-labor sections.
+        sec["has_qty"]      = any(float(_l.quantity or 0) and float(_l.quantity or 0) != 1
+                                   for _l in nonlabor_lines)
+        # OT / Fringe: only show if a labor line actually has them.
+        sec["has_ot"]       = any(float((line_results.get(_l.id) or {}).get("ot_amount", 0) or 0) > 0
+                                   for _l in labor_lines)
+        sec["has_fringe"]   = any(float((line_results.get(_l.id) or {}).get("fringe_amount", 0) or 0) > 0
+                                   for _l in labor_lines)
+        # Agent% (labor) or Disc% (non-labor): show if any line has
+        # a non-zero value.
+        sec["has_agent"]    = any(float(_l.agent_pct or 0) for _l in labor_lines)
+        sec["has_discount"] = any(float(_l.agent_pct or 0) for _l in nonlabor_lines)
     sections_ordered = [sections_detail[sk] for sk, _ in FP_COA_SECTIONS if sk in sections_detail]
 
     company_settings = CompanySettings.query.get(1) or CompanySettings()
