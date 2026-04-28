@@ -8058,10 +8058,14 @@ function _seqSuffix(n) {
 }
 
 async function qeAddSelected() {
-  if (_qeCart.size === 0) return;
+  if (_qeCart.size === 0) {
+    console.warn('[QE] Add Selected clicked but cart is empty');
+    return;
+  }
   const btn = document.getElementById('btn-add-selected');
   btn.disabled = true;
   btn.textContent = 'Adding…';
+  console.log('[QE] Adding', _qeCart.size, 'cart entries');
 
   // Track the LAST section we added to so the post-reload focus handler
   // can scroll there (instead of jumping the user back to the top of the
@@ -8070,8 +8074,13 @@ async function qeAddSelected() {
   let _lastAddedCode = null;
 
   // Save sequentially so kit fee rows are inserted immediately after their parent
+  try {
   for (const [, v] of _qeCart) {
     const { code, coa_name, item, qty, days, rate, kit, fringe, comp, agent_pct, rate_type } = v;
+    if (!item) {
+      console.error('[QE] cart entry has no item — skipping', v);
+      continue;
+    }
     const isLabor = item.isLabor;
     _lastAddedCode = code;
 
@@ -8122,14 +8131,27 @@ async function qeAddSelected() {
           // replaces this array with /api/catalog data). Forward the id
           // when present; backend tolerates null/undefined.
           catalog_item_id: (item.id != null ? item.id : null),
+          // Bypass the "estimated edit protection" 409 — Quick Entry
+          // adds NEW lines, never edits an existing Estimated. Without
+          // this, a project that already has a Working budget refuses
+          // every QE add with 409 estimated_protected and the JS hangs
+          // on resp.json() because the response carries no .id.
+          override_estimated: true,
         })
       });
+      if (!resp.ok) {
+        const errText = await resp.text().catch(()=>'');
+        console.error('[QE] save failed', resp.status, errText);
+        alert('Quick Entry save failed: HTTP ' + resp.status + '\n' + errText.slice(0, 300));
+        btn.disabled = false; btn.textContent = 'Add Selected';
+        return;
+      }
 
       if (isLabor && kit > 0) {
         // Kit fee per person — one per split line
         const parentData = await resp.json();
         if (parentData && parentData.id) {
-          await fetch(`/projects/${_pid}/budget/${_bid}/line/${parentData.id}/kit-fee`, {
+          await fetch(`/projects/${PID}/budget/${BID}/line/${parentData.id}/kit-fee`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
@@ -8141,6 +8163,12 @@ async function qeAddSelected() {
         }
       }
     }
+  }
+  } catch (err) {
+    console.error('[QE] qeAddSelected crashed', err);
+    alert('Quick Entry hit an error: ' + (err && err.message || err) + '\nCheck the browser console for details.');
+    btn.disabled = false; btn.textContent = 'Add Selected';
+    return;
   }
   closeCascade();
   // Reload so the new lines render server-side, but pass the LAST
