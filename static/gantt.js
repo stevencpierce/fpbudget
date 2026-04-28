@@ -11,7 +11,7 @@
 const DAY_CYCLE = ['work', 'off'];
 
 // All known day types (for class-cleanup purposes)
-const ALL_DAY_TYPES = ['work', 'travel', 'hold', 'half', 'kill_fee', 'off', 'custom'];
+const ALL_DAY_TYPES = ['work', 'travel', 'travel_half', 'travel_unpaid', 'hold', 'half', 'kill_fee', 'off', 'custom'];
 
 let _pid, _bid, _activeProfileId;
 let _dragging   = false;
@@ -376,7 +376,15 @@ function paintCell(cell, dayType) {
   if (dayType === 'off') {
     cell.innerHTML = flagHTML;
   } else {
-    const label = dayType === 'work' ? 'WK' : dayType.substring(0, 2).toUpperCase();
+    // Two-char labels for compact cell rendering. Most day types use
+    // first two letters; the new travel-half / travel-unpaid variants
+    // get distinct glyphs so they don't collide with plain TRavel.
+    const labelMap = {
+      work: 'WK', travel: 'TR',
+      travel_half: 'T½', travel_unpaid: 'T0',
+      hold: 'HO', half: 'HF', kill_fee: 'KF', custom: 'CS',
+    };
+    const label = labelMap[dayType] || dayType.substring(0, 2).toUpperCase();
     cell.innerHTML = `<span class="cell-label">${label}</span>${flagHTML}`;
   }
   // OT/DT classes are refreshed by the debounced fetchTotals call after each save

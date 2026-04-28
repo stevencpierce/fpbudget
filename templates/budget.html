@@ -8729,17 +8729,29 @@ setTimeout(function() {
     // Travel tab without bouncing back to the Schedule. Same color
     // accent on the border so it still scans as a status pill.
     const daySelect = (r) => {
-      const colors = {work:'#22c55e', travel:'#3498db', hold:'#a78bfa', half:'#f59e0b', kill_fee:'#ef4444', custom:'#9b59b6', off:'var(--text-muted)'};
+      const colors = {
+        work:'#22c55e',
+        travel:'#3498db',
+        travel_half:'#5b9fd9',     // lighter blue for half-rate travel
+        travel_unpaid:'#7d96aa',   // muted blue-grey for unpaid travel
+        hold:'#a78bfa',
+        half:'#f59e0b',
+        kill_fee:'#ef4444',
+        custom:'#9b59b6',
+        off:'var(--text-muted)'
+      };
       const c = colors[r.day_type] || 'var(--text-muted)';
       const handler = `travelSetDayType(${r.line_id}, ${r.instance}, '${r.date}', this.value)`;
       const opts = [
-        ['work',     'Work'],
-        ['travel',   'Travel'],
-        ['hold',     'Hold'],
-        ['half',     'Half'],
-        ['kill_fee', 'Kill Fee'],
-        ['custom',   'Custom'],
-        ['off',      'Off'],
+        ['work',          'Work'],
+        ['travel',        'Travel'],
+        ['travel_half',   'Travel — ½ rate'],
+        ['travel_unpaid', 'Travel — unpaid'],
+        ['hold',          'Hold'],
+        ['half',          'Half'],
+        ['kill_fee',      'Kill Fee'],
+        ['custom',        'Custom'],
+        ['off',           'Off'],
       ];
       return `<select onchange="${handler}" title="Change day type"
                       style="font-size:13px;padding:5px 10px;border-radius:6px;

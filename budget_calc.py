@@ -147,13 +147,22 @@ RATE_TYPE_HOURS = {
 # ── Day type multipliers ──────────────────────────────────────────────────────
 
 DAY_TYPE_MULTIPLIERS = {
-    "work":     1.0,
-    "travel":   1.0,
-    "hold":     0.5,
-    "half":     0.5,
-    "off":      0.0,
-    "kill_fee": 0.2,
-    "custom":   1.0,   # uses rate_multiplier column directly
+    "work":           1.0,
+    "travel":         1.0,
+    # Travel variants per user 2026-04-28:
+    #   travel_half   = ½ pay (contractual half-day travel, common on
+    #                   long-distance shoots)
+    #   travel_unpaid = 0 pay but still on payroll for travel logistics
+    #                   (e.g. crew flying themselves; appears on call
+    #                   sheet, gets per-diem / hotel / flight flags
+    #                   like any other travel day, just no wage).
+    "travel_half":    0.5,
+    "travel_unpaid":  0.0,
+    "hold":           0.5,
+    "half":           0.5,
+    "off":            0.0,
+    "kill_fee":       0.2,
+    "custom":         1.0,   # uses rate_multiplier column directly
 }
 
 

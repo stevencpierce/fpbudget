@@ -722,18 +722,29 @@ input:focus, select:focus { border-color: var(--accent); }
 
 /* Gantt day type colors */
 .day-work     { background: rgba(46,204,113,.35); }
-.day-travel   { background: rgba(52,152,219,.35); }
-.day-hold     { background: rgba(241,196,15,.25); }
-.day-half     { background: rgba(241,196,15,.15); }
-.day-kill_fee { background: rgba(231,76,60,.3); }
-.day-off      { background: transparent; }
+.day-travel        { background: rgba(52,152,219,.35); }
+/* Travel variants: keep the blue family but lighter so they're
+   visually distinct from full-rate Travel — half = mid-blue,
+   unpaid = grey-blue (no comp = drained color). */
+.day-travel_half   { background: rgba(52,152,219,.20);
+                     border: 1px dashed rgba(52,152,219,.55); }
+.day-travel_unpaid { background: rgba(52,152,219,.10);
+                     border: 1px dashed rgba(125,150,170,.55); }
+.day-hold          { background: rgba(241,196,15,.25); }
+.day-half          { background: rgba(241,196,15,.15); }
+.day-kill_fee      { background: rgba(231,76,60,.3); }
+.day-off           { background: transparent; }
 /* Legend chips */
-.day-chip.day-work     { background: rgba(46,204,113,.35); color: var(--green); }
-.day-chip.day-travel   { background: rgba(52,152,219,.35);  color: var(--blue); }
-.day-chip.day-hold     { background: rgba(241,196,15,.25);  color: var(--yellow); }
-.day-chip.day-half     { background: rgba(241,196,15,.15);  color: var(--yellow); }
-.day-chip.day-kill_fee { background: rgba(231,76,60,.3);    color: var(--red); }
-.day-chip.day-off      { background: var(--bg-3);           color: var(--text-muted); }
+.day-chip.day-work          { background: rgba(46,204,113,.35); color: var(--green); }
+.day-chip.day-travel        { background: rgba(52,152,219,.35); color: var(--blue); }
+.day-chip.day-travel_half   { background: rgba(52,152,219,.20); color: var(--blue);
+                              border: 1px dashed rgba(52,152,219,.55); }
+.day-chip.day-travel_unpaid { background: rgba(52,152,219,.10); color: #8aa2b8;
+                              border: 1px dashed rgba(125,150,170,.55); }
+.day-chip.day-hold          { background: rgba(241,196,15,.25); color: var(--yellow); }
+.day-chip.day-half          { background: rgba(241,196,15,.15); color: var(--yellow); }
+.day-chip.day-kill_fee      { background: rgba(231,76,60,.3);   color: var(--red); }
+.day-chip.day-off           { background: var(--bg-3);          color: var(--text-muted); }
 
 /* Schedule toggle */
 .sched-toggle { display: flex; align-items: center; gap: .25rem; cursor: pointer; margin-left: .4rem; }
