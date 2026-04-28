@@ -6533,11 +6533,13 @@ async function assignCrew(crewId, crewName) {
       span.title = crewId ? crewName : 'Click to assign person';
     }
     const d = await res.json().catch(() => ({}));
+    console.log('[assignCrew] response from server:', d);
     // Prompt to apply the crew member's defaults (rate + agent fee + fringe).
     // Combined into one confirmation so the user opts in to all defaults at
     // once instead of being asked twice or having values silently applied.
     const hasRate  = !!d.default_rate;
     const hasAgent = !!d.default_agent_pct;
+    console.log('[assignCrew] defaults present?', { hasRate, hasAgent, default_rate: d.default_rate, default_agent_pct: d.default_agent_pct });
     if (hasRate || hasAgent) {
       const lines = [`${d.name} has these defaults:`];
       if (hasRate) {
