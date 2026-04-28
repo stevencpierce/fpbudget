@@ -453,8 +453,21 @@
 <!-- Day type picker (right-click context menu — subcategory selection) -->
 <div id="day-picker" class="day-picker hidden">
   <div class="day-picker-section-label">Day Type</div>
+  {# Pretty labels for day types that don't render well as auto-titlecased
+     keys (e.g. travel_half → "Travel Half" reads weak). Keys not in this
+     map fall back to the auto-titlecase below. #}
+  {% set _day_labels = {
+    'work':           'Work',
+    'travel':         'Travel',
+    'travel_half':    'Travel — ½ rate',
+    'travel_unpaid':  'Travel — unpaid',
+    'hold':           'Hold',
+    'half':           'Half',
+    'kill_fee':       'Kill Fee',
+    'custom':         'Custom',
+  } %}
   {% for dt in day_types %}{% if dt != 'off' %}
-  <button class="day-pick-btn day-{{ dt }}" data-type="{{ dt }}">{{ dt | replace('_', ' ') | title }}</button>
+  <button class="day-pick-btn day-{{ dt }}" data-type="{{ dt }}">{{ _day_labels.get(dt, dt | replace('_', ' ') | title) }}</button>
   {% endif %}{% endfor %}
   <button class="day-pick-btn day-off" data-type="off">Off (clear)</button>
   <div class="day-picker-divider"></div>
