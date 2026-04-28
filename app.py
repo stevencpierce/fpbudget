@@ -1465,27 +1465,42 @@ def _budget_line_snapshot(ln):
     }
 
 
+# Cache flag: set to False on first failure so we stop hammering a missing
+# activity_log table on every mutation. Re-checked on app restart.
+_ACTIVITY_DISABLED = False
+
+
 def _log_activity(*, action, entity_type, entity_id=None, entity_label=None,
                   budget_id=None, project_id=None, dept_code=None,
                   before=None, after=None, dollar_delta=0, note=None,
                   field_changes=None):
-    """Append one row to activity_log. Returns the new row (uncommitted)
-    so the caller can attach more context if needed. Safe to call inside
-    any request handler — failures are swallowed and logged so they
-    never block the user-facing mutation.
+    """Append one row to activity_log AND commit it in its own savepoint
+    so a failure here cannot break the caller's transaction. Returns the
+    row on success, None on failure. Failures are logged and the activity
+    feature self-disables for the rest of the worker's lifetime so a
+    missing table can't 500 every line save until the next deploy.
     """
+    global _ACTIVITY_DISABLED
+    if _ACTIVITY_DISABLED:
+        return None
     import json as _json_act
     try:
         # Derive project_id from budget if not given
         if project_id is None and budget_id is not None:
-            _b = Budget.query.get(budget_id)
-            if _b:
-                project_id = _b.project_id
+            try:
+                _b = Budget.query.get(budget_id)
+                if _b:
+                    project_id = _b.project_id
+            except Exception:
+                pass
         # Derive dept_code from before/after blob (account_code → COA section)
         if dept_code is None:
             for blob in (after, before):
                 if isinstance(blob, dict) and blob.get('account_code'):
-                    dept_code = int(blob['account_code'])
+                    try:
+                        dept_code = int(blob['account_code'])
+                    except (TypeError, ValueError):
+                        pass
                     break
         # Compute dollar_delta from before/after if not given
         if dollar_delta in (0, None) and (before or after):
@@ -1500,7 +1515,7 @@ def _log_activity(*, action, entity_type, entity_id=None, entity_label=None,
             _changes = {}
             for k in set(before) | set(after):
                 bv, av = before.get(k), after.get(k)
-                if bv != av and k not in ('estimated_total',):  # est_total is the dollar_delta
+                if bv != av and k not in ('estimated_total',):
                     _changes[k] = [bv, av]
             field_changes = _changes or None
 
@@ -1519,10 +1534,26 @@ def _log_activity(*, action, entity_type, entity_id=None, entity_label=None,
             dollar_delta = round(float(dollar_delta or 0), 2),
             note         = (note or '')[:500] if note else None,
         )
+        # Commit in a fresh transaction so failure here can't roll back
+        # any prior commit. The caller has already committed the line
+        # save before reaching us.
         db.session.add(row)
+        db.session.commit()
         return row
     except Exception as _e:
-        logging.warning(f"[activity] log failed: {_e}")
+        # Most likely cause on a fresh deploy: activity_log table doesn't
+        # exist yet on this worker (boot pass hadn't run, or the CREATE
+        # failed). Disable the feature for this process so we don't keep
+        # poisoning the session on every subsequent request.
+        msg = str(_e)
+        logging.warning(f"[activity] log failed (disabling): {msg}")
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        if 'activity_log' in msg or 'UndefinedTable' in msg or 'no such table' in msg.lower():
+            _ACTIVITY_DISABLED = True
+            logging.error("[activity] activity_log table missing — feature disabled for this worker")
         return None
 
 
@@ -3297,8 +3328,8 @@ def upsert_line(pid, bid):
     _touch_budget(bid)
     db.session.commit()
 
-    # Activity log: record the create or update. Skipped if the row didn't
-    # actually change (e.g. autosave on a focus blur with no edits).
+    # Activity log: record the create or update. _log_activity owns its
+    # own commit + rollback so it can never break this route.
     try:
         _act_after = _budget_line_snapshot(ln)
         if _act_is_create:
@@ -3308,7 +3339,6 @@ def upsert_line(pid, bid):
                 budget_id=bid, project_id=pid,
                 before=None, after=_act_after,
             )
-            db.session.commit()
         elif _act_before != _act_after:
             _log_activity(
                 action='update', entity_type='budget_line',
@@ -3316,10 +3346,10 @@ def upsert_line(pid, bid):
                 budget_id=bid, project_id=pid,
                 before=_act_before, after=_act_after,
             )
-            db.session.commit()
     except Exception as _e:
-        logging.warning(f"[activity] upsert_line log failed: {_e}")
-        db.session.rollback()
+        logging.warning(f"[activity] upsert_line snapshot failed: {_e}")
+        try: db.session.rollback()
+        except Exception: pass
 
     fringe_cfgs = get_fringe_configs(db.session)
     if ln.use_schedule:
@@ -3727,7 +3757,7 @@ def delete_line(pid, bid, lid):
     except Exception:
         db.session.rollback()
     # Activity log: record the delete with the full pre-snapshot so undo
-    # can recreate the line + its schedule/crew/travel children later.
+    # can recreate the line later. _log_activity owns its own commit.
     try:
         _log_activity(
             action='delete', entity_type='budget_line',
@@ -3736,10 +3766,10 @@ def delete_line(pid, bid, lid):
             before=_act_before, after=None,
             dollar_delta=-float((_act_before or {}).get('estimated_total', 0) or 0),
         )
-        db.session.commit()
     except Exception as _e:
         logging.warning(f"[activity] delete_line log failed: {_e}")
-        db.session.rollback()
+        try: db.session.rollback()
+        except Exception: pass
     return jsonify({"ok": True})
 
 
