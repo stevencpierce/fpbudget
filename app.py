@@ -3538,8 +3538,29 @@ def init_working_budget(pid, bid):
 @login_required
 def delete_line(pid, bid, lid):
     ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
+    # Cascade-delete every artifact tied to this line so nothing orphans.
+    # Per user 2026-04-28: when a line goes, its schedule cells, crew
+    # assignments, and travel details should disappear too — the budget
+    # always reflects the live state, no ghost rows inflating sync counts.
+    # (The Activity tab will record the deletion for audit.)
+    sched_ids = [r.id for r in ScheduleDay.query
+                 .filter_by(budget_line_id=lid).with_entities(ScheduleDay.id).all()]
+    if sched_ids:
+        TravelDetail.query.filter(TravelDetail.schedule_day_id.in_(sched_ids))\
+            .delete(synchronize_session=False)
+        ScheduleDay.query.filter(ScheduleDay.id.in_(sched_ids))\
+            .delete(synchronize_session=False)
+    CrewAssignment.query.filter_by(budget_line_id=lid)\
+        .delete(synchronize_session=False)
     db.session.delete(ln)
     db.session.commit()
+    # Re-sync schedule-driven totals so meal/travel/per-diem lines drop
+    # the contribution from this line's now-gone schedule cells.
+    try:
+        sync_schedule_driven_lines(bid, db.session)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
     return jsonify({"ok": True})
 
 
@@ -6151,6 +6172,186 @@ def catering_bill_delete(pid, bid, bid_id):
     return jsonify({"ok": True})
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/catering/export")
+@login_required
+def catering_export(pid, bid):
+    """Render a printable HTML page for selected catering days.
+
+    Caller passes:
+      ?dates=2026-06-07,2026-06-08,2026-06-14
+      &include=meals,perdiem  (CSV; meals|perdiem|workingmeal)
+      &recipient=catering|upm|dept_head  (changes the header phrasing)
+
+    Returns a clean self-contained HTML page suitable for print-to-PDF
+    in the browser, screenshot to send to a vendor, or forwarding via
+    email. Per user 2026-04-28: this is what gets sent to caterers
+    ("here are the meals you're providing this week"), UPMs ("here's
+    per diem owed, who gets what envelope"), or dept heads ("here's
+    your department's working-meal expectation").
+    """
+    project = ProjectSheet.query.get_or_404(pid)
+    budget  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+
+    dates_param = (request.args.get("dates") or "").strip()
+    include_param = set((request.args.get("include") or "meals,perdiem").split(","))
+    recipient = (request.args.get("recipient") or "generic").strip()
+    if not dates_param:
+        return jsonify({"error": "Specify ?dates=YYYY-MM-DD,YYYY-MM-DD,..."}), 400
+
+    from datetime import datetime as _dt_e
+    selected_dates = []
+    for s in dates_param.split(","):
+        s = s.strip()
+        if not s:
+            continue
+        try:
+            selected_dates.append(_dt_e.strptime(s, "%Y-%m-%d").date())
+        except Exception:
+            return jsonify({"error": f"Invalid date: {s}"}), 400
+    selected_dates.sort()
+    selected_set = set(selected_dates)
+
+    # Reuse the same dedup pull as the catering grid endpoint.
+    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    from sqlalchemy import or_ as _or_e
+    raw_sd = ScheduleDay.query.filter(
+        ScheduleDay.budget_id == bid,
+        _or_e(ScheduleDay.schedule_mode == sched_mode,
+              ScheduleDay.schedule_mode == None),
+    ).all()
+    dedup = {}
+    for sd in raw_sd:
+        key = (sd.budget_line_id, sd.crew_instance or 1, sd.date)
+        ex = dedup.get(key)
+        if ex is None:
+            dedup[key] = sd
+        elif ex.schedule_mode is None and sd.schedule_mode == sched_mode:
+            dedup[key] = sd
+    sched_days = [sd for sd in dedup.values() if sd.date in selected_set]
+
+    raw_pd = ProductionDay.query.filter(
+        ProductionDay.budget_id == bid,
+        _or_e(ProductionDay.schedule_mode == sched_mode,
+              ProductionDay.schedule_mode == None),
+    ).all()
+    pd_dedup = {}
+    for pd_row in raw_pd:
+        ex = pd_dedup.get(pd_row.date)
+        if ex is None:
+            pd_dedup[pd_row.date] = pd_row
+        elif ex.schedule_mode is None and pd_row.schedule_mode == sched_mode:
+            pd_dedup[pd_row.date] = pd_row
+    pd_by_date = {pd.date: pd for pd in pd_dedup.values() if pd.date in selected_set}
+
+    # Resolve crew names
+    all_lines = BudgetLine.query.filter_by(budget_id=bid).all()
+    line_by_id = {ln.id: ln for ln in all_lines}
+    cas = CrewAssignment.query.filter(
+        CrewAssignment.budget_line_id.in_([ln.id for ln in all_lines if ln.is_labor])
+    ).all()
+    ca_by_key = {(ca.budget_line_id, ca.instance or 1): ca for ca in cas}
+
+    def _resolve(line, instance):
+        role = (line.description or line.account_name or '—') if line else '—'
+        ca = ca_by_key.get((line.id, instance or 1)) if line else None
+        name = None
+        if ca:
+            if ca.crew_member and ca.crew_member.name:
+                name = ca.crew_member.name
+            elif ca.name_override:
+                name = ca.name_override
+        return role, (name or '')
+
+    import json as _json_e
+    from budget_calc import SCHEDULE_LINE_DEFS
+    rate = lambda tag: float(SCHEDULE_LINE_DEFS[tag][3])
+
+    # Bucket per date
+    by_date = {}
+    for sd in sched_days:
+        line = line_by_id.get(sd.budget_line_id)
+        if not line or not line.is_labor:
+            continue
+        d = sd.date
+        bucket = by_date.setdefault(d, {
+            "working": [], "all_present": [],
+            "working_meal": [], "per_diem": [],
+        })
+        try:
+            flags = _json_e.loads(sd.cell_flags) if sd.cell_flags else {}
+        except (ValueError, TypeError):
+            flags = {}
+        if flags.get('per_diem') and not flags.get('per_diem_full'):
+            flags['per_diem_full'] = True
+        role, person = _resolve(line, sd.crew_instance)
+        entry = {"role": role, "person": person, "day_type": sd.day_type or 'off'}
+        if sd.day_type != 'off':
+            bucket["all_present"].append(entry)
+        if sd.day_type == 'work':
+            bucket["working"].append(entry)
+        if flags.get('working_meal'):
+            bucket["working_meal"].append(entry)
+        pd_kind = (
+            'full'      if flags.get('per_diem_full')      else
+            'breakfast' if flags.get('per_diem_breakfast') else
+            'lunch'     if flags.get('per_diem_lunch')     else
+            'dinner'    if flags.get('per_diem_dinner')    else
+            ''
+        )
+        if pd_kind:
+            pd_amount = rate(f'per_diem_{pd_kind}')
+            bucket["per_diem"].append({**entry, "kind": pd_kind, "amount": pd_amount})
+
+    # Per-person totals across the selected range
+    pd_by_person = {}    # ident → {full:n, breakfast:n, lunch:n, dinner:n, total: $, role, person}
+    wm_by_person = {}
+    for d, b in by_date.items():
+        for p in b["per_diem"]:
+            ident = f"{p['role']}|{p['person']}"
+            row = pd_by_person.setdefault(ident, {
+                "role": p["role"], "person": p["person"],
+                "full": 0, "breakfast": 0, "lunch": 0, "dinner": 0,
+                "total_amount": 0.0,
+            })
+            row[p["kind"]] += 1
+            row["total_amount"] += p["amount"]
+        for p in b["working_meal"]:
+            ident = f"{p['role']}|{p['person']}"
+            row = wm_by_person.setdefault(ident, {
+                "role": p["role"], "person": p["person"], "count": 0,
+                "total_amount": 0.0,
+            })
+            row["count"] += 1
+            row["total_amount"] += rate('working_meal')
+
+    pd_rows = sorted(pd_by_person.values(), key=lambda r: (-r["total_amount"], r["person"].lower(), r["role"].lower()))
+    wm_rows = sorted(wm_by_person.values(), key=lambda r: (-r["total_amount"], r["person"].lower(), r["role"].lower()))
+
+    return render_template(
+        "catering_export.html",
+        project=project,
+        budget=budget,
+        recipient=recipient,
+        include=include_param,
+        dates=selected_dates,
+        by_date=by_date,
+        pd_by_date={d: pd_by_date.get(d) for d in selected_dates},
+        pd_rows=pd_rows,
+        wm_rows=wm_rows,
+        rates={
+            "courtesy_breakfast": rate('meal_courtesy_breakfast'),
+            "first_meal":         rate('meal_first'),
+            "second_meal":        rate('meal_second'),
+            "working_meal":       rate('working_meal'),
+            "per_diem_full":      rate('per_diem_full'),
+            "per_diem_breakfast": rate('per_diem_breakfast'),
+            "per_diem_lunch":     rate('per_diem_lunch'),
+            "per_diem_dinner":    rate('per_diem_dinner'),
+        },
+        today=date.today(),
+    )
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/schedule-detail")
 @login_required
 def line_schedule_detail(pid, bid, lid):
@@ -6217,12 +6418,14 @@ def line_schedule_detail(pid, bid, lid):
     def _person_for_sched_day(sd):
         """Return (role_label, person_name, day_type, orphan?) for a
         schedule cell. orphan=True means the parent BudgetLine no longer
-        exists — these are ghost flags from deleted lines that the
-        schedule sync has been silently counting. Surfacing them lets
-        the user clean them up via re-toggling the flag in the schedule."""
+        exists. Per user 2026-04-28: we no longer surface orphans in the
+        UI — sync_schedule_driven_lines hard-deletes them on every read,
+        and the activity log will record the originating line deletion.
+        The flag is preserved in the return tuple in case any caller
+        still inspects it, but loops below skip orphan rows entirely."""
         parent = line_by_id.get(sd.budget_line_id)
         if not parent:
-            return '⚠ Orphan (deleted line)', '—', (sd.day_type or 'off'), True
+            return None, None, (sd.day_type or 'off'), True
         role   = parent.description or parent.account_name or '—'
         ca     = ca_by_key.get((sd.budget_line_id, sd.crew_instance or 1))
         name   = None
@@ -6241,13 +6444,14 @@ def line_schedule_detail(pid, bid, lid):
             if sd.day_type == 'off':
                 continue
             role, name, dt, _orphan = _person_for_sched_day(sd)
+            if _orphan:
+                continue  # parent line deleted — drop silently
             rows.append({
                 "date":     sd.date.isoformat(),
                 "role":     role,
                 "person":   name,
                 "day_type": dt,
                 "amount":   round(rate, 2),
-            "orphan":   _orphan,
             })
     elif tag in ('meal_courtesy_breakfast', 'meal_first', 'meal_second'):
         # ProductionDay flag controls "is the meal happening on this date";
@@ -6269,13 +6473,14 @@ def line_schedule_detail(pid, bid, lid):
             if sd.date not in meal_dates:
                 continue
             role, name, dt, _orphan = _person_for_sched_day(sd)
+            if _orphan:
+                continue
             rows.append({
                 "date":     sd.date.isoformat(),
                 "role":     role,
                 "person":   name,
                 "day_type": dt,
                 "amount":   round(rate, 2),
-            "orphan":   _orphan,
             })
     else:
         # Per-cell flags. Map each tag back to the cell_flag key it
@@ -6319,13 +6524,14 @@ def line_schedule_detail(pid, bid, lid):
                     if rg != required_rg:
                         continue
                 role, name, dt, _orphan = _person_for_sched_day(sd)
+                if _orphan:
+                    continue
                 rows.append({
                     "date":     sd.date.isoformat(),
                     "role":     role,
                     "person":   name,
                     "day_type": dt,
                     "amount":   round(rate, 2),
-                "orphan":   _orphan,
                 })
 
     # Group by date for the UI's outer accordion. Within each day, sort
@@ -6340,12 +6546,8 @@ def line_schedule_detail(pid, bid, lid):
     def _sort_key(it):
         role = (it.get("role") or '').strip()
         pers = (it.get("person") or '').strip()
-        # Orphan rows (deleted parent lines) sort to the bottom so the
-        # eye lands on real entries first.
-        orphan_bucket = 1 if it.get("orphan") else 0
         return (
-            orphan_bucket,
-            role.lower() if role and role != '—' and not it.get("orphan") else '~',
+            role.lower() if role and role != '—' else '~',
             pers.lower() if pers and pers != '—' else '~',
         )
     days = []

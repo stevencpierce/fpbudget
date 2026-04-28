@@ -272,6 +272,29 @@ def sync_schedule_driven_lines(budget_id, db_session):
             ScheduleDay.schedule_mode == None),
     ).all()
 
+    # ── Orphan cleanup ───────────────────────────────────────────────────
+    # Per user 2026-04-28: ScheduleDay rows whose parent BudgetLine has been
+    # deleted should not linger. They were inflating per-diem / meal / hotel
+    # / flight counts after a line delete because the schedule still
+    # remembered the flag even though no living line owned it. Hard-delete
+    # them on read so the budget always mirrors what's actually there.
+    _all_line_ids = {ln.id for ln in db_session.query(BudgetLine.id)
+                     .filter(BudgetLine.budget_id == budget_id).all()}
+    _orphan_ids = [sd.id for sd in sched_days_raw
+                   if sd.budget_line_id is not None
+                   and sd.budget_line_id not in _all_line_ids]
+    if _orphan_ids:
+        # Travel details FK ScheduleDay; drop them first so the FK constraint
+        # is satisfied and their content doesn't outlive the parent cell.
+        from models import TravelDetail as _TD
+        db_session.query(_TD).filter(_TD.schedule_day_id.in_(_orphan_ids))\
+            .delete(synchronize_session=False)
+        db_session.query(ScheduleDay).filter(ScheduleDay.id.in_(_orphan_ids))\
+            .delete(synchronize_session=False)
+        # Drop the now-deleted rows from our in-memory list so the rest of
+        # this function doesn't count them.
+        sched_days_raw = [sd for sd in sched_days_raw if sd.id not in set(_orphan_ids)]
+
     # ── Deduplicate (line, instance, date) ────────────────────────────────
     # User report 2026-04-27: flight count came back as 8 when only 4
     # cells were flagged. Cause: when a budget was started before the
