@@ -34,7 +34,7 @@
   <!-- Structural-change toast (lines added/removed by someone else) -->
   <div id="collab-struct-toast" style="display:none;position:fixed;bottom:24px;right:24px;
        background:var(--bg-3);border:1px solid var(--border);color:var(--text);border-radius:8px;
-       padding:8px 14px;font-size:.8rem;z-index:900;display:flex;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)">
+       padding:8px 14px;font-size:.8rem;z-index:900;align-items:center;gap:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)">
     <span id="collab-struct-msg"></span>
     <button onclick="document.getElementById('collab-struct-toast').style.display='none'"
             style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:.85rem;padding:0">✕</button>
@@ -719,13 +719,15 @@
               {% if _nl_pre > 0 %}{{ (_nl_pre * _sec_fee_m) | round(2) | currency }}{% else %}{{ (res.est_total * _sec_fee_m) | currency }}{% endif %}
             {% endif %}
           </td>
-          <td class="col-num">
-            {% if ln.is_labor %}
-            <span class="editable num" data-field="agent_pct"
-                  data-id="{{ ln.id }}">{{ (ln.agent_pct | float * 100) | round(1) }}</span>
-            {% else %}
-            <span class="editable num {{ 'disc-pct' if (ln.agent_pct|float) > 0 else 'muted' }}" data-field="agent_pct"
-                  data-id="{{ ln.id }}">{{ '%.0f%%' % (ln.agent_pct|float*100) if (ln.agent_pct|float) > 0 else '—' }}</span>
+          <td class="col-num{% if not ns.has_agent_or_disc %} col-empty{% endif %}">
+            {% if ns.has_agent_or_disc %}
+              {% if ln.is_labor %}
+              <span class="editable num" data-field="agent_pct"
+                    data-id="{{ ln.id }}">{{ (ln.agent_pct | float * 100) | round(1) }}</span>
+              {% else %}
+              <span class="editable num {{ 'disc-pct' if (ln.agent_pct|float) > 0 else 'muted' }}" data-field="agent_pct"
+                    data-id="{{ ln.id }}">{{ '%.0f%%' % (ln.agent_pct|float*100) if (ln.agent_pct|float) > 0 else '—' }}</span>
+              {% endif %}
             {% endif %}
           </td>
           {% if is_working_view %}
@@ -4312,7 +4314,19 @@ function _showFloatBar(show) {
   function applySavedWidths() {
     _allTables().forEach(t => {
       const cols = t.querySelectorAll('colgroup col');
+      const isLabor = t.classList.contains('has-labor');
+      const ths = t.querySelectorAll('thead th');
       COL_NAMES.forEach((name, i) => {
+        if (!cols[i]) return;
+        // Skip restoring saved widths for columns that are CSS-collapsed in
+        // the current section: pc is always-hidden, qty hides on labor
+        // sections, agent collapses when no line has an agent% value, etc.
+        // Restoring an inline px width here would override the CSS width:0
+        // and bring the empty column back into the layout.
+        if (name === 'pc') return;
+        if (name === 'qty' && isLabor) return;
+        const th = ths[i];
+        if (th && th.classList.contains('col-empty')) return;
         if (saved[name] && cols[i]) cols[i].style.width = saved[name] + 'px';
       });
     });

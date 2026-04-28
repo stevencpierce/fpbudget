@@ -314,6 +314,13 @@ input:focus, select:focus { border-color: var(--accent); }
 .line-table tbody tr.line-row:first-child {
   scroll-margin-top: 90px;
 }
+/* The sticky thead (top:44px) has z-index:5 and the col-resizer handle
+   also sits at z-index:5. With table-layout:fixed and the resizer absolutely
+   positioned inside each <th>, the handle could paint over the first row's
+   content when the table scrolls under it. Bump the resizer below the
+   thead background so the description text in row 1 stays readable. */
+.line-table thead th { z-index: 6; }
+.line-table .col-resizer { z-index: 4; }
 .section-code { font-size: .75rem; color: var(--text-muted); width: 42px; }
 .section-name { font-weight: 600; font-size: .875rem; flex: 1; }
 .section-total-badge { font-size: .8rem; font-weight: 600; color: var(--text-muted); margin-left: auto; padding: .1rem .5rem; background: var(--bg-2); border-radius: var(--radius); border: 1px solid var(--border); }
