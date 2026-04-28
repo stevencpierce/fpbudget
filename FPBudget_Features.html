@@ -1,807 +1,251 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>FPBudget Features</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:1000px;margin:40px auto;padding:0 24px;color:#1a1a2e;line-height:1.6}h1{color:#0f172a;border-bottom:3px solid #2563eb;padding-bottom:8px}h2{color:#1e3a8a;margin-top:2rem;border-bottom:1px solid #dbeafe;padding-bottom:4px}table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.9rem}th{background:#1e3a8a;color:#fff;padding:8px 12px;text-align:left}td{padding:7px 12px;border-bottom:1px solid #e2e8f0;vertical-align:top}tr:nth-child(even){background:#f8fafc}code{background:#f1f5f9;padding:2px 5px;border-radius:3px;font-size:.85em}pre{background:#0f172a;color:#e2e8f0;padding:16px;border-radius:8px;overflow-x:auto}blockquote{border-left:4px solid #2563eb;margin:0;padding:0 16px;color:#475569}.footer{margin-top:3rem;font-size:.8rem;color:#94a3b8}</style></head><body>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FPBudget — Feature Registry</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:1100px;margin:40px auto;padding:0 24px;color:#1a1a2e;line-height:1.6}
+h1{color:#0f172a;border-bottom:3px solid #2563eb;padding-bottom:8px;margin-top:0}
+h2{color:#1e3a8a;margin-top:2.5rem;border-bottom:1px solid #dbeafe;padding-bottom:4px}
+h3{color:#1e3a8a;margin-top:1.5rem}
+table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.9rem}
+th{background:#1e3a8a;color:#fff;padding:8px 12px;text-align:left;font-weight:600}
+td{padding:7px 12px;border-bottom:1px solid #e2e8f0;vertical-align:top}
+tr:nth-child(even){background:#f8fafc}
+code{background:#f1f5f9;padding:2px 5px;border-radius:3px;font-size:.85em;color:#0f172a}
+blockquote{border-left:4px solid #2563eb;margin:1rem 0;padding:8px 16px;color:#475569;background:#f1f5fb;border-radius:0 4px 4px 0}
+hr{border:none;border-top:1px solid #e2e8f0;margin:2rem 0}
+ul{padding-left:24px}
+</style>
+</head>
+<body>
 <h1>FPBudget — Feature Registry</h1>
 <p><strong>App:</strong> FPBudget (Framework Productions Budget Planning)</p>
 <p><strong>Live URL:</strong> https://fp-budget.onrender.com</p>
 <p><strong>Repo:</strong> https://github.com/stevencpierce/fpbudget</p>
-<p><strong>Stack:</strong> Flask · SQLAlchemy · SQLite/Postgres · WeasyPrint · Jinja2</p>
-<p><strong>Last Updated:</strong> 2026-04-13</p>
-<blockquote>
-<p>Update this file whenever a feature is added, changed, or removed.</p>
-<p>Status: <code>✅ Live</code> · <code>🔧 In Progress</code> · <code>📋 Planned</code> · <code>⚠️ Known Issue</code> · <code>🗑️ Removed</code></p>
-</blockquote>
-<hr />
-<h2>Projects & Budgets</h2>
+<p><strong>Stack:</strong> Flask · SQLAlchemy · Postgres · WeasyPrint · Jinja2 · Flask-SocketIO (gthread)</p>
+<p><strong>Last Updated:</strong> 2026-04-28 (commit <code>a3fefae</code>)</p>
+<blockquote>Status icons: ✅ Live · 🔧 In Progress · 📋 Planned · ⚠️ Known Issue · 🗑️ Removed</blockquote>
+<hr>
+<h2>Projects &amp; Budgets</h2>
 <table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
 <tbody>
-<tr>
-<td>✅ Live</td>
-<td>Project Dashboard</td>
-<td>Landing page showing all projects with quick links to each budget</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Create Project</td>
-<td>Start a new production project with a name, client name, and optional budget template</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Template on New Project</td>
-<td>When creating a project, pick a pre-built template from a dropdown — lines auto-populate the first budget</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Multiple Budgets per Project</td>
-<td>Each project can have several budget versions (Estimated, Working, Actual)</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Budget Modes</td>
-<td>Three modes: Estimated (baseline), Working (live forecast), Actual (real spend)</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Create Working Budget from Estimated</td>
-<td>Locks the estimated as a frozen snapshot, opens a working copy for live tracking</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Budget Versioning</td>
-<td>Estimated + Working share a version number; version_status tracks current / superseded / archived; parent budget linking for working budgets forked from estimated</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Delete Budget</td>
-<td>Delete any budget version with confirmation; guards prevent deleting the last estimated budget; fully cascaded — removes all lines, schedule, crew assignments, and related records</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Delete Project</td>
-<td>Fully cascaded delete — removes all budgets, lines, schedule, call sheets, crew, and related records</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Share Project</td>
-<td>Invite collaborators by email; they get their own login-gated access to the project</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Project Wrap</td>
-<td>Mark a project as wrapped/complete; associated Dropbox folder moves to <code>/_WRAPPED PROJECTS</code></td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Project Archive</td>
-<td>Archive a project to remove from active dashboard; Dropbox folder moves to <code>/_archived</code></td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Project Reactivate</td>
-<td>Restore a wrapped or archived project back to active status</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Dropbox Folder Import</td>
-<td>Admin bulk-import: scans Dropbox operations root for project folders and auto-creates ProjectSheet records; parses folder naming convention (YYYY-MM_Client_Project)</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Budget Entry</h2>
+<tr><td>✅</td><td>Project dashboard</td><td>Landing page lists every project with quick links to each budget</td></tr>
+<tr><td>✅</td><td>Create project</td><td>New project: name, client, optional template; auto-creates first budget</td></tr>
+<tr><td>✅</td><td>Template at creation</td><td>Pick a pre-built template — budget lines auto-populate</td></tr>
+<tr><td>✅</td><td>Multiple budgets per project</td><td>Each project can have several budget versions in parallel</td></tr>
+<tr><td>✅</td><td>Budget modes</td><td>Three modes: <strong>Estimated</strong> (baseline), <strong>Working</strong> (live), <strong>Actual</strong> (real spend)</td></tr>
+<tr><td>✅</td><td>Version management</td><td>Working budget can be archived &amp; cloned; estimated stays read-only when a working sibling exists</td></tr>
+<tr><td>✅</td><td>Project archive / reactivate</td><td>Archived projects move to <code>_ARCHIVED/</code> in Dropbox; reactivate restores them</td></tr>
+<tr><td>✅</td><td>Project access control</td><td>Per-project member roles (<code>viewer</code>, <code>editor</code>, <code>dept_head</code>, <code>admin</code>, <code>super_admin</code>)</td></tr>
+</tbody></table>
+<hr>
+<h2>Budget Line Editing</h2>
 <table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
 <tbody>
-<tr>
-<td>✅ Live</td>
-<td>Quick Entry Panel</td>
-<td>Slide-over panel with every COA department; pre-filled suggested rates for all labor and expense items; check multiple items across departments and add them all at once</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>QE Sorted Insertion</td>
-<td>Lines added via Quick Entry appear in the correct department order (e.g. Talent: Principal > Host > Extra; Meals: Breakfast > Lunch)</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>QE Kit Fees Under Parent</td>
-<td>Kit fees added via Quick Entry automatically attach below their parent labor line</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>+ Single Line (modal)</td>
-<td>Add one line at a time — pick department, description, labor vs. flat, qty/days/rate</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>+ Line per Section</td>
-<td>Each department section has its own quick-add button that pre-selects that department</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Inline Editing</td>
-<td>Click any cell in a budget line to edit it in place — saves automatically via AJAX</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Labor Lines (qty x days x rate)</td>
-<td>Full union/non-union labor math: ST/OT/DT, fringe, agent %</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Non-Labor / Flat Lines</td>
-<td>Expense lines: qty x days x unit rate, or a single flat dollar amount</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Delete Line</td>
-<td>Remove any line with a trash icon; prompts confirmation</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Reorder Lines (drag)</td>
-<td>Drag lines up/down within a section to reorder them</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Search / Filter Lines</td>
-<td>Search box filters all lines across all departments in real time</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Sync-Omit Flag</td>
-<td>Flag a budget line to exclude it from schedule-driven recalculation; line zeroes out when omitted, restores on re-enable</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Rates & Math</h2>
-<table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>✅ Live</td>
-<td>Rate Types</td>
-<td>10hr Day (default), 8hr Day, 12hr Day, Flat Day, Flat Project, Hourly, Custom</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>OT / DT Calculation</td>
-<td>Auto-calculates overtime and double time based on rate type and hours</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Fringe / Benefits</td>
-<td>Assign a fringe bucket (None, Union, Employer, State, Local, Payroll) to each labor line</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Agent %</td>
-<td>Optional agent commission percentage per labor line; on_top or inclusive fee modes</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Workers' Comp</td>
-<td>Auto-calculated as a % of total labor; set in budget settings</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Payroll Service Fee</td>
-<td>Auto-calculated as a % of total labor; set in budget settings</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Production Company Fee</td>
-<td>Flat % added on top of all costs; shown separately or dispersed into line rates</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Dispersed Fee Mode</td>
-<td>When enabled, the production fee is spread invisibly into every line rate — no fee line shown on any export</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Top Sheet (Budget Summary)</h2>
-<table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>✅ Live</td>
-<td>Top Sheet Tab</td>
-<td>One-page summary showing every COA department with its total, subtotal, fee, and grand total</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Estimated vs. Working Variance</td>
-<td>In working mode, shows frozen estimate, current working total, and dollar variance per department</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Department Drill-Down</td>
-<td>Double-click any department row to jump to those detail lines</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Tax Credit / Incentive Lines</td>
-<td>Separate section below the grand total for tax incentive tracking</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Collapsible Department Rows</td>
-<td>Toggle detail lines for any department directly on the top sheet</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Working Budget Tracking</h2>
-<table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>✅ Live</td>
-<td>Frozen Estimated Snapshot</td>
-<td>When you create a Working budget, the Estimated column locks to that moment's values and never changes</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Working Total Column</td>
-<td>Shows live recalculated totals as you make changes</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Variance Column</td>
-<td>Color-coded over/under variance between Estimated and Working per line and per section</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Cross-Budget Reference</td>
-<td>View the Working budget's totals as a column while viewing the Estimated budget</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Float Bar (bottom)</td>
-<td>Sticky bar always showing Subtotal / Fee / Grand Total — updates live as you type</td>
-</tr>
-</tbody>
-</table>
-<hr />
+<tr><td>✅</td><td>Inline editing</td><td>Click any cell on the line table to edit description, qty, days, rate, fringe, agent%</td></tr>
+<tr><td>✅</td><td>+ Single Line</td><td>Add one line to a section via modal</td></tr>
+<tr><td>✅</td><td>+ Quick Entry</td><td>Add many lines at once from a curated catalog of common production roles + items</td></tr>
+<tr><td>✅</td><td>Duplicate row</td><td>Copies an existing line; prompts whether to copy schedule cells too</td></tr>
+<tr><td>✅</td><td>Drag-reorder</td><td>Drag rows up/down; sort_order persists</td></tr>
+<tr><td>✅</td><td>Bulk delete</td><td>Multi-select rows then delete</td></tr>
+<tr><td>✅</td><td>Section auto-totals</td><td>Each section header shows running total; recalculates on every edit</td></tr>
+<tr><td>✅</td><td>Auto-line: Workers&#x27; Comp</td><td>% of gross labor wages, default 3%, lands in section 6000 (Insurance)</td></tr>
+<tr><td>✅</td><td>Auto-line: Production Liability Insurance</td><td>Mode picker (off / % of labor / flat $); default ON at 1.5% on new budgets</td></tr>
+<tr><td>✅</td><td>Auto-line: Payroll Service Fee</td><td>% of gross labor wages, default 1.75%, lands in section 6500 (Administrative)</td></tr>
+<tr><td>✅</td><td>Production Company Fee — flat or dispersed</td><td>Toggle in Settings; flat shows a separate fee line, dispersed spreads into section totals</td></tr>
+<tr><td>✅</td><td>Per-section fee exemption</td><td>Per-budget checklist of COA sections that pass through without the fee markup</td></tr>
+<tr><td>✅</td><td>Fringes excluded from fee base</td><td>Default ON: P&amp;W / P/H/W fringes don&#x27;t compound the Prod Co Fee</td></tr>
+<tr><td>✅</td><td>Replace Qty with Payroll Co. on labor</td><td>Labor rows show payroll-company text input (placeholder for future linked-payroll feature); non-labor rows keep Qty</td></tr>
+<tr><td>✅</td><td>Conditional column rendering</td><td>Payroll / OT / Fringe / Agent% / Disc% columns hide when no row in the section has data</td></tr>
+<tr><td>✅</td><td>OT Detail panel</td><td>Right-click any labor line → ST/OT/DT breakdown by week per the payroll profile</td></tr>
+<tr><td>✅</td><td>Schedule Detail panel</td><td>Click any auto-calc line (per diem, hotel, flight, etc.) → per-day, per-person breakdown with drift indicator</td></tr>
+</tbody></table>
+<hr>
 <h2>Schedule (Gantt)</h2>
 <table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
 <tbody>
-<tr>
-<td>✅ Live</td>
-<td>Schedule Tab</td>
-<td>Day-by-day Gantt grid showing all labor lines across shoot dates</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Day Types</td>
-<td>Click any cell to set day type: Shoot, Travel, Prep, Hold, Off, Half, Kill Fee</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Schedule-Driven Labor</td>
-<td>Toggle "Use Schedule" on any labor line — its days auto-count from the Gantt</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Auto-Enable Use Schedule</td>
-<td>When a day is clicked for the first time on a line, "Use Schedule" turns on automatically and manual OT is zeroed out</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>OT from Schedule</td>
-<td>Per-day OT hours feed the labor calc engine</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Department Sub-Group Headers</td>
-<td>Production Staff section shows department headers (Camera, G&E, Production, etc.) in both the budget detail view and the Gantt</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Estimated vs. Working Schedule</td>
-<td>Separate schedule grids for Estimated and Working modes</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>+ Assign Button</td>
-<td>Each labor line has an Assign button to attach a specific crew member from the roster</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Production Days</td>
-<td>Shoot day count excludes travel/hold/prep days; tracks actual production days independently of calendar dates</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Crew / Contact Sheet</h2>
+<tr><td>✅</td><td>Calendar grid</td><td>Each labor line → row; each date → column; click cells to set day type</td></tr>
+<tr><td>✅</td><td>Day types</td><td>Work / Travel / Hold / Half / Kill Fee / Custom / Off — color-coded</td></tr>
+<tr><td>✅</td><td>Multi-instance crew</td><td>Lines with qty&gt;1 expand to one row per crew member</td></tr>
+<tr><td>✅</td><td>Crew assignment</td><td>Click &quot;+ Assign&quot; → pick from crew DB or add new person inline</td></tr>
+<tr><td>✅</td><td>Manual OT hours</td><td>Right-click cell → &quot;OT Hours&quot; → enters manually; flows into payroll calc on hourly rate types</td></tr>
+<tr><td>✅</td><td>Per-cell flags</td><td>Right-click cell → toggle flight / hotel / car rental / mileage / per diem / working meal</td></tr>
+<tr><td>✅</td><td>Per-Diem variants</td><td>4 separate flags: Full / Breakfast / Lunch / Dinner — each has its own auto-line + rate</td></tr>
+<tr><td>✅</td><td>Production Day toggle</td><td>Top-row marker for &quot;real on-set days vs prep / remote / travel&quot; — feeds downstream calcs</td></tr>
+<tr><td>✅</td><td>Meal flags (per-date)</td><td>Top-row toggles: Courtesy Breakfast / 1st Meal / 2nd Meal — applied to all working crew that date</td></tr>
+<tr><td>✅</td><td>Working Meal flag (per-cell)</td><td>Per-person opt-in to a working meal on a specific day</td></tr>
+<tr><td>✅</td><td>Multi-select + Delete</td><td>Drag-select cells then Delete/Backspace clears day type + all flags + OT in one action</td></tr>
+<tr><td>✅</td><td>Copy/paste</td><td>Cmd+C / Cmd+V across selected cells</td></tr>
+<tr><td>✅</td><td>Schedule sync to budget</td><td>Every cell change re-runs sync; auto-lines (per diem, hotel, flight, mileage, meals) update in lockstep</td></tr>
+<tr><td>✅</td><td>Notes</td><td>Right-click → add free-text note per cell</td></tr>
+</tbody></table>
+<hr>
+<h2>Travel Tab</h2>
 <table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
 <tbody>
-<tr>
-<td>✅ Live</td>
-<td>Crew Tab</td>
-<td>Auto-generated contact sheet from all labor lines in the budget</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Contact Fields</td>
-<td>Name, phone, email, role, department per crew member</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Department Grouping</td>
-<td>Crew grouped by COA department in alphabetical department order</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Multi-select for Export</td>
-<td>Ctrl/Cmd-click to select multiple crew; right-click to omit from printed sheet</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Kit Fees on Crew</td>
-<td>Kit fee amount tracked per crew assignment</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Agent System</td>
-<td>Crew members can have multiple support contacts (agents, managers, publicists, attorneys, PAs); tracks fee %, fee type (on_top/inclusive), and visibility flags; primary agent fee auto-syncs to crew default_agent_pct</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Apply Default Rate on Assign</td>
-<td>When assigning crew to a budget line, popup offers to apply default rate and fringe from the crew record</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Call Sheet</h2>
+<tr><td>✅</td><td>Day-card layout</td><td>Each scheduled date is its own collapsible card; header shows pretty date + crew count</td></tr>
+<tr><td>✅</td><td>Editable day-type</td><td>Pill-style dropdown per row to change Work → Travel → Hold etc. without leaving the tab</td></tr>
+<tr><td>✅</td><td>Flag toggles per row</td><td>Pill buttons for Flight / Hotel / Car Rental / Mileage</td></tr>
+<tr><td>✅</td><td>Per-Diem dropdown</td><td>Select No PD / Full / Breakfast / Lunch / Dinner per row</td></tr>
+<tr><td>✅</td><td>&quot;Add details&quot; button</td><td>Click to open centered modal with reservation fields (flight #, airline, depart/arrive, hotel name, check-in/out, room type, rental co, pickup/return, miles, route, confirmation #, notes)</td></tr>
+<tr><td>✅</td><td>Detail persistence</td><td>TravelDetail rows live alongside ScheduleDay; survive flag-toggle cycles</td></tr>
+<tr><td>✅</td><td>&quot;+ Add to this day&quot;</td><td>Per-card button to add another crew member to an existing date with one click</td></tr>
+<tr><td>✅</td><td>&quot;Only flagged&quot; filter</td><td>Hide unflagged crew once the list grows</td></tr>
+<tr><td>✅</td><td>Expand all / Collapse all</td><td>Bulk controls above the day list</td></tr>
+<tr><td>🔧</td><td>Call sheet email integration</td><td>Travel details to flow into call sheet emails per-crew per-date</td></tr>
+</tbody></table>
+<hr>
+<h2>Catering Tab</h2>
 <table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
 <tbody>
-<tr>
-<td>✅ Live</td>
-<td>Call Sheet View</td>
-<td>Full two-page formatted call sheet for any shoot day — auto-populated from the schedule</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Editable Fields</td>
-<td>All call sheet fields (call times, weather, meals, notes, etc.) are editable inline and auto-save</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Key Personnel Section</td>
-<td>Director, DP, AD, UPM, and other key personnel with contact info; defaults empty on first visit, populated from crew data</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Useful Contacts Section</td>
-<td>Manually entered contacts or selected from project contact sheet; defaults empty on first visit</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Locations</td>
-<td>Location cards with address, map link, and contacts per location</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Crew Call Times</td>
-<td>Per-person call time grid auto-populated from crew assignments</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Department Notes</td>
-<td>Optional notes per department printed on the call sheet</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Extras Grid</td>
-<td>Number of extras + call time per category</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Advance Schedule</td>
-<td>Text block for next-day/next-week advance info</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Meal Counts from Live Headcount</td>
-<td>Meal counts derived from actual crew headcount for the shoot day (non-off ScheduleDay entries), not static budget quantities</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Time Standardization</td>
-<td>All times normalized to H:MM AM/PM format; general crew call restricted to TBD or a specific time</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Auto-Fetch Weather</td>
-<td>Fetches temperature, precipitation probability, and weather code from Open-Meteo for shoot date + location</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Auto-Fetch Sunrise / Sunset</td>
-<td>Fetches sunrise and sunset times from sunrise-sunset.org for the shoot location and date</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Auto-Fetch Nearest Hospital</td>
-<td>Finds nearest hospitals within 15km using OpenStreetMap Overpass API</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Print / Export</td>
-<td>Clean print-optimized CSS — header, page 1, page 2; all UI chrome hidden</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Send Call Sheet via Email</td>
-<td>Distribute call sheet to crew via email from contact@thefp.tv; each recipient gets a personal view/confirm link</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>View Tracking</td>
-<td>When a recipient opens their email link, the server records a viewed timestamp</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Confirmation Tracking</td>
-<td>Each email includes a "Confirm My Call" button; confirmation is recorded with timestamp</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Distribution History</td>
-<td>Internal distribution panel shows all prior sends with version, timestamp, and per-recipient status badges (pending / sent / viewed / confirmed)</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Public Confirm Page</td>
-<td>Clean standalone page (no login required) — shows project, date, version, and confirm button</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Locations</h2>
+<tr><td>✅</td><td>Day-card layout</td><td>Mirrors Travel tab — every scheduled day is its own collapsible card</td></tr>
+<tr><td>✅</td><td>Day-of-week + Production-Week label</td><td>Each card shows weekday + &quot;Wk N&quot; matching the payroll cycle</td></tr>
+<tr><td>✅</td><td>Production Day badge</td><td>Cards for production days get a green badge</td></tr>
+<tr><td>✅</td><td>Per-day meal toggles</td><td>Courtesy Breakfast / 1st Meal / 2nd Meal in each card body</td></tr>
+<tr><td>✅</td><td>Per-card people lists</td><td>Working crew, working-meal opt-ins, per-diem people (with mode) listed in the body</td></tr>
+<tr><td>✅</td><td>Expected $ per day</td><td>Computed live from headcount × rate per active meal type</td></tr>
+<tr><td>✅</td><td>Per-person Per Diem rollup</td><td>Below day cards: weekly $ matrix per person + project total + day count</td></tr>
+<tr><td>✅</td><td>Per-person Working Meal rollup</td><td>Same shape, only renders if any line has working-meal opt-ins</td></tr>
+<tr><td>✅</td><td>Caterer Bill entry</td><td>Add daily/weekly billed amounts with vendor + period + note</td></tr>
+<tr><td>✅</td><td>Drift indicator</td><td>Top summary shows expected vs caterer-billed with delta color-coded</td></tr>
+</tbody></table>
+<hr>
+<h2>Documents (Receipt OCR + Filing)</h2>
 <table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
 <tbody>
-<tr>
-<td>✅ Live</td>
-<td>Location Library</td>
-<td>Global reusable location database across all projects</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Google Maps Autocomplete</td>
-<td>Location name and address fields use Google Maps Places Autocomplete for address suggestions</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Auto Title Case</td>
-<td>Location name, facility, and contact fields auto-capitalize to Title Case on save</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Templates</h2>
+<tr><td>✅</td><td>Drag-drop or browse upload</td><td>Drop receipts/invoices/PDFs/HEIC into the docs tab</td></tr>
+<tr><td>✅</td><td>Camera capture</td><td>Mobile-friendly &quot;Take Photo&quot; button</td></tr>
+<tr><td>✅</td><td>Veryfi OCR</td><td>Each upload runs through Veryfi → vendor / amount / date / category extracted</td></tr>
+<tr><td>✅</td><td>Auto-rename</td><td>High-confidence docs get filed with <code>YYYY-MM-DD_RECEIPT_Category_Vendor_Amount.pdf</code> naming</td></tr>
+<tr><td>✅</td><td>Auto-file to Dropbox</td><td>Receipts → <code>01_ADMIN/PROCESSED DOCUMENTS/</code>, invoices → <code>01_ADMIN/CONTRACTS &amp; INVOICES/</code>, etc. by detected type</td></tr>
+<tr><td>✅</td><td>Low-confidence review queue</td><td>Files that don&#x27;t pass auto-file confidence threshold flagged for manual review</td></tr>
+<tr><td>✅</td><td>Sort + filter list</td><td>Previously-uploaded list sortable by upload date / filename / type / vendor / amount / size</td></tr>
+<tr><td>✅</td><td>Inline rename</td><td>Click any filed filename → edit → Dropbox file is renamed in lockstep</td></tr>
+<tr><td>✅</td><td>Click-to-open detail modal</td><td>Click a row → preview pane (image or PDF) + editable vendor / amount / doc date / category / note</td></tr>
+<tr><td>✅</td><td>Verify against Dropbox</td><td>Background check on every &quot;Filed&quot; row; missing files → red banner</td></tr>
+<tr><td>✅</td><td>Scan Dropbox (reconcile)</td><td>Super-admin tool: walks the project&#x27;s doc folders and creates DocUpload rows for any orphan files</td></tr>
+<tr><td>✅</td><td>Duplicate routing</td><td>Same content uploaded twice → second copy routes to <code>/_DUPLICATES/</code> subfolder, original stays clean</td></tr>
+<tr><td>✅</td><td>Wipe all (testing)</td><td>Super-admin tool: clears every DocUpload + moves filed files to <code>/_TRASH/{date}/</code></td></tr>
+</tbody></table>
+<hr>
+<h2>Top Sheet</h2>
 <table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
 <tbody>
-<tr>
-<td>✅ Live</td>
-<td>Save as Template</td>
-<td>Save any budget's lines as a reusable named template — all lines per COA section preserved (no deduplication)</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Apply Template to Budget</td>
-<td>Load a template into a budget to pre-populate lines with qty, days, and rate</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Template on New Project</td>
-<td>Template picker dropdown on the New Project modal; lines auto-apply to the first budget</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Small Live Production Template</td>
-<td>Built-in template: Director, Host, UPM, Key PA, 2x Camera Op, Video Engineer, Sound Mixer, camera/lens/monitor/media gear, lighting + grip package, AV/control room/streaming, production car, fuel/parking/mileage, lunch/catering</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Template Editor</td>
-<td>Create and edit templates from the Templates page; add/remove/edit individual lines</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Settings</h2>
-<table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>✅ Live</td>
-<td>Budget Settings</td>
-<td>Name, start/end date, target budget, company fee %, dispersed toggle, payroll settings</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Start Date Auto-fills End Date</td>
-<td>Picking a start date defaults end date to +14 days if end is empty</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Timezone Auto-detect</td>
-<td>Default timezone auto-fills from the browser/device on project creation; defaults to America/Los_Angeles</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Production Details (per budget)</td>
-<td>Client name, prepared-by name/title/email/phone stored on each budget</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Company Profile (global)</td>
-<td>Company name, address, phone, email, website — used on all PDF exports</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Fringe Config</td>
-<td>Set the % rate for each fringe bucket (Union, Employer, State, Local, Payroll)</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Payroll Profiles</td>
-<td>Named payroll setups (e.g. "ADP Weekly") with week-start day and payroll fee %</td>
-</tr>
-</tbody>
-</table>
-<hr />
+<tr><td>✅</td><td>Section-grouped totals</td><td>All COA sections rolled up: Estimated / Working / Actual / Variance</td></tr>
+<tr><td>✅</td><td>Auto-calc inline rows</td><td>Workers&#x27; Comp / Production Liability / Payroll Service Fee shown as muted sub-lines under their home sections</td></tr>
+<tr><td>✅</td><td>Fee-exempt annotation</td><td>Sections marked exempt show &quot;(Prod Co Fee exempt)&quot; inline in italic amber</td></tr>
+<tr><td>✅</td><td>Tax credits row</td><td>Subtracted from grand total when applicable</td></tr>
+<tr><td>✅</td><td>Float bar</td><td>Sticky bottom bar shows Subtotal · Prod Fee · Grand Total — recalculates live</td></tr>
+<tr><td>✅</td><td>Variance highlighting</td><td>Over/under styled green / red</td></tr>
+<tr><td>✅</td><td>Click section → jump to budget</td><td>Top sheet rows navigate into the section detail</td></tr>
+</tbody></table>
+<hr>
 <h2>Exports</h2>
 <table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
 <tbody>
-<tr>
-<td>✅ Live</td>
-<td>Top Sheet PDF</td>
-<td>One-page landscape PDF in Movie Magic / Showbiz industry format</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Full Detail PDF</td>
-<td>Multi-page PDF with every line item, section totals, and variance columns</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Top Sheet CSV</td>
-<td>Comma-separated summary export for Excel</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Line Detail CSV</td>
-<td>Full line-by-line CSV export</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Company Header on PDF</td>
-<td>PDF includes company name, address, phone, email from global Settings</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Production Details on PDF</td>
-<td>PDF includes client name, version, prepared-by info from budget Settings</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Dispersed Fee on PDF</td>
-<td>When dispersed mode is on, no fee line appears anywhere on PDF exports</td>
-</tr>
-<tr>
-<td>📋 Planned</td>
-<td>Gmail Draft Integration</td>
-<td>Send budget PDF as a Gmail draft attachment for approval workflows</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Documents (Docs Module)</h2>
+<tr><td>✅</td><td>PDF — Top Sheet</td><td>Section-grouped one-pager</td></tr>
+<tr><td>✅</td><td>PDF — Full Detail</td><td>Every line, organized by section</td></tr>
+<tr><td>✅</td><td>CSV — Top Sheet</td><td>Section totals</td></tr>
+<tr><td>✅</td><td>CSV — Line Detail</td><td>Every line with its math</td></tr>
+<tr><td>✅</td><td>MMB tab-delimited</td><td>Movie Magic Budgeting import format</td></tr>
+<tr><td>✅</td><td>ShowBiz tab-delimited</td><td>ShowBiz Budgeting import format</td></tr>
+<tr><td>✅</td><td>Export Options dialog</td><td>Pre-export prompt: suppress zero lines, override Prod Co Fee dispersed/separate</td></tr>
+<tr><td>✅</td><td>Suppress zero lines</td><td>Hide rows whose total rounds to $0 from the export</td></tr>
+<tr><td>✅</td><td>Per-export fee override</td><td>Pick &quot;use current setting&quot; / &quot;separate line&quot; / &quot;dispersed&quot; per export without changing the saved budget</td></tr>
+<tr><td>✅</td><td>Conditional columns</td><td>Empty Payroll / OT / Fringe / Agent% / Disc% columns drop entirely</td></tr>
+<tr><td>✅</td><td>Dispersed-mode rounding (PDF only)</td><td>Each line + section + grand total rounds to nearest $10 deterministically — clean numbers for client presentation</td></tr>
+</tbody></table>
+<hr>
+<h2>Schedule-Driven Auto-Calcs</h2>
 <table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
 <tbody>
-<tr>
-<td>✅ Live</td>
-<td>Docs Tab</td>
-<td>Project-scoped document upload and management; accessible from budget views and project pages</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Upload to R2 + Dropbox</td>
-<td>Files uploaded to R2 cloud storage and auto-filed to Dropbox project folder (01_ADMIN/PROCESSED DOCUMENTS/{uploader}/)</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>File Deduplication</td>
-<td>SHA-256 hash check prevents duplicate uploads</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Docs Access Control</td>
-<td>Project role enforcement — docs_only users restricted to docs routes; admins access all project docs</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Admin / System</h2>
+<tr><td>✅</td><td>Per Diem (4 variants)</td><td>Full / Breakfast / Lunch / Dinner — each its own budget line, fed by per-cell schedule flags</td></tr>
+<tr><td>✅</td><td>Hotels by role group</td><td>Hotel — Talent / ATL / Crew — separate lines fed by hotel flag + role group of parent line</td></tr>
+<tr><td>✅</td><td>Flights by role group</td><td>Same shape as hotel</td></tr>
+<tr><td>✅</td><td>Mileage by role group</td><td>Same shape</td></tr>
+<tr><td>✅</td><td>Working Meals</td><td>Per-cell flag → per-person count</td></tr>
+<tr><td>✅</td><td>First / Second Meal</td><td>Per-date flag × working headcount that day</td></tr>
+<tr><td>✅</td><td>Courtesy Breakfast</td><td>Same</td></tr>
+<tr><td>✅</td><td>Craft Services</td><td>Auto-set on every non-off scheduled day</td></tr>
+<tr><td>✅</td><td>Manual OT on flat / weekly rates</td><td>&quot;+2h&quot; entered on a schedule cell now calculates OT even when rate type is flat / week / no payroll profile</td></tr>
+<tr><td>✅</td><td>Schedule mode dedup</td><td>Legacy NULL-mode rows + new mode-tagged rows don&#x27;t double-count</td></tr>
+</tbody></table>
+<hr>
+<h2>Settings</h2>
 <table>
-<thead>
-<tr>
-<th>Status</th>
-<th>Feature</th>
-<th>Plain English Description</th>
-</tr>
-</thead>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
 <tbody>
-<tr>
-<td>✅ Live</td>
-<td>Multi-User Auth</td>
-<td>DB-backed User model with email/password; Flask-Login session auth</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Role-Based Access</td>
-<td>User roles: super_admin, admin, editor, viewer, docs_only</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Per-Project Access</td>
-<td>ProjectAccess table scopes permissions per user per project (owner/collaborator)</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Admin Panel</td>
-<td>Create users, edit roles, assign project access, reset passwords at /admin/users</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>User Profile</td>
-<td>Update name/email/phone and change password at /profile</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Mandatory Password Change</td>
-<td>New users forced to change temporary password on first login</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Super Admin Bootstrap</td>
-<td>First-run seed from ADMIN_EMAIL/ADMIN_PASSWORD env vars</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Health Check</td>
-<td><code>/health</code> endpoint for Render uptime monitoring</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Auto DB Migrations</td>
-<td>New database columns added automatically on startup — no manual migration needed</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Postgres + SQLite</td>
-<td>Uses Postgres on Render (production), SQLite locally (development)</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>CSV Import</td>
-<td>Upload a CSV to bulk-import budget lines into any section</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Dropbox Business Namespace Routing</td>
-<td>Supports Dropbox Business shared folders via namespace_id routing</td>
-</tr>
-<tr>
-<td>✅ Live</td>
-<td>Mobile / Tablet UX</td>
-<td>Budget table scroll wrapper for horizontal overflow; long-press (500ms) context menu for touch devices</td>
-</tr>
-</tbody>
-</table>
-<hr />
-<h2>Workflow: Offline to Live</h2>
-<pre><code>1. Work locally:   python app.py   -&gt;   http://localhost:5000
-2. Test your changes until the feature works correctly
-3. Commit:         git add -A && git commit -m "describe what you built"
-4. Push live:      git push origin main
-5. Render auto-deploys in ~2 minutes
-</code></pre>
-<p>No manual deploy steps needed after initial setup.</p>
-<div class="footer">Generated from FEATURES.md — 2026-04-13</div>
-</body>
-</html>
+<tr><td>✅</td><td>Project name &amp; client</td><td>Edit names from Settings tab</td></tr>
+<tr><td>✅</td><td>Production Company Fee %</td><td>Plus dispersed toggle</td></tr>
+<tr><td>✅</td><td>Sections exempt from Prod Co Fee</td><td>Per-COA-section checkboxes</td></tr>
+<tr><td>✅</td><td>Exclude fringes from fee base</td><td>Default ON</td></tr>
+<tr><td>✅</td><td>Workers&#x27; Comp %</td><td>Default 3%</td></tr>
+<tr><td>✅</td><td>Payroll Service Fee %</td><td>Default 1.75%</td></tr>
+<tr><td>✅</td><td>Production Liability Insurance</td><td>Mode (off / % / flat) + value</td></tr>
+<tr><td>✅</td><td>Payroll profile</td><td>Pick the union profile that drives ST/OT/DT calculations</td></tr>
+<tr><td>✅</td><td>Payroll week start</td><td>Override the profile&#x27;s default week-start day</td></tr>
+<tr><td>✅</td><td>Timezone</td><td>Per budget</td></tr>
+<tr><td>✅</td><td>Production details for PDFs</td><td>Client name, prepared by, title, email, phone — appears on PDF cover</td></tr>
+</tbody></table>
+<hr>
+<h2>Admin / Catalog</h2>
+<table>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<tbody>
+<tr><td>✅</td><td>Global Quick Entry catalog</td><td>Super-admin manages the curated list of common roles + items shown in QE</td></tr>
+<tr><td>✅</td><td>Bulk operations</td><td>Multi-select catalog items → delete or move to another category</td></tr>
+<tr><td>✅</td><td>Code repair tool</td><td>Super-admin: re-map account codes when COA changes</td></tr>
+<tr><td>✅</td><td>Veryfi diagnostic</td><td>Super-admin status page for OCR config</td></tr>
+<tr><td>✅</td><td>Dropbox diagnostic</td><td>Super-admin status page for filing path config</td></tr>
+</tbody></table>
+<hr>
+<h2>📋 Activity Tab + Undo (planned — next build)</h2>
+<p>User request: every change made to a budget gets logged with user, timestamp, and a per-action <code>$ delta</code> showing how the change moved the grand total. List view by tab/section with filters. Per-row &quot;Undo&quot; button that reverses the change.</p>
+<table>
+<thead><tr><th>Visibility level</th><th>What they see</th></tr></thead>
+<tbody>
+<tr><td>Super admin</td><td>Everything across every project</td></tr>
+<tr><td>Admin</td><td>Everything in projects they have admin role on</td></tr>
+<tr><td>Department head</td><td>Only changes made within their <code>dept_code</code></td></tr>
+<tr><td>Editor / Viewer</td><td>Only their own changes</td></tr>
+</tbody></table>
+<p>Implementation outline:</p>
+<ul><li>New <code>AuditLog</code> table: <code>(id, user_id, project_id, budget_id, action, target_type, target_id, payload_before_json, payload_after_json, budget_total_before, budget_total_after, created_at)</code></li><li>Hook: small wrapper around every mutating endpoint that snapshots before/after totals</li><li>Activity tab: paginated list with filters (user, action type, date range, target type)</li><li>Undo: replay the inverse of the recorded change. Some actions inherently undoable (field edits, deletes, schedule cell flips); some not (e.g. Dropbox file moves) — those rows show &quot;Cannot undo&quot; with explanation.</li></ul>
+<hr>
+<h2>Cross-Cutting</h2>
+<table>
+<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<tbody>
+<tr><td>✅</td><td>Live multi-user</td><td>Socket.io presence + live patches when teammates edit the same budget</td></tr>
+<tr><td>✅</td><td>Auto-save</td><td>Inline edits save on blur; no explicit &quot;Save&quot; needed</td></tr>
+<tr><td>✅</td><td>Per-worker schema self-heal</td><td>Critical column adds run on every gunicorn worker boot — production deploys never break on schema drift</td></tr>
+<tr><td>✅</td><td>Conversation archive</td><td>Each Claude session snapshot lands in Dropbox at <code>SOFTWARE BUILDS/FPBudget/conversation_archive/</code></td></tr>
+<tr><td>✅</td><td>Cross-device session resume</td><td><code>claude --resume &lt;id&gt;</code> continues this conversation on either Mac via Dropbox sync</td></tr>
+</tbody></table>
+<hr>
+<h2>Glossary</h2>
+<ul><li><strong>Dispersed mode</strong>: Production Company Fee is spread proportionally across every section&#x27;s total instead of shown as its own line. Some clients prefer this for presentations.</li><li><strong>Fee base</strong>: The dollar amount the Prod Co Fee applies to. Sections marked exempt and (when configured) labor fringes are subtracted from it.</li><li><strong>Schedule mode</strong>: Each schedule view is either &quot;estimated&quot; or &quot;working&quot; — they&#x27;re independent so locking the estimate doesn&#x27;t freeze you out of the working schedule.</li><li><strong>Auto-line</strong>: A budget line whose qty/days are computed from the schedule rather than typed in. Identified by a <code>line_tag</code> like <code>per_diem_full</code> or <code>hotel_crew</code>.</li></ul>
+<hr>
+<h2>Recent Pushes</h2>
+<table>
+<thead><tr><th>Commit</th><th>Date</th><th>Summary</th></tr></thead>
+<tbody>
+<tr><td><code>a3fefae</code></td><td>2026-04-28</td><td>PDF dispersed-rounding: flat $10, deterministic per-line</td></tr>
+<tr><td><code>db92d05</code></td><td>2026-04-28</td><td>Conditional columns (Payroll / OT / Fringe / Agent% / Disc%)</td></tr>
+<tr><td><code>7f7d120</code></td><td>2026-04-28</td><td>Travel modal centered + larger fonts; fix Catering &quot;Loading…&quot; stuck</td></tr>
+<tr><td><code>a6c163f</code></td><td>2026-04-27</td><td>Catering day-cards + per-person weekly rollups</td></tr>
+<tr><td><code>cdf373c</code></td><td>2026-04-27</td><td>Drop emojis, editable day-type in Travel</td></tr>
+<tr><td><code>953c2a3</code></td><td>2026-04-27</td><td>Travel day-card layout + Add Travel Day fix</td></tr>
+<tr><td><code>8474e8b</code></td><td>2026-04-27</td><td>Production Liability Insurance auto-line</td></tr>
+<tr><td><code>7156182</code></td><td>2026-04-27</td><td>Per-export options dialog (suppress zeros + fee override)</td></tr>
+</tbody></table>
+<p style="margin-top:3rem;font-size:.8rem;color:#94a3b8">Generated from FEATURES.md</p>
+</body></html>

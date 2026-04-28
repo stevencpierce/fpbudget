@@ -9212,9 +9212,33 @@ setTimeout(function() {
               ${cb('first_meal',         d.flags.first_meal,         '1st Meal')}
               ${cb('second_meal',        d.flags.second_meal,        '2nd Meal')}
             </div>
-            ${d.working_count > 0 ? `<div style="margin-bottom:.5rem;font-size:12px"><strong>Working crew (${d.working_count}):</strong> <span class="muted">${d.working_crew.map(p => _esc(p.person||p.role)).join(', ')}</span></div>` : ''}
-            ${d.working_meal_people.length > 0 ? `<div style="margin-bottom:.5rem;font-size:12px"><strong>Working meal opt-ins (${d.working_meal_people.length}):</strong> <span class="muted">${d.working_meal_people.map(p => _esc(p.person||p.role)).join(', ')}</span></div>` : ''}
-            ${d.per_diem_people.length > 0 ? `<div style="font-size:12px"><strong>Per Diem (${d.per_diem_people.length}):</strong> <span class="muted">${d.per_diem_people.map(p => _esc(p.person||p.role) + ' (' + p.kind + ')').join(', ')}</span></div>` : ''}
+            ${(() => {
+              // Color-coded list helper: assigned person renders white,
+              // unassigned slot falls back to the role label rendered in
+              // amber italic so the user can scan at a glance for "this
+              // slot has no human attached yet". Per user 2026-04-28:
+              // working crew + working meal + per-diem all get this.
+              const personCell = (p, suffix='') => {
+                const name = (p.person || '').trim();
+                const role = (p.role   || '').trim();
+                if (name && name !== '—') {
+                  return `<span style="color:var(--text)">${_esc(name)}</span>${suffix?' '+suffix:''}`;
+                }
+                return `<span style="color:#f59e0b;font-style:italic" title="No crew assigned to this role">${_esc(role || '—')}</span>${suffix?' '+suffix:''}`;
+              };
+              const list = (arr, fmt) => arr.map(fmt).join(', ');
+              let out = '';
+              if (d.working_count > 0) {
+                out += `<div style="margin-bottom:.5rem;font-size:12px"><strong>Working crew (${d.working_count}):</strong> ${list(d.working_crew, p => personCell(p))}</div>`;
+              }
+              if (d.working_meal_people.length > 0) {
+                out += `<div style="margin-bottom:.5rem;font-size:12px"><strong>Working meal opt-ins (${d.working_meal_people.length}):</strong> ${list(d.working_meal_people, p => personCell(p))}</div>`;
+              }
+              if (d.per_diem_people.length > 0) {
+                out += `<div style="font-size:12px"><strong>Per Diem (${d.per_diem_people.length}):</strong> ${list(d.per_diem_people, p => personCell(p, '<span class="muted" style="font-size:10px">('+_esc(p.kind)+')</span>'))}</div>`;
+              }
+              return out;
+            })()}
             ${d.working_count===0 && d.working_meal_people.length===0 && d.per_diem_people.length===0 ? '<span class="muted" style="font-size:12px">No working crew or meal opt-ins on this day.</span>' : ''}
           </div>
         </div>

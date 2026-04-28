@@ -3,240 +3,255 @@
 **App:** FPBudget (Framework Productions Budget Planning)
 **Live URL:** https://fp-budget.onrender.com
 **Repo:** https://github.com/stevencpierce/fpbudget
-**Stack:** Flask · SQLAlchemy · SQLite/Postgres · WeasyPrint · Jinja2
-**Last Updated:** 2026-04-13
+**Stack:** Flask · SQLAlchemy · Postgres · WeasyPrint · Jinja2 · Flask-SocketIO (gthread)
+**Last Updated:** 2026-04-28 (commit `a3fefae`)
 
-> Update this file whenever a feature is added, changed, or removed.
-> Status: `✅ Live` · `🔧 In Progress` · `📋 Planned` · `⚠️ Known Issue` · `🗑️ Removed`
+> Status icons: ✅ Live · 🔧 In Progress · 📋 Planned · ⚠️ Known Issue · 🗑️ Removed
 
 ---
 
 ## Projects & Budgets
 
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Project Dashboard | Landing page showing all projects with quick links to each budget |
-| ✅ Live | Create Project | Start a new production project with a name, client name, and optional budget template |
-| ✅ Live | Template on New Project | When creating a project, pick a pre-built template from a dropdown — lines auto-populate the first budget |
-| ✅ Live | Multiple Budgets per Project | Each project can have several budget versions (Estimated, Working, Actual) |
-| ✅ Live | Budget Modes | Three modes: Estimated (baseline), Working (live forecast), Actual (real spend) |
-| ✅ Live | Create Working Budget from Estimated | Locks the estimated as a frozen snapshot, opens a working copy for live tracking |
-| ✅ Live | Budget Versioning | Estimated + Working share a version number; version_status tracks current / superseded / archived; parent budget linking for working budgets forked from estimated |
-| ✅ Live | Delete Budget | Delete any budget version with confirmation; guards prevent deleting the last estimated budget; fully cascaded — removes all lines, schedule, crew assignments, and related records |
-| ✅ Live | Delete Project | Fully cascaded delete — removes all budgets, lines, schedule, call sheets, crew, and related records |
-| ✅ Live | Share Project | Invite collaborators by email; they get their own login-gated access to the project |
-| ✅ Live | Project Wrap | Mark a project as wrapped/complete; associated Dropbox folder moves to `/_WRAPPED PROJECTS` |
-| ✅ Live | Project Archive | Archive a project to remove from active dashboard; Dropbox folder moves to `/_archived` |
-| ✅ Live | Project Reactivate | Restore a wrapped or archived project back to active status |
-| ✅ Live | Dropbox Folder Import | Admin bulk-import: scans Dropbox operations root for project folders and auto-creates ProjectSheet records; parses folder naming convention (YYYY-MM_Client_Project) |
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Project dashboard | Landing page lists every project with quick links to each budget |
+| ✅ | Create project | New project: name, client, optional template; auto-creates first budget |
+| ✅ | Template at creation | Pick a pre-built template — budget lines auto-populate |
+| ✅ | Multiple budgets per project | Each project can have several budget versions in parallel |
+| ✅ | Budget modes | Three modes: **Estimated** (baseline), **Working** (live), **Actual** (real spend) |
+| ✅ | Version management | Working budget can be archived & cloned; estimated stays read-only when a working sibling exists |
+| ✅ | Project archive / reactivate | Archived projects move to `_ARCHIVED/` in Dropbox; reactivate restores them |
+| ✅ | Project access control | Per-project member roles (`viewer`, `editor`, `dept_head`, `admin`, `super_admin`) |
 
 ---
 
-## Budget Entry
+## Budget Line Editing
 
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Quick Entry Panel | Slide-over panel with every COA department; pre-filled suggested rates for all labor and expense items; check multiple items across departments and add them all at once |
-| ✅ Live | QE Sorted Insertion | Lines added via Quick Entry appear in the correct department order (e.g. Talent: Principal > Host > Extra; Meals: Breakfast > Lunch) |
-| ✅ Live | QE Kit Fees Under Parent | Kit fees added via Quick Entry automatically attach below their parent labor line |
-| ✅ Live | + Single Line (modal) | Add one line at a time — pick department, description, labor vs. flat, qty/days/rate |
-| ✅ Live | + Line per Section | Each department section has its own quick-add button that pre-selects that department |
-| ✅ Live | Inline Editing | Click any cell in a budget line to edit it in place — saves automatically via AJAX |
-| ✅ Live | Labor Lines (qty x days x rate) | Full union/non-union labor math: ST/OT/DT, fringe, agent % |
-| ✅ Live | Non-Labor / Flat Lines | Expense lines: qty x days x unit rate, or a single flat dollar amount |
-| ✅ Live | Delete Line | Remove any line with a trash icon; prompts confirmation |
-| ✅ Live | Reorder Lines (drag) | Drag lines up/down within a section to reorder them |
-| ✅ Live | Search / Filter Lines | Search box filters all lines across all departments in real time |
-| ✅ Live | Sync-Omit Flag | Flag a budget line to exclude it from schedule-driven recalculation; line zeroes out when omitted, restores on re-enable |
-
----
-
-## Rates & Math
-
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Rate Types | 10hr Day (default), 8hr Day, 12hr Day, Flat Day, Flat Project, Hourly, Custom |
-| ✅ Live | OT / DT Calculation | Auto-calculates overtime and double time based on rate type and hours |
-| ✅ Live | Fringe / Benefits | Assign a fringe bucket (None, Union, Employer, State, Local, Payroll) to each labor line |
-| ✅ Live | Agent % | Optional agent commission percentage per labor line; on_top or inclusive fee modes |
-| ✅ Live | Workers' Comp | Auto-calculated as a % of total labor; set in budget settings |
-| ✅ Live | Payroll Service Fee | Auto-calculated as a % of total labor; set in budget settings |
-| ✅ Live | Production Company Fee | Flat % added on top of all costs; shown separately or dispersed into line rates |
-| ✅ Live | Dispersed Fee Mode | When enabled, the production fee is spread invisibly into every line rate — no fee line shown on any export |
-
----
-
-## Top Sheet (Budget Summary)
-
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Top Sheet Tab | One-page summary showing every COA department with its total, subtotal, fee, and grand total |
-| ✅ Live | Estimated vs. Working Variance | In working mode, shows frozen estimate, current working total, and dollar variance per department |
-| ✅ Live | Department Drill-Down | Double-click any department row to jump to those detail lines |
-| ✅ Live | Tax Credit / Incentive Lines | Separate section below the grand total for tax incentive tracking |
-| ✅ Live | Collapsible Department Rows | Toggle detail lines for any department directly on the top sheet |
-
----
-
-## Working Budget Tracking
-
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Frozen Estimated Snapshot | When you create a Working budget, the Estimated column locks to that moment's values and never changes |
-| ✅ Live | Working Total Column | Shows live recalculated totals as you make changes |
-| ✅ Live | Variance Column | Color-coded over/under variance between Estimated and Working per line and per section |
-| ✅ Live | Cross-Budget Reference | View the Working budget's totals as a column while viewing the Estimated budget |
-| ✅ Live | Float Bar (bottom) | Sticky bar always showing Subtotal / Fee / Grand Total — updates live as you type |
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Inline editing | Click any cell on the line table to edit description, qty, days, rate, fringe, agent% |
+| ✅ | + Single Line | Add one line to a section via modal |
+| ✅ | + Quick Entry | Add many lines at once from a curated catalog of common production roles + items |
+| ✅ | Duplicate row | Copies an existing line; prompts whether to copy schedule cells too |
+| ✅ | Drag-reorder | Drag rows up/down; sort_order persists |
+| ✅ | Bulk delete | Multi-select rows then delete |
+| ✅ | Section auto-totals | Each section header shows running total; recalculates on every edit |
+| ✅ | Auto-line: Workers' Comp | % of gross labor wages, default 3%, lands in section 6000 (Insurance) |
+| ✅ | Auto-line: Production Liability Insurance | Mode picker (off / % of labor / flat $); default ON at 1.5% on new budgets |
+| ✅ | Auto-line: Payroll Service Fee | % of gross labor wages, default 1.75%, lands in section 6500 (Administrative) |
+| ✅ | Production Company Fee — flat or dispersed | Toggle in Settings; flat shows a separate fee line, dispersed spreads into section totals |
+| ✅ | Per-section fee exemption | Per-budget checklist of COA sections that pass through without the fee markup |
+| ✅ | Fringes excluded from fee base | Default ON: P&W / P/H/W fringes don't compound the Prod Co Fee |
+| ✅ | Replace Qty with Payroll Co. on labor | Labor rows show payroll-company text input (placeholder for future linked-payroll feature); non-labor rows keep Qty |
+| ✅ | Conditional column rendering | Payroll / OT / Fringe / Agent% / Disc% columns hide when no row in the section has data |
+| ✅ | OT Detail panel | Right-click any labor line → ST/OT/DT breakdown by week per the payroll profile |
+| ✅ | Schedule Detail panel | Click any auto-calc line (per diem, hotel, flight, etc.) → per-day, per-person breakdown with drift indicator |
 
 ---
 
 ## Schedule (Gantt)
 
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Schedule Tab | Day-by-day Gantt grid showing all labor lines across shoot dates |
-| ✅ Live | Day Types | Click any cell to set day type: Shoot, Travel, Prep, Hold, Off, Half, Kill Fee |
-| ✅ Live | Schedule-Driven Labor | Toggle "Use Schedule" on any labor line — its days auto-count from the Gantt |
-| ✅ Live | Auto-Enable Use Schedule | When a day is clicked for the first time on a line, "Use Schedule" turns on automatically and manual OT is zeroed out |
-| ✅ Live | OT from Schedule | Per-day OT hours feed the labor calc engine |
-| ✅ Live | Department Sub-Group Headers | Production Staff section shows department headers (Camera, G&E, Production, etc.) in both the budget detail view and the Gantt |
-| ✅ Live | Estimated vs. Working Schedule | Separate schedule grids for Estimated and Working modes |
-| ✅ Live | + Assign Button | Each labor line has an Assign button to attach a specific crew member from the roster |
-| ✅ Live | Production Days | Shoot day count excludes travel/hold/prep days; tracks actual production days independently of calendar dates |
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Calendar grid | Each labor line → row; each date → column; click cells to set day type |
+| ✅ | Day types | Work / Travel / Hold / Half / Kill Fee / Custom / Off — color-coded |
+| ✅ | Multi-instance crew | Lines with qty>1 expand to one row per crew member |
+| ✅ | Crew assignment | Click "+ Assign" → pick from crew DB or add new person inline |
+| ✅ | Manual OT hours | Right-click cell → "OT Hours" → enters manually; flows into payroll calc on hourly rate types |
+| ✅ | Per-cell flags | Right-click cell → toggle flight / hotel / car rental / mileage / per diem / working meal |
+| ✅ | Per-Diem variants | 4 separate flags: Full / Breakfast / Lunch / Dinner — each has its own auto-line + rate |
+| ✅ | Production Day toggle | Top-row marker for "real on-set days vs prep / remote / travel" — feeds downstream calcs |
+| ✅ | Meal flags (per-date) | Top-row toggles: Courtesy Breakfast / 1st Meal / 2nd Meal — applied to all working crew that date |
+| ✅ | Working Meal flag (per-cell) | Per-person opt-in to a working meal on a specific day |
+| ✅ | Multi-select + Delete | Drag-select cells then Delete/Backspace clears day type + all flags + OT in one action |
+| ✅ | Copy/paste | Cmd+C / Cmd+V across selected cells |
+| ✅ | Schedule sync to budget | Every cell change re-runs sync; auto-lines (per diem, hotel, flight, mileage, meals) update in lockstep |
+| ✅ | Notes | Right-click → add free-text note per cell |
 
 ---
 
-## Crew / Contact Sheet
+## Travel Tab
 
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Crew Tab | Auto-generated contact sheet from all labor lines in the budget |
-| ✅ Live | Contact Fields | Name, phone, email, role, department per crew member |
-| ✅ Live | Department Grouping | Crew grouped by COA department in alphabetical department order |
-| ✅ Live | Multi-select for Export | Ctrl/Cmd-click to select multiple crew; right-click to omit from printed sheet |
-| ✅ Live | Kit Fees on Crew | Kit fee amount tracked per crew assignment |
-| ✅ Live | Agent System | Crew members can have multiple support contacts (agents, managers, publicists, attorneys, PAs); tracks fee %, fee type (on_top/inclusive), and visibility flags; primary agent fee auto-syncs to crew default_agent_pct |
-| ✅ Live | Apply Default Rate on Assign | When assigning crew to a budget line, popup offers to apply default rate and fringe from the crew record |
-
----
-
-## Call Sheet
-
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Call Sheet View | Full two-page formatted call sheet for any shoot day — auto-populated from the schedule |
-| ✅ Live | Editable Fields | All call sheet fields (call times, weather, meals, notes, etc.) are editable inline and auto-save |
-| ✅ Live | Key Personnel Section | Director, DP, AD, UPM, and other key personnel with contact info; defaults empty on first visit, populated from crew data |
-| ✅ Live | Useful Contacts Section | Manually entered contacts or selected from project contact sheet; defaults empty on first visit |
-| ✅ Live | Locations | Location cards with address, map link, and contacts per location |
-| ✅ Live | Crew Call Times | Per-person call time grid auto-populated from crew assignments |
-| ✅ Live | Department Notes | Optional notes per department printed on the call sheet |
-| ✅ Live | Extras Grid | Number of extras + call time per category |
-| ✅ Live | Advance Schedule | Text block for next-day/next-week advance info |
-| ✅ Live | Meal Counts from Live Headcount | Meal counts derived from actual crew headcount for the shoot day (non-off ScheduleDay entries), not static budget quantities |
-| ✅ Live | Time Standardization | All times normalized to H:MM AM/PM format; general crew call restricted to TBD or a specific time |
-| ✅ Live | Auto-Fetch Weather | Fetches temperature, precipitation probability, and weather code from Open-Meteo for shoot date + location |
-| ✅ Live | Auto-Fetch Sunrise / Sunset | Fetches sunrise and sunset times from sunrise-sunset.org for the shoot location and date |
-| ✅ Live | Auto-Fetch Nearest Hospital | Finds nearest hospitals within 15km using OpenStreetMap Overpass API |
-| ✅ Live | Print / Export | Clean print-optimized CSS — header, page 1, page 2; all UI chrome hidden |
-| ✅ Live | Send Call Sheet via Email | Distribute call sheet to crew via email from contact@thefp.tv; each recipient gets a personal view/confirm link |
-| ✅ Live | View Tracking | When a recipient opens their email link, the server records a viewed timestamp |
-| ✅ Live | Confirmation Tracking | Each email includes a "Confirm My Call" button; confirmation is recorded with timestamp |
-| ✅ Live | Distribution History | Internal distribution panel shows all prior sends with version, timestamp, and per-recipient status badges (pending / sent / viewed / confirmed) |
-| ✅ Live | Public Confirm Page | Clean standalone page (no login required) — shows project, date, version, and confirm button |
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Day-card layout | Each scheduled date is its own collapsible card; header shows pretty date + crew count |
+| ✅ | Editable day-type | Pill-style dropdown per row to change Work → Travel → Hold etc. without leaving the tab |
+| ✅ | Flag toggles per row | Pill buttons for Flight / Hotel / Car Rental / Mileage |
+| ✅ | Per-Diem dropdown | Select No PD / Full / Breakfast / Lunch / Dinner per row |
+| ✅ | "Add details" button | Click to open centered modal with reservation fields (flight #, airline, depart/arrive, hotel name, check-in/out, room type, rental co, pickup/return, miles, route, confirmation #, notes) |
+| ✅ | Detail persistence | TravelDetail rows live alongside ScheduleDay; survive flag-toggle cycles |
+| ✅ | "+ Add to this day" | Per-card button to add another crew member to an existing date with one click |
+| ✅ | "Only flagged" filter | Hide unflagged crew once the list grows |
+| ✅ | Expand all / Collapse all | Bulk controls above the day list |
+| 🔧 | Call sheet email integration | Travel details to flow into call sheet emails per-crew per-date |
 
 ---
 
-## Locations
+## Catering Tab
 
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Location Library | Global reusable location database across all projects |
-| ✅ Live | Google Maps Autocomplete | Location name and address fields use Google Maps Places Autocomplete for address suggestions |
-| ✅ Live | Auto Title Case | Location name, facility, and contact fields auto-capitalize to Title Case on save |
-
----
-
-## Templates
-
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Save as Template | Save any budget's lines as a reusable named template — all lines per COA section preserved (no deduplication) |
-| ✅ Live | Apply Template to Budget | Load a template into a budget to pre-populate lines with qty, days, and rate |
-| ✅ Live | Template on New Project | Template picker dropdown on the New Project modal; lines auto-apply to the first budget |
-| ✅ Live | Small Live Production Template | Built-in template: Director, Host, UPM, Key PA, 2x Camera Op, Video Engineer, Sound Mixer, camera/lens/monitor/media gear, lighting + grip package, AV/control room/streaming, production car, fuel/parking/mileage, lunch/catering |
-| ✅ Live | Template Editor | Create and edit templates from the Templates page; add/remove/edit individual lines |
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Day-card layout | Mirrors Travel tab — every scheduled day is its own collapsible card |
+| ✅ | Day-of-week + Production-Week label | Each card shows weekday + "Wk N" matching the payroll cycle |
+| ✅ | Production Day badge | Cards for production days get a green badge |
+| ✅ | Per-day meal toggles | Courtesy Breakfast / 1st Meal / 2nd Meal in each card body |
+| ✅ | Per-card people lists | Working crew, working-meal opt-ins, per-diem people (with mode) listed in the body |
+| ✅ | Expected $ per day | Computed live from headcount × rate per active meal type |
+| ✅ | Per-person Per Diem rollup | Below day cards: weekly $ matrix per person + project total + day count |
+| ✅ | Per-person Working Meal rollup | Same shape, only renders if any line has working-meal opt-ins |
+| ✅ | Caterer Bill entry | Add daily/weekly billed amounts with vendor + period + note |
+| ✅ | Drift indicator | Top summary shows expected vs caterer-billed with delta color-coded |
 
 ---
 
-## Settings
+## Documents (Receipt OCR + Filing)
 
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Budget Settings | Name, start/end date, target budget, company fee %, dispersed toggle, payroll settings |
-| ✅ Live | Start Date Auto-fills End Date | Picking a start date defaults end date to +14 days if end is empty |
-| ✅ Live | Timezone Auto-detect | Default timezone auto-fills from the browser/device on project creation; defaults to America/Los_Angeles |
-| ✅ Live | Production Details (per budget) | Client name, prepared-by name/title/email/phone stored on each budget |
-| ✅ Live | Company Profile (global) | Company name, address, phone, email, website — used on all PDF exports |
-| ✅ Live | Fringe Config | Set the % rate for each fringe bucket (Union, Employer, State, Local, Payroll) |
-| ✅ Live | Payroll Profiles | Named payroll setups (e.g. "ADP Weekly") with week-start day and payroll fee % |
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Drag-drop or browse upload | Drop receipts/invoices/PDFs/HEIC into the docs tab |
+| ✅ | Camera capture | Mobile-friendly "Take Photo" button |
+| ✅ | Veryfi OCR | Each upload runs through Veryfi → vendor / amount / date / category extracted |
+| ✅ | Auto-rename | High-confidence docs get filed with `YYYY-MM-DD_RECEIPT_Category_Vendor_Amount.pdf` naming |
+| ✅ | Auto-file to Dropbox | Receipts → `01_ADMIN/PROCESSED DOCUMENTS/`, invoices → `01_ADMIN/CONTRACTS & INVOICES/`, etc. by detected type |
+| ✅ | Low-confidence review queue | Files that don't pass auto-file confidence threshold flagged for manual review |
+| ✅ | Sort + filter list | Previously-uploaded list sortable by upload date / filename / type / vendor / amount / size |
+| ✅ | Inline rename | Click any filed filename → edit → Dropbox file is renamed in lockstep |
+| ✅ | Click-to-open detail modal | Click a row → preview pane (image or PDF) + editable vendor / amount / doc date / category / note |
+| ✅ | Verify against Dropbox | Background check on every "Filed" row; missing files → red banner |
+| ✅ | Scan Dropbox (reconcile) | Super-admin tool: walks the project's doc folders and creates DocUpload rows for any orphan files |
+| ✅ | Duplicate routing | Same content uploaded twice → second copy routes to `/_DUPLICATES/` subfolder, original stays clean |
+| ✅ | Wipe all (testing) | Super-admin tool: clears every DocUpload + moves filed files to `/_TRASH/{date}/` |
+
+---
+
+## Top Sheet
+
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Section-grouped totals | All COA sections rolled up: Estimated / Working / Actual / Variance |
+| ✅ | Auto-calc inline rows | Workers' Comp / Production Liability / Payroll Service Fee shown as muted sub-lines under their home sections |
+| ✅ | Fee-exempt annotation | Sections marked exempt show "(Prod Co Fee exempt)" inline in italic amber |
+| ✅ | Tax credits row | Subtracted from grand total when applicable |
+| ✅ | Float bar | Sticky bottom bar shows Subtotal · Prod Fee · Grand Total — recalculates live |
+| ✅ | Variance highlighting | Over/under styled green / red |
+| ✅ | Click section → jump to budget | Top sheet rows navigate into the section detail |
 
 ---
 
 ## Exports
 
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Top Sheet PDF | One-page landscape PDF in Movie Magic / Showbiz industry format |
-| ✅ Live | Full Detail PDF | Multi-page PDF with every line item, section totals, and variance columns |
-| ✅ Live | Top Sheet CSV | Comma-separated summary export for Excel |
-| ✅ Live | Line Detail CSV | Full line-by-line CSV export |
-| ✅ Live | Company Header on PDF | PDF includes company name, address, phone, email from global Settings |
-| ✅ Live | Production Details on PDF | PDF includes client name, version, prepared-by info from budget Settings |
-| ✅ Live | Dispersed Fee on PDF | When dispersed mode is on, no fee line appears anywhere on PDF exports |
-| 📋 Planned | Gmail Draft Integration | Send budget PDF as a Gmail draft attachment for approval workflows |
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | PDF — Top Sheet | Section-grouped one-pager |
+| ✅ | PDF — Full Detail | Every line, organized by section |
+| ✅ | CSV — Top Sheet | Section totals |
+| ✅ | CSV — Line Detail | Every line with its math |
+| ✅ | MMB tab-delimited | Movie Magic Budgeting import format |
+| ✅ | ShowBiz tab-delimited | ShowBiz Budgeting import format |
+| ✅ | Export Options dialog | Pre-export prompt: suppress zero lines, override Prod Co Fee dispersed/separate |
+| ✅ | Suppress zero lines | Hide rows whose total rounds to $0 from the export |
+| ✅ | Per-export fee override | Pick "use current setting" / "separate line" / "dispersed" per export without changing the saved budget |
+| ✅ | Conditional columns | Empty Payroll / OT / Fringe / Agent% / Disc% columns drop entirely |
+| ✅ | Dispersed-mode rounding (PDF only) | Each line + section + grand total rounds to nearest $10 deterministically — clean numbers for client presentation |
 
 ---
 
-## Documents (Docs Module)
+## Schedule-Driven Auto-Calcs
 
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Docs Tab | Project-scoped document upload and management; accessible from budget views and project pages |
-| ✅ Live | Upload to R2 + Dropbox | Files uploaded to R2 cloud storage and auto-filed to Dropbox project folder (01_ADMIN/PROCESSED DOCUMENTS/{uploader}/) |
-| ✅ Live | File Deduplication | SHA-256 hash check prevents duplicate uploads |
-| ✅ Live | Docs Access Control | Project role enforcement — docs_only users restricted to docs routes; admins access all project docs |
-
----
-
-## Admin / System
-
-| Status | Feature | Plain English Description |
-|--------|---------|--------------------------|
-| ✅ Live | Multi-User Auth | DB-backed User model with email/password; Flask-Login session auth |
-| ✅ Live | Role-Based Access | User roles: super_admin, admin, editor, viewer, docs_only |
-| ✅ Live | Per-Project Access | ProjectAccess table scopes permissions per user per project (owner/collaborator) |
-| ✅ Live | Admin Panel | Create users, edit roles, assign project access, reset passwords at /admin/users |
-| ✅ Live | User Profile | Update name/email/phone and change password at /profile |
-| ✅ Live | Mandatory Password Change | New users forced to change temporary password on first login |
-| ✅ Live | Super Admin Bootstrap | First-run seed from ADMIN_EMAIL/ADMIN_PASSWORD env vars |
-| ✅ Live | Health Check | `/health` endpoint for Render uptime monitoring |
-| ✅ Live | Auto DB Migrations | New database columns added automatically on startup — no manual migration needed |
-| ✅ Live | Postgres + SQLite | Uses Postgres on Render (production), SQLite locally (development) |
-| ✅ Live | CSV Import | Upload a CSV to bulk-import budget lines into any section |
-| ✅ Live | Dropbox Business Namespace Routing | Supports Dropbox Business shared folders via namespace_id routing |
-| ✅ Live | Mobile / Tablet UX | Budget table scroll wrapper for horizontal overflow; long-press (500ms) context menu for touch devices |
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Per Diem (4 variants) | Full / Breakfast / Lunch / Dinner — each its own budget line, fed by per-cell schedule flags |
+| ✅ | Hotels by role group | Hotel — Talent / ATL / Crew — separate lines fed by hotel flag + role group of parent line |
+| ✅ | Flights by role group | Same shape as hotel |
+| ✅ | Mileage by role group | Same shape |
+| ✅ | Working Meals | Per-cell flag → per-person count |
+| ✅ | First / Second Meal | Per-date flag × working headcount that day |
+| ✅ | Courtesy Breakfast | Same |
+| ✅ | Craft Services | Auto-set on every non-off scheduled day |
+| ✅ | Manual OT on flat / weekly rates | "+2h" entered on a schedule cell now calculates OT even when rate type is flat / week / no payroll profile |
+| ✅ | Schedule mode dedup | Legacy NULL-mode rows + new mode-tagged rows don't double-count |
 
 ---
 
-## Workflow: Offline to Live
+## Settings
 
-```
-1. Work locally:   python app.py   ->   http://localhost:5000
-2. Test your changes until the feature works correctly
-3. Commit:         git add -A && git commit -m "describe what you built"
-4. Push live:      git push origin main
-5. Render auto-deploys in ~2 minutes
-```
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Project name & client | Edit names from Settings tab |
+| ✅ | Production Company Fee % | Plus dispersed toggle |
+| ✅ | Sections exempt from Prod Co Fee | Per-COA-section checkboxes |
+| ✅ | Exclude fringes from fee base | Default ON |
+| ✅ | Workers' Comp % | Default 3% |
+| ✅ | Payroll Service Fee % | Default 1.75% |
+| ✅ | Production Liability Insurance | Mode (off / % / flat) + value |
+| ✅ | Payroll profile | Pick the union profile that drives ST/OT/DT calculations |
+| ✅ | Payroll week start | Override the profile's default week-start day |
+| ✅ | Timezone | Per budget |
+| ✅ | Production details for PDFs | Client name, prepared by, title, email, phone — appears on PDF cover |
 
-No manual deploy steps needed after initial setup.
+---
+
+## Admin / Catalog
+
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Global Quick Entry catalog | Super-admin manages the curated list of common roles + items shown in QE |
+| ✅ | Bulk operations | Multi-select catalog items → delete or move to another category |
+| ✅ | Code repair tool | Super-admin: re-map account codes when COA changes |
+| ✅ | Veryfi diagnostic | Super-admin status page for OCR config |
+| ✅ | Dropbox diagnostic | Super-admin status page for filing path config |
+
+---
+
+## 📋 Activity Tab + Undo (planned — next build)
+
+User request: every change made to a budget gets logged with user, timestamp, and a per-action `$ delta` showing how the change moved the grand total. List view by tab/section with filters. Per-row "Undo" button that reverses the change.
+
+| Visibility level | What they see |
+|---|---|
+| Super admin | Everything across every project |
+| Admin | Everything in projects they have admin role on |
+| Department head | Only changes made within their `dept_code` |
+| Editor / Viewer | Only their own changes |
+
+Implementation outline:
+- New `AuditLog` table: `(id, user_id, project_id, budget_id, action, target_type, target_id, payload_before_json, payload_after_json, budget_total_before, budget_total_after, created_at)`
+- Hook: small wrapper around every mutating endpoint that snapshots before/after totals
+- Activity tab: paginated list with filters (user, action type, date range, target type)
+- Undo: replay the inverse of the recorded change. Some actions inherently undoable (field edits, deletes, schedule cell flips); some not (e.g. Dropbox file moves) — those rows show "Cannot undo" with explanation.
+
+---
+
+## Cross-Cutting
+
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Live multi-user | Socket.io presence + live patches when teammates edit the same budget |
+| ✅ | Auto-save | Inline edits save on blur; no explicit "Save" needed |
+| ✅ | Per-worker schema self-heal | Critical column adds run on every gunicorn worker boot — production deploys never break on schema drift |
+| ✅ | Conversation archive | Each Claude session snapshot lands in Dropbox at `SOFTWARE BUILDS/FPBudget/conversation_archive/` |
+| ✅ | Cross-device session resume | `claude --resume <id>` continues this conversation on either Mac via Dropbox sync |
+
+---
+
+## Glossary
+
+- **Dispersed mode**: Production Company Fee is spread proportionally across every section's total instead of shown as its own line. Some clients prefer this for presentations.
+- **Fee base**: The dollar amount the Prod Co Fee applies to. Sections marked exempt and (when configured) labor fringes are subtracted from it.
+- **Schedule mode**: Each schedule view is either "estimated" or "working" — they're independent so locking the estimate doesn't freeze you out of the working schedule.
+- **Auto-line**: A budget line whose qty/days are computed from the schedule rather than typed in. Identified by a `line_tag` like `per_diem_full` or `hotel_crew`.
+
+---
+
+## Recent Pushes
+
+| Commit | Date | Summary |
+|---|---|---|
+| `a3fefae` | 2026-04-28 | PDF dispersed-rounding: flat $10, deterministic per-line |
+| `db92d05` | 2026-04-28 | Conditional columns (Payroll / OT / Fringe / Agent% / Disc%) |
+| `7f7d120` | 2026-04-28 | Travel modal centered + larger fonts; fix Catering "Loading…" stuck |
+| `a6c163f` | 2026-04-27 | Catering day-cards + per-person weekly rollups |
+| `cdf373c` | 2026-04-27 | Drop emojis, editable day-type in Travel |
+| `953c2a3` | 2026-04-27 | Travel day-card layout + Add Travel Day fix |
+| `8474e8b` | 2026-04-27 | Production Liability Insurance auto-line |
+| `7156182` | 2026-04-27 | Per-export options dialog (suppress zeros + fee override) |
