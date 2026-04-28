@@ -711,3 +711,37 @@ class DocUpload(db.Model):
 
     uploader  = db.relationship("User",         foreign_keys=[uploader_id])
     project   = db.relationship("ProjectSheet", foreign_keys=[project_id])
+
+
+class ActivityLog(db.Model):
+    """Per-budget audit trail for the Activity tab. Each mutation that
+    changes the budget's data emits one row. Visibility is scoped per-user
+    (super_admin sees all; admin sees their projects; dept_head sees their
+    dept_code; everyone else sees their own changes). The before/after
+    JSON snapshot supports single-row Undo from the UI.
+
+    Schema is intentionally append-only — `undone_at` flips when an entry
+    is reverted, but the original row is never deleted, so the trail
+    stays intact.
+    """
+    __tablename__ = "activity_log"
+    id            = db.Column(db.Integer, primary_key=True)
+    project_id    = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=True)
+    budget_id     = db.Column(db.Integer, db.ForeignKey("budget.id"),         nullable=True)
+    user_id       = db.Column(db.Integer, db.ForeignKey("users.id"),          nullable=True)
+    dept_code     = db.Column(db.Integer, nullable=True)            # cached from line for filtering
+    action        = db.Column(db.String(20), nullable=False)        # create | update | delete | restore | sync
+    entity_type   = db.Column(db.String(40), nullable=False)        # budget_line, schedule_day, crew_assignment, ...
+    entity_id     = db.Column(db.Integer, nullable=True)            # PK of affected row (null for bulk ops)
+    entity_label  = db.Column(db.String(300), nullable=True)        # human-readable label
+    field_changes = db.Column(db.Text, nullable=True)               # JSON: {"field":[old,new], ...} for updates
+    before_json   = db.Column(db.Text, nullable=True)               # full snapshot pre-change (for undo)
+    after_json    = db.Column(db.Text, nullable=True)               # full snapshot post-change
+    dollar_delta  = db.Column(db.Numeric(14, 2), default=0)         # signed change in line est_total
+    note          = db.Column(db.String(500), nullable=True)
+    created_at    = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    undone_at     = db.Column(db.DateTime, nullable=True)
+    undone_by_id  = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+
+    user      = db.relationship("User",         foreign_keys=[user_id])
+    undone_by = db.relationship("User",         foreign_keys=[undone_by_id])

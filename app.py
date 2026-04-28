@@ -87,7 +87,7 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     ProductionDay, Location, LocationDay, CallSheetData,
                     SupportContact, ProjectUnion, ProjectClient, CallSheetSend, CallSheetRecipient,
                     BudgetDirectContact, CompanySettings, DocUpload, CatalogItem,
-                    TravelDetail, CateringBill)
+                    TravelDetail, CateringBill, ActivityLog)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -1427,6 +1427,140 @@ def _require_project_role(pid, min_role='viewer'):
     cur_idx = _HIERARCHY.index(role) if role in _HIERARCHY else 0
     if cur_idx < min_idx:
         abort(403)
+
+
+# ── Activity log helpers ─────────────────────────────────────────────────
+# Single source of truth for the Activity tab. Every mutation that
+# touches budget data calls _log_activity(...) so the audit trail stays
+# complete. Visibility scoping is enforced in _scoped_activity_query —
+# super_admin sees all; admin sees their projects; dept_head sees their
+# dept_code; everyone else sees their own changes.
+def _budget_line_snapshot(ln):
+    """Pull a JSON-serializable snapshot of a BudgetLine. Used as the
+    before/after blob so undo can restore the exact prior state."""
+    if ln is None:
+        return None
+    return {
+        "id":             ln.id,
+        "budget_id":      ln.budget_id,
+        "account_code":   ln.account_code,
+        "account_name":   ln.account_name,
+        "description":    ln.description,
+        "is_labor":       bool(ln.is_labor),
+        "quantity":       float(ln.quantity or 0),
+        "days":           float(ln.days or 0),
+        "rate":           float(ln.rate or 0),
+        "kit_fee":        float(getattr(ln, 'kit_fee', 0) or 0),
+        "fringe_code":    getattr(ln, 'fringe_code', None),
+        "agent_pct":      float(ln.agent_pct or 0),
+        "rate_type":      getattr(ln, 'rate_type', None),
+        "payroll_co":     getattr(ln, 'payroll_co', None),
+        "estimated_total": float(ln.estimated_total or 0),
+        "working_total":  float(ln.working_total or 0) if ln.working_total is not None else None,
+        "line_tag":       getattr(ln, 'line_tag', None),
+        "sync_omit":      bool(getattr(ln, 'sync_omit', False)),
+        "sort_order":     getattr(ln, 'sort_order', 0),
+        "parent_line_id": getattr(ln, 'parent_line_id', None),
+        "comp_type":      getattr(ln, 'comp_type', None),
+    }
+
+
+def _log_activity(*, action, entity_type, entity_id=None, entity_label=None,
+                  budget_id=None, project_id=None, dept_code=None,
+                  before=None, after=None, dollar_delta=0, note=None,
+                  field_changes=None):
+    """Append one row to activity_log. Returns the new row (uncommitted)
+    so the caller can attach more context if needed. Safe to call inside
+    any request handler — failures are swallowed and logged so they
+    never block the user-facing mutation.
+    """
+    import json as _json_act
+    try:
+        # Derive project_id from budget if not given
+        if project_id is None and budget_id is not None:
+            _b = Budget.query.get(budget_id)
+            if _b:
+                project_id = _b.project_id
+        # Derive dept_code from before/after blob (account_code → COA section)
+        if dept_code is None:
+            for blob in (after, before):
+                if isinstance(blob, dict) and blob.get('account_code'):
+                    dept_code = int(blob['account_code'])
+                    break
+        # Compute dollar_delta from before/after if not given
+        if dollar_delta in (0, None) and (before or after):
+            b_total = (before or {}).get('estimated_total', 0) or 0
+            a_total = (after  or {}).get('estimated_total', 0) or 0
+            try:
+                dollar_delta = float(a_total) - float(b_total)
+            except (TypeError, ValueError):
+                dollar_delta = 0
+        # Compute field_changes if updating and not provided
+        if field_changes is None and action == 'update' and isinstance(before, dict) and isinstance(after, dict):
+            _changes = {}
+            for k in set(before) | set(after):
+                bv, av = before.get(k), after.get(k)
+                if bv != av and k not in ('estimated_total',):  # est_total is the dollar_delta
+                    _changes[k] = [bv, av]
+            field_changes = _changes or None
+
+        row = ActivityLog(
+            project_id   = project_id,
+            budget_id    = budget_id,
+            user_id      = current_user.id if getattr(current_user, 'is_authenticated', False) else None,
+            dept_code    = dept_code,
+            action       = action,
+            entity_type  = entity_type,
+            entity_id    = entity_id,
+            entity_label = (entity_label or '')[:300] if entity_label else None,
+            field_changes = _json_act.dumps(field_changes, default=str) if field_changes else None,
+            before_json  = _json_act.dumps(before, default=str) if before is not None else None,
+            after_json   = _json_act.dumps(after,  default=str) if after  is not None else None,
+            dollar_delta = round(float(dollar_delta or 0), 2),
+            note         = (note or '')[:500] if note else None,
+        )
+        db.session.add(row)
+        return row
+    except Exception as _e:
+        logging.warning(f"[activity] log failed: {_e}")
+        return None
+
+
+def _scoped_activity_query(budget_id=None, project_id=None):
+    """Apply role-based visibility scoping to an ActivityLog query.
+
+    - super_admin → all rows
+    - admin       → rows on projects they have ANY ProjectAccess to
+    - dept_head   → rows where dept_code matches their dept_code
+    - editor/viewer/other → rows they themselves wrote
+    """
+    from sqlalchemy import or_ as _or_act
+    q = ActivityLog.query
+    if budget_id is not None:
+        q = q.filter(ActivityLog.budget_id == budget_id)
+    if project_id is not None:
+        q = q.filter(ActivityLog.project_id == project_id)
+    if not current_user.is_authenticated:
+        return q.filter(ActivityLog.id == -1)  # nothing
+    role = current_user.role
+    if role == 'super_admin':
+        return q
+    if role == 'admin':
+        accessible = [pa.project_id for pa in
+                      ProjectAccess.query.filter_by(user_id=current_user.id).all()]
+        if not accessible:
+            return q.filter(ActivityLog.user_id == current_user.id)
+        return q.filter(_or_act(
+            ActivityLog.project_id.in_(accessible),
+            ActivityLog.user_id == current_user.id,
+        ))
+    if role == 'dept_head' and current_user.dept_code:
+        return q.filter(_or_act(
+            ActivityLog.dept_code == current_user.dept_code,
+            ActivityLog.user_id == current_user.id,
+        ))
+    # editor / viewer / line_producer / docs_only → own changes only
+    return q.filter(ActivityLog.user_id == current_user.id)
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -3034,9 +3168,13 @@ def upsert_line(pid, bid):
 
     if lid:
         ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
+        _act_before = _budget_line_snapshot(ln)
+        _act_is_create = False
     else:
         ln = BudgetLine(budget_id=bid)
         db.session.add(ln)
+        _act_before = None
+        _act_is_create = True
         # Default sort_order for newly-created lines = MAX(sort_order)+10
         # in the SAME (budget, account_code) section. Without this, new
         # rows defaulted to 0 and showed up at the TOP of the section,
@@ -3158,6 +3296,30 @@ def upsert_line(pid, bid):
     db.session.commit()
     _touch_budget(bid)
     db.session.commit()
+
+    # Activity log: record the create or update. Skipped if the row didn't
+    # actually change (e.g. autosave on a focus blur with no edits).
+    try:
+        _act_after = _budget_line_snapshot(ln)
+        if _act_is_create:
+            _log_activity(
+                action='create', entity_type='budget_line',
+                entity_id=ln.id, entity_label=ln.description or ln.account_name,
+                budget_id=bid, project_id=pid,
+                before=None, after=_act_after,
+            )
+            db.session.commit()
+        elif _act_before != _act_after:
+            _log_activity(
+                action='update', entity_type='budget_line',
+                entity_id=ln.id, entity_label=ln.description or ln.account_name,
+                budget_id=bid, project_id=pid,
+                before=_act_before, after=_act_after,
+            )
+            db.session.commit()
+    except Exception as _e:
+        logging.warning(f"[activity] upsert_line log failed: {_e}")
+        db.session.rollback()
 
     fringe_cfgs = get_fringe_configs(db.session)
     if ln.use_schedule:
@@ -3538,6 +3700,9 @@ def init_working_budget(pid, bid):
 @login_required
 def delete_line(pid, bid, lid):
     ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
+    # Snapshot for activity log + undo before any cascade.
+    _act_before = _budget_line_snapshot(ln)
+    _act_label  = ln.description or ln.account_name
     # Cascade-delete every artifact tied to this line so nothing orphans.
     # Per user 2026-04-28: when a line goes, its schedule cells, crew
     # assignments, and travel details should disappear too — the budget
@@ -3560,6 +3725,20 @@ def delete_line(pid, bid, lid):
         sync_schedule_driven_lines(bid, db.session)
         db.session.commit()
     except Exception:
+        db.session.rollback()
+    # Activity log: record the delete with the full pre-snapshot so undo
+    # can recreate the line + its schedule/crew/travel children later.
+    try:
+        _log_activity(
+            action='delete', entity_type='budget_line',
+            entity_id=lid, entity_label=_act_label,
+            budget_id=bid, project_id=pid,
+            before=_act_before, after=None,
+            dollar_delta=-float((_act_before or {}).get('estimated_total', 0) or 0),
+        )
+        db.session.commit()
+    except Exception as _e:
+        logging.warning(f"[activity] delete_line log failed: {_e}")
         db.session.rollback()
     return jsonify({"ok": True})
 
@@ -6572,6 +6751,181 @@ def line_schedule_detail(pid, bid, lid):
         "total_amount": round(sum(r["amount"] for r in rows), 2),
         "stored_total": float(line.estimated_total or 0),
     })
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/activity")
+@login_required
+def activity_feed(pid, bid):
+    """Return the activity feed for this budget, scoped to the user's role.
+    Query params:
+      - filter: 'all' (default) | 'mine' | 'today' | 'week'
+      - limit:  max rows (default 200)
+    """
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'viewer')
+    import json as _json_a
+    from datetime import timedelta as _td
+    flt   = (request.args.get('filter') or 'all').lower()
+    limit = min(int(request.args.get('limit', 200) or 200), 1000)
+
+    q = _scoped_activity_query(budget_id=bid)
+    if flt == 'mine':
+        q = q.filter(ActivityLog.user_id == current_user.id)
+    elif flt == 'today':
+        q = q.filter(ActivityLog.created_at >= datetime.utcnow().date())
+    elif flt == 'week':
+        q = q.filter(ActivityLog.created_at >= datetime.utcnow() - _td(days=7))
+
+    rows = q.order_by(ActivityLog.created_at.desc()).limit(limit).all()
+    out = []
+    for r in rows:
+        try:
+            fc = _json_a.loads(r.field_changes) if r.field_changes else None
+        except (ValueError, TypeError):
+            fc = None
+        # Build a one-line "what changed" summary for the table view
+        if r.action == 'create':
+            summary = f"Created {r.entity_label or r.entity_type}"
+        elif r.action == 'delete':
+            summary = f"Deleted {r.entity_label or r.entity_type}"
+        elif r.action == 'update' and fc:
+            # Show up to 2 field changes inline; "+N more" if truncated
+            parts = []
+            for k, (bv, av) in list(fc.items())[:2]:
+                parts.append(f"{k}: {bv!r} → {av!r}")
+            extra = len(fc) - 2
+            if extra > 0:
+                parts.append(f"+{extra} more")
+            summary = f"Updated {r.entity_label or r.entity_type} — " + "; ".join(parts)
+        else:
+            summary = f"{r.action.title()} {r.entity_label or r.entity_type}"
+        out.append({
+            "id":           r.id,
+            "when":         r.created_at.isoformat() if r.created_at else None,
+            "who_id":       r.user_id,
+            "who":          r.user.name or r.user.email if r.user else "—",
+            "action":       r.action,
+            "entity_type":  r.entity_type,
+            "entity_id":    r.entity_id,
+            "entity_label": r.entity_label,
+            "summary":      summary,
+            "dollar_delta": float(r.dollar_delta or 0),
+            "undone":       bool(r.undone_at),
+            "can_undo":     (r.undone_at is None and r.action in ('create', 'update', 'delete')
+                             and r.entity_type == 'budget_line'),
+            "field_changes": fc,
+        })
+    return jsonify({"items": out, "count": len(out), "filter": flt})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/activity/<int:aid>/undo", methods=["POST"])
+@login_required
+def activity_undo(pid, bid, aid):
+    """Revert a single activity-log entry. Currently supports budget_line
+    create/update/delete. Refuses if a more recent entry has touched the
+    same entity_id (forces a manual fix so concurrent edits aren't lost)."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'editor')
+    import json as _json_u
+    row = ActivityLog.query.filter_by(id=aid, budget_id=bid).first_or_404()
+    if row.undone_at is not None:
+        return jsonify({"ok": False, "error": "Already undone"}), 409
+    if row.entity_type != 'budget_line':
+        return jsonify({"ok": False, "error": "Undo only supported on budget lines for now"}), 400
+
+    # Visibility check — user must be allowed to see this row to undo it
+    if not _scoped_activity_query(budget_id=bid).filter(ActivityLog.id == aid).first():
+        abort(403)
+
+    # Stale-check: any later entry on the same entity_id blocks undo
+    if row.entity_id is not None:
+        newer = ActivityLog.query.filter(
+            ActivityLog.budget_id == bid,
+            ActivityLog.entity_type == 'budget_line',
+            ActivityLog.entity_id == row.entity_id,
+            ActivityLog.id > row.id,
+            ActivityLog.undone_at == None,  # noqa: E711
+        ).first()
+        if newer:
+            return jsonify({
+                "ok": False,
+                "error": "stale",
+                "message": "A more recent change touched this line. Resolve manually."
+            }), 409
+
+    before = _json_u.loads(row.before_json) if row.before_json else None
+    after  = _json_u.loads(row.after_json)  if row.after_json  else None
+
+    if row.action == 'create':
+        # Revert create → delete the line (and its cascading children)
+        ln = BudgetLine.query.filter_by(id=row.entity_id, budget_id=bid).first()
+        if ln:
+            sched_ids = [r.id for r in ScheduleDay.query
+                         .filter_by(budget_line_id=ln.id).with_entities(ScheduleDay.id).all()]
+            if sched_ids:
+                TravelDetail.query.filter(TravelDetail.schedule_day_id.in_(sched_ids))\
+                    .delete(synchronize_session=False)
+                ScheduleDay.query.filter(ScheduleDay.id.in_(sched_ids))\
+                    .delete(synchronize_session=False)
+            CrewAssignment.query.filter_by(budget_line_id=ln.id)\
+                .delete(synchronize_session=False)
+            db.session.delete(ln)
+
+    elif row.action == 'update':
+        # Revert update → reapply pre-change values
+        ln = BudgetLine.query.filter_by(id=row.entity_id, budget_id=bid).first()
+        if ln and before:
+            for k in ('account_code', 'account_name', 'description', 'is_labor',
+                      'quantity', 'days', 'rate', 'kit_fee', 'fringe_code',
+                      'agent_pct', 'rate_type', 'payroll_co', 'estimated_total',
+                      'working_total', 'line_tag', 'sync_omit', 'sort_order',
+                      'parent_line_id', 'comp_type'):
+                if k in before:
+                    try:
+                        setattr(ln, k, before[k])
+                    except Exception:
+                        pass
+
+    elif row.action == 'delete':
+        # Revert delete → recreate with the same id + saved field values.
+        # Schedule/crew/travel children are NOT restored (those would need
+        # their own snapshots; phase-2 work).
+        if before and not BudgetLine.query.filter_by(id=row.entity_id, budget_id=bid).first():
+            ln = BudgetLine(id=row.entity_id, budget_id=bid)
+            for k, v in before.items():
+                if k in ('id',):
+                    continue
+                try:
+                    setattr(ln, k, v)
+                except Exception:
+                    pass
+            db.session.add(ln)
+
+    row.undone_at    = datetime.utcnow()
+    row.undone_by_id = current_user.id
+    db.session.commit()
+
+    # Sync after undo so meal/travel/per-diem totals re-snap
+    try:
+        sync_schedule_driven_lines(bid, db.session)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+    # Log the undo itself so the audit trail shows "X reverted Y"
+    try:
+        _log_activity(
+            action='restore', entity_type='budget_line',
+            entity_id=row.entity_id, entity_label=row.entity_label,
+            budget_id=bid, project_id=pid,
+            before=after, after=before,
+            note=f"Reverted activity #{row.id}",
+        )
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+    return jsonify({"ok": True})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/calc")
@@ -11045,6 +11399,33 @@ def _web_worker_essential_columns():
                      note         TEXT,
                      created_at   TIMESTAMP
                    )""",
+                # Activity log — per-budget audit trail for the Activity tab.
+                # Append-only; undone_at flips when an entry is reverted.
+                """CREATE TABLE IF NOT EXISTS activity_log (
+                     id            SERIAL PRIMARY KEY,
+                     project_id    INTEGER REFERENCES project_sheet(id),
+                     budget_id     INTEGER REFERENCES budget(id),
+                     user_id       INTEGER REFERENCES users(id),
+                     dept_code     INTEGER,
+                     action        VARCHAR(20) NOT NULL,
+                     entity_type   VARCHAR(40) NOT NULL,
+                     entity_id     INTEGER,
+                     entity_label  VARCHAR(300),
+                     field_changes TEXT,
+                     before_json   TEXT,
+                     after_json    TEXT,
+                     dollar_delta  NUMERIC(14,2) DEFAULT 0,
+                     note          VARCHAR(500),
+                     created_at    TIMESTAMP DEFAULT NOW(),
+                     undone_at     TIMESTAMP,
+                     undone_by_id  INTEGER REFERENCES users(id)
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_activity_log_budget_created "
+                "  ON activity_log (budget_id, created_at DESC)",
+                "CREATE INDEX IF NOT EXISTS ix_activity_log_user "
+                "  ON activity_log (user_id, created_at DESC)",
+                "CREATE INDEX IF NOT EXISTS ix_activity_log_dept "
+                "  ON activity_log (dept_code, created_at DESC)",
                 # One-time backfill for existing budgets that were created
                 # before Production Liability Insurance defaulted ON. Only
                 # touches rows that look untouched (mode='off' AND pct=0

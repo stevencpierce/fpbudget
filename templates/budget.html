@@ -218,6 +218,7 @@
     <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
     <button class="tab-btn" data-tab="docs">Docs</button>
     <button class="tab-btn" data-tab="actuals">Actuals</button>
+    <button class="tab-btn" data-tab="activity">Activity</button>
     <button class="tab-btn" data-tab="import-tools">Tools</button>
     {% if not dept_filter %}<button class="tab-btn" data-tab="settings">⚙ Settings</button>{% endif %}
   </div>
@@ -2753,6 +2754,35 @@
     <button class="cs-ctx-btn cs-ctx-clear" data-action="clear">Clear all omits</button>
   </div>
 
+</div>
+
+<!-- ═══ ACTIVITY ═══════════════════════════════════════════════════════ -->
+<div class="tab-panel" id="tab-activity">
+  <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.9rem;flex-wrap:wrap">
+    <h3 style="margin:0">Activity</h3>
+    <div id="activity-filters" style="display:flex;gap:.4rem">
+      <button class="btn btn-xs" data-act-filter="all"   style="opacity:1">All</button>
+      <button class="btn btn-xs" data-act-filter="mine"  style="opacity:.7">Mine</button>
+      <button class="btn btn-xs" data-act-filter="today" style="opacity:.7">Today</button>
+      <button class="btn btn-xs" data-act-filter="week"  style="opacity:.7">Last 7 days</button>
+    </div>
+    <button class="btn btn-xs btn-ghost" id="activity-refresh" style="margin-left:auto">↻ Refresh</button>
+  </div>
+  <div id="activity-empty" style="display:none;color:var(--text-muted);padding:1rem;text-align:center;font-style:italic">
+    No activity to show.
+  </div>
+  <table class="data-table" id="activity-table" style="width:100%">
+    <thead>
+      <tr>
+        <th style="width:130px">When</th>
+        <th style="width:160px">Who</th>
+        <th>What changed</th>
+        <th class="col-num" style="width:110px">$ Δ</th>
+        <th style="width:100px"></th>
+      </tr>
+    </thead>
+    <tbody id="activity-tbody"></tbody>
+  </table>
 </div>
 
 <!-- ═══ IMPORT / TOOLS ═══════════════════════════════════════════════════════ -->
@@ -9583,6 +9613,109 @@ setTimeout(function() {
     fireC();
   }
   console.log('[Travel/Catering] IIFE ready; observers attached');
+
+  // ── Activity tab ───────────────────────────────────────────────
+  // Loads the audit feed scoped to the user's role. One row per
+  // mutation, with [Undo] for budget-line changes that haven't been
+  // superseded. Filter chips: All / Mine / Today / Last 7 days.
+  let _activityLoaded = false;
+  let _activityFilter = 'all';
+  function _fmtActivityWhen(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    const now = new Date();
+    const diffMin = Math.round((now - d) / 60000);
+    if (diffMin < 1) return 'just now';
+    if (diffMin < 60) return diffMin + 'm ago';
+    if (diffMin < 24*60) return Math.round(diffMin/60) + 'h ago';
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  }
+  function _fmtActivityDelta(d) {
+    if (!d) return '';
+    const sign = d > 0 ? '+' : '−';
+    const abs  = Math.abs(d).toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:0});
+    const color = d > 0 ? '#f59e0b' : '#10b981';  // increase=warn, decrease=savings
+    return `<span style="color:${color};font-weight:600">${sign}$${abs}</span>`;
+  }
+  async function loadActivityFeed() {
+    const tbody = document.getElementById('activity-tbody');
+    const empty = document.getElementById('activity-empty');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);text-align:center;padding:1rem">Loading…</td></tr>';
+    try {
+      const r = await fetch(`/projects/${PID}/budget/${BID}/activity?filter=${_activityFilter}`);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      if (!data.items || !data.items.length) {
+        tbody.innerHTML = '';
+        if (empty) empty.style.display = 'block';
+        return;
+      }
+      if (empty) empty.style.display = 'none';
+      tbody.innerHTML = data.items.map(it => {
+        const undoBtn = (it.can_undo && !it.undone)
+          ? `<button class="btn btn-xs" data-act-undo="${it.id}">Undo</button>`
+          : (it.undone ? '<span class="muted" style="font-size:.75rem">undone</span>' : '');
+        const summaryEsc = (it.summary || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+        const whoEsc     = (it.who || '—').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+        return `<tr ${it.undone ? 'style="opacity:.55"' : ''}>
+          <td style="font-size:.85em;color:var(--text-muted)">${_fmtActivityWhen(it.when)}</td>
+          <td>${whoEsc}</td>
+          <td>${summaryEsc}</td>
+          <td class="col-num">${_fmtActivityDelta(it.dollar_delta)}</td>
+          <td>${undoBtn}</td>
+        </tr>`;
+      }).join('');
+      // Wire undo buttons
+      tbody.querySelectorAll('[data-act-undo]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          if (!confirm('Undo this change?')) return;
+          const aid = btn.getAttribute('data-act-undo');
+          btn.disabled = true; btn.textContent = '…';
+          try {
+            const r2 = await fetch(`/projects/${PID}/budget/${BID}/activity/${aid}/undo`, {method:'POST'});
+            const j2 = await r2.json();
+            if (!r2.ok) {
+              alert(j2.message || j2.error || 'Undo failed');
+              btn.disabled = false; btn.textContent = 'Undo';
+              return;
+            }
+            // Reload activity feed; user can hard-refresh budget if needed
+            loadActivityFeed();
+          } catch (e) {
+            alert('Undo failed: ' + e.message);
+            btn.disabled = false; btn.textContent = 'Undo';
+          }
+        });
+      });
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="5" style="color:#ef4444;text-align:center;padding:1rem">Failed to load: ${e.message}</td></tr>`;
+    }
+  }
+  // Filter chip clicks
+  document.querySelectorAll('#activity-filters [data-act-filter]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _activityFilter = btn.getAttribute('data-act-filter');
+      document.querySelectorAll('#activity-filters [data-act-filter]')
+        .forEach(b => b.style.opacity = (b === btn ? '1' : '.7'));
+      loadActivityFeed();
+    });
+  });
+  document.getElementById('activity-refresh')?.addEventListener('click', loadActivityFeed);
+  // Tab click + MutationObserver pattern (matches travel/catering)
+  document.querySelector('.tab-btn[data-tab="activity"]')?.addEventListener('click', () => {
+    _activityLoaded = true; loadActivityFeed();
+  });
+  const _activityPanel = document.getElementById('tab-activity');
+  if (_activityPanel) {
+    const fireA = () => {
+      if (!_activityLoaded && _activityPanel.classList.contains('active')) {
+        _activityLoaded = true; loadActivityFeed();
+      }
+    };
+    new MutationObserver(fireA).observe(_activityPanel, { attributes: true, attributeFilter: ['class'] });
+    fireA();
+  }
   } catch (err) {
     console.error('[Travel/Catering] IIFE crashed:', err);
     // Show the error visibly so a screenshot tells us what broke.
