@@ -481,9 +481,23 @@
     {% set ns.sec_fringe = ns.sec_fringe + res.fringe_amount %}
     {% set ns.sec_total = ns.sec_total + res.est_total %}
     {% set ns.sec_agent = ns.sec_agent + (res.agent_amount | default(0) | float) %}
+    {# Non-labor sections always show the Disc% column so users can ADD a
+       discount even when none exists yet. Labor sections still collapse
+       Agent% when no Talent line has an agency commission set — only
+       Talent (account 700) typically uses it, and hiding it on
+       Production Staff / Crew tables keeps the layout tighter. #}
+    {% set ns_has_labor_check = namespace(any=false) %}
+    {% for ln in sec.lines %}{% if ln.is_labor %}{% set ns_has_labor_check.any = true %}{% endif %}{% endfor %}
+    {% if not ns_has_labor_check.any %}
+      {# Pure non-labor section → always show Disc% column #}
+      {% set _force_disc_col = true %}
+    {% else %}
+      {% set _force_disc_col = false %}
+    {% endif %}
     {# Track whether ANY line in this section has a non-zero agent_pct
        (or, for non-labor, a discount). Used to conditionally hide the
        column header when nothing's set. #}
+    {% if _force_disc_col %}{% set ns.has_agent_or_disc = true %}{% endif %}
     {% if (ln.agent_pct | default(0) | float) > 0 %}{% set ns.has_agent_or_disc = true %}{% endif %}
     {% if ln.is_labor %}{% set ns.has_labor = true %}{% endif %}
     {% if ln.line_tag == 'kit_fee' %}
