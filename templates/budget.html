@@ -1010,7 +1010,12 @@
       <span class="muted">Loading totals…</span>
     </div>
     <!-- Day-card layout: each date is its own card with all that day's
-         travelers grouped inside. Easier scanning than a flat table. -->
+         travelers grouped inside. Click a day header to collapse/expand. -->
+    <div style="display:flex;gap:.55rem;align-items:center;margin-bottom:.55rem">
+      <button class="btn btn-xs" id="travel-expand-all">Expand all</button>
+      <button class="btn btn-xs" id="travel-collapse-all">Collapse all</button>
+      <span class="muted" style="font-size:.78rem;margin-left:auto">Click any day header to expand / collapse</span>
+    </div>
     <div id="travel-days" style="display:flex;flex-direction:column;gap:14px">
       <div class="muted" style="padding:1rem;text-align:center">Loading…</div>
     </div>
@@ -1042,25 +1047,43 @@
     <div id="catering-totals" style="display:flex;gap:1.25rem;flex-wrap:wrap;background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:.65rem 1rem;font-size:.85rem;margin-bottom:.9rem">
       <span class="muted">Loading totals…</span>
     </div>
-    <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card)">
-      <table id="catering-table" class="data-table" style="width:100%;font-size:.86rem">
-        <thead>
-          <tr style="background:var(--bg-2)">
-            <th style="text-align:left;padding:.55rem .8rem;width:32px"></th>
-            <th style="text-align:left;padding:.55rem .6rem">Date</th>
-            <th style="text-align:right;padding:.55rem .4rem" title="Working headcount">Working</th>
-            <th style="text-align:center;padding:.55rem .4rem" title="Courtesy Breakfast">Bkfst</th>
-            <th style="text-align:center;padding:.55rem .4rem" title="First Meal">1st Meal</th>
-            <th style="text-align:center;padding:.55rem .4rem" title="Second Meal">2nd Meal</th>
-            <th style="text-align:center;padding:.55rem .4rem" title="Working Meals">Wkg Meal</th>
-            <th style="text-align:center;padding:.55rem .4rem" title="Per-Diem people on this date">Per Diem</th>
-            <th style="text-align:right;padding:.55rem .8rem">Expected $</th>
-          </tr>
-        </thead>
-        <tbody id="catering-tbody">
-          <tr><td colspan="9" class="muted" style="padding:1rem;text-align:center">Loading…</td></tr>
-        </tbody>
-      </table>
+    <!-- Day-card layout matching Travel tab. Each date is its own card
+         with a collapsible header. See renderCateringGrid() below. -->
+    <div style="display:flex;gap:.55rem;align-items:center;margin-bottom:.55rem">
+      <button class="btn btn-xs" id="catering-expand-all">Expand all</button>
+      <button class="btn btn-xs" id="catering-collapse-all">Collapse all</button>
+      <span class="muted" style="font-size:.78rem;margin-left:auto">Click any day header to expand / collapse</span>
+    </div>
+    <div id="catering-days" style="display:flex;flex-direction:column;gap:14px">
+      <div class="muted" style="padding:1rem;text-align:center">Loading…</div>
+    </div>
+
+    <!-- Per-person breakdowns: Per Diem and Working Meal, both broken
+         down by payroll week. Empty until data loads; rendered by
+         renderCateringPersonRollups() below. -->
+    <div id="catering-perdiem-block" style="margin-top:1.6rem;display:none">
+      <h3 style="margin:0 0 .55rem;font-size:.95rem">Per Diem — Per Person, By Week</h3>
+      <p class="muted" style="font-size:.78rem;margin:0 0 .55rem">
+        Weeks follow the budget's payroll week-start (set in Settings → Payroll Profile).
+      </p>
+      <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card)">
+        <table id="catering-perdiem-table" style="width:100%;font-size:.85rem;border-collapse:collapse">
+          <thead><tr id="catering-perdiem-head" style="background:var(--bg-2)"></tr></thead>
+          <tbody id="catering-perdiem-tbody"></tbody>
+          <tfoot id="catering-perdiem-foot"></tfoot>
+        </table>
+      </div>
+    </div>
+
+    <div id="catering-wmeal-block" style="margin-top:1.6rem;display:none">
+      <h3 style="margin:0 0 .55rem;font-size:.95rem">Working Meals — Per Person, By Week</h3>
+      <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card)">
+        <table id="catering-wmeal-table" style="width:100%;font-size:.85rem;border-collapse:collapse">
+          <thead><tr id="catering-wmeal-head" style="background:var(--bg-2)"></tr></thead>
+          <tbody id="catering-wmeal-tbody"></tbody>
+          <tfoot id="catering-wmeal-foot"></tfoot>
+        </table>
+      </div>
     </div>
 
     <h3 style="margin:1.5rem 0 .55rem;font-size:.95rem">Caterer Bills</h3>
@@ -1102,12 +1125,14 @@
   #travel-detail-overlay:not(.hidden) { display:flex !important; }
   #travel-add-day-overlay:not(.hidden) { display:flex !important; }
   #catering-bill-overlay:not(.hidden)  { display:flex !important; }
-  /* Travel grid checkboxes need to be slightly bigger so they're easy
-     to hit on a dense table. */
-  #travel-tbody input[type="checkbox"] { width:16px;height:16px;cursor:pointer }
-  #travel-tbody td { padding:.45rem .5rem;border-top:1px solid var(--border) }
-  #catering-tbody td { padding:.45rem .5rem;border-top:1px solid var(--border) }
-  #catering-tbody .catering-detail-row td { padding:.5rem 1rem;background:var(--bg-2);font-size:.78rem }
+  /* Day-card collapse: hide the body, keep the header visible. */
+  .travel-day-body.travel-collapsed   { display:none !important; }
+  .catering-day-body.catering-collapsed { display:none !important; }
+  /* Hover affordance on day-card headers. */
+  .travel-day-header:hover, .catering-day-header:hover { background:var(--bg-3, var(--bg-2)) }
+  /* Larger hit targets for inline checkboxes inside travel rows. */
+  .travel-day-body input[type="checkbox"]   { width:14px;height:14px;cursor:pointer }
+  .catering-day-body input[type="checkbox"] { width:14px;height:14px;cursor:pointer }
 </style>
 
 <!-- Add Travel Day modal -->
@@ -8751,14 +8776,17 @@ setTimeout(function() {
       const flagged = dayRows.filter(r => r.flags.flight || r.flags.hotel || r.flags.car_rental || r.flags.mileage || r.flags.per_diem).length;
       html += `
         <div class="travel-day-card" style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;overflow:hidden">
-          <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg-2);border-bottom:1px solid var(--border)">
+          <div class="travel-day-header"
+               onclick="if (event.target.closest('button')) return; this.parentElement.querySelector('.travel-day-body').classList.toggle('travel-collapsed'); this.querySelector('.travel-chevron').textContent = this.parentElement.querySelector('.travel-day-body').classList.contains('travel-collapsed') ? '▸' : '▾';"
+               style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg-2);border-bottom:1px solid var(--border);cursor:pointer;user-select:none">
+            <span class="travel-chevron" style="color:var(--text-muted);font-size:14px;width:14px">▾</span>
             <strong style="font-size:14px">${_esc(fmtDate(date))}</strong>
             <span class="muted" style="font-size:11px">${dayRows.length} crew · ${flagged} flagged</span>
-            <button class="btn btn-xs" onclick="openAddTravelForDate('${date}')"
+            <button class="btn btn-xs" onclick="event.stopPropagation(); openAddTravelForDate('${date}')"
                     style="margin-left:auto;font-size:11px"
                     title="Add another crew member to this date">+ Add to this day</button>
           </div>
-          <div style="display:flex;flex-direction:column">
+          <div class="travel-day-body" style="display:flex;flex-direction:column">
       `;
       dayRows.forEach((r, idx) => {
         const sep = idx > 0 ? 'border-top:1px solid var(--border)' : '';
@@ -9053,6 +9081,15 @@ setTimeout(function() {
 
   document.getElementById('travel-only-flagged')?.addEventListener('change', loadTravelGrid);
   document.getElementById('travel-refresh-btn')?.addEventListener('click', loadTravelGrid);
+  // Travel expand/collapse all controls.
+  document.getElementById('travel-expand-all')?.addEventListener('click', () => {
+    document.querySelectorAll('#travel-days .travel-day-body').forEach(el => el.classList.remove('travel-collapsed'));
+    document.querySelectorAll('#travel-days .travel-chevron').forEach(el => el.textContent = '▾');
+  });
+  document.getElementById('travel-collapse-all')?.addEventListener('click', () => {
+    document.querySelectorAll('#travel-days .travel-day-body').forEach(el => el.classList.add('travel-collapsed'));
+    document.querySelectorAll('#travel-days .travel-chevron').forEach(el => el.textContent = '▸');
+  });
 
   // ── Catering grid ──────────────────────────────────────────────────────
   async function loadCateringGrid() {
@@ -9072,6 +9109,7 @@ setTimeout(function() {
       _cateringData = await r.json();
       renderCateringGrid();
       renderCateringBills();
+      renderCateringPersonRollups();
     } catch (err) {
       console.error('loadCateringGrid failed', err);
       document.getElementById('catering-tbody').innerHTML =
@@ -9086,9 +9124,26 @@ setTimeout(function() {
     const days = _cateringData.days || [];
     const bills = _cateringData.bills || [];
     if (days.length === 0) {
-      document.getElementById('catering-tbody').innerHTML =
-        '<tr><td colspan="9" class="muted" style="padding:1.2rem;text-align:center">No working days scheduled yet.</td></tr>';
+      document.getElementById('catering-days').innerHTML =
+        '<div class="muted" style="padding:1.2rem;text-align:center;background:var(--bg-card);border:1px solid var(--border);border-radius:8px">No scheduled days yet — add crew + day-types on the Schedule first.</div>';
+      document.getElementById('catering-totals').innerHTML =
+        '<span class="muted">No catering data yet.</span>';
+      return;
     }
+
+    // Map each date → its production-week index (1-based) using the
+    // server's payroll-aware `weeks` array. Lets us show "WK 2" labels
+    // alongside dates so the user can see the payroll cycle at a glance.
+    const weeksList = _cateringData.weeks || [];
+    const weekIdxOf = (dateIso) => {
+      // weeks are sorted ISO strings of week-start dates. Find the
+      // largest week-start that's <= dateIso.
+      let idx = 0;
+      for (let i = 0; i < weeksList.length; i++) {
+        if (weeksList[i] <= dateIso) idx = i;
+      }
+      return idx + 1;
+    };
 
     let totalExpected = 0, totalMeals = 0;
     let html = '';
@@ -9099,41 +9154,145 @@ setTimeout(function() {
                       + (d.flags.second_meal?d.working_count:0)
                       + d.working_meal_people.length;
       totalMeals += mealCount;
-      const cb = (flag, isOn) => `<input type="checkbox" ${isOn?'checked':''}
-        onclick="cateringMealToggle('${d.date}','${flag}',this.checked)">`;
-      const expandId = 'cat-detail-' + idx;
-      html += `<tr>
-        <td style="text-align:center">
-          <button class="btn btn-xs btn-ghost" onclick="document.getElementById('${expandId}').classList.toggle('hidden')" title="Toggle people detail">▾</button>
-        </td>
-        <td><strong>${_esc(d.date)}</strong></td>
-        <td style="text-align:right">${d.working_count}</td>
-        <td style="text-align:center">${cb('courtesy_breakfast', d.flags.courtesy_breakfast)}</td>
-        <td style="text-align:center">${cb('first_meal',         d.flags.first_meal)}</td>
-        <td style="text-align:center">${cb('second_meal',        d.flags.second_meal)}</td>
-        <td style="text-align:center">${d.working_meal_people.length}</td>
-        <td style="text-align:center">${d.per_diem_people.length}</td>
-        <td style="text-align:right"><strong>${_fmt(d.expected_cost)}</strong></td>
-      </tr>
-      <tr id="${expandId}" class="catering-detail-row hidden">
-        <td colspan="9">
-          ${d.working_count > 0 ? `<div style="margin-bottom:.4rem"><strong>Working crew (${d.working_count}):</strong> ${d.working_crew.map(p => _esc(p.person||p.role)).join(', ')}</div>` : ''}
-          ${d.working_meal_people.length > 0 ? `<div style="margin-bottom:.4rem"><strong>Working meal:</strong> ${d.working_meal_people.map(p => _esc(p.person||p.role)).join(', ')}</div>` : ''}
-          ${d.per_diem_people.length > 0 ? `<div><strong>Per Diem:</strong> ${d.per_diem_people.map(p => _esc(p.person||p.role) + ' (' + p.kind + ')').join(', ')}</div>` : ''}
-          ${d.working_count===0 && d.working_meal_people.length===0 && d.per_diem_people.length===0 ? '<span class="muted">No people on any meal list this day.</span>' : ''}
-        </td>
-      </tr>`;
+      const cb = (flag, isOn, label) => {
+        const activeStyle = isOn
+          ? 'background:#1a2540;color:#5b8af9;border:1px solid #2d4070'
+          : 'background:transparent;color:var(--text-muted);border:1px solid var(--border)';
+        return `<label style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:5px;cursor:pointer;font-size:11px;${activeStyle}">
+                  <input type="checkbox" ${isOn?'checked':''} onclick="cateringMealToggle('${d.date}','${flag}',this.checked)" style="margin:0">${label}
+                </label>`;
+      };
+
+      // Pretty heading: "Mon · Jun 7, 2027 · Wk 2"
+      const [yy,mm,dd] = d.date.split('-').map(n => parseInt(n,10));
+      const dt = new Date(yy, mm-1, dd);
+      const dow = dt.toLocaleDateString(undefined, {weekday:'short'});
+      const longDate = dt.toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'});
+      const weekIdx = weekIdxOf(d.date);
+      const prodBadge = d.is_production_day
+        ? '<span style="font-size:10px;padding:2px 8px;border-radius:6px;background:#14291e;color:#22c55e;border:1px solid #1a4228;text-transform:uppercase;letter-spacing:.4px;font-weight:600">Production Day</span>'
+        : '';
+
+      html += `
+        <div class="catering-day-card" data-date="${d.date}" style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+          <div class="catering-day-header"
+               onclick="this.parentElement.querySelector('.catering-day-body').classList.toggle('catering-collapsed'); this.querySelector('.catering-chevron').textContent = this.parentElement.querySelector('.catering-day-body').classList.contains('catering-collapsed') ? '▸' : '▾';"
+               style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg-2);border-bottom:1px solid var(--border);cursor:pointer;user-select:none">
+            <span class="catering-chevron" style="color:var(--text-muted);font-size:14px;width:14px">▾</span>
+            <strong style="font-size:14px">${_esc(dow)} · ${_esc(longDate)}</strong>
+            <span class="muted" style="font-size:11px">Wk ${weekIdx}</span>
+            ${prodBadge}
+            <span class="muted" style="font-size:11px">${d.working_count} working · ${mealCount} meal${mealCount===1?'':'s'}</span>
+            <span style="margin-left:auto;font-weight:600;color:#5b8af9">${_fmt(d.expected_cost)}</span>
+          </div>
+          <div class="catering-day-body" style="padding:12px 14px">
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center">
+              <span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.4px">Meals served:</span>
+              ${cb('courtesy_breakfast', d.flags.courtesy_breakfast, 'Courtesy Bkfst')}
+              ${cb('first_meal',         d.flags.first_meal,         '1st Meal')}
+              ${cb('second_meal',        d.flags.second_meal,        '2nd Meal')}
+            </div>
+            ${d.working_count > 0 ? `<div style="margin-bottom:.5rem;font-size:12px"><strong>Working crew (${d.working_count}):</strong> <span class="muted">${d.working_crew.map(p => _esc(p.person||p.role)).join(', ')}</span></div>` : ''}
+            ${d.working_meal_people.length > 0 ? `<div style="margin-bottom:.5rem;font-size:12px"><strong>Working meal opt-ins (${d.working_meal_people.length}):</strong> <span class="muted">${d.working_meal_people.map(p => _esc(p.person||p.role)).join(', ')}</span></div>` : ''}
+            ${d.per_diem_people.length > 0 ? `<div style="font-size:12px"><strong>Per Diem (${d.per_diem_people.length}):</strong> <span class="muted">${d.per_diem_people.map(p => _esc(p.person||p.role) + ' (' + p.kind + ')').join(', ')}</span></div>` : ''}
+            ${d.working_count===0 && d.working_meal_people.length===0 && d.per_diem_people.length===0 ? '<span class="muted" style="font-size:12px">No working crew or meal opt-ins on this day.</span>' : ''}
+          </div>
+        </div>
+      `;
     });
-    if (html) document.getElementById('catering-tbody').innerHTML = html;
+    document.getElementById('catering-days').innerHTML = html;
 
     const totalBilled = bills.reduce((acc, b) => acc + parseFloat(b.amount || 0), 0);
     const drift = totalBilled - totalExpected;
     document.getElementById('catering-totals').innerHTML = `
-      <span><strong>${days.length}</strong> meal days · <strong>${totalMeals}</strong> meals served</span>
+      <span><strong>${days.length}</strong> scheduled days · <strong>${totalMeals}</strong> meals served</span>
       <span>Expected: <strong>${_fmt(totalExpected)}</strong></span>
       <span>Caterer billed: <strong>${_fmt(totalBilled)}</strong></span>
       <span style="color:${drift>0.5?'#ef4444':drift<-0.5?'#22c55e':'var(--text-muted)'}">Drift: <strong>${_fmt(drift)}</strong></span>
     `;
+  }
+
+  // Catering expand/collapse all controls.
+  document.getElementById('catering-expand-all')?.addEventListener('click', () => {
+    document.querySelectorAll('#catering-days .catering-day-body').forEach(el => el.classList.remove('catering-collapsed'));
+    document.querySelectorAll('#catering-days .catering-chevron').forEach(el => el.textContent = '▾');
+  });
+  document.getElementById('catering-collapse-all')?.addEventListener('click', () => {
+    document.querySelectorAll('#catering-days .catering-day-body').forEach(el => el.classList.add('catering-collapsed'));
+    document.querySelectorAll('#catering-days .catering-chevron').forEach(el => el.textContent = '▸');
+  });
+
+  // Per-person Per Diem + Working Meal weekly breakdown.
+  // Server provides one row per (line, instance) with a `weeks` map
+  // {weekStartIso: $amount} plus a project total. We render two
+  // matrices (Per Diem table + Working Meal table) with one column
+  // per payroll week + a Total column.
+  function renderCateringPersonRollups() {
+    if (!_cateringData) return;
+    const fmtWeek = (iso) => {
+      const [y,m,d] = iso.split('-').map(n => parseInt(n,10));
+      const dt = new Date(y, m-1, d);
+      return dt.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+    };
+
+    function _renderTable(blockId, headId, tbodyId, footId, rows, total, label) {
+      const block = document.getElementById(blockId);
+      if (!rows || rows.length === 0) {
+        if (block) block.style.display = 'none';
+        return;
+      }
+      block.style.display = '';
+      const weeks = _cateringData.weeks || [];
+      const head = document.getElementById(headId);
+      head.innerHTML =
+        `<th style="text-align:left;padding:.45rem .7rem">Person</th>` +
+        `<th style="text-align:left;padding:.45rem .6rem">Role</th>` +
+        weeks.map((wk, i) =>
+          `<th style="text-align:right;padding:.45rem .55rem;white-space:nowrap" title="Week of ${_esc(wk)}">Wk ${i+1}<br><span class="muted" style="font-weight:400;font-size:10px">${_esc(fmtWeek(wk))}</span></th>`
+        ).join('') +
+        `<th style="text-align:right;padding:.45rem .8rem;border-left:1px solid var(--border)">Total</th>` +
+        `<th style="text-align:right;padding:.45rem .55rem" title="Total ${label} count for this person">Count</th>`;
+
+      const tbody = document.getElementById(tbodyId);
+      tbody.innerHTML = rows.map(r => `
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:.4rem .7rem"><strong>${_esc(r.person)}</strong></td>
+          <td class="muted" style="padding:.4rem .6rem">${_esc(r.role)}</td>
+          ${weeks.map(wk => {
+            const v = r.weeks[wk] || 0;
+            const c = r.weekly_counts[wk] || 0;
+            return `<td style="text-align:right;padding:.4rem .55rem">${v ? _fmt(v) : '<span class="muted">—</span>'}${c ? `<div class="muted" style="font-size:10px">${c} day${c===1?'':'s'}</div>` : ''}</td>`;
+          }).join('')}
+          <td style="text-align:right;padding:.4rem .8rem;border-left:1px solid var(--border);font-weight:600">${_fmt(r.total)}</td>
+          <td style="text-align:right;padding:.4rem .55rem" class="muted">${r.count}</td>
+        </tr>
+      `).join('');
+
+      // Footer: weekly column totals + grand total
+      const colTotals = weeks.map(wk =>
+        rows.reduce((acc, r) => acc + (r.weeks[wk] || 0), 0)
+      );
+      const colCounts = weeks.map(wk =>
+        rows.reduce((acc, r) => acc + (r.weekly_counts[wk] || 0), 0)
+      );
+      const grandCount = rows.reduce((acc, r) => acc + r.count, 0);
+      document.getElementById(footId).innerHTML = `
+        <tr style="background:var(--bg-2);font-weight:600;border-top:2px solid var(--border)">
+          <td colspan="2" style="padding:.5rem .7rem">${label} TOTAL</td>
+          ${weeks.map((wk, i) => `<td style="text-align:right;padding:.5rem .55rem">${_fmt(colTotals[i])}<div class="muted" style="font-size:10px;font-weight:400">${colCounts[i]} day${colCounts[i]===1?'':'s'}</div></td>`).join('')}
+          <td style="text-align:right;padding:.5rem .8rem;border-left:1px solid var(--border);color:#5b8af9">${_fmt(total)}</td>
+          <td style="text-align:right;padding:.5rem .55rem;font-weight:400" class="muted">${grandCount}</td>
+        </tr>
+      `;
+    }
+    _renderTable('catering-perdiem-block', 'catering-perdiem-head',
+                 'catering-perdiem-tbody', 'catering-perdiem-foot',
+                 _cateringData.per_diem_by_person,
+                 _cateringData.per_diem_total, 'Per Diem');
+    _renderTable('catering-wmeal-block',  'catering-wmeal-head',
+                 'catering-wmeal-tbody',   'catering-wmeal-foot',
+                 _cateringData.working_meal_by_person,
+                 _cateringData.working_meal_total, 'Working Meal');
   }
 
   function renderCateringBills() {

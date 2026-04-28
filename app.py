@@ -5869,6 +5869,89 @@ def catering_grid(pid, bid):
         "note":         b.note or '',
     } for b in bills]
 
+    # ── Per-person weekly rollup (per_diem + working_meal) ────────────────
+    # Bucket each per-person hit into the payroll week it lives in. The
+    # week-start day-of-week is taken from the budget's payroll profile
+    # (payroll_week_start: 0=Mon..6=Sun) so the breakdown lines up with
+    # the user's actual payroll calendar — same convention used by the
+    # OT calc and ScheduleDay weekly accumulator.
+    from datetime import timedelta as _td_w
+    profile_w = budget.payroll_profile
+    pw_start = (budget.payroll_week_start
+                if budget.payroll_week_start is not None
+                else (profile_w.payroll_week_start if profile_w else 6))
+    def _week_key(d):
+        # Return the date of the week-start that contains `d`. Same math
+        # as calc_payroll_status / _run_payroll_calc in budget_calc.py.
+        days_back = (d.weekday() - int(pw_start)) % 7
+        return d - _td_w(days=int(days_back))
+
+    # Per-person totals: people_meta keyed by a stable identity string
+    # so per-instance crew assignments stay distinct.
+    people_meta = {}        # ident → {role, person, line_id, instance}
+    pd_amount   = {}        # ident → {week_iso: amount, '_total': amount}
+    pd_count    = {}        # ident → {week_iso: count, '_total': count}
+    wm_amount   = {}
+    wm_count    = {}
+    week_set    = set()
+
+    pd_rate_for = {
+        'full':      rate('per_diem_full'),
+        'breakfast': rate('per_diem_breakfast'),
+        'lunch':     rate('per_diem_lunch'),
+        'dinner':    rate('per_diem_dinner'),
+    }
+    wm_rate = rate('working_meal')
+
+    for d, b in by_date.items():
+        wk = _week_key(d).isoformat()
+        week_set.add(wk)
+        for p in b["people_per_diem"]:
+            ident = f"{p['line_id']}:{p['instance']}"
+            people_meta.setdefault(ident, {
+                "role": p["role"], "person": p["person"],
+                "line_id": p["line_id"], "instance": p["instance"],
+            })
+            r = pd_rate_for.get(p["kind"], 0)
+            pd_amount.setdefault(ident, {"_total": 0.0})
+            pd_amount[ident][wk] = pd_amount[ident].get(wk, 0) + r
+            pd_amount[ident]["_total"] += r
+            pd_count.setdefault(ident, {"_total": 0})
+            pd_count[ident][wk] = pd_count[ident].get(wk, 0) + 1
+            pd_count[ident]["_total"] += 1
+        for p in b["people_working_meal"]:
+            ident = f"{p['line_id']}:{p['instance']}"
+            people_meta.setdefault(ident, {
+                "role": p["role"], "person": p["person"],
+                "line_id": p["line_id"], "instance": p["instance"],
+            })
+            wm_amount.setdefault(ident, {"_total": 0.0})
+            wm_amount[ident][wk] = wm_amount[ident].get(wk, 0) + wm_rate
+            wm_amount[ident]["_total"] += wm_rate
+            wm_count.setdefault(ident, {"_total": 0})
+            wm_count[ident][wk] = wm_count[ident].get(wk, 0) + 1
+            wm_count[ident]["_total"] += 1
+
+    weeks_sorted = sorted(week_set)
+
+    def _person_rollup(amt_map, cnt_map):
+        out = []
+        for ident, meta in people_meta.items():
+            if ident not in amt_map:
+                continue
+            row = {
+                "ident":   ident,
+                "person":  meta["person"],
+                "role":    meta["role"],
+                "weeks":   {wk: round(amt_map[ident].get(wk, 0), 2) for wk in weeks_sorted},
+                "weekly_counts": {wk: cnt_map[ident].get(wk, 0) for wk in weeks_sorted},
+                "total":   round(amt_map[ident]["_total"], 2),
+                "count":   cnt_map[ident]["_total"],
+            }
+            out.append(row)
+        out.sort(key=lambda r: (-r["total"], r["person"].lower()))
+        return out
+
     return jsonify({
         "days":   days,
         "bills":  bill_data,
@@ -5883,6 +5966,12 @@ def catering_grid(pid, bid):
             "per_diem_lunch":     rate('per_diem_lunch'),
             "per_diem_dinner":    rate('per_diem_dinner'),
         },
+        "weeks": weeks_sorted,
+        "payroll_week_start": int(pw_start),  # 0=Mon..6=Sun
+        "per_diem_by_person":     _person_rollup(pd_amount, pd_count),
+        "working_meal_by_person": _person_rollup(wm_amount, wm_count),
+        "per_diem_total":     round(sum(amt["_total"] for amt in pd_amount.values()), 2),
+        "working_meal_total": round(sum(amt["_total"] for amt in wm_amount.values()), 2),
     })
 
 
