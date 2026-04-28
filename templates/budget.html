@@ -1106,18 +1106,28 @@
   </div>
 </div>
 
-<!-- Travel detail modal (flight/hotel/car/mileage editing) -->
-<div id="travel-detail-overlay" class="modal-overlay hidden"
-     style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center"
+<!-- Travel detail modal (flight/hotel/car/mileage editing).
+     IMPORTANT: don't add class="modal" to the inner box — the global
+     .modal CSS in style.css forces position:fixed inset:0 which made
+     the "box" fill the viewport. Without class="modal" the inline
+     styling here (centered card with max-width) actually applies. -->
+<div id="travel-detail-overlay" class="travel-modal-overlay hidden"
+     style="position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:2000;align-items:center;justify-content:center;padding:24px"
      onclick="closeTravelDetail(event)">
-  <div class="modal" onclick="event.stopPropagation()"
-       style="max-width:560px;width:92vw;background:var(--bg-card,#1a1f2e);color:var(--text);
-              border:1px solid var(--border);border-radius:10px;padding:20px 22px;max-height:88vh;overflow-y:auto">
-    <h3 id="travel-detail-title" style="margin:0 0 1rem;font-size:1.05rem">Travel Detail</h3>
-    <div id="travel-detail-body"></div>
-    <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1.2rem;padding-top:.9rem;border-top:1px solid var(--border)">
-      <button class="btn btn-sm" onclick="closeTravelDetail()">Cancel</button>
-      <button class="btn btn-sm btn-primary" id="travel-detail-save-btn">Save</button>
+  <div onclick="event.stopPropagation()"
+       style="max-width:640px;width:100%;background:var(--bg-card,#1a1f2e);color:var(--text);
+              border:1px solid var(--border);border-radius:12px;
+              box-shadow:0 24px 60px rgba(0,0,0,.5);
+              max-height:88vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="padding:18px 24px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
+      <h3 id="travel-detail-title" style="margin:0;font-size:1.15rem;flex:1;line-height:1.3">Travel Detail</h3>
+      <button onclick="closeTravelDetail()" title="Close"
+              style="background:none;border:none;color:var(--text-muted);font-size:22px;cursor:pointer;padding:0 4px;line-height:1">×</button>
+    </div>
+    <div id="travel-detail-body" style="padding:18px 24px;overflow-y:auto;font-size:14px"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;padding:14px 24px 18px;border-top:1px solid var(--border)">
+      <button class="btn" onclick="closeTravelDetail()" style="font-size:14px;padding:8px 16px">Cancel</button>
+      <button class="btn btn-primary" id="travel-detail-save-btn" style="font-size:14px;padding:8px 20px">Save</button>
     </div>
   </div>
 </div>
@@ -8728,9 +8738,9 @@ setTimeout(function() {
         ['off',      'Off'],
       ];
       return `<select onchange="${handler}" title="Change day type"
-                      style="font-size:11px;padding:2px 6px;border-radius:6px;
+                      style="font-size:13px;padding:5px 10px;border-radius:6px;
                              background:${c}22;color:${c};border:1px solid ${c}55;
-                             text-transform:uppercase;letter-spacing:.3px;font-weight:600;cursor:pointer">
+                             text-transform:uppercase;letter-spacing:.4px;font-weight:600;cursor:pointer">
         ${opts.map(([v,l]) => `<option value="${v}" ${r.day_type===v?'selected':''}>${l}</option>`).join('')}
       </select>`;
     };
@@ -8738,26 +8748,34 @@ setTimeout(function() {
       const handler = `travelToggleFlag(${r.line_id}, ${r.instance}, '${r.date}', '${flag}')`;
       const detailHandler = kind ? `event.stopPropagation(); openTravelDetail(${r.schedule_day_id}, '${kind}')` : '';
       const hasDetail = kind && r.detail[kind];
+      // "Edit details" button — was a tiny pencil glyph that was hard
+      // to spot. Now a proper labelled button so users actually find it.
       const detailBtn = (kind && isOn)
-        ? `<button onclick="${detailHandler}" style="background:none;border:none;color:#5b8af9;cursor:pointer;padding:0 2px;font-size:11px" title="Edit reservation details">✎</button>`
+        ? `<button onclick="${detailHandler}"
+                   style="background:#1a2540;border:1px solid #2d4070;color:#5b8af9;
+                          cursor:pointer;padding:3px 9px;font-size:12px;border-radius:5px;
+                          font-weight:500;margin-left:6px"
+                   title="Open reservation details (confirmation #s, flight times, etc.)">
+             ${hasDetail ? 'Edit details' : '+ Add details'}
+           </button>`
         : '';
       const detailDot = hasDetail
-        ? '<span style="color:#22c55e;font-size:9px;margin-left:2px" title="Details on file">●</span>'
+        ? '<span style="color:#22c55e;font-size:11px;margin-left:4px" title="Details on file">●</span>'
         : '';
       const activeStyle = isOn
         ? 'background:#1a2540;color:#5b8af9;border:1px solid #2d4070'
         : 'background:transparent;color:var(--text-muted);border:1px solid var(--border)';
-      return `<label style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:5px;cursor:pointer;font-size:11px;${activeStyle}" title="${label}">
-                <input type="checkbox" ${isOn?'checked':''} onclick="${handler}" style="margin:0">
+      return `<label style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;${activeStyle}" title="${label}">
+                <input type="checkbox" ${isOn?'checked':''} onclick="${handler}" style="margin:0;width:14px;height:14px">
                 ${label}${detailDot}${detailBtn}
               </label>`;
     };
     const pdSelect = (r) => `
       <select onchange="travelSetPerDiem(${r.line_id}, ${r.instance}, '${r.date}', this.value)"
-              style="font-size:11px;padding:3px 6px;border-radius:5px;background:var(--bg-input);border:1px solid var(--border);color:var(--text)"
+              style="font-size:13px;padding:6px 10px;border-radius:6px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);font-weight:500"
               title="Per Diem">
-        <option value=""          ${r.flags.per_diem===''        ?' selected':''}>No PD</option>
-        <option value="full"      ${r.flags.per_diem==='full'    ?' selected':''}>Full PD</option>
+        <option value=""          ${r.flags.per_diem===''        ?' selected':''}>No Per Diem</option>
+        <option value="full"      ${r.flags.per_diem==='full'    ?' selected':''}>Full Per Diem</option>
         <option value="breakfast" ${r.flags.per_diem==='breakfast'?' selected':''}>Breakfast</option>
         <option value="lunch"     ${r.flags.per_diem==='lunch'   ?' selected':''}>Lunch</option>
         <option value="dinner"    ${r.flags.per_diem==='dinner'  ?' selected':''}>Dinner</option>
@@ -8775,15 +8793,15 @@ setTimeout(function() {
       const dayRows = byDate[date];
       const flagged = dayRows.filter(r => r.flags.flight || r.flags.hotel || r.flags.car_rental || r.flags.mileage || r.flags.per_diem).length;
       html += `
-        <div class="travel-day-card" style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        <div class="travel-day-card" style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
           <div class="travel-day-header"
                onclick="if (event.target.closest('button')) return; this.parentElement.querySelector('.travel-day-body').classList.toggle('travel-collapsed'); this.querySelector('.travel-chevron').textContent = this.parentElement.querySelector('.travel-day-body').classList.contains('travel-collapsed') ? '▸' : '▾';"
-               style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--bg-2);border-bottom:1px solid var(--border);cursor:pointer;user-select:none">
-            <span class="travel-chevron" style="color:var(--text-muted);font-size:14px;width:14px">▾</span>
-            <strong style="font-size:14px">${_esc(fmtDate(date))}</strong>
-            <span class="muted" style="font-size:11px">${dayRows.length} crew · ${flagged} flagged</span>
-            <button class="btn btn-xs" onclick="event.stopPropagation(); openAddTravelForDate('${date}')"
-                    style="margin-left:auto;font-size:11px"
+               style="display:flex;align-items:center;gap:14px;padding:14px 18px;background:var(--bg-2);border-bottom:1px solid var(--border);cursor:pointer;user-select:none">
+            <span class="travel-chevron" style="color:var(--text-muted);font-size:18px;width:18px">▾</span>
+            <strong style="font-size:16px">${_esc(fmtDate(date))}</strong>
+            <span class="muted" style="font-size:13px">${dayRows.length} crew · ${flagged} flagged</span>
+            <button class="btn btn-sm" onclick="event.stopPropagation(); openAddTravelForDate('${date}')"
+                    style="margin-left:auto;font-size:13px;padding:6px 12px"
                     title="Add another crew member to this date">+ Add to this day</button>
           </div>
           <div class="travel-day-body" style="display:flex;flex-direction:column">
@@ -8791,13 +8809,13 @@ setTimeout(function() {
       dayRows.forEach((r, idx) => {
         const sep = idx > 0 ? 'border-top:1px solid var(--border)' : '';
         html += `
-          <div style="display:grid;grid-template-columns:minmax(200px,260px) auto 1fr;gap:12px;padding:10px 14px;align-items:center;${sep}">
+          <div style="display:grid;grid-template-columns:minmax(220px,300px) auto 1fr;gap:16px;padding:14px 18px;align-items:center;${sep}">
             <div style="min-width:0">
-              <div><strong>${_esc(r.person)}</strong></div>
-              <div class="muted" style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${_esc(r.role)}</div>
+              <div style="font-size:14px"><strong>${_esc(r.person)}</strong></div>
+              <div class="muted" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px">${_esc(r.role)}</div>
             </div>
             <div>${daySelect(r)}</div>
-            <div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end">
+            <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;align-items:center">
               ${cb(r, 'flight',     r.flags.flight,     'flight',     'Flight')}
               ${cb(r, 'hotel',      r.flags.hotel,      'hotel',      'Hotel')}
               ${cb(r, 'car_rental', r.flags.car_rental, 'car_rental', 'Car Rental')}
@@ -8894,66 +8912,57 @@ setTimeout(function() {
     document.getElementById('travel-detail-title').textContent =
       `${titleMap[kind]} — ${row?.person || ''} ${row?.date || ''}`;
 
+    // Form-field renderers — generous spacing + readable label sizes.
+    // Inputs get explicit padding/font-size so browser defaults don't
+    // squish the form on dark themes.
+    const inputStyle = 'width:100%;font-size:14px;padding:9px 11px;border-radius:6px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);box-sizing:border-box';
+    const labelStyle = 'display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px;font-weight:600';
     const fld = (label, name, type, value, extra) =>
-      `<div class="field" style="margin-bottom:.55rem">
-         <label style="display:block;font-size:.76rem;color:var(--text-muted);margin-bottom:.25rem">${label}</label>
-         <input type="${type}" data-fld="${name}" value="${_esc(value || '')}" style="width:100%" ${extra || ''}>
+      `<div style="margin-bottom:14px">
+         <label style="${labelStyle}">${label}</label>
+         <input type="${type}" data-fld="${name}" value="${_esc(value || '')}" style="${inputStyle}" ${extra || ''}>
        </div>`;
     const txt = (label, name, value) =>
-      `<div class="field" style="margin-bottom:.55rem">
-         <label style="display:block;font-size:.76rem;color:var(--text-muted);margin-bottom:.25rem">${label}</label>
-         <textarea data-fld="${name}" rows="2" style="width:100%;resize:vertical">${_esc(value || '')}</textarea>
+      `<div style="margin-bottom:14px">
+         <label style="${labelStyle}">${label}</label>
+         <textarea data-fld="${name}" rows="3" style="${inputStyle};resize:vertical;font-family:inherit">${_esc(value || '')}</textarea>
        </div>`;
+    const grid2 = (a, b) => `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">${a}${b}</div>`;
+    const grid12 = (a, b) => `<div style="display:grid;grid-template-columns:1fr 2fr;gap:12px">${a}${b}</div>`;
 
     let body = '';
     if (kind === 'flight') {
-      body = `
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
-          ${fld('Airline', 'airline', 'text', detail.airline)}
-          ${fld('Flight #', 'flight_no', 'text', detail.flight_no)}
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
-          ${fld('From (airport code)', 'depart_airport', 'text', detail.depart_airport, 'maxlength="10"')}
-          ${fld('To (airport code)',   'arrive_airport', 'text', detail.arrive_airport, 'maxlength="10"')}
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
-          ${fld('Depart',  'depart_at', 'datetime-local', (detail.depart_at||'').slice(0,16))}
-          ${fld('Arrive',  'arrive_at', 'datetime-local', (detail.arrive_at||'').slice(0,16))}
-        </div>
-        ${fld('Confirmation #', 'confirmation_no', 'text', detail.confirmation_no)}
-        ${txt('Notes',          'notes', detail.notes)}
-      `;
+      body =
+        grid2(fld('Airline',   'airline',   'text', detail.airline),
+              fld('Flight #',  'flight_no', 'text', detail.flight_no))
+      + grid2(fld('From (airport code)', 'depart_airport', 'text', detail.depart_airport, 'maxlength="10"'),
+              fld('To (airport code)',   'arrive_airport', 'text', detail.arrive_airport, 'maxlength="10"'))
+      + grid2(fld('Depart',    'depart_at', 'datetime-local', (detail.depart_at||'').slice(0,16)),
+              fld('Arrive',    'arrive_at', 'datetime-local', (detail.arrive_at||'').slice(0,16)))
+      + fld('Confirmation #', 'confirmation_no', 'text', detail.confirmation_no)
+      + txt('Notes',          'notes', detail.notes);
     } else if (kind === 'hotel') {
-      body = `
-        ${fld('Hotel name',     'hotel_name',     'text', detail.hotel_name)}
-        ${fld('Address',        'hotel_address',  'text', detail.hotel_address)}
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
-          ${fld('Check-in',  'check_in',  'date', detail.check_in)}
-          ${fld('Check-out', 'check_out', 'date', detail.check_out)}
-        </div>
-        ${fld('Room type',      'room_type',      'text', detail.room_type)}
-        ${fld('Confirmation #', 'confirmation_no','text', detail.confirmation_no)}
-        ${txt('Notes',          'notes', detail.notes)}
-      `;
+      body =
+        fld('Hotel name',     'hotel_name',     'text', detail.hotel_name)
+      + fld('Address',        'hotel_address',  'text', detail.hotel_address)
+      + grid2(fld('Check-in',  'check_in',  'date', detail.check_in),
+              fld('Check-out', 'check_out', 'date', detail.check_out))
+      + fld('Room type',      'room_type',      'text', detail.room_type)
+      + fld('Confirmation #', 'confirmation_no','text', detail.confirmation_no)
+      + txt('Notes',          'notes', detail.notes);
     } else if (kind === 'car_rental') {
-      body = `
-        ${fld('Rental company', 'rental_co',       'text', detail.rental_co)}
-        ${fld('Pickup location','pickup_location', 'text', detail.pickup_location)}
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem">
-          ${fld('Pickup', 'pickup_at', 'datetime-local', (detail.pickup_at||'').slice(0,16))}
-          ${fld('Return', 'return_at', 'datetime-local', (detail.return_at||'').slice(0,16))}
-        </div>
-        ${fld('Confirmation #', 'confirmation_no','text', detail.confirmation_no)}
-        ${txt('Notes',          'notes', detail.notes)}
-      `;
+      body =
+        fld('Rental company', 'rental_co',       'text', detail.rental_co)
+      + fld('Pickup location','pickup_location', 'text', detail.pickup_location)
+      + grid2(fld('Pickup', 'pickup_at', 'datetime-local', (detail.pickup_at||'').slice(0,16)),
+              fld('Return', 'return_at', 'datetime-local', (detail.return_at||'').slice(0,16)))
+      + fld('Confirmation #', 'confirmation_no','text', detail.confirmation_no)
+      + txt('Notes',          'notes', detail.notes);
     } else if (kind === 'mileage') {
-      body = `
-        <div style="display:grid;grid-template-columns:1fr 2fr;gap:.5rem">
-          ${fld('Miles', 'miles', 'number', detail.miles, 'step="0.1" min="0"')}
-          ${fld('Route', 'route', 'text',   detail.route)}
-        </div>
-        ${txt('Notes', 'notes', detail.notes)}
-      `;
+      body =
+        grid12(fld('Miles', 'miles', 'number', detail.miles, 'step="0.1" min="0"'),
+               fld('Route', 'route', 'text',   detail.route))
+      + txt('Notes', 'notes', detail.notes);
     }
     document.getElementById('travel-detail-body').innerHTML = body;
     document.getElementById('travel-detail-overlay').classList.remove('hidden');
@@ -9093,29 +9102,36 @@ setTimeout(function() {
 
   // ── Catering grid ──────────────────────────────────────────────────────
   async function loadCateringGrid() {
-    document.getElementById('catering-totals').innerHTML = '<span class="muted">Loading…</span>';
-    document.getElementById('catering-tbody').innerHTML =
-      '<tr><td colspan="9" class="muted" style="padding:1rem;text-align:center">Loading…</td></tr>';
+    // Targets `#catering-days` now (was `catering-tbody` before the
+    // 2026-04-28 day-card rework). Pointing at the old id was leaving
+    // "Loading…" stuck because innerHTML calls were no-ops on a
+    // non-existent element AND any thrown error inside renderCatering*
+    // never wrote the recovery banner.
+    const daysEl   = document.getElementById('catering-days');
+    const totalsEl = document.getElementById('catering-totals');
+    totalsEl.innerHTML = '<span class="muted">Loading…</span>';
+    daysEl.innerHTML   = '<div class="muted" style="padding:1rem;text-align:center">Loading…</div>';
     try {
       const r = await fetch(CATERING_GRID_URL, { credentials: 'same-origin' });
       if (!r.ok) {
         const txt = await r.text().catch(() => '');
-        document.getElementById('catering-tbody').innerHTML =
-          `<tr><td colspan="9" style="padding:1rem;color:#ef4444">Server returned ${r.status}: ${_esc(txt.slice(0,200))}</td></tr>`;
-        document.getElementById('catering-totals').innerHTML =
-          `<span style="color:#ef4444">Failed (HTTP ${r.status})</span>`;
+        daysEl.innerHTML =
+          `<div style="padding:1rem;color:#ef4444">Server returned ${r.status}: ${_esc(txt.slice(0,200))}</div>`;
+        totalsEl.innerHTML = `<span style="color:#ef4444">Failed (HTTP ${r.status})</span>`;
         return;
       }
       _cateringData = await r.json();
-      renderCateringGrid();
-      renderCateringBills();
-      renderCateringPersonRollups();
+      try { renderCateringGrid(); }
+      catch (e1) { console.error('renderCateringGrid failed', e1);
+                   daysEl.innerHTML = `<div style="padding:1rem;color:#ef4444">renderCateringGrid: ${_esc(e1.message||e1)}</div>`; }
+      try { renderCateringBills(); }
+      catch (e2) { console.error('renderCateringBills failed', e2); }
+      try { renderCateringPersonRollups(); }
+      catch (e3) { console.error('renderCateringPersonRollups failed', e3); }
     } catch (err) {
       console.error('loadCateringGrid failed', err);
-      document.getElementById('catering-tbody').innerHTML =
-        `<tr><td colspan="9" style="padding:1rem;color:#ef4444">Error: ${_esc(err.message || err)}</td></tr>`;
-      document.getElementById('catering-totals').innerHTML =
-        `<span style="color:#ef4444">Error: ${_esc(err.message || err)}</span>`;
+      daysEl.innerHTML = `<div style="padding:1rem;color:#ef4444">Error: ${_esc(err.message || err)}</div>`;
+      totalsEl.innerHTML = `<span style="color:#ef4444">Error: ${_esc(err.message || err)}</span>`;
     }
   }
 
