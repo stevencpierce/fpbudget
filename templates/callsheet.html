@@ -60,11 +60,15 @@
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=topsheet">Top Sheet</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=working">Budget</a>
     <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=budget.id) }}">Schedule</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=travel">Travel</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=catering">Catering</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=contacts">Contacts</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=locations">Locations</a>
     <span class="tab-btn active">Call Sheets</span>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=docs">Docs</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=actuals">Actuals</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=activity">Activity</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=import-tools">Tools</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=budget.id) }}?tab=settings">⚙ Settings</a>
   </div>
   <div class="mode-switcher-seg">
