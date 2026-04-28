@@ -272,6 +272,25 @@ input:focus, select:focus { border-color: var(--accent); }
   background: var(--bg-2);
   z-index: 5;
 }
+/* Line tables: drop sticky thead. Multiple sticky theads at the same
+   top:44px overlap each other when more than one section is in view —
+   the upper section's column header keeps painting over the next
+   section's first data row. Each section is short enough that an
+   in-flow header keeps headers visible without the overlap. */
+.line-table thead th { position: static; top: auto; }
+/* Header alignment: numeric columns + Type/Fringe should hug the right
+   edge so the text sits next to its resize handle (which lives on the
+   right of each TH). Without this override .data-table th's
+   text-align:left wins over .col-num text-align:right by specificity. */
+.line-table thead th.col-num,
+.line-table thead th.col-qty,
+.line-table thead th.col-days,
+.line-table thead th.col-rt,
+.line-table thead th.col-fr,
+.line-table thead th.col-working,
+.line-table thead th.col-variance { text-align: right; }
+/* Description stays left-aligned — it's the one wide identifying column. */
+.line-table thead th.col-desc { text-align: left; }
 .data-table td {
   padding: .45rem .6rem;
   border-bottom: 1px solid rgba(46,51,73,.5);
