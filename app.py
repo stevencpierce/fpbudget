@@ -3217,10 +3217,15 @@ def upsert_line(pid, bid):
         if not data.get("sort_order"):
             _new_code = data.get("account_code")
             if _new_code is not None:
-                _max = (db.session.query(db.func.max(BudgetLine.sort_order))
-                        .filter(BudgetLine.budget_id == bid,
-                                BudgetLine.account_code == int(_new_code))
-                        .scalar())
+                # no_autoflush: the half-built ln (account_code still NULL)
+                # is in the session. Without this guard, the MAX query
+                # triggers an autoflush that tries to INSERT ln before its
+                # account_code is set — NotNullViolation, HTTP 500.
+                with db.session.no_autoflush:
+                    _max = (db.session.query(db.func.max(BudgetLine.sort_order))
+                            .filter(BudgetLine.budget_id == bid,
+                                    BudgetLine.account_code == int(_new_code))
+                            .scalar())
                 ln.sort_order = (int(_max or 0)) + 10
                 # Strip a falsy sort_order from the incoming payload so
                 # the field-assignment loop below doesn't overwrite our
