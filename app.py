@@ -7246,17 +7246,19 @@ def set_location_day(pid, bid):
 @login_required
 def assign_crew(pid, bid, lid):
     """Assign a crew member as the primary person on a budget line.
-    Auto-applies the crew member's default_agent_pct to the line when set."""
+
+    Per user 2026-04-28: the line's rate / agent% are NOT auto-applied
+    here. The server returns the crew member's defaults so the client
+    can show one combined prompt and the user opts in. Auto-applying
+    silently was overwriting line-level overrides without warning.
+    """
     BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     data   = request.get_json(force=True)
     cid    = data.get("crew_id")
     ln     = BudgetLine.query.get(lid)
     ln.assigned_crew_id = int(cid) if cid else None
-    agent_pct_applied = None
     cm = CrewMember.query.get(int(cid)) if cid else None
-    if cm and cm.default_agent_pct:
-        ln.agent_pct = float(cm.default_agent_pct)
-        agent_pct_applied = float(cm.default_agent_pct)
+    agent_pct_applied = None  # no longer auto-applied; client prompts
     # Mirror to CrewAssignment (instance 1) so the gantt stays in sync
     ca = CrewAssignment.query.filter_by(budget_line_id=lid, instance=1).first()
     if not cid:
@@ -7286,11 +7288,13 @@ def assign_crew(pid, bid, lid):
     default_rate      = float(cm.default_rate)      if cid and cm and cm.default_rate      else None
     default_rate_type = cm.default_rate_type or 'day_10' if cid and cm and cm.default_rate else None
     default_fringe    = cm.default_fringe if cid and cm else None
+    default_agent_pct = float(cm.default_agent_pct) if cid and cm and cm.default_agent_pct else None
     return jsonify({"ok": True, "crew_id": cid, "name": name,
                     "agent_pct": agent_pct_applied,
                     "default_rate": default_rate,
                     "default_rate_type": default_rate_type,
                     "default_fringe": default_fringe,
+                    "default_agent_pct": default_agent_pct,
                     "subtotal": res["subtotal"],
                     "est_total": res["est_total"],
                     "agent_amount": res.get("agent_amount", 0.0)})

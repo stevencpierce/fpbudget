@@ -6533,17 +6533,35 @@ async function assignCrew(crewId, crewName) {
       span.title = crewId ? crewName : 'Click to assign person';
     }
     const d = await res.json().catch(() => ({}));
-    // Prompt to apply default rate if the crew member has one
-    if (d.default_rate) {
-      const rateLabel = RATE_TYPE_LABELS[d.default_rate_type] || d.default_rate_type;
-      const apply = confirm(`${d.name} has a default rate of $${d.default_rate.toLocaleString()} (${rateLabel}) — apply it to this line?`);
+    // Prompt to apply the crew member's defaults (rate + agent fee + fringe).
+    // Combined into one confirmation so the user opts in to all defaults at
+    // once instead of being asked twice or having values silently applied.
+    const hasRate  = !!d.default_rate;
+    const hasAgent = !!d.default_agent_pct;
+    if (hasRate || hasAgent) {
+      const lines = [`${d.name} has these defaults:`];
+      if (hasRate) {
+        const rateLabel = RATE_TYPE_LABELS[d.default_rate_type] || d.default_rate_type;
+        lines.push(`  • Rate: $${d.default_rate.toLocaleString()} (${rateLabel})`);
+      }
+      if (hasAgent) {
+        const agentPct = (d.default_agent_pct * 100).toFixed(1).replace(/\.0$/, '');
+        lines.push(`  • Agent fee: ${agentPct}%`);
+      }
+      if (d.default_fringe) {
+        lines.push(`  • Fringe: ${d.default_fringe}`);
+      }
+      lines.push('', 'Apply these to this line?');
+      const apply = confirm(lines.join('\n'));
       if (apply) {
-        const ratePayload = { id: parseInt(lid), rate: d.default_rate, rate_type: d.default_rate_type };
-        if (d.default_fringe) ratePayload.fringe_type = d.default_fringe;
+        const payload = { id: parseInt(lid), override_estimated: true };
+        if (hasRate)            { payload.rate = d.default_rate; payload.rate_type = d.default_rate_type; }
+        if (hasAgent)           { payload.agent_pct = d.default_agent_pct; }
+        if (d.default_fringe)   { payload.fringe_type = d.default_fringe; }
         await fetch(SAVE_URL, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(ratePayload),
+          body: JSON.stringify(payload),
         });
         reloadWithTab();
         return;
