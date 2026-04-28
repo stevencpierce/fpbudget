@@ -194,19 +194,22 @@
   </thead>
   <tbody>
     {% for row in top_sheet.rows %}
+    {# In dispersed mode, the server pre-rounded each row's estimated
+       to a clean $25/$10 bucket so client-facing PDFs show round
+       section totals. Falls back to raw row.estimated otherwise. #}
+    {% set _row_est_pdf = row.pdf_rounded_estimated if (dispersed and row.pdf_rounded_estimated is defined) else row.estimated %}
     <tr>
       <td class="code">{{ row.code }}</td>
       <td class="account">{{ row.account }}</td>
       {% if is_working_view %}
-        {# For working view, top_sheet computed from working lines — show est (frozen) vs working #}
         <td class="num">{{ currency(row.raw_estimated if row.raw_estimated is defined else row.estimated) }}</td>
-        <td class="num">{{ currency(row.estimated) }}</td>
-        {% set _var = row.estimated - (row.raw_estimated if row.raw_estimated is defined else row.estimated) %}
+        <td class="num">{{ currency(_row_est_pdf) }}</td>
+        {% set _var = _row_est_pdf - (row.raw_estimated if row.raw_estimated is defined else row.estimated) %}
         <td class="num {% if _var > 0.005 %}var-over{% elif _var < -0.005 %}var-under{% endif %}">
           {{ currency(_var) }}
         </td>
       {% else %}
-        <td class="num">{{ currency(row.estimated) }}</td>
+        <td class="num">{{ currency(_row_est_pdf) }}</td>
       {% endif %}
     </tr>
     {% endfor %}
@@ -252,8 +255,11 @@
     <tr class="grand-total-row">
       <td class="code"></td>
       <td>GRAND TOTAL</td>
-      <td class="num">{{ currency(top_sheet.grand_total_estimated) }}</td>
-      {% if is_working_view %}<td class="num">{{ currency(top_sheet.grand_total_estimated) }}</td><td class="num">—</td>{% endif %}
+      {# Grand total picks the rounded sum when dispersed-rounded
+         (matches the printed section totals above). #}
+      {% set _grand_pdf = top_sheet.pdf_rounded_grand_total_estimated if (dispersed and top_sheet.pdf_rounded_grand_total_estimated is defined) else top_sheet.grand_total_estimated %}
+      <td class="num">{{ currency(_grand_pdf) }}</td>
+      {% if is_working_view %}<td class="num">{{ currency(_grand_pdf) }}</td><td class="num">—</td>{% endif %}
     </tr>
   </tbody>
 </table>
@@ -300,7 +306,14 @@
     {% set ns = namespace(sec_est=0, sec_work=0) %}
     {% for ln in sec.lines %}
     {% set res = line_results[ln.id] %}
-    {% set line_total = res.est_total * fee_m %}
+    {# In dispersed mode use the server-pre-rounded line total so
+       client-facing PDFs show clean numbers ($1,000 not $1,003). The
+       rate / OT / fringe columns above keep their fee_m-multiplied
+       values — those are usually small enough that the $25/$10 jiggle
+       on the Total absorbs the rounding without upstream cells looking
+       odd. In flat (non-dispersed) mode, fee_m=1 and pdf_line_totals
+       is empty, so this just falls through to the raw number. #}
+    {% set line_total = pdf_line_totals.get(ln.id, res.est_total * fee_m) if dispersed else (res.est_total * fee_m) %}
     {% set frozen = (ln.working_total | float) if ln.working_total is not none else res.est_total %}
     {% set ns.sec_est = ns.sec_est + frozen %}
     {% set ns.sec_work = ns.sec_work + res.est_total %}
@@ -372,17 +385,21 @@
        + 2
        + (1 if sec.has_ot else 0)
        + (1 if sec.has_fringe else 0) %}
+    {# In dispersed mode, the pre-rounded section sum is the source of
+       truth so the printed total matches the sum of printed line totals.
+       Falls back to the raw fee_m × subtotal for non-dispersed. #}
+    {% set _sec_total_disp = pdf_section_totals.get(sec.code, ns.sec_work * fee_m) if dispersed else (ns.sec_work * fee_m) %}
     <tr class="section-sub">
       <td colspan="{{ _lead_cols }}" style="text-align:right;padding-right:6pt;font-size:7.5pt;letter-spacing:0.3px">SECTION TOTAL</td>
       <td class="num">{{ currency(ns_sub.subtot * fee_m) }}</td>
       {% if sec.has_agent or sec.has_discount %}<td class="num"></td>{% endif %}
       {% if is_working_view %}
       <td class="num">{{ currency(ns.sec_est * fee_m) }}</td>
-      <td class="num">{{ currency(ns.sec_work * fee_m) }}</td>
-      {% set _svar = (ns.sec_work - ns.sec_est) * fee_m %}
+      <td class="num">{{ currency(_sec_total_disp) }}</td>
+      {% set _svar = _sec_total_disp - (ns.sec_est * fee_m) %}
       <td class="num {% if _svar > 0.005 %}var-over{% elif _svar < -0.005 %}var-under{% endif %}">{{ currency(_svar) }}</td>
       {% else %}
-      <td class="num">{{ currency(ns.sec_work * fee_m) }}</td>
+      <td class="num">{{ currency(_sec_total_disp) }}</td>
       {% endif %}
     </tr>
   </tbody>

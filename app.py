@@ -3833,6 +3833,44 @@ def export_pdf(pid, bid):
 
     fee_m = (1 + float(budget.company_fee_pct)) if dispersed else 1.0
 
+    # ── Client-facing rounding for dispersed mode ──────────────────────
+    # When the Prod Co Fee is dispersed across line totals, the raw math
+    # produces awkward numbers ($1,070, $1,650) that flag the gross-up
+    # to clients/auditors. For PDF export only (in-app stays exact), we
+    # round each line's dispersed total to a clean bucket — $25 for
+    # labor lines, $10 for non-labor — using nearest rather than floor
+    # so section sums stay close to the raw target.
+    pdf_line_totals = {}      # line_id → rounded dispersed total
+    pdf_section_totals = {}   # section_code → sum of rounded totals
+    if dispersed:
+        for sec in sections_ordered:
+            sec_sum = 0.0
+            for ln in sec["lines"]:
+                res = line_results.get(ln.id) or {}
+                exact = float(res.get("est_total") or 0) * fee_m
+                bucket = 25.0 if getattr(ln, 'is_labor', False) else 10.0
+                rounded = round(exact / bucket) * bucket
+                pdf_line_totals[ln.id] = rounded
+                sec_sum += rounded
+            pdf_section_totals[sec["code"]] = sec_sum
+        # Top-sheet rows also get rounded so the Top Sheet PDF matches.
+        # Section bucket mirrors the dominant line type — for sections
+        # with labor lines the $25 bucket; otherwise $10.
+        for row in top_sheet.get("rows", []):
+            sec_lines = next((s["lines"] for s in sections_ordered
+                              if s["code"] == row["code"]), [])
+            has_labor_in_sec = any(getattr(_l, 'is_labor', False) for _l in sec_lines)
+            bucket = 25.0 if has_labor_in_sec else 10.0
+            row["pdf_rounded_estimated"] = round(float(row["estimated"]) / bucket) * bucket
+        # Re-sum grand totals from rounded rows so the bottom line is
+        # also clean (otherwise the section subtotals won't add up to
+        # the printed grand).
+        ts_rows = top_sheet.get("rows", [])
+        if ts_rows and any("pdf_rounded_estimated" in r for r in ts_rows):
+            top_sheet["pdf_rounded_grand_total_estimated"] = sum(
+                r.get("pdf_rounded_estimated", r["estimated"]) for r in ts_rows
+            )
+
     # Filter out zero-total lines + zero-total sections when suppress_zeros
     # is on. Done at the template-data level so the math (top sheet,
     # company fee, grand total) still uses the full budget — only the
@@ -3861,6 +3899,8 @@ def export_pdf(pid, bid):
         sections_ordered=sections_ordered,
         line_results=line_results,
         fee_m=fee_m,
+        pdf_line_totals=pdf_line_totals,        # rounded dispersed line totals
+        pdf_section_totals=pdf_section_totals,  # rounded dispersed section sums
         suppress_zeros=suppress_zeros,
         today=date.today(),
     )
