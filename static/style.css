@@ -318,6 +318,31 @@ input:focus, select:focus { border-color: var(--accent); }
 .section-name { font-weight: 600; font-size: .875rem; flex: 1; }
 .section-total-badge { font-size: .8rem; font-weight: 600; color: var(--text-muted); margin-left: auto; padding: .1rem .5rem; background: var(--bg-2); border-radius: var(--radius); border: 1px solid var(--border); }
 .line-table { border: 1px solid var(--border); }
+
+/* Resizable column handles. Each <th> in a budget table gets a 6px
+   draggable strip on its right edge. Hover highlights it; dragging
+   syncs the matching <col> width across every section's table so the
+   user's adjustment carries through the whole page. Persisted to
+   localStorage per-budget by the JS in budget.html. */
+.line-table thead th { position: relative; }
+.line-table .col-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  user-select: none;
+  z-index: 5;
+  background: transparent;
+  transition: background 0.12s;
+}
+.line-table .col-resizer:hover,
+.line-table .col-resizer.col-resizer-active {
+  background: rgba(91, 138, 249, 0.45);
+}
+body.col-resizing { cursor: col-resize; user-select: none; }
+body.col-resizing * { cursor: col-resize !important; }
 .section-subtotal-row td { background: var(--bg-3); border-top: 1px solid var(--border); }
 .section-grand-total-row td {
   background: var(--bg-2, #1a1a1a);

@@ -4287,6 +4287,100 @@ function _showFloatBar(show) {
   document.body.style.paddingBottom = show ? '56px' : '';
 }
 
+// ── Resizable budget columns ──────────────────────────────────────────────
+// Drag the right edge of any column header to resize it. The change
+// applies to every section's table at once (so columns line up across
+// sections) and persists per-budget in localStorage so it survives
+// page reloads. Per user request 2026-04-28: dense budgets need
+// flexibility on which columns get the most width.
+(function() {
+  if (typeof BID === 'undefined') return;
+  const STORE_KEY = `fpbudget_col_widths_${BID}`;
+  // Indexes match the colgroup order in the section table:
+  // desc, pc, qty, days, rate, type, ot, fringe, subtotal, agent, estimated, working, variance, act
+  const COL_NAMES = ['desc','pc','qty','days','rate','type','ot','fringe','subtotal','agent','estimated','working','variance','act'];
+  // Last column ('act') is auto-sized — don't add a resizer to it.
+  const RESIZABLE_THROUGH = COL_NAMES.length - 2;
+
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); } catch {}
+
+  function _allTables() {
+    return document.querySelectorAll('#working-budget-wrap .line-table');
+  }
+
+  function applySavedWidths() {
+    _allTables().forEach(t => {
+      const cols = t.querySelectorAll('colgroup col');
+      COL_NAMES.forEach((name, i) => {
+        if (saved[name] && cols[i]) cols[i].style.width = saved[name] + 'px';
+      });
+    });
+  }
+
+  function attachResizers() {
+    _allTables().forEach(t => {
+      const ths = t.querySelectorAll('thead th');
+      ths.forEach((th, idx) => {
+        if (idx > RESIZABLE_THROUGH) return;
+        if (th.querySelector('.col-resizer')) return;  // already attached
+        const handle = document.createElement('div');
+        handle.className = 'col-resizer';
+        th.appendChild(handle);
+        handle.addEventListener('mousedown', (e) => {
+          // Find the matching <col> in THIS table to read the starting width
+          const cols = t.querySelectorAll('colgroup col');
+          const col  = cols[idx];
+          if (!col) return;
+          const startX = e.clientX;
+          const startW = col.offsetWidth || 100;
+          const colName = COL_NAMES[idx] || ('col' + idx);
+          handle.classList.add('col-resizer-active');
+          document.body.classList.add('col-resizing');
+
+          function onMove(ev) {
+            const newW = Math.max(36, startW + (ev.clientX - startX));
+            // Apply to EVERY section's table so columns stay aligned.
+            _allTables().forEach(t2 => {
+              const c = t2.querySelectorAll('colgroup col')[idx];
+              if (c) c.style.width = newW + 'px';
+            });
+          }
+          function onUp() {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            handle.classList.remove('col-resizer-active');
+            document.body.classList.remove('col-resizing');
+            const finalW = parseInt(col.style.width, 10) || col.offsetWidth;
+            saved[colName] = finalW;
+            try { localStorage.setItem(STORE_KEY, JSON.stringify(saved)); } catch {}
+          }
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+          e.preventDefault();
+          e.stopPropagation();
+        });
+      });
+    });
+  }
+
+  // Reset button: nuke saved widths + reload.
+  window.resetBudgetColumnWidths = function() {
+    if (!confirm('Reset all column widths to defaults?')) return;
+    localStorage.removeItem(STORE_KEY);
+    location.reload();
+  };
+
+  // Apply on load + attach handles. New tables added by Quick Entry
+  // / + Single Line trigger reloadWithTab() which re-runs this on
+  // the fresh DOM, so a one-shot wire-up at script time is enough.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => { applySavedWidths(); attachResizers(); });
+  } else {
+    applySavedWidths(); attachResizers();
+  }
+})();
+
 function refreshSectionTotals(table) {
   const tbody = table.querySelector('tbody');
   const tfoot = table.querySelector('tfoot');
