@@ -194,10 +194,13 @@
   </thead>
   <tbody>
     {% for row in top_sheet.rows %}
-    {# In dispersed mode, the server pre-rounded each row's estimated
-       to a clean $25/$10 bucket so client-facing PDFs show round
-       section totals. Falls back to raw row.estimated otherwise. #}
-    {% set _row_est_pdf = row.pdf_rounded_estimated if (dispersed and row.pdf_rounded_estimated is defined) else row.estimated %}
+    {# Top-sheet section row: use raw (un-rounded) estimated so it
+       reconciles exactly with sum of detail-page line totals. Per user
+       2026-04-28: rounding here created a small gap with the detail
+       pages that, combined with the previous "base rate vs inflated
+       total" gap, exposed the dispersion math. Consistency over
+       cosmetic rounding. #}
+    {% set _row_est_pdf = row.estimated %}
     <tr>
       <td class="code">{{ row.code }}</td>
       <td class="account">{{ row.account }}</td>
@@ -255,9 +258,8 @@
     <tr class="grand-total-row">
       <td class="code"></td>
       <td>GRAND TOTAL</td>
-      {# Grand total picks the rounded sum when dispersed-rounded
-         (matches the printed section totals above). #}
-      {% set _grand_pdf = top_sheet.pdf_rounded_grand_total_estimated if (dispersed and top_sheet.pdf_rounded_grand_total_estimated is defined) else top_sheet.grand_total_estimated %}
+      {# Grand total reconciles exactly with sum of section rows. #}
+      {% set _grand_pdf = top_sheet.grand_total_estimated %}
       <td class="num">{{ currency(_grand_pdf) }}</td>
       {% if is_working_view %}<td class="num">{{ currency(_grand_pdf) }}</td><td class="num">—</td>{% endif %}
     </tr>
@@ -306,14 +308,13 @@
     {% set ns = namespace(sec_est=0, sec_work=0) %}
     {% for ln in sec.lines %}
     {% set res = line_results[ln.id] %}
-    {# In dispersed mode use the server-pre-rounded line total so
-       client-facing PDFs show clean numbers ($1,000 not $1,003). The
-       rate / OT / fringe columns above keep their fee_m-multiplied
-       values — those are usually small enough that the $25/$10 jiggle
-       on the Total absorbs the rounding without upstream cells looking
-       odd. In flat (non-dispersed) mode, fee_m=1 and pdf_line_totals
-       is empty, so this just falls through to the raw number. #}
-    {% set line_total = pdf_line_totals.get(ln.id, res.est_total * fee_m) if dispersed else (res.est_total * fee_m) %}
+    {# Line total = est_total × fee_m (no per-line rounding). Per user
+       2026-04-28: rounding the Total to a clean $10 created a gap with
+       the Subtotal/Rate cells (which now also carry fee_m), and the gap
+       was the markup-tell. Letting the math line up exactly across
+       Rate × Qty × Days = Subtotal = Total is the goal. Section + grand
+       totals still get rounded for cleanliness; per-line totals don't. #}
+    {% set line_total = res.est_total * fee_m %}
     {% set frozen = (ln.working_total | float) if ln.working_total is not none else res.est_total %}
     {% set ns.sec_est = ns.sec_est + frozen %}
     {% set ns.sec_work = ns.sec_work + res.est_total %}
@@ -345,13 +346,13 @@
       {% else %}
       <td class="num">{{ ln.days | float | int if (ln.days | float) == (ln.days | float | int) else ln.days | float }}</td>
       {% endif %}
-      {# In dispersed mode show BASE values (no fee_m) for rate / OT /
-         fringe / subtotal so each row's math is internally consistent
-         (rate × days = subtotal). The dispersed fee lives only in the
-         gap between subtotal and Total — same convention as MMB and
-         ShowBiz dispersed exports. Eliminates the $1,003.50 / $1,650
-         cell values that were tipping off the gross-up. #}
-      {% set _cell_m = 1.0 if dispersed else fee_m %}
+      {# Dispersed mode: inflate EVERY cell by fee_m so Rate × Qty × Days
+         = Subtotal = Estimated all line up internally. Per user 2026-04-28:
+         the previous "show base rate but inflated total" approach left a
+         visible gap that exposed the markup. Showing every cell at the
+         dispersed level means the client sees what looks like a higher
+         natural rate — no inconsistency to spot. #}
+      {% set _cell_m = fee_m %}
       <td class="num">${{ "{:,.2f}".format(ln.rate | float * _cell_m) }}</td>
       {% if sec.has_ot %}
       <td class="num">{% if ln.is_labor and res.ot_amount %}{{ currency(res.ot_amount * _cell_m) }}{% endif %}</td>
@@ -392,11 +393,13 @@
        + 2
        + (1 if sec.has_ot else 0)
        + (1 if sec.has_fringe else 0) %}
-    {# In dispersed mode, the pre-rounded section sum is the source of
-       truth so the printed total matches the sum of printed line totals.
-       Falls back to the raw fee_m × subtotal for non-dispersed. #}
-    {% set _sec_total_disp = pdf_section_totals.get(sec.code, ns.sec_work * fee_m) if dispersed else (ns.sec_work * fee_m) %}
-    {% set _cell_m = 1.0 if dispersed else fee_m %}
+    {# Section total = sum of fee_m-inflated line totals. Section subtotal
+       cell uses the same fee_m so Subtotal and Estimated columns line up
+       (same convention as line rows above). Per user 2026-04-28: keeping
+       the dispersion visible at the rate level means the section row also
+       has to reflect it consistently. #}
+    {% set _sec_total_disp = ns.sec_work * fee_m %}
+    {% set _cell_m = fee_m %}
     <tr class="section-sub">
       <td colspan="{{ _lead_cols }}" style="text-align:right;padding-right:6pt;font-size:7.5pt;letter-spacing:0.3px">SECTION TOTAL</td>
       <td class="num">{{ currency(ns_sub.subtot * _cell_m) }}</td>
