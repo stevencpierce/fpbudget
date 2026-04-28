@@ -3837,36 +3837,36 @@ def export_pdf(pid, bid):
     # When the Prod Co Fee is dispersed across line totals, the raw math
     # produces awkward numbers ($1,070, $1,650) that flag the gross-up
     # to clients/auditors. For PDF export only (in-app stays exact), we
-    # round each line's dispersed total to a clean bucket — $25 for
-    # labor lines, $10 for non-labor — using nearest rather than floor
-    # so section sums stay close to the raw target.
-    pdf_line_totals = {}      # line_id → rounded dispersed total
-    pdf_section_totals = {}   # section_code → sum of rounded totals
+    # round each line's dispersed total to the nearest $10. Flat $10
+    # bucket across labor + non-labor (per user 2026-04-28 — the prior
+    # $25-for-labor split risked shifting line totals between exports
+    # when only the bucket boundary changed).
+    #
+    # IMPORTANT: rounding is INDEPENDENT per line — one line's rounded
+    # total never depends on another. So the same budget always exports
+    # the same PDF numbers; adding/removing a line doesn't shift the
+    # rounded values of existing lines. Determinism is the priority
+    # over making section sums hit perfect round numbers.
+    PDF_BUCKET = 10.0
+    pdf_line_totals = {}
+    pdf_section_totals = {}
     if dispersed:
         for sec in sections_ordered:
             sec_sum = 0.0
             for ln in sec["lines"]:
                 res = line_results.get(ln.id) or {}
                 exact = float(res.get("est_total") or 0) * fee_m
-                bucket = 25.0 if getattr(ln, 'is_labor', False) else 10.0
-                rounded = round(exact / bucket) * bucket
+                rounded = round(exact / PDF_BUCKET) * PDF_BUCKET
                 pdf_line_totals[ln.id] = rounded
                 sec_sum += rounded
             pdf_section_totals[sec["code"]] = sec_sum
-        # Top-sheet rows also get rounded so the Top Sheet PDF matches.
-        # Section bucket mirrors the dominant line type — for sections
-        # with labor lines the $25 bucket; otherwise $10.
+        # Top-sheet rows: round each section estimated to nearest $10.
         for row in top_sheet.get("rows", []):
-            sec_lines = next((s["lines"] for s in sections_ordered
-                              if s["code"] == row["code"]), [])
-            has_labor_in_sec = any(getattr(_l, 'is_labor', False) for _l in sec_lines)
-            bucket = 25.0 if has_labor_in_sec else 10.0
-            row["pdf_rounded_estimated"] = round(float(row["estimated"]) / bucket) * bucket
-        # Re-sum grand totals from rounded rows so the bottom line is
-        # also clean (otherwise the section subtotals won't add up to
-        # the printed grand).
+            row["pdf_rounded_estimated"] = round(float(row["estimated"]) / PDF_BUCKET) * PDF_BUCKET
+        # Grand total: sum of the rounded rows so the printed bottom
+        # line matches what's shown above it.
         ts_rows = top_sheet.get("rows", [])
-        if ts_rows and any("pdf_rounded_estimated" in r for r in ts_rows):
+        if ts_rows:
             top_sheet["pdf_rounded_grand_total_estimated"] = sum(
                 r.get("pdf_rounded_estimated", r["estimated"]) for r in ts_rows
             )
