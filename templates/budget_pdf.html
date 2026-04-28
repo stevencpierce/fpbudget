@@ -287,7 +287,7 @@
       <th class="num" style="width:36pt">Qty</th>
       {% endif %}
       <th class="num" style="width:40pt">Days</th>
-      <th class="num" style="width:64pt">Rate{% if dispersed %}<br><span style="font-weight:400;font-size:6.5pt;opacity:.7">incl. fee</span>{% endif %}</th>
+      <th class="num" style="width:64pt">Rate</th>
       {% if sec.has_ot %}    <th class="num" style="width:44pt">OT</th>{% endif %}
       {% if sec.has_fringe %}<th class="num" style="width:46pt">Fringe</th>{% endif %}
       <th class="num" style="width:58pt">Subtotal</th>
@@ -345,14 +345,21 @@
       {% else %}
       <td class="num">{{ ln.days | float | int if (ln.days | float) == (ln.days | float | int) else ln.days | float }}</td>
       {% endif %}
-      <td class="num">${{ "{:,.2f}".format(ln.rate | float * fee_m) }}</td>
+      {# In dispersed mode show BASE values (no fee_m) for rate / OT /
+         fringe / subtotal so each row's math is internally consistent
+         (rate × days = subtotal). The dispersed fee lives only in the
+         gap between subtotal and Total — same convention as MMB and
+         ShowBiz dispersed exports. Eliminates the $1,003.50 / $1,650
+         cell values that were tipping off the gross-up. #}
+      {% set _cell_m = 1.0 if dispersed else fee_m %}
+      <td class="num">${{ "{:,.2f}".format(ln.rate | float * _cell_m) }}</td>
       {% if sec.has_ot %}
-      <td class="num">{% if ln.is_labor and res.ot_amount %}{{ currency(res.ot_amount * fee_m) }}{% endif %}</td>
+      <td class="num">{% if ln.is_labor and res.ot_amount %}{{ currency(res.ot_amount * _cell_m) }}{% endif %}</td>
       {% endif %}
       {% if sec.has_fringe %}
-      <td class="num">{% if ln.is_labor and res.fringe_amount %}{{ currency(res.fringe_amount * fee_m) }}{% endif %}</td>
+      <td class="num">{% if ln.is_labor and res.fringe_amount %}{{ currency(res.fringe_amount * _cell_m) }}{% endif %}</td>
       {% endif %}
-      <td class="num">{{ currency(res.subtotal * fee_m) }}</td>
+      <td class="num">{{ currency(res.subtotal * _cell_m) }}</td>
       {% if sec.has_agent %}
       <td class="num">{% if ln.is_labor and ln.agent_pct %}{{ (ln.agent_pct | float * 100) | round(1) }}%{% endif %}</td>
       {% elif sec.has_discount %}
@@ -389,14 +396,15 @@
        truth so the printed total matches the sum of printed line totals.
        Falls back to the raw fee_m × subtotal for non-dispersed. #}
     {% set _sec_total_disp = pdf_section_totals.get(sec.code, ns.sec_work * fee_m) if dispersed else (ns.sec_work * fee_m) %}
+    {% set _cell_m = 1.0 if dispersed else fee_m %}
     <tr class="section-sub">
       <td colspan="{{ _lead_cols }}" style="text-align:right;padding-right:6pt;font-size:7.5pt;letter-spacing:0.3px">SECTION TOTAL</td>
-      <td class="num">{{ currency(ns_sub.subtot * fee_m) }}</td>
+      <td class="num">{{ currency(ns_sub.subtot * _cell_m) }}</td>
       {% if sec.has_agent or sec.has_discount %}<td class="num"></td>{% endif %}
       {% if is_working_view %}
-      <td class="num">{{ currency(ns.sec_est * fee_m) }}</td>
+      <td class="num">{{ currency(ns.sec_est * _cell_m) }}</td>
       <td class="num">{{ currency(_sec_total_disp) }}</td>
-      {% set _svar = _sec_total_disp - (ns.sec_est * fee_m) %}
+      {% set _svar = _sec_total_disp - (ns.sec_est * _cell_m) %}
       <td class="num {% if _svar > 0.005 %}var-over{% elif _svar < -0.005 %}var-under{% endif %}">{{ currency(_svar) }}</td>
       {% else %}
       <td class="num">{{ currency(_sec_total_disp) }}</td>
