@@ -3617,7 +3617,11 @@ def export_csv(pid, bid):
     w = csv.writer(output)
 
     if mode == "working":
-        w.writerow(["code", "account", "description", "qty", "days", "rate",
+        # Combined "qty_or_payroll" column: payroll co. for labor lines,
+        # numeric quantity for non-labor (per user request 2026-04-28 —
+        # qty=1 on every labor line is noise). OT + Fringe are labor-only
+        # concepts and now blank out for non-labor rows.
+        w.writerow(["code", "account", "description", "qty_or_payroll", "days", "rate",
                     "est_ot", "fringe", "subtotal", "agent_pct", "total"])
         for ln in lines:
             res = calc_line(ln, fringe_cfgs)
@@ -3627,10 +3631,13 @@ def export_csv(pid, bid):
             # rows so the bottom line stays consistent.
             if suppress_zeros and round(float(res["total"] or 0), 2) == 0:
                 continue
+            qty_or_payroll = (ln.payroll_co or '') if ln.is_labor else float(ln.quantity or 0)
+            est_ot = (float(ln.est_ot or 0) if ln.is_labor else '')
+            fringe = (ln.fringe_type if ln.is_labor else '')
             w.writerow([ln.account_code, ln.account_name, ln.description or "",
-                        float(ln.quantity or 0), float(ln.days or 0),
-                        float(ln.rate or 0), float(ln.est_ot or 0),
-                        ln.fringe_type, res["subtotal"],
+                        qty_or_payroll, float(ln.days or 0),
+                        float(ln.rate or 0), est_ot,
+                        fringe, res["subtotal"],
                         float(ln.agent_pct or 0), res["total"]])
     else:
         actuals_raw = db.session.query(
@@ -3774,6 +3781,11 @@ def export_pdf(pid, bid):
         if sk not in sections_detail:
             sections_detail[sk] = {"code": sk, "name": section_name_map.get(sk, ""), "lines": []}
         sections_detail[sk]["lines"].append(ln)
+    # Tag each section with has_labor so the PDF template can swap the
+    # Qty column header for "Payroll" on labor sections (per user
+    # request 2026-04-28).
+    for sec in sections_detail.values():
+        sec["has_labor"] = any(getattr(_l, 'is_labor', False) for _l in sec["lines"])
     sections_ordered = [sections_detail[sk] for sk, _ in FP_COA_SECTIONS if sk in sections_detail]
 
     company_settings = CompanySettings.query.get(1) or CompanySettings()

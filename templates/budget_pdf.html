@@ -271,7 +271,11 @@
   <thead>
     <tr>
       <th style="width:28%">Description</th>
-      <th class="num" style="width:36pt">Qty</th>
+      {# Combined Qty / Payroll header. Per user 2026-04-28: Qty is
+         meaningless on labor lines (one person per line), so for labor
+         we show the Payroll Co. instead. Non-labor rows still show
+         numeric Qty in the same column. #}
+      <th class="num" style="width:48pt">{% if sec.has_labor %}Payroll{% else %}Qty{% endif %}</th>
       <th class="num" style="width:40pt">Days</th>
       <th class="num" style="width:64pt">Rate{% if dispersed %}<br><span style="font-weight:400;font-size:6.5pt;opacity:.7">incl. fee</span>{% endif %}</th>
       <th class="num" style="width:44pt">OT</th>
@@ -307,11 +311,16 @@
           </div>
         {% endif %}
       </td>
-      {# Qty column: hide for labor (one person per line — Qty=1 is noise).
-         For meal lines also shown as '—' since the total-meals math is
-         in the subtitle above; the per-row qty/days are accounting
-         breakdown, not what the user cares about. #}
-      <td class="num">{% if ln.is_labor or _is_meal %}—{% else %}{{ ln.quantity | float | int if (ln.quantity | float) == (ln.quantity | float | int) else ln.quantity | float }}{% endif %}</td>
+      {# Combined Qty / Payroll cell. For labor: show payroll_co (or —);
+         for non-labor: show numeric quantity. Meal lines always show —
+         (the meal-count subtitle above carries the actual info). #}
+      <td class="num">
+        {% if ln.is_labor %}
+          {{ ln.payroll_co or '—' }}
+        {% elif _is_meal %}—{% else %}
+          {{ ln.quantity | float | int if (ln.quantity | float) == (ln.quantity | float | int) else ln.quantity | float }}
+        {% endif %}
+      </td>
       {# Days column: use schedule-computed day_count when the line is
          schedule-driven. Prevents "Days = 1" showing up for labor lines
          that are actually working 5 days per the gantt schedule. #}
@@ -321,8 +330,11 @@
       <td class="num">{{ ln.days | float | int if (ln.days | float) == (ln.days | float | int) else ln.days | float }}</td>
       {% endif %}
       <td class="num">${{ "{:,.2f}".format(ln.rate | float * fee_m) }}</td>
-      <td class="num">{% if res.ot_amount %}{{ currency(res.ot_amount * fee_m) }}{% else %}—{% endif %}</td>
-      <td class="num">{% if res.fringe_amount %}{{ currency(res.fringe_amount * fee_m) }}{% else %}—{% endif %}</td>
+      {# OT and Fringe are labor-only concepts — for non-labor rows
+         render a blank cell instead of "—" to keep the PDF clean
+         (per user request 2026-04-28). #}
+      <td class="num">{% if ln.is_labor %}{% if res.ot_amount %}{{ currency(res.ot_amount * fee_m) }}{% else %}—{% endif %}{% endif %}</td>
+      <td class="num">{% if ln.is_labor %}{% if res.fringe_amount %}{{ currency(res.fringe_amount * fee_m) }}{% else %}—{% endif %}{% endif %}</td>
       <td class="num">{{ currency(res.subtotal * fee_m) }}</td>
       {% if is_working_view %}
       <td class="num">{{ currency(frozen * fee_m) }}</td>

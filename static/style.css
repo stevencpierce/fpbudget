@@ -4022,9 +4022,12 @@ tr.cs-row-viewed    { background: #1a1200; }
     padding: 0 !important; overflow: hidden; border: none !important; }
 }
 
-/* Hidden columns: keep in layout (width:0) so fixed-table column positions stay consistent */
-.col-pc,
+/* Hidden columns: keep in layout (width:0) so fixed-table column positions stay consistent.
+   col-pc was previously always-hidden; per user 2026-04-28 we now show Payroll Co.
+   on labor sections in place of Qty. col-labor-only handles per-section visibility,
+   and the new .has-labor .col-qty rule below hides Qty for labor sections. */
 .no-labor .col-labor-only,
+.line-table.has-labor .col-qty,
 .line-table:not(.has-working) .col-working,
 .line-table:not(.has-working) .col-variance {
   width: 0 !important;
