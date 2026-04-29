@@ -550,8 +550,15 @@
     <table class="data-table line-table {{ 'has-labor' if ns.has_labor else 'no-labor' }} {{ 'has-working' if working_exists else '' }}">
       <colgroup>
         <col style="width:30%"><!-- desc -->
-        <col style="width:0"><!-- pc: always hidden -->
-        <col style="width:52px"><!-- qty -->
+        {# Labor sections show Payroll Co. (and hide Qty) — non-labor
+           sections show Qty (and hide Payroll Co.). With
+           table-layout:fixed, the colgroup widths are authoritative;
+           the CSS .has-labor .col-qty / .no-labor .col-labor-only
+           rules only affected padding, not actual column width.
+           Per user 2026-04-28: this swap never visibly took effect
+           because pc was hardcoded width:0. #}
+        <col style="width:{{ '70px' if ns.has_labor else '0' }}"><!-- pc -->
+        <col style="width:{{ '0' if ns.has_labor else '52px' }}"><!-- qty -->
         <col style="width:72px"><!-- days -->
         <col style="width:100px"><!-- rate -->
         <col style="width:105px"><!-- type -->
@@ -4733,6 +4740,23 @@ function addLineInSection(code, name) {
       sel.selectedIndex = i;
       break;
     }
+  }
+  // Pre-check the labor toggle when the target section already has
+  // labor lines — saves the user a click, and prevents accidentally
+  // adding a non-labor row into a labor section (which is what
+  // happened on Development Labor 1100 where + Single Line dropped a
+  // bare-Days row alongside flat-day labor lines). Detected from the
+  // DOM: any .line-table.has-labor under the section header for this
+  // code means it's a labor section.
+  const sectionTable = document.querySelector(`.section-block[data-section="${code}"] .line-table`);
+  const isLaborSection = sectionTable
+                       ? sectionTable.classList.contains('has-labor')
+                       : false;
+  const laborCheckbox = document.getElementById('modal-is-labor');
+  if (laborCheckbox) {
+    laborCheckbox.checked = isLaborSection;
+    // Fire change so the labor/flat field toggle (line 4744-4747) fires
+    laborCheckbox.dispatchEvent(new Event('change'));
   }
   document.getElementById('add-line-modal').classList.remove('hidden');
 }
