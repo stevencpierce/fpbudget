@@ -194,13 +194,10 @@
   </thead>
   <tbody>
     {% for row in top_sheet.rows %}
-    {# Top-sheet section row: use raw (un-rounded) estimated so it
-       reconciles exactly with sum of detail-page line totals. Per user
-       2026-04-28: rounding here created a small gap with the detail
-       pages that, combined with the previous "base rate vs inflated
-       total" gap, exposed the dispersion math. Consistency over
-       cosmetic rounding. #}
-    {% set _row_est_pdf = row.estimated %}
+    {# Top-sheet section row: in dispersed mode, use the server-rounded
+       value (matches sum of detail-page rounded line totals). Falls
+       back to raw estimated otherwise. #}
+    {% set _row_est_pdf = row.pdf_rounded_estimated if (dispersed and row.pdf_rounded_estimated is defined) else row.estimated %}
     <tr>
       <td class="code">{{ row.code }}</td>
       <td class="account">{{ row.account }}</td>
@@ -258,8 +255,10 @@
     <tr class="grand-total-row">
       <td class="code"></td>
       <td>GRAND TOTAL</td>
-      {# Grand total reconciles exactly with sum of section rows. #}
-      {% set _grand_pdf = top_sheet.grand_total_estimated %}
+      {# Grand total: in dispersed mode, sum of rounded section rows
+         (which equals sum of rounded line totals after the largest-
+         remainder reconciliation pass — exact match). #}
+      {% set _grand_pdf = top_sheet.pdf_rounded_grand_total_estimated if (dispersed and top_sheet.pdf_rounded_grand_total_estimated is defined) else top_sheet.grand_total_estimated %}
       <td class="num">{{ currency(_grand_pdf) }}</td>
       {% if is_working_view %}<td class="num">{{ currency(_grand_pdf) }}</td><td class="num">—</td>{% endif %}
     </tr>
@@ -288,7 +287,7 @@
       {% elif sec.has_qty %}
       <th class="num" style="width:36pt">Qty</th>
       {% endif %}
-      <th class="num" style="width:40pt">Days</th>
+      <th class="num" style="width:60pt">Duration</th>
       <th class="num" style="width:64pt">Rate</th>
       {% if sec.has_ot %}    <th class="num" style="width:44pt">OT</th>{% endif %}
       {% if sec.has_fringe %}<th class="num" style="width:46pt">Fringe</th>{% endif %}
@@ -308,13 +307,15 @@
     {% set ns = namespace(sec_est=0, sec_work=0) %}
     {% for ln in sec.lines %}
     {% set res = line_results[ln.id] %}
-    {# Line total = est_total × fee_m (no per-line rounding). Per user
-       2026-04-28: rounding the Total to a clean $10 created a gap with
-       the Subtotal/Rate cells (which now also carry fee_m), and the gap
-       was the markup-tell. Letting the math line up exactly across
-       Rate × Qty × Days = Subtotal = Total is the goal. Section + grand
-       totals still get rounded for cleanliness; per-line totals don't. #}
-    {% set line_total = res.est_total * fee_m %}
+    {# Line total: in dispersed mode, use the server-rounded value so
+       sums line up across detail page → top sheet → grand total. Per
+       line, rounding is independent (stable across exports), then a
+       largest-remainder pass bumps individual lines by ±$10 to make the
+       visible grand total exact. Cells above (Rate × Qty × Days =
+       Subtotal) stay at exact fee_m × base — the small gap between
+       Subtotal and the rounded Total is acceptable since rounding is
+       always to the nearest $10 (within $5 of true value). #}
+    {% set line_total = pdf_line_totals.get(ln.id, res.est_total * fee_m) if dispersed else (res.est_total * fee_m) %}
     {% set frozen = (ln.working_total | float) if ln.working_total is not none else res.est_total %}
     {% set ns.sec_est = ns.sec_est + frozen %}
     {% set ns.sec_work = ns.sec_work + res.est_total %}
@@ -338,14 +339,34 @@
       {% elif sec.has_qty %}
       <td class="num">{% if ln.is_labor or _is_meal %}{% else %}{{ ln.quantity | float | int if (ln.quantity | float) == (ln.quantity | float | int) else ln.quantity | float }}{% endif %}</td>
       {% endif %}
-      {# Days column: use schedule-computed day_count when the line is
-         schedule-driven. Prevents "Days = 1" showing up for labor lines
-         that are actually working 5 days per the gantt schedule. #}
+      {# Duration column: combines the days/weeks count with its unit so
+         the reader sees "5 days" / "2 weeks" / "Flat" / "1 project" /
+         "10 hrs" instead of a bare number. The previous "Days" header
+         was misleading for week-based and flat-rate lines. Per user
+         2026-04-28: needs to print the unit modifier (days_unit /
+         rate_type) alongside the count. #}
       {% if ln.use_schedule and res.day_count is defined %}
-      <td class="num">{{ res.day_count | int if (res.day_count | float) == (res.day_count | int) else res.day_count | float }}</td>
+        {% set _dur = res.day_count | float %}
       {% else %}
-      <td class="num">{{ ln.days | float | int if (ln.days | float) == (ln.days | float | int) else ln.days | float }}</td>
+        {% set _dur = ln.days | float %}
       {% endif %}
+      {% set _dur_disp = _dur | int if _dur == (_dur | int) else _dur %}
+      {% set _rt = ln.rate_type or 'day_10' %}
+      {% set _du = ln.days_unit or 'days' %}
+      {% if _rt == 'flat_project' %}
+        {% set _unit_label = 'Flat' %}
+        {% set _show_count = false %}
+      {% elif _rt == 'hourly' %}
+        {% set _unit_label = 'hr' if _dur == 1 else 'hrs' %}
+        {% set _show_count = true %}
+      {% elif _du == 'weeks' %}
+        {% set _unit_label = 'wk' if _dur == 1 else 'wks' %}
+        {% set _show_count = true %}
+      {% else %}
+        {% set _unit_label = 'day' if _dur == 1 else 'days' %}
+        {% set _show_count = true %}
+      {% endif %}
+      <td class="num">{% if _show_count %}{{ _dur_disp }} {% endif %}{{ _unit_label }}</td>
       {# Dispersed mode: inflate EVERY cell by fee_m so Rate × Qty × Days
          = Subtotal = Estimated all line up internally. Per user 2026-04-28:
          the previous "show base rate but inflated total" approach left a
@@ -393,12 +414,11 @@
        + 2
        + (1 if sec.has_ot else 0)
        + (1 if sec.has_fringe else 0) %}
-    {# Section total = sum of fee_m-inflated line totals. Section subtotal
-       cell uses the same fee_m so Subtotal and Estimated columns line up
-       (same convention as line rows above). Per user 2026-04-28: keeping
-       the dispersion visible at the rate level means the section row also
-       has to reflect it consistently. #}
-    {% set _sec_total_disp = ns.sec_work * fee_m %}
+    {# Section total: in dispersed mode, sum of the server-rounded line
+       totals so it reconciles exactly with detail rows AND the top
+       sheet. Section subtotal cell still shows fee_m-inflated value so
+       Subtotal column stays consistent with line cells above. #}
+    {% set _sec_total_disp = pdf_section_totals.get(sec.code, ns.sec_work * fee_m) if dispersed else (ns.sec_work * fee_m) %}
     {% set _cell_m = fee_m %}
     <tr class="section-sub">
       <td colspan="{{ _lead_cols }}" style="text-align:right;padding-right:6pt;font-size:7.5pt;letter-spacing:0.3px">SECTION TOTAL</td>

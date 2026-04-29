@@ -4097,20 +4097,78 @@ def export_pdf(pid, bid):
     pdf_line_totals = {}
     pdf_section_totals = {}
     if dispersed:
+        # ── Two-pass rounding with grand-total reconciliation ──────────
+        # Pass 1: round each line's dispersed total independently to the
+        #         nearest $10. Independent rounding = stability — adding
+        #         or editing one line never shifts another's rounded total.
+        # Pass 2: compute drift between sum(rounded lines) and
+        #         round(true grand total). If drift != 0, distribute the
+        #         drift in $10 increments by bumping individual lines
+        #         whose fractional remainder was closest to the rounding
+        #         boundary (largest-remainder method). This keeps every
+        #         bumped line within $10 of its natural rounded value
+        #         while making the visible grand total exact.
+        true_grand = 0.0
+        line_exact = {}     # id → exact dispersed total
+        line_remainder = {} # id → signed distance to next $10 bucket
         for sec in sections_ordered:
-            sec_sum = 0.0
             for ln in sec["lines"]:
                 res = line_results.get(ln.id) or {}
                 exact = float(res.get("est_total") or 0) * fee_m
+                line_exact[ln.id] = exact
                 rounded = round(exact / PDF_BUCKET) * PDF_BUCKET
                 pdf_line_totals[ln.id] = rounded
-                sec_sum += rounded
-            pdf_section_totals[sec["code"]] = sec_sum
-        # Top-sheet rows: round each section estimated to nearest $10.
+                true_grand += exact
+                # Remainder = how far from the bucket boundary in the
+                # OPPOSITE direction we'd have to go (positive if we
+                # rounded down and could bump up, negative if we rounded
+                # up and could bump down).
+                line_remainder[ln.id] = exact - rounded
+
+        # Target = true grand total rounded to $10. Drift = target − sum(rounded).
+        target_grand = round(true_grand / PDF_BUCKET) * PDF_BUCKET
+        sum_rounded = sum(pdf_line_totals.values())
+        drift = round((target_grand - sum_rounded) / PDF_BUCKET)  # in $10 units
+
+        if drift != 0:
+            # Bump up: pick lines that rounded DOWN (positive remainder),
+            #          sorted by largest remainder first (closest to bumping anyway).
+            # Bump down: pick lines that rounded UP (negative remainder),
+            #          sorted by most-negative remainder first.
+            # Each pick adjusts by one $10 unit; iterate until drift = 0
+            # or we run out of candidates.
+            ordered_ids = sorted(line_remainder, key=lambda i: line_remainder[i], reverse=(drift > 0))
+            step = PDF_BUCKET if drift > 0 else -PDF_BUCKET
+            remaining = abs(drift)
+            for lid in ordered_ids:
+                if remaining == 0:
+                    break
+                # Stop once the remainder sign flips — bumping further
+                # would mean rounding a line away from its natural target
+                # by more than $10, which defeats nearest-$10 rounding.
+                if (drift > 0 and line_remainder[lid] <= 0) or \
+                   (drift < 0 and line_remainder[lid] >= 0):
+                    break
+                pdf_line_totals[lid] += step
+                remaining -= 1
+
+        # Section totals: clean sum of the (now reconciled) rounded lines.
+        for sec in sections_ordered:
+            pdf_section_totals[sec["code"]] = sum(
+                pdf_line_totals.get(ln.id, 0) for ln in sec["lines"]
+            )
+
+        # Top-sheet rows: re-derive from the section totals so they
+        # match the detail pages exactly. Falls back to round-to-$10 of
+        # the raw estimated for sections that have no detail rows
+        # (Workers' Comp / Payroll Fee auto-injects).
         for row in top_sheet.get("rows", []):
-            row["pdf_rounded_estimated"] = round(float(row["estimated"]) / PDF_BUCKET) * PDF_BUCKET
-        # Grand total: sum of the rounded rows so the printed bottom
-        # line matches what's shown above it.
+            code = row.get("code")
+            if code in pdf_section_totals:
+                row["pdf_rounded_estimated"] = pdf_section_totals[code]
+            else:
+                row["pdf_rounded_estimated"] = round(float(row["estimated"]) / PDF_BUCKET) * PDF_BUCKET
+        # Grand total: sum of the (now reconciled) rounded rows.
         ts_rows = top_sheet.get("rows", [])
         if ts_rows:
             top_sheet["pdf_rounded_grand_total_estimated"] = sum(
