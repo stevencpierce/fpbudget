@@ -6495,6 +6495,17 @@ def catering_export(pid, bid):
     dates_param = (request.args.get("dates") or "").strip()
     include_param = set((request.args.get("include") or "meals,perdiem").split(","))
     recipient = (request.args.get("recipient") or "generic").strip()
+    # New filters per user 2026-04-28:
+    # ?people=line:inst,line:inst — restrict per-diem rollups to a subset
+    # ?meals=courtesy_breakfast,first_meal,...,per_diem,working_meal,craft_services
+    #   — restrict the catering breakdown layout to specific meal types
+    # ?breakdown=1 — render the multi-table breakdown layout (one table
+    #   per meal × day) instead of the per-day card layout.
+    people_param   = (request.args.get("people") or "").strip()
+    meals_param    = (request.args.get("meals") or "").strip()
+    breakdown_mode = request.args.get("breakdown") == "1"
+    people_filter = set(p.strip() for p in people_param.split(",") if p.strip()) if people_param else None
+    meals_filter  = set(m.strip() for m in meals_param.split(",")  if m.strip()) if meals_param  else None
     if not dates_param:
         return jsonify({"error": "Specify ?dates=YYYY-MM-DD,YYYY-MM-DD,..."}), 400
 
@@ -6584,7 +6595,14 @@ def catering_export(pid, bid):
         if flags.get('per_diem') and not flags.get('per_diem_full'):
             flags['per_diem_full'] = True
         role, person = _resolve(line, sd.crew_instance)
-        entry = {"role": role, "person": person, "day_type": sd.day_type or 'off'}
+        ident = f"{line.id}:{sd.crew_instance or 1}"
+        # People filter (per-diem export) — only applied to the per-diem
+        # bucket so the user's "include only Steven and James" choice
+        # doesn't accidentally hide the working-meal totals (which use
+        # the same ScheduleDay rows but a different filter context).
+        person_passes = (people_filter is None) or (ident in people_filter)
+        entry = {"role": role, "person": person, "day_type": sd.day_type or 'off',
+                 "ident": ident}
         if sd.day_type != 'off':
             bucket["all_present"].append(entry)
         if sd.day_type == 'work':
@@ -6598,7 +6616,7 @@ def catering_export(pid, bid):
             'dinner'    if flags.get('per_diem_dinner')    else
             ''
         )
-        if pd_kind:
+        if pd_kind and person_passes:
             pd_amount = rate(f'per_diem_{pd_kind}')
             bucket["per_diem"].append({**entry, "kind": pd_kind, "amount": pd_amount})
 
@@ -6627,6 +6645,87 @@ def catering_export(pid, bid):
     pd_rows = sorted(pd_by_person.values(), key=lambda r: (-r["total_amount"], r["person"].lower(), r["role"].lower()))
     wm_rows = sorted(wm_by_person.values(), key=lambda r: (-r["total_amount"], r["person"].lower(), r["role"].lower()))
 
+    # ── Breakdown layout (one table per meal × day) ──────────────────
+    # When ?breakdown=1, build a structured payload the template can
+    # render as separate caterer-friendly tables. Per user 2026-04-28:
+    # different caterers may handle breakfast vs second meal vs working
+    # meal, so a printable per-meal breakdown is what they hand off.
+    meal_keys_default = ['courtesy_breakfast', 'first_meal', 'second_meal',
+                         'working_meal', 'per_diem', 'craft_services']
+    selected_meals = [k for k in meal_keys_default
+                      if (meals_filter is None or k in meals_filter)]
+    meal_label = {
+        'courtesy_breakfast': 'Courtesy Breakfast',
+        'first_meal':         'First Meal',
+        'second_meal':        'Second Meal',
+        'working_meal':       'Working Meal',
+        'per_diem':           'Per Diem',
+        'craft_services':     'Craft Services',
+    }
+    meal_rate_for = {
+        'courtesy_breakfast': rate('meal_courtesy_breakfast'),
+        'first_meal':         rate('meal_first'),
+        'second_meal':        rate('meal_second'),
+        'working_meal':       rate('working_meal'),
+        'craft_services':     rate('craft_services'),
+    }
+    breakdown_tables = []  # [{meal, date, people: [...], headcount, expected_cost}]
+    if breakdown_mode:
+        for d in selected_dates:
+            b = by_date.get(d)
+            if not b:
+                continue  # skip days with no scheduled crew
+            pd = pd_by_date.get(d)
+            for meal in selected_meals:
+                if meal == 'per_diem':
+                    if not b["per_diem"]:
+                        continue
+                    people = [{"role": p["role"], "person": p["person"],
+                               "kind": p["kind"], "amount": p["amount"]}
+                              for p in b["per_diem"]]
+                    headcount = len(people)
+                    cost = sum(p["amount"] for p in people)
+                elif meal == 'working_meal':
+                    if not b["working_meal"]:
+                        continue
+                    people = [{"role": p["role"], "person": p["person"]}
+                              for p in b["working_meal"]]
+                    headcount = len(people)
+                    cost = headcount * meal_rate_for['working_meal']
+                elif meal == 'craft_services':
+                    # Everyone present (any non-off cell) gets craft.
+                    if not b["all_present"]:
+                        continue
+                    people = [{"role": p["role"], "person": p["person"]}
+                              for p in b["all_present"]]
+                    headcount = len(people)
+                    cost = headcount * meal_rate_for['craft_services']
+                else:
+                    # courtesy_breakfast / first_meal / second_meal — gated
+                    # by the ProductionDay flag for that date. Headcount =
+                    # working crew that day.
+                    flag_attr = {
+                        'courtesy_breakfast': 'courtesy_breakfast',
+                        'first_meal':         'first_meal',
+                        'second_meal':        'second_meal',
+                    }[meal]
+                    if not (pd and getattr(pd, flag_attr, False)):
+                        continue
+                    if not b["working"]:
+                        continue
+                    people = [{"role": p["role"], "person": p["person"]}
+                              for p in b["working"]]
+                    headcount = len(people)
+                    cost = headcount * meal_rate_for[meal]
+                breakdown_tables.append({
+                    "meal":         meal,
+                    "meal_label":   meal_label[meal],
+                    "date":         d,
+                    "people":       people,
+                    "headcount":    headcount,
+                    "expected_cost": round(cost, 2),
+                })
+
     return render_template(
         "catering_export.html",
         project=project,
@@ -6638,11 +6737,17 @@ def catering_export(pid, bid):
         pd_by_date={d: pd_by_date.get(d) for d in selected_dates},
         pd_rows=pd_rows,
         wm_rows=wm_rows,
+        breakdown_mode=breakdown_mode,
+        breakdown_tables=breakdown_tables,
+        selected_meals=selected_meals,
+        meal_label_map=meal_label,
+        people_filter_active=(people_filter is not None),
         rates={
             "courtesy_breakfast": rate('meal_courtesy_breakfast'),
             "first_meal":         rate('meal_first'),
             "second_meal":        rate('meal_second'),
             "working_meal":       rate('working_meal'),
+            "craft_services":     rate('craft_services'),
             "per_diem_full":      rate('per_diem_full'),
             "per_diem_breakfast": rate('per_diem_breakfast'),
             "per_diem_lunch":     rate('per_diem_lunch'),

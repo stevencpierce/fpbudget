@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Catering — {{ project.name }}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         max-width: 1100px; margin: 32px auto; padding: 0 24px; color: #1a1a2e;
+         line-height: 1.5; }
+  h1 { font-size: 22pt; margin: 0 0 4px; color: #0f172a; }
+  h2 { font-size: 14pt; color: #1e3a8a; margin-top: 28px;
+       border-bottom: 1px solid #dbeafe; padding-bottom: 4px; }
+  h3 { font-size: 12pt; color: #1e3a8a; margin: 16px 0 6px; }
+  .meta { color: #64748b; font-size: 10pt; margin-bottom: 4px; }
+  .recipient-banner { background: #f1f5fb; border-left: 4px solid #2563eb;
+                      padding: 10px 14px; border-radius: 0 6px 6px 0;
+                      margin: 16px 0 24px; font-size: 11pt; }
+  .day-card { border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden;
+              margin-bottom: 18px; page-break-inside: avoid; }
+  .day-header { background: #1e3a8a; color: #fff; padding: 10px 14px;
+                display: flex; align-items: center; gap: 12px; }
+  .day-header .date-main { font-weight: 600; font-size: 13pt; }
+  .day-header .day-meta  { opacity: 0.85; font-size: 10pt; margin-left: auto; }
+  .day-body { padding: 12px 16px; }
+  .day-body table { width: 100%; border-collapse: collapse; font-size: 10pt; }
+  .day-body th { background: #f1f5f9; text-align: left; padding: 6px 10px;
+                 border-bottom: 1px solid #cbd5e1; }
+  .day-body td { padding: 5px 10px; border-bottom: 1px solid #e2e8f0;
+                 vertical-align: top; }
+  .day-body td.num { text-align: right; }
+  .meal-summary { background: #f8fafc; padding: 8px 12px; border-radius: 4px;
+                  margin-bottom: 8px; font-size: 10pt; }
+  .meal-summary strong { color: #1e3a8a; }
+  .totals-table { width: 100%; border-collapse: collapse; margin-top: 12px;
+                  font-size: 10pt; }
+  .totals-table th { background: #1e3a8a; color: #fff; padding: 8px 12px;
+                     text-align: left; }
+  .totals-table td { padding: 7px 12px; border-bottom: 1px solid #e2e8f0; }
+  .totals-table tr:nth-child(even) td { background: #f8fafc; }
+  .totals-table .num { text-align: right; }
+  .totals-table .grand { font-weight: 700; background: #f1f5fb !important;
+                         border-top: 2px solid #2563eb; }
+  .role-only { color: #f59e0b; font-style: italic; }
+  .footer { margin-top: 36px; font-size: 9pt; color: #94a3b8;
+            border-top: 1px solid #e2e8f0; padding-top: 12px; }
+  .print-hint { background: #fef3c7; color: #78350f; padding: 8px 12px;
+                border-radius: 4px; margin-bottom: 16px; font-size: 10pt; }
+  @media print { .print-hint { display: none; } body { margin: 0; } }
+</style>
+</head>
+<body>
+
+<div class="print-hint">
+  📄 Tip: <strong>File → Print → Save as PDF</strong> to send this as an
+  attachment, or take a screenshot for quick share.
+</div>
+
+{# Recipient-flavored opening copy. Same data either way; just the
+   framing changes so the document reads naturally for whoever's
+   receiving it. #}
+{% set _recipient_lines = {
+  'catering':   'Catering vendor schedule — please provision the meals listed below for the dates indicated.',
+  'upm':        'Per-Diem hand-out summary — totals and recipients for envelope distribution.',
+  'dept_head':  'Department working-meal schedule — your crew\'s expected meal coverage for the period.',
+  'generic':    'Catering & per-diem summary for the selected dates.',
+} %}
+
+<h1>{{ project.name }}</h1>
+<div class="meta">{{ budget.name }} · Generated {{ today.strftime('%b %-d, %Y') }}</div>
+
+{% if dates|length > 0 %}
+  <div class="meta">
+    Period: <strong>{{ dates[0].strftime('%a %b %-d, %Y') }}</strong>
+    {% if dates|length > 1 %} → <strong>{{ dates[-1].strftime('%a %b %-d, %Y') }}</strong>
+       <span style="opacity:.7">({{ dates|length }} day{{ 's' if dates|length != 1 else '' }})</span>
+    {% endif %}
+  </div>
+{% endif %}
+
+<div class="recipient-banner">
+  {{ _recipient_lines.get(recipient, _recipient_lines['generic']) }}
+</div>
+
+{# ── Multi-meal breakdown layout (one table per meal × day) ── #}
+{% if breakdown_mode %}
+<h2>Catering Breakdown</h2>
+<p class="meta">Selected meals: {% for m in selected_meals %}{{ meal_label_map[m] }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+{% if breakdown_tables %}
+  {% set ns_grand = namespace(total=0, headcount=0) %}
+  {% for tbl in breakdown_tables %}
+    {% set ns_grand.total = ns_grand.total + tbl.expected_cost %}
+    {% set ns_grand.headcount = ns_grand.headcount + tbl.headcount %}
+    <div class="day-card">
+      <div class="day-header">
+        <span class="date-main">{{ tbl.meal_label }} — {{ tbl.date.strftime('%a · %b %-d, %Y') }}</span>
+        <span class="day-meta">{{ tbl.headcount }} {{ 'person' if tbl.headcount == 1 else 'people' }} · ${{ '%.2f' | format(tbl.expected_cost) }}</span>
+      </div>
+      <div class="day-body">
+        <table>
+          <thead>
+            <tr>
+              <th>Role</th>
+              <th>Person</th>
+              {% if tbl.meal == 'per_diem' %}
+              <th>Type</th>
+              <th class="num">Amount</th>
+              {% endif %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in tbl.people | sort(attribute='role') %}
+            <tr>
+              <td>{{ p.role }}</td>
+              <td>{% if p.person %}{{ p.person }}{% else %}<span class="role-only">—</span>{% endif %}</td>
+              {% if tbl.meal == 'per_diem' %}
+              <td>{{ p.kind | capitalize }}</td>
+              <td class="num">${{ '%.2f' | format(p.amount) }}</td>
+              {% endif %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endfor %}
+  <div class="day-card" style="background:#f1f5fb">
+    <div class="day-header" style="background:#0f172a">
+      <span class="date-main">GRAND TOTAL</span>
+      <span class="day-meta">{{ breakdown_tables | length }} meals · {{ ns_grand.headcount }} servings · ${{ '%.2f' | format(ns_grand.total) }}</span>
+    </div>
+  </div>
+{% else %}
+<p style="color:#64748b;font-style:italic;text-align:center;padding:2rem">No matching meals scheduled in the selected date range.</p>
+{% endif %}
+{% else %}
+
+{# ── Per-day breakdown (legacy day-card layout) ── #}
+{% if 'meals' in include or 'workingmeal' in include or 'perdiem' in include %}
+<h2>Daily Breakdown</h2>
+{% for d in dates %}
+  {% set b = by_date.get(d) %}
+  {% set pd = pd_by_date.get(d) %}
+  {% if b %}
+  <div class="day-card">
+    <div class="day-header">
+      <span class="date-main">{{ d.strftime('%a · %b %-d, %Y') }}</span>
+      <span class="day-meta">
+        {{ b.working|length }} working · {{ b.per_diem|length }} per-diem · {{ b.working_meal|length }} working-meal
+      </span>
+    </div>
+    <div class="day-body">
+
+      {# ── Catered meals (production-day flags × working headcount) ── #}
+      {% if 'meals' in include and pd %}
+      <div class="meal-summary">
+        {% set _wc = b.working|length %}
+        {% if pd.courtesy_breakfast %}
+          <div><strong>Courtesy Breakfast</strong> — {{ _wc }} ppl × ${{ '%.0f'|format(rates.courtesy_breakfast) }} = <strong>${{ '%.0f'|format(_wc * rates.courtesy_breakfast) }}</strong></div>
+        {% endif %}
+        {% if pd.first_meal %}
+          <div><strong>First Meal</strong> — {{ _wc }} ppl × ${{ '%.0f'|format(rates.first_meal) }} = <strong>${{ '%.0f'|format(_wc * rates.first_meal) }}</strong></div>
+        {% endif %}
+        {% if pd.second_meal %}
+          <div><strong>Second Meal</strong> — {{ _wc }} ppl × ${{ '%.0f'|format(rates.second_meal) }} = <strong>${{ '%.0f'|format(_wc * rates.second_meal) }}</strong></div>
+        {% endif %}
+        {% if not (pd.courtesy_breakfast or pd.first_meal or pd.second_meal) %}
+          <div style="color:#94a3b8">No catered meals scheduled this day.</div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      {# ── Working crew list (if catering wants to know who's on set) ── #}
+      {% if 'meals' in include and b.working %}
+      <h3>Working crew ({{ b.working|length }})</h3>
+      <table>
+        <thead><tr><th>Role</th><th>Person</th></tr></thead>
+        <tbody>
+        {% for p in b.working|sort(attribute='role') %}
+          <tr>
+            <td>{{ p.role }}</td>
+            <td>{% if p.person %}{{ p.person }}{% else %}<span class="role-only">—</span>{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      {# ── Working meal opt-ins ── #}
+      {% if 'workingmeal' in include and b.working_meal %}
+      <h3>Working meal opt-ins ({{ b.working_meal|length }})</h3>
+      <table>
+        <thead><tr><th>Role</th><th>Person</th><th class="num">Amount</th></tr></thead>
+        <tbody>
+        {% for p in b.working_meal|sort(attribute='role') %}
+          <tr>
+            <td>{{ p.role }}</td>
+            <td>{% if p.person %}{{ p.person }}{% else %}<span class="role-only">—</span>{% endif %}</td>
+            <td class="num">${{ '%.2f'|format(rates.working_meal) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      {# ── Per Diem list — for UPM envelope distribution ── #}
+      {% if 'perdiem' in include and b.per_diem %}
+      <h3>Per Diem ({{ b.per_diem|length }})</h3>
+      <table>
+        <thead>
+          <tr><th>Role</th><th>Person</th><th>Type</th><th class="num">Amount</th></tr>
+        </thead>
+        <tbody>
+        {% for p in b.per_diem|sort(attribute='role') %}
+          <tr>
+            <td>{{ p.role }}</td>
+            <td>{% if p.person %}{{ p.person }}{% else %}<span class="role-only">—</span>{% endif %}</td>
+            <td>{{ p.kind|capitalize }}</td>
+            <td class="num">${{ '%.2f'|format(p.amount) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+    </div>
+  </div>
+  {% endif %}
+{% endfor %}
+{% endif %}
+
+{# ── Per-person Per Diem totals — recipient summary ── #}
+{% if 'perdiem' in include and pd_rows %}
+<h2>Per-Person Per Diem Totals (across selected dates)</h2>
+<table class="totals-table">
+  <thead>
+    <tr>
+      <th>Person</th>
+      <th>Role</th>
+      <th class="num">Full</th>
+      <th class="num">Bkfst</th>
+      <th class="num">Lunch</th>
+      <th class="num">Dinner</th>
+      <th class="num">Total</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% set ns = namespace(grand=0, full=0, bkfst=0, lunch=0, dinner=0) %}
+  {% for r in pd_rows %}
+    {% set ns.grand  = ns.grand  + r.total_amount %}
+    {% set ns.full   = ns.full   + r.full %}
+    {% set ns.bkfst  = ns.bkfst  + r.breakfast %}
+    {% set ns.lunch  = ns.lunch  + r.lunch %}
+    {% set ns.dinner = ns.dinner + r.dinner %}
+    <tr>
+      <td>{% if r.person %}<strong>{{ r.person }}</strong>{% else %}<span class="role-only">{{ r.role }}</span>{% endif %}</td>
+      <td>{{ r.role }}</td>
+      <td class="num">{{ r.full or '' }}</td>
+      <td class="num">{{ r.breakfast or '' }}</td>
+      <td class="num">{{ r.lunch or '' }}</td>
+      <td class="num">{{ r.dinner or '' }}</td>
+      <td class="num"><strong>${{ '%.2f'|format(r.total_amount) }}</strong></td>
+    </tr>
+  {% endfor %}
+    <tr class="grand">
+      <td colspan="2">TOTAL</td>
+      <td class="num">{{ ns.full }}</td>
+      <td class="num">{{ ns.bkfst }}</td>
+      <td class="num">{{ ns.lunch }}</td>
+      <td class="num">{{ ns.dinner }}</td>
+      <td class="num">${{ '%.2f'|format(ns.grand) }}</td>
+    </tr>
+  </tbody>
+</table>
+{% endif %}
+
+{# ── Per-person Working Meal totals ── #}
+{% if 'workingmeal' in include and wm_rows %}
+<h2>Per-Person Working Meal Totals</h2>
+<table class="totals-table">
+  <thead>
+    <tr><th>Person</th><th>Role</th><th class="num">Days</th><th class="num">Total</th></tr>
+  </thead>
+  <tbody>
+  {% set wn = namespace(grand=0, days=0) %}
+  {% for r in wm_rows %}
+    {% set wn.grand = wn.grand + r.total_amount %}
+    {% set wn.days  = wn.days + r.count %}
+    <tr>
+      <td>{% if r.person %}<strong>{{ r.person }}</strong>{% else %}<span class="role-only">{{ r.role }}</span>{% endif %}</td>
+      <td>{{ r.role }}</td>
+      <td class="num">{{ r.count }}</td>
+      <td class="num"><strong>${{ '%.2f'|format(r.total_amount) }}</strong></td>
+    </tr>
+  {% endfor %}
+    <tr class="grand">
+      <td colspan="2">TOTAL</td>
+      <td class="num">{{ wn.days }}</td>
+      <td class="num">${{ '%.2f'|format(wn.grand) }}</td>
+    </tr>
+  </tbody>
+</table>
+{% endif %}
+
+{% endif %}{# end breakdown_mode else branch #}
+
+<div class="footer">
+  Generated by FPBudget · {{ project.name }} · {{ budget.name }} · {{ today.strftime('%b %-d, %Y') }}
+</div>
+
+</body>
+</html>

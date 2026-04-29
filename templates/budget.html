@@ -1090,9 +1090,18 @@
          down by payroll week. Empty until data loads; rendered by
          renderCateringPersonRollups() below. -->
     <div id="catering-perdiem-block" style="margin-top:1.6rem;display:none">
-      <h3 style="margin:0 0 .55rem;font-size:.95rem">Per Diem — Per Person, By Week</h3>
+      <div style="display:flex;align-items:center;gap:.75rem;margin:0 0 .55rem;flex-wrap:wrap">
+        <h3 style="margin:0;font-size:.95rem">Per Diem — Per Person, By Week</h3>
+        <button class="btn btn-xs btn-outline" onclick="openPerDiemExportModal()" style="margin-left:auto">
+          📤 Export Per Diem Report
+        </button>
+        <button class="btn btn-xs btn-outline" onclick="openCateringBreakdownExportModal()">
+          📤 Export Catering Breakdown
+        </button>
+      </div>
       <p class="muted" style="font-size:.78rem;margin:0 0 .55rem">
         Weeks follow the budget's payroll week-start (set in Settings → Payroll Profile).
+        Click <strong>Details</strong> next to a person or week for the day-by-day breakdown.
       </p>
       <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card)">
         <table id="catering-perdiem-table" style="width:100%;font-size:.85rem;border-collapse:collapse">
@@ -9524,18 +9533,26 @@ setTimeout(function() {
       block.style.display = '';
       const weeks = _cateringData.weeks || [];
       const head = document.getElementById(headId);
+      // Per-week column header includes a "Details" button (only on the
+      // Per Diem table) so the user can drill into "everyone receiving
+      // per diem this week" with one click.
+      const isPerDiem = blockId === 'catering-perdiem-block';
       head.innerHTML =
         `<th style="text-align:left;padding:.45rem .7rem">Person</th>` +
         `<th style="text-align:left;padding:.45rem .6rem">Role</th>` +
-        weeks.map((wk, i) =>
-          `<th style="text-align:right;padding:.45rem .55rem;white-space:nowrap" title="Week of ${_esc(wk)}">Wk ${i+1}<br><span class="muted" style="font-weight:400;font-size:10px">${_esc(fmtWeek(wk))}</span></th>`
-        ).join('') +
+        weeks.map((wk, i) => {
+          const detailsBtn = isPerDiem
+            ? `<div style="margin-top:3px"><button class="btn btn-xs btn-ghost" style="font-size:10px;padding:1px 6px" onclick="openPerDiemWeekDetails('${_esc(wk)}')" title="See everyone receiving per diem this week">Details</button></div>`
+            : '';
+          return `<th style="text-align:right;padding:.45rem .55rem;white-space:nowrap;vertical-align:top" title="Week of ${_esc(wk)}">Wk ${i+1}<br><span class="muted" style="font-weight:400;font-size:10px">${_esc(fmtWeek(wk))}</span>${detailsBtn}</th>`;
+        }).join('') +
         `<th style="text-align:right;padding:.45rem .8rem;border-left:1px solid var(--border)">Total</th>` +
-        `<th style="text-align:right;padding:.45rem .55rem" title="Total ${label} count for this person">Count</th>`;
+        `<th style="text-align:right;padding:.45rem .55rem" title="Total ${label} count for this person">Count</th>` +
+        (isPerDiem ? `<th style="text-align:center;padding:.45rem .55rem" title="See per-day breakdown for each person"></th>` : '');
 
       const tbody = document.getElementById(tbodyId);
       tbody.innerHTML = rows.map(r => `
-        <tr style="border-top:1px solid var(--border)">
+        <tr style="border-top:1px solid var(--border)" data-ident="${_esc(r.ident)}">
           <td style="padding:.4rem .7rem"><strong>${_esc(r.person)}</strong></td>
           <td class="muted" style="padding:.4rem .6rem">${_esc(r.role)}</td>
           ${weeks.map(wk => {
@@ -9545,6 +9562,7 @@ setTimeout(function() {
           }).join('')}
           <td style="text-align:right;padding:.4rem .8rem;border-left:1px solid var(--border);font-weight:600">${_fmt(r.total)}</td>
           <td style="text-align:right;padding:.4rem .55rem" class="muted">${r.count}</td>
+          ${isPerDiem ? `<td style="text-align:center;padding:.4rem .55rem"><button class="btn btn-xs btn-ghost" style="font-size:10px;padding:1px 6px" onclick="openPerDiemPersonDetails('${_esc(r.ident)}')" title="See day-by-day breakdown for this person">Details</button></td>` : ''}
         </tr>
       `).join('');
 
@@ -9562,6 +9580,7 @@ setTimeout(function() {
           ${weeks.map((wk, i) => `<td style="text-align:right;padding:.5rem .55rem">${_fmt(colTotals[i])}<div class="muted" style="font-size:10px;font-weight:400">${colCounts[i]} day${colCounts[i]===1?'':'s'}</div></td>`).join('')}
           <td style="text-align:right;padding:.5rem .8rem;border-left:1px solid var(--border);color:#5b8af9">${_fmt(total)}</td>
           <td style="text-align:right;padding:.5rem .55rem;font-weight:400" class="muted">${grandCount}</td>
+          ${isPerDiem ? '<td></td>' : ''}
         </tr>
       `;
     }
@@ -9574,6 +9593,294 @@ setTimeout(function() {
                  _cateringData.working_meal_by_person,
                  _cateringData.working_meal_total, 'Working Meal');
   }
+
+  // ── Per-diem details + export modals ──────────────────────────────
+  // Lightweight in-memory drilldowns: all the data is already in
+  // _cateringData.days[].per_diem_people, so each modal is just a
+  // filter + render of that slice. No new endpoints needed for
+  // viewing — the export modals POST to /catering/export with extra
+  // filter params (people / meals / date range).
+  const _PD_KIND_LABEL = { full: 'Full Day', breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner' };
+
+  function _formatYmd(iso) {
+    const [y,m,d] = iso.split('-').map(n => parseInt(n,10));
+    return new Date(y, m-1, d).toLocaleDateString(undefined,
+      {weekday:'short', month:'short', day:'numeric', year:'numeric'});
+  }
+
+  function _showCateringModal(title, bodyHtml, footerHtml) {
+    let modal = document.getElementById('catering-detail-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'catering-detail-modal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2000;display:flex;align-items:center;justify-content:center;padding:24px';
+      modal.innerHTML = `
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;width:min(900px,95vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden">
+          <div id="cdm-header" style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
+            <h3 id="cdm-title" style="margin:0;font-size:1rem;flex:1"></h3>
+            <button class="btn btn-xs btn-ghost" onclick="document.getElementById('catering-detail-modal').remove()">✕ Close</button>
+          </div>
+          <div id="cdm-body" style="padding:16px 20px;overflow-y:auto;flex:1;font-size:.86rem"></div>
+          <div id="cdm-footer" style="padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px"></div>
+        </div>`;
+      modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+      document.body.appendChild(modal);
+    }
+    document.getElementById('cdm-title').textContent = title;
+    document.getElementById('cdm-body').innerHTML = bodyHtml;
+    document.getElementById('cdm-footer').innerHTML = footerHtml || '';
+  }
+
+  // (a) Per-person details — every per-diem date for one ident.
+  window.openPerDiemPersonDetails = function(ident) {
+    if (!_cateringData) return;
+    const rates = _cateringData.rates || {};
+    const rateFor = k => rates['per_diem_' + k] || 0;
+    const rows = [];
+    let total = 0;
+    let personLabel = ident, roleLabel = '';
+    (_cateringData.days || []).forEach(day => {
+      (day.per_diem_people || []).forEach(p => {
+        const id = `${p.line_id}:${p.instance}`;
+        if (id !== ident) return;
+        if (!personLabel || personLabel === ident) {
+          personLabel = p.person || '(unassigned)';
+          roleLabel = p.role || '';
+        }
+        const amt = rateFor(p.kind);
+        total += amt;
+        rows.push({ date: day.date, kind: p.kind, amount: amt });
+      });
+    });
+    if (!rows.length) {
+      _showCateringModal('Per Diem — Detail',
+        `<p class="muted">No per diem entries found for this person.</p>`);
+      return;
+    }
+    rows.sort((a,b) => a.date < b.date ? -1 : 1);
+    let running = 0;
+    const body = `
+      <p style="margin:0 0 .8rem"><strong>${_esc(personLabel)}</strong>${roleLabel ? ` <span class="muted">— ${_esc(roleLabel)}</span>` : ''}</p>
+      <table style="width:100%;border-collapse:collapse;font-size:.85rem">
+        <thead><tr style="background:var(--bg-2);text-align:left">
+          <th style="padding:.4rem .6rem">Date</th>
+          <th style="padding:.4rem .6rem">Kind</th>
+          <th style="padding:.4rem .6rem;text-align:right">Amount</th>
+          <th style="padding:.4rem .6rem;text-align:right">Running Total</th>
+        </tr></thead>
+        <tbody>
+          ${rows.map(r => { running += r.amount; return `
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:.35rem .6rem">${_esc(_formatYmd(r.date))}</td>
+              <td style="padding:.35rem .6rem">${_esc(_PD_KIND_LABEL[r.kind] || r.kind)}</td>
+              <td style="padding:.35rem .6rem;text-align:right">${_fmt(r.amount)}</td>
+              <td style="padding:.35rem .6rem;text-align:right" class="muted">${_fmt(running)}</td>
+            </tr>`; }).join('')}
+          <tr style="background:var(--bg-2);font-weight:600;border-top:2px solid var(--border)">
+            <td colspan="2" style="padding:.5rem .6rem">${rows.length} day${rows.length===1?'':'s'}</td>
+            <td style="padding:.5rem .6rem;text-align:right;color:#5b8af9">${_fmt(total)}</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>`;
+    _showCateringModal(`Per Diem — ${personLabel}`, body);
+  };
+
+  // (b) Per-week details — everyone receiving per diem in one week.
+  window.openPerDiemWeekDetails = function(weekIso) {
+    if (!_cateringData) return;
+    const rates = _cateringData.rates || {};
+    const rateFor = k => rates['per_diem_' + k] || 0;
+    // Same week-key math the server uses (payroll_week_start). Because
+    // _cateringData buckets by date, walk the days and bucket into the
+    // matching payroll week here client-side.
+    const pwStart = _cateringData.payroll_week_start || 0; // 0=Mon..6=Sun
+    function _weekKeyOf(iso) {
+      const [y,m,d] = iso.split('-').map(n => parseInt(n,10));
+      const dt = new Date(y, m-1, d);
+      // JS getDay: 0=Sun..6=Sat. Convert to Mon=0..Sun=6 to match Python weekday().
+      const jsDow = dt.getDay();
+      const dow = (jsDow + 6) % 7;
+      const back = ((dow - pwStart) % 7 + 7) % 7;
+      const wk = new Date(dt); wk.setDate(wk.getDate() - back);
+      const yy = wk.getFullYear(), mm = String(wk.getMonth()+1).padStart(2,'0'), dd = String(wk.getDate()).padStart(2,'0');
+      return `${yy}-${mm}-${dd}`;
+    }
+    const byPerson = {};   // ident → {person, role, dates: [{date, kind, amount}], total}
+    let weekTotal = 0;
+    (_cateringData.days || []).forEach(day => {
+      if (_weekKeyOf(day.date) !== weekIso) return;
+      (day.per_diem_people || []).forEach(p => {
+        const id = `${p.line_id}:${p.instance}`;
+        if (!byPerson[id]) byPerson[id] = {
+          person: p.person || '(unassigned)', role: p.role || '',
+          dates: [], total: 0,
+        };
+        const amt = rateFor(p.kind);
+        byPerson[id].dates.push({ date: day.date, kind: p.kind, amount: amt });
+        byPerson[id].total += amt;
+        weekTotal += amt;
+      });
+    });
+    const sorted = Object.entries(byPerson)
+      .sort((a,b) => b[1].total - a[1].total || a[1].person.localeCompare(b[1].person));
+    if (!sorted.length) {
+      _showCateringModal(`Per Diem — Week of ${_formatYmd(weekIso)}`,
+        `<p class="muted">No per diem entries this week.</p>`);
+      return;
+    }
+    const body = `
+      <p style="margin:0 0 .8rem">Week of <strong>${_esc(_formatYmd(weekIso))}</strong> — ${sorted.length} ${sorted.length===1?'person':'people'}, ${_fmt(weekTotal)} total</p>
+      <table style="width:100%;border-collapse:collapse;font-size:.85rem">
+        <thead><tr style="background:var(--bg-2);text-align:left">
+          <th style="padding:.4rem .6rem">Person</th>
+          <th style="padding:.4rem .6rem">Role</th>
+          <th style="padding:.4rem .6rem">Days</th>
+          <th style="padding:.4rem .6rem;text-align:right">Total</th>
+        </tr></thead>
+        <tbody>
+          ${sorted.map(([id, p]) => `
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:.35rem .6rem"><strong>${_esc(p.person)}</strong></td>
+              <td style="padding:.35rem .6rem" class="muted">${_esc(p.role)}</td>
+              <td style="padding:.35rem .6rem;font-size:.78rem">
+                ${p.dates.map(d => `<div>${_esc(_formatYmd(d.date).replace(/, \d{4}$/,''))} — ${_esc(_PD_KIND_LABEL[d.kind] || d.kind)} (${_fmt(d.amount)})</div>`).join('')}
+              </td>
+              <td style="padding:.35rem .6rem;text-align:right;font-weight:600">${_fmt(p.total)}</td>
+            </tr>`).join('')}
+          <tr style="background:var(--bg-2);font-weight:600;border-top:2px solid var(--border)">
+            <td colspan="3" style="padding:.5rem .6rem">WEEK TOTAL</td>
+            <td style="padding:.5rem .6rem;text-align:right;color:#5b8af9">${_fmt(weekTotal)}</td>
+          </tr>
+        </tbody>
+      </table>`;
+    _showCateringModal(`Per Diem — Week of ${_formatYmd(weekIso)}`, body);
+  };
+
+  // (c) Per-diem report export modal — pick people + dates, opens the
+  // catering-export endpoint with filtering params.
+  window.openPerDiemExportModal = function() {
+    if (!_cateringData) return;
+    const people = (_cateringData.per_diem_by_person || []);
+    const days = (_cateringData.days || []).filter(d =>
+      (d.per_diem_people || []).length > 0);
+    if (!people.length || !days.length) {
+      alert('No per diem data to export.');
+      return;
+    }
+    const body = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+        <div>
+          <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem">
+            <strong style="font-size:.85rem">People</strong>
+            <button class="btn btn-xs btn-ghost" onclick="document.querySelectorAll('#pde-people input').forEach(c=>c.checked=true)">All</button>
+            <button class="btn btn-xs btn-ghost" onclick="document.querySelectorAll('#pde-people input').forEach(c=>c.checked=false)">None</button>
+          </div>
+          <div id="pde-people" style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:.4rem">
+            ${people.map(p => `
+              <label style="display:block;padding:.25rem .35rem;cursor:pointer;font-size:.83rem">
+                <input type="checkbox" value="${_esc(p.ident)}" checked> ${_esc(p.person)} <span class="muted">— ${_esc(p.role)}</span>
+              </label>`).join('')}
+          </div>
+        </div>
+        <div>
+          <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem">
+            <strong style="font-size:.85rem">Dates</strong>
+            <button class="btn btn-xs btn-ghost" onclick="document.querySelectorAll('#pde-dates input').forEach(c=>c.checked=true)">All</button>
+            <button class="btn btn-xs btn-ghost" onclick="document.querySelectorAll('#pde-dates input').forEach(c=>c.checked=false)">None</button>
+          </div>
+          <div id="pde-dates" style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:.4rem">
+            ${days.map(d => `
+              <label style="display:block;padding:.25rem .35rem;cursor:pointer;font-size:.83rem">
+                <input type="checkbox" value="${_esc(d.date)}" checked> ${_esc(_formatYmd(d.date))} <span class="muted">— ${(d.per_diem_people||[]).length} ppl</span>
+              </label>`).join('')}
+          </div>
+        </div>
+      </div>`;
+    const footer = `
+      <button class="btn btn-ghost" onclick="document.getElementById('catering-detail-modal').remove()">Cancel</button>
+      <button class="btn btn-primary" onclick="_runPerDiemExport()">Open Report</button>`;
+    _showCateringModal('Export Per Diem Report', body, footer);
+  };
+
+  window._runPerDiemExport = function() {
+    const people = Array.from(document.querySelectorAll('#pde-people input:checked')).map(c => c.value);
+    const dates  = Array.from(document.querySelectorAll('#pde-dates input:checked')).map(c => c.value);
+    if (!people.length || !dates.length) {
+      alert('Pick at least one person and one date.');
+      return;
+    }
+    const url = `/projects/${PID}/budget/${BID}/catering/export?dates=${encodeURIComponent(dates.join(','))}&include=perdiem&people=${encodeURIComponent(people.join(','))}&recipient=upm`;
+    window.open(url, '_blank');
+    document.getElementById('catering-detail-modal').remove();
+  };
+
+  // (d) Catering breakdown export — meal types + date range, output is
+  // one table per (meal × day).
+  window.openCateringBreakdownExportModal = function() {
+    if (!_cateringData) return;
+    const days = _cateringData.days || [];
+    if (!days.length) { alert('No catering days yet.'); return; }
+    const minDate = days[0].date;
+    const maxDate = days[days.length-1].date;
+    const meals = [
+      { key: 'courtesy_breakfast', label: '🥐 Courtesy Breakfast' },
+      { key: 'first_meal',         label: '🍽 First Meal' },
+      { key: 'second_meal',        label: '🍽 Second Meal' },
+      { key: 'working_meal',       label: '🥪 Working Meal' },
+      { key: 'per_diem',           label: '💰 Per Diem' },
+      { key: 'craft_services',     label: '☕ Craft Services' },
+    ];
+    const body = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+        <div>
+          <strong style="font-size:.85rem">Meal Types</strong>
+          <p class="muted" style="font-size:.76rem;margin:.25rem 0 .5rem">Pick which meals to include — separate caterers? export each one.</p>
+          <div id="cbe-meals" style="border:1px solid var(--border);border-radius:6px;padding:.4rem">
+            ${meals.map(m => `
+              <label style="display:block;padding:.3rem .35rem;cursor:pointer;font-size:.85rem">
+                <input type="checkbox" value="${m.key}" ${['first_meal','courtesy_breakfast','second_meal'].includes(m.key)?'checked':''}> ${m.label}
+              </label>`).join('')}
+          </div>
+        </div>
+        <div>
+          <strong style="font-size:.85rem">Date Range</strong>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-top:.4rem">
+            <div><label style="font-size:.76rem;color:var(--text-muted)">From</label>
+              <input type="date" id="cbe-from" value="${minDate}" min="${minDate}" max="${maxDate}" style="width:100%"></div>
+            <div><label style="font-size:.76rem;color:var(--text-muted)">To</label>
+              <input type="date" id="cbe-to" value="${maxDate}" min="${minDate}" max="${maxDate}" style="width:100%"></div>
+          </div>
+          <p class="muted" style="font-size:.74rem;margin-top:.55rem">Output: one table per (meal × day). Empty days are skipped.</p>
+        </div>
+      </div>`;
+    const footer = `
+      <button class="btn btn-ghost" onclick="document.getElementById('catering-detail-modal').remove()">Cancel</button>
+      <button class="btn btn-primary" onclick="_runCateringBreakdownExport()">Open Report</button>`;
+    _showCateringModal('Export Catering Breakdown', body, footer);
+  };
+
+  window._runCateringBreakdownExport = function() {
+    const meals = Array.from(document.querySelectorAll('#cbe-meals input:checked')).map(c => c.value);
+    const from  = document.getElementById('cbe-from').value;
+    const to    = document.getElementById('cbe-to').value;
+    if (!meals.length) { alert('Pick at least one meal type.'); return; }
+    if (!from || !to)  { alert('Pick a date range.'); return; }
+    if (from > to)     { alert('From date must be before To date.'); return; }
+    // Expand date range to a CSV. Server will skip empty days within it.
+    const dates = [];
+    const [fy,fm,fd] = from.split('-').map(n=>parseInt(n,10));
+    const [ty,tm,td] = to.split('-').map(n=>parseInt(n,10));
+    let cur = new Date(fy, fm-1, fd), end = new Date(ty, tm-1, td);
+    while (cur <= end) {
+      const yy=cur.getFullYear(), mm=String(cur.getMonth()+1).padStart(2,'0'), dd=String(cur.getDate()).padStart(2,'0');
+      dates.push(`${yy}-${mm}-${dd}`);
+      cur.setDate(cur.getDate()+1);
+    }
+    const url = `/projects/${PID}/budget/${BID}/catering/export?dates=${encodeURIComponent(dates.join(','))}&meals=${encodeURIComponent(meals.join(','))}&breakdown=1&recipient=catering`;
+    window.open(url, '_blank');
+    document.getElementById('catering-detail-modal').remove();
+  };
 
   function renderCateringBills() {
     const bills = _cateringData?.bills || [];
