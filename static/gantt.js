@@ -15,7 +15,8 @@ const ALL_DAY_TYPES = ['work', 'travel', 'travel_half', 'travel_unpaid', 'hold',
 
 let _pid, _bid, _activeProfileId;
 let _dragging   = false;
-let _dragType   = null;
+let _dragType   = null;        // legacy paint-mode (kept for compatibility paths)
+let _dragAnchor = null;        // anchor cell for drag-select rectangle
 
 // ── Select Mode ───────────────────────────────────────────────────────────────
 let _selectMode   = false;
@@ -82,12 +83,48 @@ function initGantt(pid, bid, activeProfileId) {
     const cell = e.target.closest('.gantt-cell');
     if (!cell) return;
     e.preventDefault();
-    if (_selectMode && _selection.size > 0) {
+    // If the right-click landed on a cell that's part of a multi-cell
+    // selection, show the bulk action menu. Otherwise show the
+    // single-cell picker for that cell.
+    if (_selection.size > 1 && _selection.has(cellKey(cell))) {
       showSelectActionMenu(e);
     } else {
       showPicker(e, cell);
     }
   });
+
+  // ── Inject ▾ dropdown button into each cell ──────────────────────────────
+  // Per user 2026-04-28 redesign: cell body click = select (Excel-style),
+  // dropdown button click = open picker. Two distinct interaction targets
+  // so the cell is safe to click for selection/copy without accidentally
+  // editing day type — especially important on iPad/iPhone where touch
+  // gestures were too sensitive before.
+  function _injectCellDropdowns() {
+    document.querySelectorAll('.gantt-cell').forEach(cell => {
+      if (cell.querySelector('.gantt-cell-dropdown')) return;
+      // Skip cells that aren't editable day cells (e.g. meal-row cells use
+      // data-meal, not the standard line/instance/date triplet — those
+      // already have their own click behavior via data-meal attr).
+      if (cell.dataset.meal) return;
+      if (!cell.dataset.line || !cell.dataset.date) return;
+      const btn = document.createElement('button');
+      btn.className = 'gantt-cell-dropdown';
+      btn.type = 'button';
+      btn.tabIndex = -1;
+      btn.title = 'Open day-type / flag picker';
+      btn.innerHTML = '▾';
+      cell.appendChild(btn);
+    });
+  }
+  _injectCellDropdowns();
+  // Re-inject if the gantt re-renders (e.g. after zoom or date-range change).
+  // MutationObserver on the scroll wrap watches for new .gantt-cell children.
+  const _gantWrap = document.getElementById('gantt-scroll-wrap');
+  if (_gantWrap) {
+    new MutationObserver(_injectCellDropdowns).observe(_gantWrap, {
+      childList: true, subtree: true,
+    });
+  }
 
   // ── Close crew picker on outside mousedown ────────────────────────────────
   document.addEventListener('mousedown', e => {
@@ -97,54 +134,121 @@ function initGantt(pid, bid, activeProfileId) {
     }
   }, true);  // capture phase so it fires before any element handlers
 
-  // ── Mousedown: primary paint or select ───────────────────────────────────
+  // ── Mousedown: selection-only model (rewritten 2026-04-28) ──────────────
+  // Plain click on cell body = highlight that one cell, clear prior
+  // selection. Shift+click = rectangle select from anchor to clicked cell
+  // (Excel-style). Cmd/Ctrl+click = toggle add to selection. Click on the
+  // ▾ dropdown button = open the picker (no selection). Drag from cell
+  // body = drag-select rectangle (no painting). Right-click still opens
+  // the picker as a parallel route.
   document.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    const dropdown = e.target.closest('.gantt-cell-dropdown');
     const cell = e.target.closest('.gantt-cell');
-    if (!cell || e.button !== 0) return;
-    // On Mac, Ctrl+click is right-click — only use Cmd (metaKey) to enter select mode
-    const isMac = navigator.platform.toUpperCase().includes('MAC');
-    const ctrl = isMac ? e.metaKey : e.ctrlKey;
+    if (!cell) return;
 
-    if (ctrl && !_selectMode) {
-      _activateSelectMode();
-      _mousedownDidAct = false;
+    if (dropdown) {
+      // Dropdown button clicked → open picker for this cell, don't select.
+      e.stopPropagation();
+      e.preventDefault();
+      showPicker(e, cell);
+      _mousedownDidAct = true;
       return;
     }
+    // Skip non-editable meal-row cells (their own click handler runs)
+    if (cell.dataset.meal) return;
 
-    if (_selectMode) {
-      _dragging = true;
-      if (!e.shiftKey) {
-        toggleSelectCell(cell);
-        _mousedownDidAct = true;
-      }
+    const isMac = navigator.platform.toUpperCase().includes('MAC');
+    const ctrl  = isMac ? e.metaKey : e.ctrlKey;
+
+    if (e.shiftKey && _lastClickedCell) {
+      // Range-select from anchor to this cell. Doesn't clear prior
+      // selection so you can extend after a Cmd-click pick.
+      _selectRectangle(_lastClickedCell, cell);
+    } else if (ctrl) {
+      // Toggle add/remove. Anchor moves to this cell.
+      toggleSelectCell(cell);
     } else {
-      // Normal paint mode
-      _dragging = true;
-      _dragType = nextDayType(cell.dataset.type);
-      paintAndSave(cell, _dragType, true);
-      _mousedownDidAct = true;
+      // Plain click = single-cell select. Replace any prior selection.
+      clearSelection();
+      toggleSelectCell(cell, true);
     }
+    _dragging   = true;
+    _dragAnchor = cell;
+    _mousedownDidAct = true;
   });
 
   document.addEventListener('mouseover', e => {
-    if (!_dragging) return;
+    if (!_dragging || !_dragAnchor) return;
     const cell = e.target.closest('.gantt-cell');
-    if (!cell) return;
-    if (_selectMode) {
-      toggleSelectCell(cell, true);  // drag-select: always add
-    } else if (_dragType) {
-      paintAndSave(cell, _dragType, false);  // drag-paint: no undo push per cell
-    }
+    if (!cell || cell.dataset.meal || !cell.dataset.date) return;
+    // Drag = extend the rectangle from the original anchor. We don't
+    // OR-into existing selection here because the anchor was already
+    // chosen at mousedown (with the right modifier semantics handled
+    // there). This keeps drag-select intuitive: "what's between anchor
+    // and current cursor".
+    _selectRectangle(_dragAnchor, cell);
   });
 
   document.addEventListener('mouseup', e => {
-    if (!_selectMode && _dragging && _dragType) {
-      // Collect all cells that were drag-painted and push a single undo entry
-      // (individual undos already pushed per-cell via paintAndSave batch tracking)
-    }
-    _dragging = false;
-    _dragType = null;
+    _dragging   = false;
+    _dragAnchor = null;
     setTimeout(() => { _mousedownDidAct = false; }, 0);
+  });
+
+  // ── Touch: long-press opens picker, swipe selects ───────────────────────
+  // iPad/iPhone-friendly. Default tap = select (same as desktop). Hold
+  // for ≥500ms without moving = open the picker. Swiping during the
+  // hold cancels the timer and treats the gesture as drag-select.
+  let _touchTimer = null, _touchStart = null, _touchAnchor = null;
+  document.addEventListener('touchstart', e => {
+    const dropdown = e.target.closest('.gantt-cell-dropdown');
+    const cell = e.target.closest('.gantt-cell');
+    if (!cell) return;
+    if (dropdown) {
+      // Tap on the ▾ button — open picker. touchstart is fine; we don't
+      // need long-press here because the button itself is the explicit
+      // intent.
+      const t = e.touches[0];
+      showPicker({ clientX: t.clientX, clientY: t.clientY }, cell);
+      e.preventDefault();
+      return;
+    }
+    if (cell.dataset.meal) return;
+    const t = e.touches[0];
+    _touchStart  = { x: t.clientX, y: t.clientY, time: Date.now() };
+    _touchAnchor = cell;
+    _touchTimer = setTimeout(() => {
+      if (!_touchAnchor) return;
+      // Long-press: open picker for the held cell.
+      showPicker({ clientX: _touchStart.x, clientY: _touchStart.y }, _touchAnchor);
+      _touchTimer = null;
+      _touchAnchor = null;
+    }, 500);
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (!_touchStart) return;
+    const t = e.touches[0];
+    const dx = t.clientX - _touchStart.x, dy = t.clientY - _touchStart.y;
+    if (Math.sqrt(dx*dx + dy*dy) > 12) {
+      // User started swiping — cancel long-press, treat as drag-select.
+      if (_touchTimer) { clearTimeout(_touchTimer); _touchTimer = null; }
+      const cell = document.elementFromPoint(t.clientX, t.clientY);
+      const target = cell && cell.closest && cell.closest('.gantt-cell');
+      if (target && _touchAnchor && target !== _touchAnchor) {
+        _selectRectangle(_touchAnchor, target);
+      }
+    }
+  }, { passive: true });
+  document.addEventListener('touchend', e => {
+    if (_touchTimer) { clearTimeout(_touchTimer); _touchTimer = null; }
+    if (_touchAnchor && _touchStart && (Date.now() - _touchStart.time) < 300) {
+      // Quick tap — single-cell select.
+      clearSelection();
+      toggleSelectCell(_touchAnchor, true);
+    }
+    _touchStart  = null;
+    _touchAnchor = null;
   });
 
   // ── Use-schedule checkbox ─────────────────────────────────────────────────
@@ -831,6 +935,53 @@ function rangeSelect(toCell) {
     _selection.add(cellKey(c));
     c.classList.add('selected');
   });
+  _lastClickedCell = toCell;
+}
+
+// Excel-style rectangle range select: from anchor cell to target cell,
+// includes every cell whose row is between the anchor's row and the
+// target's row AND whose date column is between the anchor's date and
+// the target's date. Used by both shift-click and drag-select.
+function _selectRectangle(anchorCell, toCell) {
+  if (!anchorCell || !toCell) return;
+  // Wipe prior selection — drag-select replaces it. (Cmd modifier
+  // semantics already happened at mousedown if the user wanted to
+  // accumulate.)
+  document.querySelectorAll('.gantt-cell.selected').forEach(c =>
+    c.classList.remove('selected'));
+  _selection.clear();
+  // Resolve row ordering by DOM position of each cell's parent <tr>.
+  const rows = Array.from(document.querySelectorAll('tr.gantt-row'));
+  const aRow = anchorCell.closest('tr.gantt-row');
+  const tRow = toCell.closest('tr.gantt-row');
+  if (!aRow || !tRow) {
+    // Anchor or target isn't inside a labor row — fall back to flat range
+    rangeSelect(toCell);
+    _lastClickedCell = toCell;
+    return;
+  }
+  const aRowIdx = rows.indexOf(aRow);
+  const tRowIdx = rows.indexOf(tRow);
+  const minRow  = Math.min(aRowIdx, tRowIdx);
+  const maxRow  = Math.max(aRowIdx, tRowIdx);
+  // Date axis: lex order on YYYY-MM-DD works as date order.
+  const minDate = anchorCell.dataset.date < toCell.dataset.date
+                ? anchorCell.dataset.date : toCell.dataset.date;
+  const maxDate = anchorCell.dataset.date > toCell.dataset.date
+                ? anchorCell.dataset.date : toCell.dataset.date;
+  for (let i = minRow; i <= maxRow; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    r.querySelectorAll('.gantt-cell').forEach(c => {
+      if (c.dataset.meal) return;
+      const d = c.dataset.date;
+      if (!d) return;
+      if (d >= minDate && d <= maxDate) {
+        _selection.add(cellKey(c));
+        c.classList.add('selected');
+      }
+    });
+  }
   _lastClickedCell = toCell;
 }
 
