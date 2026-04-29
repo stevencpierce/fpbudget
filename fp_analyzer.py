@@ -42,28 +42,40 @@ log = logging.getLogger(__name__)
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".pdf", ".heic"}
 
 # Document types → Dropbox folder (relative to project root)
+# Per user 2026-04-29: each type gets its OWN clean subfolder so the
+# downstream tooling (Actuals matching, AP view, COI tracking, PO →
+# invoice 3-way recon) can pick up the right slice. Existing files in
+# the legacy mixed folders ("CONTRACTS & INVOICES", "PROCESSED
+# DOCUMENTS") are NOT moved — only new uploads land in the new
+# structure.
 DOCUMENT_TYPES = {
-    "receipt":   "01_ADMIN/PROCESSED DOCUMENTS",
-    "invoice":   "01_ADMIN/CONTRACTS & INVOICES",
-    "contract":  "01_ADMIN/CONTRACTS & INVOICES",
-    "release":   "02_PRE-PRODUCTION/TALENT & RELEASES",
-    "estimate":  "01_ADMIN/SOW",
-    "insurance": "01_ADMIN/INSURANCE & COIs",
-    "legal":     "01_ADMIN/LEGAL",
-    "payroll":   "01_ADMIN/PAYROLL",
-    "quote":     "01_ADMIN/QUOTES & MISC DOCS",
+    "receipt":         "01_ADMIN/RECEIPTS",
+    "invoice":         "01_ADMIN/INVOICES",
+    "estimate":        "01_ADMIN/ESTIMATES",
+    "quote":           "01_ADMIN/QUOTES",
+    "contract":        "01_ADMIN/CONTRACTS",
+    "purchase_order":  "01_ADMIN/PURCHASE_ORDERS",
+    "insurance":       "01_ADMIN/INSURANCE_COIs",
+    "tax_form":        "01_ADMIN/TAX_FORMS",
+    "payroll":         "01_ADMIN/PAYROLL",
+    "legal":           "01_ADMIN/LEGAL",
+    "release":         "02_PRE-PRODUCTION/TALENT_RELEASES",
+    "misc":            "01_ADMIN/MISC",
 }
 
 DOC_PREFIXES = {
-    "receipt":   "RECEIPT",
-    "invoice":   "INVOICE",
-    "contract":  "CONTRACT",
-    "release":   "RELEASE",
-    "estimate":  "ESTIMATE",
-    "insurance": "COI",
-    "legal":     "LEGAL",
-    "payroll":   "PAYROLL",
-    "quote":     "QUOTE",
+    "receipt":         "RECEIPT",
+    "invoice":         "INVOICE",
+    "estimate":        "ESTIMATE",
+    "quote":           "QUOTE",
+    "contract":        "CONTRACT",
+    "purchase_order":  "PO",
+    "insurance":       "COI",
+    "tax_form":        "TAX",
+    "payroll":         "PAYROLL",
+    "legal":           "LEGAL",
+    "release":         "RELEASE",
+    "misc":            "DOC",
 }
 
 TOKEN_FIELDS = {
@@ -72,12 +84,20 @@ TOKEN_FIELDS = {
     "total":          lambda r: f"{r['total']:.2f}" if r.get("total") is not None else "Unknown",
     "category":       lambda r: r.get("category", "Unknown"),
     "invoice_number": lambda r: r.get("invoice_number") or "Unknown",
+    "po_number":      lambda r: r.get("purchase_order_number") or "Unknown",
+    "tax_id":         lambda r: r.get("tax_id") or r.get("ein") or "Unknown",
 }
 
 DEFAULT_ORDER = ["date", "category", "vendor", "total"]
 ORDER_BY_TYPE = {
-    "invoice":  ["date", "vendor", "invoice_number", "total"],
-    "contract": ["date", "vendor"],
+    "invoice":        ["date", "vendor", "invoice_number", "total"],
+    "contract":       ["date", "vendor"],
+    "purchase_order": ["date", "vendor", "po_number", "total"],
+    "tax_form":       ["date", "vendor"],   # tax forms = vendor onboarding; total irrelevant
+    "estimate":       ["date", "vendor", "total"],
+    "quote":          ["date", "vendor", "total"],
+    "release":        ["date", "vendor"],   # talent / location name lives in vendor
+    "insurance":      ["date", "vendor"],   # vendor = insured / certificate holder
 }
 
 # In-memory stores (safe with --workers 1)
@@ -213,7 +233,12 @@ def upload_to_dropbox(dbx, file_bytes, dropbox_path):
 # ── Confidence scoring ────────────────────────────────────────────────────────
 
 def _infer_type(vr):
-    """Infer document type from Veryfi fields when document_type is null."""
+    """Infer document type from Veryfi fields when document_type is null.
+
+    Per user 2026-04-29: extended to detect Purchase Orders and Tax
+    Forms (W-9 / W-8 / 1099 / EIN-bearing forms) using OCR text
+    keywords when the structured Veryfi fields are insufficient.
+    """
     veryfi_type = (vr.get("document_type") or "").lower()
     if veryfi_type in DOCUMENT_TYPES:
         return veryfi_type, 1.0
@@ -224,11 +249,67 @@ def _infer_type(vr):
         "insurance": "insurance", "certificate_of_insurance": "insurance",
         "legal": "legal", "payroll": "payroll",
         "quote": "quote", "quotation": "quote",
+        "purchase_order": "purchase_order", "po": "purchase_order",
+        "estimate": "estimate", "proposal": "estimate",
+        "contract": "contract", "agreement": "contract",
+        "release": "release", "talent_release": "release",
+        "w9": "tax_form", "w-9": "tax_form", "w8": "tax_form",
+        "w-8": "tax_form", "1099": "tax_form", "tax_form": "tax_form",
     }
     if veryfi_type in veryfi_map:
         return veryfi_map[veryfi_type], 0.85
 
-    # Infer from field presence
+    # ── OCR-text keyword fallback for types Veryfi often misses ──
+    # Tax forms and POs are usually structured templates, not financial
+    # docs, so Veryfi may return blank fields. Scan the raw OCR text
+    # for distinctive phrases.
+    ocr_text = (vr.get("ocr_text") or "").lower()
+
+    # Tax forms — W-9, W-8BEN(-E), 1099 variants
+    tax_keywords = (
+        "form w-9", "form w9", "request for taxpayer identification",
+        "form w-8", "form w8", "form 1099", "1099-misc", "1099-nec",
+        "1099-int", "1099-div", "substitute form w-9",
+    )
+    if any(k in ocr_text for k in tax_keywords):
+        return "tax_form", 0.92  # high — these phrases are unambiguous
+
+    # Purchase order — header text or explicit PO# field
+    po_field = (vr.get("purchase_order_number") or "").strip()
+    po_keywords = ("purchase order", "p.o. number", "p.o. no", "po number",
+                   "po #", "p.o. #")
+    if po_field:
+        return "purchase_order", 0.88
+    if any(k in ocr_text for k in po_keywords):
+        # PO without a parsed number — still confident on the keyword,
+        # but slightly lower since we couldn't extract the PO#.
+        return "purchase_order", 0.78
+
+    # Estimate / Quote keywords
+    estimate_keywords = ("estimate", "scope of work", "statement of work", "sow")
+    quote_keywords    = ("quotation", "quote no", "quote #", "price quote")
+    if any(k in ocr_text for k in estimate_keywords):
+        return "estimate", 0.75
+    if any(k in ocr_text for k in quote_keywords):
+        return "quote", 0.72
+
+    # COI / Insurance keywords
+    coi_keywords = (
+        "certificate of insurance", "certificate of liability insurance",
+        "additional insured", "general liability",
+    )
+    if any(k in ocr_text for k in coi_keywords):
+        return "insurance", 0.85
+
+    # Release form keywords
+    release_keywords = (
+        "talent release", "appearance release", "model release",
+        "location release", "personal release",
+    )
+    if any(k in ocr_text for k in release_keywords):
+        return "release", 0.85
+
+    # Infer from field presence — the original receipt vs invoice fork
     has_due_date  = bool(vr.get("due_date"))
     has_bill_to   = bool((vr.get("bill_to") or {}).get("name"))
     has_total     = vr.get("total") is not None
