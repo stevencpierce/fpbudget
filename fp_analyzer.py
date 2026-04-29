@@ -638,14 +638,14 @@ def auto_file_high_confidence(batch_token, project_name, user_name):
         new_name = build_name(item["vr"], doc_type)
         base     = f"{ops}/{project_name}/{folder}"
 
-        if doc_type in ("invoice", "contract"):
+        # Option B filing — every doc under user; vendor docs get
+        # an extra vendor subfolder. Mirrors the layout used by
+        # file_confirmed below.
+        user_folder = safe(user_name)
+        if doc_type in ("invoice", "contract", "purchase_order", "insurance"):
             vendor_folder  = safe((item["vr"].get("vendor") or {}).get("name") or "Unknown_Vendor")
-            processed_path = f"{base}/VENDOR AGREEMENTS/{vendor_folder}/{new_name}"
-        elif doc_type in ("insurance",):
-            vendor_folder  = safe((item["vr"].get("vendor") or {}).get("name") or "Unknown_Vendor")
-            processed_path = f"{base}/{vendor_folder}/{new_name}"
+            processed_path = f"{base}/{user_folder}/{vendor_folder}/{new_name}"
         else:
-            user_folder    = safe(user_name)
             processed_path = f"{base}/{user_folder}/{new_name}"
 
         ok, path, err = _file_item(item, processed_path, processed_path, dbx)
@@ -724,14 +724,16 @@ def file_confirmed(batch_token, confirmations, project_name, user_name):
         new_name  = build_name(item["vr"], doc_type)
         base      = f"{ops}/{project_name}/{folder}"
 
-        if doc_type in ("invoice", "contract"):
+        # Option B filing per user 2026-04-29: every doc lives under
+        # the uploader's user folder. Vendor-relationship docs
+        # (invoice / contract / purchase_order / insurance) get an
+        # ADDITIONAL vendor subfolder under the user — preserves both
+        # "who uploaded it" and "which vendor" navigation.
+        user_folder = safe(user_name)
+        if doc_type in ("invoice", "contract", "purchase_order", "insurance"):
             vendor_folder  = safe((item["vr"].get("vendor") or {}).get("name") or "Unknown_Vendor")
-            processed_path = f"{base}/VENDOR AGREEMENTS/{vendor_folder}/{new_name}"
-        elif doc_type in ("insurance",):
-            vendor_folder  = safe((item["vr"].get("vendor") or {}).get("name") or "Unknown_Vendor")
-            processed_path = f"{base}/{vendor_folder}/{new_name}"
+            processed_path = f"{base}/{user_folder}/{vendor_folder}/{new_name}"
         else:
-            user_folder    = safe(user_name)
             processed_path = f"{base}/{user_folder}/{new_name}"
 
         try:
