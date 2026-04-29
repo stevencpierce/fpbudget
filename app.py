@@ -12206,6 +12206,21 @@ def docs_upload_post(pid):
     db.session.add(upload)
     db.session.commit()
 
+    # Activity log
+    try:
+        _log_activity(
+            action='create', entity_type='doc_upload',
+            entity_id=upload.id,
+            entity_label=(upload.filed_filename or upload.original_filename or f'Upload #{upload.id}'),
+            project_id=pid,
+            before=None,
+            after={'status': upload.status, 'vendor': upload.vendor,
+                   'amount': float(upload.amount or 0),
+                   'category': upload.category},
+            note=f'Uploaded "{upload.original_filename}"' +
+                 (f' (filed as {upload.category})' if upload.filed_dropbox_path else ''))
+    except Exception: pass
+
     # If this upload's content hash matched an earlier row, MOVE the
     # filed Dropbox file to a /_DUPLICATES/ subfolder under whatever
     # type-folder it landed in. Keeps the original "clean" view free of
@@ -12350,6 +12365,9 @@ def docs_upload_delete(uid):
         if upload.uploader_id != current_user.id:
             return jsonify({"error": "Forbidden"}), 403
     pid = upload.project_id
+    _act_label  = upload.filed_filename or upload.original_filename or f'Upload #{uid}'
+    _act_vendor = upload.vendor
+    _act_amount = float(upload.amount or 0)
     # Remove from R2
     try:
         _r2_client().delete_object(Bucket=_R2_BUCKET, Key=upload.r2_key)
@@ -12357,7 +12375,108 @@ def docs_upload_delete(uid):
         pass
     db.session.delete(upload)
     db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='doc_upload',
+                      entity_id=uid, entity_label=_act_label,
+                      project_id=pid,
+                      before={'vendor': _act_vendor, 'amount': _act_amount},
+                      after=None,
+                      note=f'Deleted "{_act_label}"')
+    except Exception: pass
     return jsonify({"status": "deleted"})
+
+
+@app.route("/docs/<int:pid>/bulk-delete", methods=["POST"])
+@login_required
+def docs_bulk_delete(pid):
+    """Delete multiple uploads in one request. Body: {"ids": [1,2,3]}.
+    Per user 2026-04-29: bulk operations on the Docs tab.
+    Permission: same as single delete — admins can delete any, regular
+    users only their own. Mixed-ownership requests are filtered to the
+    user's own and the response reports how many were skipped.
+    """
+    ProjectSheet.query.get_or_404(pid)
+    data = request.get_json(force=True) or {}
+    ids = [int(i) for i in (data.get("ids") or []) if str(i).isdigit()]
+    if not ids:
+        return jsonify({"error": "No ids provided"}), 400
+    is_admin = current_user.role in ('super_admin', 'admin')
+    rows = DocUpload.query.filter(DocUpload.id.in_(ids),
+                                  DocUpload.project_id == pid).all()
+    deleted, skipped, labels = 0, 0, []
+    for u in rows:
+        if not is_admin and u.uploader_id != current_user.id:
+            skipped += 1
+            continue
+        labels.append(u.filed_filename or u.original_filename or f'Upload #{u.id}')
+        try:
+            _r2_client().delete_object(Bucket=_R2_BUCKET, Key=u.r2_key)
+        except Exception:
+            pass
+        db.session.delete(u)
+        deleted += 1
+    db.session.commit()
+    try:
+        if deleted:
+            _log_activity(action='delete', entity_type='doc_upload_bulk',
+                          entity_id=None,
+                          entity_label=f'Bulk delete — {deleted} document{"s" if deleted != 1 else ""}',
+                          project_id=pid,
+                          before=None, after={'deleted_ids': ids[:deleted]},
+                          note=f'Bulk-deleted {deleted} document{"s" if deleted != 1 else ""}: '
+                               + ", ".join(labels[:5])
+                               + (f' (+{len(labels)-5} more)' if len(labels) > 5 else ''))
+    except Exception: pass
+    return jsonify({"status": "ok", "deleted": deleted, "skipped": skipped})
+
+
+@app.route("/docs/<int:pid>/export.csv")
+@login_required
+def docs_export_csv(pid):
+    """Export every DocUpload row for this project as a CSV. Used for
+    accounting hand-off / audit. Per user 2026-04-29: separate from the
+    budget CSV export — this is the receipts / OCR metadata.
+    Optional ?status=done,review filter; default = everything.
+    """
+    ProjectSheet.query.get_or_404(pid)
+    status_param = (request.args.get("status") or "").strip()
+    q = DocUpload.query.filter_by(project_id=pid)
+    if status_param:
+        q = q.filter(DocUpload.status.in_(status_param.split(",")))
+    rows = q.order_by(DocUpload.uploaded_at.desc()).all()
+    import io as _io_d, csv as _csv_d
+    out = _io_d.StringIO()
+    w = _csv_d.writer(out)
+    w.writerow([
+        "ID", "Uploaded", "Uploader", "Original Filename", "Filed Filename",
+        "Status", "Doc Type", "Vendor", "Amount", "Doc Date",
+        "Confidence %", "Is Duplicate", "Dropbox Path", "Note", "File Size (KB)",
+    ])
+    for u in rows:
+        uploader = ''
+        if u.uploader:
+            uploader = u.uploader.name or u.uploader.email or ''
+        w.writerow([
+            u.id,
+            u.uploaded_at.strftime('%Y-%m-%d %H:%M') if u.uploaded_at else '',
+            uploader,
+            u.original_filename or '',
+            u.filed_filename or '',
+            u.status or '',
+            u.category or '',
+            u.vendor or '',
+            f'{float(u.amount):.2f}' if u.amount else '',
+            u.doc_date.isoformat() if u.doc_date else '',
+            f'{float(u.confidence):.1f}' if u.confidence is not None else '',
+            'yes' if u.is_duplicate else '',
+            u.filed_dropbox_path or '',
+            (u.note or '').replace('\n', ' '),
+            f'{(u.file_size or 0) / 1024:.1f}' if u.file_size else '',
+        ])
+    proj = ProjectSheet.query.get(pid)
+    fname = f"{(proj.name or 'project').replace(' ', '_')}_documents_{date.today().isoformat()}.csv"
+    return Response(out.getvalue(), mimetype='text/csv',
+                    headers={'Content-Disposition': f'attachment; filename="{fname}"'})
 
 
 @app.route("/docs/upload/<int:uid>/rename", methods=["POST"])
@@ -12438,6 +12557,15 @@ def docs_upload_rename(uid):
     # Touch filed_at so the row shows a "recently modified" sort if needed.
     upload.filed_at = _dt.utcnow()
     db.session.commit()
+
+    try:
+        _log_activity(action='update', entity_type='doc_upload',
+                      entity_id=uid, entity_label=final_name,
+                      project_id=upload.project_id,
+                      before={'filename': old_name},
+                      after={'filename': final_name},
+                      note=f'Renamed "{old_name}" → "{final_name}"')
+    except Exception: pass
 
     logging.info(f"Renamed upload {uid}: {old_path} → {final_path}")
     return jsonify({
@@ -12748,6 +12876,11 @@ def docs_upload_update(uid):
         return deny
 
     data = request.get_json(force=True) or {}
+    _act_before = {
+        'vendor': upload.vendor, 'amount': float(upload.amount) if upload.amount else None,
+        'doc_date': upload.doc_date.isoformat() if upload.doc_date else None,
+        'category': upload.category, 'note': upload.note,
+    }
     if "vendor" in data:
         v = (data.get("vendor") or "").strip()
         upload.vendor = v[:200] if v else None
@@ -12778,6 +12911,20 @@ def docs_upload_update(uid):
         upload.note = n[:500] if n else None
 
     db.session.commit()
+    try:
+        _act_after = {
+            'vendor': upload.vendor, 'amount': float(upload.amount) if upload.amount else None,
+            'doc_date': upload.doc_date.isoformat() if upload.doc_date else None,
+            'category': upload.category, 'note': upload.note,
+        }
+        if _act_before != _act_after:
+            _label = upload.filed_filename or upload.original_filename or f'Upload #{uid}'
+            _log_activity(action='update', entity_type='doc_upload',
+                          entity_id=uid, entity_label=_label,
+                          project_id=upload.project_id,
+                          before=_act_before, after=_act_after,
+                          note=f'Updated metadata on "{_label}"')
+    except Exception: pass
     return jsonify({
         "ok":       True,
         "vendor":   upload.vendor,

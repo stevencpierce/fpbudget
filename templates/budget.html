@@ -1289,12 +1289,46 @@
       {% endif %}
     </div>
 
+    {% if doc_uploads %}
+    {# Status filter chips — click a chip to show only rows matching that
+       status. "All" clears the filter. Counts shown next to each chip
+       are computed at render time from the doc_uploads list. #}
+    {% set _status_counts = namespace(all=doc_uploads|length, pending=0, processing=0, review=0, done=0, error=0, duplicate=0) %}
+    {% for u in doc_uploads %}
+      {% if u.status == 'pending' %}{% set _status_counts.pending = _status_counts.pending + 1 %}{% endif %}
+      {% if u.status == 'processing' %}{% set _status_counts.processing = _status_counts.processing + 1 %}{% endif %}
+      {% if u.status == 'review' %}{% set _status_counts.review = _status_counts.review + 1 %}{% endif %}
+      {% if u.status == 'done' or u.status == 'filed' %}{% set _status_counts.done = _status_counts.done + 1 %}{% endif %}
+      {% if u.status == 'error' %}{% set _status_counts.error = _status_counts.error + 1 %}{% endif %}
+      {% if u.is_duplicate %}{% set _status_counts.duplicate = _status_counts.duplicate + 1 %}{% endif %}
+    {% endfor %}
+    <div id="docs-filter-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;font-size:11px">
+      <button type="button" class="docs-filter-chip" data-filter="all"
+              style="padding:4px 10px;border-radius:14px;border:1px solid #5b8af9;background:rgba(91,138,249,.18);color:#5b8af9;cursor:pointer;font-weight:600">All ({{ _status_counts.all }})</button>
+      <button type="button" class="docs-filter-chip" data-filter="pending"
+              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Pending ({{ _status_counts.pending }})</button>
+      <button type="button" class="docs-filter-chip" data-filter="processing"
+              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Processing ({{ _status_counts.processing }})</button>
+      <button type="button" class="docs-filter-chip" data-filter="review"
+              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Review ({{ _status_counts.review }})</button>
+      <button type="button" class="docs-filter-chip" data-filter="done"
+              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Done ({{ _status_counts.done }})</button>
+      <button type="button" class="docs-filter-chip" data-filter="error"
+              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Error ({{ _status_counts.error }})</button>
+      <button type="button" class="docs-filter-chip" data-filter="duplicate"
+              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Duplicates ({{ _status_counts.duplicate }})</button>
+    </div>
+
     {# Sort toolbar: client-side reorder by column. Each row below carries
        data-sort-* attributes that _docsSort() reads. Default order is
        date-desc (most recent first). Clicking 'Sort by' reorders the DOM
        rows inside #docsHistory without hitting the server. #}
-    {% if doc_uploads %}
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:11px;color:var(--text-muted);">
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none">
+        <input type="checkbox" id="docs-select-all" style="cursor:pointer" title="Select all visible rows">
+        <span>Select</span>
+      </label>
+      <span style="color:var(--border)">|</span>
       <span>Sort by:</span>
       <select id="docs-sort-by"
               style="font-size:11px;padding:3px 6px;border-radius:4px;
@@ -1314,7 +1348,19 @@
               style="font-size:11px;padding:3px 8px;border-radius:4px;cursor:pointer;
                      background:var(--bg-card);border:1px solid var(--border);color:var(--text);"
               title="Toggle ascending / descending">↓ Newest first</button>
+      <button type="button" id="docs-export-btn" onclick="window.open('/docs/{{ project.id }}/export.csv', '_blank')"
+              style="font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer;
+                     background:var(--bg-card);border:1px solid var(--border);color:var(--text);"
+              title="Download every document's metadata as a CSV — for accounting / audit hand-off.">📥 Export CSV</button>
       <span id="docs-count" style="margin-left:auto">{{ doc_uploads|length }} item{{ 's' if doc_uploads|length != 1 else '' }}</span>
+    </div>
+
+    {# Bulk action bar — visible only when ≥1 row checkbox is checked. #}
+    <div id="docs-bulk-bar" style="display:none;align-items:center;gap:10px;margin-bottom:10px;padding:8px 14px;background:rgba(91,138,249,.12);border:1px solid #5b8af9;border-radius:8px;font-size:13px">
+      <span id="docs-bulk-count" style="font-weight:600">0 selected</span>
+      <button type="button" onclick="docsBulkDelete()" class="btn btn-xs"
+              style="padding:4px 12px;background:#2a1414;color:#ef4444;border:1px solid #4a2020;border-radius:5px;cursor:pointer">🗑 Delete selected</button>
+      <button type="button" onclick="docsBulkClear()" class="btn btn-xs btn-ghost" style="margin-left:auto">Clear selection</button>
     </div>
     {% endif %}
     <div id="docsHistory" style="display:flex;flex-direction:column;gap:8px;">
@@ -1337,7 +1383,14 @@
              data-sort-amount="{{ u.amount|float if u.amount else 0 }}"
              data-sort-size="{{ u.file_size or 0 }}"
              data-sort-status="{{ u.status or '' }}"
+             data-is-duplicate="{{ '1' if u.is_duplicate else '' }}"
              style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;">
+          {# Bulk-select checkbox — gated by docs-bulk-bar JS. Click on the
+             checkbox itself doesn't bubble to the row's open-detail
+             handler. #}
+          <input type="checkbox" class="doc-select-cb" data-id="{{ u.id }}"
+                 onclick="event.stopPropagation()"
+                 style="margin-top:6px;cursor:pointer;width:16px;height:16px;flex-shrink:0">
           <div style="font-size:20px;width:32px;text-align:center;padding-top:2px;">{% if u.content_type and 'pdf' in u.content_type %}📄{% else %}🧾{% endif %}</div>
           <div style="flex:1;min-width:0;">
             <div style="font-size:13px;font-weight:500;">
@@ -1867,6 +1920,117 @@
     _updateDirLabel();
     _docsSort();
   }
+
+  // ── Filter chips (status) ──────────────────────────────────────────
+  // Click a chip → hide every .doc-row whose status doesn't match.
+  // Bulk select (below) only operates on visible rows.
+  let _docsActiveFilter = 'all';
+  function _docsApplyFilter(filter) {
+    _docsActiveFilter = filter;
+    document.querySelectorAll('.docs-filter-chip').forEach(chip => {
+      const active = chip.dataset.filter === filter;
+      chip.style.background    = active ? 'rgba(91,138,249,.18)' : 'var(--bg-card)';
+      chip.style.borderColor   = active ? '#5b8af9' : 'var(--border)';
+      chip.style.color         = active ? '#5b8af9' : 'var(--text-muted)';
+      chip.style.fontWeight    = active ? '600' : 'normal';
+    });
+    document.querySelectorAll('#docsHistory .doc-row').forEach(row => {
+      const st = (row.dataset.status || '').toLowerCase();
+      const isDup = row.dataset.isDuplicate === '1';
+      let show = true;
+      if (filter === 'all')           show = true;
+      else if (filter === 'duplicate') show = isDup;
+      else if (filter === 'done')      show = (st === 'done' || st === 'filed');
+      else                             show = (st === filter);
+      row.style.display = show ? '' : 'none';
+      // Drop any selection on now-hidden rows
+      if (!show) {
+        const cb = row.querySelector('.doc-select-cb');
+        if (cb && cb.checked) cb.checked = false;
+      }
+    });
+    _docsUpdateBulkBar();
+  }
+  document.querySelectorAll('.docs-filter-chip').forEach(c => {
+    c.addEventListener('click', () => _docsApplyFilter(c.dataset.filter));
+  });
+
+  // ── Bulk-select ────────────────────────────────────────────────────
+  function _docsUpdateBulkBar() {
+    const checked = Array.from(document.querySelectorAll('.doc-select-cb:checked'));
+    const bar     = document.getElementById('docs-bulk-bar');
+    const count   = document.getElementById('docs-bulk-count');
+    if (!bar) return;
+    if (checked.length) {
+      bar.style.display = 'flex';
+      count.textContent = `${checked.length} selected`;
+    } else {
+      bar.style.display = 'none';
+    }
+    // Sync the master checkbox state — checked = all visible selected.
+    const visibleCbs = Array.from(document.querySelectorAll('#docsHistory .doc-row'))
+      .filter(r => r.style.display !== 'none')
+      .map(r => r.querySelector('.doc-select-cb'))
+      .filter(Boolean);
+    const master = document.getElementById('docs-select-all');
+    if (master && visibleCbs.length) {
+      const allChecked = visibleCbs.every(cb => cb.checked);
+      const someChecked = visibleCbs.some(cb => cb.checked);
+      master.checked = allChecked;
+      master.indeterminate = !allChecked && someChecked;
+    }
+  }
+  document.querySelectorAll('.doc-select-cb').forEach(cb =>
+    cb.addEventListener('change', _docsUpdateBulkBar));
+  const _docsMasterCb = document.getElementById('docs-select-all');
+  if (_docsMasterCb) {
+    _docsMasterCb.addEventListener('change', () => {
+      const visible = Array.from(document.querySelectorAll('#docsHistory .doc-row'))
+        .filter(r => r.style.display !== 'none');
+      visible.forEach(row => {
+        const cb = row.querySelector('.doc-select-cb');
+        if (cb) cb.checked = _docsMasterCb.checked;
+      });
+      _docsUpdateBulkBar();
+    });
+  }
+  window.docsBulkClear = function() {
+    document.querySelectorAll('.doc-select-cb').forEach(cb => cb.checked = false);
+    _docsUpdateBulkBar();
+  };
+  window.docsBulkDelete = async function() {
+    const checked = Array.from(document.querySelectorAll('.doc-select-cb:checked'));
+    if (!checked.length) return;
+    const ids = checked.map(cb => parseInt(cb.dataset.id));
+    if (!confirm(`Delete ${ids.length} document${ids.length === 1 ? '' : 's'}?\nThis removes them from the project AND moves them to _TRASH in Dropbox.`)) return;
+    try {
+      const r = await fetch(`/docs/{{ project.id }}/bulk-delete`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ ids })
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        alert('Bulk delete failed: ' + (data.error || `HTTP ${r.status}`));
+        return;
+      }
+      // Remove deleted rows from the DOM. Skipped rows (not yours) stay.
+      ids.slice(0, data.deleted).forEach(id => {
+        const row = document.querySelector(`.doc-row[data-upload-id="${id}"]`);
+        if (row) row.remove();
+      });
+      docsBulkClear();
+      // Update count
+      const count = document.getElementById('docs-count');
+      const remaining = document.querySelectorAll('#docsHistory .doc-row').length;
+      if (count) count.textContent = `${remaining} item${remaining === 1 ? '' : 's'}`;
+      if (data.skipped) {
+        alert(`Deleted ${data.deleted}. ${data.skipped} skipped (uploaded by someone else — admin required).`);
+      }
+    } catch (e) {
+      alert('Bulk delete failed: ' + (e.message || e));
+    }
+  };
 
   // ── Super-admin wipe button ──────────────────────────────────────────
   const _wipeBtn = document.getElementById('btn-wipe-docs');
