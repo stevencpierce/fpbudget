@@ -3819,8 +3819,17 @@ def set_budget_mode(pid, bid):
         if _budget_type(mode) != _budget_type(budget.budget_mode):
             flash("Switch between Estimated and Working using the mode buttons — not this route.", "error")
         else:
+            _prev_mode = budget.budget_mode
             budget.budget_mode = mode
             db.session.commit()
+            try:
+                if _prev_mode != mode:
+                    _log_activity(action='update', entity_type='budget_mode',
+                                  entity_id=bid, entity_label=budget.name or 'Budget',
+                                  budget_id=bid, project_id=pid,
+                                  before={'mode': _prev_mode}, after={'mode': mode},
+                                  note=f'Switched mode: {_prev_mode} → {mode}')
+            except Exception: pass
     return_to = request.form.get("return_to", "budget")
     if return_to == "gantt":
         return redirect(url_for("gantt_view", pid=pid, bid=bid))
@@ -5269,10 +5278,24 @@ def set_gantt_day(pid, bid):
         schedule_mode=sched_mode).first()
 
     if day_type == "off" and existing:
+        _act_prev_type = existing.day_type
         db.session.delete(existing)
         db.session.commit()
+        try:
+            _ln = BudgetLine.query.get(line_id)
+            _label = (_ln.description or _ln.account_name or '—') if _ln else f'line {line_id}'
+            _log_activity(action='delete', entity_type='schedule_day',
+                          entity_id=None, entity_label=f'{_label} — {date_str}',
+                          budget_id=bid, project_id=pid,
+                          before={'day_type': _act_prev_type, 'date': date_str,
+                                  'line_id': line_id, 'instance': crew_instance},
+                          after=None,
+                          note=f'Cleared schedule cell ({_act_prev_type} → off)')
+        except Exception: pass
         return jsonify({"ok": True, "deleted": True})
 
+    _act_is_create = existing is None
+    _act_prev_type = existing.day_type if existing else None
     if not existing:
         existing = ScheduleDay(budget_id=bid, budget_line_id=line_id,
                                crew_instance=crew_instance, date=d,
@@ -5353,6 +5376,24 @@ def set_gantt_day(pid, bid):
             "use_schedule_toggled": use_schedule_toggled}
     if _post_save_error:
         resp["_warn"] = _post_save_error  # visible in browser console, doesn't break JS
+
+    # Activity log: skip pure no-ops (existing day already had this type +
+    # no flag/note/OT change). Otherwise record what happened.
+    try:
+        if _act_is_create or _act_prev_type != day_type or cell_flags is not None or note is not None:
+            _ln = BudgetLine.query.get(line_id)
+            _label = (_ln.description or _ln.account_name or '—') if _ln else f'line {line_id}'
+            _log_activity(
+                action=('create' if _act_is_create else 'update'),
+                entity_type='schedule_day', entity_id=saved_id,
+                entity_label=f'{_label} — {date_str}',
+                budget_id=bid, project_id=pid,
+                before=(None if _act_is_create else {'day_type': _act_prev_type}),
+                after={'day_type': day_type, 'cell_flags': cell_flags},
+                note=(f'Set {_label} {date_str} to {day_type}'
+                      if _act_prev_type != day_type
+                      else f'Toggled flags on {_label} {date_str}'))
+    except Exception: pass
     return jsonify(resp)
 
 
@@ -5484,6 +5525,15 @@ def set_gantt_days_batch(pid, bid):
     resp = {"ok": True, "applied": applied, "use_schedule_toggled_lines": toggled_line_ids}
     if _post_save_error:
         resp["_warn"] = _post_save_error
+    try:
+        if applied:
+            _log_activity(action='update', entity_type='schedule_batch',
+                          entity_id=None,
+                          entity_label=f'Bulk schedule update — {applied} cells',
+                          budget_id=bid, project_id=pid,
+                          before=None, after={'cells_changed': applied},
+                          note=f'Batch updated {applied} schedule cells')
+    except Exception: pass
     return jsonify(resp)
 
 
@@ -5504,8 +5554,19 @@ def clear_gantt_day(pid, bid):
                 crew_instance=crew_instance, date=d,
                 schedule_mode=sched_mode).first()
             if existing:
+                _prev_type = existing.day_type
                 db.session.delete(existing)
                 db.session.commit()
+                try:
+                    _ln = BudgetLine.query.get(line_id)
+                    _label = (_ln.description or _ln.account_name or '—') if _ln else f'line {line_id}'
+                    _log_activity(action='delete', entity_type='schedule_day',
+                                  entity_label=f'{_label} — {date_str}',
+                                  budget_id=bid, project_id=pid,
+                                  before={'day_type': _prev_type, 'date': date_str},
+                                  after=None,
+                                  note=f'Cleared {_label} {date_str}')
+                except Exception: pass
             # Auto-disable use_schedule when last day is removed
             remaining = ScheduleDay.query.filter_by(
                 budget_id=bid, budget_line_id=line_id, schedule_mode=sched_mode
@@ -5564,6 +5625,19 @@ def gantt_assign_crew(pid, bid):
 
     _touch_budget(bid)
     db.session.commit()
+    try:
+        _ln = BudgetLine.query.get(line_id)
+        _role = (_ln.description or _ln.account_name or '—') if _ln else f'line {line_id}'
+        _log_activity(
+            action=('delete' if (not crew_id and not name_ov) else
+                    'update' if existing else 'create'),
+            entity_type='crew_assignment',
+            entity_label=f'{_role} (instance {instance})',
+            budget_id=bid, project_id=pid,
+            before=None, after={'crew_member_id': crew_id, 'name': name},
+            note=(f'Cleared assignment on {_role}' if not name
+                  else f'Assigned {name} to {_role}'))
+    except Exception: pass
     return jsonify({"ok": True, "name": name})
 
 
@@ -5603,6 +5677,13 @@ def set_gantt_meal(pid, bid):
             db.session.rollback()
         except Exception:
             pass
+    try:
+        _log_activity(action='update', entity_type='production_day',
+                      entity_label=f'{field.replace("_"," ").title()} — {date_str}',
+                      budget_id=bid, project_id=pid,
+                      before=None, after={field: value, 'date': date_str},
+                      note=f'{"Enabled" if value else "Disabled"} {field} on {date_str}')
+    except Exception: pass
     return jsonify({"ok": True, "date": date_str, "field": field, "value": value})
 
 
@@ -5987,6 +6068,19 @@ def travel_toggle_flag(pid, bid):
     except Exception as _se:
         logging.warning(f"[travel_toggle] sync failed: {_se}")
 
+    try:
+        _ln = BudgetLine.query.get(line_id)
+        _label = (_ln.description or _ln.account_name or '—') if _ln else f'line {line_id}'
+        _flag_label = (f'per_diem ({pd_mode})' if flag == 'per_diem' and pd_mode
+                       else f'per_diem (cleared)' if flag == 'per_diem'
+                       else flag)
+        _log_activity(action='update', entity_type='travel_flag',
+                      entity_id=sd.id,
+                      entity_label=f'{_label} — {date_s}',
+                      budget_id=bid, project_id=pid,
+                      before=None, after={'flag': _flag_label, 'value': value},
+                      note=f'{"Set" if value or pd_mode else "Cleared"} {_flag_label} on {_label} {date_s}')
+    except Exception: pass
     return jsonify({"ok": True, "flags": flags, "schedule_day_id": sd.id})
 
 
@@ -6051,6 +6145,16 @@ def travel_detail_save(pid, bid):
             except (TypeError, ValueError): td.miles = None
 
     db.session.commit()
+    try:
+        _ln = BudgetLine.query.get(sd.budget_line_id) if sd.budget_line_id else None
+        _label = (_ln.description or _ln.account_name or '—') if _ln else 'travel'
+        _log_activity(action='update', entity_type='travel_detail',
+                      entity_id=td.id,
+                      entity_label=f'{_label} — {kind} ({sd.date.isoformat()})',
+                      budget_id=bid, project_id=pid,
+                      before=None, after={'kind': kind, 'fields': list(data.keys())},
+                      note=f'Updated {kind} detail for {_label}')
+    except Exception: pass
     return jsonify({"ok": True, "id": td.id})
 
 
@@ -6109,6 +6213,16 @@ def travel_add_day(pid, bid):
         if sd.day_type == 'off':
             sd.day_type = 'travel'
         db.session.commit()
+    try:
+        _ln = BudgetLine.query.get(line_id)
+        _label = (_ln.description or _ln.account_name or '—') if _ln else f'line {line_id}'
+        _log_activity(action='create', entity_type='travel_day',
+                      entity_id=sd.id,
+                      entity_label=f'{_label} — {date_s}',
+                      budget_id=bid, project_id=pid,
+                      before=None, after={'date': date_s, 'day_type': sd.day_type},
+                      note=f'Added travel day for {_label} on {date_s}')
+    except Exception: pass
     return jsonify({"ok": True, "schedule_day_id": sd.id})
 
 
@@ -6420,6 +6534,14 @@ def catering_meal_toggle(pid, bid):
         sync_schedule_driven_lines(bid, db.session)
     except Exception as _se:
         logging.warning(f"[catering_meal_toggle] sync failed: {_se}")
+    try:
+        _flag_label = flag.replace('_', ' ').title()
+        _log_activity(action='update', entity_type='catering_meal',
+                      entity_label=f'{_flag_label} — {date_s}',
+                      budget_id=bid, project_id=pid,
+                      before=None, after={'flag': flag, 'value': value, 'date': date_s},
+                      note=f'{"Enabled" if value else "Disabled"} {_flag_label} on {date_s}')
+    except Exception: pass
     return jsonify({"ok": True})
 
 
@@ -6443,6 +6565,7 @@ def catering_bill_save(pid, bid):
     except (TypeError, ValueError):
         return jsonify({"error": "Invalid amount"}), 400
 
+    _is_create = not bill_id
     if bill_id:
         bill = CateringBill.query.filter_by(id=int(bill_id), budget_id=bid).first()
         if not bill:
@@ -6456,6 +6579,18 @@ def catering_bill_save(pid, bid):
     bill.amount       = amt
     bill.note         = (data.get("note") or '').strip() or None
     db.session.commit()
+    try:
+        _log_activity(
+            action=('create' if _is_create else 'update'),
+            entity_type='catering_bill', entity_id=bill.id,
+            entity_label=f'{bill.vendor or "Caterer"} — {ps} to {pe}',
+            budget_id=bid, project_id=pid,
+            before=None,
+            after={'vendor': bill.vendor, 'amount': amt,
+                   'period_start': ps.isoformat(), 'period_end': pe.isoformat()},
+            dollar_delta=amt if _is_create else 0,
+            note=f'{"Added" if _is_create else "Updated"} catering bill ${amt:,.2f}')
+    except Exception: pass
     return jsonify({"ok": True, "id": bill.id})
 
 
@@ -6467,8 +6602,19 @@ def catering_bill_delete(pid, bid, bid_id):
     bill = CateringBill.query.filter_by(id=bid_id, budget_id=bid).first()
     if not bill:
         return jsonify({"error": "Not found"}), 404
+    _amt = float(bill.amount or 0)
+    _vendor = bill.vendor or 'Caterer'
+    _period = f'{bill.period_start} to {bill.period_end}'
     db.session.delete(bill)
     db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='catering_bill',
+                      entity_id=bid_id, entity_label=f'{_vendor} — {_period}',
+                      budget_id=bid, project_id=pid,
+                      before={'amount': _amt}, after=None,
+                      dollar_delta=-_amt,
+                      note=f'Removed catering bill ${_amt:,.2f}')
+    except Exception: pass
     return jsonify({"ok": True})
 
 
@@ -7447,6 +7593,8 @@ def assign_crew(pid, bid, lid):
     data   = request.get_json(force=True)
     cid    = data.get("crew_id")
     ln     = BudgetLine.query.get(lid)
+    _act_prev_crew_id = ln.assigned_crew_id
+    _act_prev_name    = ln.assigned_crew.name if ln.assigned_crew else None
     ln.assigned_crew_id = int(cid) if cid else None
     cm = CrewMember.query.get(int(cid)) if cid else None
     agent_pct_applied = None  # no longer auto-applied; client prompts
@@ -7480,6 +7628,24 @@ def assign_crew(pid, bid, lid):
     default_rate_type = cm.default_rate_type or 'day_10' if cid and cm and cm.default_rate else None
     default_fringe    = cm.default_fringe if cid and cm else None
     default_agent_pct = float(cm.default_agent_pct) if cid and cm and cm.default_agent_pct else None
+    try:
+        _role = ln.description or ln.account_name or '—'
+        if not cid and _act_prev_crew_id:
+            _action, _note = 'delete', f'Cleared assignment from {_role} (was {_act_prev_name or "—"})'
+        elif cid and not _act_prev_crew_id:
+            _action, _note = 'create', f'Assigned {name or "—"} to {_role}'
+        elif cid and _act_prev_crew_id != int(cid):
+            _action, _note = 'update', f'Reassigned {_role}: {_act_prev_name or "—"} → {name or "—"}'
+        else:
+            _action, _note = None, None
+        if _action:
+            _log_activity(action=_action, entity_type='budget_line_crew',
+                          entity_id=lid, entity_label=_role,
+                          budget_id=bid, project_id=pid,
+                          before={'crew_id': _act_prev_crew_id, 'name': _act_prev_name},
+                          after={'crew_id': cid, 'name': name},
+                          note=_note)
+    except Exception: pass
     return jsonify({"ok": True, "crew_id": cid, "name": name,
                     "agent_pct": agent_pct_applied,
                     "default_rate": default_rate,
