@@ -644,7 +644,18 @@ _DBX_OPS_ROOT       = os.getenv('DROPBOX_OPERATIONS_PATH', '/_FP OPERATIONS FOLD
 _DBX_ARCHIVE_ROOT   = os.getenv('DROPBOX_ARCHIVE_PATH',   '/_ARCHIVED')
 _DBX_WRAP_ROOT      = os.getenv('DROPBOX_WRAP_PATH',      '/_WRAPPED PROJECTS')
 
+_DBX_CLIENT_CACHE = None
+
 def _dbx_client():
+    # Cache the client at module level (one per worker). Building a Dropbox
+    # SDK client allocates an HTTP session + OAuth2 refresh handler +
+    # namespace path-root wrapper. Per user 2026-04-29: hot paths
+    # (/docs/upload/<uid>/raw, /preview-link, /verify) call this on
+    # every request — without caching, a few rapid uploads / previews
+    # can push a Render free-tier worker over its memory limit.
+    global _DBX_CLIENT_CACHE
+    if _DBX_CLIENT_CACHE is not None:
+        return _DBX_CLIENT_CACHE
     import dropbox as _dbx_mod
     refresh_token = os.getenv('DROPBOX_REFRESH_TOKEN', '')
     app_key       = os.getenv('DROPBOX_APP_KEY', '')
@@ -661,6 +672,7 @@ def _dbx_client():
     if _DBX_NAMESPACE_ID:
         from dropbox.common import PathRoot
         dbx = dbx.with_path_root(PathRoot.namespace_id(_DBX_NAMESPACE_ID))
+    _DBX_CLIENT_CACHE = dbx
     return dbx
 
 def _dbx_paths(dropbox_folder):

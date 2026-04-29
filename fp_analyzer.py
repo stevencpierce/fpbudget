@@ -172,7 +172,17 @@ def _ops_prefix() -> str:
     return os.getenv("DROPBOX_OPERATIONS_PATH", "").rstrip("/")
 
 
+_DBX_CLIENT_CACHE = None
+_VERYFI_CLIENT_CACHE = None
+
 def get_dropbox_client():
+    # Cache the client per worker. Each Dropbox SDK instance allocates an
+    # HTTP session, OAuth2 refresh handler, and namespace path-root
+    # wrapper. Per user 2026-04-29: rebuilding on every upload was a
+    # significant memory contributor on Render free-tier workers.
+    global _DBX_CLIENT_CACHE
+    if _DBX_CLIENT_CACHE is not None:
+        return _DBX_CLIENT_CACHE
     refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
     app_key       = os.getenv("DROPBOX_APP_KEY")
     app_secret    = os.getenv("DROPBOX_APP_SECRET")
@@ -194,6 +204,7 @@ def get_dropbox_client():
             dbx = dbx.with_path_root(PathRoot.namespace_id(_DBX_NAMESPACE_ID_ENV))
         except Exception as _e:
             log.error(f"Failed to apply namespace root {_DBX_NAMESPACE_ID_ENV}: {_e}")
+    _DBX_CLIENT_CACHE = dbx
     return dbx
 
 
