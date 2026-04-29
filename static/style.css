@@ -1306,6 +1306,22 @@ body.col-resizing * { cursor: col-resize !important; }
   border-color: var(--blue);
   color: var(--blue);
 }
+/* Day-type buttons in the single-cell picker + bulk-action menu — same
+   highlight when the cell already has that type / note / OT, or when
+   every cell in a multi-cell selection unanimously has that flag. */
+.day-pick-btn.flag-active,
+.select-action-btn.flag-active {
+  background: rgba(52,152,219,.25);
+  border-color: var(--blue);
+  color: var(--blue);
+  box-shadow: inset 0 0 0 1px var(--blue);
+}
+/* Partial coverage in a mixed selection — soft highlight so the user
+   sees "some cells have this flag, not all" before clicking. */
+.select-action-btn.flag-partial {
+  background: rgba(52,152,219,.10);
+  color: var(--blue);
+}
 
 /* ── Phase 2: Working meal rows ──────────────────────────────────────────────── */
 .gantt-meal-row { }

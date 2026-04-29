@@ -474,6 +474,25 @@ function showPicker(e, cell) {
     btn.classList.toggle('flag-active', !!flags[btn.dataset.flag]);
   });
 
+  // Highlight current day type (work / travel / hold / etc.) so the
+  // user sees what's already on this cell when they right-click. Also
+  // marks the Add Note + OT Hours buttons when the cell carries that
+  // metadata. Without this, the menu always looked the same regardless
+  // of cell state — only flags showed their state.
+  const curType = cell.dataset.type || 'off';
+  const curNote = (cell.title || '').trim();
+  const curOt   = parseFloat(cell.dataset.otHours || 0);
+  document.querySelectorAll('#day-picker .day-pick-btn').forEach(btn => {
+    const t = btn.dataset.type;
+    if (t === '__note__') {
+      btn.classList.toggle('flag-active', !!curNote);
+    } else if (t === '__ot__') {
+      btn.classList.toggle('flag-active', curOt > 0);
+    } else {
+      btn.classList.toggle('flag-active', t === curType);
+    }
+  });
+
   // Show off-screen so the browser can reflow and we can read true dimensions
   picker.style.visibility = 'hidden';
   picker.style.left = '0px';
@@ -506,6 +525,32 @@ function showSelectActionMenu(e) {
   if (!menu) return;
   const count = document.getElementById('select-action-count');
   if (count) count.textContent = `${_selection.size} cell${_selection.size !== 1 ? 's' : ''} selected`;
+
+  // Highlight unanimous state across the selection. A button gets
+  // .flag-active when ALL selected cells share that day type / flag.
+  // Mixed selections show no highlight on the relevant button so the
+  // user knows clicking will set rather than toggle off.
+  const cells = _getSelectedCells();
+  if (cells.length) {
+    const types = new Set(cells.map(c => c.dataset.type || 'off'));
+    const unanimousType = types.size === 1 ? cells[0].dataset.type || 'off' : null;
+    menu.querySelectorAll('.select-action-btn[data-action="type"]').forEach(btn => {
+      btn.classList.toggle('flag-active', btn.dataset.value === unanimousType);
+    });
+    // Per flag: count how many cells already have it on. Highlight when
+    // all do; half-highlight class for partial coverage.
+    const flagBtns = menu.querySelectorAll('.select-action-btn[data-action="flag"]');
+    flagBtns.forEach(btn => {
+      const f = btn.dataset.value;
+      let on = 0;
+      cells.forEach(c => { if (_getCellFlags(c)[f]) on++; });
+      btn.classList.toggle('flag-active',  on === cells.length);
+      btn.classList.toggle('flag-partial', on > 0 && on < cells.length);
+    });
+  } else {
+    menu.querySelectorAll('.flag-active, .flag-partial').forEach(b =>
+      b.classList.remove('flag-active', 'flag-partial'));
+  }
 
   menu.style.visibility = 'hidden';
   menu.style.left = '0px';
