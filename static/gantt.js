@@ -497,12 +497,12 @@ function _arrowMove(key, shift, jumpEdge) {
   if (!targetCell) return;
 
   if (shift && _lastClickedCell) {
-    // Extend rectangle from the SHIFT anchor (the position the user was at
-    // before they started shift-arrowing). Same anchor we use for shift-click.
-    _selectRectangle(_lastClickedCell, targetCell);
-    // Move active without resetting anchor — we want repeated Shift+Arrow
-    // to keep extending from the same anchor. _selectRectangle moves
-    // _lastClickedCell to target; restore the anchor.
+    // Capture the anchor BEFORE calling _selectRectangle — that
+    // function mutates _lastClickedCell to point at the target. If we
+    // save the anchor afterward, it's already the moved-to cell and
+    // every subsequent rect call collapses to that single cell, which
+    // looks to the user like the selection "jumped" forward by one
+    // instead of growing from the existing cell. Per user 2026-04-29.
     if (!_shiftAnchor) _shiftAnchor = _lastClickedCell;
     _selectRectangle(_shiftAnchor, targetCell);
   } else {
