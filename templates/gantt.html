@@ -132,8 +132,10 @@
   <!-- Schedule being viewed -->
   <span class="gantt-sched-mode-label mode-badge {{ cur_mode.cls }}" title="Currently editing {{ sched_mode }} schedule">{{ sched_mode | upper }} SCHEDULE</span>
 
-  <!-- Select mode button -->
-  <button class="btn btn-sm btn-outline" id="btn-select-mode" onclick="toggleSelectMode()">☐ Select</button>
+  <!-- Hotkey help button — selection is now always-on, the old "Select"
+       toggle was removed (per user 2026-04-29). The "?" button shows the
+       full shortcut reference. -->
+  <button class="btn btn-sm btn-outline" id="btn-hotkey-help" onclick="toggleHotkeyHelp()" title="Keyboard shortcuts">⌨ Shortcuts</button>
 
   <!-- Date range pickers -->
   <label class="gantt-date-label">From
@@ -185,9 +187,65 @@
   <div class="payroll-info-tip">Tip: Exempt fringe disables OT regardless of payroll profile.</div>
 </div>
 
-<!-- Select mode badge (shown when select mode is active) -->
-<div class="select-mode-badge hidden" id="select-mode-badge">
-  ☐ SELECT MODE — click cells to select, Cmd+C copy, Cmd+V paste, Shift or Esc to exit
+<!-- Hotkey help overlay -->
+<div id="hotkey-help-overlay" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2500;display:flex;align-items:center;justify-content:center;padding:24px"
+     onclick="if(event.target===this) toggleHotkeyHelp()">
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;width:min(640px,95vw);max-height:88vh;overflow-y:auto">
+    <div style="padding:16px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
+      <h3 style="margin:0;font-size:1.05rem;flex:1">Schedule Keyboard Shortcuts</h3>
+      <button class="btn btn-xs btn-ghost" onclick="toggleHotkeyHelp()">✕ Close</button>
+    </div>
+    <div style="padding:18px 22px;font-size:.85rem;line-height:1.65">
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 18px;align-items:baseline">
+        <div style="display:contents"><strong style="color:var(--accent);font-size:.78rem;letter-spacing:.04em;text-transform:uppercase;grid-column:1/-1;margin-top:.4rem">Selection</strong></div>
+        <kbd>Click</kbd>           <span>Select one cell</span>
+        <kbd>Shift+Click</kbd>      <span>Extend selection (rectangle from anchor)</span>
+        <kbd>⌘ Click</kbd>         <span>Toggle individual cell in/out of selection</span>
+        <kbd>Click + drag</kbd>    <span>Drag-select rectangle</span>
+        <kbd>Esc</kbd>             <span>Clear selection / close menu</span>
+
+        <div style="display:contents"><strong style="color:var(--accent);font-size:.78rem;letter-spacing:.04em;text-transform:uppercase;grid-column:1/-1;margin-top:.6rem">Navigation</strong></div>
+        <kbd>← → ↑ ↓</kbd>          <span>Move active cell</span>
+        <kbd>Shift + Arrow</kbd>   <span>Extend selection in that direction</span>
+        <kbd>⌘ + Arrow</kbd>       <span>Jump to row / column edge</span>
+        <kbd>Enter</kbd>            <span>Open the day-type / flag picker on the active cell</span>
+
+        <div style="display:contents"><strong style="color:var(--accent);font-size:.78rem;letter-spacing:.04em;text-transform:uppercase;grid-column:1/-1;margin-top:.6rem">Edit</strong></div>
+        <kbd>⌘ C</kbd>             <span>Copy selected cells</span>
+        <kbd>⌘ V</kbd>             <span>Paste — full data (day type + flags + OT + notes)</span>
+        <kbd>⌘ ⌥ V</kbd>           <span>Paste Special — pick which elements to apply</span>
+        <kbd>Delete</kbd>           <span>Clear day type, flags, OT, notes on selected cells</span>
+        <kbd>⌘ Z</kbd>             <span>Undo last change</span>
+        <kbd>?</kbd>                <span>Toggle this help overlay</span>
+      </div>
+      <p class="muted" style="font-size:.78rem;margin-top:1rem">
+        Long-press on touch devices opens the picker. The ▾ button in each cell's bottom-right does the same.
+        Right-click → menu also has Copy / Paste / Paste Special.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- Paste Special modal — choose which elements to apply from clipboard -->
+<div id="paste-special-modal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2500;display:flex;align-items:center;justify-content:center;padding:24px"
+     onclick="if(event.target===this) closePasteSpecial()">
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;width:min(420px,95vw)">
+    <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px">
+      <h3 style="margin:0;font-size:1rem;flex:1">Paste Special</h3>
+      <button class="btn btn-xs btn-ghost" onclick="closePasteSpecial()">✕</button>
+    </div>
+    <div style="padding:14px 20px;font-size:.85rem">
+      <p class="muted" style="font-size:.78rem;margin:0 0 .8rem">Pick which elements from the clipboard to apply to the selected cells.</p>
+      <label style="display:block;padding:.3rem 0"><input type="checkbox" id="ps-day-type" checked> Day type (work / travel / hold / etc.)</label>
+      <label style="display:block;padding:.3rem 0"><input type="checkbox" id="ps-flags"> Flags (per-diem, hotel, flight, mileage, working meal, car rental)</label>
+      <label style="display:block;padding:.3rem 0"><input type="checkbox" id="ps-ot"> OT hours</label>
+      <label style="display:block;padding:.3rem 0"><input type="checkbox" id="ps-notes"> Notes</label>
+    </div>
+    <div style="padding:12px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px">
+      <button class="btn btn-ghost" onclick="closePasteSpecial()">Cancel</button>
+      <button class="btn btn-primary" onclick="applyPasteSpecial()">Paste</button>
+    </div>
+  </div>
 </div>
 
 <!-- Live Totals Panel -->
@@ -476,6 +534,10 @@
   <button class="day-pick-btn day-note-btn" data-type="__note__">📝 Add Note</button>
   <button class="day-pick-btn day-ot-btn" data-type="__ot__">⏱ OT Hours</button>
   <div class="day-picker-divider"></div>
+  <button class="day-pick-btn" data-type="__copy__">📋 Copy</button>
+  <button class="day-pick-btn" data-type="__paste__">📋 Paste</button>
+  <button class="day-pick-btn" data-type="__paste_special__">📋 Paste Special…</button>
+  <div class="day-picker-divider"></div>
   <div class="day-picker-flags" id="day-picker-flags">
     <span class="flag-toggle-label">Meals:</span>
     <button class="flag-toggle-btn" data-flag="working_meal">🍽 Working Meal</button>
@@ -539,6 +601,10 @@
           title="Wipe day type, flags, OT, and notes on every selected cell. Or press Delete / Backspace.">
     🗑 Delete all (day + flags + OT)
   </button>
+  <div class="select-action-divider"></div>
+  <button class="select-action-btn" data-action="copy">📋 Copy (⌘C)</button>
+  <button class="select-action-btn" data-action="paste">📋 Paste (⌘V)</button>
+  <button class="select-action-btn" data-action="paste-special">📋 Paste Special… (⌘⌥V)</button>
   <div class="select-action-divider"></div>
   <div class="select-action-section">Toggle flag on all:</div>
   <button class="select-action-btn" data-action="flag" data-value="working_meal">🍽 Working Meal</button>

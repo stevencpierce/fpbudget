@@ -285,6 +285,25 @@ function initGantt(pid, bid, activeProfileId) {
           updateOtBadge(cell, hrs);
           saveDay(cell, cell.dataset.type, null, hrs);
         }
+      } else if (btn.dataset.type === '__copy__') {
+        // Make sure this cell is in the selection so copySelection grabs it.
+        if (!_selection.has(cellKey(cell))) {
+          clearSelection();
+          toggleSelectCell(cell, true);
+        }
+        copySelection();
+      } else if (btn.dataset.type === '__paste__') {
+        if (!_selection.has(cellKey(cell))) {
+          clearSelection();
+          toggleSelectCell(cell, true);
+        }
+        pasteSelection();
+      } else if (btn.dataset.type === '__paste_special__') {
+        if (!_selection.has(cellKey(cell))) {
+          clearSelection();
+          toggleSelectCell(cell, true);
+        }
+        window.openPasteSpecial();
       } else {
         const newType = btn.dataset.type;
         const prev    = cell.dataset.type || 'off';
@@ -319,6 +338,12 @@ function initGantt(pid, bid, activeProfileId) {
         applyFlagToSelection(value);
       } else if (action === 'delete-all') {
         deleteSelection();
+      } else if (action === 'copy') {
+        copySelection();
+      } else if (action === 'paste') {
+        pasteSelection();
+      } else if (action === 'paste-special') {
+        window.openPasteSpecial();
       }
     });
   });
@@ -337,53 +362,75 @@ function initGantt(pid, bid, activeProfileId) {
     }
   });
 
-  // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  // ── Keyboard shortcuts (selection-always-on model) ──────────────────────
+  // Per user 2026-04-29: dropped the Shift-to-toggle-select-mode flow.
+  // Selection is always on. Cmd+C / Cmd+V / Delete fire whenever cells
+  // are selected. Arrow keys move the active cell with optional Shift
+  // (extend) and Cmd (jump-to-edge) modifiers, Excel-style.
   document.addEventListener('keydown', e => {
     const isMac = navigator.platform.toUpperCase().includes('MAC');
     const ctrl  = isMac ? e.metaKey : e.ctrlKey;
-
-    // Shift toggles select mode — skip if user is typing in any input/textarea
-    if (e.key === 'Shift' && !e.repeat) {
-      const tag = document.activeElement && document.activeElement.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    const tag   = document.activeElement && document.activeElement.tagName;
+    const isTyping = (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+                      || (document.activeElement && document.activeElement.isContentEditable));
+    // ? toggles the hotkey help overlay
+    if (e.key === '?' && !isTyping) {
       e.preventDefault();
-      if (_selectMode) {
-        _deactivateSelectMode();
-      } else {
-        _activateSelectMode();
-      }
+      window.toggleHotkeyHelp && window.toggleHotkeyHelp();
       return;
     }
 
-    if (ctrl && e.key === 'z') { e.preventDefault(); undoLast(); }
+    if (ctrl && e.key === 'z' && !isTyping) { e.preventDefault(); undoLast(); return; }
 
-    if (_selectMode) {
-      if (ctrl && e.key === 'c' && _selection.size > 0) {
-        e.preventDefault();
-        copySelection();
-      }
-      if (ctrl && e.key === 'v' && _clipboard) {
-        e.preventDefault();
-        pasteSelection();
-      }
-      // Delete / Backspace: clear EVERYTHING on the selected cells —
-      // day type goes back to 'off', cell_flags wiped, OT cleared,
-      // notes wiped. Equivalent to right-clicking each cell and
-      // picking "Off" + clearing every flag, but in one keystroke.
-      if ((e.key === 'Delete' || e.key === 'Backspace') && _selection.size > 0) {
-        // Don't intercept if user is typing in an input (e.g. picker note)
-        const t = e.target;
-        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-        e.preventDefault();
-        deleteSelection();
-      }
+    // Cmd+Option+V — paste special. Must come BEFORE plain Cmd+V.
+    if (ctrl && e.altKey && (e.key === 'v' || e.key === 'V') && _clipboard && _selection.size > 0) {
+      e.preventDefault();
+      window.openPasteSpecial && window.openPasteSpecial();
+      return;
+    }
+    if (ctrl && (e.key === 'c' || e.key === 'C') && _selection.size > 0 && !isTyping) {
+      e.preventDefault();
+      copySelection();
+      return;
+    }
+    if (ctrl && (e.key === 'v' || e.key === 'V') && _clipboard && _selection.size > 0 && !isTyping) {
+      e.preventDefault();
+      pasteSelection();
+      return;
+    }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && _selection.size > 0 && !isTyping) {
+      e.preventDefault();
+      deleteSelection();
+      return;
+    }
+
+    // Enter on a selected cell → open the picker. Equivalent to clicking
+    // the ▾ button on the active cell (last-clicked / arrow-navigated).
+    if (e.key === 'Enter' && !isTyping && _lastClickedCell) {
+      // Don't intercept Enter inside the picker itself
+      if (e.target.closest && e.target.closest('#day-picker')) return;
+      e.preventDefault();
+      const rect = _lastClickedCell.getBoundingClientRect();
+      showPicker({ clientX: rect.right - 8, clientY: rect.bottom - 8 }, _lastClickedCell);
+      return;
+    }
+
+    // Arrow-key navigation
+    const arrows = { ArrowLeft: [0,-1], ArrowRight: [0,1], ArrowUp: [-1,0], ArrowDown: [1,0] };
+    if (arrows[e.key] && !isTyping) {
+      e.preventDefault();
+      _arrowMove(e.key, e.shiftKey, ctrl);
+      return;
     }
 
     if (e.key === 'Escape') {
       clearSelection();
-      if (_selectMode) _deactivateSelectMode();
       document.getElementById('day-picker').classList.add('hidden');
       document.getElementById('select-action-menu').classList.add('hidden');
+      const psm = document.getElementById('paste-special-modal');
+      if (psm) psm.classList.add('hidden');
+      const help = document.getElementById('hotkey-help-overlay');
+      if (help) help.classList.add('hidden');
       hidePayrollInfo();
       closeCrewPicker();
       _showPickerNewForm(false);
@@ -391,39 +438,130 @@ function initGantt(pid, bid, activeProfileId) {
   });
 }
 
+// ── Arrow-key navigation helper ─────────────────────────────────────────
+// Builds a row × column matrix of editable cells (skipping meal rows etc.)
+// then moves the active cell by (drow, dcol). Cmd+Arrow jumps to the row
+// or column edge. Shift+Arrow extends the selection rectangle from the
+// existing anchor instead of replacing it.
+function _arrowMove(key, shift, jumpEdge) {
+  const arrows = { ArrowLeft: [0,-1], ArrowRight: [0,1], ArrowUp: [-1,0], ArrowDown: [1,0] };
+  const [dr, dc] = arrows[key];
+  // Build active cell list grouped by .gantt-row
+  const rows = Array.from(document.querySelectorAll('tr.gantt-row'));
+  if (!rows.length) return;
+  // Each row's editable cells (data-line + data-date, no data-meal).
+  const rowCells = rows.map(r =>
+    Array.from(r.querySelectorAll('.gantt-cell'))
+      .filter(c => c.dataset.line && c.dataset.date && !c.dataset.meal));
+  const nonEmpty = rowCells.map((cs, i) => cs.length ? i : -1).filter(i => i >= 0);
+  if (!nonEmpty.length) return;
+
+  // Find current anchor's row/col index
+  let curRowIdx = -1, curColIdx = 0;
+  if (_lastClickedCell) {
+    for (let i = 0; i < rowCells.length; i++) {
+      const idx = rowCells[i].indexOf(_lastClickedCell);
+      if (idx >= 0) { curRowIdx = i; curColIdx = idx; break; }
+    }
+  }
+  if (curRowIdx < 0) {
+    // No active cell yet — start at the first cell of the first non-empty row.
+    curRowIdx = nonEmpty[0];
+    curColIdx = 0;
+  }
+
+  // Compute target. Cmd jumps to edge. Plain arrow moves by 1.
+  let newRow = curRowIdx, newCol = curColIdx;
+  if (dr !== 0) {
+    if (jumpEdge) {
+      newRow = dr > 0 ? nonEmpty[nonEmpty.length - 1] : nonEmpty[0];
+    } else {
+      // step to next non-empty row in the direction
+      const order = dr > 0 ? nonEmpty : [...nonEmpty].reverse();
+      const here = order.indexOf(curRowIdx);
+      newRow = here >= 0 && here + 1 < order.length ? order[here + 1] : curRowIdx;
+    }
+    // Clamp column to that row's cell count
+    const maxCol = Math.max(0, rowCells[newRow].length - 1);
+    newCol = Math.min(curColIdx, maxCol);
+  } else if (dc !== 0) {
+    const maxCol = rowCells[curRowIdx].length - 1;
+    if (jumpEdge) {
+      newCol = dc > 0 ? maxCol : 0;
+    } else {
+      newCol = Math.max(0, Math.min(maxCol, curColIdx + dc));
+    }
+  }
+
+  const targetCell = rowCells[newRow][newCol];
+  if (!targetCell) return;
+
+  if (shift && _lastClickedCell) {
+    // Extend rectangle from the SHIFT anchor (the position the user was at
+    // before they started shift-arrowing). Same anchor we use for shift-click.
+    _selectRectangle(_lastClickedCell, targetCell);
+    // Move active without resetting anchor — we want repeated Shift+Arrow
+    // to keep extending from the same anchor. _selectRectangle moves
+    // _lastClickedCell to target; restore the anchor.
+    if (!_shiftAnchor) _shiftAnchor = _lastClickedCell;
+    _selectRectangle(_shiftAnchor, targetCell);
+  } else {
+    _shiftAnchor = null;
+    clearSelection();
+    toggleSelectCell(targetCell, true);
+  }
+  // Scroll target into view if it's clipped by the gantt scroll wrap
+  try { targetCell.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (_) {}
+}
+let _shiftAnchor = null;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SELECT MODE
 // ─────────────────────────────────────────────────────────────────────────────
 
-function _activateSelectMode() {
-  _selectMode = true;
-  const btn  = document.getElementById('btn-select-mode');
-  const wrap = document.getElementById('gantt-scroll-wrap');
-  const badge = document.getElementById('select-mode-badge');
-  if (btn)  { btn.classList.add('active'); btn.textContent = '✓ Select ON'; }
-  if (wrap) wrap.classList.add('select-mode-active');
-  if (badge) badge.classList.remove('hidden');
-  document.body.classList.add('gantt-select-mode');
-}
+// _selectMode is dead (selection is always-on now) but a few call sites
+// still reference these helpers — keep them as no-ops so we don't have
+// to chase down every old hook. Per user 2026-04-29: toolbar select
+// button + select-mode-badge removed; selection now happens on every
+// click without an explicit mode.
+function _activateSelectMode()   { _selectMode = false; }
+function _deactivateSelectMode() { _selectMode = false; clearSelection(); }
+function toggleSelectMode()      { /* no-op — selection always on */ }
 
-function _deactivateSelectMode() {
-  _selectMode = false;
-  clearSelection();
-  const btn  = document.getElementById('btn-select-mode');
-  const wrap = document.getElementById('gantt-scroll-wrap');
-  const badge = document.getElementById('select-mode-badge');
-  if (btn)  { btn.classList.remove('active'); btn.textContent = '☐ Select'; }
-  if (wrap) wrap.classList.remove('select-mode-active');
-  if (badge) badge.classList.add('hidden');
-  document.body.classList.remove('gantt-select-mode');
-  // NOTE: _clipboard is intentionally NOT cleared here so paste still works
-  //       after toggling select mode off and back on.
-}
+// ── Hotkey help overlay ──────────────────────────────────────────────────
+window.toggleHotkeyHelp = function() {
+  const ov = document.getElementById('hotkey-help-overlay');
+  if (!ov) return;
+  ov.classList.toggle('hidden');
+};
 
-function toggleSelectMode() {
-  if (_selectMode) _deactivateSelectMode();
-  else             _activateSelectMode();
-}
+// ── Paste Special ────────────────────────────────────────────────────────
+// Modal lets the user pick which elements (day type / flags / OT / notes)
+// from the clipboard to apply on paste. Without it, ⌘V applies all four.
+window.openPasteSpecial = function() {
+  if (!_clipboard) { alert('Nothing on the clipboard. Copy some cells first (⌘C).'); return; }
+  if (_selection.size === 0) { alert('Select target cells first.'); return; }
+  const m = document.getElementById('paste-special-modal');
+  if (m) m.classList.remove('hidden');
+};
+window.closePasteSpecial = function() {
+  const m = document.getElementById('paste-special-modal');
+  if (m) m.classList.add('hidden');
+};
+window.applyPasteSpecial = async function() {
+  const opts = {
+    dayType: document.getElementById('ps-day-type').checked,
+    flags:   document.getElementById('ps-flags').checked,
+    ot:      document.getElementById('ps-ot').checked,
+    notes:   document.getElementById('ps-notes').checked,
+  };
+  if (!opts.dayType && !opts.flags && !opts.ot && !opts.notes) {
+    alert('Pick at least one element to paste.');
+    return;
+  }
+  window.closePasteSpecial();
+  await pasteSelection(opts);
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CELL INTERACTION
@@ -1038,13 +1176,21 @@ function copySelection() {
   const wrap = document.getElementById('gantt-scroll-wrap');
   if (wrap) wrap.classList.add('has-copy');
 
-  // Brief flash on badge
-  const badge = document.getElementById('select-mode-badge');
-  if (badge) {
-    const orig = badge.textContent;
-    badge.textContent = `✓ Copied ${items.length} cell${items.length > 1 ? 's' : ''} — select target then Cmd+V to paste`;
-    setTimeout(() => { badge.textContent = orig; }, 2500);
+  _scheduleToast(`✓ Copied ${items.length} cell${items.length > 1 ? 's' : ''} — select target, then ⌘V to paste (⌘⌥V for Paste Special)`);
+}
+
+function _scheduleToast(msg) {
+  let el = document.getElementById('schedule-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'schedule-toast';
+    el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(15,23,42,.95);color:#fff;padding:10px 18px;border-radius:8px;font-size:.85rem;box-shadow:0 4px 16px rgba(0,0,0,.4);z-index:3000;pointer-events:none;transition:opacity .25s;opacity:0';
+    document.body.appendChild(el);
   }
+  el.textContent = msg;
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, 2500);
 }
 
 // Delete: wipe day_type + flags + OT + note on every selected cell.
@@ -1095,15 +1241,14 @@ async function deleteSelection() {
   scheduleTotalsRefresh();
 }
 
-async function pasteSelection() {
+async function pasteSelection(opts) {
   if (!_clipboard) return;
+  // opts (Paste Special): {dayType, flags, ot, notes} — all default true
+  // when omitted (legacy plain-paste path).
+  const _opts = Object.assign({ dayType: true, flags: true, ot: true, notes: true }, opts || {});
 
-  // Determine paste target: use current selection, or if empty, re-enter select mode and wait
-  if (_selection.size === 0) {
-    const badge = document.getElementById('select-mode-badge');
-    if (badge) badge.textContent = 'Select target cells, then Cmd+V to paste';
-    return;
-  }
+  // Determine paste target
+  if (_selection.size === 0) return;
 
   const selectedItems = [];
   _selection.forEach(key => {
@@ -1131,26 +1276,31 @@ async function pasteSelection() {
       if (!cell) continue;
 
       const prev = cell.dataset.type || 'off';
+      // Filter by opts. Day type only changes if opts.dayType true; else
+      // keep the existing day type.
+      const newType = _opts.dayType ? src.dayType : prev;
       undoBatch.push({ lineId, instance: parseInt(instance), date,
-                       prevType: prev, newType: src.dayType });
+                       prevType: prev, newType });
 
-      paintCell(cell, src.dayType);
-      if (src.flags && Object.keys(src.flags).length > 0 && src.dayType !== 'off') {
-        cell.dataset.flags = JSON.stringify(src.flags);
-        _renderFlagDots(cell, src.flags);
-      } else if (src.dayType === 'off') {
-        cell.dataset.flags = '';
+      if (_opts.dayType) paintCell(cell, src.dayType);
+      if (_opts.flags) {
+        if (src.flags && Object.keys(src.flags).length > 0 && newType !== 'off') {
+          cell.dataset.flags = JSON.stringify(src.flags);
+          _renderFlagDots(cell, src.flags);
+        } else if (newType === 'off') {
+          cell.dataset.flags = '';
+        }
       }
 
       const spec = {
         line_id:       parseInt(lineId),
         date,
-        day_type:      src.dayType,
+        day_type:      newType,
         crew_instance: parseInt(instance),
       };
-      if (src.note !== undefined && src.note !== null)               spec.note         = src.note;
-      if (src.estOtHours !== undefined && src.estOtHours !== null)   spec.est_ot_hours = src.estOtHours;
-      if (src.flags && Object.keys(src.flags).length > 0)            spec.cell_flags   = src.flags;
+      if (_opts.notes && src.note !== undefined && src.note !== null)               spec.note         = src.note;
+      if (_opts.ot    && src.estOtHours !== undefined && src.estOtHours !== null)   spec.est_ot_hours = src.estOtHours;
+      if (_opts.flags && src.flags && Object.keys(src.flags).length > 0)            spec.cell_flags   = src.flags;
       payload.push(spec);
     }
   }
