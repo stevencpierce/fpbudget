@@ -128,23 +128,47 @@ def build_name(vr, doc_type, order=None):
 
 
 def to_pdf_bytes(file_storage):
+    """Convert an upload to PDF bytes for Veryfi OCR.
+
+    Per user 2026-04-29: caps the image's longest edge at 2400px BEFORE
+    decompressing to RGB. iPhone receipts are typically 4032×3024 (12 MP)
+    which inflates to ~36 MB of uncompressed RGB in Pillow — multiply by
+    16 concurrent gthread slots and you blow Render's 512 MB worker. The
+    OCR quality at 2400px is more than enough for receipt text.
+    """
     ext = os.path.splitext(file_storage.filename)[1].lower()
     original_bytes = file_storage.read()
     if ext == ".pdf":
         return original_bytes, original_bytes
-    img = Image.open(io.BytesIO(original_bytes)).convert("RGB")
+    MAX_EDGE = 2400
+    img = Image.open(io.BytesIO(original_bytes))
+    # thumbnail() preserves aspect ratio, in-place; only shrinks (never
+    # upscales). LANCZOS keeps text legible.
+    if max(img.size) > MAX_EDGE:
+        img.thumbnail((MAX_EDGE, MAX_EDGE), Image.LANCZOS)
+    img = img.convert("RGB")
     buf = io.BytesIO()
     img.save(buf, "PDF", resolution=100.0)
+    img.close()  # release Pillow's internal buffers eagerly
     return buf.getvalue(), original_bytes
 
 
+_VERYFI_CLIENT_CACHE = None
+
+
 def get_veryfi_client():
-    return veryfi.Client(
+    """Cached per worker — same rationale as get_dropbox_client (was a
+    leak source on hot upload paths)."""
+    global _VERYFI_CLIENT_CACHE
+    if _VERYFI_CLIENT_CACHE is not None:
+        return _VERYFI_CLIENT_CACHE
+    _VERYFI_CLIENT_CACHE = veryfi.Client(
         client_id=os.getenv("VERYFI_CLIENT_ID"),
         client_secret=os.getenv("VERYFI_CLIENT_SECRET"),
         username=os.getenv("VERYFI_USERNAME"),
         api_key=os.getenv("VERYFI_API_KEY"),
     )
+    return _VERYFI_CLIENT_CACHE
 
 
 IGNORED_PREFIXES = ("_", "!", ".")

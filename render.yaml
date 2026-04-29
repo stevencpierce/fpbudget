@@ -7,17 +7,16 @@ services:
     # starts. This avoids blocking the gevent worker with synchronous psycopg2
     # calls — which was hanging deploys (worker couldn't answer health checks).
     preDeployCommand: RUN_BOOT_TASKS=1 python -c "import app"
-    # gthread worker (2 processes × 8 threads = 16 concurrent slots).
-    # Plain sync workers saturated immediately because Flask-SocketIO
-    # polling sends ~2 requests/sec per open browser tab; workers
-    # queued up and some responses got cross-contaminated / truncated
-    # (style.css returning 218KB of budget HTML, etc.).
+    # gthread worker (2 processes × 4 threads = 8 concurrent slots).
+    # Reduced from 16 slots after user-reported OOMs during doc upload
+    # batches (2026-04-29). Each Pillow image conversion can hold 30+ MB
+    # of uncompressed RGB before being PDF-encoded; 16 concurrent slots
+    # exceeded Render's free-tier 512 MB worker. 8 slots is still plenty
+    # for SocketIO polling + DB I/O.
     #
     # gthread = real OS threads inside each worker. No gevent
-    # monkey-patching, no SSL recursion, no dependency drama. Perfect
-    # for a sync Flask app that does mostly database I/O + needs to
-    # handle many concurrent HTTP requests.
-    startCommand: gunicorn -k gthread -w 2 --threads 8 --bind 0.0.0.0:$PORT --timeout 120 app:app
+    # monkey-patching, no SSL recursion, no dependency drama.
+    startCommand: gunicorn -k gthread -w 2 --threads 4 --bind 0.0.0.0:$PORT --timeout 120 app:app
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL

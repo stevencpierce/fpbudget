@@ -12150,6 +12150,19 @@ def docs_upload_post(pid):
     except Exception as _ae:
         logging.exception("Analyzer pipeline crashed")
         return jsonify({"error": f"Analyzer failed: {_ae}"}), 500
+    finally:
+        # Force Pillow / Veryfi buffers to release before the next upload
+        # stacks. Per user 2026-04-29: even after caching the SDK clients
+        # and capping image dimensions, the gthread workers were still
+        # OOMing on batch uploads because GC kept large Pillow RGB
+        # buffers alive between requests. Explicit gc.collect() drops
+        # peak working set materially (~30-40% on iPhone receipt batches).
+        try:
+            del data
+            import gc as _gc
+            _gc.collect()
+        except Exception:
+            pass
 
     status_map = {
         "filed":         "done",          # auto-filed to correct folder
