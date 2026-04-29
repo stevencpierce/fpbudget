@@ -2008,6 +2008,30 @@ def _sanitize_for_json(obj):
     return obj
 
 
+def _ws_emit_tab_refresh(bid, tab):
+    """Broadcast a "tab data changed" hint so other clients viewing this
+    budget can re-fetch the relevant tab's grid. Used by Travel and
+    Catering mutations where multiple cells/rows can change at once and
+    a full grid reload is simpler than diffing per-cell.
+    Per user 2026-04-28: in-place changes on Travel/Catering weren't
+    syncing in real time — this fills that gap.
+    """
+    if not _HAS_SOCKETIO or not socketio:
+        return
+    try:
+        user_id = current_user.id
+        user_name = current_user.name or current_user.email.split("@")[0]
+    except Exception:
+        user_id, user_name = 0, "someone"
+    room = f"budget_{bid}"
+    try:
+        socketio.emit("tab_refresh",
+                      {"tab": tab, "user_id": user_id, "user_name": user_name},
+                      room=room, namespace="/")
+    except Exception as e:
+        app.logger.error("WS tab_refresh FAILED: %s", e)
+
+
 def _ws_emit_field_change(bid, line_id, result_data):
     """Broadcast a field change to all clients viewing this budget."""
     if not _HAS_SOCKETIO or not socketio:
@@ -6163,6 +6187,7 @@ def travel_toggle_flag(pid, bid):
                       before=None, after={'flag': _flag_label, 'value': value},
                       note=f'{"Set" if value or pd_mode else "Cleared"} {_flag_label} on {_label} {date_s}')
     except Exception: pass
+    _ws_emit_tab_refresh(bid, 'travel')
     return jsonify({"ok": True, "flags": flags, "schedule_day_id": sd.id})
 
 
@@ -6237,6 +6262,7 @@ def travel_detail_save(pid, bid):
                       before=None, after={'kind': kind, 'fields': list(data.keys())},
                       note=f'Updated {kind} detail for {_label}')
     except Exception: pass
+    _ws_emit_tab_refresh(bid, 'travel')
     return jsonify({"ok": True, "id": td.id})
 
 
@@ -6305,6 +6331,7 @@ def travel_add_day(pid, bid):
                       before=None, after={'date': date_s, 'day_type': sd.day_type},
                       note=f'Added travel day for {_label} on {date_s}')
     except Exception: pass
+    _ws_emit_tab_refresh(bid, 'travel')
     return jsonify({"ok": True, "schedule_day_id": sd.id})
 
 
@@ -6624,6 +6651,7 @@ def catering_meal_toggle(pid, bid):
                       before=None, after={'flag': flag, 'value': value, 'date': date_s},
                       note=f'{"Enabled" if value else "Disabled"} {_flag_label} on {date_s}')
     except Exception: pass
+    _ws_emit_tab_refresh(bid, 'catering')
     return jsonify({"ok": True})
 
 
@@ -6673,6 +6701,7 @@ def catering_bill_save(pid, bid):
             dollar_delta=amt if _is_create else 0,
             note=f'{"Added" if _is_create else "Updated"} catering bill ${amt:,.2f}')
     except Exception: pass
+    _ws_emit_tab_refresh(bid, 'catering')
     return jsonify({"ok": True, "id": bill.id})
 
 
@@ -6697,6 +6726,7 @@ def catering_bill_delete(pid, bid, bid_id):
                       dollar_delta=-_amt,
                       note=f'Removed catering bill ${_amt:,.2f}')
     except Exception: pass
+    _ws_emit_tab_refresh(bid, 'catering')
     return jsonify({"ok": True})
 
 

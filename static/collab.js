@@ -224,6 +224,46 @@
     if (hint) hint.textContent = data.user_name + ' edited just now';
   });
 
+  // ── Tab data refresh (Travel / Catering / others) ──────────────────────────
+  // Fired when another user mutates data shown in a tab whose grid is
+  // loaded fully (rather than per-cell). Triggers a re-fetch of that
+  // tab's grid if it's currently visible. Throttled per-tab so a burst
+  // of edits from someone else doesn't hammer the server.
+
+  var _lastRefresh = {};
+  socket.on('tab_refresh', function(data) {
+    if (!data || !data.tab) return;
+    if (data.user_id === MY_ID) return;
+    var now = Date.now();
+    if (_lastRefresh[data.tab] && now - _lastRefresh[data.tab] < 800) return;
+    _lastRefresh[data.tab] = now;
+
+    // Find the corresponding tab panel; if it's not active, mark it
+    // dirty so the next click reloads. If it IS active, refresh now.
+    var panelId = 'tab-' + data.tab;
+    var panel = document.getElementById(panelId);
+    var fnMap = {
+      'travel':   typeof loadTravelGrid   === 'function' ? loadTravelGrid   : null,
+      'catering': typeof loadCateringGrid === 'function' ? loadCateringGrid : null,
+    };
+    var loader = fnMap[data.tab];
+    if (!loader) return;
+    if (panel && panel.classList.contains('active')) {
+      try { loader(); } catch (e) { console.warn('[WS] tab_refresh', data.tab, e); }
+    } else {
+      // Stash a flag so the tab IIFE re-runs its loader on next activation.
+      // Each IIFE checks _<tab>Loaded; flipping that to false forces a reload.
+      try {
+        if (data.tab === 'travel'   && typeof window !== 'undefined') window._travelStale   = true;
+        if (data.tab === 'catering' && typeof window !== 'undefined') window._cateringStale = true;
+      } catch (_) {}
+    }
+
+    var hint = document.getElementById('collab-edit-hint');
+    if (hint) hint.textContent = (data.user_name || 'Someone') + ' edited ' + data.tab;
+    setTimeout(function() { if (hint) hint.textContent = ''; }, 4000);
+  });
+
   // ── Conflict override ───────────────────────────────────────────────────────
 
   socket.on('conflict_override', function(data) {

@@ -10049,10 +10049,10 @@ setTimeout(function() {
   }
   // Use module-scoped flags via closures instead of window globals
   document.querySelector('.tab-btn[data-tab="travel"]')?.addEventListener('click', () => {
-    if (!_travelLoaded) { _travelLoaded = true; loadTravelGrid(); }
+    if (!_travelLoaded || window._travelStale) { _travelLoaded = true; window._travelStale = false; loadTravelGrid(); }
   });
   document.querySelector('.tab-btn[data-tab="catering"]')?.addEventListener('click', () => {
-    if (!_cateringLoaded) { _cateringLoaded = true; loadCateringGrid(); }
+    if (!_cateringLoaded || window._cateringStale) { _cateringLoaded = true; window._cateringStale = false; loadCateringGrid(); }
   });
   // MutationObserver fallback for URL-driven activation (where the click
   // event fires before this IIFE registers the listener). Watches for the
@@ -10060,8 +10060,8 @@ setTimeout(function() {
   const _travelPanel = document.getElementById('tab-travel');
   if (_travelPanel) {
     const fireT = () => {
-      if (!_travelLoaded && _travelPanel.classList.contains('active')) {
-        _travelLoaded = true; loadTravelGrid();
+      if ((!_travelLoaded || window._travelStale) && _travelPanel.classList.contains('active')) {
+        _travelLoaded = true; window._travelStale = false; loadTravelGrid();
       }
     };
     new MutationObserver(fireT).observe(_travelPanel, { attributes: true, attributeFilter: ['class'] });
@@ -10070,8 +10070,8 @@ setTimeout(function() {
   const _cateringPanel = document.getElementById('tab-catering');
   if (_cateringPanel) {
     const fireC = () => {
-      if (!_cateringLoaded && _cateringPanel.classList.contains('active')) {
-        _cateringLoaded = true; loadCateringGrid();
+      if ((!_cateringLoaded || window._cateringStale) && _cateringPanel.classList.contains('active')) {
+        _cateringLoaded = true; window._cateringStale = false; loadCateringGrid();
       }
     };
     new MutationObserver(fireC).observe(_cateringPanel, { attributes: true, attributeFilter: ['class'] });
