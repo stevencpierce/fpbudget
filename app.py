@@ -12140,6 +12140,12 @@ def docs_upload_post(pid):
                  or 'unknown')
     _safe_user = _re.sub(r"[^\w\- ]", "", _raw_user) or "unknown"
 
+    # Capture the size BEFORE running the analyzer so we can safely
+    # release the bytes after the route finishes (the DocUpload row at
+    # the bottom of this function only needs file_size, not the bytes
+    # themselves).
+    _data_size = len(data)
+
     try:
         result = analyze_and_file_single(
             file_bytes=data,
@@ -12150,19 +12156,18 @@ def docs_upload_post(pid):
     except Exception as _ae:
         logging.exception("Analyzer pipeline crashed")
         return jsonify({"error": f"Analyzer failed: {_ae}"}), 500
-    finally:
-        # Force Pillow / Veryfi buffers to release before the next upload
-        # stacks. Per user 2026-04-29: even after caching the SDK clients
-        # and capping image dimensions, the gthread workers were still
-        # OOMing on batch uploads because GC kept large Pillow RGB
-        # buffers alive between requests. Explicit gc.collect() drops
-        # peak working set materially (~30-40% on iPhone receipt batches).
-        try:
-            del data
-            import gc as _gc
-            _gc.collect()
-        except Exception:
-            pass
+    # Release the file bytes now that the analyzer has consumed them
+    # (it copies bytes into a temp file + Veryfi request internally).
+    # Per user 2026-04-29: reduces peak working set so concurrent
+    # uploads don't OOM Render's 512 MB worker. gc.collect runs at the
+    # bottom of the route after the DB row is committed, NOT in a
+    # finally block — earlier finally placement deleted `data` before
+    # the DocUpload row was built and broke every upload with
+    # UnboundLocalError on len(data).
+    try:
+        del data
+    except Exception:
+        pass
 
     status_map = {
         "filed":         "done",          # auto-filed to correct folder
@@ -12212,7 +12217,7 @@ def docs_upload_post(pid):
         uploader_id=current_user.id,
         r2_key=r2_key,
         original_filename=f.filename,
-        file_size=len(data),
+        file_size=_data_size,
         content_type=content_type,
         file_hash=file_hash,
         status=upload_status,
@@ -12275,6 +12280,14 @@ def docs_upload_post(pid):
                            f"FAILED to move to /_DUPLICATES/ ({_de}). "
                            f"File is at {result.get('filed_path')}.")
             db.session.commit()
+
+    # Force any remaining Pillow/Veryfi response buffers to release
+    # before responding. Safe here because all DB work is committed.
+    try:
+        import gc as _gc
+        _gc.collect()
+    except Exception:
+        pass
 
     # Build a structured client response so the upload UI can show the
     # correct state (filed with path, or needs review, or error).
