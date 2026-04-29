@@ -49,18 +49,21 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".pdf", ".heic"}
 # DOCUMENTS") are NOT moved — only new uploads land in the new
 # structure.
 DOCUMENT_TYPES = {
-    "receipt":         "01_ADMIN/RECEIPTS",
-    "invoice":         "01_ADMIN/INVOICES",
-    "estimate":        "01_ADMIN/ESTIMATES",
-    "quote":           "01_ADMIN/QUOTES",
-    "contract":        "01_ADMIN/CONTRACTS",
-    "purchase_order":  "01_ADMIN/PURCHASE_ORDERS",
-    "insurance":       "01_ADMIN/INSURANCE_COIs",
-    "tax_form":        "01_ADMIN/TAX_FORMS",
-    "payroll":         "01_ADMIN/PAYROLL",
-    "legal":           "01_ADMIN/LEGAL",
+    "receipt":         "01_ADMIN/PROCESSED DOCUMENTS/RECEIPTS",
+    "invoice":         "01_ADMIN/PROCESSED DOCUMENTS/INVOICES",
+    "estimate":        "01_ADMIN/PROCESSED DOCUMENTS/ESTIMATES",
+    "quote":           "01_ADMIN/PROCESSED DOCUMENTS/QUOTES",
+    "contract":        "01_ADMIN/PROCESSED DOCUMENTS/CONTRACTS",
+    "purchase_order":  "01_ADMIN/PROCESSED DOCUMENTS/PURCHASE_ORDERS",
+    "insurance":       "01_ADMIN/PROCESSED DOCUMENTS/INSURANCE_COIs",
+    "tax_form":        "01_ADMIN/PROCESSED DOCUMENTS/TAX_FORMS",
+    "payroll":         "01_ADMIN/PROCESSED DOCUMENTS/PAYROLL",
+    "legal":           "01_ADMIN/PROCESSED DOCUMENTS/LEGAL",
+    # Releases live under their pre-production parent — not nested under
+    # PROCESSED DOCUMENTS, since they belong to the talent / locations
+    # workflow rather than admin paperwork.
     "release":         "02_PRE-PRODUCTION/TALENT_RELEASES",
-    "misc":            "01_ADMIN/MISC",
+    "misc":            "01_ADMIN/PROCESSED DOCUMENTS/MISC",
 }
 
 DOC_PREFIXES = {
