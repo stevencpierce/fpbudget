@@ -2254,6 +2254,13 @@ def project_rename(pid):
     old_name = p.name
     p.name = new_name
     db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='project',
+                      entity_id=pid, entity_label=new_name,
+                      project_id=pid,
+                      before={'name': old_name}, after={'name': new_name},
+                      note=f'Renamed project: "{old_name}" → "{new_name}"')
+    except Exception: pass
     flash(f"Renamed '{old_name}' → '{new_name}'.", "success")
     return redirect(url_for("dashboard"))
 
@@ -2278,6 +2285,13 @@ def project_wrap(pid):
             logging.warning(f"Could not move Dropbox folder on wrap: {e}")
     p.status = 'wrapped'
     db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='project',
+                      entity_id=pid, entity_label=p.name,
+                      project_id=pid,
+                      before={'status': 'active'}, after={'status': 'wrapped'},
+                      note=f'Wrapped project "{p.name}"')
+    except Exception: pass
     flash(f"Project '{p.name}' wrapped.", "success")
     return redirect(url_for("dashboard"))
 
@@ -2300,6 +2314,13 @@ def project_archive(pid):
             logging.warning(f"Could not move Dropbox folder on archive: {e}")
     p.status = 'archived'
     db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='project',
+                      entity_id=pid, entity_label=p.name,
+                      project_id=pid,
+                      before={'status': 'active'}, after={'status': 'archived'},
+                      note=f'Archived project "{p.name}"')
+    except Exception: pass
     flash(f"Project '{p.name}' archived.", "success")
     return redirect(url_for("dashboard"))
 
@@ -4810,6 +4831,18 @@ def budget_settings(pid, bid):
     if "prepared_by_phone" in data:
         budget.prepared_by_phone = data["prepared_by_phone"].strip() or None
     db.session.commit()
+    try:
+        # Capture which fields the request actually touched (not the full
+        # object) so the activity entry tells us "fee_pct + payroll_profile
+        # changed" rather than dumping every column.
+        _changed = sorted(set(data.keys()) - {'csrf_token'})
+        if _changed:
+            _log_activity(action='update', entity_type='budget_settings',
+                          entity_id=bid, entity_label=budget.name or 'Budget',
+                          budget_id=bid, project_id=pid,
+                          before=None, after={k: data.get(k) for k in _changed},
+                          note=f'Updated budget settings: {", ".join(_changed)}')
+    except Exception: pass
     return jsonify({"ok": True})
 
 
@@ -4858,6 +4891,7 @@ def upsert_tax_credit(pid, bid):
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     data = request.get_json(force=True)
     tcid = data.get("id")
+    _is_create = not tcid
     if tcid:
         tc = TaxCredit.query.filter_by(id=tcid, budget_id=bid).first_or_404()
     else:
@@ -4872,6 +4906,16 @@ def upsert_tax_credit(pid, bid):
     tc.notes       = data.get("notes") or None
     tc.sort_order  = int(data.get("sort_order", 0) or 0)
     db.session.commit()
+    try:
+        _log_activity(
+            action=('create' if _is_create else 'update'),
+            entity_type='tax_credit', entity_id=tc.id,
+            entity_label=f'{tc.name} ({tc.jurisdiction or "—"})',
+            budget_id=bid, project_id=pid,
+            before=None,
+            after={'name': tc.name, 'rate': tc.credit_rate, 'applies_to': tc.applies_to},
+            note=f'{"Added" if _is_create else "Updated"} tax credit "{tc.name}"')
+    except Exception: pass
     return jsonify({"ok": True, "id": tc.id})
 
 
@@ -4879,8 +4923,16 @@ def upsert_tax_credit(pid, bid):
 @login_required
 def delete_tax_credit(pid, bid, tcid):
     tc = TaxCredit.query.filter_by(id=tcid, budget_id=bid).first_or_404()
+    _name = tc.name
     db.session.delete(tc)
     db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='tax_credit',
+                      entity_id=tcid, entity_label=_name,
+                      budget_id=bid, project_id=pid,
+                      before={'name': _name}, after=None,
+                      note=f'Removed tax credit "{_name}"')
+    except Exception: pass
     return jsonify({"ok": True})
 
 
@@ -7385,6 +7437,17 @@ def location_save(pid):
                     setattr(lib, f, getattr(loc, f))
 
     db.session.commit()
+    try:
+        _log_activity(
+            action=('create' if is_new else 'update'),
+            entity_type='location', entity_id=loc.id,
+            entity_label=loc.name or 'Location',
+            project_id=pid,
+            before=None,
+            after={'name': loc.name, 'address': loc.address,
+                   'fields_changed': sorted([f for f in _loc_fields if f in data])},
+            note=f'{"Added" if is_new else "Updated"} location "{loc.name}"')
+    except Exception: pass
     return jsonify({"ok": True, "id": loc.id, "name": loc.name})
 
 
@@ -7443,6 +7506,17 @@ def line_assign_location(pid, bid, lid):
         db.session.commit()
         _touch_budget(bid)
         db.session.commit()
+        try:
+            _label = ln.description or ln.account_name or '—'
+            _log_activity(
+                action='update', entity_type='budget_line_location',
+                entity_id=lid, entity_label=_label,
+                budget_id=bid, project_id=pid,
+                before=None,
+                after={'location_id': location_id, 'location_name': assigned['name'] if assigned else None},
+                note=(f'Cleared location on {_label}' if not assigned
+                      else f'Assigned location "{assigned["name"]}" to {_label}'))
+        except Exception: pass
         return jsonify({"ok": True, "assigned": assigned})
     except Exception as e:
         db.session.rollback()
@@ -7474,8 +7548,17 @@ def location_library(pid):
 @login_required
 def location_delete(pid, lid):
     loc = Location.query.filter_by(id=lid, project_id=pid).first_or_404()
+    _name = loc.name
     loc.active = False
     db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='location',
+                      entity_id=lid, entity_label=_name,
+                      project_id=pid,
+                      before={'name': _name, 'active': True},
+                      after={'active': False},
+                      note=f'Removed location "{_name}"')
+    except Exception: pass
     return jsonify({"ok": True})
 
 
@@ -7980,6 +8063,7 @@ def project_union_save(pid):
     ProjectSheet.query.get_or_404(pid)
     data = request.get_json(force=True)
     uid = data.get("id")
+    _is_create = not uid
     if uid:
         u = ProjectUnion.query.filter_by(id=uid, project_id=pid).first_or_404()
         # Partial update — only overwrite fields present in payload
@@ -8001,6 +8085,15 @@ def project_union_save(pid):
         if not u.union_name:
             return jsonify({"error": "Union name required"}), 400
     db.session.commit()
+    try:
+        _log_activity(
+            action=('create' if _is_create else 'update'),
+            entity_type='project_union', entity_id=u.id,
+            entity_label=u.union_name, project_id=pid,
+            before=None,
+            after={'union_name': u.union_name, 'contact_name': u.contact_name},
+            note=f'{"Added" if _is_create else "Updated"} union "{u.union_name}"')
+    except Exception: pass
     return jsonify({"ok": True, "id": u.id})
 
 
@@ -8008,8 +8101,15 @@ def project_union_save(pid):
 @login_required
 def project_union_delete(pid, uid):
     u = ProjectUnion.query.filter_by(id=uid, project_id=pid).first_or_404()
+    _name = u.union_name
     db.session.delete(u)
     db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='project_union',
+                      entity_id=uid, entity_label=_name, project_id=pid,
+                      before={'union_name': _name}, after=None,
+                      note=f'Removed union "{_name}"')
+    except Exception: pass
     return jsonify({"ok": True})
 
 
@@ -8035,6 +8135,7 @@ def project_client_save(pid):
     ProjectSheet.query.get_or_404(pid)
     data = request.get_json(force=True)
     cid = data.get("id")
+    _is_create = not cid
     if cid:
         c = ProjectClient.query.filter_by(id=cid, project_id=pid).first_or_404()
         # Partial update — only overwrite fields present in payload
@@ -8060,6 +8161,16 @@ def project_client_save(pid):
         if not c.name:
             return jsonify({"error": "Client name required"}), 400
     db.session.commit()
+    try:
+        _log_activity(
+            action=('create' if _is_create else 'update'),
+            entity_type='project_client', entity_id=c.id,
+            entity_label=f'{c.name}{f" ({c.company})" if c.company else ""}',
+            project_id=pid,
+            before=None,
+            after={'name': c.name, 'company': c.company, 'email': c.email},
+            note=f'{"Added" if _is_create else "Updated"} client "{c.name}"')
+    except Exception: pass
     return jsonify({"ok": True, "id": c.id})
 
 
@@ -8067,8 +8178,15 @@ def project_client_save(pid):
 @login_required
 def project_client_delete(pid, cid):
     c = ProjectClient.query.filter_by(id=cid, project_id=pid).first_or_404()
+    _name = c.name
     db.session.delete(c)
     db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='project_client',
+                      entity_id=cid, entity_label=_name, project_id=pid,
+                      before={'name': _name}, after=None,
+                      note=f'Removed client "{_name}"')
+    except Exception: pass
     return jsonify({"ok": True})
 
 
