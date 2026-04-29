@@ -3860,7 +3860,18 @@ def export_csv(pid, bid):
         for ln in lines:
             res = calc_line(ln, fringe_cfgs)
             if suppress_zeros and round(float(res["total"] or 0), 2) == 0:
-                continue
+                # Keep the line if it's zero specifically because of a
+                # discount (rate * qty * days > 0 AND non-labor agent_pct
+                # > 0) — that's a comped / in-kind item the client should
+                # still see in the export. Suppress only "actually zero"
+                # rows (no rate or no qty or no days).
+                try:
+                    _r = float(ln.rate or 0) * float(ln.quantity or 0) * float(ln.days or 0)
+                    _is_disc = _r > 0 and not ln.is_labor and float(ln.agent_pct or 0) > 0
+                except (TypeError, ValueError):
+                    _is_disc = False
+                if not _is_disc:
+                    continue
             rows_data.append((ln, res))
         any_payroll = any((ln.payroll_co or '').strip() for ln, _ in rows_data if ln.is_labor)
         any_qty     = any(float(ln.quantity or 0) and float(ln.quantity or 0) != 1
@@ -4110,11 +4121,28 @@ def export_pdf(pid, bid):
     # is on. Done at the template-data level so the math (top sheet,
     # company fee, grand total) still uses the full budget — only the
     # printed list shrinks.
+    #
+    # Per user 2026-04-28: lines that are zero BECAUSE of a discount
+    # (agent_pct → 100%, i.e. a comped / in-kind item) are meaningful and
+    # must stay visible. Only suppress lines that are zero for "no rate /
+    # no qty / no days" reasons. Heuristic: if rate * qty * days > 0 and
+    # the line is non-labor with a discount, keep it; the discount column
+    # will show 100% so the client sees "yes this was considered, 100%
+    # discounted to zero".
+    def _is_zero_due_to_discount(ln):
+        try:
+            r = float(ln.rate or 0); q = float(ln.quantity or 0); d = float(ln.days or 0)
+            ag = float(ln.agent_pct or 0)
+            return (r * q * d) > 0 and not ln.is_labor and ag > 0
+        except (TypeError, ValueError):
+            return False
+
     if suppress_zeros:
         for sec in sections_ordered:
             sec["lines"] = [
                 ln for ln in sec["lines"]
                 if round(float(line_results.get(ln.id, {}).get("est_total") or 0), 2) != 0
+                or _is_zero_due_to_discount(ln)
             ]
         sections_ordered = [s for s in sections_ordered if s["lines"]]
         top_sheet["rows"] = [
