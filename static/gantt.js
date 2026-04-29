@@ -380,20 +380,26 @@ function initGantt(pid, bid, activeProfileId) {
       return;
     }
 
-    if (ctrl && e.key === 'z' && !isTyping) { e.preventDefault(); undoLast(); return; }
+    // Use e.code (layout/modifier-independent) for letter keys when
+    // a modifier might transform e.key. On macOS, Option+V produces
+    // "√" via the character map — checking e.key === 'v' never
+    // matches with Alt held, which broke the Cmd+Option+V (Paste
+    // Special) shortcut. Per user 2026-04-29.
+    const codeIs = (c) => e.code === c;
+    if (ctrl && codeIs('KeyZ') && !isTyping) { e.preventDefault(); undoLast(); return; }
 
     // Cmd+Option+V — paste special. Must come BEFORE plain Cmd+V.
-    if (ctrl && e.altKey && (e.key === 'v' || e.key === 'V') && _clipboard && _selection.size > 0) {
+    if (ctrl && e.altKey && codeIs('KeyV') && _clipboard && _selection.size > 0) {
       e.preventDefault();
       window.openPasteSpecial && window.openPasteSpecial();
       return;
     }
-    if (ctrl && (e.key === 'c' || e.key === 'C') && _selection.size > 0 && !isTyping) {
+    if (ctrl && codeIs('KeyC') && _selection.size > 0 && !isTyping) {
       e.preventDefault();
       copySelection();
       return;
     }
-    if (ctrl && (e.key === 'v' || e.key === 'V') && _clipboard && _selection.size > 0 && !isTyping) {
+    if (ctrl && codeIs('KeyV') && _clipboard && _selection.size > 0 && !isTyping) {
       e.preventDefault();
       pasteSelection();
       return;
