@@ -353,17 +353,26 @@
       {% set _dur_disp = _dur | int if _dur == (_dur | int) else _dur %}
       {% set _rt = ln.rate_type or 'day_10' %}
       {% set _du = ln.days_unit or 'days' %}
-      {% if _rt == 'flat_project' %}
+      {# Map the days_unit dropdown values from budget.html to printable
+         labels. Singular/plural where it makes sense. #}
+      {% set _unit_map_singular = {
+        'days':'day','weeks':'wk','hrs':'hr','flat':'Flat','ea':'each',
+        'per':'per','x':'×','allow':'Allow','est':'EST','lb':'LB',
+        'mo':'mo','mi':'mi'
+      } %}
+      {% set _unit_map_plural = {
+        'days':'days','weeks':'wks','hrs':'hrs','flat':'Flat','ea':'each',
+        'per':'per','x':'×','allow':'Allow','est':'EST','lb':'LB',
+        'mo':'mos','mi':'mi'
+      } %}
+      {% if _rt == 'flat_project' or _du == 'flat' %}
         {% set _unit_label = 'Flat' %}
         {% set _show_count = false %}
       {% elif _rt == 'hourly' %}
         {% set _unit_label = 'hr' if _dur == 1 else 'hrs' %}
         {% set _show_count = true %}
-      {% elif _du == 'weeks' %}
-        {% set _unit_label = 'wk' if _dur == 1 else 'wks' %}
-        {% set _show_count = true %}
       {% else %}
-        {% set _unit_label = 'day' if _dur == 1 else 'days' %}
+        {% set _unit_label = (_unit_map_singular if _dur == 1 else _unit_map_plural).get(_du, _du) %}
         {% set _show_count = true %}
       {% endif %}
       <td class="num">{% if _show_count %}{{ _dur_disp }} {% endif %}{{ _unit_label }}</td>
