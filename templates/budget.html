@@ -4181,6 +4181,48 @@ function refreshLineRow(id, data) {
   const sub  = row.querySelector('.line-subtotal');
   if (sub) sub.textContent = fmtCurrency(data.subtotal || 0);
 
+  // ── Patch editable input cells from the server's authoritative values ──
+  // Per user 2026-04-28: in-line field changes (rate, duration, qty, fringe,
+  // payroll co, agent%) weren't syncing to other clients. Server WS payload
+  // now carries `fields` — apply them here so remote viewers see the same
+  // typed values, not just refreshed totals. Skip whichever <span> the user
+  // is currently focused inside so we never overwrite their typing.
+  const f = data.fields;
+  if (f) {
+    const _set = (sel, val) => {
+      const el = row.querySelector(sel);
+      if (!el || el === document.activeElement || el.querySelector('input,textarea')) return;
+      el.textContent = val;
+    };
+    if (f.rate !== undefined)        _set('.editable[data-field="rate"]', String(f.rate));
+    if (f.days !== undefined) {
+      const _d = parseFloat(f.days || 0);
+      _set('.editable[data-field="days"]', _d === Math.floor(_d) ? String(Math.floor(_d)) : String(_d));
+    }
+    if (f.quantity !== undefined && !row.classList.contains('labor-line')) {
+      const _q = parseFloat(f.quantity || 0);
+      _set('.editable[data-field="quantity"]', _q === Math.floor(_q) ? String(Math.floor(_q)) : String(_q));
+    }
+    if (f.payroll_co !== undefined)  _set('.editable[data-field="payroll_co"]', f.payroll_co);
+    if (f.description !== undefined) _set('.editable[data-field="description"]', f.description);
+    // <select> updates for rate_type and fringe_type
+    const _setSelect = (sel, val) => {
+      const el = row.querySelector(sel);
+      if (!el || el === document.activeElement) return;
+      if (el.value !== val) el.value = val;
+    };
+    if (f.rate_type !== undefined)   _setSelect('select[data-field="rate_type"]', f.rate_type);
+    if (f.fringe_type !== undefined) _setSelect('select[data-field="fringe_type"]', f.fringe_type);
+    // Agent% editable span (labor only — non-labor disc% is rendered below)
+    if (f.agent_pct !== undefined && row.classList.contains('labor-line')) {
+      const ag = row.querySelector('.editable[data-field="agent_pct"]');
+      if (ag && ag !== document.activeElement && !ag.querySelector('input')) {
+        const pctVal = (parseFloat(f.agent_pct || 0) * 100);
+        ag.textContent = (Math.round(pctVal * 10) / 10).toString();
+      }
+    }
+  }
+
   // Keep data-attrs fresh so refreshSectionTotals can sum them live
   if (data.subtotal !== undefined)      row.dataset.subtotal = (data.subtotal || 0);
   if (data.ot_amount !== undefined)     row.dataset.ot       = (data.ot_amount || 0);
@@ -8377,7 +8419,10 @@ function _collabLivePatch() {
       // polling catches up. Skipping polling when socket connects caused stale
       // data for other clients.
 
-      // Silently patch changed lines
+      // Silently patch changed lines. Per user 2026-04-28: previously this
+      // only refreshed when subtotal differed, which missed pure-text edits
+      // like payroll_co or fringe_type changes. Now also diffs the field
+      // values returned by /live so non-financial edits sync too.
       let patched = 0;
       for (const [idStr, res] of Object.entries(d.lines)) {
         const id = parseInt(idStr);
@@ -8386,7 +8431,34 @@ function _collabLivePatch() {
         if (!row) continue;
         const subEl = row.querySelector('.line-subtotal');
         const currentSub = subEl ? parseFloat(subEl.textContent.replace(/[$,]/g, '')) || 0 : -1;
-        if (Math.abs(currentSub - res.subtotal) < 0.005) continue;
+        let needsRefresh = Math.abs(currentSub - res.subtotal) >= 0.005;
+        if (!needsRefresh && res.fields) {
+          // Compare each editable field's current DOM value to what /live
+          // returned. Any mismatch flags the row for refresh.
+          const f = res.fields;
+          const _curText = (sel) => {
+            const el = row.querySelector(sel);
+            return el ? (el.textContent || '').trim() : '';
+          };
+          const _curSelect = (sel) => {
+            const el = row.querySelector(sel);
+            return el ? el.value : '';
+          };
+          const checks = [
+            [String(parseFloat(f.rate || 0)),     _curText('.editable[data-field="rate"]').replace(/[^\d.-]/g, '')],
+            [(f.payroll_co || ''),                _curText('.editable[data-field="payroll_co"]')],
+            [(f.description || ''),               _curText('.editable[data-field="description"]')],
+            [f.fringe_type || '',                 _curSelect('select[data-field="fringe_type"]')],
+            [f.rate_type   || '',                 _curSelect('select[data-field="rate_type"]')],
+          ];
+          for (const [want, got] of checks) {
+            // Permit empty-equivalent comparisons (—, blank).
+            if ((want || '') !== (got || '')) {
+              needsRefresh = true; break;
+            }
+          }
+        }
+        if (!needsRefresh) continue;
         refreshLineRow(id, res);
         patched++;
       }

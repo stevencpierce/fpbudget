@@ -1830,6 +1830,20 @@ def budget_live(pid, bid):
             "subtotal":     res["subtotal"],
             "est_total":    res["est_total"],
             "agent_amount": res.get("agent_amount", 0.0),
+            # Editable inputs so the poll-based fallback can patch them
+            # too. Match the WS payload shape from upsert_line.
+            "fields": {
+                "rate":        float(ln.rate or 0),
+                "days":        float(ln.days or 0),
+                "quantity":    float(ln.quantity or 0),
+                "agent_pct":   float(ln.agent_pct or 0),
+                "fringe_type": ln.fringe_type or 'N',
+                "rate_type":   ln.rate_type or 'day_10',
+                "payroll_co":  ln.payroll_co or '',
+                "description": ln.description or '',
+                "is_labor":    bool(ln.is_labor),
+                "days_unit":   getattr(ln, 'days_unit', None) or 'days',
+            },
         }
 
     editor = _budget_last_editor.get(bid)
@@ -3386,6 +3400,22 @@ def upsert_line(pid, bid):
         result = calc_line(ln, fringe_cfgs)
 
     resp = {"id": ln.id, **result}
+    # Include the editable input fields in the response so other clients can
+    # patch their visible Rate / Duration / Qty / Type / Fringe / Agent% /
+    # Payroll Co. cells in real time. Without these, the WS broadcast only
+    # updated computed totals and remote users saw stale rate displays.
+    resp["fields"] = {
+        "rate":         float(ln.rate or 0),
+        "days":         float(ln.days or 0),
+        "quantity":     float(ln.quantity or 0),
+        "agent_pct":    float(ln.agent_pct or 0),
+        "fringe_type":  ln.fringe_type or 'N',
+        "rate_type":    ln.rate_type or 'day_10',
+        "payroll_co":   ln.payroll_co or '',
+        "description":  ln.description or '',
+        "is_labor":     bool(ln.is_labor),
+        "days_unit":    getattr(ln, 'days_unit', None) or 'days',
+    }
     # Conflict detection: check if another user edited the same field within 2 seconds
     _check_and_emit_conflicts(bid, ln.id, data)
     print(f"[WS] POST /line saved line={ln.id}, emitting to room budget_{bid}")
