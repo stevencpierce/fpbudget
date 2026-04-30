@@ -69,17 +69,83 @@ class ProjectSheet(db.Model):
 
 
 class Transaction(db.Model):
+    """Single actuals row. The center of the three-legged stool:
+       BudgetLine (planned) ← Transaction (actual) → DocUpload (backup).
+
+    Three ingress paths set `source`:
+      • qbo_sync     — pulled from QuickBooks Online
+      • doc_upload   — auto-created from a receipt/invoice OCR
+      • manual_entry — user-typed in the Actuals tab
+      • invoice_split — child of a parent invoice transaction
+    """
     __tablename__ = "transaction"
     id                  = db.Column(db.Integer, primary_key=True)
-    project_id          = db.Column(db.Integer)
+    project_id          = db.Column(db.Integer, db.ForeignKey("project_sheet.id"))
     account_code        = db.Column(db.Integer)
     account_code_name   = db.Column(db.String(100))
     amount              = db.Column(db.Numeric(12, 2))
-    is_expense          = db.Column(db.Boolean)
-    not_project_expense = db.Column(db.Boolean)
+    is_expense          = db.Column(db.Boolean, default=True)
+    not_project_expense = db.Column(db.Boolean, default=False)
     vendor              = db.Column(db.String(300))
-    txn_date            = db.Column(db.String(10))
+    txn_date            = db.Column(db.String(10))   # YYYY-MM-DD
     note                = db.Column(db.Text)
+
+    # ── Three-legged-stool linkage (added 2026-04-30) ─────────────────
+    # FKs nullable so a freshly-ingested QBO txn (no doc, no line yet)
+    # is still a valid row. The Actuals UI surfaces the missing legs
+    # so the user can fill them in.
+    budget_line_id        = db.Column(db.Integer, db.ForeignKey("budget_line.id"), nullable=True)
+    doc_upload_id         = db.Column(db.Integer, db.ForeignKey("doc_upload.id"), nullable=True)
+    parent_transaction_id = db.Column(db.Integer, db.ForeignKey("transaction.id"), nullable=True)
+    source                = db.Column(db.String(20), default='manual_entry')
+    # match_status: unmatched | suggested | confirmed. Suggestions
+    # written by the auto-matcher, never silently committed — user
+    # must hit Confirm to flip suggested → confirmed.
+    match_status      = db.Column(db.String(20), default='unmatched')
+    match_confidence  = db.Column(db.Numeric(4, 3), nullable=True)
+    suggested_budget_line_id = db.Column(db.Integer, db.ForeignKey("budget_line.id"), nullable=True)
+    suggested_account_code   = db.Column(db.Integer, nullable=True)
+
+    # ── QBO ingestion fields (used when source='qbo_sync') ─────────────
+    qbo_txn_id      = db.Column(db.String(50), nullable=True)
+    qbo_txn_type    = db.Column(db.String(20), nullable=True)   # Purchase | Deposit
+    qbo_account_id  = db.Column(db.String(50), nullable=True)
+    qbo_category    = db.Column(db.String(200), nullable=True)
+
+    # ── Provenance ──────────────────────────────────────────────────────
+    created_via_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class QBOConnection(db.Model):
+    """OAuth tokens for QuickBooks Online. Single global row for now —
+    multi-user QBO connections come later. Updated in place; the
+    refresh_token rotates whenever Intuit sends a new one."""
+    __tablename__ = "qbo_connection"
+    id                  = db.Column(db.Integer, primary_key=True)
+    realm_id            = db.Column(db.String(50))
+    access_token        = db.Column(db.Text)
+    refresh_token       = db.Column(db.Text)
+    token_expiry        = db.Column(db.DateTime)
+    enabled_account_ids = db.Column(db.Text, default="[]")  # JSON array of QBO account ids
+    updated_at          = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CategoryMapping(db.Model):
+    """Learned mapping: QBO category (+ optional vendor) → FP COA code.
+    Built up as the user confirms suggestions; the auto-matcher reads
+    it back to predict the right account_code on subsequent imports."""
+    __tablename__ = "category_mapping"
+    id           = db.Column(db.Integer, primary_key=True)
+    qbo_category = db.Column(db.String(200), nullable=False)
+    vendor_name  = db.Column(db.String(300), nullable=True)
+    coa_code     = db.Column(db.Integer, nullable=False)
+    coa_name     = db.Column(db.String(100), nullable=False)
+    usage_count  = db.Column(db.Integer, default=0)
+    last_used    = db.Column(db.DateTime, default=datetime.utcnow)
+    __table_args__ = (db.UniqueConstraint("qbo_category", "vendor_name",
+                                           name="uq_category_vendor"),)
 
 
 # ── Budget-specific tables ────────────────────────────────────────────────────

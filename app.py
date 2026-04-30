@@ -12114,6 +12114,114 @@ def _web_worker_essential_columns():
                 # can re-edit it without rebuilding from notes.
                 "ALTER TABLE doc_upload "
                 "  ADD COLUMN IF NOT EXISTS doc_number VARCHAR(100)",
+                # ── 2026-04-30: Actuals integration (Phase 1 schema) ────
+                # Three-legged stool linkage on transaction:
+                #   BudgetLine ← Transaction → DocUpload
+                # Plus suggest/confirm match status, QBO ingestion fields,
+                # invoice-split parent FK, provenance.
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS budget_line_id INTEGER REFERENCES budget_line(id)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS doc_upload_id INTEGER REFERENCES doc_upload(id)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS parent_transaction_id INTEGER REFERENCES transaction(id)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'manual_entry'",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS match_status VARCHAR(20) DEFAULT 'unmatched'",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS match_confidence NUMERIC(4,3)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS suggested_budget_line_id INTEGER REFERENCES budget_line(id)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS suggested_account_code INTEGER",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS qbo_txn_id VARCHAR(50)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS qbo_txn_type VARCHAR(20)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS qbo_account_id VARCHAR(50)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS qbo_category VARCHAR(200)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS created_via_user_id INTEGER REFERENCES users(id)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()",
+                # Partial unique on QBO txn id so re-syncs are idempotent.
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_transaction_qbo "
+                "  ON transaction (project_id, qbo_txn_id, qbo_txn_type) "
+                "  WHERE qbo_txn_id IS NOT NULL",
+                "CREATE INDEX IF NOT EXISTS ix_transaction_budget_line "
+                "  ON transaction (budget_line_id)",
+                "CREATE INDEX IF NOT EXISTS ix_transaction_doc_upload "
+                "  ON transaction (doc_upload_id)",
+                "CREATE INDEX IF NOT EXISTS ix_transaction_match_status "
+                "  ON transaction (project_id, match_status)",
+                # QBO OAuth tokens — single global row for now.
+                """CREATE TABLE IF NOT EXISTS qbo_connection (
+                     id                  SERIAL PRIMARY KEY,
+                     realm_id            VARCHAR(50),
+                     access_token        TEXT,
+                     refresh_token       TEXT,
+                     token_expiry        TIMESTAMP,
+                     enabled_account_ids TEXT DEFAULT '[]',
+                     updated_at          TIMESTAMP DEFAULT NOW()
+                   )""",
+                # Learned QBO category → FP COA mapping.
+                """CREATE TABLE IF NOT EXISTS category_mapping (
+                     id           SERIAL PRIMARY KEY,
+                     qbo_category VARCHAR(200) NOT NULL,
+                     vendor_name  VARCHAR(300),
+                     coa_code     INTEGER NOT NULL,
+                     coa_name     VARCHAR(100) NOT NULL,
+                     usage_count  INTEGER DEFAULT 0,
+                     last_used    TIMESTAMP DEFAULT NOW(),
+                     CONSTRAINT uq_category_vendor UNIQUE (qbo_category, vendor_name)
+                   )""",
+                # COA refresh: any transaction row carrying a legacy COA
+                # code from the old FPBudgetSync DB gets translated to
+                # the new code. Idempotent — second run is a no-op.
+                # The mapping list mirrors COA_LEGACY_MAPPING in
+                # budget_calc.py. Cutover-only data fix; new ingestion
+                # always writes the new code.
+                "UPDATE transaction SET account_code = 1100 WHERE account_code = 100",
+                "UPDATE transaction SET account_code = 2000 WHERE account_code = 600",
+                "UPDATE transaction SET account_code = 2100 WHERE account_code = 700",
+                "UPDATE transaction SET account_code = 2300 WHERE account_code = 800",
+                "UPDATE transaction SET account_code = 2200 WHERE account_code = 900",
+                "UPDATE transaction SET account_code = 2000 WHERE account_code = 1000",
+                "UPDATE transaction SET account_code = 4000 WHERE account_code = 1200",
+                "UPDATE transaction SET account_code = 2600 WHERE account_code = 2000",
+                "UPDATE transaction SET account_code = 2700 WHERE account_code = 3000",
+                "UPDATE transaction SET account_code = 5000 WHERE account_code = 3100",
+                "UPDATE transaction SET account_code = 2900 WHERE account_code = 3200",
+                "UPDATE transaction SET account_code = 2800 WHERE account_code = 3300",
+                "UPDATE transaction SET account_code = 3000 WHERE account_code = 4000",
+                "UPDATE transaction SET account_code = 3100 WHERE account_code = 4500",
+                "UPDATE transaction SET account_code = 3200 WHERE account_code = 5000",
+                "UPDATE transaction SET account_code = 3400 WHERE account_code = 6000",
+                "UPDATE transaction SET account_code = 3500 WHERE account_code = 7000",
+                "UPDATE transaction SET account_code = 3600 WHERE account_code = 7500",
+                "UPDATE transaction SET account_code = 3700 WHERE account_code = 8000",
+                "UPDATE transaction SET account_code = 3800 WHERE account_code = 8500",
+                "UPDATE transaction SET account_code = 3300 WHERE account_code = 9000",
+                "UPDATE transaction SET account_code = 4500 WHERE account_code = 11000",
+                "UPDATE transaction SET account_code = 4600 WHERE account_code = 11500",
+                "UPDATE transaction SET account_code = 4700 WHERE account_code = 11600",
+                "UPDATE transaction SET account_code = 6100 WHERE account_code = 12000",
+                "UPDATE transaction SET account_code = 4800 WHERE account_code = 12500",
+                "UPDATE transaction SET account_code = 6200 WHERE account_code = 13000",
+                "UPDATE transaction SET account_code = 6400 WHERE account_code = 13200",
+                "UPDATE transaction SET account_code = 6000 WHERE account_code = 14000",
+                "UPDATE transaction SET account_code = 6500 WHERE account_code = 15000",
+                "UPDATE transaction SET account_code = 6300 WHERE account_code = 16000",
+                "UPDATE transaction SET account_code = 6300 WHERE account_code = 17000",
+                "UPDATE transaction SET account_code = 4900 WHERE account_code = 18000",
+                "UPDATE transaction SET account_code = 6600 WHERE account_code = 19000",
+                "UPDATE transaction SET account_code = 6700 WHERE account_code = 20000",
+                "UPDATE transaction SET account_code = 6800 WHERE account_code = 20500",
             ]:
                 try:
                     cur.execute(sql)
