@@ -3012,23 +3012,55 @@
     <div style="display:grid;grid-template-columns:200px minmax(0,1fr);gap:16px;align-items:start">
 
       {# ── COLUMN 1: Chart of Accounts (sticky) ── #}
+      {# Two-way drag-drop:
+         (a) Slice 2 — drag a COA section/line FROM the sidebar onto a
+             transaction row to code it.
+         (b) Slice 3 — drag a transaction row INTO the COA tree. Hover
+             over a section for ~400ms to expand its line children, then
+             drop on a specific line. Drop on a section directly =
+             quick-code (account_code only). Drop on a line = full link
+             (auto-clones Working → Actual on first link). #}
       <div style="position:sticky;top:14px;max-height:calc(100vh - 80px);display:flex;flex-direction:column">
         <h4 style="margin:0 0 8px;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Chart of Accounts</h4>
         <div style="overflow-y:auto;flex:1;padding-right:2px">
-          <div class="coa-item" draggable="true" data-code="not_project"
+          <div class="coa-item" draggable="true" data-code="not_project" data-droptarget="section"
                style="padding:6px 10px;margin-bottom:4px;border-radius:5px;border:1px solid #4a2a2a;background:#1e1414;font-size:.76rem;cursor:grab">
             <span style="color:#e05555;font-weight:600">✕ Not Project Expense</span>
           </div>
+          {# Build a quick lookup: section_code → sublines from the
+             Working budget (already computed for the dropdown). #}
+          {% set _grp_by_code = {} %}
+          {% for grp in actuals_pick_groups %}
+            {% set _ = _grp_by_code.update({grp.code: grp.lines}) %}
+          {% endfor %}
           {% for code, name in coa_sections %}
-          <div class="coa-item" draggable="true" data-code="{{ code }}" data-name="{{ name }}"
-               style="padding:6px 10px;margin-bottom:3px;border-radius:5px;border:1px solid var(--border);background:var(--bg-input);font-size:.76rem;display:flex;justify-content:space-between;gap:6px;align-items:baseline;cursor:grab">
-            <span style="color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ name }}</span>
-            <span style="color:var(--text-muted);flex-shrink:0;font-size:.7rem">{{ code }}</span>
+          {% set _lines = _grp_by_code.get(code, []) %}
+          <div class="coa-section" data-code="{{ code }}" style="margin-bottom:3px">
+            <div class="coa-item" draggable="true" data-code="{{ code }}" data-name="{{ name }}" data-droptarget="section"
+                 style="padding:6px 10px;border-radius:5px;border:1px solid var(--border);background:var(--bg-input);font-size:.76rem;display:flex;justify-content:space-between;gap:6px;align-items:center;cursor:grab">
+              <span class="coa-chevron" style="font-size:.7rem;color:var(--text-muted);width:10px;flex-shrink:0;{% if not _lines %}visibility:hidden{% endif %}">▸</span>
+              <span style="color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ name }}</span>
+              <span style="color:var(--text-muted);flex-shrink:0;font-size:.7rem">{{ code }}</span>
+            </div>
+            {% if _lines %}
+            <div class="coa-lines" style="display:none;margin:3px 0 4px 12px;padding-left:4px;border-left:1px dashed var(--border)">
+              {% for ln in _lines %}
+              <div class="coa-line" data-droptarget="line" data-line-id="{{ ln.id }}"
+                   style="padding:4px 8px;margin-bottom:2px;border-radius:4px;border:1px solid transparent;background:var(--bg-card);font-size:.72rem;color:var(--text-muted);display:flex;justify-content:space-between;gap:6px;cursor:default">
+                <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ ln.description or ln.account_name or 'untitled' }}</span>
+                {% if ln.estimated_total %}
+                <span style="flex-shrink:0;font-size:.66rem;color:var(--text-muted)">${{ '%.0f'|format(ln.estimated_total|float) }}</span>
+                {% endif %}
+              </div>
+              {% endfor %}
+            </div>
+            {% endif %}
           </div>
           {% endfor %}
         </div>
         <p class="muted" style="font-size:.66rem;margin:8px 0 0;line-height:1.4">
-          Drag a section onto a transaction to code it. For sub-line precision, use the dropdown.
+          <strong>Two ways:</strong> drag a section onto a transaction → quick-code.
+          OR drag a transaction onto the tree, hover a section to expand, drop on a specific line → full link with Actual budget.
         </p>
       </div>
 
@@ -3070,7 +3102,7 @@
             </button>
           </div>
           {% endif %}
-          <div class="actuals-txn-row"
+          <div class="actuals-txn-row" draggable="true"
                data-tid="{{ t.id }}"
                data-source="{{ t.source or '' }}"
                data-coded="{{ '1' if _coded else '0' }}"
@@ -3533,6 +3565,177 @@
         box-shadow:0 6px 24px rgba(0,0,0,.5);max-width:520px`;
       document.body.appendChild(t);
       setTimeout(() => t.remove(), 4000);
+    }
+
+    // ── Reverse drag: row → COA tree (slice 3) ────────────────────────
+    // Drag a transaction row over the sidebar. Hovering a section for
+    // ~350ms expands its line children. Drop on the section header
+    // → quick-code (account_code only). Drop on a specific line
+    // → full link via /set-line, which auto-clones Working → Actual on
+    // first link.
+    let _draggingTxn = null;
+    let _hoverExpandTimer = null;
+
+    document.querySelectorAll('.actuals-txn-row').forEach(row => {
+      row.addEventListener('dragstart', e => {
+        // Don't hijack drags that started on a select/input/button.
+        if (e.target.closest('select, input, textarea, button, a')) {
+          e.preventDefault();
+          return;
+        }
+        _draggingTxn = { tid: parseInt(row.dataset.tid) };
+        row.style.opacity = '.55';
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', String(row.dataset.tid));
+      });
+      row.addEventListener('dragend', () => {
+        row.style.opacity = '';
+        _draggingTxn = null;
+        // Collapse any expanded sections so the next drag starts clean.
+        document.querySelectorAll('.coa-lines').forEach(el => { el.style.display = 'none'; });
+        document.querySelectorAll('.coa-chevron').forEach(c => { c.textContent = '▸'; });
+      });
+    });
+
+    // Section drop target: hover-to-expand + drop = quick-code.
+    document.querySelectorAll('.coa-section').forEach(section => {
+      const header = section.querySelector('.coa-item[data-droptarget="section"]');
+      const lines  = section.querySelector('.coa-lines');
+      const chev   = section.querySelector('.coa-chevron');
+      if (!header) return;
+
+      section.addEventListener('dragover', e => {
+        if (!_draggingTxn) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        header.style.outline = '2px solid var(--blue)';
+        header.style.outlineOffset = '-2px';
+        // Schedule expand if we have lines and they're collapsed.
+        if (lines && lines.style.display === 'none') {
+          if (_hoverExpandTimer) return;
+          _hoverExpandTimer = setTimeout(() => {
+            lines.style.display = 'block';
+            if (chev) chev.textContent = '▾';
+            _hoverExpandTimer = null;
+          }, 350);
+        }
+      });
+      section.addEventListener('dragleave', e => {
+        // Only clear when leaving the section entirely, not when moving
+        // between header / lines / line children inside it.
+        if (!section.contains(e.relatedTarget)) {
+          header.style.outline = '';
+          if (_hoverExpandTimer) {
+            clearTimeout(_hoverExpandTimer);
+            _hoverExpandTimer = null;
+          }
+        }
+      });
+      header.addEventListener('drop', async e => {
+        if (!_draggingTxn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        header.style.outline = '';
+        const tid  = _draggingTxn.tid;
+        const code = header.dataset.code;
+        const name = header.dataset.name || '';
+        try {
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ account_code: code, account_code_name: name }),
+          });
+          const d = await r.json();
+          if (!r.ok) {
+            _actualsToast('Could not code: ' + (d.error || r.status), 'red');
+            return;
+          }
+          if (code === 'not_project') {
+            _actualsToast('Marked as not a project expense.', 'yellow');
+          } else {
+            _actualsToast(`Quick-coded to ${code} · ${name}. Drag onto a specific line to track per-line actuals.`, 'green');
+          }
+          _refreshRowAfterCode(tid, code !== 'not_project', code === 'not_project');
+        } catch (err) {
+          _actualsToast('Drop failed: ' + err.message, 'red');
+        }
+      });
+    });
+
+    // Line drop target: drop on a specific budget line = full link.
+    document.querySelectorAll('.coa-line').forEach(lineEl => {
+      lineEl.addEventListener('dragover', e => {
+        if (!_draggingTxn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+        lineEl.style.background = '#1a3a2a';
+        lineEl.style.borderColor = '#2a5a3a';
+        lineEl.style.color = 'var(--green)';
+      });
+      lineEl.addEventListener('dragleave', () => {
+        lineEl.style.background = '';
+        lineEl.style.borderColor = '';
+        lineEl.style.color = '';
+      });
+      lineEl.addEventListener('drop', async e => {
+        if (!_draggingTxn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        lineEl.style.background = '';
+        lineEl.style.borderColor = '';
+        lineEl.style.color = '';
+        const tid    = _draggingTxn.tid;
+        const lineId = parseInt(lineEl.dataset.lineId);
+        try {
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-line`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ budget_line_id: lineId }),
+          });
+          const d = await r.json();
+          if (!r.ok) {
+            _actualsToast('Could not link: ' + (d.error || r.status), 'red');
+            return;
+          }
+          if (d.working_was_just_created && d.actual_was_just_created) {
+            _actualsToast('Working budget initialized + Actual budget started. Linked to line.', 'green');
+          } else if (d.actual_was_just_created) {
+            _actualsToast('Actual budget started. Linked to line.', 'green');
+          } else {
+            _actualsToast('Linked to budget line.', 'green');
+          }
+          _refreshRowAfterCode(tid, true, false);
+          // Update the row's dropdown to reflect the new selection so
+          // it doesn't drift from server state.
+          const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
+          if (row) {
+            const sel = row.querySelector('.actuals-line-picker');
+            if (sel) sel.value = String(lineId);
+          }
+        } catch (err) {
+          _actualsToast('Drop failed: ' + err.message, 'red');
+        }
+      });
+    });
+
+    // Helper: refresh row visual + stat counts after a coding change.
+    function _refreshRowAfterCode(tid, isCoded, isNotProject) {
+      const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
+      if (!row) return;
+      if (isNotProject) {
+        row.dataset.notProject = '1';
+        row.dataset.coded      = '0';
+        row.style.opacity      = '.65';
+        row.style.borderColor  = '#3a2a2a';
+      } else {
+        row.dataset.notProject = '0';
+        row.dataset.coded      = isCoded ? '1' : '0';
+        row.style.opacity      = '';
+        row.style.borderColor  = isCoded ? '#1a3a2a' : 'var(--border)';
+        row.style.background   = isCoded ? '#0d1a14' : 'var(--bg-card)';
+      }
+      _actualsRecountStats();
     }
 
     // ── Drag-drop coding (slice 2) ─────────────────────────────────────
