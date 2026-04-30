@@ -4152,6 +4152,166 @@ def actuals_mark_not_project(pid, tid):
     return jsonify({"ok": True, "transaction_id": tid})
 
 
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-coa", methods=["POST"])
+@login_required
+def actuals_set_coa(pid, tid):
+    """Drag-drop coding: set just the COA section code without picking
+    a specific budget line. Used when the user drags a COA section from
+    the sidebar onto a transaction row. The dropdown remains the way to
+    pick a specific sub-line (which triggers Working→Actual auto-clone).
+    """
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    code_raw = data.get("account_code")
+    name_raw = (data.get("account_code_name") or "").strip()
+
+    if code_raw == "not_project":
+        txn.not_project_expense = True
+        txn.budget_line_id      = None
+        txn.account_code        = None
+        txn.account_code_name   = None
+        txn.match_status        = 'unmatched'
+    elif not code_raw:
+        # Clear coding
+        txn.account_code        = None
+        txn.account_code_name   = None
+        txn.budget_line_id      = None
+        txn.match_status        = 'unmatched'
+    else:
+        try:
+            code = int(code_raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "account_code must be int or 'not_project'"}), 400
+        # Resolve canonical name from FP_COA_SECTIONS if not provided.
+        if not name_raw:
+            name_raw = dict(FP_COA_SECTIONS).get(code, '')
+        txn.account_code      = code
+        txn.account_code_name = name_raw[:100]
+        txn.not_project_expense = False
+        # Drag-drop sets the COA section but no specific line. budget_
+        # line_id stays NULL — the user picks a sub-line via the
+        # dropdown, which triggers Working→Actual auto-clone.
+    txn.updated_at = _dt.utcnow()
+    db.session.commit()
+    return jsonify({
+        "ok":              True,
+        "transaction_id":  tid,
+        "account_code":    txn.account_code,
+        "account_code_name": txn.account_code_name,
+        "not_project_expense": txn.not_project_expense,
+    })
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/edit", methods=["POST"])
+@login_required
+def actuals_edit_transaction(pid, tid):
+    """Edit Transaction modal: vendor / amount / txn_date / note.
+    Mirrors the Docs detail modal's update endpoint but for the
+    Actuals-side row. Also propagates back to the linked DocUpload
+    (when one exists) so the two views stay in lockstep."""
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+
+    if "vendor" in data:
+        v = (data.get("vendor") or "").strip()
+        txn.vendor = v[:300] if v else None
+    if "amount" in data:
+        a = data.get("amount")
+        if a in (None, "", "null"):
+            txn.amount = None
+        else:
+            try:
+                txn.amount = round(float(a), 2)
+            except (TypeError, ValueError):
+                return jsonify({"error": "amount must be a number"}), 400
+    if "txn_date" in data:
+        d = (data.get("txn_date") or "").strip()
+        if not d:
+            txn.txn_date = None
+        else:
+            try:
+                from datetime import datetime as _dt_mod
+                _ = _dt_mod.strptime(d[:10], "%Y-%m-%d")  # validate
+                txn.txn_date = d[:10]
+            except Exception:
+                return jsonify({"error": "txn_date must be YYYY-MM-DD"}), 400
+    if "note" in data:
+        n = (data.get("note") or "").strip()
+        txn.note = n[:500] if n else None
+    txn.updated_at = _dt.utcnow()
+
+    # Sync back to the linked DocUpload so the Docs tab reflects the
+    # same vendor/amount/date. Symmetric to the /docs/upload/<uid>/update
+    # path that pushes the other direction.
+    if txn.doc_upload_id:
+        doc = DocUpload.query.get(txn.doc_upload_id)
+        if doc:
+            doc.vendor = txn.vendor
+            doc.amount = txn.amount
+            if txn.txn_date:
+                try:
+                    from datetime import datetime as _dt_mod
+                    doc.doc_date = _dt_mod.strptime(txn.txn_date[:10], "%Y-%m-%d").date()
+                except Exception:
+                    pass
+
+    db.session.commit()
+    return jsonify({
+        "ok":     True,
+        "vendor": txn.vendor,
+        "amount": float(txn.amount) if txn.amount is not None else None,
+        "txn_date": txn.txn_date,
+        "note":     txn.note,
+    })
+
+
+@app.route("/projects/<int:pid>/actuals/auto-match", methods=["POST"])
+@login_required
+def actuals_run_auto_match(pid):
+    """Run the auto-matcher on every unmatched QBO transaction in the
+    project. Pairs them with DocUpload-source transactions where amount,
+    date, and vendor align. Writes match_status='suggested' — never
+    silently 'confirmed'. User reviews via per-row Confirm/Override
+    buttons."""
+    ProjectSheet.query.get_or_404(pid)
+    from actuals import run_auto_match
+    try:
+        result = run_auto_match(pid)
+        return jsonify({"ok": True, **result})
+    except Exception as e:
+        logging.exception(f"[actuals] auto-match failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/confirm-match", methods=["POST"])
+@login_required
+def actuals_confirm_match(pid, tid):
+    """User accepts the auto-matcher's suggestion for this txn."""
+    Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    from actuals import confirm_match
+    try:
+        result = confirm_match(tid)
+        return jsonify({"ok": True, **result})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logging.exception(f"[actuals] confirm-match failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/dismiss-suggestion", methods=["POST"])
+@login_required
+def actuals_dismiss_suggestion(pid, tid):
+    """User rejects the auto-matcher's suggestion."""
+    Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    from actuals import dismiss_suggestion
+    try:
+        result = dismiss_suggestion(tid)
+        return jsonify({"ok": True, **result})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/projects/<int:pid>/actuals/sync-now", methods=["POST"])
 @login_required
 def actuals_sync_now(pid):

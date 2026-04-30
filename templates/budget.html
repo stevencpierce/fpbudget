@@ -2830,6 +2830,11 @@
       </p>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button type="button" id="actualsAutoMatchBtn" class="btn btn-sm"
+              onclick="actualsRunAutoMatch()"
+              title="Find candidate pairings between QBO transactions and uploaded receipts">
+        ⚡ Auto-Match
+      </button>
       <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-sync-panel')">↻ Sync QBO</button>
       <button type="button" class="btn btn-sm btn-ghost" onclick="toggleActualsPanel('actuals-settings-panel')">⚙ Settings</button>
     </div>
@@ -2961,20 +2966,20 @@
       <div style="position:sticky;top:14px;max-height:calc(100vh - 80px);display:flex;flex-direction:column">
         <h4 style="margin:0 0 8px;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Chart of Accounts</h4>
         <div style="overflow-y:auto;flex:1;padding-right:2px">
-          <div class="coa-item" data-code="not_project"
-               style="padding:6px 10px;margin-bottom:4px;border-radius:5px;border:1px solid #4a2a2a;background:#1e1414;font-size:.76rem">
+          <div class="coa-item" draggable="true" data-code="not_project"
+               style="padding:6px 10px;margin-bottom:4px;border-radius:5px;border:1px solid #4a2a2a;background:#1e1414;font-size:.76rem;cursor:grab">
             <span style="color:#e05555;font-weight:600">✕ Not Project Expense</span>
           </div>
           {% for code, name in coa_sections %}
-          <div class="coa-item" data-code="{{ code }}" data-name="{{ name }}"
-               style="padding:6px 10px;margin-bottom:3px;border-radius:5px;border:1px solid var(--border);background:var(--bg-input);font-size:.76rem;display:flex;justify-content:space-between;gap:6px;align-items:baseline">
+          <div class="coa-item" draggable="true" data-code="{{ code }}" data-name="{{ name }}"
+               style="padding:6px 10px;margin-bottom:3px;border-radius:5px;border:1px solid var(--border);background:var(--bg-input);font-size:.76rem;display:flex;justify-content:space-between;gap:6px;align-items:baseline;cursor:grab">
             <span style="color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ name }}</span>
             <span style="color:var(--text-muted);flex-shrink:0;font-size:.7rem">{{ code }}</span>
           </div>
           {% endfor %}
         </div>
         <p class="muted" style="font-size:.66rem;margin:8px 0 0;line-height:1.4">
-          Drag-drop coding ships in slice 2. For now, use the dropdown next to each transaction.
+          Drag a section onto a transaction to code it. For sub-line precision, use the dropdown.
         </p>
       </div>
 
@@ -2991,11 +2996,40 @@
           {% set _doc = docs_by_id.get(t.doc_upload_id) if t.doc_upload_id else None %}
           {% set _coded = (t.budget_line_id is not none) or (t.account_code is not none) %}
           {% set _has_doc = (t.doc_upload_id is not none) or (t.source == 'doc_upload') %}
+          {# Suggested-match banner — shown above the row when the
+             auto-matcher proposes a pairing. User confirms or
+             dismisses before the merge becomes permanent. #}
+          {% if t.match_status == 'suggested' and t.doc_upload_id %}
+          <div class="actuals-suggested-banner" data-tid="{{ t.id }}"
+               style="display:flex;align-items:center;gap:10px;padding:8px 12px;margin-bottom:4px;
+                      background:#2a2414;border:1px solid #4a3a1a;border-radius:6px 6px 0 0">
+            <span style="font-size:.78rem;color:#f0c060;font-weight:600">
+              ⚡ Suggested match
+            </span>
+            <span style="font-size:.74rem;color:#bba070">
+              auto-paired with receipt
+              {% if _doc %}<strong>{{ _doc.filed_filename or _doc.original_filename }}</strong>{% endif %}
+              ({{ ((t.match_confidence or 0)*100)|int }}% confidence)
+            </span>
+            <button type="button" onclick="actualsConfirmMatch({{ t.id }})"
+                    style="margin-left:auto;font-size:.7rem;padding:3px 9px;background:#1a3a2a;border:1px solid #2a5a3a;border-radius:4px;color:#74c69d;cursor:pointer">
+              ✓ Confirm
+            </button>
+            <button type="button" onclick="actualsDismissSuggestion({{ t.id }})"
+                    style="font-size:.7rem;padding:3px 9px;background:none;border:1px solid #4a3a1a;border-radius:4px;color:#bba070;cursor:pointer">
+              ✕ Dismiss
+            </button>
+          </div>
+          {% endif %}
           <div class="actuals-txn-row"
                data-tid="{{ t.id }}"
                data-source="{{ t.source or '' }}"
                data-coded="{{ '1' if _coded else '0' }}"
                data-has-doc="{{ '1' if _has_doc else '0' }}"
+               data-match-status="{{ t.match_status or 'unmatched' }}"
+               data-txn-date="{{ t.txn_date or '' }}"
+               data-amount="{{ t.amount or 0 }}"
+               data-note="{{ t.note or '' }}"
                data-not-project="{{ '1' if t.not_project_expense else '0' }}"
                style="display:flex;align-items:center;gap:8px;padding:7px 10px;margin-bottom:4px;
                       border:1px solid {% if t.not_project_expense %}#3a2a2a{% elif _coded %}#1a3a2a{% else %}var(--border){% endif %};
@@ -3014,7 +3048,8 @@
             <span style="flex-shrink:0;font-size:.72rem;color:var(--text-muted);min-width:80px">
               {{ t.txn_date or '—' }}
             </span>
-            <span style="flex:1;min-width:0;font-size:.83rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            <span class="actuals-txn-vendor"
+                  style="flex:1;min-width:0;font-size:.83rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                   title="{{ t.vendor or '' }}">
               {{ t.vendor or '— vendor unknown —' }}
             </span>
@@ -3055,7 +3090,10 @@
                          color:{% if t.is_expense %}#e05555{% else %}var(--green){% endif %}">
               {% if t.is_expense %}−{% else %}+{% endif %}{{ (t.amount or 0) | currency }}
             </span>
-            {# Not-project + delete actions (slice 2 will add edit modal) #}
+            <button type="button" class="btn btn-xs btn-ghost"
+                    onclick="actualsOpenEditTxn({{ t.id }})"
+                    title="Edit vendor / date / amount / note"
+                    style="flex-shrink:0;font-size:.7rem;padding:2px 6px;color:var(--text-muted)">✎</button>
             {% if not t.not_project_expense %}
             <button type="button" class="btn btn-xs btn-ghost"
                     onclick="actualsMarkNotProject({{ t.id }})"
@@ -3141,6 +3179,41 @@
       <p>No actuals yet.</p>
     </div>
     {% endif %}
+  </div>
+
+  {# ── Edit Transaction modal ── #}
+  <div id="editTxnOverlay" onclick="if(event.target===this)actualsCloseEditTxn()"
+       style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;width:100vw;height:100vh;
+              z-index:9999;align-items:center;justify-content:center;background:rgba(0,0,0,.78)">
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;
+                width:520px;max-width:96vw;padding:18px 22px;box-shadow:0 20px 60px rgba(0,0,0,.5)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <h3 style="margin:0;font-size:1rem">Edit Transaction</h3>
+        <button type="button" class="btn btn-sm btn-ghost" onclick="actualsCloseEditTxn()">✕</button>
+      </div>
+      <div class="field" style="margin-bottom:.6rem">
+        <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Vendor</label>
+        <input type="text" id="editTxnVendor" placeholder="Vendor name…" style="width:100%">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-bottom:.6rem">
+        <div class="field" style="margin:0">
+          <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Date</label>
+          <input type="date" id="editTxnDate" style="width:100%">
+        </div>
+        <div class="field" style="margin:0">
+          <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Amount</label>
+          <input type="number" id="editTxnAmount" step="0.01" placeholder="0.00" style="width:100%">
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:.6rem">
+        <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Note</label>
+        <textarea id="editTxnNote" rows="3" placeholder="Optional note…" style="width:100%;resize:vertical"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button type="button" class="btn btn-sm" onclick="actualsCloseEditTxn()">Cancel</button>
+        <button type="button" class="btn btn-sm btn-primary" id="editTxnSaveBtn" onclick="actualsSaveEditTxn()">Save</button>
+      </div>
+    </div>
   </div>
 
   {# ── JS for the Actuals tab ── #}
@@ -3315,13 +3388,202 @@
       _actualsRecountStats();
     }
 
-    function _actualsToast(msg) {
+    function _actualsToast(msg, color) {
       const t = document.createElement('div');
       t.textContent = msg;
-      t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1a3a2a;color:#74c69d;border:1px solid #2a5a3a;border-radius:6px;padding:10px 18px;font-size:.85rem;z-index:9999;box-shadow:0 6px 24px rgba(0,0,0,.5)';
+      const c = color || 'green';
+      const palettes = {
+        green:  { bg: '#1a3a2a', fg: '#74c69d', bd: '#2a5a3a' },
+        yellow: { bg: '#2a2414', fg: '#f0c060', bd: '#4a3a1a' },
+        red:    { bg: '#2a1414', fg: '#e08080', bd: '#4a2020' },
+      }[c] || { bg: '#1a3a2a', fg: '#74c69d', bd: '#2a5a3a' };
+      t.style.cssText = `position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+        background:${palettes.bg};color:${palettes.fg};border:1px solid ${palettes.bd};
+        border-radius:6px;padding:10px 18px;font-size:.85rem;z-index:9999;
+        box-shadow:0 6px 24px rgba(0,0,0,.5);max-width:520px`;
       document.body.appendChild(t);
       setTimeout(() => t.remove(), 4000);
     }
+
+    // ── Drag-drop coding (slice 2) ─────────────────────────────────────
+    // Drag a COA item from the sidebar onto a transaction row. Drop
+    // sets the section's account_code on the txn (does NOT pick a
+    // specific budget line — that's the dropdown's job, since it
+    // triggers the Working→Actual auto-clone).
+    let _draggingCOA = null;
+    document.querySelectorAll('.coa-item').forEach(item => {
+      item.addEventListener('dragstart', e => {
+        _draggingCOA = {
+          code: item.dataset.code,
+          name: item.dataset.name || '',
+        };
+        item.style.opacity = '.5';
+        e.dataTransfer.effectAllowed = 'copy';
+        e.dataTransfer.setData('text/plain', item.dataset.code);
+      });
+      item.addEventListener('dragend', () => {
+        item.style.opacity = '';
+        _draggingCOA = null;
+      });
+    });
+    document.querySelectorAll('.actuals-txn-row').forEach(row => {
+      row.addEventListener('dragover', e => {
+        if (!_draggingCOA) return;
+        e.preventDefault();  // allow drop
+        e.dataTransfer.dropEffect = 'copy';
+        row.style.outline = '2px solid var(--blue)';
+        row.style.outlineOffset = '-2px';
+      });
+      row.addEventListener('dragleave', () => {
+        row.style.outline = '';
+      });
+      row.addEventListener('drop', async e => {
+        e.preventDefault();
+        row.style.outline = '';
+        if (!_draggingCOA) return;
+        const tid  = parseInt(row.dataset.tid);
+        const code = _draggingCOA.code;
+        const name = _draggingCOA.name;
+        try {
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ account_code: code, account_code_name: name }),
+          });
+          const d = await r.json();
+          if (!r.ok) {
+            _actualsToast('Could not code: ' + (d.error || r.status), 'red');
+            return;
+          }
+          if (code === 'not_project') {
+            _actualsToast('Marked as not a project expense.', 'yellow');
+            row.dataset.notProject = '1';
+            row.dataset.coded      = '0';
+            row.style.opacity = '.65';
+          } else {
+            _actualsToast(`Coded to ${code} · ${name}`, 'green');
+            // Drag-drop sets account_code only (no specific line).
+            // Don't flip data-coded unless a budget line is also
+            // assigned via the dropdown — but visually mark progress.
+            row.style.borderColor = '#3a5a3a';
+          }
+          _actualsRecountStats();
+        } catch (err) {
+          _actualsToast('Drop failed: ' + err.message, 'red');
+        }
+      });
+    });
+
+    // ── Suggested-match banner: Confirm / Override ─────────────────────
+    window.actualsConfirmMatch = async function (tid) {
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/confirm-match`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        const d = await r.json();
+        if (!r.ok) { _actualsToast('Confirm failed: ' + (d.error || r.status), 'red'); return; }
+        _actualsToast('Match confirmed.', 'green');
+        setTimeout(() => window.location.reload(), 600);
+      } catch (e) {
+        _actualsToast('Confirm error: ' + e.message, 'red');
+      }
+    };
+    window.actualsDismissSuggestion = async function (tid) {
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/dismiss-suggestion`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          _actualsToast('Could not dismiss: ' + (d.error || r.status), 'red');
+          return;
+        }
+        // Hide the banner inline — no full reload needed.
+        const banner = document.querySelector(`.actuals-suggested-banner[data-tid="${tid}"]`);
+        if (banner) banner.remove();
+        const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
+        if (row) {
+          row.dataset.matchStatus = 'unmatched';
+          row.dataset.hasDoc = '0';
+        }
+        _actualsRecountStats();
+      } catch (e) {
+        _actualsToast('Error: ' + e.message, 'red');
+      }
+    };
+
+    // ── Auto-Match button ──────────────────────────────────────────────
+    window.actualsRunAutoMatch = async function () {
+      const btn = document.getElementById('actualsAutoMatchBtn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Matching…'; }
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/auto-match`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          _actualsToast('Auto-match failed: ' + (d.error || r.status), 'red');
+          return;
+        }
+        if (d.suggestions === 0) {
+          _actualsToast(`Auto-match ran — no candidate pairings found (${d.qbo_unmatched} unmatched QBO × ${d.doc_open} open docs).`, 'yellow');
+        } else {
+          _actualsToast(`Auto-match found ${d.suggestions} suggestion${d.suggestions !== 1 ? 's' : ''}. Reloading…`, 'green');
+          setTimeout(() => window.location.reload(), 800);
+        }
+      } catch (e) {
+        _actualsToast('Auto-match error: ' + e.message, 'red');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '⚡ Auto-Match'; }
+      }
+    };
+
+    // ── Edit Transaction modal ─────────────────────────────────────────
+    let _editTxnId = null;
+    window.actualsOpenEditTxn = function (tid) {
+      const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
+      if (!row) return;
+      _editTxnId = tid;
+      // Pre-populate from the row's current cell text. Cleaner than
+      // round-tripping a GET — the row already has the canonical state.
+      document.getElementById('editTxnVendor').value = row.querySelector('.actuals-txn-vendor')?.textContent.trim() || '';
+      document.getElementById('editTxnDate').value   = row.dataset.txnDate || '';
+      document.getElementById('editTxnAmount').value = row.dataset.amount || '';
+      document.getElementById('editTxnNote').value   = row.dataset.note || '';
+      document.getElementById('editTxnOverlay').style.display = 'flex';
+    };
+    window.actualsCloseEditTxn = function () {
+      document.getElementById('editTxnOverlay').style.display = 'none';
+      _editTxnId = null;
+    };
+    window.actualsSaveEditTxn = async function () {
+      if (!_editTxnId) return;
+      const payload = {
+        vendor:   document.getElementById('editTxnVendor').value,
+        txn_date: document.getElementById('editTxnDate').value,
+        amount:   document.getElementById('editTxnAmount').value,
+        note:     document.getElementById('editTxnNote').value,
+      };
+      const btn = document.getElementById('editTxnSaveBtn');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${_editTxnId}/edit`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          _actualsToast('Save failed: ' + (d.error || r.status), 'red');
+          return;
+        }
+        _actualsToast('Transaction saved.', 'green');
+        actualsCloseEditTxn();
+        setTimeout(() => window.location.reload(), 400);
+      } catch (e) {
+        _actualsToast('Save error: ' + e.message, 'red');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Save';
+      }
+    };
   })();
   </script>
 </div>

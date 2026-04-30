@@ -378,6 +378,176 @@ def unlink_transaction(transaction_id):
     return {'transaction_id': txn.id}
 
 
+# ── Auto-match (suggest, never silently confirm) ─────────────────────
+
+def _vendor_similarity(a, b):
+    """Crude fuzzy vendor matcher. Returns 0.0–1.0.
+
+    No external dep: lowercases, strips punctuation, then computes:
+      • exact match               → 1.0
+      • token-set Jaccard         → ratio of shared words / union
+      • substring containment     → 0.85 if one wholly contains the other
+      • prefix match (≥4 chars)   → 0.7
+    Anything below 0.45 is treated as no-match by the caller."""
+    import re as _re
+    if not a or not b:
+        return 0.0
+    norm = lambda s: _re.sub(r'[^a-z0-9 ]', '', s.lower()).strip()
+    A, B = norm(a), norm(b)
+    if not A or not B:
+        return 0.0
+    if A == B:
+        return 1.0
+    if A in B or B in A:
+        return 0.85
+    a_tok, b_tok = set(A.split()), set(B.split())
+    if a_tok and b_tok:
+        inter = a_tok & b_tok
+        union = a_tok | b_tok
+        if inter and union:
+            jaccard = len(inter) / len(union)
+            if jaccard >= 0.5:
+                return jaccard
+    if len(A) >= 4 and len(B) >= 4 and A[:4] == B[:4]:
+        return 0.7
+    return 0.0
+
+
+def run_auto_match(project_id):
+    """Find candidate doc-upload ↔ qbo-sync pairings within a project.
+
+    Pairs an unmatched QBO Transaction with a DocUpload Transaction
+    when:
+      • amount within ±$0.01
+      • txn_date within ±3 days
+      • vendor similarity >= 0.45
+
+    Writes match_status='suggested' + match_confidence + sets
+    qbo_txn.doc_upload_id (TENTATIVELY — user confirms via the row's
+    Confirm button to make it stick; Override clears it).
+
+    Doesn't actually merge rows. The merge happens on confirm:
+      1. The qbo_sync Transaction keeps its identity (it's the row of
+         record from the bank).
+      2. Its doc_upload_id is now permanent.
+      3. The doc_upload Transaction (the receipt's auto-created row)
+         is deleted, since the QBO txn is now the canonical record.
+
+    Returns summary dict.
+    """
+    import datetime as _dt
+    qbo_unmatched = (Transaction.query
+                     .filter_by(project_id=project_id, source='qbo_sync',
+                                match_status='unmatched',
+                                doc_upload_id=None,
+                                not_project_expense=False)
+                     .all())
+    doc_open = (Transaction.query
+                .filter_by(project_id=project_id, source='doc_upload',
+                           not_project_expense=False)
+                .all())
+
+    suggestions = 0
+    inspected = 0
+    for q in qbo_unmatched:
+        if q.amount is None or not q.txn_date:
+            continue
+        try:
+            q_dt = _dt.date.fromisoformat(q.txn_date[:10])
+        except (TypeError, ValueError):
+            continue
+        best = None
+        best_score = 0.0
+        for d in doc_open:
+            inspected += 1
+            if d.amount is None or not d.txn_date:
+                continue
+            if abs(float(d.amount) - float(q.amount)) > 0.01:
+                continue
+            try:
+                d_dt = _dt.date.fromisoformat(d.txn_date[:10])
+            except (TypeError, ValueError):
+                continue
+            day_gap = abs((d_dt - q_dt).days)
+            if day_gap > 3:
+                continue
+            vendor_score = _vendor_similarity(q.vendor, d.vendor)
+            if vendor_score < 0.45:
+                continue
+            # Composite score: amount=1.0 (already gated), date proximity
+            # (1.0 = same day, 0.7 at 3 days), vendor fuzzy.
+            date_score = max(0.0, 1.0 - (day_gap / 10.0))
+            score = (1.0 + date_score + vendor_score) / 3.0
+            if score > best_score:
+                best_score = score
+                best = d
+        if best:
+            q.doc_upload_id    = best.doc_upload_id
+            q.match_status     = 'suggested'
+            q.match_confidence = round(best_score, 3)
+            q.updated_at       = datetime.utcnow()
+            suggestions += 1
+            log.info(
+                f"[actuals automatch] QBO txn #{q.id} ({q.vendor!r}, "
+                f"${q.amount}) → doc upload #{best.doc_upload_id} via "
+                f"DocTxn #{best.id}, score={best_score:.3f}"
+            )
+    db.session.commit()
+    log.info(
+        f"[actuals automatch] project #{project_id}: {suggestions} suggestions "
+        f"from {inspected} pair inspections ({len(qbo_unmatched)} unmatched "
+        f"QBO × {len(doc_open)} open docs)"
+    )
+    return {
+        'suggestions':     suggestions,
+        'inspected':       inspected,
+        'qbo_unmatched':   len(qbo_unmatched),
+        'doc_open':        len(doc_open),
+    }
+
+
+def confirm_match(qbo_transaction_id):
+    """User confirms a suggested match. Merges the doc_upload txn into
+    the qbo_sync txn — the QBO row keeps its identity (it's the bank
+    record), the doc_upload row is deleted since it's now redundant."""
+    q = Transaction.query.get(qbo_transaction_id)
+    if not q:
+        raise ValueError(f"transaction {qbo_transaction_id} not found")
+    if q.match_status != 'suggested' or not q.doc_upload_id:
+        raise ValueError("not in 'suggested' state with a doc_upload_id")
+    # Find the doc_upload Transaction that backs the same DocUpload.
+    sister = (Transaction.query
+              .filter_by(doc_upload_id=q.doc_upload_id, source='doc_upload')
+              .first())
+    if sister and sister.id != q.id:
+        # Promote the QBO txn's coding from the sister if it had any
+        # (rare — sister was the placeholder; user might have coded it
+        # before the match landed).
+        if not q.budget_line_id and sister.budget_line_id:
+            q.budget_line_id      = sister.budget_line_id
+            q.account_code        = sister.account_code
+            q.account_code_name   = sister.account_code_name
+        db.session.delete(sister)
+    q.match_status = 'confirmed'
+    q.updated_at   = datetime.utcnow()
+    db.session.commit()
+    return {'transaction_id': q.id, 'merged_doc_txn': sister.id if sister else None}
+
+
+def dismiss_suggestion(transaction_id):
+    """User rejected the auto-matcher's suggestion. Clears the match
+    pointers without deleting the suggestion log."""
+    t = Transaction.query.get(transaction_id)
+    if not t:
+        raise ValueError(f"transaction {transaction_id} not found")
+    t.doc_upload_id    = None
+    t.match_status     = 'unmatched'
+    t.match_confidence = None
+    t.updated_at       = datetime.utcnow()
+    db.session.commit()
+    return {'transaction_id': t.id}
+
+
 # ── Working → Actual sync (additive only — deletions become orphans) ──
 
 def sync_working_to_actual(project_id, user_id=None):
