@@ -2951,7 +2951,6 @@
       <div style="color:var(--yellow);font-size:.85rem">
         QuickBooks not connected.
         <a href="/qbo/oauth/start" style="color:var(--blue);text-decoration:underline">Connect to QuickBooks ↗</a>
-        <span class="muted" style="margin-left:.6rem;font-size:.78rem">(OAuth route ships in slice 3 — for now this is the structural placeholder.)</span>
       </div>
     {% elif not project.qbo_account_ids or project.qbo_account_ids == '[]' %}
       <div style="color:var(--yellow);font-size:.85rem">
@@ -2959,25 +2958,73 @@
         Open <strong>⚙ Settings</strong> to pick which accounts feed this project.
       </div>
     {% else %}
-      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-        <div style="font-size:.85rem;color:var(--text-muted)">
-          {% if project.last_synced %}
-            Last synced: <strong>{{ project.last_synced.strftime('%Y-%m-%d %H:%M UTC') }}</strong>
-          {% else %}
-            Never synced.
-          {% endif %}
-          {% if project.sync_through %}
-            · watermark <strong>{{ project.sync_through }}</strong>
-          {% endif %}
+      {# Default "to" is today; populated by JS on panel open since
+         Jinja's date helpers vary by config. #}
+      {% set _today = '' %}
+      {% if not project.sync_through %}
+        {# First sync — user must pick a start date. Defaults: end =
+           today. We deliberately don't suggest a start date because
+           project history can vary wildly (some users want last 30
+           days, some want full year). #}
+        <div style="font-size:.85rem;color:var(--yellow);margin-bottom:8px">
+          🆕 First sync — pick a start date.
         </div>
-        <button type="button" class="btn btn-sm btn-primary"
-                onclick="actualsSyncNow({{ project.id }})">⤓ Sync now</button>
-        <span id="actuals-sync-status" class="muted" style="font-size:.78rem"></span>
-      </div>
+        <div style="display:flex;flex-direction:row;gap:10px;flex-wrap:wrap;align-items:center">
+          <label style="font-size:.78rem;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+            From
+            <input type="date" id="actuals-sync-start" required style="font-size:.78rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
+          </label>
+          <label style="font-size:.78rem;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+            To
+            <input type="date" id="actuals-sync-end" value="{{ _today }}" style="font-size:.78rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
+          </label>
+          <button type="button" class="btn btn-sm btn-primary"
+                  onclick="actualsSyncNow({{ project.id }}, /*firstSync=*/true)">⤓ Import transactions</button>
+          <span id="actuals-sync-status" class="muted" style="font-size:.78rem"></span>
+        </div>
+      {% else %}
+        {# Subsequent syncs — one-click + Advanced toggle for custom range. #}
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+          <div style="font-size:.85rem;color:var(--text-muted)">
+            {% if project.last_synced %}
+              Last synced: <strong>{{ project.last_synced.strftime('%Y-%m-%d %H:%M UTC') }}</strong> ·
+            {% endif %}
+            New txns since <strong>{{ project.sync_through }}</strong>
+          </div>
+          <button type="button" class="btn btn-sm btn-primary"
+                  onclick="actualsSyncNow({{ project.id }})">⤓ Sync new</button>
+          <span id="actuals-sync-status" class="muted" style="font-size:.78rem"></span>
+        </div>
+        <div style="margin-top:8px">
+          <a href="#" onclick="event.preventDefault();
+                  const a = document.getElementById('actuals-sync-adv');
+                  a.style.display = a.style.display === 'none' ? '' : 'none';"
+             style="font-size:.74rem;color:var(--text-muted);text-decoration:underline">
+            Advanced — custom date range
+          </a>
+          <div id="actuals-sync-adv" style="display:none;margin-top:8px;padding:10px;background:rgba(224,160,64,.04);border:1px solid rgba(224,160,64,.18);border-radius:6px">
+            <p style="font-size:.74rem;color:var(--yellow);margin:0 0 8px">
+              Custom range: dedupe + overlap + CDC still run automatically. Use this to backfill an earlier period or re-pull a specific window.
+            </p>
+            <div style="display:flex;flex-direction:row;gap:10px;flex-wrap:wrap;align-items:center">
+              <label style="font-size:.78rem;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+                From
+                <input type="date" id="actuals-sync-start" required style="font-size:.78rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
+              </label>
+              <label style="font-size:.78rem;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+                To
+                <input type="date" id="actuals-sync-end" value="{{ _today }}" style="font-size:.78rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
+              </label>
+              <button type="button" class="btn btn-sm" onclick="actualsSyncNow({{ project.id }}, /*firstSync=*/true)">Run custom sync</button>
+            </div>
+          </div>
+        </div>
+      {% endif %}
       <div style="margin-top:10px;padding:8px 10px;background:rgba(46,204,113,.04);border:1px solid rgba(46,204,113,.18);border-radius:6px;font-size:.74rem;color:var(--text-muted)">
         <div style="font-weight:600;color:var(--green);margin-bottom:3px">Sync safety</div>
         Overlap window: re-queries 14 days before the watermark to catch late-accepted bank-feed items.
-        CDC sweep: also pulls anything QBO updated since the last run, regardless of TxnDate.
+        CDC sweep: also pulls anything QBO updated since the last run regardless of TxnDate.
+        Multi-project: a transaction already coded in another project shows as "not project expense" here.
       </div>
     {% endif %}
   </div>
@@ -3410,6 +3457,16 @@
       if (willOpen && id === 'actuals-settings-panel') {
         actualsLoadQboAccounts(PROJ_ID);
       }
+      // Seed the "To" date picker with today on first open of the
+      // sync panel. Only runs once (tracked via dataset).
+      if (willOpen && id === 'actuals-sync-panel') {
+        document.querySelectorAll('#actuals-sync-panel input[type="date"]').forEach(el2 => {
+          if (el2.id === 'actuals-sync-end' && !el2.value) {
+            const today = new Date();
+            el2.value = today.toISOString().slice(0, 10);
+          }
+        });
+      }
     };
 
     // ── Per-project QBO account picker ────────────────────────────────
@@ -3612,12 +3669,27 @@
       }
     };
 
-    window.actualsSyncNow = async function (pid) {
+    window.actualsSyncNow = async function (pid, firstSync) {
       const status = document.getElementById('actuals-sync-status');
       if (status) { status.textContent = 'Syncing…'; status.style.color = 'var(--text-muted)'; }
+      // Read date inputs if the panel is in first-sync or
+      // advanced-custom-range mode. Otherwise let the server use
+      // its watermark logic.
+      const startEl = document.getElementById('actuals-sync-start');
+      const endEl   = document.getElementById('actuals-sync-end');
+      const body = {};
+      if (firstSync) {
+        if (!startEl || !startEl.value) {
+          if (status) { status.textContent = '✕ Pick a start date.'; status.style.color = '#e08080'; }
+          return;
+        }
+        body.start_date = startEl.value;
+        if (endEl && endEl.value) body.end_date = endEl.value;
+      }
       try {
         const r = await fetch(`/projects/${pid}/actuals/sync-now`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
         });
         const d = await r.json();
         if (!r.ok) {

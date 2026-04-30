@@ -4431,9 +4431,24 @@ def actuals_sync_now(pid):
             "error": "No QBO accounts selected for this project. Configure under Settings → QBO accounts.",
         }), 400
 
+    # Optional date overrides from the panel form. When omitted,
+    # sync_project uses its watermark logic (sync_through if set,
+    # else 90 days back).
+    body = request.get_json(silent=True) or {}
+    start_date = (body.get("start_date") or "").strip() or None
+    end_date   = (body.get("end_date")   or "").strip() or None
+    # Light validation — must look like YYYY-MM-DD if provided.
+    import re as _re
+    _date_re = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    if start_date and not _date_re.match(start_date):
+        return jsonify({"error": "start_date must be YYYY-MM-DD"}), 400
+    if end_date and not _date_re.match(end_date):
+        return jsonify({"error": "end_date must be YYYY-MM-DD"}), 400
+
     from qbo_sync import sync_project
     try:
-        result = sync_project(project, conn, db)
+        result = sync_project(project, conn, db,
+                              start_date=start_date, end_date=end_date)
         return jsonify({"ok": True, **result})
     except Exception as e:
         logging.exception(f"[actuals] sync_now failed: {e}")
