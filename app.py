@@ -4355,6 +4355,172 @@ def actuals_dismiss_suggestion(pid, tid):
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/upload-receipt", methods=["POST"])
+@login_required
+def actuals_upload_receipt_to_transaction(pid, tid):
+    """Direct receipt upload bound to an existing Transaction.
+
+    Mirrors docs_upload_post's pipeline (Veryfi OCR + Dropbox source-
+    archive + processed copy via fp_analyzer.analyze_and_file_single)
+    but DOES NOT create a duplicate Transaction. Instead it:
+
+      1. Files the doc through the analyzer normally.
+      2. Creates a DocUpload row.
+      3. Sets the EXISTING transaction's doc_upload_id to point at it.
+      4. Backfills the transaction's vendor / amount / txn_date from
+         OCR ONLY where the row currently has NULL — never overrides
+         existing values.
+      5. Flips match_status='confirmed' so the row reads as audit-
+         clean.
+
+    Use case: user has a paper receipt or a manually-found PDF and
+    wants to attach it to a specific QBO transaction (or manual
+    entry). Drag the file onto the row in the Actuals tab → this
+    endpoint files everything correctly without polluting the
+    ledger with a parallel doc-source row.
+    """
+    project = ProjectSheet.query.get_or_404(pid)
+    txn     = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+
+    # Reject if the transaction already has a receipt linked. The user
+    # should clear or replace the existing one explicitly rather than
+    # silently swap.
+    if txn.doc_upload_id:
+        return jsonify({
+            "error": "Transaction already has a receipt linked. "
+                     "Open the receipt and re-upload from the Docs tab to replace.",
+        }), 409
+
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "No file provided"}), 400
+
+    if not project.dropbox_folder:
+        return jsonify({"error": "Project has no Dropbox folder configured"}), 500
+
+    # Read bytes once; pass to the analyzer.
+    import hashlib, uuid as _uuid, json as _json
+    data       = f.read()
+    file_hash  = hashlib.sha256(data).hexdigest()
+    _data_size = len(data)
+
+    # Cross-doc dedupe: same file hash, real Dropbox path, not error.
+    duplicate_of = (
+        DocUpload.query
+        .filter_by(project_id=pid, file_hash=file_hash)
+        .filter(DocUpload.filed_dropbox_path.isnot(None))
+        .filter(DocUpload.status != 'review')
+        .first()
+    )
+
+    content_type = f.content_type or "application/octet-stream"
+    ext     = os.path.splitext(f.filename)[1].lower() if f.filename else ""
+    r2_key  = f"docs/{pid}/{_uuid.uuid4().hex}{ext}"
+    user_name = (current_user.name or current_user.email.split('@')[0]
+                 if current_user.email else 'user')
+
+    from fp_analyzer import analyze_and_file_single
+    try:
+        result = analyze_and_file_single(
+            file_bytes    = data,
+            filename      = f.filename,
+            project_name  = project.dropbox_folder,
+            user_name     = user_name,
+        )
+    except Exception as _ae:
+        logging.exception(f"[actuals/upload-to-txn] analyzer failed: {_ae}")
+        return jsonify({"error": f"Analyzer failed: {_ae}"}), 500
+    try:
+        del data
+    except Exception:
+        pass
+
+    status_map = {"filed": "done", "needs_review": "review", "error": "error"}
+    upload_status = status_map.get(result.get("status"), "error")
+    vr            = result.get("vr") or {}
+
+    vendor_name = None
+    amount      = None
+    doc_date    = None
+    doc_number  = None
+    if vr:
+        v = vr.get("vendor") or {}
+        vendor_name = v.get("name") or v.get("raw_name")
+        try:
+            amount = float(vr.get("total")) if vr.get("total") is not None else None
+        except Exception:
+            amount = None
+        try:
+            from datetime import datetime as _dt_mod
+            _d = vr.get("date") or ""
+            doc_date = _dt_mod.strptime(_d[:10], "%Y-%m-%d").date() if _d else None
+        except Exception:
+            doc_date = None
+        doc_number = (vr.get("invoice_number") or vr.get("purchase_order_number")
+                      or vr.get("tax_id") or vr.get("ein") or None)
+        if doc_number:
+            doc_number = str(doc_number)[:100]
+
+    upload = DocUpload(
+        project_id          = pid,
+        uploader_id         = current_user.id,
+        r2_key              = r2_key,
+        original_filename   = f.filename,
+        file_size           = _data_size,
+        content_type        = content_type,
+        file_hash           = file_hash,
+        status              = upload_status,
+        veryfi_data         = _json.dumps(vr) if vr else None,
+        vendor              = vendor_name,
+        amount              = amount,
+        doc_date            = doc_date,
+        doc_number          = doc_number,
+        confidence          = round(float(result.get("confidence") or 0) * 100, 2),
+        category            = result.get("doc_type"),
+        filed_filename      = result.get("new_filename") or None,
+        filed_dropbox_path  = result.get("filed_path") or result.get("staged_path"),
+        filed_at            = datetime.utcnow() if result.get("filed_path") else None,
+        source_archive_path = result.get("staged_path"),
+        is_duplicate        = bool(duplicate_of) or bool(result.get("duplicate")),
+    )
+    db.session.add(upload)
+    db.session.commit()
+
+    # Link to the existing transaction. Backfill blank fields only;
+    # don't override values the user may have already set.
+    txn.doc_upload_id = upload.id
+    if not txn.vendor and vendor_name:    txn.vendor   = vendor_name
+    if txn.amount is None and amount is not None: txn.amount = amount
+    if not txn.txn_date and doc_date:     txn.txn_date = doc_date.isoformat()
+    txn.match_status = 'confirmed'
+    txn.updated_at   = datetime.utcnow()
+    db.session.commit()
+
+    try:
+        _log_activity(
+            action='create', entity_type='doc_upload',
+            entity_id=upload.id,
+            entity_label=(upload.filed_filename or upload.original_filename or f'Upload #{upload.id}'),
+            project_id=pid,
+            before=None,
+            after={'status': upload.status, 'vendor': upload.vendor,
+                   'amount': float(upload.amount or 0),
+                   'category': upload.category,
+                   'linked_transaction_id': txn.id},
+            note=f'Uploaded "{upload.original_filename}" → linked to transaction #{txn.id}'
+        )
+    except Exception: pass
+
+    return jsonify({
+        "ok":              True,
+        "upload_id":       upload.id,
+        "transaction_id":  txn.id,
+        "filed_filename":  upload.filed_filename or upload.original_filename,
+        "doc_type":        upload.category,
+        "status":          upload_status,
+    })
+
+
 @app.route("/projects/<int:pid>/actuals/qbo-accounts", methods=["GET"])
 @login_required
 def actuals_qbo_accounts_list(pid):

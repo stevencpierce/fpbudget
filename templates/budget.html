@@ -3055,15 +3055,27 @@
       | rejectattr('doc_upload_id') | rejectattr('not_project_expense', 'equalto', True)
       | list | length %}
   {% set _t_doc_only  = actuals_transactions | selectattr('source', 'equalto', 'doc_upload') | list | length %}
+  {# OCR review: doc-source rows with bad/blank OCR signals — no
+     vendor, no amount, or zero amount. Surfaces receipts that need
+     manual cleanup before they can be matched. #}
+  {% set _t_ocr_review = [] %}
+  {% for _t in actuals_transactions %}
+    {% if _t.source == 'doc_upload' and not _t.not_project_expense and (
+         not _t.vendor
+         or _t.amount is none
+         or (_t.amount is not none and _t.amount|float == 0)
+    ) %}{% set _ = _t_ocr_review.append(_t) %}{% endif %}
+  {% endfor %}
   {% set _t_qbo       = actuals_transactions | selectattr('source', 'equalto', 'qbo_sync')   | list | length %}
   {% set _t_manual    = actuals_transactions | selectattr('source', 'equalto', 'manual_entry') | list | length %}
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
     {% for label, n, color, filt in [
-      ('Transactions',    _t_all,       'var(--text-muted)',  'all'),
-      ('Coded',           _t_coded,     'var(--green)',       'coded'),
-      ('Need coding',     _t_uncoded,   'var(--yellow)',      'uncoded'),
-      ('Need receipt',    _t_need_rcpt, 'var(--orange, #e0a040)', 'no_doc'),
-      ('Doc-only',        _t_doc_only,  'var(--blue)',        'doc_only'),
+      ('Transactions',    _t_all,                   'var(--text-muted)',     'all'),
+      ('Coded',           _t_coded,                 'var(--green)',          'coded'),
+      ('Need coding',     _t_uncoded,               'var(--yellow)',         'uncoded'),
+      ('Need receipt',    _t_need_rcpt,             'var(--orange, #e0a040)','no_doc'),
+      ('Doc-only',        _t_doc_only,              'var(--blue)',           'doc_only'),
+      ('Review OCR',      _t_ocr_review|length,     '#e08080',               'ocr_review'),
     ] %}
     <div class="actuals-stat-card" data-filter="{{ filt }}"
          onclick="actualsApplyFilter('{{ filt }}')"
@@ -3137,7 +3149,7 @@
               padding:8px 12px;margin-bottom:10px;
               background:#0d1a14;border:1px solid #1a3a2a;border-radius:8px">
     <span id="actuals-bulk-count" style="font-size:.78rem;color:var(--green);font-weight:600">0 selected</span>
-    <span class="muted" style="font-size:.72rem">— Cmd/Ctrl click to toggle one, Shift+click for range, Cmd+A to select all visible</span>
+    <span class="muted" style="font-size:.72rem">— click rows to toggle, Shift+click for range, Cmd+A for all visible</span>
     <button type="button" class="btn btn-xs" onclick="actualsBulkClear()"
             style="margin-left:auto;font-size:.7rem;padding:3px 9px">Deselect</button>
     <button type="button" class="btn btn-xs" onclick="actualsBulkMarkNotProject()"
@@ -3279,16 +3291,6 @@
                       border-radius:6px;
                       background:{% if t.not_project_expense %}#150d0d{% elif _coded %}#0d1a14{% else %}var(--bg-card){% endif %};
                       {% if t.not_project_expense %}opacity:.65{% endif %}">
-            {# Selection checkbox — discoverable click target. Toggling
-               here adds/removes the row from the multi-select set. We
-               stop event propagation so checkbox clicks don't trigger
-               row click handlers or drag starts. #}
-            <input type="checkbox" class="actuals-row-select"
-                   data-tid="{{ t.id }}"
-                   onclick="event.stopPropagation()"
-                   onchange="actualsRowSelectChange(this)"
-                   title="Select for bulk actions"
-                   style="flex-shrink:0;width:14px;height:14px;cursor:pointer;margin:0">
             {# Source pill #}
             <span style="flex-shrink:0;font-size:.7rem;width:24px;text-align:center"
                   title="Source: {{ t.source or 'unknown' }}">
@@ -3796,6 +3798,16 @@
         else if (f === 'uncoded')  pass = r.dataset.coded === '0' && r.dataset.notProject !== '1';
         else if (f === 'no_doc')   pass = r.dataset.hasDoc === '0' && r.dataset.notProject !== '1';
         else if (f === 'doc_only') pass = r.dataset.source === 'doc_upload';
+        else if (f === 'ocr_review') {
+          // Doc-source rows that look like OCR failed: blank vendor or
+          // zero/null amount. data-amount is "0" when amount is null
+          // or 0 from the server-side render.
+          const amt = parseFloat(r.dataset.amount || '0');
+          const vendor = (r.querySelector('.actuals-txn-vendor')?.textContent || '').trim();
+          pass = (r.dataset.source === 'doc_upload' &&
+                  r.dataset.notProject !== '1' &&
+                  (!vendor || vendor === '— vendor unknown —' || amt === 0));
+        }
 
         // Filter-bar
         if (pass && dFrom && (r.dataset.txnDate || '') < dFrom) pass = false;
@@ -3891,11 +3903,6 @@
         const selected = _selectedTids.has(tid);
         r.style.boxShadow = selected ? 'inset 0 0 0 2px var(--green)' : '';
         r.dataset.selected = selected ? '1' : '0';
-        // Sync the row's checkbox so it reflects state regardless of
-        // whether selection happened via the checkbox itself, Cmd+click
-        // somewhere else, Shift+range, or Cmd+A.
-        const cb = r.querySelector('.actuals-row-select');
-        if (cb) cb.checked = selected;
       });
       const bar = document.getElementById('actuals-bulk-bar');
       const cnt = document.getElementById('actuals-bulk-count');
@@ -3906,48 +3913,6 @@
         if (bar) bar.style.display = 'none';
       }
     }
-
-    // Checkbox toggle handler. If user holds Shift while clicking the
-    // checkbox, we extend the range from _lastClickedTid through this
-    // tid (over visible rows). The change event fires after the click
-    // has flipped the checkbox state, so the handler reads the new
-    // state and applies range logic if shiftKey was held during click.
-    let _lastShiftClickWasShift = false;
-    document.querySelectorAll('.actuals-row-select').forEach(cb => {
-      cb.addEventListener('click', e => {
-        // Capture shift state at click time; the change handler reads it.
-        _lastShiftClickWasShift = e.shiftKey;
-      });
-    });
-    window.actualsRowSelectChange = function (cb) {
-      const tid = parseInt(cb.dataset.tid);
-      const shift = _lastShiftClickWasShift;
-      _lastShiftClickWasShift = false;  // consume
-
-      if (shift && _lastClickedTid !== null && _lastClickedTid !== tid) {
-        // Range select between _lastClickedTid and this tid over
-        // visible rows. The clicked row's checkbox state drives the
-        // direction (if it just turned on, add range; if turned off,
-        // remove range).
-        const visible = Array.from(document.querySelectorAll('.actuals-txn-row'))
-          .filter(r => r.style.display !== 'none')
-          .map(r => parseInt(r.dataset.tid));
-        const i = visible.indexOf(_lastClickedTid);
-        const j = visible.indexOf(tid);
-        if (i >= 0 && j >= 0) {
-          const [a, b] = i < j ? [i, j] : [j, i];
-          for (let k = a; k <= b; k++) {
-            if (cb.checked) _selectedTids.add(visible[k]);
-            else            _selectedTids.delete(visible[k]);
-          }
-        }
-      } else {
-        if (cb.checked) _selectedTids.add(tid);
-        else            _selectedTids.delete(tid);
-      }
-      _lastClickedTid = tid;
-      _renderSelection();
-    };
 
     window.actualsBulkClear = function () {
       _selectedTids.clear();
@@ -3972,15 +3937,19 @@
       setTimeout(() => window.location.reload(), 600);
     };
 
-    // Click handler for selection. Single click = select-only-this.
-    // Cmd/Ctrl-click = toggle. Shift-click = range from anchor.
-    // Skip clicks that started on a child input/button/select/select.
+    // Click handler for selection — click-only model per user request:
+    //   plain click  → toggle THIS row in/out of the selection
+    //   Shift+click  → range from last-clicked tid through here
+    //   Cmd/Ctrl+click → toggle (same as plain click)
+    // Drag still works normally because mousedown+move triggers
+    // dragstart instead of click.
+    // Skip clicks on inner inputs / buttons / selects / dropdown.
     document.querySelectorAll('.actuals-txn-row').forEach(row => {
       row.addEventListener('click', e => {
         if (e.target.closest('select, input, textarea, button, a, .actuals-line-picker')) return;
         const tid = parseInt(row.dataset.tid);
-        if (e.shiftKey && _lastClickedTid !== null) {
-          // Range select between anchor and this row over VISIBLE rows.
+        if (e.shiftKey && _lastClickedTid !== null && _lastClickedTid !== tid) {
+          // Range select over visible rows.
           const visible = Array.from(document.querySelectorAll('.actuals-txn-row'))
             .filter(r => r.style.display !== 'none')
             .map(r => parseInt(r.dataset.tid));
@@ -3990,18 +3959,12 @@
             const [a, b] = i < j ? [i, j] : [j, i];
             for (let k = a; k <= b; k++) _selectedTids.add(visible[k]);
           }
-        } else if (e.metaKey || e.ctrlKey) {
+        } else {
+          // Plain click + Cmd/Ctrl click both toggle this single row.
           if (_selectedTids.has(tid)) _selectedTids.delete(tid);
           else _selectedTids.add(tid);
-          _lastClickedTid = tid;
-        } else {
-          // Plain click: ignore (rows aren't normally selectable). To
-          // start a selection use Cmd/Ctrl+click on the first row.
-          // This avoids accidental selection when clicking near the
-          // dropdown / source pill. Plain click on a row is also our
-          // drag handle source, kept passive otherwise.
-          return;
         }
+        _lastClickedTid = tid;
         _renderSelection();
       });
     });
@@ -4038,6 +4001,76 @@
      'actuals-filter-amount-min','actuals-filter-amount-max'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('input', _actualsResolveFilters);
+    });
+
+    // ── Drop a file onto a transaction row → upload + link ────────────
+    // For users who have a paper receipt or a manually-found PDF and
+    // want to attach it to a specific transaction. Drops POST to
+    // /actuals/transaction/<tid>/upload-receipt which runs the full
+    // analyzer pipeline + sets doc_upload_id WITHOUT creating a
+    // duplicate doc-source Transaction.
+    document.querySelectorAll('.actuals-txn-row').forEach(row => {
+      let fileEnter = 0;  // dragenter/leave fire per child; track depth
+      row.addEventListener('dragenter', e => {
+        // Only react to FILE drags; row-onto-COA drags don't carry
+        // dataTransfer.types containing 'Files'.
+        if (!e.dataTransfer || !e.dataTransfer.types) return;
+        if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+        e.preventDefault();
+        fileEnter++;
+        row.style.outline = '2px dashed var(--blue)';
+        row.style.outlineOffset = '-2px';
+      });
+      row.addEventListener('dragover', e => {
+        if (!e.dataTransfer || !e.dataTransfer.types) return;
+        if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      });
+      row.addEventListener('dragleave', () => {
+        fileEnter = Math.max(0, fileEnter - 1);
+        if (fileEnter === 0) row.style.outline = '';
+      });
+      row.addEventListener('drop', async e => {
+        if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+        e.preventDefault();
+        e.stopPropagation();
+        fileEnter = 0;
+        row.style.outline = '';
+        const tid  = parseInt(row.dataset.tid);
+        const file = e.dataTransfer.files[0];
+        if (e.dataTransfer.files.length > 1) {
+          _actualsToast('Drop one file at a time onto a transaction row.', 'yellow');
+          return;
+        }
+        // If the row already has a receipt, refuse — the user should
+        // explicitly clear/replace via the docs modal.
+        if (row.dataset.hasDoc === '1') {
+          _actualsToast('This transaction already has a receipt linked. Open it to replace.', 'yellow');
+          return;
+        }
+        // Visual progress indicator on the row.
+        const prev = row.style.background;
+        row.style.background = '#1a2540';
+        const fd = new FormData();
+        fd.append('file', file);
+        try {
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/upload-receipt`, {
+            method: 'POST', body: fd,
+          });
+          const d = await r.json();
+          row.style.background = prev;
+          if (!r.ok) {
+            _actualsToast('Upload failed: ' + (d.error || r.status), 'red');
+            return;
+          }
+          _actualsToast(`Receipt uploaded and linked: ${d.filed_filename || file.name}`, 'green');
+          setTimeout(() => window.location.reload(), 800);
+        } catch (err) {
+          row.style.background = prev;
+          _actualsToast('Upload error: ' + err.message, 'red');
+        }
+      });
     });
 
     // ── Reverse drag: row → COA tree (slice 3) ────────────────────────
