@@ -3170,11 +3170,26 @@
                     {% if t.not_project_expense %}disabled{% endif %}
                     style="flex-shrink:0;width:240px;font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px">
               <option value="">— pick budget line —</option>
+              {# Clear option: only meaningful when something IS assigned.
+                 Selecting it nulls out budget_line_id + account_code via
+                 the unlink path. #}
+              {% if t.budget_line_id or t.account_code %}
+              <option value="__clear__"
+                      style="color:#e08080">✕ Clear assignment</option>
+              {% endif %}
               {# Source: actuals_pick_groups, populated from the project's
                  current Working budget (falls back to Estimated). Picking
-                 a line auto-clones Working → Actual on first use. #}
+                 a specific line auto-clones Working → Actual on first
+                 use. Picking a "section-only" entry sets the COA section
+                 without picking a sub-line — useful as catch-all coding
+                 when there's no obvious line. #}
               {% for grp in actuals_pick_groups %}
               <optgroup label="{{ grp.code }}  {{ grp.name }}">
+                {# Section-only catch-all option, listed first in the group #}
+                <option value="section:{{ grp.code }}"
+                  {% if t.account_code == grp.code and not t.budget_line_id %}selected{% endif %}>
+                  📂 All {{ grp.name }} (section-only, no specific line)
+                </option>
                 {% for ln in grp.lines %}
                 <option value="{{ ln.id }}"
                   {% if t.budget_line_id == ln.id %}selected{% endif %}>
@@ -3441,40 +3456,68 @@
     }
 
     // Click-to-code: change a budget-line dropdown → POST → refresh row state.
+    // The dropdown supports three value forms:
+    //   ""                — no-op (the "— pick budget line —" placeholder)
+    //   "__clear__"       — clear the assignment via unlink
+    //   "section:<code>"  — section-only (no specific line) → /set-coa
+    //   "<line_id>"       — specific line → /set-line (auto-clones Actual)
     window.actualsSetLine = async function (selectEl) {
-      const tid     = parseInt(selectEl.dataset.tid);
-      const lineId  = selectEl.value;
+      const tid    = parseInt(selectEl.dataset.tid);
+      const value  = selectEl.value;
+      if (!value) return;  // placeholder — nothing to do
       selectEl.disabled = true;
       try {
-        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-line`, {
+        let url, body;
+        if (value === '__clear__') {
+          // Clear: send null to /set-line which calls unlink_transaction
+          url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-line`;
+          body = JSON.stringify({ budget_line_id: null });
+        } else if (value.startsWith('section:')) {
+          // Section-only: set account_code without a specific line.
+          const code = value.slice(8);
+          url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`;
+          body = JSON.stringify({ account_code: code });
+        } else {
+          // Specific budget line.
+          url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-line`;
+          body = JSON.stringify({ budget_line_id: value });
+        }
+        const r = await fetch(url, {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ budget_line_id: lineId || null }),
+          body:    body,
         });
         const d = await r.json();
         if (!r.ok) {
           alert('Could not save: ' + (d.error || r.status));
           return;
         }
-        // First-time auto-init toasts. Two cases stack — if both
-        // Working AND Actual were just created (user actualized off
-        // Estimated with no Working in between), say so explicitly.
+        // First-time auto-init toasts (only for line-level links).
         if (d.working_was_just_created && d.actual_was_just_created) {
           _actualsToast('Working budget initialized from Estimated. Actual budget started for live tracking.');
         } else if (d.actual_was_just_created) {
           _actualsToast('Actual budget started — Working was cloned for live tracking.');
+        } else if (value === '__clear__') {
+          _actualsToast('Cleared.', 'yellow');
+        } else if (value.startsWith('section:')) {
+          _actualsToast('Coded to section. Pick a specific line for per-line tracking.', 'green');
         }
         // Reflect coded state on the row.
         const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
         if (row) {
-          row.dataset.coded = lineId ? '1' : '0';
-          row.style.background = lineId ? '#0d1a14' : 'var(--bg-card)';
-          row.style.borderColor = lineId ? '#1a3a2a' : 'var(--border)';
+          const isCoded = value !== '__clear__';
+          row.dataset.coded = isCoded ? '1' : '0';
+          row.style.background = isCoded ? '#0d1a14' : 'var(--bg-card)';
+          row.style.borderColor = isCoded ? '#1a3a2a' : 'var(--border)';
         }
-        // Live-update the stat cards so the Coded / Need coding /
-        // Need receipt counters track the row state without a page
-        // refresh (user reported they had to reload to see them update).
         _actualsRecountStats();
+        // After a clear, force the dropdown back to the placeholder.
+        if (value === '__clear__') {
+          selectEl.value = '';
+          // Hide the Clear option until the row is reassigned again.
+          const clearOpt = selectEl.querySelector('option[value="__clear__"]');
+          if (clearOpt) clearOpt.remove();
+        }
       } catch (e) {
         alert('Save failed: ' + e.message);
       } finally {
