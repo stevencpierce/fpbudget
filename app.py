@@ -12105,16 +12105,20 @@ def docs_upload_post(pid):
     file_hash = hashlib.sha256(data).hexdigest()
 
     # Duplicate detection: hash match against an existing row in this
-    # project. We exclude status='error' rows so a previous failed upload
-    # (OOM, Veryfi connection reset, etc.) doesn't ghost-flag a fresh
-    # retry as a duplicate — those rows have no Dropbox file behind them
-    # and aren't real duplicates of anything.
+    # project that actually has a file in Dropbox. The strict rule —
+    # `filed_dropbox_path IS NOT NULL` — kills ghost matches in two
+    # failure modes:
+    #   1. status='error' rows (Veryfi connection reset, OOM, etc.)
+    #   2. partial-failure rows where OCR succeeded but the Dropbox
+    #      filing step failed (status may be 'done' or 'review' but
+    #      no file actually landed). Without this guard a re-upload
+    #      gets flagged Duplicate against a phantom row.
     # `is_duplicate_of` carries the original upload id so the UI can
     # link back to the master copy.
     duplicate_of = (
         DocUpload.query
         .filter_by(project_id=pid, file_hash=file_hash)
-        .filter(DocUpload.status != 'error')
+        .filter(DocUpload.filed_dropbox_path.isnot(None))
         .first()
     )
 
@@ -12472,6 +12476,45 @@ def docs_bulk_delete(pid):
                                + (f' (+{len(labels)-5} more)' if len(labels) > 5 else ''))
     except Exception: pass
     return jsonify({"status": "ok", "deleted": deleted, "skipped": skipped})
+
+
+@app.route("/docs/<int:pid>/purge-ghosts", methods=["POST"])
+@login_required
+def docs_purge_ghosts(pid):
+    """One-shot cleanup: delete DocUpload rows that have no file behind
+    them in Dropbox (filed_dropbox_path IS NULL). These are leftover
+    ghosts from earlier upload failures (OOM, Veryfi connection reset,
+    Dropbox partial fail). Without this they keep ghost-matching real
+    re-uploads as duplicates.
+
+    Permission: admin only — bulk delete should be deliberate.
+    Returns {deleted: N, ids: [...]}.
+    """
+    ProjectSheet.query.get_or_404(pid)
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Admin only"}), 403
+    rows = DocUpload.query.filter_by(project_id=pid).filter(
+        DocUpload.filed_dropbox_path.is_(None)
+    ).all()
+    ids, labels = [], []
+    for u in rows:
+        ids.append(u.id)
+        labels.append(u.filed_filename or u.original_filename or f'Upload #{u.id}')
+        db.session.delete(u)
+    db.session.commit()
+    try:
+        if ids:
+            _log_activity(action='delete', entity_type='doc_upload_bulk',
+                          entity_id=None,
+                          entity_label=f'Ghost purge — {len(ids)} row{"s" if len(ids) != 1 else ""}',
+                          project_id=pid,
+                          before=None, after={'deleted_ids': ids},
+                          note=f'Purged {len(ids)} ghost upload row{"s" if len(ids) != 1 else ""} '
+                               'with no Dropbox file: '
+                               + ", ".join(labels[:5])
+                               + (f' (+{len(labels)-5} more)' if len(labels) > 5 else ''))
+    except Exception: pass
+    return jsonify({"status": "ok", "deleted": len(ids), "ids": ids})
 
 
 @app.route("/docs/<int:pid>/export.csv")
