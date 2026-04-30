@@ -1115,10 +1115,13 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
             # fall through to 'needs_review' return below
 
         autos = _auto_results.pop(batch_token, [])
-        # Capture the source archive path BEFORE remove_items_from_pending
-        # — that helper used to clear staged_path on the item; even though
-        # it no longer does, we don't depend on its mutation order here.
+        # Capture the source archive path AND the Veryfi response BEFORE
+        # remove_items_from_pending mutates the item. Per user 2026-04-30:
+        # we need vendor/amount/doc_date to flow back to the upload
+        # handler so the doc-detail modal can show what Veryfi extracted
+        # (previously they were getting dropped on high-confidence files).
         archive_path = item.get("staged_path")
+        vr_for_caller = item.get("vr") or {}
         remove_items_from_pending(batch_token, [item["id"]])
         if autos:
             r = autos[0]
@@ -1133,6 +1136,7 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
                 "duplicate":         bool(r.get("duplicate")),
                 "error":             r.get("error"),
                 "needs_review":      False,
+                "vr":                vr_for_caller,
             }
 
     # Phase 3b: low-confidence OR auto-file failed above → needs_review.
@@ -1153,4 +1157,5 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
         "needs_review":      True,
         "batch_token":       batch_token,   # for future review UI
         "item_id":           item["id"],
+        "vr":                item.get("vr") or {},
     }

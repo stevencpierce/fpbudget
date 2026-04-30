@@ -12278,23 +12278,13 @@ def docs_upload_post(pid):
     }
     upload_status = status_map.get(result.get("status"), "error")
 
-    # Extract structured OCR data from the Veryfi response if present so
-    # we can display vendor/amount/date on the docs dashboard and wire
-    # into the receipt-matching flow later.
-    vr = {}
-    try:
-        # analyze_and_file_single doesn't return vr directly; needs_review
-        # items keep it in _pending[batch_token]. Pull it out for storage.
-        if result.get("needs_review") and result.get("batch_token") and result.get("item_id"):
-            from fp_analyzer import _pending as _an_pending
-            _bt   = result["batch_token"]
-            _iid  = result["item_id"]
-            items = _an_pending.get(_bt, [])
-            item  = next((it for it in items if it.get("id") == _iid), None)
-            if item:
-                vr = item.get("vr") or {}
-    except Exception:
-        vr = {}
+    # Extract structured OCR data from the Veryfi response so we can
+    # display vendor/amount/date on the docs dashboard. The analyzer
+    # now puts the raw vr on the result dict regardless of filed vs.
+    # needs_review status, so high-confidence uploads also get their
+    # extracted data stored on the row (was a bug — previously only
+    # review rows kept the OCR data).
+    vr = result.get("vr") or {}
 
     vendor_name = None
     amount      = None
@@ -12420,6 +12410,15 @@ def docs_upload_post(pid):
 
     # Build a structured client response so the upload UI can show the
     # correct state (filed with path, or needs review, or error).
+    # Common bag of fields surfaced to the JS so the freshly-prepended
+    # row carries the same OCR-extracted data the server-rendered rows
+    # do (used by the doc-detail modal to pre-populate vendor/amount/
+    # doc_date without an extra round-trip).
+    _ocr_fields = {
+        "vendor":   upload.vendor,
+        "amount":   float(upload.amount) if upload.amount is not None else None,
+        "doc_date": upload.doc_date.isoformat() if upload.doc_date else None,
+    }
     if result.get("status") == "filed":
         _is_dup = bool(duplicate_of)
         return jsonify({
@@ -12438,6 +12437,7 @@ def docs_upload_post(pid):
             "message":     (f"Duplicate of #{duplicate_of.id} — moved to /_DUPLICATES/."
                             if _is_dup
                             else f"Filed as {result.get('doc_type')} ({int((result.get('confidence') or 0) * 100)}% confidence)."),
+            **_ocr_fields,
         }), 201
     if result.get("status") == "needs_review":
         return jsonify({
@@ -12448,6 +12448,7 @@ def docs_upload_post(pid):
             "new_filename": result.get("new_filename"),
             "message":     f"OCR complete but confidence too low to auto-file "
                            f"({int((result.get('confidence') or 0) * 100)}%). Review required.",
+            **_ocr_fields,
         }), 202
     # status == 'error'
     return jsonify({

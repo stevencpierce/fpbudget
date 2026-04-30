@@ -1405,6 +1405,8 @@
              data-sort-type="{{ (u.category or '')|lower }}"
              data-sort-vendor="{{ (u.vendor or '')|lower }}"
              data-sort-amount="{{ u.amount|float if u.amount else 0 }}"
+             data-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
+             data-note="{{ u.note or '' }}"
              data-sort-size="{{ u.file_size or 0 }}"
              data-sort-status="{{ u.status or '' }}"
              data-is-duplicate="{{ '1' if u.is_duplicate else '' }}"
@@ -1776,8 +1778,12 @@
     div.dataset.sortFilename = displayName.toLowerCase();
     div.dataset.sortOriginal = filename.toLowerCase();
     div.dataset.sortType     = docType.toLowerCase();
-    div.dataset.sortVendor   = '';
-    div.dataset.sortAmount   = 0;
+    // Pull OCR-extracted vendor/amount/date from the upload response so
+    // clicking the freshly-prepended row pre-fills the modal fields.
+    div.dataset.sortVendor   = (d.vendor   || '').toString();
+    div.dataset.sortAmount   = (d.amount   || 0).toString();
+    div.dataset.docDate      = (d.doc_date || '').toString();
+    div.dataset.note         = '';
     div.dataset.sortSize     = file.size || 0;
     div.dataset.sortStatus   = isFiled ? 'filed' : 'review';
     div.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;';
@@ -2371,11 +2377,19 @@
     // Reset form fields to whatever the row's dataset carries — server
     // will overwrite when /preview-link comes back, but this avoids
     // a flash of stale data from a previous open.
+    // Pre-populate from the row's dataset so the form shows the OCR-
+    // extracted vendor/amount/doc_date/category immediately on open
+    // (no flash of empty fields while /verify and /preview-link load).
+    // The dataset uses lowercase HTML attribute names — note the
+    // camelCase access (data-doc-date → dataset.docDate).
     document.getElementById('docDetailVendor').value   = row?.dataset?.sortVendor || '';
-    document.getElementById('docDetailAmount').value   = row?.dataset?.sortAmount || '';
-    document.getElementById('docDetailDocDate').value  = '';
+    // Amount of "0" is meaningless to a user — leave blank so they see
+    // the placeholder. Real amounts always come through as floats > 0.
+    const _amt = parseFloat(row?.dataset?.sortAmount || 0);
+    document.getElementById('docDetailAmount').value   = _amt > 0 ? _amt : '';
+    document.getElementById('docDetailDocDate').value  = row?.dataset?.docDate || '';
     document.getElementById('docDetailCategory').value = row?.dataset?.sortType || '';
-    document.getElementById('docDetailNote').value     = '';
+    document.getElementById('docDetailNote').value     = row?.dataset?.note || '';
     document.getElementById('docDetailVerify').style.display = 'none';
     const previewEl = document.getElementById('docDetailPreview');
     previewEl.innerHTML = '<p class="muted" style="padding:1rem">Loading preview…</p>';
