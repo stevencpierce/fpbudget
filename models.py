@@ -821,6 +821,19 @@ class DocUpload(db.Model):
     # available; user-editable in the doc-detail modal.
     doc_number = db.Column(db.String(100), nullable=True)
 
+    # ── People / location linkage (added 2026-04-30) ───────────────────
+    # Some doc types back relationships, not spend events:
+    #   tax_form / contract / release / payroll →  a CrewMember (or
+    #     vendor — but our Vendor concept is just text on the row, so
+    #     CrewMember is the only structured target today)
+    #   insurance / release (location) →  a Location
+    # Both nullable; the doc-detail modal surfaces the appropriate
+    # picker based on doc type.
+    crew_member_id = db.Column(db.Integer, db.ForeignKey("crew_member.id"),
+                                nullable=True)
+    location_id    = db.Column(db.Integer, db.ForeignKey("location.id"),
+                                nullable=True)
+
     # User note
     note             = db.Column(db.String(500), nullable=True)
 

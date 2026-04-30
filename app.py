@@ -12513,6 +12513,18 @@ def _web_worker_essential_columns():
                 # can re-edit it without rebuilding from notes.
                 "ALTER TABLE doc_upload "
                 "  ADD COLUMN IF NOT EXISTS doc_number VARCHAR(100)",
+                # 2026-04-30 people/location linkage: tax forms / W-9s /
+                # contracts / releases / payroll → CrewMember; COIs and
+                # location releases → Location. Doc detail modal will
+                # show the appropriate picker based on doc type.
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS crew_member_id INTEGER REFERENCES crew_member(id)",
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS location_id INTEGER REFERENCES location(id)",
+                "CREATE INDEX IF NOT EXISTS ix_doc_upload_crew "
+                "  ON doc_upload (crew_member_id)",
+                "CREATE INDEX IF NOT EXISTS ix_doc_upload_location "
+                "  ON doc_upload (location_id)",
                 # ── 2026-04-30: Actuals integration (Phase 1 schema) ────
                 # Three-legged stool linkage on transaction:
                 #   BudgetLine ← Transaction → DocUpload
@@ -12917,8 +12929,18 @@ def docs_upload_post(pid):
     # Tax forms / contracts / releases also skipped because they aren't
     # spend events — they're paperwork that lives in Docs but doesn't
     # belong on the actuals ledger.
+    # Doc types that DO NOT create a Transaction at upload time:
+    #   tax_form / contract / release / legal / insurance / misc → pure
+    #     paperwork; not a spend event.
+    #   estimate / quote / purchase_order → FORECAST documents (Working
+    #     budget territory). They should feed planning, not actuals.
+    #     Slice 3+ will surface a "Convert to Working line" affordance
+    #     so the user can turn an estimate into a budgeted line item
+    #     with the doc as backing paper. Until then they live as
+    #     reference docs only.
     _NON_LEDGER_TYPES = {'tax_form', 'contract', 'release', 'legal',
-                         'insurance', 'misc'}
+                         'insurance', 'misc',
+                         'estimate', 'quote', 'purchase_order'}
     auto_txn = None
     if (upload.status in ('done', 'review')
             and not upload.is_duplicate
