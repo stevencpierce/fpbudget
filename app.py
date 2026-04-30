@@ -12109,6 +12109,11 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS source_archive_path VARCHAR(500)",
                 "CREATE INDEX IF NOT EXISTS ix_doc_upload_archive "
                 "  ON doc_upload (source_archive_path)",
+                # 2026-04-30 type-specific identifier: invoice #, PO #,
+                # tax ID, policy #, etc. Stored on the row so the modal
+                # can re-edit it without rebuilding from notes.
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS doc_number VARCHAR(100)",
             ]:
                 try:
                     cur.execute(sql)
@@ -12289,6 +12294,7 @@ def docs_upload_post(pid):
     vendor_name = None
     amount      = None
     doc_date    = None
+    doc_number  = None
     if vr:
         v = vr.get("vendor") or {}
         vendor_name = v.get("name") or v.get("raw_name")
@@ -12302,6 +12308,17 @@ def docs_upload_post(pid):
             doc_date = _dt_mod.strptime(_d[:10], "%Y-%m-%d").date() if _d else None
         except Exception:
             doc_date = None
+        # Pull whichever doc-number-style field Veryfi extracted. We
+        # don't yet know the user-confirmed type at this point so we
+        # take the first available one — the modal will show it under
+        # the right label depending on the doc type.
+        doc_number = (vr.get("invoice_number")
+                      or vr.get("purchase_order_number")
+                      or vr.get("tax_id")
+                      or vr.get("ein")
+                      or None)
+        if doc_number:
+            doc_number = str(doc_number)[:100]
 
     # Late-stage duplicate re-check. Catches the race where two parallel
     # POSTs for the same file both pass the pre-analysis duplicate query
@@ -12333,6 +12350,7 @@ def docs_upload_post(pid):
         vendor=vendor_name,
         amount=amount,
         doc_date=doc_date,
+        doc_number=doc_number,
         # confidence column is 0-100; Analyzer returns 0-1
         confidence=round(float(result.get("confidence") or 0) * 100, 2),
         category=result.get("doc_type"),
@@ -12415,9 +12433,10 @@ def docs_upload_post(pid):
     # do (used by the doc-detail modal to pre-populate vendor/amount/
     # doc_date without an extra round-trip).
     _ocr_fields = {
-        "vendor":   upload.vendor,
-        "amount":   float(upload.amount) if upload.amount is not None else None,
-        "doc_date": upload.doc_date.isoformat() if upload.doc_date else None,
+        "vendor":     upload.vendor,
+        "amount":     float(upload.amount) if upload.amount is not None else None,
+        "doc_date":   upload.doc_date.isoformat() if upload.doc_date else None,
+        "doc_number": upload.doc_number,
     }
     if result.get("status") == "filed":
         _is_dup = bool(duplicate_of)
@@ -13256,6 +13275,9 @@ def docs_upload_update(uid):
     if "note" in data:
         n = (data.get("note") or "").strip()
         upload.note = n[:500] if n else None
+    if "doc_number" in data:
+        dn = (data.get("doc_number") or "").strip()
+        upload.doc_number = dn[:100] if dn else None
 
     # ── File on review-confirm OR re-file on type change ──────────────
     # Two cases handled by one block:
@@ -13272,7 +13294,12 @@ def docs_upload_update(uid):
     #     into the new type folder so the filing structure matches the
     #     user's classification.
     refile_info = None
-    if upload.category and upload.source_archive_path:
+    # Source for the copy: prefer source_archive_path (added 2026-04-30)
+    # but fall back to filed_dropbox_path for older review-status rows
+    # which were saved before that column existed. Either points at the
+    # staged file in _SOURCE_ARCHIVE/, which is what we copy from.
+    _src_for_copy = upload.source_archive_path or upload.filed_dropbox_path
+    if upload.category and _src_for_copy:
         try:
             from fp_analyzer import (
                 DOCUMENT_TYPES, DOC_PREFIXES,
@@ -13327,16 +13354,20 @@ def docs_upload_update(uid):
                         try:
                             dbx = _ana_dbx()
                             meta = dbx.files_copy_v2(
-                                upload.source_archive_path, dest_path,
+                                _src_for_copy, dest_path,
                                 autorename=True, allow_ownership_transfer=False,
                             )
                             upload.filed_dropbox_path = meta.metadata.path_display
                             upload.filed_filename    = os.path.basename(meta.metadata.path_display)
                             upload.filed_at          = _dt.utcnow()
                             upload.status            = 'done'
+                            # Backfill source_archive_path on legacy rows so
+                            # next time around we don't have to fall back.
+                            if not upload.source_archive_path:
+                                upload.source_archive_path = _src_for_copy
                             refile_info = {
                                 'action': 'filed_from_review',
-                                'from':   upload.source_archive_path,
+                                'from':   _src_for_copy,
                                 'to':     meta.metadata.path_display,
                             }
                         except Exception as _me:
@@ -13392,6 +13423,8 @@ def docs_upload_update(uid):
         "doc_date":    upload.doc_date.isoformat() if upload.doc_date else None,
         "category":    upload.category,
         "note":        upload.note,
+        "doc_number":  upload.doc_number,
+        "status":      upload.status,
         "filed_path":  upload.filed_dropbox_path,
         "refile":      refile_info,
     })

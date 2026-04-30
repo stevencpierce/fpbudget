@@ -1406,6 +1406,7 @@
              data-sort-vendor="{{ (u.vendor or '')|lower }}"
              data-sort-amount="{{ u.amount|float if u.amount else 0 }}"
              data-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
+             data-doc-num="{{ u.doc_number or '' }}"
              data-note="{{ u.note or '' }}"
              data-sort-size="{{ u.file_size or 0 }}"
              data-sort-status="{{ u.status or '' }}"
@@ -1549,18 +1550,25 @@
           <div style="width:300px;padding:14px 16px;border-left:1px solid var(--border);overflow-y:auto;flex-shrink:0;">
             <div id="docDetailVerify" style="font-size:11px;padding:6px 9px;border-radius:6px;margin-bottom:12px;display:none;"></div>
             <div class="field" style="margin-bottom:.6rem">
-              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Vendor</label>
+              <label id="docDetailVendorLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Vendor</label>
               <input type="text" id="docDetailVendor" placeholder="Vendor name…" style="width:100%">
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.6rem">
-              <div class="field" style="margin:0">
+              <div class="field" id="docDetailAmountField" style="margin:0">
                 <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Amount</label>
                 <input type="number" id="docDetailAmount" step="0.01" placeholder="0.00" style="width:100%">
               </div>
               <div class="field" style="margin:0">
-                <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Date</label>
+                <label id="docDetailDocDateLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Date</label>
                 <input type="date" id="docDetailDocDate" style="width:100%">
               </div>
+            </div>
+            {# Type-specific identifier — invoice#, PO#, tax ID, policy#, etc.
+               The label changes based on the selected Doc Type. Stored on
+               the row's `note` field for now (no schema change required). #}
+            <div class="field" id="docDetailDocNumField" style="margin-bottom:.6rem;display:none">
+              <label id="docDetailDocNumLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Document #</label>
+              <input type="text" id="docDetailDocNum" placeholder="—" style="width:100%">
             </div>
             <div class="field" style="margin-bottom:.6rem">
               <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Type</label>
@@ -1783,6 +1791,7 @@
     div.dataset.sortVendor   = (d.vendor   || '').toString();
     div.dataset.sortAmount   = (d.amount   || 0).toString();
     div.dataset.docDate      = (d.doc_date || '').toString();
+    div.dataset.docNum       = (d.doc_number || '').toString();
     div.dataset.note         = '';
     div.dataset.sortSize     = file.size || 0;
     div.dataset.sortStatus   = isFiled ? 'filed' : 'review';
@@ -2273,6 +2282,69 @@
 
   function _docDetailFmtSize(b) { if (!b) return ''; return b<1048576?(b/1024).toFixed(1)+' KB':(b/1048576).toFixed(1)+' MB'; }
 
+  // Per-type field set: different docs need different metadata. Tax
+  // forms have no amount; COIs care about policy# + expiration; AP
+  // docs have invoice/PO numbers. We swap labels and toggle visibility
+  // on the same physical inputs so the modal stays compact and the
+  // server's /update endpoint doesn't need a separate per-type schema.
+  // The "Document #" input is stored on the row's `note` field with a
+  // type-prefix (e.g. "invoice#: 12345") so no schema change is needed.
+  const _DOC_TYPE_FIELD_SPEC = {
+    receipt:        { vendor:'Vendor',       amount:true,  date:'Receipt Date',    docnum:null },
+    invoice:        { vendor:'Vendor',       amount:true,  date:'Invoice Date',    docnum:'Invoice #' },
+    estimate:       { vendor:'Vendor',       amount:true,  date:'Estimate Date',   docnum:'Estimate #' },
+    quote:          { vendor:'Vendor',       amount:true,  date:'Quote Date',      docnum:'Quote #' },
+    purchase_order: { vendor:'Vendor',       amount:true,  date:'PO Date',         docnum:'PO #' },
+    contract:       { vendor:'Counterparty', amount:false, date:'Effective Date',  docnum:'Contract #' },
+    insurance:      { vendor:'Insured / Carrier', amount:false, date:'Expiration Date', docnum:'Policy #' },
+    tax_form:       { vendor:'Entity / Filer', amount:false, date:'Tax Year / Date', docnum:'Tax ID (EIN/SSN)' },
+    payroll:        { vendor:'Vendor / Employee', amount:true, date:'Pay Date',     docnum:'Check / Ref #' },
+    legal:          { vendor:'Counterparty', amount:false, date:'Doc Date',        docnum:'Reference #' },
+    release:        { vendor:'Talent / Location', amount:false, date:'Signed Date', docnum:null },
+    misc:           { vendor:'Vendor',       amount:true,  date:'Doc Date',        docnum:null },
+  };
+  function _docDetailApplyTypeUI(type) {
+    const spec = _DOC_TYPE_FIELD_SPEC[(type || '').toLowerCase()] || _DOC_TYPE_FIELD_SPEC.misc;
+    const vL = document.getElementById('docDetailVendorLabel');
+    if (vL) vL.textContent = spec.vendor || 'Vendor';
+    const dL = document.getElementById('docDetailDocDateLabel');
+    if (dL) dL.textContent = spec.date || 'Doc Date';
+    const amtField = document.getElementById('docDetailAmountField');
+    if (amtField) amtField.style.display = spec.amount ? '' : 'none';
+    const dnField = document.getElementById('docDetailDocNumField');
+    const dnLabel = document.getElementById('docDetailDocNumLabel');
+    if (spec.docnum) {
+      if (dnField) dnField.style.display = '';
+      if (dnLabel) dnLabel.textContent = spec.docnum;
+    } else {
+      if (dnField) dnField.style.display = 'none';
+    }
+    _docDetailHighlightMissing(spec);
+  }
+
+  // For a row that's still in Review status, highlight the required
+  // fields that are blank so the user knows what to fill in to push it
+  // out of Review. Required = the fields the spec says this type uses
+  // (vendor + date always; amount when applicable).
+  function _docDetailHighlightMissing(spec) {
+    if (!spec) return;
+    const row = document.querySelector('.doc-row[data-upload-id="' + _docDetailUid + '"]');
+    const isReview = row && row.dataset.status === 'review';
+    const yellow = '1px solid #d97706';
+    const normal = '';
+    const _hl = (id, needed) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const empty = !((el.value || '').trim());
+      el.style.outline = (isReview && needed && empty) ? yellow : normal;
+      el.style.outlineOffset = (isReview && needed && empty) ? '2px' : '';
+    };
+    _hl('docDetailVendor', true);
+    _hl('docDetailDocDate', true);
+    _hl('docDetailAmount', !!spec.amount);
+    _hl('docDetailDocNum', !!spec.docnum);
+  }
+
   // ── Image preview zoom + pan ───────────────────────────────────────
   // Receipts are unreadable when shrunk to fit a sidebar — this gives
   // the user real zoom controls (− / + / Fit / 1:1), wheel-zoom anchored
@@ -2390,6 +2462,20 @@
     document.getElementById('docDetailDocDate').value  = row?.dataset?.docDate || '';
     document.getElementById('docDetailCategory').value = row?.dataset?.sortType || '';
     document.getElementById('docDetailNote').value     = row?.dataset?.note || '';
+    document.getElementById('docDetailDocNum').value   = row?.dataset?.docNum || '';
+    _docDetailApplyTypeUI(row?.dataset?.sortType || '');
+    // Re-apply when the user changes the type dropdown so labels /
+    // field visibility track the selection live.
+    document.getElementById('docDetailCategory').onchange = (e) =>
+      _docDetailApplyTypeUI((e.target.value || '').toLowerCase());
+    // Re-evaluate the missing-field highlight on every keystroke so the
+    // yellow outline clears as soon as the user fills the field in.
+    ['docDetailVendor','docDetailAmount','docDetailDocDate','docDetailDocNum']
+      .forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.oninput = () => _docDetailApplyTypeUI(
+          (document.getElementById('docDetailCategory').value || '').toLowerCase());
+      });
     document.getElementById('docDetailVerify').style.display = 'none';
     const previewEl = document.getElementById('docDetailPreview');
     previewEl.innerHTML = '<p class="muted" style="padding:1rem">Loading preview…</p>';
@@ -2543,6 +2629,11 @@
       doc_date: document.getElementById('docDetailDocDate').value,
       category: document.getElementById('docDetailCategory').value,
       note:     document.getElementById('docDetailNote').value,
+      // Type-specific identifier (Invoice #, PO #, Tax ID, Policy #,
+      // etc.). Stored server-side; folded into the note prefix for
+      // now (no schema change). The label rendered in the modal
+      // depends on the doc type — see _DOC_TYPE_FIELD_SPEC.
+      doc_number: document.getElementById('docDetailDocNum').value,
     };
     const btn = document.getElementById('docDetailSaveBtn');
     btn.disabled = true; btn.textContent = 'Saving…';

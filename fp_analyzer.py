@@ -384,6 +384,15 @@ def assess_confidence(vr):
     Returns (suggested_type, confidence, needs_review).
     confidence is 0.0–1.0.
     needs_review=True when user should confirm before filing.
+
+    Auto-file gate (revised 2026-04-30): receipts and invoices require
+    high overall confidence (which factors in vendor + total + date)
+    AND Veryfi's own structured document_type. Tax forms, purchase
+    orders, COIs, releases, and estimates often arrive with NO
+    Veryfi-classified document_type — they're identified by OCR-text
+    keywords. For those we trust a strong OCR-keyword inference (0.85+)
+    + readable OCR even if the field-completeness score is low (a W-9
+    has no total or date in the receipt sense).
     """
     ocr_score = (vr.get("meta") or {}).get("ocr_score", 0)
 
@@ -395,9 +404,19 @@ def assess_confidence(vr):
     suggested_type, type_conf = _infer_type(vr)
 
     confidence = round((ocr_score * 0.4) + (field_score * 0.3) + (type_conf * 0.3), 3)
-    # Only auto-file if Veryfi explicitly returned a known document_type
     veryfi_type = (vr.get("document_type") or "").lower()
-    needs_review = confidence < 0.90 or suggested_type is None or veryfi_type not in DOCUMENT_TYPES
+
+    # Two paths to auto-file:
+    #   (a) Veryfi's structured field returned a known type AND
+    #       overall confidence >= 0.85
+    #   (b) OCR-keyword inference is strong (type_conf >= 0.85) AND
+    #       OCR was readable (ocr_score >= 0.4) — used for forms
+    #       and structured non-receipt docs Veryfi often skips.
+    veryfi_auth = (veryfi_type in DOCUMENT_TYPES) and confidence >= 0.85
+    ocr_auth    = (suggested_type is not None and
+                   type_conf >= 0.85 and
+                   ocr_score >= 0.4)
+    needs_review = not (suggested_type and (veryfi_auth or ocr_auth))
 
     log.debug(
         f"Confidence: ocr={ocr_score}, fields={field_score:.2f}, "

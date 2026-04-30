@@ -713,6 +713,12 @@ class DocUpload(db.Model):
     # archive copy is the durable source-of-truth and can be recovered.
     source_archive_path = db.Column(db.String(500), nullable=True)
 
+    # Type-specific identifier (added 2026-04-30): Invoice #, PO #, Tax
+    # ID (EIN/SSN), Policy #, etc. Pre-populated from Veryfi's
+    # invoice_number / purchase_order_number / tax_id fields when
+    # available; user-editable in the doc-detail modal.
+    doc_number = db.Column(db.String(100), nullable=True)
+
     # User note
     note             = db.Column(db.String(500), nullable=True)
 
