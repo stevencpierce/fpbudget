@@ -366,14 +366,22 @@ def _materialize_missing_actual_line(working_line, actual_budget_id):
 
 
 def unlink_transaction(transaction_id):
-    """Clear the budget_line_id on a transaction. Doesn't delete the
-    Actual line even if it becomes empty — user may relink later."""
+    """Clear ALL coding on a transaction — budget_line_id, account_code,
+    account_code_name, match_status. Doesn't delete the Actual line
+    even if it becomes empty (user may relink later).
+
+    Per user 2026-04-30: "clear assignments are not holding." Root
+    cause was clearing budget_line_id but leaving account_code set,
+    so the row still looked coded on the next render and the section-
+    only option re-selected itself. Now we wipe the whole coding tuple."""
     txn = Transaction.query.get(transaction_id)
     if not txn:
         raise ValueError(f"transaction {transaction_id} not found")
-    txn.budget_line_id = None
-    txn.match_status   = 'unmatched'
-    txn.updated_at     = datetime.utcnow()
+    txn.budget_line_id    = None
+    txn.account_code      = None
+    txn.account_code_name = None
+    txn.match_status      = 'unmatched'
+    txn.updated_at        = datetime.utcnow()
     db.session.commit()
     return {'transaction_id': txn.id}
 
