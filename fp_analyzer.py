@@ -130,30 +130,46 @@ def build_name(vr, doc_type, order=None):
     return f"{date_val}_{prefix}_{rest}.pdf"
 
 
-def to_pdf_bytes(file_storage):
-    """Convert an upload to PDF bytes for Veryfi OCR.
+def to_ocr_bytes(file_storage):
+    """Return (ocr_bytes, ocr_ext, original_bytes) for one upload.
 
-    Per user 2026-04-29: caps the image's longest edge at 2400px BEFORE
-    decompressing to RGB. iPhone receipts are typically 4032×3024 (12 MP)
-    which inflates to ~36 MB of uncompressed RGB in Pillow — multiply by
-    16 concurrent gthread slots and you blow Render's 512 MB worker. The
-    OCR quality at 2400px is more than enough for receipt text.
+    Per user 2026-04-29 (revised 2026-04-29): Veryfi accepts JPEG/PNG/PDF
+    natively, so we now AVOID the Pillow RGB→PDF wrapper that was the
+    primary OOM contributor on Render's 512 MB free tier (a 4032×3024
+    iPhone JPEG inflated to ~36 MB of uncompressed RGB during Pillow
+    save-as-PDF, multiplied by 8 concurrent gthread slots).
+
+    New behavior:
+      • .jpg/.jpeg/.png/.pdf → return original bytes UNTOUCHED (no Pillow).
+      • .heic               → convert to JPEG (Pillow decode is unavoidable
+                              here; we cap at 2400px first to keep peak
+                              memory ~6–10 MB instead of ~36 MB).
+
+    The PDF-wrapping path is gone entirely.
     """
     ext = os.path.splitext(file_storage.filename)[1].lower()
     original_bytes = file_storage.read()
-    if ext == ".pdf":
-        return original_bytes, original_bytes
+
+    # Native-pass formats — Veryfi handles these directly. No Pillow.
+    if ext in (".pdf", ".jpg", ".jpeg", ".png"):
+        return original_bytes, ext, original_bytes
+
+    # HEIC: must be transcoded; Veryfi has limited HEIC support.
     MAX_EDGE = 2400
     img = Image.open(io.BytesIO(original_bytes))
-    # thumbnail() preserves aspect ratio, in-place; only shrinks (never
-    # upscales). LANCZOS keeps text legible.
     if max(img.size) > MAX_EDGE:
         img.thumbnail((MAX_EDGE, MAX_EDGE), Image.LANCZOS)
     img = img.convert("RGB")
     buf = io.BytesIO()
-    img.save(buf, "PDF", resolution=100.0)
+    img.save(buf, "JPEG", quality=85, optimize=True)
     img.close()  # release Pillow's internal buffers eagerly
-    return buf.getvalue(), original_bytes
+    return buf.getvalue(), ".jpg", original_bytes
+
+
+# Backward-compat alias — some external callers may still import this name.
+def to_pdf_bytes(file_storage):
+    ocr_bytes, _ext, original_bytes = to_ocr_bytes(file_storage)
+    return ocr_bytes, original_bytes
 
 
 _VERYFI_CLIENT_CACHE = None
@@ -391,11 +407,42 @@ def assess_confidence(vr):
     return suggested_type, confidence, needs_review
 
 
-# ── Phase 1a: Prepare (convert + save temp files) ─────────────────────────────
+# ── Phase 1a: Prepare (stage to Dropbox, no local PDF wrapping) ───────────────
+
+# Dropbox folder where files live during analysis. Project-agnostic since
+# project_name isn't known at prepare-time. Files are MOVED out of here
+# (via files_move_v2) into their final processed location in Phase 2.
+_STAGING_FOLDER = "_UPLOADS_PENDING"
+
+
+def _staged_path(batch_token: str, item_id: str, ext: str) -> str:
+    """Build the Dropbox path where a staged file lives during OCR.
+
+    Lives at `{ops_prefix}/_UPLOADS_PENDING/<batch>/<item_id><ext>`.
+    A trailing files_move_v2 relocates it to the final folder, so we
+    never re-upload bytes from the worker."""
+    ops = _ops_prefix()
+    base = f"{ops}/{_STAGING_FOLDER}" if ops else f"/{_STAGING_FOLDER}"
+    return f"{base}/{batch_token}/{item_id}{ext}"
+
+
+def _stage_to_dropbox(dbx, ocr_bytes: bytes, dest_path: str) -> str:
+    """Upload OCR-ready bytes to Dropbox staging. Returns the path used.
+    autorename=False — collisions inside a batch are impossible (UUIDs)."""
+    meta = dbx.files_upload(
+        ocr_bytes, dest_path,
+        mode=dropbox.files.WriteMode.overwrite,  # idempotent on retry
+        autorename=False,
+    )
+    return meta.path_display
+
 
 def prepare_files(file_storages, batch_token=None):
     """
-    Convert uploaded files to temp PDFs and save originals.
+    Stage uploaded files directly to Dropbox `_UPLOADS_PENDING/<batch>/`
+    and record their staged paths. NO local temp PDFs, NO Pillow on the
+    common formats — see to_ocr_bytes for memory rationale.
+
     Appends to an existing batch if batch_token is supplied.
     Returns (batch_token, total_prepared_so_far, error_items_this_call).
     Does NOT call Veryfi.
@@ -405,6 +452,7 @@ def prepare_files(file_storages, batch_token=None):
 
     items = _raw_pending.setdefault(batch_token, [])
     errors_this_call = []
+    dbx = None  # lazy-init only if we have something to stage
 
     for fs in file_storages:
         if not fs.filename:
@@ -413,8 +461,10 @@ def prepare_files(file_storages, batch_token=None):
         item = {
             "id":                str(uuid.uuid4()),
             "original_filename": fs.filename,
-            "pdf_path":          None,
-            "original_path":     None,
+            "staged_path":       None,   # Dropbox path during OCR
+            "staged_ext":        None,   # extension actually staged (may differ from original for HEIC)
+            "pdf_path":          None,   # legacy; kept for compatibility, always None now
+            "original_path":     None,   # legacy; kept for compatibility, always None now
             "file_hash":         None,
             "vr":                None,
             "suggested_type":    None,
@@ -431,19 +481,29 @@ def prepare_files(file_storages, batch_token=None):
             continue
 
         try:
-            pdf_bytes, original_bytes = to_pdf_bytes(fs)
+            ocr_bytes, ocr_ext, original_bytes = to_ocr_bytes(fs)
+            # Hash the ORIGINAL (not the transcoded HEIC→JPEG) so cross-
+            # session dedupe sees the user's actual file.
             item["file_hash"] = hashlib.sha256(original_bytes).hexdigest()
-            pdf_tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-            pdf_tmp.write(pdf_bytes); pdf_tmp.close()
-            orig_tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-            orig_tmp.write(original_bytes); orig_tmp.close()
-            item["pdf_path"]      = pdf_tmp.name
-            item["original_path"] = orig_tmp.name
+            # Free the original buffer eagerly — we don't need it again.
+            # ocr_bytes is what gets uploaded; for non-HEIC they're the same
+            # object, so only drop original_bytes when it's a distinct copy.
+            if ocr_bytes is not original_bytes:
+                del original_bytes
+
+            if dbx is None:
+                dbx = get_dropbox_client()
+            dest_path = _staged_path(batch_token, item["id"], ocr_ext)
+            staged = _stage_to_dropbox(dbx, ocr_bytes, dest_path)
+            del ocr_bytes  # bytes are now in Dropbox; release worker memory
+
+            item["staged_path"] = staged
+            item["staged_ext"]  = ocr_ext
             items.append(item)
-            log.info(f"Prepared {fs.filename} → {pdf_tmp.name}")
+            log.info(f"Staged {fs.filename} → {staged}")
         except Exception as e:
-            item["error"] = f"Conversion error: {e}"
-            log.error(f"Conversion error for {fs.filename}: {e}", exc_info=True)
+            item["error"] = f"Staging error: {e}"
+            log.error(f"Staging error for {fs.filename}: {e}", exc_info=True)
             errors_this_call.append(item)
             items.append(item)
 
@@ -467,38 +527,112 @@ def find_duplicate_groups(batch_token):
 
 
 def remove_items_from_pending(batch_token, discard_ids):
-    """Remove items by id from _pending[batch_token]. Cleans up their temp files."""
+    """Remove items by id from _pending[batch_token]. Cleans up any
+    Dropbox-staged files that won't be filed (so _UPLOADS_PENDING/
+    doesn't grow unboundedly)."""
     items = _pending.get(batch_token, [])
     keep, discard = [], []
     for it in items:
         (discard if it["id"] in discard_ids else keep).append(it)
-    for it in discard:
-        for p in (it.get("pdf_path"), it.get("original_path")):
-            if p and os.path.exists(p):
-                try: os.unlink(p)
-                except: pass
+    if discard:
+        try:
+            dbx = get_dropbox_client()
+        except Exception:
+            dbx = None
+        for it in discard:
+            sp = it.get("staged_path")
+            if sp and dbx is not None:
+                try:
+                    dbx.files_delete_v2(sp)
+                except Exception as _e:
+                    log.warning(f"Could not delete staged {sp}: {_e}")
+            # Legacy temp-file cleanup (no-op after the staging refactor,
+            # but harmless if some old code path still sets pdf_path).
+            for p in (it.get("pdf_path"), it.get("original_path")):
+                if p and os.path.exists(p):
+                    try: os.unlink(p)
+                    except: pass
     _pending[batch_token] = keep
 
 
 # ── Phase 1b: Analyze (Veryfi calls, parallel) ────────────────────────────────
 
 def _call_veryfi(item):
-    """Call Veryfi on one prepared item. Each thread gets its own client."""
-    try:
-        vc = get_veryfi_client()
-        vr = vc.process_document(item["pdf_path"])
-        item["vr"] = vr
-        suggested, confidence, needs_review = assess_confidence(vr)
-        item["suggested_type"] = suggested
-        item["confidence"]     = confidence
-        item["needs_review"]   = needs_review
-        log.info(
-            f"Analyzed {item['original_filename']}: type={suggested}, "
-            f"confidence={confidence}, needs_review={needs_review}"
-        )
-    except Exception as e:
-        item["error"] = f"Veryfi error: {e}"
-        log.error(f"Veryfi error for {item['original_filename']}: {e}", exc_info=True)
+    """OCR a staged item via Veryfi's URL endpoint.
+
+    Memory-saving rationale (2026-04-29): we hand Veryfi a Dropbox
+    temporary link instead of streaming bytes from the worker. Veryfi's
+    servers fetch the file directly, so the worker holds only the JSON
+    response (a few KB). Combined with prepare_files no longer running
+    Pillow, peak per-file memory drops from ~30-60 MB to ~5 MB.
+
+    Retries once on transient connection errors (stale-cached HTTPS
+    socket on first call after a warm-boot)."""
+    import time as _time
+
+    if not item.get("staged_path"):
+        # Legacy path — shouldn't happen after the refactor, but guard.
+        item["error"] = "Veryfi error: no staged Dropbox path"
+        log.error(f"_call_veryfi: missing staged_path for {item.get('original_filename')}")
+        return item
+
+    last_err = None
+    for attempt in (1, 2):
+        try:
+            # On retry, force fresh clients (kill any dead-socket caches).
+            if attempt == 2:
+                global _VERYFI_CLIENT_CACHE, _DBX_CLIENT_CACHE
+                try:
+                    _VERYFI_CLIENT_CACHE = None
+                    _DBX_CLIENT_CACHE    = None
+                except Exception:
+                    pass
+
+            dbx = get_dropbox_client()
+            # 4-hour signed URL — plenty for an OCR call.
+            link = dbx.files_get_temporary_link(item["staged_path"]).link
+
+            vc = get_veryfi_client()
+            # process_document_url accepts a single URL or a list. We pass
+            # a list to match the SDK's documented signature.
+            # delete_after_processing=True tells Veryfi to drop its own
+            # copy after extraction — keeps their storage tidy and is a
+            # mild privacy win (we're the system of record in Dropbox).
+            vr = vc.process_document_url(
+                file_url=link,
+                delete_after_processing=True,
+            )
+            item["vr"] = vr
+            suggested, confidence, needs_review = assess_confidence(vr)
+            item["suggested_type"] = suggested
+            item["confidence"]     = confidence
+            item["needs_review"]   = needs_review
+            log.info(
+                f"Analyzed {item['original_filename']}: type={suggested}, "
+                f"confidence={confidence}, needs_review={needs_review}"
+                + (f" (retry {attempt})" if attempt > 1 else "")
+            )
+            return item
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            transient = (
+                isinstance(e, (ConnectionResetError, ConnectionError))
+                or "connection reset" in msg
+                or "protocolerror" in msg
+                or "remote end closed" in msg
+                or "broken pipe" in msg
+                or "timed out" in msg
+            )
+            if attempt == 1 and transient:
+                log.warning(
+                    f"Veryfi transient error for {item['original_filename']}: {e} — retrying"
+                )
+                _time.sleep(0.8)
+                continue
+            break
+    item["error"] = f"Veryfi error: {last_err}"
+    log.error(f"Veryfi error for {item['original_filename']}: {last_err}", exc_info=True)
     return item
 
 
@@ -510,8 +644,8 @@ def run_analysis(batch_token):
     Returns list of analyzed items.
     """
     items   = _raw_pending.pop(batch_token, [])
-    ready   = [it for it in items if it.get("pdf_path") and not it.get("error")]
-    errored = [it for it in items if it.get("error") or not it.get("pdf_path")]
+    ready   = [it for it in items if it.get("staged_path") and not it.get("error")]
+    errored = [it for it in items if it.get("error") or not it.get("staged_path")]
 
     for it in ready:
         _call_veryfi(it)
@@ -552,14 +686,30 @@ def _build_result_skeleton(item):
 
 
 def _file_item(item, dest_path, _unused, dbx):
-    """Upload PDF version of one item to Dropbox. Returns (success, actual_path, error)."""
+    """Move the staged Dropbox file into its final processed location.
+
+    No bytes flow through the worker — this is a server-side rename via
+    files_move_v2. Returns (success, actual_path, error). On collision
+    we let Dropbox autorename (autorename=True), and that final name
+    propagates back via meta.path_display.
+    """
+    src = item.get("staged_path")
+    if not src:
+        return False, None, "Internal error: no staged Dropbox path"
     try:
-        pdf_bytes   = open(item["pdf_path"], "rb").read()
-        actual_path = upload_to_dropbox(dbx, pdf_bytes, dest_path)
+        meta = dbx.files_move_v2(
+            src, dest_path,
+            autorename=True,
+            allow_ownership_transfer=False,
+        )
+        actual_path = meta.metadata.path_display
+        # Mark as moved so cleanup paths don't try to delete the staged file.
+        item["staged_path"] = None
         return True, actual_path, None
     except Exception as e:
         return False, None, f"Dropbox error: {e}"
     finally:
+        # Legacy temp-file cleanup (no-op after refactor; kept for safety).
         for p in (item.get("pdf_path"), item.get("original_path")):
             if p and os.path.exists(p):
                 try: os.unlink(p)
@@ -745,9 +895,18 @@ def file_confirmed(batch_token, confirmations, project_name, user_name):
             "file_hash":         item.get("file_hash"),
         }
 
-        # Clean up temp files regardless of outcome
-        def cleanup():
-            for p in (item.get("pdf_path"), item.get("original_path")):
+        # Cleanup: delete the staged Dropbox file (if still present) and
+        # any legacy local temp files. Called when the item won't be moved
+        # to its final location.
+        def cleanup(it=item):
+            sp = it.get("staged_path")
+            if sp:
+                try:
+                    dbx.files_delete_v2(sp)
+                    it["staged_path"] = None
+                except Exception as _e:
+                    log.warning(f"Could not delete staged {sp}: {_e}")
+            for p in (it.get("pdf_path"), it.get("original_path")):
                 if p and os.path.exists(p):
                     try: os.unlink(p)
                     except: pass
@@ -774,20 +933,18 @@ def file_confirmed(batch_token, confirmations, project_name, user_name):
         else:
             processed_path = f"{base}/{user_folder}/{new_name}"
 
-        try:
-            pdf_bytes   = open(item["pdf_path"], "rb").read()
-            actual_path = upload_to_dropbox(dbx, pdf_bytes, processed_path)
-
-            actual_name = os.path.basename(actual_path)
+        # Move (no re-upload) from staged path → final processed path.
+        ok, actual_path, err = _file_item(item, processed_path, processed_path, dbx)
+        if ok:
+            actual_name = os.path.basename(actual_path) if actual_path else new_name
             result["success"]   = True
             result["filename"]  = actual_name
             result["dest_path"] = actual_path
             result["duplicate"] = actual_name != new_name
             log.info(f"Filed {item['original_filename']} → {actual_path}")
-        except Exception as e:
-            result["error"] = f"Dropbox error: {e}"
-            log.error(f"Dropbox error for {item['original_filename']}: {e}", exc_info=True)
-        finally:
+        else:
+            result["error"] = err
+            log.error(f"Dropbox error for {item['original_filename']}: {err}")
             cleanup()
 
         results.append(result)

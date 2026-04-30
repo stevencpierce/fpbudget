@@ -12104,13 +12104,19 @@ def docs_upload_post(pid):
     data = f.read()
     file_hash = hashlib.sha256(data).hexdigest()
 
-    # Duplicate detection: hash match against ANY existing row in this
-    # project. We don't reject the upload anymore — instead we file it
-    # like a normal doc and then move it to a /_DUPLICATES/ subfolder
-    # at the end so the user can see what was duplicated and decide.
+    # Duplicate detection: hash match against an existing row in this
+    # project. We exclude status='error' rows so a previous failed upload
+    # (OOM, Veryfi connection reset, etc.) doesn't ghost-flag a fresh
+    # retry as a duplicate — those rows have no Dropbox file behind them
+    # and aren't real duplicates of anything.
     # `is_duplicate_of` carries the original upload id so the UI can
     # link back to the master copy.
-    duplicate_of = DocUpload.query.filter_by(project_id=pid, file_hash=file_hash).first()
+    duplicate_of = (
+        DocUpload.query
+        .filter_by(project_id=pid, file_hash=file_hash)
+        .filter(DocUpload.status != 'error')
+        .first()
+    )
 
     content_type = f.content_type or "application/octet-stream"
     ext = os.path.splitext(f.filename)[1].lower() if f.filename else ""
