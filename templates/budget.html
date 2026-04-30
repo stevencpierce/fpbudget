@@ -3279,6 +3279,16 @@
                       border-radius:6px;
                       background:{% if t.not_project_expense %}#150d0d{% elif _coded %}#0d1a14{% else %}var(--bg-card){% endif %};
                       {% if t.not_project_expense %}opacity:.65{% endif %}">
+            {# Selection checkbox — discoverable click target. Toggling
+               here adds/removes the row from the multi-select set. We
+               stop event propagation so checkbox clicks don't trigger
+               row click handlers or drag starts. #}
+            <input type="checkbox" class="actuals-row-select"
+                   data-tid="{{ t.id }}"
+                   onclick="event.stopPropagation()"
+                   onchange="actualsRowSelectChange(this)"
+                   title="Select for bulk actions"
+                   style="flex-shrink:0;width:14px;height:14px;cursor:pointer;margin:0">
             {# Source pill #}
             <span style="flex-shrink:0;font-size:.7rem;width:24px;text-align:center"
                   title="Source: {{ t.source or 'unknown' }}">
@@ -3878,13 +3888,14 @@
     function _renderSelection() {
       document.querySelectorAll('.actuals-txn-row').forEach(r => {
         const tid = parseInt(r.dataset.tid);
-        if (_selectedTids.has(tid)) {
-          r.style.boxShadow = 'inset 0 0 0 2px var(--green)';
-          r.dataset.selected = '1';
-        } else {
-          r.style.boxShadow = '';
-          r.dataset.selected = '0';
-        }
+        const selected = _selectedTids.has(tid);
+        r.style.boxShadow = selected ? 'inset 0 0 0 2px var(--green)' : '';
+        r.dataset.selected = selected ? '1' : '0';
+        // Sync the row's checkbox so it reflects state regardless of
+        // whether selection happened via the checkbox itself, Cmd+click
+        // somewhere else, Shift+range, or Cmd+A.
+        const cb = r.querySelector('.actuals-row-select');
+        if (cb) cb.checked = selected;
       });
       const bar = document.getElementById('actuals-bulk-bar');
       const cnt = document.getElementById('actuals-bulk-count');
@@ -3895,6 +3906,48 @@
         if (bar) bar.style.display = 'none';
       }
     }
+
+    // Checkbox toggle handler. If user holds Shift while clicking the
+    // checkbox, we extend the range from _lastClickedTid through this
+    // tid (over visible rows). The change event fires after the click
+    // has flipped the checkbox state, so the handler reads the new
+    // state and applies range logic if shiftKey was held during click.
+    let _lastShiftClickWasShift = false;
+    document.querySelectorAll('.actuals-row-select').forEach(cb => {
+      cb.addEventListener('click', e => {
+        // Capture shift state at click time; the change handler reads it.
+        _lastShiftClickWasShift = e.shiftKey;
+      });
+    });
+    window.actualsRowSelectChange = function (cb) {
+      const tid = parseInt(cb.dataset.tid);
+      const shift = _lastShiftClickWasShift;
+      _lastShiftClickWasShift = false;  // consume
+
+      if (shift && _lastClickedTid !== null && _lastClickedTid !== tid) {
+        // Range select between _lastClickedTid and this tid over
+        // visible rows. The clicked row's checkbox state drives the
+        // direction (if it just turned on, add range; if turned off,
+        // remove range).
+        const visible = Array.from(document.querySelectorAll('.actuals-txn-row'))
+          .filter(r => r.style.display !== 'none')
+          .map(r => parseInt(r.dataset.tid));
+        const i = visible.indexOf(_lastClickedTid);
+        const j = visible.indexOf(tid);
+        if (i >= 0 && j >= 0) {
+          const [a, b] = i < j ? [i, j] : [j, i];
+          for (let k = a; k <= b; k++) {
+            if (cb.checked) _selectedTids.add(visible[k]);
+            else            _selectedTids.delete(visible[k]);
+          }
+        }
+      } else {
+        if (cb.checked) _selectedTids.add(tid);
+        else            _selectedTids.delete(tid);
+      }
+      _lastClickedTid = tid;
+      _renderSelection();
+    };
 
     window.actualsBulkClear = function () {
       _selectedTids.clear();
