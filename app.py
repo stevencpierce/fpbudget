@@ -4147,7 +4147,7 @@ def actuals_mark_not_project(pid, tid):
     txn.account_code        = None
     txn.account_code_name   = None
     txn.match_status        = 'unmatched'
-    txn.updated_at          = _dt.utcnow()
+    txn.updated_at          = datetime.utcnow()
     db.session.commit()
     return jsonify({"ok": True, "transaction_id": tid})
 
@@ -4191,7 +4191,7 @@ def actuals_set_coa(pid, tid):
         # Drag-drop sets the COA section but no specific line. budget_
         # line_id stays NULL — the user picks a sub-line via the
         # dropdown, which triggers Working→Actual auto-clone.
-    txn.updated_at = _dt.utcnow()
+    txn.updated_at = datetime.utcnow()
     db.session.commit()
     return jsonify({
         "ok":              True,
@@ -4238,7 +4238,7 @@ def actuals_edit_transaction(pid, tid):
     if "note" in data:
         n = (data.get("note") or "").strip()
         txn.note = n[:500] if n else None
-    txn.updated_at = _dt.utcnow()
+    txn.updated_at = datetime.utcnow()
 
     # Sync back to the linked DocUpload so the Docs tab reflects the
     # same vendor/amount/date. Symmetric to the /docs/upload/<uid>/update
