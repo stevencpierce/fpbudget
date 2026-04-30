@@ -3179,6 +3179,46 @@ def budget_view(pid, bid):
             "count": r[3],
         }
 
+    # ── Per-line ACTUAL sums from linked transactions (added 2026-04-30) ─
+    # Transactions FK directly to Actual budget lines; each Actual line
+    # has source_line_id pointing back at the Working line it was cloned
+    # from. To get "actuals per Working line" we join Transaction →
+    # BudgetLine (Actual) → source_line_id (Working). Result keyed by
+    # the Working line id so the budget table (which renders Working
+    # lines) can look up the actual amount inline.
+    actual_by_line_id = {}
+    has_actual_budget = False
+    actual_budget_meta = None
+    try:
+        _actual_budget = (Budget.query
+                          .filter_by(project_id=pid, is_actual=True,
+                                     version_status='current')
+                          .first())
+        if _actual_budget:
+            has_actual_budget = True
+            actual_budget_meta = {
+                "id":          _actual_budget.id,
+                "name":        _actual_budget.name,
+                "created_at":  _actual_budget.created_at.isoformat() if _actual_budget.created_at else None,
+            }
+            # Sum transaction amounts per Actual line. Then translate
+            # via source_line_id → Working line id.
+            from sqlalchemy import func as _func
+            for src_line_id, amt in (
+                db.session.query(BudgetLine.source_line_id,
+                                 _func.sum(Transaction.amount))
+                .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
+                .filter(BudgetLine.budget_id == _actual_budget.id,
+                        BudgetLine.source_line_id.isnot(None),
+                        Transaction.not_project_expense == False,
+                        Transaction.is_expense == True)
+                .group_by(BudgetLine.source_line_id)
+                .all()
+            ):
+                actual_by_line_id[src_line_id] = float(amt or 0)
+    except Exception as _ae:
+        logging.warning(f"[actuals/per-line] computation failed: {_ae}")
+
     # Tax Credits
     tax_credits = TaxCredit.query.filter_by(budget_id=bid).order_by(TaxCredit.sort_order, TaxCredit.id).all()
 
@@ -3460,6 +3500,9 @@ def budget_view(pid, bid):
         qbo_connection=qbo_connection,
         actuals_pick_groups=actuals_pick_groups,
         actuals_pick_budget=actuals_pick_budget,
+        actual_by_line_id=actual_by_line_id,
+        has_actual_budget=has_actual_budget,
+        actual_budget_meta=actual_budget_meta,
     )
 
 

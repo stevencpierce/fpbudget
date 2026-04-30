@@ -576,7 +576,8 @@
         <col style="width:{{ '65px' if ns.has_agent_or_disc else '0' }}"><!-- agent%/disc% (collapsed when no line has a value) -->
         <col style="width:115px"><!-- estimated -->
         <col style="width:{{ '90px' if working_exists else '0' }}"><!-- working -->
-        <col style="width:{{ '85px' if is_working_view else '0' }}"><!-- variance -->
+        <col style="width:{{ '95px' if has_actual_budget else '0' }}"><!-- actual (collapsed unless an Actual budget exists) -->
+        <col style="width:{{ '85px' if (is_working_view or has_actual_budget) else '0' }}"><!-- variance -->
         <col><!-- act: auto -->
       </colgroup>
       <thead>
@@ -593,7 +594,8 @@
           <th class="col-num{% if not ns.has_agent_or_disc %} col-empty{% endif %}">{% if ns.has_agent_or_disc %}{{ 'Agent%' if ns.has_labor else 'Disc%' }}{% endif %}</th>
           <th class="col-num {% if is_working_view %}frozen-est-header{% endif %}">Estimated</th>
           <th class="col-num col-working">Working</th>
-          <th class="col-num col-variance">{% if is_working_view %}Variance{% endif %}</th>
+          <th class="col-num col-actual" title="Sum of linked transaction amounts">{% if has_actual_budget %}Actual{% endif %}</th>
+          <th class="col-num col-variance" title="{% if has_actual_budget %}Working − Actual{% else %}Estimated − Working{% endif %}">{% if has_actual_budget or is_working_view %}Variance{% endif %}</th>
           <th class="col-act"></th>
         </tr>
       </thead>
@@ -768,7 +770,27 @@
           <td class="col-num col-working line-working">
             <strong data-base="{{ res.est_total }}">{{ (res.est_total * _sec_fee_m) | currency }}</strong>
           </td>
-          {% set _variance = (res.est_total - _frozen) * _sec_fee_m %}
+          {# Per-line ACTUAL: sum of Transaction.amount for this line.
+             actual_by_line_id keys on the Working line id (which is
+             ln.id when we're rendering Working). Hidden when no Actual
+             budget exists yet (column collapses to 0px). #}
+          {% set _actual = (actual_by_line_id.get(ln.id, 0) or 0) | float %}
+          <td class="col-num col-actual line-actual">
+            {% if has_actual_budget %}
+              {% if _actual > 0 %}
+                <strong style="color:var(--green)">{{ _actual | currency }}</strong>
+              {% else %}
+                <span class="muted" style="font-size:.75rem">—</span>
+              {% endif %}
+            {% endif %}
+          </td>
+          {# Variance now compares Working → Actual when Actual exists,
+             else falls back to Estimated → Working in the working view. #}
+          {% if has_actual_budget %}
+            {% set _variance = (res.est_total * _sec_fee_m) - _actual %}
+          {% else %}
+            {% set _variance = (res.est_total - _frozen) * _sec_fee_m %}
+          {% endif %}
           <td class="col-num col-variance line-variance">
             <span class="{% if _variance > 0.005 %}var-pos{% elif _variance < -0.005 %}var-neg{% else %}var-zero{% endif %}">{{ _variance | currency }}</span>
           </td>
@@ -784,6 +806,16 @@
               {% endif %}
             {% else %}
             <span class="muted" style="font-size:.75rem">—</span>
+            {% endif %}
+          </td>
+          {% set _actual_e = (actual_by_line_id.get(ln.id, 0) or 0) | float %}
+          <td class="col-num col-actual">
+            {% if has_actual_budget %}
+              {% if _actual_e > 0 %}
+                <strong style="color:var(--green)">{{ _actual_e | currency }}</strong>
+              {% else %}
+                <span class="muted" style="font-size:.75rem">—</span>
+              {% endif %}
             {% endif %}
           </td>
           <td class="col-num col-variance"></td>
@@ -854,6 +886,7 @@
           <td class="col-num"></td>
           <td class="col-num">{{ (top_sheet.workers_comp_amount * _sec_fee_m) | currency }}</td>
           <td class="col-num col-working">{{ (top_sheet.workers_comp_amount * _sec_fee_m) | currency }}</td>
+          <td class="col-num col-actual"></td>
           <td class="col-num col-variance"></td>
           <td class="col-act"></td>
         </tr>
@@ -888,6 +921,7 @@
           <td class="col-num"></td>
           <td class="col-num">{{ (top_sheet.production_insurance_amount * _sec_fee_m) | currency }}</td>
           <td class="col-num col-working">{{ (top_sheet.production_insurance_amount * _sec_fee_m) | currency }}</td>
+          <td class="col-num col-actual"></td>
           <td class="col-num col-variance"></td>
           <td class="col-act"></td>
         </tr>
@@ -912,6 +946,7 @@
           <td class="col-num"></td>
           <td class="col-num">{{ (top_sheet.payroll_fee_amount * _sec_fee_m) | currency }}</td>
           <td class="col-num col-working">{{ (top_sheet.payroll_fee_amount * _sec_fee_m) | currency }}</td>
+          <td class="col-num col-actual"></td>
           <td class="col-num col-variance"></td>
           <td class="col-act"></td>
         </tr>
@@ -946,6 +981,7 @@
           <td class="col-num" style="font-size:.78rem;color:var(--text-muted)"></td>
           <td class="col-num" style="font-size:.78rem;color:var(--text-muted)">{{ ns.kit_total | currency }}</td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-size:.78rem;color:var(--text-muted)">{{ ns.kit_working | currency }}</td>
+          <td class="col-num col-actual"></td>
           <td class="col-num col-variance"></td>
           <td></td>
         </tr>
@@ -956,6 +992,7 @@
           <td class="col-num agent-est-total" style="font-size:.78rem;color:var(--text-muted)">{{ ns.sec_agent | currency }}</td>
           <td class="col-num" style="font-size:.78rem;color:var(--text-muted)">{{ ns.sec_agent | currency }}</td>
           <td class="col-num col-working" style="font-size:.78rem;color:var(--text-muted)"></td>
+          <td class="col-num col-actual"></td>
           <td class="col-num col-variance"></td>
           <td></td>
         </tr>
@@ -967,18 +1004,36 @@
           <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_fringe * _sec_fee_m) | currency if ns.sec_fringe else '' }}</td>
           <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_subtotal * _sec_fee_m) | currency if ns.sec_subtotal else '' }}</td>
           <td class="col-num muted"></td>
+          {# Section ACTUAL total = sum of actual_by_line_id for every
+             line in this section. Computed inline; cheap. #}
+          {% set _sec_actual_ns = namespace(total=0) %}
+          {% for _ln in sec.lines %}
+            {% set _sec_actual_ns.total = _sec_actual_ns.total + (actual_by_line_id.get(_ln.id, 0) or 0) | float %}
+          {% endfor %}
+          {% set _sec_actual = _sec_actual_ns.total %}
           {% if is_working_view %}
           <td class="col-num sec-est-total" style="font-size:.8rem">
             <span class="frozen-est" data-raw="{{ sec_working.total }}">{{ (sec_working.total * _sec_fee_m) | currency }}</span>
           </td>
           <td class="col-num col-working sec-working-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
-          {% set _sec_var = (ns.sec_total - sec_working.total) * _sec_fee_m %}
+          <td class="col-num col-actual sec-actual-total" style="font-size:.8rem">
+            {% if has_actual_budget and _sec_actual > 0 %}<strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>{% endif %}
+          </td>
+          {# Variance: if Actual exists, Working − Actual; else Working − Estimated. #}
+          {% if has_actual_budget %}
+            {% set _sec_var = (ns.sec_total * _sec_fee_m) - _sec_actual %}
+          {% else %}
+            {% set _sec_var = (ns.sec_total - sec_working.total) * _sec_fee_m %}
+          {% endif %}
           <td class="col-num col-variance sec-variance-total" style="font-size:.8rem">
             <span class="{% if _sec_var > 0.005 %}var-pos{% elif _sec_var < -0.005 %}var-neg{% else %}var-zero{% endif %}">{{ _sec_var | currency }}</span>
           </td>
           {% else %}
           <td class="col-num sec-est-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-size:.8rem"><strong>{{ sec_working.total | currency }}</strong></td>
+          <td class="col-num col-actual" style="font-size:.8rem">
+            {% if has_actual_budget and _sec_actual > 0 %}<strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>{% endif %}
+          </td>
           <td class="col-num col-variance"></td>
           {% endif %}
           <td></td>
@@ -991,13 +1046,23 @@
           {% if is_working_view %}
           <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem"><strong data-base="{{ sec_working.total }}">{{ (sec_working.total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-working sec-grand-working" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
+          <td class="col-num col-actual sec-grand-actual" style="font-weight:700;font-size:.92rem">
+            {% if has_actual_budget and _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
+          </td>
           <td class="col-num col-variance sec-grand-variance" style="font-weight:700;font-size:.88rem">
-            {% set _gv = (ns.sec_total - sec_working.total) * _sec_fee_m %}
+            {% if has_actual_budget %}
+              {% set _gv = (ns.sec_total * _sec_fee_m) - _sec_actual %}
+            {% else %}
+              {% set _gv = (ns.sec_total - sec_working.total) * _sec_fee_m %}
+            {% endif %}
             <span class="{% if _gv > 0.005 %}var-pos{% elif _gv < -0.005 %}var-neg{% else %}var-zero{% endif %}">{{ _gv | currency }}</span>
           </td>
           {% else %}
           <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-weight:700;font-size:.95rem"><strong>{{ sec_working.total | currency }}</strong></td>
+          <td class="col-num col-actual" style="font-weight:700;font-size:.92rem">
+            {% if has_actual_budget and _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
+          </td>
           <td class="col-num col-variance"></td>
           {% endif %}
           <td></td>
@@ -1008,6 +1073,7 @@
           </td>
           <td class="col-num sec-fee-total" style="font-size:.8rem;color:var(--green);font-weight:600">—</td>
           <td class="col-num"></td>
+          <td class="col-num col-actual"></td>
           <td class="col-num col-variance"></td>
           <td></td>
         </tr>
