@@ -3388,7 +3388,13 @@
                  a specific line auto-clones Working → Actual on first
                  use. Picking a "section-only" entry sets the COA section
                  without picking a sub-line — useful as catch-all coding
-                 when there's no obvious line. #}
+                 when there's no obvious line.
+                 Note on the selected check: transaction.budget_line_id
+                 stores the ACTUAL line id, but the dropdown options are
+                 keyed by WORKING line ids (since Working is the source
+                 of truth for the dropdown). We translate via
+                 actual_to_working[actual_id] → working_id to compare. #}
+              {% set _wid_for_selected = actual_to_working.get(t.budget_line_id, t.budget_line_id) if t.budget_line_id else None %}
               {% for grp in actuals_pick_groups %}
               <optgroup label="{{ grp.code }}  {{ grp.name }}">
                 {# Section-only catch-all option, listed first in the group #}
@@ -3398,7 +3404,7 @@
                 </option>
                 {% for ln in grp.lines %}
                 <option value="{{ ln.id }}"
-                  {% if t.budget_line_id == ln.id %}selected{% endif %}>
+                  {% if _wid_for_selected == ln.id %}selected{% endif %}>
                   {{ ln.description or ln.account_name or 'untitled' }}{% if ln.estimated_total %} — ${{ '%.0f'|format(ln.estimated_total|float) }}{% endif %}
                 </option>
                 {% endfor %}
@@ -4499,13 +4505,21 @@
           } catch (err) { fail++; }
         }
         if (workingJustMade && actualJustMade) {
-          _actualsToast(`Working budget initialized + Actual budget started. ${ok} linked${fail ? ` (${fail} failed)` : ''}.`, 'green');
+          _actualsToast(`Working budget initialized + Actual budget started. ${ok} linked${fail ? ` (${fail} failed)` : ''}. Reloading…`, 'green');
         } else if (actualJustMade) {
-          _actualsToast(`Actual budget started. ${ok} linked${fail ? ` (${fail} failed)` : ''}.`, 'green');
+          _actualsToast(`Actual budget started. ${ok} linked${fail ? ` (${fail} failed)` : ''}. Reloading…`, 'green');
         } else {
           _actualsToast(`${ok} linked${fail ? ` (${fail} failed)` : ''}.`, fail ? 'yellow' : 'green');
         }
         actualsBulkClear();
+        // After auto-init the dropdown options are stale (they were
+        // built from Estimated lines before Working/Actual existed).
+        // Force a reload so the post-auto-init state is rendered with
+        // matching ids. For non-auto-init bulk drops, the row's
+        // dropdown was already updated client-side in the loop above.
+        if (workingJustMade || actualJustMade) {
+          setTimeout(() => window.location.reload(), 1000);
+        }
       });
     });
 

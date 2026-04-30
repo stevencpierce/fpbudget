@@ -3187,6 +3187,7 @@ def budget_view(pid, bid):
     # the Working line id so the budget table (which renders Working
     # lines) can look up the actual amount inline.
     actual_by_line_id = {}
+    actual_to_working = {}  # {actual_line_id: source_working_line_id}
     has_actual_budget = False
     actual_budget_meta = None
     try:
@@ -3201,6 +3202,17 @@ def budget_view(pid, bid):
                 "name":        _actual_budget.name,
                 "created_at":  _actual_budget.created_at.isoformat() if _actual_budget.created_at else None,
             }
+            # Map every Actual line back to its source Working line so the
+            # Actuals dropdown's "selected" check can resolve
+            # transaction.budget_line_id (an Actual id) to the Working id
+            # the dropdown's options are keyed by.
+            for _alid, _wlid in (
+                db.session.query(BudgetLine.id, BudgetLine.source_line_id)
+                .filter(BudgetLine.budget_id == _actual_budget.id,
+                        BudgetLine.source_line_id.isnot(None))
+                .all()
+            ):
+                actual_to_working[_alid] = _wlid
             # Sum transaction amounts per Actual line. Then translate
             # via source_line_id → Working line id.
             from sqlalchemy import func as _func
@@ -3501,6 +3513,7 @@ def budget_view(pid, bid):
         actuals_pick_groups=actuals_pick_groups,
         actuals_pick_budget=actuals_pick_budget,
         actual_by_line_id=actual_by_line_id,
+        actual_to_working=actual_to_working,
         has_actual_budget=has_actual_budget,
         actual_budget_meta=actual_budget_meta,
     )
