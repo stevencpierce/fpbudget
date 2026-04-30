@@ -921,6 +921,22 @@ def admin_docs_wipe_project(pid):
                 errors.append(f"{label_id} ({original_src}): {err1}")
         return False
 
+    # Step 0: delete every Transaction row for this project FIRST.
+    # The 2026-04-30 doc-upload→Transaction auto-create wire means
+    # every DocUpload now has a Transaction with doc_upload_id FK
+    # pointing at it. Deleting the upload without first dropping the
+    # txn raises ForeignKeyViolation. We clear all project txns at
+    # once (faster than per-row) — for the wipe-test path that's the
+    # right semantics anyway: Doc rows go, txn rows go, fresh slate.
+    try:
+        _txn_count = (db.session.query(Transaction)
+                      .filter_by(project_id=pid)
+                      .delete(synchronize_session=False))
+        if _txn_count:
+            logging.info(f"[DOCS WIPE] deleted {_txn_count} Transaction rows for project {pid}")
+    except Exception as _txe:
+        errors.append(f"transaction wipe failed: {_txe}")
+
     for up in uploads:
         # Step 1: move the filed (processed) Dropbox copy to trash.
         if _move_to_trash(up.filed_dropbox_path, f"upload {up.id} filed"):
@@ -13018,6 +13034,11 @@ def docs_upload_delete(uid):
             _r2_client().delete_object(Bucket=_R2_BUCKET, Key=upload.r2_key)
         except Exception:
             pass
+    # Delete child Transaction(s) first to avoid FK violation. Per the
+    # 2026-04-30 wire, every DocUpload typically has one Transaction
+    # row with doc_upload_id set — but a single doc could back several
+    # txns (invoice splits) so use a loop, not assume cardinality.
+    Transaction.query.filter_by(doc_upload_id=upload.id).delete(synchronize_session=False)
     db.session.delete(upload)
     db.session.commit()
     try:
@@ -13050,6 +13071,7 @@ def docs_bulk_delete(pid):
                                   DocUpload.project_id == pid).all()
     deleted, skipped, labels = 0, 0, []
     paths_to_trash = []
+    upload_ids_to_delete = []
     for u in rows:
         if not is_admin and u.uploader_id != current_user.id:
             skipped += 1
@@ -13064,8 +13086,19 @@ def docs_bulk_delete(pid):
             _r2_client().delete_object(Bucket=_R2_BUCKET, Key=u.r2_key)
         except Exception:
             pass
-        db.session.delete(u)
+        upload_ids_to_delete.append(u.id)
         deleted += 1
+    # Delete child Transaction rows first (FK constraint). One bulk
+    # delete is faster than per-upload, and synchronize_session=False
+    # is fine because we're about to delete the parents in the same
+    # transaction anyway.
+    if upload_ids_to_delete:
+        Transaction.query.filter(
+            Transaction.doc_upload_id.in_(upload_ids_to_delete)
+        ).delete(synchronize_session=False)
+        DocUpload.query.filter(
+            DocUpload.id.in_(upload_ids_to_delete)
+        ).delete(synchronize_session=False)
     db.session.commit()
     # Move all the Dropbox files to /_TRASH/ in one go (best-effort,
     # never fails the request — DB rows are already gone).
@@ -13110,7 +13143,12 @@ def docs_purge_ghosts(pid):
     for u in rows:
         ids.append(u.id)
         labels.append(u.filed_filename or u.original_filename or f'Upload #{u.id}')
-        db.session.delete(u)
+    # Drop child Transaction rows first (FK constraint).
+    if ids:
+        Transaction.query.filter(
+            Transaction.doc_upload_id.in_(ids)
+        ).delete(synchronize_session=False)
+        DocUpload.query.filter(DocUpload.id.in_(ids)).delete(synchronize_session=False)
     db.session.commit()
     try:
         if ids:
