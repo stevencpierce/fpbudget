@@ -216,6 +216,15 @@ class Budget(db.Model):
     version_status  = db.Column(db.String(20), default='current', nullable=False)  # current | superseded | archived
     parent_budget_id = db.Column(db.Integer, db.ForeignKey('budget.id'), nullable=True)
     version_number  = db.Column(db.Integer, nullable=True)   # shared by Estimated + its Working pair
+
+    # Marks an Actual budget — peer to Estimated/Working but represents
+    # accounting reality, not planning intent. Auto-cloned from Working
+    # the first time a Transaction is linked to a budget line in this
+    # project. Lines on an actual budget point back at their Working
+    # source via BudgetLine.source_line_id; transactions FK directly
+    # to the actual lines (never to Working lines).
+    is_actual       = db.Column(db.Boolean, default=False, nullable=False,
+                                server_default='0')
     lines           = db.relationship("BudgetLine", backref="budget", lazy=True,
                                       cascade="all, delete-orphan")
     schedule_days   = db.relationship("ScheduleDay", backref="budget", lazy=True,
@@ -284,6 +293,19 @@ class BudgetLine(db.Model):
                                        cascade="all, delete-orphan")
     schedule_days    = db.relationship("ScheduleDay", backref="line", lazy=True,
                                        foreign_keys="ScheduleDay.budget_line_id")
+
+    # ── Actuals linkage (added 2026-04-30) ─────────────────────────────
+    # When a BudgetLine belongs to an Actual budget (Budget.is_actual=
+    # True), source_line_id points back at the Working line it was
+    # cloned from. Lets us:
+    #   • Re-find the Actual equivalent when a user picks a Working line
+    #   • Sync structural changes from Working → Actual on demand
+    #   • Detect orphans (Working line was deleted while Actual line
+    #     still has linked transactions — orphan_from_working flips on)
+    source_line_id = db.Column(db.Integer, db.ForeignKey('budget_line.id'),
+                                nullable=True)
+    orphan_from_working = db.Column(db.Boolean, default=False, nullable=False,
+                                    server_default='0')
 
 
 class FringeConfig(db.Model):

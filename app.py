@@ -12222,6 +12222,22 @@ def _web_worker_essential_columns():
                 "UPDATE transaction SET account_code = 6600 WHERE account_code = 19000",
                 "UPDATE transaction SET account_code = 6700 WHERE account_code = 20000",
                 "UPDATE transaction SET account_code = 6800 WHERE account_code = 20500",
+                # ── 2026-04-30: Actual-budget peer mode (Phase 2a) ────
+                # Budget.is_actual flag distinguishes the auto-cloned
+                # actuals budget from Estimated/Working planning peers.
+                "ALTER TABLE budget "
+                "  ADD COLUMN IF NOT EXISTS is_actual BOOLEAN DEFAULT FALSE",
+                # BudgetLine back-pointer to the Working line this row
+                # was cloned from, plus orphan flag for "Working deleted
+                # me while I still hold transactions" cases.
+                "ALTER TABLE budget_line "
+                "  ADD COLUMN IF NOT EXISTS source_line_id INTEGER REFERENCES budget_line(id)",
+                "ALTER TABLE budget_line "
+                "  ADD COLUMN IF NOT EXISTS orphan_from_working BOOLEAN DEFAULT FALSE",
+                "CREATE INDEX IF NOT EXISTS ix_budget_actual "
+                "  ON budget (project_id, is_actual, version_status)",
+                "CREATE INDEX IF NOT EXISTS ix_budget_line_source "
+                "  ON budget_line (source_line_id)",
             ]:
                 try:
                     cur.execute(sql)
