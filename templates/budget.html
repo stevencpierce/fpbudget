@@ -1663,10 +1663,21 @@
   window.docsRemove = function(idx){ docsQueue.splice(idx,1); docsRenderQueue(); };
 
   function docsAddFiles(files){
+    // Dedupe by name + size + lastModified so the same file dropped or
+    // selected twice doesn't queue twice — that race used to slip past
+    // the server-side dedupe and produce two filed copies of one file.
+    const _key = f => `${f.name}::${f.size}::${f.lastModified || 0}`;
+    const existing = new Set(docsQueue.map(it => _key(it.file)));
+    let skipped = 0;
     for(const f of files){
+      if(existing.has(_key(f))){ skipped++; continue; }
+      existing.add(_key(f));
       const item={file:f,status:'pending',thumbUrl:null};
       if(f.type.startsWith('image/')){const r=new FileReader();r.onload=e=>{item.thumbUrl=e.target.result;docsRenderQueue();};r.readAsDataURL(f);}
       docsQueue.push(item);
+    }
+    if(skipped > 0){
+      console.log(`[docs] Skipped ${skipped} duplicate file${skipped===1?'':'s'} from queue`);
     }
     docsRenderQueue();
   }

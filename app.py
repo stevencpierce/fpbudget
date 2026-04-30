@@ -939,6 +939,23 @@ def admin_docs_wipe_project(pid):
         except Exception as _re:
             errors.append(f"upload {up.id}: db delete failed: {_re}")
 
+    # Step 2.5: COMMIT THE DB DELETES NOW. Critical ordering — without
+    # this, any subsequent exception in the folder-cleanup phase could
+    # roll back the deletes, leaving orphan DocUpload rows even after
+    # Dropbox has been wiped (the "I have rows in software pointing at
+    # files Dropbox no longer has" symptom).
+    try:
+        db.session.commit()
+    except Exception as _ce:
+        db.session.rollback()
+        errors.append(f"commit failed: {_ce}")
+        return jsonify({
+            "error": f"Commit failed, wipe partial: {_ce}",
+            "deleted_count": 0,
+            "moved_count": moved_count,
+            "errors": errors[:20],
+        }), 500
+
     # Step 3: nuke the project's PROCESSED DOCUMENTS + source-archive
     # subtrees so an empty-folder skeleton doesn't sit around between
     # test runs. Each test should start with the same clean state so
@@ -967,18 +984,6 @@ def admin_docs_wipe_project(pid):
                 # not_found is fine — folder didn't exist for this project.
                 if "not_found" not in str(_fe):
                     logging.info(f"[DOCS WIPE] could not delete {_wf}: {_fe}")
-
-    try:
-        db.session.commit()
-    except Exception as _ce:
-        db.session.rollback()
-        errors.append(f"commit failed: {_ce}")
-        return jsonify({
-            "error": f"Commit failed, wipe partial: {_ce}",
-            "deleted_count": 0,
-            "moved_count": moved_count,
-            "errors": errors[:20],
-        }), 500
 
     return jsonify({
         "ok":            True,
@@ -12308,6 +12313,22 @@ def docs_upload_post(pid):
         except Exception:
             doc_date = None
 
+    # Late-stage duplicate re-check. Catches the race where two parallel
+    # POSTs for the same file both pass the pre-analysis duplicate query
+    # (because neither has committed yet), then both file to Dropbox.
+    # By the time we get here, the first request has typically already
+    # committed its row — so the second one finds it. The second upload's
+    # filed file then gets routed to /_DUPLICATES/ below, instead of
+    # silently producing two clean copies.
+    if not duplicate_of:
+        duplicate_of = (
+            DocUpload.query
+            .filter_by(project_id=pid, file_hash=file_hash)
+            .filter(DocUpload.filed_dropbox_path.isnot(None))
+            .filter(DocUpload.status != 'review')
+            .first()
+        )
+
     # Persist the upload row with whatever we got back from the Analyzer.
     upload = DocUpload(
         project_id=pid,
@@ -12508,6 +12529,46 @@ def docs_upload_status(uid):
     })
 
 
+def _trash_dropbox_paths(paths):
+    """Move a list of Dropbox paths to /_TRASH/<YYYY-MM-DD>/ for delete
+    operations. Returns count of successful moves. Best-effort; never
+    raises. The trash folder uses today's date so a day's deletes
+    cluster together in case the user wants to recover a file."""
+    paths = [p for p in (paths or []) if p]
+    if not paths:
+        return 0
+    try:
+        dbx = _dbx_client()
+    except Exception as _ce:
+        logging.warning(f"[docs/delete] dbx init failed: {_ce}")
+        return 0
+    from datetime import datetime as _dt_mod
+    trash_root = f"/_TRASH/{_dt_mod.utcnow().strftime('%Y-%m-%d')}"
+    moved = 0
+    for src in paths:
+        # Strip the legacy ops prefix if running in namespace mode.
+        norm = src
+        _ops_prefix_str = (_DBX_OPS_ROOT or "").rstrip("/") if _DBX_NAMESPACE_ID else ""
+        if _ops_prefix_str and norm.startswith(_ops_prefix_str + "/"):
+            norm = norm[len(_ops_prefix_str):]
+        safe_frag = src.lstrip('/').replace('/', '_')
+        dest = f"{trash_root}/{safe_frag}"
+        for path_try in (norm, src) if norm != src else (norm,):
+            try:
+                dbx.files_move_v2(path_try, dest, autorename=True)
+                moved += 1
+                break
+            except Exception as _me:
+                if "not_found" in str(_me).lower():
+                    # File was already gone — count as moved so the caller
+                    # doesn't think the delete failed. Source bytes are
+                    # not in Dropbox; nothing to trash.
+                    logging.info(f"[docs/delete] {src} already gone in Dropbox")
+                    break
+                continue
+    return moved
+
+
 @app.route("/docs/upload/<int:uid>/delete", methods=["POST"])
 @login_required
 def docs_upload_delete(uid):
@@ -12519,11 +12580,21 @@ def docs_upload_delete(uid):
     _act_label  = upload.filed_filename or upload.original_filename or f'Upload #{uid}'
     _act_vendor = upload.vendor
     _act_amount = float(upload.amount or 0)
-    # Remove from R2
-    try:
-        _r2_client().delete_object(Bucket=_R2_BUCKET, Key=upload.r2_key)
-    except Exception:
-        pass
+    # Move BOTH the filed copy AND the source archive copy to /_TRASH/.
+    # Without this, deleting a row leaves orphaned Dropbox files that
+    # show up on the next /reconcile run as "rediscovered" uploads.
+    paths_to_trash = []
+    if upload.filed_dropbox_path:
+        paths_to_trash.append(upload.filed_dropbox_path)
+    if upload.source_archive_path and upload.source_archive_path != upload.filed_dropbox_path:
+        paths_to_trash.append(upload.source_archive_path)
+    trashed = _trash_dropbox_paths(paths_to_trash)
+    # Legacy R2 cleanup (no-op for new uploads; harmless if key is dead).
+    if upload.r2_key:
+        try:
+            _r2_client().delete_object(Bucket=_R2_BUCKET, Key=upload.r2_key)
+        except Exception:
+            pass
     db.session.delete(upload)
     db.session.commit()
     try:
@@ -12532,9 +12603,9 @@ def docs_upload_delete(uid):
                       project_id=pid,
                       before={'vendor': _act_vendor, 'amount': _act_amount},
                       after=None,
-                      note=f'Deleted "{_act_label}"')
+                      note=f'Deleted "{_act_label}" (Dropbox files moved to /_TRASH/)')
     except Exception: pass
-    return jsonify({"status": "deleted"})
+    return jsonify({"status": "deleted", "trashed_files": trashed})
 
 
 @app.route("/docs/<int:pid>/bulk-delete", methods=["POST"])
@@ -12555,11 +12626,17 @@ def docs_bulk_delete(pid):
     rows = DocUpload.query.filter(DocUpload.id.in_(ids),
                                   DocUpload.project_id == pid).all()
     deleted, skipped, labels = 0, 0, []
+    paths_to_trash = []
     for u in rows:
         if not is_admin and u.uploader_id != current_user.id:
             skipped += 1
             continue
         labels.append(u.filed_filename or u.original_filename or f'Upload #{u.id}')
+        # Collect both filed + archive paths for batched Dropbox-trash.
+        if u.filed_dropbox_path:
+            paths_to_trash.append(u.filed_dropbox_path)
+        if u.source_archive_path and u.source_archive_path != u.filed_dropbox_path:
+            paths_to_trash.append(u.source_archive_path)
         try:
             _r2_client().delete_object(Bucket=_R2_BUCKET, Key=u.r2_key)
         except Exception:
@@ -12567,6 +12644,9 @@ def docs_bulk_delete(pid):
         db.session.delete(u)
         deleted += 1
     db.session.commit()
+    # Move all the Dropbox files to /_TRASH/ in one go (best-effort,
+    # never fails the request — DB rows are already gone).
+    trashed = _trash_dropbox_paths(paths_to_trash)
     try:
         if deleted:
             _log_activity(action='delete', entity_type='doc_upload_bulk',
@@ -12578,7 +12658,8 @@ def docs_bulk_delete(pid):
                                + ", ".join(labels[:5])
                                + (f' (+{len(labels)-5} more)' if len(labels) > 5 else ''))
     except Exception: pass
-    return jsonify({"status": "ok", "deleted": deleted, "skipped": skipped})
+    return jsonify({"status": "ok", "deleted": deleted, "skipped": skipped,
+                    "trashed_files": trashed})
 
 
 @app.route("/docs/<int:pid>/purge-ghosts", methods=["POST"])
