@@ -2734,173 +2734,444 @@
 </script>
 
 <!-- ═══ ACTUALS ════════════════════════════════════════════════════════════ -->
+{# Ported from FPBudgetSync project_detail.html — the matching workspace
+   formerly hosted on the standalone Actualizer site. Slice 1 (this
+   commit): structure + click-to-code + Sync button. Slice 2 adds
+   drag-drop and modals. #}
 <div class="tab-panel" id="tab-actuals">
-  <div class="actuals-header">
+  {# ── Header bar with action buttons ── #}
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:8px">
     <div>
       <h3 style="margin:0 0 .2rem">Actuals</h3>
-      <p class="muted" style="font-size:.82rem">Receipts, invoices, and QBO transactions land here. The full ledger view (with budget-line linking) ships in Phase 3 — for now this is a preview of every transaction the system has ingested.</p>
+      <p class="muted" style="font-size:.78rem;margin:0">
+        Match receipts and QBO transactions to budget lines. Linking the first
+        transaction auto-clones the Working budget into a separate Actual budget.
+      </p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-sync-panel')">↻ Sync QBO</button>
+      <button type="button" class="btn btn-sm btn-ghost" onclick="toggleActualsPanel('actuals-settings-panel')">⚙ Settings</button>
     </div>
   </div>
 
-  {# ── Recent transactions preview (interim — Phase 3 replaces with
-       the full transactional ledger + budget-line picker + doc badge) ── #}
-  {% if recent_transactions %}
-  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;
-              padding:14px 16px;margin-bottom:18px">
-    <div style="display:flex;align-items:center;justify-content:space-between;
-                margin-bottom:10px">
-      <h4 style="margin:0;font-size:.95rem">
-        Recent transactions
-        <span class="muted" style="font-weight:400;font-size:.8rem">
-          ({{ recent_transactions|length }} most recent)
-        </span>
-      </h4>
-      <span class="muted" style="font-size:.7rem">
-        Source mix: {% set _src = {} %}
-        {% for t in recent_transactions %}
-          {% set _ = _src.update({t.source: _src.get(t.source, 0) + 1}) %}
-        {% endfor %}
-        {% for src, n in _src.items() %}{{ n }} {{ src.replace('_', ' ') }}{% if not loop.last %} · {% endif %}{% endfor %}
-      </span>
+  {# ── Sync Panel (collapsible) ── #}
+  <div id="actuals-sync-panel" style="display:none;margin-bottom:12px;padding:14px 16px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px">
+    {% if not qbo_connection or not qbo_connection.refresh_token %}
+      <div style="color:var(--yellow);font-size:.85rem">
+        QuickBooks not connected.
+        <a href="/qbo/oauth/start" style="color:var(--blue);text-decoration:underline">Connect to QuickBooks ↗</a>
+        <span class="muted" style="margin-left:.6rem;font-size:.78rem">(OAuth route ships in slice 3 — for now this is the structural placeholder.)</span>
+      </div>
+    {% elif not project.qbo_account_ids or project.qbo_account_ids == '[]' %}
+      <div style="color:var(--yellow);font-size:.85rem">
+        QuickBooks is connected but no bank/credit-card accounts are selected for this project.
+        Open <strong>⚙ Settings</strong> to pick which accounts feed this project.
+      </div>
+    {% else %}
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="font-size:.85rem;color:var(--text-muted)">
+          {% if project.last_synced %}
+            Last synced: <strong>{{ project.last_synced.strftime('%Y-%m-%d %H:%M UTC') }}</strong>
+          {% else %}
+            Never synced.
+          {% endif %}
+          {% if project.sync_through %}
+            · watermark <strong>{{ project.sync_through }}</strong>
+          {% endif %}
+        </div>
+        <button type="button" class="btn btn-sm btn-primary"
+                onclick="actualsSyncNow({{ project.id }})">⤓ Sync now</button>
+        <span id="actuals-sync-status" class="muted" style="font-size:.78rem"></span>
+      </div>
+      <div style="margin-top:10px;padding:8px 10px;background:rgba(46,204,113,.04);border:1px solid rgba(46,204,113,.18);border-radius:6px;font-size:.74rem;color:var(--text-muted)">
+        <div style="font-weight:600;color:var(--green);margin-bottom:3px">Sync safety</div>
+        Overlap window: re-queries 14 days before the watermark to catch late-accepted bank-feed items.
+        CDC sweep: also pulls anything QBO updated since the last run, regardless of TxnDate.
+      </div>
+    {% endif %}
+  </div>
+
+  {# ── Settings Panel (collapsible — slice 3 wires the real form) ── #}
+  <div id="actuals-settings-panel" style="display:none;margin-bottom:12px;padding:14px 16px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px">
+    <div class="muted" style="font-size:.85rem">
+      Per-project QBO account picker ships in slice 3. Today's settings:
+      <code>qbo_account_ids = {{ project.qbo_account_ids or '[]' }}</code>
     </div>
-    <table class="data-table" style="font-size:.82rem">
+  </div>
+
+  {# ── Stat cards (Total / Coded / Need coding / Need receipt / Doc-only) ── #}
+  {% set _t_all       = actuals_transactions | length %}
+  {% set _t_coded     = actuals_transactions | selectattr('budget_line_id') | list | length %}
+  {% set _t_uncoded   = _t_all - _t_coded %}
+  {% set _t_need_rcpt = actuals_transactions
+      | rejectattr('doc_upload_id') | rejectattr('not_project_expense', 'equalto', True)
+      | list | length %}
+  {% set _t_doc_only  = actuals_transactions | selectattr('source', 'equalto', 'doc_upload') | list | length %}
+  {% set _t_qbo       = actuals_transactions | selectattr('source', 'equalto', 'qbo_sync')   | list | length %}
+  {% set _t_manual    = actuals_transactions | selectattr('source', 'equalto', 'manual_entry') | list | length %}
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
+    {% for label, n, color, filt in [
+      ('Transactions',    _t_all,       'var(--text-muted)',  'all'),
+      ('Coded',           _t_coded,     'var(--green)',       'coded'),
+      ('Need coding',     _t_uncoded,   'var(--yellow)',      'uncoded'),
+      ('Need receipt',    _t_need_rcpt, 'var(--orange, #e0a040)', 'no_doc'),
+      ('Doc-only',        _t_doc_only,  'var(--blue)',        'doc_only'),
+    ] %}
+    <div class="actuals-stat-card" data-filter="{{ filt }}"
+         onclick="actualsApplyFilter('{{ filt }}')"
+         style="flex:1;min-width:120px;padding:10px 14px;text-align:center;cursor:pointer;
+                background:var(--bg-card);border:1px solid var(--border);border-radius:8px;
+                transition:border-color .12s">
+      <div style="font-size:1.3rem;font-weight:700;color:{{ color }}">{{ n }}</div>
+      <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">{{ label }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# ── Sub-tabs (Match | By Department) ── #}
+  <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px">
+    <button type="button" id="actuals-subtab-match"
+            onclick="showActualsPane('match')"
+            class="actuals-subtab actuals-subtab-active"
+            style="padding:8px 18px;background:none;border:none;border-bottom:2px solid var(--blue);color:var(--text);cursor:pointer;font-size:.88rem">
+      Match
+    </button>
+    <button type="button" id="actuals-subtab-bydept"
+            onclick="showActualsPane('bydept')"
+            class="actuals-subtab"
+            style="padding:8px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);cursor:pointer;font-size:.88rem">
+      By Department
+    </button>
+  </div>
+
+  {# ════════════════════════════════════════════════════════════
+     MATCH PANE — COA sidebar | Transaction list
+     ════════════════════════════════════════════════════════════ #}
+  <div id="actuals-pane-match" class="actuals-pane">
+    {% if not actuals_transactions %}
+    <div class="empty-state">
+      <p>No transactions yet.</p>
+      <p class="muted" style="margin-top:.3rem;font-size:.82rem">
+        Upload a receipt in the Docs tab — it'll auto-create a transaction here.
+        Once QuickBooks is connected and synced, bank/card transactions land here too.
+      </p>
+    </div>
+    {% else %}
+
+    <div style="display:grid;grid-template-columns:200px minmax(0,1fr);gap:16px;align-items:start">
+
+      {# ── COLUMN 1: Chart of Accounts (sticky) ── #}
+      <div style="position:sticky;top:14px;max-height:calc(100vh - 80px);display:flex;flex-direction:column">
+        <h4 style="margin:0 0 8px;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Chart of Accounts</h4>
+        <div style="overflow-y:auto;flex:1;padding-right:2px">
+          <div class="coa-item" data-code="not_project"
+               style="padding:6px 10px;margin-bottom:4px;border-radius:5px;border:1px solid #4a2a2a;background:#1e1414;font-size:.76rem">
+            <span style="color:#e05555;font-weight:600">✕ Not Project Expense</span>
+          </div>
+          {% for code, name in coa_sections %}
+          <div class="coa-item" data-code="{{ code }}" data-name="{{ name }}"
+               style="padding:6px 10px;margin-bottom:3px;border-radius:5px;border:1px solid var(--border);background:var(--bg-input);font-size:.76rem;display:flex;justify-content:space-between;gap:6px;align-items:baseline">
+            <span style="color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ name }}</span>
+            <span style="color:var(--text-muted);flex-shrink:0;font-size:.7rem">{{ code }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        <p class="muted" style="font-size:.66rem;margin:8px 0 0;line-height:1.4">
+          Drag-drop coding ships in slice 2. For now, use the dropdown next to each transaction.
+        </p>
+      </div>
+
+      {# ── COLUMN 2: Transactions list ── #}
+      <div>
+        {# Build the budget-line picker once — sub-line dropdown grouped
+           by COA section. When user picks a line, JS POSTs to
+           /actuals/transaction/<id>/set-line, which triggers the
+           Working→Actual auto-clone the first time. #}
+        {% set _wb = current_working_bid %}
+
+        <div id="actuals-txn-list">
+        {% for t in actuals_transactions %}
+          {% set _doc = docs_by_id.get(t.doc_upload_id) if t.doc_upload_id else None %}
+          {% set _coded = (t.budget_line_id is not none) or (t.account_code is not none) %}
+          {% set _has_doc = (t.doc_upload_id is not none) or (t.source == 'doc_upload') %}
+          <div class="actuals-txn-row"
+               data-tid="{{ t.id }}"
+               data-source="{{ t.source or '' }}"
+               data-coded="{{ '1' if _coded else '0' }}"
+               data-has-doc="{{ '1' if _has_doc else '0' }}"
+               data-not-project="{{ '1' if t.not_project_expense else '0' }}"
+               style="display:flex;align-items:center;gap:8px;padding:7px 10px;margin-bottom:4px;
+                      border:1px solid {% if t.not_project_expense %}#3a2a2a{% elif _coded %}#1a3a2a{% else %}var(--border){% endif %};
+                      border-radius:6px;
+                      background:{% if t.not_project_expense %}#150d0d{% elif _coded %}#0d1a14{% else %}var(--bg-card){% endif %};
+                      {% if t.not_project_expense %}opacity:.65{% endif %}">
+            {# Source pill #}
+            <span style="flex-shrink:0;font-size:.7rem;width:24px;text-align:center"
+                  title="Source: {{ t.source or 'unknown' }}">
+              {% if t.source == 'doc_upload' %}📄
+              {% elif t.source == 'qbo_sync' %}🏦
+              {% elif t.source == 'manual_entry' %}✏️
+              {% elif t.source == 'invoice_split' %}↳
+              {% else %}❓{% endif %}
+            </span>
+            <span style="flex-shrink:0;font-size:.72rem;color:var(--text-muted);min-width:80px">
+              {{ t.txn_date or '—' }}
+            </span>
+            <span style="flex:1;min-width:0;font-size:.83rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                  title="{{ t.vendor or '' }}">
+              {{ t.vendor or '— vendor unknown —' }}
+            </span>
+            {# Doc badge — clicks open the existing Docs detail modal #}
+            {% if _doc %}
+            <a href="#" onclick="openDocDetail({{ _doc.id }}, null);return false"
+               title="View receipt: {{ _doc.filed_filename or _doc.original_filename }}"
+               style="flex-shrink:0;font-size:.66rem;padding:2px 7px;background:#1a2a1e;border:1px solid #2a4a2e;border-radius:4px;color:var(--green);text-decoration:none">
+              📎 {{ (_doc.filed_filename or _doc.original_filename or '')[:18] }}{% if (_doc.filed_filename or _doc.original_filename or '')|length > 18 %}…{% endif %}
+            </a>
+            {% elif t.source == 'qbo_sync' %}
+            <span style="flex-shrink:0;font-size:.66rem;padding:2px 7px;background:#2a1414;border:1px solid #4a2020;border-radius:4px;color:#e08080">
+              ⚠ no receipt
+            </span>
+            {% endif %}
+            {# Budget-line picker — 2-tier select (optgroup per section) #}
+            <select class="actuals-line-picker"
+                    data-tid="{{ t.id }}"
+                    onchange="actualsSetLine(this)"
+                    {% if t.not_project_expense %}disabled{% endif %}
+                    style="flex-shrink:0;width:240px;font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px">
+              <option value="">— pick budget line —</option>
+              {% for sec in sections %}
+                {% if sec.lines %}
+                <optgroup label="{{ sec.code }}  {{ sec.name }}">
+                  {% for ln in sec.lines %}
+                  <option value="{{ ln.id }}"
+                    {% if t.budget_line_id == ln.id %}selected{% endif %}>
+                    {{ ln.description or ln.account_name or 'untitled' }}
+                  </option>
+                  {% endfor %}
+                </optgroup>
+                {% endif %}
+              {% endfor %}
+            </select>
+            <span style="flex-shrink:0;font-size:.85rem;font-weight:700;min-width:80px;text-align:right;
+                         color:{% if t.is_expense %}#e05555{% else %}var(--green){% endif %}">
+              {% if t.is_expense %}−{% else %}+{% endif %}{{ (t.amount or 0) | currency }}
+            </span>
+            {# Not-project + delete actions (slice 2 will add edit modal) #}
+            {% if not t.not_project_expense %}
+            <button type="button" class="btn btn-xs btn-ghost"
+                    onclick="actualsMarkNotProject({{ t.id }})"
+                    title="Mark as not a project expense"
+                    style="flex-shrink:0;font-size:.66rem;padding:2px 6px;color:var(--text-muted)">✕</button>
+            {% else %}
+            <span style="flex-shrink:0;font-size:.65rem;color:#e05555;background:#2a1414;border:1px solid #4a2020;border-radius:3px;padding:1px 5px">not project</span>
+            {% endif %}
+          </div>
+        {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ════════════════════════════════════════════════════════════
+     BY DEPARTMENT PANE — the legacy section rollup
+     ════════════════════════════════════════════════════════════ #}
+  <div id="actuals-pane-bydept" class="actuals-pane" style="display:none">
+    <table class="data-table actuals-table">
       <thead>
         <tr>
-          <th style="width:80px">Date</th>
-          <th>Vendor</th>
-          <th class="col-num">Amount</th>
-          <th>Source</th>
-          <th>Doc</th>
-          <th>Budget Line</th>
-          <th>Status</th>
+          <th class="col-code">Code</th>
+          <th>Account</th>
+          <th class="col-num">Working</th>
+          <th class="col-num">Synced</th>
+          <th class="col-num">Manual</th>
+          <th class="col-num">Total Actual</th>
+          <th class="col-num">Remaining</th>
+          <th class="col-num">% Used</th>
         </tr>
       </thead>
       <tbody>
-        {% for t in recent_transactions %}
-        <tr>
-          <td>{{ t.txn_date or '—' }}</td>
-          <td>{{ t.vendor or '—' }}</td>
-          <td class="col-num">{{ (t.amount or 0) | currency }}</td>
-          <td>
-            {% if t.source == 'doc_upload' %}📄 Receipt
-            {% elif t.source == 'qbo_sync' %}🏦 QBO
-            {% elif t.source == 'manual_entry' %}✏️ Manual
-            {% elif t.source == 'invoice_split' %}↳ Split
-            {% else %}{{ t.source or '—' }}{% endif %}
-          </td>
-          <td>
-            {% if t.doc_upload_id %}
-              <span style="color:var(--green)" title="Linked to DocUpload #{{ t.doc_upload_id }}">📎 linked</span>
-            {% else %}
-              <span class="muted">—</span>
+        {% for sec in sections %}
+          {% set sec_code = sec.code %}
+          {% set synced = actuals_by_code.get(sec_code, {}).get('total', 0) | float %}
+          {% set manual = manual_by_section.get(sec_code, 0) | float %}
+          {% set working = working_by_section.get(sec_code, 0) | float %}
+          {% set effective = synced if synced > 0 else manual %}
+          {% set remaining = working - effective %}
+          {% set pct = (effective / working * 100) if working > 0 else 0 %}
+          {% if working > 0 or effective > 0 %}
+          <tr>
+            <td class="col-code muted">{{ sec_code }}</td>
+            <td>{{ sec.name }}</td>
+            <td class="col-num">{{ working | currency }}</td>
+            <td class="col-num {{ 'muted' if synced == 0 else '' }}">{{ synced | currency if synced > 0 else '—' }}</td>
+            <td class="col-num {{ 'muted' if manual == 0 else '' }}">{{ manual | currency if manual > 0 else '—' }}</td>
+            <td class="col-num"><strong>{{ effective | currency }}</strong></td>
+            <td class="col-num {{ 'over' if remaining < 0 else 'under' if remaining > 0 else '' }}">{{ remaining | currency }}</td>
+            <td class="col-num {{ 'over' if pct > 100 else '' }}">{{ pct | round(1) }}%</td>
+          </tr>
+          {% endif %}
+        {% endfor %}
+        {# Unbudgeted — codes in actuals_by_code but not in any section #}
+        {% set budgeted_codes = [] %}
+        {% for sec in sections %}
+          {% for ln in sec.lines %}
+            {% if ln.account_code not in budgeted_codes %}
+              {% set _ = budgeted_codes.append(ln.account_code) %}
             {% endif %}
-          </td>
-          <td>
-            {% if t.budget_line_id %}
-              <span style="color:var(--green)">✓ linked</span>
-            {% else %}
-              <span class="muted">—</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if t.match_status == 'confirmed' %}
-              <span style="color:var(--green)">confirmed</span>
-            {% elif t.match_status == 'suggested' %}
-              <span style="color:var(--yellow)">suggested ({{ ((t.match_confidence or 0)*100)|int }}%)</span>
-            {% else %}
-              <span class="muted">unmatched</span>
-            {% endif %}
-          </td>
-        </tr>
+          {% endfor %}
+        {% endfor %}
+        {% for code, info in actuals_by_code.items() %}
+          {% if code not in budgeted_codes %}
+          <tr class="unbudgeted-row">
+            <td class="col-code muted">{{ code }}</td>
+            <td>{{ info.name }} <span class="badge-unbudgeted">unbudgeted</span></td>
+            <td class="col-num muted">—</td>
+            <td class="col-num">{{ info.total | currency }}</td>
+            <td class="col-num muted">—</td>
+            <td class="col-num"><strong>{{ info.total | currency }}</strong></td>
+            <td class="col-num over">{{ (0 - info.total) | currency }}</td>
+            <td class="col-num over">∞</td>
+          </tr>
+          {% endif %}
         {% endfor %}
       </tbody>
     </table>
-    <p class="muted" style="font-size:.72rem;margin-top:8px;margin-bottom:0">
-      Phase 3 (next build) replaces this with the interactive ledger:
-      click any row to pick the budget line it hits → triggers the
-      Working→Actual auto-clone the first time. For now this preview
-      confirms data is flowing in correctly.
-    </p>
+    {% if not actuals_by_code and not manual_by_section %}
+    <div class="empty-state">
+      <p>No actuals yet.</p>
+    </div>
+    {% endif %}
   </div>
-  {% endif %}
 
-  {% set actuals_rows = [] %}
-  {% set ns2 = namespace(all_codes=[]) %}
-  {% for sec in sections %}
-    {% for ln in sec.lines %}
-      {% if ln.account_code not in ns2.all_codes %}
-        {% set _ = ns2.all_codes.append(ln.account_code) %}
-      {% endif %}
-    {% endfor %}
-  {% endfor %}
+  {# ── JS for the Actuals tab ── #}
+  <script>
+  (function(){
+    const PROJ_ID = {{ project.id }};
 
-  <table class="data-table actuals-table">
-    <thead>
-      <tr>
-        <th class="col-code">Code</th>
-        <th>Account</th>
-        <th class="col-num">Working</th>
-        <th class="col-num">Synced <span class="muted" style="font-size:.7rem">(BudgetSync)</span></th>
-        <th class="col-num">Manual</th>
-        <th class="col-num">Total Actual</th>
-        <th class="col-num">Remaining <span class="muted" style="font-size:.7rem">(W−A)</span></th>
-        <th class="col-num">% Used</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for sec in sections %}
-        {% set sec_code = sec.code %}
-        {% set synced = actuals_by_code.get(sec_code, {}).get('total', 0) | float %}
-        {% set manual = manual_by_section.get(sec_code, 0) | float %}
-        {% set working = working_by_section.get(sec_code, 0) | float %}
-        {% set effective = synced if synced > 0 else manual %}
-        {% set remaining = working - effective %}
-        {% set pct = (effective / working * 100) if working > 0 else 0 %}
-        {% if working > 0 or effective > 0 %}
-        <tr>
-          <td class="col-code muted">{{ sec_code }}</td>
-          <td>{{ sec.name }}</td>
-          <td class="col-num">{{ working | currency }}</td>
-          <td class="col-num {{ 'muted' if synced == 0 else '' }}">{{ synced | currency if synced > 0 else '—' }}</td>
-          <td class="col-num {{ 'muted' if manual == 0 else '' }}">{{ manual | currency if manual > 0 else '—' }}</td>
-          <td class="col-num"><strong>{{ effective | currency }}</strong></td>
-          <td class="col-num {{ 'over' if remaining < 0 else 'under' if remaining > 0 else '' }}">{{ remaining | currency }}</td>
-          <td class="col-num {{ 'over' if pct > 100 else '' }}">{{ pct | round(1) }}%</td>
-        </tr>
-        {% endif %}
-      {% endfor %}
-      {# Unbudgeted lines: in actuals_by_code but not in any section #}
-      {% set budgeted_codes = [] %}
-      {% for sec in sections %}
-        {% for ln in sec.lines %}
-          {% if ln.account_code not in budgeted_codes %}
-            {% set _ = budgeted_codes.append(ln.account_code) %}
-          {% endif %}
-        {% endfor %}
-      {% endfor %}
-      {% for code, info in actuals_by_code.items() %}
-        {% if code not in budgeted_codes %}
-        <tr class="unbudgeted-row">
-          <td class="col-code muted">{{ code }}</td>
-          <td>{{ info.name }} <span class="badge-unbudgeted">unbudgeted</span></td>
-          <td class="col-num muted">—</td>
-          <td class="col-num">{{ info.total | currency }}</td>
-          <td class="col-num muted">—</td>
-          <td class="col-num"><strong>{{ info.total | currency }}</strong></td>
-          <td class="col-num over">{{ (0 - info.total) | currency }}</td>
-          <td class="col-num over">∞</td>
-        </tr>
-        {% endif %}
-      {% endfor %}
-    </tbody>
-  </table>
+    window.toggleActualsPanel = function (id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.style.display = el.style.display === 'none' ? '' : 'none';
+    };
 
-  {% if not actuals_by_code and not manual_by_section %}
-  <div class="empty-state">
-    <p>No actuals yet.</p>
-    <p class="muted" style="margin-top:.3rem;font-size:.82rem">Transactions coded in <strong>BudgetSync</strong> will appear here automatically. You can also enter manual amounts in the Working Budget tab (Working column).</p>
-  </div>
-  {% endif %}
+    window.showActualsPane = function (which) {
+      document.getElementById('actuals-pane-match').style.display  = which === 'match'  ? '' : 'none';
+      document.getElementById('actuals-pane-bydept').style.display = which === 'bydept' ? '' : 'none';
+      // toggle subtab visual state
+      document.querySelectorAll('.actuals-subtab').forEach(b => {
+        b.style.borderBottomColor = 'transparent';
+        b.style.color = 'var(--text-muted)';
+      });
+      const active = document.getElementById('actuals-subtab-' + which);
+      if (active) {
+        active.style.borderBottomColor = 'var(--blue)';
+        active.style.color = 'var(--text)';
+      }
+    };
+
+    // Click-to-code: change a budget-line dropdown → POST → refresh row state.
+    window.actualsSetLine = async function (selectEl) {
+      const tid     = parseInt(selectEl.dataset.tid);
+      const lineId  = selectEl.value;
+      selectEl.disabled = true;
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-line`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ budget_line_id: lineId || null }),
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          alert('Could not save: ' + (d.error || r.status));
+          return;
+        }
+        // First-time auto-clone toast
+        if (d.actual_was_just_created) {
+          _actualsToast('Actual budget started — Working was cloned for live tracking.');
+        }
+        // Reflect coded state on the row.
+        const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
+        if (row) {
+          row.dataset.coded = lineId ? '1' : '0';
+          row.style.background = lineId ? '#0d1a14' : 'var(--bg-card)';
+          row.style.borderColor = lineId ? '#1a3a2a' : 'var(--border)';
+        }
+      } catch (e) {
+        alert('Save failed: ' + e.message);
+      } finally {
+        selectEl.disabled = false;
+      }
+    };
+
+    window.actualsMarkNotProject = async function (tid) {
+      if (!confirm('Mark as not a project expense? It will be greyed out and excluded from rollups.')) return;
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/mark-not-project`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          alert('Could not mark: ' + (d.error || r.status));
+          return;
+        }
+        window.location.reload();
+      } catch (e) {
+        alert('Failed: ' + e.message);
+      }
+    };
+
+    window.actualsSyncNow = async function (pid) {
+      const status = document.getElementById('actuals-sync-status');
+      if (status) { status.textContent = 'Syncing…'; status.style.color = 'var(--text-muted)'; }
+      try {
+        const r = await fetch(`/projects/${pid}/actuals/sync-now`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          if (status) {
+            status.textContent = '✕ ' + (d.error || ('HTTP ' + r.status));
+            status.style.color = '#e05555';
+          }
+          return;
+        }
+        if (status) {
+          status.textContent = `✓ Imported ${d.imported || 0} txns (CDC: ${d.cdc_additions || 0}). Reloading…`;
+          status.style.color = 'var(--green)';
+        }
+        setTimeout(() => window.location.reload(), 800);
+      } catch (e) {
+        if (status) { status.textContent = '✕ ' + e.message; status.style.color = '#e05555'; }
+      }
+    };
+
+    window.actualsApplyFilter = function (filter) {
+      // Slice 1: highlight the selected card; full filter logic in slice 2.
+      document.querySelectorAll('.actuals-stat-card').forEach(c => {
+        c.style.borderColor = c.dataset.filter === filter ? 'var(--blue)' : 'var(--border)';
+      });
+      const rows = document.querySelectorAll('.actuals-txn-row');
+      rows.forEach(r => {
+        let show = true;
+        if (filter === 'coded')    show = r.dataset.coded === '1';
+        else if (filter === 'uncoded')  show = r.dataset.coded === '0' && r.dataset.notProject !== '1';
+        else if (filter === 'no_doc')   show = r.dataset.hasDoc === '0' && r.dataset.notProject !== '1';
+        else if (filter === 'doc_only') show = r.dataset.source === 'doc_upload';
+        r.style.display = show ? '' : 'none';
+      });
+    };
+
+    function _actualsToast(msg) {
+      const t = document.createElement('div');
+      t.textContent = msg;
+      t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1a3a2a;color:#74c69d;border:1px solid #2a5a3a;border-radius:6px;padding:10px 18px;font-size:.85rem;z-index:9999;box-shadow:0 6px 24px rgba(0,0,0,.5)';
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 4000);
+    }
+  })();
+  </script>
 </div>
 
 <!-- ═══ LOCATIONS ═══════════════════════════════════════════════════════════ -->

@@ -3246,16 +3246,19 @@ def budget_view(pid, bid):
 
     company_settings = CompanySettings.query.get(1) or CompanySettings()
     doc_uploads = DocUpload.query.filter_by(project_id=pid).order_by(DocUpload.uploaded_at.desc()).all()
-    # Recent transactions for the Actuals tab preview (Phase 3 will
-    # replace this with the full transactional ledger). For now we
-    # surface the most recent rows regardless of source so the user
-    # can see receipts/QBO ingestion landing immediately.
-    recent_transactions = (Transaction.query
-                           .filter_by(project_id=pid)
-                           .order_by(Transaction.created_at.desc().nullslast(),
-                                     Transaction.id.desc())
-                           .limit(50)
-                           .all())
+    # Full transactions for the ported Actuals tab (formerly the
+    # FPBudgetSync project_detail.html). Ordered most-recent first.
+    actuals_transactions = (Transaction.query
+                            .filter_by(project_id=pid)
+                            .order_by(Transaction.txn_date.desc().nullslast(),
+                                      Transaction.id.desc())
+                            .all())
+    # Convenience: doc upload by id, for the doc-badge column in the
+    # transactions list.
+    docs_by_id = {d.id: d for d in doc_uploads}
+    # QBO connection status (single global row for now)
+    from models import QBOConnection
+    qbo_connection = QBOConnection.query.first()
     # Group uploads by category for the Docs-tab view. Per user 2026-04-30:
     # tax forms, receipts, invoices, etc. should be visually clustered so
     # the list is readable. Order matches the Analyzer's filing buckets.
@@ -3332,7 +3335,9 @@ def budget_view(pid, bid):
         line_assigned_location=line_assigned_location,
         doc_uploads=doc_uploads,
         doc_groups=doc_groups,
-        recent_transactions=recent_transactions,
+        actuals_transactions=actuals_transactions,
+        docs_by_id=docs_by_id,
+        qbo_connection=qbo_connection,
     )
 
 
@@ -3953,6 +3958,106 @@ def delete_line(pid, bid, lid):
         try: db.session.rollback()
         except Exception: pass
     return jsonify({"ok": True})
+
+
+# ── Actuals tab routes (ported from FPBudgetSync 2026-04-30) ─────────
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-line", methods=["POST"])
+@login_required
+def actuals_set_line(pid, tid):
+    """Click-to-code: set the budget_line_id on a transaction (or clear
+    it). Auto-clones Working → Actual on the first link via
+    actuals.link_transaction_to_line. Returns JSON."""
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    raw  = data.get("budget_line_id")
+
+    # Empty string / None / 0 = clear the link.
+    if not raw:
+        from actuals import unlink_transaction
+        try:
+            unlink_transaction(tid)
+            return jsonify({"ok": True, "cleared": True})
+        except Exception as e:
+            logging.exception(f"[actuals] unlink failed: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    try:
+        line_id = int(raw)
+    except (TypeError, ValueError):
+        return jsonify({"error": "budget_line_id must be an integer"}), 400
+
+    from actuals import link_transaction_to_line
+    try:
+        result = link_transaction_to_line(
+            tid, line_id, user_id=current_user.id
+        )
+        # Refresh after commit so UI gets the freshly-set fields.
+        db.session.refresh(txn)
+        return jsonify({
+            "ok":            True,
+            "cleared":       False,
+            "transaction": {
+                "id":              txn.id,
+                "budget_line_id":  txn.budget_line_id,
+                "account_code":    txn.account_code,
+                "account_code_name": txn.account_code_name,
+                "match_status":    txn.match_status,
+            },
+            "actual_was_just_created": result.get("actual_was_just_created"),
+            "actual_budget_id":        result.get("actual_budget_id"),
+        })
+    except Exception as e:
+        logging.exception(f"[actuals] link failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/mark-not-project", methods=["POST"])
+@login_required
+def actuals_mark_not_project(pid, tid):
+    """Mark a transaction as 'not a project expense' — drops it from
+    Actuals rollup but keeps it on the row (greyed) for audit. Like
+    the old FPBudgetSync /confirm-suggestion 'Not Project' path."""
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn.not_project_expense = True
+    txn.budget_line_id      = None
+    txn.account_code        = None
+    txn.account_code_name   = None
+    txn.match_status        = 'unmatched'
+    txn.updated_at          = _dt.utcnow()
+    db.session.commit()
+    return jsonify({"ok": True, "transaction_id": tid})
+
+
+@app.route("/projects/<int:pid>/actuals/sync-now", methods=["POST"])
+@login_required
+def actuals_sync_now(pid):
+    """Run a QBO sync for one project. Stub for slice 1 — wires the
+    button to qbo_sync.sync_project() but requires QBOConnection
+    (OAuth done) to actually pull data. If not connected, returns a
+    clear error message that the UI surfaces."""
+    project = ProjectSheet.query.get_or_404(pid)
+    from models import QBOConnection
+    conn = QBOConnection.query.first()
+    if not conn or not conn.refresh_token:
+        return jsonify({
+            "error": "QuickBooks not connected. Go to Admin → QBO to authorize.",
+            "needs_oauth": True,
+        }), 400
+
+    import json as _json
+    if not (project.qbo_account_ids and _json.loads(project.qbo_account_ids or "[]")):
+        return jsonify({
+            "error": "No QBO accounts selected for this project. Configure under Settings → QBO accounts.",
+        }), 400
+
+    from qbo_sync import sync_project
+    try:
+        result = sync_project(project, conn, db)
+        return jsonify({"ok": True, **result})
+    except Exception as e:
+        logging.exception(f"[actuals] sync_now failed: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/toggle-sync-omit", methods=["POST"])
