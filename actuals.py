@@ -45,6 +45,94 @@ def get_current_working_budget(project_id):
             .first())
 
 
+def get_current_estimated_budget(project_id):
+    """Return the project's current Estimated budget, or None.
+    Estimated = is_actual=False, parent_budget_id IS NULL (top of chain)."""
+    return (Budget.query
+            .filter_by(project_id=project_id, is_actual=False,
+                       version_status='current',
+                       parent_budget_id=None)
+            .order_by(Budget.id.desc())
+            .first())
+
+
+def clone_estimated_to_working(estimated_budget):
+    """Initialize a Working budget from an Estimated. Used when the user
+    starts actualizing without first having created a Working budget —
+    the system silently spins one up so the chain Estimated → Working →
+    Actual is preserved.
+
+    Same shape as clone_working_to_actual but produces a Working budget
+    (is_actual=False, parent_budget_id=<estimated_id>). Lines get
+    source_line_id pointing back at their Estimated peer.
+
+    Returns the new Budget object (uncommitted; caller commits).
+    """
+    if not estimated_budget:
+        raise ValueError("clone_estimated_to_working: estimated_budget is None")
+    if estimated_budget.is_actual:
+        raise ValueError("clone_estimated_to_working: source must be Estimated, not Actual")
+    if estimated_budget.parent_budget_id is not None:
+        raise ValueError("clone_estimated_to_working: source already has a parent (is itself a Working/Actual)")
+
+    # Reuse a current Working if one already exists.
+    existing = get_current_working_budget(estimated_budget.project_id)
+    if existing:
+        return existing
+
+    skip_cols = {'id', 'created_at', 'updated_at', 'version_status',
+                 'parent_budget_id', 'is_actual'}
+    new_budget = Budget()
+    for col in Budget.__table__.columns:
+        if col.name in skip_cols:
+            continue
+        setattr(new_budget, col.name, getattr(estimated_budget, col.name))
+    new_budget.is_actual        = False
+    new_budget.version_status   = 'current'
+    new_budget.parent_budget_id = estimated_budget.id
+    base_name = (estimated_budget.name or 'Budget').strip()
+    new_budget.name = f"{base_name} — Working"
+    new_budget.created_at = datetime.utcnow()
+    new_budget.updated_at = datetime.utcnow()
+    new_budget.working_initialized_at = datetime.utcnow()
+    db.session.add(new_budget)
+    db.session.flush()
+
+    line_map = {}
+    src_lines = sorted(estimated_budget.lines, key=lambda l: (l.sort_order or 0, l.id))
+    line_skip = {'id', 'budget_id', 'parent_line_id', 'source_line_id',
+                 'orphan_from_working', 'crew_assignments', 'schedule_days',
+                 'assigned_crew'}
+    for src in src_lines:
+        new_line = BudgetLine()
+        for col in BudgetLine.__table__.columns:
+            if col.name in line_skip:
+                continue
+            setattr(new_line, col.name, getattr(src, col.name))
+        new_line.budget_id      = new_budget.id
+        new_line.source_line_id = src.id
+        new_line.orphan_from_working = False
+        if src.parent_line_id and src.parent_line_id in line_map:
+            new_line.parent_line_id = line_map[src.parent_line_id].id
+        else:
+            new_line.parent_line_id = None
+        db.session.add(new_line)
+        db.session.flush()
+        line_map[src.id] = new_line
+    for src in src_lines:
+        if src.parent_line_id and src.parent_line_id in line_map:
+            new_child = line_map[src.id]
+            if not new_child.parent_line_id:
+                new_child.parent_line_id = line_map[src.parent_line_id].id
+
+    log.info(
+        f"[actuals] Initialized Working budget #{new_budget.id} from "
+        f"Estimated #{estimated_budget.id} ({len(line_map)} lines) for "
+        f"project #{estimated_budget.project_id}"
+    )
+    return new_budget
+
+
 def clone_working_to_actual(working_budget):
     """Create a new Actual budget by deep-copying a Working budget.
 
@@ -185,46 +273,71 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
         raise ValueError(f"transaction {transaction_id} has no project")
 
     # Detect whether the picked line is already on an Actual (user's
-    # second link in this project) vs on Working (first link → triggers
-    # the auto-clone).
+    # second link in this project) vs on Working / Estimated (first
+    # link → triggers the auto-init / auto-clone chain).
     line_budget = Budget.query.get(working_line.budget_id)
+    actual_was_just_made  = False
+    working_was_just_made = False
+
     if line_budget and line_budget.is_actual:
-        # User picked from the existing Actual. No clone needed.
-        actual_line   = working_line
-        was_just_made = False
+        # Already on Actual — straight passthrough.
+        actual_line = working_line
     else:
-        # User picked from Working. Auto-clone if needed.
+        # Picked from Working or Estimated. Make sure we have BOTH a
+        # Working (the source-of-truth for the actuals clone) AND an
+        # Actual (where transactions land).
+        working_budget = get_current_working_budget(project_id)
+        if not working_budget:
+            # User actualized off Estimated without first creating a
+            # Working budget. Auto-init Working from Estimated so the
+            # chain Estimated → Working → Actual is preserved. Per
+            # user 2026-04-30: "if somebody gets your estimated to
+            # actual, we should go ahead and create + initialize a
+            # working budget for them at that point."
+            estimated = get_current_estimated_budget(project_id)
+            # Fall back to the picked line's own budget if neither
+            # working nor estimated exists in canonical form.
+            source = estimated or line_budget
+            if not source:
+                raise ValueError(
+                    f"project {project_id} has no budget to clone from"
+                )
+            working_budget = clone_estimated_to_working(source)
+            working_was_just_made = True
+            # If the user's picked line was on Estimated, translate to
+            # the equivalent Working line we just created (so its
+            # source_line_id chain is right when we clone to Actual).
+            if line_budget and not line_budget.is_actual and line_budget.parent_budget_id is None:
+                _peer = (BudgetLine.query
+                         .filter_by(budget_id=working_budget.id,
+                                    source_line_id=working_line.id)
+                         .first())
+                if _peer:
+                    working_line = _peer
+
         actual = get_current_actual_budget(project_id)
-        was_just_made = actual is None
-        if was_just_made:
-            working_budget = get_current_working_budget(project_id)
-            if not working_budget:
-                # Edge case: user is linking to a line that's on
-                # Estimated (not yet finalized as Working). Treat
-                # that line's budget as the source.
-                working_budget = line_budget
+        actual_was_just_made = actual is None
+        if actual_was_just_made:
             actual = clone_working_to_actual(working_budget)
-        actual_line = working_to_actual_line(working_line_id, actual.id)
+        actual_line = working_to_actual_line(working_line.id, actual.id)
         if not actual_line:
-            # Line wasn't cloned (clone happened before this line was
-            # added, or some structural drift). Fall back: create a
-            # peer line on the Actual budget with source_line_id set.
             actual_line = _materialize_missing_actual_line(working_line, actual.id)
 
-    txn.budget_line_id = actual_line.id
+    txn.budget_line_id    = actual_line.id
     txn.account_code      = actual_line.account_code
     txn.account_code_name = actual_line.account_name
     txn.match_status      = 'confirmed'
     txn.updated_at        = datetime.utcnow()
     if user_id:
-        txn.created_via_user_id = user_id  # only sets if NULL? actually overwrite is fine — last-toucher
+        txn.created_via_user_id = user_id
     db.session.commit()
 
     return {
-        'transaction_id':         txn.id,
-        'budget_line_id':         actual_line.id,
-        'actual_budget_id':       actual_line.budget_id,
-        'actual_was_just_created': was_just_made,
+        'transaction_id':           txn.id,
+        'budget_line_id':           actual_line.id,
+        'actual_budget_id':         actual_line.budget_id,
+        'actual_was_just_created':  actual_was_just_made,
+        'working_was_just_created': working_was_just_made,
     }
 
 

@@ -3185,8 +3185,12 @@
           alert('Could not save: ' + (d.error || r.status));
           return;
         }
-        // First-time auto-clone toast
-        if (d.actual_was_just_created) {
+        // First-time auto-init toasts. Two cases stack — if both
+        // Working AND Actual were just created (user actualized off
+        // Estimated with no Working in between), say so explicitly.
+        if (d.working_was_just_created && d.actual_was_just_created) {
+          _actualsToast('Working budget initialized from Estimated. Actual budget started for live tracking.');
+        } else if (d.actual_was_just_created) {
           _actualsToast('Actual budget started — Working was cloned for live tracking.');
         }
         // Reflect coded state on the row.

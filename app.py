@@ -4126,8 +4126,9 @@ def actuals_set_line(pid, tid):
                 "account_code_name": txn.account_code_name,
                 "match_status":    txn.match_status,
             },
-            "actual_was_just_created": result.get("actual_was_just_created"),
-            "actual_budget_id":        result.get("actual_budget_id"),
+            "actual_was_just_created":  result.get("actual_was_just_created"),
+            "working_was_just_created": result.get("working_was_just_created"),
+            "actual_budget_id":         result.get("actual_budget_id"),
         })
     except Exception as e:
         logging.exception(f"[actuals] link failed: {e}")
