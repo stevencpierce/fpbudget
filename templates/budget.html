@@ -2848,6 +2848,22 @@
      MATCH PANE — COA sidebar | Transaction list
      ════════════════════════════════════════════════════════════ #}
   <div id="actuals-pane-match" class="actuals-pane">
+    {# Friendly empty-state when no pickable budget lines exist —
+       otherwise the dropdown silently shows nothing and the user is
+       confused. Skip if there's no budget at all (Estimated stub) so
+       this only shows once they hit a real wall. #}
+    {% if actuals_transactions and not actuals_pick_groups %}
+    <div style="background:#1e1a14;border:1px solid #3a2a1a;border-radius:8px;
+                padding:14px 16px;margin-bottom:16px;color:var(--yellow)">
+      <div style="font-weight:600;margin-bottom:4px">⚠ No budget lines to assign</div>
+      <p style="margin:0;font-size:.82rem;color:var(--text-muted)">
+        This project doesn't have any budget lines yet. Create your Working
+        budget first — switch to the <a href="?tab=working" style="color:var(--blue);text-decoration:underline">Working tab</a>
+        and add lines to each section, then come back here to assign
+        transactions to them.
+      </p>
+    </div>
+    {% endif %}
     {% if not actuals_transactions %}
     <div class="empty-state">
       <p>No transactions yet.</p>
@@ -2940,17 +2956,18 @@
                     {% if t.not_project_expense %}disabled{% endif %}
                     style="flex-shrink:0;width:240px;font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px">
               <option value="">— pick budget line —</option>
-              {% for sec in sections %}
-                {% if sec.lines %}
-                <optgroup label="{{ sec.code }}  {{ sec.name }}">
-                  {% for ln in sec.lines %}
-                  <option value="{{ ln.id }}"
-                    {% if t.budget_line_id == ln.id %}selected{% endif %}>
-                    {{ ln.description or ln.account_name or 'untitled' }}
-                  </option>
-                  {% endfor %}
-                </optgroup>
-                {% endif %}
+              {# Source: actuals_pick_groups, populated from the project's
+                 current Working budget (falls back to Estimated). Picking
+                 a line auto-clones Working → Actual on first use. #}
+              {% for grp in actuals_pick_groups %}
+              <optgroup label="{{ grp.code }}  {{ grp.name }}">
+                {% for ln in grp.lines %}
+                <option value="{{ ln.id }}"
+                  {% if t.budget_line_id == ln.id %}selected{% endif %}>
+                  {{ ln.description or ln.account_name or 'untitled' }}{% if ln.estimated_total %} — ${{ '%.0f'|format(ln.estimated_total|float) }}{% endif %}
+                </option>
+                {% endfor %}
+              </optgroup>
               {% endfor %}
             </select>
             <span style="flex-shrink:0;font-size:.85rem;font-weight:700;min-width:80px;text-align:right;

@@ -1019,8 +1019,20 @@ def admin_docs_reconcile_project(pid):
 
     Returns counts + sample orphan list. Does NOT move or re-OCR files.
     """
-    if not current_user.is_authenticated or getattr(current_user, 'role', None) != 'super_admin':
-        return jsonify({"error": "super admin only"}), 403
+    # Permission: project editor or higher (was super_admin only). The
+    # reconcile is a recovery action — when a user's upload made it to
+    # Dropbox but the DB commit got cut off (page refresh mid-upload,
+    # network blip, server timeout), they need to be able to fix it
+    # themselves without flagging an admin.
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    if current_user.role not in ('super_admin', 'admin'):
+        # Non-admins must have editor or higher access on this project.
+        access = ProjectAccess.query.filter_by(
+            project_id=pid, user_id=current_user.id
+        ).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
 
     project = ProjectSheet.query.get_or_404(pid)
     if not project.dropbox_folder:
@@ -1043,6 +1055,11 @@ def admin_docs_reconcile_project(pid):
     # folder (invoice + contract → CONTRACTS & INVOICES).
     subfolders = set(DOCUMENT_TYPES.values())
     subfolders.add("01_ADMIN/RECEIPTS FOLDER")  # Analyzer's default fallback
+    # Per 2026-04-30 fail-safe: every uploaded file is also archived
+    # under _SOURCE_ARCHIVE/. A file that exists ONLY in archive (no
+    # processed copy) means OCR/copy completed but the DB commit was
+    # interrupted — exactly the orphan case we're trying to recover.
+    subfolders.add("01_ADMIN/PROCESSED DOCUMENTS/_SOURCE_ARCHIVE")
 
     # Pre-load existing filed paths so we can do set-membership checks
     # without re-hitting the DB per file.
@@ -1180,6 +1197,55 @@ def admin_docs_reconcile_project(pid):
             "scanned": scanned,
             "errors": errors[:20],
         }), 500
+
+    # ── Auto-create Transaction rows for the freshly-reconciled docs ──
+    # Mirrors the upload handler's behavior so reconciled receipts show
+    # up in the Actuals tab too. Skips non-ledger doc types (tax forms,
+    # contracts, releases, etc.) — same rule as the upload path.
+    txns_created = 0
+    if created:
+        _NON_LEDGER_TYPES = {'tax_form', 'contract', 'release', 'legal',
+                              'insurance', 'misc'}
+        # Re-fetch the new rows by note marker (we tagged them with
+        # "Reconciled from Dropbox scan"). Faster than re-checking each
+        # path against existing_full.
+        new_uploads = (DocUpload.query
+                       .filter_by(project_id=pid)
+                       .filter(DocUpload.note == "Reconciled from Dropbox scan")
+                       .all())
+        for u in new_uploads:
+            if (u.category or '') in _NON_LEDGER_TYPES:
+                continue
+            # Skip if a Transaction already references this doc — covers
+            # repeated reconcile runs.
+            existing_txn = (Transaction.query
+                            .filter_by(doc_upload_id=u.id)
+                            .first())
+            if existing_txn:
+                continue
+            try:
+                db.session.add(Transaction(
+                    project_id          = pid,
+                    source              = 'doc_upload',
+                    doc_upload_id       = u.id,
+                    vendor              = u.vendor,
+                    amount              = u.amount,
+                    txn_date            = u.doc_date.isoformat() if u.doc_date else None,
+                    is_expense          = True,
+                    note                = u.note,
+                    match_status        = 'unmatched',
+                    created_via_user_id = current_user.id if current_user.is_authenticated else None,
+                ))
+                txns_created += 1
+            except Exception as _te:
+                errors.append(f"create txn for upload {u.id}: {_te}")
+        if txns_created:
+            try:
+                db.session.commit()
+            except Exception as _tce:
+                db.session.rollback()
+                errors.append(f"txn commit failed: {_tce}")
+                txns_created = 0
 
     return jsonify({
         "ok":       True,
@@ -3259,6 +3325,44 @@ def budget_view(pid, bid):
     # QBO connection status (single global row for now)
     from models import QBOConnection
     qbo_connection = QBOConnection.query.first()
+
+    # ── Budget lines available for the Actuals tab dropdown ─────────────
+    # The dropdown picks from the project's current Working budget,
+    # NOT from the budget the URL is currently viewing. This way the
+    # dropdown is consistent regardless of whether the user is on the
+    # Estimated or Working URL when they switch to Actuals.
+    # Falls back to Estimated if no Working exists yet.
+    actuals_pick_budget = (Budget.query
+                            .filter_by(project_id=pid, version_status='current',
+                                       is_actual=False)
+                            .filter(Budget.parent_budget_id.isnot(None))
+                            .order_by(Budget.id.desc())
+                            .first())
+    if not actuals_pick_budget:
+        actuals_pick_budget = (Budget.query
+                                .filter_by(project_id=pid,
+                                           version_status='current',
+                                           is_actual=False)
+                                .order_by(Budget.id.desc())
+                                .first())
+    # Group its lines by COA section for the optgroup dropdown.
+    actuals_pick_groups = []
+    if actuals_pick_budget:
+        _by_section = {}
+        for ln in sorted(actuals_pick_budget.lines,
+                          key=lambda l: (l.account_code or 0, l.sort_order or 0, l.id)):
+            key = (ln.account_code, ln.account_name)
+            _by_section.setdefault(key, []).append(ln)
+        # Preserve FP_COA_SECTIONS ordering so dropdown matches sidebar.
+        section_order = {code: i for i, (code, _) in enumerate(FP_COA_SECTIONS)}
+        sorted_keys = sorted(
+            _by_section.keys(),
+            key=lambda k: (section_order.get(k[0], 9999), k[0] or 0),
+        )
+        actuals_pick_groups = [
+            {"code": k[0], "name": k[1], "lines": _by_section[k]}
+            for k in sorted_keys
+        ]
     # Group uploads by category for the Docs-tab view. Per user 2026-04-30:
     # tax forms, receipts, invoices, etc. should be visually clustered so
     # the list is readable. Order matches the Analyzer's filing buckets.
@@ -3338,6 +3442,8 @@ def budget_view(pid, bid):
         actuals_transactions=actuals_transactions,
         docs_by_id=docs_by_id,
         qbo_connection=qbo_connection,
+        actuals_pick_groups=actuals_pick_groups,
+        actuals_pick_budget=actuals_pick_budget,
     )
 
 
