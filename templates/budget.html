@@ -1956,9 +1956,10 @@
   }
 
   // ── Client-side sort of the uploaded-docs list ─────────────────────────
-  // Reads data-sort-* attributes on each .doc-row and reorders the DOM.
-  // Numeric columns (amount, size) are compared as numbers; date column
-  // sorts on the ISO timestamp; everything else is lexicographic.
+  // Reads data-sort-* attributes on each .doc-row and reorders the DOM
+  // WITHIN each group (so receipts stay with receipts, etc.). Without
+  // this, the old "appendChild every row to the bottom" approach moved
+  // every row past the group headers and broke the grouped layout.
   function _docsSort() {
     const by  = document.getElementById('docs-sort-by');
     const dir = document.getElementById('docs-sort-dir');
@@ -1968,23 +1969,75 @@
     const NUMERIC = new Set(['amount', 'size']);
     const list   = document.getElementById('docsHistory');
     if (!list) return;
-    const rows = Array.from(list.querySelectorAll('.doc-row'));
-    rows.sort((a, b) => {
+
+    function _cmp(a, b) {
       const av = a.dataset['sort' + key.charAt(0).toUpperCase() + key.slice(1)] || '';
       const bv = b.dataset['sort' + key.charAt(0).toUpperCase() + key.slice(1)] || '';
-      let cmp;
-      if (NUMERIC.has(key)) {
-        cmp = (parseFloat(av) || 0) - (parseFloat(bv) || 0);
-      } else if (key === 'date') {
-        // Lexicographic works on ISO 8601 timestamps.
-        cmp = av < bv ? -1 : av > bv ? 1 : 0;
-      } else {
-        cmp = av.localeCompare(bv);
+      let c;
+      if (NUMERIC.has(key))           c = (parseFloat(av) || 0) - (parseFloat(bv) || 0);
+      else if (key === 'date')        c = av < bv ? -1 : av > bv ? 1 : 0;
+      else                            c = av.localeCompare(bv);
+      return desc ? -c : c;
+    }
+
+    // Walk the children, partitioning into groups by .doc-group-header
+    // boundaries. Each group sorts its own rows and re-appends in order.
+    const groups = [];
+    let current = { header: null, rows: [] };
+    Array.from(list.children).forEach(node => {
+      if (node.classList && node.classList.contains('doc-group-header')) {
+        if (current.header || current.rows.length) groups.push(current);
+        current = { header: node, rows: [] };
+      } else if (node.classList && node.classList.contains('doc-row')) {
+        current.rows.push(node);
       }
-      return desc ? -cmp : cmp;
     });
-    rows.forEach(r => list.appendChild(r));  // appendChild reorders in place
+    if (current.header || current.rows.length) groups.push(current);
+
+    groups.forEach(g => g.rows.sort(_cmp));
+    // Re-append in group order: header, then its sorted rows.
+    groups.forEach(g => {
+      if (g.header) list.appendChild(g.header);
+      g.rows.forEach(r => list.appendChild(r));
+    });
   }
+
+  // ── Collapsible group sections ─────────────────────────────────────
+  // Click any .doc-group-header to toggle its rows. Rows belonging to
+  // a header are every .doc-row sibling that follows, up to the next
+  // .doc-group-header.
+  function _docsBindCollapsibleHeaders() {
+    const list = document.getElementById('docsHistory');
+    if (!list) return;
+    list.querySelectorAll('.doc-group-header').forEach(h => {
+      // Inject a chevron once.
+      if (!h.querySelector('.doc-group-chevron')) {
+        const chev = document.createElement('span');
+        chev.className = 'doc-group-chevron';
+        chev.style.cssText = 'margin-left:auto;font-size:12px;color:var(--text-muted);transition:transform .12s;user-select:none;';
+        chev.textContent = '▾';
+        h.appendChild(chev);
+        h.style.cursor = 'pointer';
+        h.title = 'Click to collapse / expand this section';
+      }
+      h.onclick = () => {
+        const collapsed = h.dataset.collapsed === '1';
+        h.dataset.collapsed = collapsed ? '' : '1';
+        const chev = h.querySelector('.doc-group-chevron');
+        if (chev) chev.style.transform = collapsed ? '' : 'rotate(-90deg)';
+        // Hide every doc-row sibling until the next header.
+        let sib = h.nextElementSibling;
+        while (sib && !sib.classList.contains('doc-group-header')) {
+          if (sib.classList.contains('doc-row')) {
+            sib.style.display = collapsed ? '' : 'none';
+          }
+          sib = sib.nextElementSibling;
+        }
+      };
+    });
+  }
+  // Bind on initial render.
+  _docsBindCollapsibleHeaders();
 
   // Wire up the sort dropdown + direction toggle.
   const _sortBy  = document.getElementById('docs-sort-by');
