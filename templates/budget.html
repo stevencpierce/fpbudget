@@ -2676,7 +2676,16 @@
 
   window.openDocDetail = async function (uid, row) {
     _docDetailUid = uid;
-    document.getElementById('docDetailOverlay').style.display = 'flex';
+    // Hoist the modal out of the Docs tab panel on first open so the
+    // user can open it from any tab (Actuals, etc.) — without this,
+    // the parent tab-docs div's display:none cascades and hides the
+    // modal even though its own display is :flex. Idempotent: once
+    // moved to body, subsequent opens just toggle visibility.
+    const overlay = document.getElementById('docDetailOverlay');
+    if (overlay && overlay.parentElement !== document.body) {
+      document.body.appendChild(overlay);
+    }
+    overlay.style.display = 'flex';
     document.getElementById('docDetailTitle').textContent =
       row?.dataset?.sortFilename ? row.dataset.sortFilename : 'Document';
     // Reset form fields to whatever the row's dataset carries — server
@@ -4102,50 +4111,159 @@
       });
     });
 
-    // ── Upload-receipt button per row ─────────────────────────────────
-    // Click → hidden file input → POSTs to the same endpoint the
-    // file-drop handler uses. Same backend semantics: creates a
-    // DocUpload, links it to the transaction, doesn't create a
-    // duplicate doc-source Transaction.
+    // ── Upload-receipt: dropzone modal (drag-or-browse) ───────────────
+    // Click 📤 → opens a small modal with a visible drop zone PLUS a
+    // "browse" affordance. Either path POSTs to the existing
+    // /actuals/transaction/<tid>/upload-receipt endpoint.
+    function _ensureUploadModal() {
+      let modal = document.getElementById('_actuals-upload-modal');
+      if (modal) return modal;
+      modal = document.createElement('div');
+      modal.id = '_actuals-upload-modal';
+      modal.style.cssText = `
+        display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+        z-index:10000; background:rgba(0,0,0,.78);
+        align-items:center; justify-content:center;
+      `;
+      modal.innerHTML = `
+        <div onclick="event.stopPropagation()"
+             style="background:var(--bg-card);border:1px solid var(--border);
+                    border-radius:10px;padding:18px 22px;width:480px;max-width:96vw;
+                    box-shadow:0 20px 60px rgba(0,0,0,.5)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <h3 style="margin:0;font-size:1rem">📤 Attach receipt</h3>
+            <button type="button" class="btn btn-sm btn-ghost"
+                    onclick="document.getElementById('_actuals-upload-modal').style.display='none'">✕</button>
+          </div>
+          <div id="_actuals-upload-target" style="font-size:.78rem;color:var(--text-muted);margin-bottom:12px"></div>
+          <div id="_actuals-upload-drop"
+               style="border:2px dashed var(--border);border-radius:10px;padding:30px 20px;
+                      text-align:center;cursor:pointer;transition:border-color .15s,background .15s">
+            <div style="font-size:2rem;margin-bottom:8px">📎</div>
+            <div style="font-size:.88rem;color:var(--text);margin-bottom:4px">
+              <strong>Drop a file here</strong>
+            </div>
+            <div style="font-size:.74rem;color:var(--text-muted)">
+              or <a href="#" id="_actuals-upload-browse" style="color:var(--blue);text-decoration:underline">click to browse</a>
+            </div>
+            <div style="font-size:.7rem;color:var(--text-muted);margin-top:8px">
+              PDF · JPG · PNG · HEIC
+            </div>
+          </div>
+          <div id="_actuals-upload-status" style="margin-top:12px;font-size:.78rem;text-align:center;min-height:18px"></div>
+        </div>
+      `;
+      // Click outside the inner box closes the modal.
+      modal.addEventListener('click', e => {
+        if (e.target === modal) modal.style.display = 'none';
+      });
+      document.body.appendChild(modal);
+      return modal;
+    }
+
+    async function _actualsDoUpload(tid, file) {
+      const status = document.getElementById('_actuals-upload-status');
+      if (status) {
+        status.textContent = `⏳ Uploading "${file.name}" …`;
+        status.style.color = 'var(--text-muted)';
+      }
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/upload-receipt`, {
+          method: 'POST', body: fd,
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          if (status) {
+            status.textContent = '✕ ' + (d.error || ('HTTP ' + r.status));
+            status.style.color = '#e08080';
+          }
+          return;
+        }
+        if (status) {
+          status.textContent = `✓ Uploaded: ${d.filed_filename || file.name}`;
+          status.style.color = 'var(--green)';
+        }
+        setTimeout(() => {
+          document.getElementById('_actuals-upload-modal').style.display = 'none';
+          window.location.reload();
+        }, 700);
+      } catch (e) {
+        if (status) { status.textContent = '✕ ' + e.message; status.style.color = '#e08080'; }
+      }
+    }
+
     document.querySelectorAll('.actuals-upload-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const tid = parseInt(btn.dataset.tid);
-        let inp = document.getElementById('_actuals-upload-file');
-        if (!inp) {
-          inp = document.createElement('input');
-          inp.type = 'file';
-          inp.id = '_actuals-upload-file';
-          inp.accept = 'image/*,application/pdf';
-          inp.style.display = 'none';
-          document.body.appendChild(inp);
+        const modal = _ensureUploadModal();
+        // Re-find the row → vendor / amount for the modal subtitle.
+        const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
+        const target = document.getElementById('_actuals-upload-target');
+        if (target) {
+          const vendor = row ? (row.querySelector('.actuals-txn-vendor')?.textContent.trim() || '') : '';
+          const date   = row ? (row.dataset.txnDate || '') : '';
+          const amt    = row ? parseFloat(row.dataset.amount || 0) : 0;
+          target.innerHTML = `Linking to: <strong>${(vendor || '— no vendor —')}</strong>${date ? ' · ' + date : ''}${amt ? ' · $' + amt.toFixed(2) : ''}`;
         }
-        // Re-bind onchange each time so the closure captures the
-        // right tid (the input itself is reused across rows).
-        inp.value = '';
-        inp.onchange = async () => {
-          if (!inp.files || !inp.files.length) return;
-          const file = inp.files[0];
-          const fd = new FormData();
-          fd.append('file', file);
-          btn.disabled = true; btn.textContent = '⏳ Uploading…';
-          try {
-            const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/upload-receipt`, {
-              method: 'POST', body: fd,
-            });
-            const d = await r.json();
-            if (!r.ok) {
-              _actualsToast('Upload failed: ' + (d.error || r.status), 'red');
-              btn.disabled = false; btn.textContent = '📤 Upload receipt';
-              return;
-            }
-            _actualsToast(`Receipt uploaded: ${d.filed_filename || file.name}`, 'green');
-            setTimeout(() => window.location.reload(), 700);
-          } catch (e) {
-            _actualsToast('Upload error: ' + e.message, 'red');
-            btn.disabled = false; btn.textContent = '📤 Upload receipt';
+        const status = document.getElementById('_actuals-upload-status');
+        if (status) status.textContent = '';
+        // Wire the dropzone for THIS row each time the modal opens.
+        const drop   = document.getElementById('_actuals-upload-drop');
+        const browse = document.getElementById('_actuals-upload-browse');
+        let depth = 0;
+        drop.ondragenter = e => {
+          if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+          e.preventDefault(); depth++;
+          drop.style.borderColor = 'var(--blue)';
+          drop.style.background = 'rgba(91,138,249,.06)';
+        };
+        drop.ondragover = e => {
+          if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'copy';
+        };
+        drop.ondragleave = () => {
+          depth = Math.max(0, depth - 1);
+          if (depth === 0) {
+            drop.style.borderColor = 'var(--border)';
+            drop.style.background = '';
           }
         };
-        inp.click();
+        drop.ondrop = e => {
+          e.preventDefault(); depth = 0;
+          drop.style.borderColor = 'var(--border)';
+          drop.style.background = '';
+          if (!e.dataTransfer.files || !e.dataTransfer.files.length) return;
+          if (e.dataTransfer.files.length > 1) {
+            const status = document.getElementById('_actuals-upload-status');
+            if (status) { status.textContent = 'Drop one file at a time.'; status.style.color = 'var(--yellow)'; }
+            return;
+          }
+          _actualsDoUpload(tid, e.dataTransfer.files[0]);
+        };
+        // Click-to-browse opens the OS file picker.
+        const openPicker = () => {
+          let inp = document.getElementById('_actuals-upload-file');
+          if (!inp) {
+            inp = document.createElement('input');
+            inp.type = 'file';
+            inp.id = '_actuals-upload-file';
+            inp.accept = 'image/*,application/pdf';
+            inp.style.display = 'none';
+            document.body.appendChild(inp);
+          }
+          inp.value = '';
+          inp.onchange = () => {
+            if (!inp.files || !inp.files.length) return;
+            _actualsDoUpload(tid, inp.files[0]);
+          };
+          inp.click();
+        };
+        drop.onclick   = (e) => { if (e.target.id !== '_actuals-upload-browse') openPicker(); };
+        browse.onclick = (e) => { e.preventDefault(); openPicker(); };
+        modal.style.display = 'flex';
       });
     });
 
