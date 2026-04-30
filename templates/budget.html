@@ -2916,11 +2916,21 @@
     {% endif %}
   </div>
 
-  {# ── Settings Panel (collapsible — slice 3 wires the real form) ── #}
+  {# ── Settings Panel (per-project QBO account picker) ── #}
   <div id="actuals-settings-panel" style="display:none;margin-bottom:12px;padding:14px 16px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px">
-    <div class="muted" style="font-size:.85rem">
-      Per-project QBO account picker ships in slice 3. Today's settings:
-      <code>qbo_account_ids = {{ project.qbo_account_ids or '[]' }}</code>
+    <h4 style="margin:0 0 10px;font-size:.85rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">QBO Bank / Credit Card Accounts</h4>
+    <p style="font-size:.78rem;color:var(--text-muted);margin:0 0 10px;line-height:1.5">
+      Pick which QuickBooks accounts feed this project. Only transactions
+      from these accounts get pulled in on Sync. Loaded live from your
+      connected QBO realm.
+    </p>
+    <div id="actuals-qbo-accounts-list" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+      <div class="muted" style="font-size:.78rem;padding:6px">Loading accounts…</div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid var(--border);padding-top:10px;margin-top:6px">
+      <span id="actuals-qbo-accounts-status" class="muted" style="font-size:.74rem;margin-right:auto"></span>
+      <button type="button" class="btn btn-sm" onclick="actualsLoadQboAccounts({{ project.id }})">↻ Refresh</button>
+      <button type="button" class="btn btn-sm btn-primary" onclick="actualsSaveQboAccounts({{ project.id }})">Save</button>
     </div>
   </div>
 
@@ -3280,7 +3290,71 @@
     window.toggleActualsPanel = function (id) {
       const el = document.getElementById(id);
       if (!el) return;
-      el.style.display = el.style.display === 'none' ? '' : 'none';
+      const willOpen = el.style.display === 'none';
+      el.style.display = willOpen ? '' : 'none';
+      // Lazy-load the QBO account picker the first time the Settings
+      // panel opens (skips an empty render if the user never opens it).
+      if (willOpen && id === 'actuals-settings-panel') {
+        actualsLoadQboAccounts(PROJ_ID);
+      }
+    };
+
+    // ── Per-project QBO account picker ────────────────────────────────
+    window.actualsLoadQboAccounts = async function (pid) {
+      const list   = document.getElementById('actuals-qbo-accounts-list');
+      const status = document.getElementById('actuals-qbo-accounts-status');
+      if (!list) return;
+      list.innerHTML = '<div class="muted" style="font-size:.78rem;padding:6px">Loading accounts…</div>';
+      if (status) { status.textContent = ''; status.style.color = ''; }
+      try {
+        const r = await fetch(`/projects/${pid}/actuals/qbo-accounts`);
+        const d = await r.json();
+        if (!r.ok) {
+          list.innerHTML = `<div style="font-size:.78rem;color:#e08080;padding:6px">${d.error || 'HTTP ' + r.status}${d.needs_oauth ? ' — connect QuickBooks first.' : ''}</div>`;
+          return;
+        }
+        if (!d.accounts || !d.accounts.length) {
+          list.innerHTML = '<div class="muted" style="font-size:.78rem;padding:6px">No bank or credit-card accounts found on your QBO realm.</div>';
+          return;
+        }
+        const _esc = s => String(s||'').replace(/[&<>"']/g, c =>
+          ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        list.innerHTML = d.accounts.map(a => `
+          <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:5px;background:var(--bg-input);font-size:.8rem;cursor:pointer">
+            <input type="checkbox" class="actuals-qbo-acct" value="${_esc(a.id)}" ${a.enabled ? 'checked' : ''}>
+            <span style="flex:1">${_esc(a.name)}</span>
+            <span style="font-size:.7rem;color:var(--text-muted)">
+              ${a.type === 'Credit Card' ? 'CC' : 'Bank'}${a.mask ? ' · ' + _esc(a.mask) : ''}
+            </span>
+          </label>
+        `).join('');
+      } catch (e) {
+        list.innerHTML = `<div style="font-size:.78rem;color:#e08080;padding:6px">Network error: ${e.message}</div>`;
+      }
+    };
+
+    window.actualsSaveQboAccounts = async function (pid) {
+      const status = document.getElementById('actuals-qbo-accounts-status');
+      const ids = Array.from(document.querySelectorAll('.actuals-qbo-acct:checked'))
+                       .map(cb => cb.value);
+      if (status) { status.textContent = 'Saving…'; status.style.color = 'var(--text-muted)'; }
+      try {
+        const r = await fetch(`/projects/${pid}/actuals/qbo-accounts`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_ids: ids }),
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          if (status) { status.textContent = '✕ ' + (d.error || 'failed'); status.style.color = '#e08080'; }
+          return;
+        }
+        if (status) {
+          status.textContent = `✓ Saved ${d.count} account${d.count !== 1 ? 's' : ''}`;
+          status.style.color = 'var(--green)';
+        }
+      } catch (e) {
+        if (status) { status.textContent = '✕ ' + e.message; status.style.color = '#e08080'; }
+      }
     };
 
     window.showActualsPane = function (which) {

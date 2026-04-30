@@ -4312,6 +4312,60 @@ def actuals_dismiss_suggestion(pid, tid):
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/projects/<int:pid>/actuals/qbo-accounts", methods=["GET"])
+@login_required
+def actuals_qbo_accounts_list(pid):
+    """Return the list of available QBO bank/credit-card accounts on
+    the connected realm, plus the subset already enabled for this
+    project. The Settings panel calls this on open + on Refresh."""
+    ProjectSheet.query.get_or_404(pid)
+    from models import QBOConnection
+    conn = QBOConnection.query.first()
+    if not conn or not conn.refresh_token:
+        return jsonify({
+            "error": "QuickBooks not connected.",
+            "needs_oauth": True,
+        }), 400
+
+    project = ProjectSheet.query.get(pid)
+    import json as _json
+    enabled = set()
+    try:
+        enabled = set(_json.loads(project.qbo_account_ids or "[]") or [])
+    except Exception:
+        enabled = set()
+
+    from qbo_sync import list_qbo_accounts
+    try:
+        accts = list_qbo_accounts(conn, db)
+    except Exception as e:
+        logging.exception("[qbo] list_qbo_accounts failed")
+        return jsonify({"error": f"Could not list accounts: {e}"}), 500
+
+    # Tag each account with whether it's currently enabled for this project.
+    for a in accts:
+        a["enabled"] = a["id"] in enabled
+    return jsonify({"ok": True, "accounts": accts})
+
+
+@app.route("/projects/<int:pid>/actuals/qbo-accounts", methods=["POST"])
+@login_required
+def actuals_qbo_accounts_save(pid):
+    """Save the project's QBO account selection. Body:
+    {"account_ids": ["1","42",...]}"""
+    project = ProjectSheet.query.get_or_404(pid)
+    data = request.get_json(force=True) or {}
+    ids  = data.get("account_ids") or []
+    if not isinstance(ids, list):
+        return jsonify({"error": "account_ids must be a list"}), 400
+    # Cast each to string — QBO ids are strings like "42".
+    cleaned = [str(x) for x in ids if x not in (None, "", "0", 0)]
+    import json as _json
+    project.qbo_account_ids = _json.dumps(cleaned)
+    db.session.commit()
+    return jsonify({"ok": True, "count": len(cleaned)})
+
+
 @app.route("/projects/<int:pid>/actuals/sync-now", methods=["POST"])
 @login_required
 def actuals_sync_now(pid):
