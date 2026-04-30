@@ -1473,8 +1473,17 @@
          preview is the priority — receipts are unreadable in a sidebar.
          Image previews get zoom + pan controls; PDFs use the browser's
          native PDF UI inside the embed. -->
-    <div id="docDetailOverlay" class="modal-overlay hidden" onclick="closeDocDetail(event)">
-      <div class="modal" onclick="event.stopPropagation()" style="max-width:1400px;width:96vw;max-height:94vh;height:94vh;display:flex;flex-direction:column;padding:0;overflow:hidden;">
+    <div id="docDetailOverlay" class="modal-overlay hidden" onclick="closeDocDetail(event)"
+         style="position:fixed;inset:0;z-index:600;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);">
+      {# IMPORTANT: don't use class="modal" here — global .modal has
+         align-items:center which collapses our flex children to content
+         width and breaks the split-pane layout. We do the centering on
+         the overlay above and use a plain div for the box. #}
+      <div onclick="event.stopPropagation()"
+           style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;
+                  width:96vw;max-width:1400px;height:94vh;max-height:94vh;
+                  display:flex;flex-direction:column;align-items:stretch;
+                  padding:0;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5);">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0;">
           <h3 id="docDetailTitle" style="margin:0;font-size:1rem;line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Document</h3>
           <div id="docDetailZoomBar" style="display:none;gap:4px;align-items:center;flex-shrink:0;margin-right:12px;">
@@ -1532,12 +1541,16 @@
                 <option value="">— unspecified —</option>
                 <option value="receipt">Receipt</option>
                 <option value="invoice">Invoice</option>
-                <option value="contract">Contract</option>
                 <option value="estimate">Estimate / SOW</option>
+                <option value="quote">Quote</option>
+                <option value="purchase_order">Purchase Order (PO)</option>
+                <option value="contract">Contract</option>
                 <option value="insurance">Insurance / COI</option>
-                <option value="legal">Legal</option>
+                <option value="tax_form">Tax Form (W-9, W-8, 1099)</option>
                 <option value="payroll">Payroll</option>
-                <option value="quote">Quote / Misc</option>
+                <option value="legal">Legal</option>
+                <option value="release">Release (Talent / Location)</option>
+                <option value="misc">Miscellaneous</option>
               </select>
             </div>
             <div class="field" style="margin-bottom:.6rem">

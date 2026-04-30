@@ -13082,12 +13082,68 @@ def docs_upload_update(uid):
                 upload.doc_date = _dt_mod.strptime(d[:10], "%Y-%m-%d").date()
             except Exception:
                 return jsonify({"error": "doc_date must be YYYY-MM-DD"}), 400
+    # Capture the category change so we can move the file post-commit
+    # if the type changed and the file is currently filed in Dropbox.
+    _old_category = upload.category
+    _category_changed = False
     if "category" in data:
         c = (data.get("category") or "").strip()
-        upload.category = c[:100] if c else None
+        new_cat = c[:100] if c else None
+        if new_cat != upload.category:
+            _category_changed = True
+        upload.category = new_cat
     if "note" in data:
         n = (data.get("note") or "").strip()
         upload.note = n[:500] if n else None
+
+    # ── Re-file on doc-type change ──────────────────────────────────
+    # When the user changes the doc type via the modal, the existing
+    # Dropbox file is in the wrong type folder (e.g. RECEIPTS/ when it
+    # should be in ESTIMATES/). Move it to the right place so the
+    # filing structure matches the user's classification.
+    refile_info = None
+    if _category_changed and upload.category and upload.filed_dropbox_path \
+       and upload.filed_at:  # only re-file actually-filed docs (skip review)
+        try:
+            from fp_analyzer import DOCUMENT_TYPES, _ops_prefix as _ana_ops
+            new_type_folder = DOCUMENT_TYPES.get(upload.category)
+            if new_type_folder:
+                old_path = upload.filed_dropbox_path
+                # Old path looks like:
+                #   {ops}/{project}/{old_type_folder}/{user}/[vendor/]<filename>
+                # We rebuild it by swapping the type-folder segment.
+                # Find the project name from the project row.
+                proj = ProjectSheet.query.get(upload.project_id)
+                proj_name = (proj.dropbox_folder or '').strip('/') if proj else ''
+                ops = _ana_ops()
+                if proj_name:
+                    # The "tail" we keep is everything after the type folder.
+                    # Find the type-folder segment in the old path.
+                    # Old DOCUMENT_TYPES values look like
+                    #   "01_ADMIN/PROCESSED DOCUMENTS/RECEIPTS"
+                    # so we look for that substring and replace it.
+                    old_type_folder = DOCUMENT_TYPES.get(_old_category or '')
+                    if old_type_folder and old_type_folder in old_path:
+                        new_path = old_path.replace(old_type_folder, new_type_folder, 1)
+                        if new_path != old_path:
+                            from fp_analyzer import get_dropbox_client as _ana_dbx
+                            try:
+                                dbx = _ana_dbx()
+                                meta = dbx.files_move_v2(
+                                    old_path, new_path,
+                                    autorename=True, allow_ownership_transfer=False,
+                                )
+                                upload.filed_dropbox_path = meta.metadata.path_display
+                                refile_info = {
+                                    'from': old_path,
+                                    'to':   meta.metadata.path_display,
+                                }
+                            except Exception as _me:
+                                logging.warning(
+                                    f"[/update] re-file move failed for upload {uid}: {_me}")
+                                refile_info = {'error': str(_me)}
+        except Exception as _e:
+            logging.warning(f"[/update] re-file logic error for upload {uid}: {_e}")
 
     db.session.commit()
     try:
@@ -13105,12 +13161,14 @@ def docs_upload_update(uid):
                           note=f'Updated metadata on "{_label}"')
     except Exception: pass
     return jsonify({
-        "ok":       True,
-        "vendor":   upload.vendor,
-        "amount":   float(upload.amount) if upload.amount is not None else None,
-        "doc_date": upload.doc_date.isoformat() if upload.doc_date else None,
-        "category": upload.category,
-        "note":     upload.note,
+        "ok":          True,
+        "vendor":      upload.vendor,
+        "amount":      float(upload.amount) if upload.amount is not None else None,
+        "doc_date":    upload.doc_date.isoformat() if upload.doc_date else None,
+        "category":    upload.category,
+        "note":        upload.note,
+        "filed_path":  upload.filed_dropbox_path,
+        "refile":      refile_info,
     })
 
 
