@@ -3387,6 +3387,27 @@ def budget_view(pid, bid):
                             .order_by(Transaction.txn_date.desc().nullslast(),
                                       Transaction.id.desc())
                             .all())
+    # Distinct uploaders for the filter bar — derived from
+    # created_via_user_id (manual entry / receipt upload) + the linked
+    # DocUpload's uploader_id (so receipt-source rows attribute to the
+    # person who took the photo, not the system user). Returns
+    # [(user_id, display_name), ...] sorted by name.
+    _uploader_user_ids = set()
+    for t in actuals_transactions:
+        if t.created_via_user_id:
+            _uploader_user_ids.add(t.created_via_user_id)
+    if doc_uploads:
+        for d in doc_uploads:
+            if d.uploader_id:
+                _uploader_user_ids.add(d.uploader_id)
+    actuals_uploaders = []
+    if _uploader_user_ids:
+        for u in (User.query
+                  .filter(User.id.in_(_uploader_user_ids))
+                  .order_by(User.name.nullslast(), User.email)
+                  .all()):
+            label = u.name or (u.email.split('@')[0] if u.email else f'User #{u.id}')
+            actuals_uploaders.append((u.id, label))
     # Convenience: doc upload by id, for the doc-badge column in the
     # transactions list.
     docs_by_id = {d.id: d for d in doc_uploads}
@@ -3512,6 +3533,7 @@ def budget_view(pid, bid):
         qbo_connection=qbo_connection,
         actuals_pick_groups=actuals_pick_groups,
         actuals_pick_budget=actuals_pick_budget,
+        actuals_uploaders=actuals_uploaders,
         actual_by_line_id=actual_by_line_id,
         actual_to_working=actual_to_working,
         has_actual_budget=has_actual_budget,

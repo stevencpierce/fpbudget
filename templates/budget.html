@@ -3153,6 +3153,24 @@
       <option value="yes">Has receipt</option>
       <option value="no">No receipt</option>
     </select>
+    {% if actuals_uploaders %}
+    <select id="actuals-filter-uploader" title="Filter by who entered or uploaded the transaction"
+            style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
+      <option value="">Uploader: any</option>
+      {% for uid, name in actuals_uploaders %}
+      <option value="{{ uid }}">{{ name }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <select id="actuals-sort-by" title="Sort order"
+            style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
+      <option value="date-desc">↓ Newest first</option>
+      <option value="date-asc">↑ Oldest first</option>
+      <option value="amount-desc">↓ Largest amount</option>
+      <option value="amount-asc">↑ Smallest amount</option>
+      <option value="vendor-asc">↑ Vendor A→Z</option>
+      <option value="vendor-desc">↓ Vendor Z→A</option>
+    </select>
     <input type="number" id="actuals-filter-amount-min" placeholder="$ min" step="0.01"
            style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:80px">
     <span style="font-size:.7rem;color:var(--text-muted)">→</span>
@@ -3296,6 +3314,10 @@
             </button>
           </div>
           {% endif %}
+          {# Effective uploader: prefer the linked DocUpload's uploader
+             (the person who took the photo / picked the file) over
+             created_via_user_id (might be the QBO sync system user). #}
+          {% set _uploader_id = (_doc.uploader_id if _doc and _doc.uploader_id else t.created_via_user_id) or '' %}
           <div class="actuals-txn-row" draggable="true"
                data-tid="{{ t.id }}"
                data-source="{{ t.source or '' }}"
@@ -3305,6 +3327,7 @@
                data-txn-date="{{ t.txn_date or '' }}"
                data-amount="{{ t.amount or 0 }}"
                data-note="{{ t.note or '' }}"
+               data-uploader-id="{{ _uploader_id }}"
                data-not-project="{{ '1' if t.not_project_expense else '0' }}"
                style="display:flex;align-items:center;gap:8px;padding:7px 10px;margin-bottom:4px;
                       border:1px solid {% if t.not_project_expense %}#3a2a2a{% elif _coded %}#1a3a2a{% else %}var(--border){% endif %};
@@ -3823,6 +3846,7 @@
       const vendor   = ((document.getElementById('actuals-filter-vendor')  || {}).value || '').toLowerCase().trim();
       const section  = (document.getElementById('actuals-filter-section')  || {}).value || '';
       const receipt  = (document.getElementById('actuals-filter-receipt')  || {}).value || '';
+      const uploader = (document.getElementById('actuals-filter-uploader') || {}).value || '';
       const amtMin   = parseFloat((document.getElementById('actuals-filter-amount-min') || {}).value || 'NaN');
       const amtMax   = parseFloat((document.getElementById('actuals-filter-amount-max') || {}).value || 'NaN');
 
@@ -3882,6 +3906,7 @@
           if (receipt === 'yes' && r.dataset.hasDoc !== '1') pass = false;
           if (receipt === 'no'  && r.dataset.hasDoc === '1') pass = false;
         }
+        if (pass && uploader && (r.dataset.uploaderId || '') !== uploader) pass = false;
         if (pass && !isNaN(amtMin) && parseFloat(r.dataset.amount || 0) < amtMin) pass = false;
         if (pass && !isNaN(amtMax) && parseFloat(r.dataset.amount || 0) > amtMax) pass = false;
 
@@ -3892,6 +3917,44 @@
       });
       const lbl = document.getElementById('actuals-filter-count');
       if (lbl) lbl.textContent = (shown === total) ? `${total} txns` : `${shown} of ${total} shown`;
+      _actualsApplySort();
+    }
+
+    // Sort the visible rows in DOM order. The list container is
+    // #actuals-txn-list; the suggested-match banners live as siblings
+    // of the rows, so we move both together.
+    function _actualsApplySort() {
+      const sortBy = (document.getElementById('actuals-sort-by') || {}).value || 'date-desc';
+      const list = document.getElementById('actuals-txn-list');
+      if (!list) return;
+      const rows = Array.from(list.querySelectorAll('.actuals-txn-row'));
+      const cmp = (a, b) => {
+        const ad = a.dataset.txnDate || '';
+        const bd = b.dataset.txnDate || '';
+        const aa = parseFloat(a.dataset.amount || 0);
+        const ba = parseFloat(b.dataset.amount || 0);
+        const av = (a.querySelector('.actuals-txn-vendor')?.textContent || '').toLowerCase();
+        const bv = (b.querySelector('.actuals-txn-vendor')?.textContent || '').toLowerCase();
+        switch (sortBy) {
+          case 'date-asc':    return ad < bd ? -1 : ad > bd ? 1 : 0;
+          case 'date-desc':   return ad > bd ? -1 : ad < bd ? 1 : 0;
+          case 'amount-asc':  return aa - ba;
+          case 'amount-desc': return ba - aa;
+          case 'vendor-asc':  return av.localeCompare(bv);
+          case 'vendor-desc': return bv.localeCompare(av);
+        }
+        return 0;
+      };
+      rows.sort(cmp);
+      // Re-append rows + their suggested-match banner (if any) in the
+      // new order. The banner was rendered immediately before each
+      // row in the original DOM, so we keep that pairing.
+      rows.forEach(r => {
+        const tid    = r.dataset.tid;
+        const banner = list.querySelector(`.actuals-suggested-banner[data-tid="${tid}"]`);
+        if (banner) list.appendChild(banner);
+        list.appendChild(r);
+      });
     }
 
     window.actualsApplyFilter = function (filter) {
@@ -4034,18 +4097,23 @@
     // Live re-runs the unified filter resolver on every input change.
     window.actualsClearFilters = function () {
       ['actuals-filter-date-from','actuals-filter-date-to','actuals-filter-vendor',
-       'actuals-filter-section','actuals-filter-receipt',
+       'actuals-filter-section','actuals-filter-receipt','actuals-filter-uploader',
        'actuals-filter-amount-min','actuals-filter-amount-max'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.value = '';
       });
+      // Reset sort to the default newest-first.
+      const s = document.getElementById('actuals-sort-by');
+      if (s) s.value = 'date-desc';
       _actualsResolveFilters();
     };
     ['actuals-filter-date-from','actuals-filter-date-to','actuals-filter-vendor',
-     'actuals-filter-section','actuals-filter-receipt',
-     'actuals-filter-amount-min','actuals-filter-amount-max'].forEach(id => {
+     'actuals-filter-section','actuals-filter-receipt','actuals-filter-uploader',
+     'actuals-filter-amount-min','actuals-filter-amount-max',
+     'actuals-sort-by'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('input', _actualsResolveFilters);
+      if (el) el.addEventListener('change', _actualsResolveFilters);
     });
 
     // ── Hover preview on doc badges ───────────────────────────────────
