@@ -13842,6 +13842,26 @@ def docs_upload_update(uid):
         except Exception as _e:
             logging.warning(f"[/update] re-file logic error for upload {uid}: {_e}")
 
+    # ── Sync DocUpload metadata edits to linked Transaction(s) ─────────
+    # The Docs tab and the Actuals tab show the same physical file from
+    # different angles. Editing vendor / amount / date / note in the
+    # Docs detail modal should propagate to the auto-created Transaction
+    # row(s) so the two views stay in lockstep. Without this the user
+    # sees one vendor in Docs and another (the original OCR value) in
+    # Actuals — the exact "names don't match" symptom they reported.
+    try:
+        linked_txns = (Transaction.query
+                       .filter_by(doc_upload_id=upload.id)
+                       .all())
+        for _t in linked_txns:
+            _t.vendor   = upload.vendor
+            _t.amount   = upload.amount
+            _t.txn_date = upload.doc_date.isoformat() if upload.doc_date else None
+            _t.note     = upload.note
+            _t.updated_at = _dt.utcnow()
+    except Exception as _se:
+        logging.warning(f"[/update] could not sync to linked txns for upload {uid}: {_se}")
+
     db.session.commit()
     try:
         _act_after = {

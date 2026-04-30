@@ -474,6 +474,14 @@
   <div id="working-budget-wrap">
   {% for sec in sections %}
   {% set ns = namespace(sec_subtotal=0, sec_ot=0, sec_fringe=0, sec_total=0, has_labor=false, has_agent_or_disc=false, line_counter=0, kit_total=0, kit_working=0, sec_agent=0, prev_sub_group=None) %}
+  {# Pre-compute non-labor flag at the section level so empty sections
+     (auto-calc-only like Insurance / Administrative) still reserve the
+     Disc% column. Without this hoist, the flag was only set inside the
+     per-line loop — which never ran for empty sec.lines, so the column
+     collapsed to 0px and broke alignment with the other section tables. #}
+  {% set _sec_has_labor = namespace(any=false) %}
+  {% for ln in sec.lines %}{% if ln.is_labor %}{% set _sec_has_labor.any = true %}{% endif %}{% endfor %}
+  {% if not _sec_has_labor.any %}{% set ns.has_agent_or_disc = true %}{% endif %}
   {% for ln in sec.lines %}
     {% set res = line_results[ln.id] %}
     {% set ns.sec_subtotal = ns.sec_subtotal + res.subtotal %}
