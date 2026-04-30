@@ -411,15 +411,24 @@ def assess_confidence(vr):
 
 # Permanent source-of-truth archive for every uploaded file. Per user
 # 2026-04-30: this is mission-critical — even if processing fails, the
-# original bytes MUST stay reachable. Path scheme is human-browseable
-# so an admin can pull a source by date without DB access:
+# original bytes MUST stay reachable.
 #
-#   _SOURCE_ARCHIVE/<YYYY-MM>/<batch>/<original_filename>__<item_id><ext>
+# Lives INSIDE the project's PROCESSED DOCUMENTS folder so an admin
+# browsing the project's Dropbox tree finds source + processed in the
+# same place — no scattered top-level junk folders. Path scheme is
+# human-browseable by date:
 #
-# Filing to the final processed location is now a COPY (files_copy_v2),
-# not a move — the archive copy is the source-of-truth and persists
-# forever, the processed copy is the user-facing file.
-_STAGING_FOLDER = "_SOURCE_ARCHIVE"
+#   <project>/01_ADMIN/PROCESSED DOCUMENTS/_SOURCE_ARCHIVE/
+#       <YYYY-MM>/<batch>/<original_filename>__<item_id><ext>
+#
+# Filing to the final processed location is a COPY (files_copy_v2), not
+# a move — the archive copy is the source-of-truth and persists
+# forever; the processed copy is the user-facing file.
+_ARCHIVE_PARENT = "01_ADMIN/PROCESSED DOCUMENTS/_SOURCE_ARCHIVE"
+
+# Legacy fallback used only when project_name isn't supplied (older
+# callers). New uploads always go through the project-scoped path.
+_LEGACY_STAGING_FOLDER = "_SOURCE_ARCHIVE"
 
 
 def _safe_for_path(s: str, max_len: int = 60) -> str:
@@ -433,18 +442,28 @@ def _safe_for_path(s: str, max_len: int = 60) -> str:
 
 
 def _staged_path(batch_token: str, item_id: str, ext: str,
-                 original_filename: str = "") -> str:
+                 original_filename: str = "",
+                 project_name: str = "") -> str:
     """Build the Dropbox path where a file lives in the source archive.
 
-    Path: `{ops_prefix}/_SOURCE_ARCHIVE/<YYYY-MM>/<batch>/<orig>__<id><ext>`
+    With project_name (the normal case for FPBudget):
+      `{ops}/{project}/01_ADMIN/PROCESSED DOCUMENTS/_SOURCE_ARCHIVE/
+       <YYYY-MM>/<batch>/<orig>__<id><ext>`
+
+    Without project_name (legacy / standalone batch mode):
+      `{ops}/_SOURCE_ARCHIVE/<YYYY-MM>/<batch>/<orig>__<id><ext>`
+
     The processed copy is written via files_copy_v2 from this path on
-    success; this path itself is never deleted."""
+    success; this path itself is never deleted by the app."""
     from datetime import datetime as _dt
     ops = _ops_prefix()
     bucket = _dt.utcnow().strftime("%Y-%m")
     safe_orig = _safe_for_path(os.path.splitext(original_filename or "")[0])
     fname = f"{safe_orig}__{item_id}{ext}" if safe_orig else f"{item_id}{ext}"
-    base = f"{ops}/{_STAGING_FOLDER}" if ops else f"/{_STAGING_FOLDER}"
+    if project_name:
+        base = f"{ops}/{project_name}/{_ARCHIVE_PARENT}" if ops else f"/{project_name}/{_ARCHIVE_PARENT}"
+    else:
+        base = f"{ops}/{_LEGACY_STAGING_FOLDER}" if ops else f"/{_LEGACY_STAGING_FOLDER}"
     return f"{base}/{bucket}/{batch_token}/{fname}"
 
 
@@ -459,11 +478,16 @@ def _stage_to_dropbox(dbx, ocr_bytes: bytes, dest_path: str) -> str:
     return meta.path_display
 
 
-def prepare_files(file_storages, batch_token=None):
+def prepare_files(file_storages, batch_token=None, project_name=""):
     """
-    Stage uploaded files directly to Dropbox `_UPLOADS_PENDING/<batch>/`
-    and record their staged paths. NO local temp PDFs, NO Pillow on the
-    common formats — see to_ocr_bytes for memory rationale.
+    Stage uploaded files directly to Dropbox into the project's source
+    archive folder and record their staged paths. NO local temp PDFs,
+    NO Pillow on the common formats — see to_ocr_bytes for memory
+    rationale.
+
+    `project_name` controls where the archive lives:
+      • set: under `<project>/01_ADMIN/PROCESSED DOCUMENTS/_SOURCE_ARCHIVE/`
+      • empty: under top-level `_SOURCE_ARCHIVE/` (legacy / standalone)
 
     Appends to an existing batch if batch_token is supplied.
     Returns (batch_token, total_prepared_so_far, error_items_this_call).
@@ -516,7 +540,8 @@ def prepare_files(file_storages, batch_token=None):
             if dbx is None:
                 dbx = get_dropbox_client()
             dest_path = _staged_path(batch_token, item["id"], ocr_ext,
-                                     original_filename=fs.filename)
+                                     original_filename=fs.filename,
+                                     project_name=project_name)
             staged = _stage_to_dropbox(dbx, ocr_bytes, dest_path)
             del ocr_bytes  # bytes are now in Dropbox; release worker memory
 
@@ -1028,8 +1053,8 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
     """
     fs = _InMemoryFileStorage(file_bytes, filename)
 
-    # Phase 1: prepare (converts to PDF, saves temp files, computes hash)
-    batch_token, _total, errs = prepare_files([fs])
+    # Phase 1: stage to the project's source archive folder.
+    batch_token, _total, errs = prepare_files([fs], project_name=project_name)
     if errs:
         return {
             "status":            "error",
