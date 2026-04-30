@@ -3169,6 +3169,42 @@
       }
     };
 
+    // Recompute the 5 stat cards from the current state of the rows.
+    // Replaces the round-trip / page-refresh that the user reported.
+    function _actualsRecountStats() {
+      const rows  = document.querySelectorAll('.actuals-txn-row');
+      let total = 0, coded = 0, uncoded = 0, needRcpt = 0, docOnly = 0;
+      let qboCnt = 0, manCnt = 0;
+      rows.forEach(r => {
+        // Skip rows hidden by a filter — we want the underlying counts,
+        // not "what's currently visible". A filtered view shouldn't
+        // change the totals.
+        total++;
+        const codedRow      = r.dataset.coded === '1';
+        const hasDoc        = r.dataset.hasDoc === '1';
+        const notProj       = r.dataset.notProject === '1';
+        const src           = r.dataset.source || '';
+        if (notProj) return;  // dropped from rollup
+        if (codedRow) coded++; else uncoded++;
+        if (!hasDoc)  needRcpt++;
+        if (src === 'doc_upload')   docOnly++;
+        if (src === 'qbo_sync')     qboCnt++;
+        if (src === 'manual_entry') manCnt++;
+      });
+      const setN = (filt, n) => {
+        const card = document.querySelector(`.actuals-stat-card[data-filter="${filt}"]`);
+        if (card) {
+          const numEl = card.querySelector('div:first-child');
+          if (numEl) numEl.textContent = n;
+        }
+      };
+      setN('all', total);
+      setN('coded', coded);
+      setN('uncoded', uncoded);
+      setN('no_doc', needRcpt);
+      setN('doc_only', docOnly);
+    }
+
     // Click-to-code: change a budget-line dropdown → POST → refresh row state.
     window.actualsSetLine = async function (selectEl) {
       const tid     = parseInt(selectEl.dataset.tid);
@@ -3200,6 +3236,10 @@
           row.style.background = lineId ? '#0d1a14' : 'var(--bg-card)';
           row.style.borderColor = lineId ? '#1a3a2a' : 'var(--border)';
         }
+        // Live-update the stat cards so the Coded / Need coding /
+        // Need receipt counters track the row state without a page
+        // refresh (user reported they had to reload to see them update).
+        _actualsRecountStats();
       } catch (e) {
         alert('Save failed: ' + e.message);
       } finally {
@@ -3264,6 +3304,16 @@
         r.style.display = show ? '' : 'none';
       });
     };
+
+    // Initial recount on page load — defensive; server-rendered values
+    // should already be correct but this catches any drift between the
+    // server-side count and the DOM state (e.g. a row hidden by CSS
+    // would mismatch).
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', _actualsRecountStats);
+    } else {
+      _actualsRecountStats();
+    }
 
     function _actualsToast(msg) {
       const t = document.createElement('div');
