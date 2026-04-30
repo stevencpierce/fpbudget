@@ -2686,6 +2686,30 @@
       document.body.appendChild(overlay);
     }
     overlay.style.display = 'flex';
+    // When called from a tab that doesn't have the Docs row dataset
+    // (e.g. Actuals tab), `row` is null and the field-prepopulate
+    // below would leave everything blank. Fetch the canonical
+    // metadata from the server and synthesize a row-like dataset
+    // proxy so the rest of this function still works unchanged.
+    if (!row) {
+      try {
+        const r = await fetch(`/docs/upload/${uid}/status`, { credentials: 'same-origin' });
+        const d = r.ok ? await r.json() : {};
+        row = { dataset: {
+          sortFilename: d.filed_filename || d.original_filename || '',
+          sortVendor:   d.vendor || '',
+          sortAmount:   d.amount != null ? String(d.amount) : '',
+          sortType:     (d.category || '').toLowerCase(),
+          docDate:      d.doc_date || '',
+          docNum:       d.doc_number || '',
+          note:         d.note || '',
+          crewMemberId: d.crew_member_id != null ? String(d.crew_member_id) : '',
+          locationId:   d.location_id != null ? String(d.location_id) : '',
+        } };
+      } catch (e) {
+        row = { dataset: {} };
+      }
+    }
     document.getElementById('docDetailTitle').textContent =
       row?.dataset?.sortFilename ? row.dataset.sortFilename : 'Document';
     // Reset form fields to whatever the row's dataset carries — server
