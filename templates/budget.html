@@ -1259,6 +1259,35 @@
     <input type="file" id="docsCameraInput" accept="image/*" capture="environment" style="display:none">
     <input type="file" id="docsGalleryInput" accept="image/*,application/pdf" multiple style="display:none">
 
+    <!-- Upload-in-progress banner — shows while any files are mid-flight.
+         Pulses to draw attention; pairs with a window.beforeunload
+         handler that triggers the browser's native "leave site?" dialog
+         if the user tries to navigate away or refresh. Without this
+         guard, an interrupted upload can leave a file in Dropbox without
+         a corresponding DocUpload row (the orphan case the user hit
+         before — recoverable via Scan Dropbox but better to prevent). -->
+    <div id="docsUploadBanner"
+         style="display:none;margin-top:16px;padding:11px 14px;border-radius:8px;
+                background:#1e1a14;border:1px solid #4a3a1a;color:#e0a040;
+                font-size:.85rem;display:none;align-items:center;gap:10px;">
+      <span style="font-size:1.1rem;animation:docsBannerPulse 1.4s ease-in-out infinite">⏳</span>
+      <div style="flex:1">
+        <div style="font-weight:600;color:#f0c060">Upload in progress</div>
+        <div id="docsUploadBannerDetail" style="font-size:.78rem;color:#bba070;margin-top:1px">
+          Uploading 0 of 0 files…
+        </div>
+      </div>
+      <div style="font-size:.74rem;color:#bba070;text-align:right;line-height:1.35">
+        Don't close this tab,<br>refresh, or navigate away —<br>files may not finish processing.
+      </div>
+    </div>
+    <style>
+      @keyframes docsBannerPulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50%      { opacity: .5; transform: scale(.85); }
+      }
+    </style>
+
     <!-- Upload queue -->
     <div id="docsQueue" style="margin-top:16px;display:flex;flex-direction:column;gap:8px;"></div>
     <button id="docsBtnUpload" onclick="docsUploadAll()" disabled
@@ -1704,8 +1733,48 @@
   document.getElementById('docsCameraInput').addEventListener('change',function(){docsAddFiles(Array.from(this.files));this.value='';});
   document.getElementById('docsGalleryInput').addEventListener('change',function(){docsAddFiles(Array.from(this.files));this.value='';});
 
+  // ── Upload-in-progress safety: banner + beforeunload guard ─────────
+  // Increments while any docsUploadOne is mid-flight; the banner shows
+  // and beforeunload triggers the browser's native "Are you sure?"
+  // dialog. Both clear the moment the count returns to 0. The guard
+  // prevents the orphan-file case where the worker copies to Dropbox,
+  // commits a DocUpload row, but the browser navigates away before the
+  // response handler runs (so the queue row never flips to Done and
+  // the user thinks the upload failed when it actually succeeded).
+  let _docsActiveUploads = 0;
+  function _docsBannerUpdate() {
+    const banner = document.getElementById('docsUploadBanner');
+    const detail = document.getElementById('docsUploadBannerDetail');
+    if (!banner) return;
+    if (_docsActiveUploads > 0) {
+      banner.style.display = 'flex';
+      const total = docsQueue.length;
+      const done  = docsQueue.filter(i => i.status === 'done' ||
+                                           i.status === 'review' ||
+                                           i.status === 'duplicate' ||
+                                           i.status === 'error').length;
+      if (detail) {
+        detail.textContent = `Uploading ${done + _docsActiveUploads} of ${total} files… (${done} processed, ${_docsActiveUploads} in flight)`;
+      }
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+  function _docsBeforeUnload(e) {
+    if (_docsActiveUploads > 0) {
+      // Modern browsers ignore custom messages for security reasons but
+      // still show the native "Leave site?" dialog when preventDefault
+      // is called and returnValue is set.
+      e.preventDefault();
+      e.returnValue = 'Uploads are still in progress. Leaving now may cause files to be lost or duplicated.';
+      return e.returnValue;
+    }
+  }
+  window.addEventListener('beforeunload', _docsBeforeUnload);
+
   async function docsUploadOne(item){
     item.status='uploading'; docsRenderQueue();
+    _docsActiveUploads += 1; _docsBannerUpdate();
     const fd=new FormData(); fd.append('file',item.file);
     try{
       const r=await fetch(UPLOAD_URL,{method:'POST',body:fd});
@@ -1732,6 +1801,10 @@
         item.errorMsg = (d && d.error) || ('HTTP ' + r.status);
       }
     }catch(e){item.status='error'; item.errorMsg=e.message;}
+    finally{
+      _docsActiveUploads = Math.max(0, _docsActiveUploads - 1);
+      _docsBannerUpdate();
+    }
     docsRenderQueue();
   }
 
