@@ -3055,6 +3055,16 @@
       | rejectattr('doc_upload_id') | rejectattr('not_project_expense', 'equalto', True)
       | list | length %}
   {% set _t_doc_only  = actuals_transactions | selectattr('source', 'equalto', 'doc_upload') | list | length %}
+  {# Finished: audit-clean rows. Three legs of the stool all in place:
+     budget_line_id (coded), doc_upload_id (backed by paperwork),
+     match_status='confirmed'. Excludes not_project_expense since
+     those are out of scope. #}
+  {% set _t_finished = [] %}
+  {% for _t in actuals_transactions %}
+    {% if _t.budget_line_id and _t.doc_upload_id and _t.match_status == 'confirmed' and not _t.not_project_expense %}
+      {% set _ = _t_finished.append(_t) %}
+    {% endif %}
+  {% endfor %}
   {# OCR review: doc-source rows with bad/blank OCR signals — no
      vendor, no amount, or zero amount. Surfaces receipts that need
      manual cleanup before they can be matched. #}
@@ -3071,6 +3081,7 @@
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
     {% for label, n, color, filt in [
       ('Transactions',    _t_all,                   'var(--text-muted)',     'all'),
+      ('✓ Finished',      _t_finished|length,       '#74c69d',               'finished'),
       ('Coded',           _t_coded,                 'var(--green)',          'coded'),
       ('Need coding',     _t_uncoded,               'var(--yellow)',         'uncoded'),
       ('Need receipt',    _t_need_rcpt,             'var(--orange, #e0a040)','no_doc'),
@@ -3327,15 +3338,27 @@
               'misc':           ('#1e1e1e', '#3a3a3a', '#bbb'),
             } %}
             {% set _bg, _bd, _fg = _palette.get(_cat, _palette['misc']) %}
-            <a href="#" onclick="openDocDetail({{ _doc.id }}, null);return false"
-               title="View {{ _cat }}: {{ _doc.filed_filename or _doc.original_filename }}"
+            <a href="#" class="actuals-doc-badge"
+               data-doc-id="{{ _doc.id }}"
+               onclick="openDocDetail({{ _doc.id }}, null);return false"
+               title="View {{ _cat }} — hover to preview, click to open"
                style="flex-shrink:0;font-size:.66rem;padding:2px 7px;background:{{ _bg }};border:1px solid {{ _bd }};border-radius:4px;color:{{ _fg }};text-decoration:none">
               📎 {{ _cat }} · {{ (_doc.filed_filename or _doc.original_filename or '')[:14] }}{% if (_doc.filed_filename or _doc.original_filename or '')|length > 14 %}…{% endif %}
             </a>
-            {% elif t.source == 'qbo_sync' %}
-            <span style="flex-shrink:0;font-size:.66rem;padding:2px 7px;background:#2a1414;border:1px solid #4a2020;border-radius:4px;color:#e08080">
-              ⚠ no receipt
-            </span>
+            {% else %}
+            {# No receipt yet — show a clickable Upload button. Opens
+               a hidden file picker bound to this transaction. #}
+            <button type="button" class="actuals-upload-btn"
+                    data-tid="{{ t.id }}"
+                    title="Attach a receipt to this transaction"
+                    style="flex-shrink:0;font-size:.66rem;padding:2px 7px;
+                           background:#1a2540;border:1px solid #2d4070;
+                           border-radius:4px;color:#5b8af9;cursor:pointer">
+              📤 Upload receipt
+            </button>
+            {% if t.source == 'qbo_sync' %}
+            <span style="flex-shrink:0;font-size:.6rem;color:#e08080;font-style:italic">no receipt</span>
+            {% endif %}
             {% endif %}
             {# Budget-line picker — 2-tier select (optgroup per section) #}
             <select class="actuals-line-picker"
@@ -3798,6 +3821,13 @@
         else if (f === 'uncoded')  pass = r.dataset.coded === '0' && r.dataset.notProject !== '1';
         else if (f === 'no_doc')   pass = r.dataset.hasDoc === '0' && r.dataset.notProject !== '1';
         else if (f === 'doc_only') pass = r.dataset.source === 'doc_upload';
+        else if (f === 'finished') {
+          // Audit-clean: coded + has receipt + confirmed.
+          pass = (r.dataset.coded === '1' &&
+                  r.dataset.hasDoc === '1' &&
+                  r.dataset.matchStatus === 'confirmed' &&
+                  r.dataset.notProject !== '1');
+        }
         else if (f === 'ocr_review') {
           // Doc-source rows that look like OCR failed: blank vendor or
           // zero/null amount. data-amount is "0" when amount is null
@@ -4001,6 +4031,122 @@
      'actuals-filter-amount-min','actuals-filter-amount-max'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('input', _actualsResolveFilters);
+    });
+
+    // ── Hover preview on doc badges ───────────────────────────────────
+    // Float a small thumbnail next to the badge while hovering. Image
+    // receipts render as <img>; PDFs/other types show an icon. The
+    // preview lazy-loads via /docs/upload/<uid>/raw the first time.
+    let _hoverPreviewEl = null;
+    function _ensureHoverPreviewEl() {
+      if (_hoverPreviewEl) return _hoverPreviewEl;
+      const el = document.createElement('div');
+      el.id = '_actuals-doc-hover-preview';
+      el.style.cssText = `
+        position:fixed; z-index:10000; display:none; pointer-events:none;
+        background:var(--bg-card); border:1px solid var(--border);
+        border-radius:8px; box-shadow:0 12px 36px rgba(0,0,0,.6);
+        padding:6px; max-width:340px; max-height:340px; overflow:hidden;
+      `;
+      document.body.appendChild(el);
+      _hoverPreviewEl = el;
+      return el;
+    }
+    document.querySelectorAll('.actuals-doc-badge').forEach(badge => {
+      let hoverTimer = null;
+      badge.addEventListener('mouseenter', e => {
+        // 200ms delay so a quick mouse pass-through doesn't load.
+        hoverTimer = setTimeout(() => {
+          const docId = badge.dataset.docId;
+          if (!docId) return;
+          const el = _ensureHoverPreviewEl();
+          el.innerHTML = `<div style="font-size:.7rem;color:var(--text-muted);padding:6px 4px">Loading preview…</div>`;
+          // Fetch metadata to know whether it's an image or PDF.
+          fetch(`/docs/upload/${docId}/preview-link`, { credentials: 'same-origin' })
+            .then(r => r.json()).catch(() => ({}))
+            .then(d => {
+              const ct = (d && d.content_type ? d.content_type : '').toLowerCase();
+              const fn = (d && d.filename ? d.filename : '').toLowerCase();
+              const isImg = ct.startsWith('image/') || /\.(jpe?g|png|gif|heic|heif|webp|tiff?|bmp)$/i.test(fn);
+              const isPdf = ct.includes('pdf') || fn.endsWith('.pdf');
+              const rawUrl = `/docs/upload/${docId}/raw`;
+              if (isImg) {
+                el.innerHTML = `<img src="${rawUrl}" alt="" style="max-width:330px;max-height:330px;display:block;border-radius:5px">`;
+              } else if (isPdf) {
+                el.innerHTML = `
+                  <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;font-size:.82rem;color:var(--text)">
+                    <span style="font-size:2rem">📄</span>
+                    <div>
+                      <div style="font-weight:600">PDF</div>
+                      <div style="font-size:.72rem;color:var(--text-muted)">Click the badge to open the full preview.</div>
+                    </div>
+                  </div>`;
+              } else {
+                el.innerHTML = `
+                  <div style="padding:10px 14px;font-size:.78rem;color:var(--text-muted)">
+                    Click the badge to open this document.
+                  </div>`;
+              }
+            });
+          // Position the preview panel near the badge but inside the
+          // viewport. Updated on mousemove for smooth follow.
+          const rect = badge.getBoundingClientRect();
+          el.style.left = `${Math.min(window.innerWidth - 360, rect.right + 12)}px`;
+          el.style.top  = `${Math.min(window.innerHeight - 360, rect.top - 8)}px`;
+          el.style.display = 'block';
+        }, 200);
+      });
+      badge.addEventListener('mouseleave', () => {
+        if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+        if (_hoverPreviewEl) _hoverPreviewEl.style.display = 'none';
+      });
+    });
+
+    // ── Upload-receipt button per row ─────────────────────────────────
+    // Click → hidden file input → POSTs to the same endpoint the
+    // file-drop handler uses. Same backend semantics: creates a
+    // DocUpload, links it to the transaction, doesn't create a
+    // duplicate doc-source Transaction.
+    document.querySelectorAll('.actuals-upload-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tid = parseInt(btn.dataset.tid);
+        let inp = document.getElementById('_actuals-upload-file');
+        if (!inp) {
+          inp = document.createElement('input');
+          inp.type = 'file';
+          inp.id = '_actuals-upload-file';
+          inp.accept = 'image/*,application/pdf';
+          inp.style.display = 'none';
+          document.body.appendChild(inp);
+        }
+        // Re-bind onchange each time so the closure captures the
+        // right tid (the input itself is reused across rows).
+        inp.value = '';
+        inp.onchange = async () => {
+          if (!inp.files || !inp.files.length) return;
+          const file = inp.files[0];
+          const fd = new FormData();
+          fd.append('file', file);
+          btn.disabled = true; btn.textContent = '⏳ Uploading…';
+          try {
+            const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/upload-receipt`, {
+              method: 'POST', body: fd,
+            });
+            const d = await r.json();
+            if (!r.ok) {
+              _actualsToast('Upload failed: ' + (d.error || r.status), 'red');
+              btn.disabled = false; btn.textContent = '📤 Upload receipt';
+              return;
+            }
+            _actualsToast(`Receipt uploaded: ${d.filed_filename || file.name}`, 'green');
+            setTimeout(() => window.location.reload(), 700);
+          } catch (e) {
+            _actualsToast('Upload error: ' + e.message, 'red');
+            btn.disabled = false; btn.textContent = '📤 Upload receipt';
+          }
+        };
+        inp.click();
+      });
     });
 
     // ── Drop a file onto a transaction row → upload + link ────────────
