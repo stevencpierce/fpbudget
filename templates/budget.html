@@ -2738,9 +2738,91 @@
   <div class="actuals-header">
     <div>
       <h3 style="margin:0 0 .2rem">Actuals</h3>
-      <p class="muted" style="font-size:.82rem">Synced from <strong>BudgetSync</strong> (accounting transactions). Manual amounts supplement where sync data is unavailable.</p>
+      <p class="muted" style="font-size:.82rem">Receipts, invoices, and QBO transactions land here. The full ledger view (with budget-line linking) ships in Phase 3 — for now this is a preview of every transaction the system has ingested.</p>
     </div>
   </div>
+
+  {# ── Recent transactions preview (interim — Phase 3 replaces with
+       the full transactional ledger + budget-line picker + doc badge) ── #}
+  {% if recent_transactions %}
+  <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;
+              padding:14px 16px;margin-bottom:18px">
+    <div style="display:flex;align-items:center;justify-content:space-between;
+                margin-bottom:10px">
+      <h4 style="margin:0;font-size:.95rem">
+        Recent transactions
+        <span class="muted" style="font-weight:400;font-size:.8rem">
+          ({{ recent_transactions|length }} most recent)
+        </span>
+      </h4>
+      <span class="muted" style="font-size:.7rem">
+        Source mix: {% set _src = {} %}
+        {% for t in recent_transactions %}
+          {% set _ = _src.update({t.source: _src.get(t.source, 0) + 1}) %}
+        {% endfor %}
+        {% for src, n in _src.items() %}{{ n }} {{ src.replace('_', ' ') }}{% if not loop.last %} · {% endif %}{% endfor %}
+      </span>
+    </div>
+    <table class="data-table" style="font-size:.82rem">
+      <thead>
+        <tr>
+          <th style="width:80px">Date</th>
+          <th>Vendor</th>
+          <th class="col-num">Amount</th>
+          <th>Source</th>
+          <th>Doc</th>
+          <th>Budget Line</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in recent_transactions %}
+        <tr>
+          <td>{{ t.txn_date or '—' }}</td>
+          <td>{{ t.vendor or '—' }}</td>
+          <td class="col-num">{{ (t.amount or 0) | currency }}</td>
+          <td>
+            {% if t.source == 'doc_upload' %}📄 Receipt
+            {% elif t.source == 'qbo_sync' %}🏦 QBO
+            {% elif t.source == 'manual_entry' %}✏️ Manual
+            {% elif t.source == 'invoice_split' %}↳ Split
+            {% else %}{{ t.source or '—' }}{% endif %}
+          </td>
+          <td>
+            {% if t.doc_upload_id %}
+              <span style="color:var(--green)" title="Linked to DocUpload #{{ t.doc_upload_id }}">📎 linked</span>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if t.budget_line_id %}
+              <span style="color:var(--green)">✓ linked</span>
+            {% else %}
+              <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if t.match_status == 'confirmed' %}
+              <span style="color:var(--green)">confirmed</span>
+            {% elif t.match_status == 'suggested' %}
+              <span style="color:var(--yellow)">suggested ({{ ((t.match_confidence or 0)*100)|int }}%)</span>
+            {% else %}
+              <span class="muted">unmatched</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted" style="font-size:.72rem;margin-top:8px;margin-bottom:0">
+      Phase 3 (next build) replaces this with the interactive ledger:
+      click any row to pick the budget line it hits → triggers the
+      Working→Actual auto-clone the first time. For now this preview
+      confirms data is flowing in correctly.
+    </p>
+  </div>
+  {% endif %}
 
   {% set actuals_rows = [] %}
   {% set ns2 = namespace(all_codes=[]) %}

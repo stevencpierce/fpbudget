@@ -3246,6 +3246,16 @@ def budget_view(pid, bid):
 
     company_settings = CompanySettings.query.get(1) or CompanySettings()
     doc_uploads = DocUpload.query.filter_by(project_id=pid).order_by(DocUpload.uploaded_at.desc()).all()
+    # Recent transactions for the Actuals tab preview (Phase 3 will
+    # replace this with the full transactional ledger). For now we
+    # surface the most recent rows regardless of source so the user
+    # can see receipts/QBO ingestion landing immediately.
+    recent_transactions = (Transaction.query
+                           .filter_by(project_id=pid)
+                           .order_by(Transaction.created_at.desc().nullslast(),
+                                     Transaction.id.desc())
+                           .limit(50)
+                           .all())
     # Group uploads by category for the Docs-tab view. Per user 2026-04-30:
     # tax forms, receipts, invoices, etc. should be visually clustered so
     # the list is readable. Order matches the Analyzer's filing buckets.
@@ -3322,6 +3332,7 @@ def budget_view(pid, bid):
         line_assigned_location=line_assigned_location,
         doc_uploads=doc_uploads,
         doc_groups=doc_groups,
+        recent_transactions=recent_transactions,
     )
 
 
@@ -12506,6 +12517,52 @@ def docs_upload_post(pid):
     db.session.add(upload)
     db.session.commit()
 
+    # ── Auto-create a Transaction row for every doc upload (2026-04-30) ─
+    # Each receipt / invoice / etc. that lands in Docs becomes an
+    # immediate Actuals candidate: a Transaction with source='doc_upload'
+    # and doc_upload_id set. budget_line_id stays NULL — the user picks
+    # the line from the Actuals tab, which triggers the Working→Actual
+    # auto-clone the first time.
+    #
+    # We skip duplicate-flagged uploads (already filed as a duplicate
+    # of an earlier upload) and error-status uploads (no real file).
+    # Tax forms / contracts / releases also skipped because they aren't
+    # spend events — they're paperwork that lives in Docs but doesn't
+    # belong on the actuals ledger.
+    _NON_LEDGER_TYPES = {'tax_form', 'contract', 'release', 'legal',
+                         'insurance', 'misc'}
+    auto_txn = None
+    if (upload.status in ('done', 'review')
+            and not upload.is_duplicate
+            and (upload.category or '') not in _NON_LEDGER_TYPES):
+        try:
+            from datetime import datetime as _dt_mod
+            _txn_date = upload.doc_date.isoformat() if upload.doc_date else None
+            auto_txn = Transaction(
+                project_id          = pid,
+                source              = 'doc_upload',
+                doc_upload_id       = upload.id,
+                vendor              = upload.vendor,
+                amount              = upload.amount,
+                txn_date            = _txn_date,
+                is_expense          = True,
+                note                = upload.note,
+                # No account_code yet — user picks budget line in Actuals.
+                # match_status stays 'unmatched' until the user confirms.
+                match_status        = 'unmatched',
+                created_via_user_id = current_user.id if current_user.is_authenticated else None,
+            )
+            db.session.add(auto_txn)
+            db.session.commit()
+            logging.info(f"[docs/upload] Created Transaction #{auto_txn.id} "
+                         f"from DocUpload #{upload.id} (vendor={upload.vendor!r}, "
+                         f"amount={upload.amount}, doc_date={_txn_date})")
+        except Exception as _te:
+            logging.warning(f"[docs/upload] Auto-Transaction creation failed for "
+                            f"upload #{upload.id}: {_te}")
+            db.session.rollback()
+            auto_txn = None
+
     # Activity log
     try:
         _log_activity(
@@ -12516,9 +12573,11 @@ def docs_upload_post(pid):
             before=None,
             after={'status': upload.status, 'vendor': upload.vendor,
                    'amount': float(upload.amount or 0),
-                   'category': upload.category},
+                   'category': upload.category,
+                   'transaction_id': auto_txn.id if auto_txn else None},
             note=f'Uploaded "{upload.original_filename}"' +
-                 (f' (filed as {upload.category})' if upload.filed_dropbox_path else ''))
+                 (f' (filed as {upload.category})' if upload.filed_dropbox_path else '') +
+                 (f' → Actuals txn #{auto_txn.id}' if auto_txn else ''))
     except Exception: pass
 
     # If this upload's content hash matched an earlier row, MOVE the
