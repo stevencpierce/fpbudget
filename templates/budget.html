@@ -1473,8 +1473,14 @@
          preview is the priority — receipts are unreadable in a sidebar.
          Image previews get zoom + pan controls; PDFs use the browser's
          native PDF UI inside the embed. -->
-    <div id="docDetailOverlay" class="modal-overlay hidden" onclick="closeDocDetail(event)"
-         style="position:fixed;inset:0;z-index:600;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);">
+    {# DO NOT add class="modal-overlay" here — the global rule has
+       position:absolute which pins this overlay inside whatever
+       positioned ancestor it finds in the docs tab, so it stops
+       covering the full viewport. We use a clean ID-only div with
+       inline position:fixed instead. Hide/show via the .hidden
+       attribute equivalent (style="display:none" via JS). #}
+    <div id="docDetailOverlay" onclick="closeDocDetail(event)"
+         style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;width:100vw;height:100vh;z-index:9999;align-items:center;justify-content:center;background:rgba(0,0,0,.78);">
       {# IMPORTANT: don't use class="modal" here — global .modal has
          align-items:center which collapses our flex children to content
          width and breaks the split-pane layout. We do the centering on
@@ -2329,7 +2335,7 @@
 
   window.openDocDetail = async function (uid, row) {
     _docDetailUid = uid;
-    document.getElementById('docDetailOverlay').classList.remove('hidden');
+    document.getElementById('docDetailOverlay').style.display = 'flex';
     document.getElementById('docDetailTitle').textContent =
       row?.dataset?.sortFilename ? row.dataset.sortFilename : 'Document';
     // Reset form fields to whatever the row's dataset carries — server
@@ -2481,7 +2487,7 @@
 
   window.closeDocDetail = function (ev) {
     if (ev && ev.target && ev.target.id !== 'docDetailOverlay') return;
-    document.getElementById('docDetailOverlay').classList.add('hidden');
+    document.getElementById('docDetailOverlay').style.display = 'none';
     _docDetailUid = null;
   };
 
