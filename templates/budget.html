@@ -3095,6 +3095,55 @@
   {# ════════════════════════════════════════════════════════════
      MATCH PANE — COA sidebar | Transaction list
      ════════════════════════════════════════════════════════════ #}
+  {# ── Filter bar (date / vendor / section / receipt / amount) ── #}
+  <div id="actuals-filter-bar"
+       style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+              padding:10px 12px;margin-bottom:10px;
+              background:var(--bg-card);border:1px solid var(--border);border-radius:8px">
+    <span style="font-size:.72rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Filters</span>
+    <input type="date" id="actuals-filter-date-from" title="Date from"
+           style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
+    <span style="font-size:.7rem;color:var(--text-muted)">→</span>
+    <input type="date" id="actuals-filter-date-to" title="Date to"
+           style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
+    <input type="text" id="actuals-filter-vendor" placeholder="Vendor / note search…"
+           style="font-size:.74rem;padding:4px 8px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;flex:1;min-width:140px">
+    <select id="actuals-filter-section" title="Filter by COA section"
+            style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
+      <option value="">All sections</option>
+      {% for code, name in coa_sections %}
+      <option value="{{ code }}">{{ code }} {{ name }}</option>
+      {% endfor %}
+    </select>
+    <select id="actuals-filter-receipt" title="Receipt presence"
+            style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
+      <option value="">Receipt: any</option>
+      <option value="yes">Has receipt</option>
+      <option value="no">No receipt</option>
+    </select>
+    <input type="number" id="actuals-filter-amount-min" placeholder="$ min" step="0.01"
+           style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:80px">
+    <span style="font-size:.7rem;color:var(--text-muted)">→</span>
+    <input type="number" id="actuals-filter-amount-max" placeholder="$ max" step="0.01"
+           style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:80px">
+    <button type="button" class="btn btn-xs btn-ghost" onclick="actualsClearFilters()"
+            style="font-size:.7rem;padding:3px 8px">✕ Clear</button>
+    <span id="actuals-filter-count" class="muted" style="font-size:.7rem;margin-left:auto"></span>
+  </div>
+
+  {# ── Bulk action bar (only visible when rows are selected) ── #}
+  <div id="actuals-bulk-bar"
+       style="display:none;flex-wrap:wrap;gap:8px;align-items:center;
+              padding:8px 12px;margin-bottom:10px;
+              background:#0d1a14;border:1px solid #1a3a2a;border-radius:8px">
+    <span id="actuals-bulk-count" style="font-size:.78rem;color:var(--green);font-weight:600">0 selected</span>
+    <span class="muted" style="font-size:.72rem">— Cmd/Ctrl click to toggle one, Shift+click for range, Cmd+A to select all visible</span>
+    <button type="button" class="btn btn-xs" onclick="actualsBulkClear()"
+            style="margin-left:auto;font-size:.7rem;padding:3px 9px">Deselect</button>
+    <button type="button" class="btn btn-xs" onclick="actualsBulkMarkNotProject()"
+            style="font-size:.7rem;padding:3px 9px;color:var(--text-muted)">✕ Not project</button>
+  </div>
+
   <div id="actuals-pane-match" class="actuals-pane">
     {# Friendly empty-state when no pickable budget lines exist —
        otherwise the dropdown silently shows nothing and the user is
@@ -3709,31 +3758,81 @@
       }
     };
 
-    // Track the currently-active filter so post-code refreshes reapply
-    // it (e.g. when a row gets coded under "Need coding", it should
-    // disappear from view immediately — same effect as moving to a
-    // "coded" bucket without the DOM restructuring overhead).
-    let _actualsActiveFilter = 'uncoded';  // default on page load: needs work
+    // Single-source filter resolver. Reads both:
+    //   • stat-card filter (_actualsActiveFilter)
+    //   • filter bar (date / vendor / section / receipt / amount)
+    // and computes per-row visibility. Both subsystems call this
+    // whenever they change; we don't have one writing display only
+    // for the other to overwrite.
+    let _actualsActiveFilter = 'uncoded';
+    function _actualsResolveFilters() {
+      const f = _actualsActiveFilter;
+      // Filter-bar values
+      const dFrom    = (document.getElementById('actuals-filter-date-from') || {}).value || '';
+      const dTo      = (document.getElementById('actuals-filter-date-to')   || {}).value || '';
+      const vendor   = ((document.getElementById('actuals-filter-vendor')  || {}).value || '').toLowerCase().trim();
+      const section  = (document.getElementById('actuals-filter-section')  || {}).value || '';
+      const receipt  = (document.getElementById('actuals-filter-receipt')  || {}).value || '';
+      const amtMin   = parseFloat((document.getElementById('actuals-filter-amount-min') || {}).value || 'NaN');
+      const amtMax   = parseFloat((document.getElementById('actuals-filter-amount-max') || {}).value || 'NaN');
+
+      let shown = 0, total = 0;
+      document.querySelectorAll('.actuals-txn-row').forEach(r => {
+        total++;
+        let pass = true;
+
+        // Stat-card filter
+        if (f === 'coded')         pass = r.dataset.coded === '1';
+        else if (f === 'uncoded')  pass = r.dataset.coded === '0' && r.dataset.notProject !== '1';
+        else if (f === 'no_doc')   pass = r.dataset.hasDoc === '0' && r.dataset.notProject !== '1';
+        else if (f === 'doc_only') pass = r.dataset.source === 'doc_upload';
+
+        // Filter-bar
+        if (pass && dFrom && (r.dataset.txnDate || '') < dFrom) pass = false;
+        if (pass && dTo   && (r.dataset.txnDate || '') > dTo)   pass = false;
+        if (pass && vendor) {
+          const hay = ((r.querySelector('.actuals-txn-vendor')?.textContent || '') + ' ' +
+                       (r.dataset.note || '')).toLowerCase();
+          if (!hay.includes(vendor)) pass = false;
+        }
+        if (pass && section) {
+          const sel = r.querySelector('.actuals-line-picker');
+          let matched = false;
+          if (sel && sel.value) {
+            if (sel.value.startsWith('section:')) {
+              matched = sel.value.slice(8) === String(section);
+            } else {
+              const opt = sel.options[sel.selectedIndex];
+              const grp = opt && opt.parentElement;
+              if (grp && grp.tagName === 'OPTGROUP') {
+                matched = grp.label.startsWith(String(section) + ' ');
+              }
+            }
+          }
+          if (!matched) pass = false;
+        }
+        if (pass && receipt) {
+          if (receipt === 'yes' && r.dataset.hasDoc !== '1') pass = false;
+          if (receipt === 'no'  && r.dataset.hasDoc === '1') pass = false;
+        }
+        if (pass && !isNaN(amtMin) && parseFloat(r.dataset.amount || 0) < amtMin) pass = false;
+        if (pass && !isNaN(amtMax) && parseFloat(r.dataset.amount || 0) > amtMax) pass = false;
+
+        r.style.display = pass ? 'flex' : 'none';
+        const banner = document.querySelector(`.actuals-suggested-banner[data-tid="${r.dataset.tid}"]`);
+        if (banner) banner.style.display = pass ? 'flex' : 'none';
+        if (pass) shown++;
+      });
+      const lbl = document.getElementById('actuals-filter-count');
+      if (lbl) lbl.textContent = (shown === total) ? `${total} txns` : `${shown} of ${total} shown`;
+    }
+
     window.actualsApplyFilter = function (filter) {
       _actualsActiveFilter = filter;
       document.querySelectorAll('.actuals-stat-card').forEach(c => {
         c.style.borderColor = c.dataset.filter === filter ? 'var(--blue)' : 'var(--border)';
       });
-      // Also dim/hide the suggested-match banner when its row is hidden.
-      const rows = document.querySelectorAll('.actuals-txn-row');
-      rows.forEach(r => {
-        let show = true;
-        if (filter === 'coded')         show = r.dataset.coded === '1';
-        else if (filter === 'uncoded')  show = r.dataset.coded === '0' && r.dataset.notProject !== '1';
-        else if (filter === 'no_doc')   show = r.dataset.hasDoc === '0' && r.dataset.notProject !== '1';
-        else if (filter === 'doc_only') show = r.dataset.source === 'doc_upload';
-        // Restore the row's flex layout (inline style was display:flex).
-        // Setting style.display = '' clears the override and falls back
-        // to the default block layout, which breaks the row's flex.
-        r.style.display = show ? 'flex' : 'none';
-        const banner = document.querySelector(`.actuals-suggested-banner[data-tid="${r.dataset.tid}"]`);
-        if (banner) banner.style.display = show ? 'flex' : 'none';
-      });
+      _actualsResolveFilters();
     };
 
     // Default-apply the "Need coding" filter on initial render so the
@@ -3772,6 +3871,122 @@
       setTimeout(() => t.remove(), 4000);
     }
 
+    // ── Multi-select (Cmd/Shift click) + bulk drag ────────────────────
+    const _selectedTids = new Set();
+    let _lastClickedTid = null;  // anchor for shift-range
+
+    function _renderSelection() {
+      document.querySelectorAll('.actuals-txn-row').forEach(r => {
+        const tid = parseInt(r.dataset.tid);
+        if (_selectedTids.has(tid)) {
+          r.style.boxShadow = 'inset 0 0 0 2px var(--green)';
+          r.dataset.selected = '1';
+        } else {
+          r.style.boxShadow = '';
+          r.dataset.selected = '0';
+        }
+      });
+      const bar = document.getElementById('actuals-bulk-bar');
+      const cnt = document.getElementById('actuals-bulk-count');
+      if (_selectedTids.size > 0) {
+        if (bar) bar.style.display = 'flex';
+        if (cnt) cnt.textContent = `${_selectedTids.size} selected`;
+      } else {
+        if (bar) bar.style.display = 'none';
+      }
+    }
+
+    window.actualsBulkClear = function () {
+      _selectedTids.clear();
+      _lastClickedTid = null;
+      _renderSelection();
+    };
+
+    window.actualsBulkMarkNotProject = async function () {
+      if (_selectedTids.size === 0) return;
+      if (!confirm(`Mark ${_selectedTids.size} transaction${_selectedTids.size !== 1 ? 's' : ''} as not project expense?`)) return;
+      const tids = Array.from(_selectedTids);
+      let ok = 0, fail = 0;
+      for (const tid of tids) {
+        try {
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/mark-not-project`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+          });
+          if (r.ok) ok++; else fail++;
+        } catch (e) { fail++; }
+      }
+      _actualsToast(`Marked ${ok} as not project${fail ? ` (${fail} failed)` : ''}.`, fail ? 'yellow' : 'green');
+      setTimeout(() => window.location.reload(), 600);
+    };
+
+    // Click handler for selection. Single click = select-only-this.
+    // Cmd/Ctrl-click = toggle. Shift-click = range from anchor.
+    // Skip clicks that started on a child input/button/select/select.
+    document.querySelectorAll('.actuals-txn-row').forEach(row => {
+      row.addEventListener('click', e => {
+        if (e.target.closest('select, input, textarea, button, a, .actuals-line-picker')) return;
+        const tid = parseInt(row.dataset.tid);
+        if (e.shiftKey && _lastClickedTid !== null) {
+          // Range select between anchor and this row over VISIBLE rows.
+          const visible = Array.from(document.querySelectorAll('.actuals-txn-row'))
+            .filter(r => r.style.display !== 'none')
+            .map(r => parseInt(r.dataset.tid));
+          const i = visible.indexOf(_lastClickedTid);
+          const j = visible.indexOf(tid);
+          if (i >= 0 && j >= 0) {
+            const [a, b] = i < j ? [i, j] : [j, i];
+            for (let k = a; k <= b; k++) _selectedTids.add(visible[k]);
+          }
+        } else if (e.metaKey || e.ctrlKey) {
+          if (_selectedTids.has(tid)) _selectedTids.delete(tid);
+          else _selectedTids.add(tid);
+          _lastClickedTid = tid;
+        } else {
+          // Plain click: ignore (rows aren't normally selectable). To
+          // start a selection use Cmd/Ctrl+click on the first row.
+          // This avoids accidental selection when clicking near the
+          // dropdown / source pill. Plain click on a row is also our
+          // drag handle source, kept passive otherwise.
+          return;
+        }
+        _renderSelection();
+      });
+    });
+
+    // Cmd/Ctrl+A inside the Actuals tab selects all VISIBLE rows.
+    document.addEventListener('keydown', e => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key !== 'a' && e.key !== 'A') return;
+      const tab = document.getElementById('tab-actuals');
+      if (!tab || tab.style.display === 'none') return;
+      // Only intercept when focus is in the tab (not in a text input).
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return;
+      e.preventDefault();
+      document.querySelectorAll('.actuals-txn-row').forEach(r => {
+        if (r.style.display !== 'none') _selectedTids.add(parseInt(r.dataset.tid));
+      });
+      _renderSelection();
+    });
+
+    // ── Filter bar wiring ─────────────────────────────────────────────
+    // Live re-runs the unified filter resolver on every input change.
+    window.actualsClearFilters = function () {
+      ['actuals-filter-date-from','actuals-filter-date-to','actuals-filter-vendor',
+       'actuals-filter-section','actuals-filter-receipt',
+       'actuals-filter-amount-min','actuals-filter-amount-max'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      _actualsResolveFilters();
+    };
+    ['actuals-filter-date-from','actuals-filter-date-to','actuals-filter-vendor',
+     'actuals-filter-section','actuals-filter-receipt',
+     'actuals-filter-amount-min','actuals-filter-amount-max'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('input', _actualsResolveFilters);
+    });
+
     // ── Reverse drag: row → COA tree (slice 3) ────────────────────────
     // Drag a transaction row over the sidebar. Hovering a section for
     // ~350ms expands its line children. Drop on the section header
@@ -3788,15 +4003,33 @@
           e.preventDefault();
           return;
         }
-        _draggingTxn = { tid: parseInt(row.dataset.tid) };
-        row.style.opacity = '.55';
+        const tid = parseInt(row.dataset.tid);
+        // Bulk drag: if the dragged row is in the selection, drag the
+        // whole selection. Otherwise drag only this row (and clear any
+        // selection so the user isn't surprised).
+        let tids;
+        if (_selectedTids.has(tid)) {
+          tids = Array.from(_selectedTids);
+        } else {
+          tids = [tid];
+        }
+        _draggingTxn = { tids };
+        // Visual cue: dim every dragged row.
+        tids.forEach(_t => {
+          const r = document.querySelector(`.actuals-txn-row[data-tid="${_t}"]`);
+          if (r) r.style.opacity = '.55';
+        });
         e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', String(row.dataset.tid));
+        e.dataTransfer.setData('text/plain', tids.join(','));
       });
       row.addEventListener('dragend', () => {
-        row.style.opacity = '';
+        if (_draggingTxn && _draggingTxn.tids) {
+          _draggingTxn.tids.forEach(_t => {
+            const r = document.querySelector(`.actuals-txn-row[data-tid="${_t}"]`);
+            if (r) r.style.opacity = '';
+          });
+        }
         _draggingTxn = null;
-        // Collapse any expanded sections so the next drag starts clean.
         document.querySelectorAll('.coa-lines').forEach(el => { el.style.display = 'none'; });
         document.querySelectorAll('.coa-chevron').forEach(c => { c.textContent = '▸'; });
       });
@@ -3841,29 +4074,29 @@
         e.preventDefault();
         e.stopPropagation();
         header.style.outline = '';
-        const tid  = _draggingTxn.tid;
+        const tids = _draggingTxn.tids || [];
         const code = header.dataset.code;
         const name = header.dataset.name || '';
-        try {
-          const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`, {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ account_code: code, account_code_name: name }),
-          });
-          const d = await r.json();
-          if (!r.ok) {
-            _actualsToast('Could not code: ' + (d.error || r.status), 'red');
-            return;
-          }
-          if (code === 'not_project') {
-            _actualsToast('Marked as not a project expense.', 'yellow');
-          } else {
-            _actualsToast(`Quick-coded to ${code} · ${name}. Drag onto a specific line to track per-line actuals.`, 'green');
-          }
-          _refreshRowAfterCode(tid, code !== 'not_project', code === 'not_project');
-        } catch (err) {
-          _actualsToast('Drop failed: ' + err.message, 'red');
+        let ok = 0, fail = 0;
+        for (const tid of tids) {
+          try {
+            const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`, {
+              method:  'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body:    JSON.stringify({ account_code: code, account_code_name: name }),
+            });
+            if (r.ok) {
+              ok++;
+              _refreshRowAfterCode(tid, code !== 'not_project', code === 'not_project');
+            } else { fail++; }
+          } catch (err) { fail++; }
         }
+        if (code === 'not_project') {
+          _actualsToast(`${ok} marked not project${fail ? ` (${fail} failed)` : ''}.`, fail ? 'yellow' : 'green');
+        } else {
+          _actualsToast(`${ok} coded to ${code} · ${name}${fail ? ` (${fail} failed)` : ''}.`, fail ? 'yellow' : 'green');
+        }
+        actualsBulkClear();
       });
     });
 
@@ -3890,37 +4123,39 @@
         lineEl.style.background = '';
         lineEl.style.borderColor = '';
         lineEl.style.color = '';
-        const tid    = _draggingTxn.tid;
+        const tids   = _draggingTxn.tids || [];
         const lineId = parseInt(lineEl.dataset.lineId);
-        try {
-          const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-line`, {
-            method:  'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ budget_line_id: lineId }),
-          });
-          const d = await r.json();
-          if (!r.ok) {
-            _actualsToast('Could not link: ' + (d.error || r.status), 'red');
-            return;
-          }
-          if (d.working_was_just_created && d.actual_was_just_created) {
-            _actualsToast('Working budget initialized + Actual budget started. Linked to line.', 'green');
-          } else if (d.actual_was_just_created) {
-            _actualsToast('Actual budget started. Linked to line.', 'green');
-          } else {
-            _actualsToast('Linked to budget line.', 'green');
-          }
-          _refreshRowAfterCode(tid, true, false);
-          // Update the row's dropdown to reflect the new selection so
-          // it doesn't drift from server state.
-          const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
-          if (row) {
-            const sel = row.querySelector('.actuals-line-picker');
-            if (sel) sel.value = String(lineId);
-          }
-        } catch (err) {
-          _actualsToast('Drop failed: ' + err.message, 'red');
+        let ok = 0, fail = 0;
+        let actualJustMade = false, workingJustMade = false;
+        for (const tid of tids) {
+          try {
+            const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-line`, {
+              method:  'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body:    JSON.stringify({ budget_line_id: lineId }),
+            });
+            const d = await r.json();
+            if (r.ok) {
+              ok++;
+              if (d.working_was_just_created) workingJustMade = true;
+              if (d.actual_was_just_created)  actualJustMade  = true;
+              _refreshRowAfterCode(tid, true, false);
+              const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
+              if (row) {
+                const sel = row.querySelector('.actuals-line-picker');
+                if (sel) sel.value = String(lineId);
+              }
+            } else { fail++; }
+          } catch (err) { fail++; }
         }
+        if (workingJustMade && actualJustMade) {
+          _actualsToast(`Working budget initialized + Actual budget started. ${ok} linked${fail ? ` (${fail} failed)` : ''}.`, 'green');
+        } else if (actualJustMade) {
+          _actualsToast(`Actual budget started. ${ok} linked${fail ? ` (${fail} failed)` : ''}.`, 'green');
+        } else {
+          _actualsToast(`${ok} linked${fail ? ` (${fail} failed)` : ''}.`, fail ? 'yellow' : 'green');
+        }
+        actualsBulkClear();
       });
     });
 
