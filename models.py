@@ -67,6 +67,20 @@ class ProjectSheet(db.Model):
     client_name    = db.Column(db.String(200), nullable=True)   # used for slug + display
     status         = db.Column(db.String(20), default='active', nullable=False)  # active | wrapped | archived
 
+    # ── QBO sync state (added 2026-04-30 cutover) ──────────────────────
+    # Per-project subset of QBOConnection.enabled_account_ids. Empty
+    # array = sync nothing. JSON-encoded list of QBO account ids.
+    qbo_account_ids = db.Column(db.Text, default='[]')
+    # YYYY-MM-DD watermark — sync_project never advances this past
+    # yesterday so the most recent day stays open for re-query (bank
+    # feeds often arrive a day late).
+    sync_through    = db.Column(db.String(10), nullable=True)
+    last_synced     = db.Column(db.DateTime, nullable=True)
+    # CDC (Change Data Capture) watermark — by MetaData.LastUpdatedTime
+    # rather than TxnDate. Catches bank-feed items accepted into QBO
+    # weeks after their transaction date.
+    last_cdc_sync   = db.Column(db.DateTime, nullable=True)
+
 
 class Transaction(db.Model):
     """Single actuals row. The center of the three-legged stool:

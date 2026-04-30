@@ -43,3 +43,10 @@ gevent-websocket
 # env vars set on the Render web service.
 veryfi
 pillow-heif
+
+# QBO sync (qbo_sync.py) — REST API client for QuickBooks Online.
+# We hit /v3/company/<realmId>/query and /cdc directly, no Intuit
+# SDK. Requires QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT
+# (sandbox|production), and QBO_REDIRECT_URI env vars. Refresh
+# tokens persist in the qbo_connection table.
+requests

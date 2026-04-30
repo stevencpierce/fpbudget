@@ -12238,6 +12238,15 @@ def _web_worker_essential_columns():
                 "  ON budget (project_id, is_actual, version_status)",
                 "CREATE INDEX IF NOT EXISTS ix_budget_line_source "
                 "  ON budget_line (source_line_id)",
+                # ── 2026-04-30: ProjectSheet QBO sync state (Phase 2b) ──
+                "ALTER TABLE project_sheet "
+                "  ADD COLUMN IF NOT EXISTS qbo_account_ids TEXT DEFAULT '[]'",
+                "ALTER TABLE project_sheet "
+                "  ADD COLUMN IF NOT EXISTS sync_through VARCHAR(10)",
+                "ALTER TABLE project_sheet "
+                "  ADD COLUMN IF NOT EXISTS last_synced TIMESTAMP",
+                "ALTER TABLE project_sheet "
+                "  ADD COLUMN IF NOT EXISTS last_cdc_sync TIMESTAMP",
             ]:
                 try:
                     cur.execute(sql)
