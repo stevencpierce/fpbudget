@@ -12021,6 +12021,15 @@ def _web_worker_essential_columns():
                 "  WHERE production_insurance_mode = 'off' "
                 "    AND (production_insurance_pct IS NULL OR production_insurance_pct = 0) "
                 "    AND (production_insurance_flat IS NULL OR production_insurance_flat = 0)",
+                # 2026-04-30 fail-safe: every uploaded source file is
+                # archived in Dropbox at _SOURCE_ARCHIVE/<YYYY-MM>/
+                # <batch>/<filename>__<id>.<ext>. We track that path on
+                # the row so the source can always be recovered even
+                # if the processed copy is renamed/deleted/lost.
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS source_archive_path VARCHAR(500)",
+                "CREATE INDEX IF NOT EXISTS ix_doc_upload_archive "
+                "  ON doc_upload (source_archive_path)",
             ]:
                 try:
                     cur.execute(sql)
@@ -12119,6 +12128,10 @@ def docs_upload_post(pid):
         DocUpload.query
         .filter_by(project_id=pid, file_hash=file_hash)
         .filter(DocUpload.filed_dropbox_path.isnot(None))
+        # Exclude review rows: they point at _UPLOADS_PENDING/, not a
+        # real processed location. We don't want a not-yet-confirmed
+        # upload to ghost-flag a fresh retry as a duplicate.
+        .filter(DocUpload.status != 'review')
         .first()
     )
 
@@ -12239,8 +12252,19 @@ def docs_upload_post(pid):
         confidence=round(float(result.get("confidence") or 0) * 100, 2),
         category=result.get("doc_type"),
         filed_filename=result.get("new_filename") or None,
-        filed_dropbox_path=result.get("filed_path"),
+        # For status='done': filed_path is the final processed location.
+        # For status='review': fall back to staged_path so /docs/upload/
+        # <uid>/raw can still serve the file from _SOURCE_ARCHIVE/ for
+        # the preview modal. filed_at stays NULL so the UI knows the
+        # doc isn't actually filed yet.
+        filed_dropbox_path=result.get("filed_path") or result.get("staged_path"),
         filed_at=_dt.utcnow() if result.get("filed_path") else None,
+        # Mission-critical fail-safe (2026-04-30): the source archive
+        # path always points to the original uploaded bytes in Dropbox
+        # at _SOURCE_ARCHIVE/, regardless of whether the processed copy
+        # was filed, sent to review, or errored. The archive is never
+        # deleted by the app — it's the durable source-of-truth.
+        source_archive_path=result.get("staged_path"),
         is_duplicate=bool(duplicate_of) or bool(result.get("duplicate")),
     )
     db.session.add(upload)
@@ -12493,6 +12517,9 @@ def docs_purge_ghosts(pid):
     ProjectSheet.query.get_or_404(pid)
     if current_user.role not in ('super_admin', 'admin'):
         return jsonify({"error": "Admin only"}), 403
+    # Ghost = no Dropbox file behind the row. Review rows now point at
+    # _UPLOADS_PENDING/ so they have a path; only error/legacy rows with
+    # NULL path qualify as ghosts.
     rows = DocUpload.query.filter_by(project_id=pid).filter(
         DocUpload.filed_dropbox_path.is_(None)
     ).all()
@@ -12775,12 +12802,10 @@ def docs_upload_raw(uid):
         return deny
 
     # ── Source priority ────────────────────────────────────────────
-    # Per user 2026-04-29: docs in "review" / "pending" / "error" /
-    # "duplicate" status haven't been auto-filed to Dropbox, so
-    # filed_dropbox_path is NULL. Those files DO live in R2 (every
-    # upload writes there first), so the modal preview falls back to
-    # R2 instead of returning 404. PDFs render natively via <embed>
-    # with the right Content-Type — no PDF→JPEG conversion needed.
+    # Try filed_dropbox_path first (the user-facing copy). If it's
+    # missing or unreachable, fall back to source_archive_path — the
+    # mission-critical durable archive copy that's preserved even if
+    # the processed file was renamed or deleted (2026-04-30 fail-safe).
     content = None
     fname = upload.filed_filename or upload.original_filename or f"upload_{uid}"
 
@@ -12806,10 +12831,18 @@ def docs_upload_raw(uid):
                 last_err = e
                 continue
         if content is None:
-            # Dropbox couldn't find it (file moved/deleted). Fall back
-            # to R2 if we still have the key — better to serve the
-            # original than 500 the modal.
-            if upload.r2_key:
+            # Filed file is unreachable (renamed, deleted, or Dropbox
+            # outage). Fall back to the durable source archive.
+            if upload.source_archive_path:
+                try:
+                    md, resp = dbx.files_download(upload.source_archive_path)
+                    content = resp.content
+                    logging.info(f"[docs/raw] served from source_archive_path for upload {uid}")
+                except Exception as _ae:
+                    last_err = _ae
+            # Last-ditch R2 fallback (legacy rows from before the
+            # source-archive era).
+            if content is None and upload.r2_key:
                 bytes_, err = _r2_download(upload.r2_key)
                 if not err:
                     content = bytes_
@@ -12817,10 +12850,20 @@ def docs_upload_raw(uid):
                 return jsonify({
                     "error": f"Could not fetch file: {type(last_err).__name__}: {last_err}",
                 }), 500
+    elif upload.source_archive_path:
+        # No filed copy but we have the archive — serve directly from
+        # _SOURCE_ARCHIVE/. This is the path review-status uploads take.
+        try:
+            dbx = _dbx_client()
+            md, resp = dbx.files_download(upload.source_archive_path)
+            content = resp.content
+            fname = upload.filed_filename or upload.original_filename or md.name
+        except Exception as e:
+            return jsonify({"error": f"Source archive fetch failed: {e}"}), 502
     else:
-        # Pre-Dropbox — pull from R2.
+        # Pre-archive legacy — pull from R2.
         if not upload.r2_key:
-            return jsonify({"error": "No filed file and no R2 key — file data is missing."}), 404
+            return jsonify({"error": "No filed file and no archive — file data is missing."}), 404
         bytes_, err = _r2_download(upload.r2_key)
         if err:
             return jsonify({"error": f"R2 fetch failed: {err}"}), 502
@@ -12931,36 +12974,67 @@ def docs_upload_dropbox_link(uid):
     except Exception as e:
         return jsonify({"error": f"Dropbox init failed: {e}"}), 500
 
-    last_err = None
-    for path_try in (norm_path, raw_path) if norm_path != raw_path else (norm_path,):
+    def _shared_link_for(path_try):
+        """Try to fetch or create a shared link for one Dropbox path.
+        Returns (url, error). Mirrors the duplicated logic that used to
+        live inline so we can call it for both filed and archive paths."""
+        from dropbox.sharing import SharedLinkSettings, RequestedVisibility
         try:
-            # If a shared link already exists, reuse it. Otherwise create.
-            from dropbox.sharing import SharedLinkSettings, RequestedVisibility
-            try:
-                _existing = dbx.sharing_list_shared_links(path=path_try, direct_only=True)
-                if _existing.links:
-                    return jsonify({"ok": True, "url": _existing.links[0].url})
-            except Exception:
-                pass  # fall through to create
+            _existing = dbx.sharing_list_shared_links(path=path_try, direct_only=True)
+            if _existing.links:
+                return _existing.links[0].url, None
+        except Exception:
+            pass
+        try:
             link = dbx.sharing_create_shared_link_with_settings(
                 path_try,
                 settings=SharedLinkSettings(requested_visibility=RequestedVisibility.team_only),
             )
-            return jsonify({"ok": True, "url": link.url})
+            return link.url, None
         except Exception as e:
-            last_err = e
-            # Specific error: shared_link_already_exists — extract the existing one
-            _msg = str(e)
-            if "shared_link_already_exists" in _msg:
+            if "shared_link_already_exists" in str(e):
                 try:
                     _existing = dbx.sharing_list_shared_links(path=path_try, direct_only=True)
                     if _existing.links:
-                        return jsonify({"ok": True, "url": _existing.links[0].url})
+                        return _existing.links[0].url, None
                 except Exception as e2:
-                    last_err = e2
-            continue
+                    return None, e2
+            return None, e
+
+    last_err = None
+    primary_url = None
+    for path_try in (norm_path, raw_path) if norm_path != raw_path else (norm_path,):
+        url, err = _shared_link_for(path_try)
+        if url:
+            primary_url = url
+            break
+        last_err = err
+
+    # Source archive link — surfaces in the modal as "📎 Source" so the
+    # user can always recover the original uploaded bytes regardless of
+    # what happened to the processed copy. Best-effort; never fail the
+    # primary call over an archive link.
+    archive_url = None
+    if upload.source_archive_path:
+        try:
+            arch_norm = upload.source_archive_path
+            if _ops_prefix_str and arch_norm.startswith(_ops_prefix_str + "/"):
+                arch_norm = arch_norm[len(_ops_prefix_str):]
+            archive_url, _ = _shared_link_for(arch_norm)
+        except Exception:
+            archive_url = None
+
+    if primary_url:
+        return jsonify({
+            "ok": True,
+            "url": primary_url,
+            "archive_url":  archive_url,
+            "archive_path": upload.source_archive_path,
+        })
     return jsonify({
         "error": f"Could not create Dropbox link: {type(last_err).__name__}: {last_err}",
+        "archive_url":  archive_url,
+        "archive_path": upload.source_archive_path,
     }), 500
 
 

@@ -1368,7 +1368,13 @@
         {% for u in doc_uploads %}
         {% set _display_name = u.filed_filename or u.original_filename or 'Unnamed file' %}
         {% set _orig_name    = u.original_filename or '' %}
-        {% set _was_renamed  = u.filed_filename and u.original_filename and u.filed_filename != u.original_filename %}
+        {# Subtitle rule: show the original ("uploaded as: ...") whenever
+           we have one and it's not byte-identical to the displayed name.
+           Previously this only fired when filed_filename existed AND
+           differed; that hid the subtitle on review-status rows where
+           filed_filename was NULL and we fell back to original (so they
+           visually looked "renamed-less"). Uniform rule = no surprises. #}
+        {% set _show_orig    = _orig_name and _orig_name != _display_name %}
         {% set _can_rename   = (u.status == 'done' or u.status == 'filed') and u.filed_dropbox_path %}
         {% set _uploader_label = (u.uploader.name or u.uploader.email.split('@')[0]) if u.uploader else '' %}
         {% set _size_kb = (u.file_size / 1024) if u.file_size else 0 %}
@@ -1402,12 +1408,11 @@
                     {% endif %}>{{ _display_name }}</span>
               {% if _can_rename %}<span class="rename-hint" style="font-size:10px;color:#6b7280;margin-left:4px;opacity:0;">✎</span>{% endif %}
             </div>
-            {# Show the original filename as a subtitle whenever it
-               differs from what's now in Dropbox (i.e. Veryfi renamed
-               it). When the filed name and original are the same — or
-               when scan-reconcile created the row from an existing
-               Dropbox file — there's nothing useful to show. #}
-            {% if _orig_name and _was_renamed %}
+            {# Always show the original filename as a subtitle when the
+               displayed name differs — uniform across filed / review /
+               error / duplicate so the user can always see what they
+               originally uploaded vs. what the Analyzer named it. #}
+            {% if _show_orig %}
             <div style="font-size:11px;color:#6b7280;font-style:italic;margin-top:1px;" title="Original filename as uploaded">
               📎 uploaded as: {{ _orig_name }}
             </div>
@@ -1464,12 +1469,31 @@
 
     <!-- Document detail modal: click any row to open. Loads a short-lived
          Dropbox temporary link for the preview pane and exposes the
-         editable metadata fields. -->
+         editable metadata fields. Per user 2026-04-30: large centered
+         preview is the priority — receipts are unreadable in a sidebar.
+         Image previews get zoom + pan controls; PDFs use the browser's
+         native PDF UI inside the embed. -->
     <div id="docDetailOverlay" class="modal-overlay hidden" onclick="closeDocDetail(event)">
-      <div class="modal" onclick="event.stopPropagation()" style="max-width:880px;width:95vw;max-height:90vh;display:flex;flex-direction:column;padding:0;overflow:hidden;">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 18px;border-bottom:1px solid var(--border);">
+      <div class="modal" onclick="event.stopPropagation()" style="max-width:1400px;width:96vw;max-height:94vh;height:94vh;display:flex;flex-direction:column;padding:0;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border);flex-shrink:0;">
           <h3 id="docDetailTitle" style="margin:0;font-size:1rem;line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Document</h3>
-          <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;margin-left:1rem;">
+          <div id="docDetailZoomBar" style="display:none;gap:4px;align-items:center;flex-shrink:0;margin-right:12px;">
+            <button type="button" id="docDetailZoomOut" title="Zoom out (−)"
+                    style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;width:28px;height:26px;border-radius:5px;cursor:pointer;font-size:14px;line-height:1;">−</button>
+            <span id="docDetailZoomLabel" style="font-size:11px;color:var(--text-muted);min-width:42px;text-align:center;">100%</span>
+            <button type="button" id="docDetailZoomIn" title="Zoom in (+)"
+                    style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;width:28px;height:26px;border-radius:5px;cursor:pointer;font-size:14px;line-height:1;">+</button>
+            <button type="button" id="docDetailZoomFit" title="Fit to window"
+                    style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;height:26px;padding:0 8px;border-radius:5px;cursor:pointer;font-size:11px;">Fit</button>
+            <button type="button" id="docDetailZoom100" title="Actual size (100%)"
+                    style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;height:26px;padding:0 8px;border-radius:5px;cursor:pointer;font-size:11px;">1:1</button>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+            <a id="docDetailArchiveLink" href="#" target="_blank"
+               style="font-size:11px;padding:4px 10px;border-radius:6px;background:#1a2a1e;color:#22c55e;border:1px solid #1a4228;text-decoration:none;display:none"
+               title="Download the original uploaded file from the durable source archive">
+              📎 Source
+            </a>
             <a id="docDetailDropboxLink" href="#" target="_blank"
                style="font-size:11px;padding:4px 10px;border-radius:6px;background:#1a2540;color:#5b8af9;border:1px solid #2d4070;text-decoration:none;">
               Open in Dropbox ↗
@@ -1478,12 +1502,15 @@
           </div>
         </div>
         <div style="flex:1;display:flex;min-height:0;">
-          <!-- Left: preview pane -->
-          <div id="docDetailPreview" style="flex:1.4;background:#0a0d12;display:flex;align-items:center;justify-content:center;min-height:380px;overflow:auto;">
-            <p class="muted" style="padding:1rem">Loading preview…</p>
+          <!-- Left: preview pane (much wider — receipts need to be readable) -->
+          <div id="docDetailPreviewWrap" style="flex:1;background:#0a0d12;display:flex;flex-direction:column;min-height:0;min-width:0;">
+            <div id="docDetailPreview"
+                 style="flex:1;display:flex;align-items:center;justify-content:center;min-height:380px;overflow:auto;position:relative;">
+              <p class="muted" style="padding:1rem">Loading preview…</p>
+            </div>
           </div>
-          <!-- Right: editable metadata -->
-          <div style="flex:1;padding:14px 18px;border-left:1px solid var(--border);overflow-y:auto;min-width:280px;">
+          <!-- Right: editable metadata (narrower than before) -->
+          <div style="width:300px;padding:14px 16px;border-left:1px solid var(--border);overflow-y:auto;flex-shrink:0;">
             <div id="docDetailVerify" style="font-size:11px;padding:6px 9px;border-radius:6px;margin-bottom:12px;display:none;"></div>
             <div class="field" style="margin-bottom:.6rem">
               <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Vendor</label>
@@ -1578,8 +1605,11 @@
           ${item.thumbUrl ? `<img src="${item.thumbUrl}" style="width:100%;height:100%;object-fit:cover;">` : (item.file.type.includes('pdf') ? '📄' : '🖼')}
         </div>
         <div style="flex:1;min-width:0;">
-          <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${item.file.name}</div>
-          <div style="font-size:11px;color:var(--text-muted);">${docsFmtSize(item.file.size)}</div>
+          <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+               title="${item.file.name}">${item.filedName || item.file.name}</div>
+          ${item.filedName && item.filedName !== item.file.name
+            ? `<div style="font-size:11px;color:#6b7280;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="Original filename">📎 uploaded as: ${item.file.name}</div>`
+            : ''}
           <div style="font-size:11px;color:${color};margin-top:2px;">${label}</div>
         </div>
         ${item.status!=='uploading'?`<button onclick="docsRemove(${idx})" style="background:none;border:none;color:var(--text-muted);font-size:18px;cursor:pointer;padding:4px;">×</button>`:''}`;
@@ -1626,6 +1656,10 @@
       //   201 (filed)                 → done
       //   202 (review)                → review
       //   4xx/5xx                     → error
+      // Capture the Analyzer's renamed filename (date-prefixed,
+      // vendor-tagged) so the queue row flips from the upload's raw
+      // name to the final filed name once the server responds.
+      if (d && d.new_filename) item.filedName = d.new_filename;
       if (d && d.status === 'duplicate') {
         item.status = 'duplicate';
       } else if (r.status === 201) {
@@ -2184,6 +2218,102 @@
 
   function _docDetailFmtSize(b) { if (!b) return ''; return b<1048576?(b/1024).toFixed(1)+' KB':(b/1048576).toFixed(1)+' MB'; }
 
+  // ── Image preview zoom + pan ───────────────────────────────────────
+  // Receipts are unreadable when shrunk to fit a sidebar — this gives
+  // the user real zoom controls (− / + / Fit / 1:1), wheel-zoom anchored
+  // at the cursor, and click-drag panning when zoomed in. State lives
+  // on a single _imgZoom object that's reset every modal open.
+  let _imgZoom = null;
+  function _initImagePreviewControls() {
+    const wrap = document.getElementById('docDetailPreview');
+    const img  = document.getElementById('docDetailImg');
+    const lbl  = document.getElementById('docDetailZoomLabel');
+    if (!wrap || !img) return;
+    _imgZoom = { scale: 1, fitScale: 1, naturalW: 0, naturalH: 0 };
+
+    function applyScale() {
+      img.style.transform = 'scale(' + _imgZoom.scale + ')';
+      img.style.width  = _imgZoom.naturalW + 'px';
+      img.style.height = _imgZoom.naturalH + 'px';
+      if (lbl) lbl.textContent = Math.round(_imgZoom.scale * 100) + '%';
+      img.style.cursor = _imgZoom.scale > _imgZoom.fitScale + 0.001 ? 'grab' : 'default';
+    }
+
+    function fit() {
+      const cw = wrap.clientWidth, ch = wrap.clientHeight;
+      if (!_imgZoom.naturalW || !_imgZoom.naturalH || !cw || !ch) return;
+      const sx = cw / _imgZoom.naturalW, sy = ch / _imgZoom.naturalH;
+      _imgZoom.fitScale = Math.min(sx, sy, 1);  // never upscale on fit
+      _imgZoom.scale = _imgZoom.fitScale;
+      applyScale();
+    }
+
+    img.onload = function () {
+      _imgZoom.naturalW = img.naturalWidth;
+      _imgZoom.naturalH = img.naturalHeight;
+      fit();
+    };
+    if (img.complete && img.naturalWidth) {
+      _imgZoom.naturalW = img.naturalWidth;
+      _imgZoom.naturalH = img.naturalHeight;
+      fit();
+    }
+
+    // Toolbar buttons.
+    function zoomBy(factor, anchor) {
+      const before = _imgZoom.scale;
+      const after  = Math.max(0.1, Math.min(8, before * factor));
+      if (after === before) return;
+      // Anchor zoom at the cursor (or center if not provided) so the
+      // pixel under the mouse stays put.
+      const sl = wrap.scrollLeft, st = wrap.scrollTop;
+      const ax = anchor ? anchor.x : wrap.clientWidth / 2;
+      const ay = anchor ? anchor.y : wrap.clientHeight / 2;
+      _imgZoom.scale = after;
+      applyScale();
+      const ratio = after / before;
+      wrap.scrollLeft = (sl + ax) * ratio - ax;
+      wrap.scrollTop  = (st + ay) * ratio - ay;
+    }
+    document.getElementById('docDetailZoomIn').onclick   = () => zoomBy(1.25);
+    document.getElementById('docDetailZoomOut').onclick  = () => zoomBy(1/1.25);
+    document.getElementById('docDetailZoomFit').onclick  = () => fit();
+    document.getElementById('docDetailZoom100').onclick  = () => {
+      _imgZoom.scale = 1; applyScale();
+    };
+
+    // Wheel-zoom (Ctrl/Cmd+wheel, or pinch on trackpads — both surface
+    // as wheel events with ctrlKey set on macOS).
+    wrap.onwheel = function (e) {
+      if (!(e.ctrlKey || e.metaKey)) return;  // let plain wheel scroll
+      e.preventDefault();
+      const rect = wrap.getBoundingClientRect();
+      const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      zoomBy(e.deltaY < 0 ? 1.1 : 1/1.1, anchor);
+    };
+
+    // Click-drag panning when zoomed in beyond fit-scale.
+    let dragging = false, startX = 0, startY = 0, startSL = 0, startST = 0;
+    img.onmousedown = function (e) {
+      if (_imgZoom.scale <= _imgZoom.fitScale + 0.001) return;
+      dragging = true;
+      startX = e.clientX; startY = e.clientY;
+      startSL = wrap.scrollLeft; startST = wrap.scrollTop;
+      img.style.cursor = 'grabbing';
+      e.preventDefault();
+    };
+    window.addEventListener('mousemove', function (e) {
+      if (!dragging) return;
+      wrap.scrollLeft = startSL - (e.clientX - startX);
+      wrap.scrollTop  = startST - (e.clientY - startY);
+    });
+    window.addEventListener('mouseup', function () {
+      if (!dragging) return;
+      dragging = false;
+      img.style.cursor = _imgZoom.scale > _imgZoom.fitScale + 0.001 ? 'grab' : 'default';
+    });
+  }
+
   window.openDocDetail = async function (uid, row) {
     _docDetailUid = uid;
     document.getElementById('docDetailOverlay').classList.remove('hidden');
@@ -2227,19 +2357,35 @@
     const isImage = ct.startsWith('image/')
                     || /\.(jpe?g|png|gif|heic|heif|webp|bmp|tiff?)$/i.test(fn);
 
+    // Reset zoom toolbar visibility — only images get it.
+    const zoomBar = document.getElementById('docDetailZoomBar');
+    if (zoomBar) zoomBar.style.display = isImage ? 'flex' : 'none';
+
     if (isImage) {
-      previewEl.innerHTML = '<img src="' + rawUrl +
-        '" alt="preview" style="max-width:100%;max-height:80vh;display:block;margin:auto;">';
+      // Image preview: large by default (fit-to-window), with zoom + pan.
+      // Wraps in a positioned container so we can transform the <img>
+      // and let the parent's overflow:auto provide the panning behavior.
+      previewEl.style.alignItems = 'flex-start';
+      previewEl.style.justifyContent = 'flex-start';
+      previewEl.innerHTML =
+        '<img id="docDetailImg" src="' + rawUrl + '" alt="preview" ' +
+              'style="display:block;max-width:none;max-height:none;' +
+              'transform-origin:0 0;transition:transform .08s linear;' +
+              'user-select:none;-webkit-user-drag:none;cursor:grab;">';
+      _initImagePreviewControls();
     } else if (isPdf) {
-      // <embed> renders PDFs through the browser's plugin path and
-      // ignores X-Frame-Options (which Dropbox raw responses include).
-      // Fallback to <iframe> if the browser doesn't support embed for
-      // PDF (rare in 2026 but still possible on stripped browsers).
+      // <embed> renders PDFs through the browser's plugin path which has
+      // its own zoom controls — no need for our toolbar. ignores
+      // X-Frame-Options (which Dropbox raw responses include).
+      previewEl.style.alignItems = 'stretch';
+      previewEl.style.justifyContent = 'stretch';
       previewEl.innerHTML =
         '<embed src="' + rawUrl + '" type="application/pdf" ' +
                'style="border:0;width:100%;height:100%;min-height:540px;display:block;">';
     } else {
       // Unknown type: try img with onerror fallback to "open in new tab".
+      previewEl.style.alignItems = 'center';
+      previewEl.style.justifyContent = 'center';
       previewEl.innerHTML =
         '<div style="padding:1rem;text-align:center">' +
           '<img src="' + rawUrl + '" alt="preview" ' +
@@ -2289,6 +2435,20 @@
           dbxBtn.style.opacity = '0.4';
           dbxBtn.textContent = 'Open in Dropbox (unavailable)';
           dbxBtn.title = (d && d.error) || 'Could not generate link';
+        }
+        // The /dropbox-link endpoint also reports whether a separate
+        // source archive copy exists. If yes, expose a download link
+        // so the user can grab the original uploaded bytes regardless
+        // of what happened to the processed copy.
+        const srcBtn = document.getElementById('docDetailArchiveLink');
+        if (srcBtn) {
+          if (d && d.archive_url) {
+            srcBtn.href = d.archive_url;
+            srcBtn.style.display = 'inline-block';
+            srcBtn.title = 'Source archive: ' + (d.archive_path || '');
+          } else {
+            srcBtn.style.display = 'none';
+          }
         }
       })
       .catch(() => {

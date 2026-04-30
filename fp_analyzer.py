@@ -409,21 +409,43 @@ def assess_confidence(vr):
 
 # ── Phase 1a: Prepare (stage to Dropbox, no local PDF wrapping) ───────────────
 
-# Dropbox folder where files live during analysis. Project-agnostic since
-# project_name isn't known at prepare-time. Files are MOVED out of here
-# (via files_move_v2) into their final processed location in Phase 2.
-_STAGING_FOLDER = "_UPLOADS_PENDING"
+# Permanent source-of-truth archive for every uploaded file. Per user
+# 2026-04-30: this is mission-critical — even if processing fails, the
+# original bytes MUST stay reachable. Path scheme is human-browseable
+# so an admin can pull a source by date without DB access:
+#
+#   _SOURCE_ARCHIVE/<YYYY-MM>/<batch>/<original_filename>__<item_id><ext>
+#
+# Filing to the final processed location is now a COPY (files_copy_v2),
+# not a move — the archive copy is the source-of-truth and persists
+# forever, the processed copy is the user-facing file.
+_STAGING_FOLDER = "_SOURCE_ARCHIVE"
 
 
-def _staged_path(batch_token: str, item_id: str, ext: str) -> str:
-    """Build the Dropbox path where a staged file lives during OCR.
+def _safe_for_path(s: str, max_len: int = 60) -> str:
+    """Filename-safe version of an arbitrary string for use inside a
+    Dropbox path. Strips path separators and reserved chars."""
+    if not s:
+        return ""
+    s = re.sub(r'[<>:"/\\|?*&]', '', s).strip()
+    s = re.sub(r'\s+', '_', s)
+    return s[:max_len].strip('_') or ""
 
-    Lives at `{ops_prefix}/_UPLOADS_PENDING/<batch>/<item_id><ext>`.
-    A trailing files_move_v2 relocates it to the final folder, so we
-    never re-upload bytes from the worker."""
+
+def _staged_path(batch_token: str, item_id: str, ext: str,
+                 original_filename: str = "") -> str:
+    """Build the Dropbox path where a file lives in the source archive.
+
+    Path: `{ops_prefix}/_SOURCE_ARCHIVE/<YYYY-MM>/<batch>/<orig>__<id><ext>`
+    The processed copy is written via files_copy_v2 from this path on
+    success; this path itself is never deleted."""
+    from datetime import datetime as _dt
     ops = _ops_prefix()
+    bucket = _dt.utcnow().strftime("%Y-%m")
+    safe_orig = _safe_for_path(os.path.splitext(original_filename or "")[0])
+    fname = f"{safe_orig}__{item_id}{ext}" if safe_orig else f"{item_id}{ext}"
     base = f"{ops}/{_STAGING_FOLDER}" if ops else f"/{_STAGING_FOLDER}"
-    return f"{base}/{batch_token}/{item_id}{ext}"
+    return f"{base}/{bucket}/{batch_token}/{fname}"
 
 
 def _stage_to_dropbox(dbx, ocr_bytes: bytes, dest_path: str) -> str:
@@ -493,7 +515,8 @@ def prepare_files(file_storages, batch_token=None):
 
             if dbx is None:
                 dbx = get_dropbox_client()
-            dest_path = _staged_path(batch_token, item["id"], ocr_ext)
+            dest_path = _staged_path(batch_token, item["id"], ocr_ext,
+                                     original_filename=fs.filename)
             staged = _stage_to_dropbox(dbx, ocr_bytes, dest_path)
             del ocr_bytes  # bytes are now in Dropbox; release worker memory
 
@@ -527,31 +550,23 @@ def find_duplicate_groups(batch_token):
 
 
 def remove_items_from_pending(batch_token, discard_ids):
-    """Remove items by id from _pending[batch_token]. Cleans up any
-    Dropbox-staged files that won't be filed (so _UPLOADS_PENDING/
-    doesn't grow unboundedly)."""
+    """Remove items by id from _pending[batch_token].
+
+    NOTE: per user 2026-04-30 fail-safe policy, the Dropbox source
+    archive (_SOURCE_ARCHIVE/) is NEVER auto-deleted from this
+    function. The archive copy persists forever so a failed,
+    abandoned, or duplicate upload can always be recovered. Only
+    legacy local temp files are cleaned up (no-op after the staging
+    refactor; kept for safety)."""
     items = _pending.get(batch_token, [])
     keep, discard = [], []
     for it in items:
         (discard if it["id"] in discard_ids else keep).append(it)
-    if discard:
-        try:
-            dbx = get_dropbox_client()
-        except Exception:
-            dbx = None
-        for it in discard:
-            sp = it.get("staged_path")
-            if sp and dbx is not None:
-                try:
-                    dbx.files_delete_v2(sp)
-                except Exception as _e:
-                    log.warning(f"Could not delete staged {sp}: {_e}")
-            # Legacy temp-file cleanup (no-op after the staging refactor,
-            # but harmless if some old code path still sets pdf_path).
-            for p in (it.get("pdf_path"), it.get("original_path")):
-                if p and os.path.exists(p):
-                    try: os.unlink(p)
-                    except: pass
+    for it in discard:
+        for p in (it.get("pdf_path"), it.get("original_path")):
+            if p and os.path.exists(p):
+                try: os.unlink(p)
+                except: pass
     _pending[batch_token] = keep
 
 
@@ -686,25 +701,30 @@ def _build_result_skeleton(item):
 
 
 def _file_item(item, dest_path, _unused, dbx):
-    """Move the staged Dropbox file into its final processed location.
+    """Copy the source-archived file to its final processed location.
 
-    No bytes flow through the worker — this is a server-side rename via
-    files_move_v2. Returns (success, actual_path, error). On collision
-    we let Dropbox autorename (autorename=True), and that final name
-    propagates back via meta.path_display.
+    Per user 2026-04-30 (mission-critical fail-safe): the archive copy
+    in _SOURCE_ARCHIVE/ is preserved forever as the source of truth.
+    We use files_copy_v2 (not files_move_v2) so the archive stays
+    reachable even after the processed file is renamed, deleted, or
+    its containing folder reorganized.
+
+    No bytes flow through the worker — this is a server-side copy.
+    Returns (success, actual_path, error). On collision the destination
+    is autorenamed; that final name comes back via meta.path_display.
+    The source `staged_path` is intentionally NOT cleared on success so
+    the DocUpload row keeps a hard pointer to the source archive.
     """
     src = item.get("staged_path")
     if not src:
-        return False, None, "Internal error: no staged Dropbox path"
+        return False, None, "Internal error: no source archive path"
     try:
-        meta = dbx.files_move_v2(
+        meta = dbx.files_copy_v2(
             src, dest_path,
             autorename=True,
             allow_ownership_transfer=False,
         )
         actual_path = meta.metadata.path_display
-        # Mark as moved so cleanup paths don't try to delete the staged file.
-        item["staged_path"] = None
         return True, actual_path, None
     except Exception as e:
         return False, None, f"Dropbox error: {e}"
@@ -895,17 +915,11 @@ def file_confirmed(batch_token, confirmations, project_name, user_name):
             "file_hash":         item.get("file_hash"),
         }
 
-        # Cleanup: delete the staged Dropbox file (if still present) and
-        # any legacy local temp files. Called when the item won't be moved
-        # to its final location.
+        # Cleanup: legacy local temp files only. The Dropbox source
+        # archive (staged_path) is preserved forever per the fail-safe
+        # policy (2026-04-30) — a failed item still has its bytes in
+        # _SOURCE_ARCHIVE/ for recovery / audit / re-processing.
         def cleanup(it=item):
-            sp = it.get("staged_path")
-            if sp:
-                try:
-                    dbx.files_delete_v2(sp)
-                    it["staged_path"] = None
-                except Exception as _e:
-                    log.warning(f"Could not delete staged {sp}: {_e}")
             for p in (it.get("pdf_path"), it.get("original_path")):
                 if p and os.path.exists(p):
                     try: os.unlink(p)
@@ -1076,6 +1090,10 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
             # fall through to 'needs_review' return below
 
         autos = _auto_results.pop(batch_token, [])
+        # Capture the source archive path BEFORE remove_items_from_pending
+        # — that helper used to clear staged_path on the item; even though
+        # it no longer does, we don't depend on its mutation order here.
+        archive_path = item.get("staged_path")
         remove_items_from_pending(batch_token, [item["id"]])
         if autos:
             r = autos[0]
@@ -1083,6 +1101,7 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
                 "status":            "filed" if r.get("success") else "error",
                 "doc_type":          doc_type,
                 "filed_path":        r.get("dest_path"),
+                "staged_path":       archive_path,  # permanent source archive
                 "confidence":        confidence,
                 "new_filename":      r.get("filename"),
                 "original_filename": filename,
@@ -1100,6 +1119,7 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
         "status":            "needs_review",
         "doc_type":          doc_type,
         "filed_path":        None,
+        "staged_path":       item.get("staged_path"),  # _UPLOADS_PENDING/.../<id>.<ext>
         "confidence":        confidence,
         "new_filename":      build_name(item.get("vr") or {}, doc_type or "receipt") if doc_type else None,
         "original_filename": filename,

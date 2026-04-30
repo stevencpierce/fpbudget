@@ -706,6 +706,13 @@ class DocUpload(db.Model):
     filed_at         = db.Column(db.DateTime, nullable=True)
     is_duplicate     = db.Column(db.Boolean, default=False)
 
+    # Mission-critical source archive (added 2026-04-30): every upload's
+    # original bytes are persisted in Dropbox at _SOURCE_ARCHIVE/ and
+    # this column points to that location. Even if filed_dropbox_path
+    # is later renamed, deleted, or the processed copy is lost, the
+    # archive copy is the durable source-of-truth and can be recovered.
+    source_archive_path = db.Column(db.String(500), nullable=True)
+
     # User note
     note             = db.Column(db.String(500), nullable=True)
 
