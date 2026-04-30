@@ -13206,6 +13206,71 @@ with app.app_context():
     _web_worker_essential_columns()
 
 
+# ── Daily trash purge — soft-deleted Dropbox files >30 days hard-deleted ──
+# Runs once per worker boot if it's been >24h since the last successful run.
+# Multiple gunicorn workers booting at once: an advisory lock + UPSERT on a
+# tiny system_task_log table ensures only one worker per day actually does
+# the work. Errors are logged but never abort the boot.
+def _maybe_run_trash_purge():
+    try:
+        from sqlalchemy import text as _sql_text
+        with db.engine.connect() as conn:
+            # Create the task-log table if missing.
+            try:
+                conn.execute(_sql_text(
+                    "CREATE TABLE IF NOT EXISTS system_task_log ("
+                    " task_name VARCHAR(80) PRIMARY KEY,"
+                    " last_run_at TIMESTAMP NOT NULL,"
+                    " last_result TEXT)"
+                ))
+                conn.commit()
+            except Exception:
+                pass
+            # Try to claim the slot atomically. Postgres ON CONFLICT
+            # … WHERE clause: only update if last run was >24h ago.
+            try:
+                claimed = conn.execute(_sql_text(
+                    "INSERT INTO system_task_log (task_name, last_run_at) "
+                    "VALUES ('trash_purge', NOW()) "
+                    "ON CONFLICT (task_name) DO UPDATE "
+                    "  SET last_run_at = EXCLUDED.last_run_at "
+                    "  WHERE system_task_log.last_run_at < NOW() - INTERVAL '24 hours' "
+                    "RETURNING task_name"
+                )).fetchone()
+                conn.commit()
+            except Exception as _ce:
+                logging.warning(f"[trash purge] claim failed: {_ce}")
+                return
+            if not claimed:
+                logging.info("[trash purge] another worker ran within 24h, skipping")
+                return
+        # We claimed the slot — do the actual purge.
+        with app.app_context():
+            result = _purge_old_trash(days=30)
+            try:
+                with db.engine.connect() as conn:
+                    conn.execute(_sql_text(
+                        "UPDATE system_task_log SET last_result = :r "
+                        "WHERE task_name = 'trash_purge'"
+                    ), {'r': str(result)[:500]})
+                    conn.commit()
+            except Exception:
+                pass
+            logging.info(f"[trash purge] done: {result}")
+    except Exception as _e:
+        logging.warning(f"[trash purge] aborted: {_e}")
+
+
+# Background-thread the purge so the worker can start serving requests
+# immediately. Trash purge is a best-effort daily janitor, not on the
+# critical path. Skipped entirely if the boot-tasks env flag is set
+# (single-shot maintenance container handles it).
+import threading as _trash_threading
+if not os.getenv('RUN_BOOT_TASKS'):
+    _t = _trash_threading.Thread(target=_maybe_run_trash_purge, daemon=True)
+    _t.start()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DOCS MODULE — Receipt / Document Upload
 # ─────────────────────────────────────────────────────────────────────────────
@@ -13684,6 +13749,78 @@ def docs_upload_status(uid):
         "is_duplicate": upload.is_duplicate,
         "filed_dropbox_path": upload.filed_dropbox_path,
     })
+
+
+def _purge_old_trash(days=30):
+    """Hard-delete /_TRASH/<YYYY-MM-DD>/ folders older than `days` days.
+
+    Trash entries are organized by date-named folders (created on each
+    delete via _trash_dropbox_paths). This walker lists those folders,
+    parses the date from the name, hard-deletes any folder whose date
+    is older than the cutoff. Best-effort; never raises. Returns
+    {'deleted_folders': N, 'errors': [...]}.
+
+    Idempotent — re-running same day is a no-op (folders already gone).
+    """
+    from datetime import date as _date, datetime as _dt_mod, timedelta as _td_mod
+    cutoff = _date.today() - _td_mod(days=days)
+    out = {'deleted_folders': 0, 'kept_folders': 0, 'errors': []}
+    try:
+        dbx = _dbx_client()
+    except Exception as e:
+        out['errors'].append(f"dbx init: {e}")
+        return out
+    try:
+        res = dbx.files_list_folder("/_TRASH")
+    except Exception as e:
+        if "not_found" in str(e):
+            return out  # no trash yet
+        out['errors'].append(f"list /_TRASH: {e}")
+        return out
+    while True:
+        for entry in res.entries:
+            if not hasattr(entry, 'name') or hasattr(entry, 'size'):
+                continue  # not a folder
+            name = entry.name
+            # Parse YYYY-MM-DD prefix from the folder name. The wipe
+            # endpoint creates names like "2026-04-30_HHMMSS_<slug>";
+            # the per-row delete uses just "YYYY-MM-DD".
+            m = name[:10]
+            try:
+                folder_date = _dt_mod.strptime(m, "%Y-%m-%d").date()
+            except ValueError:
+                # Folder name doesn't start with a date — leave it alone.
+                continue
+            if folder_date < cutoff:
+                try:
+                    dbx.files_delete_v2(entry.path_lower)
+                    out['deleted_folders'] += 1
+                    logging.info(f"[trash purge] hard-deleted {entry.path_display} (age={(_date.today() - folder_date).days}d)")
+                except Exception as _de:
+                    out['errors'].append(f"delete {entry.path_display}: {_de}")
+            else:
+                out['kept_folders'] += 1
+        if not res.has_more:
+            break
+        try:
+            res = dbx.files_list_folder_continue(res.cursor)
+        except Exception as e:
+            out['errors'].append(f"list_continue: {e}")
+            break
+    return out
+
+
+@app.route("/admin/trash/purge", methods=["POST"])
+@login_required
+def admin_trash_purge():
+    """Hard-delete /_TRASH/ folders older than 30 days. Triggered
+    manually by super-admins, or via a scheduled webhook (e.g. Render
+    Cron Job). Returns counts; safe to call any time."""
+    if current_user.role != 'super_admin':
+        return jsonify({"error": "super admin only"}), 403
+    days = int(request.args.get('days') or request.json.get('days', 30) if request.is_json else (request.args.get('days') or 30))
+    result = _purge_old_trash(days=max(7, min(days, 365)))  # clamp 7–365 for safety
+    return jsonify({"ok": True, "days": days, **result})
 
 
 def _trash_dropbox_paths(paths):
