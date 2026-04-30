@@ -3511,6 +3511,10 @@
           row.style.borderColor = isCoded ? '#1a3a2a' : 'var(--border)';
         }
         _actualsRecountStats();
+        // Re-apply the active filter so the row auto-leaves the view
+        // when its coded state no longer matches the current filter
+        // (e.g. on "Need coding", a freshly-coded row hides itself).
+        actualsApplyFilter(_actualsActiveFilter);
         // After a clear, force the dropdown back to the placeholder.
         if (value === '__clear__') {
           selectEl.value = '';
@@ -3567,21 +3571,41 @@
       }
     };
 
+    // Track the currently-active filter so post-code refreshes reapply
+    // it (e.g. when a row gets coded under "Need coding", it should
+    // disappear from view immediately — same effect as moving to a
+    // "coded" bucket without the DOM restructuring overhead).
+    let _actualsActiveFilter = 'uncoded';  // default on page load: needs work
     window.actualsApplyFilter = function (filter) {
-      // Slice 1: highlight the selected card; full filter logic in slice 2.
+      _actualsActiveFilter = filter;
       document.querySelectorAll('.actuals-stat-card').forEach(c => {
         c.style.borderColor = c.dataset.filter === filter ? 'var(--blue)' : 'var(--border)';
       });
+      // Also dim/hide the suggested-match banner when its row is hidden.
       const rows = document.querySelectorAll('.actuals-txn-row');
       rows.forEach(r => {
         let show = true;
-        if (filter === 'coded')    show = r.dataset.coded === '1';
+        if (filter === 'coded')         show = r.dataset.coded === '1';
         else if (filter === 'uncoded')  show = r.dataset.coded === '0' && r.dataset.notProject !== '1';
         else if (filter === 'no_doc')   show = r.dataset.hasDoc === '0' && r.dataset.notProject !== '1';
         else if (filter === 'doc_only') show = r.dataset.source === 'doc_upload';
-        r.style.display = show ? '' : 'none';
+        // Restore the row's flex layout (inline style was display:flex).
+        // Setting style.display = '' clears the override and falls back
+        // to the default block layout, which breaks the row's flex.
+        r.style.display = show ? 'flex' : 'none';
+        const banner = document.querySelector(`.actuals-suggested-banner[data-tid="${r.dataset.tid}"]`);
+        if (banner) banner.style.display = show ? 'flex' : 'none';
       });
     };
+
+    // Default-apply the "Need coding" filter on initial render so the
+    // user sees the work-to-do queue first. They can click "All" /
+    // "Coded" / etc. to widen the view.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => actualsApplyFilter('uncoded'));
+    } else {
+      actualsApplyFilter('uncoded');
+    }
 
     // Initial recount on page load — defensive; server-rendered values
     // should already be correct but this catches any drift between the
@@ -3762,7 +3786,8 @@
       });
     });
 
-    // Helper: refresh row visual + stat counts after a coding change.
+    // Helper: refresh row visual + stat counts + reapply filter after
+    // a coding change.
     function _refreshRowAfterCode(tid, isCoded, isNotProject) {
       const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
       if (!row) return;
@@ -3779,6 +3804,10 @@
         row.style.background   = isCoded ? '#0d1a14' : 'var(--bg-card)';
       }
       _actualsRecountStats();
+      // Auto-leave the active filter view if the row no longer matches.
+      if (typeof actualsApplyFilter === 'function') {
+        actualsApplyFilter(_actualsActiveFilter);
+      }
     }
 
     // ── Drag-drop coding (slice 2) ─────────────────────────────────────
