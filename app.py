@@ -893,37 +893,44 @@ def admin_docs_wipe_project(pid):
             return p[len(_ops_prefix_str):]  # leave leading '/'
         return p
 
+    def _move_to_trash(original_src, label_id):
+        """Move one Dropbox file to the dated trash folder. Returns True
+        if moved (or if there was no Dropbox client / no trash root).
+        Records errors against the running list."""
+        if not original_src or not dbx or not trash_root:
+            return False
+        src = _normalize_for_namespace(original_src)
+        _safe_path_frag = original_src.lstrip('/').replace('/', '_')
+        dest = f"{trash_root}/{_safe_path_frag}"
+        try:
+            dbx.files_move_v2(src, dest, autorename=True)
+            return True
+        except Exception as _me1:
+            err1 = str(_me1)
+            if src != original_src:
+                try:
+                    dbx.files_move_v2(original_src, dest, autorename=True)
+                    return True
+                except Exception as _me2:
+                    errors.append(
+                        f"{label_id} ({original_src}): "
+                        f"both paths failed — normalized: {err1}; "
+                        f"original: {_me2}"
+                    )
+            else:
+                errors.append(f"{label_id} ({original_src}): {err1}")
+        return False
+
     for up in uploads:
-        # Step 1: move the filed Dropbox file to trash, if present.
-        if up.filed_dropbox_path and dbx and trash_root:
-            original_src = up.filed_dropbox_path
-            src = _normalize_for_namespace(original_src)
-            _safe_path_frag = original_src.lstrip('/').replace('/', '_')
-            dest = f"{trash_root}/{_safe_path_frag}"
-            moved_ok = False
-            # Try the normalized path first (covers both new and old uploads
-            # after we've stripped the legacy prefix).
-            try:
-                dbx.files_move_v2(src, dest, autorename=True)
-                moved_ok = True
-            except Exception as _me1:
-                err1 = str(_me1)
-                # Fallback: try the original path verbatim. Covers edge
-                # cases where the stored path is already correctly
-                # namespace-relative and wasn't touched by the strip.
-                if src != original_src:
-                    try:
-                        dbx.files_move_v2(original_src, dest, autorename=True)
-                        moved_ok = True
-                    except Exception as _me2:
-                        errors.append(
-                            f"upload {up.id} ({original_src}): "
-                            f"both paths failed — normalized: {err1}; "
-                            f"original: {_me2}"
-                        )
-                else:
-                    errors.append(f"upload {up.id} ({original_src}): {err1}")
-            if moved_ok:
+        # Step 1: move the filed (processed) Dropbox copy to trash.
+        if _move_to_trash(up.filed_dropbox_path, f"upload {up.id} filed"):
+            moved_count += 1
+        # Step 1b: also move the source-archive copy to trash, but only
+        # if it's a different path. (For status='review' rows, filed_=
+        # archive_path so we don't double-move.)
+        if (up.source_archive_path
+                and up.source_archive_path != up.filed_dropbox_path):
+            if _move_to_trash(up.source_archive_path, f"upload {up.id} archive"):
                 moved_count += 1
         # Step 2: delete the DB row regardless of Dropbox outcome.
         try:
@@ -931,6 +938,35 @@ def admin_docs_wipe_project(pid):
             deleted_count += 1
         except Exception as _re:
             errors.append(f"upload {up.id}: db delete failed: {_re}")
+
+    # Step 3: nuke the project's PROCESSED DOCUMENTS + source-archive
+    # subtrees so an empty-folder skeleton doesn't sit around between
+    # test runs. Each test should start with the same clean state so
+    # processing-path bugs are visible. Per user 2026-04-30: "I want
+    # to see it process it every time so we can identify potential
+    # errors." Errors are logged but never fatal — the wipe's primary
+    # job (DB rows + filed files) is already done by here.
+    if dbx and project.dropbox_folder:
+        proj_root = f"/{project.dropbox_folder.strip('/')}"
+        # Folders that the Analyzer writes into. We delete the ones that
+        # exist; missing ones are a no-op. files_delete_v2 on a folder
+        # cascades and deletes everything inside it.
+        from fp_analyzer import DOCUMENT_TYPES as _DOC_TYPES_FOR_WIPE
+        wipe_folders = set()
+        for _folder in _DOC_TYPES_FOR_WIPE.values():
+            wipe_folders.add(f"{proj_root}/{_folder}")
+        # Source archive (project-scoped, added 2026-04-30)
+        wipe_folders.add(f"{proj_root}/01_ADMIN/PROCESSED DOCUMENTS/_SOURCE_ARCHIVE")
+        # Legacy "Duplicate" sub-folder
+        wipe_folders.add(f"{proj_root}/01_ADMIN/PROCESSED DOCUMENTS/Duplicate")
+        for _wf in sorted(wipe_folders):
+            try:
+                dbx.files_delete_v2(_wf)
+                logging.info(f"[DOCS WIPE] deleted folder {_wf}")
+            except Exception as _fe:
+                # not_found is fine — folder didn't exist for this project.
+                if "not_found" not in str(_fe):
+                    logging.info(f"[DOCS WIPE] could not delete {_wf}: {_fe}")
 
     try:
         db.session.commit()
