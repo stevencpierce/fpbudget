@@ -73,7 +73,7 @@ os.environ.setdefault('AWS_S3_DISABLE_DEFAULT_CHECKSUMS',  'true')
 from flask_mail import Mail, Message as MailMessage
 from datetime import date, datetime, timedelta
 from flask import (Flask, render_template, redirect, url_for, request,
-                   flash, jsonify, Response, abort)
+                   flash, jsonify, Response, abort, session)
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
                          login_required, current_user)
 from dotenv import load_dotenv
@@ -4341,6 +4341,142 @@ def actuals_sync_now(pid):
     except Exception as e:
         logging.exception(f"[actuals] sync_now failed: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+# ── QBO OAuth routes (slice 3 — pulled forward 2026-04-30) ────────────
+
+@app.route("/qbo/oauth/start")
+@login_required
+def qbo_oauth_start():
+    """Kick off the QBO OAuth handshake. Redirects the user's browser
+    to Intuit's authorize URL with our client_id + redirect_uri.
+
+    Required env:
+      QBO_CLIENT_ID      — Intuit Developer app client id
+      QBO_CLIENT_SECRET  — secret (not used here, used at callback)
+      QBO_REDIRECT_URI   — must exactly match an entry in the
+                           Intuit app's Redirect URIs whitelist
+      QBO_ENVIRONMENT    — 'production' | 'sandbox'
+    """
+    if current_user.role not in ('super_admin', 'admin'):
+        return "Admin only", 403
+    client_id    = os.getenv("QBO_CLIENT_ID")
+    redirect_uri = os.getenv("QBO_REDIRECT_URI")
+    if not client_id or not redirect_uri:
+        return ("QBO_CLIENT_ID / QBO_REDIRECT_URI not configured "
+                "in the Render environment."), 500
+
+    # Random state token to validate on the callback (CSRF protection).
+    import secrets as _secrets
+    state = _secrets.token_urlsafe(24)
+    session['_qbo_oauth_state'] = state
+
+    # Intuit's authorize endpoint. Same URL for sandbox + production —
+    # the server figures out which based on the realm the user picks.
+    from urllib.parse import urlencode as _urlencode
+    params = _urlencode({
+        'client_id':     client_id,
+        'response_type': 'code',
+        'scope':         'com.intuit.quickbooks.accounting',
+        'redirect_uri':  redirect_uri,
+        'state':         state,
+    })
+    return redirect(f"https://appcenter.intuit.com/connect/oauth2?{params}")
+
+
+@app.route("/qbo/oauth/callback")
+@login_required
+def qbo_oauth_callback():
+    """Intuit redirects the user back here after they authorize. We
+    receive a code + realmId, exchange the code for access + refresh
+    tokens, persist to QBOConnection (single global row for now)."""
+    if current_user.role not in ('super_admin', 'admin'):
+        return "Admin only", 403
+
+    state    = request.args.get('state', '')
+    expected = session.pop('_qbo_oauth_state', None)
+    if not expected or state != expected:
+        return "OAuth state mismatch — possible CSRF. Try again.", 400
+
+    code     = request.args.get('code')
+    realm_id = request.args.get('realmId')
+    if not code or not realm_id:
+        # Common when the user clicks Cancel on Intuit's screen.
+        err = request.args.get('error') or 'no_code'
+        return f"OAuth aborted ({err}). <a href='/projects'>Back to projects</a>.", 400
+
+    client_id     = os.getenv("QBO_CLIENT_ID")
+    client_secret = os.getenv("QBO_CLIENT_SECRET")
+    redirect_uri  = os.getenv("QBO_REDIRECT_URI")
+    if not (client_id and client_secret and redirect_uri):
+        return "QBO env vars missing.", 500
+
+    import base64 as _b64
+    import requests as _rq
+    creds = _b64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    try:
+        resp = _rq.post(
+            "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+            headers={
+                "Authorization": f"Basic {creds}",
+                "Accept":        "application/json",
+                "Content-Type":  "application/x-www-form-urlencoded",
+            },
+            data={
+                "grant_type":   "authorization_code",
+                "code":         code,
+                "redirect_uri": redirect_uri,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        tokens = resp.json()
+    except Exception as e:
+        logging.exception("QBO token exchange failed")
+        return f"Token exchange failed: {e}", 500
+
+    from models import QBOConnection
+    from datetime import timedelta as _td
+    conn = QBOConnection.query.first()
+    if not conn:
+        conn = QBOConnection()
+        db.session.add(conn)
+    conn.realm_id      = realm_id
+    conn.access_token  = tokens.get("access_token")
+    conn.refresh_token = tokens.get("refresh_token")
+    conn.token_expiry  = datetime.utcnow() + _td(seconds=tokens.get("expires_in", 3600))
+    conn.updated_at    = datetime.utcnow()
+    db.session.commit()
+    logging.info(f"[QBO] Connected realm {realm_id}")
+
+    # Seed default category mappings on first connect so subsequent
+    # syncs auto-suggest sensibly without user training data yet.
+    try:
+        from qbo_sync import seed_default_category_mappings
+        seed_default_category_mappings(db)
+    except Exception as _se:
+        logging.warning(f"[QBO] seed_default_category_mappings failed: {_se}")
+
+    flash("✓ Connected to QuickBooks.", "success")
+    # Send the user back to wherever they triggered this. We don't know
+    # their original project, so dashboard is the safe landing spot.
+    return redirect(url_for('dashboard'))
+
+
+@app.route("/qbo/oauth/disconnect", methods=["POST"])
+@login_required
+def qbo_oauth_disconnect():
+    """Wipe the QBOConnection so the next sync forces a re-auth.
+    Doesn't revoke the token at Intuit's side — that's a separate API
+    call we can add later if needed."""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Admin only"}), 403
+    from models import QBOConnection
+    conn = QBOConnection.query.first()
+    if conn:
+        db.session.delete(conn)
+        db.session.commit()
+    return jsonify({"ok": True})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/toggle-sync-omit", methods=["POST"])

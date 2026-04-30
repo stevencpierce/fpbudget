@@ -3092,12 +3092,29 @@
                   title="{{ t.vendor or '' }}">
               {{ t.vendor or '— vendor unknown —' }}
             </span>
-            {# Doc badge — clicks open the existing Docs detail modal #}
+            {# Doc badge — clicks open the existing Docs detail modal.
+               Color palette varies by doc type for fast visual scan. #}
             {% if _doc %}
+            {% set _cat = (_doc.category or 'misc') %}
+            {% set _palette = {
+              'receipt':        ('#1a2a3e', '#2e4a6e', '#7ba6e8'),
+              'invoice':        ('#2a2414', '#4a3a1a', '#f0c060'),
+              'estimate':       ('#143030', '#1e4848', '#5fc8c8'),
+              'quote':          ('#143030', '#1e4848', '#5fc8c8'),
+              'purchase_order': ('#2a1f10', '#5a3e1a', '#f08c4a'),
+              'contract':       ('#1f1430', '#3a2a5a', '#9a7ee0'),
+              'insurance':      ('#2a1414', '#4a2020', '#e08080'),
+              'tax_form':       ('#2a1418', '#4a202a', '#e0809a'),
+              'payroll':        ('#2a1424', '#4a2040', '#e080c8'),
+              'legal':          ('#1a1430', '#2a2050', '#7e7ee0'),
+              'release':        ('#1a2e1a', '#2a4e2a', '#7ad07a'),
+              'misc':           ('#1e1e1e', '#3a3a3a', '#bbb'),
+            } %}
+            {% set _bg, _bd, _fg = _palette.get(_cat, _palette['misc']) %}
             <a href="#" onclick="openDocDetail({{ _doc.id }}, null);return false"
-               title="View receipt: {{ _doc.filed_filename or _doc.original_filename }}"
-               style="flex-shrink:0;font-size:.66rem;padding:2px 7px;background:#1a2a1e;border:1px solid #2a4a2e;border-radius:4px;color:var(--green);text-decoration:none">
-              📎 {{ (_doc.filed_filename or _doc.original_filename or '')[:18] }}{% if (_doc.filed_filename or _doc.original_filename or '')|length > 18 %}…{% endif %}
+               title="View {{ _cat }}: {{ _doc.filed_filename or _doc.original_filename }}"
+               style="flex-shrink:0;font-size:.66rem;padding:2px 7px;background:{{ _bg }};border:1px solid {{ _bd }};border-radius:4px;color:{{ _fg }};text-decoration:none">
+              📎 {{ _cat }} · {{ (_doc.filed_filename or _doc.original_filename or '')[:14] }}{% if (_doc.filed_filename or _doc.original_filename or '')|length > 14 %}…{% endif %}
             </a>
             {% elif t.source == 'qbo_sync' %}
             <span style="flex-shrink:0;font-size:.66rem;padding:2px 7px;background:#2a1414;border:1px solid #4a2020;border-radius:4px;color:#e08080">
@@ -3130,9 +3147,9 @@
               {% if t.is_expense %}−{% else %}+{% endif %}{{ (t.amount or 0) | currency }}
             </span>
             <button type="button" class="btn btn-xs btn-ghost"
-                    onclick="actualsOpenEditTxn({{ t.id }})"
-                    title="Edit vendor / date / amount / note"
-                    style="flex-shrink:0;font-size:.7rem;padding:2px 6px;color:var(--text-muted)">✎</button>
+                    onclick="actualsOpenEditTxn({{ t.id }}, {{ t.doc_upload_id or 'null' }})"
+                    title="{% if t.doc_upload_id %}Open receipt preview + edit{% else %}Edit vendor / date / amount / note{% endif %}"
+                    style="flex-shrink:0;font-size:.7rem;padding:2px 6px;color:var(--text-muted)">{% if t.doc_upload_id %}🔍{% else %}✎{% endif %}</button>
             {% if not t.not_project_expense %}
             <button type="button" class="btn btn-xs btn-ghost"
                     onclick="actualsMarkNotProject({{ t.id }})"
@@ -3578,8 +3595,16 @@
     };
 
     // ── Edit Transaction modal ─────────────────────────────────────────
+    // If the row has a linked DocUpload, open the existing Docs detail
+    // modal (with image preview + zoom + per-type fields). Otherwise
+    // fall back to the plain text edit modal for non-doc transactions
+    // (manual entries, QBO-only without a receipt).
     let _editTxnId = null;
-    window.actualsOpenEditTxn = function (tid) {
+    window.actualsOpenEditTxn = function (tid, docId) {
+      if (docId && typeof window.openDocDetail === 'function') {
+        window.openDocDetail(docId, null);
+        return;
+      }
       const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
       if (!row) return;
       _editTxnId = tid;
