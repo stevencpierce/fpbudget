@@ -1444,6 +1444,8 @@
              data-sort-amount="{{ u.amount|float if u.amount else 0 }}"
              data-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
              data-doc-num="{{ u.doc_number or '' }}"
+             data-crew-member-id="{{ u.crew_member_id or '' }}"
+             data-location-id="{{ u.location_id or '' }}"
              data-note="{{ u.note or '' }}"
              data-sort-size="{{ u.file_size or 0 }}"
              data-sort-status="{{ u.status or '' }}"
@@ -1606,6 +1608,27 @@
             <div class="field" id="docDetailDocNumField" style="margin-bottom:.6rem;display:none">
               <label id="docDetailDocNumLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Document #</label>
               <input type="text" id="docDetailDocNum" placeholder="—" style="width:100%">
+            </div>
+            {# Crew member picker — shown for tax_form / contract /
+               release / payroll. Populated from the project's crew. #}
+            <div class="field" id="docDetailCrewField" style="margin-bottom:.6rem;display:none">
+              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Crew Member</label>
+              <select id="docDetailCrewId" style="width:100%">
+                <option value="">— not linked —</option>
+                {% for cm in (crew_members or []) %}
+                <option value="{{ cm.id }}">{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.role %} — {{ cm.role }}{% endif %}</option>
+                {% endfor %}
+              </select>
+            </div>
+            {# Location picker — shown for insurance/COI and location releases. #}
+            <div class="field" id="docDetailLocationField" style="margin-bottom:.6rem;display:none">
+              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Location</label>
+              <select id="docDetailLocationId" style="width:100%">
+                <option value="">— not linked —</option>
+                {% for loc in (project_locations or []) %}
+                <option value="{{ loc.id }}">{{ loc.name or ('Location #' ~ loc.id) }}{% if loc.address %} — {{ loc.address[:40] }}{% endif %}</option>
+                {% endfor %}
+              </select>
             </div>
             <div class="field" style="margin-bottom:.6rem">
               <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Type</label>
@@ -2426,16 +2449,20 @@
   const _DOC_TYPE_FIELD_SPEC = {
     receipt:        { vendor:'Vendor',       amount:true,  date:'Receipt Date',    docnum:null },
     invoice:        { vendor:'Vendor',       amount:true,  date:'Invoice Date',    docnum:'Invoice #' },
-    estimate:       { vendor:'Vendor',       amount:true,  date:'Estimate Date',   docnum:'Estimate #' },
-    quote:          { vendor:'Vendor',       amount:true,  date:'Quote Date',      docnum:'Quote #' },
-    purchase_order: { vendor:'Vendor',       amount:true,  date:'PO Date',         docnum:'PO #' },
-    contract:       { vendor:'Counterparty', amount:false, date:'Effective Date',  docnum:'Contract #' },
-    insurance:      { vendor:'Insured / Carrier', amount:false, date:'Expiration Date', docnum:'Policy #' },
-    tax_form:       { vendor:'Entity / Filer', amount:false, date:'Tax Year / Date', docnum:'Tax ID (EIN/SSN)' },
-    payroll:        { vendor:'Vendor / Employee', amount:true, date:'Pay Date',     docnum:'Check / Ref #' },
-    legal:          { vendor:'Counterparty', amount:false, date:'Doc Date',        docnum:'Reference #' },
-    release:        { vendor:'Talent / Location', amount:false, date:'Signed Date', docnum:null },
-    misc:           { vendor:'Vendor',       amount:true,  date:'Doc Date',        docnum:null },
+    // Per-spec flags: crew = shows the Crew Member picker (tax forms,
+    // contracts, releases, payroll → backed by a person). location =
+    // shows the Location picker (COIs, location releases → backed by
+    // a place). Both nullable; user picks if relevant.
+    estimate:       { vendor:'Vendor',       amount:true,  date:'Estimate Date',   docnum:'Estimate #',  crew:false, location:false },
+    quote:          { vendor:'Vendor',       amount:true,  date:'Quote Date',      docnum:'Quote #',     crew:false, location:false },
+    purchase_order: { vendor:'Vendor',       amount:true,  date:'PO Date',         docnum:'PO #',        crew:false, location:false },
+    contract:       { vendor:'Counterparty', amount:false, date:'Effective Date',  docnum:'Contract #',  crew:true,  location:false },
+    insurance:      { vendor:'Insured / Carrier', amount:false, date:'Expiration Date', docnum:'Policy #', crew:false, location:true  },
+    tax_form:       { vendor:'Entity / Filer', amount:false, date:'Tax Year / Date', docnum:'Tax ID (EIN/SSN)', crew:true, location:false },
+    payroll:        { vendor:'Vendor / Employee', amount:true, date:'Pay Date',     docnum:'Check / Ref #', crew:true, location:false },
+    legal:          { vendor:'Counterparty', amount:false, date:'Doc Date',        docnum:'Reference #', crew:false, location:false },
+    release:        { vendor:'Talent / Location', amount:false, date:'Signed Date', docnum:null,         crew:true,  location:true  },
+    misc:           { vendor:'Vendor',       amount:true,  date:'Doc Date',        docnum:null,          crew:false, location:false },
   };
   function _docDetailApplyTypeUI(type) {
     const spec = _DOC_TYPE_FIELD_SPEC[(type || '').toLowerCase()] || _DOC_TYPE_FIELD_SPEC.misc;
@@ -2453,6 +2480,12 @@
     } else {
       if (dnField) dnField.style.display = 'none';
     }
+    // Crew + Location pickers — show only when this doc type backs a
+    // person or a place. Hidden by default for receipts / invoices.
+    const crewField = document.getElementById('docDetailCrewField');
+    if (crewField) crewField.style.display = spec.crew ? '' : 'none';
+    const locField  = document.getElementById('docDetailLocationField');
+    if (locField)  locField.style.display = spec.location ? '' : 'none';
     _docDetailHighlightMissing(spec);
   }
 
@@ -2597,6 +2630,8 @@
     document.getElementById('docDetailCategory').value = row?.dataset?.sortType || '';
     document.getElementById('docDetailNote').value     = row?.dataset?.note || '';
     document.getElementById('docDetailDocNum').value   = row?.dataset?.docNum || '';
+    document.getElementById('docDetailCrewId').value     = row?.dataset?.crewMemberId || '';
+    document.getElementById('docDetailLocationId').value = row?.dataset?.locationId || '';
     _docDetailApplyTypeUI(row?.dataset?.sortType || '');
     // Re-apply when the user changes the type dropdown so labels /
     // field visibility track the selection live.
@@ -2768,6 +2803,10 @@
       // now (no schema change). The label rendered in the modal
       // depends on the doc type — see _DOC_TYPE_FIELD_SPEC.
       doc_number: document.getElementById('docDetailDocNum').value,
+      // Person / location linkage — only meaningful for the doc types
+      // whose spec sets crew/location:true. Server accepts NULL to clear.
+      crew_member_id: document.getElementById('docDetailCrewId').value || null,
+      location_id:    document.getElementById('docDetailLocationId').value || null,
     };
     const btn = document.getElementById('docDetailSaveBtn');
     btn.disabled = true; btn.textContent = 'Saving…';

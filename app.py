@@ -13902,6 +13902,25 @@ def docs_upload_update(uid):
     if "doc_number" in data:
         dn = (data.get("doc_number") or "").strip()
         upload.doc_number = dn[:100] if dn else None
+    # Crew / location linkage. Empty / null clears.
+    if "crew_member_id" in data:
+        cm = data.get("crew_member_id")
+        if cm in (None, "", "null", "0", 0):
+            upload.crew_member_id = None
+        else:
+            try:
+                upload.crew_member_id = int(cm)
+            except (TypeError, ValueError):
+                return jsonify({"error": "crew_member_id must be int"}), 400
+    if "location_id" in data:
+        lc = data.get("location_id")
+        if lc in (None, "", "null", "0", 0):
+            upload.location_id = None
+        else:
+            try:
+                upload.location_id = int(lc)
+            except (TypeError, ValueError):
+                return jsonify({"error": "location_id must be int"}), 400
 
     # ── File on review-confirm OR re-file on type change ──────────────
     # Two cases handled by one block:
