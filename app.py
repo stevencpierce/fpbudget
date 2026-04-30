@@ -3241,6 +3241,43 @@ def budget_view(pid, bid):
 
     company_settings = CompanySettings.query.get(1) or CompanySettings()
     doc_uploads = DocUpload.query.filter_by(project_id=pid).order_by(DocUpload.uploaded_at.desc()).all()
+    # Group uploads by category for the Docs-tab view. Per user 2026-04-30:
+    # tax forms, receipts, invoices, etc. should be visually clustered so
+    # the list is readable. Order matches the Analyzer's filing buckets.
+    _DOC_TYPE_ORDER = [
+        ('receipt',        'Receipts'),
+        ('invoice',        'Invoices'),
+        ('estimate',       'Estimates / SOWs'),
+        ('quote',          'Quotes'),
+        ('purchase_order', 'Purchase Orders'),
+        ('contract',       'Contracts'),
+        ('insurance',      'Insurance / COIs'),
+        ('tax_form',       'Tax Forms'),
+        ('payroll',        'Payroll'),
+        ('legal',          'Legal'),
+        ('release',        'Releases'),
+        ('misc',           'Miscellaneous'),
+        (None,             'Unsorted'),       # category is NULL/blank
+    ]
+    _docs_by_cat = {}
+    for u in doc_uploads:
+        key = (u.category or '').lower() or None
+        _docs_by_cat.setdefault(key, []).append(u)
+    doc_groups = []  # list of {key, label, rows}
+    seen = set()
+    for key, label in _DOC_TYPE_ORDER:
+        if key in _docs_by_cat:
+            doc_groups.append({"key": key or "_unsorted",
+                               "label": label,
+                               "rows": _docs_by_cat[key]})
+            seen.add(key)
+    # Any unexpected category (typo, deprecated value) gets its own bucket
+    # so we never lose rows in the UI.
+    for key, rows in _docs_by_cat.items():
+        if key not in seen:
+            doc_groups.append({"key": key or "_unsorted",
+                               "label": (key or 'Unsorted').title(),
+                               "rows": rows})
     return render_template("budget.html",
         project=project,
         budget=budget,
@@ -3279,6 +3316,7 @@ def budget_view(pid, bid):
         line_sub_groups=line_sub_groups,
         line_assigned_location=line_assigned_location,
         doc_uploads=doc_uploads,
+        doc_groups=doc_groups,
     )
 
 
@@ -12367,6 +12405,11 @@ def docs_upload_post(pid):
             "status":      "duplicate" if _is_dup else "ok",
             "upload_id":   upload.id,
             "filed_path":  upload.filed_dropbox_path,
+            # Include the renamed filename so the JS prepend shows the
+            # Analyzer's date/vendor/amount-formatted name instead of
+            # falling back to the original (often random/uuid) filename.
+            "new_filename":   upload.filed_filename or result.get("new_filename"),
+            "filed_filename": upload.filed_filename,
             "doc_type":    result.get("doc_type"),
             "confidence":  result.get("confidence"),
             "duplicate":   _is_dup or bool(result.get("duplicate")),
@@ -13132,52 +13175,116 @@ def docs_upload_update(uid):
         n = (data.get("note") or "").strip()
         upload.note = n[:500] if n else None
 
-    # ── Re-file on doc-type change ──────────────────────────────────
-    # When the user changes the doc type via the modal, the existing
-    # Dropbox file is in the wrong type folder (e.g. RECEIPTS/ when it
-    # should be in ESTIMATES/). Move it to the right place so the
-    # filing structure matches the user's classification.
+    # ── File on review-confirm OR re-file on type change ──────────────
+    # Two cases handled by one block:
+    #
+    # (A) Review confirmation: status='review' means OCR happened but
+    #     the doc never got filed because confidence was low. The
+    #     bytes live in _SOURCE_ARCHIVE/ only. When the user picks a
+    #     category in the modal and saves, COPY the archive file into
+    #     the right processed folder, mirroring auto_file_high_confidence's
+    #     layout (per-user, vendor subfolder for AP types). Flip the
+    #     row to status='done'.
+    #
+    # (B) Type change on an already-filed doc: MOVE the processed file
+    #     into the new type folder so the filing structure matches the
+    #     user's classification.
     refile_info = None
-    if _category_changed and upload.category and upload.filed_dropbox_path \
-       and upload.filed_at:  # only re-file actually-filed docs (skip review)
+    if upload.category and upload.source_archive_path:
         try:
-            from fp_analyzer import DOCUMENT_TYPES, _ops_prefix as _ana_ops
+            from fp_analyzer import (
+                DOCUMENT_TYPES, DOC_PREFIXES,
+                get_dropbox_client as _ana_dbx,
+                _ops_prefix as _ana_ops,
+                safe as _ana_safe,
+            )
             new_type_folder = DOCUMENT_TYPES.get(upload.category)
-            if new_type_folder:
+            proj = ProjectSheet.query.get(upload.project_id)
+            proj_name = (proj.dropbox_folder or '').strip('/') if proj else ''
+            ops = _ana_ops()
+
+            def _build_processed_path():
+                """Compute the destination path for this row's processed
+                copy, mirroring auto_file_high_confidence's layout."""
+                if not (proj_name and new_type_folder):
+                    return None, None
+                user_name = (current_user.name
+                             or (current_user.email or '').split('@')[0]
+                             or f'user-{current_user.id}')
+                user_folder = _ana_safe(user_name)
+                # Construct a date-prefixed filename from the row's data.
+                # Falls back to the existing filed_filename if we already
+                # had one (review re-confirms keep the Analyzer's name).
+                fname = upload.filed_filename
+                if not fname:
+                    date_str = (upload.doc_date.isoformat()
+                                if upload.doc_date else 'Unknown')
+                    vendor   = _ana_safe(upload.vendor or 'Unknown')
+                    amount   = (f"{float(upload.amount):.2f}"
+                                if upload.amount is not None else 'Unknown')
+                    prefix   = DOC_PREFIXES.get(upload.category, 'DOC')
+                    if upload.category in ('contract', 'tax_form', 'release'):
+                        # No amount in the name for these (irrelevant or absent)
+                        fname = f"{date_str}_{prefix}_{vendor}.pdf"
+                    elif upload.category == 'invoice' or upload.category == 'purchase_order':
+                        # Include any invoice/PO# from notes if present.
+                        fname = f"{date_str}_{prefix}_{vendor}_{amount}.pdf"
+                    else:
+                        fname = f"{date_str}_{prefix}_{vendor}_{amount}.pdf"
+                base = f"{ops}/{proj_name}/{new_type_folder}" if ops else f"/{proj_name}/{new_type_folder}"
+                if upload.category in ('invoice', 'contract', 'purchase_order', 'insurance'):
+                    vendor_folder = _ana_safe(upload.vendor or 'Unknown_Vendor')
+                    return f"{base}/{user_folder}/{vendor_folder}/{fname}", fname
+                return f"{base}/{user_folder}/{fname}", fname
+
+            # Case A — review confirmation (file not yet processed)
+            if upload.status == 'review' or not upload.filed_at:
+                if new_type_folder:
+                    dest_path, dest_name = _build_processed_path()
+                    if dest_path:
+                        try:
+                            dbx = _ana_dbx()
+                            meta = dbx.files_copy_v2(
+                                upload.source_archive_path, dest_path,
+                                autorename=True, allow_ownership_transfer=False,
+                            )
+                            upload.filed_dropbox_path = meta.metadata.path_display
+                            upload.filed_filename    = os.path.basename(meta.metadata.path_display)
+                            upload.filed_at          = _dt.utcnow()
+                            upload.status            = 'done'
+                            refile_info = {
+                                'action': 'filed_from_review',
+                                'from':   upload.source_archive_path,
+                                'to':     meta.metadata.path_display,
+                            }
+                        except Exception as _me:
+                            logging.warning(
+                                f"[/update] review-confirm copy failed for upload {uid}: {_me}")
+                            refile_info = {'error': str(_me)}
+
+            # Case B — type change on an already-filed doc
+            elif _category_changed and upload.filed_dropbox_path and new_type_folder:
                 old_path = upload.filed_dropbox_path
-                # Old path looks like:
-                #   {ops}/{project}/{old_type_folder}/{user}/[vendor/]<filename>
-                # We rebuild it by swapping the type-folder segment.
-                # Find the project name from the project row.
-                proj = ProjectSheet.query.get(upload.project_id)
-                proj_name = (proj.dropbox_folder or '').strip('/') if proj else ''
-                ops = _ana_ops()
-                if proj_name:
-                    # The "tail" we keep is everything after the type folder.
-                    # Find the type-folder segment in the old path.
-                    # Old DOCUMENT_TYPES values look like
-                    #   "01_ADMIN/PROCESSED DOCUMENTS/RECEIPTS"
-                    # so we look for that substring and replace it.
-                    old_type_folder = DOCUMENT_TYPES.get(_old_category or '')
-                    if old_type_folder and old_type_folder in old_path:
-                        new_path = old_path.replace(old_type_folder, new_type_folder, 1)
-                        if new_path != old_path:
-                            from fp_analyzer import get_dropbox_client as _ana_dbx
-                            try:
-                                dbx = _ana_dbx()
-                                meta = dbx.files_move_v2(
-                                    old_path, new_path,
-                                    autorename=True, allow_ownership_transfer=False,
-                                )
-                                upload.filed_dropbox_path = meta.metadata.path_display
-                                refile_info = {
-                                    'from': old_path,
-                                    'to':   meta.metadata.path_display,
-                                }
-                            except Exception as _me:
-                                logging.warning(
-                                    f"[/update] re-file move failed for upload {uid}: {_me}")
-                                refile_info = {'error': str(_me)}
+                old_type_folder = DOCUMENT_TYPES.get(_old_category or '')
+                if old_type_folder and old_type_folder in old_path:
+                    new_path = old_path.replace(old_type_folder, new_type_folder, 1)
+                    if new_path != old_path:
+                        try:
+                            dbx = _ana_dbx()
+                            meta = dbx.files_move_v2(
+                                old_path, new_path,
+                                autorename=True, allow_ownership_transfer=False,
+                            )
+                            upload.filed_dropbox_path = meta.metadata.path_display
+                            refile_info = {
+                                'action': 'moved_to_new_type',
+                                'from':   old_path,
+                                'to':     meta.metadata.path_display,
+                            }
+                        except Exception as _me:
+                            logging.warning(
+                                f"[/update] re-file move failed for upload {uid}: {_me}")
+                            refile_info = {'error': str(_me)}
         except Exception as _e:
             logging.warning(f"[/update] re-file logic error for upload {uid}: {_e}")
 

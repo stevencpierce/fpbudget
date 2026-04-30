@@ -1365,7 +1365,25 @@
     {% endif %}
     <div id="docsHistory" style="display:flex;flex-direction:column;gap:8px;">
       {% if doc_uploads %}
-        {% for u in doc_uploads %}
+        {# Render in groups by type — Receipts together, Invoices together,
+           Tax Forms together, etc. — so the list is scannable. The server
+           builds doc_groups in display order; each group has a sticky-ish
+           header div followed by its rows. #}
+        {% for grp in (doc_groups or [{'key':'all','label':'','rows':doc_uploads}]) %}
+          {% if grp.label and (doc_groups|length > 1) %}
+          <div class="doc-group-header" data-group="{{ grp.key }}"
+               style="display:flex;align-items:center;gap:8px;
+                      padding:10px 4px 4px;margin-top:8px;
+                      border-bottom:1px solid var(--border);">
+            <span style="font-size:12px;font-weight:600;text-transform:uppercase;
+                         letter-spacing:.6px;color:var(--text-muted);">{{ grp.label }}</span>
+            <span style="font-size:11px;color:var(--text-muted);
+                         background:var(--bg-input);padding:1px 7px;border-radius:10px;">
+              {{ grp.rows|length }}
+            </span>
+          </div>
+          {% endif %}
+          {% for u in grp.rows %}
         {% set _display_name = u.filed_filename or u.original_filename or 'Unnamed file' %}
         {% set _orig_name    = u.original_filename or '' %}
         {# Subtitle rule: show the original ("uploaded as: ...") whenever
@@ -1461,7 +1479,8 @@
             ✕
           </button>
         </div>
-        {% endfor %}
+          {% endfor %}{# rows in group #}
+        {% endfor %}{# groups #}
       {% else %}
         <div style="text-align:center;color:var(--text-muted);font-size:13px;padding:20px 0;">No uploads yet for this project.</div>
       {% endif %}
