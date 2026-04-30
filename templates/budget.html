@@ -4202,26 +4202,52 @@
       modal.innerHTML = `
         <div onclick="event.stopPropagation()"
              style="background:var(--bg-card);border:1px solid var(--border);
-                    border-radius:10px;padding:18px 22px;width:480px;max-width:96vw;
+                    border-radius:10px;padding:18px 22px;width:560px;max-width:96vw;
+                    max-height:90vh;display:flex;flex-direction:column;
                     box-shadow:0 20px 60px rgba(0,0,0,.5)">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
             <h3 style="margin:0;font-size:1rem">📤 Attach receipt</h3>
             <button type="button" class="btn btn-sm btn-ghost"
                     onclick="document.getElementById('_actuals-upload-modal').style.display='none'">✕</button>
           </div>
-          <div id="_actuals-upload-target" style="font-size:.78rem;color:var(--text-muted);margin-bottom:12px"></div>
-          <div id="_actuals-upload-drop"
-               style="border:2px dashed var(--border);border-radius:10px;padding:30px 20px;
-                      text-align:center;cursor:pointer;transition:border-color .15s,background .15s">
-            <div style="font-size:2rem;margin-bottom:8px">📎</div>
-            <div style="font-size:.88rem;color:var(--text);margin-bottom:4px">
-              <strong>Drop a file here</strong>
+          <div id="_actuals-upload-target" style="font-size:.78rem;color:var(--text-muted);margin-bottom:10px"></div>
+          <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px">
+            <button type="button" id="_actuals-upload-tab-new"
+                    onclick="_actualsUploadShowTab('new')"
+                    style="padding:8px 14px;background:none;border:none;border-bottom:2px solid var(--blue);color:var(--text);cursor:pointer;font-size:.84rem">
+              New file
+            </button>
+            <button type="button" id="_actuals-upload-tab-existing"
+                    onclick="_actualsUploadShowTab('existing')"
+                    style="padding:8px 14px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);cursor:pointer;font-size:.84rem">
+              Link existing receipt
+            </button>
+          </div>
+          <div id="_actuals-upload-pane-new">
+            <div id="_actuals-upload-drop"
+                 style="border:2px dashed var(--border);border-radius:10px;padding:30px 20px;
+                        text-align:center;cursor:pointer;transition:border-color .15s,background .15s">
+              <div style="font-size:2rem;margin-bottom:8px">📎</div>
+              <div style="font-size:.88rem;color:var(--text);margin-bottom:4px">
+                <strong>Drop a file here</strong>
+              </div>
+              <div style="font-size:.74rem;color:var(--text-muted)">
+                or <a href="#" id="_actuals-upload-browse" style="color:var(--blue);text-decoration:underline">click to browse</a>
+              </div>
+              <div style="font-size:.7rem;color:var(--text-muted);margin-top:8px">
+                PDF · JPG · PNG · HEIC
+              </div>
             </div>
-            <div style="font-size:.74rem;color:var(--text-muted)">
-              or <a href="#" id="_actuals-upload-browse" style="color:var(--blue);text-decoration:underline">click to browse</a>
+          </div>
+          <div id="_actuals-upload-pane-existing" style="display:none;flex:1;min-height:0;display:none;flex-direction:column">
+            <div style="font-size:.74rem;color:var(--text-muted);margin-bottom:8px">
+              Pick an existing receipt from this project's docs. Same receipt can back multiple transactions (e.g. a Lyft week-rollup).
             </div>
-            <div style="font-size:.7rem;color:var(--text-muted);margin-top:8px">
-              PDF · JPG · PNG · HEIC
+            <input type="text" id="_actuals-upload-existing-search" placeholder="Search vendor / filename…"
+                   style="font-size:.78rem;padding:6px 10px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px;margin-bottom:8px">
+            <div id="_actuals-upload-existing-list"
+                 style="flex:1;overflow-y:auto;max-height:380px;border:1px solid var(--border);border-radius:5px;padding:4px">
+              <div class="muted" style="font-size:.78rem;padding:10px;text-align:center">Loading…</div>
             </div>
           </div>
           <div id="_actuals-upload-status" style="margin-top:12px;font-size:.78rem;text-align:center;min-height:18px"></div>
@@ -4268,9 +4294,110 @@
       }
     }
 
+    // Tab switcher inside the upload modal — toggles between "New file"
+    // (drag/browse) and "Link existing receipt" (pick from project docs).
+    let _actualsUploadCurrentTid = null;
+    let _actualsExistingDocs     = null;  // cached doc list for the picker
+    window._actualsUploadShowTab = function (which) {
+      const tabNew = document.getElementById('_actuals-upload-tab-new');
+      const tabEx  = document.getElementById('_actuals-upload-tab-existing');
+      const paneNew = document.getElementById('_actuals-upload-pane-new');
+      const paneEx  = document.getElementById('_actuals-upload-pane-existing');
+      if (which === 'new') {
+        if (tabNew) { tabNew.style.borderBottomColor = 'var(--blue)'; tabNew.style.color = 'var(--text)'; }
+        if (tabEx)  { tabEx.style.borderBottomColor = 'transparent'; tabEx.style.color = 'var(--text-muted)'; }
+        if (paneNew) paneNew.style.display = '';
+        if (paneEx)  paneEx.style.display = 'none';
+      } else {
+        if (tabEx)  { tabEx.style.borderBottomColor = 'var(--blue)'; tabEx.style.color = 'var(--text)'; }
+        if (tabNew) { tabNew.style.borderBottomColor = 'transparent'; tabNew.style.color = 'var(--text-muted)'; }
+        if (paneNew) paneNew.style.display = 'none';
+        if (paneEx)  paneEx.style.display = 'flex';
+        _loadExistingDocs();
+      }
+    };
+
+    async function _loadExistingDocs() {
+      const list = document.getElementById('_actuals-upload-existing-list');
+      if (!list) return;
+      if (_actualsExistingDocs === null) {
+        list.innerHTML = '<div class="muted" style="font-size:.78rem;padding:10px;text-align:center">Loading…</div>';
+        try {
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/docs.json`);
+          const d = await r.json();
+          _actualsExistingDocs = (d && d.ok) ? (d.docs || []) : [];
+        } catch (e) { _actualsExistingDocs = []; }
+      }
+      _renderExistingDocs();
+    }
+
+    function _renderExistingDocs() {
+      const list = document.getElementById('_actuals-upload-existing-list');
+      const search = (document.getElementById('_actuals-upload-existing-search')?.value || '').toLowerCase().trim();
+      if (!list) return;
+      const docs = _actualsExistingDocs || [];
+      if (!docs.length) {
+        list.innerHTML = '<div class="muted" style="font-size:.78rem;padding:14px;text-align:center">No existing receipts on this project yet.</div>';
+        return;
+      }
+      const filtered = docs.filter(d => {
+        if (!search) return true;
+        return ((d.label || '') + ' ' + (d.vendor || '') + ' ' + (d.category || '')).toLowerCase().includes(search);
+      });
+      if (!filtered.length) {
+        list.innerHTML = `<div class="muted" style="font-size:.78rem;padding:14px;text-align:center">No matches for "${search}".</div>`;
+        return;
+      }
+      const _esc = s => String(s||'').replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      list.innerHTML = filtered.map(d => `
+        <div class="_actuals-existing-doc" data-doc-id="${d.id}"
+             style="display:flex;align-items:center;gap:8px;padding:7px 9px;margin-bottom:3px;
+                    border:1px solid var(--border);border-radius:5px;background:var(--bg-input);
+                    cursor:pointer;font-size:.78rem">
+          <span style="font-size:.92rem;flex-shrink:0">${d.has_image ? '🖼' : '📄'}</span>
+          <div style="flex:1;min-width:0;overflow:hidden">
+            <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(d.label)}</div>
+            <div style="font-size:.7rem;color:var(--text-muted)">
+              ${d.vendor ? _esc(d.vendor) : '—'}${d.doc_date ? ' · ' + d.doc_date : ''}${d.amount ? ' · $' + d.amount.toFixed(2) : ''}${d.category ? ' · ' + _esc(d.category) : ''}
+            </div>
+          </div>
+          <button type="button" class="btn btn-xs"
+                  style="font-size:.7rem;padding:3px 9px;background:#1a3a2a;border:1px solid #2a5a3a;color:#74c69d;cursor:pointer;border-radius:4px"
+                  onclick="_actualsLinkExistingDoc(${d.id})">Link</button>
+        </div>
+      `).join('');
+    }
+
+    window._actualsLinkExistingDoc = async function (docId) {
+      const tid = _actualsUploadCurrentTid;
+      if (!tid) return;
+      const status = document.getElementById('_actuals-upload-status');
+      if (status) { status.textContent = '⏳ Linking…'; status.style.color = 'var(--text-muted)'; }
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/link-doc`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ doc_upload_id: docId }),
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          if (status) { status.textContent = '✕ ' + (d.error || ('HTTP ' + r.status)); status.style.color = '#e08080'; }
+          return;
+        }
+        if (status) { status.textContent = `✓ Linked: ${d.filed_filename}`; status.style.color = 'var(--green)'; }
+        setTimeout(() => {
+          document.getElementById('_actuals-upload-modal').style.display = 'none';
+          window.location.reload();
+        }, 700);
+      } catch (e) {
+        if (status) { status.textContent = '✕ ' + e.message; status.style.color = '#e08080'; }
+      }
+    };
+
     document.querySelectorAll('.actuals-upload-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const tid = parseInt(btn.dataset.tid);
+        _actualsUploadCurrentTid = tid;
         const modal = _ensureUploadModal();
         // Re-find the row → vendor / amount for the modal subtitle.
         const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
@@ -4337,6 +4464,15 @@
         };
         drop.onclick   = (e) => { if (e.target.id !== '_actuals-upload-browse') openPicker(); };
         browse.onclick = (e) => { e.preventDefault(); openPicker(); };
+        // Reset to "New file" tab on every open + clear the existing-
+        // doc cache so the picker re-fetches if the user switches tabs.
+        _actualsUploadShowTab('new');
+        _actualsExistingDocs = null;
+        const search = document.getElementById('_actuals-upload-existing-search');
+        if (search) {
+          search.value = '';
+          search.oninput = _renderExistingDocs;
+        }
         modal.style.display = 'flex';
       });
     });

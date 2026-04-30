@@ -4390,6 +4390,87 @@ def actuals_dismiss_suggestion(pid, tid):
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/projects/<int:pid>/actuals/docs.json", methods=["GET"])
+@login_required
+def actuals_docs_list_for_picker(pid):
+    """Return the list of DocUploads on this project that the user can
+    link to a transaction. Used by the 'Link existing receipt' picker
+    when one receipt should back multiple transactions (e.g. a Lyft
+    week-rollup receipt backing 5 individual ride transactions on the
+    bank statement).
+
+    Returns thin metadata only (id, label, vendor, amount, date,
+    category, has_image flag). The picker fetches the full preview
+    on hover/click via the existing /docs/upload/<uid>/raw endpoint.
+    """
+    ProjectSheet.query.get_or_404(pid)
+    rows = (DocUpload.query
+            .filter_by(project_id=pid)
+            .order_by(DocUpload.uploaded_at.desc())
+            .all())
+    out = []
+    for d in rows:
+        # Filter out error / corrupt rows — only show usable docs.
+        if d.status == 'error':
+            continue
+        if not d.filed_dropbox_path and not d.source_archive_path:
+            continue
+        out.append({
+            "id":             d.id,
+            "label":          d.filed_filename or d.original_filename or f"Upload #{d.id}",
+            "vendor":         d.vendor,
+            "amount":         float(d.amount) if d.amount is not None else None,
+            "doc_date":       d.doc_date.isoformat() if d.doc_date else None,
+            "category":       d.category,
+            "has_image":      bool(d.content_type and d.content_type.startswith('image/')),
+        })
+    return jsonify({"ok": True, "docs": out})
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/link-doc", methods=["POST"])
+@login_required
+def actuals_link_existing_doc(pid, tid):
+    """Link an existing DocUpload to a Transaction WITHOUT re-uploading.
+
+    Use case: one receipt (e.g. Lyft week rollup) backs multiple
+    smaller bank-side transactions. The user uploads the consolidated
+    receipt once, then opens each individual transaction and links
+    the same DocUpload via this endpoint.
+
+    Body: {doc_upload_id: int}. Server: validates that the doc lives
+    on the same project, sets transaction.doc_upload_id, backfills
+    blank vendor / amount / date from the doc's OCR data (won't
+    override existing values), flips match_status to 'confirmed'.
+    """
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    raw  = data.get("doc_upload_id")
+    if not raw:
+        return jsonify({"error": "doc_upload_id required"}), 400
+    try:
+        doc_id = int(raw)
+    except (TypeError, ValueError):
+        return jsonify({"error": "doc_upload_id must be int"}), 400
+
+    doc = DocUpload.query.filter_by(id=doc_id, project_id=pid).first()
+    if not doc:
+        return jsonify({"error": "DocUpload not found in this project"}), 404
+
+    txn.doc_upload_id = doc.id
+    if not txn.vendor and doc.vendor:                txn.vendor   = doc.vendor
+    if txn.amount is None and doc.amount is not None: txn.amount  = doc.amount
+    if not txn.txn_date and doc.doc_date:            txn.txn_date = doc.doc_date.isoformat()
+    txn.match_status = 'confirmed'
+    txn.updated_at   = datetime.utcnow()
+    db.session.commit()
+    return jsonify({
+        "ok":              True,
+        "transaction_id":  txn.id,
+        "doc_upload_id":   doc.id,
+        "filed_filename":  doc.filed_filename or doc.original_filename,
+    })
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/upload-receipt", methods=["POST"])
 @login_required
 def actuals_upload_receipt_to_transaction(pid, tid):
