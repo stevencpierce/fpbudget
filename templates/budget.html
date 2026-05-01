@@ -4248,7 +4248,11 @@
     // cards get a subtle green outline.
     (function reconcileIIFE() {
       let _recState = { txns: [], docs: [] };
-      const _esc = s => (s||'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+      // Defensive: coerce to string so numbers / null / undefined / dates
+      // don't blow up .replace. Reconcile receipts include numeric ids
+      // and amount fields that flow through here when rendering search
+      // hits on filename containing the amount.
+      const _esc = s => String(s == null ? '' : s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
       const _fmt$ = a => (a == null) ? '—' : ('$' + Math.abs(a).toFixed(2) + (a < 0 ? '' : ''));
       const _fmtDate = iso => {
         if (!iso) return '—';
