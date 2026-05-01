@@ -3231,6 +3231,32 @@ def budget_view(pid, bid):
     except Exception as _ae:
         logging.warning(f"[actuals/per-line] computation failed: {_ae}")
 
+    # Section-only actuals — when a user codes a transaction to a COA
+    # section (drag-drop onto the section header) but doesn't pick a
+    # specific budget line, the row carries account_code but no
+    # budget_line_id. Those dollars need to roll up into the section's
+    # Actual total or they're invisible to the user. Project-scoped
+    # (not budget-scoped) since these txns aren't tied to a specific
+    # Actual budget line.
+    actual_section_only_by_code = {}
+    try:
+        from sqlalchemy import func as _func2
+        for _ac, _amt in (
+            db.session.query(Transaction.account_code,
+                             _func2.sum(Transaction.amount))
+            .filter(Transaction.project_id == pid,
+                    Transaction.budget_line_id.is_(None),
+                    Transaction.account_code.isnot(None),
+                    Transaction.not_project_expense == False,
+                    Transaction.is_expense == True)
+            .group_by(Transaction.account_code)
+            .all()
+        ):
+            if _ac is not None:
+                actual_section_only_by_code[int(_ac)] = float(_amt or 0)
+    except Exception as _ae2:
+        logging.warning(f"[actuals/section-only] computation failed: {_ae2}")
+
     # Tax Credits
     tax_credits = TaxCredit.query.filter_by(budget_id=bid).order_by(TaxCredit.sort_order, TaxCredit.id).all()
 
@@ -3379,7 +3405,17 @@ def budget_view(pid, bid):
     peer_working_bid   = peer_working_bid.id if peer_working_bid else None
 
     company_settings = CompanySettings.query.get(1) or CompanySettings()
-    doc_uploads = DocUpload.query.filter_by(project_id=pid).order_by(DocUpload.uploaded_at.desc()).all()
+    # Defer veryfi_data — the raw OCR JSON blob can be 50–200 KB per row
+    # and the budget page renders metadata only (filename, vendor, amount,
+    # date, doc_type, etc.). On a project with hundreds of receipts that
+    # blob alone was the largest single contributor to per-request RSS.
+    # Pulled via /docs/upload/<uid>/status when actually needed.
+    from sqlalchemy.orm import defer as _defer
+    doc_uploads = (DocUpload.query
+                   .filter_by(project_id=pid)
+                   .options(_defer(DocUpload.veryfi_data))
+                   .order_by(DocUpload.uploaded_at.desc())
+                   .all())
     # Full transactions for the ported Actuals tab (formerly the
     # FPBudgetSync project_detail.html). Ordered most-recent first.
     actuals_transactions = (Transaction.query
@@ -3535,6 +3571,7 @@ def budget_view(pid, bid):
         actuals_pick_budget=actuals_pick_budget,
         actuals_uploaders=actuals_uploaders,
         actual_by_line_id=actual_by_line_id,
+        actual_section_only_by_code=actual_section_only_by_code,
         actual_to_working=actual_to_working,
         has_actual_budget=has_actual_budget,
         actual_budget_meta=actual_budget_meta,
@@ -4176,7 +4213,21 @@ def actuals_set_line(pid, tid):
     if not raw:
         from actuals import unlink_transaction
         try:
+            _before_clear = {'budget_line_id': txn.budget_line_id,
+                             'account_code': txn.account_code,
+                             'account_code_name': txn.account_code_name}
             unlink_transaction(tid)
+            try:
+                _log_activity(
+                    action='update', entity_type='transaction',
+                    entity_id=txn.id,
+                    entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
+                    project_id=pid,
+                    before=_before_clear,
+                    after={'budget_line_id': None, 'account_code': None,
+                           'account_code_name': None},
+                    note='Cleared coding')
+            except Exception: pass
             return jsonify({"ok": True, "cleared": True})
         except Exception as e:
             logging.exception(f"[actuals] unlink failed: {e}")
@@ -4189,11 +4240,30 @@ def actuals_set_line(pid, tid):
 
     from actuals import link_transaction_to_line
     try:
+        # Snapshot before-state for the activity log.
+        _before = {'budget_line_id': txn.budget_line_id,
+                   'account_code': txn.account_code,
+                   'account_code_name': txn.account_code_name}
         result = link_transaction_to_line(
             tid, line_id, user_id=current_user.id
         )
         # Refresh after commit so UI gets the freshly-set fields.
         db.session.refresh(txn)
+        try:
+            _label = (txn.vendor or txn.note or f'Txn #{txn.id}')[:80]
+            _amt = float(txn.amount or 0)
+            _coa_name = txn.account_code_name or ''
+            _log_activity(
+                action='update', entity_type='transaction',
+                entity_id=txn.id, entity_label=_label,
+                project_id=pid,
+                before=_before,
+                after={'budget_line_id': txn.budget_line_id,
+                       'account_code': txn.account_code,
+                       'account_code_name': _coa_name},
+                dollar_delta=0,
+                note=f'Coded ${_amt:,.2f} → {txn.account_code} {_coa_name}'.strip())
+        except Exception: pass
         return jsonify({
             "ok":            True,
             "cleared":       False,
@@ -4220,6 +4290,9 @@ def actuals_mark_not_project(pid, tid):
     Actuals rollup but keeps it on the row (greyed) for audit. Like
     the old FPBudgetSync /confirm-suggestion 'Not Project' path."""
     txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    _before_npe = {'not_project_expense': bool(txn.not_project_expense),
+                   'account_code': txn.account_code,
+                   'budget_line_id': txn.budget_line_id}
     txn.not_project_expense = True
     txn.budget_line_id      = None
     txn.account_code        = None
@@ -4227,6 +4300,18 @@ def actuals_mark_not_project(pid, tid):
     txn.match_status        = 'unmatched'
     txn.updated_at          = datetime.utcnow()
     db.session.commit()
+    try:
+        _amt = float(txn.amount or 0)
+        _log_activity(
+            action='update', entity_type='transaction',
+            entity_id=txn.id,
+            entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
+            project_id=pid,
+            before=_before_npe,
+            after={'not_project_expense': True, 'account_code': None,
+                   'budget_line_id': None},
+            note=f'Marked ${_amt:,.2f} as not a project expense')
+    except Exception: pass
     return jsonify({"ok": True, "transaction_id": tid})
 
 
@@ -4242,6 +4327,9 @@ def actuals_set_coa(pid, tid):
     data = request.get_json(force=True) or {}
     code_raw = data.get("account_code")
     name_raw = (data.get("account_code_name") or "").strip()
+    _coa_before = {'account_code': txn.account_code,
+                   'account_code_name': txn.account_code_name,
+                   'not_project_expense': bool(txn.not_project_expense)}
 
     if code_raw == "not_project":
         txn.not_project_expense = True
@@ -4269,14 +4357,45 @@ def actuals_set_coa(pid, tid):
         # Drag-drop sets the COA section but no specific line. budget_
         # line_id stays NULL — the user picks a sub-line via the
         # dropdown, which triggers Working→Actual auto-clone.
+        # Auto-add a placeholder line under this section if none exists
+        # (per user 2026-05-01: a section coded from Actuals should
+        # appear on the Budget view, not vanish silently).
+        try:
+            from actuals import ensure_section_in_working_budget
+            _ensure_result = ensure_section_in_working_budget(
+                pid, code, name_raw)
+        except Exception as _ee:
+            logging.warning(f"[actuals/set-coa] ensure-section failed: {_ee}")
+            _ensure_result = {'created': False, 'working_was_just_created': False}
     txn.updated_at = datetime.utcnow()
     db.session.commit()
+    try:
+        _amt = float(txn.amount or 0)
+        if txn.not_project_expense:
+            _note = f'Marked ${_amt:,.2f} as not a project expense'
+        elif txn.account_code:
+            _note = f'Set section: ${_amt:,.2f} → {txn.account_code} {txn.account_code_name or ""}'.strip()
+        else:
+            _note = 'Cleared section coding'
+        _log_activity(
+            action='update', entity_type='transaction',
+            entity_id=txn.id,
+            entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
+            project_id=pid,
+            before=_coa_before,
+            after={'account_code': txn.account_code,
+                   'account_code_name': txn.account_code_name,
+                   'not_project_expense': bool(txn.not_project_expense)},
+            note=_note)
+    except Exception: pass
     return jsonify({
         "ok":              True,
         "transaction_id":  tid,
         "account_code":    txn.account_code,
         "account_code_name": txn.account_code_name,
         "not_project_expense": txn.not_project_expense,
+        "budget_line_auto_created":     bool(locals().get('_ensure_result', {}).get('created')),
+        "working_was_just_created":     bool(locals().get('_ensure_result', {}).get('working_was_just_created')),
     })
 
 
@@ -4289,6 +4408,10 @@ def actuals_edit_transaction(pid, tid):
     (when one exists) so the two views stay in lockstep."""
     txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
     data = request.get_json(force=True) or {}
+    _edit_before = {'vendor': txn.vendor,
+                    'amount': float(txn.amount) if txn.amount is not None else None,
+                    'txn_date': txn.txn_date,
+                    'note': txn.note}
 
     if "vendor" in data:
         v = (data.get("vendor") or "").strip()
@@ -4334,6 +4457,23 @@ def actuals_edit_transaction(pid, tid):
                     pass
 
     db.session.commit()
+    try:
+        _edit_after = {'vendor': txn.vendor,
+                       'amount': float(txn.amount) if txn.amount is not None else None,
+                       'txn_date': txn.txn_date,
+                       'note': txn.note}
+        _amt_b = _edit_before.get('amount') or 0
+        _amt_a = _edit_after.get('amount') or 0
+        _delta = float(_amt_a) - float(_amt_b)
+        _log_activity(
+            action='update', entity_type='transaction',
+            entity_id=txn.id,
+            entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
+            project_id=pid,
+            before=_edit_before, after=_edit_after,
+            dollar_delta=_delta,
+            note='Edited transaction details')
+    except Exception: pass
     return jsonify({
         "ok":     True,
         "vendor": txn.vendor,
@@ -4351,10 +4491,21 @@ def actuals_run_auto_match(pid):
     date, and vendor align. Writes match_status='suggested' — never
     silently 'confirmed'. User reviews via per-row Confirm/Override
     buttons."""
-    ProjectSheet.query.get_or_404(pid)
+    project = ProjectSheet.query.get_or_404(pid)
     from actuals import run_auto_match
     try:
         result = run_auto_match(pid)
+        try:
+            _suggested = int(result.get('suggested') or 0)
+            _scanned   = int(result.get('scanned') or 0)
+            _log_activity(
+                action='update', entity_type='qbo_sync',
+                entity_id=pid, entity_label=project.name or f'Project #{pid}',
+                project_id=pid,
+                after={'suggested': _suggested, 'scanned': _scanned},
+                note=f'Auto-match: {_suggested} suggestion{"s" if _suggested != 1 else ""} '
+                     f'across {_scanned} unmatched txn{"s" if _scanned != 1 else ""}')
+        except Exception: pass
         return jsonify({"ok": True, **result})
     except Exception as e:
         logging.exception(f"[actuals] auto-match failed: {e}")
@@ -4365,10 +4516,21 @@ def actuals_run_auto_match(pid):
 @login_required
 def actuals_confirm_match(pid, tid):
     """User accepts the auto-matcher's suggestion for this txn."""
-    Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
     from actuals import confirm_match
     try:
         result = confirm_match(tid)
+        try:
+            _label = (txn.vendor or f'Txn #{txn.id}')[:80]
+            _amt = float(txn.amount or 0)
+            _log_activity(
+                action='update', entity_type='transaction_match',
+                entity_id=txn.id, entity_label=_label,
+                project_id=pid,
+                after={'match_status': 'confirmed',
+                       'doc_upload_id': txn.doc_upload_id},
+                note=f'Confirmed match: {_label} ${_amt:,.2f}')
+        except Exception: pass
         return jsonify({"ok": True, **result})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -4381,10 +4543,19 @@ def actuals_confirm_match(pid, tid):
 @login_required
 def actuals_dismiss_suggestion(pid, tid):
     """User rejects the auto-matcher's suggestion."""
-    Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
     from actuals import dismiss_suggestion
     try:
         result = dismiss_suggestion(tid)
+        try:
+            _label = (txn.vendor or f'Txn #{txn.id}')[:80]
+            _log_activity(
+                action='update', entity_type='transaction_match',
+                entity_id=txn.id, entity_label=_label,
+                project_id=pid,
+                after={'match_status': 'unmatched'},
+                note=f'Dismissed suggested match for {_label}')
+        except Exception: pass
         return jsonify({"ok": True, **result})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -4427,6 +4598,91 @@ def actuals_docs_list_for_picker(pid):
     return jsonify({"ok": True, "docs": out})
 
 
+@app.route("/projects/<int:pid>/actuals/reconcile.json", methods=["GET"])
+@login_required
+def actuals_reconcile_data(pid):
+    """Return the two columns for the Reconcile sub-tab:
+
+      - transactions: ledger rows that need a receipt (no doc_upload_id,
+        not flagged as not-a-project-expense, not already confirmed).
+      - receipts: DocUploads not yet linked to ANY Transaction. We compute
+        link state by joining txn.doc_upload_id back to doc_upload.id.
+        A receipt that's already linked to one txn but could legitimately
+        back another (Lyft week rollup) shows in the standard Match view's
+        'Link existing receipt' picker — Reconcile is strictly the
+        zero-link cohort, since that's where the user gets the most
+        leverage.
+    """
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+
+    # Unmatched transactions: project-scoped, no linked doc, not flagged
+    # as not-project, and not in 'confirmed' state. Order by date desc
+    # so the newest ones surface first.
+    txn_rows = (Transaction.query
+                .filter(Transaction.project_id == pid,
+                        Transaction.doc_upload_id.is_(None),
+                        Transaction.not_project_expense == False,
+                        Transaction.is_expense == True,
+                        Transaction.match_status != 'confirmed')
+                .order_by(Transaction.txn_date.desc().nullslast(),
+                          Transaction.id.desc())
+                .all())
+    transactions = [{
+        "id":         t.id,
+        "vendor":     t.vendor or '',
+        "amount":     float(t.amount) if t.amount is not None else None,
+        "txn_date":   t.txn_date,
+        "note":       t.note or '',
+        "account_code":      t.account_code,
+        "account_code_name": t.account_code_name or '',
+        "source":     t.source or 'manual',
+    } for t in txn_rows]
+
+    # Unlinked receipts: DocUploads on this project that no Transaction
+    # currently references. SELECT … WHERE id NOT IN (SELECT doc_upload_id
+    # FROM transaction WHERE doc_upload_id IS NOT NULL).
+    from sqlalchemy.orm import defer as _defer_r
+    linked_doc_ids = {row[0] for row in
+                      db.session.query(Transaction.doc_upload_id)
+                      .filter(Transaction.project_id == pid,
+                              Transaction.doc_upload_id.isnot(None))
+                      .all()}
+    doc_rows = (DocUpload.query
+                .filter(DocUpload.project_id == pid,
+                        DocUpload.status != 'error')
+                .options(_defer_r(DocUpload.veryfi_data))
+                .order_by(DocUpload.doc_date.desc().nullslast(),
+                          DocUpload.uploaded_at.desc())
+                .all())
+    receipts = []
+    for d in doc_rows:
+        if d.id in linked_doc_ids:
+            continue
+        # Hide pure non-ledger doc types (tax forms, contracts, etc.)
+        # from this view — they don't pair with transactions by design.
+        if (d.category or '') in ('tax_form', 'contract', 'release',
+                                  'legal', 'insurance', 'misc'):
+            continue
+        receipts.append({
+            "id":              d.id,
+            "vendor":          d.vendor or '',
+            "amount":          float(d.amount) if d.amount is not None else None,
+            "doc_date":        d.doc_date.isoformat() if d.doc_date else None,
+            "category":        d.category or '',
+            "veryfi_category": d.veryfi_category or '',
+            "filename":        d.filed_filename or d.original_filename or f'Upload #{d.id}',
+        })
+
+    return jsonify({
+        "ok":            True,
+        "transactions": transactions,
+        "receipts":     receipts,
+        "txn_count":    len(transactions),
+        "doc_count":    len(receipts),
+    })
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/link-doc", methods=["POST"])
 @login_required
 def actuals_link_existing_doc(pid, tid):
@@ -4463,6 +4719,17 @@ def actuals_link_existing_doc(pid, tid):
     txn.match_status = 'confirmed'
     txn.updated_at   = datetime.utcnow()
     db.session.commit()
+    try:
+        _label = (txn.vendor or f'Txn #{txn.id}')[:80]
+        _amt = float(txn.amount or 0)
+        _doc_label = doc.filed_filename or doc.original_filename or f'Doc #{doc.id}'
+        _log_activity(
+            action='update', entity_type='transaction_match',
+            entity_id=txn.id, entity_label=_label,
+            project_id=pid,
+            after={'doc_upload_id': doc.id, 'match_status': 'confirmed'},
+            note=f'Linked existing receipt "{_doc_label}" → ${_amt:,.2f} {_label}')
+    except Exception: pass
     return jsonify({
         "ok":              True,
         "transaction_id":  txn.id,
@@ -4593,6 +4860,7 @@ def actuals_upload_receipt_to_transaction(pid, tid):
         doc_number          = doc_number,
         confidence          = round(float(result.get("confidence") or 0) * 100, 2),
         category            = result.get("doc_type"),
+        veryfi_category     = (vr.get("category") if vr else None),
         filed_filename      = result.get("new_filename") or None,
         filed_dropbox_path  = result.get("filed_path") or result.get("staged_path"),
         filed_at            = datetime.utcnow() if result.get("filed_path") else None,
@@ -4686,8 +4954,18 @@ def actuals_qbo_accounts_save(pid):
     # Cast each to string — QBO ids are strings like "42".
     cleaned = [str(x) for x in ids if x not in (None, "", "0", 0)]
     import json as _json
+    _accts_before = project.qbo_account_ids or '[]'
     project.qbo_account_ids = _json.dumps(cleaned)
     db.session.commit()
+    try:
+        _log_activity(
+            action='update', entity_type='qbo_accounts',
+            entity_id=pid, entity_label=project.name or f'Project #{pid}',
+            project_id=pid,
+            before={'qbo_account_ids': _accts_before},
+            after={'qbo_account_ids': project.qbo_account_ids},
+            note=f'Updated QBO account selection ({len(cleaned)} account{"s" if len(cleaned) != 1 else ""})')
+    except Exception: pass
     return jsonify({"ok": True, "count": len(cleaned)})
 
 
@@ -4731,6 +5009,23 @@ def actuals_sync_now(pid):
     try:
         result = sync_project(project, conn, db,
                               start_date=start_date, end_date=end_date)
+        try:
+            _added   = int(result.get('added')   or result.get('inserted')   or 0)
+            _updated = int(result.get('updated') or 0)
+            _skipped = int(result.get('skipped') or 0)
+            _claimed = int(result.get('already_claimed') or 0)
+            _range   = ''
+            if start_date or end_date:
+                _range = f' ({start_date or "…"} → {end_date or "…"})'
+            _log_activity(
+                action='update', entity_type='qbo_sync',
+                entity_id=pid, entity_label=project.name or f'Project #{pid}',
+                project_id=pid,
+                after={'added': _added, 'updated': _updated,
+                       'skipped': _skipped, 'already_claimed': _claimed},
+                note=f'QBO sync{_range}: +{_added} new, {_updated} updated, '
+                     f'{_skipped} skipped, {_claimed} cross-project')
+        except Exception: pass
         return jsonify({"ok": True, **result})
     except Exception as e:
         logging.exception(f"[actuals] sync_now failed: {e}")
@@ -8260,19 +8555,49 @@ def line_schedule_detail(pid, bid, lid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/activity")
 @login_required
 def activity_feed(pid, bid):
-    """Return the activity feed for this budget, scoped to the user's role.
+    """Return the activity feed for this budget AND its sibling
+    project-scoped events (docs, actuals, qbo). Scoped to the user's role.
     Query params:
       - filter: 'all' (default) | 'mine' | 'today' | 'week'
+      - entity: 'all' (default) | 'budget' | 'docs' | 'actuals' | 'qbo'
       - limit:  max rows (default 200)
     """
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     _require_project_role(pid, 'viewer')
     import json as _json_a
     from datetime import timedelta as _td
-    flt   = (request.args.get('filter') or 'all').lower()
-    limit = min(int(request.args.get('limit', 200) or 200), 1000)
+    from sqlalchemy import or_ as _or_act_feed, and_ as _and_act_feed
+    flt    = (request.args.get('filter') or 'all').lower()
+    entity = (request.args.get('entity') or 'all').lower()
+    limit  = min(int(request.args.get('limit', 200) or 200), 1000)
 
-    q = _scoped_activity_query(budget_id=bid)
+    # Project-scoped events (docs, transactions, qbo) carry project_id
+    # but no budget_id. Surface them alongside this budget's rows so the
+    # Activity tab is a complete project history, not just budget edits.
+    q = _scoped_activity_query()
+    q = q.filter(_or_act_feed(
+        ActivityLog.budget_id == bid,
+        _and_act_feed(ActivityLog.project_id == pid,
+                      ActivityLog.budget_id.is_(None)),
+    ))
+    # Entity-type buckets — tag families of entity_type strings together.
+    BUDGET_ENTITIES  = ('budget_line', 'budget_settings', 'budget_mode',
+                        'tax_credit', 'schedule_day', 'schedule_batch',
+                        'production_day', 'travel_flag', 'travel_detail',
+                        'travel_day', 'catering_meal', 'catering_bill',
+                        'project')
+    DOCS_ENTITIES    = ('doc_upload', 'doc_upload_bulk')
+    ACTUALS_ENTITIES = ('transaction', 'transaction_match')
+    QBO_ENTITIES     = ('qbo_sync', 'qbo_accounts')
+    if entity == 'budget':
+        q = q.filter(ActivityLog.entity_type.in_(BUDGET_ENTITIES))
+    elif entity == 'docs':
+        q = q.filter(ActivityLog.entity_type.in_(DOCS_ENTITIES))
+    elif entity == 'actuals':
+        q = q.filter(ActivityLog.entity_type.in_(ACTUALS_ENTITIES))
+    elif entity == 'qbo':
+        q = q.filter(ActivityLog.entity_type.in_(QBO_ENTITIES))
+
     if flt == 'mine':
         q = q.filter(ActivityLog.user_id == current_user.id)
     elif flt == 'today':
@@ -8318,8 +8643,9 @@ def activity_feed(pid, bid):
             "can_undo":     (r.undone_at is None and r.action in ('create', 'update', 'delete')
                              and r.entity_type == 'budget_line'),
             "field_changes": fc,
+            "note":         r.note or None,
         })
-    return jsonify({"items": out, "count": len(out), "filter": flt})
+    return jsonify({"items": out, "count": len(out), "filter": flt, "entity": entity})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/activity/<int:aid>/undo", methods=["POST"])
@@ -13055,6 +13381,14 @@ def _web_worker_essential_columns():
                 "  ON doc_upload (crew_member_id)",
                 "CREATE INDEX IF NOT EXISTS ix_doc_upload_location "
                 "  ON doc_upload (location_id)",
+                # 2026-05-01 Veryfi expense category (free-text, e.g.
+                # "Meals & Entertainment", "Office Supplies & Software").
+                # Denormalized off veryfi_data so the Docs tab can render
+                # it on every row without loading the full OCR JSON
+                # (which we now defer for memory). Populated at upload
+                # time; existing rows stay NULL until next OCR.
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS veryfi_category VARCHAR(100)",
                 # ── 2026-04-30: Actuals integration (Phase 1 schema) ────
                 # Three-legged stool linkage on transaction:
                 #   BudgetLine ← Transaction → DocUpload
@@ -13493,6 +13827,7 @@ def docs_upload_post(pid):
         # confidence column is 0-100; Analyzer returns 0-1
         confidence=round(float(result.get("confidence") or 0) * 100, 2),
         category=result.get("doc_type"),
+        veryfi_category=(vr.get("category") if vr else None),
         filed_filename=result.get("new_filename") or None,
         # For status='done': filed_path is the final processed location.
         # For status='review': fall back to staged_path so /docs/upload/

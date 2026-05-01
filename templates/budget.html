@@ -1004,12 +1004,18 @@
           <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_fringe * _sec_fee_m) | currency if ns.sec_fringe else '' }}</td>
           <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_subtotal * _sec_fee_m) | currency if ns.sec_subtotal else '' }}</td>
           <td class="col-num muted"></td>
-          {# Section ACTUAL total = sum of actual_by_line_id for every
-             line in this section. Computed inline; cheap. #}
+          {# Section ACTUAL total = (a) sum of actual_by_line_id for
+             every line in this section that has matching transactions
+             linked to a specific Actual line PLUS (b) the project-
+             scoped pool of section-only-coded transactions (drag-dropped
+             onto the COA header without picking a sub-line). The
+             section-only pool is keyed by account_code, so we look it
+             up once per section. #}
           {% set _sec_actual_ns = namespace(total=0) %}
           {% for _ln in sec.lines %}
             {% set _sec_actual_ns.total = _sec_actual_ns.total + (actual_by_line_id.get(_ln.id, 0) or 0) | float %}
           {% endfor %}
+          {% set _sec_actual_ns.total = _sec_actual_ns.total + (actual_section_only_by_code.get(sec.code, 0) or 0) | float %}
           {% set _sec_actual = _sec_actual_ns.total %}
           {% if is_working_view %}
           <td class="col-num sec-est-total" style="font-size:.8rem">
@@ -1017,7 +1023,7 @@
           </td>
           <td class="col-num col-working sec-working-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-actual sec-actual-total" style="font-size:.8rem">
-            {% if has_actual_budget and _sec_actual > 0 %}<strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>{% endif %}
+            {% if _sec_actual > 0 %}<strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>{% endif %}
           </td>
           {# Variance: if Actual exists, Working − Actual; else Working − Estimated. #}
           {% if has_actual_budget %}
@@ -1032,7 +1038,7 @@
           <td class="col-num sec-est-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-size:.8rem"><strong>{{ sec_working.total | currency }}</strong></td>
           <td class="col-num col-actual" style="font-size:.8rem">
-            {% if has_actual_budget and _sec_actual > 0 %}<strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>{% endif %}
+            {% if _sec_actual > 0 %}<strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>{% endif %}
           </td>
           <td class="col-num col-variance"></td>
           {% endif %}
@@ -1047,7 +1053,7 @@
           <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem"><strong data-base="{{ sec_working.total }}">{{ (sec_working.total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-working sec-grand-working" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-actual sec-grand-actual" style="font-weight:700;font-size:.92rem">
-            {% if has_actual_budget and _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
+            {% if _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
           </td>
           <td class="col-num col-variance sec-grand-variance" style="font-weight:700;font-size:.88rem">
             {% if has_actual_budget %}
@@ -1061,7 +1067,7 @@
           <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-weight:700;font-size:.95rem"><strong>{{ sec_working.total | currency }}</strong></td>
           <td class="col-num col-actual" style="font-weight:700;font-size:.92rem">
-            {% if has_actual_budget and _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
+            {% if _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
           </td>
           <td class="col-num col-variance"></td>
           {% endif %}
@@ -1436,13 +1442,18 @@
       <select id="docs-sort-by"
               style="font-size:11px;padding:3px 6px;border-radius:4px;
                      background:var(--bg-card);border:1px solid var(--border);color:var(--text);">
+        {# Primary fields (what the row actually shows as columns) — listed first. #}
+        <option value="vendor">Vendor</option>
+        <option value="doc-date" selected>Date</option>
+        <option value="amount">Amount</option>
+        <option value="suggested">Suggested account</option>
+        <option disabled>──────────</option>
+        {# Secondary metadata. #}
         <option value="date">Upload date</option>
         <option value="uploader">Uploader</option>
+        <option value="type">Doc type</option>
         <option value="filename">Filename</option>
         <option value="original">Original filename</option>
-        <option value="type">Doc type</option>
-        <option value="vendor">Vendor</option>
-        <option value="amount">Amount</option>
         <option value="size">File size</option>
         <option value="status">Status</option>
       </select>
@@ -1464,6 +1475,22 @@
       <button type="button" onclick="docsBulkDelete()" class="btn btn-xs"
               style="padding:4px 12px;background:#2a1414;color:#ef4444;border:1px solid #4a2020;border-radius:5px;cursor:pointer">🗑 Delete selected</button>
       <button type="button" onclick="docsBulkClear()" class="btn btn-xs btn-ghost" style="margin-left:auto">Clear selection</button>
+    </div>
+    {% endif %}
+    {# Column-header strip — mirrors the grid below so eye can scan
+       Vendor / Date / Amount / Suggested vertically across rows. The
+       leading 60px gap matches the checkbox + icon block. #}
+    {% if doc_uploads %}
+    <div style="padding:6px 14px 6px 60px;display:grid;
+                grid-template-columns: minmax(0,1.4fr) 110px 90px minmax(0,1fr);
+                align-items:center;gap:14px;
+                font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;
+                color:var(--text-muted);border-bottom:1px solid var(--border);
+                margin-bottom:6px;">
+      <div>Vendor</div>
+      <div>Date</div>
+      <div style="text-align:right">Amount</div>
+      <div>Suggested account</div>
     </div>
     {% endif %}
     <div id="docsHistory" style="display:flex;flex-direction:column;gap:8px;">
@@ -1508,6 +1535,8 @@
              data-sort-type="{{ (u.category or '')|lower }}"
              data-sort-vendor="{{ (u.vendor or '')|lower }}"
              data-sort-amount="{{ u.amount|float if u.amount else 0 }}"
+             data-sort-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
+             data-sort-suggested="{{ (u.veryfi_category or '')|lower }}"
              data-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
              data-doc-num="{{ u.doc_number or '' }}"
              data-crew-member-id="{{ u.crew_member_id or '' }}"
@@ -1524,43 +1553,74 @@
                  onclick="event.stopPropagation()"
                  style="margin-top:6px;cursor:pointer;width:16px;height:16px;flex-shrink:0">
           <div style="font-size:20px;width:32px;text-align:center;padding-top:2px;">{% if u.content_type and 'pdf' in u.content_type %}📄{% else %}🧾{% endif %}</div>
-          <div style="flex:1;min-width:0;">
-            <div style="font-size:13px;font-weight:500;">
-              <span class="doc-filename {% if _can_rename %}editable-filename{% endif %}"
-                    data-id="{{ u.id }}"
-                    data-original="{{ _display_name }}"
-                    {% if _can_rename %}title="Click to rename — Dropbox will update too"
-                       style="cursor:pointer;border-bottom:1px dashed transparent;padding:1px 2px;border-radius:2px;"
-                    {% endif %}>{{ _display_name }}</span>
-              {% if _can_rename %}<span class="rename-hint" style="font-size:10px;color:#6b7280;margin-left:4px;opacity:0;">✎</span>{% endif %}
-            </div>
-            {# Always show the original filename as a subtitle when the
-               displayed name differs — uniform across filed / review /
-               error / duplicate so the user can always see what they
-               originally uploaded vs. what the Analyzer named it. #}
-            {% if _show_orig %}
-            <div style="font-size:11px;color:#6b7280;font-style:italic;margin-top:1px;" title="Original filename as uploaded">
-              📎 uploaded as: {{ _orig_name }}
-            </div>
-            {% endif %}
-            <div style="font-size:11px;color:var(--text-muted);margin-top:3px;">
-              {% if u.uploader %}
-                👤 <span title="{{ u.uploader.email }}">{{ _uploader_label }}</span>
+          <div style="flex:1;min-width:0;display:grid;
+                      grid-template-columns: minmax(0,1.4fr) 110px 90px minmax(0,1fr);
+                      align-items:center;gap:14px;">
+            {# Column 1: VENDOR (primary). Falls back to filename when OCR
+               didn't extract a vendor — keeps the row identifiable. #}
+            <div style="min-width:0;">
+              <div style="font-size:14px;font-weight:600;color:var(--text);
+                          white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                {% if u.vendor %}🏢 {{ u.vendor }}
+                {% else %}<span style="color:var(--text-muted);font-style:italic">No vendor</span>{% endif %}
+              </div>
+              {# Filename is now demoted to a subtitle. Still editable. #}
+              <div style="font-size:10.5px;color:#6b7280;margin-top:2px;
+                          white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+                   title="{{ _display_name }}">
+                <span class="doc-filename {% if _can_rename %}editable-filename{% endif %}"
+                      data-id="{{ u.id }}"
+                      data-original="{{ _display_name }}"
+                      {% if _can_rename %}title="Click to rename — Dropbox will update too"
+                         style="cursor:pointer;border-bottom:1px dashed transparent;padding:1px 2px;border-radius:2px;"
+                      {% endif %}>📎 {{ _display_name }}</span>
+              </div>
+              {% if _show_orig %}
+              <div style="font-size:10px;color:#6b7280;font-style:italic;margin-top:1px;
+                          white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+                   title="Original filename as uploaded: {{ _orig_name }}">
+                ↳ uploaded as: {{ _orig_name }}
+              </div>
               {% endif %}
-              {% if u.uploaded_at %}
-                · 📅 {{ u.uploaded_at.strftime('%b %-d, %Y · %-I:%M %p') }}
-              {% endif %}
-              {% if u.category %}
-                · 🏷 <strong>{{ u.category }}</strong>
+              <div style="font-size:10.5px;color:var(--text-muted);margin-top:2px;">
+                {% if u.uploader %}<span title="{{ u.uploader.email }}">{{ _uploader_label }}</span>{% endif %}
+                {% if u.uploader and u.uploaded_at %} · {% endif %}
+                {% if u.uploaded_at %}{{ u.uploaded_at.strftime('%b %-d, %Y') }}{% endif %}
+                {% if u.category %} · 🏷 {{ u.category }}{% endif %}
+              </div>
+            </div>
+            {# Column 2: DATE (doc date — when the receipt was issued, NOT
+               upload date). #}
+            <div style="text-align:left;font-size:13px;font-variant-numeric:tabular-nums;">
+              {% if u.doc_date %}
+                <div style="color:var(--text);font-weight:500">{{ u.doc_date.strftime('%b %-d') }}</div>
+                <div style="color:var(--text-muted);font-size:11px">{{ u.doc_date.strftime('%Y') }}</div>
+              {% else %}
+                <span style="color:var(--text-muted);font-style:italic;font-size:11px">—</span>
               {% endif %}
             </div>
-            {% if u.vendor or u.amount or u.doc_date %}
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
-              {% if u.vendor %}🏢 {{ u.vendor }}{% endif %}
-              {% if u.amount %}{% if u.vendor %} · {% endif %}💵 ${{ '%.2f'|format(u.amount|float) }}{% endif %}
-              {% if u.doc_date %}{% if u.vendor or u.amount %} · {% endif %}🗓 {{ u.doc_date.strftime('%b %-d, %Y') }}{% endif %}
+            {# Column 3: AMOUNT — right-aligned, tabular-nums for column tidiness. #}
+            <div style="text-align:right;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)">
+              {% if u.amount %}${{ '%.2f'|format(u.amount|float) }}
+              {% else %}<span style="color:var(--text-muted);font-style:italic;font-weight:400;font-size:11px">—</span>{% endif %}
             </div>
-            {% endif %}
+            {# Column 4: SUGGESTED ACCOUNT (deemphasized — small pill,
+               muted color). Comes from Veryfi's expense category. NULL
+               on legacy rows uploaded before this column existed. #}
+            <div style="min-width:0;">
+              {% if u.veryfi_category %}
+              <span style="display:inline-block;font-size:10.5px;padding:2px 8px;
+                           border-radius:10px;background:rgba(168,85,247,.12);
+                           color:#c084fc;border:1px solid rgba(168,85,247,.25);
+                           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+                           max-width:100%;"
+                    title="Suggested by OCR — click row to set the actual budget code">
+                💡 {{ u.veryfi_category }}
+              </span>
+              {% else %}
+              <span style="font-size:10.5px;color:var(--text-muted);font-style:italic">—</span>
+              {% endif %}
+            </div>
           </div>
           <span class="doc-status-badge" style="font-size:11px;padding:3px 9px;border-radius:20px;white-space:nowrap;
             {% if u.is_duplicate %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
@@ -2137,15 +2197,27 @@
     const key    = by.value;
     const desc   = dir.dataset.dir === 'desc';
     const NUMERIC = new Set(['amount', 'size']);
+    // ISO-string keys: lexicographic sort gives correct chronological order.
+    const ISO_DATE = new Set(['date', 'doc-date']);
     const list   = document.getElementById('docsHistory');
     if (!list) return;
 
+    // Convert kebab-case sort key to the camelCased dataset property.
+    // 'doc-date'  → 'sortDocDate'   (data-sort-doc-date)
+    // 'vendor'    → 'sortVendor'    (data-sort-vendor)
+    function _datasetKey(k) {
+      const camel = k.split('-').map((p, i) =>
+        i === 0 ? p : p.charAt(0).toUpperCase() + p.slice(1)).join('');
+      return 'sort' + camel.charAt(0).toUpperCase() + camel.slice(1);
+    }
+
     function _cmp(a, b) {
-      const av = a.dataset['sort' + key.charAt(0).toUpperCase() + key.slice(1)] || '';
-      const bv = b.dataset['sort' + key.charAt(0).toUpperCase() + key.slice(1)] || '';
+      const dsKey = _datasetKey(key);
+      const av = a.dataset[dsKey] || '';
+      const bv = b.dataset[dsKey] || '';
       let c;
       if (NUMERIC.has(key))           c = (parseFloat(av) || 0) - (parseFloat(bv) || 0);
-      else if (key === 'date')        c = av < bv ? -1 : av > bv ? 1 : 0;
+      else if (ISO_DATE.has(key))     c = av < bv ? -1 : av > bv ? 1 : 0;
       else                            c = av.localeCompare(bv);
       return desc ? -c : c;
     }
@@ -2216,15 +2288,17 @@
     // Labels shown on the direction toggle per column (makes intent clear —
     // "Newest first" is way more scannable than "↓ desc" for date).
     const DIR_LABELS = {
-      date:     { desc: '↓ Newest first',  asc: '↑ Oldest first' },
-      uploader: { desc: '↓ Z → A',          asc: '↑ A → Z' },
-      filename: { desc: '↓ Z → A',          asc: '↑ A → Z' },
-      original: { desc: '↓ Z → A',          asc: '↑ A → Z' },
-      type:     { desc: '↓ Z → A',          asc: '↑ A → Z' },
-      vendor:   { desc: '↓ Z → A',          asc: '↑ A → Z' },
-      amount:   { desc: '↓ Largest first', asc: '↑ Smallest first' },
-      size:     { desc: '↓ Largest first', asc: '↑ Smallest first' },
-      status:   { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      vendor:     { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      'doc-date': { desc: '↓ Newest first',  asc: '↑ Oldest first' },
+      amount:     { desc: '↓ Largest first', asc: '↑ Smallest first' },
+      suggested:  { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      date:       { desc: '↓ Newest first',  asc: '↑ Oldest first' },
+      uploader:   { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      filename:   { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      original:   { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      type:       { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      size:       { desc: '↓ Largest first', asc: '↑ Smallest first' },
+      status:     { desc: '↓ Z → A',          asc: '↑ A → Z' },
     };
     function _updateDirLabel() {
       const l = DIR_LABELS[_sortBy.value] || { desc: '↓ Desc', asc: '↑ Asc' };
@@ -3092,9 +3166,13 @@
      budget_line_id (coded), doc_upload_id (backed by paperwork),
      match_status='confirmed'. Excludes not_project_expense since
      those are out of scope. #}
+  {# Coding can be either line-level (budget_line_id) OR section-only
+     (account_code with no specific line picked) — same parity the
+     row's data-coded uses + the Finished filter in JS. Without the
+     OR, the Finished card under-counted every section-only-coded row. #}
   {% set _t_finished = [] %}
   {% for _t in actuals_transactions %}
-    {% if _t.budget_line_id and _t.doc_upload_id and _t.match_status == 'confirmed' and not _t.not_project_expense %}
+    {% if (_t.budget_line_id or _t.account_code) and _t.doc_upload_id and _t.match_status == 'confirmed' and not _t.not_project_expense %}
       {% set _ = _t_finished.append(_t) %}
     {% endif %}
   {% endfor %}
@@ -3145,6 +3223,13 @@
             class="actuals-subtab"
             style="padding:8px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);cursor:pointer;font-size:.88rem">
       By Department
+    </button>
+    <button type="button" id="actuals-subtab-reconcile"
+            onclick="showActualsPane('reconcile')"
+            class="actuals-subtab"
+            title="Side-by-side: unmatched transactions ↔ unlinked receipts. Drag to pair."
+            style="padding:8px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);cursor:pointer;font-size:.88rem">
+      🔀 Reconcile
     </button>
   </div>
 
@@ -3281,8 +3366,11 @@
             {% if _lines %}
             <div class="coa-lines" style="display:none;margin:3px 0 4px 12px;padding-left:4px;border-left:1px dashed var(--border)">
               {% for ln in _lines %}
-              <div class="coa-line" data-droptarget="line" data-line-id="{{ ln.id }}"
-                   style="padding:4px 8px;margin-bottom:2px;border-radius:4px;border:1px solid transparent;background:var(--bg-card);font-size:.72rem;color:var(--text-muted);display:flex;justify-content:space-between;gap:6px;cursor:default">
+              <div class="coa-line" draggable="true" data-droptarget="line" data-line-id="{{ ln.id }}"
+                   data-code="{{ ln.account_code }}" data-name="{{ ln.account_name or ln.description or '' }}"
+                   data-line-desc="{{ ln.description or ln.account_name or 'untitled' }}"
+                   title="Drag onto a transaction to link to this specific budget line"
+                   style="padding:4px 8px;margin-bottom:2px;border-radius:4px;border:1px solid transparent;background:var(--bg-card);font-size:.72rem;color:var(--text-muted);display:flex;justify-content:space-between;gap:6px;cursor:grab">
                 <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ ln.description or ln.account_name or 'untitled' }}</span>
                 {% if ln.estimated_total %}
                 <span style="flex-shrink:0;font-size:.66rem;color:var(--text-muted)">${{ '%.0f'|format(ln.estimated_total|float) }}</span>
@@ -3410,7 +3498,7 @@
                     style="flex-shrink:0;font-size:.66rem;padding:2px 7px;
                            background:#1a2540;border:1px solid #2d4070;
                            border-radius:4px;color:#5b8af9;cursor:pointer">
-              📤 Upload receipt
+              📎 Add Receipt
             </button>
             {% if t.source == 'qbo_sync' %}
             <span style="flex-shrink:0;font-size:.6rem;color:#e08080;font-style:italic">no receipt</span>
@@ -3553,6 +3641,68 @@
     {% endif %}
   </div>
 
+  {# ════════════════════════════════════════════════════════════
+     RECONCILE PANE — two columns: unmatched txns ↔ unlinked receipts
+     ════════════════════════════════════════════════════════════ #}
+  <div id="actuals-pane-reconcile" class="actuals-pane" style="display:none">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap">
+      <div style="font-size:.8rem;color:var(--text-muted)">
+        Drag a receipt onto a transaction to pair them. One receipt can be dropped on multiple transactions
+        (think Lyft week rollups). Smart matches — same amount + within 7 days — glow green.
+      </div>
+      <button type="button" class="btn btn-xs" id="reconcile-refresh"
+              style="margin-left:auto;font-size:.72rem;padding:3px 9px"
+              title="Re-pull both columns from the server">↻ Refresh</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+      <input type="text" id="reconcile-txn-search" placeholder="Search transactions…"
+             style="flex:1;min-width:160px;font-size:.78rem;padding:5px 9px;
+                    background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px">
+      <input type="text" id="reconcile-doc-search" placeholder="Search receipts…"
+             style="flex:1;min-width:160px;font-size:.78rem;padding:5px 9px;
+                    background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px">
+      <label style="font-size:.72rem;color:var(--text-muted);display:inline-flex;align-items:center;gap:5px">
+        <input type="checkbox" id="reconcile-suggest-only" style="cursor:pointer">
+        Show suggested matches only
+      </label>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+      {# LEFT: unmatched transactions #}
+      <div>
+        <div style="display:flex;align-items:baseline;gap:8px;padding:6px 10px;
+                    background:var(--bg-card);border:1px solid var(--border);
+                    border-bottom:none;border-radius:8px 8px 0 0;
+                    font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">
+          <span>Unmatched Transactions</span>
+          <span id="reconcile-txn-count" style="font-weight:600;color:var(--text)">0</span>
+        </div>
+        <div id="reconcile-txn-col"
+             style="background:var(--bg-card);border:1px solid var(--border);border-top:none;
+                    border-radius:0 0 8px 8px;min-height:300px;max-height:70vh;overflow-y:auto;
+                    padding:8px;display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+      {# RIGHT: unlinked receipts #}
+      <div>
+        <div style="display:flex;align-items:baseline;gap:8px;padding:6px 10px;
+                    background:var(--bg-card);border:1px solid var(--border);
+                    border-bottom:none;border-radius:8px 8px 0 0;
+                    font-size:.74rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">
+          <span>Unlinked Receipts</span>
+          <span id="reconcile-doc-count" style="font-weight:600;color:var(--text)">0</span>
+        </div>
+        <div id="reconcile-doc-col"
+             style="background:var(--bg-card);border:1px solid var(--border);border-top:none;
+                    border-radius:0 0 8px 8px;min-height:300px;max-height:70vh;overflow-y:auto;
+                    padding:8px;display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+    </div>
+    <div id="reconcile-empty"
+         style="display:none;text-align:center;color:var(--text-muted);padding:1rem;
+                font-style:italic;font-size:.85rem;margin-top:14px">
+      Nothing to reconcile — every transaction has a receipt and every receipt is linked.
+    </div>
+  </div>
+
   {# ── Edit Transaction modal ── #}
   <div id="editTxnOverlay" onclick="if(event.target===this)actualsCloseEditTxn()"
        style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;width:100vw;height:100vh;
@@ -3674,8 +3824,14 @@
     };
 
     window.showActualsPane = function (which) {
-      document.getElementById('actuals-pane-match').style.display  = which === 'match'  ? '' : 'none';
-      document.getElementById('actuals-pane-bydept').style.display = which === 'bydept' ? '' : 'none';
+      document.getElementById('actuals-pane-match').style.display    = which === 'match'    ? '' : 'none';
+      document.getElementById('actuals-pane-bydept').style.display   = which === 'bydept'   ? '' : 'none';
+      const recPane = document.getElementById('actuals-pane-reconcile');
+      if (recPane) recPane.style.display = which === 'reconcile' ? '' : 'none';
+      // Hide the global filter bar in Reconcile view — it has its own
+      // mini-filters (the COA dropdown / amount tolerance / receipt search).
+      const fbar = document.getElementById('actuals-filter-bar');
+      if (fbar) fbar.style.display = which === 'reconcile' ? 'none' : '';
       // toggle subtab visual state
       document.querySelectorAll('.actuals-subtab').forEach(b => {
         b.style.borderBottomColor = 'transparent';
@@ -3685,6 +3841,10 @@
       if (active) {
         active.style.borderBottomColor = 'var(--blue)';
         active.style.color = 'var(--text)';
+      }
+      // First time entering Reconcile → render the two columns.
+      if (which === 'reconcile' && typeof window._reconcileRender === 'function') {
+        window._reconcileRender();
       }
     };
 
@@ -3717,11 +3877,30 @@
           if (numEl) numEl.textContent = n;
         }
       };
+      // Also recount Finished + Review-OCR since both depend on row state
+      // we just re-read. Without this, coding a section-only row lets the
+      // Finished card drift until full page reload.
+      let finished = 0, ocrReview = 0;
+      rows.forEach(r => {
+        if (r.dataset.notProject === '1') return;
+        if (r.dataset.coded === '1' &&
+            r.dataset.hasDoc === '1' &&
+            r.dataset.matchStatus === 'confirmed') {
+          finished++;
+        }
+        if (r.dataset.source === 'doc_upload') {
+          const amt = parseFloat(r.dataset.amount || '0');
+          const vendor = (r.querySelector('.actuals-txn-vendor')?.textContent || '').trim();
+          if (!vendor || vendor === '— vendor unknown —' || amt === 0) ocrReview++;
+        }
+      });
       setN('all', total);
       setN('coded', coded);
       setN('uncoded', uncoded);
       setN('no_doc', needRcpt);
       setN('doc_only', docOnly);
+      setN('finished', finished);
+      setN('ocr_review', ocrReview);
     }
 
     // Click-to-code: change a budget-line dropdown → POST → refresh row state.
@@ -4007,6 +4186,203 @@
     } else {
       _actualsRecountStats();
     }
+
+    // ── Reconcile sub-tab: side-by-side unmatched txns ↔ receipts ──
+    // Drag a receipt onto a transaction to fire /link-doc and pair them.
+    // Smart-match highlight: when a receipt's amount matches a txn's
+    // amount and the doc_date is within 7 days of the txn_date, both
+    // cards get a subtle green outline.
+    (function reconcileIIFE() {
+      let _recState = { txns: [], docs: [] };
+      const _esc = s => (s||'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+      const _fmt$ = a => (a == null) ? '—' : ('$' + Math.abs(a).toFixed(2) + (a < 0 ? '' : ''));
+      const _fmtDate = iso => {
+        if (!iso) return '—';
+        const d = new Date(iso + 'T12:00:00');
+        return isNaN(d) ? iso : d.toLocaleDateString('en-US', {month:'short',day:'numeric',year:'2-digit'});
+      };
+      // Two cards "match" if amounts equal (within 1 cent) AND dates
+      // are within 7 days (or one date is missing, accept on amount).
+      function _isMatch(t, d) {
+        if (t.amount == null || d.amount == null) return false;
+        if (Math.abs(Math.abs(t.amount) - Math.abs(d.amount)) > 0.01) return false;
+        if (!t.txn_date || !d.doc_date) return true;
+        const dt = (new Date(t.txn_date) - new Date(d.doc_date)) / 86400000;
+        return Math.abs(dt) <= 7;
+      }
+      function _txnSuggests(t) { return _recState.docs.filter(d => _isMatch(t, d)); }
+      function _docSuggests(d) { return _recState.txns.filter(t => _isMatch(t, d)); }
+
+      function _renderTxn(t) {
+        const suggestCount = _txnSuggests(t).length;
+        const matchGlow = suggestCount > 0 ? 'box-shadow:0 0 0 1px #22c55e44' : '';
+        const coa = t.account_code
+          ? `<span style="font-size:10px;color:#a78bfa;background:rgba(168,85,247,.1);padding:1px 6px;border-radius:8px">${_esc(t.account_code)} ${_esc(t.account_code_name)}</span>`
+          : '';
+        const sourceBadge = t.source === 'qbo'
+          ? '<span style="font-size:9px;color:#5b8af9;text-transform:uppercase;letter-spacing:.05em">QBO</span>'
+          : '';
+        return `<div class="reconcile-txn-card" draggable="true"
+                     data-txn-id="${t.id}" data-amount="${t.amount||0}" data-date="${_esc(t.txn_date||'')}"
+                     style="padding:8px 10px;background:var(--bg-input);border:1px solid var(--border);
+                            border-radius:6px;cursor:grab;${matchGlow}"
+                     title="Drag onto a receipt — or drop a receipt onto me — to pair">
+          <div style="display:flex;align-items:baseline;gap:8px">
+            <span style="font-weight:600;font-size:13px;color:var(--text)">${_esc(t.vendor || 'No vendor')}</span>
+            <span style="margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums;color:#fb7185">${_fmt$(t.amount)}</span>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:3px;font-size:11px;color:var(--text-muted)">
+            <span>${_fmtDate(t.txn_date)}</span>
+            ${sourceBadge}
+            ${coa}
+            ${suggestCount > 0 ? `<span style="margin-left:auto;color:#22c55e">↔ ${suggestCount} match${suggestCount>1?'es':''}</span>` : ''}
+          </div>
+          ${t.note ? `<div style="font-size:10.5px;color:var(--text-muted);margin-top:2px;font-style:italic">${_esc(t.note)}</div>` : ''}
+        </div>`;
+      }
+      function _renderDoc(d) {
+        const suggestCount = _docSuggests(d).length;
+        const matchGlow = suggestCount > 0 ? 'box-shadow:0 0 0 1px #22c55e44' : '';
+        const cat = d.veryfi_category
+          ? `<span style="font-size:10px;color:#c084fc;background:rgba(168,85,247,.1);padding:1px 6px;border-radius:8px">💡 ${_esc(d.veryfi_category)}</span>`
+          : '';
+        return `<div class="reconcile-doc-card" draggable="true"
+                     data-doc-id="${d.id}" data-amount="${d.amount||0}" data-date="${_esc(d.doc_date||'')}"
+                     style="padding:8px 10px;background:var(--bg-input);border:1px solid var(--border);
+                            border-radius:6px;cursor:grab;${matchGlow}"
+                     title="Drag onto a transaction to link. Click to preview.">
+          <div style="display:flex;align-items:baseline;gap:8px">
+            <span style="font-weight:600;font-size:13px;color:var(--text)">📄 ${_esc(d.vendor || d.filename || 'Receipt')}</span>
+            <span style="margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums;color:var(--text)">${_fmt$(d.amount)}</span>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:3px;font-size:11px;color:var(--text-muted)">
+            <span>${_fmtDate(d.doc_date)}</span>
+            ${cat}
+            ${suggestCount > 0 ? `<span style="margin-left:auto;color:#22c55e">↔ ${suggestCount} match${suggestCount>1?'es':''}</span>` : ''}
+          </div>
+          <div style="font-size:10.5px;color:var(--text-muted);margin-top:2px;
+                      white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+               title="${_esc(d.filename)}">📎 ${_esc(d.filename)}</div>
+        </div>`;
+      }
+      function _applyFilters() {
+        const txnQ = (document.getElementById('reconcile-txn-search')?.value || '').toLowerCase();
+        const docQ = (document.getElementById('reconcile-doc-search')?.value || '').toLowerCase();
+        const suggestOnly = document.getElementById('reconcile-suggest-only')?.checked;
+        let txns = _recState.txns.slice();
+        let docs = _recState.docs.slice();
+        if (txnQ) txns = txns.filter(t =>
+          (t.vendor||'').toLowerCase().includes(txnQ) ||
+          (t.note||'').toLowerCase().includes(txnQ) ||
+          String(t.amount||'').includes(txnQ));
+        if (docQ) docs = docs.filter(d =>
+          (d.vendor||'').toLowerCase().includes(docQ) ||
+          (d.filename||'').toLowerCase().includes(docQ) ||
+          (d.veryfi_category||'').toLowerCase().includes(docQ) ||
+          String(d.amount||'').includes(docQ));
+        if (suggestOnly) {
+          txns = txns.filter(t => _txnSuggests(t).length > 0);
+          docs = docs.filter(d => _docSuggests(d).length > 0);
+        }
+        const txnCol = document.getElementById('reconcile-txn-col');
+        const docCol = document.getElementById('reconcile-doc-col');
+        if (txnCol) txnCol.innerHTML = txns.length
+          ? txns.map(_renderTxn).join('')
+          : '<div style="color:var(--text-muted);text-align:center;padding:1rem;font-style:italic;font-size:.82rem">No unmatched transactions.</div>';
+        if (docCol) docCol.innerHTML = docs.length
+          ? docs.map(_renderDoc).join('')
+          : '<div style="color:var(--text-muted);text-align:center;padding:1rem;font-style:italic;font-size:.82rem">No unlinked receipts.</div>';
+        const tc = document.getElementById('reconcile-txn-count'); if (tc) tc.textContent = txns.length;
+        const dc = document.getElementById('reconcile-doc-count'); if (dc) dc.textContent = docs.length;
+        const empty = document.getElementById('reconcile-empty');
+        if (empty) empty.style.display = (_recState.txns.length === 0 && _recState.docs.length === 0) ? 'block' : 'none';
+        _wireDnD();
+      }
+      function _wireDnD() {
+        const txnCol = document.getElementById('reconcile-txn-col');
+        const docCol = document.getElementById('reconcile-doc-col');
+        if (!txnCol || !docCol) return;
+        // Drag a doc card → drop on a txn card → /link-doc
+        // Drag a txn card → drop on a doc card → same operation
+        document.querySelectorAll('.reconcile-doc-card, .reconcile-txn-card').forEach(card => {
+          card.addEventListener('dragstart', e => {
+            const isDoc = card.classList.contains('reconcile-doc-card');
+            e.dataTransfer.setData('text/plain', JSON.stringify({
+              kind: isDoc ? 'doc' : 'txn',
+              id: isDoc ? card.dataset.docId : card.dataset.txnId,
+            }));
+            card.style.opacity = '.4';
+          });
+          card.addEventListener('dragend', () => { card.style.opacity = ''; });
+          card.addEventListener('dragover', e => {
+            // Only accept the opposite kind.
+            const tx = e.dataTransfer.types.includes('text/plain');
+            if (tx) { e.preventDefault(); card.style.outline = '2px dashed #22c55e'; }
+          });
+          card.addEventListener('dragleave', () => { card.style.outline = ''; });
+          card.addEventListener('drop', async e => {
+            e.preventDefault(); card.style.outline = '';
+            let payload;
+            try { payload = JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return; }
+            const isDocCard = card.classList.contains('reconcile-doc-card');
+            // Source must be opposite kind.
+            if (isDocCard && payload.kind !== 'txn') return;
+            if (!isDocCard && payload.kind !== 'doc') return;
+            const txnId = isDocCard ? payload.id : card.dataset.txnId;
+            const docId = isDocCard ? card.dataset.docId : payload.id;
+            try {
+              const r = await fetch(`/projects/${PID}/actuals/transaction/${txnId}/link-doc`, {
+                method: 'POST', headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({ doc_upload_id: parseInt(docId) }),
+              });
+              const j = await r.json();
+              if (!r.ok) { alert(j.error || 'Link failed'); return; }
+              if (typeof _actualsToast === 'function') _actualsToast(`Linked: ${j.filed_filename || 'receipt'} ↔ txn #${txnId}`, 'green');
+              // Remove both rows from local state (the doc may stay if
+              // we ever support multi-link from this view; for now drop
+              // it since both belong to the "fully matched" world after
+              // this drop).
+              _recState.txns = _recState.txns.filter(t => String(t.id) !== String(txnId));
+              _recState.docs = _recState.docs.filter(d => String(d.id) !== String(docId));
+              _applyFilters();
+            } catch (err) {
+              alert('Link failed: ' + err.message);
+            }
+          });
+          // Click-to-preview on receipt cards (added per user 2026-05-01)
+          if (card.classList.contains('reconcile-doc-card')) {
+            card.addEventListener('click', e => {
+              // Don't preview during drag.
+              if (card.style.opacity === '.4') return;
+              const docId = card.dataset.docId;
+              if (typeof window.openDocDetail === 'function') {
+                window.openDocDetail(null, docId);
+              }
+            });
+          }
+        });
+      }
+      window._reconcileRender = async function() {
+        try {
+          const r = await fetch(`/projects/${PID}/actuals/reconcile.json`);
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || 'fetch failed');
+          _recState.txns = j.transactions || [];
+          _recState.docs = j.receipts || [];
+          _applyFilters();
+        } catch (e) {
+          const txnCol = document.getElementById('reconcile-txn-col');
+          if (txnCol) txnCol.innerHTML = `<div style="color:#ef4444;text-align:center;padding:1rem">Failed to load: ${e.message}</div>`;
+        }
+      };
+      ['reconcile-txn-search','reconcile-doc-search','reconcile-suggest-only'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', _applyFilters);
+        if (el) el.addEventListener('change', _applyFilters);
+      });
+      const refresh = document.getElementById('reconcile-refresh');
+      if (refresh) refresh.addEventListener('click', () => window._reconcileRender());
+    })();
 
     function _actualsToast(msg, color) {
       const t = document.createElement('div');
@@ -4376,6 +4752,8 @@
         ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       list.innerHTML = filtered.map(d => `
         <div class="_actuals-existing-doc" data-doc-id="${d.id}"
+             onclick="_actualsPreviewExistingDoc(${d.id}, event)"
+             title="Click to preview · Link button to attach"
              style="display:flex;align-items:center;gap:8px;padding:7px 9px;margin-bottom:3px;
                     border:1px solid var(--border);border-radius:5px;background:var(--bg-input);
                     cursor:pointer;font-size:.78rem">
@@ -4387,11 +4765,25 @@
             </div>
           </div>
           <button type="button" class="btn btn-xs"
+                  style="font-size:.7rem;padding:3px 9px;background:#1e293b;border:1px solid #334155;color:#cbd5e1;cursor:pointer;border-radius:4px"
+                  onclick="event.stopPropagation();_actualsPreviewExistingDoc(${d.id})">👁 Preview</button>
+          <button type="button" class="btn btn-xs"
                   style="font-size:.7rem;padding:3px 9px;background:#1a3a2a;border:1px solid #2a5a3a;color:#74c69d;cursor:pointer;border-radius:4px"
-                  onclick="_actualsLinkExistingDoc(${d.id})">Link</button>
+                  onclick="event.stopPropagation();_actualsLinkExistingDoc(${d.id})">Link</button>
         </div>
       `).join('');
     }
+
+    // Open the doc-detail modal as a read-only preview from inside the
+    // Attach Receipt picker. The detail modal already supports being
+    // opened with row=null (it fetches metadata via /docs/upload/<uid>/
+    // status), so we just call openDocDetail with the id.
+    window._actualsPreviewExistingDoc = function (docId, ev) {
+      if (ev) ev.stopPropagation();
+      if (typeof window.openDocDetail === 'function') {
+        window.openDocDetail(null, docId);
+      }
+    };
 
     window._actualsLinkExistingDoc = async function (docId) {
       const tid = _actualsUploadCurrentTid;
@@ -4786,6 +5178,7 @@
         _draggingCOA = {
           code: item.dataset.code,
           name: item.dataset.name || '',
+          lineId: null,
         };
         item.style.opacity = '.5';
         e.dataTransfer.effectAllowed = 'copy';
@@ -4793,6 +5186,42 @@
       });
       item.addEventListener('dragend', () => {
         item.style.opacity = '';
+        _draggingCOA = null;
+      });
+    });
+    // Click section header to expand/collapse its sub-lines (separate
+    // from the hover-during-drag expansion). Lets the user keep a
+    // section open and drag the specific child line they want.
+    document.querySelectorAll('.coa-section').forEach(section => {
+      const header = section.querySelector('.coa-item[data-droptarget="section"]');
+      const lines  = section.querySelector('.coa-lines');
+      const chev   = section.querySelector('.coa-chevron');
+      if (!header || !lines) return;
+      header.addEventListener('click', e => {
+        // Don't trigger on drag — only on a real click. Drag fires
+        // dragstart, not click, so this is safe.
+        const open = lines.style.display !== 'none';
+        lines.style.display = open ? 'none' : 'block';
+        if (chev) chev.textContent = open ? '▸' : '▾';
+      });
+    });
+    // Make every COA child line draggable too — drop on a transaction
+    // = full /set-line link (auto-clones Working → Actual on first
+    // link). Distinct from section drag (account_code only).
+    document.querySelectorAll('.coa-line').forEach(line => {
+      line.addEventListener('dragstart', e => {
+        _draggingCOA = {
+          code:   line.dataset.code,
+          name:   line.dataset.name || line.dataset.lineDesc || '',
+          lineId: parseInt(line.dataset.lineId),
+        };
+        line.style.opacity = '.5';
+        e.dataTransfer.effectAllowed = 'copy';
+        e.dataTransfer.setData('text/plain', 'line:' + line.dataset.lineId);
+        e.stopPropagation();  // don't bubble to section
+      });
+      line.addEventListener('dragend', () => {
+        line.style.opacity = '';
         _draggingCOA = null;
       });
     });
@@ -4811,14 +5240,26 @@
         e.preventDefault();
         row.style.outline = '';
         if (!_draggingCOA) return;
-        const tid  = parseInt(row.dataset.tid);
-        const code = _draggingCOA.code;
-        const name = _draggingCOA.name;
+        const tid    = parseInt(row.dataset.tid);
+        const code   = _draggingCOA.code;
+        const name   = _draggingCOA.name;
+        const lineId = _draggingCOA.lineId;
         try {
-          const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`, {
+          // Specific line dragged → /set-line (full link, triggers
+          // Working→Actual auto-clone on first link).
+          // Section dragged → /set-coa (account_code only).
+          let url, body;
+          if (lineId) {
+            url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-line`;
+            body = JSON.stringify({ budget_line_id: lineId });
+          } else {
+            url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`;
+            body = JSON.stringify({ account_code: code, account_code_name: name });
+          }
+          const r = await fetch(url, {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ account_code: code, account_code_name: name }),
+            body,
           });
           const d = await r.json();
           if (!r.ok) {
@@ -4830,11 +5271,43 @@
             row.dataset.notProject = '1';
             row.dataset.coded      = '0';
             row.style.opacity = '.65';
+          } else if (lineId) {
+            // Auto-init toasts mirror actualsSetLine.
+            if (d.working_was_just_created && d.actual_was_just_created) {
+              _actualsToast('Working budget initialized from Estimated. Actual budget started for live tracking.');
+            } else if (d.actual_was_just_created) {
+              _actualsToast('Actual budget started — Working was cloned for live tracking.');
+            } else {
+              _actualsToast(`Linked to ${code} · ${name}`, 'green');
+            }
+            row.dataset.coded     = '1';
+            row.style.background  = '#0d1a14';
+            row.style.borderColor = '#1a3a2a';
+            // Sync the dropdown to reflect the new line. The select's
+            // value uses the Working line id, not the Actual id, so we
+            // can't always set it perfectly without a server hint, but
+            // try anyway — the dropdown options only carry working ids.
+            const sel = row.querySelector('.actuals-line-picker');
+            if (sel) {
+              const wantId = String(lineId);
+              for (const opt of sel.options) {
+                if (opt.value === wantId) { sel.value = wantId; break; }
+              }
+            }
           } else {
-            _actualsToast(`Coded to ${code} · ${name}`, 'green');
-            // Drag-drop sets account_code only (no specific line).
-            // Don't flip data-coded unless a budget line is also
-            // assigned via the dropdown — but visually mark progress.
+            // Section-only drag — surface auto-create signals from the
+            // server. budget_line_auto_created means we just inserted
+            // a placeholder line under this section in the Working
+            // (and Actual, if extant) budget so the section will now
+            // appear in the Budget view.
+            if (d.working_was_just_created && d.budget_line_auto_created) {
+              _actualsToast(`Working budget initialized + ${code} ${name} added.`, 'green');
+            } else if (d.budget_line_auto_created) {
+              _actualsToast(`Coded to ${code} · ${name} (added to budget)`, 'green');
+            } else {
+              _actualsToast(`Coded to ${code} · ${name}`, 'green');
+            }
+            row.dataset.coded     = '1';
             row.style.borderColor = '#3a5a3a';
           }
           _actualsRecountStats();
@@ -5471,6 +5944,13 @@
       <button class="btn btn-xs" data-act-filter="mine"  style="opacity:.7">Mine</button>
       <button class="btn btn-xs" data-act-filter="today" style="opacity:.7">Today</button>
       <button class="btn btn-xs" data-act-filter="week"  style="opacity:.7">Last 7 days</button>
+    </div>
+    <div id="activity-entity-filters" style="display:flex;gap:.4rem;border-left:1px solid var(--border);padding-left:.6rem">
+      <button class="btn btn-xs" data-act-entity="all"     style="opacity:1">All types</button>
+      <button class="btn btn-xs" data-act-entity="budget"  style="opacity:.7">Budget</button>
+      <button class="btn btn-xs" data-act-entity="docs"    style="opacity:.7">Docs</button>
+      <button class="btn btn-xs" data-act-entity="actuals" style="opacity:.7">Actuals</button>
+      <button class="btn btn-xs" data-act-entity="qbo"     style="opacity:.7">QBO</button>
     </div>
     <button class="btn btn-xs btn-ghost" id="activity-refresh" style="margin-left:auto">↻ Refresh</button>
   </div>
@@ -12761,6 +13241,27 @@ setTimeout(function() {
   // superseded. Filter chips: All / Mine / Today / Last 7 days.
   let _activityLoaded = false;
   let _activityFilter = 'all';
+  let _activityEntity = 'all';
+  // Color stripe + icon by entity-type bucket. Keeps a glance-level
+  // separation between budget edits, doc activity, and ledger activity.
+  const _ENTITY_BUCKET = {
+    budget_line:'budget', budget_settings:'budget', budget_mode:'budget',
+    tax_credit:'budget', schedule_day:'budget', schedule_batch:'budget',
+    production_day:'budget', travel_flag:'budget', travel_detail:'budget',
+    travel_day:'budget', catering_meal:'budget', catering_bill:'budget',
+    project:'budget',
+    doc_upload:'docs', doc_upload_bulk:'docs',
+    transaction:'actuals', transaction_match:'actuals',
+    qbo_sync:'qbo', qbo_accounts:'qbo',
+  };
+  const _BUCKET_STYLE = {
+    budget:  {color:'#3b82f6', icon:'📊', label:'Budget'},
+    docs:    {color:'#a855f7', icon:'📄', label:'Docs'},
+    actuals: {color:'#10b981', icon:'💰', label:'Actuals'},
+    qbo:     {color:'#f59e0b', icon:'🔄', label:'QBO'},
+    other:   {color:'#6b7280', icon:'•',  label:''},
+  };
+  function _activityBucket(et) { return _ENTITY_BUCKET[et] || 'other'; }
   function _fmtActivityWhen(iso) {
     if (!iso) return '—';
     const d = new Date(iso);
@@ -12784,7 +13285,7 @@ setTimeout(function() {
     if (!tbody) return;
     tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);text-align:center;padding:1rem">Loading…</td></tr>';
     try {
-      const r = await fetch(`/projects/${PID}/budget/${BID}/activity?filter=${_activityFilter}`);
+      const r = await fetch(`/projects/${PID}/budget/${BID}/activity?filter=${_activityFilter}&entity=${_activityEntity}`);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const data = await r.json();
       if (!data.items || !data.items.length) {
@@ -12797,12 +13298,20 @@ setTimeout(function() {
         const undoBtn = (it.can_undo && !it.undone)
           ? `<button class="btn btn-xs" data-act-undo="${it.id}">Undo</button>`
           : (it.undone ? '<span class="muted" style="font-size:.75rem">undone</span>' : '');
-        const summaryEsc = (it.summary || '').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
-        const whoEsc     = (it.who || '—').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
-        return `<tr ${it.undone ? 'style="opacity:.55"' : ''}>
-          <td style="font-size:.85em;color:var(--text-muted)">${_fmtActivityWhen(it.when)}</td>
+        // Prefer the server-side `note` for richer summaries on docs/
+        // actuals/qbo events. Fall back to `summary` for legacy budget
+        // rows that don't carry a note.
+        const rawText   = (it.note && it.note.trim()) ? it.note : (it.summary || '');
+        const summaryEsc = rawText.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+        const whoEsc    = (it.who || '—').replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+        const bucket    = _activityBucket(it.entity_type);
+        const style     = _BUCKET_STYLE[bucket] || _BUCKET_STYLE.other;
+        const stripe    = `border-left:3px solid ${style.color}`;
+        const iconHtml  = `<span title="${style.label}" style="margin-right:.4rem">${style.icon}</span>`;
+        return `<tr ${it.undone ? 'style="opacity:.55;'+stripe+'"' : 'style="'+stripe+'"'}>
+          <td style="font-size:.85em;color:var(--text-muted);padding-left:.6rem">${_fmtActivityWhen(it.when)}</td>
           <td>${whoEsc}</td>
-          <td>${summaryEsc}</td>
+          <td>${iconHtml}${summaryEsc}</td>
           <td class="col-num">${_fmtActivityDelta(it.dollar_delta)}</td>
           <td>${undoBtn}</td>
         </tr>`;
@@ -12838,6 +13347,15 @@ setTimeout(function() {
     btn.addEventListener('click', () => {
       _activityFilter = btn.getAttribute('data-act-filter');
       document.querySelectorAll('#activity-filters [data-act-filter]')
+        .forEach(b => b.style.opacity = (b === btn ? '1' : '.7'));
+      loadActivityFeed();
+    });
+  });
+  // Entity-type chip clicks (Budget / Docs / Actuals / QBO / All)
+  document.querySelectorAll('#activity-entity-filters [data-act-entity]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _activityEntity = btn.getAttribute('data-act-entity');
+      document.querySelectorAll('#activity-entity-filters [data-act-entity]')
         .forEach(b => b.style.opacity = (b === btn ? '1' : '.7'));
       loadActivityFeed();
     });

@@ -218,6 +218,121 @@ def clone_working_to_actual(working_budget):
     return new_budget
 
 
+def ensure_section_in_working_budget(project_id, account_code, account_name):
+    """Ensure the project's Working budget has at least one line under
+    the given account_code. Used when a user codes a transaction to a
+    section that doesn't yet exist in their budget — instead of leaving
+    the section invisible, we auto-add a placeholder line so the section
+    shows on the budget view (with $0 estimate / $0 working until the
+    user fills it in).
+
+    Behavior:
+      - No Working budget yet: auto-init it (clone from Estimated, or
+        create a fresh shell if there's no Estimated either).
+      - Working has a line with this account_code already: no-op.
+      - Otherwise: insert a single placeholder line. Also mirror into
+        the Actual budget if one exists.
+
+    Returns a dict with what happened so the caller can surface a toast:
+      {'created': bool, 'working_line_id': int|None, 'actual_line_id': int|None,
+       'working_was_just_created': bool}
+    """
+    from datetime import datetime as _dt
+    if not account_code:
+        return {'created': False, 'working_line_id': None,
+                'actual_line_id': None, 'working_was_just_created': False}
+    try:
+        code_int = int(account_code)
+    except (TypeError, ValueError):
+        return {'created': False, 'working_line_id': None,
+                'actual_line_id': None, 'working_was_just_created': False}
+
+    # Get / auto-init Working budget.
+    working = get_current_working_budget(project_id)
+    working_was_just_created = False
+    if not working:
+        est = get_current_estimated_budget(project_id)
+        if est:
+            working = clone_estimated_to_working(est)
+            db.session.add(working)
+            db.session.flush()  # get id
+            working_was_just_created = True
+        else:
+            # No Estimated either — bail. Coding still works at the
+            # transaction level; we just can't auto-add a line without
+            # any budget shell to put it in. This is a brand-new
+            # project edge case.
+            return {'created': False, 'working_line_id': None,
+                    'actual_line_id': None, 'working_was_just_created': False}
+
+    # Already a line with this code? no-op.
+    existing = (BudgetLine.query
+                .filter_by(budget_id=working.id, account_code=code_int)
+                .first())
+    if existing:
+        return {'created': False, 'working_line_id': existing.id,
+                'actual_line_id': None,
+                'working_was_just_created': working_was_just_created}
+
+    # Insert placeholder. Sort order: large number so it lands at the
+    # bottom of its section (existing lines keep their relative order).
+    placeholder = BudgetLine(
+        budget_id          = working.id,
+        account_code       = code_int,
+        account_name       = (account_name or '')[:100],
+        description        = '(Auto-added — no estimate)',
+        is_labor           = False,
+        quantity           = 1,
+        days               = 1,
+        rate               = 0,
+        kit_fee            = 0,
+        fringe_code        = 'N',
+        agent_pct          = 0,
+        rate_type          = 'flat',
+        estimated_total    = 0,
+        working_total      = 0,
+        sort_order         = 99999,
+        created_at         = _dt.utcnow(),
+    )
+    db.session.add(placeholder)
+    db.session.flush()  # get placeholder.id
+    placeholder_actual_id = None
+
+    # Mirror into Actual if it exists, with source_line_id pointing
+    # at the new Working line. Without this back-pointer, the actuals
+    # rollup query (which joins on source_line_id) couldn't surface
+    # transactions linked to this line.
+    actual = get_current_actual_budget(project_id)
+    if actual:
+        actual_line = BudgetLine(
+            budget_id          = actual.id,
+            account_code       = code_int,
+            account_name       = (account_name or '')[:100],
+            description        = '(Auto-added — no estimate)',
+            is_labor           = False,
+            quantity           = 1,
+            days               = 1,
+            rate               = 0,
+            kit_fee            = 0,
+            fringe_code        = 'N',
+            agent_pct          = 0,
+            rate_type          = 'flat',
+            estimated_total    = 0,
+            working_total      = 0,
+            sort_order         = 99999,
+            source_line_id     = placeholder.id,
+            created_at         = _dt.utcnow(),
+        )
+        db.session.add(actual_line)
+        db.session.flush()
+        placeholder_actual_id = actual_line.id
+
+    return {'created': True,
+            'working_line_id': placeholder.id,
+            'actual_line_id':  placeholder_actual_id,
+            'working_was_just_created': working_was_just_created}
+
+
 def working_to_actual_line(working_line_id, actual_budget_id=None):
     """Given a BudgetLine id from the Working budget, return the
     equivalent line from the project's current Actual budget.

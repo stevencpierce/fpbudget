@@ -800,7 +800,12 @@ class DocUpload(db.Model):
     amount           = db.Column(db.Numeric(10, 2), nullable=True)
     doc_date         = db.Column(db.Date, nullable=True)
     confidence       = db.Column(db.Numeric(5, 2), nullable=True) # 0-100
-    category         = db.Column(db.String(100), nullable=True)   # predicted COA category
+    category         = db.Column(db.String(100), nullable=True)   # doc type (receipt/invoice/...)
+    # Veryfi expense category — free-text taxonomy from Veryfi (e.g.
+    # "Meals & Entertainment", "Office Supplies & Software"). Denormalized
+    # off veryfi_data so the Docs row can render it without loading the
+    # full OCR JSON. Drives the "Suggested account" hint pill.
+    veryfi_category  = db.Column(db.String(100), nullable=True)
 
     # Filing to Dropbox
     filed_filename   = db.Column(db.String(300), nullable=True)   # renamed file
