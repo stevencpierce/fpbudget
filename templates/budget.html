@@ -9229,14 +9229,43 @@ function renderCalcDetail(d) {
 
   async function _saveUnit(btn, newUnit) {
     const lid = parseInt(btn.dataset.id);
+    const oldUnit = btn.dataset.unit || 'days';
     btn.dataset.unit = newUnit;
     btn.textContent  = _shortForUnit(newUnit);
     btn.classList.toggle('active', newUnit === 'weeks');
+    // Calendar-duration preservation: when flipping Days → Weeks,
+    // divide the duration field by 5 (or whatever days_per_week is) so
+    // "10 days" becomes "2 weeks" — same calendar span, same subtotal.
+    // Without this, _effective_days() server-side multiplies by 5 and
+    // the subtotal explodes 5×. Per user 2026-05-01 — duration unit
+    // toggles should NEVER change the dollar total, only the label.
+    let convertBody = {};
+    try {
+      const row = document.querySelector(`tr.line-row[data-id="${lid}"]`);
+      const dpwAttr = row?.dataset.daysPerWeek || row?.dataset.dpw || '5';
+      const dpw = Math.max(parseFloat(dpwAttr) || 5, 1);
+      const daysInput = row?.querySelector('[data-field="days"]');
+      const curDays = parseFloat(daysInput?.value || daysInput?.textContent || row?.dataset.days || '1');
+      if (!isNaN(curDays) && curDays > 0) {
+        let newDays = curDays;
+        if (oldUnit !== 'weeks' && newUnit === 'weeks')      newDays = +(curDays / dpw).toFixed(2);
+        else if (oldUnit === 'weeks' && newUnit !== 'weeks') newDays = +(curDays * dpw).toFixed(2);
+        if (newDays !== curDays) {
+          convertBody.days = newDays;
+          // Reflect in the visible cell so the user sees the swap.
+          if (daysInput) {
+            if ('value' in daysInput) daysInput.value = newDays;
+            else daysInput.textContent = newDays;
+          }
+          if (row) row.dataset.days = String(newDays);
+        }
+      }
+    } catch(_) {}
     try {
       const r = await fetch(`/projects/${_pid}/budget/${_bid}/line`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ id: lid, days_unit: newUnit })
+        body: JSON.stringify({ id: lid, days_unit: newUnit, ...convertBody })
       });
       if (r.ok) {
         const data = await r.json();
@@ -9285,6 +9314,7 @@ function renderCalcDetail(d) {
   document.addEventListener('change', function(e) {
     const sel = e.target.closest('.days-unit-select');
     if (!sel) return;
+    const oldUnit = sel.dataset.unit || 'days';
     const newUnit = sel.value;
     // "Custom…" option opens a prompt for free-text entry.
     if (newUnit === '__custom__') {
@@ -9310,20 +9340,48 @@ function renderCalcDetail(d) {
       }
       sel.value = newCode;
       sel.dataset.unit = newCode;
-      _saveSelectUnit(sel, newCode);
+      _saveSelectUnit(sel, newCode, oldUnit);
       return;
     }
     sel.dataset.unit = newUnit;
-    _saveSelectUnit(sel, newUnit);
+    _saveSelectUnit(sel, newUnit, oldUnit);
   });
 
-  async function _saveSelectUnit(sel, newUnit) {
+  async function _saveSelectUnit(sel, newUnit, oldUnit) {
     const lid = parseInt(sel.dataset.id);
+    // Same calendar-duration preservation as _saveUnit (labor toggle).
+    // Non-labor lines are calc'd qty × days × rate (no _effective_days
+    // multiplier) so changing the unit alone wouldn't blow up the
+    // subtotal — but for consistency the displayed value should still
+    // swap so "10 days" doesn't look like "10 rolls" with the same number.
+    let convertBody = {};
+    try {
+      const _prev = oldUnit || sel.dataset.prevUnit || 'days';
+      const row = document.querySelector(`tr.line-row[data-id="${lid}"]`);
+      const dpwAttr = row?.dataset.daysPerWeek || row?.dataset.dpw || '5';
+      const dpw = Math.max(parseFloat(dpwAttr) || 5, 1);
+      const daysInput = row?.querySelector('[data-field="days"]');
+      const curDays = parseFloat(daysInput?.value || daysInput?.textContent || row?.dataset.days || '1');
+      if (!isNaN(curDays) && curDays > 0) {
+        let newDays = curDays;
+        if (_prev !== 'weeks' && newUnit === 'weeks')      newDays = +(curDays / dpw).toFixed(2);
+        else if (_prev === 'weeks' && newUnit !== 'weeks') newDays = +(curDays * dpw).toFixed(2);
+        if (newDays !== curDays) {
+          convertBody.days = newDays;
+          if (daysInput) {
+            if ('value' in daysInput) daysInput.value = newDays;
+            else daysInput.textContent = newDays;
+          }
+          if (row) row.dataset.days = String(newDays);
+        }
+      }
+      sel.dataset.prevUnit = newUnit;
+    } catch(_) {}
     try {
       const r = await fetch(`/projects/${_pid}/budget/${_bid}/line`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ id: lid, days_unit: newUnit })
+        body: JSON.stringify({ id: lid, days_unit: newUnit, ...convertBody })
       });
       if (r.ok) {
         const data = await r.json();
