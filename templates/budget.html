@@ -3877,6 +3877,21 @@
       }
     };
 
+    // By Department: click a section row to toggle its detail row
+    // (transactions categorized to that section). Bound once at IIFE
+    // start since the rows are server-rendered.
+    document.querySelectorAll('.bydept-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const code = row.dataset.secCode;
+        const detail = document.querySelector(`.bydept-detail[data-for-sec="${code}"]`);
+        if (!detail) return;  // section has no transactions
+        const open = detail.style.display !== 'none';
+        detail.style.display = open ? 'none' : '';
+        const chev = row.querySelector('.bydept-chev');
+        if (chev && chev.textContent !== '·') chev.textContent = open ? '▸' : '▾';
+      });
+    });
+
     window.showActualsPane = function (which) {
       document.getElementById('actuals-pane-match').style.display    = which === 'match'    ? '' : 'none';
       document.getElementById('actuals-pane-bydept').style.display   = which === 'bydept'   ? '' : 'none';

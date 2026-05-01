@@ -274,7 +274,43 @@ def ensure_section_in_working_budget(project_id, account_code, account_name):
                 'actual_line_id': None,
                 'working_was_just_created': working_was_just_created}
 
-    # Insert placeholder. Sort order: large number so it lands at the
+    # Also seed an Estimated peer line if Estimated exists. Per user
+    # 2026-05-01 — unbudgeted actuals should appear in Working AND
+    # Estimated as $0 (so the section shows up regardless of which
+    # budget the user is viewing). The Working line gets source_line_id
+    # pointing at the Estimated peer to maintain the chain.
+    estimated = get_current_estimated_budget(project_id)
+    estimated_peer_id = None
+    if estimated:
+        # Skip if Estimated already has a line under this code.
+        existing_est = (BudgetLine.query
+                        .filter_by(budget_id=estimated.id, account_code=code_int)
+                        .first())
+        if existing_est:
+            estimated_peer_id = existing_est.id
+        else:
+            est_line = BudgetLine(
+                budget_id          = estimated.id,
+                account_code       = code_int,
+                account_name       = (account_name or '')[:100],
+                description        = '(Auto-added — no estimate)',
+                is_labor           = False,
+                quantity           = 1,
+                days               = 1,
+                rate               = 0,
+                fringe_type        = 'N',
+                agent_pct          = 0,
+                rate_type          = 'flat_day',
+                estimated_total    = 0,
+                working_total      = 0,
+                sort_order         = 99999,
+                created_at         = _dt.utcnow(),
+            )
+            db.session.add(est_line)
+            db.session.flush()
+            estimated_peer_id = est_line.id
+
+    # Insert Working placeholder. Sort order: large number so it lands at the
     # bottom of its section (existing lines keep their relative order).
     placeholder = BudgetLine(
         budget_id          = working.id,
@@ -291,6 +327,7 @@ def ensure_section_in_working_budget(project_id, account_code, account_name):
         estimated_total    = 0,
         working_total      = 0,
         sort_order         = 99999,
+        source_line_id     = estimated_peer_id,
         created_at         = _dt.utcnow(),
     )
     db.session.add(placeholder)
@@ -312,10 +349,9 @@ def ensure_section_in_working_budget(project_id, account_code, account_name):
             quantity           = 1,
             days               = 1,
             rate               = 0,
-            kit_fee            = 0,
-            fringe_code        = 'N',
+            fringe_type        = 'N',
             agent_pct          = 0,
-            rate_type          = 'flat',
+            rate_type          = 'flat_day',
             estimated_total    = 0,
             working_total      = 0,
             sort_order         = 99999,
