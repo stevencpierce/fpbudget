@@ -304,7 +304,6 @@ def ensure_section_in_working_budget(project_id, account_code, account_name):
                 estimated_total    = 0,
                 working_total      = 0,
                 sort_order         = 99999,
-                created_at         = _dt.utcnow(),
             )
             db.session.add(est_line)
             db.session.flush()
@@ -328,7 +327,6 @@ def ensure_section_in_working_budget(project_id, account_code, account_name):
         working_total      = 0,
         sort_order         = 99999,
         source_line_id     = estimated_peer_id,
-        created_at         = _dt.utcnow(),
     )
     db.session.add(placeholder)
     db.session.flush()  # get placeholder.id
@@ -356,7 +354,6 @@ def ensure_section_in_working_budget(project_id, account_code, account_name):
             working_total      = 0,
             sort_order         = 99999,
             source_line_id     = placeholder.id,
-            created_at         = _dt.utcnow(),
         )
         db.session.add(actual_line)
         db.session.flush()
