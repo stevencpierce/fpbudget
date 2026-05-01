@@ -3439,6 +3439,51 @@ def budget_view(pid, bid):
     peer_estimated_bid = peer_estimated_bid.id if peer_estimated_bid else current_estimated_bid
     peer_working_bid   = _vn_peer.get('working', {})
     peer_working_bid   = peer_working_bid.id if peer_working_bid else None
+    # Actual peer: the project's current Actual budget. Only one
+    # Actual exists per project (no version branching), so we look it
+    # up directly rather than via _vn_peer. Used by the mode-switcher
+    # Actual button (added 2026-05-01 — replaces the By Department
+    # sub-tab as the canonical phase-3 view).
+    _actual_peer = (Budget.query
+                    .filter_by(project_id=pid, is_actual=True,
+                               version_status='current')
+                    .first())
+    peer_actual_bid = _actual_peer.id if _actual_peer else None
+    is_actual_view  = bool(budget.is_actual)
+
+    # Build per-line and per-section transaction lookup tables for the
+    # Actual view's expandable detail rows. When bid == Actual budget,
+    # the rendered lines ARE Actual BudgetLines and their ids match
+    # transaction.budget_line_id directly (no Working-translation
+    # needed). txns_by_section_only_code holds rows with account_code
+    # but no specific budget_line_id (drag-drop section-only).
+    txns_by_line = {}
+    txns_by_section_only_code = {}
+    if is_actual_view:
+        try:
+            _line_txns = (Transaction.query
+                          .filter(Transaction.project_id == pid,
+                                  Transaction.budget_line_id.isnot(None),
+                                  Transaction.not_project_expense == False,
+                                  Transaction.is_expense == True)
+                          .order_by(Transaction.txn_date.desc().nullslast(),
+                                    Transaction.id.desc())
+                          .all())
+            for _tx in _line_txns:
+                txns_by_line.setdefault(_tx.budget_line_id, []).append(_tx)
+            _sec_txns = (Transaction.query
+                         .filter(Transaction.project_id == pid,
+                                 Transaction.budget_line_id.is_(None),
+                                 Transaction.account_code.isnot(None),
+                                 Transaction.not_project_expense == False,
+                                 Transaction.is_expense == True)
+                         .order_by(Transaction.txn_date.desc().nullslast(),
+                                   Transaction.id.desc())
+                         .all())
+            for _tx in _sec_txns:
+                txns_by_section_only_code.setdefault(_tx.account_code, []).append(_tx)
+        except Exception as _bge:
+            logging.warning(f"[budget_view/actual] txn grouping failed: {_bge}")
 
     company_settings = CompanySettings.query.get(1) or CompanySettings()
     # Defer veryfi_data — the raw OCR JSON blob can be 50–200 KB per row
@@ -3568,6 +3613,10 @@ def budget_view(pid, bid):
         version_groups=version_groups,
         peer_estimated_bid=peer_estimated_bid,
         peer_working_bid=peer_working_bid,
+        peer_actual_bid=peer_actual_bid,
+        is_actual_view=is_actual_view,
+        txns_by_line=txns_by_line,
+        txns_by_section_only_code=txns_by_section_only_code,
         lines=lines,
         line_results=line_results,
         sections=sections,
@@ -4517,6 +4566,38 @@ def actuals_edit_transaction(pid, tid):
         "txn_date": txn.txn_date,
         "note":     txn.note,
     })
+
+
+@app.route("/projects/<int:pid>/actuals/init", methods=["GET"])
+@login_required
+def actuals_init_actual_budget(pid):
+    """Manual entry point to initialize the project's Actual budget
+    from Working. Used by the mode-switcher's 'Actual' button when no
+    Actual exists yet — clicking sends the user here, we clone, then
+    redirect to the new Actual budget. Per user 2026-05-01: lets users
+    proactively enter the Actual phase view rather than waiting for the
+    auto-clone trigger that fires on first transaction link."""
+    _require_project_role(pid, 'editor')
+    from actuals import (get_current_actual_budget, get_current_working_budget,
+                          get_current_estimated_budget, clone_working_to_actual,
+                          clone_estimated_to_working)
+    existing = get_current_actual_budget(pid)
+    if existing:
+        return redirect(url_for('budget_view', pid=pid, bid=existing.id))
+    working = get_current_working_budget(pid)
+    if not working:
+        est = get_current_estimated_budget(pid)
+        if not est:
+            flash('No Estimated or Working budget — create one first.', 'error')
+            return redirect(url_for('project_detail', pid=pid))
+        working = clone_estimated_to_working(est)
+        db.session.add(working)
+        db.session.commit()
+    actual = clone_working_to_actual(working)
+    db.session.add(actual)
+    db.session.commit()
+    flash('Actual budget initialized from Working.', 'success')
+    return redirect(url_for('budget_view', pid=pid, bid=actual.id))
 
 
 @app.route("/projects/<int:pid>/actuals/auto-match", methods=["POST"])
