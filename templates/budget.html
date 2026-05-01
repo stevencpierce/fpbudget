@@ -3588,6 +3588,17 @@
         </tr>
       </thead>
       <tbody>
+        {# Pre-group transactions by COA section so each By-Department
+           row can show its own breakdown when expanded. Uses
+           t.account_code which is populated for both section-only and
+           line-level coding (the link_transaction_to_line path also
+           sets account_code on the txn). #}
+        {% set _txns_by_code = {} %}
+        {% for _t in (actuals_transactions or []) %}
+          {% if _t.account_code and not _t.not_project_expense %}
+            {% set _ = _txns_by_code.setdefault(_t.account_code, []).append(_t) %}
+          {% endif %}
+        {% endfor %}
         {% for sec in sections %}
           {% set sec_code = sec.code %}
           {% set synced = actuals_by_code.get(sec_code, {}).get('total', 0) | float %}
@@ -3596,10 +3607,15 @@
           {% set effective = synced if synced > 0 else manual %}
           {% set remaining = working - effective %}
           {% set pct = (effective / working * 100) if working > 0 else 0 %}
-          {% if working > 0 or effective > 0 %}
-          <tr>
-            <td class="col-code muted">{{ sec_code }}</td>
-            <td>{{ sec.name }}</td>
+          {% set _sec_txns = _txns_by_code.get(sec_code, []) %}
+          {% if working > 0 or effective > 0 or _sec_txns %}
+          <tr class="bydept-row" data-sec-code="{{ sec_code }}"
+              style="cursor:pointer" title="Click to view transactions in this section">
+            <td class="col-code muted">
+              <span class="bydept-chev" style="display:inline-block;width:10px;font-size:.7rem;color:var(--text-muted)">{% if _sec_txns %}▸{% else %}·{% endif %}</span>
+              {{ sec_code }}
+            </td>
+            <td>{{ sec.name }}{% if _sec_txns %} <span class="muted" style="font-size:.7rem">({{ _sec_txns | length }} txn{{ 's' if _sec_txns | length != 1 else '' }})</span>{% endif %}</td>
             <td class="col-num">{{ working | currency }}</td>
             <td class="col-num {{ 'muted' if synced == 0 else '' }}">{{ synced | currency if synced > 0 else '—' }}</td>
             <td class="col-num {{ 'muted' if manual == 0 else '' }}">{{ manual | currency if manual > 0 else '—' }}</td>
@@ -3607,6 +3623,44 @@
             <td class="col-num {{ 'over' if remaining < 0 else 'under' if remaining > 0 else '' }}">{{ remaining | currency }}</td>
             <td class="col-num {{ 'over' if pct > 100 else '' }}">{{ pct | round(1) }}%</td>
           </tr>
+          {% if _sec_txns %}
+          <tr class="bydept-detail" data-for-sec="{{ sec_code }}" style="display:none">
+            <td colspan="8" style="padding:8px 16px 14px 36px;background:rgba(91,138,249,.04)">
+              <table style="width:100%;font-size:.78rem;border-collapse:collapse">
+                <thead>
+                  <tr style="color:var(--text-muted);text-transform:uppercase;font-size:.65rem;letter-spacing:.05em">
+                    <th style="text-align:left;padding:4px 6px">Date</th>
+                    <th style="text-align:left;padding:4px 6px">Vendor</th>
+                    <th style="text-align:left;padding:4px 6px">Receipt</th>
+                    <th style="text-align:left;padding:4px 6px">Note</th>
+                    <th style="text-align:right;padding:4px 6px">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for _t in _sec_txns %}
+                  {% set _doc = docs_by_id.get(_t.doc_upload_id) if _t.doc_upload_id else None %}
+                  <tr style="border-top:1px solid var(--border)">
+                    <td style="padding:5px 6px;color:var(--text-muted);font-variant-numeric:tabular-nums">{{ _t.txn_date or '—' }}</td>
+                    <td style="padding:5px 6px">{{ _t.vendor or '—' }}</td>
+                    <td style="padding:5px 6px">
+                      {% if _doc %}
+                      <a href="#" onclick="event.preventDefault();openDocDetail(null, {{ _doc.id }})"
+                         style="color:#5b8af9;text-decoration:none">📎 {{ (_doc.filed_filename or _doc.original_filename or 'receipt')[:40] }}{% if (_doc.filed_filename or _doc.original_filename or '')|length > 40 %}…{% endif %}</a>
+                      {% else %}
+                      <span class="muted" style="font-style:italic;font-size:.72rem">no receipt</span>
+                      {% endif %}
+                    </td>
+                    <td style="padding:5px 6px;color:var(--text-muted);font-size:.72rem">{{ (_t.note or '')[:60] }}</td>
+                    <td style="padding:5px 6px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;color:{% if (_t.amount or 0) | float < 0 %}#fb7185{% else %}var(--text){% endif %}">
+                      {% if _t.amount %}${{ '%.2f'|format(_t.amount|float|abs) }}{% else %}—{% endif %}
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </td>
+          </tr>
+          {% endif %}
           {% endif %}
         {% endfor %}
         {# Unbudgeted — codes in actuals_by_code but not in any section #}
@@ -5311,9 +5365,12 @@
             row.style.borderColor = '#3a5a3a';
             // Sync the dropdown so the user sees the section selection.
             // The dropdown's section-only option uses the value
-            // 'section:<code>' (see actualsSetLine). Without this
-            // selection update, the dropdown kept showing
-            // "— pick budget line —" until a hard reload.
+            // 'section:<code>' (see actualsSetLine). If the option
+            // doesn't exist (auto-added section that wasn't in the
+            // server-rendered options), inject it inline rather than
+            // forcing a page reload — a reload nukes the user's filter
+            // state, which made it look like the row "disappeared"
+            // from the Finished filter when they were just reassigning.
             const sel = row.querySelector('.actuals-line-picker');
             if (sel) {
               const want = 'section:' + code;
@@ -5322,13 +5379,19 @@
                 if (opt.value === want) { sel.value = want; found = true; break; }
               }
               if (!found) {
-                // Edge case: the section-only option may have been
-                // suppressed because no Working line exists under
-                // this code. After /set-coa auto-adds a placeholder,
-                // the dropdown still has stale options — reload soon
-                // so the new options appear.
-                setTimeout(() => window.location.reload(), 800);
+                const newOpt = document.createElement('option');
+                newOpt.value = want;
+                newOpt.textContent = `All ${name} (section-only, no specific line)`;
+                sel.appendChild(newOpt);
+                sel.value = want;
               }
+            }
+            // Match-status was already 'confirmed' if the row was
+            // Finished — /set-coa doesn't touch it, so the row stays
+            // in the Finished bucket. Defensive: ensure the dataset
+            // matches the server's behavior.
+            if (!row.dataset.matchStatus) {
+              row.dataset.matchStatus = 'unmatched';
             }
           }
           _actualsRecountStats();

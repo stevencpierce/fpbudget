@@ -2998,6 +2998,42 @@ def budget_view(pid, bid):
 
     all_budgets = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).all()
 
+    # Self-heal: any account_code present on this project's transactions
+    # but missing from the current Working budget gets a $0 placeholder
+    # line auto-added (per user 2026-05-01: unbudgeted actuals should
+    # be IN the budget, not greyed out). Idempotent — the helper
+    # short-circuits on existing lines. Bounded by O(distinct codes).
+    try:
+        from actuals import (ensure_section_in_working_budget as _ensure_sec,
+                              get_current_working_budget as _gcwb)
+        _wb = _gcwb(pid)
+        if _wb:
+            _existing_codes = {c[0] for c in
+                               db.session.query(BudgetLine.account_code)
+                               .filter(BudgetLine.budget_id == _wb.id)
+                               .distinct().all()}
+            _txn_codes = (db.session.query(Transaction.account_code,
+                                            Transaction.account_code_name)
+                          .filter(Transaction.project_id == pid,
+                                  Transaction.account_code.isnot(None),
+                                  Transaction.not_project_expense == False,
+                                  Transaction.is_expense == True)
+                          .distinct().all())
+            _heal_count = 0
+            for _code, _name in _txn_codes:
+                if _code is None or _code in _existing_codes:
+                    continue
+                _r = _ensure_sec(pid, _code, _name or
+                                 dict(FP_COA_SECTIONS).get(_code, ''))
+                if _r and _r.get('created'):
+                    _heal_count += 1
+            if _heal_count:
+                db.session.commit()
+                app.logger.info(f"[budget_view] self-heal added {_heal_count} unbudgeted lines for project {pid}")
+    except Exception as _heal_e:
+        app.logger.warning(f"[budget_view] unbudgeted self-heal failed: {_heal_e}")
+        db.session.rollback()
+
     lines = BudgetLine.query.filter_by(budget_id=bid).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
 
