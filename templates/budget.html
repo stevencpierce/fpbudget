@@ -5309,6 +5309,27 @@
             }
             row.dataset.coded     = '1';
             row.style.borderColor = '#3a5a3a';
+            // Sync the dropdown so the user sees the section selection.
+            // The dropdown's section-only option uses the value
+            // 'section:<code>' (see actualsSetLine). Without this
+            // selection update, the dropdown kept showing
+            // "— pick budget line —" until a hard reload.
+            const sel = row.querySelector('.actuals-line-picker');
+            if (sel) {
+              const want = 'section:' + code;
+              let found = false;
+              for (const opt of sel.options) {
+                if (opt.value === want) { sel.value = want; found = true; break; }
+              }
+              if (!found) {
+                // Edge case: the section-only option may have been
+                // suppressed because no Working line exists under
+                // this code. After /set-coa auto-adds a placeholder,
+                // the dropdown still has stale options — reload soon
+                // so the new options appear.
+                setTimeout(() => window.location.reload(), 800);
+              }
+            }
           }
           _actualsRecountStats();
         } catch (err) {
