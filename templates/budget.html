@@ -682,6 +682,18 @@
             data-qty="{{ ln.quantity | float }}" data-days="{{ ln.days | float }}"
             data-tag="{{ ln.line_tag or '' }}" data-sync-omit="{{ '1' if ln.sync_omit else '0' }}">
           <td class="col-desc">
+            {# Actual view: chevron + count badge when this line has linked
+               transactions, signaling it's expandable. Click anywhere on
+               the line row toggles the detail (handled by the actuals JS
+               IIFE). When no txns, no chevron. #}
+            {% if is_actual_view %}
+              {% set _line_txns_n = (txns_by_line.get(ln.id, []) | length) %}
+              {% if _line_txns_n %}
+              <span class="actual-line-chev" style="display:inline-block;width:10px;color:#22c55e;font-size:.75rem;cursor:pointer">▸</span>
+              <span style="font-size:.65rem;color:#22c55e;background:rgba(34,197,94,.1);padding:1px 5px;border-radius:8px;margin-right:4px"
+                    title="{{ _line_txns_n }} transaction{{ 's' if _line_txns_n != 1 else '' }} linked — click to expand">{{ _line_txns_n }}</span>
+              {% endif %}
+            {% endif %}
             <span class="line-number">{{ sec.code }}-{{ '%02d' % ns.line_counter }}</span><span class="editable" data-field="description"
                   data-id="{{ ln.id }}">{{ ln.description or '' }}</span>
             {# Meal / craft-services summary: show 'X days catering for Y meals'
@@ -832,9 +844,18 @@
           </td>
           {# Per-line ACTUAL: sum of Transaction.amount for this line.
              actual_by_line_id keys on the Working line id (which is
-             ln.id when we're rendering Working). Hidden when no Actual
-             budget exists yet (column collapses to 0px). #}
-          {% set _actual = (actual_by_line_id.get(ln.id, 0) or 0) | float %}
+             ln.id when we're rendering Working). In Actual view, ln.id
+             IS the Actual line id and we sum txns_by_line directly.
+             Hidden when no Actual budget exists yet. #}
+          {% if is_actual_view %}
+            {% set _actual_ns = namespace(t=0) %}
+            {% for _t in txns_by_line.get(ln.id, []) %}
+              {% if _t.amount %}{% set _actual_ns.t = _actual_ns.t + (_t.amount | float) %}{% endif %}
+            {% endfor %}
+            {% set _actual = _actual_ns.t %}
+          {% else %}
+            {% set _actual = (actual_by_line_id.get(ln.id, 0) or 0) | float %}
+          {% endif %}
           <td class="col-num col-actual line-actual">
             {% if has_actual_budget %}
               {% if _actual > 0 %}
@@ -868,7 +889,15 @@
             <span class="muted" style="font-size:.75rem">—</span>
             {% endif %}
           </td>
-          {% set _actual_e = (actual_by_line_id.get(ln.id, 0) or 0) | float %}
+          {% if is_actual_view %}
+            {% set _actual_e_ns = namespace(t=0) %}
+            {% for _t in txns_by_line.get(ln.id, []) %}
+              {% if _t.amount %}{% set _actual_e_ns.t = _actual_e_ns.t + (_t.amount | float) %}{% endif %}
+            {% endfor %}
+            {% set _actual_e = _actual_e_ns.t %}
+          {% else %}
+            {% set _actual_e = (actual_by_line_id.get(ln.id, 0) or 0) | float %}
+          {% endif %}
           <td class="col-num col-actual">
             {% if has_actual_budget %}
               {% if _actual_e > 0 %}
@@ -1114,10 +1143,22 @@
              section-only pool is keyed by account_code, so we look it
              up once per section. #}
           {% set _sec_actual_ns = namespace(total=0) %}
-          {% for _ln in sec.lines %}
-            {% set _sec_actual_ns.total = _sec_actual_ns.total + (actual_by_line_id.get(_ln.id, 0) or 0) | float %}
-          {% endfor %}
-          {% set _sec_actual_ns.total = _sec_actual_ns.total + (actual_section_only_by_code.get(sec.code, 0) or 0) | float %}
+          {% if is_actual_view %}
+            {# In Actual view, ln.id is the Actual line id and txns_by_line keys on it. #}
+            {% for _ln in sec.lines %}
+              {% for _t in txns_by_line.get(_ln.id, []) %}
+                {% if _t.amount %}{% set _sec_actual_ns.total = _sec_actual_ns.total + (_t.amount | float) %}{% endif %}
+              {% endfor %}
+            {% endfor %}
+            {% for _t in txns_by_section_only_code.get(sec.code, []) %}
+              {% if _t.amount %}{% set _sec_actual_ns.total = _sec_actual_ns.total + (_t.amount | float) %}{% endif %}
+            {% endfor %}
+          {% else %}
+            {% for _ln in sec.lines %}
+              {% set _sec_actual_ns.total = _sec_actual_ns.total + (actual_by_line_id.get(_ln.id, 0) or 0) | float %}
+            {% endfor %}
+            {% set _sec_actual_ns.total = _sec_actual_ns.total + (actual_section_only_by_code.get(sec.code, 0) or 0) | float %}
+          {% endif %}
           {% set _sec_actual = _sec_actual_ns.total %}
           {% if is_working_view %}
           <td class="col-num sec-est-total" style="font-size:.8rem">
@@ -7040,7 +7081,10 @@ var _IS_ACTUAL_VIEW = {{ 'true' if is_actual_view else 'false' }};
       const id = row.dataset.id;
       const detail = document.querySelector(`.actual-line-detail[data-for-line="${id}"]`);
       if (!detail) return;
-      detail.style.display = (detail.style.display === 'none' || !detail.style.display) ? '' : 'none';
+      const open = detail.style.display !== 'none' && detail.style.display !== '';
+      detail.style.display = open ? 'none' : '';
+      const chev = row.querySelector('.actual-line-chev');
+      if (chev) chev.textContent = open ? '▸' : '▾';
     });
   });
   // Section-only detail toggle
