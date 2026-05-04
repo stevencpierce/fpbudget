@@ -796,15 +796,35 @@
                still useful since the Type column shows rate_type
                (10hr Day vs Flat Day vs Per Week) and duration unit is
                a different axis. #}
-            {% if ln.is_labor and not ln.use_schedule %}
+            {# Compact Days/Weeks selector next to the duration value —
+               matches what labor already has. Per user 2026-05-04: non-
+               labor lines were missing this; user wants visual parity.
+               Both labor and non-labor now get the same compact toggle
+               here; the fuller Type-column dropdown (with Show/Out/Per
+               Hour/Add/Per Month/Custom etc.) on non-labor stays as the
+               richer picker. Both write to days_unit so they stay in sync. #}
+            {% if not ln.use_schedule %}
             {% set _u = (ln.days_unit or 'days') %}
             <select class="days-unit-select inline-select"
                     data-id="{{ ln.id }}"
                     data-unit="{{ _u }}"
+                    {% if (ln.line_tag == 'kit_fee') or (ln.description and ln.description.startswith('Kit Fee')) %}disabled
+                    style="margin-left:.25rem;width:auto;min-width:64px;font-size:.72rem;opacity:.65;cursor:not-allowed"
+                    title="Kit-fee duration unit is locked."
+                    {% else %}
                     style="margin-left:.25rem;width:auto;min-width:64px;font-size:.72rem"
-                    title="Duration unit (Days vs Weeks). The labor rate model lives in the Type column.">
+                    title="Duration unit. The fuller type list (Show / Out / Per Hour / etc.) is in the Type column."
+                    {% endif %}>
               <option value="days"  {% if _u == 'days'  %}selected{% endif %}>Days</option>
               <option value="weeks" {% if _u == 'weeks' %}selected{% endif %}>Weeks</option>
+              {# If the row has a value other than days/weeks (e.g. set
+                 from the Type column to "Show"), include it as a hidden
+                 selected option so the select doesn't visually mismatch
+                 the actual value. The user can still change it via the
+                 fuller Type-column dropdown. #}
+              {% if _u not in ['days', 'weeks'] %}
+              <option value="{{ _u }}" selected>{{ _u | title }}</option>
+              {% endif %}
             </select>
             {% endif %}
           </td>
