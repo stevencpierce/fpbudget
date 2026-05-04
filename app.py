@@ -3957,6 +3957,16 @@ def line_insert(pid, bid):
     position = data.get("position", "below")   # "above" | "below"
 
     ref = BudgetLine.query.filter_by(id=ref_id, budget_id=bid).first_or_404()
+    # line_kind controls what kind of row is inserted:
+    #   'normal' (default) — a blank editable budget line
+    #   'spacer'           — a visual divider with no financial values; description always blank
+    #   'header'           — a sub-header label inside the section, click-to-edit text
+    # Both spacer/header carry line_tag='spacer'|'header' so the template
+    # can render them specially. Empty headers are filtered out on
+    # render so unfinished placeholders never persist visually.
+    line_kind = (data.get("line_kind") or "normal").lower()
+    if line_kind not in ("normal", "spacer", "header"):
+        line_kind = "normal"
 
     # All lines in the same section, ordered by sort_order then id (stable tiebreak)
     section_lines = BudgetLine.query.filter_by(
@@ -3966,18 +3976,39 @@ def line_insert(pid, bid):
     ref_idx = next((i for i, ln in enumerate(section_lines) if ln.id == ref_id), 0)
     insert_idx = ref_idx if position == "above" else ref_idx + 1
 
-    new_ln = BudgetLine(
-        budget_id    = bid,
-        account_code = ref.account_code,
-        account_name = ref.account_name,
-        description  = "",
-        is_labor     = ref.is_labor,
-        fringe_type  = ref.fringe_type if ref.is_labor else "N",
-        quantity     = 1,
-        days         = 1,
-        rate         = 0,
-        sort_order   = 0,
-    )
+    if line_kind in ("spacer", "header"):
+        # Header may carry a user-entered label from the insert payload
+        # (see lineInsert in templates/budget.html — prompts the user
+        # before POST so empty headers never persist).
+        _initial_desc = (data.get("description") or "").strip()[:200]
+        new_ln = BudgetLine(
+            budget_id    = bid,
+            account_code = ref.account_code,
+            account_name = ref.account_name,
+            description  = _initial_desc,
+            is_labor     = False,
+            fringe_type  = "N",
+            quantity     = 0,
+            days         = 0,
+            rate         = 0,
+            estimated_total = 0,
+            working_total   = 0,
+            line_tag     = line_kind,
+            sort_order   = 0,
+        )
+    else:
+        new_ln = BudgetLine(
+            budget_id    = bid,
+            account_code = ref.account_code,
+            account_name = ref.account_name,
+            description  = "",
+            is_labor     = ref.is_labor,
+            fringe_type  = ref.fringe_type if ref.is_labor else "N",
+            quantity     = 1,
+            days         = 1,
+            rate         = 0,
+            sort_order   = 0,
+        )
     db.session.add(new_ln)
     db.session.flush()
 

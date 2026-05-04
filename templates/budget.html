@@ -661,6 +661,42 @@
           {% endif %}
         {% endif %}
         {% for ln in sec.lines %}
+        {# Spacer / sub-header structural rows (per user 2026-05-04).
+           line_tag='spacer' renders a thin blank divider row. line_tag=
+           'header' renders an editable sub-header band. Empty headers
+           still render with placeholder hint text but won't persist any
+           text content unless the user types something. Skip the normal
+           line render path entirely for these. #}
+        {% if ln.line_tag == 'spacer' %}
+        <tr class="line-row spacer-row" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-tag="spacer">
+          <td colspan="14" style="padding:0">
+            <div style="height:14px;border-top:1px dashed var(--border);margin:0 6px"></div>
+          </td>
+          <td class="col-act" style="padding:0">
+            <button class="btn btn-xs btn-ghost line-row-menu-btn"
+                    data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
+                    title="Insert / Move row" onclick="openLineRowMenu(this)"
+                    style="font-size:.65rem;opacity:.4">⋮</button>
+            <button class="btn btn-xs btn-ghost del-line-btn" data-id="{{ ln.id }}"
+                    title="Delete spacer" style="font-size:.65rem;opacity:.4">✕</button>
+          </td>
+        </tr>
+        {% elif ln.line_tag == 'header' %}
+        <tr class="line-row header-row" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-tag="header">
+          <td colspan="14" style="padding:8px 12px;background:rgba(91,138,249,.06);border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+            <span class="editable header-label" data-field="description" data-id="{{ ln.id }}"
+                  data-placeholder="Sub-header (click to edit, leave blank to remove)"
+                  style="font-size:.85rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);min-width:200px;display:inline-block">{{ ln.description or '' }}</span>
+          </td>
+          <td class="col-act">
+            <button class="btn btn-xs btn-ghost line-row-menu-btn"
+                    data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
+                    title="Insert / Move row" onclick="openLineRowMenu(this)">⋮</button>
+            <button class="btn btn-xs btn-ghost del-line-btn" data-id="{{ ln.id }}"
+                    title="Delete header">✕</button>
+          </td>
+        </tr>
+        {% else %}
         {% set res = line_results[ln.id] %}
         {% set is_kit_fee = ln.description and ln.description.startswith('Kit Fee') %}
         {% set ns.line_counter = ns.line_counter + 1 %}
@@ -1032,6 +1068,7 @@
         </tr>
         {% endif %}
         {% endif %}
+        {% endif %}{# /spacer-elif-header-else block #}
         {% endfor %}
         {# Auto-calc display rows under the last real line in sections
            6000 (Insurance → Workers' Comp) and 6500 (Administrative →
@@ -9052,6 +9089,11 @@ function renderCalcDetail(d) {
   <button type="button" onclick="lineInsert('below')">Insert Row Below</button>
   <button type="button" onclick="lineDuplicate()">Duplicate Row</button>
   <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
+  <button type="button" onclick="lineInsert('above', 'spacer')">Insert Spacer Above</button>
+  <button type="button" onclick="lineInsert('below', 'spacer')">Insert Spacer Below</button>
+  <button type="button" onclick="lineInsert('above', 'header')">Insert Sub-header Above</button>
+  <button type="button" onclick="lineInsert('below', 'header')">Insert Sub-header Below</button>
+  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
   <button type="button" onclick="openLineMoveModal()">Move to…</button>
   <button type="button" id="line-menu-change-group-btn" onclick="openChangeGroupModal()" style="display:none">Change Group…</button>
 </div>
@@ -12248,13 +12290,30 @@ setTimeout(function() {
     }
   });
 
-  window.lineInsert = async function(position) {
+  window.lineInsert = async function(position, kind) {
     _menu.classList.add('hidden');
     if (!_menuLineId) return;
+    let initialDescription = '';
+    // Header: prompt for the label up front so empty placeholders never
+    // get persisted in the DB (per user 2026-05-04: "make sure that the
+    // temp text never appears if no one uses it"). Cancel or blank
+    // aborts the insert entirely.
+    if (kind === 'header') {
+      const label = prompt('Sub-header label (e.g. "Pre-production", "On-set crew"):', '');
+      if (label === null) return;  // canceled
+      const trimmed = String(label).trim();
+      if (!trimmed) return;        // blank — same as cancel
+      initialDescription = trimmed.slice(0, 200);
+    }
     const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/insert`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ reference_id: _menuLineId, position })
+      body: JSON.stringify({
+        reference_id: _menuLineId,
+        position,
+        line_kind: kind || 'normal',
+        description: initialDescription,
+      })
     });
     if (res.ok) reloadWithTab();
     else alert('Insert failed');
@@ -12313,6 +12372,30 @@ setTimeout(function() {
           clone.querySelectorAll('[data-id]').forEach(el => {
             if (el.getAttribute('data-id') === String(srcId)) {
               el.setAttribute('data-id', String(newId));
+            }
+          });
+          // cloneNode(true) doesn't carry live form state (select.value,
+          // input.value) — it copies the DOM tree only. So a select the
+          // user changed from "Days" to "Weeks" reverts to the default
+          // option in the clone. Walk paired controls and mirror state.
+          // Per user 2026-05-04: every element should duplicate, including
+          // the Type column dropdown and any other form controls.
+          const srcSelects = srcRow.querySelectorAll('select');
+          const dstSelects = clone.querySelectorAll('select');
+          srcSelects.forEach((s, i) => {
+            const d = dstSelects[i];
+            if (d) {
+              d.value = s.value;
+              if (d.dataset && s.dataset && s.dataset.unit) d.dataset.unit = s.dataset.unit;
+            }
+          });
+          const srcInputs = srcRow.querySelectorAll('input, textarea');
+          const dstInputs = clone.querySelectorAll('input, textarea');
+          srcInputs.forEach((s, i) => {
+            const d = dstInputs[i];
+            if (d) {
+              d.value = s.value;
+              if (s.type === 'checkbox' || s.type === 'radio') d.checked = s.checked;
             }
           });
           // Don't carry expand-state from a possibly-open source row.
