@@ -902,6 +902,9 @@
           </td>
           <td class="col-rt">
             {% if ln.is_labor %}
+            {# Labor: Type column = rate_type (10hr Day / Flat / Per Week
+               / Hourly / Custom). Different concept from days_unit —
+               affects OT calc, not duration unit. #}
             <select class="inline-select" data-field="rate_type" data-id="{{ ln.id }}">
               {% set rt_labels = {'day_10':'10hr Day','day_8':'8hr Day','day_12':'12hr Day','flat_day':'Flat Day','flat_project':'Flat Project','hourly':'Hourly','week':'Per Week','custom':'Custom'} %}
               {% for rt, label in rt_labels.items() %}
@@ -909,57 +912,13 @@
               {% endfor %}
             </select>
             {% else %}
-            {# Non-labor type/unit picker — uses days_unit field. Per user
-               2026-05-04: extended option set (Day / Week / Show / Out /
-               Per Hour / Add / Per Month / Custom) plus any project-wide
-               custom values previously entered (collected server-side
-               into project_custom_units). Same days-unit-select class
-               so the existing change handler + saveSelectUnit logic
-               handles it without per-cell wiring. #}
-            {% set _u_t = (ln.days_unit or 'days') %}
-            {# Kit-fee rows: lock the Type field after creation. Per user
-               2026-05-04 — type is set in the Add Kit Fee modal and
-               should not be changeable on the fly afterwards. #}
-            {% set _is_kit_fee_row = (ln.line_tag == 'kit_fee') or (ln.description and ln.description.startswith('Kit Fee')) %}
-            <select class="days-unit-select inline-select{% if _is_kit_fee_row %} kit-fee-locked{% endif %}"
-                    data-id="{{ ln.id }}"
-                    data-unit="{{ _u_t }}"
-                    {% if _is_kit_fee_row %}disabled
-                    title="Kit-fee type is locked — set when the kit fee was added."
-                    style="width:auto;min-width:78px;font-size:.72rem;opacity:.65;cursor:not-allowed"
-                    {% else %}
-                    style="width:auto;min-width:78px;font-size:.72rem"
-                    title="Type / unit for this non-labor line. Custom values become available across the entire project."
-                    {% endif %}>
-
-              <option value="days"  {% if _u_t == 'days'  %}selected{% endif %}>Day</option>
-              <option value="weeks" {% if _u_t == 'weeks' %}selected{% endif %}>Week</option>
-              <option value="show"  {% if _u_t == 'show'  %}selected{% endif %}>Show</option>
-              <option value="out"   {% if _u_t == 'out'   %}selected{% endif %}>Out</option>
-              <option value="hrs"   {% if _u_t == 'hrs'   %}selected{% endif %}>Per Hour</option>
-              <option value="add"   {% if _u_t == 'add'   %}selected{% endif %}>Add</option>
-              <option value="mo"    {% if _u_t == 'mo'    %}selected{% endif %}>Per Month</option>
-              <option value="flat"  {% if _u_t == 'flat'  %}selected{% endif %}>Flat</option>
-              <option value="ea"    {% if _u_t == 'ea'    %}selected{% endif %}>Each</option>
-              <option value="per"   {% if _u_t == 'per'   %}selected{% endif %}>Per</option>
-              <option value="x"     {% if _u_t == 'x'     %}selected{% endif %}>X</option>
-              <option value="allow" {% if _u_t == 'allow' %}selected{% endif %}>Allow</option>
-              <option value="est"   {% if _u_t == 'est'   %}selected{% endif %}>EST</option>
-              <option value="lb"    {% if _u_t == 'lb'    %}selected{% endif %}>LB</option>
-              <option value="mi"    {% if _u_t == 'mi'    %}selected{% endif %}>Miles</option>
-              {# Project-wide custom units — every non-standard days_unit value
-                 used anywhere on this project shows up here on every row. #}
-              {% if project_custom_units %}
-              {% for _cu in project_custom_units %}
-              <option value="{{ _cu }}" {% if _u_t == _cu %}selected{% endif %}>{{ _cu | title }}</option>
-              {% endfor %}
-              {% endif %}
-              {# If the row's current unit isn't in any list above (legacy edge case), include it. #}
-              {% if _u_t not in ['days','weeks','show','out','hrs','add','mo','flat','ea','per','x','allow','est','lb','mi'] and _u_t not in project_custom_units %}
-              <option value="{{ _u_t }}" selected>{{ _u_t | title }}</option>
-              {% endif %}
-              <option value="__custom__">+ Custom…</option>
-            </select>
+            {# Non-labor: Type column intentionally LEFT BLANK to avoid
+               the duplicate-picker bug where changing Type changed
+               Duration (both selects wrote to days_unit, mirroring
+               each other). The full unit picker (Day/Week/Show/Out/
+               Per Hour/Add/Per Month/Custom + project-wide customs)
+               lives only in the Duration column for non-labor.
+               Per user 2026-05-04 regression report. #}
             {% endif %}
           </td>
           <td class="col-num">
