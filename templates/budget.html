@@ -753,38 +753,35 @@
             {% if not ln.use_schedule %}
             {% set _u = (ln.days_unit or 'days') %}
             {% set _u_labels = {'days':'D','weeks':'W','x':'X','per':'Per','allow':'Allow','est':'EST','lb':'LB','hrs':'Hrs','flat':'Flat','mo':'Mo','mi':'Mi','ea':'Ea'} %}
-            {% if ln.is_labor %}
-              {# Labor keeps the compact D/W toggle button (right-click for full menu). #}
-              <button class="days-unit-toggle btn btn-xs {% if _u == 'weeks' %}active{% endif %}"
-                      data-id="{{ ln.id }}"
-                      data-unit="{{ _u }}"
-                      title="Right-click to change unit (Days / Weeks / X / Per / Allow / EST / LB / Custom…)">{{ _u_labels.get(_u, _u[:4] | upper) }}</button>
-            {% else %}
-              {# Non-labor: dropdown select — more discoverable than right-click. #}
-              <select class="days-unit-select inline-select"
-                      data-id="{{ ln.id }}"
-                      data-unit="{{ _u }}"
-                      style="margin-left:.25rem;width:auto;min-width:64px;font-size:.72rem"
-                      title="Unit for this non-labor line">
-                <option value="days"  {% if _u == 'days'  %}selected{% endif %}>Days</option>
-                <option value="weeks" {% if _u == 'weeks' %}selected{% endif %}>Weeks</option>
-                <option value="hrs"   {% if _u == 'hrs'   %}selected{% endif %}>Hours</option>
-                <option value="flat"  {% if _u == 'flat'  %}selected{% endif %}>Flat</option>
-                <option value="ea"    {% if _u == 'ea'    %}selected{% endif %}>Each</option>
-                <option value="per"   {% if _u == 'per'   %}selected{% endif %}>Per</option>
-                <option value="x"     {% if _u == 'x'     %}selected{% endif %}>X</option>
-                <option value="allow" {% if _u == 'allow' %}selected{% endif %}>Allow</option>
-                <option value="est"   {% if _u == 'est'   %}selected{% endif %}>EST</option>
-                <option value="lb"    {% if _u == 'lb'    %}selected{% endif %}>LB</option>
-                <option value="mo"    {% if _u == 'mo'    %}selected{% endif %}>Months</option>
-                <option value="mi"    {% if _u == 'mi'    %}selected{% endif %}>Miles</option>
-                {# If the line has a custom unit not in the list above, include it so it's selectable. #}
-                {% if _u not in ['days','weeks','hrs','flat','ea','per','x','allow','est','lb','mo','mi'] %}
-                <option value="{{ _u }}" selected>{{ _u }}</option>
-                {% endif %}
-                <option value="__custom__">Custom…</option>
-              </select>
-            {% endif %}
+            {# Per user 2026-05-04: unify the duration-unit picker —
+               labor used to be a compact D/W toggle (right-click for
+               menu), non-labor used a visible <select>. The user prefers
+               the non-labor style on both, so labor now gets the same
+               dropdown. The right-click custom-menu still works as a
+               power-user shortcut via the existing handler. #}
+            <select class="days-unit-select inline-select"
+                    data-id="{{ ln.id }}"
+                    data-unit="{{ _u }}"
+                    style="margin-left:.25rem;width:auto;min-width:64px;font-size:.72rem"
+                    title="Unit for this line">
+              <option value="days"  {% if _u == 'days'  %}selected{% endif %}>Days</option>
+              <option value="weeks" {% if _u == 'weeks' %}selected{% endif %}>Weeks</option>
+              <option value="hrs"   {% if _u == 'hrs'   %}selected{% endif %}>Hours</option>
+              <option value="flat"  {% if _u == 'flat'  %}selected{% endif %}>Flat</option>
+              <option value="ea"    {% if _u == 'ea'    %}selected{% endif %}>Each</option>
+              <option value="per"   {% if _u == 'per'   %}selected{% endif %}>Per</option>
+              <option value="x"     {% if _u == 'x'     %}selected{% endif %}>X</option>
+              <option value="allow" {% if _u == 'allow' %}selected{% endif %}>Allow</option>
+              <option value="est"   {% if _u == 'est'   %}selected{% endif %}>EST</option>
+              <option value="lb"    {% if _u == 'lb'    %}selected{% endif %}>LB</option>
+              <option value="mo"    {% if _u == 'mo'    %}selected{% endif %}>Months</option>
+              <option value="mi"    {% if _u == 'mi'    %}selected{% endif %}>Miles</option>
+              {# Custom unit fallback if the row was set to one not in the list. #}
+              {% if _u not in ['days','weeks','hrs','flat','ea','per','x','allow','est','lb','mo','mi'] %}
+              <option value="{{ _u }}" selected>{{ _u }}</option>
+              {% endif %}
+              <option value="__custom__">Custom…</option>
+            </select>
             {% endif %}
           </td>
           <td class="col-num col-rate-cell">
@@ -9225,19 +9222,19 @@ function renderCalcDetail(d) {
     _unitMenu = document.createElement('div');
     _unitMenu.id = 'days-unit-menu';
     _unitMenu.className = 'ctx-menu hidden';
-    _unitMenu.style.cssText = 'position:fixed;z-index:9999;background:var(--card,#1d2230);'
-      + 'border:1px solid var(--border,#333);border-radius:6px;'
-      + 'box-shadow:0 6px 20px rgba(0,0,0,.55);padding:4px 0;min-width:160px;font-size:.85rem';
+    _unitMenu.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-2);'
+      + 'color:var(--text);border:1px solid var(--border);border-radius:6px;'
+      + 'box-shadow:var(--shadow);padding:4px 0;min-width:160px;font-size:.85rem';
     _unitMenu.innerHTML = _UNIT_OPTIONS.map(o =>
       `<div class="ctx-menu-item" data-unit="${o.code}"
              style="padding:6px 14px;cursor:pointer"
-             onmouseover="this.style.background='rgba(255,255,255,.08)'"
+             onmouseover="this.style.background='var(--bg-3)'"
              onmouseout="this.style.background='transparent'">${o.label}</div>`
     ).join('')
       + '<div style="height:1px;background:var(--border,#333);margin:4px 0"></div>'
       + `<div class="ctx-menu-item" data-unit="__custom__"
              style="padding:6px 14px;cursor:pointer;font-style:italic"
-             onmouseover="this.style.background='rgba(255,255,255,.08)'"
+             onmouseover="this.style.background='var(--bg-3)'"
              onmouseout="this.style.background='transparent'">Custom…</div>`;
     document.body.appendChild(_unitMenu);
   }
@@ -9309,7 +9306,7 @@ function renderCalcDetail(d) {
     let html = _UNIT_OPTIONS.map(o =>
       `<div class="ctx-menu-item" data-unit="${o.code}"
              style="padding:6px 14px;cursor:pointer"
-             onmouseover="this.style.background='rgba(255,255,255,.08)'"
+             onmouseover="this.style.background='var(--bg-3)'"
              onmouseout="this.style.background='transparent'">${o.label}</div>`
     ).join('');
     if (customs.size > 0) {
@@ -9320,14 +9317,14 @@ function renderCalcDetail(d) {
         const safe = u.replace(/"/g,'&quot;').replace(/</g,'&lt;');
         html += `<div class="ctx-menu-item" data-unit="${safe}"
                   style="padding:6px 14px;cursor:pointer"
-                  onmouseover="this.style.background='rgba(255,255,255,.08)'"
+                  onmouseover="this.style.background='var(--bg-3)'"
                   onmouseout="this.style.background='transparent'">${safe.charAt(0).toUpperCase() + safe.slice(1)}</div>`;
       });
     }
     html += '<div style="height:1px;background:var(--border,#333);margin:4px 0"></div>'
           + `<div class="ctx-menu-item" data-unit="__custom__"
               style="padding:6px 14px;cursor:pointer;font-style:italic"
-              onmouseover="this.style.background='rgba(255,255,255,.08)'"
+              onmouseover="this.style.background='var(--bg-3)'"
               onmouseout="this.style.background='transparent'">Custom…</div>`;
     _unitMenu.innerHTML = html;
   }
