@@ -3923,6 +3923,7 @@ def add_kit_fee(pid, bid, lid):
     rate      = _bc_float(data.get("rate", 0))
     qty       = _bc_float(data.get("quantity", 1), 1)
     days_val  = _bc_float(data.get("days", 1), 1)
+    days_unit = (data.get("days_unit") or "days").strip().lower()[:20] or "days"
     estimated = rate * qty * days_val if rate > 0 else 0
 
     ln = BudgetLine(
@@ -3936,6 +3937,7 @@ def add_kit_fee(pid, bid, lid):
         sort_order     = parent.sort_order,
         quantity       = qty,
         days           = days_val,
+        days_unit      = days_unit,
         rate           = rate,
         unit_rate      = rate if rate > 0 else None,
         estimated_total= estimated,
