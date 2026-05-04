@@ -12160,12 +12160,17 @@ setTimeout(function() {
 
   // Right-click on any budget line row opens the same context menu as the
   // ⋮ button — just faster. Position the menu at the cursor instead of the
-  // button. Works for both labor and non-labor lines.
+  // button. Per user 2026-05-04: SKIP labor rows here — they have their
+  // own right-click menu (Add Kit Fee / All-in Total / Sync omit) which
+  // is more important for the labor workflow. Insert/Duplicate/Move are
+  // still reachable on labor rows via the ⋮ hamburger button.
   document.addEventListener('contextmenu', function(e) {
     const row = e.target.closest('.line-row');
     if (!row) return;
     // Kit-fee child rows follow their parent — no independent menu.
     if (row.classList.contains('kit-fee-row')) return;
+    // Labor rows: defer to the kit-fee context menu (registered earlier).
+    if (row.classList.contains('labor-line')) return;
     const id   = parseInt(row.dataset.id || '0');
     const code = parseInt(row.dataset.code || '0');
     if (!id) return;
