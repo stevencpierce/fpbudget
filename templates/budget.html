@@ -215,6 +215,7 @@
     <button class="tab-btn" data-tab="catering">Catering</button>
     <button class="tab-btn" data-tab="contacts">Contacts</button>
     <button class="tab-btn" data-tab="locations">Locations</button>
+    <a class="tab-btn tab-link" href="{{ url_for('po_list_page', pid=project.id) }}?return_bid={{ budget.id }}">POs</a>
     <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
     <button class="tab-btn" data-tab="docs">Docs</button>
     <button class="tab-btn" data-tab="actuals">Actuals</button>

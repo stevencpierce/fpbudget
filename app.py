@@ -9172,6 +9172,219 @@ def location_delete(pid, lid):
     return jsonify({"ok": True})
 
 
+# ── Purchase Orders (per-project) ──────────────────────────────────────────────
+# Per user 2026-05-04: vendor commitment tracking. POs are project-scoped;
+# budget lines (typically non-labor) reference one via BudgetLine.po_id.
+# Future: Transaction.po_id + DocUpload.po_id for spend rollup.
+
+def _po_to_dict(po, *, with_rollup=False, project_id=None):
+    """Serialize a PurchaseOrder. with_rollup adds budgeted (sum of
+    BudgetLine.estimated_total for assigned lines) and over_cap flag."""
+    out = {
+        "id":             po.id,
+        "po_number":      po.po_number,
+        "vendor_name":    po.vendor_name,
+        "vendor_contact": po.vendor_contact or "",
+        "vendor_email":   po.vendor_email or "",
+        "vendor_phone":   po.vendor_phone or "",
+        "total_committed": float(po.total_committed) if po.total_committed is not None else None,
+        "status":         po.status or "open",
+        "issued_date":    po.issued_date.isoformat() if po.issued_date else None,
+        "notes":          po.notes or "",
+        "archived":       bool(po.archived),
+        "created_at":     po.created_at.isoformat() if po.created_at else None,
+    }
+    if with_rollup:
+        from sqlalchemy import func as _func_po
+        # Budget commitment: sum estimated_total of every BudgetLine
+        # currently assigned to this PO (any budget — Estimated /
+        # Working / Actual all count since the user might be tracking
+        # commitments at any phase). Falls back to 0 when no lines.
+        budgeted = (db.session.query(_func_po.coalesce(_func_po.sum(BudgetLine.estimated_total), 0))
+                    .filter(BudgetLine.po_id == po.id)
+                    .scalar()) or 0
+        out["budgeted"]   = float(budgeted)
+        out["line_count"] = (db.session.query(_func_po.count(BudgetLine.id))
+                             .filter(BudgetLine.po_id == po.id).scalar()) or 0
+        if po.total_committed is not None:
+            out["over_cap"] = float(budgeted) > float(po.total_committed)
+            out["cap_remaining"] = float(po.total_committed) - float(budgeted)
+        else:
+            out["over_cap"] = False
+            out["cap_remaining"] = None
+    return out
+
+
+@app.route("/projects/<int:pid>/pos")
+@login_required
+def po_list_page(pid):
+    """Render the project's PO tab — list of every PO with budgeted +
+    invoiced totals against cap. Modeled after the Locations tab."""
+    project = ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    from models import PurchaseOrder
+    pos = (PurchaseOrder.query
+           .filter_by(project_id=pid)
+           .order_by(PurchaseOrder.archived.asc(),
+                     PurchaseOrder.created_at.desc())
+           .all())
+    pos_data = [_po_to_dict(p, with_rollup=True, project_id=pid) for p in pos]
+    return render_template("pos.html",
+                           project=project,
+                           pos=pos_data,
+                           now=datetime.utcnow())
+
+
+@app.route("/projects/<int:pid>/pos.json")
+@login_required
+def po_list_json(pid):
+    """JSON list of POs (for the budget-line PO picker modal)."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    from models import PurchaseOrder
+    include_archived = request.args.get('include_archived') == '1'
+    q = PurchaseOrder.query.filter_by(project_id=pid)
+    if not include_archived:
+        q = q.filter(PurchaseOrder.archived == False)  # noqa
+    pos = q.order_by(PurchaseOrder.created_at.desc()).all()
+    return jsonify({
+        "ok": True,
+        "pos": [_po_to_dict(p, with_rollup=True, project_id=pid) for p in pos],
+    })
+
+
+@app.route("/projects/<int:pid>/pos/save", methods=["POST"])
+@login_required
+def po_save(pid):
+    """Create or update a PurchaseOrder. Body: {id?, po_number, vendor_name,
+    vendor_contact?, vendor_email?, vendor_phone?, total_committed?, status?,
+    issued_date?, notes?}. Returns the saved PO with rollup."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    from models import PurchaseOrder
+    data = request.get_json(force=True) or {}
+    pid_arg = data.get('id')
+    if pid_arg:
+        po = PurchaseOrder.query.filter_by(id=int(pid_arg), project_id=pid).first_or_404()
+    else:
+        po = PurchaseOrder(project_id=pid,
+                           created_by_user_id=current_user.id if current_user.is_authenticated else None)
+        db.session.add(po)
+    # Field map → trim + length cap.
+    for fld, cap in (('po_number', 80), ('vendor_name', 200),
+                     ('vendor_contact', 200), ('vendor_email', 200),
+                     ('vendor_phone', 50), ('notes', None)):
+        if fld in data:
+            v = (data.get(fld) or '').strip()
+            setattr(po, fld, (v[:cap] if cap and v else (v or None)))
+    if 'total_committed' in data:
+        v = data.get('total_committed')
+        if v in (None, '', 'null'):
+            po.total_committed = None
+        else:
+            try:
+                po.total_committed = round(float(v), 2)
+            except (TypeError, ValueError):
+                return jsonify({"error": "total_committed must be a number"}), 400
+    if 'status' in data:
+        s = (data.get('status') or 'open').strip().lower()
+        if s in ('open', 'sent', 'received', 'closed', 'cancelled'):
+            po.status = s
+    if 'issued_date' in data:
+        d = (data.get('issued_date') or '').strip()
+        if not d:
+            po.issued_date = None
+        else:
+            try:
+                from datetime import datetime as _dt
+                po.issued_date = _dt.strptime(d[:10], '%Y-%m-%d').date()
+            except Exception:
+                return jsonify({"error": "issued_date must be YYYY-MM-DD"}), 400
+    if 'archived' in data:
+        po.archived = bool(data.get('archived'))
+    # Validate: po_number + vendor_name required.
+    if not (po.po_number or '').strip() or not (po.vendor_name or '').strip():
+        return jsonify({"error": "po_number and vendor_name are required"}), 400
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        # Likely the unique (project_id, po_number) constraint.
+        if 'uq_po_project_number' in str(e) or 'duplicate' in str(e).lower():
+            return jsonify({"error": "A PO with that number already exists on this project."}), 409
+        return jsonify({"error": str(e)}), 400
+    try:
+        _log_activity(
+            action=('create' if not pid_arg else 'update'), entity_type='purchase_order',
+            entity_id=po.id, entity_label=f"{po.po_number} — {po.vendor_name}",
+            project_id=pid,
+            after={'po_number': po.po_number, 'vendor_name': po.vendor_name,
+                   'total_committed': float(po.total_committed) if po.total_committed is not None else None,
+                   'status': po.status},
+            note=('Created PO' if not pid_arg else 'Updated PO'))
+    except Exception: pass
+    return jsonify({"ok": True, "po": _po_to_dict(po, with_rollup=True, project_id=pid)})
+
+
+@app.route("/projects/<int:pid>/pos/<int:po_id>/delete", methods=["POST"])
+@login_required
+def po_delete(pid, po_id):
+    """Soft-delete (archive) a PO. Lines stay assigned but the PO drops
+    out of the active list. Use ?hard=1 to fully delete (clears po_id
+    on every assigned line first)."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    from models import PurchaseOrder
+    po = PurchaseOrder.query.filter_by(id=po_id, project_id=pid).first_or_404()
+    label = f"{po.po_number} — {po.vendor_name}"
+    if request.args.get('hard') == '1':
+        # Hard delete: null out po_id on every assigned BudgetLine first.
+        BudgetLine.query.filter_by(po_id=po.id).update({'po_id': None}, synchronize_session=False)
+        db.session.delete(po)
+    else:
+        po.archived = True
+    db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='purchase_order',
+                      entity_id=po_id, entity_label=label, project_id=pid,
+                      note=('Hard-deleted PO' if request.args.get('hard') == '1' else 'Archived PO'))
+    except Exception: pass
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/po", methods=["POST"])
+@login_required
+def line_assign_po(pid, bid, lid):
+    """Assign / unassign a budget line to a PurchaseOrder. Body:
+    {po_id: int|null}. Null = unassign. Returns updated rollup so the
+    UI can show the cap status without a full reload."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'editor')
+    ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
+    data = request.get_json(force=True) or {}
+    raw = data.get('po_id')
+    from models import PurchaseOrder
+    if raw in (None, '', 'null', 0):
+        ln.po_id = None
+    else:
+        try:
+            new_po_id = int(raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "po_id must be an integer or null"}), 400
+        po = PurchaseOrder.query.filter_by(id=new_po_id, project_id=pid).first()
+        if not po:
+            return jsonify({"error": "PurchaseOrder not found on this project"}), 404
+        ln.po_id = new_po_id
+    db.session.commit()
+    # Return the updated PO rollup so the row UI can render the cap badge.
+    out = {"ok": True, "po_id": ln.po_id}
+    if ln.po_id:
+        po = PurchaseOrder.query.get(ln.po_id)
+        if po:
+            out["po"] = _po_to_dict(po, with_rollup=True, project_id=pid)
+    return out
+
+
 # ── Global Locations Database ──────────────────────────────────────────────────
 
 @app.route("/locations")
@@ -13603,6 +13816,16 @@ def _web_worker_essential_columns():
                 # forward, upsert_line guards this on every save.
                 "UPDATE budget_line SET quantity = 1 "
                 "  WHERE is_labor = TRUE AND quantity IS DISTINCT FROM 1",
+                # 2026-05-04 — PurchaseOrder table + budget_line.po_id
+                # FK. Per-project vendor commitment tracking. SQLAlchemy
+                # creates the table on first run via metadata.create_all
+                # in _do_boot_work, but we still need the FK column on
+                # the existing budget_line table. Idempotent ADD COLUMN
+                # IF NOT EXISTS so it's safe to re-run.
+                "ALTER TABLE budget_line "
+                "  ADD COLUMN IF NOT EXISTS po_id INTEGER REFERENCES purchase_order(id) ON DELETE SET NULL",
+                "CREATE INDEX IF NOT EXISTS ix_budget_line_po "
+                "  ON budget_line (po_id)",
                 # ── 2026-04-30: Actuals integration (Phase 1 schema) ────
                 # Three-legged stool linkage on transaction:
                 #   BudgetLine ← Transaction → DocUpload

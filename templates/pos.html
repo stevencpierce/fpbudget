@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% block title %}Purchase Orders — {{ project.name }} — FPBudget{% endblock %}
+
+{% block content %}
+<div class="page-header" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+  <h1 style="margin:0">Purchase Orders</h1>
+  <span class="muted" style="font-size:.9rem">{{ project.name }}</span>
+  <button class="btn btn-primary" onclick="openPoModal()" style="margin-left:auto">+ New PO</button>
+  <a href="{{ url_for('budget_view', pid=project.id, bid=request.args.get('return_bid', '')) if request.args.get('return_bid') else url_for('project_detail', pid=project.id) }}"
+     class="btn btn-outline btn-sm">← Back</a>
+</div>
+
+<p class="muted" style="margin-bottom:1.5rem;font-size:.85rem">
+  Vendor commitments tied to this project. Assign budget lines (typically equipment, services,
+  and other non-labor) to a PO so spend rolls up against the committed cap. The cap-warning
+  banner fires if the budgeted total exceeds it.
+</p>
+
+{# Open POs first, then archived. Empty-state if no POs yet. #}
+{% if pos %}
+<div style="display:flex;flex-direction:column;gap:.6rem">
+  {% for po in pos %}
+  {% set cap = po.total_committed %}
+  {% set budgeted = po.budgeted %}
+  {% set over = po.over_cap %}
+  {% set pct = (budgeted / cap * 100) if cap and cap > 0 else 0 %}
+  <div class="po-card" data-id="{{ po.id }}"
+       style="background:var(--bg-card);border:1px solid {{ '#fbbf24' if over else 'var(--border)' }};
+              border-radius:8px;padding:14px 18px;display:flex;flex-direction:column;gap:8px;
+              {% if po.archived %}opacity:.55{% endif %}">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <span style="font-weight:700;font-size:1.05rem;color:var(--accent)">{{ po.po_number }}</span>
+      <span style="font-weight:600">{{ po.vendor_name }}</span>
+      <span style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;
+                   padding:2px 8px;border-radius:10px;
+                   {% if po.status == 'open' %}background:rgba(91,138,249,.15);color:#5b8af9
+                   {% elif po.status == 'sent' %}background:rgba(245,158,11,.15);color:#f59e0b
+                   {% elif po.status == 'received' %}background:rgba(34,197,94,.15);color:#22c55e
+                   {% elif po.status == 'closed' %}background:rgba(107,114,128,.15);color:#6b7280
+                   {% elif po.status == 'cancelled' %}background:rgba(239,68,68,.15);color:#ef4444
+                   {% else %}background:var(--bg-input);color:var(--text-muted){% endif %}">{{ po.status }}</span>
+      {% if po.archived %}
+      <span style="font-size:.7rem;color:var(--text-muted);font-style:italic">archived</span>
+      {% endif %}
+      {% if po.issued_date %}
+      <span class="muted" style="font-size:.78rem">issued {{ po.issued_date }}</span>
+      {% endif %}
+      <div style="margin-left:auto;display:flex;gap:6px">
+        <button class="btn btn-xs btn-ghost" onclick="editPo({{ po.id }})" title="Edit">✎ Edit</button>
+        {% if po.archived %}
+        <button class="btn btn-xs btn-ghost" onclick="restorePo({{ po.id }})" title="Restore">↺ Restore</button>
+        <button class="btn btn-xs btn-ghost" onclick="deletePo({{ po.id }}, true)" title="Permanently delete"
+                style="color:#ef4444">✕ Delete</button>
+        {% else %}
+        <button class="btn btn-xs btn-ghost" onclick="deletePo({{ po.id }}, false)" title="Archive">📦 Archive</button>
+        {% endif %}
+      </div>
+    </div>
+    {% if po.vendor_contact or po.vendor_email or po.vendor_phone %}
+    <div style="font-size:.78rem;color:var(--text-muted)">
+      {% if po.vendor_contact %}👤 {{ po.vendor_contact }}{% endif %}
+      {% if po.vendor_email %}{% if po.vendor_contact %} · {% endif %}✉ {{ po.vendor_email }}{% endif %}
+      {% if po.vendor_phone %}{% if po.vendor_contact or po.vendor_email %} · {% endif %}☎ {{ po.vendor_phone }}{% endif %}
+    </div>
+    {% endif %}
+    <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:14px;font-size:.82rem;
+                padding:8px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+      <div>
+        <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Cap</div>
+        <div style="font-weight:600;font-variant-numeric:tabular-nums">
+          {% if cap is not none %}${{ '{:,.2f}'.format(cap) }}{% else %}<span class="muted">—</span>{% endif %}
+        </div>
+      </div>
+      <div>
+        <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Budgeted ({{ po.line_count }} line{{ 's' if po.line_count != 1 else '' }})</div>
+        <div style="font-weight:600;font-variant-numeric:tabular-nums;color:{% if over %}#fbbf24{% else %}var(--text){% endif %}">
+          ${{ '{:,.2f}'.format(budgeted) }}
+        </div>
+      </div>
+      <div>
+        <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Remaining</div>
+        <div style="font-weight:600;font-variant-numeric:tabular-nums;color:{% if over %}#ef4444{% elif cap %}#22c55e{% else %}var(--text-muted){% endif %}">
+          {% if cap is not none %}${{ '{:,.2f}'.format(po.cap_remaining) }}{% else %}<span class="muted">—</span>{% endif %}
+        </div>
+      </div>
+      <div>
+        <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">% Used</div>
+        <div style="font-weight:600;font-variant-numeric:tabular-nums;color:{% if over %}#ef4444{% else %}var(--text){% endif %}">
+          {% if cap and cap > 0 %}{{ '{:,.1f}'.format(pct) }}%{% else %}<span class="muted">—</span>{% endif %}
+        </div>
+      </div>
+    </div>
+    {% if over %}
+    <div style="font-size:.8rem;color:#fbbf24;font-weight:600">
+      ⚠ Budgeted total exceeds the committed cap by ${{ '{:,.2f}'.format(budgeted - cap) }}.
+    </div>
+    {% endif %}
+    {% if po.notes %}
+    <div style="font-size:.78rem;color:var(--text-muted);font-style:italic">📝 {{ po.notes }}</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div style="text-align:center;padding:3rem 1rem;color:var(--text-muted);font-style:italic;
+            background:var(--bg-card);border:1px dashed var(--border);border-radius:8px">
+  No purchase orders yet for this project.<br>
+  <button class="btn btn-primary" onclick="openPoModal()" style="margin-top:1rem">+ Create the first one</button>
+</div>
+{% endif %}
+
+{# ── PO modal (create / edit) ── #}
+<div id="po-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="closePoModal()"></div>
+  <div class="modal-box" style="min-width:480px;max-width:600px">
+    <h2 style="margin-bottom:4px" id="po-modal-title">+ New Purchase Order</h2>
+    <p class="muted" style="font-size:.8rem;margin-bottom:14px">
+      Capture the vendor commitment. Cap is optional — leave blank if no cap is in place.
+    </p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.7rem">
+      <div class="field">
+        <label>PO Number *</label>
+        <input type="text" id="po-number" placeholder="PO-2026-001" maxlength="80">
+      </div>
+      <div class="field">
+        <label>Vendor *</label>
+        <input type="text" id="po-vendor-name" placeholder="Newton Cinema, Adorama…" maxlength="200">
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.7rem">
+      <div class="field">
+        <label>Contact Name</label>
+        <input type="text" id="po-vendor-contact" placeholder="Optional" maxlength="200">
+      </div>
+      <div class="field">
+        <label>Contact Email</label>
+        <input type="email" id="po-vendor-email" placeholder="ops@vendor.com" maxlength="200">
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.7rem">
+      <div class="field">
+        <label>Contact Phone</label>
+        <input type="text" id="po-vendor-phone" placeholder="(555) 555-5555" maxlength="50">
+      </div>
+      <div class="field">
+        <label>Total Committed Cap ($)</label>
+        <input type="number" id="po-total-committed" placeholder="50000" min="0" step="1">
+      </div>
+      <div class="field">
+        <label>Status</label>
+        <select id="po-status">
+          <option value="open">Open</option>
+          <option value="sent">Sent</option>
+          <option value="received">Received</option>
+          <option value="closed">Closed</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label>Issued Date</label>
+      <input type="date" id="po-issued-date">
+    </div>
+    <div class="field">
+      <label>Notes</label>
+      <textarea id="po-notes" rows="3" placeholder="Anything relevant — terms, contact preferences, fulfillment quirks…"></textarea>
+    </div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button type="button" class="btn btn-outline" onclick="closePoModal()">Cancel</button>
+      <button type="button" class="btn btn-primary" id="po-save-btn" onclick="savePo()">Save PO</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const PROJECT_ID = {{ project.id }};
+const PO_DATA    = {{ pos | tojson }};
+let _editingPoId = null;
+
+function openPoModal(poId) {
+  _editingPoId = poId || null;
+  const title = document.getElementById('po-modal-title');
+  title.textContent = poId ? '✎ Edit Purchase Order' : '+ New Purchase Order';
+  if (poId) {
+    const po = PO_DATA.find(p => p.id === poId);
+    if (po) {
+      document.getElementById('po-number').value          = po.po_number || '';
+      document.getElementById('po-vendor-name').value     = po.vendor_name || '';
+      document.getElementById('po-vendor-contact').value  = po.vendor_contact || '';
+      document.getElementById('po-vendor-email').value    = po.vendor_email || '';
+      document.getElementById('po-vendor-phone').value    = po.vendor_phone || '';
+      document.getElementById('po-total-committed').value = po.total_committed != null ? po.total_committed : '';
+      document.getElementById('po-status').value          = po.status || 'open';
+      document.getElementById('po-issued-date').value     = po.issued_date || '';
+      document.getElementById('po-notes').value           = po.notes || '';
+    }
+  } else {
+    ['po-number','po-vendor-name','po-vendor-contact','po-vendor-email',
+     'po-vendor-phone','po-total-committed','po-issued-date','po-notes'
+    ].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    document.getElementById('po-status').value = 'open';
+  }
+  document.getElementById('po-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('po-number').focus(), 50);
+}
+function closePoModal() {
+  document.getElementById('po-modal').classList.add('hidden');
+  _editingPoId = null;
+}
+function editPo(id) { openPoModal(id); }
+
+async function savePo() {
+  const btn = document.getElementById('po-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  const body = {
+    po_number:       document.getElementById('po-number').value.trim(),
+    vendor_name:     document.getElementById('po-vendor-name').value.trim(),
+    vendor_contact:  document.getElementById('po-vendor-contact').value.trim(),
+    vendor_email:    document.getElementById('po-vendor-email').value.trim(),
+    vendor_phone:    document.getElementById('po-vendor-phone').value.trim(),
+    total_committed: document.getElementById('po-total-committed').value || null,
+    status:          document.getElementById('po-status').value,
+    issued_date:     document.getElementById('po-issued-date').value,
+    notes:           document.getElementById('po-notes').value.trim(),
+  };
+  if (_editingPoId) body.id = _editingPoId;
+  if (!body.po_number || !body.vendor_name) {
+    alert('PO number and vendor name are required.');
+    btn.disabled = false; btn.textContent = 'Save PO';
+    return;
+  }
+  try {
+    const r = await fetch(`/projects/${PROJECT_ID}/pos/save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      alert(j.error || 'Save failed');
+      btn.disabled = false; btn.textContent = 'Save PO';
+      return;
+    }
+    closePoModal();
+    window.location.reload();
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Save PO';
+  }
+}
+
+async function deletePo(id, hard) {
+  const msg = hard ? 'Permanently delete this PO and unlink all assigned budget lines?'
+                   : 'Archive this PO? It will be hidden from the active list.';
+  if (!confirm(msg)) return;
+  const url = hard ? `/projects/${PROJECT_ID}/pos/${id}/delete?hard=1`
+                   : `/projects/${PROJECT_ID}/pos/${id}/delete`;
+  const r = await fetch(url, { method: 'POST' });
+  if (r.ok) window.location.reload();
+  else alert('Delete failed');
+}
+async function restorePo(id) {
+  // Restore = update with archived=false.
+  const po = PO_DATA.find(p => p.id === id);
+  if (!po) return;
+  const r = await fetch(`/projects/${PROJECT_ID}/pos/save`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, ...po, archived: false }),
+  });
+  if (r.ok) window.location.reload();
+  else alert('Restore failed');
+}
+</script>
+{% endblock %}

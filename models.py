@@ -296,6 +296,12 @@ class BudgetLine(db.Model):
     # on (account_code, description) when NULL.
     catalog_item_id  = db.Column(db.Integer, db.ForeignKey("catalog_item.id"), nullable=True)
 
+    # Purchase order assignment (added 2026-05-04 per user). Non-labor
+    # rows can be tied to a PurchaseOrder so vendor commitments + cap
+    # warnings flow through the row. Optional / nullable. Labor rows
+    # don't typically use this — they go through CrewMember instead.
+    po_id            = db.Column(db.Integer, db.ForeignKey("purchase_order.id"), nullable=True)
+
     # Three-phase system columns
     working_total   = db.Column(db.Numeric(14, 2), nullable=True)  # Working forecast (snapshot + evolving)
     manual_actual   = db.Column(db.Numeric(14, 2), nullable=True)  # Manual actual override per line
@@ -878,3 +884,43 @@ class ActivityLog(db.Model):
 
     user      = db.relationship("User",         foreign_keys=[user_id])
     undone_by = db.relationship("User",         foreign_keys=[undone_by_id])
+
+
+# ── PurchaseOrder (added 2026-05-04 per user) ─────────────────────────
+# Tracks vendor commitments made against a project. A PO is project-
+# scoped; lines on the budget can be assigned to a PO via BudgetLine.po_id
+# so a row like "Camera Package Rental" books against a specific PO with
+# Newton (or whoever). Receipts / transactions can also be tagged to a
+# PO via DocUpload.po_id and Transaction.po_id (added later) so spend
+# rolls up against committed totals automatically.
+#
+# total_committed is an explicit cap; the budget UI flags any line
+# assigned to a PO whose summed budget exceeds the cap, and the PO list
+# view shows budget-vs-cap variance + invoiced-vs-cap when actuals are
+# in. status tracks the lifecycle the user manages manually.
+class PurchaseOrder(db.Model):
+    __tablename__ = "purchase_order"
+    id              = db.Column(db.Integer, primary_key=True)
+    project_id      = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
+    po_number       = db.Column(db.String(80),  nullable=False)   # user-assigned, e.g. "PO-2026-001"
+    vendor_name     = db.Column(db.String(200), nullable=False)
+    vendor_contact  = db.Column(db.String(200), nullable=True)    # name or generic contact
+    vendor_email    = db.Column(db.String(200), nullable=True)
+    vendor_phone    = db.Column(db.String(50),  nullable=True)
+    total_committed = db.Column(db.Numeric(12, 2), nullable=True) # cap; null = no cap
+    status          = db.Column(db.String(20), default='open')    # open | sent | received | closed | cancelled
+    issued_date     = db.Column(db.Date,        nullable=True)
+    notes           = db.Column(db.Text,        nullable=True)
+    created_at      = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    updated_at      = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    archived        = db.Column(db.Boolean, default=False, nullable=False)
+
+    project   = db.relationship("ProjectSheet", foreign_keys=[project_id])
+    creator   = db.relationship("User",         foreign_keys=[created_by_user_id])
+
+    __table_args__ = (
+        db.Index('ix_po_project',         'project_id'),
+        db.Index('ix_po_project_archived','project_id', 'archived'),
+        db.UniqueConstraint('project_id', 'po_number', name='uq_po_project_number'),
+    )
