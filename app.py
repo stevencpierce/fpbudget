@@ -3778,6 +3778,15 @@ def upsert_line(pid, bid):
             else:
                 setattr(ln, f, val)
 
+    # Labor-line invariant: quantity is always 1 person per line. Multi-
+    # person hires use Duplicate Row or Quick Entry's qty splitter (which
+    # creates separate A/B/C lines, each qty=1). Per user 2026-05-04:
+    # legacy data + edge cases left some labor rows with qty=2,3,…
+    # silently multiplying their subtotals (qty × days × rate). Force
+    # qty=1 on every labor save so corruption can't recur.
+    if ln.is_labor:
+        ln.quantity = 1
+
     # Backfill role_group from the linked CatalogItem when the line has a
     # catalog_item_id but no role_group set. Fixes cases where QE adds a new
     # custom role (e.g. admin-added "Utility" under Grip & Electric) and the
@@ -13506,6 +13515,16 @@ def _web_worker_essential_columns():
                 # time; existing rows stay NULL until next OCR.
                 "ALTER TABLE doc_upload "
                 "  ADD COLUMN IF NOT EXISTS veryfi_category VARCHAR(100)",
+                # 2026-05-04 — labor-line qty corruption backfill. Some
+                # legacy rows have qty>1 on labor lines, silently
+                # multiplying their subtotals (qty × days × rate). The
+                # design invariant is "labor = 1 person per line" —
+                # multi-person hires split into separate rows. Force
+                # every existing labor row back to qty=1 so the totals
+                # snap to the rates the user actually entered. Going
+                # forward, upsert_line guards this on every save.
+                "UPDATE budget_line SET quantity = 1 "
+                "  WHERE is_labor = TRUE AND quantity IS DISTINCT FROM 1",
                 # ── 2026-04-30: Actuals integration (Phase 1 schema) ────
                 # Three-legged stool linkage on transaction:
                 #   BudgetLine ← Transaction → DocUpload

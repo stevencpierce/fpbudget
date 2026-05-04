@@ -653,15 +653,23 @@ def calc_line(line, fringe_configs):
                 "total": est, "est_total": est}
 
     eff_days = _effective_days(line)
-    base     = _float(line.quantity) * eff_days * _float(line.rate)
+    # Labor-line invariant: qty is always 1 per line. Multi-person hires
+    # use Duplicate Row / Quick Entry splitter (each gets its own row).
+    # Defensive — even if the DB row has stale qty>1, calc treats it as
+    # 1 so subtotals never silently inflate. Per user 2026-05-04.
+    _qty     = 1.0 if line.is_labor else _float(line.quantity)
+    base     = _qty * eff_days * _float(line.rate)
     ot       = _float(line.est_ot)
     subtotal = base + ot
 
     cfg = fringe_configs.get(line.fringe_type)
     if cfg and cfg.is_flat:
         # Flat fringe per person (per row), NOT per day. A loan-out admin
-        # fee is charged once per person regardless of day count.
-        fringe_amount = _float(line.quantity, 1.0) * _float(cfg.flat_amount)
+        # fee is charged once per person regardless of day count. Labor
+        # is always 1 person per line — defensive fallback for stale
+        # DB rows with qty>1.
+        _persons = 1.0 if line.is_labor else _float(line.quantity, 1.0)
+        fringe_amount = _persons * _float(cfg.flat_amount)
     elif cfg:
         fringe_amount = subtotal * _float(cfg.rate)
     else:
@@ -878,7 +886,11 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
     from collections import defaultdict
 
     rate = _float(line.rate)
-    qty  = _float(line.quantity, 1.0)
+    # Labor invariant: qty is always 1 per line (multi-person hires
+    # split into separate rows). Defensive fallback against stale DB
+    # rows with qty>1 — without this, the "if num_instances==1 and qty>1"
+    # branches below silently inflated subtotals. Per user 2026-05-04.
+    qty  = 1.0 if line.is_labor else _float(line.quantity, 1.0)
 
     cfg        = fringe_configs.get(line.fringe_type) if fringe_configs else None
     ot_applies = getattr(cfg, 'ot_applies', True) if cfg is not None else True
