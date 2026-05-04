@@ -832,45 +832,56 @@
             {% else %}
             <span class="editable num" data-field="days" data-id="{{ ln.id }}">{% set _d = ln.days | float %}{{ _d | int if _d == (_d | int) else _d }}</span>
             {% endif %}
-            {# Duration cell only renders the number of days/weeks/etc.
-               The unit picker (Day/Week/Show/Out/Per Hour/Add/Per
-               Month/Custom + project-wide custom values) lives in the
-               Type column for non-labor; labor's rate_type select also
-               lives there. Per user 2026-05-04 — separating duration
-               value from type label keeps the Duration column clean.
-               Labor: a compact D/W indicator below the days number is
-               still useful since the Type column shows rate_type
-               (10hr Day vs Flat Day vs Per Week) and duration unit is
-               a different axis. #}
-            {# Compact Days/Weeks selector next to the duration value —
-               matches what labor already has. Per user 2026-05-04: non-
-               labor lines were missing this; user wants visual parity.
-               Both labor and non-labor now get the same compact toggle
-               here; the fuller Type-column dropdown (with Show/Out/Per
-               Hour/Add/Per Month/Custom etc.) on non-labor stays as the
-               richer picker. Both write to days_unit so they stay in sync. #}
+            {# Duration unit picker — full set restored per user
+               2026-05-04: "we have now lost all of our different
+               options that we had before". Both labor and non-labor
+               get the same picker here so changes sync to days_unit
+               regardless of which column the user clicks. Includes
+               the standard set + every project-wide custom value
+               previously entered (server-collected into
+               project_custom_units). Custom values selected anywhere
+               in the project show up across every row's dropdown. #}
             {% if not ln.use_schedule %}
             {% set _u = (ln.days_unit or 'days') %}
             <select class="days-unit-select inline-select"
                     data-id="{{ ln.id }}"
                     data-unit="{{ _u }}"
                     {% if (ln.line_tag == 'kit_fee') or (ln.description and ln.description.startswith('Kit Fee')) %}disabled
-                    style="margin-left:.25rem;width:auto;min-width:64px;font-size:.72rem;opacity:.65;cursor:not-allowed"
+                    style="margin-left:.25rem;width:auto;min-width:78px;font-size:.72rem;opacity:.65;cursor:not-allowed"
                     title="Kit-fee duration unit is locked."
                     {% else %}
-                    style="margin-left:.25rem;width:auto;min-width:64px;font-size:.72rem"
-                    title="Duration unit. The fuller type list (Show / Out / Per Hour / etc.) is in the Type column."
+                    style="margin-left:.25rem;width:auto;min-width:78px;font-size:.72rem"
+                    title="Duration unit. Custom values become available across every row in the project."
                     {% endif %}>
               <option value="days"  {% if _u == 'days'  %}selected{% endif %}>Days</option>
               <option value="weeks" {% if _u == 'weeks' %}selected{% endif %}>Weeks</option>
-              {# If the row has a value other than days/weeks (e.g. set
-                 from the Type column to "Show"), include it as a hidden
-                 selected option so the select doesn't visually mismatch
-                 the actual value. The user can still change it via the
-                 fuller Type-column dropdown. #}
-              {% if _u not in ['days', 'weeks'] %}
+              <option value="show"  {% if _u == 'show'  %}selected{% endif %}>Show</option>
+              <option value="out"   {% if _u == 'out'   %}selected{% endif %}>Out</option>
+              <option value="hrs"   {% if _u == 'hrs'   %}selected{% endif %}>Per Hour</option>
+              <option value="add"   {% if _u == 'add'   %}selected{% endif %}>Add</option>
+              <option value="mo"    {% if _u == 'mo'    %}selected{% endif %}>Per Month</option>
+              <option value="flat"  {% if _u == 'flat'  %}selected{% endif %}>Flat</option>
+              <option value="ea"    {% if _u == 'ea'    %}selected{% endif %}>Each</option>
+              <option value="per"   {% if _u == 'per'   %}selected{% endif %}>Per</option>
+              <option value="x"     {% if _u == 'x'     %}selected{% endif %}>X</option>
+              <option value="allow" {% if _u == 'allow' %}selected{% endif %}>Allow</option>
+              <option value="est"   {% if _u == 'est'   %}selected{% endif %}>EST</option>
+              <option value="lb"    {% if _u == 'lb'    %}selected{% endif %}>LB</option>
+              <option value="mi"    {% if _u == 'mi'    %}selected{% endif %}>Miles</option>
+              {# Project-wide custom values entered anywhere in this
+                 project — every row's picker offers them. New customs
+                 typed via "+ Custom…" propagate to every dropdown on
+                 the page immediately (see _saveSelectUnit below). #}
+              {% if project_custom_units %}
+              {% for _cu in project_custom_units %}
+              <option value="{{ _cu }}" {% if _u == _cu %}selected{% endif %}>{{ _cu | title }}</option>
+              {% endfor %}
+              {% endif %}
+              {# Legacy fallback: row's value isn't in any list above. #}
+              {% if _u not in ['days','weeks','show','out','hrs','add','mo','flat','ea','per','x','allow','est','lb','mi'] and _u not in (project_custom_units or []) %}
               <option value="{{ _u }}" selected>{{ _u | title }}</option>
               {% endif %}
+              <option value="__custom__">+ Custom…</option>
             </select>
             {% endif %}
           </td>
