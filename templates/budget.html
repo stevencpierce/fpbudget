@@ -779,10 +779,10 @@
               {% set _nl_derived = (ln.estimated_total | float) / (_nl_qty * _nl_days) if _nl_rate == 0 and (ln.estimated_total | float) > 0 and _nl_qty > 0 and _nl_days > 0 else _nl_rate %}
               <span class="currency-prefix">$</span><span class="editable num" data-field="rate"
                     data-id="{{ ln.id }}" data-derived="{{ '1' if _nl_rate == 0 and _nl_derived > 0 else '' }}"
-                    title="{% if _nl_rate == 0 and _nl_derived > 0 %}Derived from total ÷ (qty × days) — edit to lock{% endif %}">{{ _nl_derived | round(2) }}</span>
+                    title="{% if _nl_rate == 0 and _nl_derived > 0 %}Derived from total ÷ (qty × days) — edit to lock{% endif %}">{{ "{:,.2f}".format(_nl_derived) }}</span>
             {% else %}
               <span class="currency-prefix">$</span><span class="editable num" data-field="rate"
-                    data-id="{{ ln.id }}">{{ ln.rate | float | round(2) }}</span>
+                    data-id="{{ ln.id }}">{{ "{:,.2f}".format(ln.rate | float) }}</span>
             {% endif %}
             <span class="fee-disp-badge" style="display:none">+{{ (budget.company_fee_pct | float * 100) | round(1) }}%</span>
           </td>
@@ -7711,7 +7711,13 @@ function refreshLineRow(id, data) {
       if (!el || el === document.activeElement || el.querySelector('input,textarea')) return;
       el.textContent = val;
     };
-    if (f.rate !== undefined)        _set('.editable[data-field="rate"]', String(f.rate));
+    if (f.rate !== undefined) {
+      // Match server-side rendering: thousands separator + 2dp.
+      // The edit handler (startEdit) strips $/,/% before parsing, so
+      // commas in the displayed text are safe.
+      const _r = parseFloat(f.rate || 0);
+      _set('.editable[data-field="rate"]', _r.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}));
+    }
     if (f.days !== undefined) {
       const _d = parseFloat(f.days || 0);
       _set('.editable[data-field="days"]', _d === Math.floor(_d) ? String(Math.floor(_d)) : String(_d));
