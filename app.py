@@ -2998,6 +2998,32 @@ def budget_view(pid, bid):
 
     all_budgets = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).all()
 
+    # Project-wide PurchaseOrders (per user 2026-05-04). Loaded once for
+    # the budget page so each non-labor row's "+ PO" / assigned-PO badge
+    # can render without an extra round-trip. The picker modal also
+    # consumes this list for inline search / pick.
+    project_pos = []
+    pos_by_id = {}
+    try:
+        from models import PurchaseOrder
+        _pos = (PurchaseOrder.query
+                .filter_by(project_id=pid, archived=False)
+                .order_by(PurchaseOrder.po_number)
+                .all())
+        for _p in _pos:
+            _summary = {
+                "id": _p.id,
+                "po_number": _p.po_number,
+                "vendor_name": _p.vendor_name,
+                "vendor_contact": _p.vendor_contact or '',
+                "total_committed": float(_p.total_committed) if _p.total_committed is not None else None,
+                "status": _p.status or 'open',
+            }
+            project_pos.append(_summary)
+            pos_by_id[_p.id] = _summary
+    except Exception as _po_e:
+        logging.warning(f"[budget_view] PO load failed: {_po_e}")
+
     # Project-wide custom unit persistence (per user 2026-05-04): collect
     # distinct days_unit values used anywhere across this project's
     # budgets that aren't in the standard set, so every line's type/unit
@@ -3643,6 +3669,8 @@ def budget_view(pid, bid):
         txns_by_line=txns_by_line,
         txns_by_section_only_code=txns_by_section_only_code,
         project_custom_units=project_custom_units,
+        project_pos=project_pos,
+        pos_by_id=pos_by_id,
         lines=lines,
         line_results=line_results,
         sections=sections,

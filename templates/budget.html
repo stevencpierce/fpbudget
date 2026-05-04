@@ -1089,6 +1089,24 @@
                 {{ _loc.name if _loc else '+ Assign Location' }}
               </span>
             {% endif %}
+            {# + PO button on every non-labor row (per user 2026-05-04).
+               Click opens the PO picker modal — search existing open
+               POs OR create a new one inline. Assigned rows show the
+               PO number + vendor instead. Hidden on labor rows since
+               those go through CrewMember assignment. #}
+            {% if not ln.is_labor %}
+              {% set _po = pos_by_id.get(ln.po_id) if ln.po_id else None %}
+              <span class="line-po-badge {{ '' if _po else 'no-assignment' }}"
+                    data-id="{{ ln.id }}"
+                    onclick="openLinePoPicker({{ ln.id }})"
+                    title="{% if _po %}{{ _po.po_number }} — {{ _po.vendor_name }}{% else %}Click to assign a Purchase Order{% endif %}"
+                    style="cursor:pointer;font-size:.72rem;padding:2px 8px;border-radius:10px;
+                           {% if _po %}background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.25);
+                           {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}
+                           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;display:inline-block;vertical-align:middle">
+                {% if _po %}📋 {{ _po.po_number }}{% else %}+ PO{% endif %}
+              </span>
+            {% endif %}
             {# Schedule Detail button for ANY non-labor line whose qty was
                auto-derived from the schedule (per diem, hotel, flight,
                mileage, working meal, craft services, breakfast / first /
@@ -7229,6 +7247,152 @@ var _workingInitialized = {{ 'true' if working_exists else 'false' }};
 var _IS_WORKING_MODE = {{ 'true' if is_working_view else 'false' }};
 var _IS_ACTUAL_VIEW = {{ 'true' if is_actual_view else 'false' }};
 
+// ── Per-line Purchase Order picker (per user 2026-05-04) ────────────
+// Click "+ PO" on a non-labor row → open picker → pick existing OR
+// create new inline. Existing POs come from window.PROJECT_POS pre-
+// loaded server-side. Create flow opens a sibling modal that POSTs to
+// /pos/save then immediately /line/<lid>/po to assign.
+window.PROJECT_POS = {{ project_pos | tojson }};
+let _linePoCurrentLineId = null;
+
+window.openLinePoPicker = function(lineId) {
+  _linePoCurrentLineId = lineId;
+  const row = document.querySelector(`.line-row[data-id="${lineId}"]`);
+  const desc = (row?.querySelector('.editable[data-field="description"]')?.textContent || '').trim();
+  const sub = document.getElementById('line-po-modal-subtitle');
+  if (sub) {
+    sub.textContent = desc
+      ? `Assign "${desc}" to a PO. Pick an existing one or create a new one.`
+      : 'Pick an existing PO or create a new one. The line\'s estimated total commits against the PO\'s cap.';
+  }
+  // Show "Unassign" only if currently assigned (badge has the green style).
+  const badge = row?.querySelector('.line-po-badge');
+  const isAssigned = badge && !badge.classList.contains('no-assignment');
+  document.getElementById('line-po-current').style.display = isAssigned ? '' : 'none';
+  _renderLinePoList('');
+  document.getElementById('line-po-search').value = '';
+  document.getElementById('line-po-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('line-po-search').focus(), 50);
+};
+window.closeLinePoPicker = function() {
+  document.getElementById('line-po-modal').classList.add('hidden');
+  _linePoCurrentLineId = null;
+};
+function _renderLinePoList(query) {
+  const list = document.getElementById('line-po-list');
+  if (!list) return;
+  const q = (query || '').toLowerCase().trim();
+  const matches = (window.PROJECT_POS || []).filter(p =>
+    !q || (p.po_number || '').toLowerCase().includes(q)
+       || (p.vendor_name || '').toLowerCase().includes(q)
+       || (p.vendor_contact || '').toLowerCase().includes(q));
+  if (!matches.length) {
+    list.innerHTML = `<div class="muted" style="font-size:.8rem;padding:14px;text-align:center;font-style:italic">
+      ${q ? `No POs match "${q}"` : 'No POs on this project yet — click "+ New PO" to create one.'}
+    </div>`;
+    return;
+  }
+  const _esc = s => String(s||'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  list.innerHTML = matches.map(p => `
+    <div class="line-po-pick-row" data-poid="${p.id}"
+         onclick="pickLinePo(${p.id})"
+         style="display:flex;align-items:baseline;gap:10px;padding:8px 10px;cursor:pointer;
+                border:1px solid var(--border);border-radius:5px;background:var(--bg-card)"
+         onmouseover="this.style.borderColor='var(--accent)'"
+         onmouseout="this.style.borderColor='var(--border)'">
+      <span style="font-weight:700;color:var(--accent)">${_esc(p.po_number)}</span>
+      <span style="font-weight:500">${_esc(p.vendor_name)}</span>
+      ${p.vendor_contact ? `<span class="muted" style="font-size:.75rem">· ${_esc(p.vendor_contact)}</span>` : ''}
+      <span style="margin-left:auto;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;
+                   padding:2px 7px;border-radius:9px;background:rgba(91,138,249,.12);color:#5b8af9">${_esc(p.status || 'open')}</span>
+      ${p.total_committed != null ? `<span style="font-size:.75rem;color:var(--text-muted);font-variant-numeric:tabular-nums">cap $${p.total_committed.toLocaleString('en-US')}</span>` : ''}
+    </div>
+  `).join('');
+}
+window.pickLinePo = async function(poId) {
+  if (!_linePoCurrentLineId) return;
+  try {
+    const r = await fetch(`/projects/${PID}/budget/${BID}/line/${_linePoCurrentLineId}/po`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ po_id: poId }),
+    });
+    const j = await r.json();
+    if (!r.ok) { alert(j.error || 'Assign failed'); return; }
+    closeLinePoPicker();
+    reloadWithTab();
+  } catch (e) { alert('Assign failed: ' + e.message); }
+};
+window.unassignLinePo = async function() {
+  if (!_linePoCurrentLineId) return;
+  if (!confirm('Unassign this line from its PO?')) return;
+  try {
+    const r = await fetch(`/projects/${PID}/budget/${BID}/line/${_linePoCurrentLineId}/po`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ po_id: null }),
+    });
+    if (!r.ok) { alert('Unassign failed'); return; }
+    closeLinePoPicker();
+    reloadWithTab();
+  } catch (e) { alert('Unassign failed: ' + e.message); }
+};
+document.getElementById('line-po-search')?.addEventListener('input', e => _renderLinePoList(e.target.value));
+
+window.openInlinePoCreate = function() {
+  ['inline-po-number','inline-po-vendor','inline-po-contact','inline-po-email',
+   'inline-po-phone','inline-po-cap','inline-po-notes'
+  ].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  document.getElementById('inline-po-status').value = 'open';
+  document.getElementById('line-po-create-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('inline-po-number').focus(), 50);
+};
+window.closeInlinePoCreate = function() {
+  document.getElementById('line-po-create-modal').classList.add('hidden');
+};
+window.saveInlinePo = async function() {
+  const btn = document.getElementById('inline-po-save-btn');
+  btn.disabled = true; btn.textContent = 'Creating…';
+  const body = {
+    po_number:       document.getElementById('inline-po-number').value.trim(),
+    vendor_name:     document.getElementById('inline-po-vendor').value.trim(),
+    vendor_contact:  document.getElementById('inline-po-contact').value.trim(),
+    vendor_email:    document.getElementById('inline-po-email').value.trim(),
+    vendor_phone:    document.getElementById('inline-po-phone').value.trim(),
+    total_committed: document.getElementById('inline-po-cap').value || null,
+    status:          document.getElementById('inline-po-status').value,
+    notes:           document.getElementById('inline-po-notes').value.trim(),
+  };
+  if (!body.po_number || !body.vendor_name) {
+    alert('PO number and vendor name are required.');
+    btn.disabled = false; btn.textContent = 'Create & Assign';
+    return;
+  }
+  try {
+    const r = await fetch(`/projects/${PID}/pos/save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      alert(j.error || 'Save failed');
+      btn.disabled = false; btn.textContent = 'Create & Assign';
+      return;
+    }
+    // Auto-assign the new PO to the current line.
+    if (_linePoCurrentLineId && j.po && j.po.id) {
+      await fetch(`/projects/${PID}/budget/${BID}/line/${_linePoCurrentLineId}/po`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ po_id: j.po.id }),
+      });
+    }
+    closeInlinePoCreate();
+    closeLinePoPicker();
+    reloadWithTab();
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Create & Assign';
+  }
+};
+
 // ── Sub-header formatting toolbar (per user 2026-05-04) ─────────────
 // Format options live in BudgetLine.note as JSON: bold/underline/
 // italic/indent/color. Toolbar buttons + color picker mutate that
@@ -9348,6 +9512,95 @@ function renderCalcDetail(d) {
               onclick="document.getElementById('kit-fee-modal').classList.add('hidden')">Cancel</button>
       <button type="button" class="btn btn-primary" id="kit-fee-apply-btn"
               onclick="applyKitFee()">Add Kit Fee</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Line → PO picker modal (per user 2026-05-04) ──────────────────
+     Opens when the user clicks "+ PO" on a non-labor row. Two paths:
+     pick an existing open PO, or create a new one inline (jumps to a
+     fresh PO modal, then auto-assigns this line to the new PO). -->
+<div id="line-po-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="closeLinePoPicker()"></div>
+  <div class="modal-box" style="min-width:480px;max-width:560px">
+    <h2 style="margin-bottom:4px">📋 Assign Purchase Order</h2>
+    <p class="muted" style="font-size:.78rem;margin-bottom:14px" id="line-po-modal-subtitle">
+      Pick an existing PO or create a new one. The line's estimated total commits against the PO's cap.
+    </p>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <input type="search" id="line-po-search" placeholder="Search PO# or vendor…"
+             style="flex:1;font-size:.85rem">
+      <button class="btn btn-primary btn-sm" onclick="openInlinePoCreate()">+ New PO</button>
+    </div>
+    <div id="line-po-list"
+         style="max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:.3rem;
+                background:var(--bg-3);border:1px solid var(--border);border-radius:6px;padding:6px">
+      {# Populated by JS from project_pos #}
+    </div>
+    <div id="line-po-current" style="margin-top:10px;display:none">
+      <button class="btn btn-outline btn-sm" onclick="unassignLinePo()" style="width:100%;color:#fbbf24">
+        ✕ Unassign current PO
+      </button>
+    </div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button type="button" class="btn btn-outline" onclick="closeLinePoPicker()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Inline PO create modal (sibling to the picker, opens on top) ── -->
+<div id="line-po-create-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="closeInlinePoCreate()"></div>
+  <div class="modal-box" style="min-width:480px;max-width:560px">
+    <h2 style="margin-bottom:4px">+ New Purchase Order</h2>
+    <p class="muted" style="font-size:.78rem;margin-bottom:14px">
+      After save, this line is auto-assigned to the new PO.
+    </p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">
+      <div class="field">
+        <label>PO Number *</label>
+        <input type="text" id="inline-po-number" placeholder="PO-2026-001" maxlength="80">
+      </div>
+      <div class="field">
+        <label>Vendor *</label>
+        <input type="text" id="inline-po-vendor" placeholder="Newton, Adorama…" maxlength="200">
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.6rem">
+      <div class="field">
+        <label>Contact</label>
+        <input type="text" id="inline-po-contact" maxlength="200">
+      </div>
+      <div class="field">
+        <label>Email</label>
+        <input type="email" id="inline-po-email" maxlength="200">
+      </div>
+      <div class="field">
+        <label>Phone</label>
+        <input type="text" id="inline-po-phone" maxlength="50">
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">
+      <div class="field">
+        <label>Cap ($)</label>
+        <input type="number" id="inline-po-cap" min="0" step="1" placeholder="optional">
+      </div>
+      <div class="field">
+        <label>Status</label>
+        <select id="inline-po-status">
+          <option value="open">Open</option>
+          <option value="sent">Sent</option>
+          <option value="received">Received</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label>Notes</label>
+      <textarea id="inline-po-notes" rows="2"></textarea>
+    </div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button type="button" class="btn btn-outline" onclick="closeInlinePoCreate()">Cancel</button>
+      <button type="button" class="btn btn-primary" id="inline-po-save-btn" onclick="saveInlinePo()">Create &amp; Assign</button>
     </div>
   </div>
 </div>
