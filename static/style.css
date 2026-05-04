@@ -412,6 +412,32 @@ body.col-resizing * { cursor: col-resize !important; }
   display: inline-block;
 }
 .editable:hover { background: var(--bg-3); }
+
+/* Empty description fields are nearly impossible to click — give them
+   a visible click target with placeholder hint text. Per user
+   2026-05-04: blank rows from Insert Row Above/Below were tricky to
+   click into. The :empty:before pseudo-element shows on a wider hit
+   area; clicks anywhere on the area open the editor as before. */
+.editable[data-field="description"]:empty {
+  min-width: 220px;
+  min-height: 1.4em;
+  padding: 4px 8px;
+  border: 1px dashed var(--border);
+  background: rgba(91,138,249,.04);
+  vertical-align: middle;
+}
+.editable[data-field="description"]:empty:before {
+  content: "Click to add description…";
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: .82rem;
+  opacity: .8;
+  pointer-events: none;
+}
+.editable[data-field="description"]:empty:hover {
+  background: var(--bg-3);
+  border-color: var(--accent);
+}
 .inline-input {
   background: var(--bg-3);
   border: 1px solid var(--accent);
