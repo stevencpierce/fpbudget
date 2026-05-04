@@ -913,7 +913,15 @@
                columns visible, both editable, no linkage. Same option
                list as Duration since the user wants the flexibility
                to pick freely. #}
-            {% set _rt_v = ln.rate_type or 'days' %}
+            {# Default non-labor rate_type to 'x' per user 2026-05-04.
+               Existing rows with labor rate_types like 'day_10' bleed
+               through if not normalized — silently coerce them to 'x'
+               at render time so the dropdown never shows "Day_10".
+               (Server-side migration also fixes the underlying data.) #}
+            {% set _rt_v = ln.rate_type or 'x' %}
+            {% if _rt_v in ['day_10','day_8','day_12','flat_day','flat_project','hourly','week','custom'] %}
+              {% set _rt_v = 'x' %}
+            {% endif %}
             <select class="inline-select rate-type-nonlabor"
                     data-field="rate_type" data-id="{{ ln.id }}"
                     style="width:auto;min-width:78px;font-size:.72rem"

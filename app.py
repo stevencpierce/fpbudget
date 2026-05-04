@@ -3812,6 +3812,19 @@ def upsert_line(pid, bid):
     # qty=1 on every labor save so corruption can't recur.
     if ln.is_labor:
         ln.quantity = 1
+    else:
+        # Non-labor defaults (per user 2026-05-04). The BudgetLine model
+        # defaults rate_type='day_10' and days_unit='days' which are
+        # both labor concepts. For a fresh non-labor row, default
+        # rate_type='x' (Type column) and leave days_unit='days'.
+        # Don't overwrite existing non-default values — only set if the
+        # field landed on the labor default OR is null.
+        _LABOR_RT_VALUES = {'day_10', 'day_8', 'day_12', 'flat_day',
+                             'flat_project', 'hourly', 'week', 'custom'}
+        if (ln.rate_type or '') in _LABOR_RT_VALUES or not ln.rate_type:
+            ln.rate_type = 'x'
+        if not ln.days_unit:
+            ln.days_unit = 'days'
 
     # Backfill role_group from the linked CatalogItem when the line has a
     # catalog_item_id but no role_group set. Fixes cases where QE adds a new
@@ -13833,6 +13846,16 @@ def _web_worker_essential_columns():
                 # forward, upsert_line guards this on every save.
                 "UPDATE budget_line SET quantity = 1 "
                 "  WHERE is_labor = TRUE AND quantity IS DISTINCT FROM 1",
+                # 2026-05-04 — non-labor rate_type cleanup. The model
+                # default is 'day_10' (a labor concept) so non-labor
+                # rows created via legacy paths show "Day_10" in the
+                # Type column. Reset every non-labor row whose rate_type
+                # is one of the labor-only values to 'x' (user's chosen
+                # non-labor default). New non-labor lines use 'x' too
+                # (set in upsert_line / line_insert).
+                "UPDATE budget_line SET rate_type = 'x' "
+                "  WHERE is_labor = FALSE "
+                "    AND rate_type IN ('day_10','day_8','day_12','flat_day','flat_project','hourly','week','custom')",
                 # 2026-05-04 — PurchaseOrder table + budget_line.po_id
                 # FK. Per-project vendor commitment tracking. The table
                 # MUST be created here in the worker self-heal pass
