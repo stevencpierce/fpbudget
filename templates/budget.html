@@ -691,16 +691,17 @@
         {# Header formatting options stored in the row's `note` field as
            JSON: {bold,underline,italic,indent,color}. Render inline so
            the user-applied formatting takes effect on next page load.
-           Per user 2026-05-04. #}
-        {% set _hf = {} %}
-        {% if ln.note %}
-          {% set _hf = (ln.note | from_json_safe) or {} %}
-        {% endif %}
-        {% set _h_indent  = (_hf.indent | default(0)) | int %}
-        {% set _h_color   = _hf.color or '' %}
-        {% set _h_bold    = _hf.bold | default(true) %}
-        {% set _h_under   = _hf.underline | default(false) %}
-        {% set _h_italic  = _hf.italic | default(false) %}
+           Per user 2026-05-04. Defensive .get() access since Jinja
+           dotted attr access on dicts can hit StrictUndefined depending
+           on env, and we want this template to never explode regardless
+           of what's in `note` (legacy plain text, malformed JSON, etc.). #}
+        {% set _hf = (ln.note | from_json_safe) if ln.note else None %}
+        {% if not _hf or _hf is not mapping %}{% set _hf = {} %}{% endif %}
+        {% set _h_indent  = (_hf.get('indent', 0) | int) if _hf else 0 %}
+        {% set _h_color   = _hf.get('color', '') if _hf else '' %}
+        {% set _h_bold    = _hf.get('bold', true)  if _hf else true  %}
+        {% set _h_under   = _hf.get('underline', false) if _hf else false %}
+        {% set _h_italic  = _hf.get('italic', false) if _hf else false %}
         <tr class="line-row header-row" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-tag="header"
             data-format='{{ _hf | tojson }}'>
           <td colspan="14" style="padding:8px 12px 8px {{ 12 + _h_indent * 24 }}px;background:rgba(91,138,249,.06);border-top:1px solid var(--border);border-bottom:1px solid var(--border);position:relative">

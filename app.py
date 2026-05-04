@@ -13834,11 +13834,33 @@ def _web_worker_essential_columns():
                 "UPDATE budget_line SET quantity = 1 "
                 "  WHERE is_labor = TRUE AND quantity IS DISTINCT FROM 1",
                 # 2026-05-04 — PurchaseOrder table + budget_line.po_id
-                # FK. Per-project vendor commitment tracking. SQLAlchemy
-                # creates the table on first run via metadata.create_all
-                # in _do_boot_work, but we still need the FK column on
-                # the existing budget_line table. Idempotent ADD COLUMN
-                # IF NOT EXISTS so it's safe to re-run.
+                # FK. Per-project vendor commitment tracking. The table
+                # MUST be created here in the worker self-heal pass
+                # (not just relied on db.create_all) so the FK column
+                # ALTER below has a target. Without this create, the
+                # ALTER fails, the po_id column is missing, and every
+                # SELECT on budget_line 500s ("column po_id does not
+                # exist"). Idempotent CREATE TABLE IF NOT EXISTS.
+                """CREATE TABLE IF NOT EXISTS purchase_order (
+                     id              SERIAL PRIMARY KEY,
+                     project_id      INTEGER NOT NULL REFERENCES project_sheet(id),
+                     po_number       VARCHAR(80)  NOT NULL,
+                     vendor_name     VARCHAR(200) NOT NULL,
+                     vendor_contact  VARCHAR(200),
+                     vendor_email    VARCHAR(200),
+                     vendor_phone    VARCHAR(50),
+                     total_committed NUMERIC(12,2),
+                     status          VARCHAR(20) DEFAULT 'open',
+                     issued_date     DATE,
+                     notes           TEXT,
+                     created_at      TIMESTAMP DEFAULT NOW(),
+                     created_by_user_id INTEGER REFERENCES users(id),
+                     updated_at      TIMESTAMP DEFAULT NOW(),
+                     archived        BOOLEAN DEFAULT FALSE NOT NULL,
+                     CONSTRAINT uq_po_project_number UNIQUE (project_id, po_number)
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_po_project ON purchase_order (project_id)",
+                "CREATE INDEX IF NOT EXISTS ix_po_project_archived ON purchase_order (project_id, archived)",
                 "ALTER TABLE budget_line "
                 "  ADD COLUMN IF NOT EXISTS po_id INTEGER REFERENCES purchase_order(id) ON DELETE SET NULL",
                 "CREATE INDEX IF NOT EXISTS ix_budget_line_po "
