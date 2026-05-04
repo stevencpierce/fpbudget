@@ -846,13 +846,9 @@
             <select class="days-unit-select inline-select"
                     data-id="{{ ln.id }}"
                     data-unit="{{ _u }}"
-                    {% if (ln.line_tag == 'kit_fee') or (ln.description and ln.description.startswith('Kit Fee')) %}disabled
-                    style="margin-left:.25rem;width:auto;min-width:78px;font-size:.72rem;opacity:.65;cursor:not-allowed"
-                    title="Kit-fee duration unit is locked."
-                    {% else %}
+                    data-field="days_unit"
                     style="margin-left:.25rem;width:auto;min-width:78px;font-size:.72rem"
-                    title="Duration unit. Custom values become available across every row in the project."
-                    {% endif %}>
+                    title="Duration unit. Right-click to apply to other rows. Custom values become available across every row in the project.">
               <option value="days"  {% if _u == 'days'  %}selected{% endif %}>Days</option>
               <option value="weeks" {% if _u == 'weeks' %}selected{% endif %}>Weeks</option>
               <option value="show"  {% if _u == 'show'  %}selected{% endif %}>Show</option>
@@ -7799,8 +7795,10 @@ document.addEventListener('change', e => {
 });
 
 // ── Right-click copy dropdown value to rows below / all ───────────────────
+// Per user 2026-05-04 — extended to days_unit (Duration column picker)
+// alongside the existing fringe_type and rate_type pickers.
 document.addEventListener('contextmenu', e => {
-  const sel = e.target.closest('.inline-select[data-field="fringe_type"], .inline-select[data-field="rate_type"]');
+  const sel = e.target.closest('.inline-select[data-field="fringe_type"], .inline-select[data-field="rate_type"], .inline-select[data-field="days_unit"]');
   if (!sel) return;
   e.preventDefault();
   _showSelectCopyMenu(sel, e.clientX, e.clientY);
