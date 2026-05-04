@@ -670,8 +670,13 @@
            line render path entirely for these. #}
         {% if ln.line_tag == 'spacer' %}
         <tr class="line-row spacer-row" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-tag="spacer">
-          <td colspan="14" style="padding:0">
-            <div style="height:14px;border-top:1px dashed var(--border);margin:0 6px"></div>
+          <td colspan="14" style="padding:0;position:relative">
+            {# Drag handle on the left so spacers can be reordered. #}
+            <span class="row-drag-handle" title="Drag to reorder"
+                  style="position:absolute;left:6px;top:50%;transform:translateY(-50%);
+                         color:var(--text-muted);opacity:.35;font-size:.75rem;cursor:grab;
+                         padding:2px 4px;user-select:none">⋮⋮</span>
+            <div style="height:14px;border-top:1px dashed var(--border);margin:0 32px"></div>
           </td>
           <td class="col-act" style="padding:0">
             <button class="btn btn-xs btn-ghost line-row-menu-btn"
@@ -683,11 +688,50 @@
           </td>
         </tr>
         {% elif ln.line_tag == 'header' %}
-        <tr class="line-row header-row" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-tag="header">
-          <td colspan="14" style="padding:8px 12px;background:rgba(91,138,249,.06);border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+        {# Header formatting options stored in the row's `note` field as
+           JSON: {bold,underline,italic,indent,color}. Render inline so
+           the user-applied formatting takes effect on next page load.
+           Per user 2026-05-04. #}
+        {% set _hf = {} %}
+        {% if ln.note %}
+          {% set _hf = (ln.note | from_json_safe) or {} %}
+        {% endif %}
+        {% set _h_indent  = (_hf.indent | default(0)) | int %}
+        {% set _h_color   = _hf.color or '' %}
+        {% set _h_bold    = _hf.bold | default(true) %}
+        {% set _h_under   = _hf.underline | default(false) %}
+        {% set _h_italic  = _hf.italic | default(false) %}
+        <tr class="line-row header-row" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-tag="header"
+            data-format='{{ _hf | tojson }}'>
+          <td colspan="14" style="padding:8px 12px 8px {{ 12 + _h_indent * 24 }}px;background:rgba(91,138,249,.06);border-top:1px solid var(--border);border-bottom:1px solid var(--border);position:relative">
+            <span class="row-drag-handle" title="Drag to reorder"
+                  style="color:var(--text-muted);opacity:.35;font-size:.75rem;cursor:grab;
+                         padding:2px 4px;margin-right:4px;user-select:none">⋮⋮</span>
             <span class="editable header-label" data-field="description" data-id="{{ ln.id }}"
                   data-placeholder="Sub-header (click to edit, leave blank to remove)"
-                  style="font-size:.85rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);min-width:200px;display:inline-block">{{ ln.description or '' }}</span>
+                  style="font-size:.85rem;
+                         font-weight:{{ '700' if _h_bold else '500' }};
+                         {% if _h_under %}text-decoration:underline;{% endif %}
+                         {% if _h_italic %}font-style:italic;{% endif %}
+                         letter-spacing:.04em;text-transform:uppercase;
+                         color:{{ _h_color or 'var(--accent)' }};
+                         min-width:200px;display:inline-block">{{ ln.description or '' }}</span>
+            <span class="header-format-toolbar" style="margin-left:14px;display:inline-flex;gap:2px;vertical-align:middle">
+              <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="bold" data-id="{{ ln.id }}"
+                      title="Bold" style="padding:1px 7px;font-weight:700;{% if _h_bold %}background:rgba(91,138,249,.18){% endif %}">B</button>
+              <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="underline" data-id="{{ ln.id }}"
+                      title="Underline" style="padding:1px 7px;text-decoration:underline;{% if _h_under %}background:rgba(91,138,249,.18){% endif %}">U</button>
+              <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="italic" data-id="{{ ln.id }}"
+                      title="Italic" style="padding:1px 7px;font-style:italic;{% if _h_italic %}background:rgba(91,138,249,.18){% endif %}">I</button>
+              <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="indent-out" data-id="{{ ln.id }}"
+                      title="Outdent" style="padding:1px 7px;{% if _h_indent < 1 %}opacity:.4{% endif %}">⇤</button>
+              <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="indent-in" data-id="{{ ln.id }}"
+                      title="Indent" style="padding:1px 7px">⇥</button>
+              <input type="color" class="header-fmt-color" data-id="{{ ln.id }}"
+                     value="{{ _h_color or '#5b8af9' }}" title="Header color"
+                     style="width:24px;height:22px;border:1px solid var(--border);border-radius:4px;
+                            padding:0;cursor:pointer;vertical-align:middle">
+            </span>
           </td>
           <td class="col-act">
             <button class="btn btn-xs btn-ghost line-row-menu-btn"
@@ -7178,6 +7222,74 @@ var SAVE_URL = `/projects/${PID}/budget/${BID}/line`;
 var _workingInitialized = {{ 'true' if working_exists else 'false' }};
 var _IS_WORKING_MODE = {{ 'true' if is_working_view else 'false' }};
 var _IS_ACTUAL_VIEW = {{ 'true' if is_actual_view else 'false' }};
+
+// ── Sub-header formatting toolbar (per user 2026-05-04) ─────────────
+// Format options live in BudgetLine.note as JSON: bold/underline/
+// italic/indent/color. Toolbar buttons + color picker mutate that
+// dict and POST to /line which already accepts a `note` field.
+(function headerFormatIIFE() {
+  function _readFmt(row) {
+    try { return JSON.parse(row.dataset.format || '{}') || {}; }
+    catch(_) { return {}; }
+  }
+  async function _saveFmt(id, row, fmt) {
+    row.dataset.format = JSON.stringify(fmt);
+    try {
+      await fetch(`/projects/${PID}/budget/${BID}/line`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, note: JSON.stringify(fmt) }),
+      });
+    } catch(_) {}
+    // Re-render this header row's visible styling without a full reload.
+    const label = row.querySelector('.header-label');
+    const cell  = row.querySelector('td');
+    if (label) {
+      label.style.fontWeight = fmt.bold === false ? '500' : '700';
+      label.style.textDecoration = fmt.underline ? 'underline' : '';
+      label.style.fontStyle = fmt.italic ? 'italic' : '';
+      label.style.color = fmt.color || 'var(--accent)';
+    }
+    if (cell) {
+      const ind = parseInt(fmt.indent || 0) || 0;
+      cell.style.paddingLeft = (12 + ind * 24) + 'px';
+    }
+    // Toolbar button active states.
+    row.querySelectorAll('.header-fmt-btn').forEach(b => {
+      const act = b.dataset.act;
+      const on = (act === 'bold' && fmt.bold !== false) ||
+                 (act === 'underline' && fmt.underline) ||
+                 (act === 'italic' && fmt.italic);
+      b.style.background = on ? 'rgba(91,138,249,.18)' : '';
+    });
+  }
+  document.addEventListener('click', function(e) {
+    const btn = e.target.closest('.header-fmt-btn');
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const id  = parseInt(btn.dataset.id);
+    const row = btn.closest('.line-row');
+    if (!id || !row) return;
+    const fmt = _readFmt(row);
+    const act = btn.dataset.act;
+    if      (act === 'bold')       fmt.bold      = (fmt.bold === false) ? true : !(fmt.bold !== false);
+    else if (act === 'underline')  fmt.underline = !fmt.underline;
+    else if (act === 'italic')     fmt.italic    = !fmt.italic;
+    else if (act === 'indent-in')  fmt.indent    = Math.min(8, (parseInt(fmt.indent || 0) || 0) + 1);
+    else if (act === 'indent-out') fmt.indent    = Math.max(0, (parseInt(fmt.indent || 0) || 0) - 1);
+    _saveFmt(id, row, fmt);
+  });
+  document.addEventListener('change', function(e) {
+    const inp = e.target.closest('.header-fmt-color');
+    if (!inp) return;
+    const id  = parseInt(inp.dataset.id);
+    const row = inp.closest('.line-row');
+    if (!id || !row) return;
+    const fmt = _readFmt(row);
+    fmt.color = inp.value;
+    _saveFmt(id, row, fmt);
+  });
+})();
 
 // ── Actual view: line / section-only expand + drag-drop reassign ──
 // (added 2026-05-01 — replaces the By Department sub-tab as the

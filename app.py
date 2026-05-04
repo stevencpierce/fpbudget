@@ -11266,6 +11266,23 @@ def pct_filter(v):
         return "0.00%"
 
 
+@app.template_filter("from_json_safe")
+def from_json_safe(v):
+    """Parse a JSON string into a Python dict/list — return None on
+    anything that doesn't parse cleanly. Used by the budget template
+    to read the per-row format options stored in BudgetLine.note for
+    spacer/header rows. Per user 2026-05-04 — header bold/underline/
+    indent/color encoding."""
+    if not v:
+        return None
+    try:
+        import json as _json
+        out = _json.loads(v)
+        return out if isinstance(out, (dict, list)) else None
+    except (ValueError, TypeError):
+        return None
+
+
 @app.template_filter("fromjson")
 def fromjson_filter(s):
     try:

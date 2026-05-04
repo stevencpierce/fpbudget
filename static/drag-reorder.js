@@ -25,7 +25,10 @@
       tbody.dataset.sortableInit = '1';
 
       new Sortable(tbody, {
-        handle: '.line-number',
+        // Per user 2026-05-04: spacer + header rows must also be drag-
+        // movable. They don't have a .line-number element so they
+        // mount their own .row-drag-handle. Add that to the selector.
+        handle: '.line-number, .row-drag-handle',
         animation: 150,
         draggable: '.line-row',
         filter: '.kit-fee-row, .sec-subtotal-row, .sec-total-row, tfoot tr',
