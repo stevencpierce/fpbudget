@@ -717,10 +717,23 @@
           </td>
           <td class="col-qty">
             {% if ln.is_labor %}
-              {# Labor lines are always 1 person per line — qty is hidden.
-                 To add more instances, use Duplicate Row or add via Quick
-                 Entry with qty>1 (creates separate A/B/C named lines). #}
+              {# Labor lines are normally 1 person per line — qty is hidden.
+                 But if a row has qty>1 (legacy data, duplicated row that
+                 copied qty, etc.), surface it so the user can see why
+                 their subtotal is multiplied. Click to edit back down to
+                 1 (or whatever the real headcount is). Without this, the
+                 calc multiplies invisibly: qty=2 with days=2.5 rate=$700
+                 produces $3,500 instead of the expected $1,750. Reported
+                 by user 2026-05-04. #}
+              {% set _lq = ln.quantity | float %}
+              {% if _lq > 1 %}
+              <span class="editable num" data-field="quantity" data-id="{{ ln.id }}"
+                    style="color:#fbbf24;font-weight:600;background:rgba(251,191,36,.1);
+                           padding:1px 5px;border-radius:4px;border:1px solid rgba(251,191,36,.3)"
+                    title="⚠ This labor line is multiplied by {{ _lq | int if _lq == (_lq | int) else _lq }}× — base × days × rate × THIS. Click to edit back to 1 if unintended.">×{{ _lq | int if _lq == (_lq | int) else _lq }}</span>
+              {% else %}
               <span class="muted" style="font-size:.75rem" title="One person per labor line. Use Duplicate Row or Quick Entry qty to add more.">—</span>
+              {% endif %}
             {% else %}
               <span class="editable num" data-field="quantity"
                     data-id="{{ ln.id }}">{% set _q = ln.quantity | float %}{{ _q | int if _q == (_q | int) else _q }}</span>
