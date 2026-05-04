@@ -2998,6 +2998,31 @@ def budget_view(pid, bid):
 
     all_budgets = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).all()
 
+    # Project-wide custom unit persistence (per user 2026-05-04): collect
+    # distinct days_unit values used anywhere across this project's
+    # budgets that aren't in the standard set, so every line's type/unit
+    # picker can offer them as options. "If a custom entry is used that
+    # remains available throughout the entire project."
+    _STANDARD_UNITS = {'days', 'weeks', 'hrs', 'flat', 'ea', 'per', 'x',
+                       'allow', 'est', 'lb', 'mo', 'mi',
+                       'show', 'out', 'add'}  # newly-added standard set
+    project_custom_units = []
+    try:
+        _proj_budget_ids = [b.id for b in all_budgets]
+        if _proj_budget_ids:
+            _rows = (db.session.query(BudgetLine.days_unit)
+                     .filter(BudgetLine.budget_id.in_(_proj_budget_ids),
+                             BudgetLine.days_unit.isnot(None),
+                             BudgetLine.days_unit != '')
+                     .distinct().all())
+            project_custom_units = sorted({
+                (r[0] or '').strip().lower()
+                for r in _rows
+                if (r[0] or '').strip().lower() not in _STANDARD_UNITS
+            })
+    except Exception as _cu_e:
+        logging.warning(f"[budget_view] custom units gather failed: {_cu_e}")
+
     # Self-heal: any account_code present on this project's transactions
     # but missing from the current Working budget gets a $0 placeholder
     # line auto-added (per user 2026-05-01: unbudgeted actuals should
@@ -3617,6 +3642,7 @@ def budget_view(pid, bid):
         is_actual_view=is_actual_view,
         txns_by_line=txns_by_line,
         txns_by_section_only_code=txns_by_section_only_code,
+        project_custom_units=project_custom_units,
         lines=lines,
         line_results=line_results,
         sections=sections,
@@ -4071,13 +4097,32 @@ def line_duplicate(pid, bid, lid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/reorder", methods=["POST"])
 @login_required
 def line_reorder(pid, bid):
-    """Move a line to a new position within its section (same account_code)."""
+    """Move a line to a new position. Within-section by default; pass
+    target_section_code to move across sections (per user 2026-05-04)."""
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     data    = request.get_json(force=True) or {}
     line_id = int(data.get("line_id") or 0)
     after_id = data.get("after_id")   # None → first in section; int → move after this line
+    target_section_code = data.get("target_section_code")  # cross-section move
 
     ln = BudgetLine.query.filter_by(id=line_id, budget_id=bid).first_or_404()
+
+    # Cross-section move: update account_code (and account_name from
+    # FP_COA_SECTIONS) before reordering, then sort within the new section.
+    if target_section_code is not None:
+        try:
+            new_code = int(target_section_code)
+        except (TypeError, ValueError):
+            return jsonify({"error": "target_section_code must be an integer"}), 400
+        if new_code != ln.account_code:
+            new_name = dict(FP_COA_SECTIONS).get(new_code) or ln.account_name
+            ln.account_code = new_code
+            ln.account_name = new_name
+            # Drop role_group when crossing sections — sub-group labels
+            # are section-specific (e.g. "Executives" only makes sense in
+            # 2000 Production Staff). Neighbor adoption below picks up the
+            # right one if applicable.
+            ln.role_group = None
 
     section_lines = BudgetLine.query.filter_by(
         budget_id=bid, account_code=ln.account_code

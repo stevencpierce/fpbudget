@@ -597,7 +597,7 @@
           <th class="col-qty">Qty</th>
           <th class="col-days" title="Duration — value × unit selectable per row (Days / Weeks / Hrs / Flat / Each / Per / Allow / EST / LB / Mo / Mi / X)">Duration</th>
           <th class="col-num">Rate</th>
-          <th class="col-rt">{{ 'Type' if ns.has_labor else '' }}</th>
+          <th class="col-rt">Type</th>
           <th class="col-num">{{ 'OT' if ns.has_labor else '' }}</th>
           <th class="col-fr">{{ 'Fringe' if ns.has_labor else '' }}</th>
           <th class="col-num">Subtotal</th>
@@ -750,37 +750,25 @@
             {% else %}
             <span class="editable num" data-field="days" data-id="{{ ln.id }}">{% set _d = ln.days | float %}{{ _d | int if _d == (_d | int) else _d }}</span>
             {% endif %}
-            {% if not ln.use_schedule %}
+            {# Duration cell only renders the number of days/weeks/etc.
+               The unit picker (Day/Week/Show/Out/Per Hour/Add/Per
+               Month/Custom + project-wide custom values) lives in the
+               Type column for non-labor; labor's rate_type select also
+               lives there. Per user 2026-05-04 — separating duration
+               value from type label keeps the Duration column clean.
+               Labor: a compact D/W indicator below the days number is
+               still useful since the Type column shows rate_type
+               (10hr Day vs Flat Day vs Per Week) and duration unit is
+               a different axis. #}
+            {% if ln.is_labor and not ln.use_schedule %}
             {% set _u = (ln.days_unit or 'days') %}
-            {% set _u_labels = {'days':'D','weeks':'W','x':'X','per':'Per','allow':'Allow','est':'EST','lb':'LB','hrs':'Hrs','flat':'Flat','mo':'Mo','mi':'Mi','ea':'Ea'} %}
-            {# Per user 2026-05-04: unify the duration-unit picker —
-               labor used to be a compact D/W toggle (right-click for
-               menu), non-labor used a visible <select>. The user prefers
-               the non-labor style on both, so labor now gets the same
-               dropdown. The right-click custom-menu still works as a
-               power-user shortcut via the existing handler. #}
             <select class="days-unit-select inline-select"
                     data-id="{{ ln.id }}"
                     data-unit="{{ _u }}"
                     style="margin-left:.25rem;width:auto;min-width:64px;font-size:.72rem"
-                    title="Unit for this line">
+                    title="Duration unit (Days vs Weeks). The labor rate model lives in the Type column.">
               <option value="days"  {% if _u == 'days'  %}selected{% endif %}>Days</option>
               <option value="weeks" {% if _u == 'weeks' %}selected{% endif %}>Weeks</option>
-              <option value="hrs"   {% if _u == 'hrs'   %}selected{% endif %}>Hours</option>
-              <option value="flat"  {% if _u == 'flat'  %}selected{% endif %}>Flat</option>
-              <option value="ea"    {% if _u == 'ea'    %}selected{% endif %}>Each</option>
-              <option value="per"   {% if _u == 'per'   %}selected{% endif %}>Per</option>
-              <option value="x"     {% if _u == 'x'     %}selected{% endif %}>X</option>
-              <option value="allow" {% if _u == 'allow' %}selected{% endif %}>Allow</option>
-              <option value="est"   {% if _u == 'est'   %}selected{% endif %}>EST</option>
-              <option value="lb"    {% if _u == 'lb'    %}selected{% endif %}>LB</option>
-              <option value="mo"    {% if _u == 'mo'    %}selected{% endif %}>Months</option>
-              <option value="mi"    {% if _u == 'mi'    %}selected{% endif %}>Miles</option>
-              {# Custom unit fallback if the row was set to one not in the list. #}
-              {% if _u not in ['days','weeks','hrs','flat','ea','per','x','allow','est','lb','mo','mi'] %}
-              <option value="{{ _u }}" selected>{{ _u }}</option>
-              {% endif %}
-              <option value="__custom__">Custom…</option>
             </select>
             {% endif %}
           </td>
@@ -806,6 +794,48 @@
               {% for rt, label in rt_labels.items() %}
               <option value="{{ rt }}" {% if ln.rate_type == rt %}selected{% endif %}>{{ label }}</option>
               {% endfor %}
+            </select>
+            {% else %}
+            {# Non-labor type/unit picker — uses days_unit field. Per user
+               2026-05-04: extended option set (Day / Week / Show / Out /
+               Per Hour / Add / Per Month / Custom) plus any project-wide
+               custom values previously entered (collected server-side
+               into project_custom_units). Same days-unit-select class
+               so the existing change handler + saveSelectUnit logic
+               handles it without per-cell wiring. #}
+            {% set _u_t = (ln.days_unit or 'days') %}
+            <select class="days-unit-select inline-select"
+                    data-id="{{ ln.id }}"
+                    data-unit="{{ _u_t }}"
+                    style="width:auto;min-width:78px;font-size:.72rem"
+                    title="Type / unit for this non-labor line. Custom values become available across the entire project.">
+              <option value="days"  {% if _u_t == 'days'  %}selected{% endif %}>Day</option>
+              <option value="weeks" {% if _u_t == 'weeks' %}selected{% endif %}>Week</option>
+              <option value="show"  {% if _u_t == 'show'  %}selected{% endif %}>Show</option>
+              <option value="out"   {% if _u_t == 'out'   %}selected{% endif %}>Out</option>
+              <option value="hrs"   {% if _u_t == 'hrs'   %}selected{% endif %}>Per Hour</option>
+              <option value="add"   {% if _u_t == 'add'   %}selected{% endif %}>Add</option>
+              <option value="mo"    {% if _u_t == 'mo'    %}selected{% endif %}>Per Month</option>
+              <option value="flat"  {% if _u_t == 'flat'  %}selected{% endif %}>Flat</option>
+              <option value="ea"    {% if _u_t == 'ea'    %}selected{% endif %}>Each</option>
+              <option value="per"   {% if _u_t == 'per'   %}selected{% endif %}>Per</option>
+              <option value="x"     {% if _u_t == 'x'     %}selected{% endif %}>X</option>
+              <option value="allow" {% if _u_t == 'allow' %}selected{% endif %}>Allow</option>
+              <option value="est"   {% if _u_t == 'est'   %}selected{% endif %}>EST</option>
+              <option value="lb"    {% if _u_t == 'lb'    %}selected{% endif %}>LB</option>
+              <option value="mi"    {% if _u_t == 'mi'    %}selected{% endif %}>Miles</option>
+              {# Project-wide custom units — every non-standard days_unit value
+                 used anywhere on this project shows up here on every row. #}
+              {% if project_custom_units %}
+              {% for _cu in project_custom_units %}
+              <option value="{{ _cu }}" {% if _u_t == _cu %}selected{% endif %}>{{ _cu | title }}</option>
+              {% endfor %}
+              {% endif %}
+              {# If the row's current unit isn't in any list above (legacy edge case), include it. #}
+              {% if _u_t not in ['days','weeks','show','out','hrs','add','mo','flat','ea','per','x','allow','est','lb','mi'] and _u_t not in project_custom_units %}
+              <option value="{{ _u_t }}" selected>{{ _u_t | title }}</option>
+              {% endif %}
+              <option value="__custom__">+ Custom…</option>
             </select>
             {% endif %}
           </td>
@@ -9048,8 +9078,12 @@ function renderCalcDetail(d) {
   <div class="modal-box" style="min-width:340px;max-width:480px">
     <h2 style="margin-bottom:4px">Move Row</h2>
     <p style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">
-      Choose where to place this row within its section.
+      Place this row anywhere — within the current section, or move it to a different section entirely.
     </p>
+    <div style="margin-bottom:8px">
+      <label style="font-size:.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Section</label>
+      <select id="line-move-section-select" style="width:100%;margin-top:4px;font-size:.85rem"></select>
+    </div>
     <div id="line-move-list" style="max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:.25rem"></div>
     <div class="modal-actions" style="margin-top:12px">
       <button type="button" class="btn btn-outline" onclick="closeLineMoveModal()">Cancel</button>
@@ -9347,16 +9381,21 @@ function renderCalcDetail(d) {
       const cleaned = String(custom).trim().slice(0, 20);
       if (!cleaned) { sel.value = prev; return; }
       const newCode = cleaned.toLowerCase();
-      // Add the custom option to the dropdown if it's not already there, then select it
-      let opt = Array.from(sel.options).find(o => o.value === newCode);
-      if (!opt) {
-        opt = document.createElement('option');
+      const label = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+      // Project-wide propagation (per user 2026-05-04): inject the new
+      // custom option into EVERY .days-unit-select on the page, not just
+      // this one. So when someone types "Rolls" on a Camera Equipment
+      // line, every other line's dropdown gets "Rolls" available too.
+      // The server picks it up on next page load via project_custom_units.
+      document.querySelectorAll('.days-unit-select').forEach(other => {
+        if (Array.from(other.options).find(o => o.value === newCode)) return;
+        const opt = document.createElement('option');
         opt.value = newCode;
-        opt.textContent = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-        // Insert before the Custom… option so it stays at the bottom
-        const customOpt = Array.from(sel.options).find(o => o.value === '__custom__');
-        sel.insertBefore(opt, customOpt);
-      }
+        opt.textContent = label;
+        const customOpt = Array.from(other.options).find(o => o.value === '__custom__');
+        if (customOpt) other.insertBefore(opt, customOpt);
+        else other.appendChild(opt);
+      });
       sel.value = newCode;
       sel.dataset.unit = newCode;
       _saveSelectUnit(sel, newCode, oldUnit);
@@ -12241,12 +12280,60 @@ setTimeout(function() {
       dupeSched = false;
     }
 
-    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/${_menuLineId}/duplicate`, {
+    const srcId = _menuLineId;
+    const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/${srcId}/duplicate`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ duplicate_schedule: !!dupeSched })
     });
-    if (res.ok) reloadWithTab();
+    if (res.ok) {
+      // In-place insert (per user 2026-05-04: avoid the full-page
+      // reload "jump" feel). Clone the source row's DOM, retarget all
+      // data-id refs to the new line id, drop in immediately after the
+      // source, flash green so the user sees the new row land. Most
+      // interactive handlers (edits, selects, drag-drop) use document-
+      // level event delegation so the clone wires up automatically.
+      // If anything looks off, a manual refresh restores the canonical
+      // server-rendered state.
+      try {
+        const j = await res.clone().json().catch(() => null);
+        const newId = j && j.id;
+        const srcRow = document.querySelector(`.line-row[data-id="${srcId}"]`);
+        if (newId && srcRow) {
+          const clone = srcRow.cloneNode(true);
+          clone.setAttribute('data-id', String(newId));
+          // Retarget every data-id attribute on inner controls so per-
+          // row server calls (rate edit, line/<id>/* endpoints) hit
+          // the new row's id, not the source's.
+          clone.querySelectorAll('[data-id]').forEach(el => {
+            if (el.getAttribute('data-id') === String(srcId)) {
+              el.setAttribute('data-id', String(newId));
+            }
+          });
+          // Don't carry expand-state from a possibly-open source row.
+          clone.style.background = 'rgba(34,197,94,.12)';
+          srcRow.parentNode.insertBefore(clone, srcRow.nextSibling);
+          // Fade the highlight back out.
+          setTimeout(() => { clone.style.transition = 'background .8s ease'; clone.style.background = ''; }, 50);
+          // Bump the line-number text for the clone + every row after
+          // it in the same section so the visual numbering stays
+          // sequential without a full reload.
+          const code = srcRow.dataset.code;
+          if (code) {
+            const peers = Array.from(document.querySelectorAll(`.line-row[data-code="${code}"]`));
+            peers.forEach((row, i) => {
+              const ln = row.querySelector('.line-number');
+              if (ln) {
+                const padded = String(i + 1).padStart(2, '0');
+                ln.textContent = `${code}-${padded}`;
+              }
+            });
+          }
+          return;
+        }
+      } catch (e) { /* fall through to reload */ }
+      reloadWithTab();
+    }
     else {
       let msg = 'Duplicate failed';
       try { const j = await res.json(); if (j && j.error) msg += ': ' + j.error; } catch(e){}
@@ -12258,45 +12345,83 @@ setTimeout(function() {
     _menu.classList.add('hidden');
     if (!_menuLineId || !_menuCode) return;
 
-    // Gather all lines in the same section from the DOM
-    const rows = Array.from(document.querySelectorAll(`.line-row[data-code="${_menuCode}"]`));
-    const list = document.getElementById('line-move-list');
-    list.innerHTML = '';
+    // Build the Section selector — every COA section that's present on
+    // this budget page (so you can move across sections per user
+    // 2026-05-04 — e.g. Camera Equipment → Grip & Electric).
+    const secSel = document.getElementById('line-move-section-select');
+    if (secSel && !secSel.dataset.populated) {
+      const seen = new Set();
+      const opts = [];
+      document.querySelectorAll('.section-block').forEach(block => {
+        const code = block.dataset.section;
+        if (!code || seen.has(code)) return;
+        seen.add(code);
+        // Pull the readable name from the section header.
+        const nameEl = block.querySelector('.section-name');
+        const name = (nameEl && nameEl.textContent.trim()) || code;
+        opts.push({ code, name });
+      });
+      // Keep server-side COA order (already enforced by sections list).
+      secSel.innerHTML = opts.map(o =>
+        `<option value="${o.code}">${o.code} — ${o.name}</option>`).join('');
+      secSel.dataset.populated = '1';
+    }
+    if (secSel) secSel.value = String(_menuCode);
 
-    // "Move to first in section"
+    _renderMoveList(secSel ? secSel.value : String(_menuCode));
+    document.getElementById('line-move-modal').classList.remove('hidden');
+  };
+
+  function _renderMoveList(sectionCode) {
+    const list = document.getElementById('line-move-list');
+    if (!list) return;
+    list.innerHTML = '';
+    // "Move to top of section" — works for both same-section and cross-
+    // section moves (the latter passes target_section_code along).
     const topBtn = document.createElement('button');
     topBtn.className = 'btn btn-sm btn-outline';
     topBtn.style.cssText = 'text-align:left;width:100%';
-    topBtn.textContent = '↑ Move to top of section';
-    topBtn.onclick = () => doMove(null);
+    const isCross = String(sectionCode) !== String(_menuCode);
+    topBtn.textContent = isCross
+      ? `↑ Move to top of section ${sectionCode}`
+      : '↑ Move to top of section';
+    topBtn.onclick = () => doMove(null, isCross ? sectionCode : null);
     list.appendChild(topBtn);
 
+    const rows = Array.from(document.querySelectorAll(`.line-row[data-code="${sectionCode}"]`));
     rows.forEach(row => {
       const id = parseInt(row.dataset.id);
-      if (id === _menuLineId) return;  // skip self
+      if (id === _menuLineId) return;  // skip self when same-section
       const desc = row.querySelector('.editable[data-field="description"]');
       const label = (desc && desc.textContent.trim()) || `Line #${id}`;
       const btn = document.createElement('button');
       btn.className = 'btn btn-sm btn-outline';
       btn.style.cssText = 'text-align:left;width:100%';
       btn.textContent = `After: ${label}`;
-      btn.onclick = () => doMove(id);
+      btn.onclick = () => doMove(id, isCross ? sectionCode : null);
       list.appendChild(btn);
     });
+  }
 
-    document.getElementById('line-move-modal').classList.remove('hidden');
-  };
+  // Re-render the row list when the user changes the target section.
+  document.addEventListener('change', e => {
+    if (e.target && e.target.id === 'line-move-section-select') {
+      _renderMoveList(e.target.value);
+    }
+  });
 
   window.closeLineMoveModal = function() {
     document.getElementById('line-move-modal').classList.add('hidden');
   };
 
-  async function doMove(afterId) {
+  async function doMove(afterId, targetSectionCode) {
     closeLineMoveModal();
+    const body = { line_id: _menuLineId, after_id: afterId };
+    if (targetSectionCode) body.target_section_code = targetSectionCode;
     const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/reorder`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ line_id: _menuLineId, after_id: afterId })
+      body: JSON.stringify(body)
     });
     if (res.ok) reloadWithTab();
     else alert('Move failed');
