@@ -903,8 +903,7 @@
           <td class="col-rt">
             {% if ln.is_labor %}
             {# Labor: Type column = rate_type (10hr Day / Flat / Per Week
-               / Hourly / Custom). Different concept from days_unit —
-               affects OT calc, not duration unit. #}
+               / Hourly / Custom). Affects OT calc basis. #}
             <select class="inline-select" data-field="rate_type" data-id="{{ ln.id }}">
               {% set rt_labels = {'day_10':'10hr Day','day_8':'8hr Day','day_12':'12hr Day','flat_day':'Flat Day','flat_project':'Flat Project','hourly':'Hourly','week':'Per Week','custom':'Custom'} %}
               {% for rt, label in rt_labels.items() %}
@@ -912,13 +911,45 @@
               {% endfor %}
             </select>
             {% else %}
-            {# Non-labor: Type column intentionally LEFT BLANK to avoid
-               the duplicate-picker bug where changing Type changed
-               Duration (both selects wrote to days_unit, mirroring
-               each other). The full unit picker (Day/Week/Show/Out/
-               Per Hour/Add/Per Month/Custom + project-wide customs)
-               lives only in the Duration column for non-labor.
-               Per user 2026-05-04 regression report. #}
+            {# Non-labor: Type column writes to rate_type (independent
+               from Duration's days_unit field, so changing one no
+               longer mirrors the other). Per user 2026-05-04 — both
+               columns visible, both editable, no linkage. Same option
+               list as Duration since the user wants the flexibility
+               to pick freely. #}
+            {% set _rt_v = ln.rate_type or 'days' %}
+            <select class="inline-select rate-type-nonlabor"
+                    data-field="rate_type" data-id="{{ ln.id }}"
+                    style="width:auto;min-width:78px;font-size:.72rem"
+                    title="Rate type — what the rate applies to. Independent of the duration unit.">
+              <option value="days"  {% if _rt_v == 'days'  %}selected{% endif %}>Day</option>
+              <option value="weeks" {% if _rt_v == 'weeks' %}selected{% endif %}>Week</option>
+              <option value="show"  {% if _rt_v == 'show'  %}selected{% endif %}>Show</option>
+              <option value="out"   {% if _rt_v == 'out'   %}selected{% endif %}>Out</option>
+              <option value="hrs"   {% if _rt_v == 'hrs'   %}selected{% endif %}>Per Hour</option>
+              <option value="add"   {% if _rt_v == 'add'   %}selected{% endif %}>Add</option>
+              <option value="mo"    {% if _rt_v == 'mo'    %}selected{% endif %}>Per Month</option>
+              <option value="flat"  {% if _rt_v == 'flat'  %}selected{% endif %}>Flat</option>
+              <option value="ea"    {% if _rt_v == 'ea'    %}selected{% endif %}>Each</option>
+              <option value="per"   {% if _rt_v == 'per'   %}selected{% endif %}>Per</option>
+              <option value="x"     {% if _rt_v == 'x'     %}selected{% endif %}>X</option>
+              <option value="allow" {% if _rt_v == 'allow' %}selected{% endif %}>Allow</option>
+              <option value="est"   {% if _rt_v == 'est'   %}selected{% endif %}>EST</option>
+              <option value="lb"    {% if _rt_v == 'lb'    %}selected{% endif %}>LB</option>
+              <option value="mi"    {% if _rt_v == 'mi'    %}selected{% endif %}>Miles</option>
+              {# Project-wide custom values — same set used by Duration
+                 column, since both pickers offer the same free-text
+                 vocabulary the user has built up on this project. #}
+              {% if project_custom_units %}
+              {% for _cu in project_custom_units %}
+              <option value="{{ _cu }}" {% if _rt_v == _cu %}selected{% endif %}>{{ _cu | title }}</option>
+              {% endfor %}
+              {% endif %}
+              {# Legacy fallback for any value not in the lists above. #}
+              {% if _rt_v not in ['days','weeks','show','out','hrs','add','mo','flat','ea','per','x','allow','est','lb','mi'] and _rt_v not in (project_custom_units or []) %}
+              <option value="{{ _rt_v }}" selected>{{ _rt_v | title }}</option>
+              {% endif %}
+            </select>
             {% endif %}
           </td>
           <td class="col-num">
