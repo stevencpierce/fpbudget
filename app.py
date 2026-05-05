@@ -1948,7 +1948,7 @@ def budget_live(pid, bid):
     """Return per-line calc results for silent real-time patching."""
     b = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     lines = BudgetLine.query.filter_by(budget_id=bid).order_by(BudgetLine.account_code, BudgetLine.sort_order).all()
-    fringe_cfgs = get_fringe_configs(db.session)
+    fringe_cfgs = get_fringe_configs(db.session, pid)
     profile = b.payroll_profile
     pw_start = b.payroll_week_start if b.payroll_week_start is not None else (
         profile.payroll_week_start if profile else 6)
@@ -2318,7 +2318,7 @@ def _archive_project_dropbox(p):
         # Export each budget version as a PDF and upload to archive
         budgets = Budget.query.filter_by(project_id=p.id).all()
         if budgets:
-            fringe_cfgs = get_fringe_configs(db.session)
+            fringe_cfgs = get_fringe_configs(db.session, p.id)
             for b in budgets:
                 try:
                     b_lines = BudgetLine.query.filter_by(budget_id=b.id).order_by(
@@ -2776,7 +2776,7 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
         # Stamp working_total on every line so the Estimated column has a frozen
         # snapshot from the moment this working budget was created.
         if new_mode in ('working', 'actual'):
-            _wfringe = get_fringe_configs(db.session)
+            _wfringe = get_fringe_configs(db.session, pid)
             _wprofile  = b.payroll_profile
             _wpw_start = b.payroll_week_start if b.payroll_week_start is not None else (
                 _wprofile.payroll_week_start if _wprofile else 6)
@@ -3088,7 +3088,7 @@ def budget_view(pid, bid):
     lines = BudgetLine.query.filter_by(budget_id=bid).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
 
-    fringe_cfgs = get_fringe_configs(db.session)
+    fringe_cfgs = get_fringe_configs(db.session, pid)
     payroll_profiles = PayrollProfile.query.order_by(PayrollProfile.sort_order).all()
     profile = budget.payroll_profile  # may be None
     pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
@@ -3448,7 +3448,7 @@ def budget_view(pid, bid):
     if _budget_type(budget.budget_mode) == 'estimated' and current_working_bid:
         _wb = next((b for b in all_budgets if b.id == current_working_bid), None)
         _wblines = BudgetLine.query.filter_by(budget_id=current_working_bid).all()
-        _wb_fringe = get_fringe_configs(db.session)
+        _wb_fringe = get_fringe_configs(db.session, pid)
         _wb_profile  = _wb.payroll_profile if _wb else None
         _wb_pw_start = (_wb.payroll_week_start if (_wb and _wb.payroll_week_start is not None)
                         else (_wb_profile.payroll_week_start if _wb_profile else 6))
@@ -3920,7 +3920,7 @@ def upsert_line(pid, bid):
         try: db.session.rollback()
         except Exception: pass
 
-    fringe_cfgs = get_fringe_configs(db.session)
+    fringe_cfgs = get_fringe_configs(db.session, pid)
     if ln.use_schedule:
         _sm = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
         sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=_sm).all()
@@ -4344,7 +4344,7 @@ def init_working_budget(pid, bid):
     """
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     lines  = BudgetLine.query.filter_by(budget_id=bid).all()
-    fringe_cfgs = get_fringe_configs(db.session)
+    fringe_cfgs = get_fringe_configs(db.session, pid)
     profile  = budget.payroll_profile
     pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
         profile.payroll_week_start if profile else 6)
@@ -5482,7 +5482,7 @@ def export_csv(pid, bid):
     mode   = request.args.get("type", "topsheet")   # topsheet | working
     lines  = BudgetLine.query.filter_by(budget_id=bid).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
-    fringe_cfgs = get_fringe_configs(db.session)
+    fringe_cfgs = get_fringe_configs(db.session, pid)
 
     # Per-export overrides from the Export Options dialog. Apply on the
     # in-memory budget object so calc_top_sheet picks them up — these
@@ -5636,7 +5636,7 @@ def export_pdf(pid, bid):
     project = ProjectSheet.query.get_or_404(pid)
     lines   = BudgetLine.query.filter_by(budget_id=bid).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
-    fringe_cfgs = get_fringe_configs(db.session)
+    fringe_cfgs = get_fringe_configs(db.session, pid)
 
     # Per-export overrides from the Export Options dialog (see export_csv
     # for the same pattern). Applied to the in-memory Budget without
@@ -6763,7 +6763,7 @@ def gantt_view(pid, bid):
         day_map[(d.budget_line_id, d.crew_instance or 1, d.date.isoformat())] = d
 
     # Load fringe configs once (needed for both ot_applies checks and section totals)
-    fringe_cfgs = get_fringe_configs(db.session)
+    fringe_cfgs = get_fringe_configs(db.session, pid)
 
     # Build OT status map for cell highlighting: (line_id, instance, date_iso) → 'ot'|'dt'|None
     ot_status_map = {}
@@ -7424,7 +7424,7 @@ def gantt_totals(pid, bid):
     pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
         profile.payroll_week_start if profile else 6)
 
-    fringe_cfgs = get_fringe_configs(db.session)
+    fringe_cfgs = get_fringe_configs(db.session, pid)
     totals = _compute_gantt_section_totals(labor_lines, days, fringe_cfgs, profile, pw_start)
 
     # Per-cell OT status — group days by (line_id, crew_instance) and run calc_days_ot_status
@@ -9017,7 +9017,7 @@ def line_calc_detail(pid, bid, lid):
     profile     = budget.payroll_profile
     pw_start    = budget.payroll_week_start if budget.payroll_week_start is not None else (
                   profile.payroll_week_start if profile else 6)
-    fringe_cfgs = get_fringe_configs(db.session)
+    fringe_cfgs = get_fringe_configs(db.session, pid)
 
     detail = calc_line_detail(line, sched_days, fringe_cfgs, profile, pw_start)
     return jsonify(detail)
@@ -9560,7 +9560,7 @@ def assign_crew(pid, bid, lid):
     db.session.commit()
     name = ln.assigned_crew.name if ln.assigned_crew else None
     # Return calc results so the UI can refresh totals without a full reload
-    fringe_cfgs = get_fringe_configs(db.session)
+    fringe_cfgs = get_fringe_configs(db.session, pid)
     budget = Budget.query.get(bid)
     if ln.use_schedule:
         sched_mode = budget.budget_mode if budget.budget_mode in ('working', 'actual') else 'estimated'
@@ -10407,6 +10407,162 @@ def template_delete(tid):
 
 
 # ── Fringe Config ─────────────────────────────────────────────────────────────
+
+# ── Per-project fringes (added 2026-05-05) ─────────────────────────────────
+# The schema already supports project_id-scoped fringes (FringeConfig.
+# project_id nullable, with NULL = global default). These routes expose
+# project-specific fringe management so each project can have its own
+# rates (handy for state-specific tax / loan-out variations) without
+# polluting the global library.
+def _fringe_to_dict(f):
+    return {
+        "id":          f.id,
+        "fringe_type": f.fringe_type,
+        "label":       f.label,
+        "rate":        float(f.rate or 0),
+        "is_flat":     bool(f.is_flat),
+        "flat_amount": float(f.flat_amount) if f.flat_amount is not None else None,
+        "ot_applies":  bool(f.ot_applies if f.ot_applies is not None else True),
+        "is_global":   f.project_id is None,
+    }
+
+
+@app.route("/projects/<int:pid>/fringes.json")
+@login_required
+def project_fringes_json(pid):
+    """Return the effective fringes for a project: global rows merged
+    with project overrides (project rows win on shared fringe_type).
+    Used by the Settings panel UI for the per-project fringe editor."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    rows = (FringeConfig.query
+            .filter((FringeConfig.project_id == None) |  # noqa: E711
+                    (FringeConfig.project_id == pid))
+            .all())
+    # Project rows win on shared fringe_type — flag globals that have
+    # a project override so the UI can dim them.
+    proj_types = {r.fringe_type for r in rows if r.project_id == pid}
+    out = []
+    for r in rows:
+        d = _fringe_to_dict(r)
+        d["overridden"] = (r.project_id is None and r.fringe_type in proj_types)
+        out.append(d)
+    out.sort(key=lambda x: (x["fringe_type"], not x["is_global"]))
+    return jsonify({"ok": True, "fringes": out})
+
+
+@app.route("/projects/<int:pid>/fringes/save", methods=["POST"])
+@login_required
+def project_fringe_save(pid):
+    """Create or update a project-scoped fringe override."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    data = request.get_json(force=True) or {}
+    fid_arg = data.get('id')
+    if fid_arg:
+        f = FringeConfig.query.filter_by(id=int(fid_arg), project_id=pid).first_or_404()
+    else:
+        # New project override
+        fringe_type = (data.get('fringe_type') or '').strip().upper()[:5]
+        if not fringe_type:
+            return jsonify({"error": "fringe_type required"}), 400
+        # If a project override for this type already exists, update it
+        existing = FringeConfig.query.filter_by(project_id=pid, fringe_type=fringe_type).first()
+        if existing:
+            f = existing
+        else:
+            f = FringeConfig(project_id=pid, fringe_type=fringe_type,
+                             label=fringe_type, rate=0)
+            db.session.add(f)
+    if 'label' in data:
+        f.label = (data.get('label') or '').strip()[:50] or f.fringe_type
+    if 'rate' in data:
+        try:
+            f.rate = float(data.get('rate') or 0)
+        except (TypeError, ValueError):
+            return jsonify({"error": "rate must be a number"}), 400
+    if 'is_flat' in data:
+        f.is_flat = bool(data.get('is_flat'))
+    if 'flat_amount' in data:
+        v = data.get('flat_amount')
+        if v in (None, '', 'null'):
+            f.flat_amount = None
+        else:
+            try:
+                f.flat_amount = float(v)
+            except (TypeError, ValueError):
+                return jsonify({"error": "flat_amount must be a number"}), 400
+    if 'ot_applies' in data:
+        f.ot_applies = bool(data.get('ot_applies'))
+    db.session.commit()
+    return jsonify({"ok": True, "fringe": _fringe_to_dict(f)})
+
+
+@app.route("/projects/<int:pid>/fringes/<int:fid>/delete", methods=["POST"])
+@login_required
+def project_fringe_delete(pid, fid):
+    """Remove a project-scoped fringe override. The project falls back
+    to the global default for that fringe_type. Won't delete globals
+    via this route — use the global admin page for those."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    f = FringeConfig.query.filter_by(id=fid, project_id=pid).first_or_404()
+    label, ftype = f.label, f.fringe_type
+    db.session.delete(f)
+    db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='fringe',
+                      entity_id=fid, entity_label=f"{ftype} — {label}",
+                      project_id=pid,
+                      note='Removed project override; reverted to global default.')
+    except Exception: pass
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/fringes/import-defaults", methods=["POST"])
+@login_required
+def project_fringes_import_defaults(pid):
+    """Copy every global fringe into this project as a project-scoped
+    override. Useful when starting a new project from the master list,
+    or when the user wants to reset overrides to match globals.
+    Body: {overwrite: bool} — false (default) skips fringe_types the
+    project already has overrides for; true replaces them."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    data = request.get_json(silent=True) or {}
+    overwrite = bool(data.get('overwrite'))
+    globals_ = FringeConfig.query.filter_by(project_id=None).all()
+    existing = {f.fringe_type: f for f in
+                FringeConfig.query.filter_by(project_id=pid).all()}
+    added, updated, skipped = 0, 0, 0
+    for g in globals_:
+        if g.fringe_type in existing:
+            if not overwrite:
+                skipped += 1
+                continue
+            ex = existing[g.fringe_type]
+            ex.label       = g.label
+            ex.rate        = g.rate
+            ex.is_flat     = g.is_flat
+            ex.flat_amount = g.flat_amount
+            ex.ot_applies  = g.ot_applies
+            updated += 1
+        else:
+            db.session.add(FringeConfig(
+                project_id=pid, fringe_type=g.fringe_type, label=g.label,
+                rate=g.rate, is_flat=g.is_flat, flat_amount=g.flat_amount,
+                ot_applies=g.ot_applies,
+            ))
+            added += 1
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='fringe',
+                      entity_id=pid, entity_label=f"{added} added · {updated} updated · {skipped} skipped",
+                      project_id=pid,
+                      note=f"Imported {len(globals_)} global fringes")
+    except Exception: pass
+    return jsonify({"ok": True, "added": added, "updated": updated, "skipped": skipped})
+
 
 @app.route("/fringe-config")
 @login_required

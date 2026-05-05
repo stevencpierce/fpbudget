@@ -6805,6 +6805,74 @@
         </div>
       </div>
 
+      {# ── Per-project fringes (added 2026-05-05) ──────────────────
+         Project-scoped fringes override the global library on a per-
+         fringe-type basis. Use "Import from Defaults" to seed this
+         list from the global fringes; edit rows to set project-specific
+         rates (e.g. state-specific tax handling). Removing an override
+         falls back to the global default for that fringe type. #}
+      <div class="settings-section">
+        <h3>Project Fringes <span class="muted" style="font-weight:400;font-size:.8rem">— overrides the global library for this project only</span></h3>
+        <p class="muted" style="font-size:.78rem;margin:0 0 10px">
+          Project rows take precedence over globals. Global rows that have a project override are dimmed.
+          Use "Import from Defaults" to seed all globals into this project, or "Add Fringe" to add a single override.
+        </p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn btn-sm btn-primary" onclick="openFringeEditModal()">+ Add Fringe Override</button>
+          <button class="btn btn-sm btn-outline" onclick="importGlobalFringes(false)" title="Add globals not yet in this project">⬇ Import Defaults</button>
+          <button class="btn btn-sm btn-outline" onclick="importGlobalFringes(true)" title="Replace ALL project overrides with current globals" style="color:#fbbf24">↺ Reset to Defaults</button>
+          <a href="{{ url_for('fringe_config') }}" class="btn btn-sm btn-ghost" style="margin-left:auto">Edit global library →</a>
+        </div>
+        <div id="project-fringes-list" style="display:flex;flex-direction:column;gap:.3rem">
+          <div class="muted" style="font-size:.8rem;font-style:italic;padding:8px">Loading…</div>
+        </div>
+      </div>
+
+      {# ── Fringe edit modal (add or edit a project override) ── #}
+      <div id="fringe-edit-modal" class="modal hidden">
+        <div class="modal-overlay" onclick="closeFringeEditModal()"></div>
+        <div class="modal-box" style="min-width:420px;max-width:480px">
+          <h2 style="margin-bottom:4px" id="fringe-edit-title">+ Add Fringe Override</h2>
+          <p class="muted" style="font-size:.78rem;margin-bottom:14px">
+            Project-specific fringe values override the global library for this project.
+          </p>
+          <div style="display:grid;grid-template-columns:90px 1fr;gap:.6rem">
+            <div class="field">
+              <label>Code *</label>
+              <input type="text" id="fringe-edit-code" maxlength="5" placeholder="E / N / L" style="text-transform:uppercase">
+            </div>
+            <div class="field">
+              <label>Label *</label>
+              <input type="text" id="fringe-edit-label" maxlength="50" placeholder="Exempt / Non-Exempt / Loan-Out…">
+            </div>
+          </div>
+          <div class="field" id="fringe-edit-rate-field">
+            <label>Rate (decimal — 0.27 = 27%)</label>
+            <input type="number" id="fringe-edit-rate" min="0" max="1" step="0.001" placeholder="0.27">
+          </div>
+          <div class="field">
+            <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400">
+              <input type="checkbox" id="fringe-edit-isflat" onchange="document.getElementById('fringe-edit-flat-field').style.display = this.checked ? '' : 'none'">
+              Flat fee (per person)
+            </label>
+          </div>
+          <div class="field" id="fringe-edit-flat-field" style="display:none">
+            <label>Flat Amount ($)</label>
+            <input type="number" id="fringe-edit-flat" min="0" step="0.01" placeholder="18.00">
+          </div>
+          <div class="field">
+            <label style="display:inline-flex;align-items:center;gap:6px;font-weight:400">
+              <input type="checkbox" id="fringe-edit-otapplies" checked>
+              OT applies (uncheck for Exempt-style fringes)
+            </label>
+          </div>
+          <div class="modal-actions" style="margin-top:14px">
+            <button type="button" class="btn btn-outline" onclick="closeFringeEditModal()">Cancel</button>
+            <button type="button" class="btn btn-primary" id="fringe-edit-save-btn" onclick="saveFringeEdit()">Save</button>
+          </div>
+        </div>
+      </div>
+
       <div class="settings-section">
         <h3>Production Details <span class="muted" style="font-weight:400;font-size:.8rem">— appears on PDF exports</span></h3>
         <div class="field">
@@ -7246,6 +7314,170 @@ var SAVE_URL = `/projects/${PID}/budget/${BID}/line`;
 var _workingInitialized = {{ 'true' if working_exists else 'false' }};
 var _IS_WORKING_MODE = {{ 'true' if is_working_view else 'false' }};
 var _IS_ACTUAL_VIEW = {{ 'true' if is_actual_view else 'false' }};
+
+// ── Per-project fringes (Settings tab) ────────────────────────────
+// Project-scoped fringe overrides + "import from defaults" flow.
+// Per user 2026-05-05.
+let _fringeEditingId = null;
+async function loadProjectFringes() {
+  try {
+    const r = await fetch(`/projects/${PID}/fringes.json`);
+    const j = await r.json();
+    if (!j.ok) throw new Error('load failed');
+    _renderProjectFringes(j.fringes || []);
+  } catch (e) {
+    const el = document.getElementById('project-fringes-list');
+    if (el) el.innerHTML = `<div style="color:#ef4444;font-size:.8rem;padding:8px">Failed to load: ${e.message}</div>`;
+  }
+}
+function _renderProjectFringes(fringes) {
+  const el = document.getElementById('project-fringes-list');
+  if (!el) return;
+  if (!fringes.length) {
+    el.innerHTML = '<div class="muted" style="font-size:.8rem;font-style:italic;padding:8px">No fringes yet.</div>';
+    return;
+  }
+  const _esc = s => String(s||'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  el.innerHTML = fringes.map(f => {
+    const isProj = !f.is_global;
+    const dim = f.overridden ? 'opacity:.45' : '';
+    const rateDisp = f.is_flat
+      ? `$${(f.flat_amount || 0).toFixed(2)} flat`
+      : `${(f.rate * 100).toFixed(2)}%`;
+    const badge = isProj
+      ? '<span style="font-size:.65rem;padding:1px 6px;border-radius:8px;background:rgba(34,197,94,.15);color:#22c55e">project</span>'
+      : (f.overridden
+          ? '<span style="font-size:.65rem;padding:1px 6px;border-radius:8px;background:var(--bg-input);color:var(--text-muted);font-style:italic">overridden</span>'
+          : '<span style="font-size:.65rem;padding:1px 6px;border-radius:8px;background:rgba(91,138,249,.12);color:#5b8af9">global</span>');
+    const otBadge = !f.ot_applies ? '<span style="font-size:.65rem;color:var(--text-muted);font-style:italic">no OT</span>' : '';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:6px 10px;
+                        background:var(--bg-card);border:1px solid var(--border);border-radius:5px;${dim}">
+      <span style="font-weight:700;font-family:monospace;min-width:36px">${_esc(f.fringe_type)}</span>
+      <span style="flex:1">${_esc(f.label)}</span>
+      <span style="font-variant-numeric:tabular-nums;color:var(--text-muted);min-width:80px;text-align:right">${rateDisp}</span>
+      ${otBadge}
+      ${badge}
+      ${isProj ? `
+        <button class="btn btn-xs btn-ghost" onclick='editFringe(${f.id}, ${JSON.stringify(f)})'>✎</button>
+        <button class="btn btn-xs btn-ghost" onclick="deleteFringe(${f.id})" style="color:#ef4444">✕</button>
+      ` : `
+        <button class="btn btn-xs btn-ghost" onclick='overrideGlobalFringe(${JSON.stringify(f)})' title="Create a project override for this global">+ Override</button>
+      `}
+    </div>`;
+  }).join('');
+}
+window.openFringeEditModal = function() {
+  _fringeEditingId = null;
+  document.getElementById('fringe-edit-title').textContent = '+ Add Fringe Override';
+  ['fringe-edit-code','fringe-edit-label','fringe-edit-rate','fringe-edit-flat'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('fringe-edit-isflat').checked = false;
+  document.getElementById('fringe-edit-flat-field').style.display = 'none';
+  document.getElementById('fringe-edit-otapplies').checked = true;
+  document.getElementById('fringe-edit-code').readOnly = false;
+  document.getElementById('fringe-edit-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('fringe-edit-code').focus(), 50);
+};
+window.closeFringeEditModal = function() {
+  document.getElementById('fringe-edit-modal').classList.add('hidden');
+};
+window.editFringe = function(id, f) {
+  _fringeEditingId = id;
+  document.getElementById('fringe-edit-title').textContent = '✎ Edit Project Fringe';
+  document.getElementById('fringe-edit-code').value  = f.fringe_type;
+  document.getElementById('fringe-edit-code').readOnly = true;
+  document.getElementById('fringe-edit-label').value = f.label;
+  document.getElementById('fringe-edit-rate').value  = f.rate;
+  document.getElementById('fringe-edit-isflat').checked = !!f.is_flat;
+  document.getElementById('fringe-edit-flat').value = f.flat_amount != null ? f.flat_amount : '';
+  document.getElementById('fringe-edit-flat-field').style.display = f.is_flat ? '' : 'none';
+  document.getElementById('fringe-edit-otapplies').checked = !!f.ot_applies;
+  document.getElementById('fringe-edit-modal').classList.remove('hidden');
+};
+window.overrideGlobalFringe = function(f) {
+  // Pre-fill from the global so the user can tweak before saving.
+  _fringeEditingId = null;
+  document.getElementById('fringe-edit-title').textContent = `Override "${f.fringe_type}" for this project`;
+  document.getElementById('fringe-edit-code').value  = f.fringe_type;
+  document.getElementById('fringe-edit-code').readOnly = true;
+  document.getElementById('fringe-edit-label').value = f.label;
+  document.getElementById('fringe-edit-rate').value  = f.rate;
+  document.getElementById('fringe-edit-isflat').checked = !!f.is_flat;
+  document.getElementById('fringe-edit-flat').value = f.flat_amount != null ? f.flat_amount : '';
+  document.getElementById('fringe-edit-flat-field').style.display = f.is_flat ? '' : 'none';
+  document.getElementById('fringe-edit-otapplies').checked = !!f.ot_applies;
+  document.getElementById('fringe-edit-modal').classList.remove('hidden');
+};
+window.saveFringeEdit = async function() {
+  const btn = document.getElementById('fringe-edit-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  const body = {
+    fringe_type: document.getElementById('fringe-edit-code').value.trim().toUpperCase(),
+    label:       document.getElementById('fringe-edit-label').value.trim(),
+    rate:        parseFloat(document.getElementById('fringe-edit-rate').value || '0') || 0,
+    is_flat:     document.getElementById('fringe-edit-isflat').checked,
+    flat_amount: parseFloat(document.getElementById('fringe-edit-flat').value || '0') || null,
+    ot_applies:  document.getElementById('fringe-edit-otapplies').checked,
+  };
+  if (_fringeEditingId) body.id = _fringeEditingId;
+  if (!body.fringe_type || !body.label) {
+    alert('Code and label are required.');
+    btn.disabled = false; btn.textContent = 'Save';
+    return;
+  }
+  try {
+    const r = await fetch(`/projects/${PID}/fringes/save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      alert(j.error || 'Save failed');
+      btn.disabled = false; btn.textContent = 'Save';
+      return;
+    }
+    closeFringeEditModal();
+    loadProjectFringes();
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Save';
+  }
+};
+window.deleteFringe = async function(id) {
+  if (!confirm('Remove this project override? The fringe will revert to the global default.')) return;
+  try {
+    const r = await fetch(`/projects/${PID}/fringes/${id}/delete`, { method: 'POST' });
+    if (!r.ok) { alert('Delete failed'); return; }
+    loadProjectFringes();
+  } catch (e) { alert('Delete failed: ' + e.message); }
+};
+window.importGlobalFringes = async function(overwrite) {
+  const msg = overwrite
+    ? 'Replace ALL project fringe overrides with the current global values? Project-specific edits will be lost.'
+    : 'Import any global fringes that this project doesn\'t already have? Existing overrides are kept.';
+  if (!confirm(msg)) return;
+  try {
+    const r = await fetch(`/projects/${PID}/fringes/import-defaults`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ overwrite: !!overwrite }),
+    });
+    const j = await r.json();
+    if (!r.ok) { alert(j.error || 'Import failed'); return; }
+    alert(`${j.added} added · ${j.updated} updated · ${j.skipped} skipped`);
+    loadProjectFringes();
+  } catch (e) { alert('Import failed: ' + e.message); }
+};
+// Load the fringes when the Settings tab becomes active (or on first load
+// if already on that tab via ?tab=settings).
+(function _initProjectFringes() {
+  const settingsTab = document.querySelector('.tab-btn[data-tab="settings"]');
+  if (!settingsTab) return;
+  let loaded = false;
+  const lazyLoad = () => { if (!loaded) { loaded = true; loadProjectFringes(); } };
+  settingsTab.addEventListener('click', lazyLoad);
+  if (document.getElementById('tab-settings')?.classList.contains('active')) lazyLoad();
+})();
 
 // ── Per-line Purchase Order picker (per user 2026-05-04) ────────────
 // Click "+ PO" on a non-labor row → open picker → pick existing OR
