@@ -2,12 +2,37 @@
 {% block title %}Purchase Orders — {{ project.name }} — FPBudget{% endblock %}
 
 {% block content %}
-<div class="page-header" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+{# Mirror the budget tab strip so users don't lose context while on
+   the PO page. Per user 2026-05-05: "I can't see any of the other
+   tabs any longer. Make sure it behaves just like the other tabs."
+   Tab buttons that point to in-page panels on the budget become
+   anchor links back to the budget with ?tab=<name>. The POs button
+   gets the active state. #}
+{% if return_budget %}
+<div class="tabs-row">
+  <div class="tabs">
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=topsheet">Top Sheet</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=working">Budget</a>
+    <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=return_budget.id) }}">Schedule</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=travel">Travel</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=catering">Catering</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=contacts">Contacts</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=locations">Locations</a>
+    <span class="tab-btn active">POs</span>
+    <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=return_budget.id) }}">Call Sheets</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=docs">Docs</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=actuals">Actuals</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=activity">Activity</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=import-tools">Tools</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=settings">⚙ Settings</a>
+  </div>
+</div>
+{% endif %}
+
+<div class="page-header" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-top:1rem">
   <h1 style="margin:0">Purchase Orders</h1>
   <span class="muted" style="font-size:.9rem">{{ project.name }}</span>
   <button class="btn btn-primary" onclick="openPoModal()" style="margin-left:auto">+ New PO</button>
-  <a href="{{ url_for('budget_view', pid=project.id, bid=request.args.get('return_bid', '')) if request.args.get('return_bid') else url_for('project_detail', pid=project.id) }}"
-     class="btn btn-outline btn-sm">← Back</a>
 </div>
 
 <p class="muted" style="margin-bottom:1.5rem;font-size:.85rem">

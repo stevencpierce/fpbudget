@@ -9330,9 +9330,21 @@ def po_list_page(pid):
                      PurchaseOrder.created_at.desc())
            .all())
     pos_data = [_po_to_dict(p, with_rollup=True, project_id=pid) for p in pos]
+    # Resolve the budget context for the tab strip — prefer the
+    # explicit return_bid query arg (set by the Budget tab's PO link),
+    # fall back to the project's most recent current budget.
+    return_bid_arg = request.args.get('return_bid', type=int)
+    return_budget = None
+    if return_bid_arg:
+        return_budget = Budget.query.filter_by(id=return_bid_arg, project_id=pid).first()
+    if not return_budget:
+        return_budget = (Budget.query
+                         .filter_by(project_id=pid, version_status='current')
+                         .order_by(Budget.id.desc()).first())
     return render_template("pos.html",
                            project=project,
                            pos=pos_data,
+                           return_budget=return_budget,
                            now=datetime.utcnow())
 
 
