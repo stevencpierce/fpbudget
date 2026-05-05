@@ -98,6 +98,25 @@
     {% if po.notes %}
     <div style="font-size:.78rem;color:var(--text-muted);font-style:italic">📝 {{ po.notes }}</div>
     {% endif %}
+    {# Attached docs (estimates / quotes / invoices). Source attachment
+       has role='source' and shows with a 📎 prefix; additional ones
+       show with a + prefix. Per user 2026-05-05. #}
+    {% if po.attachments %}
+    <div style="font-size:.78rem;color:var(--text-muted);display:flex;flex-direction:column;gap:3px">
+      {% for att in po.attachments %}
+      <div style="display:flex;align-items:center;gap:6px">
+        <span>{% if att.role == 'source' %}📎 source{% else %}+ added{% endif %}:</span>
+        {% if att.filename %}
+        <a href="{{ url_for('docs_dashboard') if false else '#' }}"
+           onclick="event.preventDefault();window.open('/docs/upload/' + {{ att.doc_id }} + '/raw', '_blank')"
+           style="color:#5b8af9;text-decoration:none">{{ att.filename }}</a>
+        {% endif %}
+        {% if att.amount %}<span style="font-variant-numeric:tabular-nums">${{ '{:,.2f}'.format(att.amount) }}</span>{% endif %}
+        {% if att.note %}<span style="font-style:italic;font-size:.72rem">— {{ att.note }}</span>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
   {% endfor %}
 </div>

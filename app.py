@@ -9258,7 +9258,43 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
         "notes":          po.notes or "",
         "archived":       bool(po.archived),
         "created_at":     po.created_at.isoformat() if po.created_at else None,
+        "source_doc_upload_id": po.source_doc_upload_id if hasattr(po, 'source_doc_upload_id') else None,
     }
+    # Surface the source doc filename so list views render a link
+    # without a second query per PO. None when no source doc.
+    out["source_doc"] = None
+    if getattr(po, 'source_doc_upload_id', None):
+        try:
+            _sd = db.session.get(DocUpload, po.source_doc_upload_id)
+            if _sd:
+                out["source_doc"] = {
+                    "id":       _sd.id,
+                    "filename": _sd.filed_filename or _sd.original_filename or f"Upload #{_sd.id}",
+                    "vendor":   _sd.vendor or "",
+                    "amount":   float(_sd.amount) if _sd.amount is not None else None,
+                    "category": _sd.category or "",
+                }
+        except Exception:
+            pass
+    # Additional doc attachments from "Add to PO" appends.
+    out["attachments"] = []
+    try:
+        from models import PoDocAttachment
+        for att in (PoDocAttachment.query
+                    .filter_by(po_id=po.id)
+                    .order_by(PoDocAttachment.created_at).all()):
+            d = db.session.get(DocUpload, att.doc_upload_id)
+            out["attachments"].append({
+                "id":       att.id,
+                "doc_id":   att.doc_upload_id,
+                "filename": (d.filed_filename or d.original_filename or f"Upload #{d.id}") if d else None,
+                "amount":   float(att.amount) if att.amount is not None else None,
+                "note":     att.note or "",
+                "role":     att.role or "additional",
+                "created_at": att.created_at.isoformat() if att.created_at else None,
+            })
+    except Exception:
+        pass
     if with_rollup:
         from sqlalchemy import func as _func_po
         # Budget commitment: sum estimated_total of every BudgetLine
@@ -9367,6 +9403,18 @@ def po_save(pid):
                 return jsonify({"error": "issued_date must be YYYY-MM-DD"}), 400
     if 'archived' in data:
         po.archived = bool(data.get('archived'))
+    # Source doc attachment (added 2026-05-05). When a PO is created
+    # from an estimate via the Docs tab, the originating DocUpload id
+    # is forwarded here so the PO list page can show + link the source.
+    if 'source_doc_upload_id' in data:
+        v = data.get('source_doc_upload_id')
+        if v in (None, '', 'null', 0):
+            po.source_doc_upload_id = None
+        else:
+            try:
+                po.source_doc_upload_id = int(v)
+            except (TypeError, ValueError):
+                return jsonify({"error": "source_doc_upload_id must be an integer"}), 400
     # Validate: po_number + vendor_name required.
     if not (po.po_number or '').strip() or not (po.vendor_name or '').strip():
         return jsonify({"error": "po_number and vendor_name are required"}), 400
@@ -9414,6 +9462,155 @@ def po_delete(pid, po_id):
                       entity_id=po_id, entity_label=label, project_id=pid,
                       note=('Hard-deleted PO' if request.args.get('hard') == '1' else 'Archived PO'))
     except Exception: pass
+    return jsonify({"ok": True})
+
+
+@app.route("/docs/upload/<int:uid>/create-po", methods=["POST"])
+@login_required
+def create_po_from_doc(uid):
+    """Create a new PurchaseOrder from an estimate / quote document.
+    Body: {po_number, vendor_name (optional override), total_committed
+    (optional override), status, issued_date, notes}. Defaults pulled
+    from the DocUpload's OCR data when caller doesn't override.
+    Returns the created PO with rollup."""
+    from models import PurchaseOrder, PoDocAttachment
+    doc = DocUpload.query.get_or_404(uid)
+    pid = doc.project_id
+    _require_project_role(pid, 'editor')
+    data = request.get_json(force=True) or {}
+    po_number = (data.get('po_number') or '').strip()
+    if not po_number:
+        return jsonify({"error": "po_number required"}), 400
+    vendor_name = (data.get('vendor_name') or doc.vendor or '').strip()
+    if not vendor_name:
+        return jsonify({"error": "vendor_name required (no vendor on doc to default from)"}), 400
+    total = data.get('total_committed')
+    if total in (None, ''):
+        total = float(doc.amount) if doc.amount is not None else None
+    elif total is not None:
+        try:
+            total = round(float(total), 2)
+        except (TypeError, ValueError):
+            return jsonify({"error": "total_committed must be a number"}), 400
+    issued = (data.get('issued_date') or '').strip()
+    issued_date = None
+    if issued:
+        try:
+            from datetime import datetime as _dt
+            issued_date = _dt.strptime(issued[:10], '%Y-%m-%d').date()
+        except Exception:
+            return jsonify({"error": "issued_date must be YYYY-MM-DD"}), 400
+    elif doc.doc_date:
+        issued_date = doc.doc_date
+
+    po = PurchaseOrder(
+        project_id      = pid,
+        po_number       = po_number[:80],
+        vendor_name     = vendor_name[:200],
+        vendor_contact  = (data.get('vendor_contact') or '').strip()[:200] or None,
+        vendor_email    = (data.get('vendor_email')   or '').strip()[:200] or None,
+        vendor_phone    = (data.get('vendor_phone')   or '').strip()[:50]  or None,
+        total_committed = total,
+        status          = (data.get('status') or 'open').strip().lower(),
+        issued_date     = issued_date,
+        notes           = (data.get('notes') or f'Created from estimate: {doc.filed_filename or doc.original_filename or f"Doc #{uid}"}').strip(),
+        source_doc_upload_id = doc.id,
+        created_by_user_id = current_user.id if current_user.is_authenticated else None,
+    )
+    db.session.add(po)
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        if 'uq_po_project_number' in str(e) or 'duplicate' in str(e).lower():
+            return jsonify({"error": "A PO with that number already exists on this project."}), 409
+        return jsonify({"error": str(e)}), 400
+    # Also record in the attachment junction so the source doc shows up
+    # in the same list as future "Add to PO" appends.
+    try:
+        att = PoDocAttachment(
+            po_id=po.id, doc_upload_id=doc.id,
+            amount=doc.amount, role='source',
+            note='Source estimate',
+            created_by_user_id=current_user.id if current_user.is_authenticated else None,
+        )
+        db.session.add(att)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    try:
+        _log_activity(action='create', entity_type='purchase_order',
+                      entity_id=po.id, entity_label=f"{po.po_number} — {po.vendor_name}",
+                      project_id=pid,
+                      after={'po_number': po.po_number, 'vendor_name': po.vendor_name,
+                             'total_committed': total, 'source_doc_upload_id': doc.id},
+                      note=f'Created PO from estimate "{doc.filed_filename or doc.original_filename}"')
+    except Exception: pass
+    return jsonify({"ok": True, "po": _po_to_dict(po, with_rollup=True, project_id=pid)})
+
+
+@app.route("/projects/<int:pid>/pos/<int:po_id>/attach-doc", methods=["POST"])
+@login_required
+def po_attach_doc(pid, po_id):
+    """Attach an additional DocUpload (typically an estimate / quote /
+    invoice) to an existing PO. Body: {doc_upload_id, bump_cap (bool),
+    note}. When bump_cap is true and the doc has an amount + the PO has
+    a cap, increment the cap by the doc's amount. Returns updated PO."""
+    from models import PurchaseOrder, PoDocAttachment
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    po = PurchaseOrder.query.filter_by(id=po_id, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    raw = data.get('doc_upload_id')
+    if not raw:
+        return jsonify({"error": "doc_upload_id required"}), 400
+    try:
+        doc_id = int(raw)
+    except (TypeError, ValueError):
+        return jsonify({"error": "doc_upload_id must be int"}), 400
+    doc = DocUpload.query.filter_by(id=doc_id, project_id=pid).first()
+    if not doc:
+        return jsonify({"error": "DocUpload not on this project"}), 404
+    # Already attached? Bail with a friendly message.
+    existing = PoDocAttachment.query.filter_by(po_id=po.id, doc_upload_id=doc.id).first()
+    if existing:
+        return jsonify({"error": "Doc already attached to this PO"}), 409
+    bump_cap = bool(data.get('bump_cap', True))
+    note = (data.get('note') or '').strip()[:300] or None
+    att = PoDocAttachment(
+        po_id=po.id, doc_upload_id=doc.id,
+        amount=doc.amount, role='additional',
+        note=note or (f'Added: {doc.filed_filename or doc.original_filename or f"Doc #{doc.id}"}'),
+        created_by_user_id=current_user.id if current_user.is_authenticated else None,
+    )
+    db.session.add(att)
+    cap_delta = 0
+    if bump_cap and doc.amount is not None and po.total_committed is not None:
+        cap_delta = float(doc.amount)
+        po.total_committed = round(float(po.total_committed) + cap_delta, 2)
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='purchase_order',
+                      entity_id=po.id, entity_label=f"{po.po_number} — {po.vendor_name}",
+                      project_id=pid,
+                      note=(f'Attached "{doc.filed_filename or doc.original_filename}"'
+                            + (f' (+${cap_delta:,.2f} to cap)' if cap_delta else '')))
+    except Exception: pass
+    return jsonify({"ok": True, "po": _po_to_dict(po, with_rollup=True, project_id=pid)})
+
+
+@app.route("/projects/<int:pid>/pos/<int:po_id>/detach-doc/<int:att_id>", methods=["POST"])
+@login_required
+def po_detach_doc(pid, po_id, att_id):
+    """Remove a doc attachment from a PO. Doesn't touch cap (manual
+    cleanup if needed)."""
+    from models import PurchaseOrder, PoDocAttachment
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    PurchaseOrder.query.filter_by(id=po_id, project_id=pid).first_or_404()
+    att = PoDocAttachment.query.filter_by(id=att_id, po_id=po_id).first_or_404()
+    db.session.delete(att)
+    db.session.commit()
     return jsonify({"ok": True})
 
 
@@ -14096,6 +14293,29 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS po_id INTEGER REFERENCES purchase_order(id) ON DELETE SET NULL",
                 "CREATE INDEX IF NOT EXISTS ix_budget_line_po "
                 "  ON budget_line (po_id)",
+                # 2026-05-05 — PO source doc + attachment junction.
+                # PurchaseOrder.source_doc_upload_id points at the
+                # originating estimate/quote DocUpload (first attachment).
+                # po_doc_attachment is the junction for any additional
+                # docs stacked via "Add to PO" — keeps the per-doc
+                # amount + note for audit.
+                "ALTER TABLE purchase_order "
+                "  ADD COLUMN IF NOT EXISTS source_doc_upload_id INTEGER REFERENCES doc_upload(id)",
+                "CREATE INDEX IF NOT EXISTS ix_po_source_doc "
+                "  ON purchase_order (source_doc_upload_id)",
+                """CREATE TABLE IF NOT EXISTS po_doc_attachment (
+                     id              SERIAL PRIMARY KEY,
+                     po_id           INTEGER NOT NULL REFERENCES purchase_order(id),
+                     doc_upload_id   INTEGER NOT NULL REFERENCES doc_upload(id),
+                     amount          NUMERIC(12,2),
+                     note            VARCHAR(300),
+                     role            VARCHAR(20) DEFAULT 'additional',
+                     created_at      TIMESTAMP DEFAULT NOW(),
+                     created_by_user_id INTEGER REFERENCES users(id),
+                     CONSTRAINT uq_po_doc UNIQUE (po_id, doc_upload_id)
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_po_doc_po  ON po_doc_attachment (po_id)",
+                "CREATE INDEX IF NOT EXISTS ix_po_doc_doc ON po_doc_attachment (doc_upload_id)",
                 # ── 2026-04-30: Actuals integration (Phase 1 schema) ────
                 # Three-legged stool linkage on transaction:
                 #   BudgetLine ← Transaction → DocUpload

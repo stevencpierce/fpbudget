@@ -2035,6 +2035,30 @@
             ↻ Retry
           </button>
           {% endif %}
+          {# PO actions on estimate / quote / purchase_order docs (added
+             2026-05-05). User can spin up a new PO with the doc as the
+             source attachment, or stack the doc onto an existing PO. #}
+          {% if u.category in ('estimate', 'quote', 'purchase_order') %}
+          <button class="doc-create-po-btn" data-uid="{{ u.id }}"
+                  data-vendor="{{ u.vendor or '' }}"
+                  data-amount="{{ u.amount|float if u.amount else '' }}"
+                  data-filename="{{ u.filed_filename or u.original_filename or '' }}"
+                  data-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
+                  title="Create a new Purchase Order from this estimate"
+                  onclick="openCreatePoFromDoc(this)"
+                  style="background:#1a3a2a;border:1px solid #2a5a3a;color:#74c69d;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;">
+            📋 Create PO
+          </button>
+          <button class="doc-add-to-po-btn" data-uid="{{ u.id }}"
+                  data-vendor="{{ u.vendor or '' }}"
+                  data-amount="{{ u.amount|float if u.amount else '' }}"
+                  data-filename="{{ u.filed_filename or u.original_filename or '' }}"
+                  title="Attach this document to an existing Purchase Order"
+                  onclick="openAddToPoFromDoc(this)"
+                  style="background:#1a2540;border:1px solid #2d4070;color:#5b8af9;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;">
+            ＋ to PO
+          </button>
+          {% endif %}
           <button class="doc-delete-btn" title="Delete this document"
                   style="background:none;border:none;color:#ef4444;cursor:pointer;padding:4px 8px;font-size:14px;">
             ✕
@@ -7640,6 +7664,97 @@ window.unassignLinePo = async function() {
 };
 document.getElementById('line-po-search')?.addEventListener('input', e => _renderLinePoList(e.target.value));
 
+// Doc → PO flow (per user 2026-05-05). Two entry points on estimate /
+// quote / PO documents in the Docs tab: create a brand new PO from
+// the doc, or stack the doc onto an existing PO.
+let _docPoFromDocId = null;  // when set, save flow uses /create-po-from-doc
+window.openCreatePoFromDoc = function(btn) {
+  const uid      = parseInt(btn.dataset.uid);
+  const vendor   = btn.dataset.vendor || '';
+  const amount   = btn.dataset.amount || '';
+  const filename = btn.dataset.filename || '';
+  const docDate  = btn.dataset.docDate || '';
+  _docPoFromDocId = uid;
+  _linePoCurrentLineId = null;  // ensure line-assign path is OFF
+  // Pre-fill the existing inline PO create modal.
+  ['inline-po-number','inline-po-vendor','inline-po-contact','inline-po-email',
+   'inline-po-phone','inline-po-cap','inline-po-notes'
+  ].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  document.getElementById('inline-po-vendor').value = vendor;
+  document.getElementById('inline-po-cap').value    = amount || '';
+  document.getElementById('inline-po-notes').value  = filename ? `Created from estimate: ${filename}` : '';
+  document.getElementById('inline-po-status').value = 'open';
+  // Suggest a PO# from the year + vendor initials.
+  const year = (new Date()).getFullYear();
+  const initials = (vendor.match(/\b\w/g) || []).slice(0, 4).join('').toUpperCase();
+  document.getElementById('inline-po-number').value = initials ? `PO-${year}-${initials}-001` : `PO-${year}-001`;
+  document.getElementById('line-po-create-modal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('inline-po-number').focus(), 50);
+};
+
+window.openAddToPoFromDoc = async function(btn) {
+  const uid      = parseInt(btn.dataset.uid);
+  const vendor   = btn.dataset.vendor || '';
+  const amount   = btn.dataset.amount || '';
+  const filename = btn.dataset.filename || '';
+  // Reuse the existing line-po-modal but in "attach" mode. We hijack
+  // pickLinePo to call the attach-doc endpoint instead of line/po.
+  try {
+    const r = await fetch(`/projects/${PID}/pos.json`);
+    const j = await r.json();
+    if (!j.ok) throw new Error('PO load failed');
+    window.PROJECT_POS = j.pos || [];
+  } catch (e) { /* fall back to whatever's loaded */ }
+  _docPoAttachDocId = uid;
+  _docPoAttachAmount = parseFloat(amount) || null;
+  _docPoAttachFilename = filename;
+  _linePoCurrentLineId = null;
+  // Open the picker — re-render with current PO list. Repurpose the
+  // subtitle to indicate attach mode.
+  const sub = document.getElementById('line-po-modal-subtitle');
+  if (sub) {
+    sub.textContent = filename
+      ? `Attach "${filename}" (${amount ? '$' + parseFloat(amount).toFixed(2) : 'no amount'}) to an existing PO. The cap auto-bumps by the doc amount.`
+      : 'Attach this document to an existing PO. The cap auto-bumps by the doc amount.';
+  }
+  document.getElementById('line-po-current').style.display = 'none';
+  _renderLinePoList('');
+  document.getElementById('line-po-search').value = '';
+  document.getElementById('line-po-modal').classList.remove('hidden');
+};
+
+let _docPoAttachDocId = null;
+let _docPoAttachAmount = null;
+let _docPoAttachFilename = null;
+
+// Hijack the existing pickLinePo so that when a doc-attach flow is
+// active, it calls attach-doc instead of line/po.
+const _origPickLinePo = window.pickLinePo;
+window.pickLinePo = async function(poId) {
+  if (_docPoAttachDocId) {
+    try {
+      const r = await fetch(`/projects/${PID}/pos/${poId}/attach-doc`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          doc_upload_id: _docPoAttachDocId,
+          bump_cap: true,
+          note: _docPoAttachFilename ? `Estimate: ${_docPoAttachFilename}` : null,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok) { alert(j.error || 'Attach failed'); return; }
+      _docPoAttachDocId = null;
+      _docPoAttachAmount = null;
+      _docPoAttachFilename = null;
+      closeLinePoPicker();
+      alert(`Attached. Cap is now $${(j.po && j.po.total_committed) ? j.po.total_committed.toLocaleString('en-US') : '—'}.`);
+    } catch (e) { alert('Attach failed: ' + e.message); }
+    return;
+  }
+  // Otherwise fall through to the original line-assign behavior.
+  if (typeof _origPickLinePo === 'function') return _origPickLinePo(poId);
+};
+
 window.openInlinePoCreate = function() {
   ['inline-po-number','inline-po-vendor','inline-po-contact','inline-po-email',
    'inline-po-phone','inline-po-cap','inline-po-notes'
@@ -7670,15 +7785,34 @@ window.saveInlinePo = async function() {
     return;
   }
   try {
-    const r = await fetch(`/projects/${PID}/pos/save`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const j = await r.json();
-    if (!r.ok) {
-      alert(j.error || 'Save failed');
-      btn.disabled = false; btn.textContent = 'Create & Assign';
-      return;
+    // If this flow originated from a Docs-tab "Create PO" button on
+    // an estimate, route through /docs/upload/<uid>/create-po so the
+    // PO is linked back to the source doc + recorded as 'source' role
+    // in po_doc_attachment.
+    let r, j;
+    if (_docPoFromDocId) {
+      r = await fetch(`/docs/upload/${_docPoFromDocId}/create-po`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      j = await r.json();
+      if (!r.ok) {
+        alert(j.error || 'Save failed');
+        btn.disabled = false; btn.textContent = 'Create & Assign';
+        return;
+      }
+      _docPoFromDocId = null;
+    } else {
+      r = await fetch(`/projects/${PID}/pos/save`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      j = await r.json();
+      if (!r.ok) {
+        alert(j.error || 'Save failed');
+        btn.disabled = false; btn.textContent = 'Create & Assign';
+        return;
+      }
     }
     // Auto-assign the new PO to the current line.
     if (_linePoCurrentLineId && j.po && j.po.id) {

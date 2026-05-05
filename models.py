@@ -916,11 +916,46 @@ class PurchaseOrder(db.Model):
     updated_at      = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     archived        = db.Column(db.Boolean, default=False, nullable=False)
 
+    # Source estimate / quote document (added 2026-05-05 per user). When
+    # a PO is created from a vendor's estimate via the Docs tab, this
+    # FK points at the originating DocUpload. The PO list page links
+    # back to it. Additional supporting docs from "Add to PO" appends
+    # are tracked in PoDocAttachment (junction). NULL = manually-created
+    # PO with no source doc.
+    source_doc_upload_id = db.Column(db.Integer, db.ForeignKey("doc_upload.id"), nullable=True)
+
     project   = db.relationship("ProjectSheet", foreign_keys=[project_id])
     creator   = db.relationship("User",         foreign_keys=[created_by_user_id])
+    source_doc = db.relationship("DocUpload",   foreign_keys=[source_doc_upload_id])
 
     __table_args__ = (
         db.Index('ix_po_project',         'project_id'),
         db.Index('ix_po_project_archived','project_id', 'archived'),
         db.UniqueConstraint('project_id', 'po_number', name='uq_po_project_number'),
+    )
+
+
+# ── Junction: PO ↔ DocUpload (added 2026-05-05) ─────────────────────────
+# Per user: "Add to PO" should let multiple estimates/invoices stack
+# under one PO. Source attachment lives in PurchaseOrder.source_doc_
+# upload_id (the FIRST one); subsequent additions land here with
+# their per-doc amount + optional note (e.g. "Revised quote — added $500").
+class PoDocAttachment(db.Model):
+    __tablename__ = "po_doc_attachment"
+    id              = db.Column(db.Integer, primary_key=True)
+    po_id           = db.Column(db.Integer, db.ForeignKey("purchase_order.id"), nullable=False)
+    doc_upload_id   = db.Column(db.Integer, db.ForeignKey("doc_upload.id"), nullable=False)
+    amount          = db.Column(db.Numeric(12, 2), nullable=True)   # snapshot of doc's amount at attach time
+    note            = db.Column(db.String(300), nullable=True)
+    role            = db.Column(db.String(20), default='additional')  # source | additional
+    created_at      = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+
+    po           = db.relationship("PurchaseOrder", foreign_keys=[po_id])
+    doc          = db.relationship("DocUpload",     foreign_keys=[doc_upload_id])
+
+    __table_args__ = (
+        db.Index('ix_po_doc_po',  'po_id'),
+        db.Index('ix_po_doc_doc', 'doc_upload_id'),
+        db.UniqueConstraint('po_id', 'doc_upload_id', name='uq_po_doc'),
     )
