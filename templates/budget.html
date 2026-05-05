@@ -754,7 +754,7 @@
           {% set ns.prev_sub_group = _sg %}
           {% endif %}
         {% endif %}
-        <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }} {{ 'sync-line' if ln.line_tag else '' }} {{ 'sync-omitted' if ln.sync_omit else '' }}" data-id="{{ ln.id }}"
+        <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }} {{ 'sync-line' if ln.line_tag else '' }} {{ 'sync-omitted' if ln.sync_omit else '' }} {{ 'schedule-driven' if ln.use_schedule else '' }}" data-id="{{ ln.id }}"
             data-code="{{ ln.account_code }}" data-code-name="{{ ln.account_name }}"
             data-agent="{{ res.agent_amount | default(0) | float | round(2) }}"
             data-ot="{{ res.ot_amount | default(0) | float | round(2) }}"
@@ -826,9 +826,17 @@
           </td>
           <td class="col-days col-days-cell">
             {% if ln.use_schedule %}
-            <span class="sched-days" title="Driven by schedule ({{ res.day_count }} days)">
+            <span class="sched-days" title="Driven by schedule ({{ res.day_count }} days) — edit on the Schedule tab">
               {{ res.day_count if res.day_count is defined else ln.days | float | round(2) }}
             </span>
+            {# Schedule-driven duration: render the unit as blue italic
+               text in place of the editable dropdown. Matches the blue
+               italic styling of the duration number to signal "this is
+               computed from the schedule, not user-entered". Per user
+               2026-05-05. #}
+            <span class="sched-unit"
+                  title="Pulled from the Schedule tab — editing the duration unit is disabled because the day count is calendar-driven."
+                  style="margin-left:.4rem;color:var(--accent);font-style:italic;font-size:.78rem">Days</span>
             {% else %}
             <span class="editable num" data-field="days" data-id="{{ ln.id }}">{% set _d = ln.days | float %}{{ _d | int if _d == (_d | int) else _d }}</span>
             {% endif %}

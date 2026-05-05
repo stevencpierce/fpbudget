@@ -403,6 +403,15 @@ body.col-resizing * { cursor: col-resize !important; }
   opacity: .75;
 }
 
+/* Schedule-driven rows — italicize the description as a subtle "this
+   is pulled from the schedule, not directly editable" signal. The
+   duration count + "Days" label already render in the schedule's blue
+   italic via .sched-days / .sched-unit; matching italics on the
+   description ties the visual hint together. Per user 2026-05-05. */
+.line-row.schedule-driven .editable[data-field="description"] {
+  font-style: italic;
+}
+
 /* Inline edit */
 .editable {
   cursor: text;
