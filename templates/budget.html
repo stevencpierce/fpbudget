@@ -2015,54 +2015,51 @@
               {% endif %}
             </div>
           </div>
-          <span class="doc-status-badge" style="font-size:11px;padding:3px 9px;border-radius:20px;white-space:nowrap;
-            {% if u.is_duplicate %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
-            {% elif u.status == 'filed' or u.status == 'done' %}background:#14291e;color:#22c55e;border:1px solid #1a4228;
-            {% elif u.status == 'review' %}background:#2a2414;color:#fbbf24;border:1px solid #4a3a1a;
-            {% elif u.status == 'duplicate' %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
-            {% elif u.status == 'error' %}background:#2a1414;color:#ef4444;border:1px solid #4a2020;
-            {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}"
-            title="{% if u.confidence %}OCR confidence: {{ u.confidence }}%{% endif %}{% if u.filed_dropbox_path %} · Dropbox: {{ u.filed_dropbox_path }}{% endif %}{% if u.note %} · {{ u.note }}{% endif %}">
-            {% if u.is_duplicate %}🔁 Duplicate
-            {% elif u.status == 'done' or u.status == 'filed' %}Filed
-            {% elif u.status == 'review' %}⚠ Review
-              {% if u.confidence %} {{ u.confidence | int }}%{% endif %}
-            {% else %}{{ u.status|capitalize }}{% endif %}
-          </span>
-          {% if u.status == 'pending' %}
-          <button class="doc-retry-btn" title="Retry filing to Dropbox"
-                  style="background:#1a2540;border:1px solid #2d4070;color:#5b8af9;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;">
-            ↻ Retry
-          </button>
-          {% endif %}
-          {# PO actions on estimate / quote / purchase_order docs (added
-             2026-05-05). User can spin up a new PO with the doc as the
-             source attachment, or stack the doc onto an existing PO. #}
-          {% if u.category in ('estimate', 'quote', 'purchase_order') %}
-          <button class="doc-create-po-btn" data-uid="{{ u.id }}"
-                  data-vendor="{{ u.vendor or '' }}"
-                  data-amount="{{ u.amount|float if u.amount else '' }}"
-                  data-filename="{{ u.filed_filename or u.original_filename or '' }}"
-                  data-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
-                  title="Create a new Purchase Order from this estimate"
-                  onclick="openCreatePoFromDoc(this)"
-                  style="background:#1a3a2a;border:1px solid #2a5a3a;color:#74c69d;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;">
-            📋 Create PO
-          </button>
-          <button class="doc-add-to-po-btn" data-uid="{{ u.id }}"
-                  data-vendor="{{ u.vendor or '' }}"
-                  data-amount="{{ u.amount|float if u.amount else '' }}"
-                  data-filename="{{ u.filed_filename or u.original_filename or '' }}"
-                  title="Attach this document to an existing Purchase Order"
-                  onclick="openAddToPoFromDoc(this)"
-                  style="background:#1a2540;border:1px solid #2d4070;color:#5b8af9;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;">
-            ＋ to PO
-          </button>
-          {% endif %}
-          <button class="doc-delete-btn" title="Delete this document"
-                  style="background:none;border:none;color:#ef4444;cursor:pointer;padding:4px 8px;font-size:14px;">
-            ✕
-          </button>
+          {# Right-side action cluster wrapped in a single flex-item
+             with flex-shrink:0 so it never crushes the inner column
+             grid. Per user 2026-05-05 — list view became unviewable
+             when PO buttons ate horizontal space. #}
+          <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+            <span class="doc-status-badge" style="font-size:11px;padding:3px 9px;border-radius:20px;white-space:nowrap;
+              {% if u.is_duplicate %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
+              {% elif u.status == 'filed' or u.status == 'done' %}background:#14291e;color:#22c55e;border:1px solid #1a4228;
+              {% elif u.status == 'review' %}background:#2a2414;color:#fbbf24;border:1px solid #4a3a1a;
+              {% elif u.status == 'duplicate' %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
+              {% elif u.status == 'error' %}background:#2a1414;color:#ef4444;border:1px solid #4a2020;
+              {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}"
+              title="{% if u.confidence %}OCR confidence: {{ u.confidence }}%{% endif %}{% if u.filed_dropbox_path %} · Dropbox: {{ u.filed_dropbox_path }}{% endif %}{% if u.note %} · {{ u.note }}{% endif %}">
+              {% if u.is_duplicate %}🔁
+              {% elif u.status == 'done' or u.status == 'filed' %}✓
+              {% elif u.status == 'review' %}⚠{% if u.confidence %} {{ u.confidence | int }}%{% endif %}
+              {% else %}{{ u.status|capitalize }}{% endif %}
+            </span>
+            {% if u.status == 'pending' %}
+            <button class="doc-retry-btn" title="Retry filing to Dropbox"
+                    style="background:#1a2540;border:1px solid #2d4070;color:#5b8af9;padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer;white-space:nowrap;">↻</button>
+            {% endif %}
+            {# PO actions on estimate / quote / SOW / PO docs. Compact
+               icon buttons so they fit the action cluster without
+               crushing the row's main grid. Tooltips spell them out. #}
+            {% if u.category in ('estimate', 'quote', 'purchase_order') %}
+            <button class="doc-create-po-btn" data-uid="{{ u.id }}"
+                    data-vendor="{{ u.vendor or '' }}"
+                    data-amount="{{ u.amount|float if u.amount else '' }}"
+                    data-filename="{{ u.filed_filename or u.original_filename or '' }}"
+                    data-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
+                    title="Create a new Purchase Order from this estimate / quote / SOW"
+                    onclick="openCreatePoFromDoc(this)"
+                    style="background:#1a3a2a;border:1px solid #2a5a3a;color:#74c69d;padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer;white-space:nowrap;">📋＋</button>
+            <button class="doc-add-to-po-btn" data-uid="{{ u.id }}"
+                    data-vendor="{{ u.vendor or '' }}"
+                    data-amount="{{ u.amount|float if u.amount else '' }}"
+                    data-filename="{{ u.filed_filename or u.original_filename or '' }}"
+                    title="Attach this document to an existing Purchase Order"
+                    onclick="openAddToPoFromDoc(this)"
+                    style="background:#1a2540;border:1px solid #2d4070;color:#5b8af9;padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer;white-space:nowrap;">📎→</button>
+            {% endif %}
+            <button class="doc-delete-btn" title="Delete this document"
+                    style="background:none;border:none;color:#ef4444;cursor:pointer;padding:4px 8px;font-size:14px;">✕</button>
+          </div>
         </div>
           {% endfor %}{# rows in group #}
         {% endfor %}{# groups #}
@@ -2190,6 +2187,26 @@
                 <option value="release">Release (Talent / Location)</option>
                 <option value="misc">Miscellaneous</option>
               </select>
+            </div>
+            {# Per user 2026-05-05: when the doc type is estimate / quote /
+               SOW / PO, expose Create-PO + Add-to-PO actions inline in the
+               detail modal so the user doesn't have to close and find the
+               row in the list view. The buttons hide/show via JS based on
+               docDetailCategory's current value. #}
+            <div id="docDetailPoActions" class="field" style="margin-bottom:.6rem;display:none">
+              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Purchase Order</label>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button type="button" id="docDetailCreatePoBtn"
+                        onclick="docDetailCreatePo()"
+                        style="flex:1;min-width:120px;padding:6px 12px;border-radius:6px;
+                               background:#1a3a2a;border:1px solid #2a5a3a;color:#74c69d;
+                               font-size:12px;cursor:pointer">📋 Create PO from this</button>
+                <button type="button" id="docDetailAddToPoBtn"
+                        onclick="docDetailAddToPo()"
+                        style="flex:1;min-width:120px;padding:6px 12px;border-radius:6px;
+                               background:#1a2540;border:1px solid #2d4070;color:#5b8af9;
+                               font-size:12px;cursor:pointer">📎 Add to existing PO</button>
+              </div>
             </div>
             <div class="field" style="margin-bottom:.6rem">
               <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Note</label>
@@ -3043,8 +3060,51 @@
     if (crewField) crewField.style.display = spec.crew ? '' : 'none';
     const locField  = document.getElementById('docDetailLocationField');
     if (locField)  locField.style.display = spec.location ? '' : 'none';
+    // PO actions visible only when type is estimate / quote / SOW / PO.
+    // Per user 2026-05-05.
+    const poActions = document.getElementById('docDetailPoActions');
+    if (poActions) {
+      const isPoCandidate = ['estimate', 'quote', 'purchase_order'].includes((type || '').toLowerCase());
+      poActions.style.display = isPoCandidate ? '' : 'none';
+    }
     _docDetailHighlightMissing(spec);
   }
+  // Find the currently-open detail row and route through the existing
+  // openCreatePoFromDoc / openAddToPoFromDoc handlers using a synthesized
+  // button element with the row's data attributes.
+  window.docDetailCreatePo = function() {
+    const uid = window._docDetailCurrentUid;
+    if (!uid) { alert('No document loaded'); return; }
+    const fakeBtn = {
+      dataset: {
+        uid:     String(uid),
+        vendor:  document.getElementById('docDetailVendor').value || '',
+        amount:  document.getElementById('docDetailAmount').value || '',
+        filename: document.getElementById('docDetailTitle')?.textContent || '',
+        docDate: document.getElementById('docDetailDocDate').value || '',
+      }
+    };
+    closeDocDetail();
+    if (typeof window.openCreatePoFromDoc === 'function') {
+      window.openCreatePoFromDoc(fakeBtn);
+    }
+  };
+  window.docDetailAddToPo = function() {
+    const uid = window._docDetailCurrentUid;
+    if (!uid) { alert('No document loaded'); return; }
+    const fakeBtn = {
+      dataset: {
+        uid:     String(uid),
+        vendor:  document.getElementById('docDetailVendor').value || '',
+        amount:  document.getElementById('docDetailAmount').value || '',
+        filename: document.getElementById('docDetailTitle')?.textContent || '',
+      }
+    };
+    closeDocDetail();
+    if (typeof window.openAddToPoFromDoc === 'function') {
+      window.openAddToPoFromDoc(fakeBtn);
+    }
+  };
 
   // For a row that's still in Review status, highlight the required
   // fields that are blank so the user knows what to fill in to push it
@@ -3167,6 +3227,7 @@
 
   window.openDocDetail = async function (uid, row) {
     _docDetailUid = uid;
+    window._docDetailCurrentUid = uid;
     // Hoist the modal out of the Docs tab panel on first open so the
     // user can open it from any tab (Actuals, etc.) — without this,
     // the parent tab-docs div's display:none cascades and hides the

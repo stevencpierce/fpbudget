@@ -9258,14 +9258,18 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
         "notes":          po.notes or "",
         "archived":       bool(po.archived),
         "created_at":     po.created_at.isoformat() if po.created_at else None,
-        "source_doc_upload_id": po.source_doc_upload_id if hasattr(po, 'source_doc_upload_id') else None,
     }
-    # Surface the source doc filename so list views render a link
-    # without a second query per PO. None when no source doc.
+    # Surface source_doc_upload_id + denormalized filename. Wrapped
+    # defensively in case the column / table hasn't been added yet on
+    # a fresh deploy where the worker self-heal hasn't fully run.
+    try:
+        out["source_doc_upload_id"] = getattr(po, 'source_doc_upload_id', None)
+    except Exception:
+        out["source_doc_upload_id"] = None
     out["source_doc"] = None
-    if getattr(po, 'source_doc_upload_id', None):
+    if out["source_doc_upload_id"]:
         try:
-            _sd = db.session.get(DocUpload, po.source_doc_upload_id)
+            _sd = db.session.get(DocUpload, out["source_doc_upload_id"])
             if _sd:
                 out["source_doc"] = {
                     "id":       _sd.id,
@@ -9418,15 +9422,18 @@ def po_save(pid):
     # Source doc attachment (added 2026-05-05). When a PO is created
     # from an estimate via the Docs tab, the originating DocUpload id
     # is forwarded here so the PO list page can show + link the source.
+    # Wrapped in try/except defensively — if the column hasn't been
+    # added yet by the worker self-heal (race on first deploy), this
+    # silently no-ops instead of breaking the basic PO save flow.
     if 'source_doc_upload_id' in data:
-        v = data.get('source_doc_upload_id')
-        if v in (None, '', 'null', 0):
-            po.source_doc_upload_id = None
-        else:
-            try:
+        try:
+            v = data.get('source_doc_upload_id')
+            if v in (None, '', 'null', 0):
+                po.source_doc_upload_id = None
+            else:
                 po.source_doc_upload_id = int(v)
-            except (TypeError, ValueError):
-                return jsonify({"error": "source_doc_upload_id must be an integer"}), 400
+        except (AttributeError, TypeError, ValueError):
+            pass
     # Validate: po_number + vendor_name required.
     if not (po.po_number or '').strip() or not (po.vendor_name or '').strip():
         return jsonify({"error": "po_number and vendor_name are required"}), 400
