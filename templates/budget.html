@@ -983,7 +983,7 @@
             {% set _eot = ln.est_ot | float %}
             <span class="editable num" data-field="est_ot"
                   data-id="{{ ln.id }}"
-                  title="Manual OT (flat $) — click to edit or set to 0 to clear. This is a hand-entered value, not from the schedule. Use the Schedule tab to flag calendar-day OT hours instead."
+                  title="Manual OT (flat $) — click to edit, or right-click to clear OT on multiple rows at once. This is a hand-entered value, not pulled from the Schedule."
                   style="{% if _eot > 0 %}color:#fbbf24{% endif %}">{{ "{:,.2f}".format(_eot) if _eot > 0 else 0 }}</span>
             {% endif %}
             {% endif %}
@@ -8229,6 +8229,77 @@ document.addEventListener('contextmenu', e => {
   e.preventDefault();
   _showSelectCopyMenu(sel, e.clientX, e.clientY);
 });
+
+// ── Right-click on est_ot field → bulk clear OT ────────────────────────
+// Per user 2026-05-05: legacy manual OT values stored in est_ot show up
+// on rows even when the schedule is empty. User wanted a quick way to
+// wipe them in bulk without clicking each cell. Right-click any est_ot
+// editable to get "Clear OT on rows below" / "section" / "whole budget".
+document.addEventListener('contextmenu', e => {
+  const span = e.target.closest('.editable.num[data-field="est_ot"]');
+  if (!span) return;
+  e.preventDefault();
+  _showOtClearMenu(span, e.clientX, e.clientY);
+});
+
+function _showOtClearMenu(span, x, y) {
+  document.getElementById('_otClearMenu')?.remove();
+  const menu = document.createElement('div');
+  menu.id = '_otClearMenu';
+  menu.className = 'ctx-menu';
+  menu.innerHTML = `
+    <div class="ctx-menu-title">Clear manual OT</div>
+    <div class="ctx-item" data-scope="below">…on rows below in this section</div>
+    <div class="ctx-item" data-scope="section">…on all rows in this section</div>
+    <div class="ctx-item" data-scope="all">…on every labor row in this budget</div>
+  `;
+  menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;z-index:9999`;
+  document.body.appendChild(menu);
+
+  menu.addEventListener('click', async e => {
+    const scope = e.target.dataset.scope;
+    if (!scope) return;
+    menu.remove();
+    const sectionTable = span.closest('table');
+    let candidates;
+    if (scope === 'all') {
+      candidates = Array.from(document.querySelectorAll(
+        `#working-budget-wrap .editable.num[data-field="est_ot"]`));
+    } else if (scope === 'section') {
+      candidates = Array.from(sectionTable.querySelectorAll(
+        `.editable.num[data-field="est_ot"]`));
+    } else {
+      const allInSection = Array.from(sectionTable.querySelectorAll(
+        `.editable.num[data-field="est_ot"]`));
+      const idx = allInSection.indexOf(span);
+      candidates = allInSection.slice(idx + 1);
+    }
+    // Skip rows whose value is already 0 to avoid pointless writes.
+    const nonzero = candidates.filter(el => {
+      const v = parseFloat((el.textContent || '0').replace(/[$,]/g, '')) || 0;
+      return v > 0;
+    });
+    if (!nonzero.length) {
+      alert('No non-zero manual OT values to clear in that scope.');
+      return;
+    }
+    if (!confirm(`Clear manual OT on ${nonzero.length} row${nonzero.length !== 1 ? 's' : ''}?`)) return;
+    for (const el of nonzero) {
+      el.textContent = '0';
+      el.style.color = '';  // drop the amber tint
+      try {
+        await patchLine(parseInt(el.dataset.id), { est_ot: 0 });
+      } catch (err) { /* keep going */ }
+    }
+  });
+
+  setTimeout(() => {
+    document.addEventListener('click', function _dismiss() {
+      document.getElementById('_otClearMenu')?.remove();
+      document.removeEventListener('click', _dismiss);
+    });
+  }, 0);
+}
 
 function _showSelectCopyMenu(sel, x, y) {
   document.getElementById('_selCopyMenu')?.remove();
