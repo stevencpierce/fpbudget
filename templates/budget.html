@@ -971,10 +971,20 @@
           <td class="col-num">
             {% if ln.is_labor %}
             {% if ln.use_schedule and res.ot_amount is defined and res.ot_amount > 0 %}
-            <span class="sched-ot" title="OT computed from schedule">{{ (res.ot_amount * _sec_fee_m) | currency }}</span>
+            {# Schedule-driven OT — currency formatted, blue italic to
+               match the schedule-driven row treatment elsewhere. #}
+            <span class="sched-ot" title="OT computed from the Schedule tab — flagged OT/DT hours on calendar days. Edit there to change.">{{ (res.ot_amount * _sec_fee_m) | currency }}</span>
             {% else %}
+            {# Manual est_ot field. Shown as plain number (no $) to
+               distinguish from schedule-driven. Per user 2026-05-05 —
+               better tooltip explains the source so users can find +
+               clear stale manual values. Highlight non-zero values
+               in amber so they catch the eye. #}
+            {% set _eot = ln.est_ot | float %}
             <span class="editable num" data-field="est_ot"
-                  data-id="{{ ln.id }}">{{ ln.est_ot | float | round(2) }}</span>
+                  data-id="{{ ln.id }}"
+                  title="Manual OT (flat $) — click to edit or set to 0 to clear. This is a hand-entered value, not from the schedule. Use the Schedule tab to flag calendar-day OT hours instead."
+                  style="{% if _eot > 0 %}color:#fbbf24{% endif %}">{{ "{:,.2f}".format(_eot) if _eot > 0 else 0 }}</span>
             {% endif %}
             {% endif %}
           </td>
