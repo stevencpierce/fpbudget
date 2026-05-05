@@ -403,6 +403,22 @@ body.col-resizing * { cursor: col-resize !important; }
   opacity: .75;
 }
 
+/* Kit-fee rows: make every editable cell easier to click into. The
+   subtle blue tint background on these rows + small cell padding made
+   the editable spans hard to target. Per user 2026-05-05 — duration
+   field on kit-fee rows specifically. Apply to all editable.num cells
+   on kit-fee rows for consistency. */
+.kit-fee-row .editable.num {
+  min-width: 36px;
+  padding: 2px 8px;
+  display: inline-block;
+}
+.kit-fee-row .editable.num:hover {
+  background: var(--bg-3);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
 /* Schedule-driven rows — italicize the description as a subtle "this
    is pulled from the schedule, not directly editable" signal. The
    duration count + "Days" label already render in the schedule's blue

@@ -744,7 +744,11 @@
         </tr>
         {% else %}
         {% set res = line_results[ln.id] %}
-        {% set is_kit_fee = ln.description and ln.description.startswith('Kit Fee') %}
+        {# Kit-fee detection — line_tag is the canonical signal (set by
+           the Add Kit Fee modal) but legacy rows used a description
+           prefix. Check both. Without this, kit fees with custom
+           descriptions ("Camera Kit") missed the .kit-fee-row class. #}
+        {% set is_kit_fee = (ln.line_tag == 'kit_fee') or (ln.description and ln.description.startswith('Kit Fee')) %}
         {% set ns.line_counter = ns.line_counter + 1 %}
         {# Sub-department group header for Production Staff section (2000) #}
         {% if sec.code == 2000 and not is_kit_fee %}
