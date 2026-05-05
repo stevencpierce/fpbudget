@@ -3138,6 +3138,29 @@ def budget_view(pid, bid):
         else:
             line_results[ln.id] = calc_line(ln, fringe_cfgs)
 
+    # Per-labor-line travel/per-diem mirror (per user 2026-05-05).
+    # For each labor line, walk that person's schedule days and compute
+    # the per-person share of every Travel/Per-Diem aggregate. Rendered
+    # as muted italic child rows under the labor person — read-only
+    # references that say "this is your slice of 3500 Travel". Source
+    # of truth stays in the aggregate Travel BudgetLine; double-count
+    # is avoided since these mirror rows have no BudgetLine of their
+    # own and don't enter line_results.
+    travel_mirror_by_line = {}
+    try:
+        from budget_calc import compute_travel_mirror_per_line
+        _labor_lines = [ln for ln in lines if ln.is_labor]
+        # Flatten all schedule days from _bucket back to a list (we want
+        # every (line, date, instance) — same set sync_schedule_driven_lines
+        # walks, so the per-person totals reconcile with the aggregate).
+        _flat_sd = []
+        for _ln_buck in _bucket.values():
+            _flat_sd.extend(_ln_buck.values())
+        travel_mirror_by_line = compute_travel_mirror_per_line(
+            budget, _labor_lines, _flat_sd, all_lines=lines)
+    except Exception as _tm_e:
+        logging.warning(f"[budget_view] travel-mirror compute failed: {_tm_e}")
+
     # Actuals from Transaction table
     actuals_raw = db.session.query(
         Transaction.account_code, func.sum(Transaction.amount)
@@ -3671,6 +3694,7 @@ def budget_view(pid, bid):
         project_custom_units=project_custom_units,
         project_pos=project_pos,
         pos_by_id=pos_by_id,
+        travel_mirror_by_line=travel_mirror_by_line,
         lines=lines,
         line_results=line_results,
         sections=sections,

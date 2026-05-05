@@ -1147,6 +1147,55 @@
                     title="Delete line">✕</button>
           </td>
         </tr>
+        {# Per-person travel/per-diem mirror rows (per user 2026-05-05).
+           Read-only references showing this person's slice of each
+           Travel section aggregate. Source of truth stays in the
+           aggregate; these rows are display-only — they don't enter
+           calc totals or BudgetLine. The italic styling + "↪" arrow
+           + faint blue background visually distinguish them as
+           reference rather than budget. Clicking the line jumps to
+           the source aggregate row. #}
+        {% if ln.is_labor and travel_mirror_by_line.get(ln.id) %}
+          {% for _tm in travel_mirror_by_line.get(ln.id, []) %}
+        <tr class="travel-mirror-row" data-source-line="{{ _tm.source_line_id or '' }}"
+            style="background:rgba(91,138,249,.04);font-style:italic;color:var(--text-muted);font-size:.78rem"
+            title="Mirrored from 3500 Travel — this is {% if ln.assigned_crew %}{{ ln.assigned_crew.name }}'s{% else %}this person's{% endif %} share. Edit the aggregate Travel line to change.">
+          <td class="col-desc" style="padding-left:2.4rem">
+            ↪ <span style="color:var(--text-muted)">{{ _tm.label }}</span>
+          </td>
+          <td class="col-pc col-labor-only"></td>
+          <td class="col-qty"></td>
+          <td class="col-days col-days-cell">
+            <span style="color:var(--text-muted)">{{ _tm.days }}</span>
+            <span style="margin-left:.4rem;color:var(--accent);font-style:italic;font-size:.7rem">days</span>
+          </td>
+          <td class="col-num">
+            <span style="color:var(--text-muted)">${{ "{:,.2f}".format(_tm.rate) }}</span>
+          </td>
+          <td class="col-rt"></td>
+          <td class="col-num"></td>
+          <td class="col-fr"></td>
+          <td class="col-num">
+            <span style="color:var(--text-muted)">${{ "{:,.2f}".format(_tm.amount) }}</span>
+          </td>
+          <td class="col-num"></td>
+          <td class="col-num">
+            <span style="color:var(--text-muted)">${{ "{:,.2f}".format(_tm.amount) }}</span>
+          </td>
+          {% if working_exists %}<td class="col-num col-working"></td>{% endif %}
+          {% if has_actual_budget %}<td class="col-num col-actual"></td>{% endif %}
+          {% if is_working_view or has_actual_budget %}<td class="col-num col-variance"></td>{% endif %}
+          <td class="col-act">
+            {% if _tm.source_line_id %}
+            <a href="#"
+               onclick="event.preventDefault();const t=document.querySelector('.line-row[data-id=\'{{ _tm.source_line_id }}\']');if(t){t.scrollIntoView({behavior:'smooth',block:'center'});t.style.transition='background .8s';t.style.background='rgba(91,138,249,.18)';setTimeout(()=>{t.style.background='';},1200);}"
+               style="font-size:.7rem;color:var(--accent);text-decoration:none"
+               title="Jump to the aggregate Travel line">→ source</a>
+            {% endif %}
+          </td>
+        </tr>
+          {% endfor %}
+        {% endif %}
         {# Actual view: expandable transaction detail row under each
            line. Hidden by default; click the line row's description
            cell to toggle. Per user 2026-05-01 — replaces the By

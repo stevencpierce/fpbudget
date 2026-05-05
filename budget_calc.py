@@ -178,6 +178,126 @@ def get_role_group(account_code):
     return _ROLE_GROUP_CODES.get(int(account_code or 0), "crew")
 
 
+# ── Per-labor-line travel/per-diem mirror (added 2026-05-05 per user) ────
+# For each labor line, walk its schedule days and compute the per-person
+# share of every travel-flag-driven cost. Returns a dict keyed by
+# labor_line_id with a list of mirror entries (kind, label, days, rate,
+# amount, source_line_id). The Budget tab renders these as muted italic
+# child rows under each labor person — read-only references that show
+# "this is your share of the aggregate Travel section line." Source of
+# truth stays in the aggregate Travel BudgetLine; these are display-only.
+def compute_travel_mirror_per_line(budget, labor_lines, schedule_days, all_lines=None):
+    """
+    Return: {line_id: [{
+       kind:        flag tag (e.g. 'per_diem_full', 'hotel_crew')
+       label:       human-readable label
+       days:        count of flagged days for this person
+       rate:        per-day per-person rate (from aggregate line's unit_rate, fallback to SCHEDULE_LINE_DEFS)
+       amount:      days * rate
+       source_line_id: id of the aggregate Travel BudgetLine (link target for the user)
+    }, ...]}
+
+    Talent is routed to hotel_talent / per_diem_full / etc.; ATL → _atl;
+    everyone else → _crew. Mirrors the role-group logic in
+    sync_schedule_driven_lines so the per-person numbers reconcile with
+    the aggregates.
+    """
+    import json as _json
+    if not labor_lines or not schedule_days:
+        return {}
+    # Build a quick map: tag → {rate, source_line_id} from the aggregate
+    # Travel/Meals lines that already exist on this budget (so per-line
+    # mirrors use the user's edited rate, not just the default).
+    rate_by_tag = {}
+    src_id_by_tag = {}
+    if all_lines:
+        for ln in all_lines:
+            if ln.line_tag and ln.line_tag in SCHEDULE_LINE_DEFS:
+                # rate per unit: prefer unit_rate (set on creation), then rate, then default.
+                _r = float(ln.unit_rate) if ln.unit_rate is not None else float(ln.rate or 0)
+                if not _r:
+                    _r = SCHEDULE_LINE_DEFS[ln.line_tag][3]
+                rate_by_tag[ln.line_tag] = _r
+                src_id_by_tag[ln.line_tag] = ln.id
+    for tag, defs in SCHEDULE_LINE_DEFS.items():
+        if tag not in rate_by_tag:
+            rate_by_tag[tag] = defs[3]  # default unit_rate
+
+    # Build labor_id → role_group lookup. Use the line's own role_group
+    # override (Production Staff sub-grouping) if set; otherwise fall
+    # back to COA-code mapping.
+    role_for_line = {}
+    for ln in labor_lines:
+        rg = (ln.role_group or '').strip().lower()
+        if rg in ('talent', 'atl', 'crew'):
+            role_for_line[ln.id] = rg
+        else:
+            role_for_line[ln.id] = get_role_group(ln.account_code)
+
+    # Day-flag aggregation per labor line. We walk each ScheduleDay,
+    # parse cell_flags, and bump counters for each flag found.
+    counts = {}  # {line_id: {tag: days_count}}
+    flag_keys = ('working_meal', 'per_diem_full', 'per_diem_breakfast',
+                 'per_diem_lunch', 'per_diem_dinner', 'hotel', 'flight',
+                 'mileage')
+    for sd in schedule_days:
+        if sd.day_type == 'off':
+            continue
+        if sd.budget_line_id not in role_for_line:
+            continue
+        if not sd.cell_flags:
+            continue
+        try:
+            flags = _json.loads(sd.cell_flags)
+        except (ValueError, TypeError):
+            continue
+        # Apply legacy alias for old per_diem flag.
+        if flags.get('per_diem') and not flags.get('per_diem_full'):
+            flags['per_diem_full'] = True
+        rg = role_for_line[sd.budget_line_id]
+        line_bucket = counts.setdefault(sd.budget_line_id, {})
+        for flag in flag_keys:
+            if not flags.get(flag):
+                continue
+            # Map flag → SCHEDULE_LINE_DEFS tag based on role group.
+            if flag == 'working_meal':
+                tag = 'working_meal'
+            elif flag.startswith('per_diem'):
+                tag = flag  # per_diem_full / breakfast / lunch / dinner — same tag
+            elif flag == 'hotel':
+                tag = f'hotel_{rg}'
+            elif flag == 'flight':
+                tag = f'flight_{rg}'
+            elif flag == 'mileage':
+                tag = f'mileage_{rg}'
+            else:
+                continue
+            line_bucket[tag] = line_bucket.get(tag, 0) + 1
+
+    # Build the mirror entries.
+    out = {}
+    for line_id, bucket in counts.items():
+        rows = []
+        for tag, days in bucket.items():
+            if days <= 0:
+                continue
+            rate = rate_by_tag.get(tag, 0)
+            label = SCHEDULE_LINE_DEFS.get(tag, (None, None, tag, 0, 0))[2]
+            rows.append({
+                'kind':           tag,
+                'label':          label,
+                'days':           days,
+                'rate':           rate,
+                'amount':         round(days * rate, 2),
+                'source_line_id': src_id_by_tag.get(tag),
+            })
+        # Sort by section sort order so mirror rows match the Travel section's order.
+        rows.sort(key=lambda r: SCHEDULE_LINE_DEFS.get(r['kind'], (0, 0, 0, 0, 99))[4])
+        if rows:
+            out[line_id] = rows
+    return out
+
+
 # ── Schedule-driven auto-created line definitions ─────────────────────────────
 # Maps line_tag → (account_code, account_name, description, default_unit_rate, section_sort_order)
 # section_sort_order controls ordering within account section (lower = first)
