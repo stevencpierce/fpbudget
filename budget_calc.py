@@ -454,10 +454,13 @@ def sync_schedule_driven_lines(budget_id, db_session):
         if sd.day_type == 'work':
             date_working_headcount[sd.date] = date_working_headcount.get(sd.date, 0) + 1
 
-    # Craft services = every shoot day; headcount = crew that day
-    for d, hc in date_headcount.items():
-        day_dates['craft_services'].add(d)
-        day_hcs['craft_services'].append(hc)
+    # Craft Services — user-toggled per-day flag on ProductionDay. Was
+    # previously auto-counted as "every non-off day" but that made the
+    # qty fluid (re-derived from schedule on every sync) and not
+    # reproducible across Estimated→Working clones. Now mirrors the
+    # courtesy_breakfast / first_meal / second_meal pattern: only days
+    # the user explicitly ticks count toward Craft Services.
+    # 2026-05-06 — see ProductionDay.craft_services column.
 
     # Per-crew-cell flags (working_meal, hotel, flight, mileage, per_diem)
     # Aggregate by (tag, date): count distinct dates as days; headcount is the
@@ -555,6 +558,13 @@ def sync_schedule_driven_lines(budget_id, db_session):
             _pd_dedup[_pd.date] = _pd
     prod_days = list(_pd_dedup.values())
     for pd in prod_days:
+        # Craft Services — user-toggled flag. Uses the broader (non-off)
+        # headcount because cs is set out for everyone present (work +
+        # travel + hold + half), unlike meals which are working-only.
+        cs_hc = date_headcount.get(pd.date, 0) or 0
+        if getattr(pd, 'craft_services', False) and cs_hc > 0:
+            day_dates['craft_services'].add(pd.date)
+            day_hcs['craft_services'].append(cs_hc)
         # Meals use the STRICT working headcount (day_type == 'work' only)
         # — travel / hold / half / kill_fee crew aren't on set eating.
         hc = date_working_headcount.get(pd.date, 0) or 0
@@ -1256,6 +1266,10 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
 
     fee_pct     = float(budget.company_fee_pct)
     dispersed   = bool(getattr(budget, 'company_fee_dispersed', False))
+    # Fee mode: 'pct' (default — fee = pct × eligible base) or 'flat'
+    # (fee = fixed dollar amount, ignores pct entirely). 2026-05-06.
+    fee_mode    = (getattr(budget, 'company_fee_mode', None) or 'pct').lower()
+    fee_flat    = float(getattr(budget, 'company_fee_flat', 0) or 0)
 
     # Sections the user has excluded from the Prod Company Fee base.
     # Default = empty (every section contributes). MMB/ShowBiz convention
@@ -1304,6 +1318,22 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     # Fee base = sum of (eligible portion - fringes) across rows.
     fee_base = sum(_row_fee_base(r) for r in rows)
 
+    # Compute the company fee total. Mode 'flat' uses a fixed dollar
+    # amount regardless of the eligible base (still respects exempt
+    # sections + fringes for the dispersed allocation, just not for the
+    # total itself). Mode 'pct' multiplies fee_base × fee_pct.
+    if fee_mode == 'flat':
+        company_fee_est = round(fee_flat, 2)
+        # Effective rate used to disperse the flat fee proportionally
+        # across eligible (non-exempt, post-fringe) rows. Falls back to
+        # 0 when the eligible base is 0 to avoid div-by-zero (in that
+        # case the flat fee shows as a single line item even if the
+        # user picked 'dispersed' — there's nothing to disperse into).
+        effective_rate = (fee_flat / fee_base) if fee_base > 0 else 0.0
+    else:
+        company_fee_est = round(fee_base * fee_pct, 2)
+        effective_rate = fee_pct
+
     if dispersed:
         # Spread the fee proportionally into each ELIGIBLE section row,
         # but only on the row's NON-fringe portion when fringes are
@@ -1313,18 +1343,16 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
             row["raw_estimated"] = raw
             row_base = _row_fee_base(row)
             if row_base > 0:
-                fee_amt = round(row_base * fee_pct, 2)
+                fee_amt = round(row_base * effective_rate, 2)
                 row["fee_amount"] = fee_amt
                 row["estimated"]  = round(raw + fee_amt, 2)
             else:
                 row["fee_amount"] = 0.0
-        company_fee_est = round(fee_base * fee_pct, 2)
         grand_total_est = round(subtotal_est + company_fee_est, 2)
     else:
         for row in rows:
             row["raw_estimated"] = row["estimated"]
             row["fee_amount"]    = 0.0
-        company_fee_est = round(fee_base * fee_pct, 2)
         grand_total_est = round(subtotal_est + company_fee_est, 2)
 
     grand_total_act = subtotal_act   # no fee on actuals (pass-through)
@@ -1335,6 +1363,8 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         "subtotal_estimated": round(subtotal_est, 2),
         "subtotal_actual":    round(subtotal_act, 2),
         "company_fee_pct":    fee_pct,
+        "company_fee_mode":   fee_mode,
+        "company_fee_flat":   round(fee_flat, 2),
         "company_fee":        round(company_fee_est, 2),
         "company_fee_base":   round(fee_base, 2),
         "company_fee_excluded_codes": sorted(_excluded_codes),

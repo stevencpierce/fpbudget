@@ -172,6 +172,16 @@ class Budget(db.Model):
     budget_mode     = db.Column(db.String(20), default="estimated")  # estimated | schedule | hybrid
     company_fee_pct       = db.Column(db.Numeric(6, 4), default=0.18)
     company_fee_dispersed = db.Column(db.Boolean, default=False, nullable=False)
+    # Production Company Fee mode — 'pct' (default, fee = pct × eligible
+    # subtotal) or 'flat' (fee = company_fee_flat, fixed dollar amount
+    # regardless of subtotal). Added 2026-05-06 per user request to
+    # support fixed-fee production deals where the producer's fee is
+    # negotiated as a single number rather than a markup. Self-heal DDL
+    # backfills existing rows to 'pct' so behavior is unchanged.
+    company_fee_mode      = db.Column(db.String(10), default='pct',
+                                      nullable=False, server_default='pct')
+    company_fee_flat      = db.Column(db.Numeric(14, 2), default=0,
+                                      server_default='0')
     # JSON-encoded array of COA section codes EXCLUDED from the
     # production-company fee base. NULL / empty = every section
     # contributes (default). Edited via budget Settings → "Sections
@@ -401,6 +411,15 @@ class ProductionDay(db.Model):
     budget_id           = db.Column(db.Integer, db.ForeignKey("budget.id"), nullable=False)
     date                = db.Column(db.Date, nullable=False)
     schedule_mode       = db.Column(db.String(20), default="estimated", nullable=False)
+    # Craft Services — explicit per-day toggle (added 2026-05-06).
+    # Previously craft services was auto-counted from "every non-off
+    # ScheduleDay row," which made the qty fluid and re-derived on every
+    # sync, producing different numbers between Estimated and Working
+    # clones. Promoting it to a user-controlled flag (parallel to
+    # courtesy_breakfast / first_meal / second_meal) makes the line
+    # reproducible and reproducible across clones.
+    craft_services      = db.Column(db.Boolean, default=False, nullable=False,
+                                     server_default=db.text('false'))
     courtesy_breakfast  = db.Column(db.Boolean, default=False)
     first_meal          = db.Column(db.Boolean, default=False)
     second_meal         = db.Column(db.Boolean, default=False)

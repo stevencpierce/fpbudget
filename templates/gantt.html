@@ -326,6 +326,23 @@
     </tr>
 
     <!-- ── Working Meal rows (production-wide per-day flags) ── -->
+    <tr class="gantt-meal-row" data-meal="craft_services">
+      <td class="gantt-row-label gantt-meal-label">
+        <span class="gantt-line-desc">Craft Services</span>
+      </td>
+      {% for d in date_range %}
+      {% set is_week_start = d.isoformat() in week_boundary_dates %}
+      {% set meal_data = meal_map.get(d.isoformat(), {}) %}
+      {% set active = meal_data.get('craft_services', False) %}
+      <td class="gantt-meal-cell {{ 'meal-active' if active else '' }} {{ 'week-start-col' if is_week_start else '' }}"
+          data-date="{{ d.isoformat() }}" data-meal="craft_services"
+          onclick="toggleMeal(this)"
+          title="Click to mark Craft Services served on this date">
+        {% if active %}<span class="meal-dot">●</span>{% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+
     <tr class="gantt-meal-row" data-meal="courtesy_breakfast">
       <td class="gantt-row-label gantt-meal-label">
         <span class="gantt-line-desc">Courtesy Breakfast</span>

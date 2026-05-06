@@ -6763,6 +6763,7 @@ def gantt_view(pid, bid):
     # Load production days (meals) for this budget/schedule_mode
     prod_days = ProductionDay.query.filter_by(budget_id=bid, schedule_mode=sched_mode).all()
     meal_map = {pd.date.isoformat(): {
+        "craft_services":      bool(getattr(pd, 'craft_services', False)),
         "courtesy_breakfast": bool(pd.courtesy_breakfast),
         "first_meal":          bool(pd.first_meal),
         "second_meal":         bool(pd.second_meal),
@@ -7381,7 +7382,8 @@ def set_gantt_meal(pid, bid):
     value     = bool(data.get("value", False))
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
 
-    if not date_str or field not in ("courtesy_breakfast", "first_meal", "second_meal", "is_production_day"):
+    if not date_str or field not in ("courtesy_breakfast", "first_meal", "second_meal",
+                                      "is_production_day", "craft_services"):
         return jsonify({"error": "date and valid field required"}), 400
 
     try:
@@ -11801,6 +11803,7 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
             budget_id=dest_bid,
             date=pd.date,
             schedule_mode=dest_sched_mode or pd.schedule_mode,
+            craft_services=getattr(pd, 'craft_services', False),
             courtesy_breakfast=pd.courtesy_breakfast,
             first_meal=pd.first_meal,
             second_meal=pd.second_meal,
@@ -14374,6 +14377,14 @@ def _web_worker_essential_columns():
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_flat NUMERIC(12,2) DEFAULT 0",
                 # Production day flag on ProductionDay (set from Schedule)
                 "ALTER TABLE production_day ADD COLUMN IF NOT EXISTS is_production_day BOOLEAN DEFAULT FALSE NOT NULL",
+                # Craft Services per-day flag (2026-05-06). Promoted from
+                # an auto-counted "every non-off day" to a user-toggled
+                # row alongside courtesy_breakfast / first_meal /
+                # second_meal so the line qty is reproducible across
+                # Estimated → Working clones. Default FALSE — existing
+                # budgets must opt-in per day (matches the user's intent
+                # to make this explicit, not automatic).
+                "ALTER TABLE production_day ADD COLUMN IF NOT EXISTS craft_services BOOLEAN DEFAULT FALSE NOT NULL",
                 # Travel + Catering tables (added 2026-04-27 for Travel/Catering tabs).
                 # CREATE TABLE IF NOT EXISTS so the migration is idempotent and
                 # safe to run on every worker boot.
