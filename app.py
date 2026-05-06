@@ -14371,6 +14371,18 @@ def _web_worker_essential_columns():
             for sql in [
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS fee_excluded_sections TEXT",
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS fee_exclude_fringes BOOLEAN DEFAULT TRUE NOT NULL",
+                # Company fee mode + flat amount (added 2026-05-06 — model
+                # has had these for a while but some production DBs were
+                # never migrated, so SELECTs blow up with UndefinedColumn).
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS company_fee_mode VARCHAR(10) DEFAULT 'pct' NOT NULL",
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS company_fee_flat NUMERIC(14,2) DEFAULT 0",
+                # Display / metadata columns referenced by the Budget ORM.
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS timezone VARCHAR(60) DEFAULT 'America/Los_Angeles'",
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS client_name VARCHAR(200)",
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS prepared_by VARCHAR(200)",
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS prepared_by_title VARCHAR(100)",
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS prepared_by_email VARCHAR(200)",
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS prepared_by_phone VARCHAR(50)",
                 # Production Insurance auto-calc (off / % of labor / flat $)
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_mode VARCHAR(10) DEFAULT 'pct' NOT NULL",
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_pct  NUMERIC(8,6) DEFAULT 0.015",

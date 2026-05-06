@@ -6858,14 +6858,37 @@
           </div>
         </div>
         <div class="field">
-          <label>Production Company Fee %</label>
+          <label>Production Company Fee</label>
+          {# Mode picker — percentage of eligible base, or fixed flat $.
+             Per user 2026-05-06: support fixed-fee deals where the
+             producer's fee is a negotiated dollar amount, not a markup. #}
+          {% set _fee_mode = (budget.company_fee_mode or 'pct') %}
+          <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.5rem;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;cursor:pointer">
+              <input type="radio" name="fee-mode" value="pct" id="set-fee-mode-pct"
+                     {% if _fee_mode != 'flat' %}checked{% endif %}>
+              <span>Percentage</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;cursor:pointer">
+              <input type="radio" name="fee-mode" value="flat" id="set-fee-mode-flat"
+                     {% if _fee_mode == 'flat' %}checked{% endif %}>
+              <span>Flat amount</span>
+            </label>
+          </div>
           <div style="display:flex;align-items:flex-start;gap:1.5rem;flex-wrap:wrap">
-            <input type="number" id="set-fee" value="{{ (budget.company_fee_pct | float * 100) | round(2) }}" min="0" step="0.25" style="width:120px">
+            <div id="set-fee-pct-wrap" style="display:{{ 'none' if _fee_mode == 'flat' else 'flex' }};align-items:center;gap:.4rem">
+              <input type="number" id="set-fee" value="{{ (budget.company_fee_pct | float * 100) | round(2) }}" min="0" step="0.25" style="width:120px">
+              <span class="muted">%</span>
+            </div>
+            <div id="set-fee-flat-wrap" style="display:{{ 'flex' if _fee_mode == 'flat' else 'none' }};align-items:center;gap:.4rem">
+              <span class="muted">$</span>
+              <input type="number" id="set-fee-flat" value="{{ budget.company_fee_flat | float | round(2) if budget.company_fee_flat else 0 }}" min="0" step="100" style="width:160px">
+            </div>
             <label style="display:flex;align-items:flex-start;gap:.5rem;cursor:pointer;font-weight:400;max-width:360px">
               <input type="checkbox" id="set-fee-dispersed" style="margin-top:2px;flex-shrink:0" {% if budget.company_fee_dispersed %}checked{% endif %}>
               <span>
                 <strong style="font-weight:600">Disperse fee across lines</strong><br>
-                <span class="muted" style="font-size:.8rem">Instead of a separate fee line, the markup is spread proportionally into each budget section (rounded to the nearest dollar). The grand total is identical — useful for client-facing budgets where the fee should not appear as a line item.</span>
+                <span class="muted" style="font-size:.8rem">Instead of a separate fee line, the fee is spread proportionally into each eligible section (rounded to the nearest dollar). The grand total is identical — useful for client-facing budgets where the fee should not appear as a line item.</span>
               </span>
             </label>
           </div>
@@ -9671,6 +9694,8 @@ async function saveSettings() {
     name:           document.getElementById('set-name').value.trim(),
     company_fee_pct:        parseFloat(document.getElementById('set-fee').value || 0),
     company_fee_dispersed:  document.getElementById('set-fee-dispersed').checked,
+    company_fee_mode:       (document.querySelector('input[name="fee-mode"]:checked')?.value === 'flat' ? 'flat' : 'pct'),
+    company_fee_flat:       parseFloat(document.getElementById('set-fee-flat')?.value || 0),
     target_budget:  document.getElementById('set-target').value || null,
     start_date:     document.getElementById('set-start').value || null,
     end_date:       document.getElementById('set-end').value || null,
