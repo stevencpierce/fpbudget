@@ -2755,24 +2755,53 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
     _fed40 = PayrollProfile.query.filter(PayrollProfile.name.ilike('%federal%')).first()
     _src_profile_id  = source.payroll_profile_id if source and source.payroll_profile_id else (_fed40.id if _fed40 else None)
     _src_week_start  = source.payroll_week_start if source and source.payroll_week_start is not None else 6
+    # Inherit EVERY user-editable setting from source. Anything left out
+    # silently falls back to factory defaults on the clone, which makes
+    # the Top Sheet totals drift from Estimated the moment Working is
+    # initialized — e.g. Production Insurance / fee-exclusion lists /
+    # fee-mode all changed the auto-injected line amounts. 2026-05-06.
     b = Budget(
         project_id=pid,
         name=new_name,
         budget_mode=new_mode,
+        # Production Company Fee — pct, mode, flat, dispersed flag,
+        # exempt-sections JSON, fringe-exclusion flag.
         company_fee_pct=source.company_fee_pct if source else 0.18,
         company_fee_dispersed=source.company_fee_dispersed if source else False,
+        company_fee_mode=getattr(source, 'company_fee_mode', None) or 'pct' if source else 'pct',
+        company_fee_flat=getattr(source, 'company_fee_flat', None) or 0 if source else 0,
+        fee_excluded_sections=getattr(source, 'fee_excluded_sections', None) if source else None,
+        fee_exclude_fringes=getattr(source, 'fee_exclude_fringes', True) if source else True,
+        # Project / scheduling settings.
         start_date=source.start_date if source else None,
         end_date=source.end_date if source else None,
         target_budget=source.target_budget if source else None,
         notes=source.notes if source else None,
         payroll_profile_id=_src_profile_id,
         payroll_week_start=_src_week_start,
+        timezone=getattr(source, 'timezone', None) or 'America/Los_Angeles' if source else 'America/Los_Angeles',
+        # Version metadata.
         version_status='current',
         parent_budget_id=parent_bid,
         updated_at=datetime.utcnow(),
+        version_number=version_number,
+        # Auto-calc line items — % of labor wages.
         workers_comp_pct=source.workers_comp_pct if source else 0.03,
         payroll_fee_pct=source.payroll_fee_pct if source else 0.0175,
-        version_number=version_number,
+        # Production Insurance auto-inject — mode + pct + flat. Critical:
+        # without this, the clone defaulted to 'pct' at 1.5% even if the
+        # source had it 'off' or 'flat', producing a different Insurance
+        # section total → different fee base → different grand total.
+        production_insurance_mode=getattr(source, 'production_insurance_mode', None) or 'pct' if source else 'pct',
+        production_insurance_pct=getattr(source, 'production_insurance_pct', None) or 0.015 if source else 0.015,
+        production_insurance_flat=getattr(source, 'production_insurance_flat', None) or 0 if source else 0,
+        # Display / approval fields — copied so PDF exports and headers
+        # come out identical between Estimated and Working.
+        client_name=getattr(source, 'client_name', None) if source else None,
+        prepared_by=getattr(source, 'prepared_by', None) if source else None,
+        prepared_by_title=getattr(source, 'prepared_by_title', None) if source else None,
+        prepared_by_email=getattr(source, 'prepared_by_email', None) if source else None,
+        prepared_by_phone=getattr(source, 'prepared_by_phone', None) if source else None,
     )
     db.session.add(b)
     db.session.flush()
