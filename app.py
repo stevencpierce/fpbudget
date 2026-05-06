@@ -3447,7 +3447,16 @@ def budget_view(pid, bid):
         tax_credit_totals[tc.id] = credit
 
     # Working budget: sum working_total per COA section (fall back to est_total if unset)
+    # Must mirror calc_top_sheet exactly so the Working column matches the
+    # Estimated column when nothing has actually changed. That means: in
+    # addition to summing line working_total, we ALSO have to inject the
+    # auto-line amounts (Workers' Comp, Production Insurance, Payroll Fee)
+    # AND apply the dispersed Production Company Fee per section. Without
+    # the dispersal step, every Working section showed raw — the fee was
+    # only added on the "Estimated" column — so the two columns visibly
+    # disagreed by the dispersed fee amount on every row. 2026-05-06.
     working_by_section = {}
+    working_section_fringe = {}     # for fee-base = est − fringe (dispersal)
     working_gross_labor = 0.0
     for ln in lines:
         sec_key = _section_for_code(ln.account_code)
@@ -3455,14 +3464,85 @@ def budget_view(pid, bid):
         working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
         if ln.is_labor:
             working_gross_labor += line_results[ln.id].get('subtotal', 0.0)
-    # Inject auto-calculated fee amounts (Workers' Comp, Payroll Service Fee) —
-    # these are not BudgetLines so they must be added separately, same as calc_top_sheet does.
+            working_section_fringe[sec_key] = working_section_fringe.get(sec_key, 0.0) + float(line_results[ln.id].get('fringe_amount', 0) or 0)
+    # Inject auto-calculated fee amounts (WC, Production Insurance, Payroll
+    # Service Fee) — not BudgetLines so they must be added separately.
     _wc_pct = float(getattr(budget, 'workers_comp_pct', 0) or 0)
     _pf_pct = float(getattr(budget, 'payroll_fee_pct',  0) or 0)
+    _pi_mode = (getattr(budget, 'production_insurance_mode', 'off') or 'off').lower()
+    _pi_pct  = float(getattr(budget, 'production_insurance_pct',  0) or 0)
+    _pi_flat = float(getattr(budget, 'production_insurance_flat', 0) or 0)
+    if _pi_mode == 'pct':
+        _pi_amount = round(working_gross_labor * _pi_pct, 2)
+    elif _pi_mode == 'flat':
+        _pi_amount = round(_pi_flat, 2)
+    else:
+        _pi_amount = 0.0
     if _wc_pct:
         working_by_section[COA_CODE_INSURANCE] = working_by_section.get(COA_CODE_INSURANCE, 0.0) + round(working_gross_labor * _wc_pct, 2)
+    if _pi_amount:
+        working_by_section[COA_CODE_INSURANCE] = working_by_section.get(COA_CODE_INSURANCE, 0.0) + _pi_amount
     if _pf_pct:
         working_by_section[COA_CODE_ADMIN] = working_by_section.get(COA_CODE_ADMIN, 0.0) + round(working_gross_labor * _pf_pct, 2)
+
+    # Disperse Production Company Fee across eligible sections. Mirrors
+    # calc_top_sheet's dispersal logic — eligible base = (section total −
+    # labor fringe) for non-exempt sections; the fee multiplier (or
+    # effective_rate for flat mode) is applied to that base.
+    _wfee_pct = float(getattr(budget, 'company_fee_pct', 0) or 0)
+    _wfee_dispersed = bool(getattr(budget, 'company_fee_dispersed', False))
+    _wfee_mode = (getattr(budget, 'company_fee_mode', None) or 'pct').lower()
+    _wfee_flat = float(getattr(budget, 'company_fee_flat', 0) or 0)
+    _wfee_exclude_fringes = bool(getattr(budget, 'fee_exclude_fringes', True))
+    import json as _json_wfee
+    _wraw_excl = getattr(budget, 'fee_excluded_sections', None)
+    try:
+        _wexcluded = set(int(c) for c in (_json_wfee.loads(_wraw_excl) if _wraw_excl else []))
+    except Exception:
+        _wexcluded = set()
+    _wexcluded.add(6800)  # Prod Co Fee section is always self-exempt
+
+    # Snapshot pre-fee subtotal + raw section totals for the template.
+    # The "Subtotal (Before Prod. Fee)" row uses working_subtotal_pre_fee;
+    # the per-section Working column uses (post-dispersal) working_by_section.
+    working_subtotal_pre_fee = round(sum(working_by_section.values()), 2)
+    working_company_fee = 0.0
+    if _wfee_dispersed:
+        # Compute effective rate the same way calc_top_sheet does
+        _wfee_base = 0.0
+        for _sk, _sv in working_by_section.items():
+            if _sk in _wexcluded:
+                continue
+            _b = _sv - (working_section_fringe.get(_sk, 0.0) if _wfee_exclude_fringes else 0.0)
+            if _b > 0:
+                _wfee_base += _b
+        if _wfee_mode == 'flat':
+            _w_eff_rate = (_wfee_flat / _wfee_base) if _wfee_base > 0 else 0.0
+            working_company_fee = round(_wfee_flat, 2)
+        else:
+            _w_eff_rate = _wfee_pct
+            working_company_fee = round(_wfee_base * _wfee_pct, 2)
+        # Apply dispersal in place
+        for _sk in list(working_by_section.keys()):
+            if _sk in _wexcluded:
+                continue
+            _raw = working_by_section[_sk]
+            _base = _raw - (working_section_fringe.get(_sk, 0.0) if _wfee_exclude_fringes else 0.0)
+            if _base > 0:
+                working_by_section[_sk] = round(_raw + _base * _w_eff_rate, 2)
+    else:
+        # Non-dispersed: fee is shown as its own line item, not baked into sections.
+        _wfee_base = 0.0
+        for _sk, _sv in working_by_section.items():
+            if _sk in _wexcluded:
+                continue
+            _b = _sv - (working_section_fringe.get(_sk, 0.0) if _wfee_exclude_fringes else 0.0)
+            if _b > 0:
+                _wfee_base += _b
+        if _wfee_mode == 'flat':
+            working_company_fee = round(_wfee_flat, 2)
+        else:
+            working_company_fee = round(_wfee_base * _wfee_pct, 2)
 
     # Manual actuals sum per section (from BudgetLine.manual_actual)
     manual_by_section = {}
@@ -3762,6 +3842,8 @@ def budget_view(pid, bid):
         tax_credit_totals=tax_credit_totals,
         payroll_profiles=payroll_profiles,
         working_by_section=working_by_section,
+        working_subtotal_pre_fee=working_subtotal_pre_fee,
+        working_company_fee=working_company_fee,
         working_line_totals=working_line_totals,
         manual_by_section=manual_by_section,
         project_locations=project_locations,
