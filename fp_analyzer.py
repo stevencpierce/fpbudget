@@ -294,6 +294,37 @@ def _infer_type(vr):
     keywords when the structured Veryfi fields are insufficient.
     """
     veryfi_type = (vr.get("document_type") or "").lower()
+
+    # ── OCR-text override for Veryfi's known mis-classifications ──
+    # Veryfi habitually labels estimates / quotes / SOWs as "invoice"
+    # or "bill" because they look invoice-shaped (vendor + line items
+    # + total). If the raw OCR text contains an unambiguous estimate /
+    # quote / SOW phrase, that wins over Veryfi's structured field.
+    # Run this BEFORE the structured-field accept so the override
+    # actually catches.
+    ocr_text_pre = (vr.get("ocr_text") or "").lower()
+    estimate_strong = (
+        "this is an estimate", "estimate total", "estimate #",
+        "estimate no", "estimate number",
+        "scope of work", "statement of work", " sow ",
+        "not an invoice", "this is not an invoice",
+    )
+    quote_strong = (
+        "quotation", "quote total", "quote #", "quote no",
+        "quote number", "price quote", "this is a quote",
+    )
+    if any(k in ocr_text_pre for k in estimate_strong):
+        return "estimate", 0.92
+    if any(k in ocr_text_pre for k in quote_strong):
+        return "quote", 0.90
+    # Standalone "estimate" word at the top of the doc (first 400 chars)
+    # is a strong hint too — but only if Veryfi didn't confidently say
+    # something else specific. The "first 400 chars" heuristic catches
+    # documents whose header reads "ESTIMATE" without using a stronger
+    # phrase.
+    if "estimate" in ocr_text_pre[:400] and veryfi_type in ("", "bill", "invoice"):
+        return "estimate", 0.85
+
     if veryfi_type in DOCUMENT_TYPES:
         return veryfi_type, 1.0
 

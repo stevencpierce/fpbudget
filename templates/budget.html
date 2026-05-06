@@ -3072,9 +3072,39 @@
   // Find the currently-open detail row and route through the existing
   // openCreatePoFromDoc / openAddToPoFromDoc handlers using a synthesized
   // button element with the row's data attributes.
-  window.docDetailCreatePo = function() {
+  window.docDetailCreatePo = async function() {
     const uid = window._docDetailCurrentUid;
     if (!uid) { alert('No document loaded'); return; }
+    // Persist any pending edits in the modal (vendor / amount / date /
+    // category / note) BEFORE opening the create-PO flow, so manual
+    // category changes (e.g. user just switched type from "invoice" to
+    // "estimate") survive the trip and the file gets re-filed to the
+    // right Dropbox folder. Without this, clicking "Create PO" would
+    // open the next modal while the doc is still saved as an invoice.
+    try {
+      const payload = {
+        vendor:     document.getElementById('docDetailVendor').value,
+        amount:     document.getElementById('docDetailAmount').value,
+        doc_date:   document.getElementById('docDetailDocDate').value,
+        category:   document.getElementById('docDetailCategory').value,
+        note:       document.getElementById('docDetailNote').value,
+        doc_number: document.getElementById('docDetailDocNum').value,
+      };
+      const r = await fetch('/docs/upload/' + uid + '/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        alert('Could not save document changes: ' + (d.error || r.status));
+        return;
+      }
+    } catch (e) {
+      // Non-fatal — proceed to PO modal even if the save fails so the
+      // user isn't stuck. They'll see the error in the console.
+      console.warn('[docDetailCreatePo] pre-save failed', e);
+    }
     const fakeBtn = {
       dataset: {
         uid:     String(uid),
@@ -5668,7 +5698,29 @@
               const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
               if (row) {
                 const sel = row.querySelector('.actuals-line-picker');
-                if (sel) sel.value = String(lineId);
+                if (sel) {
+                  // Set the dropdown to the dropped line. If the option
+                  // doesn't exist (e.g. a row's option list was filtered
+                  // for some reason, or the working budget was just
+                  // cloned and option ids drifted), inject one inline so
+                  // the dropdown reflects the assignment instead of
+                  // staying on "Pick budget line". 2026-05-06 — fixes
+                  // multi-select drag where only the first row's
+                  // dropdown updated.
+                  const wantId = String(lineId);
+                  let found = false;
+                  for (const opt of sel.options) {
+                    if (opt.value === wantId) { sel.value = wantId; found = true; break; }
+                  }
+                  if (!found) {
+                    const newOpt = document.createElement('option');
+                    newOpt.value = wantId;
+                    newOpt.textContent = (lineEl.dataset.code || '') + ' · ' +
+                                         (lineEl.dataset.lineDesc || lineEl.dataset.name || 'Line ' + wantId);
+                    sel.appendChild(newOpt);
+                    sel.value = wantId;
+                  }
+                }
               }
             } else { fail++; }
           } catch (err) { fail++; }

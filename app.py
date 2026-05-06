@@ -9302,15 +9302,42 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
     if with_rollup:
         from sqlalchemy import func as _func_po
         # Budget commitment: sum estimated_total of every BudgetLine
-        # currently assigned to this PO (any budget — Estimated /
-        # Working / Actual all count since the user might be tracking
-        # commitments at any phase). Falls back to 0 when no lines.
-        budgeted = (db.session.query(_func_po.coalesce(_func_po.sum(BudgetLine.estimated_total), 0))
-                    .filter(BudgetLine.po_id == po.id)
-                    .scalar()) or 0
+        # currently assigned to this PO. CRITICAL: filter to a single
+        # canonical budget per project, otherwise the same logical line
+        # gets counted in Estimated + Working + Actual (2–3× over-count)
+        # because po_id is copied during the Working→Actual auto-clone.
+        # Pick the project's current Working budget (parent_budget_id
+        # set, version_status=current, is_actual=False) — falls back to
+        # the latest non-actual current budget if no Working exists yet.
+        # 2026-05-06 — fixes "PO shows 4 lines $65k when only 1 line is
+        # assigned with $15k cap".
+        _pid_for_rollup = project_id or po.project_id
+        _canonical = (Budget.query
+                      .filter_by(project_id=_pid_for_rollup,
+                                 version_status='current',
+                                 is_actual=False)
+                      .filter(Budget.parent_budget_id.isnot(None))
+                      .order_by(Budget.id.desc())
+                      .first())
+        if not _canonical:
+            _canonical = (Budget.query
+                          .filter_by(project_id=_pid_for_rollup,
+                                     version_status='current',
+                                     is_actual=False)
+                          .order_by(Budget.id.desc())
+                          .first())
+        if _canonical:
+            budgeted = (db.session.query(_func_po.coalesce(_func_po.sum(BudgetLine.estimated_total), 0))
+                        .filter(BudgetLine.po_id == po.id,
+                                BudgetLine.budget_id == _canonical.id)
+                        .scalar()) or 0
+            line_count = (db.session.query(_func_po.count(BudgetLine.id))
+                          .filter(BudgetLine.po_id == po.id,
+                                  BudgetLine.budget_id == _canonical.id).scalar()) or 0
+        else:
+            budgeted, line_count = 0, 0
         out["budgeted"]   = float(budgeted)
-        out["line_count"] = (db.session.query(_func_po.count(BudgetLine.id))
-                             .filter(BudgetLine.po_id == po.id).scalar()) or 0
+        out["line_count"] = line_count
         if po.total_committed is not None:
             out["over_cap"] = float(budgeted) > float(po.total_committed)
             out["cap_remaining"] = float(po.total_committed) - float(budgeted)
@@ -9544,6 +9571,30 @@ def create_po_from_doc(uid):
         if 'uq_po_project_number' in str(e) or 'duplicate' in str(e).lower():
             return jsonify({"error": "A PO with that number already exists on this project."}), 409
         return jsonify({"error": str(e)}), 400
+
+    # If this doc is still flagged as an invoice/receipt/etc., flip it
+    # to 'estimate' (creating a PO from it implies it was a forecast
+    # doc) and clear any linked Transaction rows so it stops appearing
+    # in Actuals. Mirrors the docs_upload_update non-ledger behaviour.
+    # 2026-05-06 — covers Veryfi mis-classifications the user didn't
+    # manually correct in the doc-detail modal first.
+    try:
+        _ledger_cats = {'invoice', 'receipt', 'expense', 'bill', None, ''}
+        if (doc.category or '') in _ledger_cats:
+            doc.category = 'estimate'
+            db.session.commit()
+        # Always clear linked txns — the doc is now a PO source, not a spend event.
+        _txn_ids = [t.id for t in
+                    Transaction.query.filter_by(doc_upload_id=doc.id).all()]
+        if _txn_ids:
+            Transaction.query.filter(Transaction.id.in_(_txn_ids)) \
+                .delete(synchronize_session=False)
+            db.session.commit()
+            logging.info(f"[create_po_from_doc] cleared {len(_txn_ids)} "
+                         f"Transaction row(s) for doc #{doc.id} (now a PO source)")
+    except Exception as _e:
+        logging.warning(f"[create_po_from_doc] post-create cleanup failed: {_e}")
+        db.session.rollback()
     # Also record in the attachment junction so the source doc shows up
     # in the same list as future "Add to PO" appends.
     try:
@@ -16059,16 +16110,39 @@ def docs_upload_update(uid):
     # row(s) so the two views stay in lockstep. Without this the user
     # sees one vendor in Docs and another (the original OCR value) in
     # Actuals — the exact "names don't match" symptom they reported.
+    #
+    # Category change to a non-ledger type (estimate / quote / PO / tax
+    # form / contract / release / legal / insurance / misc) DELETES the
+    # linked Transaction rows: those doc types are forecast paperwork,
+    # not spend events, so they shouldn't sit on the actuals ledger.
+    # 2026-05-06 — fixes "PO and estimate docs still showing up in the
+    # Actuals tab after I corrected the doc type from invoice".
+    _NON_LEDGER_CATS = {'tax_form', 'contract', 'release', 'legal',
+                        'insurance', 'misc',
+                        'estimate', 'quote', 'purchase_order'}
     try:
-        linked_txns = (Transaction.query
-                       .filter_by(doc_upload_id=upload.id)
-                       .all())
-        for _t in linked_txns:
-            _t.vendor   = upload.vendor
-            _t.amount   = upload.amount
-            _t.txn_date = upload.doc_date.isoformat() if upload.doc_date else None
-            _t.note     = upload.note
-            _t.updated_at = _dt.utcnow()
+        if (upload.category or '') in _NON_LEDGER_CATS:
+            # Pull Transaction ids first so we can clean up child FK rows
+            # (qbo_account_map is fine; budget_line stays — it just
+            # loses any actual_amount contribution from these txns).
+            _txn_ids = [t.id for t in
+                        Transaction.query.filter_by(doc_upload_id=upload.id).all()]
+            if _txn_ids:
+                Transaction.query.filter(Transaction.id.in_(_txn_ids)) \
+                    .delete(synchronize_session=False)
+                logging.info(f"[/update] doc {uid} switched to non-ledger "
+                             f"category '{upload.category}' — deleted "
+                             f"{len(_txn_ids)} linked Transaction row(s)")
+        else:
+            linked_txns = (Transaction.query
+                           .filter_by(doc_upload_id=upload.id)
+                           .all())
+            for _t in linked_txns:
+                _t.vendor   = upload.vendor
+                _t.amount   = upload.amount
+                _t.txn_date = upload.doc_date.isoformat() if upload.doc_date else None
+                _t.note     = upload.note
+                _t.updated_at = _dt.utcnow()
     except Exception as _se:
         logging.warning(f"[/update] could not sync to linked txns for upload {uid}: {_se}")
 
