@@ -2815,6 +2815,21 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
         # Stamp working_total on every line so the Estimated column has a frozen
         # snapshot from the moment this working budget was created.
         if new_mode in ('working', 'actual'):
+            # CRITICAL: run sync_schedule_driven_lines on BOTH budgets before
+            # snapshotting. Without this, the auto meal/travel/per-diem lines
+            # carry forward stale quantity/days from the source's last sync,
+            # and the working_total snapshot freezes those stale numbers.
+            # The next page load then re-syncs (fresh count) and the
+            # Estimated total visibly shifts while Working stays frozen on
+            # the stale snapshot — that's the "totals don't match" bug.
+            # Syncing source + dest first guarantees both budgets see the
+            # same auto-line numbers at the moment of the snapshot.
+            try:
+                sync_schedule_driven_lines(source.id, db.session)
+                sync_schedule_driven_lines(b.id, db.session)
+                db.session.flush()
+            except Exception as _se:
+                logging.warning("clone sync_schedule_driven_lines failed: %s", _se)
             _wfringe = get_fringe_configs(db.session, pid)
             _wprofile  = b.payroll_profile
             _wpw_start = b.payroll_week_start if b.payroll_week_start is not None else (
