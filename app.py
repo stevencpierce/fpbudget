@@ -2781,6 +2781,8 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
         db.session.flush()
         _copy_schedule_days(source.id, b.id, line_id_map, dest_mode=new_mode)
         db.session.flush()
+        _copy_budget_extras(source.id, b.id, dest_mode=new_mode)
+        db.session.flush()
         # Stamp working_total on every line so the Estimated column has a frozen
         # snapshot from the moment this working budget was created.
         if new_mode in ('working', 'actual'):
@@ -11600,6 +11602,82 @@ def _copy_budget_lines(source_id, dest_id):
             ))
 
     return line_id_map
+
+
+def _copy_budget_extras(source_bid, dest_bid, dest_mode=None):
+    """Copy budget-scoped editable tables that aren't budget_lines or
+    schedule days: tax credits, catering bills, location-day bookings,
+    direct-added contacts, and per-day call sheet overrides. Without
+    this, every Working clone started with no tax credits / no catering
+    plan / no location bookings even though the source Estimated had
+    them — silent data loss the user only notices when something they
+    configured is missing. 2026-05-06.
+
+    Project-level data (FringeConfig with project_id, Locations,
+    CrewMembers, Contacts) is shared automatically since it's scoped to
+    project_id, not budget_id — no copy needed.
+    """
+    from models import (TaxCredit, CateringBill, LocationDay,
+                        BudgetDirectContact, CallSheetData)
+
+    # TaxCredit — copy every row with sort order preserved.
+    for tc in TaxCredit.query.filter_by(budget_id=source_bid).all():
+        db.session.add(TaxCredit(
+            budget_id=dest_bid,
+            name=tc.name, jurisdiction=tc.jurisdiction,
+            credit_rate=tc.credit_rate, applies_to=tc.applies_to,
+            min_spend=tc.min_spend, cap=tc.cap, notes=tc.notes,
+            sort_order=tc.sort_order or 0,
+        ))
+
+    # CateringBill — vendor billing entries.
+    for cb in CateringBill.query.filter_by(budget_id=source_bid).all():
+        db.session.add(CateringBill(
+            budget_id=dest_bid,
+            period_start=cb.period_start, period_end=cb.period_end,
+            vendor=cb.vendor, amount=cb.amount, note=cb.note,
+        ))
+
+    # LocationDay — per-day location bookings. Skip duplicates against
+    # the unique constraint (budget_id, location_id, date).
+    seen_ld = set()
+    for ld in LocationDay.query.filter_by(budget_id=source_bid).all():
+        key = (ld.location_id, ld.date)
+        if key in seen_ld:
+            continue
+        seen_ld.add(key)
+        db.session.add(LocationDay(
+            budget_id=dest_bid,
+            location_id=ld.location_id, date=ld.date,
+            day_type=ld.day_type, note=ld.note,
+        ))
+
+    # BudgetDirectContact — manually-added contact-sheet entries.
+    seen_dc = set()
+    for dc in BudgetDirectContact.query.filter_by(budget_id=source_bid).all():
+        if dc.crew_member_id in seen_dc:
+            continue
+        seen_dc.add(dc.crew_member_id)
+        db.session.add(BudgetDirectContact(
+            budget_id=dest_bid,
+            crew_member_id=dc.crew_member_id,
+            role=dc.role, sort_order=dc.sort_order or 0,
+        ))
+
+    # CallSheetData — per-day overrides. Map schedule_mode to 'working'
+    # when cloning into a Working/Actual budget so the gantt finds them.
+    dest_cs_mode = 'working' if dest_mode in ('working', 'actual') else None
+    for cs in CallSheetData.query.filter_by(budget_id=source_bid).all():
+        db.session.add(CallSheetData(
+            budget_id=dest_bid,
+            date=cs.date,
+            schedule_mode=dest_cs_mode or cs.schedule_mode or 'estimated',
+            data_json=cs.data_json,
+        ))
+
+    # Intentionally NOT copied:
+    #   CallSheetSend  — historical send log; new budget = new history.
+    #   ActivityLog    — audit log of actions on the source budget.
 
 
 def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):

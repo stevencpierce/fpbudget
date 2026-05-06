@@ -551,8 +551,16 @@
      at their raw total, matching calc_top_sheet's row.fee_amount=0 for
      exempt rows). #}
   {% set _sec_fee_m = 1.0 if _sec_fee_exempt else _fee_m %}
+  {# Per-section labor-fringe total, pulled from the Top Sheet rows so
+     the Budget-tab fee recalc can subtract it (when fee_exclude_fringes
+     is on, which is the default and industry-standard). Without this,
+     the Budget-tab fee disagreed with the Top Sheet by exactly the
+     total fringes amount. 2026-05-06. #}
+  {% set _sec_fringe_ns = namespace(v=0) %}
+  {% for r in top_sheet.rows if r.code == sec.code %}{% set _sec_fringe_ns.v = r.fringe_in_section or 0 %}{% endfor %}
   <div class="section-block" data-section="{{ sec.code }}"
-       data-fee-exempt="{{ '1' if _sec_fee_exempt else '0' }}">
+       data-fee-exempt="{{ '1' if _sec_fee_exempt else '0' }}"
+       data-section-fringe="{{ _sec_fringe_ns.v }}">
     <div class="section-header">
       <span class="section-code">{{ sec.code }}</span>
       <span class="section-name">{{ sec.name }}</span>
@@ -8832,6 +8840,11 @@ function refreshLineRow(id, data) {
 // ── Floating budget total bar ──────────────────────────────────────────────
 let _FLOAT_FEE_PCT        = {{ top_sheet.company_fee_pct | float }};
 let _FLOAT_DISPERSED      = {{ 'true' if top_sheet.company_fee_dispersed else 'false' }};
+// Industry-standard: labor fringes pass through without the Prod Co Fee
+// marked up on them. Top Sheet subtracts per-section fringes from the
+// fee base; the Budget tab's float bar must do the same or its fee +
+// grand total will disagree with the Top Sheet. 2026-05-06.
+let _FLOAT_EXCLUDE_FRINGES = {{ 'true' if top_sheet.company_fee_exclude_fringes else 'false' }};
 // Auto-calculated line items not rendered as BudgetLine rows — must be added to float bar separately
 const _AUTO_WORKERS_COMP  = {{ top_sheet.workers_comp_amount | float }};
 const _AUTO_PAYROLL_FEE   = {{ top_sheet.payroll_fee_amount  | float }};
@@ -8858,7 +8871,16 @@ function updateFloatBar() {
     if (!el) return;
     const v = parseFloat(el.dataset.base !== undefined ? el.dataset.base : el.textContent.replace(/[$,]/g,'')) || 0;
     subtotal += v;
-    if (!exempt) feeBase += v;
+    if (!exempt) {
+      // Subtract this section's labor fringes from the fee base when
+      // fee_exclude_fringes is on (default). Mirrors calc_top_sheet's
+      // _row_fee_base (budget_calc.py:1295). Without this, Budget-tab
+      // grand total > Top-Sheet grand total by total_fringes × fee_pct.
+      const fringe = _FLOAT_EXCLUDE_FRINGES
+                       ? (parseFloat(block.dataset.sectionFringe) || 0)
+                       : 0;
+      feeBase += Math.max(v - fringe, 0);
+    }
   });
   const fee   = feeBase * _FLOAT_FEE_PCT;
   const grand = subtotal + fee;
