@@ -2746,7 +2746,15 @@ def _working_version_name(base_name, version_num):
 
 def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None, version_number=None):
     """Create a new Budget record copied from source and return it (not yet committed)."""
+    # Inherit the source's payroll profile + week start so OT thresholds
+    # stay identical between Estimated and the cloned Working/Actual.
+    # Without this, every clone reset to Federal 40-Hour + Sunday week,
+    # which silently changed OT math and produced totals that drifted
+    # from Estimated the moment Working was initialized.
+    # 2026-05-06 — fixes "totals different immediately on Working init".
     _fed40 = PayrollProfile.query.filter(PayrollProfile.name.ilike('%federal%')).first()
+    _src_profile_id  = source.payroll_profile_id if source and source.payroll_profile_id else (_fed40.id if _fed40 else None)
+    _src_week_start  = source.payroll_week_start if source and source.payroll_week_start is not None else 6
     b = Budget(
         project_id=pid,
         name=new_name,
@@ -2757,8 +2765,8 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
         end_date=source.end_date if source else None,
         target_budget=source.target_budget if source else None,
         notes=source.notes if source else None,
-        payroll_profile_id=_fed40.id if _fed40 else None,
-        payroll_week_start=6,
+        payroll_profile_id=_src_profile_id,
+        payroll_week_start=_src_week_start,
         version_status='current',
         parent_budget_id=parent_bid,
         updated_at=datetime.utcnow(),
