@@ -326,7 +326,8 @@
         <td class="col-code muted" style="font-size:.75rem"></td>
         <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Prod. Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(1) }}% dispersed)</td>
         <td class="col-num muted" style="font-size:.85rem">{{ row.fee_amount | currency }}</td>
-        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
+        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ row.fee_amount | currency }}{% else %}$0.00{% endif %}</td>
+        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
       {% if row.code == 6000 and top_sheet.workers_comp_amount > 0 %}
@@ -336,7 +337,8 @@
         <td class="col-code muted" style="font-size:.75rem"></td>
         <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
         <td class="col-num muted" style="font-size:.85rem">{{ top_sheet.workers_comp_amount | currency }}</td>
-        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
+        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.workers_comp_amount | currency }}{% else %}$0.00{% endif %}</td>
+        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
       {% if row.code == 6000 and top_sheet.production_insurance_amount > 0 %}
@@ -352,7 +354,8 @@
           {% endif %}
         </td>
         <td class="col-num muted" style="font-size:.85rem">{{ top_sheet.production_insurance_amount | currency }}</td>
-        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
+        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.production_insurance_amount | currency }}{% else %}$0.00{% endif %}</td>
+        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
       {% if row.code == 6500 and top_sheet.payroll_fee_amount > 0 %}
@@ -362,7 +365,8 @@
         <td class="col-code muted" style="font-size:.75rem"></td>
         <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
         <td class="col-num muted" style="font-size:.85rem">{{ top_sheet.payroll_fee_amount | currency }}</td>
-        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
+        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.payroll_fee_amount | currency }}{% else %}$0.00{% endif %}</td>
+        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {# Debug / sanity-check row: the labor total that WC + Payroll Fee are
          both multiplied against. If this number looks wrong you'll know the
