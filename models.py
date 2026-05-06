@@ -922,7 +922,7 @@ class PurchaseOrder(db.Model):
     # back to it. Additional supporting docs from "Add to PO" appends
     # are tracked in PoDocAttachment (junction). NULL = manually-created
     # PO with no source doc.
-    source_doc_upload_id = db.Column(db.Integer, db.ForeignKey("doc_upload.id"), nullable=True)
+    source_doc_upload_id = db.Column(db.Integer, db.ForeignKey("doc_upload.id", ondelete="SET NULL"), nullable=True)
 
     project   = db.relationship("ProjectSheet", foreign_keys=[project_id])
     creator   = db.relationship("User",         foreign_keys=[created_by_user_id])
@@ -943,8 +943,8 @@ class PurchaseOrder(db.Model):
 class PoDocAttachment(db.Model):
     __tablename__ = "po_doc_attachment"
     id              = db.Column(db.Integer, primary_key=True)
-    po_id           = db.Column(db.Integer, db.ForeignKey("purchase_order.id"), nullable=False)
-    doc_upload_id   = db.Column(db.Integer, db.ForeignKey("doc_upload.id"), nullable=False)
+    po_id           = db.Column(db.Integer, db.ForeignKey("purchase_order.id", ondelete="CASCADE"), nullable=False)
+    doc_upload_id   = db.Column(db.Integer, db.ForeignKey("doc_upload.id", ondelete="CASCADE"), nullable=False)
     amount          = db.Column(db.Numeric(12, 2), nullable=True)   # snapshot of doc's amount at attach time
     note            = db.Column(db.String(300), nullable=True)
     role            = db.Column(db.String(20), default='additional')  # source | additional

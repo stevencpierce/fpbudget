@@ -14335,6 +14335,29 @@ def _web_worker_essential_columns():
                    )""",
                 "CREATE INDEX IF NOT EXISTS ix_po_doc_po  ON po_doc_attachment (po_id)",
                 "CREATE INDEX IF NOT EXISTS ix_po_doc_doc ON po_doc_attachment (doc_upload_id)",
+                # 2026-05-06 — retrofit ON DELETE rules for existing rows.
+                # The original FKs were created without delete rules so a
+                # DocUpload delete tripped a ForeignKeyViolation. Drop +
+                # re-add each FK with the correct rule. Idempotent: each
+                # DROP uses IF EXISTS so re-runs are safe.
+                "ALTER TABLE purchase_order "
+                "  DROP CONSTRAINT IF EXISTS purchase_order_source_doc_upload_id_fkey",
+                "ALTER TABLE purchase_order "
+                "  ADD CONSTRAINT purchase_order_source_doc_upload_id_fkey "
+                "  FOREIGN KEY (source_doc_upload_id) REFERENCES doc_upload(id) "
+                "  ON DELETE SET NULL",
+                "ALTER TABLE po_doc_attachment "
+                "  DROP CONSTRAINT IF EXISTS po_doc_attachment_doc_upload_id_fkey",
+                "ALTER TABLE po_doc_attachment "
+                "  ADD CONSTRAINT po_doc_attachment_doc_upload_id_fkey "
+                "  FOREIGN KEY (doc_upload_id) REFERENCES doc_upload(id) "
+                "  ON DELETE CASCADE",
+                "ALTER TABLE po_doc_attachment "
+                "  DROP CONSTRAINT IF EXISTS po_doc_attachment_po_id_fkey",
+                "ALTER TABLE po_doc_attachment "
+                "  ADD CONSTRAINT po_doc_attachment_po_id_fkey "
+                "  FOREIGN KEY (po_id) REFERENCES purchase_order(id) "
+                "  ON DELETE CASCADE",
                 # ── 2026-04-30: Actuals integration (Phase 1 schema) ────
                 # Three-legged stool linkage on transaction:
                 #   BudgetLine ← Transaction → DocUpload
@@ -15175,6 +15198,23 @@ def docs_upload_delete(uid):
     # row with doc_upload_id set — but a single doc could back several
     # txns (invoice splits) so use a loop, not assume cardinality.
     Transaction.query.filter_by(doc_upload_id=upload.id).delete(synchronize_session=False)
+    # Detach from any PurchaseOrder that points at this upload as its
+    # source doc, and remove po_doc_attachment junction rows. Without
+    # these, FK violations block the delete (purchase_order.source_doc_upload_id
+    # and po_doc_attachment.doc_upload_id both reference doc_upload).
+    try:
+        db.session.execute(
+            text("UPDATE purchase_order SET source_doc_upload_id=NULL "
+                 "WHERE source_doc_upload_id=:uid"),
+            {"uid": upload.id},
+        )
+        db.session.execute(
+            text("DELETE FROM po_doc_attachment WHERE doc_upload_id=:uid"),
+            {"uid": upload.id},
+        )
+    except Exception:
+        # Tables may not exist yet on a fresh DB before self-heal runs.
+        db.session.rollback()
     db.session.delete(upload)
     db.session.commit()
     try:
@@ -15232,6 +15272,21 @@ def docs_bulk_delete(pid):
         Transaction.query.filter(
             Transaction.doc_upload_id.in_(upload_ids_to_delete)
         ).delete(synchronize_session=False)
+        # Detach PO source-doc references and remove po_doc_attachment
+        # rows so the doc_upload deletes don't trip FK constraints.
+        try:
+            db.session.execute(
+                text("UPDATE purchase_order SET source_doc_upload_id=NULL "
+                     "WHERE source_doc_upload_id = ANY(:ids)"),
+                {"ids": upload_ids_to_delete},
+            )
+            db.session.execute(
+                text("DELETE FROM po_doc_attachment "
+                     "WHERE doc_upload_id = ANY(:ids)"),
+                {"ids": upload_ids_to_delete},
+            )
+        except Exception:
+            db.session.rollback()
         DocUpload.query.filter(
             DocUpload.id.in_(upload_ids_to_delete)
         ).delete(synchronize_session=False)
