@@ -11710,19 +11710,37 @@ def _copy_budget_extras(source_bid, dest_bid, dest_mode=None):
 
 
 def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
-    """Copy all ScheduleDay and ProductionDay rows from source to dest budget.
+    """Copy ScheduleDay + ProductionDay + TravelDetail rows verbatim.
 
-    dest_mode: the budget_mode of the destination budget. When it is 'working'
-    or 'actual', all copied rows are stored with schedule_mode='working' so the
-    Working gantt can find them immediately without needing a separate init step.
+    Every column on the source rows is reproduced on the destination so the
+    cloned schedule produces identical sync_schedule_driven_lines output —
+    meals, per-diem, hotel, flights, mileage all match the source.
+
+    Critical fields the previous version dropped:
+      - ProductionDay.is_production_day — drives meal-day filtering and
+        production-day-only auto-injects (insurance daily rate, etc.).
+        Without it the clone treated every day as non-production.
+      - TravelDetail rows — FK to ScheduleDay, carry per-cell flight /
+        hotel / car-rental / mileage data. Previously orphaned because
+        the new ScheduleDay rows had new IDs.
+
+    dest_mode: the budget_mode of the destination budget. When it is
+    'working' or 'actual', copied rows are stored with schedule_mode=
+    'working' so the Working gantt finds them immediately.
+    2026-05-06 — fixes "schedule duplicate is recalculating meals/etc".
     """
+    from models import TravelDetail
     dest_sched_mode = 'working' if dest_mode in ('working', 'actual') else None
+
+    # Build sched_id_map = {old_schedule_day_id: new_schedule_day_id} so
+    # TravelDetail rows can be reparented onto the cloned ScheduleDays.
+    sched_id_map = {}
     src_days = ScheduleDay.query.filter_by(budget_id=source_bid).all()
     for d in src_days:
         new_lid = line_id_map.get(d.budget_line_id)
         if d.budget_line_id and not new_lid:
             continue  # skip orphaned days (line wasn't copied)
-        db.session.add(ScheduleDay(
+        new_sd = ScheduleDay(
             budget_id=dest_bid,
             budget_line_id=new_lid,
             crew_member_id=d.crew_member_id,
@@ -11735,12 +11753,45 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
             est_ot_hours=d.est_ot_hours,
             cell_flags=d.cell_flags,
             schedule_mode=dest_sched_mode or d.schedule_mode,
-        ))
-    # Clear any stale ProductionDay rows for dest_bid (e.g. from a previous failed
-    # attempt where SQLite reused the same budget_id after a rollback).
+        )
+        db.session.add(new_sd)
+        db.session.flush()  # so new_sd.id is available for TravelDetail FK
+        sched_id_map[d.id] = new_sd.id
+
+    # ── TravelDetail — per-(date, person, kind) flight / hotel / car
+    # rental / mileage detail rows that FK to ScheduleDay. Previously
+    # orphaned on every clone because new ScheduleDays got new IDs.
+    if sched_id_map:
+        src_tds = TravelDetail.query.filter(
+            TravelDetail.schedule_day_id.in_(sched_id_map.keys())
+        ).all()
+        for td in src_tds:
+            new_sd_id = sched_id_map.get(td.schedule_day_id)
+            if not new_sd_id:
+                continue
+            db.session.add(TravelDetail(
+                schedule_day_id=new_sd_id,
+                kind=td.kind,
+                confirmation_no=td.confirmation_no,
+                notes=td.notes,
+                airline=td.airline, flight_no=td.flight_no,
+                depart_at=td.depart_at, arrive_at=td.arrive_at,
+                depart_airport=td.depart_airport,
+                arrive_airport=td.arrive_airport,
+                hotel_name=td.hotel_name, hotel_address=td.hotel_address,
+                check_in=td.check_in, check_out=td.check_out,
+                room_type=td.room_type,
+                rental_co=td.rental_co,
+                pickup_at=td.pickup_at, return_at=td.return_at,
+                pickup_location=td.pickup_location,
+                miles=td.miles,
+            ))
+
+    # Clear any stale ProductionDay rows for dest_bid (e.g. from a previous
+    # failed attempt where SQLite reused the same budget_id after a rollback).
     ProductionDay.query.filter_by(budget_id=dest_bid).delete()
-    # Deduplicate by date before inserting — older DBs have UNIQUE(budget_id, date)
-    # without schedule_mode, so we take the first row per date.
+    # Deduplicate by date before inserting — older DBs have UNIQUE(budget_id,
+    # date) without schedule_mode, so we take the first row per date.
     seen_pd_dates = set()
     for pd in ProductionDay.query.filter_by(budget_id=source_bid).all():
         if pd.date in seen_pd_dates:
@@ -11753,6 +11804,12 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
             courtesy_breakfast=pd.courtesy_breakfast,
             first_meal=pd.first_meal,
             second_meal=pd.second_meal,
+            # is_production_day was missing before — that single boolean
+            # reset to False on every clone changed which days counted
+            # toward production-only auto-injects (insurance daily rate,
+            # location day count, etc.), shifting the Working totals away
+            # from Estimated even though everything LOOKED copied.
+            is_production_day=getattr(pd, 'is_production_day', False),
         ))
 
 
