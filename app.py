@@ -3852,6 +3852,43 @@ def budget_view(pid, bid):
             except Exception:
                 pass  # skip any line that fails to calc; column shows — for that line
 
+    # Symmetric: when viewing the Working budget (or Actual), compute the
+    # CURRENT Estimated budget's per-line totals so the "Estimated" column
+    # reflects live Estimated edits. Previously this column read
+    # ln.working_total — a frozen snapshot taken when the Working budget
+    # was created — which meant editing the Estimated budget after init
+    # silently desynced the two views (user zeroes Flights on Estimated,
+    # switches to Working tab, sees the old $944 still). Live lookup
+    # fixes that. The frozen snapshot is still kept on the row for any
+    # historical/audit needs but is no longer the column source.
+    # 2026-05-07.
+    estimated_line_totals = {}
+    if _budget_type(budget.budget_mode) in ('working', 'actual') and current_estimated_bid:
+        _eb = next((b for b in all_budgets if b.id == current_estimated_bid), None)
+        _eblines = BudgetLine.query.filter_by(budget_id=current_estimated_bid).all()
+        _eb_fringe = get_fringe_configs(db.session, pid)
+        _eb_profile  = _eb.payroll_profile if _eb else None
+        _eb_pw_start = (_eb.payroll_week_start if (_eb and _eb.payroll_week_start is not None)
+                        else (_eb_profile.payroll_week_start if _eb_profile else 6))
+        for _eln in _eblines:
+            try:
+                if _eln.use_schedule:
+                    _eb_sched = ScheduleDay.query.filter_by(
+                        budget_line_id=_eln.id, schedule_mode='estimated'
+                    ).all()
+                    # Also accept legacy NULL-mode rows so older budgets
+                    # mid-migration still produce a value.
+                    if not _eb_sched:
+                        _eb_sched = ScheduleDay.query.filter_by(
+                            budget_line_id=_eln.id, schedule_mode=None
+                        ).all()
+                    _eres = calc_line_from_schedule(_eln, _eb_sched, _eb_fringe, _eb_profile, _eb_pw_start)
+                else:
+                    _eres = calc_line(_eln, _eb_fringe)
+                estimated_line_totals[(_eln.account_code, _eln.sort_order)] = _eres['est_total']
+            except Exception:
+                pass  # skip any line that fails to calc
+
     # Build version groups: list of {version_number, estimated, working, is_current}
     # sorted descending so newest version is first.
     _vn_map = {}
@@ -4076,6 +4113,7 @@ def budget_view(pid, bid):
         working_subtotal_pre_fee=working_subtotal_pre_fee,
         working_company_fee=working_company_fee,
         working_line_totals=working_line_totals,
+        estimated_line_totals=estimated_line_totals,
         manual_by_section=manual_by_section,
         project_locations=project_locations,
         loc_day_map=loc_day_map,

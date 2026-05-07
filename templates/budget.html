@@ -1058,7 +1058,21 @@
             {% endif %}
           </td>
           {% if is_working_view %}
-          {% set _frozen = (ln.working_total | float) if ln.working_total is not none else res.est_total %}
+          {# "Estimated" column on the Working/Actual view — read LIVE
+             from the current Estimated budget so edits in Estimated
+             flow through here (e.g. user zeroes a Flights line on
+             Estimated, sees $0 here too). Falls back to the frozen
+             ln.working_total snapshot when the sister Estimated has
+             no matching line — keeps things sensible for orphaned
+             lines added directly on Working. 2026-05-07. #}
+          {% set _est_live = estimated_line_totals.get((ln.account_code, ln.sort_order), none) %}
+          {% if _est_live is not none %}
+            {% set _frozen = _est_live %}
+          {% elif ln.working_total is not none %}
+            {% set _frozen = (ln.working_total | float) %}
+          {% else %}
+            {% set _frozen = res.est_total %}
+          {% endif %}
           <td class="col-num line-total line-frozen-est">
             <span class="frozen-est" data-raw="{{ _frozen }}">{{ (_frozen * _sec_fee_m) | currency }}</span>
           </td>
