@@ -3986,34 +3986,59 @@ def budget_view(pid, bid):
     # dimmed "claimed elsewhere" panel further down (not yet rendered
     # — TBD). Per-project rule: claimed_by_project_id IS NULL OR equal
     # to this project's id means it's still ours to work with.
+    #
+    # Defensive: the claimed_by_project_id column is added by self-heal
+    # DDL on worker boot. If a deploy hits this route before the
+    # ALTER TABLE has run, the query 500s with UndefinedColumn. Try
+    # the filtered query first; on any DB error fall back to the
+    # unfiltered query so the page still renders. Once every worker
+    # has booted with the new schema this fallback becomes a no-op.
     _is_admin_view = (current_user.is_authenticated
                       and current_user.role in ('admin', 'super_admin'))
-    _txn_q = Transaction.query.filter_by(project_id=pid)
-    if not _is_admin_view:
-        from sqlalchemy import or_ as _or
-        _txn_q = _txn_q.filter(_or(
-            Transaction.claimed_by_project_id.is_(None),
-            Transaction.claimed_by_project_id == pid,
-        ))
-    actuals_transactions = (_txn_q
-                            .order_by(Transaction.txn_date.desc().nullslast(),
-                                      Transaction.id.desc())
-                            .all())
+    try:
+        _txn_q = Transaction.query.filter_by(project_id=pid)
+        if not _is_admin_view:
+            from sqlalchemy import or_ as _or
+            _txn_q = _txn_q.filter(_or(
+                Transaction.claimed_by_project_id.is_(None),
+                Transaction.claimed_by_project_id == pid,
+            ))
+        actuals_transactions = (_txn_q
+                                .order_by(Transaction.txn_date.desc().nullslast(),
+                                          Transaction.id.desc())
+                                .all())
+    except Exception as _claim_err:
+        logging.warning(
+            "[budget_view] cross-project claim filter failed (column "
+            "likely missing — self-heal DDL pending): %s. Falling back "
+            "to unfiltered Transaction list.", _claim_err)
+        db.session.rollback()
+        actuals_transactions = (Transaction.query
+                                .filter_by(project_id=pid)
+                                .order_by(Transaction.txn_date.desc().nullslast(),
+                                          Transaction.id.desc())
+                                .all())
     # Surface "claimed elsewhere" rows for admin+ as a separate list so
     # the template can render them in a distinct panel without polluting
-    # the main rollup. Empty for non-admin users.
+    # the main rollup. Empty for non-admin users. Defensive: same DDL-
+    # not-yet-run guard as above.
     actuals_claimed_elsewhere = []
     actuals_claimed_project_names = {}  # {project_id: 'Project Name'}
     if _is_admin_view:
-        actuals_claimed_elsewhere = [
-            t for t in actuals_transactions
-            if t.claimed_by_project_id and t.claimed_by_project_id != pid
-        ]
-        if actuals_claimed_elsewhere:
-            _claim_pids = {t.claimed_by_project_id for t in actuals_claimed_elsewhere}
-            for _p in (ProjectSheet.query
-                       .filter(ProjectSheet.id.in_(_claim_pids)).all()):
-                actuals_claimed_project_names[_p.id] = _p.name or f'Project #{_p.id}'
+        try:
+            actuals_claimed_elsewhere = [
+                t for t in actuals_transactions
+                if getattr(t, 'claimed_by_project_id', None)
+                and t.claimed_by_project_id != pid
+            ]
+            if actuals_claimed_elsewhere:
+                _claim_pids = {t.claimed_by_project_id for t in actuals_claimed_elsewhere}
+                for _p in (ProjectSheet.query
+                           .filter(ProjectSheet.id.in_(_claim_pids)).all()):
+                    actuals_claimed_project_names[_p.id] = _p.name or f'Project #{_p.id}'
+        except Exception:
+            actuals_claimed_elsewhere = []
+            actuals_claimed_project_names = {}
     # Distinct uploaders for the filter bar — derived from
     # created_via_user_id (manual entry / receipt upload) + the linked
     # DocUpload's uploader_id (so receipt-source rows attribute to the
@@ -4904,11 +4929,16 @@ def _sync_claim_state(txn):
         return
     is_claimed_now = bool(txn.budget_line_id or txn.account_code
                           or txn.not_project_expense)
-    siblings = (Transaction.query
-                .filter(Transaction.qbo_txn_id   == txn.qbo_txn_id,
-                        Transaction.qbo_txn_type == txn.qbo_txn_type,
-                        Transaction.project_id   != txn.project_id)
-                .all())
+    try:
+        siblings = (Transaction.query
+                    .filter(Transaction.qbo_txn_id   == txn.qbo_txn_id,
+                            Transaction.qbo_txn_type == txn.qbo_txn_type,
+                            Transaction.project_id   != txn.project_id)
+                    .all())
+    except Exception as _se:
+        # Likely DDL hasn't run for the indexes yet; safe to skip.
+        logging.warning("[claim-sync] sibling lookup failed (skipping): %s", _se)
+        return
     if not siblings:
         return
     if is_claimed_now:
