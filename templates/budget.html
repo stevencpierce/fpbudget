@@ -3734,13 +3734,30 @@
   </div>
 
   {# ── Stat cards (Total / Coded / Need coding / Need receipt / Doc-only) ── #}
-  {% set _t_all       = actuals_transactions | length %}
-  {% set _t_coded     = actuals_transactions | selectattr('budget_line_id') | list | length %}
+  {# Claimed-elsewhere rows (admin-only visibility) don't represent
+     work for THIS project, so they're excluded from every rollup
+     count below. Compute the actionable subset once. #}
+  {% set _t_actionable = [] %}
+  {% for _t in actuals_transactions %}
+    {% if not (_t.claimed_by_project_id and _t.claimed_by_project_id != project.id) %}
+      {% set _ = _t_actionable.append(_t) %}
+    {% endif %}
+  {% endfor %}
+  {% set _t_all       = _t_actionable | length %}
+  {% set _t_coded     = _t_actionable | selectattr('budget_line_id') | list | length %}
   {% set _t_uncoded   = _t_all - _t_coded %}
-  {% set _t_need_rcpt = actuals_transactions
-      | rejectattr('doc_upload_id') | rejectattr('not_project_expense', 'equalto', True)
-      | list | length %}
-  {% set _t_doc_only  = actuals_transactions | selectattr('source', 'equalto', 'doc_upload') | list | length %}
+  {# Need receipt: only flag ELECTRONIC transactions (qbo_sync or
+     reconciled) that lack a receipt. Manual-entry and doc-only rows
+     stay out of this count — cash spend / off-system cards are valid
+     without a paper trail in QBO. #}
+  {% set _t_need_rcpt = [] %}
+  {% for _t in _t_actionable %}
+    {% if (_t.source in ('qbo_sync', 'reconciled')) and not _t.doc_upload_id and not _t.not_project_expense %}
+      {% set _ = _t_need_rcpt.append(_t) %}
+    {% endif %}
+  {% endfor %}
+  {% set _t_need_rcpt_n = _t_need_rcpt | length %}
+  {% set _t_doc_only  = _t_actionable | selectattr('source', 'equalto', 'doc_upload') | list | length %}
   {# Finished: audit-clean rows. Three legs of the stool all in place:
      budget_line_id (coded), doc_upload_id (backed by paperwork),
      match_status='confirmed'. Excludes not_project_expense since
@@ -3750,7 +3767,7 @@
      row's data-coded uses + the Finished filter in JS. Without the
      OR, the Finished card under-counted every section-only-coded row. #}
   {% set _t_finished = [] %}
-  {% for _t in actuals_transactions %}
+  {% for _t in _t_actionable %}
     {% if (_t.budget_line_id or _t.account_code) and _t.doc_upload_id and _t.match_status == 'confirmed' and not _t.not_project_expense %}
       {% set _ = _t_finished.append(_t) %}
     {% endif %}
@@ -3759,22 +3776,22 @@
      vendor, no amount, or zero amount. Surfaces receipts that need
      manual cleanup before they can be matched. #}
   {% set _t_ocr_review = [] %}
-  {% for _t in actuals_transactions %}
+  {% for _t in _t_actionable %}
     {% if _t.source == 'doc_upload' and not _t.not_project_expense and (
          not _t.vendor
          or _t.amount is none
          or (_t.amount is not none and _t.amount|float == 0)
     ) %}{% set _ = _t_ocr_review.append(_t) %}{% endif %}
   {% endfor %}
-  {% set _t_qbo       = actuals_transactions | selectattr('source', 'equalto', 'qbo_sync')   | list | length %}
-  {% set _t_manual    = actuals_transactions | selectattr('source', 'equalto', 'manual_entry') | list | length %}
+  {% set _t_qbo       = _t_actionable | selectattr('source', 'equalto', 'qbo_sync')   | list | length %}
+  {% set _t_manual    = _t_actionable | selectattr('source', 'equalto', 'manual_entry') | list | length %}
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
     {% for label, n, color, filt in [
       ('Transactions',    _t_all,                   'var(--text-muted)',     'all'),
       ('✓ Finished',      _t_finished|length,       '#74c69d',               'finished'),
       ('Coded',           _t_coded,                 'var(--green)',          'coded'),
       ('Need coding',     _t_uncoded,               'var(--yellow)',         'uncoded'),
-      ('Need receipt',    _t_need_rcpt,             'var(--orange, #e0a040)','no_doc'),
+      ('Need receipt',    _t_need_rcpt_n,           'var(--orange, #e0a040)','no_doc'),
       ('Doc-only',        _t_doc_only,              'var(--blue)',           'doc_only'),
       ('Review OCR',      _t_ocr_review|length,     '#e08080',               'ocr_review'),
     ] %}
@@ -4013,6 +4030,10 @@
              (the person who took the photo / picked the file) over
              created_via_user_id (might be the QBO sync system user). #}
           {% set _uploader_id = (_doc.uploader_id if _doc and _doc.uploader_id else t.created_via_user_id) or '' %}
+          {# "Claimed elsewhere" only renders for admin+ — non-admins
+             never see the row at all (filtered server-side). #}
+          {% set _claimed_elsewhere = (t.claimed_by_project_id is not none and t.claimed_by_project_id != project.id) %}
+          {% set _claimer_name = actuals_claimed_project_names.get(t.claimed_by_project_id, '') if _claimed_elsewhere else '' %}
           <div class="actuals-txn-row" draggable="true"
                data-tid="{{ t.id }}"
                data-source="{{ t.source or '' }}"
@@ -4024,11 +4045,18 @@
                data-note="{{ t.note or '' }}"
                data-uploader-id="{{ _uploader_id }}"
                data-not-project="{{ '1' if t.not_project_expense else '0' }}"
+               data-claimed-elsewhere="{{ '1' if _claimed_elsewhere else '0' }}"
                style="display:flex;align-items:center;gap:8px;padding:7px 10px;margin-bottom:4px;
-                      border:1px solid {% if t.not_project_expense %}#3a2a2a{% elif _coded %}#1a3a2a{% else %}var(--border){% endif %};
+                      border:1px solid {% if _claimed_elsewhere %}#4a3a2a{% elif t.not_project_expense %}#3a2a2a{% elif _coded %}#1a3a2a{% else %}var(--border){% endif %};
                       border-radius:6px;
-                      background:{% if t.not_project_expense %}#150d0d{% elif _coded %}#0d1a14{% else %}var(--bg-card){% endif %};
-                      {% if t.not_project_expense %}opacity:.65{% endif %}">
+                      background:{% if _claimed_elsewhere %}#1a1610{% elif t.not_project_expense %}#150d0d{% elif _coded %}#0d1a14{% else %}var(--bg-card){% endif %};
+                      {% if _claimed_elsewhere or t.not_project_expense %}opacity:.55{% endif %}">
+            {% if _claimed_elsewhere %}
+            <span title="Admin-only view: this electronic transaction is owned by another project's budget. Non-admins don't see this row."
+                  style="flex-shrink:0;font-size:.6rem;padding:2px 6px;background:#2a2010;border:1px solid #5a4a20;border-radius:3px;color:#e0a040">
+              🔒 Claimed: {{ _claimer_name or 'other project' }}
+            </span>
+            {% endif %}
             {# Source pill #}
             <span style="flex-shrink:0;font-size:.7rem;width:24px;text-align:center"
                   title="Source: {{ t.source or 'unknown' }}">
@@ -4083,8 +4111,9 @@
                            border-radius:4px;color:#5b8af9;cursor:pointer">
               📎 Add Receipt
             </button>
-            {% if t.source == 'qbo_sync' %}
-            <span style="flex-shrink:0;font-size:.6rem;color:#e08080;font-style:italic">no receipt</span>
+            {% if t.source in ('qbo_sync', 'reconciled') %}
+            <span title="Electronic transaction without a receipt — flagged for follow-up"
+                  style="flex-shrink:0;font-size:.6rem;color:#e08080;font-style:italic">⚠ no receipt</span>
             {% endif %}
             {% endif %}
             {# Budget-line picker — 2-tier select (optgroup per section) #}
@@ -4531,6 +4560,8 @@
         // Skip rows hidden by a filter — we want the underlying counts,
         // not "what's currently visible". A filtered view shouldn't
         // change the totals.
+        const claimedElsewhere = r.dataset.claimedElsewhere === '1';
+        if (claimedElsewhere) return;  // admin-only awareness, not actionable
         total++;
         const codedRow      = r.dataset.coded === '1';
         const hasDoc        = r.dataset.hasDoc === '1';
@@ -4538,7 +4569,9 @@
         const src           = r.dataset.source || '';
         if (notProj) return;  // dropped from rollup
         if (codedRow) coded++; else uncoded++;
-        if (!hasDoc)  needRcpt++;
+        // Need-receipt flag: electronic-only. Cash / off-system / manual
+        // rows are valid without a paper trail.
+        if (!hasDoc && (src === 'qbo_sync' || src === 'reconciled')) needRcpt++;
         if (src === 'doc_upload')   docOnly++;
         if (src === 'qbo_sync')     qboCnt++;
         if (src === 'manual_entry') manCnt++;
@@ -4813,10 +4846,19 @@
         total++;
         let pass = true;
 
+        // Cross-project claim: admin-only "claimed elsewhere" rows show
+        // ONLY in the All view. Every other filter is about work-to-do
+        // for this project, and those rows aren't this project's work.
+        if (r.dataset.claimedElsewhere === '1' && f !== 'all') {
+          r.style.display = 'none';
+          return;
+        }
+
         // Stat-card filter
         if (f === 'coded')         pass = r.dataset.coded === '1';
         else if (f === 'uncoded')  pass = r.dataset.coded === '0' && r.dataset.notProject !== '1';
-        else if (f === 'no_doc')   pass = r.dataset.hasDoc === '0' && r.dataset.notProject !== '1';
+        else if (f === 'no_doc')   pass = r.dataset.hasDoc === '0' && r.dataset.notProject !== '1'
+                                          && (r.dataset.source === 'qbo_sync' || r.dataset.source === 'reconciled');
         else if (f === 'doc_only') pass = r.dataset.source === 'doc_upload';
         else if (f === 'finished') {
           // Audit-clean: coded + has receipt + confirmed.

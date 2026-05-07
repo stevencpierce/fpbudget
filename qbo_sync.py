@@ -436,6 +436,97 @@ def _parse_qbo_timestamp(ts_str):
 
 # ── Project sync (the public entry point) ─────────────────────────────
 
+def _find_unreconciled_doc_match(db, project_id, qbo_row):
+    """Receipt-first reconciliation matcher.
+
+    Returns the existing doc-sourced Transaction in `project_id` that
+    most plausibly corresponds to `qbo_row` (a dict from
+    fetch_transactions), or None if no match is good enough.
+
+    Match window: source='doc_upload' AND qbo_txn_id IS NULL AND
+    txn_date within ±5 calendar days AND amount within ±$1.00 (or
+    exact).
+
+    Vendor match is best-effort: if both sides have a vendor, fuzzy
+    match must be ≥ 0.6. If either side is empty, fall back to the
+    date+amount match alone (common for cash receipts where the user
+    didn't type a vendor name).
+    """
+    from models import Transaction
+    import datetime as _dt
+    if not qbo_row.get("txn_date") or qbo_row.get("amount") in (None, ""):
+        return None
+    try:
+        target_date = _dt.datetime.strptime(qbo_row["txn_date"], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    try:
+        target_amt = float(qbo_row["amount"])
+    except (ValueError, TypeError):
+        return None
+    win_lo = (target_date - _dt.timedelta(days=5)).isoformat()
+    win_hi = (target_date + _dt.timedelta(days=5)).isoformat()
+
+    # Pull candidates: same project, doc-only, no QBO id yet, in window.
+    cands = (db.session.query(Transaction)
+             .filter(Transaction.project_id == project_id,
+                     Transaction.source == 'doc_upload',
+                     Transaction.qbo_txn_id.is_(None),
+                     Transaction.txn_date >= win_lo,
+                     Transaction.txn_date <= win_hi)
+             .all())
+    if not cands:
+        return None
+
+    def _vendor_sim(a, b):
+        a = (a or "").strip().lower()
+        b = (b or "").strip().lower()
+        if not a or not b:
+            return None  # signal: insufficient data
+        # Cheap token-overlap: count shared whitespace tokens / max-len.
+        ta, tb = set(a.split()), set(b.split())
+        if not ta or not tb:
+            return 0.0
+        return len(ta & tb) / max(len(ta), len(tb))
+
+    best = None
+    best_score = 0.0
+    for c in cands:
+        try:
+            c_amt = float(c.amount or 0)
+        except (ValueError, TypeError):
+            continue
+        amt_diff = abs(c_amt - target_amt)
+        if amt_diff > 1.00:
+            continue
+        # Score: 1.0 for exact amount, decay linearly to 0.0 at $1.00.
+        amt_score = max(0.0, 1.0 - amt_diff)
+        # Date proximity: 1.0 same day, 0.5 at ±5d, linear.
+        try:
+            c_date = _dt.datetime.strptime(c.txn_date, "%Y-%m-%d").date()
+            day_diff = abs((c_date - target_date).days)
+        except (ValueError, TypeError):
+            day_diff = 5
+        date_score = max(0.0, 1.0 - (day_diff / 10.0))
+        # Vendor: bonus if it agrees, no penalty if missing.
+        vsim = _vendor_sim(c.vendor, qbo_row.get("vendor"))
+        if vsim is None:
+            vendor_score = 0.5  # neutral when we can't compare
+        elif vsim >= 0.6:
+            vendor_score = 1.0
+        else:
+            # Vendors disagree → reject unless amount is exact.
+            if amt_diff > 0.01:
+                continue
+            vendor_score = 0.2
+        score = (amt_score * 0.5) + (date_score * 0.3) + (vendor_score * 0.2)
+        if score > best_score:
+            best_score = score
+            best = c
+    # Threshold: 0.7 keeps obvious matches, rejects coincidental ones.
+    return best if best_score >= 0.7 else None
+
+
 def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
     """Pull QBO transactions for one project into the shared Transaction
     table. Idempotent — re-running is a no-op for txns already imported.
@@ -453,6 +544,8 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
     Returns:
       dict {
         'imported':         int,    # rows newly written to Transaction
+        'reconciled':       int,    # merged into existing doc-only rows
+                                    # (receipt-first reconciliation)
         'cdc_additions':    int,    # subset of imported that came via CDC
         'sync_through':     str,    # new watermark
         'effective_start':  str,
@@ -562,6 +655,7 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
         mappings.setdefault(cat, (code, name))
 
     imported = 0
+    reconciled = 0
     for r in rows:
         suggested_code = suggested_name = None
         if r.get("qbo_category"):
@@ -579,6 +673,43 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
                     Transaction.account_code.isnot(None))
             .first()
         )
+
+        # ── Receipt-first reconciliation ─────────────────────────────
+        # If the user already uploaded a receipt for this expense and
+        # tagged it to a budget line BEFORE the QBO charge synced, we
+        # have a doc_upload-sourced Transaction in our DB that's the
+        # "same" expense. Detect that and merge into it instead of
+        # creating a parallel row (which would double-count actuals).
+        # Match criteria: same project, source='doc_upload', no
+        # qbo_txn_id yet, txn_date within ±5d, amount within ±$1.00.
+        existing_doc_txn = _find_unreconciled_doc_match(
+            db, project_sheet.id, r,
+        )
+        if existing_doc_txn is not None:
+            # Merge: promote the doc-only row into a reconciled row by
+            # stamping the QBO ingest fields onto it. Preserve the
+            # user's existing budget_line_id / doc_upload_id work.
+            existing_doc_txn.source         = 'reconciled'
+            existing_doc_txn.qbo_txn_id     = r["qbo_txn_id"]
+            existing_doc_txn.qbo_txn_type   = r["qbo_txn_type"]
+            existing_doc_txn.qbo_account_id = r["qbo_account_id"]
+            existing_doc_txn.qbo_category   = r["qbo_category"]
+            # Trust QBO for the canonical amount + vendor + date; the
+            # user-typed receipt values may have been approximate.
+            existing_doc_txn.amount         = r["amount"]
+            existing_doc_txn.is_expense     = r["is_expense"]
+            existing_doc_txn.vendor         = r["vendor"] or existing_doc_txn.vendor
+            existing_doc_txn.txn_date       = r["txn_date"] or existing_doc_txn.txn_date
+            # Confirmed because the user manually placed the receipt
+            # against a budget line — they own the categorization.
+            if existing_doc_txn.budget_line_id or existing_doc_txn.account_code:
+                existing_doc_txn.match_status = 'confirmed'
+            log.info(
+                f"[qbo {project_sheet.name}] reconciled QBO {r['qbo_txn_type']}"
+                f"/{r['qbo_txn_id']} → existing doc Transaction id={existing_doc_txn.id}"
+            )
+            reconciled += 1
+            continue
 
         db.session.add(Transaction(
             project_id              = project_sheet.id,
@@ -610,7 +741,8 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
 
     db.session.commit()
     log.info(f"[qbo {project_sheet.name}] imported {imported} txns "
-             f"(cdc={cdc_count}); watermark → {safe_end}")
+             f"(reconciled={reconciled}, cdc={cdc_count}); "
+             f"watermark → {safe_end}")
     # Surface unmatched account refs — transactions QBO returned that
     # weren't on accounts the user selected for this project. Resolve
     # to display names if we can so the UI can say "add Chase 8432" not
@@ -637,6 +769,7 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
                 unmatched_named.append({"id": ref, "label": f"QBO account #{ref}"})
     return {
         "imported":        imported,
+        "reconciled":      reconciled,    # merged into existing doc Transactions
         "cdc_additions":   cdc_count,
         "sync_through":    safe_end,
         "effective_start": effective_start,

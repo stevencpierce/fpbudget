@@ -126,6 +126,19 @@ class Transaction(db.Model):
     qbo_account_id  = db.Column(db.String(50), nullable=True)
     qbo_category    = db.Column(db.String(200), nullable=True)
 
+    # ── Cross-project claim (2026-05-07) ───────────────────────────────
+    # An electronic transaction (qbo_txn_id present) can only be billed
+    # to one project at a time. When project A codes it, every parallel
+    # row across other projects gets this set to A's project_id so it
+    # can be hidden from B's "uncoded" pile and shown to admins+ as
+    # "claimed elsewhere → Project A · Account 2100". Releasing the
+    # claim (clearing budget_line_id and account_code in A) clears it
+    # everywhere. Self-heal DDL adds the column on every worker boot;
+    # `nullable=True` so legacy rows are valid.
+    claimed_by_project_id = db.Column(db.Integer,
+                                      db.ForeignKey("project_sheet.id"),
+                                      nullable=True)
+
     # ── Provenance ──────────────────────────────────────────────────────
     created_via_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)

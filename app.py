@@ -3975,11 +3975,41 @@ def budget_view(pid, bid):
                    .all())
     # Full transactions for the ported Actuals tab (formerly the
     # FPBudgetSync project_detail.html). Ordered most-recent first.
-    actuals_transactions = (Transaction.query
-                            .filter_by(project_id=pid)
+    #
+    # Cross-project claim filter: if an electronic transaction has been
+    # claimed by another project (claimed_by_project_id != this pid),
+    # hide it from non-admin views. Admin/super-admin see them in a
+    # dimmed "claimed elsewhere" panel further down (not yet rendered
+    # — TBD). Per-project rule: claimed_by_project_id IS NULL OR equal
+    # to this project's id means it's still ours to work with.
+    _is_admin_view = (current_user.is_authenticated
+                      and current_user.role in ('admin', 'super_admin'))
+    _txn_q = Transaction.query.filter_by(project_id=pid)
+    if not _is_admin_view:
+        from sqlalchemy import or_ as _or
+        _txn_q = _txn_q.filter(_or(
+            Transaction.claimed_by_project_id.is_(None),
+            Transaction.claimed_by_project_id == pid,
+        ))
+    actuals_transactions = (_txn_q
                             .order_by(Transaction.txn_date.desc().nullslast(),
                                       Transaction.id.desc())
                             .all())
+    # Surface "claimed elsewhere" rows for admin+ as a separate list so
+    # the template can render them in a distinct panel without polluting
+    # the main rollup. Empty for non-admin users.
+    actuals_claimed_elsewhere = []
+    actuals_claimed_project_names = {}  # {project_id: 'Project Name'}
+    if _is_admin_view:
+        actuals_claimed_elsewhere = [
+            t for t in actuals_transactions
+            if t.claimed_by_project_id and t.claimed_by_project_id != pid
+        ]
+        if actuals_claimed_elsewhere:
+            _claim_pids = {t.claimed_by_project_id for t in actuals_claimed_elsewhere}
+            for _p in (ProjectSheet.query
+                       .filter(ProjectSheet.id.in_(_claim_pids)).all()):
+                actuals_claimed_project_names[_p.id] = _p.name or f'Project #{_p.id}'
     # Distinct uploaders for the filter bar — derived from
     # created_via_user_id (manual entry / receipt upload) + the linked
     # DocUpload's uploader_id (so receipt-source rows attribute to the
@@ -4133,6 +4163,9 @@ def budget_view(pid, bid):
         doc_uploads=doc_uploads,
         doc_groups=doc_groups,
         actuals_transactions=actuals_transactions,
+        actuals_claimed_elsewhere=actuals_claimed_elsewhere,
+        actuals_claimed_project_names=actuals_claimed_project_names,
+        actuals_is_admin_view=_is_admin_view,
         docs_by_id=docs_by_id,
         qbo_connection=qbo_connection,
         actuals_pick_groups=actuals_pick_groups,
@@ -4841,6 +4874,62 @@ def delete_line(pid, bid, lid):
 
 # ── Actuals tab routes (ported from FPBudgetSync 2026-04-30) ─────────
 
+def _sync_claim_state(txn):
+    """Cross-project claim propagation for electronic transactions.
+
+    Call this AFTER mutating `txn` (set/clear budget_line_id /
+    account_code / not_project_expense) and BEFORE `db.session.commit()`.
+
+    Rules:
+      • Only electronic txns participate (qbo_txn_id present). Doc-only
+        and manual rows are project-local — never propagate.
+      • Sibling = another Transaction row with the same
+        (qbo_txn_id, qbo_txn_type) on a different project.
+      • If THIS row is claimed (budget_line_id OR account_code OR
+        not_project_expense) → set siblings' claimed_by_project_id to
+        this project_id, AND mark them not_project_expense=True so they
+        drop out of the other project's rollup.
+      • If THIS row was released (no claim flags), clear the claim on
+        any sibling whose claimed_by_project_id == this project_id, and
+        un-mark not_project_expense if it was set by us. Other-project
+        claims (set by yet another project) are left alone.
+
+    Idempotent: safe to call repeatedly. No-op for non-electronic rows.
+    """
+    if not (txn.qbo_txn_id and txn.qbo_txn_type):
+        return
+    is_claimed_now = bool(txn.budget_line_id or txn.account_code
+                          or txn.not_project_expense)
+    siblings = (Transaction.query
+                .filter(Transaction.qbo_txn_id   == txn.qbo_txn_id,
+                        Transaction.qbo_txn_type == txn.qbo_txn_type,
+                        Transaction.project_id   != txn.project_id)
+                .all())
+    if not siblings:
+        return
+    if is_claimed_now:
+        for s in siblings:
+            # Don't trample a claim already held by a third project.
+            # Only re-claim if unclaimed or claimed by this project.
+            if s.claimed_by_project_id in (None, txn.project_id):
+                s.claimed_by_project_id = txn.project_id
+                # Drop sibling out of its project's "uncoded" pile.
+                # Preserve the sibling's existing flags only if it's
+                # already coded — we don't want to wipe their work.
+                if not (s.budget_line_id or s.account_code):
+                    s.not_project_expense = True
+    else:
+        for s in siblings:
+            if s.claimed_by_project_id == txn.project_id:
+                s.claimed_by_project_id = None
+                # If the sibling was marked not-project SOLELY because
+                # we claimed it, undo that. Heuristic: if it has no
+                # other coding, we set it; revert.
+                if (s.not_project_expense
+                        and not s.budget_line_id and not s.account_code):
+                    s.not_project_expense = False
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-line", methods=["POST"])
 @login_required
 def actuals_set_line(pid, tid):
@@ -4859,6 +4948,11 @@ def actuals_set_line(pid, tid):
                              'account_code': txn.account_code,
                              'account_code_name': txn.account_code_name}
             unlink_transaction(tid)
+            # Refresh the txn after unlink_transaction's commit so the
+            # claim-sync sees the cleared state.
+            db.session.refresh(txn)
+            _sync_claim_state(txn)
+            db.session.commit()
             try:
                 _log_activity(
                     action='update', entity_type='transaction',
@@ -4891,6 +4985,10 @@ def actuals_set_line(pid, tid):
         )
         # Refresh after commit so UI gets the freshly-set fields.
         db.session.refresh(txn)
+        # Cross-project claim: now that this row owns a budget line,
+        # propagate to any sibling rows in other projects.
+        _sync_claim_state(txn)
+        db.session.commit()
         try:
             _label = (txn.vendor or txn.note or f'Txn #{txn.id}')[:80]
             _amt = float(txn.amount or 0)
@@ -4941,6 +5039,7 @@ def actuals_mark_not_project(pid, tid):
     txn.account_code_name   = None
     txn.match_status        = 'unmatched'
     txn.updated_at          = datetime.utcnow()
+    _sync_claim_state(txn)
     db.session.commit()
     try:
         _amt = float(txn.amount or 0)
@@ -5010,6 +5109,7 @@ def actuals_set_coa(pid, tid):
             logging.warning(f"[actuals/set-coa] ensure-section failed: {_ee}")
             _ensure_result = {'created': False, 'working_was_just_created': False}
     txn.updated_at = datetime.utcnow()
+    _sync_claim_state(txn)
     db.session.commit()
     try:
         _amt = float(txn.amount or 0)
@@ -14017,6 +14117,15 @@ def _do_boot_work():
         # Workers' Comp / Payroll Fee percentages
         "ALTER TABLE budget ADD COLUMN IF NOT EXISTS workers_comp_pct NUMERIC(8,6) DEFAULT 0.03",
         "ALTER TABLE budget ADD COLUMN IF NOT EXISTS payroll_fee_pct NUMERIC(8,6) DEFAULT 0.0175",
+        # Cross-project claim on electronic transactions (2026-05-07).
+        # When project A codes a QBO-sourced txn to a budget line or
+        # marks it not-project, every parallel Transaction row across
+        # other projects (same qbo_txn_id) gets this set to A's id so
+        # the row can be filtered out of B's "uncoded" pile and shown
+        # to admins+ as "claimed elsewhere".
+        "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claimed_by_project_id INTEGER REFERENCES project_sheet(id)",
+        "CREATE INDEX IF NOT EXISTS ix_transaction_claimed_by ON transaction (claimed_by_project_id)",
+        "CREATE INDEX IF NOT EXISTS ix_transaction_qbo_txn_id ON transaction (qbo_txn_id, qbo_txn_type)",
     ]
     if _is_pg:
         try:
@@ -14753,6 +14862,10 @@ def _web_worker_essential_columns():
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_mode VARCHAR(10) DEFAULT 'pct' NOT NULL",
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_pct  NUMERIC(8,6) DEFAULT 0.015",
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_flat NUMERIC(12,2) DEFAULT 0",
+                # Cross-project claim (2026-05-07).
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claimed_by_project_id INTEGER REFERENCES project_sheet(id)",
+                "CREATE INDEX IF NOT EXISTS ix_transaction_claimed_by ON transaction (claimed_by_project_id)",
+                "CREATE INDEX IF NOT EXISTS ix_transaction_qbo_txn_id ON transaction (qbo_txn_id, qbo_txn_type)",
                 # Production day flag on ProductionDay (set from Schedule)
                 "ALTER TABLE production_day ADD COLUMN IF NOT EXISTS is_production_day BOOLEAN DEFAULT FALSE NOT NULL",
                 # Craft Services per-day flag (2026-05-06). Promoted from
