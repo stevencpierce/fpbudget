@@ -301,8 +301,20 @@
             </div>
             {% endif %}
           </div>
+          <div class="doc-links" style="display:flex;gap:8px;align-items:center;font-size:.78rem;margin-right:8px">
+            {% if u.filed_dropbox_path %}
+              <a href="{{ url_for('docs_upload_raw', uid=u.id) }}" target="_blank" rel="noopener"
+                 title="Open the processed (filed) copy in a new tab"
+                 style="color:var(--blue);text-decoration:none">📄 processed</a>
+            {% endif %}
+            {% if u.source_archive_path %}
+              <a href="{{ url_for('docs_upload_raw', uid=u.id) }}?source=1" target="_blank" rel="noopener"
+                 title="Open the original uploaded file (untouched bytes from _SOURCE_ARCHIVE)"
+                 style="color:var(--text-muted);text-decoration:none">📁 source</a>
+            {% endif %}
+          </div>
           <div class="status-pill {{ u.status }}"
-               title="{% if u.confidence %}OCR confidence: {{ u.confidence }}%{% endif %}{% if u.filed_dropbox_path %} · Dropbox: {{ u.filed_dropbox_path }}{% endif %}">
+               title="{% if u.confidence %}OCR confidence: {{ u.confidence }}%{% endif %}{% if u.filed_dropbox_path %} · Filed: {{ u.filed_dropbox_path }}{% endif %}{% if u.source_archive_path %} · Source: {{ u.source_archive_path }}{% endif %}">
             {% if u.status == 'done' or u.status == 'filed' %}Filed
             {% elif u.status == 'review' %}⚠ Review needed
               {% if u.confidence %}<span style="font-size:.7rem;opacity:.7">{{ u.confidence | int }}%</span>{% endif %}

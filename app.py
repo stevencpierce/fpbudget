@@ -16188,14 +16188,29 @@ def docs_upload_raw(uid):
         return deny
 
     # ── Source priority ────────────────────────────────────────────
-    # Try filed_dropbox_path first (the user-facing copy). If it's
-    # missing or unreachable, fall back to source_archive_path — the
-    # mission-critical durable archive copy that's preserved even if
-    # the processed file was renamed or deleted (2026-04-30 fail-safe).
+    # By default serve the filed (processed) copy. If the caller
+    # passes ?source=1 (or ?archive=1), serve the durable
+    # _SOURCE_ARCHIVE copy instead — that's the original bytes as
+    # uploaded, untouched by the Analyzer's renaming/filing pipeline.
+    # If the filed copy is unreachable, fall back to source archive
+    # too (mission-critical fail-safe — 2026-04-30).
+    _force_source = request.args.get('source') in ('1', 'true', 'yes') \
+                 or request.args.get('archive') in ('1', 'true', 'yes')
     content = None
     fname = upload.filed_filename or upload.original_filename or f"upload_{uid}"
 
-    if upload.filed_dropbox_path:
+    if _force_source and upload.source_archive_path:
+        try:
+            dbx = _dbx_client()
+            md, resp = dbx.files_download(upload.source_archive_path)
+            content = resp.content
+            fname = upload.original_filename or md.name or fname
+            logging.info(f"[docs/raw] forced source archive for upload {uid}")
+        except Exception as _se:
+            logging.warning(f"[docs/raw] source archive fetch failed for {uid}: {_se}")
+            # Fall through to filed-copy logic below as best-effort.
+
+    if content is None and upload.filed_dropbox_path:
         # Filed in Dropbox — fetch from there.
         _ops_prefix_str = (_DBX_OPS_ROOT or "").rstrip("/") if _DBX_NAMESPACE_ID else ""
         raw_path  = upload.filed_dropbox_path
