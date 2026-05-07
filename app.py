@@ -3283,47 +3283,6 @@ def budget_view(pid, bid):
 
     all_budgets = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).all()
 
-    # PO + crew assignments live ONLY on Working budget lines per user
-    # 2026-05-08 — "those should not be individual per budget. Those
-    # should apply globally to every estimated/working/actual budget".
-    # When viewing Estimated or Actual, we look up the assignment from
-    # the sister Working line and surface it as a read-only dot
-    # indicator. Two lookup maps support both views:
-    #   • by (account_code, sort_order): for Estimated view (no FK back
-    #     to Working since Working clones FROM Estimated, not vice
-    #     versa).
-    #   • by Working line id: for Actual view (Actual lines carry
-    #     source_line_id pointing back at the Working line they were
-    #     cloned from).
-    working_po_by_key = {}      # {(account_code, sort_order): po_id}
-    working_po_by_wlid = {}     # {working_line_id: po_id}
-    working_crew_by_key = {}    # {(account_code, sort_order): (crew_id, crew_name)}
-    working_crew_by_wlid = {}   # {working_line_id: (crew_id, crew_name)}
-    if current_working_bid:
-        from models import CrewMember as _CM
-        # Pre-load crew names so we don't N+1 the relationship.
-        _crew_name_by_id = {}
-        try:
-            _wlines = (BudgetLine.query
-                       .filter_by(budget_id=current_working_bid)
-                       .all())
-            _crew_ids = {l.assigned_crew_id for l in _wlines if l.assigned_crew_id}
-            if _crew_ids:
-                for _cm in _CM.query.filter(_CM.id.in_(_crew_ids)).all():
-                    _crew_name_by_id[_cm.id] = _cm.name or ''
-        except Exception:
-            _wlines = (BudgetLine.query
-                       .filter_by(budget_id=current_working_bid)
-                       .all())
-        for _wln in _wlines:
-            if _wln.po_id:
-                working_po_by_key[(_wln.account_code, _wln.sort_order)] = _wln.po_id
-                working_po_by_wlid[_wln.id] = _wln.po_id
-            if _wln.assigned_crew_id:
-                _cn = _crew_name_by_id.get(_wln.assigned_crew_id, '')
-                working_crew_by_key[(_wln.account_code, _wln.sort_order)] = (_wln.assigned_crew_id, _cn)
-                working_crew_by_wlid[_wln.id] = (_wln.assigned_crew_id, _cn)
-
     # Project-wide PurchaseOrders (per user 2026-05-04). Loaded once for
     # the budget page so each non-labor row's "+ PO" / assigned-PO badge
     # can render without an extra round-trip. The picker modal also
@@ -3870,6 +3829,47 @@ def budget_view(pid, bid):
             parent = next((x for x in all_budgets if x.id == b.parent_budget_id), None)
             if parent:
                 parent_names[b.id] = parent.name
+
+    # PO + crew assignments live ONLY on Working budget lines per user
+    # 2026-05-08 — "those should not be individual per budget. Those
+    # should apply globally to every estimated/working/actual budget".
+    # When viewing Estimated or Actual, we look up the assignment from
+    # the sister Working line and surface it as a read-only dot
+    # indicator. Two lookup maps support both views:
+    #   • by (account_code, sort_order): for Estimated view (no FK back
+    #     to Working since Working clones FROM Estimated, not vice
+    #     versa).
+    #   • by Working line id: for Actual view (Actual lines carry
+    #     source_line_id pointing back at the Working line they were
+    #     cloned from).
+    working_po_by_key = {}      # {(account_code, sort_order): po_id}
+    working_po_by_wlid = {}     # {working_line_id: po_id}
+    working_crew_by_key = {}    # {(account_code, sort_order): (crew_id, crew_name)}
+    working_crew_by_wlid = {}   # {working_line_id: (crew_id, crew_name)}
+    if current_working_bid:
+        from models import CrewMember as _CM
+        # Pre-load crew names so we don't N+1 the relationship.
+        _crew_name_by_id = {}
+        try:
+            _wlines = (BudgetLine.query
+                       .filter_by(budget_id=current_working_bid)
+                       .all())
+            _crew_ids = {l.assigned_crew_id for l in _wlines if l.assigned_crew_id}
+            if _crew_ids:
+                for _cm in _CM.query.filter(_CM.id.in_(_crew_ids)).all():
+                    _crew_name_by_id[_cm.id] = _cm.name or ''
+        except Exception:
+            _wlines = (BudgetLine.query
+                       .filter_by(budget_id=current_working_bid)
+                       .all())
+        for _wln in _wlines:
+            if _wln.po_id:
+                working_po_by_key[(_wln.account_code, _wln.sort_order)] = _wln.po_id
+                working_po_by_wlid[_wln.id] = _wln.po_id
+            if _wln.assigned_crew_id:
+                _cn = _crew_name_by_id.get(_wln.assigned_crew_id, '')
+                working_crew_by_key[(_wln.account_code, _wln.sort_order)] = (_wln.assigned_crew_id, _cn)
+                working_crew_by_wlid[_wln.id] = (_wln.assigned_crew_id, _cn)
 
     # Cross-reference: live per-line totals from the OTHER budgets so
     # the active view can render Estimated / Working / Actual summary
