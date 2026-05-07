@@ -646,7 +646,7 @@
           <th class="col-num{% if not ns.has_agent_or_disc %} col-empty{% endif %}">{% if ns.has_agent_or_disc %}{{ 'Agent%' if ns.has_labor else 'Disc%' }}{% endif %}</th>
           <th class="col-num {% if is_working_view %}frozen-est-header{% endif %}">Estimated</th>
           <th class="col-num col-working">Working</th>
-          <th class="col-num col-actual" title="Sum of linked transaction amounts">{% if has_actual_budget %}Actual{% endif %}</th>
+          <th class="col-num col-actual" title="{% if is_actual_view %}Actual planned (top) + cumulative transaction spend (bottom){% else %}Sum of linked transaction amounts{% endif %}">{% if is_actual_view %}Actual{% elif has_actual_budget %}Actual{% endif %}</th>
           <th class="col-num col-variance" title="{% if has_actual_budget %}Working − Actual{% else %}Estimated − Working{% endif %}">{% if has_actual_budget or is_working_view %}Variance{% endif %}</th>
           <th class="col-act"></th>
         </tr>
@@ -1076,8 +1076,25 @@
           <td class="col-num line-total line-frozen-est">
             <span class="frozen-est" data-raw="{{ _frozen }}">{{ (_frozen * _sec_fee_m) | currency }}</span>
           </td>
+          {# Working column: in pure Working view this is the active edit
+             cell (bold) — res.est_total IS the Working line. In Actual
+             view it should instead show the LIVE sister Working budget
+             total as a read-only summary, since the active edit happens
+             on the Actual budget's lines (and the Actual planned value
+             is already accessible via res.est_total elsewhere).
+             2026-05-07. #}
           <td class="col-num col-working line-working">
-            <strong data-base="{{ res.est_total }}">{{ (res.est_total * _sec_fee_m) | currency }}</strong>
+            {% if is_actual_view %}
+              {% set _wlt_act = working_line_totals.get((ln.account_code, ln.sort_order), none) %}
+              {% if _wlt_act is not none %}
+                <span class="muted" style="font-size:.85rem"
+                      title="Live total from the current Working budget for this line">{{ (_wlt_act * _sec_fee_m) | currency }}</span>
+              {% else %}
+                <span class="muted" style="font-size:.75rem">—</span>
+              {% endif %}
+            {% else %}
+              <strong data-base="{{ res.est_total }}">{{ (res.est_total * _sec_fee_m) | currency }}</strong>
+            {% endif %}
           </td>
           {# Per-line ACTUAL: sum of Transaction.amount for this line.
              actual_by_line_id keys on the Working line id (which is
@@ -1094,7 +1111,25 @@
             {% set _actual = (actual_by_line_id.get(ln.id, 0) or 0) | float %}
           {% endif %}
           <td class="col-num col-actual line-actual">
-            {% if has_actual_budget %}
+            {% if is_actual_view %}
+              {# In Actual view this column doubles as the active edit
+                 anchor + spend tracker:
+                   • Top line (bold): the Actual budget's planned line
+                     total — what the user sees update as they edit
+                     qty/rate. Was previously rendered in the Working
+                     column, now lives here so the column labels match
+                     reality.
+                   • Bottom line (small green): cumulative transaction
+                     spend pulled from txns_by_line. Lets the user
+                     compare planned vs spent on the same row. #}
+              <strong data-base="{{ res.est_total }}">{{ (res.est_total * _sec_fee_m) | currency }}</strong>
+              {% if _actual > 0 %}
+                <div style="font-size:.66rem;color:var(--green);margin-top:1px"
+                     title="Sum of linked transaction amounts (spent so far)">
+                  spent: {{ _actual | currency }}
+                </div>
+              {% endif %}
+            {% elif has_actual_budget %}
               {% if _actual > 0 %}
                 <strong style="color:var(--green)">{{ _actual | currency }}</strong>
               {% else %}
@@ -1475,12 +1510,39 @@
           {% endif %}
           {% set _sec_actual = _sec_actual_ns.total %}
           {% if is_working_view %}
+          {# In Actual view, we need a live Working-section total for
+             the W column. Sum working_line_totals for every line in
+             this section (matched by (account_code, sort_order)). #}
+          {% set _sec_w_live_ns = namespace(t=0) %}
+          {% if is_actual_view %}
+            {% for _ln in sec.lines %}
+              {% set _wlt_sec = working_line_totals.get((_ln.account_code, _ln.sort_order), none) %}
+              {% if _wlt_sec is not none %}{% set _sec_w_live_ns.t = _sec_w_live_ns.t + (_wlt_sec | float) %}{% endif %}
+            {% endfor %}
+          {% endif %}
           <td class="col-num sec-est-total" style="font-size:.8rem">
             <span class="frozen-est" data-raw="{{ sec_working.total }}">{{ (sec_working.total * _sec_fee_m) | currency }}</span>
           </td>
-          <td class="col-num col-working sec-working-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
+          <td class="col-num col-working sec-working-total" style="font-size:.8rem">
+            {% if is_actual_view %}
+              {% if _sec_w_live_ns.t > 0 %}
+                <span class="muted">{{ (_sec_w_live_ns.t * _sec_fee_m) | currency }}</span>
+              {% else %}<span class="muted">—</span>{% endif %}
+            {% else %}
+              <strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong>
+            {% endif %}
+          </td>
           <td class="col-num col-actual sec-actual-total" style="font-size:.8rem">
-            {% if _sec_actual > 0 %}<strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>{% endif %}
+            {% if is_actual_view %}
+              {# Show Actual planned section total (active edit) on top,
+                 spent below — mirrors the per-line Actual column. #}
+              <strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong>
+              {% if _sec_actual > 0 %}
+              <div style="font-size:.62rem;color:var(--green);margin-top:1px">spent: {{ _sec_actual | currency }}</div>
+              {% endif %}
+            {% elif _sec_actual > 0 %}
+              <strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>
+            {% endif %}
           </td>
           {# Section subtotal variance — basis-driven (same as line cells).
              Working view: E = sec_working snapshot, W = ns.sec_total,

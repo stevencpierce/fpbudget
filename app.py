@@ -3830,10 +3830,14 @@ def budget_view(pid, bid):
             if parent:
                 parent_names[b.id] = parent.name
 
-    # Cross-reference: when viewing the Estimated budget, show working budget line totals
-    # in the Working column. Lines matched by (account_code, sort_order).
+    # Cross-reference: live per-line totals from the OTHER budgets so
+    # the active view can render Estimated / Working / Actual summary
+    # columns side by side. Computed whenever the relevant sister
+    # budget exists, regardless of which mode the user is currently
+    # viewing — symmetric to estimated_line_totals below. Lines matched
+    # by (account_code, sort_order). 2026-05-07.
     working_line_totals = {}
-    if _budget_type(budget.budget_mode) == 'estimated' and current_working_bid:
+    if current_working_bid:
         _wb = next((b for b in all_budgets if b.id == current_working_bid), None)
         _wblines = BudgetLine.query.filter_by(budget_id=current_working_bid).all()
         _wb_fringe = get_fringe_configs(db.session, pid)
@@ -3863,7 +3867,7 @@ def budget_view(pid, bid):
     # historical/audit needs but is no longer the column source.
     # 2026-05-07.
     estimated_line_totals = {}
-    if _budget_type(budget.budget_mode) in ('working', 'actual') and current_estimated_bid:
+    if current_estimated_bid:
         _eb = next((b for b in all_budgets if b.id == current_estimated_bid), None)
         _eblines = BudgetLine.query.filter_by(budget_id=current_estimated_bid).all()
         _eb_fringe = get_fringe_configs(db.session, pid)
