@@ -4241,9 +4241,27 @@ tr.cs-row-viewed    { background: #1a1200; }
 /* Google Places Autocomplete dropdown above modals */
 .pac-container { z-index: 9999 !important; }
 
-/* ── Schedule-driven line omit state ─────────────────────────────────────── */
-tr.sync-omitted td { opacity: .45; text-decoration: line-through; }
-tr.sync-omitted td .editable { pointer-events: none; }
+/* ── Schedule-driven line override state ─────────────────────────────────
+   sync_omit was originally a hard "exclude from budget" flag (line-through,
+   pointer-events:none). Repurposed 2026-05-07 to mean "manually
+   overridden" — the line stays in the budget but stops being clobbered
+   by sync_schedule_driven_lines on each page load. Visual treatment:
+   duration + quantity render blue italic (matching the labor-line
+   accent color) so the user instantly knows this line is decoupled
+   from the schedule and won't change when they edit Gantt cells. */
+tr.sync-omitted td .editable[data-field="days"],
+tr.sync-omitted td .editable[data-field="quantity"] {
+  color: var(--blue);
+  font-style: italic;
+}
+tr.sync-omitted .col-days::after {
+  content: "✎";
+  margin-left: .35rem;
+  font-size: .68rem;
+  color: var(--blue);
+  opacity: .7;
+}
+/* Tooltip hint via title is set inline in the template. */
 
 /* ── Location search field ──────────────────────────────────────────────── */
 .loc-search-field {
