@@ -135,17 +135,18 @@ def get_valid_token(conn, db):
 # ── QBO data fetch ────────────────────────────────────────────────────
 
 def list_qbo_accounts(conn, db):
-    """List ALL active accounts on the QBO realm. The previous
-    AccountType filter ('Bank', 'Credit Card', '*Liability') hid the
-    actual spend-source account in some QBO setups (one user's
-    transactions all posted to AccountRef=221 which never appeared
-    in the picker no matter how we expanded the type list). Removing
-    the filter entirely lets the user see every account and pick the
-    one they actually use. Type is shown in the picker label so they
-    can still tell Bank/CC apart from Income/Equity/etc.
+    """List active **Bank** and **Credit Card** accounts on the QBO
+    realm. These are the only account types that hold spend the user
+    cares about for budget actuals (income/equity/etc are noise).
+    User selects per-project from this filtered list.
     """
     token = get_valid_token(conn, db)
-    query = "SELECT * FROM Account WHERE Active = true MAXRESULTS 1000"
+    query = (
+        "SELECT * FROM Account "
+        "WHERE Active = true "
+        "AND AccountType IN ('Bank', 'Credit Card') "
+        "MAXRESULTS 1000"
+    )
     resp  = requests.get(
         f"{_qbo_base_url()}/{conn.realm_id}/query",
         headers=_headers(token),

@@ -4701,9 +4701,70 @@
         const unmatched = d.unmatched_accounts || [];
         if (unmatched.length && (d.imported || 0) === 0) {
           if (status) {
-            const lbls = unmatched.map(u => u.label).join(', ');
-            status.innerHTML = `⚠ 0 imported. QuickBooks returned transactions on accounts you haven't enabled for this project: <strong>${lbls}</strong>. Open the QBO accounts picker above and tick those.`;
+            // Build inline "Add & re-sync" buttons for each unmatched
+            // account so the user doesn't have to scroll the picker.
+            const safe = (s) => String(s).replace(/[&<>"']/g, c => (
+              {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+            ));
+            const btns = unmatched.map(u =>
+              `<button type="button" class="btn btn-xs btn-primary qbo-add-acct-btn" data-acct-id="${safe(u.id)}" data-acct-label="${safe(u.label)}" style="margin:2px 4px 2px 0">+ Add ${safe(u.label)}</button>`
+            ).join('');
+            status.innerHTML =
+              `⚠ 0 imported. QuickBooks returned transactions on accounts you haven't enabled: ` +
+              `<div style="margin-top:6px">${btns}</div>`;
             status.style.color = '#e0a040';
+            // Wire each button: tick the matching checkbox in the
+            // picker, save accounts, then re-trigger the same sync.
+            status.querySelectorAll('.qbo-add-acct-btn').forEach(btn => {
+              btn.addEventListener('click', async () => {
+                const acctId = btn.dataset.acctId;
+                const lbl    = btn.dataset.acctLabel;
+                btn.disabled = true;
+                btn.textContent = `Adding ${lbl}…`;
+                // Tick the checkbox if present so the picker stays
+                // visually in sync with what we're about to save.
+                const cb = document.querySelector(`.actuals-qbo-acct[value="${acctId}"]`);
+                if (cb) cb.checked = true;
+                // Build the new id list = currently-checked + this id
+                // (defensive in case the checkbox isn't in the DOM).
+                const ids = new Set(Array.from(
+                  document.querySelectorAll('.actuals-qbo-acct:checked')
+                ).map(c => c.value));
+                ids.add(acctId);
+                console.log('[qbo-add-acct] saving ids:', Array.from(ids), 'adding:', acctId);
+                try {
+                  const sr = await fetch(`/projects/${pid}/actuals/qbo-accounts`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ account_ids: Array.from(ids) }),
+                  });
+                  if (!sr.ok) {
+                    const ed = await sr.json().catch(() => ({}));
+                    btn.textContent = `✕ ${ed.error || 'save failed'}`;
+                    return;
+                  }
+                  btn.textContent = `✓ Added — re-syncing…`;
+                  // Re-trigger the sync without firstSync gating; pass
+                  // any remembered date window from the form.
+                  const body2 = {};
+                  if (startEl && startEl.value) body2.start_date = startEl.value;
+                  if (endEl   && endEl.value)   body2.end_date   = endEl.value;
+                  const r2 = await fetch(`/projects/${pid}/actuals/sync-now`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body2),
+                  });
+                  const d2 = await r2.json();
+                  if (!r2.ok) {
+                    btn.textContent = `✕ ${d2.error || 'sync failed'}`;
+                    return;
+                  }
+                  status.textContent = `✓ Imported ${d2.imported || 0} txns. Reloading…`;
+                  status.style.color = 'var(--green)';
+                  setTimeout(() => window.location.reload(), 600);
+                } catch (e) {
+                  btn.textContent = `✕ ${e.message}`;
+                }
+              });
+            });
           }
           return;
         }
