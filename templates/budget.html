@@ -3921,9 +3921,15 @@
       <div style="position:sticky;top:14px;max-height:calc(100vh - 80px);display:flex;flex-direction:column">
         <h4 style="margin:0 0 8px;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Chart of Accounts</h4>
         <div style="overflow-y:auto;flex:1;padding-right:2px">
-          <div class="coa-item" draggable="true" data-code="not_project" data-droptarget="section"
-               style="padding:6px 10px;margin-bottom:4px;border-radius:5px;border:1px solid #4a2a2a;background:#1e1414;font-size:.76rem;cursor:grab">
-            <span style="color:#e05555;font-weight:600">✕ Not Project Expense</span>
+          {# Wrapped in .coa-section so the drop-target handler (which
+             selects .coa-section elements) picks it up — without the
+             wrapper, you could drag this chip onto a transaction but
+             couldn't drop a transaction onto it. #}
+          <div class="coa-section" data-code="not_project" style="margin-bottom:4px">
+            <div class="coa-item" draggable="true" data-code="not_project" data-name="Not Project Expense" data-droptarget="section"
+                 style="padding:6px 10px;border-radius:5px;border:1px solid #4a2a2a;background:#1e1414;font-size:.76rem;cursor:grab">
+              <span style="color:#e05555;font-weight:600">✕ Not Project Expense</span>
+            </div>
           </div>
           {# Build a quick lookup: section_code → sublines from the
              Working budget (already computed for the dropdown). #}
@@ -4914,6 +4920,16 @@
       document.querySelectorAll('.actuals-stat-card').forEach(c => {
         c.style.borderColor = c.dataset.filter === filter ? 'var(--blue)' : 'var(--border)';
       });
+      // Stat-card filters only act on the Match sub-tab (the row list).
+      // If the user is currently on Reconcile and clicks a chip, switch
+      // them into Match so the click does something visible. Otherwise
+      // the filter applies "silently" to a hidden pane and nothing
+      // appears to happen.
+      const matchPane = document.getElementById('actuals-pane-match');
+      const onMatch = matchPane && matchPane.style.display !== 'none';
+      if (!onMatch && typeof window.showActualsPane === 'function') {
+        window.showActualsPane('match');
+      }
       _actualsResolveFilters();
     };
 
