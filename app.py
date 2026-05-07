@@ -9900,17 +9900,44 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                           .order_by(Budget.id.desc())
                           .first())
         if _canonical:
-            budgeted = (db.session.query(_func_po.coalesce(_func_po.sum(BudgetLine.estimated_total), 0))
-                        .filter(BudgetLine.po_id == po.id,
-                                BudgetLine.budget_id == _canonical.id)
-                        .scalar()) or 0
-            line_count = (db.session.query(_func_po.count(BudgetLine.id))
-                          .filter(BudgetLine.po_id == po.id,
-                                  BudgetLine.budget_id == _canonical.id).scalar()) or 0
+            _po_lines = (BudgetLine.query
+                         .filter(BudgetLine.po_id == po.id,
+                                 BudgetLine.budget_id == _canonical.id)
+                         .order_by(BudgetLine.account_code,
+                                   BudgetLine.sort_order,
+                                   BudgetLine.id)
+                         .all())
+            budgeted = sum((float(l.estimated_total or 0) for l in _po_lines), 0.0)
+            line_count = len(_po_lines)
+            # Per-line breakdown so the PO card can show which lines
+            # contribute and at what amounts. Helps the user spot
+            # mis-coded / duplicated lines that would otherwise just
+            # show as a mysterious total.
+            out["lines"] = [{
+                "id":             l.id,
+                "account_code":   l.account_code,
+                "description":    l.description or l.account_name or '',
+                "estimated_total": float(l.estimated_total or 0),
+                "qty":            float(l.quantity or 0),
+                "days":           float(l.days or 0),
+                "rate":           float(l.rate or 0),
+            } for l in _po_lines]
         else:
             budgeted, line_count = 0, 0
+            out["lines"] = []
         out["budgeted"]   = float(budgeted)
         out["line_count"] = line_count
+        # Sum of attached-doc amounts (the "what was quoted" side, vs
+        # budgeted = "what the budget commits"). When these diverge
+        # there's likely a wrong line amount or a duplicate; show both
+        # so the user can spot it.
+        try:
+            _att_total = sum(float(a.amount or 0)
+                             for a in (out.get("attachments") or [])
+                             if a.get("amount"))
+            out["doc_attached_total"] = round(_att_total, 2)
+        except Exception:
+            out["doc_attached_total"] = None
         if po.total_committed is not None:
             out["over_cap"] = float(budgeted) > float(po.total_committed)
             out["cap_remaining"] = float(po.total_committed) - float(budgeted)
