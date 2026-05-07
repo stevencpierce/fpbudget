@@ -4328,11 +4328,21 @@ def upsert_line(pid, bid):
     _user_touched_auto_field = _has_line_tag and any(
         f in data for f in _AUTO_OVERRIDE_FIELDS
     )
+    # Numeric fields where "blank" should mean ZERO, not NULL. Otherwise
+    # calc_line falls back to its default (often 1.0 for qty/days),
+    # which silently turns a user-cleared field into a partial value.
+    # See budget_calc.calc_line() docstring for the related fix.
+    _ZERO_ON_BLANK = {"quantity", "days", "rate", "estimated_total",
+                      "est_ot", "agent_pct", "working_total",
+                      "manual_actual", "unit_rate", "days_per_week"}
     for f in fields:
         if f in data:
             val = data[f]
             if val == "" or val is None:
-                setattr(ln, f, None if f not in ("account_code", "sort_order") else 0)
+                if f in ("account_code", "sort_order") or f in _ZERO_ON_BLANK:
+                    setattr(ln, f, 0)
+                else:
+                    setattr(ln, f, None)
             else:
                 setattr(ln, f, val)
     # Apply the auto-override AFTER the field loop so an explicit

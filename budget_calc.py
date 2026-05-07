@@ -768,15 +768,31 @@ def calc_line(line, fringe_configs):
     For rate_type='week': rate is per-week, days column = number of weeks.
     """
     if not line.is_labor:
-        qty      = _float(line.quantity, 1.0)
-        days     = _float(line.days, 1.0)
+        # Treat None / missing as ZERO, not 1.0. The old default-to-1
+        # behavior masked user-cleared fields: a user who cleared
+        # quantity to "blank out" a line saw the line silently fall
+        # back to 1.0 × days × rate (= half the original on a qty-2
+        # line), making it look like the edit got "halved". User
+        # report 2026-05-07. Explicit override: pass 1.0 only when
+        # we genuinely want a default for a never-touched field.
+        qty      = _float(line.quantity, 0.0)
+        days     = _float(line.days, 0.0)
         rate     = _float(line.rate, 0.0)
         discount = _float(line.agent_pct, 0.0)   # stored as fraction (0.15 = 15%)
-        # Pre-discount subtotal: qty × days × rate, or fall back to estimated_total
-        if rate > 0:
+        # If the user has zeroed any of qty/days/rate, the line is
+        # zero — never fall back to estimated_total in that case
+        # (estimated_total is the OLD pre-edit value and would un-do
+        # the user's intent). Only fall back when all three are
+        # meaningfully unset and there's a stored total to honor.
+        if qty > 0 and days > 0 and rate > 0:
             pre = round(qty * days * rate, 2)
-        else:
+        elif (line.quantity is None and line.days is None
+              and line.rate in (None, 0)):
+            # Genuinely uninitialized — honor stored estimated_total.
             pre = _float(line.estimated_total)
+        else:
+            # User explicitly zeroed at least one field → line is zero.
+            pre = 0.0
         disc_amt = round(pre * discount, 2)
         est      = round(pre - disc_amt, 2)
         return {"subtotal": pre, "fringe_amount": 0.0, "agent_amount": disc_amt,
