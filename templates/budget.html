@@ -284,9 +284,9 @@
       <tr>
         <th class="col-code">Code</th>
         <th>Department</th>
-        <th class="col-num">Estimated</th>
-        <th class="col-num">Working</th>
-        <th class="col-num">Actual</th>
+        <th class="col-num var-col-header" data-budget="estimated">Estimated</th>
+        <th class="col-num var-col-header" data-budget="working">Working</th>
+        <th class="col-num var-col-header" data-budget="actual">Actual</th>
         <th class="col-num">Variance <span class="muted" style="font-size:.7rem;font-weight:400">(+ under)</span></th>
       </tr>
     </thead>
@@ -644,9 +644,9 @@
           <th class="col-fr">{{ 'Fringe' if ns.has_labor else '' }}</th>
           <th class="col-num">Subtotal</th>
           <th class="col-num{% if not ns.has_agent_or_disc %} col-empty{% endif %}">{% if ns.has_agent_or_disc %}{{ 'Agent%' if ns.has_labor else 'Disc%' }}{% endif %}</th>
-          <th class="col-num {% if is_working_view %}frozen-est-header{% endif %}">Estimated</th>
-          <th class="col-num col-working">Working</th>
-          <th class="col-num col-actual" title="{% if is_actual_view %}Actual planned (top) + cumulative transaction spend (bottom){% else %}Sum of linked transaction amounts{% endif %}">{% if is_actual_view %}Actual{% elif has_actual_budget %}Actual{% endif %}</th>
+          <th class="col-num {% if is_working_view %}frozen-est-header{% endif %} var-col-header" data-budget="estimated">Estimated</th>
+          <th class="col-num col-working var-col-header" data-budget="working">Working</th>
+          <th class="col-num col-actual var-col-header" data-budget="actual" title="{% if is_actual_view %}Actual planned (top) + cumulative transaction spend (bottom){% else %}Sum of linked transaction amounts{% endif %}">{% if is_actual_view %}Actual{% elif has_actual_budget %}Actual{% endif %}</th>
           <th class="col-num col-variance" title="{% if has_actual_budget %}Working − Actual{% else %}Estimated − Working{% endif %}">{% if has_actual_budget or is_working_view %}Variance{% endif %}</th>
           <th class="col-act"></th>
         </tr>
@@ -10142,6 +10142,25 @@ async function saveSettings() {
     });
   }
 
+  // Map each basis to which budget column is the FIRST (positive cue,
+  // blue) and which is the SECOND (negative cue, red) being compared.
+  // The "third" column gets no highlight. Per user request 2026-05-08
+  // — "blue box around the first budget, red around the second so I
+  // can see at a glance which two are being compared".
+  const BASIS_COLOR_MAP = {
+    'w_vs_e': { first: 'working',  second: 'estimated' },
+    'a_vs_w': { first: 'actual',   second: 'working'   },
+    'a_vs_e': { first: 'actual',   second: 'estimated' },
+  };
+  function applyBasisHighlight(basis) {
+    const map = BASIS_COLOR_MAP[basis] || {};
+    document.querySelectorAll('.var-col-header').forEach(th => {
+      const which = th.dataset.budget;
+      th.classList.toggle('var-col-first',  which === map.first);
+      th.classList.toggle('var-col-second', which === map.second);
+    });
+  }
+
   // Sync state between Top Sheet selector and Budget-tab selector so
   // switching basis on one updates the other (single source of truth
   // for the user's intent).
@@ -10150,6 +10169,7 @@ async function saveSettings() {
       b.classList.toggle('active', b.dataset.basis === basis);
     });
     applyVariance(basis);
+    applyBasisHighlight(basis);
   }
 
   const defaultBasis = _workingInitialized ? 'w_vs_e' : 'a_vs_e';
