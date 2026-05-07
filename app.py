@@ -4315,6 +4315,19 @@ def upsert_line(pid, bid):
               "working_total", "manual_actual",
               # Task 2: catalog linkage for exports
               "catalog_item_id"]
+    # Schedule-driven lines (Flights, Per Diem, Hotel, Meals, etc.) get
+    # auto-recomputed by sync_schedule_driven_lines on every page load.
+    # If the user manually edits qty/days/rate/estimated_total, treat
+    # that as an explicit override and set sync_omit=True so subsequent
+    # page loads stop clobbering their value. Without this, zeroing
+    # Flights in Working "comes back" to its computed value as soon as
+    # the user navigates away. User report 2026-05-07.
+    _AUTO_OVERRIDE_FIELDS = {"quantity", "days", "rate", "estimated_total",
+                             "rate_type", "fringe_type"}
+    _has_line_tag = bool(getattr(ln, 'line_tag', None))
+    _user_touched_auto_field = _has_line_tag and any(
+        f in data for f in _AUTO_OVERRIDE_FIELDS
+    )
     for f in fields:
         if f in data:
             val = data[f]
@@ -4322,6 +4335,15 @@ def upsert_line(pid, bid):
                 setattr(ln, f, None if f not in ("account_code", "sort_order") else 0)
             else:
                 setattr(ln, f, val)
+    # Apply the auto-override AFTER the field loop so an explicit
+    # sync_omit in the payload still wins.
+    if _user_touched_auto_field and not getattr(ln, 'sync_omit', False):
+        ln.sync_omit = True
+        logging.info(
+            "[upsert_line] auto-set sync_omit=True on schedule-driven "
+            "line id=%s tag=%s — user manually edited %s",
+            ln.id, ln.line_tag,
+            sorted(set(data.keys()) & _AUTO_OVERRIDE_FIELDS))
 
     # Labor-line invariant: quantity is always 1 person per line. Multi-
     # person hires use Duplicate Row or Quick Entry's qty splitter (which
