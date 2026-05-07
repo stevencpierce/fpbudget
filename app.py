@@ -2408,7 +2408,13 @@ def project_delete(pid):
 @app.route("/projects/<int:pid>/rename", methods=["POST"])
 @login_required
 def project_rename(pid):
-    """Rename a project. Admin or super_admin only."""
+    """Rename a project. Admin or super_admin only.
+
+    Also renames the Dropbox folder so the on-disk structure stays in
+    sync with the project name. The slug is regenerated from the new
+    name (preserving the YYYY-MM prefix from the old slug if present
+    so historical sort-order isn't disturbed).
+    """
     if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
         flash("Only admins can rename projects.", "error")
         return redirect(url_for("dashboard"))
@@ -2425,17 +2431,210 @@ def project_rename(pid):
         flash(f"A project named '{new_name}' already exists.", "error")
         return redirect(url_for("dashboard"))
     old_name = p.name
+    old_slug = p.dropbox_folder
     p.name = new_name
+
+    # Generate a new slug from the new name. Preserve the original
+    # YYYY-MM prefix from the old slug (so the folder keeps its
+    # creation-month sort order) — only the name portion changes.
+    new_slug = None
+    try:
+        prefix_dt = None
+        if old_slug:
+            import re as _re
+            m = _re.match(r'^(\d{4})-(\d{2})_', old_slug)
+            if m:
+                from datetime import date as _date
+                prefix_dt = _date(int(m.group(1)), int(m.group(2)), 1)
+        # _make_project_slug accepts a `dt` arg via _unique_project_slug → _make_project_slug
+        # but the public helper is _unique_project_slug. We use it
+        # directly and then patch the YYYY-MM prefix afterwards if
+        # we extracted one above.
+        candidate = _unique_project_slug(new_name, p.client_name, exclude_id=p.id)
+        if prefix_dt:
+            import re as _re2
+            candidate = _re2.sub(r'^\d{4}-\d{2}_',
+                                 prefix_dt.strftime('%Y-%m_'), candidate)
+            # Re-check uniqueness after prefix patch
+            from models import ProjectSheet as _PS
+            if _PS.query.filter(_PS.dropbox_folder == candidate,
+                                _PS.id != p.id).first():
+                candidate = _unique_project_slug(new_name, p.client_name, exclude_id=p.id)
+        new_slug = candidate
+    except Exception as _se:
+        logging.warning(f"slug regen failed on rename: {_se}")
+
+    # Move the Dropbox folder to match the new slug.
+    dropbox_renamed = False
+    if new_slug and old_slug and new_slug != old_slug:
+        try:
+            has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
+            if has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN'):
+                dbx = _dbx_client()
+                if _DBX_NAMESPACE_ID:
+                    src  = f"/{old_slug}"
+                    dest = f"/{new_slug}"
+                else:
+                    src  = f"{_DBX_OPS_ROOT}/{old_slug}"
+                    dest = f"{_DBX_OPS_ROOT}/{new_slug}"
+                dbx.files_move_v2(src, dest, autorename=False)
+                p.dropbox_folder = new_slug
+                dropbox_renamed = True
+                logging.info(f"[DBX RENAME] {src} → {dest}")
+        except Exception as e:
+            logging.error(f"[DBX RENAME] failed for pid={pid}: "
+                          f"{type(e).__name__}: {e} — DB renamed but folder NOT moved")
+
     db.session.commit()
     try:
         _log_activity(action='update', entity_type='project',
                       entity_id=pid, entity_label=new_name,
                       project_id=pid,
-                      before={'name': old_name}, after={'name': new_name},
-                      note=f'Renamed project: "{old_name}" → "{new_name}"')
+                      before={'name': old_name, 'dropbox_folder': old_slug},
+                      after={'name': new_name, 'dropbox_folder': p.dropbox_folder},
+                      note=f'Renamed project: "{old_name}" → "{new_name}"'
+                           + (' (folder moved)' if dropbox_renamed else ''))
     except Exception: pass
-    flash(f"Renamed '{old_name}' → '{new_name}'.", "success")
+    msg = f"Renamed '{old_name}' → '{new_name}'."
+    if old_slug and new_slug and not dropbox_renamed and new_slug != old_slug:
+        msg += " Note: Dropbox folder could not be moved — rename it manually."
+    flash(msg, "success")
     return redirect(url_for("dashboard"))
+
+
+@app.route("/projects/<int:pid>/duplicate", methods=["POST"])
+@login_required
+def project_duplicate(pid):
+    """Duplicate a project — clone every Budget, project-scoped Locations,
+    FringeConfigs, and provision a fresh Dropbox folder by copying the
+    source project's folder tree. Admin or super_admin only.
+    """
+    if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+        flash("Only admins can duplicate projects.", "error")
+        return redirect(url_for("dashboard"))
+    src_p = ProjectSheet.query.get_or_404(pid)
+    new_name = (request.form.get("name") or "").strip()
+    if not new_name:
+        new_name = f"{src_p.name} (copy)"
+    # Uniqueness check
+    if ProjectSheet.query.filter(ProjectSheet.name == new_name).first():
+        flash(f"A project named '{new_name}' already exists.", "error")
+        return redirect(url_for("dashboard"))
+
+    try:
+        # 1. Create the new ProjectSheet
+        new_p = ProjectSheet(
+            name=new_name,
+            client_name=src_p.client_name,
+            status='active',
+        )
+        db.session.add(new_p)
+        db.session.flush()
+
+        # 2. Generate a fresh slug + provision a Dropbox folder by
+        #    copying the SOURCE project's folder (so the duplicated
+        #    project keeps the same on-disk layout incl. any custom
+        #    subfolders). Falls back to copying the template if the
+        #    source folder copy fails.
+        new_slug = _unique_project_slug(new_name, src_p.client_name, exclude_id=new_p.id)
+        new_p.dropbox_folder = new_slug
+        try:
+            has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
+            if (has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN')) and src_p.dropbox_folder:
+                dbx = _dbx_client()
+                if _DBX_NAMESPACE_ID:
+                    src_path  = f"/{src_p.dropbox_folder}"
+                    dest_path = f"/{new_slug}"
+                else:
+                    src_path  = f"{_DBX_OPS_ROOT}/{src_p.dropbox_folder}"
+                    dest_path = f"{_DBX_OPS_ROOT}/{new_slug}"
+                dbx.files_copy_v2(src_path, dest_path)
+                logging.info(f"[DBX DUP] {src_path} → {dest_path}")
+            else:
+                _provision_dropbox_folder(new_slug)
+        except Exception as e:
+            logging.error(f"[DBX DUP] folder copy failed: {type(e).__name__}: {e} — "
+                          f"falling back to template provision")
+            try:
+                _provision_dropbox_folder(new_slug)
+            except Exception:
+                pass
+
+        # 3. Copy project-scoped FringeConfigs.
+        for fc in FringeConfig.query.filter_by(project_id=src_p.id).all():
+            db.session.add(FringeConfig(
+                project_id=new_p.id,
+                fringe_type=fc.fringe_type,
+                label=fc.label,
+                rate=fc.rate,
+                is_flat=fc.is_flat,
+                flat_amount=fc.flat_amount,
+                ot_applies=fc.ot_applies,
+            ))
+
+        # 4. Copy project-scoped Locations.
+        from models import Location as _Loc
+        loc_id_map = {}
+        for lc in _Loc.query.filter_by(project_id=src_p.id).all():
+            new_lc = _Loc(
+                project_id=new_p.id,
+                name=lc.name,
+                facility_name=lc.facility_name,
+                location_type=lc.location_type,
+                address=lc.address,
+                map_url=lc.map_url,
+                contact_name=lc.contact_name,
+                contact_email=lc.contact_email,
+                contact_phone=lc.contact_phone,
+                dayof_name=lc.dayof_name,
+                dayof_email=lc.dayof_email,
+                dayof_phone=lc.dayof_phone,
+                billing_type=lc.billing_type,
+                daily_rate=lc.daily_rate,
+                notes=lc.notes,
+                active=lc.active,
+                omit_flags=lc.omit_flags,
+                # budget_line_id intentionally NOT copied — points at
+                # source budget's lines and would orphan on the clone.
+            )
+            db.session.add(new_lc)
+            db.session.flush()
+            loc_id_map[lc.id] = new_lc.id
+
+        # 5. Clone every Budget on the source project. We use the
+        #    existing _create_budget_from_source helper for each one
+        #    so all the careful settings-inheritance + schedule-copy
+        #    logic kicks in exactly the same as for Working clones.
+        src_budgets = Budget.query.filter_by(project_id=src_p.id).order_by(
+            Budget.created_at.asc()).all()
+        for sb in src_budgets:
+            new_b = _create_budget_from_source(
+                new_p.id, sb, sb.name, sb.budget_mode or 'estimated',
+                parent_bid=None, version_number=sb.version_number,
+            )
+            new_b.version_status = sb.version_status
+
+        # 6. Grant the duplicating user owner access on the new project.
+        db.session.add(ProjectAccess(
+            project_id=new_p.id, user_id=current_user.id, role="owner"
+        ))
+
+        db.session.commit()
+        try:
+            _log_activity(action='create', entity_type='project',
+                          entity_id=new_p.id, entity_label=new_name,
+                          project_id=new_p.id,
+                          before=None,
+                          after={'name': new_name, 'duplicated_from': src_p.id},
+                          note=f'Duplicated from "{src_p.name}"')
+        except Exception: pass
+        flash(f"Duplicated '{src_p.name}' → '{new_name}'.", "success")
+        return redirect(url_for("project_budget_redirect", pid=new_p.id))
+    except Exception as e:
+        db.session.rollback()
+        logging.exception("project_duplicate failed")
+        flash(f"Could not duplicate project — {e}", "error")
+        return redirect(url_for("dashboard"))
 
 
 @app.route("/projects/<int:pid>/wrap", methods=["POST"])
@@ -2760,48 +2959,59 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
     # the Top Sheet totals drift from Estimated the moment Working is
     # initialized — e.g. Production Insurance / fee-exclusion lists /
     # fee-mode all changed the auto-injected line amounts. 2026-05-06.
+    # CRITICAL: never use `or` for fallbacks here — Python treats 0 / '' /
+    # False as falsy, so `source.production_insurance_pct or 0.015` would
+    # corrupt a legitimate user-set 0% to 1.5%. Use `if X is not None
+    # else default` so zero / empty values copy verbatim. The user's
+    # rule: a fresh Working clone must produce IDENTICAL numbers to its
+    # source Estimated. Any fallback that mutates 0 → non-zero violates
+    # that. 2026-05-07.
+    def _src(attr, default):
+        if not source:
+            return default
+        v = getattr(source, attr, None)
+        return v if v is not None else default
     b = Budget(
         project_id=pid,
         name=new_name,
         budget_mode=new_mode,
         # Production Company Fee — pct, mode, flat, dispersed flag,
         # exempt-sections JSON, fringe-exclusion flag.
-        company_fee_pct=source.company_fee_pct if source else 0.18,
-        company_fee_dispersed=source.company_fee_dispersed if source else False,
-        company_fee_mode=getattr(source, 'company_fee_mode', None) or 'pct' if source else 'pct',
-        company_fee_flat=getattr(source, 'company_fee_flat', None) or 0 if source else 0,
-        fee_excluded_sections=getattr(source, 'fee_excluded_sections', None) if source else None,
-        fee_exclude_fringes=getattr(source, 'fee_exclude_fringes', True) if source else True,
+        company_fee_pct=_src('company_fee_pct', 0.18),
+        company_fee_dispersed=_src('company_fee_dispersed', False),
+        company_fee_mode=_src('company_fee_mode', 'pct'),
+        company_fee_flat=_src('company_fee_flat', 0),
+        fee_excluded_sections=_src('fee_excluded_sections', None),
+        fee_exclude_fringes=_src('fee_exclude_fringes', True),
         # Project / scheduling settings.
-        start_date=source.start_date if source else None,
-        end_date=source.end_date if source else None,
-        target_budget=source.target_budget if source else None,
-        notes=source.notes if source else None,
+        start_date=_src('start_date', None),
+        end_date=_src('end_date', None),
+        target_budget=_src('target_budget', None),
+        notes=_src('notes', None),
         payroll_profile_id=_src_profile_id,
         payroll_week_start=_src_week_start,
-        timezone=getattr(source, 'timezone', None) or 'America/Los_Angeles' if source else 'America/Los_Angeles',
+        timezone=_src('timezone', 'America/Los_Angeles'),
         # Version metadata.
         version_status='current',
         parent_budget_id=parent_bid,
         updated_at=datetime.utcnow(),
         version_number=version_number,
-        # Auto-calc line items — % of labor wages.
-        workers_comp_pct=source.workers_comp_pct if source else 0.03,
-        payroll_fee_pct=source.payroll_fee_pct if source else 0.0175,
-        # Production Insurance auto-inject — mode + pct + flat. Critical:
-        # without this, the clone defaulted to 'pct' at 1.5% even if the
-        # source had it 'off' or 'flat', producing a different Insurance
-        # section total → different fee base → different grand total.
-        production_insurance_mode=getattr(source, 'production_insurance_mode', None) or 'pct' if source else 'pct',
-        production_insurance_pct=getattr(source, 'production_insurance_pct', None) or 0.015 if source else 0.015,
-        production_insurance_flat=getattr(source, 'production_insurance_flat', None) or 0 if source else 0,
+        # Auto-calc line items — % of labor wages. Use _src so a legit
+        # zero pct from source carries through (was being overwritten by
+        # the default before — that's the rock-solid bug).
+        workers_comp_pct=_src('workers_comp_pct', 0.03),
+        payroll_fee_pct=_src('payroll_fee_pct', 0.0175),
+        # Production Insurance auto-inject — mode + pct + flat.
+        production_insurance_mode=_src('production_insurance_mode', 'pct'),
+        production_insurance_pct=_src('production_insurance_pct', 0.015),
+        production_insurance_flat=_src('production_insurance_flat', 0),
         # Display / approval fields — copied so PDF exports and headers
         # come out identical between Estimated and Working.
-        client_name=getattr(source, 'client_name', None) if source else None,
-        prepared_by=getattr(source, 'prepared_by', None) if source else None,
-        prepared_by_title=getattr(source, 'prepared_by_title', None) if source else None,
-        prepared_by_email=getattr(source, 'prepared_by_email', None) if source else None,
-        prepared_by_phone=getattr(source, 'prepared_by_phone', None) if source else None,
+        client_name=_src('client_name', None),
+        prepared_by=_src('prepared_by', None),
+        prepared_by_title=_src('prepared_by_title', None),
+        prepared_by_email=_src('prepared_by_email', None),
+        prepared_by_phone=_src('prepared_by_phone', None),
     )
     db.session.add(b)
     db.session.flush()

@@ -83,10 +83,19 @@
           <button type="button" class="proj-menu-item proj-rename-btn"
                   data-pid="{{ p.id }}" data-name="{{ p.name | e }}">Rename Project</button>
         </form>
+        <form method="POST" action="{{ url_for('project_duplicate', pid=p.id) }}" class="proj-duplicate-form">
+          <input type="hidden" name="name" value="">
+          <button type="button" class="proj-menu-item proj-duplicate-btn"
+                  data-pid="{{ p.id }}" data-name="{{ p.name | e }}">Duplicate Project</button>
+        </form>
         {% else %}
         <button type="button" class="proj-menu-item proj-menu-disabled" disabled
                 title="Admin only">
           Rename Project <span class="proj-menu-adminonly">Admin Only</span>
+        </button>
+        <button type="button" class="proj-menu-item proj-menu-disabled" disabled
+                title="Admin only">
+          Duplicate Project <span class="proj-menu-adminonly">Admin Only</span>
         </button>
         {% endif %}
 
@@ -409,6 +418,24 @@ document.addEventListener('click', function(e) {
   if (!trimmed) { alert('Name cannot be empty.'); return; }
   if (trimmed === current) return;         // no change
   const form = btn.closest('form.proj-rename-form');
+  if (!form) return;
+  form.querySelector('input[name="name"]').value = trimmed;
+  form.submit();
+});
+
+// Duplicate Project — prompt for new name, inject into form, submit
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.proj-duplicate-btn');
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const current = btn.dataset.name || '';
+  const suggestion = current + ' (copy)';
+  const next = prompt('Duplicate project as:', suggestion);
+  if (next === null) return;
+  const trimmed = next.trim();
+  if (!trimmed) { alert('Name cannot be empty.'); return; }
+  const form = btn.closest('form.proj-duplicate-form');
   if (!form) return;
   form.querySelector('input[name="name"]').value = trimmed;
   form.submit();
