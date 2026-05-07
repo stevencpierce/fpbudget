@@ -1226,12 +1226,38 @@
           {% endif %}
           <td class="col-act">
             {% if ln.is_labor %}
-            <span class="assigned-crew-name {{ '' if ln.assigned_crew else 'no-assignment' }}"
-                  data-id="{{ ln.id }}"
-                  onclick="openCrewAssign({{ ln.id }})"
-                  title="{{ ln.assigned_crew.name if ln.assigned_crew else 'Click to assign person' }}">
-              {{ ln.assigned_crew.name if ln.assigned_crew else '+ Assign' }}
-            </span>
+              {# Crew assignment now lives only on Working budget lines.
+                 In Working view → editable name (existing behavior).
+                 In Estimated → look up by (account_code, sort_order)
+                 against sister Working; show as a small amber dot with
+                 the crew member name on hover. Read-only.
+                 In Actual → look up by source_line_id (Actual line's
+                 backlink to its Working twin); same read-only dot.
+                 Per user 2026-05-08. #}
+              {% if is_working_view and not is_actual_view %}
+                <span class="assigned-crew-name {{ '' if ln.assigned_crew else 'no-assignment' }}"
+                      data-id="{{ ln.id }}"
+                      onclick="openCrewAssign({{ ln.id }})"
+                      title="{{ ln.assigned_crew.name if ln.assigned_crew else 'Click to assign person' }}">
+                  {{ ln.assigned_crew.name if ln.assigned_crew else '+ Assign' }}
+                </span>
+              {% else %}
+                {% if is_actual_view %}
+                  {% set _w_crew = working_crew_by_wlid.get(ln.source_line_id) if ln.source_line_id else None %}
+                {% else %}
+                  {% set _w_crew = working_crew_by_key.get((ln.account_code, ln.sort_order)) %}
+                {% endif %}
+                {% if _w_crew %}
+                <span class="line-crew-dot"
+                      title="Assigned to {{ _w_crew[1] or 'crew member' }} (set on Working budget)"
+                      style="display:inline-block;width:8px;height:8px;border-radius:50%;
+                             background:#fbbf24;margin-right:4px;vertical-align:middle;
+                             box-shadow:0 0 0 2px rgba(251,191,36,.18);cursor:help"></span>
+                <span class="muted" style="font-size:.72rem;font-style:italic">{{ _w_crew[1] or 'assigned' }}</span>
+                {% else %}
+                <span class="muted" style="font-size:.7rem">—</span>
+                {% endif %}
+              {% endif %}
             <button class="btn btn-xs btn-outline calc-detail-btn"
                     data-pid="{{ project.id }}" data-bid="{{ budget.id }}" data-lid="{{ ln.id }}"
                     title="View OT / payroll calculation breakdown">OT Detail</button>
@@ -1250,17 +1276,45 @@
                PO number + vendor instead. Hidden on labor rows since
                those go through CrewMember assignment. #}
             {% if not ln.is_labor %}
-              {% set _po = pos_by_id.get(ln.po_id) if ln.po_id else None %}
-              <span class="line-po-badge {{ '' if _po else 'no-assignment' }}"
-                    data-id="{{ ln.id }}"
-                    onclick="openLinePoPicker({{ ln.id }})"
-                    title="{% if _po %}{{ _po.po_number }} — {{ _po.vendor_name }}{% else %}Click to assign a Purchase Order{% endif %}"
-                    style="cursor:pointer;font-size:.72rem;padding:2px 8px;border-radius:10px;
-                           {% if _po %}background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.25);
-                           {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}
-                           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;display:inline-block;vertical-align:middle">
-                {% if _po %}📋 {{ _po.po_number }}{% else %}+ PO{% endif %}
-              </span>
+              {# PO assignment now lives only on the Working budget line.
+                 In Working view → editable badge (current behavior).
+                 In Estimated → look up by (account_code, sort_order)
+                 against sister Working budget; show as a small dot
+                 indicator with the PO# on hover. Read-only.
+                 In Actual → look up by source_line_id (Actual line's
+                 backlink to the Working line it cloned from); same
+                 read-only dot. Per user 2026-05-08 — "PO assignments
+                 should apply globally, not per budget version". #}
+              {% if is_working_view and not is_actual_view %}
+                {# Working view: full editable badge (existing behavior) #}
+                {% set _po = pos_by_id.get(ln.po_id) if ln.po_id else None %}
+                <span class="line-po-badge {{ '' if _po else 'no-assignment' }}"
+                      data-id="{{ ln.id }}"
+                      onclick="openLinePoPicker({{ ln.id }})"
+                      title="{% if _po %}{{ _po.po_number }} — {{ _po.vendor_name }}{% else %}Click to assign a Purchase Order{% endif %}"
+                      style="cursor:pointer;font-size:.72rem;padding:2px 8px;border-radius:10px;
+                             {% if _po %}background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.25);
+                             {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}
+                             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;display:inline-block;vertical-align:middle">
+                  {% if _po %}📋 {{ _po.po_number }}{% else %}+ PO{% endif %}
+                </span>
+              {% else %}
+                {# Estimated / Actual view: read-only dot. Look up
+                   sister Working line's PO. #}
+                {% if is_actual_view %}
+                  {% set _w_po_id = working_po_by_wlid.get(ln.source_line_id) if ln.source_line_id else None %}
+                {% else %}
+                  {% set _w_po_id = working_po_by_key.get((ln.account_code, ln.sort_order)) %}
+                {% endif %}
+                {% set _po = pos_by_id.get(_w_po_id) if _w_po_id else None %}
+                {% if _po %}
+                <span class="line-po-dot"
+                      title="PO {{ _po.po_number }} — {{ _po.vendor_name }} (assigned on Working budget)"
+                      style="display:inline-block;width:8px;height:8px;border-radius:50%;
+                             background:#a78bfa;margin-left:6px;vertical-align:middle;
+                             box-shadow:0 0 0 2px rgba(167,139,250,.18);cursor:help"></span>
+                {% endif %}
+              {% endif %}
             {% endif %}
             {# Schedule Detail button for ANY non-labor line whose qty was
                auto-derived from the schedule (per diem, hotel, flight,
