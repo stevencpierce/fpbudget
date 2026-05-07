@@ -3170,9 +3170,30 @@ def _delete_budget_cascade(bid):
             {"parent_line_id": None}, synchronize_session=False)
         Location.query.filter(Location.budget_line_id.in_(line_ids)).update(
             {"budget_line_id": None}, synchronize_session=False)
+        # TravelDetail FKs ScheduleDay — must drop them BEFORE ScheduleDay
+        # rows are deleted, otherwise the FK violates and the whole
+        # cascade aborts. Found via 500 on /budget/<bid>/delete: "update
+        # or delete on table schedule_day violates foreign key constraint
+        # travel_detail_schedule_day_id_fkey on table travel_detail".
+        from models import TravelDetail as _TD
+        _sd_ids = [r[0] for r in db.session.query(ScheduleDay.id)
+                   .filter(ScheduleDay.budget_line_id.in_(line_ids)).all()]
+        if _sd_ids:
+            _TD.query.filter(_TD.schedule_day_id.in_(_sd_ids))\
+                .delete(synchronize_session=False)
         # Delete children of budget_lines
         ScheduleDay.query.filter(ScheduleDay.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
         CrewAssignment.query.filter(CrewAssignment.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
+
+    # Drop any remaining TravelDetail rows attached to budget-level
+    # ScheduleDays (rows with no budget_line_id) before nuking the
+    # ScheduleDays themselves.
+    from models import TravelDetail as _TD2
+    _budget_sd_ids = [r[0] for r in db.session.query(ScheduleDay.id)
+                      .filter_by(budget_id=bid).all()]
+    if _budget_sd_ids:
+        _TD2.query.filter(_TD2.schedule_day_id.in_(_budget_sd_ids))\
+            .delete(synchronize_session=False)
 
     # Delete budget-level tables in safe order
     ScheduleDay.query.filter_by(budget_id=bid).delete(synchronize_session=False)
