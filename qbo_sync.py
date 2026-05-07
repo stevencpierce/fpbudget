@@ -214,13 +214,29 @@ def _extract_txn_fields(txn, entity, acct_ref, account_meta):
 def fetch_transactions(conn, db, account_ids, start_date, end_date,
                        skip_keys=None, account_meta=None):
     """Fetch Purchases + Deposits by TxnDate range. skip_keys is a set
-    of (qbo_txn_id, qbo_txn_type) already in our DB."""
+    of (qbo_txn_id, qbo_txn_type) already in our DB.
+
+    QBO entity coverage:
+      Purchase — credit card / cash purchases (most common)
+      Deposit  — incoming deposits
+      Bill     — vendor invoices (recorded but paid later)
+      BillPayment — payments made against bills, recorded against the
+                    bank/CC. Filters on AccountRef.
+    """
     token     = get_valid_token(conn, db)
     skip_keys = skip_keys or set()
     out       = []
 
+    # Diagnostic dump so we can see exactly where data is lost when the
+    # sync returns 0 rows. Logged once per fetch.
+    log.info(
+        f"[qbo] fetch_transactions: env={(os.getenv('QBO_ENVIRONMENT') or 'sandbox').lower()} "
+        f"realm={conn.realm_id} accounts={account_ids} "
+        f"window={start_date}..{end_date}"
+    )
+
     for acct_id in account_ids:
-        for entity in ("Purchase", "Deposit"):
+        for entity in ("Purchase", "Deposit", "Bill", "BillPayment"):
             query = (
                 f"SELECT * FROM {entity} WHERE "
                 f"TxnDate >= '{start_date}' AND TxnDate <= '{end_date}' "
@@ -236,16 +252,26 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
                 log.warning(f"[qbo] {entity} query failed: {resp.status_code} {resp.text[:200]}")
                 continue
             rows = resp.json().get("QueryResponse", {}).get(entity, [])
+            log.info(f"[qbo] {entity} acct={acct_id}: QBO returned {len(rows)} rows pre-filter")
             if len(rows) >= 1000:
                 log.warning(
                     f"[qbo] {entity} query hit MAXRESULTS 1000 — narrow the date range."
                 )
+            kept = 0
+            seen_refs = set()  # diagnostic — what AccountRefs did we actually see?
             for txn in rows:
-                acct_ref = (
-                    (txn.get("DepositToAccountRef") or {}).get("value")
-                    if entity == "Deposit"
-                    else (txn.get("AccountRef") or {}).get("value")
-                )
+                # Different entities use different fields for the bank/CC link.
+                if entity == "Deposit":
+                    acct_ref = (txn.get("DepositToAccountRef") or {}).get("value")
+                elif entity == "BillPayment":
+                    acct_ref = (txn.get("CheckPayment") or {}).get("BankAccountRef", {}).get("value") \
+                            or (txn.get("CreditCardPayment") or {}).get("CCAccountRef", {}).get("value") \
+                            or (txn.get("APAccountRef") or {}).get("value")
+                else:
+                    # Purchase or Bill — top-level AccountRef
+                    acct_ref = (txn.get("AccountRef") or {}).get("value")
+                if acct_ref:
+                    seen_refs.add(acct_ref)
                 if acct_ref != acct_id:
                     continue
                 fields = _extract_txn_fields(txn, entity, acct_ref, account_meta)
@@ -254,6 +280,14 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
                 if (fields["qbo_txn_id"], fields["qbo_txn_type"]) in skip_keys:
                     continue
                 out.append(fields)
+                kept += 1
+            if rows and kept == 0:
+                log.warning(
+                    f"[qbo] {entity} acct={acct_id}: 0 of {len(rows)} matched. "
+                    f"Account refs seen on returned rows: {sorted(seen_refs)}"
+                )
+            elif kept:
+                log.info(f"[qbo] {entity} acct={acct_id}: kept {kept}/{len(rows)} after account filter")
     out.sort(key=lambda f: f.get("txn_date") or "")
     return out
 
