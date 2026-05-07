@@ -496,6 +496,18 @@
     <button class="btn btn-outline btn-sm" onclick="addLineModal()">+ Single Line</button>
     <button class="btn btn-primary btn-sm" onclick="openCascade()">⚡ Quick Entry</button>
     <span class="muted" style="font-size:.85rem">Changes save automatically.</span>
+    {# Variance basis selector — same three options as the Top Sheet.
+       Drives every per-line + per-section variance cell on this tab.
+       Default basis follows the active view: Working → W vs E,
+       Estimated → A vs E, Actual → A vs E. #}
+    <div style="display:flex;align-items:center;gap:.4rem;margin-left:1rem">
+      <span class="muted" style="font-size:.78rem">Variance basis:</span>
+      <div class="var-basis-group" style="display:flex;gap:.2rem">
+        <button type="button" class="var-btn budget-var-btn {% if budget.budget_mode in ('working','actual') and not is_actual_view %}active{% endif %}" data-basis="w_vs_e" title="Working vs Estimated — positive = working below estimate (favorable)">W vs E</button>
+        <button type="button" class="var-btn budget-var-btn" data-basis="a_vs_w" title="Actual vs Working — positive = came in under forecast (favorable)">A vs W</button>
+        <button type="button" class="var-btn budget-var-btn {% if not (budget.budget_mode in ('working','actual')) or is_actual_view %}active{% endif %}" data-basis="a_vs_e" title="Actual vs Estimated — positive = came in under budget (favorable)">A vs E</button>
+      </div>
+    </div>
     <div class="wb-search-wrap" style="margin-left:auto">
       <input type="search" id="wb-search" class="wb-search-input" placeholder="Search lines…"
              oninput="filterWorkingBudget(this.value)" autocomplete="off">
@@ -1076,15 +1088,15 @@
               {% endif %}
             {% endif %}
           </td>
-          {# Variance now compares Working → Actual when Actual exists,
-             else falls back to Estimated → Working in the working view. #}
-          {% if has_actual_budget %}
-            {% set _variance = (res.est_total * _sec_fee_m) - _actual %}
-          {% else %}
-            {% set _variance = (res.est_total - _frozen) * _sec_fee_m %}
-          {% endif %}
-          <td class="col-num col-variance line-variance">
-            <span class="{% if _variance > 0.005 %}var-pos{% elif _variance < -0.005 %}var-neg{% else %}var-zero{% endif %}">{{ _variance | currency }}</span>
+          {# Variance — driven by the basis selector at the top of the
+             tab. Carries data-e/w/a so JS can compute any basis on the
+             fly. In Working view the row's E is the frozen snapshot,
+             W is res.est_total (current working calc), A is per-line
+             actual. #}
+          <td class="col-num col-variance line-variance line-var-cell"
+              data-e="{{ _frozen * _sec_fee_m }}"
+              data-w="{{ res.est_total * _sec_fee_m }}"
+              data-a="{{ _actual }}">
           </td>
           {% else %}
           <td class="col-num line-total"><strong data-base="{{ res.est_total }}">{{ (res.est_total * _sec_fee_m) | currency }}</strong></td>
@@ -1118,7 +1130,16 @@
               {% endif %}
             {% endif %}
           </td>
-          <td class="col-num col-variance"></td>
+          {# Estimated view variance — same data-e/w/a pattern as working
+             view so the basis selector drives this cell too. E is the
+             current line (the budget being viewed), W is the sister
+             Working budget's value if it exists, A is per-line actual. #}
+          {% set _wlt_for_var = working_line_totals.get((ln.account_code, ln.sort_order), 0) or 0 %}
+          <td class="col-num col-variance line-variance line-var-cell"
+              data-e="{{ res.est_total * _sec_fee_m }}"
+              data-w="{{ (_wlt_for_var | float) * _sec_fee_m }}"
+              data-a="{{ _actual_e }}">
+          </td>
           {% endif %}
           <td class="col-act">
             {% if ln.is_labor %}
@@ -1447,14 +1468,13 @@
           <td class="col-num col-actual sec-actual-total" style="font-size:.8rem">
             {% if _sec_actual > 0 %}<strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>{% endif %}
           </td>
-          {# Variance: if Actual exists, Working − Actual; else Working − Estimated. #}
-          {% if has_actual_budget %}
-            {% set _sec_var = (ns.sec_total * _sec_fee_m) - _sec_actual %}
-          {% else %}
-            {% set _sec_var = (ns.sec_total - sec_working.total) * _sec_fee_m %}
-          {% endif %}
-          <td class="col-num col-variance sec-variance-total" style="font-size:.8rem">
-            <span class="{% if _sec_var > 0.005 %}var-pos{% elif _sec_var < -0.005 %}var-neg{% else %}var-zero{% endif %}">{{ _sec_var | currency }}</span>
+          {# Section subtotal variance — basis-driven (same as line cells).
+             Working view: E = sec_working snapshot, W = ns.sec_total,
+             A = _sec_actual. #}
+          <td class="col-num col-variance sec-variance-total line-var-cell" style="font-size:.8rem"
+              data-e="{{ sec_working.total * _sec_fee_m }}"
+              data-w="{{ ns.sec_total * _sec_fee_m }}"
+              data-a="{{ _sec_actual }}">
           </td>
           {% else %}
           <td class="col-num sec-est-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
@@ -1462,7 +1482,14 @@
           <td class="col-num col-actual" style="font-size:.8rem">
             {% if _sec_actual > 0 %}<strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>{% endif %}
           </td>
-          <td class="col-num col-variance"></td>
+          {# Estimated-view section subtotal variance — E = current
+             section total, W = sister Working section total, A = sum
+             of actuals across all lines in this section. #}
+          <td class="col-num col-variance sec-variance-total line-var-cell" style="font-size:.8rem"
+              data-e="{{ ns.sec_total * _sec_fee_m }}"
+              data-w="{{ (sec_working.total | float) * _sec_fee_m }}"
+              data-a="{{ _sec_actual }}">
+          </td>
           {% endif %}
           <td></td>
         </tr>
@@ -1477,13 +1504,10 @@
           <td class="col-num col-actual sec-grand-actual" style="font-weight:700;font-size:.92rem">
             {% if _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
           </td>
-          <td class="col-num col-variance sec-grand-variance" style="font-weight:700;font-size:.88rem">
-            {% if has_actual_budget %}
-              {% set _gv = (ns.sec_total * _sec_fee_m) - _sec_actual %}
-            {% else %}
-              {% set _gv = (ns.sec_total - sec_working.total) * _sec_fee_m %}
-            {% endif %}
-            <span class="{% if _gv > 0.005 %}var-pos{% elif _gv < -0.005 %}var-neg{% else %}var-zero{% endif %}">{{ _gv | currency }}</span>
+          <td class="col-num col-variance sec-grand-variance line-var-cell" style="font-weight:700;font-size:.88rem"
+              data-e="{{ sec_working.total * _sec_fee_m }}"
+              data-w="{{ ns.sec_total * _sec_fee_m }}"
+              data-a="{{ _sec_actual }}">
           </td>
           {% else %}
           <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
@@ -1491,7 +1515,11 @@
           <td class="col-num col-actual" style="font-weight:700;font-size:.92rem">
             {% if _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
           </td>
-          <td class="col-num col-variance"></td>
+          <td class="col-num col-variance sec-grand-variance line-var-cell" style="font-weight:700;font-size:.88rem"
+              data-e="{{ ns.sec_total * _sec_fee_m }}"
+              data-w="{{ (sec_working.total | float) * _sec_fee_m }}"
+              data-a="{{ _sec_actual }}">
+          </td>
           {% endif %}
           <td></td>
         </tr>
@@ -9823,30 +9851,63 @@ async function saveSettings() {
 
 
 // ── Variance basis toggle ─────────────────────────────────────────────────
+// Two cell flavors share this logic:
+//   .var-cell        — Top Sheet (renders <span class="over|under">…</span>)
+//   .line-var-cell   — Budget tab line/section/grand totals (renders
+//                      <span class="var-pos|var-neg|var-zero">…</span>
+//                      to match the existing budget styling)
+// Both expose data-e / data-w / data-a so any basis can be computed.
 (function() {
-  const fmt = v => '$' + parseFloat(v||0).toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2});
+  const fmt = v => {
+    const n = parseFloat(v||0);
+    const sign = n < 0 ? '-' : '';
+    return sign + '$' + Math.abs(n).toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2});
+  };
+  function compute(basis, e, w, a) {
+    if (basis === 'w_vs_e') return e - w;       // + = working below estimate
+    if (basis === 'a_vs_w') return w - a;       // + = actual below working
+    return e - a;                                // + = actual below estimate (a_vs_e)
+  }
   function applyVariance(basis) {
+    // Top Sheet cells
     document.querySelectorAll('.var-cell').forEach(cell => {
       const e = parseFloat(cell.dataset.e || 0);
       const w = parseFloat(cell.dataset.w || 0);
       const a = parseFloat(cell.dataset.a || 0);
-      let v;
-      if (basis === 'w_vs_e') { v = e - w; }       // positive = working below estimate = favorable
-      else if (basis === 'a_vs_w') { v = w - a; }  // positive = actual below working = favorable
-      else { v = e - a; }                           // positive = actual below estimate = favorable
+      const v = compute(basis, e, w, a);
       const cls = v < 0 ? 'over' : (v > 0 ? 'under' : '');
+      cell.innerHTML = `<span class="${cls}">${fmt(v)}</span>`;
+    });
+    // Budget tab line + section + grand cells
+    document.querySelectorAll('.line-var-cell').forEach(cell => {
+      const e = parseFloat(cell.dataset.e || 0);
+      const w = parseFloat(cell.dataset.w || 0);
+      const a = parseFloat(cell.dataset.a || 0);
+      const v = compute(basis, e, w, a);
+      let cls;
+      if (Math.abs(v) < 0.005) cls = 'var-zero';
+      else if (v > 0) cls = 'var-pos';
+      else cls = 'var-neg';
       cell.innerHTML = `<span class="${cls}">${fmt(v)}</span>`;
     });
   }
 
+  // Sync state between Top Sheet selector and Budget-tab selector so
+  // switching basis on one updates the other (single source of truth
+  // for the user's intent).
+  function setActiveBasis(basis) {
+    document.querySelectorAll('.var-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.basis === basis);
+    });
+    applyVariance(basis);
+  }
+
   const defaultBasis = _workingInitialized ? 'w_vs_e' : 'a_vs_e';
-  applyVariance(defaultBasis);
+  setActiveBasis(defaultBasis);
 
   document.querySelectorAll('.var-btn').forEach(btn => {
     btn.addEventListener('click', function() {
-      document.querySelectorAll('.var-btn').forEach(b => b.classList.remove('active'));
-      this.classList.add('active');
-      applyVariance(this.dataset.basis);
+      setActiveBasis(this.dataset.basis);
     });
   });
 })();
