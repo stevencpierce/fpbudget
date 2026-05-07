@@ -4381,6 +4381,20 @@
       const status = document.getElementById('actuals-qbo-accounts-status');
       const ids = Array.from(document.querySelectorAll('.actuals-qbo-acct:checked'))
                        .map(cb => cb.value);
+      // Was the sync panel already gated by "no accounts selected"
+      // (server-rendered from project.qbo_account_ids)? If so, the
+      // panel HTML is stale after this save and the user has to
+      // refresh before the sync button appears. Detect that and
+      // reload the page automatically once the save completes.
+      // Heuristic: count was 0 before AND we're saving > 0 now, OR
+      // count > 0 before AND we're saving 0 now (toggling visibility
+      // of the gate).
+      const prevCount = (window.__qboAcctsPrevCount != null)
+        ? window.__qboAcctsPrevCount
+        : Array.from(document.querySelectorAll('.actuals-qbo-acct'))
+                .filter(cb => cb.dataset.initiallyEnabled === '1').length;
+      const willTriggerReload = (prevCount === 0 && ids.length > 0)
+                              || (prevCount  >  0 && ids.length === 0);
       if (status) { status.textContent = 'Saving…'; status.style.color = 'var(--text-muted)'; }
       try {
         const r = await fetch(`/projects/${pid}/actuals/qbo-accounts`, {
@@ -4395,6 +4409,13 @@
         if (status) {
           status.textContent = `✓ Saved ${d.count} account${d.count !== 1 ? 's' : ''}`;
           status.style.color = 'var(--green)';
+        }
+        // Track count for the next save in this session.
+        window.__qboAcctsPrevCount = ids.length;
+        // If the sync panel's gate just flipped, reload so the panel
+        // re-renders with the right controls (no manual refresh).
+        if (willTriggerReload) {
+          setTimeout(() => window.location.reload(), 350);
         }
       } catch (e) {
         if (status) { status.textContent = '✕ ' + e.message; status.style.color = '#e08080'; }
