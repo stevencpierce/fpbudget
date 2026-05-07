@@ -303,7 +303,7 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
     # added to capture CC refunds. JournalEntry omitted — multi-line
     # splits need a different parser.
     account_id_set = set(str(a) for a in account_ids)
-    for entity in ("Purchase", "Deposit", "BillPayment", "CreditCardCredit"):
+    for entity in ("Purchase", "Deposit", "BillPayment"):
         query = (
             f"SELECT * FROM {entity} WHERE "
             f"TxnDate >= '{start_date}' AND TxnDate <= '{end_date}' "
@@ -321,6 +321,7 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
         if len(rows) >= 1000:
             log.warning(f"[qbo] {entity} query hit MAXRESULTS 1000 — narrow the date range.")
         kept = 0
+        skipped_dup = 0
         seen_refs = set()
         for txn in rows:
             if entity == "Deposit":
@@ -340,17 +341,30 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
             if not fields:
                 continue
             if (fields["qbo_txn_id"], fields["qbo_txn_type"]) in skip_keys:
+                skipped_dup += 1
                 continue
             out.append(fields)
             kept += 1
-        if rows and kept == 0:
+        # Distinguish three "0 imported" cases:
+        # (a) kept=0 AND skipped_dup=0 → rows existed but none matched a
+        #     user-selected account (warn + surface unmatched refs).
+        # (b) kept=0 AND skipped_dup>0 → rows matched but were already
+        #     imported on a previous sync. Not a problem; just info.
+        # (c) kept>0 → normal success.
+        if rows and kept == 0 and skipped_dup == 0:
             log.warning(
                 f"[qbo] {entity}: 0 of {len(rows)} matched user-selected accounts. "
                 f"Account refs seen on returned rows: {sorted(seen_refs)}"
             )
-            seen_unmatched_refs.update(seen_refs)
+            # Only refs we actually didn't have selected → surface to UI.
+            seen_unmatched_refs.update(seen_refs - account_id_set)
+        elif rows and kept == 0 and skipped_dup > 0:
+            log.info(
+                f"[qbo] {entity}: 0 new (all {skipped_dup} already imported). "
+                f"refs={sorted(seen_refs)}"
+            )
         elif kept:
-            log.info(f"[qbo] {entity}: kept {kept}/{len(rows)} after account filter")
+            log.info(f"[qbo] {entity}: kept {kept}/{len(rows)} (dup-skipped {skipped_dup})")
     out.sort(key=lambda f: f.get("txn_date") or "")
     # Stash unmatched refs on the return value so sync_project can
     # surface them. Subtract account_ids that DID match so the warning
