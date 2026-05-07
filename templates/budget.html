@@ -394,8 +394,19 @@
          POST-fee when dispersed, so we can't use it here directly. #}
       {% set sub_w = working_subtotal_pre_fee or 0 %}
       {% set sum_w_post = working_by_section.values() | sum %}
+      {# Active-view label: which budget mode the user is currently
+         editing. Shown next to the Subtotal / Grand Total labels so
+         when the totals shift between Estimated / Working / Actual
+         columns, it's clear which one is the "live" focus. #}
+      {% if is_actual_view %}
+        {% set _active_mode_label = 'Actual' %}
+      {% elif budget.budget_mode in ('working', 'actual') %}
+        {% set _active_mode_label = 'Working' %}
+      {% else %}
+        {% set _active_mode_label = 'Estimated' %}
+      {% endif %}
       <tr class="subtotal-row" data-ts-row="subtotal">
-        <td colspan="2"><strong>Subtotal (Before Prod. Fee)</strong></td>
+        <td colspan="2"><strong>Subtotal ({{ _active_mode_label }}, Before Prod. Fee)</strong></td>
         <td class="col-num"><strong>{{ top_sheet.subtotal_estimated | currency }}</strong></td>
         <td class="col-num {% if not working_exists %}muted{% endif %}"><strong>{{ sub_w | currency }}</strong></td>
         <td class="col-num"><strong>{{ top_sheet.subtotal_actual | currency }}</strong></td>
@@ -432,7 +443,7 @@
         {# When dispersed, sum_w_post already includes the fee per section.
            When not dispersed, add fee_w on top of pre-fee sub_w. #}
         {% set grand_w = sum_w_post if top_sheet.company_fee_dispersed else (sub_w + fee_w) %}
-        <td colspan="2"><strong>GRAND TOTAL</strong></td>
+        <td colspan="2"><strong>GRAND TOTAL ({{ _active_mode_label }})</strong></td>
         <td class="col-num"><strong>{{ top_sheet.grand_total_estimated | currency }}</strong></td>
         <td class="col-num {% if not working_exists %}muted{% endif %}"><strong>{{ grand_w | currency }}</strong></td>
         <td class="col-num"><strong>{{ top_sheet.grand_total_actual | currency }}</strong></td>
