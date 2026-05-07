@@ -283,67 +283,79 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
         f"window={start_date}..{end_date}"
     )
 
-    for acct_id in account_ids:
-        for entity in ("Purchase", "Deposit", "BillPayment"):
-            query = (
-                f"SELECT * FROM {entity} WHERE "
-                f"TxnDate >= '{start_date}' AND TxnDate <= '{end_date}' "
-                f"MAXRESULTS 1000"
-            )
-            resp = requests.get(
-                f"{_qbo_base_url()}/{conn.realm_id}/query",
-                headers=_headers(token),
-                params={"query": query},
-                timeout=60,
-            )
-            if resp.status_code != 200:
-                log.warning(f"[qbo] {entity} query failed: {resp.status_code} {resp.text[:200]}")
+    # Diagnostic: total Purchase count in window with NO filters, so we
+    # can tell "QBO has 1 Purchase" from "our query missed N Purchases".
+    try:
+        diag_q = (f"SELECT COUNT(*) FROM Purchase WHERE "
+                  f"TxnDate >= '{start_date}' AND TxnDate <= '{end_date}'")
+        diag = requests.get(
+            f"{_qbo_base_url()}/{conn.realm_id}/query",
+            headers=_headers(token), params={"query": diag_q}, timeout=30,
+        )
+        if diag.status_code == 200:
+            n = diag.json().get("QueryResponse", {}).get("totalCount")
+            log.info(f"[qbo] diagnostic: QBO has totalCount={n} Purchase rows in {start_date}..{end_date}")
+    except Exception as _e:
+        log.warning(f"[qbo] diagnostic count failed: {_e}")
+
+    # One query per entity (was N×3 — query has no account filter so
+    # there's no reason to repeat it per account). CreditCardCredit
+    # added to capture CC refunds. JournalEntry omitted — multi-line
+    # splits need a different parser.
+    account_id_set = set(str(a) for a in account_ids)
+    for entity in ("Purchase", "Deposit", "BillPayment", "CreditCardCredit"):
+        query = (
+            f"SELECT * FROM {entity} WHERE "
+            f"TxnDate >= '{start_date}' AND TxnDate <= '{end_date}' "
+            f"MAXRESULTS 1000"
+        )
+        resp = requests.get(
+            f"{_qbo_base_url()}/{conn.realm_id}/query",
+            headers=_headers(token), params={"query": query}, timeout=60,
+        )
+        if resp.status_code != 200:
+            log.warning(f"[qbo] {entity} query failed: {resp.status_code} {resp.text[:200]}")
+            continue
+        rows = resp.json().get("QueryResponse", {}).get(entity, [])
+        log.info(f"[qbo] {entity}: QBO returned {len(rows)} rows pre-filter")
+        if len(rows) >= 1000:
+            log.warning(f"[qbo] {entity} query hit MAXRESULTS 1000 — narrow the date range.")
+        kept = 0
+        seen_refs = set()
+        for txn in rows:
+            if entity == "Deposit":
+                acct_ref = (txn.get("DepositToAccountRef") or {}).get("value")
+            elif entity == "BillPayment":
+                acct_ref = (txn.get("CheckPayment") or {}).get("BankAccountRef", {}).get("value") \
+                        or (txn.get("CreditCardPayment") or {}).get("CCAccountRef", {}).get("value") \
+                        or (txn.get("APAccountRef") or {}).get("value")
+            else:
+                # Purchase or CreditCardCredit — top-level AccountRef
+                acct_ref = (txn.get("AccountRef") or {}).get("value")
+            if acct_ref:
+                seen_refs.add(acct_ref)
+            if acct_ref not in account_id_set:
                 continue
-            rows = resp.json().get("QueryResponse", {}).get(entity, [])
-            log.info(f"[qbo] {entity} acct={acct_id}: QBO returned {len(rows)} rows pre-filter")
-            if len(rows) >= 1000:
-                log.warning(
-                    f"[qbo] {entity} query hit MAXRESULTS 1000 — narrow the date range."
-                )
-            kept = 0
-            seen_refs = set()  # diagnostic — what AccountRefs did we actually see?
-            for txn in rows:
-                # Different entities use different fields for the bank/CC link.
-                if entity == "Deposit":
-                    acct_ref = (txn.get("DepositToAccountRef") or {}).get("value")
-                elif entity == "BillPayment":
-                    acct_ref = (txn.get("CheckPayment") or {}).get("BankAccountRef", {}).get("value") \
-                            or (txn.get("CreditCardPayment") or {}).get("CCAccountRef", {}).get("value") \
-                            or (txn.get("APAccountRef") or {}).get("value")
-                else:
-                    # Purchase or Bill — top-level AccountRef
-                    acct_ref = (txn.get("AccountRef") or {}).get("value")
-                if acct_ref:
-                    seen_refs.add(acct_ref)
-                if acct_ref != acct_id:
-                    continue
-                fields = _extract_txn_fields(txn, entity, acct_ref, account_meta)
-                if not fields:
-                    continue
-                if (fields["qbo_txn_id"], fields["qbo_txn_type"]) in skip_keys:
-                    continue
-                out.append(fields)
-                kept += 1
-            if rows and kept == 0:
-                log.warning(
-                    f"[qbo] {entity} acct={acct_id}: 0 of {len(rows)} matched. "
-                    f"Account refs seen on returned rows: {sorted(seen_refs)}"
-                )
-                # Track refs we saw but couldn't match to user's selection
-                # so the UI can prompt the user to add them.
-                seen_unmatched_refs.update(seen_refs)
-            elif kept:
-                log.info(f"[qbo] {entity} acct={acct_id}: kept {kept}/{len(rows)} after account filter")
+            fields = _extract_txn_fields(txn, entity, acct_ref, account_meta)
+            if not fields:
+                continue
+            if (fields["qbo_txn_id"], fields["qbo_txn_type"]) in skip_keys:
+                continue
+            out.append(fields)
+            kept += 1
+        if rows and kept == 0:
+            log.warning(
+                f"[qbo] {entity}: 0 of {len(rows)} matched user-selected accounts. "
+                f"Account refs seen on returned rows: {sorted(seen_refs)}"
+            )
+            seen_unmatched_refs.update(seen_refs)
+        elif kept:
+            log.info(f"[qbo] {entity}: kept {kept}/{len(rows)} after account filter")
     out.sort(key=lambda f: f.get("txn_date") or "")
     # Stash unmatched refs on the return value so sync_project can
     # surface them. Subtract account_ids that DID match so the warning
     # is purely about accounts the user hasn't enabled.
-    out_refs = seen_unmatched_refs - set(account_ids)
+    out_refs = seen_unmatched_refs - account_id_set
     try:
         # Lists allow attribute assignment in Python so this works.
         out.unmatched_account_refs = sorted(out_refs)  # type: ignore[attr-defined]
