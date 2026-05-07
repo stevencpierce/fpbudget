@@ -799,7 +799,18 @@
           {% set ns.prev_sub_group = _sg %}
           {% endif %}
         {% endif %}
-        <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }} {{ 'sync-line' if ln.line_tag else '' }} {{ 'sync-omitted' if ln.sync_omit else '' }} {{ 'schedule-driven' if ln.use_schedule else '' }}" data-id="{{ ln.id }}"
+        {# Actual view: precompute the line's transaction sum once. Used
+           by the subtotal cell (replaces qty×days×rate) and by the
+           expandable detail row. Lets the user track live spend per
+           line instead of editing planned numbers. 2026-05-07. #}
+        {% set _act_txn_sum_ns = namespace(t=0) %}
+        {% if is_actual_view %}
+          {% for _t in txns_by_line.get(ln.id, []) %}
+            {% if _t.amount %}{% set _act_txn_sum_ns.t = _act_txn_sum_ns.t + (_t.amount | float) %}{% endif %}
+          {% endfor %}
+        {% endif %}
+        {% set _act_txn_sum = _act_txn_sum_ns.t %}
+        <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }} {{ 'sync-line' if ln.line_tag else '' }} {{ 'sync-omitted' if ln.sync_omit else '' }} {{ 'schedule-driven' if ln.use_schedule else '' }} {% if is_actual_view %}actual-view-row{% endif %}" data-id="{{ ln.id }}"
             data-code="{{ ln.account_code }}" data-code-name="{{ ln.account_name }}"
             data-agent="{{ res.agent_amount | default(0) | float | round(2) }}"
             data-ot="{{ res.ot_amount | default(0) | float | round(2) }}"
@@ -807,7 +818,8 @@
             data-subtotal="{{ res.subtotal | default(0) | float | round(2) }}"
             data-rate-type="{{ ln.rate_type or 'day_10' }}"
             data-qty="{{ ln.quantity | float }}" data-days="{{ ln.days | float }}"
-            data-tag="{{ ln.line_tag or '' }}" data-sync-omit="{{ '1' if ln.sync_omit else '0' }}">
+            data-tag="{{ ln.line_tag or '' }}" data-sync-omit="{{ '1' if ln.sync_omit else '0' }}"
+            {% if is_actual_view %}data-actual-spent="{{ _act_txn_sum | round(2) }}"{% endif %}>
           <td class="col-desc">
             {# Actual view: chevron + count badge when this line has linked
                transactions, signaling it's expandable. Click anywhere on
@@ -859,7 +871,9 @@
             {% else %}<span class="muted">—</span>{% endif %}
           </td>
           <td class="col-qty">
-            {% if ln.is_labor %}
+            {% if is_actual_view %}
+              <span class="muted" style="font-size:.7rem">—</span>
+            {% elif ln.is_labor %}
               {# Labor lines: qty>1 badge is rendered inline with the
                  description (above) since the .col-qty column is
                  width:0 in labor sections. Keep this cell empty. #}
@@ -870,7 +884,9 @@
             {% endif %}
           </td>
           <td class="col-days col-days-cell">
-            {% if ln.use_schedule %}
+            {% if is_actual_view %}
+            <span class="muted" style="font-size:.7rem">—</span>
+            {% elif ln.use_schedule %}
             <span class="sched-days" title="Driven by schedule ({{ res.day_count }} days) — edit on the Schedule tab">
               {{ res.day_count if res.day_count is defined else ln.days | float | round(2) }}
             </span>
@@ -935,7 +951,9 @@
             {% endif %}
           </td>
           <td class="col-num col-rate-cell">
-            {% if not ln.is_labor %}
+            {% if is_actual_view %}
+              <span class="muted" style="font-size:.7rem">—</span>
+            {% elif not ln.is_labor %}
               {% set _nl_rate = ln.rate | float %}
               {% set _nl_qty  = ln.quantity | float %}
               {% set _nl_days = ln.days | float %}
@@ -950,7 +968,9 @@
             <span class="fee-disp-badge" style="display:none">+{{ (budget.company_fee_pct | float * 100) | round(1) }}%</span>
           </td>
           <td class="col-rt">
-            {% if ln.is_labor %}
+            {% if is_actual_view %}
+            <span class="muted" style="font-size:.7rem">—</span>
+            {% elif ln.is_labor %}
             {# Labor: Type column = rate_type (10hr Day / Flat / Per Week
                / Hourly / Custom). Affects OT calc basis. #}
             <select class="inline-select" data-field="rate_type" data-id="{{ ln.id }}">
@@ -1010,7 +1030,9 @@
             {% endif %}
           </td>
           <td class="col-num">
-            {% if ln.is_labor %}
+            {% if is_actual_view %}
+            <span class="muted" style="font-size:.7rem">—</span>
+            {% elif ln.is_labor %}
             {% if ln.use_schedule and res.ot_amount is defined and res.ot_amount > 0 %}
             {# Schedule-driven OT — currency formatted, blue italic to
                match the schedule-driven row treatment elsewhere. #}
@@ -1030,7 +1052,9 @@
             {% endif %}
           </td>
           <td class="col-fr">
-            {% if ln.is_labor %}
+            {% if is_actual_view %}
+            <span class="muted" style="font-size:.7rem">—</span>
+            {% elif ln.is_labor %}
             <select class="inline-select" data-field="fringe_type" data-id="{{ ln.id }}">
               {% for fr in fringes %}
               <option value="{{ fr.fringe_type }}"
@@ -1040,7 +1064,17 @@
             {% endif %}
           </td>
           <td class="col-num line-subtotal">
-            {% if ln.is_labor %}{{ (res.subtotal * _sec_fee_m) | currency }}
+            {% if is_actual_view %}
+              {# Subtotal in Actual view = sum of linked transactions
+                 for this line. Replaces qty×days×rate, since Actual is
+                 about tracking real spend, not planned. Click chevron
+                 in description cell to expand the underlying txns. #}
+              {% if _act_txn_sum > 0 %}
+                <strong style="color:#22c55e">{{ _act_txn_sum | currency }}</strong>
+              {% else %}
+                <span class="muted" style="font-size:.85rem">$0.00</span>
+              {% endif %}
+            {% elif ln.is_labor %}{{ (res.subtotal * _sec_fee_m) | currency }}
             {% else %}
               {% set _nl_pre = (ln.quantity|float) * (ln.days|float) * (ln.rate|float) %}
               {% if _nl_pre > 0 %}{{ (_nl_pre * _sec_fee_m) | round(2) | currency }}{% else %}{{ (res.est_total * _sec_fee_m) | currency }}{% endif %}
