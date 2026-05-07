@@ -135,12 +135,24 @@ def get_valid_token(conn, db):
 # ── QBO data fetch ────────────────────────────────────────────────────
 
 def list_qbo_accounts(conn, db):
-    """List all active Bank + Credit Card accounts on the QBO realm.
+    """List active spend-source accounts on the QBO realm.
     Used by the project-settings UI to let the user pick which
-    accounts feed this project."""
+    accounts feed this project.
+
+    Account types included:
+      Bank                    — checking / savings
+      Credit Card             — standard CC accounts
+      Other Current Liability — line-of-credit cards, AmEx-style
+      Long Term Liability     — long-term cards / loans charged like CCs
+    Some QBO setups type their corporate credit cards as a Liability
+    instead of "Credit Card", which made them invisible in the picker
+    even though purchases were posted against them.
+    """
     token = get_valid_token(conn, db)
-    query = ("SELECT * FROM Account WHERE AccountType IN ('Bank', 'Credit Card') "
-             "AND Active = true MAXRESULTS 100")
+    query = ("SELECT * FROM Account WHERE AccountType IN ("
+             "'Bank', 'Credit Card', "
+             "'Other Current Liability', 'Long Term Liability'"
+             ") AND Active = true MAXRESULTS 200")
     resp  = requests.get(
         f"{_qbo_base_url()}/{conn.realm_id}/query",
         headers=_headers(token),
@@ -213,19 +225,31 @@ def _extract_txn_fields(txn, entity, acct_ref, account_meta):
 
 def fetch_transactions(conn, db, account_ids, start_date, end_date,
                        skip_keys=None, account_meta=None):
-    """Fetch Purchases + Deposits by TxnDate range. skip_keys is a set
-    of (qbo_txn_id, qbo_txn_type) already in our DB.
+    """Fetch Purchases + Deposits + BillPayments by TxnDate range.
+    skip_keys is a set of (qbo_txn_id, qbo_txn_type) already in our DB.
 
     QBO entity coverage:
-      Purchase — credit card / cash purchases (most common)
-      Deposit  — incoming deposits
-      Bill     — vendor invoices (recorded but paid later)
-      BillPayment — payments made against bills, recorded against the
-                    bank/CC. Filters on AccountRef.
+      Purchase    — credit card / cash purchases (most common)
+      Deposit     — incoming deposits
+      BillPayment — payments made against bills, recorded against
+                    the bank/CC. The line-item Bill is an AP entry
+                    not yet paid — including it here would double-
+                    count once BillPayment fires.
+
+    Returns:
+      list[dict] of transaction rows
+      .seen_refs (attribute on the list) = set of every AccountRef
+        seen on returned rows. Used by sync_project to surface
+        "found N txns on unselected accounts X, Y" warnings.
     """
     token     = get_valid_token(conn, db)
     skip_keys = skip_keys or set()
-    out       = []
+    # list subclass so we can stash diagnostic metadata on the return
+    # value (built-in list rejects attribute assignment).
+    class _TxnRows(list):
+        pass
+    out       = _TxnRows()
+    seen_unmatched_refs = set()  # account refs that had rows but weren't selected
 
     # Diagnostic dump so we can see exactly where data is lost when the
     # sync returns 0 rows. Logged once per fetch.
@@ -236,7 +260,7 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
     )
 
     for acct_id in account_ids:
-        for entity in ("Purchase", "Deposit", "Bill", "BillPayment"):
+        for entity in ("Purchase", "Deposit", "BillPayment"):
             query = (
                 f"SELECT * FROM {entity} WHERE "
                 f"TxnDate >= '{start_date}' AND TxnDate <= '{end_date}' "
@@ -286,9 +310,21 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
                     f"[qbo] {entity} acct={acct_id}: 0 of {len(rows)} matched. "
                     f"Account refs seen on returned rows: {sorted(seen_refs)}"
                 )
+                # Track refs we saw but couldn't match to user's selection
+                # so the UI can prompt the user to add them.
+                seen_unmatched_refs.update(seen_refs)
             elif kept:
                 log.info(f"[qbo] {entity} acct={acct_id}: kept {kept}/{len(rows)} after account filter")
     out.sort(key=lambda f: f.get("txn_date") or "")
+    # Stash unmatched refs on the return value so sync_project can
+    # surface them. Subtract account_ids that DID match so the warning
+    # is purely about accounts the user hasn't enabled.
+    out_refs = seen_unmatched_refs - set(account_ids)
+    try:
+        # Lists allow attribute assignment in Python so this works.
+        out.unmatched_account_refs = sorted(out_refs)  # type: ignore[attr-defined]
+    except Exception:
+        pass
     return out
 
 
@@ -525,12 +561,31 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
     db.session.commit()
     log.info(f"[qbo {project_sheet.name}] imported {imported} txns "
              f"(cdc={cdc_count}); watermark → {safe_end}")
+    # Surface unmatched account refs — transactions QBO returned that
+    # weren't on accounts the user selected for this project. Resolve
+    # to display names if we can so the UI can say "add Chase 8432" not
+    # "add account 221".
+    unmatched_refs = list(getattr(rows, 'unmatched_account_refs', []) or [])
+    unmatched_named = []
+    if unmatched_refs:
+        for ref in unmatched_refs:
+            meta = account_meta.get(ref) if account_meta else None
+            if meta:
+                lbl = meta.get("name") or f"#{ref}"
+                if meta.get("mask"):
+                    lbl = f"{lbl} (•{meta['mask']})"
+                unmatched_named.append({"id": ref, "label": lbl})
+            else:
+                # Account isn't in the user-pickable list (probably a
+                # type we didn't include — e.g. Other Asset, Equity).
+                unmatched_named.append({"id": ref, "label": f"QBO account #{ref} (not in current account picker)"})
     return {
         "imported":        imported,
         "cdc_additions":   cdc_count,
         "sync_through":    safe_end,
         "effective_start": effective_start,
         "effective_end":   safe_end,
+        "unmatched_accounts": unmatched_named,
     }
 
 

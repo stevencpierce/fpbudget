@@ -4691,8 +4691,29 @@
           }
           return;
         }
+        // If QBO returned transactions on accounts the user hasn't
+        // selected, surface that as a clear actionable warning before
+        // reloading. Common cause: a corporate credit card typed as
+        // "Other Current Liability" in QBO that the user hasn't ticked
+        // in Settings → QBO accounts. Without this, a sync that returns
+        // 0 looks identical whether QBO has nothing OR everything's on
+        // an unselected account.
+        const unmatched = d.unmatched_accounts || [];
+        if (unmatched.length && (d.imported || 0) === 0) {
+          if (status) {
+            const lbls = unmatched.map(u => u.label).join(', ');
+            status.innerHTML = `⚠ 0 imported. QuickBooks returned transactions on accounts you haven't enabled for this project: <strong>${lbls}</strong>. Open the QBO accounts picker above and tick those.`;
+            status.style.color = '#e0a040';
+          }
+          return;
+        }
         if (status) {
-          status.textContent = `✓ Imported ${d.imported || 0} txns (CDC: ${d.cdc_additions || 0}). Reloading…`;
+          let msg = `✓ Imported ${d.imported || 0} txns (CDC: ${d.cdc_additions || 0}). Reloading…`;
+          if (unmatched.length) {
+            const lbls = unmatched.map(u => u.label).join(', ');
+            msg += ` ⚠ Also saw txns on unselected accounts: ${lbls}.`;
+          }
+          status.textContent = msg;
           status.style.color = 'var(--green)';
         }
         setTimeout(() => window.location.reload(), 800);
