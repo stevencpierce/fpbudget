@@ -135,24 +135,17 @@ def get_valid_token(conn, db):
 # ── QBO data fetch ────────────────────────────────────────────────────
 
 def list_qbo_accounts(conn, db):
-    """List active spend-source accounts on the QBO realm.
-    Used by the project-settings UI to let the user pick which
-    accounts feed this project.
-
-    Account types included:
-      Bank                    — checking / savings
-      Credit Card             — standard CC accounts
-      Other Current Liability — line-of-credit cards, AmEx-style
-      Long Term Liability     — long-term cards / loans charged like CCs
-    Some QBO setups type their corporate credit cards as a Liability
-    instead of "Credit Card", which made them invisible in the picker
-    even though purchases were posted against them.
+    """List ALL active accounts on the QBO realm. The previous
+    AccountType filter ('Bank', 'Credit Card', '*Liability') hid the
+    actual spend-source account in some QBO setups (one user's
+    transactions all posted to AccountRef=221 which never appeared
+    in the picker no matter how we expanded the type list). Removing
+    the filter entirely lets the user see every account and pick the
+    one they actually use. Type is shown in the picker label so they
+    can still tell Bank/CC apart from Income/Equity/etc.
     """
     token = get_valid_token(conn, db)
-    query = ("SELECT * FROM Account WHERE AccountType IN ("
-             "'Bank', 'Credit Card', "
-             "'Other Current Liability', 'Long Term Liability'"
-             ") AND Active = true MAXRESULTS 200")
+    query = "SELECT * FROM Account WHERE Active = true MAXRESULTS 1000"
     resp  = requests.get(
         f"{_qbo_base_url()}/{conn.realm_id}/query",
         headers=_headers(token),
@@ -170,6 +163,36 @@ def list_qbo_accounts(conn, db):
         }
         for a in accts
     ]
+
+
+def get_qbo_account_by_id(conn, db, account_id):
+    """Look up a single QBO account by its Id. Returns the same dict
+    shape as list_qbo_accounts, or None on failure. Used by sync_project
+    to resolve unmatched account refs into human names so the UI can
+    say "QBO account #221 (My Card •8432, Credit Card)" instead of
+    just "QBO account #221"."""
+    if not account_id:
+        return None
+    try:
+        token = get_valid_token(conn, db)
+        resp = requests.get(
+            f"{_qbo_base_url()}/{conn.realm_id}/account/{account_id}",
+            headers=_headers(token),
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        a = resp.json().get("Account") or {}
+        if not a.get("Id"):
+            return None
+        return {
+            "id":   a["Id"],
+            "name": a.get("Name") or f"Account #{a['Id']}",
+            "mask": (a.get("AcctNum") or "")[-4:],
+            "type": a.get("AccountType", ""),
+        }
+    except Exception:
+        return None
 
 
 def _extract_txn_fields(txn, entity, acct_ref, account_meta):
@@ -570,15 +593,21 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
     if unmatched_refs:
         for ref in unmatched_refs:
             meta = account_meta.get(ref) if account_meta else None
+            # If we don't have metadata in the cached list (because the
+            # ref's account type was filtered out previously, or the
+            # account is inactive), look it up directly by id so the
+            # UI can show the real name + account type.
+            if not meta:
+                meta = get_qbo_account_by_id(conn, db, ref)
             if meta:
                 lbl = meta.get("name") or f"#{ref}"
                 if meta.get("mask"):
                     lbl = f"{lbl} (•{meta['mask']})"
+                if meta.get("type"):
+                    lbl = f"{lbl} [{meta['type']}]"
                 unmatched_named.append({"id": ref, "label": lbl})
             else:
-                # Account isn't in the user-pickable list (probably a
-                # type we didn't include — e.g. Other Asset, Equity).
-                unmatched_named.append({"id": ref, "label": f"QBO account #{ref} (not in current account picker)"})
+                unmatched_named.append({"id": ref, "label": f"QBO account #{ref}"})
     return {
         "imported":        imported,
         "cdc_additions":   cdc_count,
