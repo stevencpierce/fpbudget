@@ -1131,36 +1131,32 @@
             {% endif %}
           </td>
           {# Per-line ACTUAL: sum of Transaction.amount for this line.
-             actual_by_line_id keys on the Working line id (which is
-             ln.id when we're rendering Working). In Actual view, ln.id
-             IS the Actual line id and we sum txns_by_line directly.
-             Hidden when no Actual budget exists yet. #}
-          {% if is_actual_view %}
-            {% set _actual_ns = namespace(t=0) %}
-            {% for _t in txns_by_line.get(ln.id, []) %}
-              {% if _t.amount %}{% set _actual_ns.t = _actual_ns.t + (_t.amount | float) %}{% endif %}
-            {% endfor %}
-            {% set _actual = _actual_ns.t %}
-          {% else %}
-            {% set _actual = (actual_by_line_id.get(ln.id, 0) or 0) | float %}
-          {% endif %}
+             Resolved across all three views via actual_line_totals,
+             which is keyed by (account_code, sort_order) so it works
+             from any sister budget — Estimated, Working, or Actual.
+             Previously the Estimated view tried actual_by_line_id
+             (keyed by Working ids) and always missed → dash. Hidden
+             when no Actual budget exists yet. 2026-05-08. #}
+          {% set _actual = (actual_line_totals.get((ln.account_code, ln.sort_order), 0) or 0) | float %}
           <td class="col-num col-actual line-actual">
             {% if is_actual_view %}
-              {# In Actual view this column doubles as the active edit
-                 anchor + spend tracker:
-                   • Top line (bold): the Actual budget's planned line
-                     total — what the user sees update as they edit
-                     qty/rate. Was previously rendered in the Working
-                     column, now lives here so the column labels match
-                     reality.
-                   • Bottom line (small green): cumulative transaction
-                     spend pulled from txns_by_line. Lets the user
-                     compare planned vs spent on the same row. #}
-              <strong data-base="{{ res.est_total }}">{{ (res.est_total * _sec_fee_m) | currency }}</strong>
-              {% if _actual > 0 %}
-                <div style="font-size:.66rem;color:var(--green);margin-top:1px"
-                     title="Sum of linked transaction amounts (spent so far)">
-                  spent: {{ _actual | currency }}
+              {# Actual view: the Actual column IS the rollup of charges
+                 linked to this line. Per user 2026-05-08, the Actual
+                 budget should never reflect the Working/Estimated
+                 planned amount as its primary value — it's the spend
+                 tracker. Bold = sum of transactions. Underneath, a
+                 small "planned: $X" subtitle shows what Working has
+                 committed for context. With nothing charged yet, the
+                 row reads $0.00 / planned: $W → big positive variance
+                 against Working/Estimated, which is the desired UX. #}
+              <strong style="color:{% if _actual > 0 %}var(--green){% else %}var(--text-muted){% endif %}">
+                {{ _actual | currency }}
+              </strong>
+              {% set _wlt_planned = working_line_totals.get((ln.account_code, ln.sort_order), none) %}
+              {% if _wlt_planned is not none and _wlt_planned > 0 %}
+                <div style="font-size:.66rem;color:var(--text-muted);margin-top:1px"
+                     title="Working budget plan for this line">
+                  planned: {{ (_wlt_planned * _sec_fee_m) | currency }}
                 </div>
               {% endif %}
             {% elif has_actual_budget %}
@@ -1195,15 +1191,9 @@
             <span class="muted" style="font-size:.75rem">—</span>
             {% endif %}
           </td>
-          {% if is_actual_view %}
-            {% set _actual_e_ns = namespace(t=0) %}
-            {% for _t in txns_by_line.get(ln.id, []) %}
-              {% if _t.amount %}{% set _actual_e_ns.t = _actual_e_ns.t + (_t.amount | float) %}{% endif %}
-            {% endfor %}
-            {% set _actual_e = _actual_e_ns.t %}
-          {% else %}
-            {% set _actual_e = (actual_by_line_id.get(ln.id, 0) or 0) | float %}
-          {% endif %}
+          {# Estimated view's Actual column — same key-based lookup as
+             Working view above. 2026-05-08. #}
+          {% set _actual_e = (actual_line_totals.get((ln.account_code, ln.sort_order), 0) or 0) | float %}
           <td class="col-num col-actual">
             {% if has_actual_budget %}
               {% if _actual_e > 0 %}
@@ -1622,11 +1612,15 @@
           </td>
           <td class="col-num col-actual sec-actual-total" style="font-size:.8rem">
             {% if is_actual_view %}
-              {# Show Actual planned section total (active edit) on top,
-                 spent below — mirrors the per-line Actual column. #}
-              <strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong>
-              {% if _sec_actual > 0 %}
-              <div style="font-size:.62rem;color:var(--green);margin-top:1px">spent: {{ _sec_actual | currency }}</div>
+              {# Actual section total IS the rollup of charges. Planned
+                 (Working-projected section total) is shown underneath
+                 as a small subtitle. Mirrors the per-line column.
+                 2026-05-08 per user. #}
+              <strong style="color:{% if _sec_actual > 0 %}var(--green){% else %}var(--text-muted){% endif %}">
+                {{ _sec_actual | currency }}
+              </strong>
+              {% if _sec_w_live_ns.t > 0 %}
+              <div style="font-size:.62rem;color:var(--text-muted);margin-top:1px">planned: {{ (_sec_w_live_ns.t * _sec_fee_m) | currency }}</div>
               {% endif %}
             {% elif _sec_actual > 0 %}
               <strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>

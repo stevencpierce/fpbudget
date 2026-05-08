@@ -3934,6 +3934,36 @@ def budget_view(pid, bid):
             except Exception:
                 pass  # skip any line that fails to calc
 
+    # Per-line ACTUAL spend rollup. Sums non-project-expense=False
+    # transactions on the project's current Actual budget, keyed by
+    # (account_code, sort_order) so it can be looked up from the
+    # Estimated/Working sister lines too. This is the canonical source
+    # for the "Actual" column in EVERY view — Actual lines do not
+    # carry an estimated_total of their own; they show the rollup of
+    # whatever transactions were dragged in. 2026-05-08 per user.
+    actual_line_totals = {}
+    actual_line_totals_by_lid = {}  # by Actual line id (used in Actual view)
+    if peer_actual_bid:
+        try:
+            _alines = BudgetLine.query.filter_by(budget_id=peer_actual_bid).all()
+            _alid_to_key = {l.id: (l.account_code, l.sort_order) for l in _alines}
+            _txns = (Transaction.query
+                     .filter(Transaction.project_id == pid,
+                             Transaction.budget_line_id.isnot(None),
+                             Transaction.not_project_expense == False,
+                             Transaction.is_expense == True)
+                     .all())
+            for _tx in _txns:
+                _key = _alid_to_key.get(_tx.budget_line_id)
+                if _key is None:
+                    continue
+                _amt = float(_tx.amount or 0)
+                actual_line_totals[_key] = actual_line_totals.get(_key, 0.0) + _amt
+                actual_line_totals_by_lid[_tx.budget_line_id] = (
+                    actual_line_totals_by_lid.get(_tx.budget_line_id, 0.0) + _amt)
+        except Exception as _ate:
+            logging.warning(f"[budget_view] actual rollup failed: {_ate}")
+
     # Build version groups: list of {version_number, estimated, working, is_current}
     # sorted descending so newest version is first.
     _vn_map = {}
@@ -4218,6 +4248,8 @@ def budget_view(pid, bid):
         working_company_fee=working_company_fee,
         working_line_totals=working_line_totals,
         estimated_line_totals=estimated_line_totals,
+        actual_line_totals=actual_line_totals,
+        actual_line_totals_by_lid=actual_line_totals_by_lid,
         manual_by_section=manual_by_section,
         project_locations=project_locations,
         loc_day_map=loc_day_map,
