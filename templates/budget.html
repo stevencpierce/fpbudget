@@ -554,19 +554,7 @@
     {% if ln.is_labor %}{% set ns.has_labor = true %}{% endif %}
     {% if ln.line_tag == 'kit_fee' %}
       {% set ns.kit_total = ns.kit_total + res.est_total %}
-      {# kit_working is the kit-fee subtotal for the WORKING column.
-         Read live from working_line_totals when a sister Working line
-         exists, fall back to ln.working_total (frozen Estimated
-         snapshot) and finally to the current line's est_total.
-         2026-05-08. #}
-      {% set _w_kit_live = working_line_totals.get((ln.account_code, ln.sort_order), none) %}
-      {% if _w_kit_live is not none %}
-        {% set ns.kit_working = ns.kit_working + (_w_kit_live | float) %}
-      {% elif ln.working_total is not none %}
-        {% set ns.kit_working = ns.kit_working + (ln.working_total | float) %}
-      {% else %}
-        {% set ns.kit_working = ns.kit_working + res.est_total %}
-      {% endif %}
+      {% set ns.kit_working = ns.kit_working + ((ln.working_total | float) if ln.working_total is not none else res.est_total) %}
     {% endif %}
   {% endfor %}
   {# Auto-calc injections: keep line-by-line section totals in SYNC with
@@ -1522,52 +1510,26 @@
         </tr>
         {% endif %}
       </tbody>
-      {# Section subtotals — three live sums, one per cross-budget column.
-         Per-line columns already read live from
-         estimated_line_totals / working_line_totals / actual_line_totals;
-         the section badge has to follow the same source or it will
-         silently desync (user reported 2026-05-08: "Estimated view's
-         Working column not showing current Working totals" — the row
-         was live but the badge underneath summed ln.working_total
-         frozen snapshots).
-
-         ln.working_total is the snapshot of the ESTIMATED value taken
-         when the Working budget was created. Confusingly named, kept
-         only as a last-resort fallback for orphan lines that have no
-         sister in either live table. #}
-      {% set sec_est_live  = namespace(t=0) %}
-      {% set sec_work_live = namespace(t=0) %}
+      {% set sec_working = namespace(total=0) %}
       {% for ln in sec.lines %}
-        {% set _e_live = estimated_line_totals.get((ln.account_code, ln.sort_order), none) %}
-        {% set _w_live = working_line_totals.get((ln.account_code, ln.sort_order), none) %}
-        {% if _e_live is not none %}
-          {% set sec_est_live.t = sec_est_live.t + (_e_live | float) %}
-        {% elif ln.working_total is not none %}
-          {% set sec_est_live.t = sec_est_live.t + (ln.working_total | float) %}
+        {% if ln.working_total is not none %}
+          {% set sec_working.total = sec_working.total + (ln.working_total | float) %}
         {% else %}
-          {% set sec_est_live.t = sec_est_live.t + line_results[ln.id].est_total %}
-        {% endif %}
-        {% if _w_live is not none %}
-          {% set sec_work_live.t = sec_work_live.t + (_w_live | float) %}
+          {% set sec_working.total = sec_working.total + line_results[ln.id].est_total %}
         {% endif %}
       {% endfor %}
-      {# Mirror Top Sheet auto-injections (Workers' Comp + Production
-         Insurance into 6000, Payroll Fee into 6500) into BOTH live
-         sums so every column matches the Top Sheet. #}
+      {# Mirror the Top Sheet injection into the Working-column section
+         total so the "Working" badge under line items matches the Top
+         Sheet's Working column. #}
       {% if sec.code == 6000 and top_sheet.workers_comp_amount %}
-        {% set sec_est_live.t  = sec_est_live.t  + top_sheet.workers_comp_amount %}
-        {% set sec_work_live.t = sec_work_live.t + top_sheet.workers_comp_amount %}
+        {% set sec_working.total = sec_working.total + top_sheet.workers_comp_amount %}
       {% endif %}
       {% if sec.code == 6000 and top_sheet.production_insurance_amount %}
-        {% set sec_est_live.t  = sec_est_live.t  + top_sheet.production_insurance_amount %}
-        {% set sec_work_live.t = sec_work_live.t + top_sheet.production_insurance_amount %}
+        {% set sec_working.total = sec_working.total + top_sheet.production_insurance_amount %}
       {% endif %}
       {% if sec.code == 6500 and top_sheet.payroll_fee_amount %}
-        {% set sec_est_live.t  = sec_est_live.t  + top_sheet.payroll_fee_amount %}
-        {% set sec_work_live.t = sec_work_live.t + top_sheet.payroll_fee_amount %}
+        {% set sec_working.total = sec_working.total + top_sheet.payroll_fee_amount %}
       {% endif %}
-      {# Back-compat alias for any lingering reference downstream. #}
-      {% set sec_working = namespace(total=sec_est_live.t) %}
       <tfoot>
         {# Per-category subtotals (kit / agent / section breakdowns) all align under their matching column. #}
         {% if ns.kit_total > 0 %}
@@ -1626,18 +1588,23 @@
           {% endif %}
           {% set _sec_actual = _sec_actual_ns.total %}
           {% if is_working_view %}
-          {# Working view subtotal row. E col = live sister Estimated
-             section sum. W col = active edits (current budget when
-             Working view) or live sister Working sum (Actual view).
-             A col = transactions roll-up. Variance bars carry all
-             three so JS can switch basis without re-render. #}
+          {# In Actual view, we need a live Working-section total for
+             the W column. Sum working_line_totals for every line in
+             this section (matched by (account_code, sort_order)). #}
+          {% set _sec_w_live_ns = namespace(t=0) %}
+          {% if is_actual_view %}
+            {% for _ln in sec.lines %}
+              {% set _wlt_sec = working_line_totals.get((_ln.account_code, _ln.sort_order), none) %}
+              {% if _wlt_sec is not none %}{% set _sec_w_live_ns.t = _sec_w_live_ns.t + (_wlt_sec | float) %}{% endif %}
+            {% endfor %}
+          {% endif %}
           <td class="col-num sec-est-total" style="font-size:.8rem">
-            <span class="frozen-est" data-raw="{{ sec_est_live.t }}">{{ (sec_est_live.t * _sec_fee_m) | currency }}</span>
+            <span class="frozen-est" data-raw="{{ sec_working.total }}">{{ (sec_working.total * _sec_fee_m) | currency }}</span>
           </td>
           <td class="col-num col-working sec-working-total" style="font-size:.8rem">
             {% if is_actual_view %}
-              {% if sec_work_live.t > 0 %}
-                <span class="muted">{{ (sec_work_live.t * _sec_fee_m) | currency }}</span>
+              {% if _sec_w_live_ns.t > 0 %}
+                <span class="muted">{{ (_sec_w_live_ns.t * _sec_fee_m) | currency }}</span>
               {% else %}<span class="muted">—</span>{% endif %}
             {% else %}
               <strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong>
@@ -1646,46 +1613,39 @@
           <td class="col-num col-actual sec-actual-total" style="font-size:.8rem">
             {% if is_actual_view %}
               {# Actual section total IS the rollup of charges. Planned
-                 (live Working section sum) is shown underneath as a
-                 small subtitle. Mirrors the per-line column.
+                 (Working-projected section total) is shown underneath
+                 as a small subtitle. Mirrors the per-line column.
                  2026-05-08 per user. #}
               <strong style="color:{% if _sec_actual > 0 %}var(--green){% else %}var(--text-muted){% endif %}">
                 {{ _sec_actual | currency }}
               </strong>
-              {% if sec_work_live.t > 0 %}
-              <div style="font-size:.62rem;color:var(--text-muted);margin-top:1px">planned: {{ (sec_work_live.t * _sec_fee_m) | currency }}</div>
+              {% if _sec_w_live_ns.t > 0 %}
+              <div style="font-size:.62rem;color:var(--text-muted);margin-top:1px">planned: {{ (_sec_w_live_ns.t * _sec_fee_m) | currency }}</div>
               {% endif %}
             {% elif _sec_actual > 0 %}
               <strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>
             {% endif %}
           </td>
-          {# Section subtotal variance — basis-driven (same as line
-             cells). Working view: E = live sister Estimated sum,
-             W = current budget (Working), A = transactions. Actual
-             view substitutes live Working sum for W. #}
+          {# Section subtotal variance — basis-driven (same as line cells).
+             Working view: E = sec_working snapshot, W = ns.sec_total,
+             A = _sec_actual. #}
           <td class="col-num col-variance sec-variance-total line-var-cell" style="font-size:.8rem"
-              data-e="{{ sec_est_live.t * _sec_fee_m }}"
-              data-w="{{ (sec_work_live.t if is_actual_view else ns.sec_total) * _sec_fee_m }}"
+              data-e="{{ sec_working.total * _sec_fee_m }}"
+              data-w="{{ ns.sec_total * _sec_fee_m }}"
               data-a="{{ _sec_actual }}">
           </td>
           {% else %}
-          {# Estimated view subtotal row. E col = current budget
-             (Estimated). W col = LIVE sister Working section sum
-             (was previously summing frozen ln.working_total snapshots
-             — fixed 2026-05-08). A col = transactions. #}
           <td class="col-num sec-est-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
-          <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-size:.8rem">
-            {% if working_exists %}<strong>{{ (sec_work_live.t * _sec_fee_m) | currency }}</strong>
-            {% else %}<span class="muted">—</span>{% endif %}
-          </td>
+          <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-size:.8rem"><strong>{{ sec_working.total | currency }}</strong></td>
           <td class="col-num col-actual" style="font-size:.8rem">
             {% if _sec_actual > 0 %}<strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>{% endif %}
           </td>
-          {# Estimated view variance — E = current Estimated section,
-             W = live sister Working sum, A = transactions. #}
+          {# Estimated-view section subtotal variance — E = current
+             section total, W = sister Working section total, A = sum
+             of actuals across all lines in this section. #}
           <td class="col-num col-variance sec-variance-total line-var-cell" style="font-size:.8rem"
               data-e="{{ ns.sec_total * _sec_fee_m }}"
-              data-w="{{ sec_work_live.t * _sec_fee_m }}"
+              data-w="{{ (sec_working.total | float) * _sec_fee_m }}"
               data-a="{{ _sec_actual }}">
           </td>
           {% endif %}
@@ -1696,41 +1656,26 @@
           <td colspan="10" class="col-desc" style="padding:.55rem .6rem;font-weight:700;font-size:.88rem;text-align:right;letter-spacing:.02em;text-transform:uppercase;color:var(--text)">
             Total {{ sec.name }}
           </td>
-          {# Section grand-total row — same E/W/A semantics as the
-             subtotal row above. All three columns read live cross-
-             budget data (sec_est_live / sec_work_live / _sec_actual)
-             so this footer never disagrees with the per-line cells.
-             2026-05-08. #}
           {% if is_working_view %}
-          <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem"><strong data-base="{{ sec_est_live.t }}">{{ (sec_est_live.t * _sec_fee_m) | currency }}</strong></td>
-          <td class="col-num col-working sec-grand-working" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)">
-            {% if is_actual_view %}
-              {% if sec_work_live.t > 0 %}<strong>{{ (sec_work_live.t * _sec_fee_m) | currency }}</strong>
-              {% else %}<span class="muted">—</span>{% endif %}
-            {% else %}
-              <strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong>
-            {% endif %}
-          </td>
+          <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem"><strong data-base="{{ sec_working.total }}">{{ (sec_working.total * _sec_fee_m) | currency }}</strong></td>
+          <td class="col-num col-working sec-grand-working" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-actual sec-grand-actual" style="font-weight:700;font-size:.92rem">
             {% if _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
           </td>
           <td class="col-num col-variance sec-grand-variance line-var-cell" style="font-weight:700;font-size:.88rem"
-              data-e="{{ sec_est_live.t * _sec_fee_m }}"
-              data-w="{{ (sec_work_live.t if is_actual_view else ns.sec_total) * _sec_fee_m }}"
+              data-e="{{ sec_working.total * _sec_fee_m }}"
+              data-w="{{ ns.sec_total * _sec_fee_m }}"
               data-a="{{ _sec_actual }}">
           </td>
           {% else %}
           <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
-          <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-weight:700;font-size:.95rem">
-            {% if working_exists %}<strong>{{ (sec_work_live.t * _sec_fee_m) | currency }}</strong>
-            {% else %}<span class="muted">—</span>{% endif %}
-          </td>
+          <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-weight:700;font-size:.95rem"><strong>{{ sec_working.total | currency }}</strong></td>
           <td class="col-num col-actual" style="font-weight:700;font-size:.92rem">
             {% if _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
           </td>
           <td class="col-num col-variance sec-grand-variance line-var-cell" style="font-weight:700;font-size:.88rem"
               data-e="{{ ns.sec_total * _sec_fee_m }}"
-              data-w="{{ sec_work_live.t * _sec_fee_m }}"
+              data-w="{{ (sec_working.total | float) * _sec_fee_m }}"
               data-a="{{ _sec_actual }}">
           </td>
           {% endif %}
