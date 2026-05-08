@@ -3750,17 +3750,36 @@ def budget_view(pid, bid):
         else:
             # Cross-view: viewing Estimated/Actual, separate Working budget
             # exists. Query + calc its lines fresh.
+            #
+            # C-6 (2026-05-08): bulk-fetch ALL ScheduleDay rows for the
+            # cross-budget in ONE query, then bucket by line_id in
+            # Python. Previously this loop did `ScheduleDay.query.filter_by
+            # (budget_line_id=…)` PER use_schedule line — for 200 lines
+            # that's 200 queries plus all the ORM hydration overhead. On
+            # rapid Estimated/Working/Actual switches the cumulative query
+            # + memory load was OOMing Render workers. Bulk fetch cuts the
+            # query count from N+1 to 2 (lines + schedule), and the dict
+            # lookup is essentially free.
             _wb = next((b for b in all_budgets if b.id == current_working_bid), None)
             _wblines = BudgetLine.query.filter_by(budget_id=current_working_bid).all()
             _wb_fringe = get_fringe_configs(db.session, pid)
             _wb_profile  = _wb.payroll_profile if _wb else None
             _wb_pw_start = (_wb.payroll_week_start if (_wb and _wb.payroll_week_start is not None)
                             else (_wb_profile.payroll_week_start if _wb_profile else 6))
+            _wb_sm = 'working' if (_wb and _wb.budget_mode in ('working', 'actual')) else 'estimated'
+            _wb_sched_by_line = {}
+            try:
+                _wb_all_sched = ScheduleDay.query.filter_by(
+                    budget_id=current_working_bid, schedule_mode=_wb_sm
+                ).all()
+                for _d in _wb_all_sched:
+                    _wb_sched_by_line.setdefault(_d.budget_line_id, []).append(_d)
+            except Exception:
+                pass  # any line will fall through to the empty list below
             for _wln in _wblines:
                 try:
                     if _wln.use_schedule:
-                        _wb_sm = 'working' if (_wb and _wb.budget_mode in ('working', 'actual')) else 'estimated'
-                        _wb_sched = ScheduleDay.query.filter_by(budget_line_id=_wln.id, schedule_mode=_wb_sm).all()
+                        _wb_sched = _wb_sched_by_line.get(_wln.id, [])
                         _wres = calc_line_from_schedule(_wln, _wb_sched, _wb_fringe, _wb_profile, _wb_pw_start)
                     else:
                         _wres = calc_line(_wln, _wb_fringe)
@@ -4030,24 +4049,41 @@ def budget_view(pid, bid):
                 )
         else:
             # Cross-view: query + calc the separate Estimated budget.
+            # Bulk-fetch ScheduleDay rows in one query (see C-6 note above
+            # for working_line_totals — same N+1 → 2-query optimization).
             _eb = next((b for b in all_budgets if b.id == current_estimated_bid), None)
             _eblines = BudgetLine.query.filter_by(budget_id=current_estimated_bid).all()
             _eb_fringe = get_fringe_configs(db.session, pid)
             _eb_profile  = _eb.payroll_profile if _eb else None
             _eb_pw_start = (_eb.payroll_week_start if (_eb and _eb.payroll_week_start is not None)
                             else (_eb_profile.payroll_week_start if _eb_profile else 6))
+            # Mode 'estimated' rows + legacy NULL-mode rows (older budgets
+            # pre-schedule_mode column). Dedup keeps mode-tagged over NULL
+            # for any (line, instance, date) collision — same pattern
+            # line_results uses for the budget being viewed.
+            _eb_sched_by_line = {}
+            try:
+                _eb_all_sched = ScheduleDay.query.filter(
+                    ScheduleDay.budget_id == current_estimated_bid,
+                    db.or_(ScheduleDay.schedule_mode == 'estimated',
+                           ScheduleDay.schedule_mode == None),
+                ).all()
+                _eb_dedup = {}  # (line_id, instance, date) -> sd
+                for _d in _eb_all_sched:
+                    _k = (_d.budget_line_id, _d.crew_instance or 1, _d.date)
+                    _ex = _eb_dedup.get(_k)
+                    if _ex is None:
+                        _eb_dedup[_k] = _d
+                    elif _ex.schedule_mode is None and _d.schedule_mode == 'estimated':
+                        _eb_dedup[_k] = _d
+                for _d in _eb_dedup.values():
+                    _eb_sched_by_line.setdefault(_d.budget_line_id, []).append(_d)
+            except Exception:
+                pass
             for _eln in _eblines:
                 try:
                     if _eln.use_schedule:
-                        _eb_sched = ScheduleDay.query.filter_by(
-                            budget_line_id=_eln.id, schedule_mode='estimated'
-                        ).all()
-                        # Also accept legacy NULL-mode rows so older budgets
-                        # mid-migration still produce a value.
-                        if not _eb_sched:
-                            _eb_sched = ScheduleDay.query.filter_by(
-                                budget_line_id=_eln.id, schedule_mode=None
-                            ).all()
+                        _eb_sched = _eb_sched_by_line.get(_eln.id, [])
                         _eres = calc_line_from_schedule(_eln, _eb_sched, _eb_fringe, _eb_profile, _eb_pw_start)
                     else:
                         _eres = calc_line(_eln, _eb_fringe)
