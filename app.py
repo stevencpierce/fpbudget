@@ -3677,25 +3677,90 @@ def budget_view(pid, bid):
             credit = min(credit, float(tc.cap))
         tax_credit_totals[tc.id] = credit
 
-    # Working budget: sum working_total per COA section (fall back to est_total if unset)
-    # Must mirror calc_top_sheet exactly so the Working column matches the
-    # Estimated column when nothing has actually changed. That means: in
-    # addition to summing line working_total, we ALSO have to inject the
-    # auto-line amounts (Workers' Comp, Production Insurance, Payroll Fee)
-    # AND apply the dispersed Production Company Fee per section. Without
-    # the dispersal step, every Working section showed raw — the fee was
-    # only added on the "Estimated" column — so the two columns visibly
-    # disagreed by the dispersed fee amount on every row. 2026-05-06.
+    # Working budget rollup for the Top Sheet's "Working" column.
+    #
+    # 2026-05-08 — REWRITE. Previously this loop iterated `lines`
+    # (the budget being VIEWED) and summed each line's stale
+    # ln.working_total snapshot — meaning the Top Sheet's Working
+    # column always reflected the value taken at Working-creation
+    # time, NOT the live Working budget. Editing the Working budget
+    # then switching to Estimated showed the old numbers in the
+    # Working column. User-reported.
+    #
+    # New behavior: when a current Working budget exists, rollup
+    # the ACTUAL Working budget's lines using the same calc engine
+    # the per-line columns already use. Falls back to the legacy
+    # snapshot loop only when no Working budget exists yet (in which
+    # case the Working column should mirror Estimated anyway).
+    #
+    # As before, this still has to mirror calc_top_sheet on the
+    # injected auto-line amounts (Workers' Comp, Production
+    # Insurance, Payroll Fee) AND the dispersed Production Company
+    # Fee per section — those happen below.
     working_by_section = {}
     working_section_fringe = {}     # for fee-base = est − fringe (dispersal)
     working_gross_labor = 0.0
-    for ln in lines:
-        sec_key = _section_for_code(ln.account_code)
-        wt = float(ln.working_total) if ln.working_total is not None else line_results[ln.id]['est_total']
-        working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
-        if ln.is_labor:
-            working_gross_labor += line_results[ln.id].get('subtotal', 0.0)
-            working_section_fringe[sec_key] = working_section_fringe.get(sec_key, 0.0) + float(line_results[ln.id].get('fringe_amount', 0) or 0)
+    if current_working_bid and current_working_bid == budget.id:
+        # Already viewing the Working budget — `lines` IS its lines
+        # and `line_results` already holds the live calc. Reuse to
+        # avoid an N+1 re-query on the same budget.
+        for ln in lines:
+            sec_key = _section_for_code(ln.account_code)
+            wt = float(line_results[ln.id].get('est_total', 0) or 0)
+            working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
+            if ln.is_labor:
+                working_gross_labor += float(line_results[ln.id].get('subtotal', 0) or 0)
+                working_section_fringe[sec_key] = (
+                    working_section_fringe.get(sec_key, 0.0)
+                    + float(line_results[ln.id].get('fringe_amount', 0) or 0)
+                )
+    elif current_working_bid:
+        _wb_ts = next((b for b in all_budgets if b.id == current_working_bid), None)
+        _wblines_ts = BudgetLine.query.filter_by(budget_id=current_working_bid).all()
+        _wb_fringe_ts = get_fringe_configs(db.session, pid)
+        _wb_profile_ts = _wb_ts.payroll_profile if _wb_ts else None
+        _wb_pw_start_ts = (_wb_ts.payroll_week_start
+                           if (_wb_ts and _wb_ts.payroll_week_start is not None)
+                           else (_wb_profile_ts.payroll_week_start if _wb_profile_ts else 6))
+        for _wln in _wblines_ts:
+            sec_key = _section_for_code(_wln.account_code)
+            try:
+                if _wln.use_schedule:
+                    _sm = ('working'
+                           if (_wb_ts and _wb_ts.budget_mode in ('working', 'actual'))
+                           else 'estimated')
+                    _sched = ScheduleDay.query.filter_by(
+                        budget_line_id=_wln.id, schedule_mode=_sm
+                    ).all()
+                    _r = calc_line_from_schedule(_wln, _sched, _wb_fringe_ts,
+                                                 _wb_profile_ts, _wb_pw_start_ts)
+                else:
+                    _r = calc_line(_wln, _wb_fringe_ts)
+                wt = float(_r.get('est_total', 0) or 0)
+            except Exception:
+                _r = {}
+                wt = (float(_wln.working_total)
+                      if _wln.working_total is not None else 0.0)
+            working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
+            if _wln.is_labor and _r:
+                working_gross_labor += float(_r.get('subtotal', 0) or 0)
+                working_section_fringe[sec_key] = (
+                    working_section_fringe.get(sec_key, 0.0)
+                    + float(_r.get('fringe_amount', 0) or 0)
+                )
+    else:
+        # No Working budget yet — Working column mirrors Estimated.
+        for ln in lines:
+            sec_key = _section_for_code(ln.account_code)
+            wt = (float(ln.working_total) if ln.working_total is not None
+                  else line_results[ln.id]['est_total'])
+            working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
+            if ln.is_labor:
+                working_gross_labor += line_results[ln.id].get('subtotal', 0.0)
+                working_section_fringe[sec_key] = (
+                    working_section_fringe.get(sec_key, 0.0)
+                    + float(line_results[ln.id].get('fringe_amount', 0) or 0)
+                )
     # Inject auto-calculated fee amounts (WC, Production Insurance, Payroll
     # Service Fee) — not BudgetLines so they must be added separately.
     _wc_pct = float(getattr(budget, 'workers_comp_pct', 0) or 0)
