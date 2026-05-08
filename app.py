@@ -17081,6 +17081,119 @@ def docs_upload_update(uid):
     })
 
 
+# ── Debug: dump a budget line + both calc paths ──────────────────────────────
+# Lets us inspect why calc_line vs calc_line_from_schedule disagree on a given
+# line. Super-admin-gated. Returns JSON with the raw BudgetLine row, its
+# schedule rows, and the result of both calc paths so we can see exactly
+# where a divergence comes from. Add to a URL like:
+#   /admin/debug/line/306?account_code=3500&description=Flights
+# 2026-05-08.
+@app.route("/admin/debug/line/<int:bid>")
+@super_admin_required
+def debug_line(bid):
+    from flask import jsonify, request
+    from models import Budget, BudgetLine, ScheduleDay
+    from budget_calc import (calc_line, calc_line_from_schedule,
+                             get_fringe_configs)
+    budget = Budget.query.get_or_404(bid)
+    q = BudgetLine.query.filter_by(budget_id=bid)
+    if request.args.get('account_code'):
+        q = q.filter_by(account_code=int(request.args['account_code']))
+    if request.args.get('description'):
+        q = q.filter(BudgetLine.description.ilike(
+            f"%{request.args['description']}%"))
+    if request.args.get('line_id'):
+        q = q.filter_by(id=int(request.args['line_id']))
+    lines = q.all()
+    fringe = get_fringe_configs(db.session, budget.project_id)
+    profile = budget.payroll_profile
+    pw_start = (budget.payroll_week_start
+                if budget.payroll_week_start is not None
+                else (profile.payroll_week_start if profile else 6))
+    sched_mode = ('working'
+                  if budget.budget_mode in ('working', 'actual')
+                  else 'estimated')
+    out = {
+        "budget": {
+            "id": budget.id, "name": budget.name, "mode": budget.budget_mode,
+            "is_actual": bool(budget.is_actual),
+        },
+        "lines": [],
+    }
+    for ln in lines:
+        # Strict working-mode rows (cross-view query)
+        sched_strict = ScheduleDay.query.filter_by(
+            budget_line_id=ln.id, schedule_mode=sched_mode).all()
+        # working-OR-NULL rows with dedup (line_results / Working-view query)
+        sched_loose_raw = ScheduleDay.query.filter(
+            ScheduleDay.budget_line_id == ln.id,
+            db.or_(ScheduleDay.schedule_mode == sched_mode,
+                   ScheduleDay.schedule_mode == None),
+        ).all()
+        _dedup = {}
+        for d in sched_loose_raw:
+            k = (d.crew_instance or 1, d.date)
+            ex = _dedup.get(k)
+            if ex is None:
+                _dedup[k] = d
+            elif ex.schedule_mode is None and d.schedule_mode == sched_mode:
+                _dedup[k] = d
+        sched_loose = list(_dedup.values())
+
+        def _do_calc(rows):
+            try:
+                if ln.use_schedule:
+                    if rows:
+                        r = calc_line_from_schedule(ln, rows, fringe,
+                                                    profile, pw_start)
+                    else:
+                        r = calc_line(ln, fringe)
+                        r["_note"] = "no schedule rows → fell back to calc_line"
+                else:
+                    r = calc_line(ln, fringe)
+                return r
+            except Exception as e:
+                return {"_error": repr(e)}
+
+        out["lines"].append({
+            "id": ln.id,
+            "account_code": ln.account_code,
+            "sort_order": ln.sort_order,
+            "description": ln.description,
+            "is_labor": bool(ln.is_labor),
+            "use_schedule": bool(ln.use_schedule),
+            "rate_type": ln.rate_type,
+            "fringe_type": ln.fringe_type,
+            "quantity": float(ln.quantity) if ln.quantity is not None else None,
+            "days": float(ln.days) if ln.days is not None else None,
+            "rate": float(ln.rate) if ln.rate is not None else None,
+            "agent_pct": float(ln.agent_pct) if ln.agent_pct is not None else None,
+            "estimated_total": (float(ln.estimated_total)
+                                if ln.estimated_total is not None else None),
+            "working_total": (float(ln.working_total)
+                              if ln.working_total is not None else None),
+            "line_tag": ln.line_tag,
+            "sync_omit": bool(getattr(ln, 'sync_omit', False)),
+            "sched_strict_count": len(sched_strict),
+            "sched_loose_count": len(sched_loose),
+            "calc_strict": _do_calc(sched_strict),  # cross-view path
+            "calc_loose":  _do_calc(sched_loose),   # Working-view path
+            "schedule_strict": [
+                {"id": d.id, "instance": d.crew_instance, "date": str(d.date),
+                 "day_type": d.day_type, "mode": d.schedule_mode,
+                 "est_ot_hours": float(getattr(d, 'est_ot_hours', None) or 0)}
+                for d in sched_strict
+            ],
+            "schedule_loose": [
+                {"id": d.id, "instance": d.crew_instance, "date": str(d.date),
+                 "day_type": d.day_type, "mode": d.schedule_mode,
+                 "est_ot_hours": float(getattr(d, 'est_ot_hours', None) or 0)}
+                for d in sched_loose
+            ],
+        })
+    return jsonify(out)
+
+
 @app.errorhandler(404)
 def page_not_found(e):
     return render_template("404.html"), 404
