@@ -48,7 +48,11 @@
   {% set cap = po.total_committed %}
   {% set budgeted = po.budgeted %}
   {% set over = po.over_cap %}
-  {% set pct = (budgeted / cap * 100) if cap and cap > 0 else 0 %}
+  {# Cap usage is driven by attached receipts when any exist, otherwise
+     by the budgeted line projection. Mirrors the server-side basis so
+     Remaining / % Used reflect what triggered the over warning. #}
+  {% set _used = (po.doc_attached_total if po.cap_used_basis == 'receipts' else budgeted) %}
+  {% set pct = (_used / cap * 100) if cap and cap > 0 else 0 %}
   <div class="po-card" data-id="{{ po.id }}"
        style="background:var(--bg-card);border:1px solid {{ '#fbbf24' if over else 'var(--border)' }};
               border-radius:8px;padding:14px 18px;display:flex;flex-direction:column;gap:8px;
@@ -117,7 +121,11 @@
     </div>
     {% if over %}
     <div style="font-size:.8rem;color:#fbbf24;font-weight:600">
-      ⚠ Budgeted total exceeds the committed cap by ${{ '{:,.2f}'.format(budgeted - cap) }}.
+      {% if po.cap_used_basis == 'receipts' %}
+      ⚠ Attached receipts (${{ '{:,.2f}'.format(_used) }}) exceed the committed cap by ${{ '{:,.2f}'.format(_used - cap) }}.
+      {% else %}
+      ⚠ Budgeted total exceeds the committed cap by ${{ '{:,.2f}'.format(_used - cap) }}. (No receipts attached yet.)
+      {% endif %}
     </div>
     {% endif %}
     {# Doc-vs-line mismatch banner: when the sum of attached doc

@@ -9983,9 +9983,22 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
             out["doc_attached_total"] = round(_att_total, 2)
         except Exception:
             out["doc_attached_total"] = None
+        # Cap usage drives off the *actual receipts* when any are
+        # attached — the line-budget total is a planning projection
+        # and routinely exceeds the cap before receipts come in. When
+        # no receipts are attached yet, fall back to the budgeted
+        # projection so the user still gets a heads-up that the line
+        # plan exceeds what was committed. 2026-05-08 per user.
+        # Doc-vs-line mismatch (line plan != receipt totals) has its
+        # own banner in the template, so this signal is reserved for
+        # actual overspend against the vendor commitment.
+        _has_receipts = bool(out.get("doc_attached_total")) and \
+                        any(a.get("amount") for a in (out.get("attachments") or []))
+        _used = float(out["doc_attached_total"]) if _has_receipts else float(budgeted)
+        out["cap_used_basis"] = "receipts" if _has_receipts else "budgeted"
         if po.total_committed is not None:
-            out["over_cap"] = float(budgeted) > float(po.total_committed)
-            out["cap_remaining"] = float(po.total_committed) - float(budgeted)
+            out["over_cap"] = _used > float(po.total_committed)
+            out["cap_remaining"] = float(po.total_committed) - _used
         else:
             out["over_cap"] = False
             out["cap_remaining"] = None
