@@ -3695,13 +3695,30 @@ def budget_view(pid, bid):
     # loop inside working_by_section which both hit a name-binding bug
     # and doubled query load. This single computation feeds everything.
     # ────────────────────────────────────────────────────────────────────
+    # CRITICAL: must exclude is_actual=True budgets here. The Actual
+    # budget is stored with budget_mode='working' (or 'actual') and the
+    # only discriminator is the is_actual boolean — _budget_type() lumps
+    # both into 'working'. Without this filter the Actual budget could
+    # win the next() because it's more recently created than the real
+    # Working budget (auto-created on doc upload), making
+    # working_line_totals get built from Actual lines instead of
+    # Working lines. That's the source of "Working column shows wrong
+    # number in cross-views" — user-reported all day, root cause found
+    # in calc-trace 2026-05-08, C-5 of sweep.
     has_working_budget = any(_budget_type(b.budget_mode) == 'working' and
+                             not b.is_actual and
                              b.version_status != 'archived' for b in all_budgets)
     current_working_bid = next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'working' and b.version_status == 'current'),
+        (b.id for b in all_budgets
+         if _budget_type(b.budget_mode) == 'working'
+         and not b.is_actual
+         and b.version_status == 'current'),
         None
     ) or next(
-        (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'working' and b.version_status != 'archived'),
+        (b.id for b in all_budgets
+         if _budget_type(b.budget_mode) == 'working'
+         and not b.is_actual
+         and b.version_status != 'archived'),
         None
     )
     current_estimated_bid = next(
@@ -4079,8 +4096,15 @@ def budget_view(pid, bid):
 
     # Build version groups: list of {version_number, estimated, working, is_current}
     # sorted descending so newest version is first.
+    # Skip is_actual budgets — they share budget_mode='working'/'actual' with
+    # real Working budgets but aren't peers in the version-group sense (the
+    # version switcher only swaps Estimated↔Working). Without this filter,
+    # peer_working_bid could resolve to the Actual budget when it's more
+    # recently created. C-5, 2026-05-08.
     _vn_map = {}
     for _b in all_budgets:
+        if _b.is_actual:
+            continue
         _vn = _b.version_number or 1
         if _vn not in _vn_map:
             _vn_map[_vn] = {'version_number': _vn, 'estimated': None, 'working': None}
