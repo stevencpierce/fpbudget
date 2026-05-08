@@ -3677,6 +3677,34 @@ def budget_view(pid, bid):
             credit = min(credit, float(tc.cap))
         tax_credit_totals[tc.id] = credit
 
+    # ── Working budget per-line live calc — moved up here from below in
+    # commit C-2 (2026-05-08) so the Top Sheet's working_by_section block
+    # below can sum from working_line_results instead of stale frozen
+    # ln.working_total snapshots. Pure refactor: the loop body is
+    # identical to what previously ran further down. Cross-budget per-line
+    # columns and Top Sheet now share one computation pass. ──────────────
+    working_line_totals = {}
+    working_line_results = {}  # {working_line.id: full _wres dict}
+    if current_working_bid:
+        _wb = next((b for b in all_budgets if b.id == current_working_bid), None)
+        _wblines = BudgetLine.query.filter_by(budget_id=current_working_bid).all()
+        _wb_fringe = get_fringe_configs(db.session, pid)
+        _wb_profile  = _wb.payroll_profile if _wb else None
+        _wb_pw_start = (_wb.payroll_week_start if (_wb and _wb.payroll_week_start is not None)
+                        else (_wb_profile.payroll_week_start if _wb_profile else 6))
+        for _wln in _wblines:
+            try:
+                if _wln.use_schedule:
+                    _wb_sm = 'working' if (_wb and _wb.budget_mode in ('working', 'actual')) else 'estimated'
+                    _wb_sched = ScheduleDay.query.filter_by(budget_line_id=_wln.id, schedule_mode=_wb_sm).all()
+                    _wres = calc_line_from_schedule(_wln, _wb_sched, _wb_fringe, _wb_profile, _wb_pw_start)
+                else:
+                    _wres = calc_line(_wln, _wb_fringe)
+                working_line_totals[(_wln.account_code, _wln.sort_order)] = _wres['est_total']
+                working_line_results[_wln.id] = _wres
+            except Exception:
+                pass  # skip any line that fails to calc; column shows — for that line
+
     # Working budget: sum working_total per COA section (fall back to est_total if unset)
     # Must mirror calc_top_sheet exactly so the Working column matches the
     # Estimated column when nothing has actually changed. That means: in
@@ -3871,37 +3899,11 @@ def budget_view(pid, bid):
                 working_crew_by_key[(_wln.account_code, _wln.sort_order)] = (_wln.assigned_crew_id, _cn)
                 working_crew_by_wlid[_wln.id] = (_wln.assigned_crew_id, _cn)
 
-    # Cross-reference: live per-line totals from the OTHER budgets so
-    # the active view can render Estimated / Working / Actual summary
-    # columns side by side. Computed whenever the relevant sister
-    # budget exists, regardless of which mode the user is currently
-    # viewing — symmetric to estimated_line_totals below. Lines matched
-    # by (account_code, sort_order). 2026-05-07.
-    working_line_totals = {}
-    # Parallel dict: same loop, store the FULL calc result keyed by Working
-    # line id. Future commits will use this to compute working_by_section /
-    # working_gross_labor / working_section_fringe without a second N+1
-    # query against the Working budget. 2026-05-08 (commit C-1 of sweep).
-    working_line_results = {}
-    if current_working_bid:
-        _wb = next((b for b in all_budgets if b.id == current_working_bid), None)
-        _wblines = BudgetLine.query.filter_by(budget_id=current_working_bid).all()
-        _wb_fringe = get_fringe_configs(db.session, pid)
-        _wb_profile  = _wb.payroll_profile if _wb else None
-        _wb_pw_start = (_wb.payroll_week_start if (_wb and _wb.payroll_week_start is not None)
-                        else (_wb_profile.payroll_week_start if _wb_profile else 6))
-        for _wln in _wblines:
-            try:
-                if _wln.use_schedule:
-                    _wb_sm = 'working' if (_wb and _wb.budget_mode in ('working', 'actual')) else 'estimated'
-                    _wb_sched = ScheduleDay.query.filter_by(budget_line_id=_wln.id, schedule_mode=_wb_sm).all()
-                    _wres = calc_line_from_schedule(_wln, _wb_sched, _wb_fringe, _wb_profile, _wb_pw_start)
-                else:
-                    _wres = calc_line(_wln, _wb_fringe)
-                working_line_totals[(_wln.account_code, _wln.sort_order)] = _wres['est_total']
-                working_line_results[_wln.id] = _wres
-            except Exception:
-                pass  # skip any line that fails to calc; column shows — for that line
+    # working_line_totals / working_line_results were computed above (moved
+    # in commit C-2, 2026-05-08) so the Top Sheet's working_by_section
+    # block could reuse them without a second query loop. Per-line
+    # cross-budget columns still read working_line_totals from the
+    # template context — that's unchanged.
 
     # Symmetric: when viewing the Working budget (or Actual), compute the
     # CURRENT Estimated budget's per-line totals so the "Estimated" column
