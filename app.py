@@ -3734,75 +3734,25 @@ def budget_view(pid, bid):
             except Exception:
                 pass  # skip any line that fails to calc; column shows — for that line
 
-    # Top Sheet's Working column rollup. Three branches by data source:
-    #
-    #   (a) viewing Working: line_results IS the live working calc.
-    #       Reuse to avoid an N+1 re-query of the same budget.
-    #   (b) viewing Estimated/Actual with a sister Working budget:
-    #       sum the live working_line_results computed above (which
-    #       ran calc_line / calc_line_from_schedule against every
-    #       Working line). This is the fix for the snapshot-stale
-    #       bug — previously this loop summed each viewed-budget
-    #       line's frozen ln.working_total snapshot, which never
-    #       updated when the user edited the Working budget. User-
-    #       reported 2026-05-08: "Top Sheet doesn't match Working
-    #       budget line by line."
-    #   (c) no sister Working budget yet: mirror Estimated.
-    #
-    # All three branches must mirror calc_top_sheet's auto-line +
-    # dispersed-fee injection (added below) — without the dispersal,
-    # every Working section showed raw and disagreed with the Top
-    # Sheet's own Working column by the dispersed fee amount.
-    # Original snapshot-based loop kept as branch (c) for the
-    # no-Working-yet case (where mirroring Estimated is correct).
-    # C-3, 2026-05-08.
+    # Working budget: sum working_total per COA section (fall back to est_total if unset)
+    # Must mirror calc_top_sheet exactly so the Working column matches the
+    # Estimated column when nothing has actually changed. That means: in
+    # addition to summing line working_total, we ALSO have to inject the
+    # auto-line amounts (Workers' Comp, Production Insurance, Payroll Fee)
+    # AND apply the dispersed Production Company Fee per section. Without
+    # the dispersal step, every Working section showed raw — the fee was
+    # only added on the "Estimated" column — so the two columns visibly
+    # disagreed by the dispersed fee amount on every row. 2026-05-06.
     working_by_section = {}
     working_section_fringe = {}     # for fee-base = est − fringe (dispersal)
     working_gross_labor = 0.0
-    if current_working_bid and current_working_bid == budget.id:
-        # (a) Viewing Working — line_results is live for this budget.
-        for ln in lines:
-            sec_key = _section_for_code(ln.account_code)
-            r = line_results.get(ln.id) or {}
-            wt = float(r.get('est_total', 0) or 0)
-            working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
-            if ln.is_labor:
-                working_gross_labor += float(r.get('subtotal', 0) or 0)
-                working_section_fringe[sec_key] = (
-                    working_section_fringe.get(sec_key, 0.0)
-                    + float(r.get('fringe_amount', 0) or 0)
-                )
-    elif current_working_bid:
-        # (b) Viewing Estimated/Actual — use working_line_results
-        #     computed above. _wblines was set in the same `if
-        #     current_working_bid:` block, so it's in scope here.
-        for _wln in _wblines:
-            _wres = working_line_results.get(_wln.id)
-            if not _wres:
-                continue  # calc raised; skip the line, column shows —
-            sec_key = _section_for_code(_wln.account_code)
-            wt = float(_wres.get('est_total', 0) or 0)
-            working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
-            if _wln.is_labor:
-                working_gross_labor += float(_wres.get('subtotal', 0) or 0)
-                working_section_fringe[sec_key] = (
-                    working_section_fringe.get(sec_key, 0.0)
-                    + float(_wres.get('fringe_amount', 0) or 0)
-                )
-    else:
-        # (c) No Working budget yet — mirror Estimated. Same loop the
-        #     legacy code used; only kept for this no-sister case.
-        for ln in lines:
-            sec_key = _section_for_code(ln.account_code)
-            wt = (float(ln.working_total) if ln.working_total is not None
-                  else line_results[ln.id]['est_total'])
-            working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
-            if ln.is_labor:
-                working_gross_labor += line_results[ln.id].get('subtotal', 0.0)
-                working_section_fringe[sec_key] = (
-                    working_section_fringe.get(sec_key, 0.0)
-                    + float(line_results[ln.id].get('fringe_amount', 0) or 0)
-                )
+    for ln in lines:
+        sec_key = _section_for_code(ln.account_code)
+        wt = float(ln.working_total) if ln.working_total is not None else line_results[ln.id]['est_total']
+        working_by_section[sec_key] = working_by_section.get(sec_key, 0.0) + wt
+        if ln.is_labor:
+            working_gross_labor += line_results[ln.id].get('subtotal', 0.0)
+            working_section_fringe[sec_key] = working_section_fringe.get(sec_key, 0.0) + float(line_results[ln.id].get('fringe_amount', 0) or 0)
     # Inject auto-calculated fee amounts (WC, Production Insurance, Payroll
     # Service Fee) — not BudgetLines so they must be added separately.
     _wc_pct = float(getattr(budget, 'workers_comp_pct', 0) or 0)
