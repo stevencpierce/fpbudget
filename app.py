@@ -17080,6 +17080,56 @@ def page_not_found(e):
     return render_template("404.html"), 404
 
 
+# ── Global 500 handler — traceback + error-ref ────────────────────────────────
+# Catches any unhandled exception in a view, generates a short error-ref id,
+# logs the full traceback under that ref, and returns a small HTML page
+# showing the ref so the user can paste it back. Lets us find the exact
+# traceback in Render logs by grepping `ERR-<ref>`. Without this, Flask's
+# default 500 page reveals nothing and Render's log window is too narrow
+# to scroll back through hours of socket.io noise.
+#
+# Static assets and socket.io polling errors are excluded — those generate
+# enough log noise on their own and are handled by the LB / client retry.
+# 2026-05-08.
+@app.errorhandler(Exception)
+def _unhandled_exception(e):
+    # Let HTTP exceptions (404, 403, 401 etc.) pass through to their own
+    # handlers / Flask's default rendering. Only trap actual 500s.
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return e
+    import uuid as _uuid
+    import traceback as _tb
+    ref = _uuid.uuid4().hex[:8].upper()
+    try:
+        _path = request.path
+        _method = request.method
+        _user_id = getattr(getattr(request, '_login_user', None), 'id', None)
+    except Exception:
+        _path = '?'
+        _method = '?'
+        _user_id = None
+    logging.error(
+        f"[ERR-{ref}] {_method} {_path} user={_user_id}\n{_tb.format_exc()}"
+    )
+    body = (
+        '<!doctype html><html><head>'
+        '<title>Internal error</title>'
+        '<style>body{font-family:system-ui,sans-serif;max-width:560px;'
+        'margin:80px auto;padding:0 20px;color:#222}'
+        'code{background:#f3f4f6;padding:2px 8px;border-radius:4px;'
+        'font-size:1.1em}</style>'
+        '</head><body>'
+        '<h1>Something broke.</h1>'
+        '<p>We hit an unexpected error. Send this reference to support '
+        'so we can find the exact traceback:</p>'
+        f'<p><code>ERR-{ref}</code></p>'
+        '<p><a href="/">Back to dashboard</a></p>'
+        '</body></html>'
+    )
+    return body, 500
+
+
 @app.route("/projects")
 def projects_redirect():
     return redirect(url_for("dashboard"))
