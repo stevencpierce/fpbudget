@@ -3878,6 +3878,11 @@ def budget_view(pid, bid):
     # viewing — symmetric to estimated_line_totals below. Lines matched
     # by (account_code, sort_order). 2026-05-07.
     working_line_totals = {}
+    # Parallel dict: same loop, store the FULL calc result keyed by Working
+    # line id. Future commits will use this to compute working_by_section /
+    # working_gross_labor / working_section_fringe without a second N+1
+    # query against the Working budget. 2026-05-08 (commit C-1 of sweep).
+    working_line_results = {}
     if current_working_bid:
         _wb = next((b for b in all_budgets if b.id == current_working_bid), None)
         _wblines = BudgetLine.query.filter_by(budget_id=current_working_bid).all()
@@ -3894,6 +3899,7 @@ def budget_view(pid, bid):
                 else:
                     _wres = calc_line(_wln, _wb_fringe)
                 working_line_totals[(_wln.account_code, _wln.sort_order)] = _wres['est_total']
+                working_line_results[_wln.id] = _wres
             except Exception:
                 pass  # skip any line that fails to calc; column shows — for that line
 
