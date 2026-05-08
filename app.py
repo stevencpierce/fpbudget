@@ -17196,6 +17196,202 @@ def debug_line(bid):
     return jsonify(out)
 
 
+# ── Debug: full-budget calc trace HTML page ──────────────────────────────────
+# Side-window companion view. Shows every line's stored fields + both calc
+# paths' outputs in a single readable table. Auto-refreshes every 5s so
+# super admin can edit the budget in another tab and watch the calc shift
+# in real time. Companion to /admin/debug/line/<bid> (which returns JSON
+# for a single line). 2026-05-08 (Option B of sweep). Super-admin gated.
+@app.route("/admin/debug/budget/<int:bid>")
+@super_admin_required
+def debug_budget_calc_trace(bid):
+    from flask import render_template_string
+    from models import Budget, BudgetLine, ScheduleDay
+    from budget_calc import (calc_line, calc_line_from_schedule,
+                             get_fringe_configs)
+    budget = Budget.query.get_or_404(bid)
+    fringe = get_fringe_configs(db.session, budget.project_id)
+    profile = budget.payroll_profile
+    pw_start = (budget.payroll_week_start
+                if budget.payroll_week_start is not None
+                else (profile.payroll_week_start if profile else 6))
+    sched_mode = ('working'
+                  if budget.budget_mode in ('working', 'actual')
+                  else 'estimated')
+    # Pre-bucket all schedule rows in one query so per-line filters are
+    # dict lookups, not N+1 queries. Same dedup pattern budget_view uses.
+    _all_sd = ScheduleDay.query.filter(
+        ScheduleDay.budget_id == bid,
+        db.or_(ScheduleDay.schedule_mode == sched_mode,
+               ScheduleDay.schedule_mode == None),
+    ).all()
+    bucket_loose = {}
+    bucket_strict = {}
+    for d in _all_sd:
+        bk = (d.crew_instance or 1, d.date)
+        # Strict: only mode-specific rows
+        if d.schedule_mode == sched_mode:
+            bucket_strict.setdefault(d.budget_line_id, {})[bk] = d
+        # Loose: dedup with mode-tagged winning over NULL
+        b = bucket_loose.setdefault(d.budget_line_id, {})
+        ex = b.get(bk)
+        if ex is None:
+            b[bk] = d
+        elif ex.schedule_mode is None and d.schedule_mode == sched_mode:
+            b[bk] = d
+
+    lines = (BudgetLine.query
+             .filter_by(budget_id=bid)
+             .order_by(BudgetLine.account_code, BudgetLine.sort_order, BudgetLine.id)
+             .all())
+
+    rows = []
+    for ln in lines:
+        sched_strict = list(bucket_strict.get(ln.id, {}).values())
+        sched_loose  = list(bucket_loose.get(ln.id, {}).values())
+
+        def _do_calc(rows_):
+            try:
+                if ln.use_schedule:
+                    if rows_:
+                        return calc_line_from_schedule(ln, rows_, fringe,
+                                                      profile, pw_start)
+                    r = calc_line(ln, fringe)
+                    r["_note"] = "no sched → calc_line fallback"
+                    return r
+                return calc_line(ln, fringe)
+            except Exception as e:
+                return {"_error": repr(e)}
+
+        rs = _do_calc(sched_strict)
+        rl = _do_calc(sched_loose)
+
+        # Highlight rows where the two calc paths disagree, or where the
+        # frozen working_total snapshot disagrees with the live calc.
+        live = (rl.get("est_total") if isinstance(rl, dict) else None) or 0
+        snap = float(ln.working_total) if ln.working_total is not None else None
+        mismatch_calc = (rs.get("est_total") if isinstance(rs, dict) else None) != \
+                        (rl.get("est_total") if isinstance(rl, dict) else None)
+        mismatch_snap = snap is not None and abs((snap or 0) - live) > 0.01
+
+        rows.append({
+            "ln": ln,
+            "sched_strict_n": len(sched_strict),
+            "sched_loose_n":  len(sched_loose),
+            "rs": rs,
+            "rl": rl,
+            "snap": snap,
+            "live": live,
+            "mismatch_calc": mismatch_calc,
+            "mismatch_snap": mismatch_snap,
+        })
+
+    n_calc = sum(1 for r in rows if r["mismatch_calc"])
+    n_snap = sum(1 for r in rows if r["mismatch_snap"])
+
+    HTML = """
+<!doctype html>
+<html><head>
+<meta http-equiv="refresh" content="5">
+<title>Calc trace — {{ budget.name }}</title>
+<style>
+ body{font-family:-apple-system,system-ui,sans-serif;margin:0;padding:14px;background:#0b0d10;color:#e5e7eb;font-size:12px}
+ h1{font-size:14px;margin:0 0 8px;color:#f3f4f6}
+ .meta{color:#9ca3af;margin-bottom:10px;font-size:11px}
+ .meta b{color:#e5e7eb}
+ .legend{display:flex;gap:14px;margin-bottom:8px;font-size:11px;color:#9ca3af}
+ .legend span{display:inline-flex;align-items:center;gap:4px}
+ .swatch{display:inline-block;width:10px;height:10px;border-radius:2px}
+ table{border-collapse:collapse;width:100%;font-size:11px}
+ th{background:#1f2937;color:#e5e7eb;text-align:left;padding:5px 6px;position:sticky;top:0;border-bottom:1px solid #374151;white-space:nowrap}
+ td{padding:4px 6px;border-bottom:1px solid #1f2937;vertical-align:top}
+ tr.mismatch-snap td{background:#3f1d1d}
+ tr.mismatch-calc td{background:#3f2d1d}
+ .num{text-align:right;font-variant-numeric:tabular-nums;font-family:ui-monospace,monospace}
+ .muted{color:#6b7280}
+ .ok{color:#10b981}
+ .bad{color:#ef4444}
+ .desc{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .small{font-size:10px;color:#9ca3af}
+ .err{color:#ef4444;font-family:ui-monospace,monospace;font-size:10px}
+ .pill{display:inline-block;padding:1px 5px;border-radius:3px;font-size:10px;background:#374151;color:#d1d5db}
+ .pill.lab{background:#312e81;color:#a5b4fc}
+ .pill.sch{background:#064e3b;color:#6ee7b7}
+</style>
+</head><body>
+<h1>Calc trace — {{ budget.name }} <span class="muted">(bid={{ budget.id }}, mode={{ budget.budget_mode }})</span></h1>
+<div class="meta">
+ Auto-refresh every 5s · {{ rows|length }} lines ·
+ <b class="{{ 'bad' if n_calc else 'ok' }}">{{ n_calc }}</b> calc-path mismatches ·
+ <b class="{{ 'bad' if n_snap else 'ok' }}">{{ n_snap }}</b> snapshot mismatches
+ (live calc vs frozen working_total)
+</div>
+<div class="legend">
+ <span><span class="swatch" style="background:#3f1d1d"></span>working_total snapshot ≠ live calc (Top Sheet bug)</span>
+ <span><span class="swatch" style="background:#3f2d1d"></span>strict-mode calc ≠ loose-mode calc (NULL-mode legacy rows)</span>
+</div>
+<table>
+<thead><tr>
+ <th>code</th><th>description</th>
+ <th>tags</th>
+ <th class="num">qty</th><th class="num">days</th><th class="num">rate</th>
+ <th class="num">agent%</th>
+ <th>fringe</th><th>rate_type</th>
+ <th class="num">sched (strict / loose)</th>
+ <th class="num">est_total<br>strict</th>
+ <th class="num">est_total<br>loose (live)</th>
+ <th class="num">working_total<br>snapshot</th>
+ <th class="num">subtotal<br>(loose)</th>
+ <th class="num">agent$<br>(loose)</th>
+ <th class="num">fringe$<br>(loose)</th>
+</tr></thead>
+<tbody>
+{% for r in rows %}
+{% set ln = r.ln %}
+<tr class="{% if r.mismatch_snap %}mismatch-snap{% elif r.mismatch_calc %}mismatch-calc{% endif %}">
+ <td class="muted">{{ ln.account_code }}</td>
+ <td class="desc" title="{{ ln.description }}">{{ ln.description or '—' }}</td>
+ <td>
+  {% if ln.is_labor %}<span class="pill lab">labor</span>{% endif %}
+  {% if ln.use_schedule %}<span class="pill sch">sched</span>{% endif %}
+  {% if ln.line_tag %}<span class="pill">{{ ln.line_tag }}</span>{% endif %}
+  {% if ln.sync_omit %}<span class="pill" style="background:#5b21b6;color:#ddd6fe">sync_omit</span>{% endif %}
+ </td>
+ <td class="num">{{ '%g' % ln.quantity if ln.quantity is not none else '—' }}</td>
+ <td class="num">{{ '%g' % ln.days if ln.days is not none else '—' }}</td>
+ <td class="num">{{ '%g' % ln.rate if ln.rate is not none else '—' }}</td>
+ <td class="num">{{ '%g' % (ln.agent_pct * 100) if ln.agent_pct else '0' }}%</td>
+ <td><span class="muted">{{ ln.fringe_type or '—' }}</span></td>
+ <td><span class="muted">{{ ln.rate_type or '—' }}</span></td>
+ <td class="num"><span class="muted">{{ r.sched_strict_n }} / {{ r.sched_loose_n }}</span></td>
+ <td class="num">
+  {% if r.rs._error is defined %}<span class="err">{{ r.rs._error }}</span>
+  {% else %}{{ '%.2f' % (r.rs.est_total or 0) }}{% endif %}
+ </td>
+ <td class="num"><b>
+  {% if r.rl._error is defined %}<span class="err">{{ r.rl._error }}</span>
+  {% else %}{{ '%.2f' % (r.rl.est_total or 0) }}{% endif %}
+ </b></td>
+ <td class="num">
+  {% if r.snap is none %}<span class="muted">—</span>
+  {% else %}{{ '%.2f' % r.snap }}{% endif %}
+ </td>
+ <td class="num"><span class="muted">{{ '%.2f' % (r.rl.subtotal or 0) if r.rl.subtotal is defined else '' }}</span></td>
+ <td class="num"><span class="muted">{{ '%.2f' % (r.rl.agent_amount or 0) if r.rl.agent_amount is defined else '' }}</span></td>
+ <td class="num"><span class="muted">{{ '%.2f' % (r.rl.fringe_amount or 0) if r.rl.fringe_amount is defined else '' }}</span></td>
+</tr>
+{% if r.rl._note is defined %}
+<tr><td colspan="16" class="small" style="padding-left:24px">↳ {{ r.rl._note }}</td></tr>
+{% endif %}
+{% endfor %}
+</tbody>
+</table>
+</body></html>
+"""
+    return render_template_string(HTML, budget=budget, rows=rows,
+                                  n_calc=n_calc, n_snap=n_snap)
+
+
 @app.errorhandler(404)
 def page_not_found(e):
     return render_template("404.html"), 404
