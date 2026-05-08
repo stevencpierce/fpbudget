@@ -15336,48 +15336,67 @@ def _web_worker_essential_columns():
                      last_used    TIMESTAMP DEFAULT NOW(),
                      CONSTRAINT uq_category_vendor UNIQUE (qbo_category, vendor_name)
                    )""",
-                # COA refresh: any transaction row carrying a legacy COA
-                # code from the old FPBudgetSync DB gets translated to
-                # the new code. Idempotent — second run is a no-op.
-                # The mapping list mirrors COA_LEGACY_MAPPING in
-                # budget_calc.py. Cutover-only data fix; new ingestion
-                # always writes the new code.
-                "UPDATE transaction SET account_code = 1100 WHERE account_code = 100",
-                "UPDATE transaction SET account_code = 2000 WHERE account_code = 600",
-                "UPDATE transaction SET account_code = 2100 WHERE account_code = 700",
-                "UPDATE transaction SET account_code = 2300 WHERE account_code = 800",
-                "UPDATE transaction SET account_code = 2200 WHERE account_code = 900",
-                "UPDATE transaction SET account_code = 2000 WHERE account_code = 1000",
-                "UPDATE transaction SET account_code = 4000 WHERE account_code = 1200",
-                "UPDATE transaction SET account_code = 2600 WHERE account_code = 2000",
-                "UPDATE transaction SET account_code = 2700 WHERE account_code = 3000",
-                "UPDATE transaction SET account_code = 5000 WHERE account_code = 3100",
-                "UPDATE transaction SET account_code = 2900 WHERE account_code = 3200",
-                "UPDATE transaction SET account_code = 2800 WHERE account_code = 3300",
-                "UPDATE transaction SET account_code = 3000 WHERE account_code = 4000",
-                "UPDATE transaction SET account_code = 3100 WHERE account_code = 4500",
-                "UPDATE transaction SET account_code = 3200 WHERE account_code = 5000",
-                "UPDATE transaction SET account_code = 3400 WHERE account_code = 6000",
-                "UPDATE transaction SET account_code = 3500 WHERE account_code = 7000",
-                "UPDATE transaction SET account_code = 3600 WHERE account_code = 7500",
-                "UPDATE transaction SET account_code = 3700 WHERE account_code = 8000",
-                "UPDATE transaction SET account_code = 3800 WHERE account_code = 8500",
-                "UPDATE transaction SET account_code = 3300 WHERE account_code = 9000",
-                "UPDATE transaction SET account_code = 4500 WHERE account_code = 11000",
-                "UPDATE transaction SET account_code = 4600 WHERE account_code = 11500",
-                "UPDATE transaction SET account_code = 4700 WHERE account_code = 11600",
-                "UPDATE transaction SET account_code = 6100 WHERE account_code = 12000",
-                "UPDATE transaction SET account_code = 4800 WHERE account_code = 12500",
-                "UPDATE transaction SET account_code = 6200 WHERE account_code = 13000",
-                "UPDATE transaction SET account_code = 6400 WHERE account_code = 13200",
-                "UPDATE transaction SET account_code = 6000 WHERE account_code = 14000",
-                "UPDATE transaction SET account_code = 6500 WHERE account_code = 15000",
-                "UPDATE transaction SET account_code = 6300 WHERE account_code = 16000",
-                "UPDATE transaction SET account_code = 6300 WHERE account_code = 17000",
-                "UPDATE transaction SET account_code = 4900 WHERE account_code = 18000",
-                "UPDATE transaction SET account_code = 6600 WHERE account_code = 19000",
-                "UPDATE transaction SET account_code = 6700 WHERE account_code = 20000",
-                "UPDATE transaction SET account_code = 6800 WHERE account_code = 20500",
+                # COA refresh on transaction.account_code: any row
+                # carrying a legacy code from the pre-2026-04 COA gets
+                # translated to the new MMB/ShowBiz-aligned code in a
+                # SINGLE CASE WHEN pass. Sequential UPDATEs were buggy
+                # (chained re-mapping: old 600→new 2000 then old 2000→
+                # new 2600 swept the just-promoted rows on to 2600) and
+                # had a wrong target for code 100 (1100 instead of
+                # 3300). See coa_change_log + COA_LEGACY_MAPPING in
+                # budget_calc.py for the canonical mapping. Idempotent
+                # because rows with old codes vanish on first run, and
+                # the WHERE…IN clause is a no-op once they're gone.
+                #
+                # 2026-05-08: rewrite. Existing already-corrupted rows
+                # cannot be repaired here (we can no longer tell whether
+                # a 2600 row was originally 600, 1000, or 2000) — see
+                # admin audit query.
+                """UPDATE transaction
+                   SET account_code = CASE account_code
+                     WHEN 100   THEN 3300
+                     WHEN 600   THEN 2000
+                     WHEN 700   THEN 2100
+                     WHEN 800   THEN 2300
+                     WHEN 900   THEN 2200
+                     WHEN 1000  THEN 2000
+                     WHEN 1200  THEN 4000
+                     WHEN 2000  THEN 2600
+                     WHEN 3000  THEN 2700
+                     WHEN 3100  THEN 5000
+                     WHEN 3200  THEN 2900
+                     WHEN 3300  THEN 2800
+                     WHEN 4000  THEN 3000
+                     WHEN 4500  THEN 3100
+                     WHEN 5000  THEN 3200
+                     WHEN 6000  THEN 3400
+                     WHEN 7000  THEN 3500
+                     WHEN 7500  THEN 3600
+                     WHEN 8000  THEN 3700
+                     WHEN 8500  THEN 3800
+                     WHEN 9000  THEN 3300
+                     WHEN 11000 THEN 4500
+                     WHEN 11500 THEN 4600
+                     WHEN 11600 THEN 4700
+                     WHEN 12000 THEN 6100
+                     WHEN 12500 THEN 4800
+                     WHEN 13000 THEN 6200
+                     WHEN 13200 THEN 6400
+                     WHEN 14000 THEN 6000
+                     WHEN 15000 THEN 6500
+                     WHEN 16000 THEN 6300
+                     WHEN 17000 THEN 6300
+                     WHEN 18000 THEN 4900
+                     WHEN 19000 THEN 6600
+                     WHEN 20000 THEN 6700
+                     WHEN 20500 THEN 6800
+                     ELSE account_code
+                   END
+                   WHERE account_code IN (100,600,700,800,900,1000,1200,
+                       2000,3000,3100,3200,3300,4000,4500,5000,6000,
+                       7000,7500,8000,8500,9000,11000,11500,11600,12000,
+                       12500,13000,13200,14000,15000,16000,17000,18000,
+                       19000,20000,20500)""",
                 # ── 2026-04-30: Actual-budget peer mode (Phase 2a) ────
                 # Budget.is_actual flag distinguishes the auto-cloned
                 # actuals budget from Estimated/Working planning peers.
@@ -15427,40 +15446,45 @@ with app.app_context():
 # tiny system_task_log table ensures only one worker per day actually does
 # the work. Errors are logged but never abort the boot.
 def _maybe_run_trash_purge():
+    # Whole body must run inside app_context — db.engine raises
+    # `Working outside of application context` otherwise, which was
+    # silently aborting every purge run (see logs 2026-05-08). The
+    # background thread starts before app_context is established,
+    # so we set it up here.
     try:
         from sqlalchemy import text as _sql_text
-        with db.engine.connect() as conn:
-            # Create the task-log table if missing.
-            try:
-                conn.execute(_sql_text(
-                    "CREATE TABLE IF NOT EXISTS system_task_log ("
-                    " task_name VARCHAR(80) PRIMARY KEY,"
-                    " last_run_at TIMESTAMP NOT NULL,"
-                    " last_result TEXT)"
-                ))
-                conn.commit()
-            except Exception:
-                pass
-            # Try to claim the slot atomically. Postgres ON CONFLICT
-            # … WHERE clause: only update if last run was >24h ago.
-            try:
-                claimed = conn.execute(_sql_text(
-                    "INSERT INTO system_task_log (task_name, last_run_at) "
-                    "VALUES ('trash_purge', NOW()) "
-                    "ON CONFLICT (task_name) DO UPDATE "
-                    "  SET last_run_at = EXCLUDED.last_run_at "
-                    "  WHERE system_task_log.last_run_at < NOW() - INTERVAL '24 hours' "
-                    "RETURNING task_name"
-                )).fetchone()
-                conn.commit()
-            except Exception as _ce:
-                logging.warning(f"[trash purge] claim failed: {_ce}")
-                return
-            if not claimed:
-                logging.info("[trash purge] another worker ran within 24h, skipping")
-                return
-        # We claimed the slot — do the actual purge.
         with app.app_context():
+            with db.engine.connect() as conn:
+                # Create the task-log table if missing.
+                try:
+                    conn.execute(_sql_text(
+                        "CREATE TABLE IF NOT EXISTS system_task_log ("
+                        " task_name VARCHAR(80) PRIMARY KEY,"
+                        " last_run_at TIMESTAMP NOT NULL,"
+                        " last_result TEXT)"
+                    ))
+                    conn.commit()
+                except Exception:
+                    pass
+                # Try to claim the slot atomically. Postgres ON CONFLICT
+                # … WHERE clause: only update if last run was >24h ago.
+                try:
+                    claimed = conn.execute(_sql_text(
+                        "INSERT INTO system_task_log (task_name, last_run_at) "
+                        "VALUES ('trash_purge', NOW()) "
+                        "ON CONFLICT (task_name) DO UPDATE "
+                        "  SET last_run_at = EXCLUDED.last_run_at "
+                        "  WHERE system_task_log.last_run_at < NOW() - INTERVAL '24 hours' "
+                        "RETURNING task_name"
+                    )).fetchone()
+                    conn.commit()
+                except Exception as _ce:
+                    logging.warning(f"[trash purge] claim failed: {_ce}")
+                    return
+                if not claimed:
+                    logging.info("[trash purge] another worker ran within 24h, skipping")
+                    return
+            # We claimed the slot — do the actual purge.
             result = _purge_old_trash(days=30)
             try:
                 with db.engine.connect() as conn:

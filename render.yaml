@@ -7,16 +7,19 @@ services:
     # starts. This avoids blocking the gevent worker with synchronous psycopg2
     # calls — which was hanging deploys (worker couldn't answer health checks).
     preDeployCommand: RUN_BOOT_TASKS=1 python -c "import app"
-    # gthread worker (2 processes × 4 threads = 8 concurrent slots).
-    # Reduced from 16 slots after user-reported OOMs during doc upload
-    # batches (2026-04-29). Each Pillow image conversion can hold 30+ MB
-    # of uncompressed RGB before being PDF-encoded; 16 concurrent slots
-    # exceeded Render's free-tier 512 MB worker. 8 slots is still plenty
-    # for SocketIO polling + DB I/O.
+    # gthread worker (2 processes × 8 threads = 16 concurrent slots).
+    # Bumped back from 4 threads (2026-05-08) after user reported 502s
+    # when navigating between budget tabs: each open browser tab parks
+    # ~2 threads on /socket.io/?…polling for ~25s at a time, so 4 open
+    # budgets saturated all 8 slots and starved page renders. The
+    # earlier 4-thread cut was a response to OOMs during doc-upload
+    # batches (Pillow holding 30+MB per image); 8 threads is the prior
+    # known-good value. If OOM recurs, raise instance memory before
+    # cutting threads again — saturation is the worse failure mode.
     #
     # gthread = real OS threads inside each worker. No gevent
     # monkey-patching, no SSL recursion, no dependency drama.
-    startCommand: gunicorn -k gthread -w 2 --threads 4 --bind 0.0.0.0:$PORT --timeout 120 app:app
+    startCommand: gunicorn -k gthread -w 2 --threads 8 --bind 0.0.0.0:$PORT --timeout 120 app:app
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
