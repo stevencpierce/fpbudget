@@ -3941,6 +3941,15 @@ def budget_view(pid, bid):
     # for the "Actual" column in EVERY view — Actual lines do not
     # carry an estimated_total of their own; they show the rollup of
     # whatever transactions were dragged in. 2026-05-08 per user.
+    # Resolve peer Actual budget early — actual_line_totals below depends
+    # on it, and peer_estimated/working_bid are computed further down. Only
+    # one Actual exists per project (no version branching).
+    _actual_peer = (Budget.query
+                    .filter_by(project_id=pid, is_actual=True,
+                               version_status='current')
+                    .first())
+    peer_actual_bid = _actual_peer.id if _actual_peer else None
+
     actual_line_totals = {}
     actual_line_totals_by_lid = {}  # by Actual line id (used in Actual view)
     if peer_actual_bid:
@@ -3990,16 +3999,11 @@ def budget_view(pid, bid):
     peer_estimated_bid = peer_estimated_bid.id if peer_estimated_bid else current_estimated_bid
     peer_working_bid   = _vn_peer.get('working', {})
     peer_working_bid   = peer_working_bid.id if peer_working_bid else None
-    # Actual peer: the project's current Actual budget. Only one
-    # Actual exists per project (no version branching), so we look it
-    # up directly rather than via _vn_peer. Used by the mode-switcher
+    # Actual peer (peer_actual_bid) was resolved earlier so the
+    # actual_line_totals rollup could use it. Only one Actual exists
+    # per project (no version branching). Used by the mode-switcher
     # Actual button (added 2026-05-01 — replaces the By Department
     # sub-tab as the canonical phase-3 view).
-    _actual_peer = (Budget.query
-                    .filter_by(project_id=pid, is_actual=True,
-                               version_status='current')
-                    .first())
-    peer_actual_bid = _actual_peer.id if _actual_peer else None
     is_actual_view  = bool(budget.is_actual)
 
     # Build per-line and per-section transaction lookup tables for the
