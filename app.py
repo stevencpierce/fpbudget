@@ -3715,24 +3715,42 @@ def budget_view(pid, bid):
     working_line_totals = {}
     working_line_results = {}  # {working_line.id: full _wres dict}
     if current_working_bid:
-        _wb = next((b for b in all_budgets if b.id == current_working_bid), None)
-        _wblines = BudgetLine.query.filter_by(budget_id=current_working_bid).all()
-        _wb_fringe = get_fringe_configs(db.session, pid)
-        _wb_profile  = _wb.payroll_profile if _wb else None
-        _wb_pw_start = (_wb.payroll_week_start if (_wb and _wb.payroll_week_start is not None)
-                        else (_wb_profile.payroll_week_start if _wb_profile else 6))
-        for _wln in _wblines:
-            try:
-                if _wln.use_schedule:
-                    _wb_sm = 'working' if (_wb and _wb.budget_mode in ('working', 'actual')) else 'estimated'
-                    _wb_sched = ScheduleDay.query.filter_by(budget_line_id=_wln.id, schedule_mode=_wb_sm).all()
-                    _wres = calc_line_from_schedule(_wln, _wb_sched, _wb_fringe, _wb_profile, _wb_pw_start)
-                else:
-                    _wres = calc_line(_wln, _wb_fringe)
-                working_line_totals[(_wln.account_code, _wln.sort_order)] = _wres['est_total']
-                working_line_results[_wln.id] = _wres
-            except Exception:
-                pass  # skip any line that fails to calc; column shows — for that line
+        if current_working_bid == budget.id:
+            # FAST PATH: we're viewing the Working budget — its lines AND
+            # calc results are already in `lines` and `line_results`.
+            # No need to re-query / re-calc. Saves a full N+1 ScheduleDay
+            # query pass + a second calc_line pass per request. Big memory
+            # win when users hammer-switch between Estimated/Working/Actual.
+            # 2026-05-08, C-4 of sweep.
+            for ln in lines:
+                r = line_results.get(ln.id)
+                if not r:
+                    continue
+                working_line_totals[(ln.account_code, ln.sort_order)] = (
+                    r.get('est_total', 0) or 0
+                )
+                working_line_results[ln.id] = r
+        else:
+            # Cross-view: viewing Estimated/Actual, separate Working budget
+            # exists. Query + calc its lines fresh.
+            _wb = next((b for b in all_budgets if b.id == current_working_bid), None)
+            _wblines = BudgetLine.query.filter_by(budget_id=current_working_bid).all()
+            _wb_fringe = get_fringe_configs(db.session, pid)
+            _wb_profile  = _wb.payroll_profile if _wb else None
+            _wb_pw_start = (_wb.payroll_week_start if (_wb and _wb.payroll_week_start is not None)
+                            else (_wb_profile.payroll_week_start if _wb_profile else 6))
+            for _wln in _wblines:
+                try:
+                    if _wln.use_schedule:
+                        _wb_sm = 'working' if (_wb and _wb.budget_mode in ('working', 'actual')) else 'estimated'
+                        _wb_sched = ScheduleDay.query.filter_by(budget_line_id=_wln.id, schedule_mode=_wb_sm).all()
+                        _wres = calc_line_from_schedule(_wln, _wb_sched, _wb_fringe, _wb_profile, _wb_pw_start)
+                    else:
+                        _wres = calc_line(_wln, _wb_fringe)
+                    working_line_totals[(_wln.account_code, _wln.sort_order)] = _wres['est_total']
+                    working_line_results[_wln.id] = _wres
+                except Exception:
+                    pass  # skip any line that fails to calc; column shows — for that line
 
     # Top Sheet's Working column rollup. Three branches by data source:
     #
@@ -3982,30 +4000,43 @@ def budget_view(pid, bid):
     # 2026-05-07.
     estimated_line_totals = {}
     if current_estimated_bid:
-        _eb = next((b for b in all_budgets if b.id == current_estimated_bid), None)
-        _eblines = BudgetLine.query.filter_by(budget_id=current_estimated_bid).all()
-        _eb_fringe = get_fringe_configs(db.session, pid)
-        _eb_profile  = _eb.payroll_profile if _eb else None
-        _eb_pw_start = (_eb.payroll_week_start if (_eb and _eb.payroll_week_start is not None)
-                        else (_eb_profile.payroll_week_start if _eb_profile else 6))
-        for _eln in _eblines:
-            try:
-                if _eln.use_schedule:
-                    _eb_sched = ScheduleDay.query.filter_by(
-                        budget_line_id=_eln.id, schedule_mode='estimated'
-                    ).all()
-                    # Also accept legacy NULL-mode rows so older budgets
-                    # mid-migration still produce a value.
-                    if not _eb_sched:
+        if current_estimated_bid == budget.id:
+            # FAST PATH: viewing the Estimated budget — line_results
+            # already has its live calc. Same memory/query win as
+            # working_line_totals above. C-4, 2026-05-08.
+            for ln in lines:
+                r = line_results.get(ln.id)
+                if not r:
+                    continue
+                estimated_line_totals[(ln.account_code, ln.sort_order)] = (
+                    r.get('est_total', 0) or 0
+                )
+        else:
+            # Cross-view: query + calc the separate Estimated budget.
+            _eb = next((b for b in all_budgets if b.id == current_estimated_bid), None)
+            _eblines = BudgetLine.query.filter_by(budget_id=current_estimated_bid).all()
+            _eb_fringe = get_fringe_configs(db.session, pid)
+            _eb_profile  = _eb.payroll_profile if _eb else None
+            _eb_pw_start = (_eb.payroll_week_start if (_eb and _eb.payroll_week_start is not None)
+                            else (_eb_profile.payroll_week_start if _eb_profile else 6))
+            for _eln in _eblines:
+                try:
+                    if _eln.use_schedule:
                         _eb_sched = ScheduleDay.query.filter_by(
-                            budget_line_id=_eln.id, schedule_mode=None
+                            budget_line_id=_eln.id, schedule_mode='estimated'
                         ).all()
-                    _eres = calc_line_from_schedule(_eln, _eb_sched, _eb_fringe, _eb_profile, _eb_pw_start)
-                else:
-                    _eres = calc_line(_eln, _eb_fringe)
-                estimated_line_totals[(_eln.account_code, _eln.sort_order)] = _eres['est_total']
-            except Exception:
-                pass  # skip any line that fails to calc
+                        # Also accept legacy NULL-mode rows so older budgets
+                        # mid-migration still produce a value.
+                        if not _eb_sched:
+                            _eb_sched = ScheduleDay.query.filter_by(
+                                budget_line_id=_eln.id, schedule_mode=None
+                            ).all()
+                        _eres = calc_line_from_schedule(_eln, _eb_sched, _eb_fringe, _eb_profile, _eb_pw_start)
+                    else:
+                        _eres = calc_line(_eln, _eb_fringe)
+                    estimated_line_totals[(_eln.account_code, _eln.sort_order)] = _eres['est_total']
+                except Exception:
+                    pass  # skip any line that fails to calc
 
     # Per-line ACTUAL spend rollup. Sums non-project-expense=False
     # transactions on the project's current Actual budget, keyed by
