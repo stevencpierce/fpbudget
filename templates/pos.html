@@ -72,8 +72,12 @@
               border-radius:8px;padding:14px 18px;display:flex;flex-direction:column;gap:8px;
               {% if po.archived %}opacity:.55{% endif %}">
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-      <span style="font-weight:700;font-size:1.05rem;color:var(--accent)">{{ po.po_number }}</span>
-      <span style="font-weight:600">{{ po.vendor_name }}</span>
+      <span class="po-inline-edit" data-po-id="{{ po.id }}" data-field="po_number"
+            style="font-weight:700;font-size:1.05rem;color:var(--accent);cursor:text"
+            title="Click to rename PO">{{ po.po_number }}</span>
+      <span class="po-inline-edit" data-po-id="{{ po.id }}" data-field="vendor_name"
+            style="font-weight:600;cursor:text"
+            title="Click to rename vendor">{{ po.vendor_name }}</span>
       <span style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;
                    padding:2px 8px;border-radius:10px;
                    {% if po.status == 'open' %}background:rgba(91,138,249,.15);color:#5b8af9
@@ -111,7 +115,11 @@
       <div>
         <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Cap</div>
         <div style="font-weight:600;font-variant-numeric:tabular-nums">
-          {% if cap is not none %}${{ '{:,.2f}'.format(cap) }}{% else %}<span class="muted">—</span>{% endif %}
+          <span class="po-inline-edit po-inline-cap" data-po-id="{{ po.id }}"
+                data-field="total_committed" data-raw="{{ cap if cap is not none else '' }}"
+                style="cursor:text" title="Click to edit cap">
+            {% if cap is not none %}${{ '{:,.2f}'.format(cap) }}{% else %}<span class="muted">—</span>{% endif %}
+          </span>
         </div>
       </div>
       <div title="Sum of budget lines assigned to this PO (planning projection)">
@@ -417,5 +425,100 @@ async function restorePo(id) {
   if (r.ok) window.location.reload();
   else alert('Restore failed');
 }
+
+// ── Inline edit for PO #, vendor name, cap ─────────────────────────────────
+// Click any element with .po-inline-edit → it becomes an input → Enter
+// saves and reloads, Escape cancels. Saves partially via the same
+// /pos/save endpoint the modal uses (it accepts any subset of fields).
+// User-requested 2026-05-10: avoid the modal round-trip for quick edits.
+(function() {
+  let _editing = null;
+
+  function startEdit(span) {
+    if (_editing === span || span.querySelector('input')) return;
+    _editing = span;
+    const field = span.dataset.field;
+    // Cap stores the raw number on data-raw; PO# / vendor reads textContent.
+    const rawAttr = span.dataset.raw;
+    const original = (rawAttr !== undefined && rawAttr !== '')
+        ? rawAttr
+        : span.textContent.trim().replace(/^\$/, '').replace(/,/g, '');
+    span.dataset.original = span.innerHTML;
+    span.dataset.originalText = original;
+
+    const input = document.createElement('input');
+    input.type = (field === 'total_committed') ? 'number' : 'text';
+    if (field === 'total_committed') { input.step = '0.01'; input.min = '0'; }
+    input.value = original;
+    input.style.cssText =
+      'font:inherit;color:inherit;background:var(--bg-input);' +
+      'border:1px solid var(--border);border-radius:4px;' +
+      'padding:1px 6px;width:' + Math.max(80, span.offsetWidth + 20) + 'px;';
+    span.innerHTML = '';
+    span.appendChild(input);
+    input.focus();
+    input.select();
+
+    const finish = (commit) => {
+      if (!_editing || _editing !== span) return;
+      const newVal = input.value.trim();
+      if (!commit || newVal === original) {
+        // Cancel: restore original markup
+        span.innerHTML = span.dataset.original;
+        _editing = null;
+        return;
+      }
+      saveField(span, field, newVal);
+    };
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  async function saveField(span, field, value) {
+    const id = parseInt(span.dataset.poId, 10);
+    const body = { id };
+    if (field === 'total_committed') {
+      // Empty input → clear the cap (server accepts null).
+      body.total_committed = value === '' ? null : value;
+    } else {
+      body[field] = value;
+    }
+    try {
+      const r = await fetch(`/projects/${PROJECT_ID}/pos/save`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        alert(j.error || 'Save failed');
+        span.innerHTML = span.dataset.original;
+        _editing = null;
+        return;
+      }
+      // Reload so the dependent values (Remaining, % Used, banners,
+      // mismatch checks) recompute server-side. Cap edit in particular
+      // ripples into multiple cells.
+      window.location.reload();
+    } catch (e) {
+      alert('Save failed: ' + e.message);
+      span.innerHTML = span.dataset.original;
+      _editing = null;
+    }
+  }
+
+  // Wire up all inline-edit spans on page load.
+  document.addEventListener('click', (e) => {
+    const span = e.target.closest('.po-inline-edit');
+    if (!span) return;
+    // Don't re-trigger when clicking inside the input that's already there.
+    if (e.target.tagName === 'INPUT') return;
+    e.preventDefault();
+    startEdit(span);
+  });
+})();
 </script>
 {% endblock %}
