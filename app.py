@@ -10098,7 +10098,8 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                 }
         except Exception:
             pass
-    # Additional doc attachments from "Add to PO" appends.
+    # Additional doc attachments from "Add to PO" appends. Capture each
+    # doc's category so the rollup below can split estimates vs receipts.
     out["attachments"] = []
     try:
         from models import PoDocAttachment
@@ -10113,6 +10114,7 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                 "amount":   float(att.amount) if att.amount is not None else None,
                 "note":     att.note or "",
                 "role":     att.role or "additional",
+                "category": (d.category if d else None),
                 "created_at": att.created_at.isoformat() if att.created_at else None,
             })
     except Exception:
@@ -10171,37 +10173,76 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
             budgeted, line_count = 0, 0
             out["lines"] = []
         out["budgeted"]   = float(budgeted)
+        out["lines_total"] = float(budgeted)  # alias for clarity
         out["line_count"] = line_count
-        # Sum of attached-doc amounts (the "what was quoted" side, vs
-        # budgeted = "what the budget commits"). When these diverge
-        # there's likely a wrong line amount or a duplicate; show both
-        # so the user can spot it.
+
+        # Three-bucket rollup, 2026-05-10. User feedback: the previous
+        # "doc_attached_total" lumped vendor estimates/SOWs and receipts
+        # together. Real workflow distinguishes them:
+        #   estimates_total → vendor commitments (estimate / quote /
+        #     contract / purchase_order categories) — what the vendor
+        #     said the work would cost
+        #   receipts_total  → receipts/invoices ATTACHED but not yet
+        #     posted as transactions — informational
+        #   billed_total    → ACTUALS — sum of Transaction.amount for
+        #     transactions whose budget_line.po_id == this PO. This is
+        #     the canonical "money paid out" number; over-cap fires
+        #     only when this exceeds the cap.
+        _ESTIMATE_CATS = {'estimate', 'quote', 'contract', 'purchase_order'}
+        _RECEIPT_CATS  = {'receipt', 'invoice'}
+        _est_sum = 0.0
+        _rcp_sum = 0.0
+        _all_sum = 0.0
+        for a in (out.get("attachments") or []):
+            amt = a.get("amount") or 0
+            if not amt:
+                continue
+            amt = float(amt)
+            _all_sum += amt
+            cat = (a.get("category") or "").lower()
+            if cat in _ESTIMATE_CATS:
+                _est_sum += amt
+            elif cat in _RECEIPT_CATS:
+                _rcp_sum += amt
+        out["estimates_total"]   = round(_est_sum, 2)
+        out["receipts_total"]    = round(_rcp_sum, 2)
+        out["doc_attached_total"] = round(_all_sum, 2)  # legacy field, kept
+
+        # Billed = sum of transactions on lines assigned to this PO.
+        # Filter by line ids we already loaded above. Skips reversed/
+        # not-project-expense rows because those don't represent real
+        # spend. Vendor-name match deliberately NOT applied — the line
+        # assignment IS the canonical link; vendor strings on POs vs
+        # transactions can differ in casing/punctuation.
+        _billed = 0.0
         try:
-            _att_total = sum(float(a.amount or 0)
-                             for a in (out.get("attachments") or [])
-                             if a.get("amount"))
-            out["doc_attached_total"] = round(_att_total, 2)
-        except Exception:
-            out["doc_attached_total"] = None
-        # Cap usage drives off the *actual receipts* when any are
-        # attached — the line-budget total is a planning projection
-        # and routinely exceeds the cap before receipts come in. When
-        # no receipts are attached yet, fall back to the budgeted
-        # projection so the user still gets a heads-up that the line
-        # plan exceeds what was committed. 2026-05-08 per user.
-        # Doc-vs-line mismatch (line plan != receipt totals) has its
-        # own banner in the template, so this signal is reserved for
-        # actual overspend against the vendor commitment.
-        _has_receipts = bool(out.get("doc_attached_total")) and \
-                        any(a.get("amount") for a in (out.get("attachments") or []))
-        _used = float(out["doc_attached_total"]) if _has_receipts else float(budgeted)
-        out["cap_used_basis"] = "receipts" if _has_receipts else "budgeted"
+            if _po_lines:
+                _line_ids = [l.id for l in _po_lines]
+                _txns = (Transaction.query
+                         .filter(Transaction.budget_line_id.in_(_line_ids),
+                                 Transaction.not_project_expense == False,
+                                 Transaction.is_expense == True)
+                         .all())
+                _billed = sum(float(t.amount or 0) for t in _txns)
+        except Exception as _be:
+            logging.warning(f"[po rollup] billed calc failed for po={po.id}: {_be}")
+        out["billed_total"] = round(_billed, 2)
+
+        # Cap usage drives off BILLED only — the user wants the over-cap
+        # alert reserved for actual overspend, not a budgeted projection
+        # exceeding the committed cap. Lines or estimates above cap can
+        # still trigger informational banners (in the template), but
+        # over_cap is the loud signal and it requires real money paid.
+        # 2026-05-10.
         if po.total_committed is not None:
-            out["over_cap"] = _used > float(po.total_committed)
-            out["cap_remaining"] = float(po.total_committed) - _used
+            cap_f = float(po.total_committed)
+            out["over_cap"]      = _billed > cap_f
+            out["cap_remaining"] = cap_f - _billed
+            out["cap_used_basis"] = "billed"
         else:
-            out["over_cap"] = False
+            out["over_cap"]      = False
             out["cap_remaining"] = None
+            out["cap_used_basis"] = "billed"
     return out
 
 

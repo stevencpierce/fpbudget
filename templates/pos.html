@@ -36,23 +36,27 @@
 </div>
 
 <p class="muted" style="margin-bottom:1.5rem;font-size:.85rem">
-  Vendor commitments tied to this project. Assign budget lines (typically equipment, services,
-  and other non-labor) to a PO so spend rolls up against the committed cap. The cap-warning
-  banner fires if the budgeted total exceeds it.
+  Vendor commitments tied to this project. Assign budget lines (typically equipment,
+  services, and other non-labor) to a PO and attach the vendor's estimate / SOW.
+  Receipts and transactions linked to those lines roll up into <strong>Billed</strong>;
+  the cap-warning banner only fires when <strong>Billed exceeds the committed cap</strong>.
 </p>
 
 {# Open POs first, then archived. Empty-state if no POs yet. #}
 {% if pos %}
 <div style="display:flex;flex-direction:column;gap:.6rem">
   {% for po in pos %}
-  {% set cap = po.total_committed %}
-  {% set budgeted = po.budgeted %}
-  {% set over = po.over_cap %}
-  {# Cap usage is driven by attached receipts when any exist, otherwise
-     by the budgeted line projection. Mirrors the server-side basis so
-     Remaining / % Used reflect what triggered the over warning. #}
-  {% set _used = (po.doc_attached_total if po.cap_used_basis == 'receipts' else budgeted) %}
-  {% set pct = (_used / cap * 100) if cap and cap > 0 else 0 %}
+  {% set cap          = po.total_committed %}
+  {% set lines_total  = po.lines_total | default(po.budgeted) %}
+  {% set est_total    = po.estimates_total | default(0) %}
+  {% set rcp_total    = po.receipts_total  | default(0) %}
+  {% set billed_total = po.billed_total    | default(0) %}
+  {% set over         = po.over_cap %}
+  {# Cap usage is driven by BILLED only — actual transactions on
+     PO-assigned lines. Lines / Estimates / Receipts above cap show
+     up as informational banners; the loud over-cap signal requires
+     real money out. 2026-05-10 per user spec. #}
+  {% set pct = (billed_total / cap * 100) if cap and cap > 0 else 0 %}
   <div class="po-card" data-id="{{ po.id }}"
        style="background:var(--bg-card);border:1px solid {{ '#fbbf24' if over else 'var(--border)' }};
               border-radius:8px;padding:14px 18px;display:flex;flex-direction:column;gap:8px;
@@ -92,7 +96,7 @@
       {% if po.vendor_phone %}{% if po.vendor_contact or po.vendor_email %} · {% endif %}☎ {{ po.vendor_phone }}{% endif %}
     </div>
     {% endif %}
-    <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:14px;font-size:.82rem;
+    <div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:14px;font-size:.82rem;
                 padding:8px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
       <div>
         <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Cap</div>
@@ -100,49 +104,82 @@
           {% if cap is not none %}${{ '{:,.2f}'.format(cap) }}{% else %}<span class="muted">—</span>{% endif %}
         </div>
       </div>
-      <div>
-        <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Budgeted ({{ po.line_count }} line{{ 's' if po.line_count != 1 else '' }})</div>
-        <div style="font-weight:600;font-variant-numeric:tabular-nums;color:{% if over %}#fbbf24{% else %}var(--text){% endif %}">
-          ${{ '{:,.2f}'.format(budgeted) }}
+      <div title="Sum of budget lines assigned to this PO (planning projection)">
+        <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Lines ({{ po.line_count }})</div>
+        <div style="font-weight:600;font-variant-numeric:tabular-nums">
+          ${{ '{:,.2f}'.format(lines_total) }}
         </div>
       </div>
-      <div>
+      <div title="Sum of attached vendor estimates / SOWs / quotes / contracts">
+        <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Estimates</div>
+        <div style="font-weight:600;font-variant-numeric:tabular-nums;color:var(--text-muted)">
+          {% if est_total > 0 %}${{ '{:,.2f}'.format(est_total) }}{% else %}<span class="muted">—</span>{% endif %}
+        </div>
+      </div>
+      <div title="Actual money out — sum of transactions on this PO's lines. Drives the over-cap warning.">
+        <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Billed</div>
+        <div style="font-weight:600;font-variant-numeric:tabular-nums;color:{% if over %}#ef4444{% elif billed_total > 0 %}var(--text){% else %}var(--text-muted){% endif %}">
+          {% if billed_total > 0 %}${{ '{:,.2f}'.format(billed_total) }}{% else %}<span class="muted">$0.00</span>{% endif %}
+        </div>
+      </div>
+      <div title="Cap minus Billed. Negative = over budget.">
         <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Remaining</div>
         <div style="font-weight:600;font-variant-numeric:tabular-nums;color:{% if over %}#ef4444{% elif cap %}#22c55e{% else %}var(--text-muted){% endif %}">
-          {% if cap is not none %}${{ '{:,.2f}'.format(po.cap_remaining) }}{% else %}<span class="muted">—</span>{% endif %}
-        </div>
-      </div>
-      <div>
-        <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">% Used</div>
-        <div style="font-weight:600;font-variant-numeric:tabular-nums;color:{% if over %}#ef4444{% else %}var(--text){% endif %}">
-          {% if cap and cap > 0 %}{{ '{:,.1f}'.format(pct) }}%{% else %}<span class="muted">—</span>{% endif %}
+          {% if cap is not none %}${{ '{:,.2f}'.format(po.cap_remaining) }}
+            {% if cap > 0 %}<span style="font-weight:400;color:var(--text-muted);font-size:.72rem">({{ '{:,.1f}'.format(pct) }}% used)</span>{% endif %}
+          {% else %}<span class="muted">—</span>{% endif %}
         </div>
       </div>
     </div>
+    {# Loud red banner: actual money paid exceeds the committed cap. Only
+       fires on real spend (transactions on PO's lines). 2026-05-10. #}
     {% if over %}
-    <div style="font-size:.8rem;color:#fbbf24;font-weight:600">
-      {% if po.cap_used_basis == 'receipts' %}
-      ⚠ Attached receipts (${{ '{:,.2f}'.format(_used) }}) exceed the committed cap by ${{ '{:,.2f}'.format(_used - cap) }}.
-      {% else %}
-      ⚠ Budgeted total exceeds the committed cap by ${{ '{:,.2f}'.format(_used - cap) }}. (No receipts attached yet.)
-      {% endif %}
+    <div style="font-size:.85rem;color:#ef4444;font-weight:600;background:rgba(239,68,68,.08);
+                border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:6px 10px">
+      🚨 Billed amount (${{ '{:,.2f}'.format(billed_total) }}) exceeds the committed cap by
+      <strong>${{ '{:,.2f}'.format(billed_total - cap) }}</strong>.
     </div>
     {% endif %}
-    {# Doc-vs-line mismatch banner: when the sum of attached doc
-       amounts differs materially from the sum of budget-line
-       estimated_total, surface the gap so the user can spot
-       wrong-amount lines or duplicates. Tolerance: ±$0.50 to ignore
-       rounding. #}
-    {% if po.doc_attached_total is not none and po.attachments and budgeted is not none %}
-      {% set _gap = budgeted - po.doc_attached_total %}
+    {# Soft yellow heads-up: planning projection over the cap, but no real
+       overspend yet. Useful early-warning so the user can revisit the cap
+       or cut lines before money goes out the door. Suppressed when the
+       loud banner is firing (it would be redundant). #}
+    {% if not over and cap and lines_total > cap %}
+    <div style="font-size:.78rem;color:#f59e0b;background:rgba(245,158,11,.07);
+                border:1px solid rgba(245,158,11,.25);border-radius:5px;
+                padding:5px 9px;display:flex;align-items:center;gap:6px">
+      <span>⚠</span>
+      <span>
+        Heads up: assigned lines total
+        ${{ '{:,.2f}'.format(lines_total) }} — over the committed cap by
+        <strong>${{ '{:,.2f}'.format(lines_total - cap) }}</strong>. Nothing's
+        been billed yet, but consider raising the cap or trimming lines.
+      </span>
+    </div>
+    {% endif %}
+    {# Receipts attached but not yet recorded as transactions — informational. #}
+    {% if rcp_total > 0 and rcp_total > billed_total %}
+    <div style="font-size:.78rem;color:var(--text-muted);background:rgba(91,138,249,.06);
+                border:1px solid rgba(91,138,249,.2);border-radius:5px;padding:5px 9px">
+      ℹ Receipts attached: <strong>${{ '{:,.2f}'.format(rcp_total) }}</strong>
+      ({{ '${:,.2f}'.format(rcp_total - billed_total) }} not yet posted as transactions).
+    </div>
+    {% endif %}
+    {# Lines-vs-estimates mismatch: assigned lines total ≠ vendor
+       estimates total. Suggests a wrong line amount, a missing line,
+       or a stale estimate. Only fires when both sides have a value
+       (no estimate attached → no signal possible). Tolerance: ±$0.50
+       to ignore rounding. #}
+    {% if est_total > 0 and lines_total is not none %}
+      {% set _gap = lines_total - est_total %}
       {% if _gap | abs > 0.5 %}
       <div style="font-size:.78rem;color:#f59e0b;background:rgba(245,158,11,.07);
                   border:1px solid rgba(245,158,11,.25);border-radius:5px;
                   padding:5px 9px;display:flex;align-items:center;gap:6px">
         <span>⚠</span>
         <span>
-          Budgeted (${{ '{:,.2f}'.format(budgeted) }}) doesn't match the attached doc total
-          (${{ '{:,.2f}'.format(po.doc_attached_total) }}). Gap:
+          Lines total (${{ '{:,.2f}'.format(lines_total) }}) doesn't match the
+          attached estimates total (${{ '{:,.2f}'.format(est_total) }}). Gap:
           <strong>${{ '{:,.2f}'.format(_gap | abs) }}</strong>{% if _gap > 0 %} over{% else %} under{% endif %}.
           Check the line breakdown below.
         </span>
