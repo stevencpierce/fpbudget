@@ -4450,3 +4450,63 @@ tr.sync-omitted .col-days::after {
   background: var(--bg);
   padding: .35rem 0;
 }
+
+/* ── View-specific subtotal/grand-total emphasis ─────────────────────────────
+   2026-05-10 user request: reinforce the active budget view by styling
+   the subtotal/grand-total headings in the matching color. The active
+   column's value, the "Total [Section]" label, and the section header
+   badge all pick up the view accent so the user always knows which
+   budget they're looking at by scanning the totals.
+
+   Inline-style colors on the grand-total cells get overridden via
+   higher-specificity selectors. Estimated view stays the default blue;
+   Working shifts to orange, Actual to red. */
+
+/* ── Active grand-total column: color value text per view ─────────────── */
+.view-estimated .sec-grand-est strong,
+.view-estimated .sec-grand-est { color: var(--accent) !important; }
+.view-working   .sec-grand-working strong,
+.view-working   .sec-grand-working { color: var(--orange) !important; }
+.view-actual    .sec-grand-actual strong,
+.view-actual    .sec-grand-actual span { color: var(--red) !important; }
+
+/* Bump the active column slightly so it visually leads when scanning. */
+.view-estimated .sec-grand-est strong,
+.view-working   .sec-grand-working strong,
+.view-actual    .sec-grand-actual strong {
+  font-size: 1.02rem;
+  letter-spacing: .01em;
+}
+
+/* ── "Total [Section Name]" label: accent the active view ─────────────── */
+.view-estimated .section-grand-total-row .col-desc {
+  color: var(--accent) !important;
+  font-weight: 800 !important;
+}
+.view-working   .section-grand-total-row .col-desc {
+  color: var(--orange) !important;
+  font-weight: 800 !important;
+}
+.view-actual    .section-grand-total-row .col-desc {
+  color: var(--red) !important;
+  font-weight: 800 !important;
+}
+
+/* ── Section header badge (the dollar pill next to "2000 Production Staff")
+       picks up the view color too. .section-total-badge is the inline
+       badge in each section heading. */
+.view-estimated .section-total-badge {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.view-working   .section-total-badge {
+  background: color-mix(in srgb, var(--orange) 15%, transparent);
+  color: var(--orange);
+  border: 1px solid color-mix(in srgb, var(--orange) 35%, transparent);
+}
+.view-actual    .section-total-badge {
+  background: color-mix(in srgb, var(--red) 15%, transparent);
+  color: var(--red);
+  border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
+}
