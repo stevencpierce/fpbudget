@@ -2263,8 +2263,8 @@ a.tab-link:hover { background: var(--bg-3); }
   flex-shrink: 0;
 }
 .mode-badge.mode-estimated { background: color-mix(in srgb, var(--accent) 18%, var(--bg-3)); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
-.mode-badge.mode-working   { background: color-mix(in srgb, var(--green) 18%, var(--bg-3));  color: var(--green);  border: 1px solid color-mix(in srgb, var(--green) 35%, transparent); }
-.mode-badge.mode-actual    { background: color-mix(in srgb, var(--orange) 18%, var(--bg-3)); color: var(--orange); border: 1px solid color-mix(in srgb, var(--orange) 35%, transparent); }
+.mode-badge.mode-working   { background: color-mix(in srgb, var(--orange) 18%, var(--bg-3)); color: var(--orange); border: 1px solid color-mix(in srgb, var(--orange) 35%, transparent); }
+.mode-badge.mode-actual    { background: color-mix(in srgb, var(--red) 18%, var(--bg-3));    color: var(--red);    border: 1px solid color-mix(in srgb, var(--red) 35%, transparent); }
 .mode-badge.mode-estimator { background: color-mix(in srgb, var(--yellow) 18%, var(--bg-3)); color: var(--yellow); border: 1px solid color-mix(in srgb, var(--yellow) 35%, transparent); }
 
 /* Mode indicator strip below tabs */
@@ -2279,8 +2279,8 @@ a.tab-link:hover { background: var(--bg-3); }
   font-size: .8rem;
 }
 .mode-indicator-strip.mode-estimated { background: color-mix(in srgb, var(--accent) 8%, var(--bg-2));  border-color: var(--accent); }
-.mode-indicator-strip.mode-working   { background: color-mix(in srgb, var(--green) 8%, var(--bg-2));   border-color: var(--green); }
-.mode-indicator-strip.mode-actual    { background: color-mix(in srgb, var(--orange) 8%, var(--bg-2));  border-color: var(--orange); }
+.mode-indicator-strip.mode-working   { background: color-mix(in srgb, var(--orange) 8%, var(--bg-2));  border-color: var(--orange); }
+.mode-indicator-strip.mode-actual    { background: color-mix(in srgb, var(--red) 8%, var(--bg-2));     border-color: var(--red); }
 .mode-indicator-strip.mode-estimator { background: color-mix(in srgb, var(--yellow) 8%, var(--bg-2));  border-color: var(--yellow); }
 
 .mode-indicator-pill {
@@ -2293,8 +2293,8 @@ a.tab-link:hover { background: var(--bg-3); }
   flex-shrink: 0;
 }
 .mode-estimated .mode-indicator-pill { background: var(--accent); color: #fff; }
-.mode-working   .mode-indicator-pill { background: var(--green);  color: #000; }
-.mode-actual    .mode-indicator-pill { background: var(--orange); color: #fff; }
+.mode-working   .mode-indicator-pill { background: var(--orange); color: #fff; }
+.mode-actual    .mode-indicator-pill { background: var(--red);    color: #fff; }
 .mode-estimator .mode-indicator-pill { background: var(--yellow); color: #000; }
 
 .mode-indicator-desc { color: var(--text-muted); flex: 1; }
@@ -2386,8 +2386,14 @@ a.tab-link:hover { background: var(--bg-3); }
   color: #fff;
   font-weight: 600;
 }
-.mode-seg-btn[value="working"].active  { background: var(--green); color: #000; }
-.mode-seg-btn[value="actual"].active   { background: var(--orange); color: #fff; }
+/* Per-mode active button colors. 2026-05-10 user spec:
+     Estimated → blue   (default --accent, no rule needed)
+     Working   → orange
+     Actual    → red
+   Selectors moved off the broken [value="…"] form (these are <a> tags,
+   not <input>) onto the actual class on the element. */
+.mode-seg-btn.mode-working.active  { background: var(--orange); color: #fff; }
+.mode-seg-btn.mode-actual.active   { background: var(--red);    color: #fff; }
 
 /* ── Version management UI ──────────────────────────────────────────────── */
 .version-dropdown { position: relative; }
@@ -4385,3 +4391,30 @@ tr.sync-omitted .col-days::after {
 }
 .float-bar-grand .float-bar-label { color: var(--accent); }
 .float-bar-grand .float-bar-value { font-size: 1.15rem; color: var(--accent); }
+
+/* ── Per-view color cue ──────────────────────────────────────────────────────
+   2026-05-10 user spec: "make it very apparent which budget I'm in".
+   <body> gets one of view-estimated / view-working / view-actual, set by
+   JS at page load based on the active budget's mode. These rules apply
+   subtle accent strips and section borders so the view is identifiable
+   at a glance without changing the entire page palette.
+
+   Color map: estimated = blue, working = orange, actual = red.
+*/
+.view-working   .section-block { border-top: 3px solid var(--orange); }
+.view-actual    .section-block { border-top: 3px solid var(--red);    }
+.view-estimated .section-block { border-top: 3px solid var(--accent); }
+
+/* Thin strip across the top of the budget area as a constant reminder. */
+.view-working   #working-budget-wrap::before,
+.view-actual    #working-budget-wrap::before,
+.view-estimated #working-budget-wrap::before {
+  content: '';
+  display: block;
+  height: 4px;
+  margin: -8px 0 12px;
+  border-radius: 2px;
+}
+.view-working   #working-budget-wrap::before { background: var(--orange); }
+.view-actual    #working-budget-wrap::before { background: var(--red); }
+.view-estimated #working-budget-wrap::before { background: var(--accent); }

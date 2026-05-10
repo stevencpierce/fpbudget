@@ -7948,6 +7948,17 @@ var _workingInitialized = {{ 'true' if working_exists else 'false' }};
 var _IS_WORKING_MODE = {{ 'true' if is_working_view else 'false' }};
 var _IS_ACTUAL_VIEW = {{ 'true' if is_actual_view else 'false' }};
 
+// Tag <body> with the active view so CSS can color borders / mode-
+// indicator strips per view (estimated=blue, working=orange,
+// actual=red). 2026-05-10 — user-requested visual differentiation.
+(function() {
+  const cls = _IS_ACTUAL_VIEW ? 'view-actual'
+            : _IS_WORKING_MODE ? 'view-working'
+            : 'view-estimated';
+  document.body.classList.remove('view-estimated', 'view-working', 'view-actual');
+  document.body.classList.add(cls);
+})();
+
 // ── Per-project fringes (Settings tab) ────────────────────────────
 // Project-scoped fringe overrides + "import from defaults" flow.
 // Per user 2026-05-05.
@@ -10251,16 +10262,27 @@ async function saveSettings() {
 
   // Sync state between Top Sheet selector and Budget-tab selector so
   // switching basis on one updates the other (single source of truth
-  // for the user's intent).
+  // for the user's intent). Also persists to localStorage so the
+  // user's basis choice carries across budget-mode navigation
+  // (Estimated → Working → Actual). 2026-05-10 user-requested.
+  const _BASIS_KEY = 'fpbudget.varianceBasis';
+  const _VALID_BASES = new Set(['e_vs_w', 'w_vs_a', 'e_vs_a']);
   function setActiveBasis(basis) {
     document.querySelectorAll('.var-btn').forEach(b => {
       b.classList.toggle('active', b.dataset.basis === basis);
     });
     applyVariance(basis);
     applyBasisHighlight(basis);
+    try { localStorage.setItem(_BASIS_KEY, basis); } catch (e) {}
   }
 
-  const defaultBasis = _workingInitialized ? 'e_vs_w' : 'e_vs_a';
+  // Read previous basis from localStorage; fall back to the per-mode
+  // default if absent or unrecognized (e.g. migrated from old keys).
+  let _stored = null;
+  try { _stored = localStorage.getItem(_BASIS_KEY); } catch (e) {}
+  const defaultBasis = (_stored && _VALID_BASES.has(_stored))
+    ? _stored
+    : (_workingInitialized ? 'e_vs_w' : 'e_vs_a');
   setActiveBasis(defaultBasis);
 
   document.querySelectorAll('.var-btn').forEach(btn => {
