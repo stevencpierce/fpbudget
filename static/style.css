@@ -4418,3 +4418,35 @@ tr.sync-omitted .col-days::after {
 .view-working   #working-budget-wrap::before { background: var(--orange); }
 .view-actual    #working-budget-wrap::before { background: var(--red); }
 .view-estimated #working-budget-wrap::before { background: var(--accent); }
+
+/* ── Sticky tabs + variance toolbar ──────────────────────────────────────────
+   2026-05-10 user request: keep the budget mode switcher and the variance
+   basis buttons visible while scrolling through long budget sections.
+
+   tabs-row sticks at top:0; the working-toolbar (Quick Entry / variance
+   buttons / search) sticks just below it. topsheet-controls (Top Sheet
+   variance toggle) does the same. Z-indexes layer cleanly: tabs-row 50,
+   toolbars 40, content default. Backgrounds are explicit so the sticky
+   bars don't show table content underneath. */
+.tabs-row {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: var(--bg);
+  padding-top: .25rem;
+  /* small gradient fade so content below blends out as it scrolls under */
+}
+.working-toolbar {
+  position: sticky;
+  top: 44px;
+  z-index: 40;
+  background: var(--bg);
+  padding: .35rem 0;
+}
+.topsheet-controls {
+  position: sticky;
+  top: 44px;
+  z-index: 40;
+  background: var(--bg);
+  padding: .35rem 0;
+}

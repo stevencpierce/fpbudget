@@ -7959,6 +7959,46 @@ var _IS_ACTUAL_VIEW = {{ 'true' if is_actual_view else 'false' }};
   document.body.classList.add(cls);
 })();
 
+// Preserve scroll position when switching between budget modes
+// (Estimated ↔ Working ↔ Actual). 2026-05-10 user request — scrolling
+// down to inspect a section then jumping budgets shouldn't reset to
+// the top. sessionStorage keyed by project so two open tabs on
+// different projects don't collide. 60-second window so we don't
+// restore on unrelated returns to the page.
+(function() {
+  // Pull pid from the URL rather than the PID JS var — that var is
+  // declared further down in this file's <script> blocks and may not
+  // have been initialized yet at the time this IIFE runs.
+  const _pidMatch = window.location.pathname.match(/\/projects\/(\d+)\//);
+  const _pid = _pidMatch ? _pidMatch[1] : 'x';
+  const _SCROLL_KEY = 'fpbudget.scrollY.' + _pid;
+  const _SCROLL_AT  = 'fpbudget.scrollAt.' + _pid;
+  // Capture scroll on mode-switcher clicks. Same-project anchors only —
+  // we don't want to leak scroll state onto other projects.
+  document.addEventListener('click', function(e) {
+    const a = e.target.closest('.mode-seg-btn[href]');
+    if (!a) return;
+    try {
+      sessionStorage.setItem(_SCROLL_KEY, String(window.scrollY));
+      sessionStorage.setItem(_SCROLL_AT,  String(Date.now()));
+    } catch (_) {}
+  });
+  // Restore on load, then clear so the next refresh starts fresh.
+  try {
+    const y  = parseInt(sessionStorage.getItem(_SCROLL_KEY) || '0', 10);
+    const at = parseInt(sessionStorage.getItem(_SCROLL_AT)  || '0', 10);
+    if (y > 0 && Date.now() - at < 60000) {
+      // Defer past the next paint so dynamic content (live polls,
+      // schedule sync, etc.) has settled before we jump.
+      requestAnimationFrame(function() {
+        requestAnimationFrame(function() { window.scrollTo(0, y); });
+      });
+    }
+    sessionStorage.removeItem(_SCROLL_KEY);
+    sessionStorage.removeItem(_SCROLL_AT);
+  } catch (_) {}
+})();
+
 // ── Per-project fringes (Settings tab) ────────────────────────────
 // Project-scoped fringe overrides + "import from defaults" flow.
 // Per user 2026-05-05.
