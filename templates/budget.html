@@ -9175,17 +9175,13 @@ function refreshLineRow(id, data) {
       workStrong.dataset.base = data.est_total || 0;
       workStrong.textContent = fmtCurrency((data.est_total || 0) * fm);
     }
-    // Variance = (working - frozen) × feeMult; frozen is in data-raw on .frozen-est span
-    const frozenSpan = row.querySelector('.line-frozen-est .frozen-est');
-    const frozen = frozenSpan ? (parseFloat(frozenSpan.dataset.raw) || 0) : 0;
-    const variance = ((data.est_total || 0) - frozen) * fm;
-    const varCell = row.querySelector('.line-variance');
+    // Variance cell's data-w needs to reflect the new live est_total so
+    // the basis-toggle JS computes correctly. data-e (frozen snapshot)
+    // and data-a (actuals) don't change on a working-budget edit.
+    // 2026-05-10 — fix for stale variance after edit.
+    const varCell = row.querySelector('.line-var-cell');
     if (varCell) {
-      const span = varCell.querySelector('span');
-      if (span) {
-        span.textContent = fmtCurrency(variance);
-        span.className = variance > 0.005 ? 'var-pos' : variance < -0.005 ? 'var-neg' : 'var-zero';
-      }
+      varCell.dataset.w = (data.est_total || 0) * fm;
     }
   } else {
     const tot = row.querySelector('.line-total');
@@ -9196,14 +9192,14 @@ function refreshLineRow(id, data) {
         strong.textContent = fmtCurrency((data.est_total || 0) * fm);
       }
     }
-    const act  = row.querySelector('.line-actual');
-    const varEl= row.querySelector('.line-var');
-    if (act && varEl) {
-      const actualVal = parseFloat(act.textContent.replace(/[$,]/g,'')) || 0;
-      const variance  = (data.est_total || 0) - actualVal;
-      varEl.textContent = fmtCurrency(variance);
-      varEl.classList.toggle('over', variance < 0);
-      varEl.classList.toggle('under', variance > 0);
+    // Estimated view: variance cell's data-e is the live Estimated value.
+    // Just changed → push the new value so basis toggle reads fresh data.
+    // data-w (cross-view Working sister) and data-a (actuals) don't
+    // change here — those depend on edits to other budgets / transactions.
+    // 2026-05-10.
+    const varCell = row.querySelector('.line-var-cell');
+    if (varCell) {
+      varCell.dataset.e = (data.est_total || 0) * fm;
     }
   }
 
@@ -9534,13 +9530,15 @@ function refreshSectionTotals(table) {
       frozenTotal += parseFloat(el.dataset.raw) || 0;
     });
 
-    // Update variance total (inflated)
-    const variance = (liveTotal - frozenTotal) * fm;
-    const secVarEl = tfoot.querySelector('.sec-variance-total span');
-    if (secVarEl) {
-      secVarEl.textContent = fmtCurrency(variance);
-      secVarEl.className = variance > 0.005 ? 'var-pos' : variance < -0.005 ? 'var-neg' : 'var-zero';
-    }
+    // Push the new live working total into data-w on the section + grand-
+    // total variance cells so the basis-toggle JS recomputes against fresh
+    // data. data-e (frozen Estimated snapshot, summed via sec_est_live on
+    // server side) and data-a (transactions roll-up) don't change on a
+    // working-budget edit. 2026-05-10 — was previously updating only the
+    // visible span, which the basis toggle then overwrote with stale data
+    // when the user clicked between bases.
+    const secVarCell = tfoot.querySelector('.sec-variance-total');
+    if (secVarCell) secVarCell.dataset.w = liveTotal * fm;
 
     // Update section badge (inflated)
     const block = table.closest('.section-block');
@@ -9573,16 +9571,8 @@ function refreshSectionTotals(table) {
       grandWorking.dataset.base = liveTotal;
       grandWorking.textContent = fmtCurrency(liveTotal * fm);
     }
-    const grandVar = tfoot.querySelector('.sec-grand-variance span');
-    if (grandVar) {
-      let frozenSum = 0;
-      tbody.querySelectorAll('.line-frozen-est .frozen-est').forEach(el => {
-        frozenSum += parseFloat(el.dataset.raw) || 0;
-      });
-      const gv = (liveTotal - frozenSum) * fm;
-      grandVar.textContent = fmtCurrency(gv);
-      grandVar.className = gv > 0.005 ? 'var-pos' : gv < -0.005 ? 'var-neg' : 'var-zero';
-    }
+    const grandVarCell = tfoot.querySelector('.sec-grand-variance');
+    if (grandVarCell) grandVarCell.dataset.w = liveTotal * fm;
   } else {
     // Update section estimated total (base stored in data-base, display inflated)
     const secEst = tfoot.querySelector('.sec-est-total strong');
@@ -9612,6 +9602,22 @@ function refreshSectionTotals(table) {
       grandEst.dataset.base = liveTotal;
       grandEst.textContent = fmtCurrency(liveTotal * fm);
     }
+    // Push the new live Estimated total into data-e on section + grand-
+    // total variance cells so basis-toggle JS recomputes against fresh
+    // data. data-w (cross-view Working sister) is unchanged — it'd only
+    // change if the Working budget itself were edited. 2026-05-10.
+    const secVarCell = tfoot.querySelector('.sec-variance-total');
+    if (secVarCell) secVarCell.dataset.e = liveTotal * fm;
+    const grandVarCell = tfoot.querySelector('.sec-grand-variance');
+    if (grandVarCell) grandVarCell.dataset.e = liveTotal * fm;
+  }
+
+  // Re-apply the active variance basis so the basis-toggle JS reads the
+  // freshly-updated data-e/-w/-a attrs and recomputes variance display.
+  // Without this, save handlers updated text spans but the next basis
+  // click would overwrite with stale data attrs.
+  if (typeof window._reapplyVarianceBasis === 'function') {
+    window._reapplyVarianceBasis();
   }
 
   updateFloatBar();
@@ -10236,6 +10242,16 @@ async function saveSettings() {
       setActiveBasis(this.dataset.basis);
     });
   });
+
+  // Expose a re-apply hook so save handlers can refresh variance cells
+  // after editing data-e/-w/-a on the cells. Without this, edits to a
+  // budget line update the line's own total cell but the variance cell
+  // keeps reading the original page-load values (user-reported 2026-05-10
+  // — "edited Estimated, no variance shown despite a real difference").
+  window._reapplyVarianceBasis = function() {
+    const active = document.querySelector('.var-btn.active');
+    setActiveBasis((active && active.dataset.basis) || defaultBasis);
+  };
 })();
 </script>
 
