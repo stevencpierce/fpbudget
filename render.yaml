@@ -19,7 +19,18 @@ services:
     #
     # gthread = real OS threads inside each worker. No gevent
     # monkey-patching, no SSL recursion, no dependency drama.
-    startCommand: gunicorn -k gthread -w 2 --threads 8 --bind 0.0.0.0:$PORT --timeout 120 app:app
+    #
+    # --max-requests 100 --max-requests-jitter 20: each worker will
+    # voluntarily recycle after handling 80–120 requests. Sheds
+    # accumulated memory (SQLAlchemy session caches, ORM identity
+    # maps, big budget renders held in tracebacks, etc.) before
+    # Render's OOM killer hits. Without this, workers grow until
+    # they cross 512MB and Render terminates them mid-request, which
+    # the user sees as random instance failures. With this, the
+    # other worker (still pid-stable) continues serving while the
+    # one being recycled is replaced. The jitter avoids both workers
+    # cycling at the exact same moment. 2026-05-10.
+    startCommand: gunicorn -k gthread -w 2 --threads 8 --bind 0.0.0.0:$PORT --timeout 120 --max-requests 100 --max-requests-jitter 20 app:app
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
