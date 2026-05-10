@@ -35,12 +35,22 @@
   <button class="btn btn-primary" onclick="openPoModal()" style="margin-left:auto">+ New PO</button>
 </div>
 
-<p class="muted" style="margin-bottom:1.5rem;font-size:.85rem">
+<p class="muted" style="margin-bottom:.4rem;font-size:.85rem">
   Vendor commitments tied to this project. Assign budget lines (typically equipment,
   services, and other non-labor) to a PO and attach the vendor's estimate / SOW.
   Receipts and transactions linked to those lines roll up into <strong>Billed</strong>;
   the cap-warning banner only fires when <strong>Billed exceeds the committed cap</strong>.
 </p>
+<div style="font-size:.78rem;color:var(--text-muted);background:rgba(91,138,249,.06);
+            border:1px solid rgba(91,138,249,.2);border-radius:5px;padding:6px 10px;
+            margin-bottom:1.2rem;display:inline-flex;align-items:center;gap:6px">
+  <span>ℹ</span>
+  <span>
+    PO rollups read from your <strong>Working budget</strong> only — not Estimated and
+    not Actual. PO assignments made on the Working budget are visible (read-only)
+    on the matching Estimated and Actual lines as a purple badge.
+  </span>
+</div>
 
 {# Open POs first, then archived. Empty-state if no POs yet. #}
 {% if pos %}

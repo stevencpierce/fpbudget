@@ -1298,11 +1298,22 @@
                 {% endif %}
                 {% set _po = pos_by_id.get(_w_po_id) if _w_po_id else None %}
                 {% if _po %}
+                {# Read-only badge — purple distinguishes from the editable
+                   green "📋 PO" badge in Working view. Shows PO# inline so
+                   the user doesn't have to hover-discover it (the old 8px
+                   dot was hard to land a cursor on; user-reported
+                   2026-05-10). Tooltip carries vendor name for full
+                   context. #}
                 <span class="line-po-dot"
-                      title="PO {{ _po.po_number }} — {{ _po.vendor_name }} (assigned on Working budget)"
-                      style="display:inline-block;width:8px;height:8px;border-radius:50%;
-                             background:#a78bfa;margin-left:6px;vertical-align:middle;
-                             box-shadow:0 0 0 2px rgba(167,139,250,.18);cursor:help"></span>
+                      title="📋 {{ _po.po_number }} — {{ _po.vendor_name }} (assigned on Working budget — read-only here)"
+                      style="display:inline-block;font-size:.66rem;font-weight:600;
+                             padding:1px 7px;border-radius:9px;
+                             background:rgba(167,139,250,.12);color:#a78bfa;
+                             border:1px solid rgba(167,139,250,.3);
+                             margin-left:6px;vertical-align:middle;cursor:help;
+                             white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis">
+                  📋 {{ _po.po_number }}
+                </span>
                 {% endif %}
               {% endif %}
             {% endif %}
@@ -1380,11 +1391,26 @@
            drag-drop reassignment available inline. #}
         {% if is_actual_view %}
         {% set _line_txns = txns_by_line.get(ln.id, []) %}
+        {# Resolve the PO for this line. Actual line's source_line_id
+           points back to the Working line whose po_id is the canonical
+           link. Used for both the txn detail header and per-row badges
+           below. 2026-05-10. #}
+        {% set _line_po_id = working_po_by_wlid.get(ln.source_line_id) if ln.source_line_id else None %}
+        {% set _line_po = pos_by_id.get(_line_po_id) if _line_po_id else None %}
         {% if _line_txns %}
         <tr class="actual-line-detail" data-for-line="{{ ln.id }}" style="display:none">
           <td colspan="14" style="padding:6px 12px 12px 32px;background:rgba(34,197,94,.04);border-left:3px solid #22c55e">
-            <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">
-              {{ _line_txns | length }} transaction{{ 's' if _line_txns | length != 1 else '' }} · drag onto another line to reassign
+            <div style="font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span>{{ _line_txns | length }} transaction{{ 's' if _line_txns | length != 1 else '' }} · drag onto another line to reassign</span>
+              {% if _line_po %}
+              <span style="font-size:.7rem;font-weight:600;letter-spacing:0;text-transform:none;
+                           padding:1px 7px;border-radius:9px;
+                           background:rgba(167,139,250,.12);color:#a78bfa;
+                           border:1px solid rgba(167,139,250,.3);"
+                    title="All transactions on this line bill against {{ _line_po.po_number }} — {{ _line_po.vendor_name }}">
+                📋 {{ _line_po.po_number }} · {{ _line_po.vendor_name }}
+              </span>
+              {% endif %}
             </div>
             <table style="width:100%;font-size:.78rem;border-collapse:collapse">
               <tbody>
