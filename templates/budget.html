@@ -273,9 +273,9 @@
   <div class="topsheet-controls">
     <span class="muted" style="font-size:.8rem">Variance basis:</span>
     <div class="var-basis-toggle" id="varBasisToggle">
-      <button type="button" class="var-btn {% if working_exists %}active{% endif %}" data-basis="w_vs_e" title="Working vs Estimated — positive = working is below estimate (favorable)">W vs E</button>
-      <button type="button" class="var-btn" data-basis="a_vs_w" title="Actual vs Working — positive = came in under forecast (favorable)">A vs W</button>
-      <button type="button" class="var-btn {% if not working_exists %}active{% endif %}" data-basis="a_vs_e" title="Actual vs Estimated — positive = came in under budget (favorable)">A vs E</button>
+      <button type="button" class="var-btn {% if working_exists %}active{% endif %}" data-basis="e_vs_w" title="Estimated minus Working. Negative = Working is over Estimated (in the red).">Estimated V Working</button>
+      <button type="button" class="var-btn" data-basis="w_vs_a" title="Working minus Actual. Negative = Actual is over Working (in the red).">Working V Actual</button>
+      <button type="button" class="var-btn {% if not working_exists %}active{% endif %}" data-basis="e_vs_a" title="Estimated minus Actual. Negative = Actual is over Estimated (in the red).">Estimated V Actual</button>
     </div>
   </div>
 
@@ -503,9 +503,9 @@
     <div style="display:flex;align-items:center;gap:.4rem;margin-left:1rem">
       <span class="muted" style="font-size:.78rem">Variance basis:</span>
       <div class="var-basis-group" style="display:flex;gap:.2rem">
-        <button type="button" class="var-btn budget-var-btn {% if budget.budget_mode in ('working','actual') and not is_actual_view %}active{% endif %}" data-basis="w_vs_e" title="Working vs Estimated — positive = working below estimate (favorable)">W vs E</button>
-        <button type="button" class="var-btn budget-var-btn" data-basis="a_vs_w" title="Actual vs Working — positive = came in under forecast (favorable)">A vs W</button>
-        <button type="button" class="var-btn budget-var-btn {% if not (budget.budget_mode in ('working','actual')) or is_actual_view %}active{% endif %}" data-basis="a_vs_e" title="Actual vs Estimated — positive = came in under budget (favorable)">A vs E</button>
+        <button type="button" class="var-btn budget-var-btn {% if budget.budget_mode in ('working','actual') and not is_actual_view %}active{% endif %}" data-basis="e_vs_w" title="Estimated minus Working. Negative = Working is over Estimated (in the red).">Estimated V Working</button>
+        <button type="button" class="var-btn budget-var-btn" data-basis="w_vs_a" title="Working minus Actual. Negative = Actual is over Working (in the red).">Working V Actual</button>
+        <button type="button" class="var-btn budget-var-btn {% if not (budget.budget_mode in ('working','actual')) or is_actual_view %}active{% endif %}" data-basis="e_vs_a" title="Estimated minus Actual. Negative = Actual is over Estimated (in the red).">Estimated V Actual</button>
       </div>
     </div>
     <div class="wb-search-wrap" style="margin-left:auto">
@@ -10162,9 +10162,14 @@ async function saveSettings() {
     return sign + '$' + Math.abs(n).toLocaleString('en-US', {minimumFractionDigits:2,maximumFractionDigits:2});
   };
   function compute(basis, e, w, a) {
-    if (basis === 'w_vs_e') return e - w;       // + = working below estimate
-    if (basis === 'a_vs_w') return w - a;       // + = actual below working
-    return e - a;                                // + = actual below estimate (a_vs_e)
+    // Convention: "X V Y" computes (X - Y). Positive = Y under X (remaining
+    // budget). Negative = Y over X (in the red). Renamed 2026-05-10 to
+    // make the labels read in the same order as the math — was previously
+    // labeled "W vs E" but computed E - W, which made every variance read
+    // backwards.
+    if (basis === 'e_vs_w') return e - w;        // + = Working under Estimated
+    if (basis === 'w_vs_a') return w - a;        // + = Actual under Working
+    return e - a;                                 // + = Actual under Estimated (e_vs_a)
   }
   function applyVariance(basis) {
     // Top Sheet cells
@@ -10195,10 +10200,13 @@ async function saveSettings() {
   // The "third" column gets no highlight. Per user request 2026-05-08
   // — "blue box around the first budget, red around the second so I
   // can see at a glance which two are being compared".
+  // First column shown in blue (the "minuend" / starting tier), second in
+  // red (the "subtrahend" / what's being checked against it). Matches the
+  // X V Y reading order. 2026-05-10.
   const BASIS_COLOR_MAP = {
-    'w_vs_e': { first: 'working',  second: 'estimated' },
-    'a_vs_w': { first: 'actual',   second: 'working'   },
-    'a_vs_e': { first: 'actual',   second: 'estimated' },
+    'e_vs_w': { first: 'estimated', second: 'working'   },
+    'w_vs_a': { first: 'working',   second: 'actual'    },
+    'e_vs_a': { first: 'estimated', second: 'actual'    },
   };
   function applyBasisHighlight(basis) {
     const map = BASIS_COLOR_MAP[basis] || {};
@@ -10220,7 +10228,7 @@ async function saveSettings() {
     applyBasisHighlight(basis);
   }
 
-  const defaultBasis = _workingInitialized ? 'w_vs_e' : 'a_vs_e';
+  const defaultBasis = _workingInitialized ? 'e_vs_w' : 'e_vs_a';
   setActiveBasis(defaultBasis);
 
   document.querySelectorAll('.var-btn').forEach(btn => {
