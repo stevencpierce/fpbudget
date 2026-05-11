@@ -7971,6 +7971,12 @@
 {# ── Floating budget total bar ─────────────────────────────────────────── #}
 <div id="budget-float-bar" class="budget-float-bar hidden">
   <div class="float-bar-inner">
+    {# Subtotal and Prod Fee are estimated-side rollups; in Actual view
+       they'd always render as $0 (no subtotal_actual / fee_actual exist
+       server-side, and Actual = sum-of-transactions which already lives
+       in Grand Total). Hide them in Actual view so only the meaningful
+       Grand Total (Actual) is shown. 2026-05-11. #}
+    {% if not is_actual_view %}
     <div class="float-bar-item">
       <span class="float-bar-label">Subtotal</span>
       <span class="float-bar-value" id="float-subtotal">{{ top_sheet.subtotal_estimated | currency }}</span>
@@ -7979,8 +7985,9 @@
       <span class="float-bar-label">Prod. Fee ({{ (top_sheet.company_fee_pct * 100) | round(1) }}%{% if top_sheet.company_fee_dispersed %} · Dispersed{% else %} · Line Item{% endif %})</span>
       <span class="float-bar-value" id="float-fee">{{ top_sheet.company_fee | currency }}</span>
     </div>
+    {% endif %}
     <div class="float-bar-item float-bar-grand">
-      <span class="float-bar-label">Grand Total</span>
+      <span class="float-bar-label">{% if is_actual_view %}Actual Spend{% else %}Grand Total{% endif %}</span>
       <span class="float-bar-value" id="float-grand">{{ (top_sheet.grand_total_actual if is_actual_view else top_sheet.grand_total_estimated) | currency }}</span>
     </div>
   </div>
