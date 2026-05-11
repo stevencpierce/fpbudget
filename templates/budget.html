@@ -1142,23 +1142,14 @@
             {% if is_actual_view %}
               {# Actual view: the Actual column IS the rollup of charges
                  linked to this line. Per user 2026-05-08, the Actual
-                 budget should never reflect the Working/Estimated
-                 planned amount as its primary value — it's the spend
-                 tracker. Bold = sum of transactions. Underneath, a
-                 small "planned: $X" subtitle shows what Working has
-                 committed for context. With nothing charged yet, the
-                 row reads $0.00 / planned: $W → big positive variance
-                 against Working/Estimated, which is the desired UX. #}
+                 budget never shows the planned amount as its primary
+                 value — it's the spend tracker. The "planned:" subtitle
+                 previously below this cell was removed 2026-05-11 as
+                 redundant: the Estimated and Working columns alongside
+                 already carry that information. #}
               <strong style="color:{% if _actual > 0 %}var(--green){% else %}var(--text-muted){% endif %}">
                 {{ _actual | currency }}
               </strong>
-              {% set _wlt_planned = working_line_totals.get((ln.account_code, ln.sort_order), none) %}
-              {% if _wlt_planned is not none and _wlt_planned > 0 %}
-                <div style="font-size:.66rem;color:var(--text-muted);margin-top:1px"
-                     title="Working budget plan for this line">
-                  planned: {{ (_wlt_planned * _sec_fee_m) | currency }}
-                </div>
-              {% endif %}
             {% elif has_actual_budget %}
               {% if _actual > 0 %}
                 <strong style="color:var(--green)">{{ _actual | currency }}</strong>
@@ -1643,16 +1634,13 @@
           </td>
           <td class="col-num col-actual sec-actual-total" style="font-size:.8rem">
             {% if is_actual_view %}
-              {# Actual section total IS the rollup of charges. Planned
-                 (Working-projected section total) is shown underneath
-                 as a small subtitle. Mirrors the per-line column.
-                 2026-05-08 per user. #}
+              {# Actual section total IS the rollup of charges. The
+                 "planned:" subtitle was removed 2026-05-11 — the
+                 Estimated and Working columns alongside already show
+                 the planned amount. #}
               <strong style="color:{% if _sec_actual > 0 %}var(--green){% else %}var(--text-muted){% endif %}">
                 {{ _sec_actual | currency }}
               </strong>
-              {% if _sec_w_live_ns.t > 0 %}
-              <div style="font-size:.62rem;color:var(--text-muted);margin-top:1px">planned: {{ (_sec_w_live_ns.t * _sec_fee_m) | currency }}</div>
-              {% endif %}
             {% elif _sec_actual > 0 %}
               <strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>
             {% endif %}
@@ -1703,9 +1691,6 @@
           </td>
           <td class="col-num col-actual sec-grand-actual" style="font-weight:700;font-size:.92rem">
             <strong style="color:{% if _sec_actual > 0 %}var(--green){% else %}var(--text-muted){% endif %}">{{ _sec_actual | currency }}</strong>
-            {% if _sec_w_live_ns.t > 0 %}
-              <div style="font-size:.62rem;color:var(--text-muted);margin-top:1px;font-weight:400">planned: {{ (_sec_w_live_ns.t * _sec_fee_m) | currency }}</div>
-            {% endif %}
           </td>
           <td class="col-num col-variance sec-grand-variance line-var-cell" style="font-weight:700;font-size:.88rem"
               data-e="{{ sec_working.total * _sec_fee_m }}"
