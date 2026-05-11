@@ -2443,14 +2443,18 @@
             </div>
             <div class="field" style="margin-bottom:.6rem">
               <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Type</label>
+              {# 2026-05-11 taxonomy: Quote merged into Estimate (same
+                 thing semantically); SOW merged into Contract (SOW is a
+                 contract variant). Legacy rows keyed 'quote' or 'sow'
+                 are aliased to 'estimate' / 'contract' at value-set time
+                 below (search _categoryAlias). #}
               <select id="docDetailCategory" style="width:100%">
                 <option value="">— unspecified —</option>
                 <option value="receipt">Receipt</option>
                 <option value="invoice">Invoice</option>
-                <option value="estimate">Estimate / SOW</option>
-                <option value="quote">Quote</option>
+                <option value="estimate">Estimate / Quote</option>
                 <option value="purchase_order">Purchase Order (PO)</option>
-                <option value="contract">Contract</option>
+                <option value="contract">Contract / SOW</option>
                 <option value="insurance">Insurance / COI</option>
                 <option value="tax_form">Tax Form (W-9, W-8, 1099)</option>
                 <option value="payroll">Payroll</option>
@@ -3602,7 +3606,13 @@
     const _amt = parseFloat(row?.dataset?.sortAmount || 0);
     document.getElementById('docDetailAmount').value   = _amt > 0 ? _fmtMoney(_amt) : '';
     document.getElementById('docDetailDocDate').value  = row?.dataset?.docDate || '';
-    document.getElementById('docDetailCategory').value = row?.dataset?.sortType || '';
+    // Category alias for the 2026-05-11 taxonomy collapse: legacy rows
+    // tagged 'quote' or 'sow' have no matching <option> after the merge,
+    // so map them to the merged keys before assigning. A subsequent Save
+    // by the user will rewrite the row to the merged key.
+    const _categoryAlias = { quote: 'estimate', sow: 'contract' };
+    const _rawCat = (row?.dataset?.sortType || '').toLowerCase();
+    document.getElementById('docDetailCategory').value = _categoryAlias[_rawCat] || _rawCat;
     document.getElementById('docDetailNote').value     = row?.dataset?.note || '';
     document.getElementById('docDetailDocNum').value   = row?.dataset?.docNum || '';
     document.getElementById('docDetailCrewId').value     = row?.dataset?.crewMemberId || '';
