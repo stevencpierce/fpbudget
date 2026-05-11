@@ -81,6 +81,20 @@ from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from weasyprint import HTML as WeasyprintHTML
 
+# Eagerly import fp_analyzer (which itself imports the dropbox SDK) at
+# module load. Previously the request handlers did `from fp_analyzer
+# import …` inside their function bodies — that's a deferred import,
+# and under gunicorn's threaded workers Python 3.13 will hand a second
+# concurrent thread a partially-initialized `dropbox` module while the
+# first thread is still loading it. Symptom on user bulk-uploads
+# 2026-05-11: "Staging error: partially initialized module 'dropbox'
+# ... has no attribute 'Dropbox' (most likely due to a circular
+# import)". Importing here forces the whole dropbox SDK to finish
+# loading during worker boot, before any request can race. Per-handler
+# `from fp_analyzer import …` lines below are kept (they just rebind
+# already-loaded names — cheap).
+import fp_analyzer  # noqa: F401
+
 from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, BudgetLine,
                     FringeConfig, CrewMember, CrewAssignment, ScheduleDay,
                     BudgetTemplate, BudgetTemplateLine, TaxCredit, PayrollProfile,
