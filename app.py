@@ -473,6 +473,25 @@ app.config['MAIL_PASSWORD']       = os.getenv('MAIL_PASSWORD', '')
 app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_USERNAME', '')
 mail = Mail(app)
 
+# ── Session + remember-me cookie config ───────────────────────────────────
+# Phones that "Add to Home Screen" the mobile uploader (PWA, standalone
+# display) keep the user signed in via Flask-Login's remember-me cookie,
+# which is independent of the short-lived session cookie. Without
+# remember=True on login_user(), the session cookie expires when the
+# browser/PWA closes and the user has to log in again on every launch.
+# SameSite=Lax lets the cookie ride along top-level navigations from
+# the home-screen icon. Secure=True is safe because Render serves over
+# HTTPS in production (local dev over HTTP will silently skip the
+# cookie — fix by setting SESSION_COOKIE_SECURE=0 locally if needed).
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
+app.config['SESSION_COOKIE_SAMESITE']    = 'Lax'
+app.config['SESSION_COOKIE_HTTPONLY']    = True
+app.config['SESSION_COOKIE_SECURE']      = os.getenv('SESSION_COOKIE_SECURE', '1') == '1'
+app.config['REMEMBER_COOKIE_DURATION']   = timedelta(days=180)
+app.config['REMEMBER_COOKIE_SAMESITE']   = 'Lax'
+app.config['REMEMBER_COOKIE_HTTPONLY']   = True
+app.config['REMEMBER_COOKIE_SECURE']     = os.getenv('REMEMBER_COOKIE_SECURE', '1') == '1'
+
 # ── Timezone filter ────────────────────────────────────────────────────────────
 try:
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -1739,7 +1758,12 @@ def login():
         password = request.form.get("password", "")
         user = User.query.filter_by(email=email).first()
         if user and user.is_active and user.check_password(password):
-            login_user(user)
+            # remember=True sets Flask-Login's persistent cookie so the
+            # session survives PWA / mobile-app relaunches without re-
+            # auth. session.permanent extends the regular session cookie
+            # to PERMANENT_SESSION_LIFETIME for the same reason.
+            login_user(user, remember=True)
+            session.permanent = True
             if user.must_change_password:
                 flash("Please set a new password to continue.", "warning")
                 return redirect(url_for("profile"))
