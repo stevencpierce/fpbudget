@@ -110,6 +110,9 @@
     .queue-item {
       background: #161920; border: 1px solid #2a2d36; border-radius: 10px;
       padding: 12px 14px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .queue-row {
       display: flex; align-items: center; gap: 12px;
     }
     .queue-thumb {
@@ -141,6 +144,58 @@
       font-size: 16px; font-weight: 600; cursor: pointer;
     }
     .btn-upload-all:disabled { background: #2a2d36; color: #4b5263; }
+
+    /* ── Per-upload edit panel (revealed after OCR completes) ── */
+    .queue-edit {
+      display: none;
+      border-top: 1px solid #2a2d36;
+      padding-top: 10px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .qe-row { display: flex; flex-direction: column; gap: 4px; }
+    .qe-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    }
+    .qe-label {
+      font-size: 10px; font-weight: 600; color: #6b7280;
+      text-transform: uppercase; letter-spacing: .5px;
+    }
+    .qe-input, .qe-select {
+      width: 100%; padding: 10px 10px;
+      background: #1e2230; color: #e8e9ec;
+      border: 1px solid #2a2d36; border-radius: 8px;
+      font-size: 16px; /* ≥16px to suppress iOS zoom */
+      font-family: inherit;
+    }
+    .qe-select {
+      appearance: none; -webkit-appearance: none;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='%236b7280' d='M6 8L0 0h12z'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      padding-right: 32px;
+    }
+    .qe-actions {
+      display: flex; align-items: center; gap: 10px;
+      margin-top: 2px;
+    }
+    .qe-save {
+      flex: 1; padding: 12px;
+      background: #1a3a2a; border: 1px solid #2a5a3a;
+      color: #74c69d; border-radius: 8px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    .qe-save:disabled { opacity: .5; cursor: not-allowed; }
+    .qe-save.saving { background: #2a2d36; color: #6b7280; }
+    .qe-save.saved  { background: #14291e; color: #22c55e; border-color: #1a4228; }
+    .qe-save.failed { background: #2a1414; color: #ef4444; border-color: #4a2020; }
+    .qe-confidence {
+      font-size: 11px; color: #fbbf24; font-weight: 500;
+    }
+    .qe-confidence.high { color: #22c55e; }
+    .qe-filed-as {
+      font-size: 11px; color: #6b7280; font-style: italic;
+      word-break: break-all;
+    }
 
     .footer-note {
       margin-top: 28px;
@@ -221,7 +276,26 @@ if (sel) {
   });
 }
 
-let queue = []; // { file, status, thumbUrl }
+let queue = []; // { file, status, thumbUrl, uploadId, ocr: {...} }
+
+// Doc Type options — mirrors the desktop dropdown (2026-05-11 taxonomy).
+const DOC_TYPES = [
+  { v: '',                label: '— unspecified —' },
+  { v: 'receipt',         label: 'Receipt' },
+  { v: 'invoice',         label: 'Invoice' },
+  { v: 'estimate',        label: 'Estimate / Quote' },
+  { v: 'purchase_order',  label: 'Purchase Order (PO)' },
+  { v: 'contract',        label: 'Contract / SOW' },
+  { v: 'insurance',       label: 'Insurance / COI' },
+  { v: 'tax_form',        label: 'Tax Form (W-9, W-8, 1099)' },
+  { v: 'payroll',         label: 'Payroll' },
+  { v: 'legal',           label: 'Legal' },
+  { v: 'release',         label: 'Release (Talent / Location)' },
+  { v: 'misc',            label: 'Miscellaneous' },
+];
+// Legacy DocUpload rows tagged 'quote' or 'sow' map to the merged
+// keys for the dropdown (matches desktop's _categoryAlias).
+const CATEGORY_ALIAS = { quote: 'estimate', sow: 'contract' };
 
 function formatSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
@@ -233,6 +307,29 @@ function fileIcon(file) {
   if (file.type.startsWith('image/')) return '🖼️';
   if (file.type === 'application/pdf') return '📄';
   return '📎';
+}
+
+function _fmtMoney(v) {
+  if (v === '' || v == null) return '';
+  const n = parseFloat(String(v).replace(/,/g, ''));
+  if (!isFinite(n)) return '';
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function _parseMoney(v) {
+  if (v == null) return '';
+  const cleaned = String(v).replace(/,/g, '').trim();
+  if (cleaned === '') return '';
+  const n = parseFloat(cleaned);
+  return isFinite(n) ? String(n) : '';
+}
+
+function _statusBadge(item) {
+  if (item.status === 'uploading') return { text: 'Uploading…',       cls: 'uploading' };
+  if (item.status === 'done')      return { text: 'Filed ✓',          cls: 'done' };
+  if (item.status === 'review')    return { text: 'Needs review',     cls: 'review' };
+  if (item.status === 'duplicate') return { text: 'Already uploaded', cls: 'dup' };
+  if (item.status === 'error')     return { text: item.error || 'Failed', cls: 'error' };
+  return { text: 'Ready', cls: 'pending' };
 }
 
 function renderQueue() {
@@ -247,32 +344,135 @@ function renderQueue() {
       thumbHtml = `<div class="queue-thumb"><img alt="" src="${item.thumbUrl}"></div>`;
     }
 
-    let statusText = 'Ready';
-    let statusClass = 'pending';
-    if (item.status === 'uploading')      { statusText = 'Uploading…';    statusClass = 'uploading'; }
-    else if (item.status === 'done')      { statusText = 'Filed ✓';        statusClass = 'done'; }
-    else if (item.status === 'review')    { statusText = 'Needs review';   statusClass = 'review'; }
-    else if (item.status === 'duplicate') { statusText = 'Already uploaded'; statusClass = 'dup'; }
-    else if (item.status === 'error')     { statusText = item.error || 'Failed'; statusClass = 'error'; }
-
+    const status = _statusBadge(item);
     const removeBtn = (item.status === 'uploading') ? '' :
       `<button class="queue-remove" aria-label="Remove" onclick="removeItem(${idx})">×</button>`;
 
-    // Plain-text filename via textContent to avoid HTML injection from
-    // user-chosen filenames; everything else here is template-controlled.
-    div.innerHTML = `
+    // Header row — thumb, filename, size, status, remove. The filename
+    // goes in via textContent below to neutralise any HTML in user
+    // filenames; the rest is template-controlled.
+    const header = document.createElement('div');
+    header.className = 'queue-row';
+    header.innerHTML = `
       ${thumbHtml}
       <div class="queue-info">
         <div class="queue-name"></div>
         <div class="queue-size">${formatSize(item.file.size)}</div>
-        <div class="queue-status ${statusClass}">${statusText}</div>
+        <div class="queue-status ${status.cls}">${status.text}</div>
       </div>
       ${removeBtn}`;
-    div.querySelector('.queue-name').textContent = item.file.name;
+    header.querySelector('.queue-name').textContent = item.file.name;
+    div.appendChild(header);
+
+    // Edit panel — shown once OCR has completed (done or review). Lets
+    // the user fix vendor / amount / date / doc-type inline without
+    // bouncing to the desktop docs page. Mirrors a limited subset of
+    // the desktop doc-detail modal's fields.
+    if ((item.status === 'done' || item.status === 'review') && item.uploadId) {
+      const ocr = item.ocr || {};
+      const conf = Math.round((ocr.confidence || 0) * 100);
+      const filedAs = item.filedFilename || ocr.new_filename || '';
+      const docTypeKey = CATEGORY_ALIAS[(ocr.doc_type || '').toLowerCase()] || ocr.doc_type || '';
+      const optionsHtml = DOC_TYPES.map(o =>
+        `<option value="${o.v}"${o.v === docTypeKey ? ' selected' : ''}>${o.label}</option>`
+      ).join('');
+      const edit = document.createElement('div');
+      edit.className = 'queue-edit';
+      edit.innerHTML = `
+        ${filedAs ? `<div class="qe-filed-as" title="Final filename in Dropbox"></div>` : ''}
+        ${item.status === 'review'
+          ? `<div class="qe-confidence">⚠ Low OCR confidence (${conf}%) — please confirm the fields below.</div>`
+          : (conf >= 90 ? `<div class="qe-confidence high">OCR confidence ${conf}%</div>`
+                        : `<div class="qe-confidence">OCR confidence ${conf}%</div>`)
+        }
+        <div class="qe-row">
+          <span class="qe-label">Vendor</span>
+          <input class="qe-input" type="text" data-field="vendor" value="">
+        </div>
+        <div class="qe-grid">
+          <div class="qe-row">
+            <span class="qe-label">Amount</span>
+            <input class="qe-input qe-amount" type="text" inputmode="decimal" data-field="amount" value="">
+          </div>
+          <div class="qe-row">
+            <span class="qe-label">Doc Date</span>
+            <input class="qe-input" type="date" data-field="doc_date" value="">
+          </div>
+        </div>
+        <div class="qe-row">
+          <span class="qe-label">Doc Type</span>
+          <select class="qe-select" data-field="category">${optionsHtml}</select>
+        </div>
+        <div class="qe-row">
+          <span class="qe-label">Doc #</span>
+          <input class="qe-input" type="text" data-field="doc_number" value="" placeholder="—">
+        </div>
+        <div class="qe-actions">
+          <button class="qe-save" onclick="saveEdit(${idx})">Save changes</button>
+        </div>`;
+      // textContent for the filename — same XSS guard pattern as the
+      // header row above.
+      if (filedAs) edit.querySelector('.qe-filed-as').textContent = `Filed as: ${filedAs}`;
+      edit.querySelector('[data-field="vendor"]').value     = ocr.vendor || '';
+      edit.querySelector('[data-field="amount"]').value     = ocr.amount != null ? _fmtMoney(ocr.amount) : '';
+      edit.querySelector('[data-field="doc_date"]').value   = ocr.doc_date || '';
+      edit.querySelector('[data-field="doc_number"]').value = ocr.doc_number || '';
+      // Comma-format the amount on blur, strip on focus.
+      const amtEl = edit.querySelector('.qe-amount');
+      amtEl.addEventListener('focus', () => { amtEl.value = String(amtEl.value).replace(/,/g, ''); });
+      amtEl.addEventListener('blur',  () => { amtEl.value = _fmtMoney(amtEl.value); });
+      div.appendChild(edit);
+    }
+
     el.appendChild(div);
   });
   const anyPending = queue.some(i => i.status === 'pending');
   document.getElementById('btnUploadAll').disabled = !anyPending;
+}
+
+async function saveEdit(idx) {
+  const item = queue[idx];
+  if (!item || !item.uploadId) return;
+  const wrap = document.getElementById('uploadQueue').children[idx];
+  const btn  = wrap.querySelector('.qe-save');
+  if (!btn) return;
+  const payload = {
+    vendor:     wrap.querySelector('[data-field="vendor"]').value,
+    amount:     _parseMoney(wrap.querySelector('[data-field="amount"]').value),
+    doc_date:   wrap.querySelector('[data-field="doc_date"]').value,
+    category:   wrap.querySelector('[data-field="category"]').value,
+    doc_number: wrap.querySelector('[data-field="doc_number"]').value,
+  };
+  btn.disabled = true;
+  btn.className = 'qe-save saving';
+  btn.textContent = 'Saving…';
+  try {
+    const r = await fetch(`/docs/upload/${item.uploadId}/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || `HTTP ${r.status}`);
+    }
+    btn.className = 'qe-save saved';
+    btn.textContent = 'Saved ✓';
+    // Keep the local OCR cache in sync so a subsequent renderQueue
+    // (eg. after adding more files) preserves the edits.
+    item.ocr = Object.assign({}, item.ocr, {
+      vendor: payload.vendor || null,
+      amount: payload.amount === '' ? null : parseFloat(payload.amount),
+      doc_date: payload.doc_date || null,
+      doc_type: payload.category || null,
+      doc_number: payload.doc_number || null,
+    });
+  } catch (e) {
+    btn.className = 'qe-save failed';
+    btn.textContent = 'Save failed — tap to retry';
+    btn.disabled = false;
+    console.warn('[mobile_upload] save edit failed', e);
+  }
 }
 
 function removeItem(idx) {
@@ -330,11 +530,25 @@ async function uploadOne(item, pid) {
 
     if (data && data.status === 'duplicate') {
       item.status = 'duplicate';
+      item.uploadId = data.upload_id || null;
     } else if (resp.ok) {
       // Server returns DocUpload.status: 'done' | 'review' | 'error'.
       const s = (data && data.status) || 'done';
       item.status = (s === 'review') ? 'review' : (s === 'error' ? 'error' : 'done');
       if (s === 'error' && data.error) item.error = data.error;
+      // Capture upload metadata so the edit panel can render and so
+      // saveEdit can target the right DocUpload row.
+      item.uploadId      = data.upload_id || null;
+      item.filedFilename = data.new_filename || data.filed_filename || null;
+      item.ocr = {
+        vendor:     data.vendor || null,
+        amount:     data.amount != null ? data.amount : null,
+        doc_date:   data.doc_date || null,
+        doc_number: data.doc_number || null,
+        doc_type:   data.doc_type || null,
+        confidence: data.confidence != null ? data.confidence : null,
+        new_filename: data.new_filename || null,
+      };
     } else {
       item.status = 'error';
       item.error  = (data && data.error) || `HTTP ${resp.status}`;
