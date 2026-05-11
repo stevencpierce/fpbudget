@@ -8742,13 +8742,17 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 // ── Tab switching ──────────────────────────────────────────────────────────
+// Tabs that show the floating totals bar at the bottom of the window.
+// Top Sheet + Budget both surface the same totals (they're the canonical
+// numeric summary), so we keep the bar pinned across both.
+const _FLOAT_BAR_TABS = new Set(['working', 'topsheet']);
 document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-    _showFloatBar(btn.dataset.tab === 'working');
+    _showFloatBar(_FLOAT_BAR_TABS.has(btn.dataset.tab));
     // Persist the active tab in the URL so page refresh keeps you here
     try {
       const u = new URL(window.location);
@@ -8761,7 +8765,7 @@ document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
 // Initialise float bar visibility and fee display — deferred so URL param tab switch runs first
 setTimeout(function() {
   const activeBtn = document.querySelector('.tab-btn.active[data-tab]');
-  _showFloatBar(activeBtn && activeBtn.dataset.tab === 'working');
+  _showFloatBar(activeBtn && _FLOAT_BAR_TABS.has(activeBtn.dataset.tab));
   applyFeeDisplay();
 }, 0);
 
