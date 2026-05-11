@@ -2362,6 +2362,24 @@ a.tab-link:hover { background: var(--bg-3); }
   overflow: hidden;
   background: var(--bg-3);
 }
+/* Float the Estimated/Working/Actual mode switcher so it stays visible
+   while scrolling long tables (Top Sheet, Budget, Schedule). The inline
+   sticky .tabs-row pattern was failing on phone + wide-table horizontal
+   scroll because the switcher sat at the right edge of the tabs row and
+   scrolled off-screen along with the table. position:fixed escapes the
+   parent scroll context entirely. 2026-05-11. */
+.mode-switcher-seg {
+  position: fixed;
+  top: 56px;
+  right: 14px;
+  z-index: 60;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+}
+@media (max-width: 640px) {
+  /* Tighter on phones, slightly smaller font so it doesn't dominate. */
+  .mode-switcher-seg { top: 50px; right: 8px; font-size: .78rem; }
+  .mode-switcher-seg .mode-seg-btn { padding: .25rem .55rem; }
+}
 .mode-seg-btn {
   background: transparent;
   border: none;
