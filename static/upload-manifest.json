@@ -1,0 +1,15 @@
+{
+  "name": "FP Budget Upload",
+  "short_name": "FP Upload",
+  "description": "Snap or pick receipts and docs — auto-filed to Framework Productions projects.",
+  "start_url": "/upload",
+  "scope": "/upload",
+  "display": "standalone",
+  "background_color": "#0d0f14",
+  "theme_color": "#0d0f14",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/static/upload-icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/static/upload-icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

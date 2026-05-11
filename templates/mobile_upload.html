@@ -7,6 +7,10 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="FP Upload">
+  <link rel="manifest" href="{{ url_for('static', filename='upload-manifest.json') }}">
+  <link rel="apple-touch-icon" sizes="192x192" href="{{ url_for('static', filename='upload-icon-192.png') }}">
+  <link rel="apple-touch-icon" sizes="512x512" href="{{ url_for('static', filename='upload-icon-512.png') }}">
+  <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='upload-icon-192.png') }}">
   <title>FP Upload</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
