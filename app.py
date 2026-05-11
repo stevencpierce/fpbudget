@@ -3288,6 +3288,38 @@ def delete_budget(pid, bid):
     return jsonify({"ok": True, "redirect": url_for("dashboard")})
 
 
+def _actuals_by_section_code(pid):
+    """Sum a project's expense Transactions, grouped by section account_code.
+
+    Previously each top-sheet build did its own:
+        Transaction.account_code != None
+        group by Transaction.account_code
+    That filter dropped any Transaction that was linked to an Actual
+    BudgetLine via budget_line_id but had NULL account_code (the typical
+    state for an auto-created doc-upload txn before the user has assigned
+    a line via the Actuals tab — but also for any user-assigned txn whose
+    legacy ingress path forgot to mirror the line's account_code onto the
+    Transaction row). Symptom 2026-05-11: per-line cells show actual
+    spend (they key on budget_line_id) but the float-bar GRAND TOTAL and
+    the Top Sheet rolled up $0 because the section sum was missing those
+    rows.
+
+    Coalesce Transaction.account_code with the linked BudgetLine's
+    account_code so any txn with EITHER set lands in the rollup.
+    """
+    rows = (db.session.query(
+                func.coalesce(Transaction.account_code,
+                              BudgetLine.account_code).label('code'),
+                func.sum(Transaction.amount))
+            .outerjoin(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
+            .filter(Transaction.project_id == pid,
+                    Transaction.is_expense == True,
+                    Transaction.not_project_expense == False)
+            .group_by('code')
+            .all())
+    return {r[0]: float(r[1]) for r in rows if r[0] is not None}
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>")
 @login_required
 def budget_view(pid, bid):
@@ -3485,16 +3517,10 @@ def budget_view(pid, bid):
     except Exception as _tm_e:
         logging.warning(f"[budget_view] travel-mirror compute failed: {_tm_e}")
 
-    # Actuals from Transaction table
-    actuals_raw = db.session.query(
-        Transaction.account_code, func.sum(Transaction.amount)
-    ).filter(
-        Transaction.project_id == pid,
-        Transaction.is_expense == True,
-        Transaction.not_project_expense == False,
-        Transaction.account_code != None,
-    ).group_by(Transaction.account_code).all()
-    actuals_by_code = {r[0]: float(r[1]) for r in actuals_raw}
+    # Actuals from Transaction table (see _actuals_by_section_code for the
+    # COALESCE rationale — picks up budget_line_id-linked txns that have
+    # NULL account_code).
+    actuals_by_code = _actuals_by_section_code(pid)
 
     top_sheet = calc_top_sheet(budget, lines, fringe_cfgs, actuals_by_code, profile, pw_start)
 
@@ -6427,13 +6453,7 @@ def export_csv(pid, bid):
             row.append(res["total"])
             w.writerow(row)
     else:
-        actuals_raw = db.session.query(
-            Transaction.account_code, func.sum(Transaction.amount)
-        ).filter(Transaction.project_id == pid, Transaction.is_expense == True,
-                 Transaction.not_project_expense == False,
-                 Transaction.account_code != None
-        ).group_by(Transaction.account_code).all()
-        actuals_by_code = {r[0]: float(r[1]) for r in actuals_raw}
+        actuals_by_code = _actuals_by_section_code(pid)
         ts = calc_top_sheet(budget, lines, fringe_cfgs, actuals_by_code)
 
         w.writerow(["code", "account", "estimated", "actual", "variance", "pct_used"])
@@ -6527,15 +6547,7 @@ def export_pdf(pid, bid):
     pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
         profile.payroll_week_start if profile else 6)
 
-    actuals_raw = db.session.query(
-        Transaction.account_code, func.sum(Transaction.amount)
-    ).filter(
-        Transaction.project_id == pid,
-        Transaction.is_expense == True,
-        Transaction.not_project_expense == False,
-        Transaction.account_code != None,
-    ).group_by(Transaction.account_code).all()
-    actuals_by_code = {r[0]: float(r[1]) for r in actuals_raw}
+    actuals_by_code = _actuals_by_section_code(pid)
 
     top_sheet   = calc_top_sheet(budget, lines, fringe_cfgs, actuals_by_code, profile, pw_start)
     detail_mode = request.args.get("detail", "0") == "1"
