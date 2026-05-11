@@ -48,12 +48,18 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".pdf", ".heic"}
 # the legacy mixed folders ("CONTRACTS & INVOICES", "PROCESSED
 # DOCUMENTS") are NOT moved — only new uploads land in the new
 # structure.
+# 2026-05-11 taxonomy collapse:
+#   • Quote merged into Estimate (same doc semantically — vendor pricing
+#     proposal before committing). Existing rows keyed 'quote' display
+#     under the merged "Estimate / Quote" option via UI-side aliasing.
+#   • SOW merged into Contract (SOW is a contract variant, not a pricing
+#     estimate). Filed alongside contracts in CONTRACTS_SOWS; UI label
+#     shows "Contract / SOW" with the underscored folder name on disk.
 DOCUMENT_TYPES = {
     "receipt":         "01_ADMIN/PROCESSED DOCUMENTS/RECEIPTS",
     "invoice":         "01_ADMIN/PROCESSED DOCUMENTS/INVOICES",
     "estimate":        "01_ADMIN/PROCESSED DOCUMENTS/ESTIMATES",
-    "quote":           "01_ADMIN/PROCESSED DOCUMENTS/QUOTES",
-    "contract":        "01_ADMIN/PROCESSED DOCUMENTS/CONTRACTS",
+    "contract":        "01_ADMIN/PROCESSED DOCUMENTS/CONTRACTS_SOWS",
     "purchase_order":  "01_ADMIN/PROCESSED DOCUMENTS/PURCHASE_ORDERS",
     "insurance":       "01_ADMIN/PROCESSED DOCUMENTS/INSURANCE_COIs",
     "tax_form":        "01_ADMIN/PROCESSED DOCUMENTS/TAX_FORMS",
@@ -70,7 +76,6 @@ DOC_PREFIXES = {
     "receipt":         "RECEIPT",
     "invoice":         "INVOICE",
     "estimate":        "ESTIMATE",
-    "quote":           "QUOTE",
     "contract":        "CONTRACT",
     "purchase_order":  "PO",
     "insurance":       "COI",
@@ -98,7 +103,6 @@ ORDER_BY_TYPE = {
     "purchase_order": ["date", "vendor", "po_number", "total"],
     "tax_form":       ["date", "vendor"],   # tax forms = vendor onboarding; total irrelevant
     "estimate":       ["date", "vendor", "total"],
-    "quote":          ["date", "vendor", "total"],
     "release":        ["date", "vendor"],   # talent / location name lives in vendor
     "insurance":      ["date", "vendor"],   # vendor = insured / certificate holder
 }
@@ -302,21 +306,32 @@ def _infer_type(vr):
     # quote / SOW phrase, that wins over Veryfi's structured field.
     # Run this BEFORE the structured-field accept so the override
     # actually catches.
+    #
+    # 2026-05-11: Quote keywords now route to 'estimate' (Quote merged
+    # into Estimate). SOW keywords now route to 'contract' (SOW is a
+    # contract variant, filed in CONTRACTS_SOWS).
     ocr_text_pre = (vr.get("ocr_text") or "").lower()
+    sow_strong = (
+        "scope of work", "statement of work", " sow ",
+        "this is a sow", "sow #", "sow no", "sow number",
+    )
     estimate_strong = (
         "this is an estimate", "estimate total", "estimate #",
         "estimate no", "estimate number",
-        "scope of work", "statement of work", " sow ",
         "not an invoice", "this is not an invoice",
     )
     quote_strong = (
         "quotation", "quote total", "quote #", "quote no",
         "quote number", "price quote", "this is a quote",
     )
+    # SOW check FIRST — "scope of work" used to live in estimate_strong
+    # and would mis-route SOW docs as estimates. Now they go to contract.
+    if any(k in ocr_text_pre for k in sow_strong):
+        return "contract", 0.92
     if any(k in ocr_text_pre for k in estimate_strong):
         return "estimate", 0.92
     if any(k in ocr_text_pre for k in quote_strong):
-        return "quote", 0.90
+        return "estimate", 0.90
     # Standalone "estimate" word at the top of the doc (first 400 chars)
     # is a strong hint too — but only if Veryfi didn't confidently say
     # something else specific. The "first 400 chars" heuristic catches
@@ -328,15 +343,18 @@ def _infer_type(vr):
     if veryfi_type in DOCUMENT_TYPES:
         return veryfi_type, 1.0
 
-    # Map Veryfi's own labels to ours
+    # Map Veryfi's own labels to ours. 2026-05-11: quote/quotation now
+    # route to 'estimate' (merged); sow/statement_of_work to 'contract'.
     veryfi_map = {
         "bill": "invoice", "expense": "receipt", "check": "receipt",
         "insurance": "insurance", "certificate_of_insurance": "insurance",
         "legal": "legal", "payroll": "payroll",
-        "quote": "quote", "quotation": "quote",
+        "quote": "estimate", "quotation": "estimate",
         "purchase_order": "purchase_order", "po": "purchase_order",
         "estimate": "estimate", "proposal": "estimate",
         "contract": "contract", "agreement": "contract",
+        "sow": "contract", "statement_of_work": "contract",
+        "scope_of_work": "contract",
         "release": "release", "talent_release": "release",
         "w9": "tax_form", "w-9": "tax_form", "w8": "tax_form",
         "w-8": "tax_form", "1099": "tax_form", "tax_form": "tax_form",
@@ -370,13 +388,17 @@ def _infer_type(vr):
         # but slightly lower since we couldn't extract the PO#.
         return "purchase_order", 0.78
 
-    # Estimate / Quote keywords
-    estimate_keywords = ("estimate", "scope of work", "statement of work", "sow")
+    # SOW keywords (routed to contract — SOW is a contract variant)
+    sow_keywords = ("scope of work", "statement of work", " sow ", "sow #")
+    if any(k in ocr_text for k in sow_keywords):
+        return "contract", 0.75
+    # Estimate / Quote keywords (Quote merged into Estimate 2026-05-11)
+    estimate_keywords = ("estimate",)
     quote_keywords    = ("quotation", "quote no", "quote #", "price quote")
     if any(k in ocr_text for k in estimate_keywords):
         return "estimate", 0.75
     if any(k in ocr_text for k in quote_keywords):
-        return "quote", 0.72
+        return "estimate", 0.72
 
     # COI / Insurance keywords
     coi_keywords = (
