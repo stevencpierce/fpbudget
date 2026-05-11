@@ -1,9 +1,16 @@
 # FPBudget — Active Session Handoff
 
-**Last updated:** 2026-05-11 (mid-session, user traveling, picking up from laptop)
-**Working directory:** `/Users/frameworkproductions/PythonProjects/FPBudget`
+**Session ended:** 2026-05-11 — user traveling, will resume on laptop.
+**Working directory (this machine):** `/Users/frameworkproductions/PythonProjects/FPBudget`
 **Prod URL:** https://fp-budget.onrender.com
-**Latest commit:** `96cb8ab` (subtotal headings adopt view color)
+**Latest commit:** `881ebfc` (added this HANDOFF.md)
+**Status:** No work in progress, no uncommitted changes, prod healthy on `96cb8ab`.
+**Dropbox copy of this file:**
+`BUDGET SOFTWARE DEVELOPMENT/FPBudget — Budget Module/HANDOFF.md`
+
+When resuming on the laptop, this file in Dropbox is identical to the one
+on GitHub — pull whichever is faster. The Dropbox copy will go stale once
+work resumes; trust the repo copy after that.
 
 ---
 
