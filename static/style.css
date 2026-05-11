@@ -546,6 +546,19 @@ body.col-resizing * { cursor: col-resize !important; }
   align-items: center;
   gap: .75rem;
   margin-bottom: .75rem;
+  /* flex-wrap so the search field can drop to its own row, clearing
+     the floating mode switcher (which sits at top:56px right:14px and
+     would otherwise overlay a right-aligned search input). */
+  flex-wrap: wrap;
+}
+.working-toolbar .wb-search-wrap {
+  /* flex-basis:100% forces the search field to wrap onto its own row
+     below the other toolbar controls — keeps it out from under the
+     floating Estimated/Working/Actual switcher. */
+  flex-basis: 100%;
+  margin-left: 0 !important;
+  display: flex;
+  align-items: center;
 }
 
 /* Tools grid */
