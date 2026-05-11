@@ -1508,7 +1508,8 @@ _FORCE_PW_ALLOWED = {"profile", "logout", "login", "static",
                      "reset_password", "forgot_password",
                      "callsheet_view_public", "callsheet_confirm_public",
                      "docs_dashboard", "docs_project", "docs_upload_post",
-                     "docs_upload_status"}
+                     "docs_upload_status",
+                     "mobile_upload"}
 
 _DOCS_ONLY_ALLOWED = _FORCE_PW_ALLOWED | {"docs_upload_delete"}
 
@@ -15761,6 +15762,13 @@ def docs_project(pid):
     # Pass latest budget for tab bar (docs_only users won't see budget tabs)
     budget = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
     return render_template("docs_upload.html", project=project, uploads=uploads, budget=budget)
+
+
+@app.route("/upload", methods=["GET"])
+@login_required
+def mobile_upload():
+    projects = _docs_accessible_projects(current_user)
+    return render_template("mobile_upload.html", projects=projects)
 
 
 @app.route("/docs/<int:pid>/upload", methods=["POST"])
