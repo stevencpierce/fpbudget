@@ -1,251 +1,1285 @@
 <!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FPBudget — Feature Registry</title>
-<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:1100px;margin:40px auto;padding:0 24px;color:#1a1a2e;line-height:1.6}
-h1{color:#0f172a;border-bottom:3px solid #2563eb;padding-bottom:8px;margin-top:0}
-h2{color:#1e3a8a;margin-top:2.5rem;border-bottom:1px solid #dbeafe;padding-bottom:4px}
-h3{color:#1e3a8a;margin-top:1.5rem}
-table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.9rem}
-th{background:#1e3a8a;color:#fff;padding:8px 12px;text-align:left;font-weight:600}
-td{padding:7px 12px;border-bottom:1px solid #e2e8f0;vertical-align:top}
-tr:nth-child(even){background:#f8fafc}
-code{background:#f1f5f9;padding:2px 5px;border-radius:3px;font-size:.85em;color:#0f172a}
-blockquote{border-left:4px solid #2563eb;margin:1rem 0;padding:8px 16px;color:#475569;background:#f1f5fb;border-radius:0 4px 4px 0}
-hr{border:none;border-top:1px solid #e2e8f0;margin:2rem 0}
-ul{padding-left:24px}
-</style>
-</head>
-<body>
-<h1>FPBudget — Feature Registry</h1>
-<p><strong>App:</strong> FPBudget (Framework Productions Budget Planning)</p>
-<p><strong>Live URL:</strong> https://fp-budget.onrender.com</p>
-<p><strong>Repo:</strong> https://github.com/stevencpierce/fpbudget</p>
-<p><strong>Stack:</strong> Flask · SQLAlchemy · Postgres · WeasyPrint · Jinja2 · Flask-SocketIO (gthread)</p>
-<p><strong>Last Updated:</strong> 2026-04-28 (commit <code>a3fefae</code>)</p>
-<blockquote>Status icons: ✅ Live · 🔧 In Progress · 📋 Planned · ⚠️ Known Issue · 🗑️ Removed</blockquote>
-<hr>
-<h2>Projects &amp; Budgets</h2>
+<html lang="en"><head><meta charset="utf-8"><title>FPBudget — Feature Registry</title>
+<style>body{font-family:-apple-system,system-ui,"Segoe UI",Roboto,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1.5rem;color:#1f2937;line-height:1.55}h1,h2,h3{color:#111827}h2{border-bottom:1px solid #e5e7eb;padding-bottom:.3rem;margin-top:2rem}h3{margin-top:1.4rem;color:#374151}table{border-collapse:collapse;width:100%;margin:.8rem 0;font-size:.92rem}th,td{border:1px solid #e5e7eb;padding:6px 10px;text-align:left;vertical-align:top}th{background:#f9fafb}code{background:#f3f4f6;padding:1px 5px;border-radius:3px;font-size:.92em}blockquote{border-left:3px solid #4f7ef8;margin:1rem 0;padding:.3rem .9rem;background:#f8faff;color:#374151}a{color:#2563eb;text-decoration:none}a:hover{text-decoration:underline}hr{border:none;border-top:1px solid #e5e7eb;margin:2rem 0}</style>
+</head><body><h1 id="fpbudget-feature-registry">FPBudget — Feature Registry</h1>
+<p><strong>App:</strong> FPBudget (Framework Productions Budget Planning)
+<strong>Live URL:</strong> https://fp-budget.onrender.com
+<strong>Repo:</strong> https://github.com/stevencpierce/fpbudget
+<strong>Stack:</strong> Flask · SQLAlchemy · Postgres · WeasyPrint · Jinja2 · Flask-SocketIO (gthread)
+<strong>Last Updated:</strong> 2026-05-11 (commit <code>bf42832</code>)</p>
+<blockquote>
+<p>Status icons: ✅ Live · 🔧 In Progress · 📋 Planned · ⚠️ Known Issue · 🗑️ Removed</p>
+</blockquote>
+<hr />
+<h2 id="whats-new-2026-04-29-2026-05-11">What's New (2026-04-29 → 2026-05-11)</h2>
+<p>Compact, grouped summary of everything added since the previous Last Updated.
+Detail rows added to the per-category tables below; full commit list at the
+bottom under "Recent Pushes".</p>
+<h3 id="chart-of-accounts-overhaul">Chart of Accounts overhaul</h3>
+<p>| ✅ | COA renumbered to MMB / ShowBiz industry-standard structure | Old codes 100–20500 remapped to 1000–6800. Inline data migration runs once per DB and writes a <code>coa_change_log</code> audit row for every old→new pair. |
+| ✅ | Migration covers budget_line, budget_template_line, catalog_item, users.dept_code | Atomic CASE WHEN UPDATE per table in a single transaction. Merge collisions on <code>catalog_item</code> get <code>" (legacy)"</code> suffixed. |
+| ✅ | Transaction.account_code migration | Separate CASE WHEN pass on <code>transaction</code> rows (rewritten 2026-05-08 to fix a chain-bug from the earlier sequential version). |</p>
+<h3 id="quick-entry-catalog-role-mapping-scaffolding">Quick Entry catalog + role mapping (scaffolding)</h3>
+<p>| ✅ | CatalogItem.role_tag + phase columns | Promotes labor catalog items into the master role list with a stable slug. |
+| ✅ | RoleTagMapping table | Maps internal role tags to MMB / ShowBiz target account codes. Super-admin editable via <code>/admin/role-mapping</code>. |
+| ✅ | BudgetLine.catalog_item_id FK | Lets exports look up the role-tag mapping per line. |
+| 📋 | QE_CATEGORIES unification with DB | Replace the hardcoded JS array with a <code>/api/catalog</code> fetch on page load. Phase 2 — see HANDOFF.md. |</p>
+<h3 id="purchase-order-system-rebuild">Purchase Order system rebuild</h3>
+<p>| ✅ | PO calc: Cap / Lines / Estimates / Billed / Remaining | Five distinct numbers replace the old single "budgeted" rollup. |
+| ✅ | Over-cap warning fires only on real spend | <code>billed_total</code> (sum of Transaction.amount on PO's lines) is the threshold; lines/estimates above cap show as soft yellow heads-up. |
+| ✅ | Receipts attached note | When attached receipts exceed billed, an info banner shows "$X not yet posted as transactions". |
+| ✅ | Estimate / receipt attachment split by doc.category | Estimates: estimate/quote/contract/PO. Receipts: receipt/invoice. Mismatch banner compares lines vs estimates specifically. |
+| ✅ | Read-only PO badge in cross-views | Purple pill (📋 PO-XXXX) on each non-labor line in Estimated/Actual views; vendor name on hover. Distinct from the editable green badge in Working view. |
+| ✅ | PO surfaced in Actuals transaction expansion | Header pill (📋 PO-XXXX · Vendor) above each line's transaction detail. |
+| ✅ | Inline-edit PO #/vendor/Cap on the PO card | Click any of the three → input → Enter saves → page refreshes computed fields. Skip the modal for fast edits. |
+| ✅ | Note on POs page: rollups read from Working budget only | Explicit info box explaining the canonical-budget selection. |
+| ✅ | PO over-cap based on receipts not budget projection | Pre-rewrite logic that's now superseded by billed_total. |</p>
+<h3 id="variance-system">Variance system</h3>
+<p>| ✅ | Three bases: Estimated V Working / Working V Actual / Estimated V Actual | Renamed from "W vs E" etc. so labels match the math (X V Y = X − Y). |
+| ✅ | Math + label convention | Positive = remaining/under budget (BLUE). Negative = over budget (RED). |
+| ✅ | Real-time variance update on inline-save | Save handler updates data-e/-w/-a on per-line + section + grand-total cells, then re-applies the active basis. No more stale variance after edits. |
+| ✅ | Variance basis persistence across budget mode switches | localStorage <code>fpbudget.varianceBasis</code> retains the user's choice between Estimated/Working/Actual navigations. |
+| ✅ | Variance basis column-header highlight | Blue box around the first budget tier, red around the second, so the active comparison is clear at a glance. |</p>
+<h3 id="view-differentiation">View differentiation</h3>
+<p>| ✅ | Per-view color scheme | Estimated = blue, Working = orange, Actual = red. Applied via <code>&lt;body class="view-estimated"&gt;</code> etc. |
+| ✅ | Section block top borders match view color | 3px accent strip across each section card. |
+| ✅ | Mode-switcher button highlights match view color | Active button background = view color. |
+| ✅ | Section header dollar badge tinted per view | The dollar pill next to each section heading uses the view's color. |
+| ✅ | "Total [Section]" label colored + bolder per view | Reinforces view at scroll depth. |
+| ✅ | Active grand-total column value colored per view | Larger font + matching color. |
+| ✅ | Top accent strip across budget area | 4px colored bar on the page. |</p>
+<h3 id="sticky-ui-scroll-persistence">Sticky UI + scroll persistence</h3>
+<p>| ✅ | Sticky tabs row | Stays at top of viewport on scroll. Contains the Estimated/Working/Actual mode switcher. |
+| ✅ | Sticky toolbar | Quick Entry + variance buttons + search box stay just below the tabs. |
+| ✅ | Sticky Top Sheet variance toggle | Same offset as the budget-tab toolbar. |
+| ✅ | Preserve scroll on budget mode switch | sessionStorage capture before navigation, restore after page load. 60-second TTL, project-scoped. |</p>
+<h3 id="cross-budget-live-data">Cross-budget live data</h3>
+<p>| ✅ | Per-line E/W/A columns read live | Estimated_line_totals / working_line_totals / actual_line_totals dicts feed the cross-view cells. |
+| ✅ | Top Sheet's Working column reads live | working_by_section pulls from working_line_results (live calc) instead of frozen ln.working_total snapshots. |
+| ✅ | working_line_results dict | Full _wres calc dict cached per Working line id, reused across multiple downstream consumers. |
+| ⚠️ | Section subtotal badges still partial | Some per-section badges in the line-item view still read frozen snapshots in fallback paths. Per-line cells are live; the badges are cosmetic. C-7 cleanup deferred. |</p>
+<h3 id="performance-memory">Performance / memory</h3>
+<p>| ✅ | N+1 ScheduleDay queries eliminated | Bulk-fetch once per cross-budget, bucket by line_id in Python. Cuts query count from ~200 to 2 per request. |
+| ✅ | Same-budget cross-view fast path | When viewing the Working budget, skip the redundant query+calc for working_line_totals — reuse <code>line_results</code>. |
+| ✅ | Sister-budget resolution moved earlier | current_working_bid / current_estimated_bid resolved before any block that uses them — eliminates <code>peer_actual_bid</code> style UnboundLocalErrors. |
+| ✅ | Gunicorn <code>--max-requests 100 --jitter 20</code> | Workers voluntarily recycle every 80–120 requests so memory sheds before Render's OOM killer triggers. |
+| ✅ | Thread count bumped 4 → 8 per worker | 16 concurrent slots (2 workers × 8 threads) to survive socket.io long-polling tying up threads. |</p>
+<h3 id="root-cause-fix-is_actual-budget-misclassification">Root cause fix: is_actual budget misclassification</h3>
+<p>| ✅ | Filter out is_actual=True from current_working_bid resolution | The Actual budget shares budget_mode='working' with the real Working budget; is_actual is the only discriminator. Before this fix, the Actual could win the lookup when newer, causing cross-views to read its data instead of Working's. Same fix applied to has_working_budget and the version_groups builder. |</p>
+<h3 id="error-handling-debug">Error handling &amp; debug</h3>
+<p>| ✅ | Global 500 handler with ERR-XXXX ref | Unhandled exceptions log full traceback under <code>ERR-&lt;8 hex&gt;</code> and show the user a small page with just the ref. Grep Render logs for the ref to find the stack. |
+| ✅ | Calc-trace HTML debug page | <code>/admin/debug/budget/&lt;bid&gt;</code> — auto-refreshing table of every line + both calc paths' outputs + frozen snapshot comparison. Red rows = snapshot mismatch, yellow = NULL-mode schedule legacy. |
+| ✅ | Line JSON debug endpoint | <code>/admin/debug/line/&lt;bid&gt;?account_code=…&amp;description=…</code> — full data dump per line for surgical debugging. |
+| ✅ | Trash-purge fixed | Was silently failing every boot due to <code>db.engine</code> accessed outside app context. Wrapped the entire <code>_maybe_run_trash_purge</code> body in <code>app.app_context()</code>. |</p>
+<h3 id="actuals-transactions">Actuals + transactions</h3>
+<p>| ✅ | Actuals view: transaction rollup as Actual column | Across all three budget modes (Estimated/Working/Actual), the Actual column shows sum of linked transactions. |
+| ✅ | Actuals view: receipt-first reconciliation | Need-receipt scoping, cross-project claims. |
+| ✅ | Actuals view: drag transactions to reassign lines | Inline drag-drop in the per-line transaction detail expansion. |
+| ✅ | Actuals view: drop on "Not Project" | Quick exclusion target for personal expenses caught in the QBO sync. |
+| ✅ | Auto-clone Working → Actual on first transaction link | Creates a separate Actual budget the first time a transaction is linked to a line. |
+| ✅ | QBO sync: Bank + Credit Card account picker | Filter to relevant account types, one-click "Add account" button. |
+| ✅ | QBO sync: per-entity query (no broad scans) | Query each entity once, log diagnostic counts. |
+| ✅ | QBO sync: drop invalid entities | Removed CreditCardCredit (invalid) and Bill (out of scope). |
+| ✅ | Actuals: auto-reload after QBO account save | Re-renders the sync panel gate. |</p>
+<h3 id="travel-per-diem">Travel + per-diem</h3>
+<p>| ✅ | Per-person travel/per-diem mirror rows | Read-only italic child rows under each labor line showing that person's slice of Travel section aggregates. Source of truth stays in the aggregates. |
+| ✅ | Travel day-card layout | Each date is its own card with day's travelers grouped inside. Click header to collapse/expand. |
+| ✅ | Editable day-type in Travel | Drop the emojis, in-line day-type editor. |
+| ✅ | Travel "Only flagged" filter | Hide crew not marked for any travel item. |</p>
+<h3 id="catering">Catering</h3>
+<p>| ✅ | Catering day-cards + per-person weekly rollups | Same UX as Travel. |
+| ✅ | Craft Services becomes per-day toggle | Previously auto-counted; now user-toggled per ProductionDay flag. |</p>
+<h3 id="schedule-driven-lines">Schedule-driven lines</h3>
+<p>| ✅ | Stop clobbering user edits on schedule-driven lines | Manual edits to qty/days/rate/estimated_total auto-set sync_omit=True so the next page load doesn't overwrite. |
+| ✅ | sync-omitted visual cue | Italic + small icon indicator on rows where auto-sync is disabled. |
+| ✅ | Schedule-driven labor: blue italic "Days" label | Italic description for visual distinction. |
+| ✅ | Schedule clone copies is_production_day + TravelDetail rows | Verbatim, not just the day_type / cell_flags. |
+| ✅ | Inherit every Budget setting on clone | Not just half. Includes payroll_profile, payroll_week_start, fee settings, etc. |</p>
+<h3 id="top-sheet">Top Sheet</h3>
+<p>| ✅ | Label totals with active mode | "Subtotal (Working, Before Prod. Fee)" — clarifies which budget the column reflects. |
+| ✅ | Auto-line amounts shown in Working column | Workers' Comp / Production Insurance / Payroll Fee mirror into both Estimated and Working columns. |
+| ✅ | Apply fee dispersal + Production Insurance to Working column | Top Sheet's Working column matches Budget tab when nothing's changed. |</p>
+<h3 id="project-management">Project management</h3>
+<p>| ✅ | Project duplicate | Clone settings + folder structure to a new project. |
+| ✅ | Rename with folder | Rename a project AND its Dropbox folder atomically. |
+| ✅ | Rock-solid clone settings | Cover every Budget setting in the clone path. |</p>
+<h3 id="fringes">Fringes</h3>
+<p>| ✅ | Per-project fringes | Override the global library at the project level. |</p>
+<h3 id="calc-fixes">Calc fixes</h3>
+<p>| ✅ | Fix "line halves on edit" | Blank numeric fields now mean zero, not 1.0 fallback. |
+| ✅ | Labor qty invariant | Labor lines force qty=1 on save (multi-person split into separate rows). |
+| ⚠️ | Travel-Flights "exactly half" workaround | Auto-managed lines (per_diem, flight, hotel) have a <code>qty_val or 1.0</code> fallback that produces half-value when qty=0. <strong>Workaround:</strong> apply 100% discount instead of zeroing qty. <strong>Permanent fix pending</strong> — see HANDOFF.md. |</p>
+<h3 id="activity-log">Activity log</h3>
+<p>| ✅ | Activity timeline tab | Per-budget audit trail of every line create/update/delete with before/after JSON. |
+| ✅ | Dollar delta column | $ change per activity row. |
+| ✅ | Filterable by entity type + action | budget / docs / actuals / qbo / all. |</p>
+<h3 id="docs-document-analyzer">Docs / Document Analyzer</h3>
+<p>| ✅ | Docs tab embedded in budget | Per-project doc list with upload, OCR review, manual filing. |
+| ✅ | Veryfi OCR integration | Auto-extracts vendor/amount/date/category. |
+| ✅ | Dropbox auto-filing | ≥90% confidence auto-files to the correct subfolder; &lt;90% goes to review queue. |
+| ✅ | Duplicate detection | Hash-based, scoped per project, excludes review-status rows. |
+| ✅ | Estimate docs → PO | Create PO from a doc, or add to existing PO. |
+| ✅ | PO doc attachments | Source estimate + additional attachments with role tagging. |
+| ✅ | Mobile uploader — Commit 1 (GET /upload) | Phone-first upload page at <code>/upload</code>. Project picker (localStorage-persisted), 📷 Take Photo, 🖼 Choose from Library, drag-drop on desktop, per-file status queue. Allowlisted for <code>docs_only</code> role. Reuses the existing <code>/docs/&lt;pid&gt;/upload</code> pipeline (Veryfi OCR + Dropbox filing + dup detection). Shipped 2026-05-11 (commit <code>69b1460</code>). |
+| ✅ | Mobile uploader — Commit 2 (PWA + nav) | PWA manifest, apple touch icons, "Add to Home Screen" support, admin nav link. Shipped 2026-05-11 (commit <code>2232855</code>). |</p>
+<hr />
+<h2 id="projects-budgets">Projects &amp; Budgets</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>Project dashboard</td><td>Landing page lists every project with quick links to each budget</td></tr>
-<tr><td>✅</td><td>Create project</td><td>New project: name, client, optional template; auto-creates first budget</td></tr>
-<tr><td>✅</td><td>Template at creation</td><td>Pick a pre-built template — budget lines auto-populate</td></tr>
-<tr><td>✅</td><td>Multiple budgets per project</td><td>Each project can have several budget versions in parallel</td></tr>
-<tr><td>✅</td><td>Budget modes</td><td>Three modes: <strong>Estimated</strong> (baseline), <strong>Working</strong> (live), <strong>Actual</strong> (real spend)</td></tr>
-<tr><td>✅</td><td>Version management</td><td>Working budget can be archived &amp; cloned; estimated stays read-only when a working sibling exists</td></tr>
-<tr><td>✅</td><td>Project archive / reactivate</td><td>Archived projects move to <code>_ARCHIVED/</code> in Dropbox; reactivate restores them</td></tr>
-<tr><td>✅</td><td>Project access control</td><td>Per-project member roles (<code>viewer</code>, <code>editor</code>, <code>dept_head</code>, <code>admin</code>, <code>super_admin</code>)</td></tr>
-</tbody></table>
-<hr>
-<h2>Budget Line Editing</h2>
+<tr>
+<td>✅</td>
+<td>Project dashboard</td>
+<td>Landing page lists every project with quick links to each budget</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Create project</td>
+<td>New project: name, client, optional template; auto-creates first budget</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Template at creation</td>
+<td>Pick a pre-built template — budget lines auto-populate</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Multiple budgets per project</td>
+<td>Each project can have several budget versions in parallel</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Budget modes</td>
+<td>Three modes: <strong>Estimated</strong> (baseline), <strong>Working</strong> (live), <strong>Actual</strong> (real spend)</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Version management</td>
+<td>Working budget can be archived &amp; cloned; estimated stays read-only when a working sibling exists</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Project archive / reactivate</td>
+<td>Archived projects move to <code>_ARCHIVED/</code> in Dropbox; reactivate restores them</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Project access control</td>
+<td>Per-project member roles (<code>viewer</code>, <code>editor</code>, <code>dept_head</code>, <code>admin</code>, <code>super_admin</code>)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="budget-line-editing">Budget Line Editing</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>Inline editing</td><td>Click any cell on the line table to edit description, qty, days, rate, fringe, agent%</td></tr>
-<tr><td>✅</td><td>+ Single Line</td><td>Add one line to a section via modal</td></tr>
-<tr><td>✅</td><td>+ Quick Entry</td><td>Add many lines at once from a curated catalog of common production roles + items</td></tr>
-<tr><td>✅</td><td>Duplicate row</td><td>Copies an existing line; prompts whether to copy schedule cells too</td></tr>
-<tr><td>✅</td><td>Drag-reorder</td><td>Drag rows up/down; sort_order persists</td></tr>
-<tr><td>✅</td><td>Bulk delete</td><td>Multi-select rows then delete</td></tr>
-<tr><td>✅</td><td>Section auto-totals</td><td>Each section header shows running total; recalculates on every edit</td></tr>
-<tr><td>✅</td><td>Auto-line: Workers&#x27; Comp</td><td>% of gross labor wages, default 3%, lands in section 6000 (Insurance)</td></tr>
-<tr><td>✅</td><td>Auto-line: Production Liability Insurance</td><td>Mode picker (off / % of labor / flat $); default ON at 1.5% on new budgets</td></tr>
-<tr><td>✅</td><td>Auto-line: Payroll Service Fee</td><td>% of gross labor wages, default 1.75%, lands in section 6500 (Administrative)</td></tr>
-<tr><td>✅</td><td>Production Company Fee — flat or dispersed</td><td>Toggle in Settings; flat shows a separate fee line, dispersed spreads into section totals</td></tr>
-<tr><td>✅</td><td>Per-section fee exemption</td><td>Per-budget checklist of COA sections that pass through without the fee markup</td></tr>
-<tr><td>✅</td><td>Fringes excluded from fee base</td><td>Default ON: P&amp;W / P/H/W fringes don&#x27;t compound the Prod Co Fee</td></tr>
-<tr><td>✅</td><td>Replace Qty with Payroll Co. on labor</td><td>Labor rows show payroll-company text input (placeholder for future linked-payroll feature); non-labor rows keep Qty</td></tr>
-<tr><td>✅</td><td>Conditional column rendering</td><td>Payroll / OT / Fringe / Agent% / Disc% columns hide when no row in the section has data</td></tr>
-<tr><td>✅</td><td>OT Detail panel</td><td>Right-click any labor line → ST/OT/DT breakdown by week per the payroll profile</td></tr>
-<tr><td>✅</td><td>Schedule Detail panel</td><td>Click any auto-calc line (per diem, hotel, flight, etc.) → per-day, per-person breakdown with drift indicator</td></tr>
-</tbody></table>
-<hr>
-<h2>Schedule (Gantt)</h2>
+<tr>
+<td>✅</td>
+<td>Inline editing</td>
+<td>Click any cell on the line table to edit description, qty, days, rate, fringe, agent%</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>+ Single Line</td>
+<td>Add one line to a section via modal</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>+ Quick Entry</td>
+<td>Add many lines at once from a curated catalog of common production roles + items</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Duplicate row</td>
+<td>Copies an existing line; prompts whether to copy schedule cells too</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Drag-reorder</td>
+<td>Drag rows up/down; sort_order persists</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Bulk delete</td>
+<td>Multi-select rows then delete</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Section auto-totals</td>
+<td>Each section header shows running total; recalculates on every edit</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Auto-line: Workers' Comp</td>
+<td>% of gross labor wages, default 3%, lands in section 6000 (Insurance)</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Auto-line: Production Liability Insurance</td>
+<td>Mode picker (off / % of labor / flat $); default ON at 1.5% on new budgets</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Auto-line: Payroll Service Fee</td>
+<td>% of gross labor wages, default 1.75%, lands in section 6500 (Administrative)</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Production Company Fee — flat or dispersed</td>
+<td>Toggle in Settings; flat shows a separate fee line, dispersed spreads into section totals</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Per-section fee exemption</td>
+<td>Per-budget checklist of COA sections that pass through without the fee markup</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Fringes excluded from fee base</td>
+<td>Default ON: P&amp;W / P/H/W fringes don't compound the Prod Co Fee</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Replace Qty with Payroll Co. on labor</td>
+<td>Labor rows show payroll-company text input (placeholder for future linked-payroll feature); non-labor rows keep Qty</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Conditional column rendering</td>
+<td>Payroll / OT / Fringe / Agent% / Disc% columns hide when no row in the section has data</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>OT Detail panel</td>
+<td>Right-click any labor line → ST/OT/DT breakdown by week per the payroll profile</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Schedule Detail panel</td>
+<td>Click any auto-calc line (per diem, hotel, flight, etc.) → per-day, per-person breakdown with drift indicator</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="schedule-gantt">Schedule (Gantt)</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>Calendar grid</td><td>Each labor line → row; each date → column; click cells to set day type</td></tr>
-<tr><td>✅</td><td>Day types</td><td>Work / Travel / Hold / Half / Kill Fee / Custom / Off — color-coded</td></tr>
-<tr><td>✅</td><td>Multi-instance crew</td><td>Lines with qty&gt;1 expand to one row per crew member</td></tr>
-<tr><td>✅</td><td>Crew assignment</td><td>Click &quot;+ Assign&quot; → pick from crew DB or add new person inline</td></tr>
-<tr><td>✅</td><td>Manual OT hours</td><td>Right-click cell → &quot;OT Hours&quot; → enters manually; flows into payroll calc on hourly rate types</td></tr>
-<tr><td>✅</td><td>Per-cell flags</td><td>Right-click cell → toggle flight / hotel / car rental / mileage / per diem / working meal</td></tr>
-<tr><td>✅</td><td>Per-Diem variants</td><td>4 separate flags: Full / Breakfast / Lunch / Dinner — each has its own auto-line + rate</td></tr>
-<tr><td>✅</td><td>Production Day toggle</td><td>Top-row marker for &quot;real on-set days vs prep / remote / travel&quot; — feeds downstream calcs</td></tr>
-<tr><td>✅</td><td>Meal flags (per-date)</td><td>Top-row toggles: Courtesy Breakfast / 1st Meal / 2nd Meal — applied to all working crew that date</td></tr>
-<tr><td>✅</td><td>Working Meal flag (per-cell)</td><td>Per-person opt-in to a working meal on a specific day</td></tr>
-<tr><td>✅</td><td>Multi-select + Delete</td><td>Drag-select cells then Delete/Backspace clears day type + all flags + OT in one action</td></tr>
-<tr><td>✅</td><td>Copy/paste</td><td>Cmd+C / Cmd+V across selected cells</td></tr>
-<tr><td>✅</td><td>Schedule sync to budget</td><td>Every cell change re-runs sync; auto-lines (per diem, hotel, flight, mileage, meals) update in lockstep</td></tr>
-<tr><td>✅</td><td>Notes</td><td>Right-click → add free-text note per cell</td></tr>
-</tbody></table>
-<hr>
-<h2>Travel Tab</h2>
+<tr>
+<td>✅</td>
+<td>Calendar grid</td>
+<td>Each labor line → row; each date → column; click cells to set day type</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Day types</td>
+<td>Work / Travel / Hold / Half / Kill Fee / Custom / Off — color-coded</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Multi-instance crew</td>
+<td>Lines with qty&gt;1 expand to one row per crew member</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Crew assignment</td>
+<td>Click "+ Assign" → pick from crew DB or add new person inline</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Manual OT hours</td>
+<td>Right-click cell → "OT Hours" → enters manually; flows into payroll calc on hourly rate types</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Per-cell flags</td>
+<td>Right-click cell → toggle flight / hotel / car rental / mileage / per diem / working meal</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Per-Diem variants</td>
+<td>4 separate flags: Full / Breakfast / Lunch / Dinner — each has its own auto-line + rate</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Production Day toggle</td>
+<td>Top-row marker for "real on-set days vs prep / remote / travel" — feeds downstream calcs</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Meal flags (per-date)</td>
+<td>Top-row toggles: Courtesy Breakfast / 1st Meal / 2nd Meal — applied to all working crew that date</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Working Meal flag (per-cell)</td>
+<td>Per-person opt-in to a working meal on a specific day</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Multi-select + Delete</td>
+<td>Drag-select cells then Delete/Backspace clears day type + all flags + OT in one action</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Copy/paste</td>
+<td>Cmd+C / Cmd+V across selected cells</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Schedule sync to budget</td>
+<td>Every cell change re-runs sync; auto-lines (per diem, hotel, flight, mileage, meals) update in lockstep</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Notes</td>
+<td>Right-click → add free-text note per cell</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="travel-tab">Travel Tab</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>Day-card layout</td><td>Each scheduled date is its own collapsible card; header shows pretty date + crew count</td></tr>
-<tr><td>✅</td><td>Editable day-type</td><td>Pill-style dropdown per row to change Work → Travel → Hold etc. without leaving the tab</td></tr>
-<tr><td>✅</td><td>Flag toggles per row</td><td>Pill buttons for Flight / Hotel / Car Rental / Mileage</td></tr>
-<tr><td>✅</td><td>Per-Diem dropdown</td><td>Select No PD / Full / Breakfast / Lunch / Dinner per row</td></tr>
-<tr><td>✅</td><td>&quot;Add details&quot; button</td><td>Click to open centered modal with reservation fields (flight #, airline, depart/arrive, hotel name, check-in/out, room type, rental co, pickup/return, miles, route, confirmation #, notes)</td></tr>
-<tr><td>✅</td><td>Detail persistence</td><td>TravelDetail rows live alongside ScheduleDay; survive flag-toggle cycles</td></tr>
-<tr><td>✅</td><td>&quot;+ Add to this day&quot;</td><td>Per-card button to add another crew member to an existing date with one click</td></tr>
-<tr><td>✅</td><td>&quot;Only flagged&quot; filter</td><td>Hide unflagged crew once the list grows</td></tr>
-<tr><td>✅</td><td>Expand all / Collapse all</td><td>Bulk controls above the day list</td></tr>
-<tr><td>🔧</td><td>Call sheet email integration</td><td>Travel details to flow into call sheet emails per-crew per-date</td></tr>
-</tbody></table>
-<hr>
-<h2>Catering Tab</h2>
+<tr>
+<td>✅</td>
+<td>Day-card layout</td>
+<td>Each scheduled date is its own collapsible card; header shows pretty date + crew count</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Editable day-type</td>
+<td>Pill-style dropdown per row to change Work → Travel → Hold etc. without leaving the tab</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Flag toggles per row</td>
+<td>Pill buttons for Flight / Hotel / Car Rental / Mileage</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Per-Diem dropdown</td>
+<td>Select No PD / Full / Breakfast / Lunch / Dinner per row</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>"Add details" button</td>
+<td>Click to open centered modal with reservation fields (flight #, airline, depart/arrive, hotel name, check-in/out, room type, rental co, pickup/return, miles, route, confirmation #, notes)</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Detail persistence</td>
+<td>TravelDetail rows live alongside ScheduleDay; survive flag-toggle cycles</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>"+ Add to this day"</td>
+<td>Per-card button to add another crew member to an existing date with one click</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>"Only flagged" filter</td>
+<td>Hide unflagged crew once the list grows</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Expand all / Collapse all</td>
+<td>Bulk controls above the day list</td>
+</tr>
+<tr>
+<td>🔧</td>
+<td>Call sheet email integration</td>
+<td>Travel details to flow into call sheet emails per-crew per-date</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="catering-tab">Catering Tab</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>Day-card layout</td><td>Mirrors Travel tab — every scheduled day is its own collapsible card</td></tr>
-<tr><td>✅</td><td>Day-of-week + Production-Week label</td><td>Each card shows weekday + &quot;Wk N&quot; matching the payroll cycle</td></tr>
-<tr><td>✅</td><td>Production Day badge</td><td>Cards for production days get a green badge</td></tr>
-<tr><td>✅</td><td>Per-day meal toggles</td><td>Courtesy Breakfast / 1st Meal / 2nd Meal in each card body</td></tr>
-<tr><td>✅</td><td>Per-card people lists</td><td>Working crew, working-meal opt-ins, per-diem people (with mode) listed in the body</td></tr>
-<tr><td>✅</td><td>Expected $ per day</td><td>Computed live from headcount × rate per active meal type</td></tr>
-<tr><td>✅</td><td>Per-person Per Diem rollup</td><td>Below day cards: weekly $ matrix per person + project total + day count</td></tr>
-<tr><td>✅</td><td>Per-person Working Meal rollup</td><td>Same shape, only renders if any line has working-meal opt-ins</td></tr>
-<tr><td>✅</td><td>Caterer Bill entry</td><td>Add daily/weekly billed amounts with vendor + period + note</td></tr>
-<tr><td>✅</td><td>Drift indicator</td><td>Top summary shows expected vs caterer-billed with delta color-coded</td></tr>
-</tbody></table>
-<hr>
-<h2>Documents (Receipt OCR + Filing)</h2>
+<tr>
+<td>✅</td>
+<td>Day-card layout</td>
+<td>Mirrors Travel tab — every scheduled day is its own collapsible card</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Day-of-week + Production-Week label</td>
+<td>Each card shows weekday + "Wk N" matching the payroll cycle</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Production Day badge</td>
+<td>Cards for production days get a green badge</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Per-day meal toggles</td>
+<td>Courtesy Breakfast / 1st Meal / 2nd Meal in each card body</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Per-card people lists</td>
+<td>Working crew, working-meal opt-ins, per-diem people (with mode) listed in the body</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Expected $ per day</td>
+<td>Computed live from headcount × rate per active meal type</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Per-person Per Diem rollup</td>
+<td>Below day cards: weekly $ matrix per person + project total + day count</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Per-person Working Meal rollup</td>
+<td>Same shape, only renders if any line has working-meal opt-ins</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Caterer Bill entry</td>
+<td>Add daily/weekly billed amounts with vendor + period + note</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Drift indicator</td>
+<td>Top summary shows expected vs caterer-billed with delta color-coded</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="documents-receipt-ocr-filing">Documents (Receipt OCR + Filing)</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>Drag-drop or browse upload</td><td>Drop receipts/invoices/PDFs/HEIC into the docs tab</td></tr>
-<tr><td>✅</td><td>Camera capture</td><td>Mobile-friendly &quot;Take Photo&quot; button</td></tr>
-<tr><td>✅</td><td>Veryfi OCR</td><td>Each upload runs through Veryfi → vendor / amount / date / category extracted</td></tr>
-<tr><td>✅</td><td>Auto-rename</td><td>High-confidence docs get filed with <code>YYYY-MM-DD_RECEIPT_Category_Vendor_Amount.pdf</code> naming</td></tr>
-<tr><td>✅</td><td>Auto-file to Dropbox</td><td>Receipts → <code>01_ADMIN/PROCESSED DOCUMENTS/</code>, invoices → <code>01_ADMIN/CONTRACTS &amp; INVOICES/</code>, etc. by detected type</td></tr>
-<tr><td>✅</td><td>Low-confidence review queue</td><td>Files that don&#x27;t pass auto-file confidence threshold flagged for manual review</td></tr>
-<tr><td>✅</td><td>Sort + filter list</td><td>Previously-uploaded list sortable by upload date / filename / type / vendor / amount / size</td></tr>
-<tr><td>✅</td><td>Inline rename</td><td>Click any filed filename → edit → Dropbox file is renamed in lockstep</td></tr>
-<tr><td>✅</td><td>Click-to-open detail modal</td><td>Click a row → preview pane (image or PDF) + editable vendor / amount / doc date / category / note</td></tr>
-<tr><td>✅</td><td>Verify against Dropbox</td><td>Background check on every &quot;Filed&quot; row; missing files → red banner</td></tr>
-<tr><td>✅</td><td>Scan Dropbox (reconcile)</td><td>Super-admin tool: walks the project&#x27;s doc folders and creates DocUpload rows for any orphan files</td></tr>
-<tr><td>✅</td><td>Duplicate routing</td><td>Same content uploaded twice → second copy routes to <code>/_DUPLICATES/</code> subfolder, original stays clean</td></tr>
-<tr><td>✅</td><td>Wipe all (testing)</td><td>Super-admin tool: clears every DocUpload + moves filed files to <code>/_TRASH/{date}/</code></td></tr>
-</tbody></table>
-<hr>
-<h2>Top Sheet</h2>
+<tr>
+<td>✅</td>
+<td>Drag-drop or browse upload</td>
+<td>Drop receipts/invoices/PDFs/HEIC into the docs tab</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Camera capture</td>
+<td>Mobile-friendly "Take Photo" button</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Veryfi OCR</td>
+<td>Each upload runs through Veryfi → vendor / amount / date / category extracted</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Auto-rename</td>
+<td>High-confidence docs get filed with <code>YYYY-MM-DD_RECEIPT_Category_Vendor_Amount.pdf</code> naming</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Auto-file to Dropbox</td>
+<td>Receipts → <code>01_ADMIN/PROCESSED DOCUMENTS/</code>, invoices → <code>01_ADMIN/CONTRACTS &amp; INVOICES/</code>, etc. by detected type</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Low-confidence review queue</td>
+<td>Files that don't pass auto-file confidence threshold flagged for manual review</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Sort + filter list</td>
+<td>Previously-uploaded list sortable by upload date / filename / type / vendor / amount / size</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Inline rename</td>
+<td>Click any filed filename → edit → Dropbox file is renamed in lockstep</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Click-to-open detail modal</td>
+<td>Click a row → preview pane (image or PDF) + editable vendor / amount / doc date / category / note</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Verify against Dropbox</td>
+<td>Background check on every "Filed" row; missing files → red banner</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Scan Dropbox (reconcile)</td>
+<td>Super-admin tool: walks the project's doc folders and creates DocUpload rows for any orphan files</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Duplicate routing</td>
+<td>Same content uploaded twice → second copy routes to <code>/_DUPLICATES/</code> subfolder, original stays clean</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Wipe all (testing)</td>
+<td>Super-admin tool: clears every DocUpload + moves filed files to <code>/_TRASH/{date}/</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="top-sheet_1">Top Sheet</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>Section-grouped totals</td><td>All COA sections rolled up: Estimated / Working / Actual / Variance</td></tr>
-<tr><td>✅</td><td>Auto-calc inline rows</td><td>Workers&#x27; Comp / Production Liability / Payroll Service Fee shown as muted sub-lines under their home sections</td></tr>
-<tr><td>✅</td><td>Fee-exempt annotation</td><td>Sections marked exempt show &quot;(Prod Co Fee exempt)&quot; inline in italic amber</td></tr>
-<tr><td>✅</td><td>Tax credits row</td><td>Subtracted from grand total when applicable</td></tr>
-<tr><td>✅</td><td>Float bar</td><td>Sticky bottom bar shows Subtotal · Prod Fee · Grand Total — recalculates live</td></tr>
-<tr><td>✅</td><td>Variance highlighting</td><td>Over/under styled green / red</td></tr>
-<tr><td>✅</td><td>Click section → jump to budget</td><td>Top sheet rows navigate into the section detail</td></tr>
-</tbody></table>
-<hr>
-<h2>Exports</h2>
+<tr>
+<td>✅</td>
+<td>Section-grouped totals</td>
+<td>All COA sections rolled up: Estimated / Working / Actual / Variance</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Auto-calc inline rows</td>
+<td>Workers' Comp / Production Liability / Payroll Service Fee shown as muted sub-lines under their home sections</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Fee-exempt annotation</td>
+<td>Sections marked exempt show "(Prod Co Fee exempt)" inline in italic amber</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Tax credits row</td>
+<td>Subtracted from grand total when applicable</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Float bar</td>
+<td>Sticky bottom bar shows Subtotal · Prod Fee · Grand Total — recalculates live</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Variance highlighting</td>
+<td>Over/under styled green / red</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Click section → jump to budget</td>
+<td>Top sheet rows navigate into the section detail</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="exports">Exports</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>PDF — Top Sheet</td><td>Section-grouped one-pager</td></tr>
-<tr><td>✅</td><td>PDF — Full Detail</td><td>Every line, organized by section</td></tr>
-<tr><td>✅</td><td>CSV — Top Sheet</td><td>Section totals</td></tr>
-<tr><td>✅</td><td>CSV — Line Detail</td><td>Every line with its math</td></tr>
-<tr><td>✅</td><td>MMB tab-delimited</td><td>Movie Magic Budgeting import format</td></tr>
-<tr><td>✅</td><td>ShowBiz tab-delimited</td><td>ShowBiz Budgeting import format</td></tr>
-<tr><td>✅</td><td>Export Options dialog</td><td>Pre-export prompt: suppress zero lines, override Prod Co Fee dispersed/separate</td></tr>
-<tr><td>✅</td><td>Suppress zero lines</td><td>Hide rows whose total rounds to $0 from the export</td></tr>
-<tr><td>✅</td><td>Per-export fee override</td><td>Pick &quot;use current setting&quot; / &quot;separate line&quot; / &quot;dispersed&quot; per export without changing the saved budget</td></tr>
-<tr><td>✅</td><td>Conditional columns</td><td>Empty Payroll / OT / Fringe / Agent% / Disc% columns drop entirely</td></tr>
-<tr><td>✅</td><td>Dispersed-mode rounding (PDF only)</td><td>Each line + section + grand total rounds to nearest $10 deterministically — clean numbers for client presentation</td></tr>
-</tbody></table>
-<hr>
-<h2>Schedule-Driven Auto-Calcs</h2>
+<tr>
+<td>✅</td>
+<td>PDF — Top Sheet</td>
+<td>Section-grouped one-pager</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>PDF — Full Detail</td>
+<td>Every line, organized by section</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>CSV — Top Sheet</td>
+<td>Section totals</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>CSV — Line Detail</td>
+<td>Every line with its math</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>MMB tab-delimited</td>
+<td>Movie Magic Budgeting import format</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>ShowBiz tab-delimited</td>
+<td>ShowBiz Budgeting import format</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Export Options dialog</td>
+<td>Pre-export prompt: suppress zero lines, override Prod Co Fee dispersed/separate</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Suppress zero lines</td>
+<td>Hide rows whose total rounds to $0 from the export</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Per-export fee override</td>
+<td>Pick "use current setting" / "separate line" / "dispersed" per export without changing the saved budget</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Conditional columns</td>
+<td>Empty Payroll / OT / Fringe / Agent% / Disc% columns drop entirely</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Dispersed-mode rounding (PDF only)</td>
+<td>Each line + section + grand total rounds to nearest $10 deterministically — clean numbers for client presentation</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="schedule-driven-auto-calcs">Schedule-Driven Auto-Calcs</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>Per Diem (4 variants)</td><td>Full / Breakfast / Lunch / Dinner — each its own budget line, fed by per-cell schedule flags</td></tr>
-<tr><td>✅</td><td>Hotels by role group</td><td>Hotel — Talent / ATL / Crew — separate lines fed by hotel flag + role group of parent line</td></tr>
-<tr><td>✅</td><td>Flights by role group</td><td>Same shape as hotel</td></tr>
-<tr><td>✅</td><td>Mileage by role group</td><td>Same shape</td></tr>
-<tr><td>✅</td><td>Working Meals</td><td>Per-cell flag → per-person count</td></tr>
-<tr><td>✅</td><td>First / Second Meal</td><td>Per-date flag × working headcount that day</td></tr>
-<tr><td>✅</td><td>Courtesy Breakfast</td><td>Same</td></tr>
-<tr><td>✅</td><td>Craft Services</td><td>Auto-set on every non-off scheduled day</td></tr>
-<tr><td>✅</td><td>Manual OT on flat / weekly rates</td><td>&quot;+2h&quot; entered on a schedule cell now calculates OT even when rate type is flat / week / no payroll profile</td></tr>
-<tr><td>✅</td><td>Schedule mode dedup</td><td>Legacy NULL-mode rows + new mode-tagged rows don&#x27;t double-count</td></tr>
-</tbody></table>
-<hr>
-<h2>Settings</h2>
+<tr>
+<td>✅</td>
+<td>Per Diem (4 variants)</td>
+<td>Full / Breakfast / Lunch / Dinner — each its own budget line, fed by per-cell schedule flags</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Hotels by role group</td>
+<td>Hotel — Talent / ATL / Crew — separate lines fed by hotel flag + role group of parent line</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Flights by role group</td>
+<td>Same shape as hotel</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Mileage by role group</td>
+<td>Same shape</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Working Meals</td>
+<td>Per-cell flag → per-person count</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>First / Second Meal</td>
+<td>Per-date flag × working headcount that day</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Courtesy Breakfast</td>
+<td>Same</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Craft Services</td>
+<td>Auto-set on every non-off scheduled day</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Manual OT on flat / weekly rates</td>
+<td>"+2h" entered on a schedule cell now calculates OT even when rate type is flat / week / no payroll profile</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Schedule mode dedup</td>
+<td>Legacy NULL-mode rows + new mode-tagged rows don't double-count</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="settings">Settings</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>Project name &amp; client</td><td>Edit names from Settings tab</td></tr>
-<tr><td>✅</td><td>Production Company Fee %</td><td>Plus dispersed toggle</td></tr>
-<tr><td>✅</td><td>Sections exempt from Prod Co Fee</td><td>Per-COA-section checkboxes</td></tr>
-<tr><td>✅</td><td>Exclude fringes from fee base</td><td>Default ON</td></tr>
-<tr><td>✅</td><td>Workers&#x27; Comp %</td><td>Default 3%</td></tr>
-<tr><td>✅</td><td>Payroll Service Fee %</td><td>Default 1.75%</td></tr>
-<tr><td>✅</td><td>Production Liability Insurance</td><td>Mode (off / % / flat) + value</td></tr>
-<tr><td>✅</td><td>Payroll profile</td><td>Pick the union profile that drives ST/OT/DT calculations</td></tr>
-<tr><td>✅</td><td>Payroll week start</td><td>Override the profile&#x27;s default week-start day</td></tr>
-<tr><td>✅</td><td>Timezone</td><td>Per budget</td></tr>
-<tr><td>✅</td><td>Production details for PDFs</td><td>Client name, prepared by, title, email, phone — appears on PDF cover</td></tr>
-</tbody></table>
-<hr>
-<h2>Admin / Catalog</h2>
+<tr>
+<td>✅</td>
+<td>Project name &amp; client</td>
+<td>Edit names from Settings tab</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Production Company Fee %</td>
+<td>Plus dispersed toggle</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Sections exempt from Prod Co Fee</td>
+<td>Per-COA-section checkboxes</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Exclude fringes from fee base</td>
+<td>Default ON</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Workers' Comp %</td>
+<td>Default 3%</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Payroll Service Fee %</td>
+<td>Default 1.75%</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Production Liability Insurance</td>
+<td>Mode (off / % / flat) + value</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Payroll profile</td>
+<td>Pick the union profile that drives ST/OT/DT calculations</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Payroll week start</td>
+<td>Override the profile's default week-start day</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Timezone</td>
+<td>Per budget</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Production details for PDFs</td>
+<td>Client name, prepared by, title, email, phone — appears on PDF cover</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="admin-catalog">Admin / Catalog</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>Global Quick Entry catalog</td><td>Super-admin manages the curated list of common roles + items shown in QE</td></tr>
-<tr><td>✅</td><td>Bulk operations</td><td>Multi-select catalog items → delete or move to another category</td></tr>
-<tr><td>✅</td><td>Code repair tool</td><td>Super-admin: re-map account codes when COA changes</td></tr>
-<tr><td>✅</td><td>Veryfi diagnostic</td><td>Super-admin status page for OCR config</td></tr>
-<tr><td>✅</td><td>Dropbox diagnostic</td><td>Super-admin status page for filing path config</td></tr>
-</tbody></table>
-<hr>
-<h2>📋 Activity Tab + Undo (planned — next build)</h2>
-<p>User request: every change made to a budget gets logged with user, timestamp, and a per-action <code>$ delta</code> showing how the change moved the grand total. List view by tab/section with filters. Per-row &quot;Undo&quot; button that reverses the change.</p>
+<tr>
+<td>✅</td>
+<td>Global Quick Entry catalog</td>
+<td>Super-admin manages the curated list of common roles + items shown in QE</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Bulk operations</td>
+<td>Multi-select catalog items → delete or move to another category</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Code repair tool</td>
+<td>Super-admin: re-map account codes when COA changes</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Veryfi diagnostic</td>
+<td>Super-admin status page for OCR config</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Dropbox diagnostic</td>
+<td>Super-admin status page for filing path config</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="activity-tab-undo-planned-next-build">📋 Activity Tab + Undo (planned — next build)</h2>
+<p>User request: every change made to a budget gets logged with user, timestamp, and a per-action <code>$ delta</code> showing how the change moved the grand total. List view by tab/section with filters. Per-row "Undo" button that reverses the change.</p>
 <table>
-<thead><tr><th>Visibility level</th><th>What they see</th></tr></thead>
+<thead>
+<tr>
+<th>Visibility level</th>
+<th>What they see</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>Super admin</td><td>Everything across every project</td></tr>
-<tr><td>Admin</td><td>Everything in projects they have admin role on</td></tr>
-<tr><td>Department head</td><td>Only changes made within their <code>dept_code</code></td></tr>
-<tr><td>Editor / Viewer</td><td>Only their own changes</td></tr>
-</tbody></table>
-<p>Implementation outline:</p>
-<ul><li>New <code>AuditLog</code> table: <code>(id, user_id, project_id, budget_id, action, target_type, target_id, payload_before_json, payload_after_json, budget_total_before, budget_total_after, created_at)</code></li><li>Hook: small wrapper around every mutating endpoint that snapshots before/after totals</li><li>Activity tab: paginated list with filters (user, action type, date range, target type)</li><li>Undo: replay the inverse of the recorded change. Some actions inherently undoable (field edits, deletes, schedule cell flips); some not (e.g. Dropbox file moves) — those rows show &quot;Cannot undo&quot; with explanation.</li></ul>
-<hr>
-<h2>Cross-Cutting</h2>
+<tr>
+<td>Super admin</td>
+<td>Everything across every project</td>
+</tr>
+<tr>
+<td>Admin</td>
+<td>Everything in projects they have admin role on</td>
+</tr>
+<tr>
+<td>Department head</td>
+<td>Only changes made within their <code>dept_code</code></td>
+</tr>
+<tr>
+<td>Editor / Viewer</td>
+<td>Only their own changes</td>
+</tr>
+</tbody>
+</table>
+<p>Implementation outline:
+- New <code>AuditLog</code> table: <code>(id, user_id, project_id, budget_id, action, target_type, target_id, payload_before_json, payload_after_json, budget_total_before, budget_total_after, created_at)</code>
+- Hook: small wrapper around every mutating endpoint that snapshots before/after totals
+- Activity tab: paginated list with filters (user, action type, date range, target type)
+- Undo: replay the inverse of the recorded change. Some actions inherently undoable (field edits, deletes, schedule cell flips); some not (e.g. Dropbox file moves) — those rows show "Cannot undo" with explanation.</p>
+<hr />
+<h2 id="cross-cutting">Cross-Cutting</h2>
 <table>
-<thead><tr><th>Status</th><th>Feature</th><th>Plain English</th></tr></thead>
+<thead>
+<tr>
+<th>Status</th>
+<th>Feature</th>
+<th>Plain English</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>✅</td><td>Live multi-user</td><td>Socket.io presence + live patches when teammates edit the same budget</td></tr>
-<tr><td>✅</td><td>Auto-save</td><td>Inline edits save on blur; no explicit &quot;Save&quot; needed</td></tr>
-<tr><td>✅</td><td>Per-worker schema self-heal</td><td>Critical column adds run on every gunicorn worker boot — production deploys never break on schema drift</td></tr>
-<tr><td>✅</td><td>Conversation archive</td><td>Each Claude session snapshot lands in Dropbox at <code>SOFTWARE BUILDS/FPBudget/conversation_archive/</code></td></tr>
-<tr><td>✅</td><td>Cross-device session resume</td><td><code>claude --resume &lt;id&gt;</code> continues this conversation on either Mac via Dropbox sync</td></tr>
-</tbody></table>
-<hr>
-<h2>Glossary</h2>
-<ul><li><strong>Dispersed mode</strong>: Production Company Fee is spread proportionally across every section&#x27;s total instead of shown as its own line. Some clients prefer this for presentations.</li><li><strong>Fee base</strong>: The dollar amount the Prod Co Fee applies to. Sections marked exempt and (when configured) labor fringes are subtracted from it.</li><li><strong>Schedule mode</strong>: Each schedule view is either &quot;estimated&quot; or &quot;working&quot; — they&#x27;re independent so locking the estimate doesn&#x27;t freeze you out of the working schedule.</li><li><strong>Auto-line</strong>: A budget line whose qty/days are computed from the schedule rather than typed in. Identified by a <code>line_tag</code> like <code>per_diem_full</code> or <code>hotel_crew</code>.</li></ul>
-<hr>
-<h2>Recent Pushes</h2>
+<tr>
+<td>✅</td>
+<td>Live multi-user</td>
+<td>Socket.io presence + live patches when teammates edit the same budget</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Auto-save</td>
+<td>Inline edits save on blur; no explicit "Save" needed</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Per-worker schema self-heal</td>
+<td>Critical column adds run on every gunicorn worker boot — production deploys never break on schema drift</td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Conversation archive</td>
+<td>Each Claude session snapshot lands in Dropbox at <code>SOFTWARE BUILDS/FPBudget/conversation_archive/</code></td>
+</tr>
+<tr>
+<td>✅</td>
+<td>Cross-device session resume</td>
+<td><code>claude --resume &lt;id&gt;</code> continues this conversation on either Mac via Dropbox sync</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="glossary">Glossary</h2>
+<ul>
+<li><strong>Dispersed mode</strong>: Production Company Fee is spread proportionally across every section's total instead of shown as its own line. Some clients prefer this for presentations.</li>
+<li><strong>Fee base</strong>: The dollar amount the Prod Co Fee applies to. Sections marked exempt and (when configured) labor fringes are subtracted from it.</li>
+<li><strong>Schedule mode</strong>: Each schedule view is either "estimated" or "working" — they're independent so locking the estimate doesn't freeze you out of the working schedule.</li>
+<li><strong>Auto-line</strong>: A budget line whose qty/days are computed from the schedule rather than typed in. Identified by a <code>line_tag</code> like <code>per_diem_full</code> or <code>hotel_crew</code>.</li>
+</ul>
+<hr />
+<h2 id="recent-pushes">Recent Pushes</h2>
 <table>
-<thead><tr><th>Commit</th><th>Date</th><th>Summary</th></tr></thead>
+<thead>
+<tr>
+<th>Commit</th>
+<th>Date</th>
+<th>Summary</th>
+</tr>
+</thead>
 <tbody>
-<tr><td><code>a3fefae</code></td><td>2026-04-28</td><td>PDF dispersed-rounding: flat $10, deterministic per-line</td></tr>
-<tr><td><code>db92d05</code></td><td>2026-04-28</td><td>Conditional columns (Payroll / OT / Fringe / Agent% / Disc%)</td></tr>
-<tr><td><code>7f7d120</code></td><td>2026-04-28</td><td>Travel modal centered + larger fonts; fix Catering &quot;Loading…&quot; stuck</td></tr>
-<tr><td><code>a6c163f</code></td><td>2026-04-27</td><td>Catering day-cards + per-person weekly rollups</td></tr>
-<tr><td><code>cdf373c</code></td><td>2026-04-27</td><td>Drop emojis, editable day-type in Travel</td></tr>
-<tr><td><code>953c2a3</code></td><td>2026-04-27</td><td>Travel day-card layout + Add Travel Day fix</td></tr>
-<tr><td><code>8474e8b</code></td><td>2026-04-27</td><td>Production Liability Insurance auto-line</td></tr>
-<tr><td><code>7156182</code></td><td>2026-04-27</td><td>Per-export options dialog (suppress zeros + fee override)</td></tr>
-</tbody></table>
-<p style="margin-top:3rem;font-size:.8rem;color:#94a3b8">Generated from FEATURES.md</p>
-</body></html>
+<tr>
+<td><code>2232855</code></td>
+<td>2026-05-11</td>
+<td>Mobile uploader: PWA manifest + icons + nav links (Commit 2)</td>
+</tr>
+<tr>
+<td><code>69b1460</code></td>
+<td>2026-05-11</td>
+<td>Mobile uploader: GET /upload with project picker (Commit 1)</td>
+</tr>
+<tr>
+<td><code>bf42832</code></td>
+<td>2026-05-11</td>
+<td>HANDOFF.md: mark session ended, note Dropbox copy location</td>
+</tr>
+<tr>
+<td><code>881ebfc</code></td>
+<td>2026-05-11</td>
+<td>Add HANDOFF.md — session state for cross-device continuity</td>
+</tr>
+<tr>
+<td><code>96cb8ab</code></td>
+<td>2026-05-10</td>
+<td>Subtotal headings adopt view color (estimated=blue, working=orange, actual=red)</td>
+</tr>
+<tr>
+<td><code>e543747</code></td>
+<td>2026-05-10</td>
+<td>Sticky tabs/toolbar + preserve scroll on budget switch</td>
+</tr>
+<tr>
+<td><code>7da5bd5</code></td>
+<td>2026-05-10</td>
+<td>View differentiation + variance basis persistence</td>
+</tr>
+<tr>
+<td><code>fb6cf10</code></td>
+<td>2026-05-10</td>
+<td>Variance colors: negative = red, positive = blue</td>
+</tr>
+<tr>
+<td><code>eb09ad5</code></td>
+<td>2026-05-10</td>
+<td>Inline-edit PO number, vendor, and cap directly on the card</td>
+</tr>
+<tr>
+<td><code>c677a06</code></td>
+<td>2026-05-10</td>
+<td>PO surfacing: visible badge in cross-views, scope note on POs page, PO badge on actuals txn detail</td>
+</tr>
+<tr>
+<td><code>a0b7c4a</code></td>
+<td>2026-05-10</td>
+<td>PO calc: split estimates/receipts/billed, alert only on real overspend</td>
+</tr>
+<tr>
+<td><code>d663d15</code></td>
+<td>2026-05-10</td>
+<td>Real-time variance: refresh data-e/-w/-a after inline-save</td>
+</tr>
+<tr>
+<td><code>34915f3</code></td>
+<td>2026-05-10</td>
+<td>Variance basis: rename labels to match math, 'X V Y' = X minus Y</td>
+</tr>
+<tr>
+<td><code>74ec8e7</code></td>
+<td>2026-05-10</td>
+<td>Add --max-requests to gunicorn for graceful worker recycling</td>
+</tr>
+<tr>
+<td><code>6ff4d90</code></td>
+<td>2026-05-08</td>
+<td>C-6: Bulk-fetch ScheduleDay in cross-view loops (N+1 → 2 queries)</td>
+</tr>
+<tr>
+<td><code>9bdc882</code></td>
+<td>2026-05-08</td>
+<td>Reapply C-5: Exclude is_actual budgets from current_working_bid (THE root-cause fix)</td>
+</tr>
+<tr>
+<td><code>feea9b7</code></td>
+<td>2026-05-08</td>
+<td>C-4: Skip redundant N+1 query loops on same-budget cross-views</td>
+</tr>
+<tr>
+<td><code>193cbc0</code></td>
+<td>2026-05-08</td>
+<td>Reapply C-3: Top Sheet's working_by_section reads live, not snapshots</td>
+</tr>
+<tr>
+<td><code>48f1b4e</code></td>
+<td>2026-05-08</td>
+<td>C-2v2: Move sister-budget resolution + working_line_results above working_by_section</td>
+</tr>
+<tr>
+<td><code>9194c04</code></td>
+<td>2026-05-08</td>
+<td>Option B: Calc-trace HTML page at /admin/debug/budget/<bid></td>
+</tr>
+<tr>
+<td><code>05009fb</code></td>
+<td>2026-05-08</td>
+<td>Add /admin/debug/line/<bid> debug endpoint</td>
+</tr>
+<tr>
+<td><code>7c01e41</code></td>
+<td>2026-05-08</td>
+<td>Add global 500 handler with error-ref + traceback</td>
+</tr>
+<tr>
+<td><code>cbd6692</code></td>
+<td>2026-05-08</td>
+<td>Fix 502s, trash-purge, and COA transaction migration</td>
+</tr>
+<tr>
+<td><code>fa84feb</code></td>
+<td>2026-05-07</td>
+<td>Fix UnboundLocalError on peer_actual_bid in budget_view</td>
+</tr>
+<tr>
+<td><code>ca69b35</code></td>
+<td>2026-05-07</td>
+<td>Actual column = transaction rollup across all views</td>
+</tr>
+<tr>
+<td><code>e95c698</code></td>
+<td>2026-05-07</td>
+<td>PO over-cap fires on receipts, not line projection</td>
+</tr>
+<tr>
+<td><code>3b5e480</code></td>
+<td>2026-05-07</td>
+<td>PO/crew are project-level: read-only dots in Estimated and Actual</td>
+</tr>
+<tr>
+<td><code>db5dfec</code></td>
+<td>2026-05-07</td>
+<td>Highlight column headers based on active variance basis</td>
+</tr>
+<tr>
+<td><code>50873d7</code></td>
+<td>2026-05-07</td>
+<td>PO card: show line breakdown + flag doc-vs-line mismatch</td>
+</tr>
+<tr>
+<td><code>1e409b8</code></td>
+<td>2026-05-07</td>
+<td>Actual view: hide qty/duration/rate, subtotal = sum of transactions</td>
+</tr>
+<tr>
+<td><code>4536aee</code></td>
+<td>2026-05-07</td>
+<td>Fix "line halves on edit" — blank numeric fields now mean zero</td>
+</tr>
+<tr>
+<td><code>e4771b9</code></td>
+<td>2026-05-07</td>
+<td>sync-omitted: visual cue for manually-overridden schedule lines</td>
+</tr>
+<tr>
+<td><code>479a0ee</code></td>
+<td>2026-05-07</td>
+<td>Stop clobbering user edits on schedule-driven budget lines</td>
+</tr>
+<tr>
+<td><code>9f4e7ea</code></td>
+<td>2026-05-07</td>
+<td>Defensive guards for cross-project claim queries</td>
+</tr>
+<tr>
+<td><code>22dc659</code></td>
+<td>2026-05-07</td>
+<td>Budget view: show all 3 budgets (E/W/A) live in every mode</td>
+</tr>
+<tr>
+<td><code>b1a80eb</code></td>
+<td>2026-05-07</td>
+<td>Actuals: receipt-first reconciliation, need-receipt scoping, cross-project claims</td>
+</tr>
+<tr>
+<td><code>7d08d2c</code></td>
+<td>2026-05-07</td>
+<td>QBO sync: drop CreditCardCredit (invalid entity), fix misleading warning</td>
+</tr>
+<tr>
+<td><code>541e429</code></td>
+<td>2026-05-07</td>
+<td>QBO actuals: filter picker to Bank+CC, add one-click "Add account" button</td>
+</tr>
+<tr>
+<td><code>2606a4b</code></td>
+<td>2026-05-07</td>
+<td>Working view: live Estimated column instead of frozen snapshot</td>
+</tr>
+<tr>
+<td><code>2f36534</code></td>
+<td>2026-05-07</td>
+<td>Budget tab: variance basis selector matching Top Sheet</td>
+</tr>
+<tr>
+<td><code>1fd8b25</code></td>
+<td>2026-05-07</td>
+<td>QBO sync: add Bill/BillPayment + diagnostic logging</td>
+</tr>
+<tr>
+<td><code>f05e48f</code></td>
+<td>2026-05-07</td>
+<td>Top Sheet: label totals with active mode + fix header alignment</td>
+</tr>
+<tr>
+<td><code>1c9e8c7</code></td>
+<td>2026-05-07</td>
+<td>Project duplicate + rename-with-folder + rock-solid clone settings</td>
+</tr>
+<tr>
+<td><code>b4265ca</code></td>
+<td>2026-05-06</td>
+<td>Top Sheet: show auto-line amounts in Working column too</td>
+</tr>
+<tr>
+<td><code>0b42051</code></td>
+<td>2026-05-06</td>
+<td>Top Sheet: apply fee dispersal + Production Insurance to Working column</td>
+</tr>
+<tr>
+<td><code>ba96369</code></td>
+<td>2026-05-06</td>
+<td>Sync source + clone before snapshotting working_total</td>
+</tr>
+<tr>
+<td><code>12825ed</code></td>
+<td>2026-05-06</td>
+<td>Self-heal: add missing Budget columns on worker boot</td>
+</tr>
+<tr>
+<td><code>466d0a5</code></td>
+<td>2026-05-06</td>
+<td>Craft Services becomes a per-day toggle, not auto-counted</td>
+</tr>
+<tr>
+<td><code>88f5f09</code></td>
+<td>2026-05-06</td>
+<td>Schedule clone now copies is_production_day + TravelDetail rows verbatim</td>
+</tr>
+<tr>
+<td><code>9827ca7</code></td>
+<td>2026-05-06</td>
+<td>Inherit every Budget setting on clone, not just half of them</td>
+</tr>
+<tr>
+<td><code>53ccc0e</code></td>
+<td>2026-05-06</td>
+<td>Inherit payroll profile + week start when cloning Working from Estimated</td>
+</tr>
+<tr>
+<td><code>d57f9c9</code></td>
+<td>2026-05-06</td>
+<td>PO/Doc fixes: rollup, OCR, multi-select drag, manual edit propagation</td>
+</tr>
+<tr>
+<td><code>db1b99c</code></td>
+<td>2026-05-05</td>
+<td>Fix Docs row layout + PO actions in detail modal + harden po_save</td>
+</tr>
+<tr>
+<td><code>90db305</code></td>
+<td>2026-05-05</td>
+<td>PO page: render the budget tab strip so context isn't lost</td>
+</tr>
+<tr>
+<td><code>068d1f3</code></td>
+<td>2026-05-05</td>
+<td>Estimate docs → PO: Create PO from doc + Add to existing PO</td>
+</tr>
+<tr>
+<td><code>5f04c8c</code></td>
+<td>2026-05-05</td>
+<td>Plan A: per-person travel/per-diem mirror rows on labor lines</td>
+</tr>
+<tr>
+<td><code>8814cf4</code></td>
+<td>2026-05-05</td>
+<td>Right-click on manual OT field → bulk clear OT</td>
+</tr>
+<tr>
+<td><code>5778363</code></td>
+<td>2026-05-05</td>
+<td>Clearer OT column: distinguish manual vs schedule-driven</td>
+</tr>
+<tr>
+<td><code>b4c9b48</code></td>
+<td>2026-05-05</td>
+<td>Kit-fee rows: broader detection + larger click targets on editables</td>
+</tr>
+<tr>
+<td><code>111d894</code></td>
+<td>2026-05-05</td>
+<td>Per-project fringes — overrides global library</td>
+</tr>
+<tr>
+<td><code>0a8d9b6</code></td>
+<td>2026-05-04</td>
+<td>+ PO button on non-labor lines: pick existing or create inline</td>
+</tr>
+<tr>
+<td><code>a3fefae</code></td>
+<td>2026-04-28</td>
+<td>PDF dispersed-rounding: flat $10, deterministic per-line</td>
+</tr>
+<tr>
+<td><code>db92d05</code></td>
+<td>2026-04-28</td>
+<td>Conditional columns (Payroll / OT / Fringe / Agent% / Disc%)</td>
+</tr>
+<tr>
+<td><code>7f7d120</code></td>
+<td>2026-04-28</td>
+<td>Travel modal centered + larger fonts; fix Catering "Loading…" stuck</td>
+</tr>
+<tr>
+<td><code>a6c163f</code></td>
+<td>2026-04-27</td>
+<td>Catering day-cards + per-person weekly rollups</td>
+</tr>
+<tr>
+<td><code>cdf373c</code></td>
+<td>2026-04-27</td>
+<td>Drop emojis, editable day-type in Travel</td>
+</tr>
+<tr>
+<td><code>953c2a3</code></td>
+<td>2026-04-27</td>
+<td>Travel day-card layout + Add Travel Day fix</td>
+</tr>
+<tr>
+<td><code>8474e8b</code></td>
+<td>2026-04-27</td>
+<td>Production Liability Insurance auto-line</td>
+</tr>
+<tr>
+<td><code>7156182</code></td>
+<td>2026-04-27</td>
+<td>Per-export options dialog (suppress zeros + fee override)</td>
+</tr>
+</tbody>
+</table></body></html>

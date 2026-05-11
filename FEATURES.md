@@ -4,9 +4,144 @@
 **Live URL:** https://fp-budget.onrender.com
 **Repo:** https://github.com/stevencpierce/fpbudget
 **Stack:** Flask · SQLAlchemy · Postgres · WeasyPrint · Jinja2 · Flask-SocketIO (gthread)
-**Last Updated:** 2026-04-28 (commit `a3fefae`)
+**Last Updated:** 2026-05-11 (commit `bf42832`)
 
 > Status icons: ✅ Live · 🔧 In Progress · 📋 Planned · ⚠️ Known Issue · 🗑️ Removed
+
+---
+
+## What's New (2026-04-29 → 2026-05-11)
+
+Compact, grouped summary of everything added since the previous Last Updated.
+Detail rows added to the per-category tables below; full commit list at the
+bottom under "Recent Pushes".
+
+### Chart of Accounts overhaul
+| ✅ | COA renumbered to MMB / ShowBiz industry-standard structure | Old codes 100–20500 remapped to 1000–6800. Inline data migration runs once per DB and writes a `coa_change_log` audit row for every old→new pair. |
+| ✅ | Migration covers budget_line, budget_template_line, catalog_item, users.dept_code | Atomic CASE WHEN UPDATE per table in a single transaction. Merge collisions on `catalog_item` get `" (legacy)"` suffixed. |
+| ✅ | Transaction.account_code migration | Separate CASE WHEN pass on `transaction` rows (rewritten 2026-05-08 to fix a chain-bug from the earlier sequential version). |
+
+### Quick Entry catalog + role mapping (scaffolding)
+| ✅ | CatalogItem.role_tag + phase columns | Promotes labor catalog items into the master role list with a stable slug. |
+| ✅ | RoleTagMapping table | Maps internal role tags to MMB / ShowBiz target account codes. Super-admin editable via `/admin/role-mapping`. |
+| ✅ | BudgetLine.catalog_item_id FK | Lets exports look up the role-tag mapping per line. |
+| 📋 | QE_CATEGORIES unification with DB | Replace the hardcoded JS array with a `/api/catalog` fetch on page load. Phase 2 — see HANDOFF.md. |
+
+### Purchase Order system rebuild
+| ✅ | PO calc: Cap / Lines / Estimates / Billed / Remaining | Five distinct numbers replace the old single "budgeted" rollup. |
+| ✅ | Over-cap warning fires only on real spend | `billed_total` (sum of Transaction.amount on PO's lines) is the threshold; lines/estimates above cap show as soft yellow heads-up. |
+| ✅ | Receipts attached note | When attached receipts exceed billed, an info banner shows "$X not yet posted as transactions". |
+| ✅ | Estimate / receipt attachment split by doc.category | Estimates: estimate/quote/contract/PO. Receipts: receipt/invoice. Mismatch banner compares lines vs estimates specifically. |
+| ✅ | Read-only PO badge in cross-views | Purple pill (📋 PO-XXXX) on each non-labor line in Estimated/Actual views; vendor name on hover. Distinct from the editable green badge in Working view. |
+| ✅ | PO surfaced in Actuals transaction expansion | Header pill (📋 PO-XXXX · Vendor) above each line's transaction detail. |
+| ✅ | Inline-edit PO #/vendor/Cap on the PO card | Click any of the three → input → Enter saves → page refreshes computed fields. Skip the modal for fast edits. |
+| ✅ | Note on POs page: rollups read from Working budget only | Explicit info box explaining the canonical-budget selection. |
+| ✅ | PO over-cap based on receipts not budget projection | Pre-rewrite logic that's now superseded by billed_total. |
+
+### Variance system
+| ✅ | Three bases: Estimated V Working / Working V Actual / Estimated V Actual | Renamed from "W vs E" etc. so labels match the math (X V Y = X − Y). |
+| ✅ | Math + label convention | Positive = remaining/under budget (BLUE). Negative = over budget (RED). |
+| ✅ | Real-time variance update on inline-save | Save handler updates data-e/-w/-a on per-line + section + grand-total cells, then re-applies the active basis. No more stale variance after edits. |
+| ✅ | Variance basis persistence across budget mode switches | localStorage `fpbudget.varianceBasis` retains the user's choice between Estimated/Working/Actual navigations. |
+| ✅ | Variance basis column-header highlight | Blue box around the first budget tier, red around the second, so the active comparison is clear at a glance. |
+
+### View differentiation
+| ✅ | Per-view color scheme | Estimated = blue, Working = orange, Actual = red. Applied via `<body class="view-estimated">` etc. |
+| ✅ | Section block top borders match view color | 3px accent strip across each section card. |
+| ✅ | Mode-switcher button highlights match view color | Active button background = view color. |
+| ✅ | Section header dollar badge tinted per view | The dollar pill next to each section heading uses the view's color. |
+| ✅ | "Total [Section]" label colored + bolder per view | Reinforces view at scroll depth. |
+| ✅ | Active grand-total column value colored per view | Larger font + matching color. |
+| ✅ | Top accent strip across budget area | 4px colored bar on the page. |
+
+### Sticky UI + scroll persistence
+| ✅ | Sticky tabs row | Stays at top of viewport on scroll. Contains the Estimated/Working/Actual mode switcher. |
+| ✅ | Sticky toolbar | Quick Entry + variance buttons + search box stay just below the tabs. |
+| ✅ | Sticky Top Sheet variance toggle | Same offset as the budget-tab toolbar. |
+| ✅ | Preserve scroll on budget mode switch | sessionStorage capture before navigation, restore after page load. 60-second TTL, project-scoped. |
+
+### Cross-budget live data
+| ✅ | Per-line E/W/A columns read live | Estimated_line_totals / working_line_totals / actual_line_totals dicts feed the cross-view cells. |
+| ✅ | Top Sheet's Working column reads live | working_by_section pulls from working_line_results (live calc) instead of frozen ln.working_total snapshots. |
+| ✅ | working_line_results dict | Full _wres calc dict cached per Working line id, reused across multiple downstream consumers. |
+| ⚠️ | Section subtotal badges still partial | Some per-section badges in the line-item view still read frozen snapshots in fallback paths. Per-line cells are live; the badges are cosmetic. C-7 cleanup deferred. |
+
+### Performance / memory
+| ✅ | N+1 ScheduleDay queries eliminated | Bulk-fetch once per cross-budget, bucket by line_id in Python. Cuts query count from ~200 to 2 per request. |
+| ✅ | Same-budget cross-view fast path | When viewing the Working budget, skip the redundant query+calc for working_line_totals — reuse `line_results`. |
+| ✅ | Sister-budget resolution moved earlier | current_working_bid / current_estimated_bid resolved before any block that uses them — eliminates `peer_actual_bid` style UnboundLocalErrors. |
+| ✅ | Gunicorn `--max-requests 100 --jitter 20` | Workers voluntarily recycle every 80–120 requests so memory sheds before Render's OOM killer triggers. |
+| ✅ | Thread count bumped 4 → 8 per worker | 16 concurrent slots (2 workers × 8 threads) to survive socket.io long-polling tying up threads. |
+
+### Root cause fix: is_actual budget misclassification
+| ✅ | Filter out is_actual=True from current_working_bid resolution | The Actual budget shares budget_mode='working' with the real Working budget; is_actual is the only discriminator. Before this fix, the Actual could win the lookup when newer, causing cross-views to read its data instead of Working's. Same fix applied to has_working_budget and the version_groups builder. |
+
+### Error handling & debug
+| ✅ | Global 500 handler with ERR-XXXX ref | Unhandled exceptions log full traceback under `ERR-<8 hex>` and show the user a small page with just the ref. Grep Render logs for the ref to find the stack. |
+| ✅ | Calc-trace HTML debug page | `/admin/debug/budget/<bid>` — auto-refreshing table of every line + both calc paths' outputs + frozen snapshot comparison. Red rows = snapshot mismatch, yellow = NULL-mode schedule legacy. |
+| ✅ | Line JSON debug endpoint | `/admin/debug/line/<bid>?account_code=…&description=…` — full data dump per line for surgical debugging. |
+| ✅ | Trash-purge fixed | Was silently failing every boot due to `db.engine` accessed outside app context. Wrapped the entire `_maybe_run_trash_purge` body in `app.app_context()`. |
+
+### Actuals + transactions
+| ✅ | Actuals view: transaction rollup as Actual column | Across all three budget modes (Estimated/Working/Actual), the Actual column shows sum of linked transactions. |
+| ✅ | Actuals view: receipt-first reconciliation | Need-receipt scoping, cross-project claims. |
+| ✅ | Actuals view: drag transactions to reassign lines | Inline drag-drop in the per-line transaction detail expansion. |
+| ✅ | Actuals view: drop on "Not Project" | Quick exclusion target for personal expenses caught in the QBO sync. |
+| ✅ | Auto-clone Working → Actual on first transaction link | Creates a separate Actual budget the first time a transaction is linked to a line. |
+| ✅ | QBO sync: Bank + Credit Card account picker | Filter to relevant account types, one-click "Add account" button. |
+| ✅ | QBO sync: per-entity query (no broad scans) | Query each entity once, log diagnostic counts. |
+| ✅ | QBO sync: drop invalid entities | Removed CreditCardCredit (invalid) and Bill (out of scope). |
+| ✅ | Actuals: auto-reload after QBO account save | Re-renders the sync panel gate. |
+
+### Travel + per-diem
+| ✅ | Per-person travel/per-diem mirror rows | Read-only italic child rows under each labor line showing that person's slice of Travel section aggregates. Source of truth stays in the aggregates. |
+| ✅ | Travel day-card layout | Each date is its own card with day's travelers grouped inside. Click header to collapse/expand. |
+| ✅ | Editable day-type in Travel | Drop the emojis, in-line day-type editor. |
+| ✅ | Travel "Only flagged" filter | Hide crew not marked for any travel item. |
+
+### Catering
+| ✅ | Catering day-cards + per-person weekly rollups | Same UX as Travel. |
+| ✅ | Craft Services becomes per-day toggle | Previously auto-counted; now user-toggled per ProductionDay flag. |
+
+### Schedule-driven lines
+| ✅ | Stop clobbering user edits on schedule-driven lines | Manual edits to qty/days/rate/estimated_total auto-set sync_omit=True so the next page load doesn't overwrite. |
+| ✅ | sync-omitted visual cue | Italic + small icon indicator on rows where auto-sync is disabled. |
+| ✅ | Schedule-driven labor: blue italic "Days" label | Italic description for visual distinction. |
+| ✅ | Schedule clone copies is_production_day + TravelDetail rows | Verbatim, not just the day_type / cell_flags. |
+| ✅ | Inherit every Budget setting on clone | Not just half. Includes payroll_profile, payroll_week_start, fee settings, etc. |
+
+### Top Sheet
+| ✅ | Label totals with active mode | "Subtotal (Working, Before Prod. Fee)" — clarifies which budget the column reflects. |
+| ✅ | Auto-line amounts shown in Working column | Workers' Comp / Production Insurance / Payroll Fee mirror into both Estimated and Working columns. |
+| ✅ | Apply fee dispersal + Production Insurance to Working column | Top Sheet's Working column matches Budget tab when nothing's changed. |
+
+### Project management
+| ✅ | Project duplicate | Clone settings + folder structure to a new project. |
+| ✅ | Rename with folder | Rename a project AND its Dropbox folder atomically. |
+| ✅ | Rock-solid clone settings | Cover every Budget setting in the clone path. |
+
+### Fringes
+| ✅ | Per-project fringes | Override the global library at the project level. |
+
+### Calc fixes
+| ✅ | Fix "line halves on edit" | Blank numeric fields now mean zero, not 1.0 fallback. |
+| ✅ | Labor qty invariant | Labor lines force qty=1 on save (multi-person split into separate rows). |
+| ⚠️ | Travel-Flights "exactly half" workaround | Auto-managed lines (per_diem, flight, hotel) have a `qty_val or 1.0` fallback that produces half-value when qty=0. **Workaround:** apply 100% discount instead of zeroing qty. **Permanent fix pending** — see HANDOFF.md. |
+
+### Activity log
+| ✅ | Activity timeline tab | Per-budget audit trail of every line create/update/delete with before/after JSON. |
+| ✅ | Dollar delta column | $ change per activity row. |
+| ✅ | Filterable by entity type + action | budget / docs / actuals / qbo / all. |
+
+### Docs / Document Analyzer
+| ✅ | Docs tab embedded in budget | Per-project doc list with upload, OCR review, manual filing. |
+| ✅ | Veryfi OCR integration | Auto-extracts vendor/amount/date/category. |
+| ✅ | Dropbox auto-filing | ≥90% confidence auto-files to the correct subfolder; <90% goes to review queue. |
+| ✅ | Duplicate detection | Hash-based, scoped per project, excludes review-status rows. |
+| ✅ | Estimate docs → PO | Create PO from a doc, or add to existing PO. |
+| ✅ | PO doc attachments | Source estimate + additional attachments with role tagging. |
+| ✅ | Mobile uploader — Commit 1 (GET /upload) | Phone-first upload page at `/upload`. Project picker (localStorage-persisted), 📷 Take Photo, 🖼 Choose from Library, drag-drop on desktop, per-file status queue. Allowlisted for `docs_only` role. Reuses the existing `/docs/<pid>/upload` pipeline (Veryfi OCR + Dropbox filing + dup detection). Shipped 2026-05-11 (commit `69b1460`). |
+| ✅ | Mobile uploader — Commit 2 (PWA + nav) | PWA manifest, apple touch icons, "Add to Home Screen" support, admin nav link. Shipped 2026-05-11 (commit `2232855`). |
 
 ---
 
@@ -247,6 +382,67 @@ Implementation outline:
 
 | Commit | Date | Summary |
 |---|---|---|
+| `2232855` | 2026-05-11 | Mobile uploader: PWA manifest + icons + nav links (Commit 2) |
+| `69b1460` | 2026-05-11 | Mobile uploader: GET /upload with project picker (Commit 1) |
+| `bf42832` | 2026-05-11 | HANDOFF.md: mark session ended, note Dropbox copy location |
+| `881ebfc` | 2026-05-11 | Add HANDOFF.md — session state for cross-device continuity |
+| `96cb8ab` | 2026-05-10 | Subtotal headings adopt view color (estimated=blue, working=orange, actual=red) |
+| `e543747` | 2026-05-10 | Sticky tabs/toolbar + preserve scroll on budget switch |
+| `7da5bd5` | 2026-05-10 | View differentiation + variance basis persistence |
+| `fb6cf10` | 2026-05-10 | Variance colors: negative = red, positive = blue |
+| `eb09ad5` | 2026-05-10 | Inline-edit PO number, vendor, and cap directly on the card |
+| `c677a06` | 2026-05-10 | PO surfacing: visible badge in cross-views, scope note on POs page, PO badge on actuals txn detail |
+| `a0b7c4a` | 2026-05-10 | PO calc: split estimates/receipts/billed, alert only on real overspend |
+| `d663d15` | 2026-05-10 | Real-time variance: refresh data-e/-w/-a after inline-save |
+| `34915f3` | 2026-05-10 | Variance basis: rename labels to match math, 'X V Y' = X minus Y |
+| `74ec8e7` | 2026-05-10 | Add --max-requests to gunicorn for graceful worker recycling |
+| `6ff4d90` | 2026-05-08 | C-6: Bulk-fetch ScheduleDay in cross-view loops (N+1 → 2 queries) |
+| `9bdc882` | 2026-05-08 | Reapply C-5: Exclude is_actual budgets from current_working_bid (THE root-cause fix) |
+| `feea9b7` | 2026-05-08 | C-4: Skip redundant N+1 query loops on same-budget cross-views |
+| `193cbc0` | 2026-05-08 | Reapply C-3: Top Sheet's working_by_section reads live, not snapshots |
+| `48f1b4e` | 2026-05-08 | C-2v2: Move sister-budget resolution + working_line_results above working_by_section |
+| `9194c04` | 2026-05-08 | Option B: Calc-trace HTML page at /admin/debug/budget/<bid> |
+| `05009fb` | 2026-05-08 | Add /admin/debug/line/<bid> debug endpoint |
+| `7c01e41` | 2026-05-08 | Add global 500 handler with error-ref + traceback |
+| `cbd6692` | 2026-05-08 | Fix 502s, trash-purge, and COA transaction migration |
+| `fa84feb` | 2026-05-07 | Fix UnboundLocalError on peer_actual_bid in budget_view |
+| `ca69b35` | 2026-05-07 | Actual column = transaction rollup across all views |
+| `e95c698` | 2026-05-07 | PO over-cap fires on receipts, not line projection |
+| `3b5e480` | 2026-05-07 | PO/crew are project-level: read-only dots in Estimated and Actual |
+| `db5dfec` | 2026-05-07 | Highlight column headers based on active variance basis |
+| `50873d7` | 2026-05-07 | PO card: show line breakdown + flag doc-vs-line mismatch |
+| `1e409b8` | 2026-05-07 | Actual view: hide qty/duration/rate, subtotal = sum of transactions |
+| `4536aee` | 2026-05-07 | Fix "line halves on edit" — blank numeric fields now mean zero |
+| `e4771b9` | 2026-05-07 | sync-omitted: visual cue for manually-overridden schedule lines |
+| `479a0ee` | 2026-05-07 | Stop clobbering user edits on schedule-driven budget lines |
+| `9f4e7ea` | 2026-05-07 | Defensive guards for cross-project claim queries |
+| `22dc659` | 2026-05-07 | Budget view: show all 3 budgets (E/W/A) live in every mode |
+| `b1a80eb` | 2026-05-07 | Actuals: receipt-first reconciliation, need-receipt scoping, cross-project claims |
+| `7d08d2c` | 2026-05-07 | QBO sync: drop CreditCardCredit (invalid entity), fix misleading warning |
+| `541e429` | 2026-05-07 | QBO actuals: filter picker to Bank+CC, add one-click "Add account" button |
+| `2606a4b` | 2026-05-07 | Working view: live Estimated column instead of frozen snapshot |
+| `2f36534` | 2026-05-07 | Budget tab: variance basis selector matching Top Sheet |
+| `1fd8b25` | 2026-05-07 | QBO sync: add Bill/BillPayment + diagnostic logging |
+| `f05e48f` | 2026-05-07 | Top Sheet: label totals with active mode + fix header alignment |
+| `1c9e8c7` | 2026-05-07 | Project duplicate + rename-with-folder + rock-solid clone settings |
+| `b4265ca` | 2026-05-06 | Top Sheet: show auto-line amounts in Working column too |
+| `0b42051` | 2026-05-06 | Top Sheet: apply fee dispersal + Production Insurance to Working column |
+| `ba96369` | 2026-05-06 | Sync source + clone before snapshotting working_total |
+| `12825ed` | 2026-05-06 | Self-heal: add missing Budget columns on worker boot |
+| `466d0a5` | 2026-05-06 | Craft Services becomes a per-day toggle, not auto-counted |
+| `88f5f09` | 2026-05-06 | Schedule clone now copies is_production_day + TravelDetail rows verbatim |
+| `9827ca7` | 2026-05-06 | Inherit every Budget setting on clone, not just half of them |
+| `53ccc0e` | 2026-05-06 | Inherit payroll profile + week start when cloning Working from Estimated |
+| `d57f9c9` | 2026-05-06 | PO/Doc fixes: rollup, OCR, multi-select drag, manual edit propagation |
+| `db1b99c` | 2026-05-05 | Fix Docs row layout + PO actions in detail modal + harden po_save |
+| `90db305` | 2026-05-05 | PO page: render the budget tab strip so context isn't lost |
+| `068d1f3` | 2026-05-05 | Estimate docs → PO: Create PO from doc + Add to existing PO |
+| `5f04c8c` | 2026-05-05 | Plan A: per-person travel/per-diem mirror rows on labor lines |
+| `8814cf4` | 2026-05-05 | Right-click on manual OT field → bulk clear OT |
+| `5778363` | 2026-05-05 | Clearer OT column: distinguish manual vs schedule-driven |
+| `b4c9b48` | 2026-05-05 | Kit-fee rows: broader detection + larger click targets on editables |
+| `111d894` | 2026-05-05 | Per-project fringes — overrides global library |
+| `0a8d9b6` | 2026-05-04 | + PO button on non-labor lines: pick existing or create inline |
 | `a3fefae` | 2026-04-28 | PDF dispersed-rounding: flat $10, deterministic per-line |
 | `db92d05` | 2026-04-28 | Conditional columns (Payroll / OT / Fringe / Agent% / Disc%) |
 | `7f7d120` | 2026-04-28 | Travel modal centered + larger fonts; fix Catering "Loading…" stuck |
