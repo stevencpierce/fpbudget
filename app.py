@@ -10339,6 +10339,49 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
             logging.warning(f"[po rollup] billed calc failed for po={po.id}: {_be}")
         out["billed_total"] = round(_billed, 2)
 
+        # Detail listing of the same transactions that fed billed_total.
+        # Same OR filter; same estimate-link guard. Surfaces to the PO
+        # card so the user can spot incorrectly-coded txns and either
+        # mark them not-project-expense in place, or follow the link
+        # back to the Actuals view to reassign to a different line/PO.
+        # 2026-05-14 per user request.
+        out["transactions"] = []
+        try:
+            _detail_q = (db.session
+                         .query(Transaction, BudgetLine, DocUpload)
+                         .join(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
+                         .outerjoin(DocUpload, DocUpload.id == Transaction.doc_upload_id)
+                         .filter(_or_po(
+                                     BudgetLine.po_id == po.id,
+                                     BudgetLine.source_line_id.in_(_working_po_lines_sub),
+                                 ),
+                                 Transaction.not_project_expense == False,
+                                 Transaction.is_expense == True,
+                                 _exclude_estimate_linked_txns_clause())
+                         .order_by(Transaction.txn_date.desc().nullslast(),
+                                   Transaction.id.desc()))
+            for _t, _ln, _d in _detail_q.all():
+                out["transactions"].append({
+                    "id":            _t.id,
+                    # Already a YYYY-MM-DD string per Transaction model.
+                    "txn_date":      _t.txn_date or "",
+                    "vendor":        _t.vendor or "",
+                    "amount":        float(_t.amount) if _t.amount is not None else None,
+                    "note":          _t.note or "",
+                    "source":        _t.source or "manual",
+                    "match_status":  _t.match_status or "unmatched",
+                    "budget_line_id":   _ln.id,
+                    "account_code":     _ln.account_code,
+                    "line_description": _ln.description or _ln.account_name or "",
+                    # The Actual budget id the line belongs to — gives the
+                    # template a target for the "Manage in Actuals" link.
+                    "budget_id":     _ln.budget_id,
+                    "doc_upload_id": _t.doc_upload_id,
+                    "doc_filename":  (_d.filed_filename or _d.original_filename) if _d else None,
+                })
+        except Exception as _de:
+            logging.warning(f"[po rollup] txn detail failed for po={po.id}: {_de}")
+
         # Cap usage drives off BILLED only — the user wants the over-cap
         # alert reserved for actual overspend, not a budgeted projection
         # exceeding the committed cap. Lines or estimates above cap can

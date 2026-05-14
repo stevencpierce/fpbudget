@@ -232,6 +232,59 @@
       </div>
     </details>
     {% endif %}
+    {# Per-transaction breakdown — every Transaction feeding the Actualized
+       total. Lets the user spot a wrong assignment (e.g. estimate sneaking
+       in) and either flip it out via "Mark not project" or jump to the
+       Actuals tab to reassign it to a different PO / line. Per user
+       2026-05-12: "we also need… all transactions feeding the actualized
+       PO there too so that I can see them and remove them if they're
+       incorrect or move them to another PO." #}
+    {% if po.transactions %}
+    <details style="font-size:.76rem;color:var(--text-muted)">
+      <summary style="cursor:pointer;user-select:none">
+        ▸ {{ po.transactions | length }} transaction{{ 's' if po.transactions | length != 1 else '' }}
+        feeding Actualized (${{ '{:,.2f}'.format(billed_total) }})
+      </summary>
+      <div style="margin-top:6px;padding-left:14px;display:flex;flex-direction:column;gap:4px">
+        {% for t in po.transactions %}
+        <div data-txn-row="{{ t.id }}"
+             style="display:flex;gap:10px;align-items:center;font-variant-numeric:tabular-nums;
+                    padding:4px 0;border-bottom:1px dashed var(--border)">
+          <span style="color:var(--text-muted);min-width:78px">
+            {{ t.txn_date or '—' }}
+          </span>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">
+            {{ t.vendor or '(no vendor)' }}
+            {% if t.note %}
+            <span style="color:var(--text-muted);font-style:italic">— {{ t.note }}</span>
+            {% endif %}
+          </span>
+          <span style="color:var(--text-muted);min-width:50px;text-align:right">{{ t.account_code }}</span>
+          <span style="color:var(--text-muted);min-width:0;max-width:160px;overflow:hidden;
+                       text-overflow:ellipsis;white-space:nowrap">{{ t.line_description }}</span>
+          {% if t.doc_filename %}
+          <a href="/docs/upload/{{ t.doc_upload_id }}/raw" target="_blank"
+             title="{{ t.doc_filename }}" style="color:#5b8af9;text-decoration:none">📎</a>
+          {% endif %}
+          <span style="font-size:.68rem;padding:1px 6px;border-radius:8px;
+                       background:var(--bg-input);color:var(--text-muted);text-transform:uppercase;
+                       letter-spacing:.04em" title="Source">{{ t.source }}</span>
+          <span style="font-weight:600;color:var(--text);min-width:90px;text-align:right">
+            ${{ '{:,.2f}'.format(t.amount or 0) }}
+          </span>
+          <span style="display:flex;gap:4px">
+            <button class="btn btn-xs btn-ghost" title="Flag this as not a project expense — removes it from Actualized totals."
+                    onclick="markTxnNotProject({{ t.id }}, this)">✕ Not project</button>
+            {% if return_budget %}
+            <a class="btn btn-xs btn-ghost" title="Open Actuals to reassign this transaction"
+               href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=actuals#txn-{{ t.id }}">↗ Manage</a>
+            {% endif %}
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
     {% if po.notes %}
     <div style="font-size:.78rem;color:var(--text-muted);font-style:italic">📝 {{ po.notes }}</div>
     {% endif %}
@@ -424,6 +477,39 @@ async function restorePo(id) {
   });
   if (r.ok) window.location.reload();
   else alert('Restore failed');
+}
+
+// ── Mark a transaction as "not a project expense" ─────────────────────────
+// Flips Transaction.not_project_expense=True via the existing actuals
+// endpoint. The transaction is then excluded from PO Actualized rollups.
+// Reloads on success so all the dependent cells (Actualized, Remaining,
+// banners, %used) recompute server-side. Per user 2026-05-12.
+async function markTxnNotProject(txnId, btn) {
+  if (!confirm('Flag this transaction as not a project expense?\n\n' +
+               'It will be removed from this PO\'s Actualized total and ' +
+               'won\'t count against the cap. You can unflag later from ' +
+               'the Actuals tab.')) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '…';
+  try {
+    const r = await fetch(`/projects/${PROJECT_ID}/actuals/transaction/${txnId}/mark-not-project`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ not_project_expense: true }),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      alert(j.error || 'Update failed');
+      btn.disabled = false;
+      btn.textContent = orig;
+      return;
+    }
+    window.location.reload();
+  } catch (e) {
+    alert('Update failed: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
 }
 
 // ── Inline edit for PO #, vendor name, cap ─────────────────────────────────
