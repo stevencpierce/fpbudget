@@ -3683,7 +3683,8 @@ def budget_view(pid, bid):
                 .filter(BudgetLine.budget_id == _actual_budget.id,
                         BudgetLine.source_line_id.isnot(None),
                         Transaction.not_project_expense == False,
-                        Transaction.is_expense == True)
+                        Transaction.is_expense == True,
+                        _exclude_estimate_linked_txns_clause())
                 .group_by(BudgetLine.source_line_id)
                 .all()
             ):
@@ -3708,7 +3709,8 @@ def budget_view(pid, bid):
                     Transaction.budget_line_id.is_(None),
                     Transaction.account_code.isnot(None),
                     Transaction.not_project_expense == False,
-                    Transaction.is_expense == True)
+                    Transaction.is_expense == True,
+                    _exclude_estimate_linked_txns_clause())
             .group_by(Transaction.account_code)
             .all()
         ):
@@ -4182,7 +4184,8 @@ def budget_view(pid, bid):
                      .filter(Transaction.project_id == pid,
                              Transaction.budget_line_id.isnot(None),
                              Transaction.not_project_expense == False,
-                             Transaction.is_expense == True)
+                             Transaction.is_expense == True,
+                             _exclude_estimate_linked_txns_clause())
                      .all())
             for _tx in _txns:
                 _key = _alid_to_key.get(_tx.budget_line_id)
@@ -4249,7 +4252,8 @@ def budget_view(pid, bid):
                           .filter(Transaction.project_id == pid,
                                   Transaction.budget_line_id.isnot(None),
                                   Transaction.not_project_expense == False,
-                                  Transaction.is_expense == True)
+                                  Transaction.is_expense == True,
+                                  _exclude_estimate_linked_txns_clause())
                           .order_by(Transaction.txn_date.desc().nullslast(),
                                     Transaction.id.desc())
                           .all())
@@ -4260,7 +4264,8 @@ def budget_view(pid, bid):
                                  Transaction.budget_line_id.is_(None),
                                  Transaction.account_code.isnot(None),
                                  Transaction.not_project_expense == False,
-                                 Transaction.is_expense == True)
+                                 Transaction.is_expense == True,
+                                 _exclude_estimate_linked_txns_clause())
                          .order_by(Transaction.txn_date.desc().nullslast(),
                                    Transaction.id.desc())
                          .all())
@@ -10106,6 +10111,38 @@ def location_delete(pid, lid):
     return jsonify({"ok": True})
 
 
+# ── Estimate-linked Transaction filter ────────────────────────────────────────
+# DocUpload categories that represent FORECAST paperwork, not real spend.
+# The upload handler (line ~16061) already refuses to auto-create a
+# Transaction for these. The metadata-update handler (line ~17299) deletes
+# any linked Transactions when a doc's category is changed to one of these
+# values. Even so, legacy data + QBO-sync-then-manual-match can leave stray
+# estimate-linked Transactions in the DB — defense-in-depth filter below
+# excludes them from every Actual / Actualized rollup so they never inflate
+# Actual columns or PO Actualized totals. 2026-05-14.
+_NON_LEDGER_DOC_CATEGORIES = (
+    'tax_form', 'contract', 'release', 'legal', 'insurance', 'misc',
+    'estimate', 'quote', 'purchase_order',
+)
+def _exclude_estimate_linked_txns_clause():
+    """Returns a SQLAlchemy clause to splat into a Transaction filter that
+    keeps:
+      - Transactions with no doc attached (manual entry, QBO sync without
+        doc match) — always counted as real spend.
+      - Transactions linked to a doc whose category is NOT in the
+        non-ledger set (receipt/invoice/etc. — real spend events).
+    Excludes Transactions linked to a doc whose category IS in the
+    non-ledger set (estimates, quotes, POs, paperwork)."""
+    from sqlalchemy import or_ as _or_t
+    _bad_doc_ids = (db.session.query(DocUpload.id)
+                    .filter(DocUpload.category.in_(_NON_LEDGER_DOC_CATEGORIES))
+                    .subquery())
+    return _or_t(
+        Transaction.doc_upload_id.is_(None),
+        Transaction.doc_upload_id.notin_(_bad_doc_ids),
+    )
+
+
 # ── Purchase Orders (per-project) ──────────────────────────────────────────────
 # Per user 2026-05-04: vendor commitment tracking. POs are project-scoped;
 # budget lines (typically non-labor) reference one via BudgetLine.po_id.
@@ -10295,7 +10332,8 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                                      BudgetLine.source_line_id.in_(_working_po_lines_sub),
                                  ),
                                  Transaction.not_project_expense == False,
-                                 Transaction.is_expense == True))
+                                 Transaction.is_expense == True,
+                                 _exclude_estimate_linked_txns_clause()))
             _billed = float(_billed_q.scalar() or 0)
         except Exception as _be:
             logging.warning(f"[po rollup] billed calc failed for po={po.id}: {_be}")
@@ -17471,6 +17509,99 @@ def debug_line(bid):
             ],
         })
     return jsonify(out)
+
+
+# ── Admin: cleanup of estimate-linked Transactions ──────────────────────────
+# Both the upload and metadata-update paths already prevent estimate-type
+# docs from creating Transaction rows. But pre-guard legacy data and the
+# QBO-sync-then-manual-match pathway can leave stray estimate-linked
+# Transactions in the DB, polluting Actual rollups. This route gives the
+# super admin a way to list them (GET) and delete them (POST).
+# 2026-05-14 per user report.
+@app.route("/admin/cleanup-estimate-txns", methods=["GET", "POST"])
+@super_admin_required
+def admin_cleanup_estimate_txns():
+    from flask import request, render_template_string
+    # Find every Transaction whose linked doc has a non-ledger category.
+    # Join via doc_upload_id so a Transaction with no doc attached is
+    # never picked up — manual-entry / pure-QBO rows are always kept.
+    q = (db.session.query(Transaction, DocUpload)
+         .join(DocUpload, DocUpload.id == Transaction.doc_upload_id)
+         .filter(DocUpload.category.in_(_NON_LEDGER_DOC_CATEGORIES))
+         .order_by(Transaction.txn_date.desc().nullslast(),
+                   Transaction.id.desc()))
+    rows = q.all()
+    if request.method == "POST" and request.form.get("confirm") == "delete":
+        _ids = [t.id for (t, _d) in rows]
+        if _ids:
+            (Transaction.query
+             .filter(Transaction.id.in_(_ids))
+             .delete(synchronize_session=False))
+            db.session.commit()
+            logging.warning(f"[admin/cleanup] deleted {len(_ids)} estimate-linked "
+                            f"Transaction rows by user={current_user.id}")
+            return render_template_string(
+                "<h2>Deleted {{ n }} estimate-linked Transaction rows.</h2>"
+                "<p><a href=\"{{ url_for('admin_cleanup_estimate_txns') }}\">Refresh list</a> · "
+                "<a href=\"{{ url_for('dashboard') }}\">Dashboard</a></p>",
+                n=len(_ids))
+        return redirect(url_for('admin_cleanup_estimate_txns'))
+
+    HTML = """
+<!doctype html><html><head><title>Cleanup estimate-linked Transactions</title>
+<style>
+ body{font-family:system-ui,sans-serif;max-width:1100px;margin:24px auto;padding:0 18px;color:#222}
+ h1{font-size:18px;margin:0 0 6px} .sub{color:#6b7280;font-size:13px;margin-bottom:16px}
+ table{border-collapse:collapse;width:100%;font-size:12px}
+ th{background:#f3f4f6;text-align:left;padding:6px 8px;border-bottom:1px solid #e5e7eb}
+ td{padding:5px 8px;border-bottom:1px solid #f3f4f6;vertical-align:top}
+ .amt{text-align:right;font-variant-numeric:tabular-nums}
+ .cat{background:#fef3c7;padding:1px 6px;border-radius:3px;font-size:11px}
+ .empty{padding:24px;text-align:center;color:#6b7280;background:#f9fafb;border-radius:6px}
+ .danger{background:#dc2626;color:#fff;border:none;padding:10px 16px;border-radius:5px;font-weight:600;cursor:pointer;font-size:14px}
+ .danger:hover{background:#b91c1c}
+</style></head><body>
+<h1>Cleanup: estimate-linked Transactions</h1>
+<div class="sub">
+  Transactions whose linked DocUpload has a non-ledger category
+  (estimate / quote / purchase_order / contract / tax_form / release / legal /
+  insurance / misc). These shouldn't exist — they're paperwork, not spend —
+  but legacy data + post-upload category edits can leave them. Deleting them
+  here cleans up the Actuals view and PO Actualized totals.
+</div>
+{% if rows %}
+<form method="post" style="margin:18px 0">
+  <input type="hidden" name="confirm" value="delete">
+  <button class="danger" type="submit"
+    onclick="return confirm('Delete {{ rows|length }} Transaction rows? Cannot be undone.')">
+    🗑 Delete all {{ rows|length }} rows
+  </button>
+</form>
+<table>
+  <thead><tr>
+    <th>txn id</th><th>doc id</th><th>category</th>
+    <th>txn date</th><th>vendor</th><th class="amt">amount</th>
+    <th>doc filename</th>
+  </tr></thead>
+  <tbody>
+  {% for t, d in rows %}
+  <tr>
+    <td>{{ t.id }}</td><td>{{ d.id }}</td>
+    <td><span class="cat">{{ d.category }}</span></td>
+    <td>{{ t.txn_date or '—' }}</td>
+    <td>{{ t.vendor or '—' }}</td>
+    <td class="amt">{{ '${:,.2f}'.format(t.amount|float) if t.amount is not none else '—' }}</td>
+    <td>{{ d.filed_filename or d.original_filename or '' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">✓ No estimate-linked Transactions found. All clean.</div>
+{% endif %}
+</body></html>
+"""
+    return render_template_string(HTML, rows=rows)
 
 
 # ── Debug: full-budget calc trace HTML page ──────────────────────────────────
