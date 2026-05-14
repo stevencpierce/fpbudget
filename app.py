@@ -10259,22 +10259,28 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
         out["receipts_total"]    = round(_rcp_sum, 2)
         out["doc_attached_total"] = round(_all_sum, 2)  # legacy field, kept
 
-        # Billed = sum of transactions on lines assigned to this PO.
-        # Filter by line ids we already loaded above. Skips reversed/
-        # not-project-expense rows because those don't represent real
-        # spend. Vendor-name match deliberately NOT applied — the line
-        # assignment IS the canonical link; vendor strings on POs vs
-        # transactions can differ in casing/punctuation.
+        # Billed = sum of transactions on ANY budget line (across every
+        # budget in this project) whose po_id == this PO. Transactions in
+        # the Actuals tab are linked to ACTUAL budget lines, not Working
+        # lines — but po_id is copied to Actual lines during the
+        # Working→Actual clone, so a JOIN through BudgetLine.po_id catches
+        # them no matter which budget the line lives on. Earlier version
+        # filtered to _po_lines (Working only) which silently missed
+        # every Actual-linked transaction; "Billed" stayed $0 even when
+        # money was clearly there. User report 2026-05-14.
+        #
+        # No double-count risk: each Transaction has exactly one
+        # budget_line_id pointing at one row, so the same dollar can't
+        # appear twice in this sum.
         _billed = 0.0
         try:
-            if _po_lines:
-                _line_ids = [l.id for l in _po_lines]
-                _txns = (Transaction.query
-                         .filter(Transaction.budget_line_id.in_(_line_ids),
+            _billed_q = (db.session
+                         .query(_func_po.coalesce(_func_po.sum(Transaction.amount), 0))
+                         .join(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
+                         .filter(BudgetLine.po_id == po.id,
                                  Transaction.not_project_expense == False,
-                                 Transaction.is_expense == True)
-                         .all())
-                _billed = sum(float(t.amount or 0) for t in _txns)
+                                 Transaction.is_expense == True))
+            _billed = float(_billed_q.scalar() or 0)
         except Exception as _be:
             logging.warning(f"[po rollup] billed calc failed for po={po.id}: {_be}")
         out["billed_total"] = round(_billed, 2)
