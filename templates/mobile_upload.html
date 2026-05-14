@@ -249,6 +249,18 @@
       <div class="drop-secondary">or <span>browse</span> · PDF, JPG, PNG, HEIC</div>
     </div>
 
+    <div class="offline-banner" id="offlineBanner">
+      <span>📡</span>
+      <span>You're offline. Photos stay in your queue and upload automatically when signal comes back.</span>
+    </div>
+
+    <div class="tip">
+      💡 <strong>Take Photo</strong> captures stay in this app's queue until uploaded
+      (they aren't saved to your camera roll — that's a browser limit). If you want a
+      permanent copy on your phone, take the photo in your <strong>Camera app first</strong>,
+      then come back here and tap <strong>Choose from Library</strong>.
+    </div>
+
     <div class="queue" id="uploadQueue"></div>
     <button class="btn-upload-all" id="btnUploadAll" disabled onclick="uploadAll()">Upload</button>
   {% endif %}
@@ -257,6 +269,73 @@
 
 <script>
 const LAST_PROJECT_KEY = "fpbudget.mobile_upload.last_project";
+const MAX_AUTO_RETRIES = 3;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IndexedDB persistence for the upload queue. Files captured via "Take Photo"
+// only live in browser memory; if the upload fails (no signal, server hiccup)
+// and the page reloads, the image is gone forever — and the user can't
+// re-shoot the receipt because the captured image never landed in their
+// camera roll. So we persist the File blob to IDB immediately on add and
+// only delete on confirmed upload success. 2026-05-14.
+// ─────────────────────────────────────────────────────────────────────────────
+const IDB_NAME = 'fpbudget_uploads';
+const IDB_STORE = 'pending';
+let _idbConn = null;
+function idbOpen() {
+  if (_idbConn) return Promise.resolve(_idbConn);
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE, { keyPath: 'id', autoIncrement: true });
+      }
+    };
+    req.onsuccess = () => { _idbConn = req.result; resolve(_idbConn); };
+    req.onerror   = () => reject(req.error);
+  });
+}
+function idbAdd(record) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    const req = tx.objectStore(IDB_STORE).add(record);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  }));
+}
+function idbUpdate(id, updates) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    const store = tx.objectStore(IDB_STORE);
+    const getReq = store.get(id);
+    getReq.onsuccess = () => {
+      const rec = getReq.result;
+      if (!rec) { resolve(null); return; }
+      Object.assign(rec, updates);
+      const putReq = store.put(rec);
+      putReq.onsuccess = () => resolve(rec);
+      putReq.onerror   = () => reject(putReq.error);
+    };
+    getReq.onerror = () => reject(getReq.error);
+  }));
+}
+function idbRemove(id) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    const req = tx.objectStore(IDB_STORE).delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror   = () => reject(req.error);
+  }));
+}
+function idbList() {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror   = () => reject(req.error);
+  }));
+}
 
 const sel = document.getElementById('projectSelect');
 if (sel) {
@@ -324,7 +403,16 @@ function _statusBadge(item) {
   if (item.status === 'done')      return { text: 'Filed ✓',          cls: 'done' };
   if (item.status === 'review')    return { text: 'Needs review',     cls: 'review' };
   if (item.status === 'duplicate') return { text: 'Already uploaded', cls: 'dup' };
-  if (item.status === 'error')     return { text: item.error || 'Failed', cls: 'error' };
+  if (item.status === 'error') {
+    // Auto-retry attempts not yet exhausted; will retry on next online tick.
+    const tries = item.retries || 0;
+    const remaining = MAX_AUTO_RETRIES - tries;
+    return { text: (item.error || 'Failed') + ` · auto-retrying (${remaining} left)`, cls: 'error' };
+  }
+  if (item.status === 'failed') {
+    const tries = item.retries || MAX_AUTO_RETRIES;
+    return { text: `Failed after ${tries} tries · ` + (item.error || 'tap retry'), cls: 'failed' };
+  }
   return { text: 'Ready', cls: 'pending' };
 }
 
@@ -341,12 +429,15 @@ function renderQueue() {
     }
 
     const status = _statusBadge(item);
+    const retryBtn = (item.status === 'failed')
+      ? `<button class="queue-retry" onclick="manualRetry(${idx})">Retry</button>`
+      : '';
     const removeBtn = (item.status === 'uploading') ? '' :
       `<button class="queue-remove" aria-label="Remove" onclick="removeItem(${idx})">×</button>`;
 
-    // Header row — thumb, filename, size, status, remove. The filename
-    // goes in via textContent below to neutralise any HTML in user
-    // filenames; the rest is template-controlled.
+    // Header row — thumb, filename, size, status, retry, remove. The
+    // filename goes in via textContent below to neutralise any HTML in
+    // user filenames; the rest is template-controlled.
     const header = document.createElement('div');
     header.className = 'queue-row';
     header.innerHTML = `
@@ -356,7 +447,7 @@ function renderQueue() {
         <div class="queue-size">${formatSize(item.file.size)}</div>
         <div class="queue-status ${status.cls}">${status.text}</div>
       </div>
-      ${removeBtn}`;
+      ${retryBtn}${removeBtn}`;
     header.querySelector('.queue-name').textContent = item.file.name;
     div.appendChild(header);
 
@@ -471,20 +562,42 @@ async function saveEdit(idx) {
   }
 }
 
-function removeItem(idx) {
-  if (queue[idx] && queue[idx].status === 'uploading') return;
+async function removeItem(idx) {
+  const item = queue[idx];
+  if (!item || item.status === 'uploading') return;
+  if (item.idbId != null) {
+    try { await idbRemove(item.idbId); } catch (e) { /* ignore */ }
+  }
   queue.splice(idx, 1);
   renderQueue();
 }
 
-function addFiles(files) {
+function buildThumb(item) {
+  if (!item.file || !item.file.type || !item.file.type.startsWith('image/')) return;
+  const reader = new FileReader();
+  reader.onload = e => { item.thumbUrl = e.target.result; renderQueue(); };
+  reader.readAsDataURL(item.file);
+}
+
+async function addFiles(files) {
+  const pid = sel ? sel.value : null;
   for (const f of files) {
-    const item = { file: f, status: 'pending', thumbUrl: null };
-    if (f.type.startsWith('image/')) {
-      const reader = new FileReader();
-      reader.onload = e => { item.thumbUrl = e.target.result; renderQueue(); };
-      reader.readAsDataURL(f);
-    }
+    const record = {
+      fileBlob: f,
+      fileName: f.name,
+      fileType: f.type,
+      fileSize: f.size,
+      projectId: pid,
+      status: 'pending',
+      error: null,
+      retries: 0,
+      addedAt: Date.now(),
+    };
+    let idbId = null;
+    try { idbId = await idbAdd(record); }
+    catch (e) { console.warn('IDB add failed — falling back to in-memory only', e); }
+    const item = { idbId, file: f, status: 'pending', retries: 0, thumbUrl: null };
+    buildThumb(item);
     queue.push(item);
   }
   renderQueue();
@@ -516,44 +629,100 @@ if (dropZone) {
 }
 
 async function uploadOne(item, pid) {
+  if (item.status === 'uploading') return;
   item.status = 'uploading'; renderQueue();
+  if (item.idbId != null) {
+    try { await idbUpdate(item.idbId, { status: 'uploading' }); } catch (e) {}
+  }
   const fd = new FormData();
   fd.append('file', item.file);
+
+  // 60s per-attempt cap so a hung request doesn't park the queue forever.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+
   try {
-    const resp = await fetch(`/docs/${pid}/upload`, { method: 'POST', body: fd });
+    const resp = await fetch(`/docs/${pid}/upload`, {
+      method: 'POST', body: fd, signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
     let data = {};
     try { data = await resp.json(); } catch (e) { /* may be empty */ }
 
     if (data && data.status === 'duplicate') {
       item.status = 'duplicate';
       item.uploadId = data.upload_id || null;
+      if (item.idbId != null) { try { await idbRemove(item.idbId); item.idbId = null; } catch (e) {} }
     } else if (resp.ok) {
       // Server returns DocUpload.status: 'done' | 'review' | 'error'.
       const s = (data && data.status) || 'done';
-      item.status = (s === 'review') ? 'review' : (s === 'error' ? 'error' : 'done');
-      if (s === 'error' && data.error) item.error = data.error;
-      // Capture upload metadata so the edit panel can render and so
-      // saveEdit can target the right DocUpload row.
-      item.uploadId      = data.upload_id || null;
-      item.filedFilename = data.new_filename || data.filed_filename || null;
-      item.ocr = {
-        vendor:     data.vendor || null,
-        amount:     data.amount != null ? data.amount : null,
-        doc_date:   data.doc_date || null,
-        doc_number: data.doc_number || null,
-        doc_type:   data.doc_type || null,
-        confidence: data.confidence != null ? data.confidence : null,
-        new_filename: data.new_filename || null,
-      };
+      if (s === 'error') {
+        await markFailure(item, data.error || 'Server returned error');
+      } else {
+        item.status = (s === 'review') ? 'review' : 'done';
+        // Capture upload metadata so the edit panel can render and so
+        // saveEdit can target the right DocUpload row.
+        item.uploadId      = data.upload_id || null;
+        item.filedFilename = data.new_filename || data.filed_filename || null;
+        item.ocr = {
+          vendor:     data.vendor || null,
+          amount:     data.amount != null ? data.amount : null,
+          doc_date:   data.doc_date || null,
+          doc_number: data.doc_number || null,
+          doc_type:   data.doc_type || null,
+          confidence: data.confidence != null ? data.confidence : null,
+          new_filename: data.new_filename || null,
+        };
+        if (item.idbId != null) { try { await idbRemove(item.idbId); item.idbId = null; } catch (e) {} }
+      }
     } else {
-      item.status = 'error';
-      item.error  = (data && data.error) || `HTTP ${resp.status}`;
+      await markFailure(item, (data && data.error) || `HTTP ${resp.status}`);
     }
   } catch (e) {
-    item.status = 'error';
-    item.error  = e.message || 'Network error';
+    clearTimeout(timeoutId);
+    await markFailure(item, e.name === 'AbortError' ? 'Timeout (60s)' : (e.message || 'Network error'));
   }
   renderQueue();
+}
+
+// Bump retry counter; flip to 'failed' once auto-retries are exhausted so
+// the user has to tap Retry manually. Persist new state to IDB.
+async function markFailure(item, msg) {
+  item.retries = (item.retries || 0) + 1;
+  item.error = msg;
+  item.status = (item.retries >= MAX_AUTO_RETRIES) ? 'failed' : 'error';
+  if (item.idbId != null) {
+    try { await idbUpdate(item.idbId, {
+      status: item.status, retries: item.retries, error: msg
+    }); } catch (e) {}
+  }
+}
+
+// Schedule a retry pass with exponential backoff (1s, 2s, 4s, capped 30s).
+// Only one timer in flight at a time; the timer callback re-checks the
+// state of the queue before doing anything.
+let _retryTimer = null;
+function scheduleRetry() {
+  if (_retryTimer) return;
+  const maxRetries = Math.max(0, ...queue.map(i => i.retries || 0));
+  const delay = Math.min(30000, Math.pow(2, maxRetries) * 1000);
+  _retryTimer = setTimeout(async () => {
+    _retryTimer = null;
+    await retryEligible();
+  }, delay);
+}
+
+async function retryEligible() {
+  if (!navigator.onLine) return;            // wait for 'online' event
+  const pid = sel ? sel.value : null;
+  if (!pid) return;
+  const eligible = queue.filter(i =>
+    (i.status === 'pending' || i.status === 'error') && i.status !== 'uploading');
+  if (!eligible.length) return;
+  for (const item of eligible) {
+    await uploadOne(item, pid);
+  }
+  if (queue.some(i => i.status === 'error')) scheduleRetry();
 }
 
 async function uploadAll() {
@@ -563,7 +732,69 @@ async function uploadAll() {
   for (const item of pending) {
     await uploadOne(item, pid);
   }
+  if (queue.some(i => i.status === 'error')) scheduleRetry();
 }
+
+// Manual retry — resets the auto-retry budget back to 0 so the user gets
+// a fresh 3-attempt window, then kicks the loop.
+async function manualRetry(idx) {
+  const item = queue[idx];
+  if (!item) return;
+  item.retries = 0; item.status = 'pending'; item.error = null;
+  if (item.idbId != null) {
+    try { await idbUpdate(item.idbId, { status: 'pending', retries: 0, error: null }); } catch (e) {}
+  }
+  renderQueue();
+  retryEligible();
+}
+
+// Offline indicator + auto-retry on network restoration.
+function updateOfflineBanner() {
+  const el = document.getElementById('offlineBanner');
+  if (!el) return;
+  el.classList.toggle('visible', !navigator.onLine);
+}
+window.addEventListener('online',  () => { updateOfflineBanner(); retryEligible(); });
+window.addEventListener('offline', updateOfflineBanner);
+updateOfflineBanner();
+
+// Restore the queue from IDB on page load. Anything still in pending /
+// error state from a prior session resumes; an 'uploading' record from
+// a killed previous session is reset to 'error' so the retry path picks
+// it up.
+async function restoreQueueFromIdb() {
+  let records = [];
+  try { records = await idbList(); } catch (e) { console.warn('IDB list failed', e); return; }
+  for (const rec of records) {
+    const blob = rec.fileBlob;
+    if (!blob) continue;
+    let f;
+    try {
+      f = new File([blob], rec.fileName || 'upload', {
+        type: rec.fileType || blob.type || 'application/octet-stream',
+      });
+    } catch (e) { f = blob; }
+    let status = rec.status || 'pending';
+    if (status === 'uploading') status = 'error'; // crashed mid-upload → retry
+    const item = {
+      idbId: rec.id,
+      file: f,
+      status,
+      retries: rec.retries || 0,
+      error: rec.error || null,
+      thumbUrl: null,
+    };
+    buildThumb(item);
+    queue.push(item);
+  }
+  if (queue.length) {
+    renderQueue();
+    if (queue.some(i => i.status === 'error' || i.status === 'pending')) {
+      retryEligible();
+    }
+  }
+}
+restoreQueueFromIdb();
 </script>
 </body>
 </html>
