@@ -52,6 +52,95 @@
   </span>
 </div>
 
+{# ── Budget-view mirror ────────────────────────────────────────────────
+   Every PO-assigned line, grouped by COA section. Lets the user see
+   PO commitments through the lens of the chart of accounts (same
+   shape as the Budget tab) instead of only by vendor. Each row has a
+   colored PO badge that anchors to the matching PO card below.
+   Per user 2026-05-14: "can this mirror the budget view. So that you
+   see the lines that have po items associated?" #}
+{% if lines_by_section %}
+{% set _all_lines_total = lines_by_section | sum(attribute='total') %}
+{% set _all_lines_count = lines_by_section | sum(attribute='count') %}
+<details open style="margin-bottom:1.4rem;background:var(--bg-card);
+                    border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+  <summary style="cursor:pointer;user-select:none;font-weight:600;font-size:.95rem;
+                  display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <span>📋 Budget lines on POs</span>
+    <span class="muted" style="font-weight:400;font-size:.78rem">
+      ({{ _all_lines_count }} line{{ 's' if _all_lines_count != 1 else '' }},
+      grouped by COA section)
+    </span>
+    <span style="margin-left:auto;font-variant-numeric:tabular-nums;color:var(--text)">
+      ${{ '{:,.2f}'.format(_all_lines_total) }}
+    </span>
+  </summary>
+  <div style="margin-top:10px;display:flex;flex-direction:column;gap:14px">
+    {% for sec in lines_by_section %}
+    <div class="po-budget-section" data-section="{{ sec.code }}">
+      <div style="display:flex;align-items:baseline;gap:10px;padding:6px 0;
+                  border-bottom:1px solid var(--border)">
+        <span style="font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;
+                     min-width:54px">{{ sec.code }}</span>
+        <span style="font-weight:600">{{ sec.name }}</span>
+        <span class="muted" style="font-size:.75rem">
+          ({{ sec.count }} line{{ 's' if sec.count != 1 else '' }})
+        </span>
+        <span style="margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums">
+          ${{ '{:,.2f}'.format(sec.total) }}
+        </span>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:.82rem;margin-top:4px">
+        <colgroup>
+          <col style="width:60px"><!-- code -->
+          <col><!-- description -->
+          <col style="width:170px"><!-- breakdown -->
+          <col style="width:200px"><!-- PO -->
+          <col style="width:110px"><!-- total -->
+        </colgroup>
+        <tbody>
+          {% for ln in sec.lines %}
+          <tr style="border-bottom:1px dashed var(--border)">
+            <td style="padding:5px 8px;color:var(--text-muted);font-variant-numeric:tabular-nums">
+              {{ ln.account_code }}
+            </td>
+            <td style="padding:5px 8px;overflow:hidden;text-overflow:ellipsis;
+                       white-space:nowrap;max-width:0">{{ ln.description }}</td>
+            <td style="padding:5px 8px;color:var(--text-muted);font-size:.74rem;
+                       font-variant-numeric:tabular-nums">
+              {% if ln.qty and ln.days and ln.rate %}
+              {{ ln.qty | int if ln.qty == ln.qty | int else ln.qty }} ×
+              {{ ln.days | int if ln.days == ln.days | int else ln.days }} ×
+              ${{ '{:,.2f}'.format(ln.rate) }}
+              {% endif %}
+            </td>
+            <td style="padding:5px 8px">
+              <a href="#po-{{ ln.po_id }}"
+                 onclick="event.preventDefault();scrollToPo({{ ln.po_id }})"
+                 style="display:inline-flex;align-items:center;gap:6px;
+                        background:rgba(168,85,247,.12);color:#c084fc;
+                        padding:2px 8px;border-radius:10px;font-size:.72rem;
+                        font-weight:600;text-decoration:none;cursor:pointer;
+                        {% if ln.po_archived %}opacity:.55;font-style:italic{% endif %}"
+                 title="{{ ln.po_number }} — {{ ln.vendor_name }}{% if ln.po_archived %} (archived){% endif %}">
+                <span>📋 {{ ln.po_number }}</span>
+                <span style="color:var(--text-muted);font-weight:400">— {{ ln.vendor_name }}</span>
+              </a>
+            </td>
+            <td style="padding:5px 8px;text-align:right;font-weight:600;
+                       font-variant-numeric:tabular-nums">
+              ${{ '{:,.2f}'.format(ln.estimated_total) }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  </div>
+</details>
+{% endif %}
+
 {# Open POs first, then archived. Empty-state if no POs yet. #}
 {% if pos %}
 <div style="display:flex;flex-direction:column;gap:.6rem">
@@ -67,8 +156,8 @@
      up as informational banners; the loud over-cap signal requires
      real money out. 2026-05-10 per user spec. #}
   {% set pct = (billed_total / cap * 100) if cap and cap > 0 else 0 %}
-  <div class="po-card" data-id="{{ po.id }}"
-       style="background:var(--bg-card);border:1px solid {{ '#fbbf24' if over else 'var(--border)' }};
+  <div class="po-card" id="po-{{ po.id }}" data-id="{{ po.id }}"
+       style="scroll-margin-top:80px;background:var(--bg-card);border:1px solid {{ '#fbbf24' if over else 'var(--border)' }};
               border-radius:8px;padding:14px 18px;display:flex;flex-direction:column;gap:8px;
               {% if po.archived %}opacity:.55{% endif %}">
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
@@ -477,6 +566,19 @@ async function restorePo(id) {
   });
   if (r.ok) window.location.reload();
   else alert('Restore failed');
+}
+
+// ── Scroll to a PO card from the budget-view mirror ───────────────────────
+// Highlights briefly so it's obvious which card just got jumped to.
+function scrollToPo(poId) {
+  const el = document.getElementById('po-' + poId);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // Brief highlight pulse so the user's eye lands on it.
+  const orig = el.style.boxShadow;
+  el.style.transition = 'box-shadow 250ms ease';
+  el.style.boxShadow = '0 0 0 3px rgba(168,85,247,.4)';
+  setTimeout(() => { el.style.boxShadow = orig; }, 1400);
 }
 
 // ── Mark a transaction as "not a project expense" ─────────────────────────

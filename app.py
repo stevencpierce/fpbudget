@@ -10425,10 +10425,96 @@ def po_list_page(pid):
         return_budget = (Budget.query
                          .filter_by(project_id=pid, version_status='current')
                          .order_by(Budget.id.desc()).first())
+
+    # ── Budget-view mirror: every PO-assigned line, grouped by COA section.
+    # Lets the user see PO commitments through the lens of the chart of
+    # accounts instead of by vendor. Mirrors the budget view's
+    # section-header / lines-table structure. Per user 2026-05-14.
+    #
+    # Source set: BudgetLines with po_id IS NOT NULL on the project's
+    # canonical Working budget (same canonical pick as _po_to_dict so
+    # totals reconcile). PO meta carried inline per line so the template
+    # can render a clickable PO badge that anchors to the matching card.
+    lines_by_section = []
+    try:
+        from budget_calc import FP_COA_SECTIONS, FP_COA_NAMES
+        _canonical_w = (Budget.query
+                        .filter_by(project_id=pid,
+                                   version_status='current',
+                                   is_actual=False)
+                        .filter(Budget.parent_budget_id.isnot(None))
+                        .order_by(Budget.id.desc())
+                        .first())
+        if not _canonical_w:
+            _canonical_w = (Budget.query
+                            .filter_by(project_id=pid,
+                                       version_status='current',
+                                       is_actual=False)
+                            .order_by(Budget.id.desc())
+                            .first())
+        if _canonical_w:
+            # Single query: every PO-assigned line on the canonical
+            # Working budget, with PO joined in for the badge.
+            from models import PurchaseOrder as _PO
+            _po_lines_q = (db.session
+                           .query(BudgetLine, _PO)
+                           .join(_PO, _PO.id == BudgetLine.po_id)
+                           .filter(BudgetLine.budget_id == _canonical_w.id,
+                                   BudgetLine.po_id.isnot(None))
+                           .order_by(BudgetLine.account_code,
+                                     BudgetLine.sort_order,
+                                     BudgetLine.id))
+            # Bucket lines by (start_code, section_name) using the COA
+            # section that contains each line's account_code. The PO
+            # tab's "Lines" badge already shows the canonical estimated
+            # total per line; reuse that here.
+            _coa_starts = [c for c, _ in FP_COA_SECTIONS]
+            def _section_for(code):
+                # Largest section start ≤ code.
+                if code is None:
+                    return (0, "Unassigned")
+                _start = 0
+                for _s in _coa_starts:
+                    if _s <= code:
+                        _start = _s
+                    else:
+                        break
+                return (_start, FP_COA_NAMES.get(_start, "Unassigned"))
+
+            _buckets = {}  # (start, name) -> list of dicts
+            for _ln, _po in _po_lines_q.all():
+                _key = _section_for(_ln.account_code)
+                _buckets.setdefault(_key, []).append({
+                    "id":              _ln.id,
+                    "account_code":    _ln.account_code,
+                    "description":    (_ln.description or _ln.account_name or ""),
+                    "qty":             float(_ln.quantity or 0),
+                    "days":            float(_ln.days or 0),
+                    "rate":            float(_ln.rate or 0),
+                    "estimated_total": float(_ln.estimated_total or 0),
+                    "po_id":           _po.id,
+                    "po_number":       _po.po_number,
+                    "vendor_name":     _po.vendor_name,
+                    "po_archived":     bool(_po.archived),
+                })
+            # Stable ascending order by section start code.
+            for _key in sorted(_buckets.keys(), key=lambda k: k[0]):
+                _ls = _buckets[_key]
+                lines_by_section.append({
+                    "code":  _key[0],
+                    "name":  _key[1],
+                    "lines": _ls,
+                    "total": round(sum(l["estimated_total"] for l in _ls), 2),
+                    "count": len(_ls),
+                })
+    except Exception as _ble:
+        logging.warning(f"[po list] budget-view mirror build failed: {_ble}")
+
     return render_template("pos.html",
                            project=project,
                            pos=pos_data,
                            return_budget=return_budget,
+                           lines_by_section=lines_by_section,
                            now=datetime.utcnow())
 
 
