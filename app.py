@@ -13083,6 +13083,72 @@ def admin_panel():
                            coa_sections=FP_COA_SECTIONS)
 
 
+@app.route("/admin/qbo-coverage", methods=["GET"])
+@login_required
+@admin_required
+def admin_qbo_coverage():
+    """Per-project QBO sync diagnostics.
+
+    Shows a matrix of every active project × every Bank/Credit-Card
+    account on the connected QBO realm, with a ✓ wherever the project
+    has that account in its qbo_account_ids. Also surfaces each
+    project's sync_through watermark + last_synced + last_cdc_sync, so
+    you can pinpoint "why didn't this project see those 5/12 Amazon
+    charges?" — almost always: the relevant card isn't selected, or
+    the watermark is parked too far in the future.
+
+    Built 2026-05-14 in response to user report that two projects
+    "synced" minutes apart saw different transaction sets.
+    """
+    from models import QBOConnection
+    import json as _json
+
+    projects = (ProjectSheet.query
+                .filter(ProjectSheet.status != 'archived')
+                .order_by(ProjectSheet.name).all())
+
+    conn = QBOConnection.query.first()
+    qbo_connected = bool(conn and conn.refresh_token)
+    accounts = []
+    qbo_error = None
+    if qbo_connected:
+        try:
+            from qbo_sync import list_qbo_accounts
+            accounts = list_qbo_accounts(conn, db)
+            # Stable sort: Bank first, then Credit Card; then by name.
+            accounts.sort(key=lambda a: (
+                0 if a.get("type") == "Bank" else 1,
+                (a.get("name") or "").lower(),
+            ))
+        except Exception as e:
+            qbo_error = str(e)
+            logging.exception("[admin qbo-coverage] list_qbo_accounts failed")
+
+    # Build matrix: each row = project with its enabled-set + watermark.
+    rows = []
+    for p in projects:
+        try:
+            enabled_ids = set(_json.loads(p.qbo_account_ids or "[]") or [])
+        except Exception:
+            enabled_ids = set()
+        rows.append({
+            "project":      p,
+            "enabled_ids":  enabled_ids,
+            "enabled_count": len(enabled_ids),
+            # The 4 timestamps that govern *what* a sync pulls.
+            "sync_through": p.sync_through,
+            "last_synced":  p.last_synced,
+            "last_cdc_sync": p.last_cdc_sync,
+        })
+
+    return render_template("admin_qbo_coverage.html",
+                           projects=rows,
+                           accounts=accounts,
+                           qbo_connected=qbo_connected,
+                           qbo_error=qbo_error,
+                           now=datetime.utcnow())
+
+
 @app.route("/admin/users/create", methods=["POST"])
 @login_required
 @admin_required
