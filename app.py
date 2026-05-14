@@ -10259,25 +10259,41 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
         out["receipts_total"]    = round(_rcp_sum, 2)
         out["doc_attached_total"] = round(_all_sum, 2)  # legacy field, kept
 
-        # Billed = sum of transactions on ANY budget line (across every
-        # budget in this project) whose po_id == this PO. Transactions in
-        # the Actuals tab are linked to ACTUAL budget lines, not Working
-        # lines — but po_id is copied to Actual lines during the
-        # Working→Actual clone, so a JOIN through BudgetLine.po_id catches
-        # them no matter which budget the line lives on. Earlier version
-        # filtered to _po_lines (Working only) which silently missed
-        # every Actual-linked transaction; "Billed" stayed $0 even when
-        # money was clearly there. User report 2026-05-14.
+        # Billed = sum of transactions linked (via Transaction.budget_line_id)
+        # to ANY budget line that maps to this PO. "Maps to this PO" means
+        # one of:
+        #   (a) line.po_id == po.id directly  — true for Working lines and
+        #       for Actual lines that were cloned AFTER the PO was assigned
+        #       (po_id is copied at clone time).
+        #   (b) line.source_line_id points to a Working line with po_id ==
+        #       po.id  — covers Actual lines that were cloned BEFORE the PO
+        #       was assigned to the parent Working line. Their own po_id
+        #       stays NULL forever (clone-time snapshot) but they're still
+        #       the logical Actual-tab counterpart of the PO-assigned line,
+        #       so transactions on them must count.
+        #
+        # Earlier versions only handled (a), which silently dropped every
+        # Actual-linked transaction whose PO was assigned post-clone. User
+        # report 2026-05-14.
         #
         # No double-count risk: each Transaction has exactly one
-        # budget_line_id pointing at one row, so the same dollar can't
-        # appear twice in this sum.
+        # budget_line_id pointing at one BudgetLine row.
         _billed = 0.0
         try:
+            # Subquery: ids of Working budget lines currently assigned to
+            # this PO. Used to match Actual lines back via source_line_id
+            # when the Actual's own po_id is NULL.
+            _working_po_lines_sub = (db.session.query(BudgetLine.id)
+                                     .filter(BudgetLine.po_id == po.id)
+                                     .subquery())
+            from sqlalchemy import or_ as _or_po
             _billed_q = (db.session
                          .query(_func_po.coalesce(_func_po.sum(Transaction.amount), 0))
                          .join(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
-                         .filter(BudgetLine.po_id == po.id,
+                         .filter(_or_po(
+                                     BudgetLine.po_id == po.id,
+                                     BudgetLine.source_line_id.in_(_working_po_lines_sub),
+                                 ),
                                  Transaction.not_project_expense == False,
                                  Transaction.is_expense == True))
             _billed = float(_billed_q.scalar() or 0)
