@@ -38,8 +38,8 @@
 <p class="muted" style="margin-bottom:.4rem;font-size:.85rem">
   Vendor commitments tied to this project. Assign budget lines (typically equipment,
   services, and other non-labor) to a PO and attach the vendor's estimate / SOW.
-  Receipts and transactions linked to those lines roll up into <strong>Billed</strong>;
-  the cap-warning banner only fires when <strong>Billed exceeds the committed cap</strong>.
+  Receipts and transactions linked to those lines roll up into <strong>Actualized</strong>;
+  the cap-warning banner only fires when <strong>Actualized exceeds the committed cap</strong>.
 </p>
 <div style="font-size:.78rem;color:var(--text-muted);background:rgba(91,138,249,.06);
             border:1px solid rgba(91,138,249,.2);border-radius:5px;padding:6px 10px;
@@ -135,12 +135,12 @@
         </div>
       </div>
       <div title="Actual money out — sum of transactions on this PO's lines. Drives the over-cap warning.">
-        <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Billed</div>
+        <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Actualized</div>
         <div style="font-weight:600;font-variant-numeric:tabular-nums;color:{% if over %}#ef4444{% elif billed_total > 0 %}var(--text){% else %}var(--text-muted){% endif %}">
           {% if billed_total > 0 %}${{ '{:,.2f}'.format(billed_total) }}{% else %}<span class="muted">$0.00</span>{% endif %}
         </div>
       </div>
-      <div title="Cap minus Billed. Negative = over budget.">
+      <div title="Cap minus Actualized. Negative = over budget.">
         <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Remaining</div>
         <div style="font-weight:600;font-variant-numeric:tabular-nums;color:{% if over %}#ef4444{% elif cap %}#22c55e{% else %}var(--text-muted){% endif %}">
           {% if cap is not none %}${{ '{:,.2f}'.format(po.cap_remaining) }}
@@ -154,7 +154,7 @@
     {% if over %}
     <div style="font-size:.85rem;color:#ef4444;font-weight:600;background:rgba(239,68,68,.08);
                 border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:6px 10px">
-      🚨 Billed amount (${{ '{:,.2f}'.format(billed_total) }}) exceeds the committed cap by
+      🚨 Actualized amount (${{ '{:,.2f}'.format(billed_total) }}) exceeds the committed cap by
       <strong>${{ '{:,.2f}'.format(billed_total - cap) }}</strong>.
     </div>
     {% endif %}
@@ -171,7 +171,7 @@
         Heads up: assigned lines total
         ${{ '{:,.2f}'.format(lines_total) }} — over the committed cap by
         <strong>${{ '{:,.2f}'.format(lines_total - cap) }}</strong>. Nothing's
-        been billed yet, but consider raising the cap or trimming lines.
+        been actualized yet, but consider raising the cap or trimming lines.
       </span>
     </div>
     {% endif %}
