@@ -2473,9 +2473,23 @@
               <textarea id="docDetailNote" rows="3" placeholder="Optional note…" style="width:100%;resize:vertical"></textarea>
             </div>
             <div id="docDetailMeta" style="font-size:11px;color:var(--text-muted);margin:8px 0 12px;line-height:1.5"></div>
-            <div style="display:flex;gap:6px;justify-content:flex-end;">
-              <button type="button" class="btn btn-sm" onclick="closeDocDetail()">Cancel</button>
-              <button type="button" class="btn btn-sm btn-primary" id="docDetailSaveBtn">Save</button>
+            <div style="display:flex;gap:6px;justify-content:space-between;align-items:center;">
+              {# Left side: destructive action — delete the doc from the
+                 software and trash the Dropbox copies. Calls the same
+                 endpoint as the Docs tab's per-row × button so the
+                 cascade is identical (linked Transaction rows get
+                 deleted, PO source-doc + attachments get unlinked).
+                 Per user 2026-05-14: "we have to have a way to delete
+                 documents". #}
+              <button type="button" id="docDetailDeleteBtn" onclick="docDetailDelete()"
+                      title="Delete this document from the software and trash the Dropbox copies"
+                      style="padding:6px 12px;border-radius:6px;background:#2a1414;
+                             border:1px solid #4a2020;color:#ef4444;font-size:12px;
+                             cursor:pointer">🗑 Delete document</button>
+              <div style="display:flex;gap:6px">
+                <button type="button" class="btn btn-sm" onclick="closeDocDetail()">Cancel</button>
+                <button type="button" class="btn btn-sm btn-primary" id="docDetailSaveBtn">Save</button>
+              </div>
             </div>
           </div>
         </div>
@@ -3758,6 +3772,46 @@
     if (ev && ev.target && ev.target.id !== 'docDetailOverlay') return;
     document.getElementById('docDetailOverlay').style.display = 'none';
     _docDetailUid = null;
+  };
+
+  // ── Delete the currently-open document ───────────────────────────────
+  // Calls the existing /docs/upload/<uid>/delete endpoint, which trashes
+  // both Dropbox copies, unlinks PO source-doc + attachments, and
+  // cascades delete to the linked Transaction row(s). Reloads on
+  // success so the Actuals tab / Docs tab refresh. Per user 2026-05-14.
+  window.docDetailDelete = async function () {
+    const uid = _docDetailUid || window._docDetailCurrentUid;
+    if (!uid) return;
+    const titleEl = document.getElementById('docDetailTitle');
+    const name = (titleEl && titleEl.textContent) ? titleEl.textContent.trim() : `Upload #${uid}`;
+    if (!confirm(
+      `Delete "${name}"?\n\n` +
+      `This will:\n` +
+      `  • Move both Dropbox copies (filed + source archive) to /_TRASH/\n` +
+      `  • Delete the linked transaction row if there is one\n` +
+      `  • Unlink it from any PO using it as a source doc or attachment\n\n` +
+      `This cannot be undone from the software (recoverable from Dropbox /_TRASH/ for 30 days).`
+    )) return;
+    const btn = document.getElementById('docDetailDeleteBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
+    try {
+      const r = await fetch(`/docs/upload/${uid}/delete`, {
+        method: 'POST', credentials: 'same-origin',
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        alert('Delete failed: ' + (j.error || r.status));
+        if (btn) { btn.disabled = false; btn.textContent = '🗑 Delete document'; }
+        return;
+      }
+      // Close modal + reload so Actuals / Docs lists refresh from
+      // server (the row vanishes everywhere it was visible).
+      closeDocDetail();
+      window.location.reload();
+    } catch (e) {
+      alert('Delete failed: ' + e.message);
+      if (btn) { btn.disabled = false; btn.textContent = '🗑 Delete document'; }
+    }
   };
 
   document.getElementById('docDetailSaveBtn')?.addEventListener('click', async () => {
