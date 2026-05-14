@@ -4111,6 +4111,14 @@
     <span class="muted" style="font-size:.72rem">— click rows to toggle, Shift+click for range, Cmd+A for all visible</span>
     <button type="button" class="btn btn-xs" onclick="actualsBulkClear()"
             style="margin-left:auto;font-size:.7rem;padding:3px 9px">Deselect</button>
+    {# Merge button — only enabled when exactly 2 rows are selected.
+       Reconciles a doc-upload row with a QBO row (or any pair) into a
+       single 'reconciled' transaction. Per user 2026-05-14: paired
+       LENSRENTALS.COM ($97.75 doc + $97.75 QBO no-receipt). #}
+    <button type="button" id="actuals-bulk-merge-btn" class="btn btn-xs" onclick="actualsBulkMerge()"
+            disabled
+            title="Select exactly two rows that are the same expense — typically one receipt-only and one QBO bank charge"
+            style="font-size:.7rem;padding:3px 9px;color:#5b8af9;opacity:.45;cursor:not-allowed">🔗 Merge pair</button>
     <button type="button" class="btn btn-xs" onclick="actualsBulkMarkNotProject()"
             style="font-size:.7rem;padding:3px 9px;color:var(--text-muted)">✕ Not project</button>
   </div>
@@ -5449,12 +5457,70 @@
       } else {
         if (bar) bar.style.display = 'none';
       }
+      // Merge button is only valid for exactly 2 selected rows.
+      const mb = document.getElementById('actuals-bulk-merge-btn');
+      if (mb) {
+        const canMerge = (_selectedTids.size === 2);
+        mb.disabled = !canMerge;
+        mb.style.opacity = canMerge ? '1' : '.45';
+        mb.style.cursor  = canMerge ? 'pointer' : 'not-allowed';
+      }
     }
 
     window.actualsBulkClear = function () {
       _selectedTids.clear();
       _lastClickedTid = null;
       _renderSelection();
+    };
+
+    window.actualsBulkMerge = async function () {
+      if (_selectedTids.size !== 2) {
+        _actualsToast('Select exactly two rows to merge.', 'yellow');
+        return;
+      }
+      const tids = Array.from(_selectedTids);
+      // Pull readable info for the confirm dialog by reading row text.
+      const rowInfo = tids.map(tid => {
+        const r = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
+        if (!r) return `#${tid}`;
+        const cells = r.querySelectorAll('td');
+        const date   = cells[1] ? (cells[1].textContent || '').trim() : '';
+        const vendor = cells[2] ? (cells[2].textContent || '').trim() : '';
+        const amount = cells[cells.length - 2]
+                          ? (cells[cells.length - 2].textContent || '').trim() : '';
+        return `  • #${tid} — ${date} ${vendor} ${amount}`;
+      }).join('\n');
+      if (!confirm(
+        'Merge these two transactions into one?\n\n' +
+        rowInfo + '\n\n' +
+        'The receipt, budget-line link, and any user-coded fields from the ' +
+        'losing row will be transferred onto the surviving row, then the ' +
+        'losing row is deleted. The system picks the surviving row by ' +
+        'priority (QBO charge first, then user-coded, then oldest). ' +
+        'Activity log records the merge.'
+      )) return;
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/merge`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tids }),
+        });
+        const j = await r.json();
+        if (!r.ok) {
+          _actualsToast(j.error || 'Merge failed.', 'red');
+          return;
+        }
+        const tr = (j.transferred || []).join(', ') || 'no changes';
+        const warn = j.doc_conflict
+          ? ' Both rows had different receipts — only the surviving row\'s receipt was kept.'
+          : '';
+        _actualsToast(
+          `Merged #${j.deleted_id} into #${j.canonical_id} (${tr}).${warn}`,
+          j.doc_conflict ? 'yellow' : 'green'
+        );
+        setTimeout(() => window.location.reload(), 800);
+      } catch (e) {
+        _actualsToast('Merge failed: ' + e.message, 'red');
+      }
     };
 
     window.actualsBulkMarkNotProject = async function () {

@@ -5437,6 +5437,168 @@ def actuals_mark_not_project(pid, tid):
     return jsonify({"ok": True, "transaction_id": tid})
 
 
+@app.route("/projects/<int:pid>/actuals/transaction/merge", methods=["POST"])
+@login_required
+def actuals_merge_transactions(pid):
+    """Manually reconcile a pair of transactions that are really the same
+    expense. Most common case: a receipt was uploaded *after* the QBO
+    charge synced, so the receipt-first reconciliation (qbo_sync.py's
+    _find_unreconciled_doc_match — runs only during sync) didn't catch
+    them, and the user ends up with two rows for the same $97.75 charge.
+
+    Body: { "tids": [<id_a>, <id_b>] } — exactly two transaction ids.
+
+    Canonical-row priority (winner keeps its id, the other is deleted):
+      1. Has qbo_txn_id (QBO charge is the canonical "money out" record)
+      2. Has account_code set (already user-coded)
+      3. Has budget_line_id set
+      4. Lower id (older)
+
+    Then we transfer onto the canonical, only filling blanks (never
+    overwriting work already there):
+      - doc_upload_id   (the receipt — always wins from the other row
+                         if canonical lacks one; this is the whole point)
+      - budget_line_id  (only if canonical has none)
+      - account_code / account_code_name (only if canonical has none)
+      - note            (concatenated if both have notes)
+
+    Result: canonical row gets source='reconciled', match_status='confirmed'.
+    The losing row is deleted (its FK row count is small — no children).
+
+    Both rows must belong to the same project (pid). User must have at
+    least editor role on the project.
+    """
+    _require_project_role(pid, 'editor')
+    ProjectSheet.query.get_or_404(pid)
+    data = request.get_json(force=True) or {}
+    tids = data.get("tids") or []
+    if not isinstance(tids, list) or len(tids) != 2:
+        return jsonify({"error": "tids must be a list of exactly 2 transaction ids"}), 400
+    try:
+        tid_a, tid_b = int(tids[0]), int(tids[1])
+    except (TypeError, ValueError):
+        return jsonify({"error": "tids must be integers"}), 400
+    if tid_a == tid_b:
+        return jsonify({"error": "Cannot merge a transaction with itself"}), 400
+
+    a = Transaction.query.filter_by(id=tid_a, project_id=pid).first()
+    b = Transaction.query.filter_by(id=tid_b, project_id=pid).first()
+    if not a or not b:
+        return jsonify({"error": "Both transactions must exist on this project"}), 404
+
+    # Pick canonical — the one we keep.
+    def _canon_priority(t):
+        # Lower tuple wins.
+        return (
+            0 if t.qbo_txn_id else 1,
+            0 if t.account_code else 1,
+            0 if t.budget_line_id else 1,
+            t.id,
+        )
+    if _canon_priority(a) <= _canon_priority(b):
+        canon, loser = a, b
+    else:
+        canon, loser = b, a
+
+    _before = {
+        'canon_id':           canon.id,
+        'canon_source':       canon.source,
+        'canon_doc_upload_id': canon.doc_upload_id,
+        'canon_budget_line_id': canon.budget_line_id,
+        'canon_account_code': canon.account_code,
+        'canon_qbo_txn_id':   canon.qbo_txn_id,
+        'loser_id':           loser.id,
+        'loser_source':       loser.source,
+        'loser_doc_upload_id': loser.doc_upload_id,
+        'loser_budget_line_id': loser.budget_line_id,
+        'loser_account_code': loser.account_code,
+        'loser_qbo_txn_id':   loser.qbo_txn_id,
+    }
+
+    # ── Transfer fields onto canonical (only fill blanks) ──────────────
+    # The receipt is the whole point of the manual merge, so doc_upload_id
+    # always comes over if canonical lacks one. If both rows have a doc
+    # (rare — would mean two receipts for the same charge) we keep
+    # canonical's and note the conflict.
+    transferred = []
+    doc_conflict = False
+    if loser.doc_upload_id and not canon.doc_upload_id:
+        canon.doc_upload_id = loser.doc_upload_id
+        transferred.append('doc_upload_id')
+    elif loser.doc_upload_id and canon.doc_upload_id and loser.doc_upload_id != canon.doc_upload_id:
+        doc_conflict = True
+    if loser.budget_line_id and not canon.budget_line_id:
+        canon.budget_line_id = loser.budget_line_id
+        transferred.append('budget_line_id')
+    if loser.account_code and not canon.account_code:
+        canon.account_code      = loser.account_code
+        canon.account_code_name = loser.account_code_name
+        transferred.append('account_code')
+    # Notes: concatenate distinct ones so user-typed context isn't lost.
+    if loser.note and (loser.note or '').strip() != (canon.note or '').strip():
+        if canon.note:
+            canon.note = f"{canon.note}\n[merged from #{loser.id}] {loser.note}"
+        else:
+            canon.note = loser.note
+        transferred.append('note')
+
+    # ── Promote canonical to 'reconciled' / 'confirmed' ────────────────
+    # Keep qbo_txn_id intact (we only transfer onto canonical when it
+    # lacks one — see below).
+    if loser.qbo_txn_id and not canon.qbo_txn_id:
+        canon.qbo_txn_id     = loser.qbo_txn_id
+        canon.qbo_txn_type   = loser.qbo_txn_type
+        canon.qbo_account_id = loser.qbo_account_id
+        canon.qbo_category   = loser.qbo_category
+        transferred.append('qbo_txn_id')
+
+    canon.source       = 'reconciled'
+    canon.match_status = 'confirmed' if canon.budget_line_id or canon.account_code else canon.match_status
+    canon.updated_at   = datetime.utcnow()
+
+    # Clear FK on loser BEFORE delete so cascade-on-delete behavior is
+    # predictable (we don't want the loser's doc_upload_id row touched —
+    # the DocUpload itself stays, just transferred to canonical).
+    loser.doc_upload_id   = None
+    loser.budget_line_id  = None
+
+    _loser_amt    = float(loser.amount or 0)
+    _loser_vendor = loser.vendor or ''
+    _loser_id     = loser.id
+
+    db.session.delete(loser)
+    db.session.commit()
+
+    # Activity log: one entry on the surviving row recording what was
+    # merged in. Helps the audit trail explain "why is this txn marked
+    # 'reconciled' even though we didn't run a QBO sync?".
+    try:
+        _log_activity(
+            action='update', entity_type='transaction',
+            entity_id=canon.id,
+            entity_label=(canon.vendor or canon.note or f'Txn #{canon.id}')[:80],
+            project_id=pid,
+            before=_before,
+            after={'canon_id': canon.id, 'source': canon.source,
+                   'doc_upload_id': canon.doc_upload_id,
+                   'budget_line_id': canon.budget_line_id,
+                   'account_code': canon.account_code,
+                   'qbo_txn_id': canon.qbo_txn_id,
+                   'transferred': transferred,
+                   'deleted_loser_id': _loser_id},
+            note=f'Manually merged duplicate ${_loser_amt:,.2f} {_loser_vendor} '
+                 f'(loser #{_loser_id}) into this row')
+    except Exception: pass
+
+    return jsonify({
+        "ok": True,
+        "canonical_id": canon.id,
+        "deleted_id":   _loser_id,
+        "transferred":  transferred,
+        "doc_conflict": doc_conflict,
+    })
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-coa", methods=["POST"])
 @login_required
 def actuals_set_coa(pid, tid):
