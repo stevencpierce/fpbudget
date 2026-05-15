@@ -5299,46 +5299,125 @@ def delete_line(pid, bid, lid):
 
 # ── Actuals tab routes (ported from FPBudgetSync 2026-04-30) ─────────
 
+def _normalize_vendor(v):
+    """Lowercase + strip common credit-card noise so 'LYFT *RIDE MON 8AM'
+    and 'Lyft' both normalize to 'lyft' for fuzzy sibling matching.
+    Used by _sync_claim_state's fuzzy branch (2026-05-15) to match
+    receipt-only rows against QBO charges across projects."""
+    if not v:
+        return ""
+    import re as _re
+    s = str(v).strip().lower()
+    # Strip common prefixes credit-card processors prepend.
+    for _p in ('sq *', 'sq*', 'tst* ', 'tst*', 'amzn mktp ', 'amzn mktp* ',
+               'amazon mktpl*', 'amazon mktpl ', 'amazon mktp ', 'paypal *',
+               'paypal*', 'pp*', 'pos debit ', 'remote online deposit '):
+        if s.startswith(_p):
+            s = s[len(_p):]
+            break
+    # Strip trailing " *" + ride/order id noise after a space-asterisk.
+    s = _re.split(r'\s+\*', s, maxsplit=1)[0]
+    # Strip trailing reference digits / dates / "ride mon 8am" tails.
+    s = _re.sub(r'\s+\d[\w\-: ]*$', '', s).strip()
+    # Collapse remaining whitespace.
+    s = _re.sub(r'\s+', ' ', s)
+    return s
+
+
 def _sync_claim_state(txn):
-    """Cross-project claim propagation for electronic transactions.
+    """Cross-project claim propagation. Two channels:
+
+    (1) **QBO-id match** — siblings with the same
+        (qbo_txn_id, qbo_txn_type) across other projects. Pre-2026-05-15
+        this was the only channel and required both rows to be electronic
+        (had qbo_txn_id). That missed a real workflow: user uploads a
+        receipt in Project A, assigns it to a budget line — the row has
+        no qbo_txn_id (yet?), so claim never fired, and the same expense
+        synced from QBO into Project B showed up uncoded there. User
+        report 2026-05-15: "I have a Lyft charge for $37.93 that is
+        assigned to Car Service in 2026 Q2 Etoro Press Conference and
+        it also is showing up in 2026 FP general operations actuals".
+
+    (2) **Fuzzy match** — siblings on other projects with the same
+        normalized vendor, same amount (to the cent), and txn_date
+        within ±5 days. Bridges the doc-only-vs-QBO-elsewhere gap.
+        Tight enough to avoid false positives (same vendor+amount+date
+        across two projects within a 5-day window is almost certainly
+        the same expense).
 
     Call this AFTER mutating `txn` (set/clear budget_line_id /
     account_code / not_project_expense) and BEFORE `db.session.commit()`.
 
-    Rules:
-      • Only electronic txns participate (qbo_txn_id present). Doc-only
-        and manual rows are project-local — never propagate.
-      • Sibling = another Transaction row with the same
-        (qbo_txn_id, qbo_txn_type) on a different project.
+    Rules (apply to siblings from both channels):
       • If THIS row is claimed (budget_line_id OR account_code OR
         not_project_expense) → set siblings' claimed_by_project_id to
         this project_id, AND mark them not_project_expense=True so they
-        drop out of the other project's rollup.
+        drop out of the other project's rollup. Don't trample a claim
+        already held by a third project.
       • If THIS row was released (no claim flags), clear the claim on
         any sibling whose claimed_by_project_id == this project_id, and
         un-mark not_project_expense if it was set by us. Other-project
         claims (set by yet another project) are left alone.
 
-    Idempotent: safe to call repeatedly. No-op for non-electronic rows.
+    Idempotent: safe to call repeatedly.
     """
-    if not (txn.qbo_txn_id and txn.qbo_txn_type):
-        return
     is_claimed_now = bool(txn.budget_line_id or txn.account_code
                           or txn.not_project_expense)
-    try:
-        siblings = (Transaction.query
-                    .filter(Transaction.qbo_txn_id   == txn.qbo_txn_id,
-                            Transaction.qbo_txn_type == txn.qbo_txn_type,
-                            Transaction.project_id   != txn.project_id)
-                    .all())
-    except Exception as _se:
-        # Likely DDL hasn't run for the indexes yet; safe to skip.
-        logging.warning("[claim-sync] sibling lookup failed (skipping): %s", _se)
+
+    siblings_by_id = {}  # id → Transaction (dedupe across both channels)
+
+    # ── Channel 1: QBO-id sibling lookup ──────────────────────────────
+    if txn.qbo_txn_id and txn.qbo_txn_type:
+        try:
+            for s in (Transaction.query
+                      .filter(Transaction.qbo_txn_id   == txn.qbo_txn_id,
+                              Transaction.qbo_txn_type == txn.qbo_txn_type,
+                              Transaction.project_id   != txn.project_id)
+                      .all()):
+                siblings_by_id[s.id] = s
+        except Exception as _se:
+            # Likely DDL hasn't run for the indexes yet; safe to skip.
+            logging.warning("[claim-sync] qbo sibling lookup failed (skipping): %s", _se)
+
+    # ── Channel 2: Fuzzy (vendor / amount / date) sibling lookup ──────
+    # Only runs when we have enough signal to match safely. Requires
+    # amount AND date AND a non-trivial vendor name. Doc-only / manual
+    # / reconciled rows all qualify.
+    if txn.amount is not None and txn.txn_date and (txn.vendor or '').strip():
+        try:
+            import datetime as _dt
+            _v_norm = _normalize_vendor(txn.vendor)
+            if _v_norm and len(_v_norm) >= 3:
+                # ±5d date window — same as receipt-first reconciliation.
+                _d0 = _dt.datetime.strptime(txn.txn_date, '%Y-%m-%d').date()
+                _date_lo = (_d0 - _dt.timedelta(days=5)).isoformat()
+                _date_hi = (_d0 + _dt.timedelta(days=5)).isoformat()
+                # Amount: exact match to the cent. Cross-project Lyft
+                # charges of $37.93 vs $37.94 should NOT match — tip
+                # rounding differences could create false positives if
+                # we loosen this.
+                from decimal import Decimal as _Dec
+                _amt = _Dec(str(txn.amount))
+                _candidates = (Transaction.query
+                               .filter(Transaction.project_id   != txn.project_id,
+                                       Transaction.amount       == _amt,
+                                       Transaction.txn_date     >= _date_lo,
+                                       Transaction.txn_date     <= _date_hi)
+                               .all())
+                for s in _candidates:
+                    if s.id in siblings_by_id:
+                        continue
+                    if _normalize_vendor(s.vendor) == _v_norm:
+                        siblings_by_id[s.id] = s
+        except Exception as _fe:
+            # Don't let fuzzy match break the user's primary action.
+            logging.warning("[claim-sync] fuzzy sibling lookup failed (skipping): %s", _fe)
+
+    if not siblings_by_id:
         return
-    if not siblings:
-        return
+
     if is_claimed_now:
-        for s in siblings:
+        for s in siblings_by_id.values():
             # Don't trample a claim already held by a third project.
             # Only re-claim if unclaimed or claimed by this project.
             if s.claimed_by_project_id in (None, txn.project_id):
@@ -5349,7 +5428,7 @@ def _sync_claim_state(txn):
                 if not (s.budget_line_id or s.account_code):
                     s.not_project_expense = True
     else:
-        for s in siblings:
+        for s in siblings_by_id.values():
             if s.claimed_by_project_id == txn.project_id:
                 s.claimed_by_project_id = None
                 # If the sibling was marked not-project SOLELY because
@@ -5484,6 +5563,97 @@ def actuals_mark_not_project(pid, tid):
             note=f'Marked ${_amt:,.2f} as not a project expense')
     except Exception: pass
     return jsonify({"ok": True, "transaction_id": tid})
+
+
+@app.route("/admin/cross-project-claim-backfill", methods=["GET", "POST"])
+@login_required
+@super_admin_required
+def admin_cross_project_claim_backfill():
+    """One-shot: run _sync_claim_state across every already-coded
+    transaction in the database so the new fuzzy-match channel
+    retroactively claims siblings in other projects.
+
+    User report 2026-05-15: a Lyft $37.93 was coded in Project A but
+    still showing in Project B because the pre-fuzzy claim logic only
+    matched on qbo_txn_id and Project A's row was doc-only. After
+    deploying the fuzzy match, NEW coding actions claim correctly, but
+    historical ones don't until we walk the table once.
+
+    GET shows a dry-run preview (how many siblings would get claimed
+    without writing anything). POST runs it for real and commits.
+    """
+    from sqlalchemy import or_ as _or
+    coded_q = (Transaction.query
+               .filter(_or(Transaction.budget_line_id.isnot(None),
+                           Transaction.account_code.isnot(None),
+                           Transaction.not_project_expense == True))
+               .filter(Transaction.amount.isnot(None),
+                       Transaction.txn_date.isnot(None),
+                       Transaction.vendor.isnot(None)))
+    coded_count = coded_q.count()
+
+    if request.method == "GET":
+        # Dry-run preview: iterate but rollback at the end.
+        marked = 0
+        preview = []
+        for t in coded_q.limit(2000).all():
+            _before = {
+                str(s.id): (s.claimed_by_project_id, bool(s.not_project_expense))
+                for s in Transaction.query
+                              .filter(Transaction.project_id != t.project_id,
+                                      Transaction.amount == t.amount,
+                                      Transaction.txn_date == t.txn_date)
+                              .limit(20).all()
+            }
+            _sync_claim_state(t)
+            for s in db.session.dirty:
+                if not isinstance(s, Transaction):
+                    continue
+                _b = _before.get(str(s.id))
+                if _b is None:
+                    continue
+                if _b != (s.claimed_by_project_id, bool(s.not_project_expense)):
+                    marked += 1
+                    if len(preview) < 25:
+                        preview.append({
+                            'sibling_id':   s.id,
+                            'sibling_proj': s.project_id,
+                            'vendor':       s.vendor,
+                            'amount':       float(s.amount or 0),
+                            'date':         s.txn_date,
+                            'claimed_by':   s.claimed_by_project_id,
+                            'not_project':  bool(s.not_project_expense),
+                        })
+        db.session.rollback()
+        return jsonify({
+            'ok': True,
+            'mode': 'dry-run',
+            'coded_transactions': coded_count,
+            'siblings_would_claim': marked,
+            'sample': preview,
+            'next': 'POST to this URL to apply.',
+        })
+
+    # POST: actually run + commit.
+    marked = 0
+    errors = 0
+    for t in coded_q.all():
+        try:
+            _sync_claim_state(t)
+            for s in list(db.session.dirty):
+                if isinstance(s, Transaction):
+                    marked += 1
+        except Exception as e:
+            errors += 1
+            logging.warning("[claim-backfill] failed on txn #%s: %s", t.id, e)
+    db.session.commit()
+    return jsonify({
+        'ok': True,
+        'mode': 'committed',
+        'coded_transactions': coded_count,
+        'siblings_marked_dirty': marked,
+        'errors': errors,
+    })
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/merge", methods=["POST"])

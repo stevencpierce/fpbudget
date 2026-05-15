@@ -9510,6 +9510,17 @@ const _AUTO_WORKERS_COMP  = {{ top_sheet.workers_comp_amount | float }};
 const _AUTO_PAYROLL_FEE   = {{ top_sheet.payroll_fee_amount  | float }};
 
 function updateFloatBar() {
+  // In Actual view the float bar shows "Actual Spend" = sum of
+  // transaction amounts on the Actual budget. That's not derivable
+  // from the Budget-tab section blocks (those show estimated_total
+  // snapshots, not transaction sums), so the server-rendered value
+  // from top_sheet.grand_total_actual is the canonical source. Just
+  // leave it alone — recomputing here was wiping it to $0 / a wrong
+  // number whenever the user landed on the Actual view. 2026-05-15
+  // bug report: "the totals aren't totaling for the actual budget.
+  // It shows Actual Spend 0.00 at the bottom of the page".
+  if (_IS_ACTUAL_VIEW) return;
+
   // Sum each section's data-base (which ALREADY includes Workers' Comp,
   // Production Liability Insurance, and Payroll Service Fee — see the
   // ns.sec_total injection in the section block). Used to also add
