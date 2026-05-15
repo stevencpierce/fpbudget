@@ -4158,6 +4158,53 @@ def budget_view(pid, bid):
                 except Exception:
                     pass  # skip any line that fails to calc
 
+    # ── Estimated Top Sheet — live cross-view rollup ─────────────────────
+    # The Top Sheet's Estimated column was previously reading
+    # row.estimated from the *current* budget's top_sheet. For Working /
+    # Actual views, that means each line's frozen-at-clone estimated_total
+    # snapshot — not the live Estimated budget. Result: editing the
+    # Estimated budget after Working / Actual were cloned silently
+    # desynced the Estimated column across views (2026-05-15 user report:
+    # Travel showed $961.70 in Actual view but $17.70 in Estimated/Working
+    # views for the same section — the $944 gap was the stale clone-time
+    # snapshot still on the Actual budget's lines).
+    #
+    # Fix: always compute the Estimated budget's Top Sheet via calc_top_sheet
+    # and surface it as est_top_sheet + a code→row lookup. Template reads
+    # those for every Estimated-column cell (section row, dispersed-fee
+    # sub-row, WC / PI / PF auto-rows, Subtotal, Production Company Fee
+    # line, Grand Total, variance fallback). Mirrors the working_by_section
+    # pattern already used for the Working column.
+    est_top_sheet      = None
+    est_section_lookup = {}
+    if current_estimated_bid:
+        if current_estimated_bid == budget.id:
+            # FAST PATH: viewing the Estimated budget already — top_sheet
+            # IS the Estimated rollup. No second calc needed.
+            est_top_sheet = top_sheet
+        else:
+            # Cross-view: run calc_top_sheet against the live Estimated
+            # budget. _eblines + _eb_fringe + _eb_profile + _eb_pw_start
+            # were set just above in the estimated_line_totals block and
+            # are still in scope here.
+            _eb_obj = next((b for b in all_budgets if b.id == current_estimated_bid), None)
+            if _eb_obj:
+                try:
+                    est_top_sheet = calc_top_sheet(
+                        _eb_obj, _eblines, _eb_fringe, {},
+                        _eb_profile, _eb_pw_start,
+                    )
+                except Exception as _ee:
+                    logging.warning(f"[top sheet] live Estimated rollup failed: {_ee}")
+                    est_top_sheet = None
+    if est_top_sheet is None:
+        # Fallback so template never 500s — degenerate to current behavior
+        # (the buggy snapshot read). Better than a hard error if
+        # current_estimated_bid is missing.
+        est_top_sheet = top_sheet
+    for _r in est_top_sheet.get("rows", []):
+        est_section_lookup[_r["code"]] = _r
+
     # Per-line ACTUAL spend rollup. Sums non-project-expense=False
     # transactions on the project's current Actual budget, keyed by
     # (account_code, sort_order) so it can be looked up from the
@@ -4486,6 +4533,8 @@ def budget_view(pid, bid):
         working_company_fee=working_company_fee,
         working_line_totals=working_line_totals,
         estimated_line_totals=estimated_line_totals,
+        est_top_sheet=est_top_sheet,
+        est_section_lookup=est_section_lookup,
         actual_line_totals=actual_line_totals,
         actual_line_totals_by_lid=actual_line_totals_by_lid,
         manual_by_section=manual_by_section,

@@ -293,6 +293,15 @@
     <tbody>
       {% for row in top_sheet.rows %}
       {% set w = working_by_section.get(row.code, 0) %}
+      {# Estimated column reads from est_section_lookup — the live
+         Estimated budget's Top Sheet row, not row.estimated (which
+         for Actual / Working views is the clone-time snapshot and
+         silently drifts when the Estimated budget is edited later).
+         2026-05-15 fix. #}
+      {% set _e_row = est_section_lookup.get(row.code) %}
+      {% set e_val  = (_e_row.estimated if _e_row else 0) %}
+      {% set e_fee  = (_e_row.fee_amount if _e_row else 0) %}
+      {% set var_static = e_val - row.actual %}
       <tr data-ts-code="{{ row.code }}" ondblclick="goToSection({{ row.code }})" style="cursor:pointer" title="Double-click to go to section">
         <td class="col-code muted">{{ row.code }}</td>
         <td>
@@ -309,39 +318,44 @@
             <span class="muted" style="font-size:.75rem;font-style:italic;margin-left:.4rem;color:#f59e0b">(Prod Co Fee exempt)</span>
           {% endif %}
         </td>
-        <td class="col-num">{{ row.estimated | currency }}</td>
+        <td class="col-num">{{ e_val | currency }}</td>
         <td class="col-num {% if not working_exists %}muted{% endif %}">{{ w | currency }}</td>
         <td class="col-num">{{ row.actual | currency }}</td>
         <td class="col-num var-cell"
             data-w="{{ w }}"
-            data-e="{{ row.estimated }}"
+            data-e="{{ e_val }}"
             data-a="{{ row.actual }}">
-          <span class="{{ 'over' if row.variance < 0 else 'under' if row.variance > 0 else '' }}">
-            {{ row.variance | currency }}
+          <span class="{{ 'over' if var_static < 0 else 'under' if var_static > 0 else '' }}">
+            {{ var_static | currency }}
           </span>
         </td>
       </tr>
-      {% if top_sheet.company_fee_dispersed and row.fee_amount > 0 %}
+      {% if est_top_sheet.company_fee_dispersed and e_fee > 0 %}
       <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9)">
         <td class="col-code muted" style="font-size:.75rem"></td>
-        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Prod. Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(1) }}% dispersed)</td>
-        <td class="col-num muted" style="font-size:.85rem">{{ row.fee_amount | currency }}</td>
-        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ row.fee_amount | currency }}{% else %}$0.00{% endif %}</td>
+        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Prod. Company Fee ({{ (est_top_sheet.company_fee_pct * 100) | round(1) }}% dispersed)</td>
+        <td class="col-num muted" style="font-size:.85rem">{{ e_fee | currency }}</td>
+        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ e_fee | currency }}{% else %}$0.00{% endif %}</td>
         <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
-      {% if row.code == 6000 and top_sheet.workers_comp_amount > 0 %}
+      {# WC / PI / PF auto-line Est-column values pulled from
+         est_top_sheet so cross-view editing of the Estimated budget's
+         pct / labor stays reflected. The label keeps using top_sheet
+         for the percentage/mode (it's still the active budget's
+         configuration the user is editing). #}
+      {% if row.code == 6000 and (est_top_sheet.workers_comp_amount or top_sheet.workers_comp_amount) %}
       <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
           data-ts-section="6000"
           oncontextmenu="editAutoLinePct(event, 'workers_comp')" title="Right-click to edit %">
         <td class="col-code muted" style="font-size:.75rem"></td>
         <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
-        <td class="col-num muted" style="font-size:.85rem">{{ top_sheet.workers_comp_amount | currency }}</td>
+        <td class="col-num muted" style="font-size:.85rem">{{ est_top_sheet.workers_comp_amount | currency }}</td>
         <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.workers_comp_amount | currency }}{% else %}$0.00{% endif %}</td>
         <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
-      {% if row.code == 6000 and top_sheet.production_insurance_amount > 0 %}
+      {% if row.code == 6000 and (est_top_sheet.production_insurance_amount or top_sheet.production_insurance_amount) %}
       <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9)"
           data-ts-section="6000"
           title="Edit in Settings → Production Insurance">
@@ -353,18 +367,18 @@
             (flat amount)
           {% endif %}
         </td>
-        <td class="col-num muted" style="font-size:.85rem">{{ top_sheet.production_insurance_amount | currency }}</td>
+        <td class="col-num muted" style="font-size:.85rem">{{ est_top_sheet.production_insurance_amount | currency }}</td>
         <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.production_insurance_amount | currency }}{% else %}$0.00{% endif %}</td>
         <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
-      {% if row.code == 6500 and top_sheet.payroll_fee_amount > 0 %}
+      {% if row.code == 6500 and (est_top_sheet.payroll_fee_amount or top_sheet.payroll_fee_amount) %}
       <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
           data-ts-section="6500"
           oncontextmenu="editAutoLinePct(event, 'payroll_fee')" title="Right-click to edit %">
         <td class="col-code muted" style="font-size:.75rem"></td>
         <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
-        <td class="col-num muted" style="font-size:.85rem">{{ top_sheet.payroll_fee_amount | currency }}</td>
+        <td class="col-num muted" style="font-size:.85rem">{{ est_top_sheet.payroll_fee_amount | currency }}</td>
         <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.payroll_fee_amount | currency }}{% else %}$0.00{% endif %}</td>
         <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
@@ -407,17 +421,19 @@
       {% endif %}
       <tr class="subtotal-row" data-ts-row="subtotal">
         <td colspan="2"><strong>Subtotal ({{ _active_mode_label }}, Before Prod. Fee)</strong></td>
-        <td class="col-num"><strong>{{ top_sheet.subtotal_estimated | currency }}</strong></td>
+        {# Subtotal Est column reads est_top_sheet so it matches the live
+           Estimated budget across views (2026-05-15). #}
+        <td class="col-num"><strong>{{ est_top_sheet.subtotal_estimated | currency }}</strong></td>
         <td class="col-num {% if not working_exists %}muted{% endif %}"><strong>{{ sub_w | currency }}</strong></td>
         <td class="col-num"><strong>{{ top_sheet.subtotal_actual | currency }}</strong></td>
         <td class="col-num var-cell"
             data-w="{{ sub_w }}"
-            data-e="{{ top_sheet.subtotal_estimated }}"
+            data-e="{{ est_top_sheet.subtotal_estimated }}"
             data-a="{{ top_sheet.subtotal_actual }}"></td>
       </tr>
       {% set fee_w = working_company_fee or 0 %}
       {% set fee_a = (top_sheet.subtotal_actual * top_sheet.company_fee_pct) | round(2) if not top_sheet.company_fee_dispersed else 0 %}
-      {% set fee_var = top_sheet.company_fee - fee_a %}
+      {% set fee_var = est_top_sheet.company_fee - fee_a %}
       <tr class="fee-row {% if top_sheet.company_fee_dispersed %}fee-row-dispersed{% endif %}" data-ts-row="fee" data-fee-pct="{{ top_sheet.company_fee_pct }}" data-dispersed="{{ 'true' if top_sheet.company_fee_dispersed else 'false' }}">
         <td colspan="2">
           Production Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(2) }}%)
@@ -427,12 +443,12 @@
           <span class="fee-mode-badge">Line Item</span>
           {% endif %}
         </td>
-        <td class="col-num">{{ top_sheet.company_fee | currency }}</td>
+        <td class="col-num">{{ est_top_sheet.company_fee | currency }}</td>
         <td class="col-num {% if not working_exists %}muted{% endif %}">{{ fee_w | currency }}</td>
         <td class="col-num">{{ fee_a | currency }}</td>
         <td class="col-num var-cell"
             data-w="{{ fee_w }}"
-            data-e="{{ top_sheet.company_fee }}"
+            data-e="{{ est_top_sheet.company_fee }}"
             data-a="{{ fee_a }}">
           <span class="{{ 'over' if fee_var < 0 else 'under' if fee_var > 0 else '' }}">
             {{ fee_var | currency }}
@@ -443,16 +459,17 @@
         {# When dispersed, sum_w_post already includes the fee per section.
            When not dispersed, add fee_w on top of pre-fee sub_w. #}
         {% set grand_w = sum_w_post if top_sheet.company_fee_dispersed else (sub_w + fee_w) %}
+        {% set grand_variance_live = est_top_sheet.grand_total_estimated - top_sheet.grand_total_actual %}
         <td colspan="2"><strong>GRAND TOTAL ({{ _active_mode_label }})</strong></td>
-        <td class="col-num"><strong>{{ top_sheet.grand_total_estimated | currency }}</strong></td>
+        <td class="col-num"><strong>{{ est_top_sheet.grand_total_estimated | currency }}</strong></td>
         <td class="col-num {% if not working_exists %}muted{% endif %}"><strong>{{ grand_w | currency }}</strong></td>
         <td class="col-num"><strong>{{ top_sheet.grand_total_actual | currency }}</strong></td>
         <td class="col-num var-cell"
             data-w="{{ grand_w }}"
-            data-e="{{ top_sheet.grand_total_estimated }}"
+            data-e="{{ est_top_sheet.grand_total_estimated }}"
             data-a="{{ top_sheet.grand_total_actual }}">
-          <span class="{{ 'over' if top_sheet.grand_variance < 0 else 'under' if top_sheet.grand_variance > 0 else '' }}">
-            <strong>{{ top_sheet.grand_variance | currency }}</strong>
+          <span class="{{ 'over' if grand_variance_live < 0 else 'under' if grand_variance_live > 0 else '' }}">
+            <strong>{{ grand_variance_live | currency }}</strong>
           </span>
         </td>
       </tr>
@@ -482,7 +499,7 @@
       {% if tax_credits %}
       <tr class="net-budget-row" style="border-top:2px solid var(--border)">
         <td colspan="2"><strong>Net Budget (After Credits)</strong></td>
-        <td class="col-num"><strong>{{ (top_sheet.grand_total_estimated - tax_credit_totals.values() | sum) | currency }}</strong></td>
+        <td class="col-num"><strong>{{ (est_top_sheet.grand_total_estimated - tax_credit_totals.values() | sum) | currency }}</strong></td>
         <td colspan="3"></td>
       </tr>
       {% endif %}
