@@ -317,6 +317,138 @@
 
   <div class="admin-card">
     <div class="admin-card-header">
+      <h2>Cross-Project Claim Backfill</h2>
+      <span class="badge" style="background:rgba(217,119,6,.18);color:#fbbf24;font-size:.7rem;padding:3px 8px;border-radius:4px;margin-left:.5rem;text-transform:uppercase;letter-spacing:.04em">Super Admin</span>
+    </div>
+    <p style="color:var(--text-muted);font-size:.88rem;margin:.5rem 0 1rem">
+      Walks every already-coded transaction through the cross-project claim
+      logic so the fuzzy-match channel (added 2026-05-15) fires retroactively.
+      Use this when you see the same expense showing up in two projects — e.g.
+      a Lyft charge coded in Project A still visible in Project B's actuals.
+      Click <strong>Preview</strong> first to see how many siblings would get
+      claimed without writing anything; then <strong>Run Backfill</strong> to
+      apply.
+    </p>
+    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+      <button type="button" id="claim-backfill-preview" class="btn btn-outline">Preview (dry-run)</button>
+      <button type="button" id="claim-backfill-apply"   class="btn btn-primary" disabled
+              style="opacity:.55">Run Backfill</button>
+      <span id="claim-backfill-status" style="font-size:.82rem;color:var(--text-muted)"></span>
+    </div>
+    <pre id="claim-backfill-output"
+         style="margin-top:.9rem;padding:.7rem 1rem;background:var(--bg-2,#1a1a1a);
+                border:1px solid var(--border);border-radius:6px;font-size:.78rem;
+                color:var(--text-muted);max-height:380px;overflow:auto;display:none;
+                white-space:pre-wrap;word-break:break-word"></pre>
+  </div>
+
+  <script>
+  (function () {
+    // Two-button workflow: Preview (GET = dry-run, never writes) →
+    // Run Backfill (POST = commits). The apply button stays disabled
+    // until the user has previewed at least once, so a stray double-
+    // click on "Open Admin" can't accidentally fire a database-wide
+    // write. The output pane shows the JSON response from each call
+    // including the per-sibling sample list so the super admin can
+    // sanity-check what's about to be claimed.
+    const previewBtn = document.getElementById('claim-backfill-preview');
+    const applyBtn   = document.getElementById('claim-backfill-apply');
+    const statusEl   = document.getElementById('claim-backfill-status');
+    const outEl      = document.getElementById('claim-backfill-output');
+    if (!previewBtn || !applyBtn) return;
+
+    function setStatus(msg, color) {
+      statusEl.textContent = msg;
+      statusEl.style.color = color || 'var(--text-muted)';
+    }
+    function showOutput(data) {
+      outEl.style.display = 'block';
+      outEl.textContent   = JSON.stringify(data, null, 2);
+    }
+    function setApplyEnabled(on) {
+      applyBtn.disabled       = !on;
+      applyBtn.style.opacity  = on ? '1' : '.55';
+      applyBtn.style.cursor   = on ? 'pointer' : 'not-allowed';
+    }
+
+    previewBtn.addEventListener('click', async () => {
+      previewBtn.disabled = true;
+      const _orig = previewBtn.textContent;
+      previewBtn.textContent = 'Previewing…';
+      setStatus('Walking every coded transaction (dry-run, no writes)…');
+      try {
+        const r = await fetch('/admin/cross-project-claim-backfill', {
+          method: 'GET', credentials: 'same-origin',
+          headers: { 'Accept': 'application/json' },
+        });
+        const j = await r.json();
+        showOutput(j);
+        if (!r.ok) {
+          setStatus(j.error || 'Preview failed.', '#ef4444');
+          return;
+        }
+        const n = j.siblings_would_claim || 0;
+        setStatus(
+          `Preview: ${n} sibling${n === 1 ? '' : 's'} would be claimed across ` +
+          `${j.coded_transactions} coded transaction${j.coded_transactions === 1 ? '' : 's'}. ` +
+          (n > 0 ? 'Review the sample below, then click Run Backfill.' :
+                   'Nothing to do — every claim is already in place.'),
+          n > 0 ? '#fbbf24' : '#22c55e'
+        );
+        setApplyEnabled(n > 0);
+      } catch (e) {
+        setStatus('Preview failed: ' + e.message, '#ef4444');
+      } finally {
+        previewBtn.disabled    = false;
+        previewBtn.textContent = _orig;
+      }
+    });
+
+    applyBtn.addEventListener('click', async () => {
+      if (!confirm(
+        'Run cross-project claim backfill now?\n\n' +
+        'This will update the claimed_by_project_id and ' +
+        'not_project_expense flags on every sibling row identified by ' +
+        'the fuzzy matcher. It cannot be undone in bulk — individual ' +
+        'rows can be unclaimed by re-saving them.\n\n' +
+        'Make sure you reviewed the Preview output first.'
+      )) return;
+      applyBtn.disabled = true;
+      const _orig = applyBtn.textContent;
+      applyBtn.textContent = 'Running…';
+      setStatus('Writing claim updates…');
+      try {
+        const r = await fetch('/admin/cross-project-claim-backfill', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Accept': 'application/json' },
+        });
+        const j = await r.json();
+        showOutput(j);
+        if (!r.ok) {
+          setStatus(j.error || 'Backfill failed.', '#ef4444');
+          applyBtn.disabled = false;
+          applyBtn.textContent = _orig;
+          return;
+        }
+        setStatus(
+          `Done. Marked ${j.siblings_marked_dirty} sibling row${j.siblings_marked_dirty === 1 ? '' : 's'} ` +
+          `as claimed across ${j.coded_transactions} coded transactions` +
+          (j.errors ? ` (${j.errors} error${j.errors === 1 ? '' : 's'} — see server logs)` : '') + '.',
+          j.errors ? '#fbbf24' : '#22c55e'
+        );
+        setApplyEnabled(false);
+        applyBtn.textContent = 'Run Backfill';
+      } catch (e) {
+        setStatus('Backfill failed: ' + e.message, '#ef4444');
+        applyBtn.disabled = false;
+        applyBtn.textContent = _orig;
+      }
+    });
+  })();
+  </script>
+
+  <div class="admin-card">
+    <div class="admin-card-header">
       <h2>Quick Entry vs Catalog Audit</h2>
       <span class="badge" style="background:rgba(217,119,6,.18);color:#fbbf24;font-size:.7rem;padding:3px 8px;border-radius:4px;margin-left:.5rem;text-transform:uppercase;letter-spacing:.04em">Super Admin</span>
     </div>
