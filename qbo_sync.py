@@ -704,6 +704,20 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             # against a budget line — they own the categorization.
             if existing_doc_txn.budget_line_id or existing_doc_txn.account_code:
                 existing_doc_txn.match_status = 'confirmed'
+            # Fire cross-project claim propagation: reconciliation
+            # stamped a qbo_txn_id onto this doc row, which means QBO
+            # siblings on other projects now share that id and should
+            # be claimed (or fuzzy-matched siblings, since the row also
+            # has a doc_upload_id — receipt = affirmative claim signal).
+            # Import locally to dodge circular import at module-load
+            # (app.py imports qbo_sync; qbo_sync importing app.py would
+            # cycle). app must be initialized when sync runs anyway.
+            try:
+                from app import _sync_claim_state as _scs
+                _scs(existing_doc_txn)
+            except Exception as _re:
+                log.warning(f"[qbo {project_sheet.name}] cross-project claim "
+                            f"on reconciled txn #{existing_doc_txn.id} failed: {_re}")
             log.info(
                 f"[qbo {project_sheet.name}] reconciled QBO {r['qbo_txn_type']}"
                 f"/{r['qbo_txn_id']} → existing doc Transaction id={existing_doc_txn.id}"

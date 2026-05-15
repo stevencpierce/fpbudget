@@ -5361,8 +5361,17 @@ def _sync_claim_state(txn):
 
     Idempotent: safe to call repeatedly.
     """
+    # Claim signals — any of these on `txn` mean "this project owns the
+    # expense, hide siblings elsewhere". Attaching a receipt counts:
+    # uploading a doc to project A is an affirmative assertion that the
+    # expense lives there. Without this, a user-uploaded receipt in
+    # project A had no effect on a parallel QBO row in project B; the
+    # duplicate sat there until the user remembered to code A's row.
+    # 2026-05-15 user report: Etoro had a Lyft receipt; FP General Ops
+    # had the same Lyft as a separate QBO row that nobody had claimed.
     is_claimed_now = bool(txn.budget_line_id or txn.account_code
-                          or txn.not_project_expense)
+                          or txn.not_project_expense
+                          or txn.doc_upload_id)
 
     siblings_by_id = {}  # id → Transaction (dedupe across both channels)
 
@@ -5583,10 +5592,14 @@ def admin_cross_project_claim_backfill():
     without writing anything). POST runs it for real and commits.
     """
     from sqlalchemy import or_ as _or
+    # "Coded" for this backfill = any claim signal recognized by
+    # _sync_claim_state. As of 2026-05-15 that includes doc_upload_id
+    # too (receipt attachment → claim).
     coded_q = (Transaction.query
                .filter(_or(Transaction.budget_line_id.isnot(None),
                            Transaction.account_code.isnot(None),
-                           Transaction.not_project_expense == True))
+                           Transaction.not_project_expense == True,
+                           Transaction.doc_upload_id.isnot(None)))
                .filter(Transaction.amount.isnot(None),
                        Transaction.txn_date.isnot(None),
                        Transaction.vendor.isnot(None)))
@@ -16697,6 +16710,20 @@ def docs_upload_post(pid):
                 created_via_user_id = current_user.id if current_user.is_authenticated else None,
             )
             db.session.add(auto_txn)
+            db.session.flush()
+            # Cross-project claim: a receipt upload is an affirmative
+            # "this expense belongs here" signal. Fire _sync_claim_state
+            # so any QBO sibling on another project (same vendor + amount
+            # + date within ±5d) gets claimed_by_project_id set and
+            # not_project_expense=True, dropping it out of that project's
+            # uncoded pile. Without this, user uploads a Lyft receipt to
+            # Etoro and the same Lyft in FP General Ops sits there
+            # uncoded until they remember to fix it.
+            try:
+                _sync_claim_state(auto_txn)
+            except Exception as _ce:
+                logging.warning(f"[docs/upload] cross-project claim failed "
+                                f"for txn #{auto_txn.id}: {_ce}")
             db.session.commit()
             logging.info(f"[docs/upload] Created Transaction #{auto_txn.id} "
                          f"from DocUpload #{upload.id} (vendor={upload.vendor!r}, "

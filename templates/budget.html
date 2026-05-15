@@ -4478,6 +4478,7 @@
                   title="Source: {{ t.source or 'unknown' }}">
               {% if t.source == 'doc_upload' %}📄
               {% elif t.source == 'qbo_sync' %}🏦
+              {% elif t.source == 'reconciled' %}🔗
               {% elif t.source == 'manual_entry' %}✏️
               {% elif t.source == 'invoice_split' %}↳
               {% else %}❓{% endif %}
