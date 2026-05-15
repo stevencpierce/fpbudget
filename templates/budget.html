@@ -2539,6 +2539,125 @@
         min-width: 200px;
         white-space: normal !important;
       }
+
+      /* ── Doc group section headers (2026-05-15) ─────────────────────
+         User report: "the drop-down arrows and headings need to be a
+         little more apparent right now just all sort of blends together
+         and you don't see that there are documents listed there".
+         Treatment:
+           • Bigger header bar with its own elevated background + left
+             accent stripe so the eye knows "new section starts here"
+           • Heading is normal-cased, ~1rem, bold — readable at a glance
+             instead of 12px muted uppercase
+           • Pill-style count chip with category-tinted background
+           • Larger chevron in the primary color with a smooth rotation
+             on collapse — it's an obvious affordance, not muted decor
+           • Hover state brightens the border + bumps the chevron alpha
+           • A clear bottom-divider region (rows feel attached to header) */
+      #tab-docs .doc-group-header {
+        display: flex !important;
+        align-items: center !important;
+        gap: 10px !important;
+        padding: 12px 14px !important;
+        margin: 18px 0 8px !important;
+        background: var(--bg-card) !important;
+        border: 1px solid var(--border) !important;
+        border-left: 4px solid #5b8af9 !important;
+        border-radius: 8px 8px 4px 4px !important;
+        cursor: pointer;
+        transition: border-color .14s ease, background .14s ease;
+        position: relative;
+      }
+      #tab-docs .doc-group-header:hover {
+        border-color: rgba(91,138,249,.5) !important;
+        background: rgba(91,138,249,.04) !important;
+      }
+      #tab-docs .doc-group-header:first-of-type {
+        margin-top: 4px !important;
+      }
+      /* Override the inline label span so the heading reads loud. */
+      #tab-docs .doc-group-header > span:first-child {
+        font-size: 1rem !important;
+        font-weight: 700 !important;
+        text-transform: none !important;
+        letter-spacing: 0 !important;
+        color: var(--text) !important;
+      }
+      /* Count chip — slightly larger, blue-tinted to match the stripe. */
+      #tab-docs .doc-group-header > span:nth-child(2) {
+        font-size: 11px !important;
+        font-weight: 600;
+        color: #5b8af9 !important;
+        background: rgba(91,138,249,.12) !important;
+        border: 1px solid rgba(91,138,249,.30);
+        padding: 2px 9px !important;
+        border-radius: 10px !important;
+      }
+      /* Bigger, brighter chevron. */
+      #tab-docs .doc-group-chevron {
+        font-size: 18px !important;
+        color: #5b8af9 !important;
+        opacity: .85;
+        margin-left: auto !important;
+        transition: transform .18s ease, opacity .14s ease !important;
+        user-select: none;
+        line-height: 1;
+        width: 22px;
+        text-align: center;
+      }
+      #tab-docs .doc-group-header:hover .doc-group-chevron { opacity: 1; }
+      /* Per-category accent recolor — receipts blue, invoices gold,
+         estimates teal, etc. — using data-group set by the server. */
+      #tab-docs .doc-group-header[data-group*="receipt"]        { border-left-color: #5b8af9 !important; }
+      #tab-docs .doc-group-header[data-group*="receipt"]        .doc-group-chevron,
+      #tab-docs .doc-group-header[data-group*="receipt"]        > span:nth-child(2) { color: #7ba6e8 !important; }
+      #tab-docs .doc-group-header[data-group*="receipt"]        > span:nth-child(2) { background: rgba(123,166,232,.12) !important; border-color: rgba(123,166,232,.30) !important; }
+
+      #tab-docs .doc-group-header[data-group*="invoice"]        { border-left-color: #f0c060 !important; }
+      #tab-docs .doc-group-header[data-group*="invoice"]        .doc-group-chevron { color: #f0c060 !important; }
+      #tab-docs .doc-group-header[data-group*="invoice"]        > span:nth-child(2) { color: #f0c060 !important; background: rgba(240,192,96,.12) !important; border-color: rgba(240,192,96,.30) !important; }
+
+      #tab-docs .doc-group-header[data-group*="estimate"]       { border-left-color: #5fc8c8 !important; }
+      #tab-docs .doc-group-header[data-group*="estimate"]       .doc-group-chevron { color: #5fc8c8 !important; }
+      #tab-docs .doc-group-header[data-group*="estimate"]       > span:nth-child(2) { color: #5fc8c8 !important; background: rgba(95,200,200,.12) !important; border-color: rgba(95,200,200,.30) !important; }
+
+      #tab-docs .doc-group-header[data-group*="purchase_order"],
+      #tab-docs .doc-group-header[data-group*="po"]             { border-left-color: #f08c4a !important; }
+      #tab-docs .doc-group-header[data-group*="purchase_order"] .doc-group-chevron,
+      #tab-docs .doc-group-header[data-group*="po"]             .doc-group-chevron { color: #f08c4a !important; }
+      #tab-docs .doc-group-header[data-group*="purchase_order"] > span:nth-child(2),
+      #tab-docs .doc-group-header[data-group*="po"]             > span:nth-child(2) { color: #f08c4a !important; background: rgba(240,140,74,.12) !important; border-color: rgba(240,140,74,.30) !important; }
+
+      #tab-docs .doc-group-header[data-group*="contract"]       { border-left-color: #9a7ee0 !important; }
+      #tab-docs .doc-group-header[data-group*="contract"]       .doc-group-chevron { color: #9a7ee0 !important; }
+      #tab-docs .doc-group-header[data-group*="contract"]       > span:nth-child(2) { color: #9a7ee0 !important; background: rgba(154,126,224,.12) !important; border-color: rgba(154,126,224,.30) !important; }
+
+      #tab-docs .doc-group-header[data-group*="insurance"]      { border-left-color: #e08080 !important; }
+      #tab-docs .doc-group-header[data-group*="insurance"]      .doc-group-chevron { color: #e08080 !important; }
+      #tab-docs .doc-group-header[data-group*="insurance"]      > span:nth-child(2) { color: #e08080 !important; background: rgba(224,128,128,.12) !important; border-color: rgba(224,128,128,.30) !important; }
+
+      #tab-docs .doc-group-header[data-group*="tax"]            { border-left-color: #e0809a !important; }
+      #tab-docs .doc-group-header[data-group*="tax"]            .doc-group-chevron { color: #e0809a !important; }
+      #tab-docs .doc-group-header[data-group*="tax"]            > span:nth-child(2) { color: #e0809a !important; background: rgba(224,128,154,.12) !important; border-color: rgba(224,128,154,.30) !important; }
+
+      #tab-docs .doc-group-header[data-group*="payroll"]        { border-left-color: #e080c8 !important; }
+      #tab-docs .doc-group-header[data-group*="payroll"]        .doc-group-chevron { color: #e080c8 !important; }
+      #tab-docs .doc-group-header[data-group*="payroll"]        > span:nth-child(2) { color: #e080c8 !important; background: rgba(224,128,200,.12) !important; border-color: rgba(224,128,200,.30) !important; }
+
+      #tab-docs .doc-group-header[data-group*="legal"]          { border-left-color: #7e7ee0 !important; }
+      #tab-docs .doc-group-header[data-group*="legal"]          .doc-group-chevron { color: #7e7ee0 !important; }
+      #tab-docs .doc-group-header[data-group*="legal"]          > span:nth-child(2) { color: #7e7ee0 !important; background: rgba(126,126,224,.12) !important; border-color: rgba(126,126,224,.30) !important; }
+
+      #tab-docs .doc-group-header[data-group*="release"]        { border-left-color: #7ad07a !important; }
+      #tab-docs .doc-group-header[data-group*="release"]        .doc-group-chevron { color: #7ad07a !important; }
+      #tab-docs .doc-group-header[data-group*="release"]        > span:nth-child(2) { color: #7ad07a !important; background: rgba(122,208,122,.12) !important; border-color: rgba(122,208,122,.30) !important; }
+
+      /* Collapsed state — softer border so the section "rests" but the
+         heading is still distinctly there. Rows below are hidden by JS. */
+      #tab-docs .doc-group-header[data-collapsed="1"] {
+        border-bottom-left-radius: 8px;
+        border-bottom-right-radius: 8px;
+      }
     </style>
   </div>
 </div>
