@@ -698,7 +698,16 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             # user-typed receipt values may have been approximate.
             existing_doc_txn.amount         = r["amount"]
             existing_doc_txn.is_expense     = r["is_expense"]
-            existing_doc_txn.vendor         = r["vendor"] or existing_doc_txn.vendor
+            # Vendor: prefer the receipt's OCR'd / human-typed value
+            # over QBO's. QBO's vendor field carries credit-card processor
+            # noise — "AMAZON MKTPL*BJ3NU6KN0", "LYFT *RIDE MON 8AM" —
+            # whereas the receipt OCR produces the clean human-readable
+            # name ("Amazon", "Lyft"). Falls back to QBO if the doc has
+            # no vendor on it. 2026-05-15 user report: had to manually
+            # "overwrite name" via the modal after every reconcile —
+            # causing a page reload and losing scroll position. Inverting
+            # the precedence here removes that step entirely.
+            existing_doc_txn.vendor         = existing_doc_txn.vendor or r["vendor"]
             existing_doc_txn.txn_date       = r["txn_date"] or existing_doc_txn.txn_date
             # Confirmed because the user manually placed the receipt
             # against a budget line — they own the categorization.

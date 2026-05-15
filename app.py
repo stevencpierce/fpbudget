@@ -5774,6 +5774,17 @@ def actuals_merge_transactions(pid):
             canon.note = loser.note
         transferred.append('note')
 
+    # Vendor: prefer the receipt-side vendor when one of the two rows is
+    # doc-only (its OCR'd value is human-readable — "Amazon", "Lyft"
+    # vs QBO's processor noise "AMAZON MKTPL*BJ3NU6KN0"). Only swap if
+    # the canonical row currently holds the QBO-side string AND the
+    # other row carries the doc-side string. Same rationale as the
+    # reconciliation path in qbo_sync.py (2026-05-15).
+    if (loser.doc_upload_id and not canon.doc_upload_id
+            and loser.vendor and loser.vendor != canon.vendor):
+        canon.vendor = loser.vendor
+        transferred.append('vendor')
+
     # ── Promote canonical to 'reconciled' / 'confirmed' ────────────────
     # Keep qbo_txn_id intact (we only transfer onto canonical when it
     # lacks one — see below).
