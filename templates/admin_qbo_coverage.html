@@ -75,7 +75,7 @@
     <tr style="border-bottom:1px dashed var(--border)">
       <td style="padding:7px 12px;position:sticky;left:0;background:var(--bg-card);
                  z-index:1;font-weight:600">
-        <a href="{{ url_for('project_overview', pid=row.project.id) }}"
+        <a href="{{ url_for('project_budget_redirect', pid=row.project.id) }}"
            style="color:var(--text);text-decoration:none">{{ row.project.name }}</a>
       </td>
       <td style="padding:7px 8px;text-align:center;font-size:.74rem;color:var(--text-muted);
