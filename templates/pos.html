@@ -2,6 +2,115 @@
 {% block title %}Purchase Orders — {{ project.name }} — FPBudget{% endblock %}
 
 {% block content %}
+<style>
+  /* ── PO card visual treatment (2026-05-15) ─────────────────────────
+     User asked for the tile cards to "look a little bit more defined
+     from the main interface". Layered approach:
+       • Slightly elevated background (one shade lighter than the page)
+         so cards stand off the surrounding canvas
+       • 4px colored left accent stripe tied to PO status — open=blue,
+         sent=amber, received=green, closed=grey, cancelled=red — same
+         palette as the inline status pill so the two reinforce each
+         other
+       • Stronger top-of-card header band (semi-transparent tint matching
+         the status color) with a clear bottom divider before the metrics
+         grid — gives each card a recognizable "letterhead" zone
+       • Subtle drop shadow + hover lift so they feel like physical tiles
+       • Over-cap state overrides the accent + adds a red border halo
+       • Archived state dims AND prints a corner ribbon */
+  .po-card {
+    position: relative;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--border);
+    border-radius: 10px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 1px 0 rgba(0,0,0,.18), 0 4px 10px -6px rgba(0,0,0,.35);
+    transition: transform .14s ease, box-shadow .14s ease, border-color .14s ease;
+    overflow: hidden;
+    scroll-margin-top: 80px;
+  }
+  .po-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 0 rgba(0,0,0,.20), 0 10px 22px -10px rgba(0,0,0,.50);
+    border-color: rgba(255,255,255,.12);
+  }
+  /* Status accent on the left edge + a faint tint of the same color
+     bleeding into the header band. */
+  .po-card.status-open      { border-left-color: #5b8af9; }
+  .po-card.status-sent      { border-left-color: #f59e0b; }
+  .po-card.status-received  { border-left-color: #22c55e; }
+  .po-card.status-closed    { border-left-color: #6b7280; }
+  .po-card.status-cancelled { border-left-color: #ef4444; }
+  .po-card.over-cap         { border-left-color: #ef4444; border-color: rgba(239,68,68,.45); }
+
+  .po-card.archived         { opacity: .55; }
+  .po-card.archived::after {
+    content: "ARCHIVED";
+    position: absolute; top: 10px; right: -28px;
+    transform: rotate(35deg);
+    background: rgba(0,0,0,.55);
+    color: #fbbf24;
+    font-size: .58rem; font-weight: 700; letter-spacing: .14em;
+    padding: 2px 32px;
+    pointer-events: none;
+  }
+
+  .po-card-header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 12px 16px 10px;
+    background: linear-gradient(180deg, rgba(255,255,255,.025) 0%, rgba(255,255,255,0) 100%);
+    border-bottom: 1px solid var(--border);
+  }
+  .po-card.status-open      .po-card-header { background: linear-gradient(180deg, rgba(91,138,249,.07), rgba(91,138,249,0)); }
+  .po-card.status-sent      .po-card-header { background: linear-gradient(180deg, rgba(245,158,11,.08), rgba(245,158,11,0)); }
+  .po-card.status-received  .po-card-header { background: linear-gradient(180deg, rgba(34,197,94,.07),  rgba(34,197,94,0));  }
+  .po-card.status-closed    .po-card-header { background: linear-gradient(180deg, rgba(107,114,128,.07),rgba(107,114,128,0));}
+  .po-card.status-cancelled .po-card-header { background: linear-gradient(180deg, rgba(239,68,68,.08),  rgba(239,68,68,0));  }
+  .po-card.over-cap         .po-card-header { background: linear-gradient(180deg, rgba(239,68,68,.10),  rgba(239,68,68,0));  }
+
+  /* Make the PO number look like a stamped label so the eye lands
+     there first. Tabular numerals + mono-ish family for the receipt feel. */
+  .po-card .po-num {
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: .02em;
+    color: var(--accent);
+    background: rgba(91,138,249,.1);
+    border: 1px solid rgba(91,138,249,.25);
+    padding: 3px 10px;
+    border-radius: 5px;
+    cursor: text;
+  }
+  .po-card .po-vendor {
+    font-weight: 600; font-size: .98rem;
+    cursor: text;
+  }
+
+  .po-card-body { padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 10px; }
+
+  /* Section heading above the PO tile list — give the user a clear
+     visual break between the "Budget lines on POs" top block and the
+     vendor-tile list below. */
+  .po-tiles-heading {
+    display: flex; align-items: baseline; gap: 10px;
+    margin: 0 0 .65rem;
+    padding-bottom: .35rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .po-tiles-heading h2 {
+    margin: 0;
+    font-size: .78rem; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .po-tiles-heading .po-tiles-count {
+    font-size: .75rem; color: var(--text-muted);
+  }
+</style>
 {# Mirror the budget tab strip so users don't lose context while on
    the PO page. Per user 2026-05-05: "I can't see any of the other
    tabs any longer. Make sure it behaves just like the other tabs."
@@ -143,7 +252,16 @@
 
 {# Open POs first, then archived. Empty-state if no POs yet. #}
 {% if pos %}
-<div style="display:flex;flex-direction:column;gap:.6rem">
+{# Section heading separating the budget-view mirror block above from
+   the vendor-tile list below. Per user 2026-05-15 — wanted clearer
+   visual definition between the two halves of the page. #}
+<div class="po-tiles-heading">
+  <h2>📦 Purchase Orders</h2>
+  <span class="po-tiles-count">
+    ({{ pos | length }} total · {{ pos | rejectattr('archived') | list | length }} active)
+  </span>
+</div>
+<div style="display:flex;flex-direction:column;gap:1rem">
   {% for po in pos %}
   {% set cap          = po.total_committed %}
   {% set lines_total  = po.lines_total | default(po.budgeted) %}
@@ -156,16 +274,12 @@
      up as informational banners; the loud over-cap signal requires
      real money out. 2026-05-10 per user spec. #}
   {% set pct = (billed_total / cap * 100) if cap and cap > 0 else 0 %}
-  <div class="po-card" id="po-{{ po.id }}" data-id="{{ po.id }}"
-       style="scroll-margin-top:80px;background:var(--bg-card);border:1px solid {{ '#fbbf24' if over else 'var(--border)' }};
-              border-radius:8px;padding:14px 18px;display:flex;flex-direction:column;gap:8px;
-              {% if po.archived %}opacity:.55{% endif %}">
-    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-      <span class="po-inline-edit" data-po-id="{{ po.id }}" data-field="po_number"
-            style="font-weight:700;font-size:1.05rem;color:var(--accent);cursor:text"
+  <div class="po-card status-{{ po.status or 'open' }} {% if over %}over-cap{% endif %} {% if po.archived %}archived{% endif %}"
+       id="po-{{ po.id }}" data-id="{{ po.id }}">
+    <div class="po-card-header">
+      <span class="po-inline-edit po-num" data-po-id="{{ po.id }}" data-field="po_number"
             title="Click to rename PO">{{ po.po_number }}</span>
-      <span class="po-inline-edit" data-po-id="{{ po.id }}" data-field="vendor_name"
-            style="font-weight:600;cursor:text"
+      <span class="po-inline-edit po-vendor" data-po-id="{{ po.id }}" data-field="vendor_name"
             title="Click to rename vendor">{{ po.vendor_name }}</span>
       <span style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;
                    padding:2px 8px;border-radius:10px;
@@ -175,9 +289,8 @@
                    {% elif po.status == 'closed' %}background:rgba(107,114,128,.15);color:#6b7280
                    {% elif po.status == 'cancelled' %}background:rgba(239,68,68,.15);color:#ef4444
                    {% else %}background:var(--bg-input);color:var(--text-muted){% endif %}">{{ po.status }}</span>
-      {% if po.archived %}
-      <span style="font-size:.7rem;color:var(--text-muted);font-style:italic">archived</span>
-      {% endif %}
+      {# The inline "archived" label is redundant — corner ribbon now
+         handles that. Removed 2026-05-15 along with card restyle. #}
       {% if po.issued_date %}
       <span class="muted" style="font-size:.78rem">issued {{ po.issued_date }}</span>
       {% endif %}
@@ -192,6 +305,7 @@
         {% endif %}
       </div>
     </div>
+    <div class="po-card-body">
     {% if po.vendor_contact or po.vendor_email or po.vendor_phone %}
     <div style="font-size:.78rem;color:var(--text-muted)">
       {% if po.vendor_contact %}👤 {{ po.vendor_contact }}{% endif %}
@@ -396,7 +510,8 @@
       {% endfor %}
     </div>
     {% endif %}
-  </div>
+    </div>{# /.po-card-body #}
+  </div>{# /.po-card #}
   {% endfor %}
 </div>
 {% else %}
