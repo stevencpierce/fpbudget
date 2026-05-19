@@ -8517,12 +8517,32 @@ def clear_gantt_day(pid, bid):
     if line_id and date_str:
         try:
             d = datetime.strptime(date_str, "%Y-%m-%d").date()
-            existing = ScheduleDay.query.filter_by(
-                budget_id=bid, budget_line_id=line_id,
-                crew_instance=crew_instance, date=d,
-                schedule_mode=sched_mode).first()
+            # Match the active schedule_mode OR legacy NULL rows (pre-
+            # schedule_mode column data) so cells that were rendered on
+            # the gantt can always be deleted. Without the NULL fallback,
+            # legacy rows showed up visually but DELETE silently no-op'd
+            # (filter didn't match → existing=None → return ok with no
+            # work done → user sees the flags persist after reload).
+            # 2026-05-15 user bug report.
+            from sqlalchemy import or_ as _or_sd
+            existing = (ScheduleDay.query
+                        .filter(ScheduleDay.budget_id == bid,
+                                ScheduleDay.budget_line_id == line_id,
+                                ScheduleDay.crew_instance == crew_instance,
+                                ScheduleDay.date == d,
+                                _or_sd(ScheduleDay.schedule_mode == sched_mode,
+                                       ScheduleDay.schedule_mode.is_(None)))
+                        .first())
             if existing:
                 _prev_type = existing.day_type
+                # Travel details FK ScheduleDay — drop them first so the
+                # parent delete doesn't trip the FK constraint.
+                try:
+                    from models import TravelDetail as _TD
+                    db.session.query(_TD).filter(_TD.schedule_day_id == existing.id)\
+                        .delete(synchronize_session=False)
+                except Exception:
+                    pass
                 db.session.delete(existing)
                 db.session.commit()
                 try:
@@ -8535,17 +8555,43 @@ def clear_gantt_day(pid, bid):
                                   after=None,
                                   note=f'Cleared {_label} {date_str}')
                 except Exception: pass
-            # Auto-disable use_schedule when last day is removed
-            remaining = ScheduleDay.query.filter_by(
-                budget_id=bid, budget_line_id=line_id, schedule_mode=sched_mode
-            ).count()
+            # ── Refresh derived state — same pattern as the POST handler.
+            # Without this, meal / per-diem / hotel / flight budget lines
+            # kept their stale qty after a flag cell was deleted, so the
+            # Budget tab still showed counts that no longer existed on
+            # the schedule. 2026-05-15 user report: "I delete the cells
+            # and confirm, but when I navigate to the budget and come
+            # back to those items, they don't actually delete."
+            try:
+                _touch_budget(bid)
+                db.session.commit()
+            except Exception as _te:
+                logging.warning(f"[clear_gantt_day] _touch_budget failed: {_te}")
+                try: db.session.rollback()
+                except Exception: pass
+            try:
+                sync_schedule_driven_lines(bid, db.session)
+                db.session.commit()
+            except Exception as _sdl:
+                logging.warning(f"[clear_gantt_day] sync_schedule_driven_lines failed: {_sdl}")
+                try: db.session.rollback()
+                except Exception: pass
+            # Auto-disable use_schedule when last day is removed.
+            remaining = (ScheduleDay.query
+                         .filter(ScheduleDay.budget_id == bid,
+                                 ScheduleDay.budget_line_id == line_id,
+                                 _or_sd(ScheduleDay.schedule_mode == sched_mode,
+                                        ScheduleDay.schedule_mode.is_(None)))
+                         .count())
             if remaining == 0:
                 ln = BudgetLine.query.filter_by(id=line_id, budget_id=bid).first()
                 if ln and ln.use_schedule:
                     ln.use_schedule = False
                     db.session.commit()
-        except Exception:
-            pass
+        except Exception as _e:
+            logging.warning(f"[clear_gantt_day] failed: {_e}")
+            try: db.session.rollback()
+            except Exception: pass
     return jsonify({"ok": True})
 
 
