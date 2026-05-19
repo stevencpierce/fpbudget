@@ -10575,6 +10575,14 @@ def line_schedule_detail(pid, bid, lid):
         "total_count":  len(rows),
         "total_amount": round(sum(r["amount"] for r in rows), 2),
         "stored_total": float(line.estimated_total or 0),
+        # Sync state — surfaces "manual override is on" so the popup
+        # can offer a one-click reset back to auto. Without this the
+        # user sees a stale stored total + zero-flag breakdown and has
+        # no idea why sync isn't fixing it. 2026-05-19.
+        "sync_omit": bool(getattr(line, 'sync_omit', False)),
+        "stored_qty":   float(line.quantity or 0),
+        "stored_days":  float(line.days or 0),
+        "stored_rate":  float(line.rate or 0),
     })
 
 

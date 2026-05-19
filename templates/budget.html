@@ -10911,12 +10911,38 @@ function renderScheduleDetail(d) {
   const drift    = Math.abs(computed - stored);
   let banner = '';
   if (drift > 0.5) {
+    // When sync_omit is on AND there's drift, give the user an actual
+    // "fix it" button. The previous version of this banner just told
+    // them what the symptom was without a way out — user report
+    // 2026-05-19: "the top sheet is not calculating correctly for
+    // working" → root cause was a sync-omitted Flights line stuck at
+    // its old qty=1, days=2, $400 even though the schedule had 0
+    // flight flags. One click resets sync_omit=False + re-runs sync
+    // → days drop to 1, total to $0, line either deletes or stands
+    // by ready to refill from new flags.
+    const omittedNote = d.sync_omit
+      ? `<div style="font-size:.78rem;margin-top:6px;color:#fbbf24">
+           This line has <strong>manual override on</strong> — sync skips it
+           every render, so deleting schedule flags doesn't zero it out.
+         </div>`
+      : '';
+    const resyncBtn = d.sync_omit
+      ? `<button type="button" id="calc-resync-btn"
+                 data-line-id="${d.line_id}" data-line-tag="${d.line_tag}"
+                 style="margin-top:10px;padding:5px 12px;border-radius:5px;
+                        background:#1a2540;border:1px solid #2d4070;
+                        color:#5b8af9;font-size:.8rem;cursor:pointer">
+           ↻ Reset to auto-sync
+         </button>`
+      : '';
     banner = `
       <div style="padding:8px 12px;border-radius:6px;margin-bottom:12px;
                   background:#2a2414;color:#fbbf24;border:1px solid #4a3a1a;font-size:.82rem">
         ⚠ Line total ${fmt(stored)} differs from breakdown sum ${fmt(computed)}.
-        Manually edited qty / days / rate? The breakdown shows what the
+        ${d.sync_omit ? '' : 'Manually edited qty / days / rate? '}The breakdown shows what the
         schedule WOULD compute — not what's stored.
+        ${omittedNote}
+        ${resyncBtn}
       </div>`;
   }
 
@@ -10966,6 +10992,42 @@ function renderScheduleDetail(d) {
   }
 
   document.getElementById('calc-detail-body').innerHTML = html;
+
+  // Wire the Reset-to-auto button when present. POSTs to the
+  // toggle-sync-omit endpoint (which flips False → not False = True;
+  // so when current state IS True, one toggle clears it). Then reloads
+  // so calc_top_sheet + sync_schedule_driven_lines re-render with the
+  // line back under auto-control.
+  const resyncBtn = document.getElementById('calc-resync-btn');
+  if (resyncBtn) {
+    resyncBtn.addEventListener('click', async () => {
+      const lineId = resyncBtn.dataset.lineId;
+      if (!confirm('Reset this line to auto-sync? Its qty / days / rate / total will be ' +
+                   'recomputed from the schedule on the next render. Any value you typed in ' +
+                   'manually will be overwritten.')) return;
+      resyncBtn.disabled = true;
+      resyncBtn.textContent = 'Resetting…';
+      try {
+        const r = await fetch(`/projects/${PID}/budget/${BID}/line/${lineId}/toggle-sync-omit`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+        });
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}));
+          alert(j.error || `Reset failed (HTTP ${r.status}).`);
+          resyncBtn.disabled = false;
+          resyncBtn.textContent = '↻ Reset to auto-sync';
+          return;
+        }
+        // Reload — calc_top_sheet + sync_schedule_driven_lines run
+        // on page load and will normalize the line.
+        window.location.reload();
+      } catch (e) {
+        alert('Reset failed: ' + e.message);
+        resyncBtn.disabled = false;
+        resyncBtn.textContent = '↻ Reset to auto-sync';
+      }
+    });
+  }
 }
 
 function renderCalcDetail(d) {
