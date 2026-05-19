@@ -6789,6 +6789,31 @@ def set_budget_mode(pid, bid):
     return redirect(url_for("budget_view", pid=pid, bid=bid) + f"?tab={tab}")
 
 
+def _content_disposition_attachment(filename):
+    """Build an RFC 6266-compliant Content-Disposition: attachment header
+    that survives non-ASCII characters in the filename. Gunicorn rejects
+    raw non-ASCII bytes in HTTP headers with 400 (which Render's edge
+    surfaces as 502 to the browser) — user report 2026-05-19, export PDF
+    blew up because the budget name carried an em-dash ("—").
+
+    Strategy (per RFC 6266 §4):
+      • Send `filename="<ASCII fallback>"` for legacy clients — strip
+        the unicode out and replace whitespace/special chars with `_`.
+      • Send `filename*=UTF-8''<percent-encoded UTF-8>` for modern
+        clients so they recover the original characters when saving.
+    """
+    import re as _re
+    from urllib.parse import quote as _q
+    # ASCII fallback — keep alnum, dot, dash, underscore; everything else
+    # collapses to underscore. Drop redundant runs of underscores.
+    ascii_safe = _re.sub(r'[^A-Za-z0-9._-]+', '_', filename).strip('_')
+    if not ascii_safe:
+        ascii_safe = 'download'
+    # UTF-8 part — RFC 5987 syntax (charset'lang'value); lang empty is OK.
+    utf8_part = _q(filename, safe='._-')
+    return f'attachment; filename="{ascii_safe}"; filename*=UTF-8\'\'{utf8_part}'
+
+
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/export.csv")
 @login_required
@@ -6889,7 +6914,7 @@ def export_csv(pid, bid):
     output.seek(0)
     fname = f"{budget.name.replace(' ', '_')}_{'working' if mode == 'working' else 'topsheet'}.csv"
     return Response(output.read(), mimetype="text/csv",
-                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+                    headers={"Content-Disposition": _content_disposition_attachment(fname)})
 
 
 # ── Task 3: MMB / ShowBiz exports + preview ──────────────────────────────────
@@ -6906,7 +6931,7 @@ def export_mmb(pid, bid):
     data = export_mmb_tab(budget, suppress_zeros=suppress_zeros)
     fname = f"{(budget.name or 'budget').replace(' ', '_')}_MMB.txt"
     return Response(data, mimetype="text/tab-separated-values",
-                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+                    headers={"Content-Disposition": _content_disposition_attachment(fname)})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/export.showbiz.txt")
@@ -6920,7 +6945,7 @@ def export_showbiz(pid, bid):
     data = export_showbiz_tab(budget, suppress_zeros=suppress_zeros)
     fname = f"{(budget.name or 'budget').replace(' ', '_')}_ShowBiz.txt"
     return Response(data, mimetype="text/tab-separated-values",
-                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+                    headers={"Content-Disposition": _content_disposition_attachment(fname)})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/preview/<target>")
@@ -7205,7 +7230,7 @@ def export_pdf(pid, bid):
     return Response(
         pdf_bytes,
         mimetype="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=\"{fname}\""}
+        headers={"Content-Disposition": _content_disposition_attachment(fname)}
     )
 
 
