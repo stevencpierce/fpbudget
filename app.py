@@ -7204,10 +7204,56 @@ def export_pdf(pid, bid):
     if var_basis not in ('est_v_work', 'work_v_act', 'est_v_act'):
         var_basis = 'est_v_work'
 
+    # ── Pull the Estimated peer's Top Sheet so the PDF's Estimated
+    # column reads from the actual Estimated budget instead of the
+    # current budget's pre-fee snapshot. Without this, exporting from
+    # Working / Actual put the Working pre-fee value in the Estimated
+    # column (e.g. Travel showed $961.70 instead of $17.70). The in-app
+    # Top Sheet already does this — mirror it here. User report
+    # 2026-05-15. Same fallback as the in-app block: if no Estimated
+    # peer exists, est_top_sheet collapses to top_sheet (degenerates to
+    # the pre-fix behavior, which is correct when there IS no separate
+    # Estimated budget).
+    est_top_sheet = None
+    est_section_lookup = {}
+    try:
+        # Find the project's current Estimated peer budget.
+        from sqlalchemy import or_ as _or_eb
+        _est_peer = (Budget.query
+                     .filter(Budget.project_id == pid,
+                             Budget.budget_mode == 'estimated',
+                             Budget.is_actual == False,
+                             _or_eb(Budget.version_status == 'current',
+                                    Budget.version_status.is_(None)))
+                     .order_by(Budget.id.desc()).first())
+        if _est_peer and _est_peer.id != budget.id:
+            _eb_lines = (BudgetLine.query
+                         .filter_by(budget_id=_est_peer.id)
+                         .order_by(BudgetLine.account_code,
+                                   BudgetLine.sort_order).all())
+            _eb_profile = _est_peer.payroll_profile
+            _eb_pw_start = (_est_peer.payroll_week_start
+                            if _est_peer.payroll_week_start is not None
+                            else (_eb_profile.payroll_week_start if _eb_profile else 6))
+            _eb_fringe = get_fringe_configs(db.session, pid)
+            est_top_sheet = calc_top_sheet(
+                _est_peer, _eb_lines, _eb_fringe, {},
+                _eb_profile, _eb_pw_start,
+            )
+        else:
+            est_top_sheet = top_sheet  # current budget IS the Estimated
+    except Exception as _eee:
+        logging.warning(f"[export_pdf] est_top_sheet build failed: {_eee}")
+        est_top_sheet = top_sheet
+    for _r in (est_top_sheet.get("rows") if est_top_sheet else []) or []:
+        est_section_lookup[_r["code"]] = _r
+
     html_str = render_template("budget_pdf.html",
         project=project,
         budget=budget,
         top_sheet=top_sheet,
+        est_top_sheet=est_top_sheet,
+        est_section_lookup=est_section_lookup,
         detail_mode=detail_mode,
         dispersed=dispersed,
         company_settings=company_settings,

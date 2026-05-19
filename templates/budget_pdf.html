@@ -213,7 +213,17 @@
   </thead>
   <tbody>
     {% for row in top_sheet.rows %}
-    {% set _row_est  = row.raw_estimated if row.raw_estimated is defined else row.estimated %}
+    {# Estimated column: pull from the Estimated peer budget's rollup
+       so the value matches what the in-app Top Sheet shows. The current
+       budget's row.raw_estimated is only pre-fee-of-current — when the
+       export came from a Working / Actual budget, that's the Working
+       value, not the Estimated peer's value. 2026-05-15 user report. #}
+    {% set _est_row = est_section_lookup.get(row.code) if est_section_lookup else None %}
+    {% if _est_row %}
+      {% set _row_est = _est_row.raw_estimated if _est_row.raw_estimated is defined else _est_row.estimated %}
+    {% else %}
+      {% set _row_est = row.raw_estimated if row.raw_estimated is defined else row.estimated %}
+    {% endif %}
     {% set _row_work = (row.pdf_rounded_estimated if (dispersed and row.pdf_rounded_estimated is defined) else row.estimated) %}
     {% set _row_act  = row.actual | default(0) %}
     {% if   _var_basis == 'est_v_work' %}{% set _row_var = _row_work - _row_est %}
@@ -259,7 +269,11 @@
     <tr class="subtotal-row">
       <td class="code"></td>
       <td>SUBTOTAL</td>
-      {% if _col_est  %}<td class="num">{{ currency(top_sheet.subtotal_estimated) }}</td>{% endif %}
+      {# Estimated column pulls from est_top_sheet when present (so the
+         column always shows the Estimated peer's totals, not the current
+         budget's). #}
+      {% set _sub_est = (est_top_sheet.subtotal_estimated if est_top_sheet else top_sheet.subtotal_estimated) %}
+      {% if _col_est  %}<td class="num">{{ currency(_sub_est) }}</td>{% endif %}
       {% if _col_work %}<td class="num">{{ currency(top_sheet.subtotal_estimated) }}</td>{% endif %}
       {% if _col_act  %}<td class="num">{{ currency(top_sheet.subtotal_actual | default(0)) }}</td>{% endif %}
       {% if _show_var %}<td class="num">—</td>{% endif %}
@@ -267,15 +281,18 @@
     <tr class="fee-row">
       <td class="code"></td>
       <td>Production Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(1) }}%)</td>
-      {% if _col_est  %}<td class="num">{{ currency(top_sheet.company_fee) }}</td>{% endif %}
+      {% set _fee_est = (est_top_sheet.company_fee if est_top_sheet else top_sheet.company_fee) %}
+      {% if _col_est  %}<td class="num">{{ currency(_fee_est) }}</td>{% endif %}
       {% if _col_work %}<td class="num">{{ currency(top_sheet.company_fee) }}</td>{% endif %}
       {% if _col_act  %}<td class="num">—</td>{% endif %}
       {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
     {% endif %}
     {# Grand Total — variance column now shows a real number based on
-       basis (was hardcoded "—"). Per user request 2026-05-15. #}
-    {% set _grand_est  = top_sheet.grand_total_estimated %}
+       basis (was hardcoded "—"). Per user request 2026-05-15.
+       Estimated grand total pulls from the Estimated peer rollup when
+       available so it matches what the in-app Top Sheet shows. #}
+    {% set _grand_est  = (est_top_sheet.grand_total_estimated if est_top_sheet else top_sheet.grand_total_estimated) %}
     {% set _grand_work = top_sheet.pdf_rounded_grand_total_estimated if (dispersed and top_sheet.pdf_rounded_grand_total_estimated is defined) else top_sheet.grand_total_estimated %}
     {% set _grand_act  = top_sheet.grand_total_actual | default(0) %}
     {% if   _var_basis == 'est_v_work' %}{% set _grand_var = _grand_work - _grand_est %}
