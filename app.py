@@ -5250,99 +5250,232 @@ def init_working_budget(pid, bid):
     return jsonify({"ok": True, "initialized_at": budget.working_initialized_at.isoformat()})
 
 
-def _depopulate_auto_line_sources(budget_id, line_tag):
-    """Strip the cell_flags / ProductionDay flag that drives an auto-
-    created budget line, so sync_schedule_driven_lines can't resurrect
-    the line on next render.
-
-    Called when delete_line removes a row whose line_tag is in
-    SCHEDULE_LINE_DEFS. Without this, deleting (say) "Per Diem —
-    Breakfast" from the Budget tab just hides it for a few seconds —
-    the next page load runs the sync, sees per_diem_breakfast=True on
-    a labor row's cell_flags, and recreates the line. User report
-    2026-05-19: "I click delete, click OK, and the line just never
-    leaves."
-
-    Tag → flag mapping:
-      • per_diem_full / per_diem_breakfast / per_diem_lunch /
-        per_diem_dinner / working_meal  →  cell_flags[key], all lines
-      • hotel_<rg> / flight_<rg> / mileage_<rg>  →  cell_flags[base],
-        only on lines whose role-group matches the suffix
-      • meal_courtesy_breakfast / meal_first / meal_second  →
-        ProductionDay.courtesy_breakfast / first_meal / second_meal
-      • craft_services  →  ProductionDay.craft_services
-
-    Anything not recognized is a no-op (safe default).
+def _auto_tag_source_spec(line_tag):
+    """Resolve an auto-line tag to its driving sources. Returns:
+        (flag_key, role_scope, pd_col)
+    where:
+      flag_key   = key inside ScheduleDay.cell_flags JSON to look for
+                   (None means no schedule-cell driver for this tag)
+      role_scope = 'talent' | 'atl' | 'crew' | None — when set, only
+                   cells whose parent labor line matches this role
+                   group contribute (hotel/flight/mileage are split
+                   per role group)
+      pd_col     = ProductionDay column name to check (None when not
+                   meal-driven). Meals come from production-day toggles,
+                   not per-crew cell flags.
+    Unknown tags return (None, None, None) — no-op.
     """
-    import json as _json
-    from budget_calc import get_role_group as _get_rg
-
-    # ── ScheduleDay cell_flags side ─────────────────────────────────
-    flag_key = None       # JSON key in cell_flags to strip
-    role_scope = None     # 'talent' | 'atl' | 'crew' | None for all-lines
-
     if line_tag in ('per_diem_full', 'per_diem_breakfast',
                     'per_diem_lunch', 'per_diem_dinner', 'working_meal'):
-        flag_key = line_tag
-    elif line_tag.startswith('hotel_'):
-        flag_key   = 'hotel'
-        role_scope = line_tag.split('_', 1)[1]
-    elif line_tag.startswith('flight_'):
-        flag_key   = 'flight'
-        role_scope = line_tag.split('_', 1)[1]
-    elif line_tag.startswith('mileage_'):
-        flag_key   = 'mileage'
-        role_scope = line_tag.split('_', 1)[1]
+        return (line_tag, None, None)
+    if line_tag.startswith('hotel_'):
+        return ('hotel', line_tag.split('_', 1)[1], None)
+    if line_tag.startswith('flight_'):
+        return ('flight', line_tag.split('_', 1)[1], None)
+    if line_tag.startswith('mileage_'):
+        return ('mileage', line_tag.split('_', 1)[1], None)
+    _pd_col_map = {
+        'craft_services':          'craft_services',
+        'meal_courtesy_breakfast': 'courtesy_breakfast',
+        'meal_first':              'first_meal',
+        'meal_second':             'second_meal',
+    }
+    if line_tag in _pd_col_map:
+        return (None, None, _pd_col_map[line_tag])
+    return (None, None, None)
+
+
+def _count_auto_line_sources(budget_id, line_tag):
+    """Count how many ScheduleDay cells / ProductionDay rows still
+    carry the flag that would resurrect an auto-line of this tag.
+    Used by delete_line to refuse with a clear error message when
+    the user tries to remove a line that the sync would just bring
+    back. 2026-05-19."""
+    import json as _json
+    from budget_calc import get_role_group as _get_rg
+    flag_key, role_scope, pd_col = _auto_tag_source_spec(line_tag)
+    count = 0
 
     if flag_key:
-        # Resolve role-group per labor line once so we can filter.
         labor_lines = {ln.id: ln for ln in
                        BudgetLine.query.filter_by(budget_id=budget_id, is_labor=True).all()}
         rg_by_line = {lid: _get_rg(ln.account_code) for lid, ln in labor_lines.items()}
-        sds = ScheduleDay.query.filter_by(budget_id=budget_id).all()
-        _wrote = 0
-        for sd in sds:
+        for sd in ScheduleDay.query.filter_by(budget_id=budget_id).all():
             if not sd.cell_flags:
                 continue
             try:
                 flags = _json.loads(sd.cell_flags)
             except (ValueError, TypeError):
                 continue
-            if not flags.get(flag_key):
+            # Legacy per_diem alias also counts as per_diem_full.
+            _has = flags.get(flag_key) or (
+                flag_key == 'per_diem_full' and flags.get('per_diem'))
+            if not _has:
                 continue
             if role_scope and rg_by_line.get(sd.budget_line_id) != role_scope:
                 continue
-            # Strip the flag — keep the rest of the JSON.
+            count += 1
+
+    if pd_col:
+        from models import ProductionDay as _PD
+        for pd_row in _PD.query.filter_by(budget_id=budget_id).all():
+            if getattr(pd_row, pd_col, False):
+                count += 1
+
+    return count
+
+
+def _depopulate_auto_line_sources(budget_id, line_tag):
+    """Strip every ScheduleDay cell_flag / ProductionDay column entry
+    that drives an auto-created budget line of `line_tag`. Returns the
+    number of source rows touched. Called by the purge-tag endpoint
+    after the user explicitly asks for it; not called from delete_line
+    (delete_line refuses instead and tells the user to invoke this).
+
+    Tag → flag mapping is owned by _auto_tag_source_spec(). Anything
+    unrecognized is a safe no-op (returns 0).
+    """
+    import json as _json
+    from budget_calc import get_role_group as _get_rg
+    flag_key, role_scope, pd_col = _auto_tag_source_spec(line_tag)
+    touched = 0
+
+    if flag_key:
+        labor_lines = {ln.id: ln for ln in
+                       BudgetLine.query.filter_by(budget_id=budget_id, is_labor=True).all()}
+        rg_by_line = {lid: _get_rg(ln.account_code) for lid, ln in labor_lines.items()}
+        for sd in ScheduleDay.query.filter_by(budget_id=budget_id).all():
+            if not sd.cell_flags:
+                continue
+            try:
+                flags = _json.loads(sd.cell_flags)
+            except (ValueError, TypeError):
+                continue
+            if not (flags.get(flag_key) or
+                    (flag_key == 'per_diem_full' and flags.get('per_diem'))):
+                continue
+            if role_scope and rg_by_line.get(sd.budget_line_id) != role_scope:
+                continue
             flags.pop(flag_key, None)
-            # Also strip the legacy 'per_diem' alias if this is the
-            # canonical per_diem_full key so an old budget doesn't
-            # re-resurrect it via the legacy-alias path in sync.
             if flag_key == 'per_diem_full':
                 flags.pop('per_diem', None)
             sd.cell_flags = _json.dumps(flags) if flags else None
-            _wrote += 1
-        if _wrote:
-            logging.info(f"[delete_line] stripped {flag_key} from {_wrote} "
+            touched += 1
+        if touched:
+            logging.info(f"[purge-tag] stripped {flag_key} from {touched} "
                          f"cell(s) on budget {budget_id} (tag={line_tag})")
 
-    # ── ProductionDay meal-flag side ────────────────────────────────
-    from models import ProductionDay as _PD
-    pd_col_map = {
-        'craft_services':          'craft_services',
-        'meal_courtesy_breakfast': 'courtesy_breakfast',
-        'meal_first':              'first_meal',
-        'meal_second':             'second_meal',
-    }
-    pd_col = pd_col_map.get(line_tag)
     if pd_col:
-        _wrote = 0
+        from models import ProductionDay as _PD
+        _pd_touched = 0
         for pd_row in _PD.query.filter_by(budget_id=budget_id).all():
             if getattr(pd_row, pd_col, False):
                 setattr(pd_row, pd_col, False)
-                _wrote += 1
-        if _wrote:
-            logging.info(f"[delete_line] cleared {pd_col} on {_wrote} "
+                _pd_touched += 1
+        if _pd_touched:
+            logging.info(f"[purge-tag] cleared {pd_col} on {_pd_touched} "
                          f"ProductionDay(s) on budget {budget_id} (tag={line_tag})")
+        touched += _pd_touched
+    return touched
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/schedule/purge-tag", methods=["POST"])
+@login_required
+def schedule_purge_tag(pid, bid):
+    """Purge every schedule entry that would resurrect a given auto-
+    line tag (per_diem_*, working_meal, hotel_<rg>, flight_<rg>,
+    mileage_<rg>, craft_services, meal_*). Called by the UI after
+    delete_line returns 400 with an `auto_line_sources` count, so the
+    user can clear the driving flags + delete the line in one
+    deliberate step.
+
+    Body: { "line_tag": "<tag>" }
+    Response: { ok: true, touched: <int> }
+    """
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    tag = (data.get("line_tag") or "").strip()
+    if not tag or tag not in SCHEDULE_LINE_DEFS:
+        return jsonify({"error": "Unknown line_tag"}), 400
+    try:
+        touched = _depopulate_auto_line_sources(bid, tag)
+        # Also re-sync so the now-zero-count auto-line drops to qty=0 /
+        # gets removed entirely in the next render.
+        sync_schedule_driven_lines(bid, db.session)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logging.exception(f"[purge-tag] failed for {tag}: {e}")
+        return jsonify({"error": str(e)}), 500
+    try:
+        _log_activity(action='update', entity_type='schedule',
+                      entity_id=bid, entity_label=f'Purge {tag}',
+                      budget_id=bid, project_id=pid,
+                      before={'line_tag': tag, 'sources_remaining': '?'},
+                      after={'line_tag': tag, 'sources_remaining': 0,
+                             'touched': touched},
+                      note=f'Purged {touched} schedule entr'
+                           f'{"y" if touched == 1 else "ies"} '
+                           f'driving auto-line "{tag}"')
+    except Exception: pass
+    return jsonify({"ok": True, "touched": touched, "line_tag": tag})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/schedule/purge-all", methods=["POST"])
+@login_required
+def schedule_purge_all(pid, bid):
+    """Nuke every cell_flag + ProductionDay meal/CS toggle on this
+    budget. Per-day type (work / travel / off) is left intact — only
+    the auto-line drivers are cleared. Used as a hard reset when the
+    user wants to rebuild meals / per-diem / travel coverage from
+    scratch. 2026-05-19 user request: "find a way to purge the deletes
+    on the schedule to make sure that it actually doesn't exist".
+    """
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    import json as _json
+    cleared_flags = 0
+    cleared_pd    = 0
+    try:
+        for sd in ScheduleDay.query.filter_by(budget_id=bid).all():
+            if not sd.cell_flags:
+                continue
+            try:
+                _json.loads(sd.cell_flags)
+            except Exception:
+                sd.cell_flags = None
+                cleared_flags += 1
+                continue
+            sd.cell_flags = None
+            cleared_flags += 1
+        from models import ProductionDay as _PD
+        for pd_row in _PD.query.filter_by(budget_id=bid).all():
+            _any = False
+            for col in ('craft_services', 'courtesy_breakfast',
+                        'first_meal', 'second_meal'):
+                if getattr(pd_row, col, False):
+                    setattr(pd_row, col, False)
+                    _any = True
+            if _any:
+                cleared_pd += 1
+        sync_schedule_driven_lines(bid, db.session)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logging.exception(f"[purge-all] failed: {e}")
+        return jsonify({"error": str(e)}), 500
+    try:
+        _log_activity(action='update', entity_type='schedule',
+                      entity_id=bid, entity_label='Schedule flag purge',
+                      budget_id=bid, project_id=pid,
+                      before=None,
+                      after={'cleared_cell_flags': cleared_flags,
+                             'cleared_prod_day_flags': cleared_pd},
+                      note=f'Cleared all schedule flags '
+                           f'({cleared_flags} cells, {cleared_pd} prod days)')
+    except Exception: pass
+    return jsonify({"ok": True,
+                    "cleared_cell_flags": cleared_flags,
+                    "cleared_prod_day_flags": cleared_pd})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>", methods=["DELETE"])
@@ -5367,26 +5500,34 @@ def delete_line(pid, bid, lid):
             .delete(synchronize_session=False)
     CrewAssignment.query.filter_by(budget_line_id=lid)\
         .delete(synchronize_session=False)
+    # ── Auto-line resurrection check (2026-05-19 v2) ───────────────────
+    # The sync engine treats schedule flags / ProductionDay toggles as
+    # the source of truth for these auto-lines — that's actually the
+    # right behavior (a meal flag without the meal line on the budget
+    # would be a silent data hole). So instead of silently stripping
+    # flags on delete (the v1 fix), refuse the delete with a clear
+    # explanation. User feedback 2026-05-19: "I like that the sync
+    # automatically detects things in the schedule … perhaps you just
+    # kick an error instead of just replenishing it."
+    #
+    # The user clears the driving flags themselves (via Purge below)
+    # and then the delete succeeds — no silent ghosts either way.
+    if _line_tag and _line_tag in SCHEDULE_LINE_DEFS:
+        _src_count = _count_auto_line_sources(bid, _line_tag)
+        if _src_count > 0:
+            db.session.rollback()
+            return jsonify({
+                "error": (f"Can't delete this line — the schedule still has "
+                          f"{_src_count} entr{'y' if _src_count == 1 else 'ies'} "
+                          f"flagged that would recreate it on the next sync. "
+                          f"Click 'Purge driving entries' to clear them first."),
+                "auto_line_sources": _src_count,
+                "line_tag": _line_tag,
+                "line_id": lid,
+                "purge_url": f"/projects/{pid}/budget/{bid}/schedule/purge-tag",
+            }), 400
     db.session.delete(ln)
     db.session.commit()
-    # ── Auto-line de-resurrection (2026-05-19) ─────────────────────────
-    # If we just deleted a schedule-driven auto-line (line_tag in
-    # SCHEDULE_LINE_DEFS), the corresponding cell_flags / ProductionDay
-    # flags elsewhere in the budget will cause sync_schedule_driven_lines
-    # to recreate the line on the very next page render — and the user
-    # would see the line they just deleted come right back. User report
-    # 2026-05-19: "I click delete, click OK, and then the line just never
-    # leaves." Strip the driving flag from every source row so the
-    # subsequent sync sees count=0 and the line stays gone.
-    if _line_tag:
-        try:
-            _depopulate_auto_line_sources(bid, _line_tag)
-            db.session.commit()
-        except Exception as _ce:
-            logging.warning(f"[delete_line] auto-line source cleanup failed for "
-                            f"tag={_line_tag}: {_ce}")
-            try: db.session.rollback()
-            except Exception: pass
     # Re-sync schedule-driven totals so meal/travel/per-diem lines drop
     # the contribution from this line's now-gone schedule cells.
     try:

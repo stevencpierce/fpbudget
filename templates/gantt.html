@@ -175,6 +175,18 @@
     <button class="payroll-info-btn" id="payroll-info-btn"
             onclick="togglePayrollInfo(event)" title="How this payroll profile calculates OT/DT">?</button>
   </div>
+
+  {# Hard-reset escape hatch: wipes every cell_flag + ProductionDay
+     meal toggle on this budget. Per-day type (work/travel/off) stays
+     intact. Used when auto-driven budget lines won't go away — clear
+     all flags, then the per-diem / hotel / flight / mileage / meal
+     lines drop to qty=0 and can be deleted cleanly. Per user
+     2026-05-19. #}
+  <button type="button" class="btn btn-xs btn-ghost" onclick="purgeAllScheduleFlags()"
+          title="Clear every per-diem / hotel / flight / mileage / meal / craft-services flag on this schedule. Day types (work / travel / off) stay intact."
+          style="margin-left:auto;color:#ef4444;border-color:rgba(239,68,68,.4)">
+    🧹 Purge schedule flags
+  </button>
 </div>
 
 <!-- Payroll info popup -->
@@ -662,6 +674,39 @@ const _GANTT_PID = {{ project.id }};
 const _GANTT_BID = {{ budget.id }};
 // Add bottom padding so gantt content clears the float bar
 document.body.style.paddingBottom = '56px';
+
+// Hard-reset every cell_flag + ProductionDay meal toggle on this
+// budget. Used as an escape hatch when auto-derived per-diem / hotel /
+// flight / mileage / meal lines won't go away on the budget tab. The
+// per-line delete on the Budget tab already does the same targeted
+// purge for one tag; this button nukes everything in one shot. Per
+// user 2026-05-19. Day types (work / travel / off) are NOT touched.
+window.purgeAllScheduleFlags = async function () {
+  if (!confirm(
+    'Clear every per-diem / hotel / flight / mileage / meal / craft-services ' +
+    'flag on this schedule?\n\n' +
+    'This nukes the flag toggles but leaves day types (Work / Travel / Off) ' +
+    'intact. After purging, the auto-driven budget lines (Per Diem, Flights, ' +
+    'Travel, Hotel, Mileage, Meals) drop to qty=0 and can be deleted.\n\n' +
+    'You\'ll need to re-set the flags by hand if you want any of those lines back.'
+  )) return;
+  try {
+    const r = await fetch(`/projects/${_GANTT_PID}/budget/${_GANTT_BID}/schedule/purge-all`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      alert(j.error || `Purge failed (HTTP ${r.status}).`);
+      return;
+    }
+    alert(`Cleared ${j.cleared_cell_flags} cell flag(s) and `
+        + `${j.cleared_prod_day_flags} production-day toggle(s). `
+        + `Reloading…`);
+    window.location.reload();
+  } catch (e) {
+    alert('Purge failed: ' + e.message);
+  }
+};
 </script>
 <script>
 // ── Version management (gantt) ───────────────────────────────────────────────

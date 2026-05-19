@@ -10191,6 +10191,14 @@ async function _qtyReduceConfirm() {
 }
 
 // ── Delete line ────────────────────────────────────────────────────────────
+// Two-step flow when the server reports an auto-line is still being
+// driven by schedule flags (per_diem_*, hotel_<rg>, flight_<rg>,
+// mileage_<rg>, working_meal, craft_services, meal_*). Server returns
+// 400 with auto_line_sources count + purge_url. We re-confirm with the
+// user, hit the purge endpoint to clear the driving flags, then retry
+// the delete. Per user feedback 2026-05-19: instead of silently
+// stripping flags, kick a visible error and let the user purge
+// deliberately.
 document.addEventListener('click', async e => {
   const btn = e.target.closest('.del-line-btn');
   if (!btn) return;
@@ -10198,26 +10206,62 @@ document.addEventListener('click', async e => {
   const id = parseInt(btn.dataset.id);
   const res = await fetch(`/projects/${PID}/budget/${BID}/line/${id}`, {method:'DELETE'});
   if (res.ok) {
-    const row = document.querySelector(`.line-row[data-id="${id}"]`);
-    const table = row ? row.closest('table') : null;
-    if (row) row.remove();
-    // Also drop any child kit-fee rows attached to this parent
-    document.querySelectorAll(`.kit-fee-row[data-parent-id="${id}"]`).forEach(r => r.remove());
-    if (table) refreshSectionTotals(table);
-    updateFloatBar();
-    // Record the deletion locally so the live-patch poller doesn't see
-    // this as a remote "removed" line and force a full reloadWithTab()
-    // (which was scrolling the view back to the top).
-    try {
-      if (Array.isArray(_knownLineIds)) {
-        const idx = _knownLineIds.indexOf(id);
-        if (idx !== -1) _knownLineIds.splice(idx, 1);
-      }
-      _myEditedLines.add(id);
-      setTimeout(() => _myEditedLines.delete(id), 15000);
-    } catch(_) {}
+    _afterLineDelete(id);
+    return;
   }
+  // Auto-line resurrection guard tripped — offer to purge + retry.
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 400 && data.auto_line_sources && data.line_tag) {
+    const n = data.auto_line_sources;
+    const prompt =
+      (data.error || '') + '\n\n' +
+      `Click OK to clear those ${n} schedule entr${n === 1 ? 'y' : 'ies'} ` +
+      `and delete the line. Click Cancel to keep the line.`;
+    if (!confirm(prompt)) return;
+    const purgeRes = await fetch(`/projects/${PID}/budget/${BID}/schedule/purge-tag`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ line_tag: data.line_tag }),
+    });
+    if (!purgeRes.ok) {
+      const pd = await purgeRes.json().catch(() => ({}));
+      alert(pd.error || 'Could not purge the driving schedule entries.');
+      return;
+    }
+    // Retry the delete now that the sources are gone.
+    const res2 = await fetch(`/projects/${PID}/budget/${BID}/line/${id}`, {method:'DELETE'});
+    if (res2.ok) {
+      _afterLineDelete(id);
+    } else {
+      const d2 = await res2.json().catch(() => ({}));
+      alert(d2.error || 'Delete failed after purge.');
+    }
+    return;
+  }
+  // Generic error path.
+  alert(data.error || `Delete failed (HTTP ${res.status}).`);
 });
+
+function _afterLineDelete(id) {
+  const row = document.querySelector(`.line-row[data-id="${id}"]`);
+  const table = row ? row.closest('table') : null;
+  if (row) row.remove();
+  // Also drop any child kit-fee rows attached to this parent
+  document.querySelectorAll(`.kit-fee-row[data-parent-id="${id}"]`).forEach(r => r.remove());
+  if (table) refreshSectionTotals(table);
+  updateFloatBar();
+  // Record the deletion locally so the live-patch poller doesn't see
+  // this as a remote "removed" line and force a full reloadWithTab()
+  // (which was scrolling the view back to the top).
+  try {
+    if (Array.isArray(_knownLineIds)) {
+      const idx = _knownLineIds.indexOf(id);
+      if (idx !== -1) _knownLineIds.splice(idx, 1);
+    }
+    _myEditedLines.add(id);
+    setTimeout(() => _myEditedLines.delete(id), 15000);
+  } catch(_) {}
+}
 
 // ── Add Line Modal ─────────────────────────────────────────────────────────
 let _modalSectionCode = null;
