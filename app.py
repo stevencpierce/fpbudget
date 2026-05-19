@@ -5486,6 +5486,27 @@ def delete_line(pid, bid, lid):
     _act_before = _budget_line_snapshot(ln)
     _act_label  = ln.description or ln.account_name
     _line_tag   = getattr(ln, 'line_tag', None)
+
+    # ── Auto-line resurrection check FIRST (before any cascade) ────────
+    # If the line is schedule-driven AND flags are still set, refuse the
+    # delete BEFORE we destroy any ScheduleDay/CrewAssignment children.
+    # Without this guard, the previous version cascaded everything, then
+    # rolled back — losing the deletes we'd already issued. User
+    # feedback 2026-05-19: keep sync as source of truth; kick error.
+    if _line_tag and _line_tag in SCHEDULE_LINE_DEFS:
+        _src_count = _count_auto_line_sources(bid, _line_tag)
+        if _src_count > 0:
+            return jsonify({
+                "error": (f"Can't delete this line — the schedule still has "
+                          f"{_src_count} entr{'y' if _src_count == 1 else 'ies'} "
+                          f"flagged that would recreate it on the next sync. "
+                          f"Click 'Purge driving entries' to clear them first."),
+                "auto_line_sources": _src_count,
+                "line_tag": _line_tag,
+                "line_id": lid,
+                "purge_url": f"/projects/{pid}/budget/{bid}/schedule/purge-tag",
+            }), 400
+
     # Cascade-delete every artifact tied to this line so nothing orphans.
     # Per user 2026-04-28: when a line goes, its schedule cells, crew
     # assignments, and travel details should disappear too — the budget
@@ -5500,34 +5521,71 @@ def delete_line(pid, bid, lid):
             .delete(synchronize_session=False)
     CrewAssignment.query.filter_by(budget_line_id=lid)\
         .delete(synchronize_session=False)
-    # ── Auto-line resurrection check (2026-05-19 v2) ───────────────────
-    # The sync engine treats schedule flags / ProductionDay toggles as
-    # the source of truth for these auto-lines — that's actually the
-    # right behavior (a meal flag without the meal line on the budget
-    # would be a silent data hole). So instead of silently stripping
-    # flags on delete (the v1 fix), refuse the delete with a clear
-    # explanation. User feedback 2026-05-19: "I like that the sync
-    # automatically detects things in the schedule … perhaps you just
-    # kick an error instead of just replenishing it."
+
+    # ── Cross-row FK nullification (2026-05-19) ────────────────────────
+    # Postgres FK constraints don't ON DELETE SET NULL on these — they
+    # raise IntegrityError if anything still points at us. Clean it up:
     #
-    # The user clears the driving flags themselves (via Purge below)
-    # and then the delete succeeds — no silent ghosts either way.
-    if _line_tag and _line_tag in SCHEDULE_LINE_DEFS:
-        _src_count = _count_auto_line_sources(bid, _line_tag)
-        if _src_count > 0:
-            db.session.rollback()
-            return jsonify({
-                "error": (f"Can't delete this line — the schedule still has "
-                          f"{_src_count} entr{'y' if _src_count == 1 else 'ies'} "
-                          f"flagged that would recreate it on the next sync. "
-                          f"Click 'Purge driving entries' to clear them first."),
-                "auto_line_sources": _src_count,
-                "line_tag": _line_tag,
-                "line_id": lid,
-                "purge_url": f"/projects/{pid}/budget/{bid}/schedule/purge-tag",
-            }), 400
+    #  1. BudgetLine.source_line_id — Actual budget lines back-reference
+    #     their Working source. Null the link and flip orphan_from_working
+    #     so the Actual UI shows "(orphan)" instead of silently losing
+    #     the connection. The Actual line itself stays (it may have
+    #     linked transactions whose dollars we don't want to drop).
+    #  2. BudgetLine.parent_line_id — child lines (kit fees, splits)
+    #     get re-parented to NULL → they become top-level rows in the
+    #     same section. User can delete them individually if desired.
+    #  3. Transaction.budget_line_id + suggested_budget_line_id —
+    #     transactions stay (the spend happened) but lose the specific
+    #     line link. Drop to section-only coding via account_code (which
+    #     they already carry as a snapshot of the line's coding).
+    #  4. Location.budget_line_id — catering vendors linked to the line.
+    #     Null it; user can re-link.
+    try:
+        # 1. source_line_id back-references → SET NULL + mark orphan
+        from sqlalchemy import update as _upd
+        db.session.execute(
+            _upd(BudgetLine)
+            .where(BudgetLine.source_line_id == lid)
+            .values(source_line_id=None, orphan_from_working=True)
+        )
+        # 2. parent_line_id back-references → SET NULL
+        db.session.execute(
+            _upd(BudgetLine)
+            .where(BudgetLine.parent_line_id == lid)
+            .values(parent_line_id=None)
+        )
+        # 3. Transaction back-references — keep the txns, drop the link
+        Transaction.query.filter_by(budget_line_id=lid)\
+            .update({Transaction.budget_line_id: None,
+                     Transaction.match_status: 'unmatched'},
+                    synchronize_session=False)
+        Transaction.query.filter_by(suggested_budget_line_id=lid)\
+            .update({Transaction.suggested_budget_line_id: None},
+                    synchronize_session=False)
+        # 4. Location.budget_line_id back-references
+        try:
+            from models import Location as _Loc
+            _Loc.query.filter_by(budget_line_id=lid)\
+                .update({_Loc.budget_line_id: None}, synchronize_session=False)
+        except Exception:
+            # Location.budget_line_id may not exist on every install
+            pass
+    except Exception as _fe:
+        db.session.rollback()
+        logging.exception(f"[delete_line] FK cleanup failed for line {lid}: {_fe}")
+        return jsonify({
+            "error": f"Could not clear references to this line before delete: {_fe}",
+        }), 500
+
     db.session.delete(ln)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception as _de:
+        db.session.rollback()
+        logging.exception(f"[delete_line] commit failed for line {lid}: {_de}")
+        return jsonify({
+            "error": f"Delete failed: {_de}",
+        }), 500
     # Re-sync schedule-driven totals so meal/travel/per-diem lines drop
     # the contribution from this line's now-gone schedule cells.
     try:
