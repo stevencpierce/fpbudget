@@ -5250,6 +5250,101 @@ def init_working_budget(pid, bid):
     return jsonify({"ok": True, "initialized_at": budget.working_initialized_at.isoformat()})
 
 
+def _depopulate_auto_line_sources(budget_id, line_tag):
+    """Strip the cell_flags / ProductionDay flag that drives an auto-
+    created budget line, so sync_schedule_driven_lines can't resurrect
+    the line on next render.
+
+    Called when delete_line removes a row whose line_tag is in
+    SCHEDULE_LINE_DEFS. Without this, deleting (say) "Per Diem —
+    Breakfast" from the Budget tab just hides it for a few seconds —
+    the next page load runs the sync, sees per_diem_breakfast=True on
+    a labor row's cell_flags, and recreates the line. User report
+    2026-05-19: "I click delete, click OK, and the line just never
+    leaves."
+
+    Tag → flag mapping:
+      • per_diem_full / per_diem_breakfast / per_diem_lunch /
+        per_diem_dinner / working_meal  →  cell_flags[key], all lines
+      • hotel_<rg> / flight_<rg> / mileage_<rg>  →  cell_flags[base],
+        only on lines whose role-group matches the suffix
+      • meal_courtesy_breakfast / meal_first / meal_second  →
+        ProductionDay.courtesy_breakfast / first_meal / second_meal
+      • craft_services  →  ProductionDay.craft_services
+
+    Anything not recognized is a no-op (safe default).
+    """
+    import json as _json
+    from budget_calc import get_role_group as _get_rg
+
+    # ── ScheduleDay cell_flags side ─────────────────────────────────
+    flag_key = None       # JSON key in cell_flags to strip
+    role_scope = None     # 'talent' | 'atl' | 'crew' | None for all-lines
+
+    if line_tag in ('per_diem_full', 'per_diem_breakfast',
+                    'per_diem_lunch', 'per_diem_dinner', 'working_meal'):
+        flag_key = line_tag
+    elif line_tag.startswith('hotel_'):
+        flag_key   = 'hotel'
+        role_scope = line_tag.split('_', 1)[1]
+    elif line_tag.startswith('flight_'):
+        flag_key   = 'flight'
+        role_scope = line_tag.split('_', 1)[1]
+    elif line_tag.startswith('mileage_'):
+        flag_key   = 'mileage'
+        role_scope = line_tag.split('_', 1)[1]
+
+    if flag_key:
+        # Resolve role-group per labor line once so we can filter.
+        labor_lines = {ln.id: ln for ln in
+                       BudgetLine.query.filter_by(budget_id=budget_id, is_labor=True).all()}
+        rg_by_line = {lid: _get_rg(ln.account_code) for lid, ln in labor_lines.items()}
+        sds = ScheduleDay.query.filter_by(budget_id=budget_id).all()
+        _wrote = 0
+        for sd in sds:
+            if not sd.cell_flags:
+                continue
+            try:
+                flags = _json.loads(sd.cell_flags)
+            except (ValueError, TypeError):
+                continue
+            if not flags.get(flag_key):
+                continue
+            if role_scope and rg_by_line.get(sd.budget_line_id) != role_scope:
+                continue
+            # Strip the flag — keep the rest of the JSON.
+            flags.pop(flag_key, None)
+            # Also strip the legacy 'per_diem' alias if this is the
+            # canonical per_diem_full key so an old budget doesn't
+            # re-resurrect it via the legacy-alias path in sync.
+            if flag_key == 'per_diem_full':
+                flags.pop('per_diem', None)
+            sd.cell_flags = _json.dumps(flags) if flags else None
+            _wrote += 1
+        if _wrote:
+            logging.info(f"[delete_line] stripped {flag_key} from {_wrote} "
+                         f"cell(s) on budget {budget_id} (tag={line_tag})")
+
+    # ── ProductionDay meal-flag side ────────────────────────────────
+    from models import ProductionDay as _PD
+    pd_col_map = {
+        'craft_services':          'craft_services',
+        'meal_courtesy_breakfast': 'courtesy_breakfast',
+        'meal_first':              'first_meal',
+        'meal_second':             'second_meal',
+    }
+    pd_col = pd_col_map.get(line_tag)
+    if pd_col:
+        _wrote = 0
+        for pd_row in _PD.query.filter_by(budget_id=budget_id).all():
+            if getattr(pd_row, pd_col, False):
+                setattr(pd_row, pd_col, False)
+                _wrote += 1
+        if _wrote:
+            logging.info(f"[delete_line] cleared {pd_col} on {_wrote} "
+                         f"ProductionDay(s) on budget {budget_id} (tag={line_tag})")
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>", methods=["DELETE"])
 @login_required
 def delete_line(pid, bid, lid):
@@ -5257,6 +5352,7 @@ def delete_line(pid, bid, lid):
     # Snapshot for activity log + undo before any cascade.
     _act_before = _budget_line_snapshot(ln)
     _act_label  = ln.description or ln.account_name
+    _line_tag   = getattr(ln, 'line_tag', None)
     # Cascade-delete every artifact tied to this line so nothing orphans.
     # Per user 2026-04-28: when a line goes, its schedule cells, crew
     # assignments, and travel details should disappear too — the budget
@@ -5273,6 +5369,24 @@ def delete_line(pid, bid, lid):
         .delete(synchronize_session=False)
     db.session.delete(ln)
     db.session.commit()
+    # ── Auto-line de-resurrection (2026-05-19) ─────────────────────────
+    # If we just deleted a schedule-driven auto-line (line_tag in
+    # SCHEDULE_LINE_DEFS), the corresponding cell_flags / ProductionDay
+    # flags elsewhere in the budget will cause sync_schedule_driven_lines
+    # to recreate the line on the very next page render — and the user
+    # would see the line they just deleted come right back. User report
+    # 2026-05-19: "I click delete, click OK, and then the line just never
+    # leaves." Strip the driving flag from every source row so the
+    # subsequent sync sees count=0 and the line stays gone.
+    if _line_tag:
+        try:
+            _depopulate_auto_line_sources(bid, _line_tag)
+            db.session.commit()
+        except Exception as _ce:
+            logging.warning(f"[delete_line] auto-line source cleanup failed for "
+                            f"tag={_line_tag}: {_ce}")
+            try: db.session.rollback()
+            except Exception: pass
     # Re-sync schedule-driven totals so meal/travel/per-diem lines drop
     # the contribution from this line's now-gone schedule cells.
     try:
