@@ -7217,15 +7217,28 @@ def export_pdf(pid, bid):
     est_top_sheet = None
     est_section_lookup = {}
     try:
-        # Find the project's current Estimated peer budget.
-        from sqlalchemy import or_ as _or_eb
+        # Find the project's current Estimated peer budget. Two-step
+        # lookup that mirrors the in-app view (app.py:3791): prefer
+        # version_status='current'; fall back to any non-archived row
+        # so projects whose Estimated peer was superseded but not
+        # archived still resolve correctly.
+        #
+        # Critical: don't filter on is_actual — Estimated budgets in
+        # this codebase either have is_actual=False or NULL, and a
+        # naive `is_actual == False` SQL filter excludes NULL rows
+        # entirely. Was the silent reason the previous fix (29d99c8)
+        # didn't take for this user. 2026-05-19 v2.
         _est_peer = (Budget.query
                      .filter(Budget.project_id == pid,
                              Budget.budget_mode == 'estimated',
-                             Budget.is_actual == False,
-                             _or_eb(Budget.version_status == 'current',
-                                    Budget.version_status.is_(None)))
+                             Budget.version_status == 'current')
                      .order_by(Budget.id.desc()).first())
+        if not _est_peer:
+            _est_peer = (Budget.query
+                         .filter(Budget.project_id == pid,
+                                 Budget.budget_mode == 'estimated',
+                                 Budget.version_status != 'archived')
+                         .order_by(Budget.id.desc()).first())
         if _est_peer and _est_peer.id != budget.id:
             _eb_lines = (BudgetLine.query
                          .filter_by(budget_id=_est_peer.id)
@@ -8617,31 +8630,37 @@ def clear_gantt_day(pid, bid):
             d = datetime.strptime(date_str, "%Y-%m-%d").date()
             # Match the active schedule_mode OR legacy NULL rows (pre-
             # schedule_mode column data) so cells that were rendered on
-            # the gantt can always be deleted. Without the NULL fallback,
-            # legacy rows showed up visually but DELETE silently no-op'd
-            # (filter didn't match → existing=None → return ok with no
-            # work done → user sees the flags persist after reload).
-            # 2026-05-15 user bug report.
+            # the gantt can always be deleted. The gantt view dedupes
+            # (working-mode preferred over NULL when both exist for the
+            # same cell), so visually it's one cell but the DB can hold
+            # both rows — we have to nuke ALL matching rows or
+            # sync_schedule_driven_lines re-counts the leftover NULL row
+            # and the flight / per-diem / mileage budget lines keep their
+            # stale qty. User report 2026-05-19: "the same bug we fixed
+            # earlier where when I delete from the schedule on working,
+            # it does not update the travel days or flight days".
             from sqlalchemy import or_ as _or_sd
-            existing = (ScheduleDay.query
+            matching = (ScheduleDay.query
                         .filter(ScheduleDay.budget_id == bid,
                                 ScheduleDay.budget_line_id == line_id,
                                 ScheduleDay.crew_instance == crew_instance,
                                 ScheduleDay.date == d,
                                 _or_sd(ScheduleDay.schedule_mode == sched_mode,
                                        ScheduleDay.schedule_mode.is_(None)))
-                        .first())
-            if existing:
-                _prev_type = existing.day_type
+                        .all())
+            if matching:
+                _prev_type = matching[0].day_type
+                _ids = [m.id for m in matching]
                 # Travel details FK ScheduleDay — drop them first so the
                 # parent delete doesn't trip the FK constraint.
                 try:
                     from models import TravelDetail as _TD
-                    db.session.query(_TD).filter(_TD.schedule_day_id == existing.id)\
+                    db.session.query(_TD).filter(_TD.schedule_day_id.in_(_ids))\
                         .delete(synchronize_session=False)
                 except Exception:
                     pass
-                db.session.delete(existing)
+                for _sd_row in matching:
+                    db.session.delete(_sd_row)
                 db.session.commit()
                 try:
                     _ln = BudgetLine.query.get(line_id)
@@ -8649,9 +8668,11 @@ def clear_gantt_day(pid, bid):
                     _log_activity(action='delete', entity_type='schedule_day',
                                   entity_label=f'{_label} — {date_str}',
                                   budget_id=bid, project_id=pid,
-                                  before={'day_type': _prev_type, 'date': date_str},
+                                  before={'day_type': _prev_type, 'date': date_str,
+                                          'rows_deleted': len(matching)},
                                   after=None,
-                                  note=f'Cleared {_label} {date_str}')
+                                  note=f'Cleared {_label} {date_str}'
+                                       + (f' ({len(matching)} rows)' if len(matching) > 1 else ''))
                 except Exception: pass
             # ── Refresh derived state — same pattern as the POST handler.
             # Without this, meal / per-diem / hotel / flight budget lines
