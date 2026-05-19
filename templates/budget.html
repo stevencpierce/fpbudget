@@ -139,90 +139,136 @@
       </div>
     </div>
 
-    <!-- Export Options modal — collects per-export overrides without
-         touching the saved budget settings. Submits to the right
-         download URL with query params: ?suppress_zeros=1&fee_dispersed=1 -->
-    <div id="export-options-overlay" class="modal-overlay hidden" onclick="closeExportOptions(event)"
-         style="position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;display:none;align-items:center;justify-content:center">
-      <div class="modal" onclick="event.stopPropagation()"
-           style="max-width:520px;width:92vw;background:var(--bg-card,#1a1f2e);color:var(--text,#e6e9ef);
-                  border:1px solid var(--border,#2a3146);border-radius:10px;padding:20px 22px;
-                  box-shadow:0 12px 40px rgba(0,0,0,.5)">
-        <h3 style="margin:0 0 .25rem;color:var(--text);font-size:1.1rem">Export Options</h3>
-        <p style="margin:0 0 1rem;font-size:.85rem;color:var(--text-muted)" id="export-opts-target">Format: —</p>
-        <div class="field" style="margin-bottom:1.2rem">
-          <label style="display:flex;align-items:flex-start;gap:.6rem;font-weight:400;cursor:pointer;color:var(--text)">
-            <input type="checkbox" id="export-opt-suppress-zeros" style="margin-top:3px;flex-shrink:0">
-            <span>
-              <strong style="font-weight:600;color:var(--text)">Suppress zero lines</strong>
-              <span style="display:block;margin-top:2px;font-size:.8rem;color:var(--text-muted)">Hide rows whose total is $0 from the export. Section totals still reflect the full data.</span>
-            </span>
-          </label>
-        </div>
-        {# PDF-only: column visibility. Lets the user generate, e.g., a
-           client-friendly export with Working only (no Estimated/Actual
-           clutter), or a variance review with Working vs Actual. The
-           grand-total Variance row now shows a real number based on
-           the selected basis. Per user 2026-05-15. #}
-        <div class="field" id="export-opt-cols-wrap" style="margin-bottom:1.2rem;display:none">
-          <label style="display:block;font-weight:600;margin-bottom:.5rem;color:var(--text)">Columns to include</label>
-          <div style="display:flex;flex-direction:column;gap:.35rem;font-weight:400;font-size:.88rem">
-            <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;color:var(--text)">
-              <input type="checkbox" id="export-col-est" checked>
-              <span>Estimated</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;color:var(--text)">
-              <input type="checkbox" id="export-col-work" checked>
-              <span>Working</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;color:var(--text)">
-              <input type="checkbox" id="export-col-act">
-              <span>Actual <span style="color:var(--text-muted);font-size:.78rem">(sum of transactions)</span></span>
-            </label>
-            <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;color:var(--text)">
-              <input type="checkbox" id="export-col-var" checked>
-              <span>Variance</span>
-            </label>
+    <!-- Export Options modal — centered, two-column layout. Compact
+         chip-style toggles instead of stacked checkboxes so the user
+         can scan it as a panel rather than a sidebar form. Per user
+         feedback 2026-05-19: "the export interface is clunky to look
+         at as a side bar". -->
+    <div id="export-options-overlay" class="export-opts-overlay hidden" onclick="closeExportOptions(event)">
+      <div class="export-opts-card" onclick="event.stopPropagation()">
+        <div class="export-opts-head">
+          <div>
+            <h3 class="export-opts-title">Export Options</h3>
+            <p class="export-opts-sub" id="export-opts-target">Format: —</p>
           </div>
-          <div id="export-var-basis-wrap" style="margin-top:.55rem;padding-left:1.6rem;font-size:.82rem;display:none">
-            <label style="display:block;color:var(--text-muted);margin-bottom:.3rem">Variance basis</label>
-            <select id="export-var-basis"
-                    style="font-size:.85rem;padding:4px 6px;border-radius:4px;
-                           background:var(--bg-input);border:1px solid var(--border);color:var(--text)">
-              <option value="est_v_work">Estimated vs Working</option>
-              <option value="work_v_act">Working vs Actual</option>
-              <option value="est_v_act">Estimated vs Actual</option>
-            </select>
-          </div>
+          <button type="button" class="export-opts-close" onclick="closeExportOptions()" aria-label="Close">×</button>
         </div>
-        <div class="field" style="margin-bottom:1.2rem">
-          <label style="display:block;font-weight:600;margin-bottom:.5rem;color:var(--text)">Production Company Fee</label>
-          <div style="display:flex;flex-direction:column;gap:.45rem;font-weight:400">
-            <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;color:var(--text);font-size:.9rem">
-              <input type="radio" name="export-opt-fee" value="" checked>
-              <span>Use current budget setting <span style="color:var(--text-muted);font-size:.8rem" id="export-opt-fee-current"></span></span>
-            </label>
-            <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;color:var(--text);font-size:.9rem">
-              <input type="radio" name="export-opt-fee" value="0">
-              <span>Show as <strong>separate line</strong> at the bottom</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;color:var(--text);font-size:.9rem">
-              <input type="radio" name="export-opt-fee" value="1">
-              <span><strong>Disperse</strong> across section totals (no separate line)</span>
+        <div class="export-opts-grid">
+          {# Column 1 — applies to PDF only. Shown/hidden by openExportOptions(). #}
+          <div class="export-opts-col" id="export-opt-cols-wrap" style="display:none">
+            <div class="export-opts-section-label">Columns</div>
+            <div class="export-chip-row">
+              <label class="export-chip"><input type="checkbox" id="export-col-est"  checked><span>Estimated</span></label>
+              <label class="export-chip"><input type="checkbox" id="export-col-work" checked><span>Working</span></label>
+              <label class="export-chip"><input type="checkbox" id="export-col-act"><span>Actual</span></label>
+              <label class="export-chip"><input type="checkbox" id="export-col-var"  checked><span>Variance</span></label>
+            </div>
+            <div id="export-var-basis-wrap" class="export-var-basis" style="display:none">
+              <span class="export-opts-mini-label">Variance basis</span>
+              <select id="export-var-basis" class="export-opts-select">
+                <option value="est_v_work">Estimated vs Working</option>
+                <option value="work_v_act">Working vs Actual</option>
+                <option value="est_v_act">Estimated vs Actual</option>
+              </select>
+            </div>
+          </div>
+          {# Column 2 — applies to every format. #}
+          <div class="export-opts-col">
+            <div class="export-opts-section-label">Production Company Fee</div>
+            <div class="export-radio-stack">
+              <label class="export-radio"><input type="radio" name="export-opt-fee" value="" checked><span>Use current setting <em id="export-opt-fee-current"></em></span></label>
+              <label class="export-radio"><input type="radio" name="export-opt-fee" value="0"><span>Separate line at bottom</span></label>
+              <label class="export-radio"><input type="radio" name="export-opt-fee" value="1"><span>Disperse across totals</span></label>
+            </div>
+            <div class="export-opts-section-label" style="margin-top:14px">Filters</div>
+            <label class="export-chip export-chip-block">
+              <input type="checkbox" id="export-opt-suppress-zeros">
+              <span>Suppress $0 lines <em>(section totals stay accurate)</em></span>
             </label>
           </div>
         </div>
-        <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1rem;border-top:1px solid var(--border);padding-top:.9rem">
+        <div class="export-opts-foot">
           <button type="button" class="btn btn-sm" onclick="closeExportOptions()">Cancel</button>
-          <button type="button" class="btn btn-sm btn-primary" id="btn-export-go">Export</button>
+          <button type="button" class="btn btn-sm btn-primary" id="btn-export-go">Download</button>
         </div>
       </div>
     </div>
     <style>
-      /* The .hidden helper is `display:none !important` elsewhere in the
-         stylesheet — overlay needs explicit display:flex when shown so
-         the modal centers vertically. */
-      #export-options-overlay:not(.hidden) { display:flex !important; }
+      .export-opts-overlay {
+        position: fixed; inset: 0; z-index: 1000;
+        background: rgba(0,0,0,.65);
+        display: flex; align-items: center; justify-content: center;
+        padding: 24px;
+      }
+      .export-opts-overlay.hidden { display: none; }
+      .export-opts-card {
+        background: var(--bg-card, #1a1f2e); color: var(--text, #e6e9ef);
+        border: 1px solid var(--border, #2a3146); border-radius: 12px;
+        width: min(720px, 96vw);
+        max-height: calc(100vh - 48px); overflow-y: auto;
+        box-shadow: 0 18px 50px rgba(0,0,0,.55);
+      }
+      .export-opts-head {
+        display: flex; align-items: flex-start; justify-content: space-between;
+        gap: 12px; padding: 18px 22px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      .export-opts-title { margin: 0; font-size: 1.05rem; font-weight: 700; }
+      .export-opts-sub   { margin: 4px 0 0; font-size: .82rem; color: var(--text-muted); }
+      .export-opts-close {
+        background: transparent; border: none; color: var(--text-muted);
+        font-size: 22px; line-height: 1; cursor: pointer; padding: 2px 8px;
+        border-radius: 4px; transition: background .12s, color .12s;
+      }
+      .export-opts-close:hover { background: rgba(255,255,255,.08); color: var(--text); }
+      .export-opts-grid {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 22px;
+        padding: 18px 22px;
+      }
+      /* When only one column is rendered (non-PDF formats), span full width. */
+      .export-opts-grid > .export-opts-col:only-child { grid-column: 1 / -1; max-width: 380px; }
+      .export-opts-section-label {
+        font-size: .7rem; font-weight: 700; text-transform: uppercase;
+        letter-spacing: .08em; color: var(--text-muted); margin-bottom: 8px;
+      }
+      .export-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+      .export-chip {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px;
+        font-size: .82rem; cursor: pointer; user-select: none;
+        background: var(--bg-input, #11151f); transition: all .12s;
+      }
+      .export-chip input[type="checkbox"] { margin: 0; cursor: pointer; }
+      .export-chip:hover { border-color: rgba(91,138,249,.5); }
+      .export-chip:has(input:checked) {
+        background: rgba(91,138,249,.15); border-color: #5b8af9; color: #e6efff;
+      }
+      .export-chip-block { display: flex; width: 100%; }
+      .export-chip-block em { color: var(--text-muted); font-style: normal; font-size: .75rem; }
+      .export-var-basis {
+        margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--border);
+        border-radius: 6px; background: rgba(255,255,255,.02);
+        display: flex; align-items: center; gap: 10px;
+      }
+      .export-opts-mini-label { font-size: .75rem; color: var(--text-muted); }
+      .export-opts-select {
+        flex: 1; font-size: .85rem; padding: 4px 6px; border-radius: 5px;
+        background: var(--bg-input); border: 1px solid var(--border); color: var(--text);
+      }
+      .export-radio-stack { display: flex; flex-direction: column; gap: 6px; }
+      .export-radio {
+        display: flex; align-items: center; gap: 8px; cursor: pointer;
+        font-size: .85rem; padding: 4px 0;
+      }
+      .export-radio em { color: var(--text-muted); font-style: normal; }
+      .export-opts-foot {
+        display: flex; justify-content: flex-end; gap: 8px;
+        padding: 12px 22px 18px; border-top: 1px solid var(--border);
+      }
+      /* Collapse to single column on narrow screens. */
+      @media (max-width: 640px) {
+        .export-opts-grid { grid-template-columns: 1fr; }
+      }
     </style>
 
     <!-- Export Preview drawer -->
