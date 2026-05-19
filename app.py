@@ -7154,6 +7154,31 @@ def export_pdf(pid, bid):
             or round(float(r.get("actual") or 0), 2) != 0
         ]
 
+    # Column picker (2026-05-15). Defaults preserve previous behavior:
+    # working view → Est + Work + Var; estimated view → Est only.
+    # User can override via the Export Options modal — flags arrive
+    # as ?col_est=1&col_work=1&col_act=1&col_var=1&var_basis=...
+    # The variance basis controls what the Variance column subtracts:
+    #   est_v_work  → Working - Estimated  (overrun while planning)
+    #   work_v_act  → Working - Actual     (overrun in production)
+    #   est_v_act   → Estimated - Actual   (overrun vs original plan)
+    _any_col_param = any(k in request.args for k in
+                         ('col_est', 'col_work', 'col_act', 'col_var'))
+    if _any_col_param:
+        col_est  = request.args.get('col_est')  == '1'
+        col_work = request.args.get('col_work') == '1'
+        col_act  = request.args.get('col_act')  == '1'
+        col_var  = request.args.get('col_var')  == '1'
+    else:
+        # Legacy defaults — no params means no modal-invoked export.
+        col_est  = True
+        col_work = is_working_view
+        col_act  = False
+        col_var  = is_working_view
+    var_basis = request.args.get('var_basis') or 'est_v_work'
+    if var_basis not in ('est_v_work', 'work_v_act', 'est_v_act'):
+        var_basis = 'est_v_work'
+
     html_str = render_template("budget_pdf.html",
         project=project,
         budget=budget,
@@ -7168,6 +7193,8 @@ def export_pdf(pid, bid):
         pdf_line_totals=pdf_line_totals,        # rounded dispersed line totals
         pdf_section_totals=pdf_section_totals,  # rounded dispersed section sums
         suppress_zeros=suppress_zeros,
+        col_est=col_est, col_work=col_work, col_act=col_act, col_var=col_var,
+        var_basis=var_basis,
         today=date.today(),
     )
 

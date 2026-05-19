@@ -176,91 +176,123 @@
   </div>
 </div>
 
-{# ── Top Sheet ── #}
+{# ── Top Sheet ──
+   Column visibility driven by col_est / col_work / col_act / col_var
+   (URL params from the Export Options modal, with sensible defaults
+   per view in the route). The Grand Total Variance row computes a
+   real number based on var_basis instead of the hardcoded "—" it
+   used to show. Per user 2026-05-15. #}
+{% set _col_est  = col_est  | default(true) %}
+{% set _col_work = col_work | default(is_working_view) %}
+{% set _col_act  = col_act  | default(false) %}
+{% set _col_var  = col_var  | default(is_working_view) %}
+{% set _value_col_count = (1 if _col_est else 0) + (1 if _col_work else 0) + (1 if _col_act else 0) %}
+{% set _show_var = _col_var and _value_col_count >= 2 %}
+{% set _var_basis = var_basis | default('est_v_work') %}
+{% set _var_label = ({
+     'est_v_work': 'Variance (Work − Est)',
+     'work_v_act': 'Variance (Work − Act)',
+     'est_v_act':  'Variance (Est − Act)',
+   })[_var_basis] %}
+
+{# Per-row variance helper closure isn't a thing in Jinja — compute
+   inline using the row's resolved est / work / act values. The macro
+   below would be ideal but cross-template macros add overhead;
+   inline-set is clearer for one consumer. #}
 <div class="section-title">Budget Summary — Top Sheet</div>
 <table>
   <thead>
     <tr>
       <th style="width:52pt">Code</th>
       <th>Account</th>
-      <th class="num" style="width:90pt">
-        {% if is_working_view %}Estimated{% else %}Budget{% endif %}
-      </th>
-      {% if is_working_view %}
-      <th class="num" style="width:90pt">Working</th>
-      <th class="num" style="width:80pt">Variance</th>
-      {% endif %}
+      {% if _col_est  %}<th class="num" style="width:90pt">Estimated</th>{% endif %}
+      {% if _col_work %}<th class="num" style="width:90pt">Working</th>{% endif %}
+      {% if _col_act  %}<th class="num" style="width:90pt">Actual</th>{% endif %}
+      {% if _show_var %}<th class="num" style="width:80pt">{{ _var_label }}</th>{% endif %}
     </tr>
   </thead>
   <tbody>
     {% for row in top_sheet.rows %}
-    {# Top-sheet section row: in dispersed mode, use the server-rounded
-       value (matches sum of detail-page rounded line totals). Falls
-       back to raw estimated otherwise. #}
-    {% set _row_est_pdf = row.pdf_rounded_estimated if (dispersed and row.pdf_rounded_estimated is defined) else row.estimated %}
+    {% set _row_est  = row.raw_estimated if row.raw_estimated is defined else row.estimated %}
+    {% set _row_work = (row.pdf_rounded_estimated if (dispersed and row.pdf_rounded_estimated is defined) else row.estimated) %}
+    {% set _row_act  = row.actual | default(0) %}
+    {% if   _var_basis == 'est_v_work' %}{% set _row_var = _row_work - _row_est %}
+    {% elif _var_basis == 'work_v_act' %}{% set _row_var = _row_work - _row_act %}
+    {% elif _var_basis == 'est_v_act'  %}{% set _row_var = _row_est  - _row_act %}
+    {% else %}{% set _row_var = 0 %}{% endif %}
     <tr>
       <td class="code">{{ row.code }}</td>
       <td class="account">{{ row.account }}</td>
-      {% if is_working_view %}
-        <td class="num">{{ currency(row.raw_estimated if row.raw_estimated is defined else row.estimated) }}</td>
-        <td class="num">{{ currency(_row_est_pdf) }}</td>
-        {% set _var = _row_est_pdf - (row.raw_estimated if row.raw_estimated is defined else row.estimated) %}
-        <td class="num {% if _var > 0.005 %}var-over{% elif _var < -0.005 %}var-under{% endif %}">
-          {{ currency(_var) }}
-        </td>
-      {% else %}
-        <td class="num">{{ currency(_row_est_pdf) }}</td>
+      {% if _col_est  %}<td class="num">{{ currency(_row_est) }}</td>{% endif %}
+      {% if _col_work %}<td class="num">{{ currency(_row_work) }}</td>{% endif %}
+      {% if _col_act  %}<td class="num">{{ currency(_row_act) }}</td>{% endif %}
+      {% if _show_var %}
+      <td class="num {% if _row_var > 0.005 %}var-over{% elif _row_var < -0.005 %}var-under{% endif %}">
+        {{ currency(_row_var) }}
+      </td>
       {% endif %}
     </tr>
     {% endfor %}
-    {# Auto-calc lines (Workers Comp / Payroll Fee) — always shown regardless of dispersed #}
+    {# Auto-calc lines (Workers Comp / Payroll Fee). These contribute to
+       Estimated + Working equally and don't have an Actual equivalent. #}
     {% if top_sheet.workers_comp_amount > 0 %}
     <tr class="auto-line">
       <td class="code">6000*</td>
       <td>Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of labor)</td>
-      <td class="num">{{ currency(top_sheet.workers_comp_amount) }}</td>
-      {% if is_working_view %}<td class="num">{{ currency(top_sheet.workers_comp_amount) }}</td><td class="num">—</td>{% endif %}
+      {% if _col_est  %}<td class="num">{{ currency(top_sheet.workers_comp_amount) }}</td>{% endif %}
+      {% if _col_work %}<td class="num">{{ currency(top_sheet.workers_comp_amount) }}</td>{% endif %}
+      {% if _col_act  %}<td class="num">—</td>{% endif %}
+      {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
     {% endif %}
     {% if top_sheet.payroll_fee_amount > 0 %}
     <tr class="auto-line">
       <td class="code">6500*</td>
       <td>Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}%)</td>
-      <td class="num">{{ currency(top_sheet.payroll_fee_amount) }}</td>
-      {% if is_working_view %}<td class="num">{{ currency(top_sheet.payroll_fee_amount) }}</td><td class="num">—</td>{% endif %}
+      {% if _col_est  %}<td class="num">{{ currency(top_sheet.payroll_fee_amount) }}</td>{% endif %}
+      {% if _col_work %}<td class="num">{{ currency(top_sheet.payroll_fee_amount) }}</td>{% endif %}
+      {% if _col_act  %}<td class="num">—</td>{% endif %}
+      {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
     {% endif %}
-    {# Subtotal — only shown when NOT dispersed. When the fee is dispersed,
-       the section rows above already include fee baked in, so showing a
-       separate "subtotal before fee" creates a visible pre-fee vs
-       grand-total gap which defeats the whole point of dispersal. Per
-       user 2026-04-17: when dispersed, subtotal should collapse into
-       grand total (one row, no visible fee gap). #}
     {% if not dispersed %}
     <tr class="subtotal-row">
       <td class="code"></td>
       <td>SUBTOTAL</td>
-      <td class="num">{{ currency(top_sheet.subtotal_estimated) }}</td>
-      {% if is_working_view %}<td class="num">{{ currency(top_sheet.subtotal_estimated) }}</td><td class="num">—</td>{% endif %}
+      {% if _col_est  %}<td class="num">{{ currency(top_sheet.subtotal_estimated) }}</td>{% endif %}
+      {% if _col_work %}<td class="num">{{ currency(top_sheet.subtotal_estimated) }}</td>{% endif %}
+      {% if _col_act  %}<td class="num">{{ currency(top_sheet.subtotal_actual | default(0)) }}</td>{% endif %}
+      {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
-    {# Fee row — only when NOT dispersed #}
     <tr class="fee-row">
       <td class="code"></td>
       <td>Production Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(1) }}%)</td>
-      <td class="num">{{ currency(top_sheet.company_fee) }}</td>
-      {% if is_working_view %}<td class="num">{{ currency(top_sheet.company_fee) }}</td><td class="num">—</td>{% endif %}
+      {% if _col_est  %}<td class="num">{{ currency(top_sheet.company_fee) }}</td>{% endif %}
+      {% if _col_work %}<td class="num">{{ currency(top_sheet.company_fee) }}</td>{% endif %}
+      {% if _col_act  %}<td class="num">—</td>{% endif %}
+      {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
     {% endif %}
-    {# Grand Total #}
+    {# Grand Total — variance column now shows a real number based on
+       basis (was hardcoded "—"). Per user request 2026-05-15. #}
+    {% set _grand_est  = top_sheet.grand_total_estimated %}
+    {% set _grand_work = top_sheet.pdf_rounded_grand_total_estimated if (dispersed and top_sheet.pdf_rounded_grand_total_estimated is defined) else top_sheet.grand_total_estimated %}
+    {% set _grand_act  = top_sheet.grand_total_actual | default(0) %}
+    {% if   _var_basis == 'est_v_work' %}{% set _grand_var = _grand_work - _grand_est %}
+    {% elif _var_basis == 'work_v_act' %}{% set _grand_var = _grand_work - _grand_act %}
+    {% elif _var_basis == 'est_v_act'  %}{% set _grand_var = _grand_est  - _grand_act %}
+    {% else %}{% set _grand_var = 0 %}{% endif %}
     <tr class="grand-total-row">
       <td class="code"></td>
       <td>GRAND TOTAL</td>
-      {# Grand total: in dispersed mode, sum of rounded section rows
-         (which equals sum of rounded line totals after the largest-
-         remainder reconciliation pass — exact match). #}
-      {% set _grand_pdf = top_sheet.pdf_rounded_grand_total_estimated if (dispersed and top_sheet.pdf_rounded_grand_total_estimated is defined) else top_sheet.grand_total_estimated %}
-      <td class="num">{{ currency(_grand_pdf) }}</td>
-      {% if is_working_view %}<td class="num">{{ currency(_grand_pdf) }}</td><td class="num">—</td>{% endif %}
+      {% if _col_est  %}<td class="num">{{ currency(_grand_est) }}</td>{% endif %}
+      {% if _col_work %}<td class="num">{{ currency(_grand_work) }}</td>{% endif %}
+      {% if _col_act  %}<td class="num">{{ currency(_grand_act) }}</td>{% endif %}
+      {% if _show_var %}
+      <td class="num {% if _grand_var > 0.005 %}var-over{% elif _grand_var < -0.005 %}var-under{% endif %}">
+        {{ currency(_grand_var) }}
+      </td>
+      {% endif %}
     </tr>
   </tbody>
 </table>
@@ -295,9 +327,9 @@
       {% if sec.has_agent %}   <th class="num" style="width:42pt">Agent%</th>
       {% elif sec.has_discount %}<th class="num" style="width:42pt">Disc%</th>{% endif %}
       {% if is_working_view %}
-      <th class="num" style="width:66pt">Estimated</th>
-      <th class="num" style="width:66pt">Working</th>
-      <th class="num" style="width:60pt">Variance</th>
+      {% if _col_est  %}<th class="num" style="width:66pt">Estimated</th>{% endif %}
+      {% if _col_work %}<th class="num" style="width:66pt">Working</th>{% endif %}
+      {% if _show_var %}<th class="num" style="width:60pt">{{ _var_label }}</th>{% endif %}
       {% else %}
       <th class="num" style="width:80pt">Total</th>
       {% endif %}
@@ -397,10 +429,15 @@
       <td class="num">{% if (not ln.is_labor) and ln.agent_pct %}{{ (ln.agent_pct | float * 100) | round(1) }}%{% endif %}</td>
       {% endif %}
       {% if is_working_view %}
-      <td class="num">{{ currency(frozen * fee_m) }}</td>
-      <td class="num">{{ currency(res.est_total * fee_m) }}</td>
-      {% set _var = (res.est_total - frozen) * fee_m %}
-      <td class="num {% if _var > 0.005 %}var-over{% elif _var < -0.005 %}var-under{% endif %}">{{ currency(_var) }}</td>
+      {% if _col_est  %}<td class="num">{{ currency(frozen * fee_m) }}</td>{% endif %}
+      {% if _col_work %}<td class="num">{{ currency(res.est_total * fee_m) }}</td>{% endif %}
+      {% if _show_var %}
+        {# Detail-line variance uses Work − Est (est_v_work). Per-line
+           Actual isn't computed in this template; the other basis
+           options only apply to the Top Sheet rollups. #}
+        {% set _var = (res.est_total - frozen) * fee_m %}
+        <td class="num {% if _var > 0.005 %}var-over{% elif _var < -0.005 %}var-under{% endif %}">{{ currency(_var) }}</td>
+      {% endif %}
       {% else %}
       <td class="num">{{ currency(line_total) }}</td>
       {% endif %}
@@ -434,10 +471,12 @@
       <td class="num">{{ currency(ns_sub.subtot * _cell_m) }}</td>
       {% if sec.has_agent or sec.has_discount %}<td class="num"></td>{% endif %}
       {% if is_working_view %}
-      <td class="num">{{ currency(ns.sec_est * _cell_m) }}</td>
-      <td class="num">{{ currency(_sec_total_disp) }}</td>
-      {% set _svar = _sec_total_disp - (ns.sec_est * _cell_m) %}
-      <td class="num {% if _svar > 0.005 %}var-over{% elif _svar < -0.005 %}var-under{% endif %}">{{ currency(_svar) }}</td>
+      {% if _col_est  %}<td class="num">{{ currency(ns.sec_est * _cell_m) }}</td>{% endif %}
+      {% if _col_work %}<td class="num">{{ currency(_sec_total_disp) }}</td>{% endif %}
+      {% if _show_var %}
+        {% set _svar = _sec_total_disp - (ns.sec_est * _cell_m) %}
+        <td class="num {% if _svar > 0.005 %}var-over{% elif _svar < -0.005 %}var-under{% endif %}">{{ currency(_svar) }}</td>
+      {% endif %}
       {% else %}
       <td class="num">{{ currency(_sec_total_disp) }}</td>
       {% endif %}

@@ -159,6 +159,42 @@
             </span>
           </label>
         </div>
+        {# PDF-only: column visibility. Lets the user generate, e.g., a
+           client-friendly export with Working only (no Estimated/Actual
+           clutter), or a variance review with Working vs Actual. The
+           grand-total Variance row now shows a real number based on
+           the selected basis. Per user 2026-05-15. #}
+        <div class="field" id="export-opt-cols-wrap" style="margin-bottom:1.2rem;display:none">
+          <label style="display:block;font-weight:600;margin-bottom:.5rem;color:var(--text)">Columns to include</label>
+          <div style="display:flex;flex-direction:column;gap:.35rem;font-weight:400;font-size:.88rem">
+            <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;color:var(--text)">
+              <input type="checkbox" id="export-col-est" checked>
+              <span>Estimated</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;color:var(--text)">
+              <input type="checkbox" id="export-col-work" checked>
+              <span>Working</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;color:var(--text)">
+              <input type="checkbox" id="export-col-act">
+              <span>Actual <span style="color:var(--text-muted);font-size:.78rem">(sum of transactions)</span></span>
+            </label>
+            <label style="display:flex;align-items:center;gap:.55rem;cursor:pointer;color:var(--text)">
+              <input type="checkbox" id="export-col-var" checked>
+              <span>Variance</span>
+            </label>
+          </div>
+          <div id="export-var-basis-wrap" style="margin-top:.55rem;padding-left:1.6rem;font-size:.82rem;display:none">
+            <label style="display:block;color:var(--text-muted);margin-bottom:.3rem">Variance basis</label>
+            <select id="export-var-basis"
+                    style="font-size:.85rem;padding:4px 6px;border-radius:4px;
+                           background:var(--bg-input);border:1px solid var(--border);color:var(--text)">
+              <option value="est_v_work">Estimated vs Working</option>
+              <option value="work_v_act">Working vs Actual</option>
+              <option value="est_v_act">Estimated vs Actual</option>
+            </select>
+          </div>
+        </div>
         <div class="field" style="margin-bottom:1.2rem">
           <label style="display:block;font-weight:600;margin-bottom:.5rem;color:var(--text)">Production Company Fee</label>
           <div style="display:flex;flex-direction:column;gap:.45rem;font-weight:400">
@@ -14711,8 +14747,43 @@ setTimeout(function() {
     const _isDispNow = {{ 'true' if budget.company_fee_dispersed else 'false' }};
     document.getElementById('export-opt-fee-current').textContent =
       _isDispNow ? '(currently: dispersed)' : '(currently: separate line)';
+    // Columns picker — PDF only; defaults follow the current view.
+    const _colsWrap = document.getElementById('export-opt-cols-wrap');
+    if (_colsWrap) {
+      _colsWrap.style.display = (format === 'pdf') ? '' : 'none';
+      // Default: working view shows Est+Work+Var; estimated view just
+      // Est; actual view Est+Work+Act+Var with Work-V-Act basis.
+      const _hasActual = {{ 'true' if has_actual_budget else 'false' }};
+      const _isWorkView = {{ 'true' if is_working_view else 'false' }};
+      const _isActView  = {{ 'true' if is_actual_view  else 'false' }};
+      document.getElementById('export-col-est').checked  = true;
+      document.getElementById('export-col-work').checked = _isWorkView || _isActView;
+      document.getElementById('export-col-act').checked  = _isActView || _hasActual;
+      document.getElementById('export-col-var').checked  = _isWorkView || _isActView;
+      document.getElementById('export-var-basis').value =
+        _isActView ? 'work_v_act' : 'est_v_work';
+      _updateVarBasisVisibility();
+    }
     document.getElementById('export-options-overlay').classList.remove('hidden');
   };
+
+  // Hide the variance-basis dropdown when Variance is unchecked or when
+  // fewer than 2 value columns are checked (variance needs a pair).
+  function _updateVarBasisVisibility() {
+    const wrap = document.getElementById('export-var-basis-wrap');
+    if (!wrap) return;
+    const varChecked = document.getElementById('export-col-var')?.checked;
+    const valueColsChecked =
+      ['export-col-est','export-col-work','export-col-act']
+        .filter(id => document.getElementById(id)?.checked).length;
+    wrap.style.display = (varChecked && valueColsChecked >= 2) ? '' : 'none';
+  }
+  // Wire change events for live show/hide of the basis dropdown.
+  ['export-col-est','export-col-work','export-col-act','export-col-var']
+    .forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('change', _updateVarBasisVisibility);
+    });
 
   window.closeExportOptions = function (ev) {
     if (ev && ev.target && ev.target.id !== 'export-options-overlay') return;
@@ -14735,6 +14806,15 @@ setTimeout(function() {
     if (format === 'pdf') {
       url = '/projects/' + PID + '/budget/' + BID + '/export.pdf';
       if (variant === 'detail') params.set('detail', '1');
+      // Column picker — PDF only. Pass each checked column as a
+      // separate flag so the server's URL parser is simple and the
+      // template's column-visibility test is a single Jinja bool.
+      if (document.getElementById('export-col-est')?.checked)  params.set('col_est',  '1');
+      if (document.getElementById('export-col-work')?.checked) params.set('col_work', '1');
+      if (document.getElementById('export-col-act')?.checked)  params.set('col_act',  '1');
+      if (document.getElementById('export-col-var')?.checked)  params.set('col_var',  '1');
+      const _vb = document.getElementById('export-var-basis')?.value;
+      if (_vb) params.set('var_basis', _vb);
     } else if (format === 'csv') {
       url = '/projects/' + PID + '/budget/' + BID + '/export.csv';
       if (variant) params.set('type', variant);
