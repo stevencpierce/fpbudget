@@ -11719,15 +11719,37 @@ def po_detach_doc(pid, po_id, att_id):
 def line_assign_po(pid, bid, lid):
     """Assign / unassign a budget line to a PurchaseOrder. Body:
     {po_id: int|null}. Null = unassign. Returns updated rollup so the
-    UI can show the cap status without a full reload."""
+    UI can show the cap status without a full reload.
+
+    Cross-version propagation (added 2026-05-19 per user request):
+    Per project, the Working budget is the canonical owner of PO
+    assignments. When this endpoint is called from a non-Working line
+    (Estimated or Actual), it resolves the canonical Working sister
+    line via:
+      • Actual line  → BudgetLine.source_line_id (the explicit clone
+                        backlink to its Working source)
+      • Estimated line → (account_code, sort_order) match on the
+                          project's current Working budget
+    Then writes po_id on the Working sister AND on every Actual clone
+    of that Working line (so PO rollups stay consistent without
+    requiring a re-clone). The Estimated line itself doesn't carry
+    po_id — it inherits read-only via the same key match.
+
+    Net effect for the user: clicking the +PO badge in any view
+    edits the project-wide assignment, and the badge re-renders
+    correctly on all three views after refresh.
+    """
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     _require_project_role(pid, 'editor')
     ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     data = request.get_json(force=True) or {}
     raw = data.get('po_id')
     from models import PurchaseOrder
+
+    # Resolve the new po_id value first (None vs validated integer).
+    new_po_id = None
     if raw in (None, '', 'null', 0):
-        ln.po_id = None
+        new_po_id = None
     else:
         try:
             new_po_id = int(raw)
@@ -11736,10 +11758,70 @@ def line_assign_po(pid, bid, lid):
         po = PurchaseOrder.query.filter_by(id=new_po_id, project_id=pid).first()
         if not po:
             return jsonify({"error": "PurchaseOrder not found on this project"}), 404
-        ln.po_id = new_po_id
+
+    # ── Resolve the canonical Working sister line ──────────────────────
+    # Same project, mode=working, version_status preferred 'current'.
+    canonical_working = None
+    _wb = (Budget.query
+           .filter_by(project_id=pid, budget_mode='working',
+                      version_status='current')
+           .filter(Budget.is_actual == False)
+           .order_by(Budget.id.desc()).first())
+    if not _wb:
+        _wb = (Budget.query
+               .filter_by(project_id=pid, budget_mode='working')
+               .filter(Budget.is_actual == False)
+               .filter(Budget.version_status != 'archived')
+               .order_by(Budget.id.desc()).first())
+
+    line_budget = Budget.query.get(bid)
+    _is_working_line = (line_budget
+                        and line_budget.budget_mode == 'working'
+                        and not line_budget.is_actual)
+    _is_actual_line  = bool(line_budget and line_budget.is_actual)
+
+    if _is_working_line:
+        canonical_working = ln
+    elif _wb:
+        if _is_actual_line and ln.source_line_id:
+            # Actual → explicit backlink wins (most accurate).
+            canonical_working = (BudgetLine.query
+                                 .filter_by(id=ln.source_line_id,
+                                            budget_id=_wb.id).first())
+        if not canonical_working:
+            # Fall back to (account_code, sort_order) match — same
+            # rule the read-only badge uses to render Working PO on
+            # Estimated/Actual rows.
+            canonical_working = (BudgetLine.query
+                                 .filter_by(budget_id=_wb.id,
+                                            account_code=ln.account_code,
+                                            sort_order=ln.sort_order)
+                                 .first())
+
+    # Apply to the line that was clicked (so the UI roundtrips correctly
+    # without a full refresh on the same view) AND, separately, to the
+    # canonical Working line + every Actual clone of that Working line.
+    touched_ids = set()
+    ln.po_id = new_po_id
+    touched_ids.add(ln.id)
+
+    if canonical_working and canonical_working.id != ln.id:
+        canonical_working.po_id = new_po_id
+        touched_ids.add(canonical_working.id)
+
+    # Propagate to Actual clones of the canonical Working line.
+    if canonical_working:
+        for actual_clone in BudgetLine.query.filter_by(
+                source_line_id=canonical_working.id).all():
+            if actual_clone.id in touched_ids:
+                continue
+            actual_clone.po_id = new_po_id
+            touched_ids.add(actual_clone.id)
+
     db.session.commit()
+
     # Return the updated PO rollup so the row UI can render the cap badge.
-    out = {"ok": True, "po_id": ln.po_id}
+    out = {"ok": True, "po_id": ln.po_id, "touched_line_ids": sorted(touched_ids)}
     if ln.po_id:
         po = PurchaseOrder.query.get(ln.po_id)
         if po:
