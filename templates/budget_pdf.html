@@ -459,6 +459,43 @@
       <td class="num">{{ currency(line_total) }}</td>
       {% endif %}
     </tr>
+    {# ── Per-person travel / per-diem mirror notes (opt-in)
+       Rendered under each labor line when the user ticked "Include
+       travel & per-diem notes" in the Export Options modal. These are
+       reference rows — they don't enter any sum; the canonical $$
+       lives in the aggregate 3500 Travel / 3700 Meals lines. Italic
+       muted styling matches the in-app treatment. 2026-05-19. #}
+    {% if include_travel_notes and ln.is_labor and travel_mirror_by_line and travel_mirror_by_line.get(ln.id) %}
+      {% set _tm_rows = travel_mirror_by_line.get(ln.id) %}
+      {# Column count for colspan calc below — count the columns this
+         section actually renders so the mirror cells span correctly. #}
+      {% set _tm_cols = namespace(n=4) %}
+      {% if sec.has_payroll or sec.has_qty %}{% set _tm_cols.n = _tm_cols.n + 1 %}{% endif %}
+      {% if sec.has_ot %}{% set _tm_cols.n = _tm_cols.n + 1 %}{% endif %}
+      {% if sec.has_fringe %}{% set _tm_cols.n = _tm_cols.n + 1 %}{% endif %}
+      {% if sec.has_agent or sec.has_discount %}{% set _tm_cols.n = _tm_cols.n + 1 %}{% endif %}
+      {% if is_working_view %}
+        {% if _col_est  %}{% set _tm_cols.n = _tm_cols.n + 1 %}{% endif %}
+        {% if _col_work %}{% set _tm_cols.n = _tm_cols.n + 1 %}{% endif %}
+        {% if _show_var %}{% set _tm_cols.n = _tm_cols.n + 1 %}{% endif %}
+      {% else %}
+        {% set _tm_cols.n = _tm_cols.n + 1 %}
+      {% endif %}
+      {% for _tm in _tm_rows %}
+      <tr style="background:#f5f7fc">
+        <td style="padding-left:18pt;font-style:italic;color:#666;font-size:7pt">
+          ↪ {{ _tm.label }}
+          <span style="color:#888"> — {{ _tm.days }} day{{ 's' if _tm.days != 1 else '' }} × ${{ "{:,.2f}".format(_tm.rate) }}</span>
+        </td>
+        <td class="num" colspan="{{ _tm_cols.n - 2 }}" style="font-style:italic;color:#888;font-size:7pt;text-align:right">
+          {# Blank middle — keeps the mirror visually de-emphasized #}
+        </td>
+        <td class="num" style="font-style:italic;color:#666;font-size:7pt">
+          ${{ "{:,.2f}".format(_tm.amount) }}
+        </td>
+      </tr>
+      {% endfor %}
+    {% endif %}
     {% endfor %}
     {% set ns_sub = namespace(subtot=0, ot=0, fringe=0) %}
     {% for ln in sec.lines %}{% set _r = line_results[ln.id] %}

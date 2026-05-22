@@ -185,6 +185,14 @@
               <input type="checkbox" id="export-opt-suppress-zeros">
               <span>Suppress $0 lines <em>(section totals stay accurate)</em></span>
             </label>
+            {# Travel & per-diem mirror rows — PDF detail export only.
+               Off by default (compact export); user-selectable when
+               they want the per-person breakdown printed alongside
+               each labor person. Per user 2026-05-19. #}
+            <label class="export-chip export-chip-block" id="export-opt-travel-notes-wrap" style="margin-top:6px">
+              <input type="checkbox" id="export-opt-travel-notes">
+              <span>Include travel &amp; per-diem notes <em>(per-person breakdown under each labor line)</em></span>
+            </label>
           </div>
         </div>
         <div class="export-opts-foot">
@@ -14889,6 +14897,15 @@ setTimeout(function() {
       'Format: ' + (labelMap[format] || format);
     // Reset checkboxes/radios to defaults each open.
     document.getElementById('export-opt-suppress-zeros').checked = false;
+    // Travel notes checkbox — only meaningful for PDF detail export.
+    // Hide for non-PDF formats (and for PDF top-sheet, which doesn't
+    // render per-line rows). Default off so the export stays compact.
+    const _tnWrap = document.getElementById('export-opt-travel-notes-wrap');
+    if (_tnWrap) {
+      _tnWrap.style.display = (format === 'pdf' && variant === 'detail') ? '' : 'none';
+    }
+    const _tnBox = document.getElementById('export-opt-travel-notes');
+    if (_tnBox) _tnBox.checked = false;
     document.querySelectorAll('input[name="export-opt-fee"]').forEach(r => {
       r.checked = (r.value === '');
     });
@@ -14964,6 +14981,13 @@ setTimeout(function() {
       if (document.getElementById('export-col-var')?.checked)  params.set('col_var',  '1');
       const _vb = document.getElementById('export-var-basis')?.value;
       if (_vb) params.set('var_basis', _vb);
+      // Per-person travel / per-diem mirror rows — PDF detail only.
+      // Server reads ?travel_notes=1 to compute travel_mirror_by_line
+      // and the template renders the indented "↪ Hotel — Crew /
+      // Flights / Per Diem" rows under each labor person. 2026-05-19.
+      if (document.getElementById('export-opt-travel-notes')?.checked) {
+        params.set('travel_notes', '1');
+      }
     } else if (format === 'csv') {
       url = '/projects/' + PID + '/budget/' + BID + '/export.csv';
       if (variant) params.set('type', variant);

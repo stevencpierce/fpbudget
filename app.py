@@ -7574,6 +7574,34 @@ def export_pdf(pid, bid):
     for _r in (est_top_sheet.get("rows") if est_top_sheet else []) or []:
         est_section_lookup[_r["code"]] = _r
 
+    # ── Per-person travel/per-diem mirror rows (opt-in PDF export)
+    # Reuses compute_travel_mirror_per_line — same helper the in-app
+    # Budget tab uses to render the small italic "↪ Hotel — Crew /
+    # ↪ Flights — Crew / ↪ Per Diem" rows under each labor person.
+    # Gated by ?travel_notes=1 from the Export Options modal so the
+    # default export stays compact. User request 2026-05-19: "I can
+    # see, like, little hotel flights per diems, all of that. Can
+    # that go out on the exports as well?". 2026-05-19.
+    include_travel_notes = (request.args.get('travel_notes') == '1')
+    travel_mirror_by_line = {}
+    if include_travel_notes:
+        try:
+            from budget_calc import compute_travel_mirror_per_line
+            _labor_lines = [ln for ln in lines if ln.is_labor]
+            # Pull schedule days for this budget+mode. Same query
+            # signature sync_schedule_driven_lines uses so the
+            # per-person split reconciles with the aggregate.
+            from sqlalchemy import or_ as _or_pdf_sd
+            _sd_pdf = ScheduleDay.query.filter(
+                ScheduleDay.budget_id == bid,
+                _or_pdf_sd(ScheduleDay.schedule_mode == sched_mode,
+                           ScheduleDay.schedule_mode.is_(None))
+            ).all()
+            travel_mirror_by_line = compute_travel_mirror_per_line(
+                budget, _labor_lines, _sd_pdf, all_lines=lines)
+        except Exception as _tm_e:
+            logging.warning(f"[export_pdf] travel-mirror compute failed: {_tm_e}")
+
     html_str = render_template("budget_pdf.html",
         project=project,
         budget=budget,
@@ -7592,6 +7620,8 @@ def export_pdf(pid, bid):
         suppress_zeros=suppress_zeros,
         col_est=col_est, col_work=col_work, col_act=col_act, col_var=col_var,
         var_basis=var_basis,
+        include_travel_notes=include_travel_notes,
+        travel_mirror_by_line=travel_mirror_by_line,
         today=date.today(),
     )
 
