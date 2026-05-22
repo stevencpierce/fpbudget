@@ -1350,12 +1350,17 @@
                 {{ _loc.name if _loc else '+ Assign Location' }}
               </span>
             {% endif %}
-            {# + PO button on every non-labor row (per user 2026-05-04).
+            {# + PO button on every row (labor + non-labor).
                Click opens the PO picker modal — search existing open
                POs OR create a new one inline. Assigned rows show the
-               PO number + vendor instead. Hidden on labor rows since
-               those go through CrewMember assignment. #}
-            {% if not ln.is_labor %}
+               PO number + vendor instead.
+               Previously gated to non-labor rows on the theory that
+               labor goes through CrewMember assignment instead — but
+               user request 2026-05-19: "I need to be able to assign a
+               labor line to a PO. In the short term, can we just add
+               the PO button on labor lines?" Done. BudgetLine.po_id
+               already exists for every row, so this is purely UI. #}
+            {% if true %}
               {# PO assignment now lives only on the Working budget line.
                  In Working view → editable badge (current behavior).
                  In Estimated → look up by (account_code, sort_order)
