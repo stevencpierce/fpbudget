@@ -14512,15 +14512,46 @@ def admin_budget_diff():
     try:
         a_bid = int(request.args.get('a') or 0)
         b_bid = int(request.args.get('b') or 0)
+        pid_filter = int(request.args.get('project') or 0) or None
     except (TypeError, ValueError):
-        return jsonify({"error": "a and b must be integers"}), 400
+        return jsonify({"error": "a, b, project must be integers"}), 400
+
+    # Helper: return the live budget list so the caller knows what IDs
+    # exist. Filtered to ?project=<pid> when supplied; otherwise every
+    # non-archived budget in the system (sorted by project then version).
+    def _budget_catalog():
+        q = (Budget.query
+             .join(ProjectSheet, ProjectSheet.id == Budget.project_id)
+             .filter(Budget.version_status != 'archived'))
+        if pid_filter:
+            q = q.filter(Budget.project_id == pid_filter)
+        rows = q.order_by(ProjectSheet.name, Budget.version_number,
+                          Budget.id).all()
+        return [{
+            'id': b.id, 'name': b.name, 'mode': b.budget_mode,
+            'status': b.version_status,
+            'version_number': b.version_number,
+            'project_id': b.project_id,
+            'project_name': b.project.name if b.project else None,
+        } for b in rows]
+
     if not a_bid or not b_bid:
-        return jsonify({"error": "Pass ?a=<bid>&b=<bid>"}), 400
+        return jsonify({
+            "error": "Pass ?a=<bid>&b=<bid> — see `available_budgets` below.",
+            "available_budgets": _budget_catalog(),
+            "hint": "Add ?project=<pid> to narrow the list to one project.",
+        }), 400
 
     ba = Budget.query.get(a_bid)
     bb = Budget.query.get(b_bid)
     if not ba or not bb:
-        return jsonify({"error": "One or both budgets not found"}), 404
+        return jsonify({
+            "error": "One or both budgets not found",
+            "requested": {"a": a_bid, "b": b_bid},
+            "found": {"a": bool(ba), "b": bool(bb)},
+            "available_budgets": _budget_catalog(),
+            "hint": "Add ?project=<pid> to narrow the list to one project.",
+        }), 404
 
     # ── Budget-level settings comparison ──────────────────────────────
     _budget_fields = [
