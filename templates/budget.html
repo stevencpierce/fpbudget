@@ -747,9 +747,9 @@
           <th class="col-days" title="Duration — value × unit selectable per row (Days / Weeks / Hrs / Flat / Each / Per / Allow / EST / LB / Mo / Mi / X)">Duration</th>
           <th class="col-num">Rate</th>
           <th class="col-rt">Type</th>
+          <th class="col-num">Subtotal</th>
           <th class="col-num">{{ 'OT' if ns.has_labor else '' }}</th>
           <th class="col-fr">{{ 'Fringe' if ns.has_labor else '' }}</th>
-          <th class="col-num">Subtotal</th>
           <th class="col-num{% if not ns.has_agent_or_disc %} col-empty{% endif %}">{% if ns.has_agent_or_disc %}{{ 'Agent%' if ns.has_labor else 'Disc%' }}{% endif %}</th>
           <th class="col-num {% if is_working_view %}frozen-est-header{% endif %} var-col-header" data-budget="estimated">Estimated</th>
           <th class="col-num col-working var-col-header" data-budget="working">Working</th>
@@ -1136,6 +1136,23 @@
             </select>
             {% endif %}
           </td>
+          <td class="col-num line-subtotal">
+            {% if is_actual_view %}
+              {# Subtotal in Actual view = sum of linked transactions
+                 for this line. Replaces qty×days×rate, since Actual is
+                 about tracking real spend, not planned. Click chevron
+                 in description cell to expand the underlying txns. #}
+              {% if _act_txn_sum > 0 %}
+                <strong style="color:#22c55e">{{ _act_txn_sum | currency }}</strong>
+              {% else %}
+                <span class="muted" style="font-size:.85rem">$0.00</span>
+              {% endif %}
+            {% elif ln.is_labor %}{{ (res.subtotal * _sec_fee_m) | currency }}
+            {% else %}
+              {% set _nl_pre = (ln.quantity|float) * (ln.days|float) * (ln.rate|float) %}
+              {% if _nl_pre > 0 %}{{ (_nl_pre * _sec_fee_m) | round(2) | currency }}{% else %}{{ (res.est_total * _sec_fee_m) | currency }}{% endif %}
+            {% endif %}
+          </td>
           <td class="col-num">
             {% if is_actual_view %}
             <span class="muted" style="font-size:.7rem">—</span>
@@ -1168,23 +1185,6 @@
                 {% if ln.fringe_type == fr.fringe_type %}selected{% endif %}>{{ fr.fringe_type }}</option>
               {% endfor %}
             </select>
-            {% endif %}
-          </td>
-          <td class="col-num line-subtotal">
-            {% if is_actual_view %}
-              {# Subtotal in Actual view = sum of linked transactions
-                 for this line. Replaces qty×days×rate, since Actual is
-                 about tracking real spend, not planned. Click chevron
-                 in description cell to expand the underlying txns. #}
-              {% if _act_txn_sum > 0 %}
-                <strong style="color:#22c55e">{{ _act_txn_sum | currency }}</strong>
-              {% else %}
-                <span class="muted" style="font-size:.85rem">$0.00</span>
-              {% endif %}
-            {% elif ln.is_labor %}{{ (res.subtotal * _sec_fee_m) | currency }}
-            {% else %}
-              {% set _nl_pre = (ln.quantity|float) * (ln.days|float) * (ln.rate|float) %}
-              {% if _nl_pre > 0 %}{{ (_nl_pre * _sec_fee_m) | round(2) | currency }}{% else %}{{ (res.est_total * _sec_fee_m) | currency }}{% endif %}
             {% endif %}
           </td>
           <td class="col-num{% if not ns.has_agent_or_disc %} col-empty{% endif %}">
@@ -1456,11 +1456,11 @@
             <span style="color:var(--text-muted)">${{ "{:,.2f}".format(_tm.rate) }}</span>
           </td>
           <td class="col-rt"></td>
-          <td class="col-num"></td>
-          <td class="col-fr"></td>
           <td class="col-num">
             <span style="color:var(--text-muted)">${{ "{:,.2f}".format(_tm.amount) }}</span>
           </td>
+          <td class="col-num"></td>
+          <td class="col-fr"></td>
           <td class="col-num"></td>
           <td class="col-num">
             <span style="color:var(--text-muted)">${{ "{:,.2f}".format(_tm.amount) }}</span>
@@ -1559,9 +1559,9 @@
           <td class="col-days"></td>
           <td class="col-num"></td>
           <td class="col-rt"></td>
+          <td class="col-num">{{ top_sheet.workers_comp_amount | currency }}</td>
           <td class="col-num"></td>
           <td class="col-fr"></td>
-          <td class="col-num">{{ top_sheet.workers_comp_amount | currency }}</td>
           <td class="col-num"></td>
           <td class="col-num">{{ (top_sheet.workers_comp_amount * _sec_fee_m) | currency }}</td>
           <td class="col-num col-working">{{ (top_sheet.workers_comp_amount * _sec_fee_m) | currency }}</td>
@@ -1594,9 +1594,9 @@
           <td class="col-days"></td>
           <td class="col-num"></td>
           <td class="col-rt"></td>
+          <td class="col-num">{{ top_sheet.production_insurance_amount | currency }}</td>
           <td class="col-num"></td>
           <td class="col-fr"></td>
-          <td class="col-num">{{ top_sheet.production_insurance_amount | currency }}</td>
           <td class="col-num"></td>
           <td class="col-num">{{ (top_sheet.production_insurance_amount * _sec_fee_m) | currency }}</td>
           <td class="col-num col-working">{{ (top_sheet.production_insurance_amount * _sec_fee_m) | currency }}</td>
@@ -1619,9 +1619,9 @@
           <td class="col-days"></td>
           <td class="col-num"></td>
           <td class="col-rt"></td>
+          <td class="col-num">{{ top_sheet.payroll_fee_amount | currency }}</td>
           <td class="col-num"></td>
           <td class="col-fr"></td>
-          <td class="col-num">{{ top_sheet.payroll_fee_amount | currency }}</td>
           <td class="col-num"></td>
           <td class="col-num">{{ (top_sheet.payroll_fee_amount * _sec_fee_m) | currency }}</td>
           <td class="col-num col-working">{{ (top_sheet.payroll_fee_amount * _sec_fee_m) | currency }}</td>
@@ -1655,8 +1655,10 @@
         {# Per-category subtotals (kit / agent / section breakdowns) all align under their matching column. #}
         {% if ns.kit_total > 0 %}
         <tr class="kit-fee-subtotal-row">
-          <td colspan="8" class="col-desc" style="font-size:.78rem;color:var(--text-muted);padding-left:1.6rem;font-style:italic;text-align:right">Kit Fees subtotal</td>
+          <td colspan="6" class="col-desc" style="font-size:.78rem;color:var(--text-muted);padding-left:1.6rem;font-style:italic;text-align:right">Kit Fees subtotal</td>
           <td class="col-num kit-est-total" style="font-size:.78rem;color:var(--text-muted)">{{ ns.kit_total | currency }}</td>
+          <td class="col-num" style="font-size:.78rem;color:var(--text-muted)"></td>
+          <td class="col-fr" style="font-size:.78rem;color:var(--text-muted)"></td>
           <td class="col-num" style="font-size:.78rem;color:var(--text-muted)"></td>
           <td class="col-num" style="font-size:.78rem;color:var(--text-muted)">{{ ns.kit_total | currency }}</td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-size:.78rem;color:var(--text-muted)">{{ ns.kit_working | currency }}</td>
@@ -1679,9 +1681,9 @@
         <tr class="section-subtotal-row">
           <td colspan="5" class="col-desc muted" style="font-size:.75rem;font-style:italic;text-align:right">Section breakdown</td>
           <td class="col-num muted"></td>
+          <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_subtotal * _sec_fee_m) | currency if ns.sec_subtotal else '' }}</td>
           <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_ot * _sec_fee_m) | currency if ns.sec_ot else '' }}</td>
           <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_fringe * _sec_fee_m) | currency if ns.sec_fringe else '' }}</td>
-          <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_subtotal * _sec_fee_m) | currency if ns.sec_subtotal else '' }}</td>
           <td class="col-num muted"></td>
           {# Section ACTUAL total = (a) sum of actual_by_line_id for
              every line in this section that has matching transactions
@@ -10087,18 +10089,18 @@ function refreshSectionTotals(table) {
     if (agentRow) agentRow.style.display = agentTotal > 0 ? '' : 'none';
   }
 
-  // Update OT / Fringe / Subtotal cells on the "Section breakdown" row.
-  // These cells are the 7th, 8th, 9th td (OT / Fringe / Subtotal columns).
+  // Update Subtotal / OT / Fringe cells on the "Section breakdown" row.
+  // These cells are the 7th, 8th, 9th td (Subtotal / OT / Fringe columns).
   const breakdownRow = tfoot.querySelector('.section-subtotal-row');
   if (breakdownRow) {
     const cells = breakdownRow.querySelectorAll('td.col-num');
     // cells[0] = col 6 (Type, empty spacer)
-    // cells[1] = OT
-    // cells[2] = Fringe
-    // cells[3] = Subtotal
-    if (cells[1]) cells[1].textContent = otTotal       ? fmtCurrency(otTotal       * fm) : '';
-    if (cells[2]) cells[2].textContent = fringeTotal   ? fmtCurrency(fringeTotal   * fm) : '';
-    if (cells[3]) cells[3].textContent = subtotalTotal ? fmtCurrency(subtotalTotal * fm) : '';
+    // cells[1] = Subtotal
+    // cells[2] = OT
+    // cells[3] = Fringe
+    if (cells[1]) cells[1].textContent = subtotalTotal ? fmtCurrency(subtotalTotal * fm) : '';
+    if (cells[2]) cells[2].textContent = otTotal       ? fmtCurrency(otTotal       * fm) : '';
+    if (cells[3]) cells[3].textContent = fringeTotal   ? fmtCurrency(fringeTotal   * fm) : '';
   }
 
   if (_IS_WORKING_MODE) {
