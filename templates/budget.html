@@ -8332,6 +8332,100 @@
   </div>
 </div>
 
+{# ── Budget Gut Check (super_admin only) ─────────────────────────────────
+   Read-only diagnostic: re-runs the canonical calc engine, cross-checks each
+   line's arithmetic, reconciles section + grand-total roll-ups, and surfaces
+   snapshot drift. Hidden from every other role so it can't confuse non-admins. #}
+{% if current_user.role == 'super_admin' %}
+<style>
+  #gc-trigger {
+    position: fixed; left: 16px; bottom: 16px; z-index: 9000;
+    background: #1e293b; color: #94a3b8; border: 1px solid #334155;
+    border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+    font-family: monospace;
+  }
+  #gc-trigger:hover { color: #e2e8f0; border-color: #475569; }
+  #gc-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.72); z-index: 9500;
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  #gc-overlay.gc-open { display: flex; }
+  #gc-panel {
+    background: #0f172a; border: 1px solid #1e293b; border-radius: 12px;
+    width: 100%; max-width: 1040px; max-height: 90vh; display: flex;
+    flex-direction: column; overflow: hidden; box-shadow: 0 24px 64px rgba(0,0,0,0.6);
+    font-family: monospace; color: #cbd5e1;
+  }
+  #gc-panel .gc-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; border-bottom: 1px solid #1e293b;
+  }
+  #gc-panel .gc-title { color: #f1f5f9; font-weight: 600; font-size: 15px; }
+  #gc-panel .gc-status { font-size: 12px; margin-left: 12px; }
+  .gc-status.gc-pass { color: #22c55e; }
+  .gc-status.gc-fail { color: #ef4444; }
+  #gc-panel .gc-close {
+    background: none; border: none; color: #64748b; cursor: pointer; font-size: 18px;
+  }
+  #gc-panel .gc-tabs {
+    display: flex; gap: 4px; padding: 8px 16px; border-bottom: 1px solid #1e293b;
+    background: #0a111f;
+  }
+  .gc-tab {
+    background: none; border: 1px solid transparent; border-radius: 6px;
+    color: #64748b; cursor: pointer; font-size: 12px; padding: 4px 12px;
+    font-family: monospace;
+  }
+  .gc-tab.gc-active { background: #1e293b; border-color: #334155; color: #e2e8f0; }
+  #gc-panel .gc-content { flex: 1; overflow: auto; padding: 18px 20px; }
+  .gc-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
+  .gc-stat { background: #1e293b; border-radius: 8px; padding: 10px 14px; }
+  .gc-stat .gc-l { color: #64748b; font-size: 10px; text-transform: uppercase; margin-bottom: 4px; }
+  .gc-stat .gc-v { font-size: 19px; font-weight: 700; color: #e2e8f0; }
+  .gc-note { color: #94a3b8; font-size: 12px; margin: 4px 0 12px; }
+  .gc-warn-box {
+    background: #451a03; border: 1px solid #92400e; border-radius: 8px;
+    color: #fbbf24; padding: 10px 14px; font-size: 12px; margin-top: 8px;
+  }
+  table.gc-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  table.gc-table th {
+    color: #64748b; padding: 6px 8px; border-bottom: 1px solid #1e293b;
+    font-weight: 500; white-space: nowrap; background: #0a111f;
+    position: sticky; top: -18px; text-align: left;
+  }
+  table.gc-table td { padding: 5px 8px; border-bottom: 1px solid #0f172a; color: #cbd5e1; }
+  table.gc-table td.gc-r, table.gc-table th.gc-r { text-align: right; }
+  tr.gc-row-fail { background: rgba(239,68,68,0.10); }
+  tr.gc-row-warn { background: rgba(245,158,11,0.08); }
+  .gc-badge { border-radius: 4px; padding: 1px 6px; font-size: 10.5px; white-space: nowrap; }
+  .gc-badge.ok   { background: rgba(34,197,94,0.15);  color: #22c55e; }
+  .gc-badge.fail { background: rgba(239,68,68,0.15);  color: #ef4444; }
+  .gc-badge.warn { background: rgba(245,158,11,0.15); color: #f59e0b; }
+  .gc-sub { color: #64748b; font-size: 10.5px; }
+</style>
+<button id="gc-trigger" title="Run a read-only line-by-line math audit">&#128269; Gut Check</button>
+<div id="gc-overlay">
+  <div id="gc-panel">
+    <div class="gc-header">
+      <div style="display:flex;align-items:center;">
+        <span class="gc-title">Budget Gut Check</span>
+        <span id="gc-status" class="gc-status"></span>
+      </div>
+      <button class="gc-close" id="gc-close">&#10005;</button>
+    </div>
+    <div class="gc-tabs">
+      <button class="gc-tab gc-active" data-tab="summary">Summary</button>
+      <button class="gc-tab" data-tab="lines">Lines</button>
+      <button class="gc-tab" data-tab="sections">Sections</button>
+      <button class="gc-tab" data-tab="drift">Drift &amp; Flags</button>
+    </div>
+    <div class="gc-content" id="gc-content">
+      <p class="gc-note">Click "Gut Check" to run the audit.</p>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {% endblock %}
 
 {% block scripts %}
@@ -16351,5 +16445,243 @@ setTimeout(function() {
   }
 })();
 </script>
+
+{% if current_user.role == 'super_admin' %}
+<script>
+/* ── Budget Gut Check panel ──────────────────────────────────────────────
+   Fetches the read-only /audit.json diagnostic and renders Summary / Lines /
+   Sections / Drift tabs. Super-admin only; the trigger + markup are gated in
+   the template so this script no-ops for everyone else. */
+(function () {
+  const trigger = document.getElementById('gc-trigger');
+  const overlay = document.getElementById('gc-overlay');
+  if (!trigger || !overlay) return;
+
+  const content = document.getElementById('gc-content');
+  const statusEl = document.getElementById('gc-status');
+  let DATA = null;
+  let TAB = 'summary';
+
+  const fmtMoney = (n) => {
+    const v = Number(n || 0);
+    return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US',
+      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const within = (d, tol) => Math.abs(Number(d || 0)) < (tol || 0.01);
+
+  function open() {
+    overlay.classList.add('gc-open');
+    if (!DATA) run();
+  }
+  function close() { overlay.classList.remove('gc-open'); }
+
+  trigger.addEventListener('click', open);
+  document.getElementById('gc-close').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.querySelectorAll('.gc-tab').forEach((b) => {
+    b.addEventListener('click', () => {
+      TAB = b.dataset.tab;
+      document.querySelectorAll('.gc-tab').forEach((x) =>
+        x.classList.toggle('gc-active', x === b));
+      render();
+    });
+  });
+
+  async function run() {
+    content.innerHTML = '<p class="gc-note">Running audit…</p>';
+    statusEl.textContent = '';
+    statusEl.className = 'gc-status';
+    try {
+      const res = await fetch(`/projects/${PID}/budget/${BID}/audit.json`,
+        { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error('Server returned ' + res.status);
+      DATA = await res.json();
+    } catch (e) {
+      content.innerHTML = '<p class="gc-note" style="color:#ef4444">Audit failed: '
+        + esc(e.message) + '</p>';
+      return;
+    }
+    const s = DATA.summary;
+    statusEl.textContent = s.status === 'PASS' ? '● ALL CHECKS PASS' : '● ERRORS FOUND';
+    statusEl.className = 'gc-status ' + (s.status === 'PASS' ? 'gc-pass' : 'gc-fail');
+    render();
+  }
+
+  function stat(label, value, color) {
+    return '<div class="gc-stat"><div class="gc-l">' + esc(label) + '</div>'
+      + '<div class="gc-v"' + (color ? ' style="color:' + color + '"' : '') + '>'
+      + value + '</div></div>';
+  }
+
+  function render() {
+    if (!DATA) return;
+    if (TAB === 'summary') return renderSummary();
+    if (TAB === 'lines') return renderLines();
+    if (TAB === 'sections') return renderSections();
+    if (TAB === 'drift') return renderDrift();
+  }
+
+  function renderSummary() {
+    const s = DATA.summary, g = s.grand, tol = DATA.tolerance;
+    const ec = s.error_counts, wc = s.warning_counts;
+    const totalWarn = Object.values(wc).reduce((a, b) => a + b, 0);
+    let h = '';
+    h += '<div class="gc-note">' + esc(DATA.budget_name) + ' · mode <b>'
+      + esc(DATA.budget_mode) + '</b>' + (DATA.is_actual ? ' · actual' : '')
+      + ' · tolerance ' + fmtMoney(tol) + '</div>';
+    h += '<div class="gc-grid">';
+    h += stat('Total Lines', s.total_lines);
+    h += stat('Clean', s.lines_ok, '#22c55e');
+    h += stat('Lines w/ Errors', s.lines_with_errors, s.lines_with_errors ? '#ef4444' : null);
+    h += stat('Lines w/ Warnings', s.lines_with_warnings, s.lines_with_warnings ? '#f59e0b' : null);
+    h += stat('Grand (engine)', fmtMoney(g.engine_grand));
+    h += stat('Grand (recomputed)', fmtMoney(g.indep_grand));
+    h += stat('Grand Δ', fmtMoney(g.grand_delta), within(g.grand_delta, tol) ? '#22c55e' : '#ef4444');
+    h += stat('Section Errors', s.section_errors, s.section_errors ? '#ef4444' : null);
+    h += '</div>';
+
+    h += '<table class="gc-table"><thead><tr><th>Roll-up reconciliation</th>'
+      + '<th class="gc-r">Engine</th><th class="gc-r">Recomputed</th>'
+      + '<th class="gc-r">Δ</th><th></th></tr></thead><tbody>';
+    const recon = [
+      ['Section subtotal', g.engine_subtotal, g.indep_subtotal, g.subtotal_delta],
+      ['Prod. company fee (' + (g.fee_mode === 'flat' ? 'flat' : (g.fee_pct * 100).toFixed(1) + '%') + ')',
+        g.engine_fee, g.indep_fee, g.fee_delta],
+      ['Grand total', g.engine_grand, g.indep_grand, g.grand_delta],
+    ];
+    recon.forEach((r) => {
+      const ok = within(r[3], tol);
+      h += '<tr class="' + (ok ? '' : 'gc-row-fail') + '"><td>' + esc(r[0]) + '</td>'
+        + '<td class="gc-r">' + fmtMoney(r[1]) + '</td>'
+        + '<td class="gc-r">' + fmtMoney(r[2]) + '</td>'
+        + '<td class="gc-r">' + fmtMoney(r[3]) + '</td>'
+        + '<td><span class="gc-badge ' + (ok ? 'ok' : 'fail') + '">'
+        + (ok ? '✓' : '✗') + '</span></td></tr>';
+    });
+    h += '<tr><td class="gc-sub">Gross labor wages</td><td class="gc-r gc-sub" colspan="4">'
+      + fmtMoney(g.gross_labor_wages) + ' · WC ' + fmtMoney(g.workers_comp_amount)
+      + ' · Payroll fee ' + fmtMoney(g.payroll_fee_amount)
+      + ' · Prod. insurance ' + fmtMoney(g.production_insurance_amount) + '</td></tr>';
+    h += '</tbody></table>';
+
+    const errTotal = Object.values(ec).reduce((a, b) => a + b, 0);
+    if (errTotal) {
+      h += '<div class="gc-warn-box" style="background:#2a1414;border-color:#ef4444;color:#fca5a5">'
+        + '⚠️ Math errors: ' + errLabels(ec) + '</div>';
+    }
+    if (totalWarn) {
+      h += '<div class="gc-warn-box">⚠️ ' + totalWarn
+        + ' warning(s): ' + errLabels(wc) + '. See "Drift &amp; Flags".</div>';
+    }
+    if (!errTotal && !totalWarn && within(g.grand_delta, tol)) {
+      h += '<div class="gc-warn-box" style="background:#052e16;border-color:#15803d;color:#4ade80">'
+        + '✓ Every line, section, and the grand total reconcile within tolerance.</div>';
+    }
+    content.innerHTML = h;
+  }
+
+  function errLabels(obj) {
+    return Object.entries(obj).filter(([, v]) => v > 0)
+      .map(([k, v]) => v + '× ' + k.replace(/_/g, ' ')).join(', ');
+  }
+
+  function checkCell(line) {
+    const failed = line.checks.filter((c) => !c.pass);
+    if (failed.length) {
+      return '<span class="gc-badge fail">✗ ' + failed.map((c) => esc(c.name)).join(', ')
+        + '</span>';
+    }
+    return '<span class="gc-badge ok">✓</span>';
+  }
+
+  function renderLines() {
+    const rows = DATA.lines;
+    let h = '<div class="gc-note">' + rows.length + ' lines · '
+      + 'engine output vs independent recompute. Failing checks highlighted.</div>';
+    h += '<table class="gc-table"><thead><tr>'
+      + '<th>Acct</th><th>Description</th><th>Type</th>'
+      + '<th class="gc-r">Subtotal</th><th class="gc-r">Fringe</th>'
+      + '<th class="gc-r">Agent</th><th class="gc-r">Total</th>'
+      + '<th>Checks</th></tr></thead><tbody>';
+    rows.forEach((l) => {
+      const cls = !l.ok ? 'gc-row-fail' : (l.has_warnings ? 'gc-row-warn' : '');
+      const type = l.is_labor ? (l.used_schedule ? 'labor·sched' : 'labor') : 'non-labor';
+      h += '<tr class="' + cls + '">'
+        + '<td>' + esc(l.account_code) + '</td>'
+        + '<td>' + esc(l.description || l.account_name) + '</td>'
+        + '<td class="gc-sub">' + type + '</td>'
+        + '<td class="gc-r">' + fmtMoney(l.subtotal) + '</td>'
+        + '<td class="gc-r">' + fmtMoney(l.fringe_amount) + '</td>'
+        + '<td class="gc-r">' + fmtMoney(l.agent_amount) + '</td>'
+        + '<td class="gc-r">' + fmtMoney(l.total) + '</td>'
+        + '<td>' + checkCell(l) + '</td></tr>';
+      const failed = l.checks.filter((c) => !c.pass);
+      failed.forEach((c) => {
+        h += '<tr class="gc-row-fail"><td></td><td colspan="7" class="gc-sub">'
+          + '↳ ' + esc(c.label) + ': expected ' + fmtMoney(c.expected)
+          + ', got ' + fmtMoney(c.got) + ' (Δ ' + fmtMoney(c.delta) + ')</td></tr>';
+      });
+    });
+    h += '</tbody></table>';
+    content.innerHTML = h;
+  }
+
+  function renderSections() {
+    const rows = DATA.sections;
+    let h = '<div class="gc-note">Independent sum of line totals (plus injected '
+      + 'WC / payroll fee / insurance) vs the Top Sheet section totals.</div>';
+    h += '<table class="gc-table"><thead><tr>'
+      + '<th>Code</th><th>Section</th><th class="gc-r">Top Sheet</th>'
+      + '<th class="gc-r">Recomputed</th><th class="gc-r">Δ</th>'
+      + '<th>Fee?</th><th></th></tr></thead><tbody>';
+    rows.forEach((r) => {
+      h += '<tr class="' + (r.pass ? '' : 'gc-row-fail') + '">'
+        + '<td>' + esc(r.code) + '</td><td>' + esc(r.name) + '</td>'
+        + '<td class="gc-r">' + fmtMoney(r.engine_raw) + '</td>'
+        + '<td class="gc-r">' + fmtMoney(r.indep_total) + '</td>'
+        + '<td class="gc-r">' + fmtMoney(r.delta) + '</td>'
+        + '<td class="gc-sub">' + (r.fee_applies ? 'yes' : 'exempt') + '</td>'
+        + '<td><span class="gc-badge ' + (r.pass ? 'ok' : 'fail') + '">'
+        + (r.pass ? '✓' : '✗') + '</span></td></tr>';
+    });
+    h += '</tbody></table>';
+    content.innerHTML = h;
+  }
+
+  function renderDrift() {
+    const flagged = DATA.lines.filter((l) => l.warnings && l.warnings.length);
+    if (!flagged.length) {
+      content.innerHTML = '<p class="gc-note">No drift or structural flags. '
+        + 'Stored snapshots match the live calc and no anomalies found.</p>';
+      return;
+    }
+    let h = '<div class="gc-note">' + flagged.length
+      + ' line(s) with snapshot drift or structural flags. '
+      + 'Drift = live calc moved away from a stored snapshot (not necessarily a bug).</div>';
+    h += '<table class="gc-table"><thead><tr>'
+      + '<th>Acct</th><th>Description</th><th>Flag</th>'
+      + '<th class="gc-r">Stored</th><th class="gc-r">Live</th>'
+      + '<th class="gc-r">Δ</th></tr></thead><tbody>';
+    flagged.forEach((l) => {
+      l.warnings.forEach((w, i) => {
+        const hasNums = (w.stored != null);
+        h += '<tr class="gc-row-warn">'
+          + '<td>' + (i === 0 ? esc(l.account_code) : '') + '</td>'
+          + '<td>' + (i === 0 ? esc(l.description || l.account_name) : '') + '</td>'
+          + '<td><span class="gc-badge warn">' + esc(w.type.replace(/_/g, ' ')) + '</span>'
+          + (w.detail ? ' <span class="gc-sub">' + esc(w.detail) + '</span>' : '') + '</td>'
+          + '<td class="gc-r">' + (hasNums ? fmtMoney(w.stored) : '') + '</td>'
+          + '<td class="gc-r">' + (hasNums ? fmtMoney(w.computed) : '') + '</td>'
+          + '<td class="gc-r">' + (w.delta != null ? fmtMoney(w.delta) : '') + '</td></tr>';
+      });
+    });
+    h += '</tbody></table>';
+    content.innerHTML = h;
+  }
+})();
+</script>
+{% endif %}
 
 {% endblock %}

@@ -3320,6 +3320,335 @@ def _actuals_by_section_code(pid):
     return {r[0]: float(r[1]) for r in rows if r[0] is not None}
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/audit.json")
+@login_required
+def budget_audit_json(pid, bid):
+    """Super-admin line-by-line budget gut check (read-only).
+
+    Re-runs the canonical calc engine, cross-checks each line's component
+    arithmetic against an independent recompute from raw fields, reconciles
+    the section + grand-total roll-ups against calc_top_sheet, and surfaces
+    snapshot drift (working_total / estimated_total / manual_actual) plus
+    structural anomalies. Never mutates the budget — unlike budget_view it
+    deliberately does NOT run sync_schedule_driven_lines, so it audits the
+    DB exactly as stored.
+    """
+    if not current_user.is_authenticated or current_user.role != 'super_admin':
+        abort(403)
+
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    from budget_calc import _effective_days
+
+    TOL = 0.01
+
+    def _f(x):
+        try:
+            return float(x) if x is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _r(x):
+        return round(_f(x), 2)
+
+    lines = BudgetLine.query.filter_by(budget_id=bid).order_by(
+        BudgetLine.account_code, BudgetLine.sort_order).all()
+    line_ids = {ln.id for ln in lines}
+
+    fringe_cfgs = get_fringe_configs(db.session, pid)
+    profile = budget.payroll_profile
+    pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
+        profile.payroll_week_start if profile else 6)
+
+    # Schedule bucket — identical mode-OR-NULL dedupe to budget_view and
+    # calc_top_sheet so per-line calc matches exactly what the UI shows.
+    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    _all_sd = ScheduleDay.query.filter(
+        ScheduleDay.budget_id == bid,
+        db.or_(ScheduleDay.schedule_mode == sched_mode,
+               ScheduleDay.schedule_mode == None),
+    ).all()
+    bucket = {}
+    for _d in _all_sd:
+        _b = bucket.setdefault(_d.budget_line_id, {})
+        _k = (_d.crew_instance or 1, _d.date)
+        _ex = _b.get(_k)
+        if _ex is None:
+            _b[_k] = _d
+        elif _ex.schedule_mode is None and _d.schedule_mode == sched_mode:
+            _b[_k] = _d
+
+    is_working = budget.budget_mode in ('working', 'actual')
+
+    out_lines = []
+    err_counts = {"arithmetic": 0, "agent": 0, "fringe": 0,
+                  "schedule_sum": 0, "subtotal": 0}
+    warn_counts = {"estimated_drift": 0, "working_drift": 0, "manual_actual": 0,
+                   "unknown_fringe_type": 0, "orphan_parent": 0,
+                   "orphan_from_working": 0, "schedule_no_days": 0,
+                   "negative_value": 0}
+    lines_with_errors = 0
+    lines_with_warnings = 0
+    indep_section = {}  # section_start -> summed est_total (lines only)
+
+    for ln in lines:
+        sched_rows = list(bucket.get(ln.id, {}).values())
+        used_schedule = bool(ln.use_schedule and sched_rows)
+        if ln.use_schedule:
+            res = calc_line_from_schedule(ln, sched_rows, fringe_cfgs, profile, pw_start)
+        else:
+            res = calc_line(ln, fringe_cfgs)
+
+        subtotal = _f(res.get("subtotal"))
+        fringe   = _f(res.get("fringe_amount"))
+        agent    = _f(res.get("agent_amount"))
+        total    = _f(res.get("total"))
+        st_amt   = res.get("st_amount")
+        ot_amt   = res.get("ot_amount")
+        dt_amt   = res.get("dt_amount")
+
+        checks = []
+        warnings = []
+        agent_pct = _f(ln.agent_pct)
+        cfg = fringe_cfgs.get(ln.fringe_type)
+
+        # ── Arithmetic assembly check ────────────────────────────────
+        # calc_line_from_schedule and labor calc_line assemble
+        # total = subtotal + fringe + agent. Flat NON-labor calc_line
+        # instead treats agent_pct as a DISCOUNT: total = subtotal - agent.
+        if used_schedule or ln.is_labor:
+            exp_total = round(subtotal + fringe + agent, 2)
+        else:
+            exp_total = round(subtotal - agent, 2)
+        checks.append({"name": "arithmetic", "label": "Total = parts",
+                       "pass": abs(exp_total - total) < TOL,
+                       "expected": exp_total, "got": _r(total),
+                       "delta": round(total - exp_total, 2)})
+
+        # ── Agent fee/discount magnitude ─────────────────────────────
+        exp_agent = round(subtotal * agent_pct, 2)
+        checks.append({"name": "agent", "label": "Agent = subtotal x agent%",
+                       "pass": abs(exp_agent - agent) < TOL,
+                       "expected": exp_agent, "got": _r(agent),
+                       "delta": round(agent - exp_agent, 2)})
+
+        # ── Fringe check (labor lines) ───────────────────────────────
+        if ln.is_labor:
+            if cfg is None:
+                checks.append({"name": "fringe", "label": "Fringe = $0 (no config)",
+                               "pass": abs(fringe) < TOL, "expected": 0.0,
+                               "got": _r(fringe), "delta": _r(fringe)})
+            elif cfg.is_flat:
+                checks.append({"name": "fringe", "label": "Fringe (flat/person)",
+                               "pass": True, "expected": None, "got": _r(fringe),
+                               "delta": 0.0,
+                               "note": "flat $%s/person - not %%-checked" % _r(cfg.flat_amount)})
+            else:
+                exp_fr = round(subtotal * _f(cfg.rate), 2)
+                checks.append({"name": "fringe", "label": "Fringe = subtotal x rate",
+                               "pass": abs(exp_fr - fringe) < TOL,
+                               "expected": exp_fr, "got": _r(fringe),
+                               "delta": round(fringe - exp_fr, 2)})
+
+        # ── Schedule parts add up to subtotal ────────────────────────
+        if used_schedule and st_amt is not None:
+            parts = _f(st_amt) + _f(ot_amt) + _f(dt_amt)
+            checks.append({"name": "schedule_sum", "label": "ST+OT+DT = subtotal",
+                           "pass": abs(parts - subtotal) < TOL,
+                           "expected": _r(subtotal), "got": round(parts, 2),
+                           "delta": round(parts - subtotal, 2)})
+
+        # ── Independent subtotal recompute (flat-calc cases only) ────
+        if not used_schedule:
+            if not ln.is_labor:
+                q, dy, rt = ln.quantity, ln.days, ln.rate
+                qf, dyf, rtf = _f(q), _f(dy), _f(rt)
+                if qf > 0 and dyf > 0 and rtf > 0:
+                    pre = round(qf * dyf * rtf, 2)
+                elif q is None and dy is None and rt in (None, 0):
+                    pre = round(_f(ln.estimated_total), 2)
+                else:
+                    pre = 0.0
+                checks.append({"name": "subtotal", "label": "Qty x Days x Rate",
+                               "pass": abs(pre - subtotal) < TOL,
+                               "expected": pre, "got": _r(subtotal),
+                               "delta": round(subtotal - pre, 2)})
+            else:
+                eff = _effective_days(ln)
+                base = round(1.0 * eff * _f(ln.rate) + _f(ln.est_ot), 2)
+                checks.append({"name": "subtotal", "label": "EffDays x Rate + OT",
+                               "pass": abs(base - subtotal) < TOL,
+                               "expected": base, "got": _r(subtotal),
+                               "delta": round(subtotal - base, 2)})
+
+        line_has_err = False
+        for c in checks:
+            if not c["pass"]:
+                line_has_err = True
+                err_counts[c["name"]] = err_counts.get(c["name"], 0) + 1
+
+        # ── Structural warnings ──────────────────────────────────────
+        ft = (ln.fringe_type or "").strip()
+        if ln.is_labor and cfg is None and ft not in ("", "N"):
+            warnings.append({"type": "unknown_fringe_type",
+                             "detail": "fringe_type '%s' has no config - fringe treated as $0" % ft})
+            warn_counts["unknown_fringe_type"] += 1
+        if ln.parent_line_id and ln.parent_line_id not in line_ids:
+            warnings.append({"type": "orphan_parent",
+                             "detail": "parent_line_id %s not in this budget" % ln.parent_line_id})
+            warn_counts["orphan_parent"] += 1
+        if getattr(ln, "orphan_from_working", False):
+            warnings.append({"type": "orphan_from_working",
+                             "detail": "Working source line was deleted"})
+            warn_counts["orphan_from_working"] += 1
+        if ln.use_schedule and not sched_rows:
+            warnings.append({"type": "schedule_no_days",
+                             "detail": "use_schedule on but no schedule days - fell back to flat calc"})
+            warn_counts["schedule_no_days"] += 1
+        for _fld in ("rate", "days", "quantity", "est_ot"):
+            if _f(getattr(ln, _fld, 0)) < 0:
+                warnings.append({"type": "negative_value",
+                                 "detail": "%s is negative" % _fld})
+                warn_counts["negative_value"] += 1
+                break
+
+        # ── Snapshot drift warnings ──────────────────────────────────
+        if is_working and ln.working_total is not None:
+            wt = _r(ln.working_total)
+            d = round(total - wt, 2)
+            if abs(d) >= TOL:
+                warnings.append({"type": "working_drift", "stored": wt,
+                                 "computed": _r(total), "delta": d})
+                warn_counts["working_drift"] += 1
+        if (not ln.is_labor and ln.estimated_total is not None
+                and not (ln.quantity is None and ln.days is None
+                         and ln.rate in (None, 0))):
+            et = _r(ln.estimated_total)
+            d = round(total - et, 2)
+            if abs(d) >= TOL:
+                warnings.append({"type": "estimated_drift", "stored": et,
+                                 "computed": _r(total), "delta": d})
+                warn_counts["estimated_drift"] += 1
+        if ln.manual_actual is not None:
+            ma = _r(ln.manual_actual)
+            warnings.append({"type": "manual_actual", "stored": ma,
+                             "computed": _r(total), "delta": round(ma - total, 2),
+                             "detail": "manual actual override present"})
+            warn_counts["manual_actual"] += 1
+
+        if line_has_err:
+            lines_with_errors += 1
+        if warnings:
+            lines_with_warnings += 1
+
+        sec = _section_for_code(int(ln.account_code))
+        indep_section[sec] = indep_section.get(sec, 0.0) + _f(res.get("est_total"))
+
+        out_lines.append({
+            "line_id": ln.id, "account_code": ln.account_code,
+            "account_name": ln.account_name, "description": ln.description or "",
+            "is_labor": bool(ln.is_labor), "use_schedule": bool(ln.use_schedule),
+            "used_schedule": used_schedule, "rate_type": ln.rate_type,
+            "fringe_type": ln.fringe_type, "qty": _f(ln.quantity),
+            "days": _f(ln.days), "rate": _f(ln.rate), "est_ot": _f(ln.est_ot),
+            "agent_pct": agent_pct, "subtotal": _r(subtotal),
+            "fringe_amount": _r(fringe), "agent_amount": _r(agent), "total": _r(total),
+            "st_amount": _r(st_amt) if st_amt is not None else None,
+            "ot_amount": _r(ot_amt) if ot_amt is not None else None,
+            "dt_amount": _r(dt_amt) if dt_amt is not None else None,
+            "stored_estimated_total": _r(ln.estimated_total) if ln.estimated_total is not None else None,
+            "stored_working_total": _r(ln.working_total) if ln.working_total is not None else None,
+            "stored_manual_actual": _r(ln.manual_actual) if ln.manual_actual is not None else None,
+            "checks": checks, "warnings": warnings,
+            "ok": not line_has_err, "has_warnings": bool(warnings),
+        })
+
+    # ── Roll-up reconciliation via calc_top_sheet ────────────────────
+    actuals_by_code = _actuals_by_section_code(pid)
+    top_sheet = calc_top_sheet(budget, lines, fringe_cfgs, actuals_by_code, profile, pw_start)
+
+    wc = _f(top_sheet.get("workers_comp_amount"))
+    pf = _f(top_sheet.get("payroll_fee_amount"))
+    pi = _f(top_sheet.get("production_insurance_amount"))
+    # Mirror calc_top_sheet's auto-line injection into sections 6000/6500.
+    if wc:
+        indep_section[6000] = indep_section.get(6000, 0.0) + wc
+    if pi:
+        indep_section[6000] = indep_section.get(6000, 0.0) + pi
+    if pf:
+        indep_section[6500] = indep_section.get(6500, 0.0) + pf
+
+    section_rows = []
+    section_errors = 0
+    exclude_fringes = bool(top_sheet.get("company_fee_exclude_fringes", True))
+    fee_base_indep = 0.0
+    for row in top_sheet.get("rows", []):
+        code = row["code"]
+        engine_raw = _f(row.get("raw_estimated", row.get("estimated")))
+        indep = round(indep_section.get(code, 0.0), 2)
+        delta = round(indep - engine_raw, 2)
+        ok = abs(delta) < TOL
+        if not ok:
+            section_errors += 1
+        if row.get("fee_applies"):
+            base = engine_raw - (_f(row.get("fringe_in_section")) if exclude_fringes else 0.0)
+            fee_base_indep += max(base, 0.0)
+        section_rows.append({
+            "code": code, "name": row.get("account"),
+            "engine_estimated": _f(row.get("estimated")),
+            "engine_raw": round(engine_raw, 2), "indep_total": indep,
+            "delta": delta, "pass": ok,
+            "fee_applies": bool(row.get("fee_applies")),
+            "fringe_in_section": _f(row.get("fringe_in_section")),
+        })
+
+    fee_mode = top_sheet.get("company_fee_mode", "pct")
+    fee_pct  = _f(top_sheet.get("company_fee_pct"))
+    fee_flat = _f(top_sheet.get("company_fee_flat"))
+    fee_indep = round(fee_flat, 2) if fee_mode == "flat" else round(fee_base_indep * fee_pct, 2)
+    engine_fee = _f(top_sheet.get("company_fee"))
+    fee_delta = round(fee_indep - engine_fee, 2)
+
+    indep_subtotal = round(sum(indep_section.values()), 2)
+    engine_subtotal = _f(top_sheet.get("subtotal_estimated"))
+    subtotal_delta = round(indep_subtotal - engine_subtotal, 2)
+
+    indep_grand = round(indep_subtotal + fee_indep, 2)
+    engine_grand = _f(top_sheet.get("grand_total_estimated"))
+    grand_delta = round(indep_grand - engine_grand, 2)
+    grand_pass = (abs(grand_delta) < TOL and abs(subtotal_delta) < TOL
+                  and abs(fee_delta) < TOL)
+
+    total_errors = lines_with_errors + section_errors + (0 if grand_pass else 1)
+    status = "PASS" if total_errors == 0 else "FAIL"
+
+    return jsonify({
+        "budget_id": bid, "project_id": pid, "budget_name": budget.name,
+        "budget_mode": budget.budget_mode, "is_actual": bool(budget.is_actual),
+        "tolerance": TOL,
+        "summary": {
+            "total_lines": len(out_lines),
+            "lines_ok": sum(1 for l in out_lines if l["ok"] and not l["has_warnings"]),
+            "lines_with_errors": lines_with_errors,
+            "lines_with_warnings": lines_with_warnings,
+            "error_counts": err_counts, "warning_counts": warn_counts,
+            "section_errors": section_errors,
+            "grand": {
+                "engine_subtotal": round(engine_subtotal, 2),
+                "indep_subtotal": indep_subtotal, "subtotal_delta": subtotal_delta,
+                "engine_fee": round(engine_fee, 2), "indep_fee": fee_indep,
+                "fee_delta": fee_delta, "fee_mode": fee_mode, "fee_pct": fee_pct,
+                "engine_grand": round(engine_grand, 2), "indep_grand": indep_grand,
+                "grand_delta": grand_delta, "grand_pass": grand_pass,
+                "gross_labor_wages": _f(top_sheet.get("gross_labor_wages")),
+                "workers_comp_amount": wc, "payroll_fee_amount": pf,
+                "production_insurance_amount": pi,
+            },
+            "status": status,
+        },
+        "lines": out_lines, "sections": section_rows,
+    })
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>")
 @login_required
 def budget_view(pid, bid):
