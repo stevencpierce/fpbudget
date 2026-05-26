@@ -14157,6 +14157,174 @@ def admin_panel():
                            coa_sections=FP_COA_SECTIONS)
 
 
+@app.route("/admin/budget-diff", methods=["GET"])
+@login_required
+@admin_required
+def admin_budget_diff():
+    """Compare two budgets field-by-field and return every line where
+    they differ. Built 2026-05-26 because a user reported "the new
+    estimated budget once duplicated doesn't match" and the sync logs
+    showed identical auto-line outputs — meaning the divergence must
+    be somewhere we weren't looking.
+
+    Usage:  /admin/budget-diff?a=<bid_a>&b=<bid_b>
+
+    Output: JSON with per-section per-line diffs of the canonical calc
+    inputs (quantity, days, rate, est_ot, agent_pct, fringe_type,
+    rate_type, days_unit, days_per_week, use_schedule, sync_omit,
+    line_tag, estimated_total, working_total, unit_rate, po_id,
+    catalog_item_id) and the budget-level settings that affect
+    calc_top_sheet (company_fee_pct/mode/flat/dispersed/excluded,
+    fee_exclude_fringes, workers_comp_pct, payroll_fee_pct,
+    production_insurance_*, payroll_profile_id, payroll_week_start).
+    Lines are matched by (account_code, sort_order, description) —
+    same key the in-app Estimated→Working PO badge resolution uses.
+    """
+    try:
+        a_bid = int(request.args.get('a') or 0)
+        b_bid = int(request.args.get('b') or 0)
+    except (TypeError, ValueError):
+        return jsonify({"error": "a and b must be integers"}), 400
+    if not a_bid or not b_bid:
+        return jsonify({"error": "Pass ?a=<bid>&b=<bid>"}), 400
+
+    ba = Budget.query.get(a_bid)
+    bb = Budget.query.get(b_bid)
+    if not ba or not bb:
+        return jsonify({"error": "One or both budgets not found"}), 404
+
+    # ── Budget-level settings comparison ──────────────────────────────
+    _budget_fields = [
+        'budget_mode', 'version_status', 'parent_budget_id', 'version_number',
+        'company_fee_pct', 'company_fee_mode', 'company_fee_flat',
+        'company_fee_dispersed', 'fee_excluded_sections', 'fee_exclude_fringes',
+        'workers_comp_pct', 'payroll_fee_pct',
+        'production_insurance_mode', 'production_insurance_pct',
+        'production_insurance_flat',
+        'payroll_profile_id', 'payroll_week_start', 'timezone',
+        'start_date', 'end_date', 'target_budget',
+    ]
+    def _stringify(v):
+        if v is None:
+            return None
+        if hasattr(v, 'isoformat'):
+            return v.isoformat()
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return str(v)
+
+    budget_diffs = {}
+    for f in _budget_fields:
+        va, vb = _stringify(getattr(ba, f, None)), _stringify(getattr(bb, f, None))
+        if va != vb:
+            budget_diffs[f] = {'a': va, 'b': vb}
+
+    # ── Per-line comparison, keyed by (account_code, sort_order, desc) ─
+    _line_fields = [
+        'account_code', 'account_name', 'description', 'is_labor',
+        'sort_order', 'estimated_total', 'payroll_co', 'quantity', 'days',
+        'rate', 'rate_type', 'est_ot', 'fringe_type', 'agent_pct',
+        'use_schedule', 'days_unit', 'days_per_week',
+        'line_tag', 'role_group', 'unit_rate',
+        'sync_omit', 'schedule_labels',
+        'po_id', 'catalog_item_id',
+        'working_total', 'manual_actual',
+        'parent_line_id',  # NOTE: ids differ per-budget; we report the boolean "has parent" too
+    ]
+    def _key(ln):
+        return (ln.account_code, ln.sort_order, (ln.description or '').strip().lower())
+    a_lines = {_key(ln): ln for ln in BudgetLine.query.filter_by(budget_id=a_bid).all()}
+    b_lines = {_key(ln): ln for ln in BudgetLine.query.filter_by(budget_id=b_bid).all()}
+
+    line_diffs = []
+    only_in_a = []
+    only_in_b = []
+    keys = set(a_lines.keys()) | set(b_lines.keys())
+    for k in sorted(keys, key=lambda x: (x[0] or 0, x[1] or 0, x[2] or '')):
+        la, lb = a_lines.get(k), b_lines.get(k)
+        if la and not lb:
+            only_in_a.append({'key': list(k), 'id': la.id})
+            continue
+        if lb and not la:
+            only_in_b.append({'key': list(k), 'id': lb.id})
+            continue
+        per_line = {}
+        for f in _line_fields:
+            va, vb = _stringify(getattr(la, f, None)), _stringify(getattr(lb, f, None))
+            # parent_line_id will always differ (different namespace); convert
+            # to a boolean "has parent" comparison so we don't spam the diff.
+            if f == 'parent_line_id':
+                va = bool(va); vb = bool(vb)
+            if va != vb:
+                per_line[f] = {'a': va, 'b': vb}
+        if per_line:
+            line_diffs.append({
+                'key': {'account_code': k[0], 'sort_order': k[1],
+                        'description': k[2]},
+                'a_line_id': la.id, 'b_line_id': lb.id,
+                'fields': per_line,
+            })
+
+    # ── Schedule day count + ProductionDay flag tally ─────────────────
+    def _sd_summary(bid):
+        from sqlalchemy import or_ as _or_d
+        sched_mode = ('working' if (Budget.query.get(bid).budget_mode in ('working', 'actual'))
+                      else 'estimated')
+        rows = (db.session.query(ScheduleDay)
+                .filter(ScheduleDay.budget_id == bid,
+                        _or_d(ScheduleDay.schedule_mode == sched_mode,
+                              ScheduleDay.schedule_mode.is_(None)))
+                .all())
+        flag_tally = {}
+        for r in rows:
+            if not r.cell_flags:
+                continue
+            try:
+                import json as _json
+                for k, v in (_json.loads(r.cell_flags) or {}).items():
+                    if v:
+                        flag_tally[k] = flag_tally.get(k, 0) + 1
+            except Exception:
+                pass
+        from models import ProductionDay as _PD
+        pds = _PD.query.filter_by(budget_id=bid).all()
+        pd_tally = {}
+        for col in ('craft_services', 'courtesy_breakfast', 'first_meal', 'second_meal'):
+            pd_tally[col] = sum(1 for p in pds if getattr(p, col, False))
+        return {'schedule_days': len(rows), 'cell_flag_tally': flag_tally,
+                'production_day_flag_tally': pd_tally,
+                'production_day_total': len(pds)}
+
+    sd_a = _sd_summary(a_bid)
+    sd_b = _sd_summary(b_bid)
+    sd_diff = {}
+    for f in ('schedule_days', 'production_day_total'):
+        if sd_a[f] != sd_b[f]:
+            sd_diff[f] = {'a': sd_a[f], 'b': sd_b[f]}
+    for k in set(sd_a['cell_flag_tally']) | set(sd_b['cell_flag_tally']):
+        va, vb = sd_a['cell_flag_tally'].get(k, 0), sd_b['cell_flag_tally'].get(k, 0)
+        if va != vb:
+            sd_diff.setdefault('cell_flag_tally', {})[k] = {'a': va, 'b': vb}
+    for k in set(sd_a['production_day_flag_tally']) | set(sd_b['production_day_flag_tally']):
+        va, vb = sd_a['production_day_flag_tally'].get(k, 0), sd_b['production_day_flag_tally'].get(k, 0)
+        if va != vb:
+            sd_diff.setdefault('production_day_flag_tally', {})[k] = {'a': va, 'b': vb}
+
+    return jsonify({
+        'a': {'id': a_bid, 'name': ba.name, 'mode': ba.budget_mode,
+              'status': ba.version_status, 'line_count': len(a_lines)},
+        'b': {'id': b_bid, 'name': bb.name, 'mode': bb.budget_mode,
+              'status': bb.version_status, 'line_count': len(b_lines)},
+        'budget_diffs': budget_diffs,
+        'schedule_diffs': sd_diff,
+        'line_diffs_count': len(line_diffs),
+        'lines_only_in_a': only_in_a,
+        'lines_only_in_b': only_in_b,
+        'line_diffs': line_diffs,
+    })
+
+
 @app.route("/admin/qbo-coverage", methods=["GET"])
 @login_required
 @admin_required
