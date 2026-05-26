@@ -4556,7 +4556,14 @@ def budget_view(pid, bid):
     # pattern already used for the Working column.
     est_top_sheet      = None
     est_section_lookup = {}
-    if current_estimated_bid:
+    if budget.budget_mode == 'estimated':
+        # Viewing an Estimated budget — its OWN rollup IS the Estimated
+        # column, full stop. Use top_sheet directly rather than
+        # re-resolving the project's "current" Estimated peer, which can
+        # be a DIFFERENT version than the one on screen and made the Top
+        # Sheet table disagree with the float bar + PDF. 2026-05-20.
+        est_top_sheet = top_sheet
+    elif current_estimated_bid:
         if current_estimated_bid == budget.id:
             # FAST PATH: viewing the Estimated budget already — top_sheet
             # IS the Estimated rollup. No second calc needed.
@@ -7908,7 +7915,15 @@ def export_pdf(pid, bid):
     # Estimated budget).
     est_top_sheet = None
     est_section_lookup = {}
-    try:
+    if budget.budget_mode == 'estimated':
+        # Exporting an Estimated budget — its OWN rollup IS the Estimated
+        # column. Don't re-resolve a "current Estimated peer"; that could
+        # pick a DIFFERENT Estimated version and make the PDF disagree
+        # with the budget on screen (root cause of the active-vs-export
+        # mismatch). Mirrors budget_view. 2026-05-20.
+        est_top_sheet = top_sheet
+    else:
+      try:
         # Find the project's current Estimated peer budget. Two-step
         # lookup that mirrors the in-app view (app.py:3791): prefer
         # version_status='current'; fall back to any non-archived row
@@ -7947,7 +7962,7 @@ def export_pdf(pid, bid):
             )
         else:
             est_top_sheet = top_sheet  # current budget IS the Estimated
-    except Exception as _eee:
+      except Exception as _eee:
         logging.warning(f"[export_pdf] est_top_sheet build failed: {_eee}")
         est_top_sheet = top_sheet
     for _r in (est_top_sheet.get("rows") if est_top_sheet else []) or []:
