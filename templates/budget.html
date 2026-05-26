@@ -729,9 +729,9 @@
         <col style="width:72px"><!-- days -->
         <col style="width:100px"><!-- rate -->
         <col style="width:105px"><!-- type -->
-        <col style="width:65px"><!-- ot -->
-        <col style="width:80px"><!-- fringe -->
         <col style="width:95px"><!-- subtotal -->
+        <col style="width:65px"><!-- ot -->
+        <col style="width:92px"><!-- fringe (type dropdown + calc'd fringe $) -->
         <col style="width:{{ '65px' if ns.has_agent_or_disc else '0' }}"><!-- agent%/disc% (collapsed when no line has a value) -->
         <col style="width:115px"><!-- estimated -->
         <col style="width:{{ '90px' if working_exists else '0' }}"><!-- working -->
@@ -1185,6 +1185,8 @@
                 {% if ln.fringe_type == fr.fringe_type %}selected{% endif %}>{{ fr.fringe_type }}</option>
               {% endfor %}
             </select>
+            <span class="line-fringe-amt muted" style="display:block;font-size:.68rem;margin-top:1px;line-height:1.1"
+                  title="Calculated fringe cost for this line">{{ res.fringe_amount | currency if res.fringe_amount else '' }}</span>
             {% endif %}
           </td>
           <td class="col-num{% if not ns.has_agent_or_disc %} col-empty{% endif %}">
@@ -9688,6 +9690,11 @@ function refreshLineRow(id, data) {
   if (!row) return;
   const sub  = row.querySelector('.line-subtotal');
   if (sub) sub.textContent = fmtCurrency(data.subtotal || 0);
+  // Calculated fringe $ shown under the fringe-type dropdown (labor lines).
+  const frAmt = row.querySelector('.line-fringe-amt');
+  if (frAmt && data.fringe_amount !== undefined) {
+    frAmt.textContent = (data.fringe_amount || 0) ? fmtCurrency(data.fringe_amount) : '';
+  }
 
   // ── Patch editable input cells from the server's authoritative values ──
   // Per user 2026-04-28: in-line field changes (rate, duration, qty, fringe,
@@ -9936,8 +9943,8 @@ function _showFloatBar(show) {
   if (typeof BID === 'undefined') return;
   const STORE_KEY = `fpbudget_col_widths_${BID}`;
   // Indexes match the colgroup order in the section table:
-  // desc, pc, qty, days, rate, type, ot, fringe, subtotal, agent, estimated, working, variance, act
-  const COL_NAMES = ['desc','pc','qty','days','rate','type','ot','fringe','subtotal','agent','estimated','working','variance','act'];
+  // desc, pc, qty, days, rate, type, subtotal, ot, fringe, agent, estimated, working, variance, act
+  const COL_NAMES = ['desc','pc','qty','days','rate','type','subtotal','ot','fringe','agent','estimated','working','variance','act'];
   // Last column ('act') is auto-sized — don't add a resizer to it.
   const RESIZABLE_THROUGH = COL_NAMES.length - 2;
 
