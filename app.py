@@ -3209,6 +3209,22 @@ def _delete_budget_cascade(bid):
             {"parent_line_id": None}, synchronize_session=False)
         Location.query.filter(Location.budget_line_id.in_(line_ids)).update(
             {"budget_line_id": None}, synchronize_session=False)
+        # Cross-budget BudgetLine references (Actual budget back-references
+        # to a Working line that lives on this Estimated/Working budget).
+        # NULL the link + mark orphan_from_working so the surviving Actual
+        # rows degrade gracefully instead of erroring on the next sync.
+        # Mirrors the single-line delete_line handler from earlier.
+        BudgetLine.query.filter(BudgetLine.source_line_id.in_(line_ids)).update(
+            {"source_line_id": None, "orphan_from_working": True},
+            synchronize_session=False)
+        # Transactions linked to lines on this budget — keep the txn (the
+        # actual spend), drop the line pointer, drop the suggestion, flip
+        # to unmatched so it resurfaces in the Actuals "needs coding" pile.
+        Transaction.query.filter(Transaction.budget_line_id.in_(line_ids)).update(
+            {"budget_line_id": None, "match_status": "unmatched"},
+            synchronize_session=False)
+        Transaction.query.filter(Transaction.suggested_budget_line_id.in_(line_ids)).update(
+            {"suggested_budget_line_id": None}, synchronize_session=False)
         # TravelDetail FKs ScheduleDay — must drop them BEFORE ScheduleDay
         # rows are deleted, otherwise the FK violates and the whole
         # cascade aborts. Found via 500 on /budget/<bid>/delete: "update
@@ -3245,7 +3261,41 @@ def _delete_budget_cascade(bid):
     LocationDay.query.filter_by(budget_id=bid).delete(synchronize_session=False)
     CallSheetData.query.filter_by(budget_id=bid).delete(synchronize_session=False)
     BudgetDirectContact.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    # CateringBill — budget-scoped, no value standalone. Was previously
+    # missing from this cascade — Postgres raised
+    # "catering_bill_budget_id_fkey" when deleting any budget that had
+    # catering rows attached. 2026-05-26.
+    try:
+        from models import CateringBill as _CB
+        _CB.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+    except Exception:
+        # Table may not exist on older deploys; harmless to skip.
+        pass
     BudgetLine.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+
+    # ── Cross-row Budget back-references (2026-05-26) ─────────────────
+    # Two remaining FKs Postgres will trip on if we don't pre-clear:
+    #
+    # 1. Budget.parent_budget_id — child budgets (e.g. a Working budget
+    #    whose parent is this Estimated, or a v2 Estimated whose parent
+    #    is v1). NULL the link to preserve the children as standalone
+    #    versions; otherwise deleting v1 would cascade-orphan v2, which
+    #    is destructive of audit history the user didn't ask to drop.
+    #
+    # 2. ActivityLog.budget_id — every edit ever recorded against this
+    #    budget. NULL the link, keep the rows. The activity feed will
+    #    show them as project-scoped events without a budget tag —
+    #    correct, since the budget no longer exists. User report
+    #    2026-05-26 surfaced this one: "could not delete version" →
+    #    "ForeignKeyViolation: activity_log_budget_id_fkey".
+    Budget.query.filter(Budget.parent_budget_id == bid).update(
+        {"parent_budget_id": None}, synchronize_session=False)
+    try:
+        ActivityLog.query.filter(ActivityLog.budget_id == bid).update(
+            {"budget_id": None}, synchronize_session=False)
+    except Exception:
+        # ActivityLog table didn't exist in early builds; harmless skip.
+        pass
 
     db.session.delete(budget)
 
