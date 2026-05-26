@@ -12354,20 +12354,69 @@ def assign_crew(pid, bid, lid):
     ln     = BudgetLine.query.get(lid)
     _act_prev_crew_id = ln.assigned_crew_id
     _act_prev_name    = ln.assigned_crew.name if ln.assigned_crew else None
-    ln.assigned_crew_id = int(cid) if cid else None
-    cm = CrewMember.query.get(int(cid)) if cid else None
+    _cid_int = int(cid) if cid else None
+    cm = CrewMember.query.get(_cid_int) if _cid_int else None
     agent_pct_applied = None  # no longer auto-applied; client prompts
-    # Mirror to CrewAssignment (instance 1) so the gantt stays in sync
-    ca = CrewAssignment.query.filter_by(budget_line_id=lid, instance=1).first()
-    if not cid:
-        if ca:
-            db.session.delete(ca)
-    elif ca:
-        ca.crew_member_id = int(cid)
-        ca.name_override  = None
-    else:
-        db.session.add(CrewAssignment(budget_line_id=lid, instance=1,
-                                      crew_member_id=int(cid), name_override=None))
+
+    def _apply_crew_to_line(target):
+        """Set assigned_crew_id + mirror CrewAssignment(instance 1) so the
+        gantt stays in sync, for one budget line."""
+        target.assigned_crew_id = _cid_int
+        ca = CrewAssignment.query.filter_by(budget_line_id=target.id, instance=1).first()
+        if not _cid_int:
+            if ca:
+                db.session.delete(ca)
+        elif ca:
+            ca.crew_member_id = _cid_int
+            ca.name_override  = None
+        else:
+            db.session.add(CrewAssignment(budget_line_id=target.id, instance=1,
+                                          crew_member_id=_cid_int, name_override=None))
+
+    # ── Cross-version unification (mirrors line_assign_po, 2026-05-20) ──
+    # The Working budget is the canonical owner of crew assignments.
+    # Assigning from ANY view (Estimated / Working / Actual) writes
+    # through to the canonical Working sister line + every Actual clone
+    # of it, so the same person shows on all three versions. Resolution:
+    #   • Working line  → itself
+    #   • Actual line   → BudgetLine.source_line_id backlink
+    #   • Estimated     → (account_code, sort_order) match on the
+    #                     project's current Working budget
+    canonical_working = None
+    _wb = (Budget.query
+           .filter_by(project_id=pid, budget_mode='working', version_status='current')
+           .filter(Budget.is_actual == False)
+           .order_by(Budget.id.desc()).first())
+    if not _wb:
+        _wb = (Budget.query
+               .filter_by(project_id=pid, budget_mode='working')
+               .filter(Budget.is_actual == False)
+               .filter(Budget.version_status != 'archived')
+               .order_by(Budget.id.desc()).first())
+    line_budget = Budget.query.get(bid)
+    _is_working_line = (line_budget and line_budget.budget_mode == 'working'
+                        and not line_budget.is_actual)
+    _is_actual_line  = bool(line_budget and line_budget.is_actual)
+    if _is_working_line:
+        canonical_working = ln
+    elif _wb:
+        if _is_actual_line and ln.source_line_id:
+            canonical_working = BudgetLine.query.filter_by(
+                id=ln.source_line_id, budget_id=_wb.id).first()
+        if not canonical_working:
+            canonical_working = BudgetLine.query.filter_by(
+                budget_id=_wb.id, account_code=ln.account_code,
+                sort_order=ln.sort_order).first()
+
+    _apply_crew_to_line(ln)
+    if canonical_working and canonical_working.id != ln.id:
+        _apply_crew_to_line(canonical_working)
+    if canonical_working:
+        for _clone in BudgetLine.query.filter_by(
+                source_line_id=canonical_working.id).all():
+            if _clone.id != ln.id:
+                _apply_crew_to_line(_clone)
+
     _touch_budget(bid)
     db.session.commit()
     name = ln.assigned_crew.name if ln.assigned_crew else None

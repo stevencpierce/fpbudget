@@ -1316,38 +1316,37 @@
           {% endif %}
           <td class="col-act">
             {% if ln.is_labor %}
-              {# Crew assignment now lives only on Working budget lines.
-                 In Working view → editable name (existing behavior).
-                 In Estimated → look up by (account_code, sort_order)
-                 against sister Working; show as a small amber dot with
-                 the crew member name on hover. Read-only.
-                 In Actual → look up by source_line_id (Actual line's
-                 backlink to its Working twin); same read-only dot.
-                 Per user 2026-05-08. #}
+              {# Crew assignment is editable on every view and unified
+                 across versions (like the +PO badge): the Working budget
+                 is the canonical owner, and assigning from Estimated /
+                 Actual writes through server-side to the Working sister +
+                 its Actual clones. Effective name resolves per view, with
+                 a fallback to the line's own assignment when there's no
+                 Working sister yet. Revised 2026-05-20 from Working-only. #}
               {% if is_working_view and not is_actual_view %}
-                <span class="assigned-crew-name {{ '' if ln.assigned_crew else 'no-assignment' }}"
-                      data-id="{{ ln.id }}"
-                      onclick="openCrewAssign({{ ln.id }})"
-                      title="{{ ln.assigned_crew.name if ln.assigned_crew else 'Click to assign person' }}">
-                  {{ ln.assigned_crew.name if ln.assigned_crew else '+ Assign' }}
-                </span>
+                {% set _crew_id   = ln.assigned_crew_id %}
+                {% set _crew_name = ln.assigned_crew.name if ln.assigned_crew else None %}
               {% else %}
                 {% if is_actual_view %}
-                  {% set _w_crew = working_crew_by_wlid.get(ln.source_line_id) if ln.source_line_id else None %}
+                  {% set _wc = working_crew_by_wlid.get(ln.source_line_id) if ln.source_line_id else None %}
                 {% else %}
-                  {% set _w_crew = working_crew_by_key.get((ln.account_code, ln.sort_order)) %}
+                  {% set _wc = working_crew_by_key.get((ln.account_code, ln.sort_order)) %}
                 {% endif %}
-                {% if _w_crew %}
-                <span class="line-crew-dot"
-                      title="Assigned to {{ _w_crew[1] or 'crew member' }} (set on Working budget)"
-                      style="display:inline-block;width:8px;height:8px;border-radius:50%;
-                             background:#fbbf24;margin-right:4px;vertical-align:middle;
-                             box-shadow:0 0 0 2px rgba(251,191,36,.18);cursor:help"></span>
-                <span class="muted" style="font-size:.72rem;font-style:italic">{{ _w_crew[1] or 'assigned' }}</span>
+                {% if _wc %}
+                  {% set _crew_id   = _wc[0] %}
+                  {% set _crew_name = _wc[1] %}
                 {% else %}
-                <span class="muted" style="font-size:.7rem">—</span>
+                  {% set _crew_id   = ln.assigned_crew_id %}
+                  {% set _crew_name = ln.assigned_crew.name if ln.assigned_crew else None %}
                 {% endif %}
               {% endif %}
+              {% set _crew_hint = '' if (is_working_view and not is_actual_view) else ' (saves to Working + Actuals)' %}
+              <span class="assigned-crew-name {{ '' if _crew_id else 'no-assignment' }}"
+                    data-id="{{ ln.id }}"
+                    onclick="openCrewAssign({{ ln.id }})"
+                    title="{% if _crew_id %}{{ _crew_name or 'assigned' }}{{ _crew_hint }}{% else %}Click to assign person{{ _crew_hint }}{% endif %}">
+                {{ (_crew_name or 'assigned') if _crew_id else '+ Assign' }}
+              </span>
             <button class="btn btn-xs btn-outline calc-detail-btn"
                     data-pid="{{ project.id }}" data-bid="{{ budget.id }}" data-lid="{{ ln.id }}"
                     title="View OT / payroll calculation breakdown">OT Detail</button>
