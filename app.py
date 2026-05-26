@@ -13712,8 +13712,29 @@ def _copy_budget_lines(source_id, dest_id):
             assigned_crew_id=ln.assigned_crew_id,
             # Parent-child relationship (remapped to new IDs)
             parent_line_id=line_id_map.get(ln.parent_line_id) if ln.parent_line_id else None,
-            # working_total and manual_actual intentionally NOT copied:
-            # the new budget starts with no working override (None = falls back to est_total)
+            # ── 2026-05-26: previously missing — caused new-version totals
+            # to diverge from source. sync_omit is the critical one: when
+            # a source line has manual override on (per-diem qty hand-
+            # tweaked, custom flight days set, etc.), failing to copy it
+            # meant the new version booted with sync_omit=False, and the
+            # next render's sync_schedule_driven_lines overwrote the
+            # manual value with whatever the schedule computed. Source
+            # kept the manual value (sync skipped it), copy got the auto
+            # value → identical input, different output. User report
+            # 2026-05-26 "when I make a new version of an estimated the
+            # numbers don't match".
+            #
+            # The others (schedule_labels, po_id, catalog_item_id) don't
+            # affect calc totals directly but should carry across version
+            # boundaries so the new version mirrors the source's vendor
+            # commitments / quick-entry catalog links / custom labels.
+            #
+            # working_total + manual_actual stay un-copied per the
+            # deliberate "new budget = no working override" semantic.
+            sync_omit=bool(getattr(ln, 'sync_omit', False)),
+            schedule_labels=ln.schedule_labels,
+            po_id=ln.po_id,
+            catalog_item_id=ln.catalog_item_id,
         )
         db.session.add(new_ln)
         db.session.flush()  # get new_ln.id
