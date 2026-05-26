@@ -11214,6 +11214,18 @@ function renderCalcDetail(d) {
 <div id="budget-row-ctx-menu" class="budget-ctx-menu hidden">
   <button type="button" class="ctx-menu-item" id="ctx-add-kit-fee">🔧 Add Kit Fee</button>
   <button type="button" class="ctx-menu-item" id="ctx-all-in-total">💰 Enter All-in Total</button>
+  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
+  <button type="button" class="ctx-menu-item labor-rowop" data-op="insert-above">Insert Row Above</button>
+  <button type="button" class="ctx-menu-item labor-rowop" data-op="insert-below">Insert Row Below</button>
+  <button type="button" class="ctx-menu-item labor-rowop" data-op="duplicate">Duplicate Row</button>
+  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
+  <button type="button" class="ctx-menu-item labor-rowop" data-op="spacer-above">Insert Spacer Above</button>
+  <button type="button" class="ctx-menu-item labor-rowop" data-op="spacer-below">Insert Spacer Below</button>
+  <button type="button" class="ctx-menu-item labor-rowop" data-op="header-above">Insert Sub-header Above</button>
+  <button type="button" class="ctx-menu-item labor-rowop" data-op="header-below">Insert Sub-header Below</button>
+  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
+  <button type="button" class="ctx-menu-item labor-rowop" data-op="move">Move to…</button>
+  <button type="button" class="ctx-menu-item labor-rowop" data-op="change-group" id="ctx-labor-change-group" style="display:none">Change Group…</button>
 </div>
 
 <!-- ── Schedule-driven Line Context Menu (right-click on auto-managed lines) ── -->
@@ -11480,6 +11492,10 @@ function renderCalcDetail(d) {
   function _showCtxMenuAt(row, x, y) {
     _ctxLineId  = parseInt(row.dataset.id);
     _ctxLineRow = row;
+    // Change Group… only applies to role-grouped sections (2000), matching
+    // the non-labor menu.
+    const _cgBtn = document.getElementById('ctx-labor-change-group');
+    if (_cgBtn) _cgBtn.style.display = (parseInt(row.dataset.code || '0') === 2000) ? '' : 'none';
     menu.style.visibility = 'hidden';
     menu.style.left = '0px';
     menu.style.top  = '0px';
@@ -11498,6 +11514,30 @@ function renderCalcDetail(d) {
     if (!row) { menu.classList.add('hidden'); return; }
     e.preventDefault();
     _showCtxMenuAt(row, e.clientX, e.clientY);
+  });
+
+  // Insert / Spacer / Sub-header / Move / Duplicate parity with non-labor
+  // rows. These reuse the shared window.lineInsert/lineDuplicate/move
+  // helpers (which the ⋮ button already drives on labor rows); we just
+  // point them at the right-clicked row first. 2026-05-20.
+  menu.querySelectorAll('.labor-rowop').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      menu.classList.add('hidden');
+      if (!_ctxLineId) return;
+      const code = _ctxLineRow ? (_ctxLineRow.dataset.code || '') : '';
+      if (window._setLineMenuTarget) window._setLineMenuTarget(_ctxLineId, code);
+      switch (this.dataset.op) {
+        case 'insert-above':  window.lineInsert('above'); break;
+        case 'insert-below':  window.lineInsert('below'); break;
+        case 'duplicate':     window.lineDuplicate(); break;
+        case 'spacer-above':  window.lineInsert('above', 'spacer'); break;
+        case 'spacer-below':  window.lineInsert('below', 'spacer'); break;
+        case 'header-above':  window.lineInsert('above', 'header'); break;
+        case 'header-below':  window.lineInsert('below', 'header'); break;
+        case 'move':          window.openLineMoveModal(); break;
+        case 'change-group':  window.openChangeGroupModal(); break;
+      }
+    });
   });
 
   // Long-press (500ms) on touch devices — triggers context menu without right-click
@@ -14528,6 +14568,15 @@ setTimeout(function() {
 
   let _menuLineId  = null;
   let _menuCode    = null;
+
+  // Allow the labor right-click menu (a separate IIFE) to target the same
+  // row before invoking the shared lineInsert/lineDuplicate/move helpers,
+  // so labor rows get the same Insert/Spacer/Header/Move actions as
+  // non-labor rows. 2026-05-20.
+  window._setLineMenuTarget = function(id, code) {
+    _menuLineId = parseInt(id) || null;
+    _menuCode   = (code !== undefined && code !== null && code !== '') ? parseInt(code) : null;
+  };
   const _menu = document.getElementById('line-row-menu');
 
   window.openLineRowMenu = function(btn) {
