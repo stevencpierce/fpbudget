@@ -261,6 +261,11 @@
   tr.grand-total-row {
     page-break-before: avoid;
   }
+  /* And the whole SUBTOTAL → FEE → GRAND TOTAL block stays together
+     as one unit (via the separate <tbody class="totals-block"> wrapper
+     in the markup). Without this, Weasyprint could still break between
+     SUBTOTAL and GRAND TOTAL when only the first row fit. */
+  tbody.totals-block { page-break-inside: avoid; }
   /* Per-section subtotal also wants to stay with its data. */
   tr.section-sub {
     page-break-before: avoid;
@@ -402,6 +407,18 @@
       {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
     {% endif %}
+  </tbody>
+  {# ── Top Sheet totals block ────────────────────────────────────────
+     Wrapped in its own <tbody class="totals-block"> with
+     `page-break-inside: avoid` so SUBTOTAL → Prod Fee → GRAND TOTAL
+     always render as a single unit on the same page. Without this,
+     the chain of `page-break-before: avoid` rules wasn't strong
+     enough — Weasyprint occasionally still broke between subtotal
+     and grand total when only one of them fit at the bottom of a
+     page. User report 2026-05-26 (third pass): "the only awkward one
+     now is the top sheet. It still breaks the total to a page by
+     itself". #}
+  <tbody class="totals-block">
     {% if not dispersed %}
     <tr class="subtotal-row">
       <td class="code"></td>
