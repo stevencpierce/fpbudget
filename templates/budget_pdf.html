@@ -384,29 +384,49 @@
       </td>
       {% endif %}
     </tr>
-    {% endfor %}
-    {# Auto-calc lines (Workers Comp / Payroll Fee). These contribute to
-       Estimated + Working equally and don't have an Actual equivalent. #}
-    {% if top_sheet.workers_comp_amount > 0 %}
+    {# ── Auto-inject "of which" sub-rows ───────────────────────────
+       Render WC + Production Insurance directly under Insurance
+       (6000), and Payroll Fee directly under Admin (6500). These
+       amounts are ALREADY INCLUDED in the parent section row's
+       total — they appear here as indented explanatory sub-rows,
+       NOT as additive lines. Mirrors the in-app Top Sheet
+       treatment. Previously rendered as flat <tr class="auto-line">
+       rows at the END of the section list, which led readers to
+       sum them on top of the section rows and conclude "SUBTOTAL
+       is missing $3,484.84" when it wasn't. User QC 2026-05-26. #}
+    {% if row.code == 6000 and top_sheet.workers_comp_amount %}
     <tr class="auto-line">
-      <td class="code">6000*</td>
-      <td>Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of labor)</td>
+      <td class="code"></td>
+      <td style="padding-left:22pt">↳ Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
       {% if _col_est  %}<td class="num">{{ currency(top_sheet.workers_comp_amount) }}</td>{% endif %}
       {% if _col_work %}<td class="num">{{ currency(top_sheet.workers_comp_amount) }}</td>{% endif %}
       {% if _col_act  %}<td class="num">—</td>{% endif %}
       {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
     {% endif %}
-    {% if top_sheet.payroll_fee_amount > 0 %}
+    {% if row.code == 6000 and top_sheet.production_insurance_amount %}
     <tr class="auto-line">
-      <td class="code">6500*</td>
-      <td>Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}%)</td>
+      <td class="code"></td>
+      <td style="padding-left:22pt">↳ Production Liability Insurance
+        {% if top_sheet.production_insurance_mode == 'pct' %}({{ (top_sheet.production_insurance_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor){% elif top_sheet.production_insurance_mode == 'flat' %}(flat){% endif %}
+      </td>
+      {% if _col_est  %}<td class="num">{{ currency(top_sheet.production_insurance_amount) }}</td>{% endif %}
+      {% if _col_work %}<td class="num">{{ currency(top_sheet.production_insurance_amount) }}</td>{% endif %}
+      {% if _col_act  %}<td class="num">—</td>{% endif %}
+      {% if _show_var %}<td class="num">—</td>{% endif %}
+    </tr>
+    {% endif %}
+    {% if row.code == 6500 and top_sheet.payroll_fee_amount %}
+    <tr class="auto-line">
+      <td class="code"></td>
+      <td style="padding-left:22pt">↳ Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
       {% if _col_est  %}<td class="num">{{ currency(top_sheet.payroll_fee_amount) }}</td>{% endif %}
       {% if _col_work %}<td class="num">{{ currency(top_sheet.payroll_fee_amount) }}</td>{% endif %}
       {% if _col_act  %}<td class="num">—</td>{% endif %}
       {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
     {% endif %}
+    {% endfor %}
   </tbody>
   {# ── Top Sheet totals block ────────────────────────────────────────
      Wrapped in its own <tbody class="totals-block"> with
@@ -602,11 +622,19 @@
     <tr{% if _is_child %} class="kit-row"{% endif %}>
       <td>
         {{ ln.description or ln.account_name }}
-        {% if _is_meal and (ln.days|float) > 0 and (ln.quantity|float) > 0 and not ln.sync_omit %}
-          {% set _total_meals = (ln.quantity|float * ln.days|float) | round(0) | int %}
+        {% if _is_meal and (ln.days|float) > 0 and (ln.quantity|float) > 0 %}
+          {# Meals hide the Qty column on the PDF, which left a "8 days
+             × $20 = $800" optical illusion — the math only works once
+             the hidden headcount is visible. Caption now spells out
+             the full equation: "8 days × 5 people × $20 = $800". User
+             QC 2026-05-26. #}
+          {% set _qty_disp  = ln.quantity|float|int if (ln.quantity|float) == (ln.quantity|float|int) else ln.quantity|float %}
           {% set _days_disp = ln.days|float|int if (ln.days|float) == (ln.days|float|int) else ln.days|float %}
+          {% set _total_meals = (ln.quantity|float * ln.days|float) | round(0) | int %}
           <div style="font-size:6.5pt;color:#777;font-style:italic;margin-top:1pt">
-            {{ _days_disp }} day{{ 's' if _days_disp != 1 else '' }} catering for {{ _total_meals }} meal{{ 's' if _total_meals != 1 else '' }}
+            {{ _days_disp }} day{{ 's' if _days_disp != 1 else '' }}
+            × {{ _qty_disp }} {{ 'person' if _qty_disp == 1 else 'people' }}
+            = {{ _total_meals }} meal{{ 's' if _total_meals != 1 else '' }}
           </div>
         {% endif %}
       </td>
