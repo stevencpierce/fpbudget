@@ -70,14 +70,13 @@
 
   /* ── Section title ── */
   .section-title {
-    font-size: 10pt;
+    font-size: 11pt;
     font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    margin-bottom: 6pt;
+    letter-spacing: 0.4px;
+    margin-bottom: 10pt;
     color: #1a1a1a;
-    border-bottom: 0.5pt solid #ccc;
-    padding-bottom: 3pt;
+    border-bottom: 1pt solid #1a1a1a;
+    padding-bottom: 5pt;
   }
 
   /* ── Tables ── */
@@ -87,27 +86,86 @@
     font-size: 8.5pt;
   }
   thead tr {
-    background: #1a1a1a;
+    background: #2a2f3a;
     color: #fff;
   }
   thead th {
-    padding: 4pt 6pt;
+    padding: 5pt 7pt;
     text-align: left;
     font-weight: 600;
-    font-size: 7.5pt;
-    letter-spacing: 0.3px;
+    font-size: 7.2pt;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
   }
   thead th.num { text-align: right; }
 
-  tbody tr { border-bottom: 0.25pt solid #e0e0e0; }
-  tbody tr:nth-child(even) { background: #f9f9f9; }
-  tbody td { padding: 3.5pt 6pt; vertical-align: middle; }
+  tbody tr { border-bottom: 0.25pt solid #e5e5e5; }
+  /* Zebra striping skips kit-row + section-sub so kit fees + totals
+     stay visually distinct from the alternation pattern. */
+  tbody tr:nth-child(even):not(.kit-row):not(.section-sub):not(.travel-mirror) {
+    background: #fafafa;
+  }
+  tbody td { padding: 4.5pt 7pt; vertical-align: middle; }
   tbody td.num { text-align: right; font-variant-numeric: tabular-nums; }
   tbody td.code { color: #888; font-size: 7.5pt; width: 52pt; }
   tbody td.account { font-weight: 500; }
 
-  /* Section subtotal row */
-  tr.section-sub td { border-top: 0.5pt solid #aaa; font-weight: 600; background: #f0f0f0; }
+  /* ── Kit-fee / child rows ──────────────────────────────────────────
+     Lines whose parent_line_id is set (kit fee, split, sub-rate, etc.).
+     Indented, smaller, lighter — visually attached to their parent
+     line instead of competing with it. Per user 2026-05-26 — "the kit
+     fees and item section spacers and labels don't look nice". */
+  tbody tr.kit-row td {
+    background: transparent !important;
+    padding-top: 2pt;
+    padding-bottom: 2pt;
+    color: #4a4a4a;
+    font-size: 7.8pt;
+    border-bottom: 0 !important;
+  }
+  tbody tr.kit-row td:first-child {
+    padding-left: 22pt;
+    font-style: italic;
+  }
+  tbody tr.kit-row td:first-child::before {
+    content: "↳ ";
+    color: #999;
+    font-style: normal;
+    margin-right: 2pt;
+  }
+  /* Last kit row in a group closes with a faint divider, set by JS-
+     less rule: the next non-kit row's top border re-establishes the
+     line separation. We just suppress the kit row's bottom border
+     above; the parent's existing border serves as the bracket. */
+
+  /* ── Travel/per-diem mirror rows (opt-in) ───────────────────────── */
+  tbody tr.travel-mirror td {
+    background: #f5f7fc !important;
+    padding-top: 2pt;
+    padding-bottom: 2pt;
+    font-style: italic;
+    color: #4a4a4a;
+    font-size: 7.5pt;
+    border-bottom: 0 !important;
+  }
+  tbody tr.travel-mirror td:first-child { padding-left: 22pt; }
+
+  /* Section subtotal row — cleaner than the muddy grey band */
+  tr.section-sub td {
+    border-top: 0.75pt solid #444;
+    border-bottom: 1.5pt solid #1a1a1a;
+    font-weight: 700;
+    background: #f3f5f9;
+    padding-top: 5pt;
+    padding-bottom: 5pt;
+    font-size: 8.2pt;
+  }
+  tr.section-sub td:first-child {
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 7.5pt;
+    color: #555;
+  }
   /* Auto-calc line (Workers Comp / Payroll Fee) */
   tr.auto-line td { color: #666; font-style: italic; font-size: 7.5pt; }
   /* Total rows */
@@ -119,20 +177,52 @@
   .var-over  { color: #c0392b; font-weight: 600; }
   .var-under { color: #1a6b3a; font-weight: 600; }
 
-  /* ── Detail section header ── */
+  /* ── Detail section header ──────────────────────────────────────────
+     Cleaner treatment than the dark band:
+       • Section CODE in a tinted pill on the left
+       • Section NAME as the primary text, normal-case
+       • Thin accent stripe underneath ties to the table that follows
+     Per user 2026-05-26 — "item section spacers and labels don't look
+     nice". */
   .detail-section-header {
     margin-top: 18pt;
-    margin-bottom: 5pt;
+    margin-bottom: 0;
     page-break-after: avoid;
+    display: flex;
+    align-items: baseline;
+    gap: 9pt;
+    padding: 6pt 0 5pt;
+    border-bottom: 2pt solid #2a2f3a;
   }
-  .detail-section-header h3 {
-    font-size: 9pt;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    background: #334;
+  .detail-section-header .sec-code {
+    display: inline-block;
+    background: #2a2f3a;
     color: #fff;
-    padding: 3pt 6pt;
+    font-size: 8pt;
+    font-weight: 700;
+    padding: 2pt 7pt;
+    letter-spacing: 0.4px;
+    border-radius: 2pt;
+    font-variant-numeric: tabular-nums;
+  }
+  .detail-section-header .sec-name {
+    font-size: 11pt;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    color: #1a1a1a;
+    flex: 1;
+  }
+  .detail-section-header .sec-meta {
+    font-size: 7.5pt;
+    color: #888;
+    font-style: italic;
+  }
+
+  /* Tables that follow a section header attach flush — no top margin
+     gap, the header's bottom border serves as the table's top border. */
+  .detail-section-header + table { margin-top: 0; }
+  .detail-section-header + table thead tr {
+    border-top: 0;
   }
 
   .page-break { page-break-before: always; }
@@ -321,7 +411,9 @@
 {% for sec in sections_ordered %}
 {% if sec.lines %}
 <div class="detail-section-header no-break">
-  <h3>{{ sec.code }} &nbsp;{{ sec.name }}</h3>
+  <span class="sec-code">{{ sec.code }}</span>
+  <span class="sec-name">{{ sec.name }}</span>
+  <span class="sec-meta">{{ sec.lines | length }} line{{ 's' if sec.lines | length != 1 else '' }}</span>
 </div>
 <table class="no-break">
   <thead>
@@ -370,7 +462,11 @@
     {% set ns.sec_work = ns.sec_work + res.est_total %}
     {% set _meal_tags = ['craft_services','meal_courtesy_breakfast','meal_first','meal_second','working_meal'] %}
     {% set _is_meal = ln.line_tag in _meal_tags %}
-    <tr>
+    {# Child rows (kit fees, splits) get the kit-row class so CSS can
+       indent + soften them visually instead of letting them compete
+       with their parent line. Detected via parent_line_id. #}
+    {% set _is_child = (ln.parent_line_id is not none) %}
+    <tr{% if _is_child %} class="kit-row"{% endif %}>
       <td>
         {{ ln.description or ln.account_name }}
         {% if _is_meal and (ln.days|float) > 0 and (ln.quantity|float) > 0 and not ln.sync_omit %}
@@ -482,15 +578,15 @@
         {% set _tm_cols.n = _tm_cols.n + 1 %}
       {% endif %}
       {% for _tm in _tm_rows %}
-      <tr style="background:#f5f7fc">
-        <td style="padding-left:18pt;font-style:italic;color:#666;font-size:7pt">
+      <tr class="travel-mirror">
+        <td>
           ↪ {{ _tm.label }}
           <span style="color:#888"> — {{ _tm.days }} day{{ 's' if _tm.days != 1 else '' }} × ${{ "{:,.2f}".format(_tm.rate) }}</span>
         </td>
-        <td class="num" colspan="{{ _tm_cols.n - 2 }}" style="font-style:italic;color:#888;font-size:7pt;text-align:right">
+        <td class="num" colspan="{{ _tm_cols.n - 2 }}">
           {# Blank middle — keeps the mirror visually de-emphasized #}
         </td>
-        <td class="num" style="font-style:italic;color:#666;font-size:7pt">
+        <td class="num">
           ${{ "{:,.2f}".format(_tm.amount) }}
         </td>
       </tr>
@@ -521,7 +617,7 @@
     {% set _sec_total_disp = pdf_section_totals.get(sec.code, ns.sec_work * fee_m) if dispersed else (ns.sec_work * fee_m) %}
     {% set _cell_m = fee_m %}
     <tr class="section-sub">
-      <td colspan="{{ _lead_cols }}" style="text-align:right;padding-right:6pt;font-size:7.5pt;letter-spacing:0.3px">SECTION TOTAL</td>
+      <td colspan="{{ _lead_cols }}" style="text-align:right;padding-right:9pt">{{ sec.name }} — Subtotal</td>
       <td class="num">{{ currency(ns_sub.subtot * _cell_m) }}</td>
       {% if sec.has_agent or sec.has_discount %}<td class="num"></td>{% endif %}
       {% if is_working_view %}
