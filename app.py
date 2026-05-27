@@ -7714,6 +7714,14 @@ def export_pdf(pid, bid):
         if sk not in sections_detail:
             sections_detail[sk] = {"code": sk, "name": section_name_map.get(sk, ""), "lines": []}
         sections_detail[sk]["lines"].append(ln)
+    # Apply the same parent-child + sub-group clustering the in-app view
+    # uses, so kit-fee rows attach to their parent labor line and
+    # headers/spacers stay in the right sub-group on export. Without
+    # this, the PDF showed kit fees in raw sort_order position (e.g.
+    # "Laptop" kit fee for Tech Producer landed under Robo Cam Op
+    # instead). User report 2026-05-26.
+    for sec in sections_detail.values():
+        sec["lines"] = _order_lines_with_children(sec["lines"])
     # Tag each section with column-visibility booleans so the PDF can
     # collapse columns that have no data — per user request 2026-04-28
     # the export shouldn't render Payroll / OT / Fringe / Agent% / Disc%
@@ -14408,16 +14416,59 @@ def _cluster_by_subgroup(lines):
     order of each group. Used to keep same-group lines together so we don't
     render duplicate sub-department headers when new lines are added later.
     Only clusters lines in sub-grouped sections (currently 1000 Production Staff).
-    Other sections pass through unchanged."""
+    Other sections pass through unchanged.
+
+    Headers + spacers (line_tag in {'header','spacer'}) don't have a
+    sub-group of their own. They get bucketed with the labor line that
+    SITS ABOVE THEM in sort_order — so a header dragged between two
+    Camera lines stays with Camera instead of bouncing to the
+    uncategorized bucket. Per user 2026-05-26: "I drag it into the
+    camera department. It keeps moving back out into a different spot
+    each time."
+    """
     is_subgrouped = any(
         int(getattr(ln, 'account_code', 0) or 0) == COA_CODE_PROD_STAFF for ln in lines
     )
     if not is_subgrouped:
         return list(lines)
+
+    # Pre-pass: walk lines in sort_order and tag header/spacer rows
+    # with the effective subgroup carried from the preceding labor line.
+    # If there's no preceding labor line in this section, fall back to
+    # the next labor line's group (so a header at the top of a section
+    # sticks to the first group).
+    by_sort = sorted(lines, key=lambda x: (x.sort_order or 0, x.id))
+    effective_group = {}
+    current_group = None
+    # Forward pass for "carry from previous labor line".
+    for ln in by_sort:
+        tag = getattr(ln, 'line_tag', None)
+        if tag in ('header', 'spacer'):
+            effective_group[ln.id] = current_group
+        else:
+            g = _infer_line_subgroup(ln)
+            if g:
+                current_group = g
+                effective_group[ln.id] = g
+            else:
+                effective_group[ln.id] = current_group
+    # Backward pass to fill in headers/spacers that came BEFORE any
+    # labor line (no preceding group to inherit from).
+    next_group = None
+    for ln in reversed(by_sort):
+        tag = getattr(ln, 'line_tag', None)
+        if tag in ('header', 'spacer'):
+            if effective_group.get(ln.id) is None:
+                effective_group[ln.id] = next_group
+        else:
+            g = _infer_line_subgroup(ln)
+            if g:
+                next_group = g
+
     group_order = []
     buckets = {}
     for ln in lines:
-        g = _infer_line_subgroup(ln) or ''
+        g = effective_group.get(ln.id) or _infer_line_subgroup(ln) or ''
         if g not in buckets:
             buckets[g] = []
             group_order.append(g)

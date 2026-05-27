@@ -462,6 +462,75 @@
     {% set ns.sec_work = ns.sec_work + res.est_total %}
     {% set _meal_tags = ['craft_services','meal_courtesy_breakfast','meal_first','meal_second','working_meal'] %}
     {% set _is_meal = ln.line_tag in _meal_tags %}
+    {# ── Header / spacer rows ────────────────────────────────────────
+       Structural rows the user inserts in the budget — line_tag is
+       'header' (an editable label like "BIO PACK ON-LOCATION CREW")
+       or 'spacer' (a thin blank divider). Previously these rendered
+       as regular line rows on the PDF, picking up qty/days/rate cells
+       and zebra striping like real lines — looked like garbage and
+       leaked confusing zero values. Per user 2026-05-26:
+       "the header doesn't have any of the color or formatting … and
+       it also has quantity rates and other items there that are
+       confusing that it shouldn't have." #}
+    {% if ln.line_tag == 'header' %}
+      {% set _hf = (ln.note | from_json_safe) if ln.note else {} %}
+      {% if _hf is not mapping %}{% set _hf = {} %}{% endif %}
+      {% set _h_bold   = _hf.get('bold',   true)  %}
+      {% set _h_under  = _hf.get('underline', false) %}
+      {% set _h_italic = _hf.get('italic', false) %}
+      {% set _h_color  = _hf.get('color',  '#5b8af9') %}
+      {% set _h_indent = (_hf.get('indent', 0) | int) %}
+      {# Span all columns rendered for this section so the header
+         takes the full width of the table — same colspan math used
+         by the SECTION TOTAL row below. #}
+      {% set _hdr_cols = 4
+         + (1 if (sec.has_payroll or sec.has_qty) else 0)
+         + (1 if sec.has_ot else 0)
+         + (1 if sec.has_fringe else 0)
+         + (1 if (sec.has_agent or sec.has_discount) else 0) %}
+      {% if is_working_view %}
+        {% if _col_est  %}{% set _hdr_cols = _hdr_cols + 1 %}{% endif %}
+        {% if _col_work %}{% set _hdr_cols = _hdr_cols + 1 %}{% endif %}
+        {% if _show_var %}{% set _hdr_cols = _hdr_cols + 1 %}{% endif %}
+      {% else %}
+        {% set _hdr_cols = _hdr_cols + 1 %}
+      {% endif %}
+      <tr class="header-row">
+        <td colspan="{{ _hdr_cols }}" style="
+              background:rgba(91,138,249,.10);
+              border-top:0.75pt solid #b8c4dc;
+              border-bottom:0.75pt solid #b8c4dc;
+              padding:5pt 8pt 5pt {{ 8 + _h_indent * 12 }}pt;
+              font-size:8.5pt;
+              {% if _h_bold %}font-weight:700;{% endif %}
+              {% if _h_under %}text-decoration:underline;{% endif %}
+              {% if _h_italic %}font-style:italic;{% endif %}
+              letter-spacing:0.5px;
+              text-transform:uppercase;
+              color:{{ _h_color }};">
+          {{ ln.description or '' }}
+        </td>
+      </tr>
+    {% elif ln.line_tag == 'spacer' %}
+      {# Spacer = thin blank divider row. Just the height + a faint
+         top border so it visually separates groups without printing
+         any data. #}
+      {% set _sp_cols = 4
+         + (1 if (sec.has_payroll or sec.has_qty) else 0)
+         + (1 if sec.has_ot else 0)
+         + (1 if sec.has_fringe else 0)
+         + (1 if (sec.has_agent or sec.has_discount) else 0) %}
+      {% if is_working_view %}
+        {% if _col_est  %}{% set _sp_cols = _sp_cols + 1 %}{% endif %}
+        {% if _col_work %}{% set _sp_cols = _sp_cols + 1 %}{% endif %}
+        {% if _show_var %}{% set _sp_cols = _sp_cols + 1 %}{% endif %}
+      {% else %}
+        {% set _sp_cols = _sp_cols + 1 %}
+      {% endif %}
+      <tr class="spacer-row">
+        <td colspan="{{ _sp_cols }}" style="padding:3pt 0;border-top:0.25pt dashed #ccc;background:transparent"></td>
+      </tr>
+    {% else %}
     {# Child rows (kit fees, splits) get the kit-row class so CSS can
        indent + soften them visually instead of letting them compete
        with their parent line. Detected via parent_line_id. #}
@@ -592,6 +661,7 @@
       </tr>
       {% endfor %}
     {% endif %}
+    {% endif %}{# /header-elif-spacer-else block #}
     {% endfor %}
     {% set ns_sub = namespace(subtot=0, ot=0, fringe=0) %}
     {% for ln in sec.lines %}{% set _r = line_results[ln.id] %}
