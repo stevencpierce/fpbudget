@@ -227,6 +227,53 @@
 
   .page-break { page-break-before: always; }
   .no-break   { page-break-inside: avoid; }
+
+  /* ── Smart page-break logic (2026-05-26) ─────────────────────────────
+     User report: "the top sheet cuts off right at the end of the page,
+     and then the total gets pushed to the next page" + "production
+     staff is too big for one page, and it pushes it down to another
+     page and splits it. so there's one page that's just a heading on
+     it."
+
+     Strategy:
+       • Allow long tables to break across pages — never force the
+         entire section to one page (that's what created the "header
+         alone on a page" symptom).
+       • Within a table, glue every row's internals together
+         (page-break-inside: avoid on tr) so no row gets sliced in half.
+       • Glue the Top Sheet's terminal rows (subtotal → fee → grand
+         total → tax credit → net) to whatever sits above them via
+         page-break-before: avoid, so the grand total can never orphan
+         on its own page.
+       • Same logic for detail-table section subtotals.
+       • Repeat the column headers on every page break.
+       • orphans/widows = 2 so we never leave 1-row crumbs at top or
+         bottom of a page. */
+  table { page-break-inside: auto; }
+  thead { display: table-header-group; }
+  tfoot { display: table-footer-group; }
+  tbody tr { page-break-inside: avoid; }
+
+  /* Top Sheet terminal rows — never break *before* these, they must
+     stay with the data above them. */
+  tr.subtotal-row,
+  tr.fee-row,
+  tr.grand-total-row {
+    page-break-before: avoid;
+  }
+  /* Per-section subtotal also wants to stay with its data. */
+  tr.section-sub {
+    page-break-before: avoid;
+  }
+  /* Header rows (user-inserted band labels) shouldn't be the last
+     thing on a page — push them with their following content. */
+  tr.header-row {
+    page-break-after: avoid;
+  }
+
+  /* Default to keeping at least 2 rows together at the top/bottom of
+     any page break inside flowable content. */
+  body, table, tbody { orphans: 2; widows: 2; }
 </style>
 </head>
 <body>
@@ -410,12 +457,12 @@
 <div class="section-title">Budget Detail — Line by Line</div>
 {% for sec in sections_ordered %}
 {% if sec.lines %}
-<div class="detail-section-header no-break">
+<div class="detail-section-header">
   <span class="sec-code">{{ sec.code }}</span>
   <span class="sec-name">{{ sec.name }}</span>
   <span class="sec-meta">{{ sec.lines | length }} line{{ 's' if sec.lines | length != 1 else '' }}</span>
 </div>
-<table class="no-break">
+<table>
   <thead>
     <tr>
       <th style="width:28%">Description</th>
