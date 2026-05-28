@@ -84,15 +84,17 @@
     });
   }
 
-  // Kit fee rows follow their parent labor line. After a drag, any kit-fee-row
-  // whose previous sibling is no longer its parent (by data-parent-id) moves
-  // back next to the parent.
+  // Child rows (kit fees, mileage, per-diem, anything with parent_line_id
+  // set in the DB and data-parent-id in the DOM) follow their parent line.
+  // After a drag, find every row referencing the moved row as parent and
+  // slot them immediately under the parent in order.
+  // (Used to be .kit-fee-row only — per user 2026-05-28: a key PA with
+  // mileage attached also needs its sub-row to follow.)
   function _reattachKitFees(movedRow) {
     var parentId = movedRow.dataset.id;
-    // Find kit fees that reference this parent — move them right after the parent
-    var kitFees = document.querySelectorAll('.kit-fee-row[data-parent-id="' + parentId + '"]');
+    var children = document.querySelectorAll('[data-parent-id="' + parentId + '"]');
     var anchor = movedRow;
-    kitFees.forEach(function(kf) {
+    children.forEach(function(kf) {
       if (kf.previousElementSibling !== anchor) {
         anchor.parentNode.insertBefore(kf, anchor.nextSibling);
       }

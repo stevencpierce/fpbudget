@@ -927,6 +927,11 @@
             data-rate-type="{{ ln.rate_type or 'day_10' }}"
             data-qty="{{ ln.quantity | float }}" data-days="{{ ln.days | float }}"
             data-tag="{{ ln.line_tag or '' }}" data-sync-omit="{{ '1' if ln.sync_omit else '0' }}"
+            {# data-parent-id lets drag-reorder.js find and re-anchor
+               child rows (kit fees, mileage, per-diem, etc.) to follow
+               their parent after a drag. Without it the children stayed
+               put visually until the user refreshed the page. #}
+            {% if ln.parent_line_id %}data-parent-id="{{ ln.parent_line_id }}"{% endif %}
             {% if is_actual_view %}data-actual-spent="{{ _act_txn_sum | round(2) }}"{% endif %}>
           <td class="col-desc">
             {# Actual view: chevron + count badge when this line has linked
@@ -11544,6 +11549,36 @@ function renderCalcDetail(d) {
   </div>
 </div>
 
+<!-- ── Duplicate-line schedule confirm modal (2026-05-28) ──
+     Replaces a native window.confirm() that, per user feedback, "feels
+     like an error" because it appears as a browser-chrome popup at the
+     top of the window. This in-page modal asks "Yes / No / Cancel"
+     about copying the schedule days when duplicating a labor or
+     location line. Promise-based — lineDuplicate awaits the user's
+     choice before posting to /duplicate. -->
+<div id="line-duplicate-confirm-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="window._lineDupResolve && window._lineDupResolve(null)"></div>
+  <div class="modal-box" style="min-width:420px;max-width:520px">
+    <h2 style="margin-bottom:6px">Duplicate Line</h2>
+    <p style="font-size:.9rem;margin:0 0 6px 0">
+      Also duplicate the <strong>schedule days</strong> associated with this line?
+    </p>
+    <p class="muted" style="font-size:.78rem;margin:0 0 16px 0">
+      Choose <strong>Yes</strong> to copy the line and its schedule days.
+      Choose <strong>No</strong> to copy the line only — it will start fresh
+      in estimated mode with no schedule.
+    </p>
+    <div class="modal-actions" style="display:flex;justify-content:flex-end;gap:8px">
+      <button type="button" class="btn btn-outline"
+              onclick="window._lineDupResolve && window._lineDupResolve(null)">Cancel</button>
+      <button type="button" class="btn btn-outline"
+              onclick="window._lineDupResolve && window._lineDupResolve(false)">No</button>
+      <button type="button" class="btn btn-primary"
+              onclick="window._lineDupResolve && window._lineDupResolve(true)">Yes</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Inline PO create modal (sibling to the picker, opens on top) ── -->
 <div id="line-po-create-modal" class="modal hidden">
   <div class="modal-overlay" onclick="closeInlinePoCreate()"></div>
@@ -14128,7 +14163,7 @@ function renderQeCategory(code, searchQ) {
     titleEl.textContent = 'Select a category';
     codeEl.textContent  = '';
     mainBody.innerHTML  = `<div class="qe-welcome">
-      <p>Select a category from the left to see items.</p>
+      <p>Select a category from the left to see items, or type in the search box to search across <strong>every department</strong>.</p>
       <p class="muted" style="margin-top:.4rem;font-size:.8rem">Selections persist as you move between categories.</p>
     </div>`;
     return;
@@ -14358,8 +14393,11 @@ function qeRemoveFromCart(key) {
 }
 
 function qeSelectAllInCategory(checked) {
-  if (_qeCatCode === null) return;
-  document.querySelectorAll('.qe-item-row').forEach(row => {
+  // Acts on every visible .qe-item-row — works for both single-category
+  // view and the global search view (where _qeCatCode may be null).
+  const rows = document.querySelectorAll('.qe-item-row');
+  if (!rows.length) return;
+  rows.forEach(row => {
     const cb = row.querySelector('.qe-cb');
     if (cb) {
       cb.checked = checked;
@@ -14376,8 +14414,193 @@ function qeClearAll() {
 }
 
 function qeSearch(q) {
-  if (_qeCatCode === null) return;
-  renderQeCategory(_qeCatCode, q.trim() || undefined);
+  // Empty query → restore the prior view (category if one was open, else
+  // welcome screen). Non-empty → search across EVERY department (per user
+  // 2026-05-28: "if it could search across all departments rather than
+  // just the open department, would be really helpful.").
+  const trimmed = (q || '').trim();
+  if (!trimmed) {
+    renderQeCategory(_qeCatCode);
+    return;
+  }
+  renderQeGlobalSearch(trimmed);
+}
+
+// Cross-department search results. Mirrors renderQeCategory's row markup
+// so the existing checkbox / input / cart-sync wiring works unchanged —
+// the only diff is the rows come from every QE_CATEGORIES bucket and are
+// grouped under a section header per department so the user can see which
+// department each match belongs to. The Agent% column is always present
+// (Talent items use it; others render "—") to avoid varying column counts
+// across groups.
+function renderQeGlobalSearch(q) {
+  const mainBody = document.getElementById('qe-main-body');
+  const titleEl  = document.getElementById('qe-cat-title');
+  const codeEl   = document.getElementById('qe-cat-code');
+  const qLower   = q.toLowerCase();
+
+  // Collect matches by category, preserving QE_CATEGORIES order.
+  const groups = [];
+  let totalMatches = 0;
+  QE_CATEGORIES.forEach(cat => {
+    const matches = (cat.items || []).filter(i =>
+      (i.label || '').toLowerCase().includes(qLower)
+    );
+    if (matches.length) {
+      groups.push({ cat, matches });
+      totalMatches += matches.length;
+    }
+  });
+
+  // Highlight every category in the sidebar that has at least one match
+  // so the user has spatial context for where results live.
+  document.querySelectorAll('.qe-cat-btn').forEach(b => {
+    b.classList.remove('active');
+    b.classList.remove('qe-cat-has-match');
+  });
+  groups.forEach(({ cat }) => {
+    const btn = document.querySelector(`.qe-cat-btn[data-code="${cat.code}"]`);
+    if (btn) btn.classList.add('qe-cat-has-match');
+  });
+
+  titleEl.textContent = `Search: "${q}"`;
+  codeEl.textContent  = totalMatches
+    ? `${totalMatches} result${totalMatches !== 1 ? 's' : ''} across ${groups.length} department${groups.length !== 1 ? 's' : ''}`
+    : 'No results';
+
+  if (!groups.length) {
+    mainBody.innerHTML = `<div class="qe-welcome">
+      <p>No items match &ldquo;<strong>${_qeHtmlEscape(q)}</strong>&rdquo;.</p>
+      <p class="muted" style="margin-top:.4rem;font-size:.8rem">Try a different keyword or clear the search box.</p>
+    </div>`;
+    return;
+  }
+
+  // Always reserve the Agent column in global search so Talent rows line
+  // up with the rest. colCount = 9 = check + label + qty + days + rate +
+  // kit + fringe + agent + comp.
+  const colCount = 9;
+
+  let html = '';
+  groups.forEach(({ cat, matches }) => {
+    const isUnion = _qeUnionByCode[cat.code] || false;
+    // Department divider row.
+    html += `<tr class="qe-group-header qe-dept-divider" data-cat="${cat.code}">
+      <td colspan="${colCount}" style="background:var(--bg-3);padding:.4rem .55rem;border-top:1px solid var(--border)">
+        <span class="qe-group-label" style="color:var(--accent)">${cat.code} · ${_qeHtmlEscape(cat.name)}</span>
+        <span class="muted" style="font-size:.7rem;margin-left:.5rem">${matches.length} match${matches.length !== 1 ? 'es' : ''}</span>
+      </td>
+    </tr>`;
+
+    matches.forEach((item, idx) => {
+      const code  = cat.code;
+      const key   = qeKey(code, item.label);
+      const cart  = _qeCart.get(key);
+      const checked   = !!cart;
+      const effRate   = cart ? cart.rate
+                              : (isUnion && item.isLabor ? Math.round(item.rate * UNION_RATE_MULT) : item.rate);
+      const effFringe = cart ? cart.fringe
+                              : (isUnion && item.isLabor
+                                  ? (item.unionFringe || UNION_FRINGE[item.fringe||'N'] || 'I')
+                                  : (item.fringe||'N'));
+      const effQty    = cart ? cart.qty    : item.qty;
+      const effDays   = cart ? cart.days   : item.days;
+      const effKit    = cart ? cart.kit    : (item.kit || 0);
+      const effUnit   = cart ? cart.unit   : (item.unit || 'day');
+      const effComp   = cart ? cart.comp   : item.comp;
+      const effAgent  = cart ? (cart.agent_pct || 0) : (item.agent_pct || 0);
+
+      // Agent input only meaningful for Talent labor; placeholder cell
+      // everywhere else keeps column alignment.
+      const agentCell = (code === 2100 && item.isLabor)
+        ? `<td class="qe-td-agent"><input type="number" class="qe-input qe-agent" value="${effAgent}" min="0" step="5" max="100"></td>`
+        : `<td class="qe-td-agent"><span class="muted" style="font-size:.75rem">—</span></td>`;
+
+      const laborFields = item.isLabor ? `
+        <td class="qe-td-qty">
+          <input type="number" class="qe-input qe-qty" value="${effQty}" min="1" step="1"
+                 title="People — values above 1 create separate lines (A, B, C...)">
+        </td>
+        <td class="qe-td-days"><input type="number" class="qe-input qe-days" value="${effDays}" min="0.5" step="0.5"></td>
+        <td class="qe-td-rate"><div class="qe-rate-wrap"><span class="qe-dollar">$</span>
+          <input type="number" class="qe-input qe-rate" value="${effRate}" min="0" step="25">
+          <span class="qe-rate-lbl">/day</span></div></td>
+        <td class="qe-td-kit"><div class="qe-rate-wrap"><span class="qe-dollar">$</span>
+          <input type="number" class="qe-input qe-kit" value="${effKit}" min="0" step="25">
+          <span class="qe-rate-lbl">/day</span></div></td>
+        <td class="qe-td-fringe">
+          <select class="qe-select qe-fringe">
+            ${['E','N','L','U','S','I','D'].map(f=>`<option value="${f}" ${effFringe===f?'selected':''}>${f}</option>`).join('')}
+          </select>
+        </td>
+        ${agentCell}
+        <td class="qe-td-comp"><span class="qe-comp-badge labor">Labor</span></td>
+      ` : `
+        <td class="qe-td-qty"><input type="number" class="qe-input qe-qty" value="${effQty}" min="1" step="1"></td>
+        <td class="qe-td-days"><input type="number" class="qe-input qe-days" value="${effDays}" min="0.5" step="0.5"></td>
+        <td class="qe-td-rate"><div class="qe-rate-wrap"><span class="qe-dollar">$</span>
+          <input type="number" class="qe-input qe-rate" value="${effRate}" min="0" step="25">
+          <span class="qe-rate-lbl">/${effUnit}</span></div></td>
+        <td class="qe-td-kit"><span class="muted" style="font-size:.75rem">—</span></td>
+        <td class="qe-td-fringe"><span class="muted" style="font-size:.75rem">—</span></td>
+        ${agentCell}
+        <td class="qe-td-comp"><span class="qe-comp-badge ${effComp}">${effComp}</span></td>
+      `;
+
+      html += `<tr class="qe-item-row ${checked?'qe-row-checked':''}" data-key="${key}" data-cat="${code}" data-idx="${idx}">
+        <td class="qe-td-check"><input type="checkbox" class="qe-cb" ${checked?'checked':''}></td>
+        <td class="qe-td-label"><span class="qe-item-label">${_qeHtmlEscape(item.label)}</span></td>
+        ${laborFields}
+      </tr>`;
+    });
+  });
+
+  mainBody.innerHTML = `
+    <table class="qe-table">
+      <thead>
+        <tr>
+          <th class="qe-th-check"><input type="checkbox" id="qe-cat-check-all" onchange="qeSelectAllInCategory(this.checked)" title="Select all visible"></th>
+          <th class="qe-th-label">Item</th>
+          <th class="qe-th-qty">Qty</th>
+          <th class="qe-th-days">Days</th>
+          <th class="qe-th-rate">Rate</th>
+          <th class="qe-th-kit">Kit Fee</th>
+          <th class="qe-th-fringe">Fringe</th>
+          <th class="qe-th-agent">Agent%</th>
+          <th class="qe-th-comp">Type</th>
+        </tr>
+      </thead>
+      <tbody>${html}</tbody>
+    </table>`;
+
+  // Same row-wiring renderQeCategory uses — checkbox toggle + auto-check
+  // on any input change.
+  mainBody.querySelectorAll('.qe-item-row').forEach(row => {
+    const cb = row.querySelector('.qe-cb');
+    cb.addEventListener('change', () => {
+      syncRowToCart(row, cb.checked);
+    });
+    row.querySelectorAll('input[type="number"], select').forEach(inp => {
+      inp.addEventListener('change', () => {
+        if (!cb.checked) cb.checked = true;
+        syncRowToCart(row, true);
+      });
+      if (inp.type === 'number') {
+        inp.addEventListener('input', () => {
+          if (!cb.checked) {
+            cb.checked = true;
+            syncRowToCart(row, true);
+          }
+        });
+      }
+    });
+  });
+}
+
+function _qeHtmlEscape(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // Convert 0 → A, 1 → B, ..., 25 → Z, 26 → AA, 27 → AB, ...
@@ -14890,26 +15113,45 @@ setTimeout(function() {
     const isLocation = (parseInt(codeAttr || '0') === 3300);
     const promptsSchedule = isLabor || isLocation;
 
-    let dupeSched = true;   // default for schedule-bearing lines when user hits OK
+    let dupeSched = false;
     if (promptsSchedule) {
-      dupeSched = window.confirm(
-        'Duplicate this row.\n\n' +
-        'Also duplicate the schedule days associated with this line?\n\n' +
-        '• OK     — copy the line AND its schedule days\n' +
-        '• Cancel — copy the line only (fresh schedule)'
-      );
-    } else {
-      // Non-labor / non-location — nothing to ask; just duplicate.
-      dupeSched = false;
+      // In-page Yes / No / Cancel modal (was window.confirm; per user
+      // 2026-05-28 the native popup "feels like an error" because it
+      // renders as browser chrome at the top of the window).
+      const modal = document.getElementById('line-duplicate-confirm-modal');
+      if (!modal) {
+        // Defensive fallback — shouldn't happen, but don't strand the click.
+        dupeSched = window.confirm('Also duplicate the schedule days?');
+      } else {
+        const choice = await new Promise((resolve) => {
+          window._lineDupResolve = (val) => {
+            modal.classList.add('hidden');
+            window._lineDupResolve = null;
+            resolve(val);
+          };
+          modal.classList.remove('hidden');
+        });
+        if (choice === null) return;   // user cancelled — no duplicate at all
+        dupeSched = !!choice;
+      }
     }
 
     const srcId = _menuLineId;
+    // If the source was schedule-driven and the user picked "No", the
+    // duplicate lands in a different mode (use_schedule=false, no days,
+    // not checked in the schedule grid). The in-place clone would carry
+    // the .schedule-driven class + checked grid boxes from the source,
+    // so force a full reload in that case to pull faithful server state.
+    const srcWasSched = !!(row && row.classList.contains('schedule-driven'));
+    const modeChanged = promptsSchedule && srcWasSched && !dupeSched;
+
     const res = await fetch(`/projects/${_pid}/budget/${_bid}/line/${srcId}/duplicate`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ duplicate_schedule: !!dupeSched })
     });
     if (res.ok) {
+      if (modeChanged) { reloadWithTab(); return; }
       // In-place insert (per user 2026-05-04: avoid the full-page
       // reload "jump" feel). Clone the source row's DOM, retarget all
       // data-id refs to the new line id, drop in immediately after the

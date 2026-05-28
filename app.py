@@ -5434,7 +5434,14 @@ def line_duplicate(pid, bid, lid):
             fringe_type      = src.fringe_type,
             agent_pct        = src.agent_pct,
             note             = src.note,
-            use_schedule     = src.use_schedule,
+            # When the user says "no" to duplicating the schedule, the new
+            # row should land in plain estimated mode — not the blue/italic
+            # schedule-driven look. Forcing use_schedule=False here mirrors
+            # the empty ScheduleDay set we're about to leave behind.
+            # (User 2026-05-28: "if you do not copy the schedule, it
+            # should go back to the estimated mode, not scheduled mode by
+            # default.")
+            use_schedule     = src.use_schedule if duplicate_schedule else False,
             days_unit        = src.days_unit,
             days_per_week    = src.days_per_week,
             parent_line_id   = src.parent_line_id,
@@ -5528,10 +5535,27 @@ def line_reorder(pid, bid):
             # right one if applicable.
             ln.role_group = None
 
-    section_lines = BudgetLine.query.filter_by(
+    # Build the section list, holding child rows (parent_line_id set) out so
+    # we can re-clip them under their parent in a deterministic second pass.
+    # Without this, dragging a parent labor row would re-seat its sort_order
+    # but its children (kit fees, mileage, per-diem) kept their old
+    # sort_order — fine for the next page render because
+    # _order_lines_with_children re-clusters by parent_id, but stale in the
+    # DB and brittle for any path that doesn't go through that helper.
+    raw_lines = BudgetLine.query.filter_by(
         budget_id=bid, account_code=ln.account_code
     ).filter(BudgetLine.id != line_id).order_by(BudgetLine.sort_order, BudgetLine.id).all()
+    parents_only = [sl for sl in raw_lines if not sl.parent_line_id]
+    children_by_parent = {}
+    for sl in raw_lines:
+        if sl.parent_line_id:
+            children_by_parent.setdefault(sl.parent_line_id, []).append(sl)
 
+    # The dragged row could itself be a child line (rare — the UI normally
+    # excludes them from drag) or a parent. Either way insert it into the
+    # parent stream at the requested position; the child-clip pass below
+    # then reseats every parent's children together.
+    section_lines = parents_only
     if after_id is None:
         section_lines.insert(0, ln)
     else:
@@ -5540,34 +5564,45 @@ def line_reorder(pid, bid):
                    len(section_lines) - 1)
         section_lines.insert(idx + 1, ln)
 
-    for i, sl in enumerate(section_lines):
+    # Re-stitch: parent, then its children, then next parent, etc.
+    final_order = []
+    for sl in section_lines:
+        final_order.append(sl)
+        for kid in children_by_parent.get(sl.id, []):
+            final_order.append(kid)
+    # Orphaned children (parent missing from this section) tail in.
+    seen_kids = {kid.id for sl in section_lines for kid in children_by_parent.get(sl.id, [])}
+    for pid, kids in children_by_parent.items():
+        for kid in kids:
+            if kid.id not in seen_kids:
+                final_order.append(kid)
+
+    for i, sl in enumerate(final_order):
         sl.sort_order = i
 
-    # Adopt role_group from the dropped position's immediate neighbors. This
-    # ensures cross-group drags land cleanly — e.g. dragging "Executive
-    # Producer" (role_group='Executives') into the middle of the
-    # "Direction / AD" rows updates its group to 'Direction / AD' instead of
-    # leaving a fragmented "Executives" header mid-section. Logic:
-    #   - If the row IMMEDIATELY before and after the dropped row share the
-    #     same role_group, the moved row adopts it.
-    #   - If the row is at a section boundary (first or last), it adopts
-    #     whichever single neighbor exists.
-    #   - If neighbors disagree, leave role_group unchanged (the user is
-    #     likely placing it on a group boundary intentionally).
+    # Adopt role_group from the dropped position's immediate parent neighbors.
+    # Bias toward the row landed AFTER (the user dropped HERE so this is the
+    # cluster they joined). Without aggressive adoption, dropping at a
+    # group boundary leaves role_group unchanged → _cluster_by_subgroup
+    # snaps the row back to its original cluster on next render and the
+    # drag visually "doesn't stick" (user 2026-05-28).
     try:
         new_idx = next((i for i, sl in enumerate(section_lines) if sl.id == ln.id), None)
         if new_idx is not None:
             before = section_lines[new_idx - 1].role_group if new_idx > 0 else None
             after  = section_lines[new_idx + 1].role_group if new_idx + 1 < len(section_lines) else None
-            target = None
+            # Priority: matching pair > before (the row we landed AFTER) > after.
+            # The "after" row is the one we're now sitting above — usually
+            # the same cluster — so it's the better default than leaving
+            # the row's old role_group in place.
+            target = ln.role_group
             if before is not None and after is not None:
-                if before == after:
-                    target = before
+                target = before if before == after else (before or after)
             elif before is not None:
                 target = before
             elif after is not None:
                 target = after
-            if target is not None and ln.role_group != target:
+            if ln.role_group != target:
                 ln.role_group = target
     except Exception:
         # If neighbor inference fails for any reason, silently keep the
