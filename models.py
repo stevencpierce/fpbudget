@@ -991,3 +991,71 @@ class PoDocAttachment(db.Model):
         db.Index('ix_po_doc_doc', 'doc_upload_id'),
         db.UniqueConstraint('po_id', 'doc_upload_id', name='uq_po_doc'),
     )
+
+
+# ── Sub-Budget (2026-05-26) ─────────────────────────────────────────────
+# User-defined slice of a project's budget for a client-facing or partial
+# view. Functions parallel to PurchaseOrder — name + cap + rollup +
+# actualized total — but the relationship to BudgetLines is MANY-to-MANY
+# (a line can belong to a PO and to one or more sub-budgets at the same
+# time). Use cases: "Day 2 Shoot Only" line slice for a co-producer,
+# "Equipment Subset" for a vendor proposal, "Talent + Crew Subset" for
+# a payroll handoff. Each sub-budget can be exported as its own PDF
+# (filtered subset of the parent budget) so the client sees only the
+# rows that pertain to them.
+#
+# Per user 2026-05-26: "be able to function a similar way to a PO …
+# but this is more like being able to export these items specifically
+# added to a sub budget for a client or simple view."
+class SubBudget(db.Model):
+    __tablename__ = "sub_budget"
+    id              = db.Column(db.Integer, primary_key=True)
+    project_id      = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
+    # Required: short human label, e.g. "Day 2 Filming", "Equipment Quote"
+    name            = db.Column(db.String(200), nullable=False)
+    # Optional: longer note for the client / internal context
+    description     = db.Column(db.Text,        nullable=True)
+    # Optional: cap budget for over-spend warnings (parallel to PO cap)
+    total_committed = db.Column(db.Numeric(12, 2), nullable=True)
+    # Pinned to a specific budget version (Working by default).
+    # Sub-budget always reflects this budget's lines — assignments are
+    # to BudgetLine.id rows on this specific budget.
+    budget_id       = db.Column(db.Integer, db.ForeignKey("budget.id"), nullable=True)
+    notes           = db.Column(db.Text,        nullable=True)
+    archived        = db.Column(db.Boolean, default=False, nullable=False)
+    created_at      = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    updated_at      = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = db.relationship("ProjectSheet", foreign_keys=[project_id])
+    creator = db.relationship("User",         foreign_keys=[created_by_user_id])
+    budget  = db.relationship("Budget",       foreign_keys=[budget_id])
+
+    __table_args__ = (
+        db.Index('ix_sub_budget_project', 'project_id'),
+        db.Index('ix_sub_budget_project_archived', 'project_id', 'archived'),
+    )
+
+
+# ── Junction: SubBudget ↔ BudgetLine (many-to-many) ────────────────────
+# A line can be in multiple sub-budgets (e.g. the Camera Operator A line
+# might appear in both "Day 2 Filming" and "Crew-Only Quote"). Unique
+# constraint prevents accidental double-assignment of the same line to
+# the same sub-budget.
+class SubBudgetLine(db.Model):
+    __tablename__ = "sub_budget_line"
+    id              = db.Column(db.Integer, primary_key=True)
+    sub_budget_id   = db.Column(db.Integer, db.ForeignKey("sub_budget.id", ondelete="CASCADE"), nullable=False)
+    budget_line_id  = db.Column(db.Integer, db.ForeignKey("budget_line.id", ondelete="CASCADE"), nullable=False)
+    sort_order      = db.Column(db.Integer, default=0)   # let user reorder within the sub-budget
+    note            = db.Column(db.String(300), nullable=True)   # per-assignment annotation
+    created_at      = db.Column(db.DateTime, default=datetime.utcnow)
+
+    sub_budget  = db.relationship("SubBudget",  foreign_keys=[sub_budget_id])
+    budget_line = db.relationship("BudgetLine", foreign_keys=[budget_line_id])
+
+    __table_args__ = (
+        db.UniqueConstraint('sub_budget_id', 'budget_line_id', name='uq_sub_budget_line'),
+        db.Index('ix_sbl_sub_budget', 'sub_budget_id'),
+        db.Index('ix_sbl_budget_line', 'budget_line_id'),
+    )

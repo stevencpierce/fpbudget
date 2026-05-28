@@ -101,7 +101,8 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     ProductionDay, Location, LocationDay, CallSheetData,
                     SupportContact, ProjectUnion, ProjectClient, CallSheetSend, CallSheetRecipient,
                     BudgetDirectContact, CompanySettings, DocUpload, CatalogItem,
-                    TravelDetail, CateringBill, ActivityLog)
+                    TravelDetail, CateringBill, ActivityLog,
+                    SubBudget, SubBudgetLine)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -7671,6 +7672,29 @@ def export_pdf(pid, bid):
         BudgetLine.account_code, BudgetLine.sort_order).all()
     fringe_cfgs = get_fringe_configs(db.session, pid)
 
+    # ── Sub-budget filter (2026-05-26) ────────────────────────────────
+    # When ?sub_budget=<id> is set, render the PDF as a slice of the
+    # parent budget — keep only lines that are assigned to that
+    # sub-budget. Same template, same calc, just a filtered line set.
+    # The Top Sheet rolls up only the included lines, so the GRAND
+    # TOTAL is the sub-budget's total (client sees only their slice).
+    sub_budget_id = request.args.get('sub_budget', type=int)
+    sub_budget_obj = None
+    if sub_budget_id:
+        sub_budget_obj = SubBudget.query.filter_by(
+            id=sub_budget_id, project_id=pid).first()
+        if not sub_budget_obj:
+            return jsonify({"error": "Sub-budget not found"}), 404
+        _sb_line_ids = {r[0] for r in db.session.query(SubBudgetLine.budget_line_id)
+                                         .filter(SubBudgetLine.sub_budget_id == sub_budget_id)
+                                         .all()}
+        # Also include any child rows (kit fees) of included parent
+        # lines, so the export reads naturally with their parent.
+        _children = {ln.id for ln in lines
+                     if ln.parent_line_id and ln.parent_line_id in _sb_line_ids}
+        _keep_ids = _sb_line_ids | _children
+        lines = [ln for ln in lines if ln.id in _keep_ids]
+
     # Per-export overrides from the Export Options dialog (see export_csv
     # for the same pattern). Applied to the in-memory Budget without
     # persisting so the saved settings stay untouched.
@@ -8030,7 +8054,10 @@ def export_pdf(pid, bid):
     pdf_bytes = WeasyprintHTML(string=html_str, base_url=request.host_url).write_pdf()
     mode_label = "Working" if is_working_view else "Estimated"
     detail_label = "_detail" if detail_mode else "_topsheet"
-    fname = f"{project.name.replace(' ', '_')}_{budget.name.replace(' ', '_')}_{mode_label}{detail_label}.pdf"
+    # If this is a sub-budget slice, tag the filename so the client
+    # immediately knows what they got (vs the full budget export).
+    sb_label = f"_{sub_budget_obj.name.replace(' ', '_')}" if sub_budget_obj else ""
+    fname = f"{project.name.replace(' ', '_')}_{budget.name.replace(' ', '_')}{sb_label}_{mode_label}{detail_label}.pdf"
     return Response(
         pdf_bytes,
         mimetype="application/pdf",
@@ -10124,12 +10151,16 @@ def budget_lines_json(pid, bid):
         if getattr(ln, 'assigned_crew', None) and ln.assigned_crew.name:
             crew_name = ln.assigned_crew.name
         out.append({
-            "id":            ln.id,
-            "description":   ln.description or '',
-            "account_code":  ln.account_code,
-            "is_labor":      bool(ln.is_labor),
-            "quantity":      float(ln.quantity or 1),
-            "assigned_crew": crew_name,
+            "id":              ln.id,
+            "description":     ln.description or '',
+            "account_code":    ln.account_code,
+            "account_name":    ln.account_name or '',
+            "is_labor":        bool(ln.is_labor),
+            "quantity":        float(ln.quantity or 1),
+            "days":            float(ln.days or 0),
+            "rate":            float(ln.rate or 0),
+            "estimated_total": float(ln.estimated_total or 0),
+            "assigned_crew":   crew_name,
         })
     return jsonify({"lines": out})
 
@@ -11833,9 +11864,27 @@ def po_list_page(pid):
     except Exception as _ble:
         logging.warning(f"[po list] budget-view mirror build failed: {_ble}")
 
+    # ── Sub-budgets (2026-05-26) — rendered alongside POs on the same
+    # page. Each one is a user-defined slice of the budget that can be
+    # exported as a mini-PDF for a client or simple view.
+    sub_budgets_data = []
+    try:
+        _sbs = (SubBudget.query
+                .filter_by(project_id=pid)
+                .order_by(SubBudget.archived.asc(),
+                          SubBudget.created_at.desc())
+                .all())
+        sub_budgets_data = [_sub_budget_to_dict(sb, with_rollup=True,
+                                                project_id=pid,
+                                                return_budget=return_budget)
+                            for sb in _sbs]
+    except Exception as _sbe:
+        logging.warning(f"[po list] sub-budgets build failed: {_sbe}")
+
     return render_template("pos.html",
                            project=project,
                            pos=pos_data,
+                           sub_budgets=sub_budgets_data,
                            return_budget=return_budget,
                            lines_by_section=lines_by_section,
                            now=datetime.utcnow())
@@ -12259,6 +12308,253 @@ def line_assign_po(pid, bid, lid):
         if po:
             out["po"] = _po_to_dict(po, with_rollup=True, project_id=pid)
     return out
+
+
+# ── Sub-Budgets (2026-05-26) ─────────────────────────────────────────────
+# User-defined slices of a project budget. Function parallel to POs but
+# many-to-many with budget lines (so a line can be in multiple slices
+# without contention with a PO assignment). Render on the same /pos page
+# under their own section heading. Each one can be exported as a mini-
+# PDF (filtered subset of the parent budget) for client handoff.
+
+def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
+                        return_budget=None):
+    """Serialize a SubBudget. with_rollup adds lines_total, billed_total
+    (sum of transactions on the included lines), cap status, and a
+    per-line breakdown. Mirrors _po_to_dict's shape so the template
+    can render both POs and sub-budgets with similar card markup."""
+    out = {
+        "id":              sb.id,
+        "name":            sb.name,
+        "description":     sb.description or "",
+        "total_committed": float(sb.total_committed) if sb.total_committed is not None else None,
+        "notes":           sb.notes or "",
+        "archived":        bool(sb.archived),
+        "budget_id":       sb.budget_id,
+        "created_at":      sb.created_at.isoformat() if sb.created_at else None,
+    }
+    if not with_rollup:
+        return out
+
+    # Resolve the canonical Working budget for this project — same
+    # picker _po_to_dict uses so totals reconcile.
+    pid = project_id or sb.project_id
+    canonical = (Budget.query
+                 .filter_by(project_id=pid, version_status='current',
+                            is_actual=False)
+                 .filter(Budget.parent_budget_id.isnot(None))
+                 .order_by(Budget.id.desc()).first())
+    if not canonical:
+        canonical = (Budget.query
+                     .filter_by(project_id=pid, version_status='current',
+                                is_actual=False)
+                     .order_by(Budget.id.desc()).first())
+
+    # Pull every line assigned to this sub-budget. Filter to the canonical
+    # Working budget's line ids so cross-version clones don't double-count.
+    sbl_q = (db.session.query(SubBudgetLine, BudgetLine)
+             .join(BudgetLine, BudgetLine.id == SubBudgetLine.budget_line_id)
+             .filter(SubBudgetLine.sub_budget_id == sb.id))
+    if canonical:
+        sbl_q = sbl_q.filter(BudgetLine.budget_id == canonical.id)
+    sbl_q = sbl_q.order_by(SubBudgetLine.sort_order,
+                           BudgetLine.account_code,
+                           BudgetLine.sort_order,
+                           BudgetLine.id)
+    line_rows = []
+    for sbl, ln in sbl_q.all():
+        line_rows.append({
+            "assignment_id":   sbl.id,
+            "id":              ln.id,
+            "account_code":    ln.account_code,
+            "description":     ln.description or ln.account_name or "",
+            "qty":             float(ln.quantity or 0),
+            "days":            float(ln.days or 0),
+            "rate":            float(ln.rate or 0),
+            "estimated_total": float(ln.estimated_total or 0),
+            "is_labor":        bool(ln.is_labor),
+            "note":            sbl.note or "",
+        })
+
+    lines_total = round(sum(r["estimated_total"] for r in line_rows), 2)
+    line_count  = len(line_rows)
+
+    # Actualized = sum of Transaction.amount for transactions linked to
+    # any line in this sub-budget (either directly via budget_line_id or
+    # via the Working sister through source_line_id, same OR pattern
+    # _po_to_dict uses). Excludes not-project-expense / non-expense /
+    # estimate-linked txns.
+    billed = 0.0
+    try:
+        from sqlalchemy import or_ as _or_sb, func as _func_sb
+        _line_ids = [r["id"] for r in line_rows]
+        if _line_ids:
+            _working_lines_sub = (db.session.query(BudgetLine.id)
+                                  .filter(BudgetLine.id.in_(_line_ids))
+                                  .subquery())
+            _billed_q = (db.session
+                         .query(_func_sb.coalesce(_func_sb.sum(Transaction.amount), 0))
+                         .join(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
+                         .filter(_or_sb(BudgetLine.id.in_(_line_ids),
+                                        BudgetLine.source_line_id.in_(_working_lines_sub)),
+                                 Transaction.not_project_expense == False,
+                                 Transaction.is_expense == True,
+                                 _exclude_estimate_linked_txns_clause()))
+            billed = float(_billed_q.scalar() or 0)
+    except Exception as _bbe:
+        logging.warning(f"[sub_budget] billed calc failed for sub_budget={sb.id}: {_bbe}")
+
+    cap         = out["total_committed"]
+    over        = (cap is not None and billed > cap)
+    remaining   = (cap - billed) if cap is not None else None
+
+    out.update({
+        "lines":         line_rows,
+        "line_count":    line_count,
+        "lines_total":   lines_total,
+        "billed_total":  round(billed, 2),
+        "over_cap":      over,
+        "cap_remaining": remaining,
+    })
+    return out
+
+
+@app.route("/projects/<int:pid>/sub-budgets/save", methods=["POST"])
+@login_required
+def sub_budget_save(pid):
+    """Create or update a sub-budget. Body:
+       { id?: int, name, description?, total_committed?, notes?, archived?, budget_id? }
+    Returns the updated sub-budget dict.
+    """
+    _require_project_role(pid, 'editor')
+    ProjectSheet.query.get_or_404(pid)
+    data = request.get_json(force=True) or {}
+    sb_id = data.get('id')
+    if sb_id:
+        sb = SubBudget.query.filter_by(id=sb_id, project_id=pid).first_or_404()
+    else:
+        sb = SubBudget(project_id=pid,
+                       created_by_user_id=(current_user.id if current_user.is_authenticated else None))
+        db.session.add(sb)
+    # Name is required on create; on update, only overwrite if provided.
+    if 'name' in data:
+        nm = (data.get('name') or '').strip()
+        if not nm:
+            return jsonify({"error": "Sub-budget name is required"}), 400
+        sb.name = nm[:200]
+    elif not sb.id:
+        return jsonify({"error": "Sub-budget name is required"}), 400
+    if 'description' in data:
+        sb.description = (data.get('description') or '').strip() or None
+    if 'notes' in data:
+        sb.notes = (data.get('notes') or '').strip() or None
+    if 'total_committed' in data:
+        raw = data.get('total_committed')
+        if raw in (None, '', 'null'):
+            sb.total_committed = None
+        else:
+            try: sb.total_committed = float(raw)
+            except (TypeError, ValueError):
+                return jsonify({"error": "total_committed must be a number"}), 400
+    if 'archived' in data:
+        sb.archived = bool(data.get('archived'))
+    if 'budget_id' in data:
+        bid = data.get('budget_id')
+        if bid in (None, '', 0):
+            sb.budget_id = None
+        else:
+            try: sb.budget_id = int(bid)
+            except (TypeError, ValueError):
+                return jsonify({"error": "budget_id must be an integer"}), 400
+    db.session.commit()
+    return jsonify({"ok": True,
+                    "sub_budget": _sub_budget_to_dict(sb, with_rollup=True, project_id=pid)})
+
+
+@app.route("/projects/<int:pid>/sub-budgets/<int:sb_id>/delete", methods=["POST"])
+@login_required
+def sub_budget_delete(pid, sb_id):
+    """Permanent delete (hard=1 query param) OR soft archive."""
+    _require_project_role(pid, 'editor')
+    sb = SubBudget.query.filter_by(id=sb_id, project_id=pid).first_or_404()
+    hard = request.args.get('hard') == '1'
+    if hard:
+        # Cascade DELETE on sub_budget_line via ON DELETE CASCADE in DDL.
+        db.session.delete(sb)
+    else:
+        sb.archived = True
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/sub-budgets/<int:sb_id>/lines", methods=["POST"])
+@login_required
+def sub_budget_add_lines(pid, sb_id):
+    """Add one or more BudgetLine rows to this sub-budget.
+    Body: { "line_ids": [int, ...] }. Duplicate assignments are silently
+    skipped (UniqueConstraint catches them, we just don't fail).
+    Returns the updated sub-budget rollup."""
+    _require_project_role(pid, 'editor')
+    sb = SubBudget.query.filter_by(id=sb_id, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    raw_ids = data.get('line_ids') or []
+    if not isinstance(raw_ids, list):
+        return jsonify({"error": "line_ids must be a list"}), 400
+    try:
+        line_ids = [int(x) for x in raw_ids]
+    except (TypeError, ValueError):
+        return jsonify({"error": "line_ids must be integers"}), 400
+    # Filter to lines that belong to this project to prevent cross-project
+    # leakage. Join through Budget to verify project_id.
+    valid_q = (db.session.query(BudgetLine.id)
+               .join(Budget, Budget.id == BudgetLine.budget_id)
+               .filter(BudgetLine.id.in_(line_ids),
+                       Budget.project_id == pid))
+    valid_ids = {r[0] for r in valid_q.all()}
+    # Skip ones already in this sub-budget.
+    existing_q = (db.session.query(SubBudgetLine.budget_line_id)
+                  .filter(SubBudgetLine.sub_budget_id == sb_id,
+                          SubBudgetLine.budget_line_id.in_(valid_ids)))
+    existing_ids = {r[0] for r in existing_q.all()}
+    added = 0
+    for lid in valid_ids - existing_ids:
+        db.session.add(SubBudgetLine(sub_budget_id=sb_id, budget_line_id=lid))
+        added += 1
+    db.session.commit()
+    return jsonify({"ok": True, "added": added,
+                    "sub_budget": _sub_budget_to_dict(sb, with_rollup=True, project_id=pid)})
+
+
+@app.route("/projects/<int:pid>/sub-budgets/<int:sb_id>/lines/<int:lid>", methods=["DELETE"])
+@login_required
+def sub_budget_remove_line(pid, sb_id, lid):
+    """Remove a budget line from this sub-budget (the underlying
+    BudgetLine row is untouched — only the assignment is dropped)."""
+    _require_project_role(pid, 'editor')
+    sb = SubBudget.query.filter_by(id=sb_id, project_id=pid).first_or_404()
+    SubBudgetLine.query.filter_by(sub_budget_id=sb_id, budget_line_id=lid)\
+        .delete(synchronize_session=False)
+    db.session.commit()
+    return jsonify({"ok": True,
+                    "sub_budget": _sub_budget_to_dict(sb, with_rollup=True, project_id=pid)})
+
+
+@app.route("/projects/<int:pid>/sub-budgets.json")
+@login_required
+def sub_budgets_json(pid):
+    """JSON list of sub-budgets for this project. Used by the budget-line
+    picker modal to let the user assign a line to a sub-budget from the
+    Budget tab. Mirrors /pos.json."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    include_archived = request.args.get('include_archived') == '1'
+    q = SubBudget.query.filter_by(project_id=pid)
+    if not include_archived:
+        q = q.filter(SubBudget.archived == False)  # noqa
+    sbs = q.order_by(SubBudget.created_at.desc()).all()
+    return jsonify({"ok": True,
+                    "sub_budgets": [_sub_budget_to_dict(sb, with_rollup=True, project_id=pid)
+                                    for sb in sbs]})
 
 
 # ── Global Locations Database ──────────────────────────────────────────────────
@@ -17498,6 +17794,42 @@ def _web_worker_essential_columns():
                 "  ADD CONSTRAINT po_doc_attachment_po_id_fkey "
                 "  FOREIGN KEY (po_id) REFERENCES purchase_order(id) "
                 "  ON DELETE CASCADE",
+                # ── 2026-05-26: SubBudget — user-defined budget slices ──
+                # Parallel to PurchaseOrder but many-to-many with
+                # BudgetLine via sub_budget_line. Lets a user group a
+                # subset of lines for client-facing export ("Day 2
+                # Filming Only", "Equipment Quote", etc.) while still
+                # rolling actuals up to the main budget.
+                """CREATE TABLE IF NOT EXISTS sub_budget (
+                     id              SERIAL PRIMARY KEY,
+                     project_id      INTEGER NOT NULL REFERENCES project_sheet(id),
+                     name            VARCHAR(200) NOT NULL,
+                     description     TEXT,
+                     total_committed NUMERIC(12,2),
+                     budget_id       INTEGER REFERENCES budget(id),
+                     notes           TEXT,
+                     archived        BOOLEAN DEFAULT FALSE NOT NULL,
+                     created_at      TIMESTAMP DEFAULT NOW(),
+                     created_by_user_id INTEGER REFERENCES users(id),
+                     updated_at      TIMESTAMP DEFAULT NOW()
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_sub_budget_project "
+                "  ON sub_budget (project_id)",
+                "CREATE INDEX IF NOT EXISTS ix_sub_budget_project_archived "
+                "  ON sub_budget (project_id, archived)",
+                """CREATE TABLE IF NOT EXISTS sub_budget_line (
+                     id              SERIAL PRIMARY KEY,
+                     sub_budget_id   INTEGER NOT NULL REFERENCES sub_budget(id) ON DELETE CASCADE,
+                     budget_line_id  INTEGER NOT NULL REFERENCES budget_line(id) ON DELETE CASCADE,
+                     sort_order      INTEGER DEFAULT 0,
+                     note            VARCHAR(300),
+                     created_at      TIMESTAMP DEFAULT NOW(),
+                     CONSTRAINT uq_sub_budget_line UNIQUE (sub_budget_id, budget_line_id)
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_sbl_sub_budget "
+                "  ON sub_budget_line (sub_budget_id)",
+                "CREATE INDEX IF NOT EXISTS ix_sbl_budget_line "
+                "  ON sub_budget_line (budget_line_id)",
                 # ── 2026-04-30: Actuals integration (Phase 1 schema) ────
                 # Three-legged stool linkage on transaction:
                 #   BudgetLine ← Transaction → DocUpload
