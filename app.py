@@ -4467,37 +4467,55 @@ def budget_view(pid, bid):
 
     # ── Sub-Budget memberships per line ─────────────────────────────────
     # Build a quick lookup so the budget-line picker badge can show
-    # how many sub-budgets each Working line belongs to and open the
-    # multi-select picker pre-checked. Same canonical-Working pinning
-    # as PO so cross-version views resolve to the same set.
-    # Per user 2026-05-26: per-line sub-budget picker on the Budget tab.
+    # how many sub-budgets each line belongs to and open the multi-
+    # select picker pre-checked. The badge renders for every project
+    # that has at least one sub-budget — even if the project is still
+    # Estimated-only (no Working sister yet) and even when the user is
+    # viewing the Estimated or Actual budget. User report 2026-05-26
+    # v2: "I created a subbudget, and now in the budget, I don't have
+    # the little subbudget chip next to the PO badge." Root cause:
+    # the original block was wrapped in `if current_working_bid:`, so
+    # any project without a Working budget OR any view where the
+    # Working data wasn't loaded silently dropped the badge.
     sub_budgets_for_project = []
-    sb_by_wline = {}           # {working_line_id: [{id, name, archived}, ...]}
-    sb_by_key   = {}           # {(account_code, sort_order): [...]}  for Estimated mirror
-    if current_working_bid:
-        try:
-            sub_budgets_for_project = (SubBudget.query
-                                       .filter_by(project_id=pid, archived=False)
-                                       .order_by(SubBudget.name)
-                                       .all())
-            if sub_budgets_for_project:
-                _sb_lookup = {s.id: s for s in sub_budgets_for_project}
-                _wl_ids = [l.id for l in _wlines]
-                # Pull memberships in one shot.
+    sb_by_wline = {}     # {line_id: [{id, name, archived}, ...]} — keyed by
+                         # any line id the membership might point at (Working
+                         # lines when present, plus the current view's lines)
+    sb_by_key   = {}     # {(account_code, sort_order): [...]} — for cross-view
+                         # mirror when source_line_id isn't set
+    try:
+        sub_budgets_for_project = (SubBudget.query
+                                   .filter_by(project_id=pid, archived=False)
+                                   .order_by(SubBudget.name)
+                                   .all())
+        if sub_budgets_for_project:
+            _sb_lookup = {s.id: s for s in sub_budgets_for_project}
+            # Build the universe of line IDs membership might point at:
+            # current view's lines + (if different) the canonical Working
+            # budget's lines, so the badge resolves correctly in all
+            # three views.
+            _line_id_universe = {l.id for l in lines}
+            _all_lines_by_id  = {l.id: l for l in lines}
+            if current_working_bid and current_working_bid != bid:
+                for _wln in _wlines:
+                    _line_id_universe.add(_wln.id)
+                    _all_lines_by_id.setdefault(_wln.id, _wln)
+            if _line_id_universe:
                 _mem_q = (db.session.query(SubBudgetLine)
-                          .filter(SubBudgetLine.budget_line_id.in_(_wl_ids)))
-                _wln_by_id = {l.id: l for l in _wlines}
+                          .filter(SubBudgetLine.budget_line_id.in_(_line_id_universe)))
                 for sbl in _mem_q.all():
                     _sb = _sb_lookup.get(sbl.sub_budget_id)
                     if not _sb:
                         continue
                     _entry = {"id": _sb.id, "name": _sb.name, "archived": bool(_sb.archived)}
                     sb_by_wline.setdefault(sbl.budget_line_id, []).append(_entry)
-                    _wln = _wln_by_id.get(sbl.budget_line_id)
-                    if _wln:
-                        sb_by_key.setdefault((_wln.account_code, _wln.sort_order), []).append(_entry)
-        except Exception as _sbm_e:
-            logging.warning(f"[budget_view] sub-budget membership build failed: {_sbm_e}")
+                    _ln_for_key = _all_lines_by_id.get(sbl.budget_line_id)
+                    if _ln_for_key:
+                        sb_by_key.setdefault(
+                            (_ln_for_key.account_code, _ln_for_key.sort_order),
+                            []).append(_entry)
+    except Exception as _sbm_e:
+        logging.warning(f"[budget_view] sub-budget membership build failed: {_sbm_e}")
 
     # working_line_totals + working_line_results were computed above
     # (moved in commit C-2v2, 2026-05-08) so the Top Sheet's
