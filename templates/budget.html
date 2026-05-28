@@ -1413,6 +1413,41 @@
                            white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;display:inline-block;vertical-align:middle">
                 {% if _po %}📋 {{ _po.po_number }}{% else %}+ PO{% endif %}
               </span>
+              {# ── Sub-Budget membership badge (2026-05-26) ──────────
+                 Shows which sub-budgets this line is in. Resolves the
+                 same way as the PO badge: Working = own id, Actual =
+                 source_line_id chain, Estimated = (account_code, sort_
+                 order) match. Click opens the multi-select picker.
+                 The picker writes to the canonical Working line id (so
+                 a single click from any view propagates correctly).
+                 Hidden when no sub-budgets exist on the project. #}
+              {% if sub_budgets_for_project %}
+                {% if is_actual_view %}
+                  {% set _sb_list = sb_by_wline.get(ln.source_line_id) if ln.source_line_id else None %}
+                  {% set _sb_target_lid = ln.source_line_id %}
+                {% elif is_working_view %}
+                  {% set _sb_list = sb_by_wline.get(ln.id) %}
+                  {% set _sb_target_lid = ln.id %}
+                {% else %}
+                  {% set _sb_list = sb_by_key.get((ln.account_code, ln.sort_order)) %}
+                  {# Find the matching Working line id for the picker target. #}
+                  {% set _sb_target_lid = None %}
+                  {% for _wlid, _wpoid in working_po_by_wlid.items() %}{# loop to find a wlid #}{% endfor %}
+                  {% set _sb_target_lid = ln.id %}{# fallback — server picker handles cross-view resolution #}
+                {% endif %}
+                {% set _sb_n = (_sb_list | length) if _sb_list else 0 %}
+                <span class="line-sb-badge {{ '' if _sb_n else 'no-assignment' }}"
+                      data-id="{{ ln.id }}"
+                      data-target-lid="{{ _sb_target_lid or ln.id }}"
+                      onclick="openLineSubBudgetPicker(this)"
+                      title="{% if _sb_n %}In {{ _sb_n }} sub-budget{{ 's' if _sb_n != 1 else '' }}: {{ _sb_list | map(attribute='name') | join(', ') }}{% else %}Click to add to a sub-budget{% endif %}"
+                      style="cursor:pointer;font-size:.72rem;padding:2px 8px;border-radius:10px;margin-left:3px;
+                             {% if _sb_n %}background:rgba(167,139,250,.12);color:#a78bfa;border:1px solid rgba(167,139,250,.3);
+                             {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}
+                             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px;display:inline-block;vertical-align:middle">
+                  {% if _sb_n %}🧩 {{ _sb_n }}{% else %}+ SB{% endif %}
+                </span>
+              {% endif %}
             {% endif %}
             {# Schedule Detail button for ANY non-labor line whose qty was
                auto-derived from the schedule (per diem, hotel, flight,
@@ -8750,6 +8785,105 @@ window.unassignLinePo = async function() {
 };
 document.getElementById('line-po-search')?.addEventListener('input', e => _renderLinePoList(e.target.value));
 
+// ── Per-line sub-budget picker (2026-05-26) ─────────────────────────────
+// Mirrors the PO picker but is MULTI-SELECT (a line can be in multiple
+// sub-budgets simultaneously). Renders a checkbox list of every active
+// sub-budget on the project with pre-checks for ones the line is
+// already in. On save, computes the delta vs current membership and
+// fires add/remove API calls per change.
+window.PROJECT_SUB_BUDGETS = {{ sub_budgets_for_project | tojson }};
+let _lineSbCurrentLineId = null;     // working-budget line id (target for assignment)
+let _lineSbStartMembership = null;   // Set<int> sub_budget_ids the line was in on open
+
+window.openLineSubBudgetPicker = function(badge) {
+  // Resolve the target Working line id from the badge's data attribute.
+  // The badge already does the cross-view resolution (Working=own id,
+  // Actual=source_line_id, Estimated=fallback to own id with server-
+  // side resolution by the assignment endpoint).
+  _lineSbCurrentLineId = parseInt(badge.dataset.targetLid || badge.dataset.id);
+  const lid = _lineSbCurrentLineId;
+  const row = badge.closest('.line-row');
+  const desc = (row?.querySelector('.editable[data-field="description"]')?.textContent || '').trim();
+  document.getElementById('line-sb-modal-subtitle').textContent =
+    desc ? `Pick which sub-budgets "${desc}" belongs to.`
+         : 'Pick which sub-budgets this line belongs to.';
+  // Fetch fresh memberships (in case the page is stale).
+  fetch(`/projects/${PID}/sub-budgets.json`)
+    .then(r => r.json())
+    .then(j => {
+      const sbs = j.sub_budgets || [];
+      _lineSbStartMembership = new Set(
+        sbs.filter(s => (s.lines || []).some(l => l.id === lid))
+           .map(s => s.id)
+      );
+      _renderLineSbList(sbs);
+    });
+  document.getElementById('line-sb-modal').classList.remove('hidden');
+};
+window.closeLineSubBudgetPicker = function() {
+  document.getElementById('line-sb-modal').classList.add('hidden');
+  _lineSbCurrentLineId = null;
+  _lineSbStartMembership = null;
+};
+function _renderLineSbList(sbs) {
+  const list = document.getElementById('line-sb-list');
+  if (!list) return;
+  const active = sbs.filter(s => !s.archived);
+  if (!active.length) {
+    list.innerHTML = `<div class="muted" style="font-size:.8rem;padding:14px;text-align:center;font-style:italic">
+      No sub-budgets on this project yet. Open the Sub-Budgets tab to create one.
+    </div>`;
+    return;
+  }
+  const _esc = s => String(s||'').replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  list.innerHTML = active.map(s => {
+    const checked = _lineSbStartMembership.has(s.id) ? 'checked' : '';
+    return `
+      <label style="display:flex;align-items:center;gap:10px;padding:6px 10px;cursor:pointer;
+                    border-bottom:1px dashed var(--border);font-size:.85rem">
+        <input type="checkbox" class="line-sb-cb" value="${s.id}" ${checked}>
+        <span style="font-weight:600;color:#a78bfa">🧩</span>
+        <span style="flex:1">${_esc(s.name)}</span>
+        ${s.description ? `<span class="muted" style="font-size:.72rem;font-style:italic">${_esc(s.description.slice(0,40))}</span>` : ''}
+      </label>`;
+  }).join('');
+}
+window.saveLineSubBudgetPicks = async function() {
+  if (!_lineSbCurrentLineId || !_lineSbStartMembership) return;
+  const lid = _lineSbCurrentLineId;
+  const wanted = new Set(
+    Array.from(document.querySelectorAll('.line-sb-cb:checked'))
+      .map(cb => parseInt(cb.value))
+  );
+  const toAdd    = [...wanted].filter(id => !_lineSbStartMembership.has(id));
+  const toRemove = [...(_lineSbStartMembership)].filter(id => !wanted.has(id));
+  if (!toAdd.length && !toRemove.length) {
+    closeLineSubBudgetPicker();
+    return;
+  }
+  const btn = document.getElementById('line-sb-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    // Add: bulk endpoint that takes line_ids array — call once per sub.
+    for (const sbId of toAdd) {
+      await fetch(`/projects/${PID}/sub-budgets/${sbId}/lines`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ line_ids: [lid] }),
+      });
+    }
+    // Remove: one DELETE per sub-budget.
+    for (const sbId of toRemove) {
+      await fetch(`/projects/${PID}/sub-budgets/${sbId}/lines/${lid}`,
+                  { method: 'DELETE' });
+    }
+    closeLineSubBudgetPicker();
+    reloadWithTab();
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+    btn.disabled = false; btn.textContent = 'Save';
+  }
+};
+
 // Doc → PO flow (per user 2026-05-05). Two entry points on estimate /
 // quote / PO documents in the Docs tab: create a brand new PO from
 // the doc, or stack the doc onto an existing PO.
@@ -11380,6 +11514,32 @@ function renderCalcDetail(d) {
     </div>
     <div class="modal-actions" style="margin-top:14px">
       <button type="button" class="btn btn-outline" onclick="closeLinePoPicker()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Per-line Sub-Budget multi-picker (2026-05-26) ──
+     Multi-select picker for sub-budget memberships. Pre-checks the
+     ones the line is already in; on Save, computes the delta and
+     fires add/remove API calls per change. -->
+<div id="line-sb-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="closeLineSubBudgetPicker()"></div>
+  <div class="modal-box" style="min-width:480px;max-width:600px;max-height:80vh;overflow-y:auto">
+    <h2 style="margin-bottom:4px">Sub-Budget Memberships</h2>
+    <p class="muted" style="font-size:.8rem;margin-bottom:12px" id="line-sb-modal-subtitle">
+      Pick which sub-budgets this line belongs to.
+    </p>
+    <div id="line-sb-list" style="max-height:55vh;overflow-y:auto;border:1px solid var(--border);
+                                  border-radius:5px;background:var(--bg-input);min-height:80px">
+      <p class="muted" style="padding:1rem;text-align:center">Loading…</p>
+    </div>
+    <div class="modal-actions" style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
+      <a href="#" onclick="event.preventDefault();window.location.href=`/projects/${PID}/sub-budgets?return_bid=${BID}`"
+         style="font-size:.8rem;color:var(--accent)">Manage sub-budgets ↗</a>
+      <div style="display:flex;gap:6px">
+        <button type="button" class="btn btn-outline" onclick="closeLineSubBudgetPicker()">Cancel</button>
+        <button type="button" class="btn btn-primary" id="line-sb-save-btn" onclick="saveLineSubBudgetPicks()">Save</button>
+      </div>
     </div>
   </div>
 </div>
