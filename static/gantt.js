@@ -1262,8 +1262,43 @@ async function pasteSelection(opts) {
     selectedItems.push({ lineId, instance: parseInt(instance), date });
   });
 
-  const targetRows = [...new Set(selectedItems.map(i => `${i.lineId}:${i.instance}`))].sort();
-  const targetCols = [...new Set(selectedItems.map(i => i.date))].sort();
+  let targetRows = [...new Set(selectedItems.map(i => `${i.lineId}:${i.instance}`))].sort();
+  let targetCols = [...new Set(selectedItems.map(i => i.date))].sort();
+
+  // ── Single-anchor expansion (2026-05-26) ──────────────────────────
+  // Spreadsheet-style paste: if the user has selected exactly one
+  // cell, treat it as the top-left ANCHOR and expand the paste target
+  // to match the clipboard's shape. Without this, copying a 1×5 range
+  // and clicking one target cell pasted only 1 cell (the top-left of
+  // the clipboard) — user had to manually select the same shape range
+  // to paste into. Per user 2026-05-26: "it's more logical to just
+  // standard paste in from the first cell, obeying the same format."
+  //
+  // Multi-cell selections keep the existing behavior: clipboard is
+  // tiled across the selected range via modulo. That covers the
+  // power-user case of "fill this big block with a 1×2 pattern".
+  if (selectedItems.length === 1 && (_clipboard.rows * _clipboard.cols > 1)) {
+    const anchor = selectedItems[0];
+    const anchorRowKey = `${anchor.lineId}:${anchor.instance}`;
+    // Build visual row + column order from the DOM.
+    const allCells = document.querySelectorAll('.gantt-cell');
+    const seenRow = new Set();
+    const rowsInOrder = [];
+    for (const c of allCells) {
+      const key = `${c.dataset.line}:${c.dataset.instance}`;
+      if (!seenRow.has(key)) { seenRow.add(key); rowsInOrder.push(key); }
+    }
+    const colsInOrder = [...new Set(Array.from(allCells).map(c => c.dataset.date))].sort();
+    const rIdx = rowsInOrder.indexOf(anchorRowKey);
+    const cIdx = colsInOrder.indexOf(anchor.date);
+    if (rIdx >= 0 && cIdx >= 0) {
+      // Slice the visual order — fewer rows/cols than the clipboard
+      // means the paste truncates at the end of the gantt (no wrap).
+      targetRows = rowsInOrder.slice(rIdx, rIdx + _clipboard.rows);
+      targetCols = colsInOrder.slice(cIdx, cIdx + _clipboard.cols);
+    }
+  }
+
   const undoBatch  = [];
   const payload    = [];
 
