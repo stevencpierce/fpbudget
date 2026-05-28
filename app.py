@@ -11864,9 +11864,33 @@ def po_list_page(pid):
     except Exception as _ble:
         logging.warning(f"[po list] budget-view mirror build failed: {_ble}")
 
-    # ── Sub-budgets (2026-05-26) — rendered alongside POs on the same
-    # page. Each one is a user-defined slice of the budget that can be
-    # exported as a mini-PDF for a client or simple view.
+    return render_template("pos.html",
+                           project=project,
+                           pos=pos_data,
+                           return_budget=return_budget,
+                           lines_by_section=lines_by_section,
+                           now=datetime.utcnow())
+
+
+@app.route("/projects/<int:pid>/sub-budgets")
+@login_required
+def sub_budgets_page(pid):
+    """Render the project's Sub-Budgets tab. Moved out of the POs page
+    into its own tab per user 2026-05-26: 'I think we should move this
+    into its own tab. It's substantial enough that it just needs to be
+    on its own separate tab.'"""
+    project = ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+
+    return_bid_arg = request.args.get('return_bid', type=int)
+    return_budget = None
+    if return_bid_arg:
+        return_budget = Budget.query.filter_by(id=return_bid_arg, project_id=pid).first()
+    if not return_budget:
+        return_budget = (Budget.query
+                         .filter_by(project_id=pid, version_status='current')
+                         .order_by(Budget.id.desc()).first())
+
     sub_budgets_data = []
     try:
         _sbs = (SubBudget.query
@@ -11879,14 +11903,12 @@ def po_list_page(pid):
                                                 return_budget=return_budget)
                             for sb in _sbs]
     except Exception as _sbe:
-        logging.warning(f"[po list] sub-budgets build failed: {_sbe}")
+        logging.warning(f"[sub-budgets page] build failed: {_sbe}")
 
-    return render_template("pos.html",
+    return render_template("sub_budgets.html",
                            project=project,
-                           pos=pos_data,
                            sub_budgets=sub_budgets_data,
                            return_budget=return_budget,
-                           lines_by_section=lines_by_section,
                            now=datetime.utcnow())
 
 
@@ -12361,20 +12383,62 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
                            BudgetLine.account_code,
                            BudgetLine.sort_order,
                            BudgetLine.id)
+    raw_rows = list(sbl_q.all())
+
+    # ── Per-line total — compute via calc_line()/calc_line_from_schedule()
+    # instead of reading the stored estimated_total field. Many lines
+    # (labor with qty/days/rate, schedule-driven per-diem/hotel/flight,
+    # etc.) don't have estimated_total populated on the DB row — it's
+    # computed at render time from qty × days × rate (+ fringes for
+    # labor). Using calc_line ensures the sub-budget card shows the
+    # SAME total the user sees in the Budget tab. Per user report
+    # 2026-05-26: "it doesn't show the total of the lines currently."
     line_rows = []
-    for sbl, ln in sbl_q.all():
-        line_rows.append({
-            "assignment_id":   sbl.id,
-            "id":              ln.id,
-            "account_code":    ln.account_code,
-            "description":     ln.description or ln.account_name or "",
-            "qty":             float(ln.quantity or 0),
-            "days":            float(ln.days or 0),
-            "rate":            float(ln.rate or 0),
-            "estimated_total": float(ln.estimated_total or 0),
-            "is_labor":        bool(ln.is_labor),
-            "note":            sbl.note or "",
-        })
+    if raw_rows and canonical:
+        try:
+            fringe_cfgs = get_fringe_configs(db.session, pid)
+            _profile  = canonical.payroll_profile
+            _pw_start = canonical.payroll_week_start if canonical.payroll_week_start is not None else (
+                _profile.payroll_week_start if _profile else 6)
+            _sched_mode = 'working' if canonical.budget_mode in ('working', 'actual') else 'estimated'
+            for sbl, ln in raw_rows:
+                # Use calc_line_from_schedule() for use_schedule lines so
+                # the displayed total matches the gantt-driven computation.
+                if ln.use_schedule:
+                    _sched = ScheduleDay.query.filter_by(
+                        budget_line_id=ln.id, schedule_mode=_sched_mode).all()
+                    _res = calc_line_from_schedule(ln, _sched, fringe_cfgs, _profile, _pw_start)
+                else:
+                    _res = calc_line(ln, fringe_cfgs)
+                _eff_total = float(_res.get('est_total') or 0)
+                line_rows.append({
+                    "assignment_id":   sbl.id,
+                    "id":              ln.id,
+                    "account_code":    ln.account_code,
+                    "description":     ln.description or ln.account_name or "",
+                    "qty":             float(ln.quantity or 0),
+                    "days":            float(ln.days or 0),
+                    "rate":            float(ln.rate or 0),
+                    "estimated_total": _eff_total,
+                    "is_labor":        bool(ln.is_labor),
+                    "note":            sbl.note or "",
+                })
+        except Exception as _ce:
+            logging.warning(f"[sub_budget] line total calc failed for sb={sb.id}: {_ce}")
+            # Fall back to stored estimated_total so we still render something.
+            for sbl, ln in raw_rows:
+                line_rows.append({
+                    "assignment_id":   sbl.id,
+                    "id":              ln.id,
+                    "account_code":    ln.account_code,
+                    "description":     ln.description or ln.account_name or "",
+                    "qty":             float(ln.quantity or 0),
+                    "days":            float(ln.days or 0),
+                    "rate":            float(ln.rate or 0),
+                    "estimated_total": float(ln.estimated_total or 0),
+                    "is_labor":        bool(ln.is_labor),
+                    "note":            sbl.note or "",
+                })
 
     lines_total = round(sum(r["estimated_total"] for r in line_rows), 2)
     line_count  = len(line_rows)
