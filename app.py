@@ -4534,6 +4534,18 @@ def budget_view(pid, bid):
     # historical/audit needs but is no longer the column source.
     # 2026-05-07.
     estimated_line_totals = {}
+    # Secondary index keyed by (account_code, normalized description). The
+    # primary (account_code, sort_order) key desyncs the moment a Working/
+    # Actual line is duplicated, reordered, inserted, or deleted (sort_order
+    # gets reseated, so it no longer lines up with the Estimated budget).
+    # When that happens the per-line "Estimated" column used to fall back to
+    # the FROZEN ln.working_total snapshot — showing a stale pre-edit value
+    # (user 2026-05-29: Estimated col stuck at $3,360 after the fringe was
+    # zeroed to $3,000). The description index lets a moved/renamed line
+    # still resolve to the LIVE Estimated total before any frozen fallback.
+    estimated_line_totals_by_desc = {}
+    def _desc_key(_l):
+        return (_l.account_code, (_l.description or '').strip().lower())
     if current_estimated_bid:
         if current_estimated_bid == budget.id:
             # FAST PATH: viewing the Estimated budget — line_results
@@ -4543,9 +4555,9 @@ def budget_view(pid, bid):
                 r = line_results.get(ln.id)
                 if not r:
                     continue
-                estimated_line_totals[(ln.account_code, ln.sort_order)] = (
-                    r.get('est_total', 0) or 0
-                )
+                _ev = r.get('est_total', 0) or 0
+                estimated_line_totals[(ln.account_code, ln.sort_order)] = _ev
+                estimated_line_totals_by_desc[_desc_key(ln)] = _ev
         else:
             # Cross-view: query + calc the separate Estimated budget.
             # Bulk-fetch ScheduleDay rows in one query (see C-6 note above
@@ -4587,6 +4599,7 @@ def budget_view(pid, bid):
                     else:
                         _eres = calc_line(_eln, _eb_fringe)
                     estimated_line_totals[(_eln.account_code, _eln.sort_order)] = _eres['est_total']
+                    estimated_line_totals_by_desc[_desc_key(_eln)] = _eres['est_total']
                 except Exception:
                     pass  # skip any line that fails to calc
 
@@ -5005,6 +5018,7 @@ def budget_view(pid, bid):
         working_company_fee=working_company_fee,
         working_line_totals=working_line_totals,
         estimated_line_totals=estimated_line_totals,
+        estimated_line_totals_by_desc=estimated_line_totals_by_desc,
         est_top_sheet=est_top_sheet,
         est_section_lookup=est_section_lookup,
         actual_line_totals=actual_line_totals,

@@ -1214,7 +1214,19 @@
              ln.working_total snapshot when the sister Estimated has
              no matching line — keeps things sensible for orphaned
              lines added directly on Working. 2026-05-07. #}
+          {# Resolve the LIVE Estimated total for this line, most-precise
+             key first: (1) exact position (account_code, sort_order);
+             (2) by description (account_code, desc) — survives a Working/
+             Actual line being duplicated / reordered / inserted, which
+             reseats sort_order and breaks key #1. Only if BOTH miss do we
+             fall back to the frozen ln.working_total snapshot (and that's
+             genuinely a line with no Estimated counterpart). This stops the
+             Estimated column showing a stale pre-edit value in Working/
+             Actual views (user 2026-05-29). #}
           {% set _est_live = estimated_line_totals.get((ln.account_code, ln.sort_order), none) %}
+          {% if _est_live is none %}
+            {% set _est_live = estimated_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
+          {% endif %}
           {% if _est_live is not none %}
             {% set _frozen = _est_live %}
           {% elif ln.working_total is not none %}
