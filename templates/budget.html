@@ -4300,15 +4300,18 @@
     payroll:        { vendor:'Vendor / Employee', amount:true, date:'Pay Date',     docnum:'Check / Ref #', crew:true, location:false },
     legal:          { vendor:'Counterparty', amount:false, date:'Doc Date',        docnum:'Reference #', crew:false, location:false },
     release:        { vendor:'Talent / Location', amount:false, date:'Signed Date', docnum:null,         crew:true,  location:true  },
-    // Employee/Vendor supporting docs (DTR, ID, W-9…): attach to a crew
-    // member; vendor free-text covers vendor-side. No amount. (2026-05-29.)
-    employee_vendor_doc: { vendor:'Person / Vendor', amount:false, date:'Doc Date', docnum:'Doc # / ID', crew:true, location:false },
+    // Employee/Vendor supporting docs (DTR, ID, W-9…): the PERSON is set via
+    // the Crew Member dropdown, so the top text field describes the document
+    // itself (its kind/title) rather than a vendor. (2026-05-29.)
+    employee_vendor_doc: { vendor:'Document Type', vendorPh:'e.g. Direct Deposit, W-9, ID, DTR…', amount:false, date:'Doc Date', docnum:'Doc # / ID', crew:true, location:false },
     misc:           { vendor:'Vendor',       amount:true,  date:'Doc Date',        docnum:null,          crew:false, location:false },
   };
   function _docDetailApplyTypeUI(type) {
     const spec = _DOC_TYPE_FIELD_SPEC[(type || '').toLowerCase()] || _DOC_TYPE_FIELD_SPEC.misc;
     const vL = document.getElementById('docDetailVendorLabel');
     if (vL) vL.textContent = spec.vendor || 'Vendor';
+    const vIn = document.getElementById('docDetailVendor');
+    if (vIn) vIn.placeholder = spec.vendorPh || 'Vendor name…';
     const dL = document.getElementById('docDetailDocDateLabel');
     if (dL) dL.textContent = spec.date || 'Doc Date';
     const amtField = document.getElementById('docDetailAmountField');
