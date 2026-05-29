@@ -2755,7 +2755,10 @@
        Keep-both vs It's-a-duplicate without flipping between rows. Panes
        are built dynamically (starts with 2) and the footer actions reuse
        docsResolveDuplicate(). #}
-    <div id="docDupCompareOverlay" onclick="closeDupCompare(event)"
+    {# No overlay click-to-close: stray clicks while zooming/interacting
+       with a preview were dismissing the review (user 2026-05-29). Close
+       only via ✕ / Cancel / Esc. #}
+    <div id="docDupCompareOverlay"
          style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1200;
                 align-items:center;justify-content:center;padding:24px">
       <div style="background:var(--bg,#141414);border:1px solid var(--border);border-radius:12px;
@@ -3381,30 +3384,55 @@
   }
   function _docGroupPaneHTML(m) {
     const src = '/docs/upload/' + m.uid + '/raw';
+    // Preview FILLS the pane height (flex:1) so docs are big and readable
+    // without fighting the embedded PDF zoom. Per-pane "Expand" makes one
+    // fill the modal; "Full size" opens /raw in a new tab (native zoom,
+    // can't close the modal). 2026-05-29.
     const preview = m.isPdf
-      ? '<iframe src="' + src + '" style="width:100%;height:38vh;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
-      : '<img src="' + src + '" alt="preview" style="width:100%;max-height:38vh;object-fit:contain;border:1px solid var(--border);border-radius:6px;background:#0a0d12">';
-    const mrow = (k, v) => '<div><span style="color:var(--text-muted)">' + k + ':</span> ' + _esc(v || '—') + '</div>';
+      ? '<iframe src="' + src + '#zoom=page-width" style="width:100%;height:100%;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
+      : '<img src="' + src + '" alt="preview" style="width:100%;height:100%;object-fit:contain;border:1px solid var(--border);border-radius:6px;background:#0a0d12">';
+    const mrow = (k, v) => '<span style="margin-right:14px;white-space:nowrap"><span style="color:var(--text-muted)">' + k + ':</span> ' + _esc(v || '—') + '</span>';
     return ''
       + '<div class="dup-pane" data-uid="' + m.uid + '" '
-      +      'style="flex:1;min-width:240px;display:flex;flex-direction:column;gap:8px;'
+      +      'style="flex:1;min-width:260px;min-height:0;display:flex;flex-direction:column;gap:8px;'
       +      'border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--bg-card)">'
-      +   '<div style="font-size:12px;font-weight:600;color:var(--text-muted)">#' + m.uid + '</div>'
-      +   preview
-      +   '<div style="font-size:12px;line-height:1.6;word-break:break-word;flex:1">'
-      +     mrow('Vendor', m.vendor) + mrow('Amount', m.amount) + mrow('Date', m.date)
-      +     mrow('Type', m.dtype) + mrow('File', m.fname)
+      +   '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0">'
+      +     '<span style="font-size:12px;font-weight:600;color:var(--text-muted)">#' + m.uid + '</span>'
+      +     '<button type="button" class="dup-expand-btn" onclick="docDupExpand(\'' + m.uid + '\')" '
+      +        'style="margin-left:auto;background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;'
+      +        'padding:3px 9px;border-radius:5px;cursor:pointer;font-size:11px">⤢ Expand</button>'
+      +     '<a href="' + src + '" target="_blank" rel="noopener" '
+      +        'style="background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;'
+      +        'padding:3px 9px;border-radius:5px;font-size:11px;text-decoration:none">↗ Full size</a>'
       +   '</div>'
-      +   '<div class="dup-toggle" style="display:flex;gap:6px">'
+      +   '<div class="dup-preview" style="flex:1;min-height:300px">' + preview + '</div>'
+      +   '<div style="font-size:11.5px;line-height:1.5;word-break:break-word;flex-shrink:0">'
+      +     mrow('Vendor', m.vendor) + mrow('Amount', m.amount) + mrow('Date', m.date) + mrow('Type', m.dtype)
+      +     '<div style="margin-top:2px"><span style="color:var(--text-muted)">File:</span> ' + _esc(m.fname || '—') + '</div>'
+      +   '</div>'
+      +   '<div class="dup-toggle" style="display:flex;gap:6px;flex-shrink:0">'
       +     '<button type="button" class="dup-keep" onclick="docDupSetChoice(\'' + m.uid + '\',\'keep\')" '
-      +        'style="flex:1;padding:6px;border-radius:6px;cursor:pointer;font-size:12px;'
+      +        'style="flex:1;padding:7px;border-radius:6px;cursor:pointer;font-size:12px;'
       +        'border:1px solid #1a4228;background:#14291e;color:#22c55e">Keep</button>'
       +     '<button type="button" class="dup-dupe" onclick="docDupSetChoice(\'' + m.uid + '\',\'dupe\')" '
-      +        'style="flex:1;padding:6px;border-radius:6px;cursor:pointer;font-size:12px;'
+      +        'style="flex:1;padding:7px;border-radius:6px;cursor:pointer;font-size:12px;'
       +        'border:1px solid #2d2a40;background:#1e1a2a;color:#a78bfa">Duplicate</button>'
       +   '</div>'
       + '</div>';
   }
+  // Expand one pane to fill the modal (hide siblings); click again to restore.
+  window.docDupExpand = function(uid) {
+    const body  = document.getElementById('docDupCompareBody');
+    if (!body) return;
+    const panes = body.querySelectorAll('.dup-pane');
+    const isOn  = body.dataset.expanded === String(uid);
+    body.dataset.expanded = isOn ? '' : String(uid);
+    panes.forEach(p => {
+      p.style.display = (isOn || p.dataset.uid === String(uid)) ? '' : 'none';
+      const btn = p.querySelector('.dup-expand-btn');
+      if (btn) btn.textContent = (!isOn && p.dataset.uid === String(uid)) ? '⤡ Collapse' : '⤢ Expand';
+    });
+  };
   window.docDupSetChoice = function(uid, choice) {
     _docDupGroupState[uid] = choice;
     _docDupRefreshChoices();
@@ -3571,9 +3599,15 @@
     const o = document.getElementById('docDupCompareOverlay');
     if (o) o.style.display = 'none';
     const b = document.getElementById('docDupCompareBody');
-    if (b) b.innerHTML = '';   // stop iframe/img loads
+    if (b) { b.innerHTML = ''; b.dataset.expanded = ''; }   // stop iframe/img loads + reset expand
     _docDupGroupState = {};
   };
+  // Esc closes the group-review modal (only when it's open).
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const o = document.getElementById('docDupCompareOverlay');
+    if (o && o.style.display !== 'none') { e.preventDefault(); closeDupCompare(); }
+  });
 
   // ── Inline filename rename (click filed filename) ─────────────────────
   document.getElementById('docsHistory').addEventListener('click', (e) => {
