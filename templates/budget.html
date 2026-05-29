@@ -2734,6 +2734,7 @@
                 <option value="payroll">Payroll</option>
                 <option value="legal">Legal</option>
                 <option value="release">Release (Talent / Location)</option>
+                <option value="employee_vendor_doc">Employee/Vendor Doc (DTR, ID, W-9…)</option>
                 <option value="misc">Miscellaneous</option>
               </select>
             </div>
@@ -4299,6 +4300,9 @@
     payroll:        { vendor:'Vendor / Employee', amount:true, date:'Pay Date',     docnum:'Check / Ref #', crew:true, location:false },
     legal:          { vendor:'Counterparty', amount:false, date:'Doc Date',        docnum:'Reference #', crew:false, location:false },
     release:        { vendor:'Talent / Location', amount:false, date:'Signed Date', docnum:null,         crew:true,  location:true  },
+    // Employee/Vendor supporting docs (DTR, ID, W-9…): attach to a crew
+    // member; vendor free-text covers vendor-side. No amount. (2026-05-29.)
+    employee_vendor_doc: { vendor:'Person / Vendor', amount:false, date:'Doc Date', docnum:'Doc # / ID', crew:true, location:false },
     misc:           { vendor:'Vendor',       amount:true,  date:'Doc Date',        docnum:null,          crew:false, location:false },
   };
   function _docDetailApplyTypeUI(type) {

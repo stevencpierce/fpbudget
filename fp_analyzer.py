@@ -69,6 +69,10 @@ DOCUMENT_TYPES = {
     # PROCESSED DOCUMENTS, since they belong to the talent / locations
     # workflow rather than admin paperwork.
     "release":         "02_PRE-PRODUCTION/TALENT_RELEASES",
+    # Employee/Vendor supporting docs — DTRs (TX residency), IDs, W-9s,
+    # and other personnel/vendor paperwork; attaches to a crew member.
+    # (User 2026-05-29.)
+    "employee_vendor_doc": "01_ADMIN/PROCESSED DOCUMENTS/EMPLOYEE_VENDOR_DOCS",
     "misc":            "01_ADMIN/PROCESSED DOCUMENTS/MISC",
 }
 
@@ -83,6 +87,7 @@ DOC_PREFIXES = {
     "payroll":         "PAYROLL",
     "legal":           "LEGAL",
     "release":         "RELEASE",
+    "employee_vendor_doc": "EMPDOC",
     "misc":            "DOC",
 }
 
@@ -105,6 +110,7 @@ ORDER_BY_TYPE = {
     "estimate":       ["date", "vendor", "total"],
     "release":        ["date", "vendor"],   # talent / location name lives in vendor
     "insurance":      ["date", "vendor"],   # vendor = insured / certificate holder
+    "employee_vendor_doc": ["date", "vendor"],   # person/vendor name; no amount
 }
 
 # In-memory stores (safe with --workers 1)

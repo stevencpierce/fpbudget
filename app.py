@@ -1335,7 +1335,7 @@ def admin_docs_reconcile_project(pid):
     txns_created = 0
     if created:
         _NON_LEDGER_TYPES = {'tax_form', 'contract', 'release', 'legal',
-                              'insurance', 'misc'}
+                              'insurance', 'misc', 'employee_vendor_doc'}
         # Re-fetch the new rows by note marker (we tagged them with
         # "Reconciled from Dropbox scan"). Faster than re-checking each
         # path against existing_full.
@@ -5051,6 +5051,7 @@ def budget_view(pid, bid):
         ('payroll',        'Payroll'),
         ('legal',          'Legal'),
         ('release',        'Releases'),
+        ('employee_vendor_doc', 'Employee/Vendor Docs'),
         ('misc',           'Miscellaneous'),
         (None,             'Unsorted'),       # category is NULL/blank
     ]
@@ -18686,7 +18687,7 @@ def docs_upload_post(pid):
     #     with the doc as backing paper. Until then they live as
     #     reference docs only.
     _NON_LEDGER_TYPES = {'tax_form', 'contract', 'release', 'legal',
-                         'insurance', 'misc',
+                         'insurance', 'misc', 'employee_vendor_doc',
                          'estimate', 'quote', 'purchase_order'}
     auto_txn = None
     if (upload.status in ('done', 'review')
@@ -19035,7 +19036,7 @@ def _apply_dup_resolution(upload, action):
         # Create the deferred Actuals Transaction for ledger doc types so a
         # genuinely-separate spend shows up in Actuals.
         _NON_LEDGER_TYPES = {'tax_form', 'contract', 'release', 'legal',
-                             'insurance', 'misc',
+                             'insurance', 'misc', 'employee_vendor_doc',
                              'estimate', 'quote', 'purchase_order'}
         made_txn = None
         if (upload.status in ('done', 'review')
@@ -20276,7 +20277,7 @@ def docs_upload_update(uid):
     # 2026-05-06 — fixes "PO and estimate docs still showing up in the
     # Actuals tab after I corrected the doc type from invoice".
     _NON_LEDGER_CATS = {'tax_form', 'contract', 'release', 'legal',
-                        'insurance', 'misc',
+                        'insurance', 'misc', 'employee_vendor_doc',
                         'estimate', 'quote', 'purchase_order'}
     try:
         if (upload.category or '') in _NON_LEDGER_CATS:
