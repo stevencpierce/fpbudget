@@ -19892,16 +19892,31 @@ def _refile_doc(upload, dry=False):
     if dry:
         return {"changed": True, "dry": True, "from": cur, "to": intended,
                 "id": upload.id, "name": upload.filed_filename or upload.original_filename}
+    from fp_analyzer import get_dropbox_client as _ana_dbx
+    dbx = _ana_dbx()
     try:
-        from fp_analyzer import get_dropbox_client as _ana_dbx
-        meta = _ana_dbx().files_move_v2(cur, intended, autorename=True,
-                                        allow_ownership_transfer=False)
+        meta = dbx.files_move_v2(cur, intended, autorename=True,
+                                 allow_ownership_transfer=False)
         final = meta.metadata.path_display
         upload.filed_dropbox_path = final
         upload.filed_filename     = os.path.basename(final)
         logging.info(f"[refile] upload #{upload.id}: {cur} → {final}")
         return {"changed": True, "from": cur, "to": final, "id": upload.id}
     except Exception as e:
+        # Self-heal: a prior partial/interrupted run may have ALREADY moved
+        # the file to `intended` without recording it (DB still points at the
+        # old path → move source is now not_found). If the intended location
+        # holds the file, just record it — no data lost, idempotent re-runs.
+        if 'not_found' in str(e).lower():
+            try:
+                m2 = dbx.files_get_metadata(intended)
+                final = getattr(m2, 'path_display', intended)
+                upload.filed_dropbox_path = final
+                upload.filed_filename     = os.path.basename(final)
+                logging.info(f"[refile] upload #{upload.id}: healed DB → {final} (file already moved)")
+                return {"changed": True, "healed": True, "from": cur, "to": final, "id": upload.id}
+            except Exception:
+                pass
         logging.warning(f"[refile] upload #{upload.id} move failed: {e}")
         return {"changed": False, "error": str(e), "from": cur, "to": intended, "id": upload.id}
 
@@ -19911,33 +19926,55 @@ def _refile_doc(upload, dry=False):
 def docs_reconcile_filing(pid):
     """Reconcile every filed doc in a project so its Dropbox location matches
     the software's current metadata — fixes files left orphaned by edits made
-    before save-time re-filing existed. Pass {"dry": true} (or ?dry=1) to get
-    the planned moves without touching Dropbox. Admin only. (User 2026-05-29.)"""
+    before save-time re-filing existed. Admin only. (User 2026-05-29.)
+
+    Body/params:
+      dry   : true → preview only, no Dropbox calls (processes ALL).
+      limit : real runs process at most this many MOVES per call (default 12)
+              and commit PER ITEM, so a worker timeout can't leave Dropbox
+              and the DB out of sync. The client loops until remaining == 0.
+    Returns {moved, already_ok, skipped, errors, remaining}."""
     if current_user.role not in ('super_admin', 'admin'):
         return jsonify({"error": "Forbidden — admin only"}), 403
-    dry = (request.args.get('dry') == '1') or bool((request.get_json(silent=True) or {}).get('dry'))
+    body = request.get_json(silent=True) or {}
+    dry = (request.args.get('dry') == '1') or bool(body.get('dry'))
+    try:
+        limit = int(request.args.get('limit') or body.get('limit') or 12)
+    except (TypeError, ValueError):
+        limit = 12
     uploads = (DocUpload.query
                .filter_by(project_id=pid)
                .filter(DocUpload.status.in_(['done', 'filed']))
                .all())
     report = {"dry": dry, "total": len(uploads), "moved": [], "already_ok": 0,
-              "skipped": 0, "errors": []}
+              "skipped": 0, "errors": [], "remaining": 0}
+    done_moves = 0
     for u in uploads:
+        # On a real run, stop after `limit` actual moves (commit per item).
+        # Remaining still-needed moves are counted (dry check) so the client
+        # knows whether to loop again.
+        if not dry and limit and done_moves >= limit:
+            r = _refile_doc(u, dry=True)   # cheap: no Dropbox call
+            if r.get("changed"):
+                report["remaining"] += 1
+            continue
         r = _refile_doc(u, dry=dry)
         if r.get("changed"):
-            report["moved"].append({"id": u.id, "from": r["from"], "to": r["to"]})
+            report["moved"].append({"id": u.id, "from": r["from"], "to": r["to"],
+                                    "healed": r.get("healed", False)})
+            if not dry:
+                db.session.commit()        # durable per item
+                done_moves += 1
         elif r.get("error"):
             report["errors"].append({"id": u.id, "error": r["error"]})
         elif r.get("reason") in ("not filed", "special folder", "unresolved"):
             report["skipped"] += 1
         else:
             report["already_ok"] += 1
-    if not dry:
-        db.session.commit()
     logging.info(f"[reconcile-filing] pid={pid} dry={dry}: "
                  f"{len(report['moved'])} {'would move' if dry else 'moved'}, "
                  f"{report['already_ok']} ok, {report['skipped']} skipped, "
-                 f"{len(report['errors'])} errors")
+                 f"{len(report['errors'])} errors, {report['remaining']} remaining")
     return jsonify(report)
 
 
