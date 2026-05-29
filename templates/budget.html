@@ -2136,8 +2136,15 @@
     <div id="docsDropZone" style="border:2px dashed var(--border);border-radius:12px;padding:36px 20px;text-align:center;cursor:pointer;background:var(--bg-card);position:relative;transition:border-color .2s;">
       <input type="file" id="docsFileInput" multiple accept="image/*,application/pdf,.heic,.heif" style="position:absolute;inset:0;opacity:0;cursor:pointer;">
       <div style="font-size:32px;margin-bottom:8px;">📎</div>
-      <div style="font-size:15px;font-weight:600;margin-bottom:4px;">Drop receipts or invoices here</div>
-      <div style="font-size:13px;color:var(--text-muted);">or <span style="color:#5b8af9">browse</span> · PDF, JPG, PNG, HEIC</div>
+      <div style="font-size:15px;font-weight:600;margin-bottom:4px;">Drop receipts, invoices, or whole folders here</div>
+      <div style="font-size:13px;color:var(--text-muted);">or <span style="color:#5b8af9">browse</span> · PDF, JPG, PNG, HEIC · subfolders are searched too</div>
+    </div>
+    {# Folder picker (drag-drop of folders works above; this is the click
+       equivalent — recurses every supported file in the chosen folder). #}
+    <div style="text-align:center;margin-top:6px">
+      <input type="file" id="docsFolderInput" webkitdirectory directory multiple style="display:none">
+      <a href="#" onclick="event.preventDefault();document.getElementById('docsFolderInput').click()"
+         style="font-size:12px;color:#5b8af9;text-decoration:none">📁 …or choose a folder to import</a>
     </div>
 
     <!-- Camera/gallery row (mobile) -->
@@ -3051,12 +3058,92 @@
     docsRenderQueue();
   }
 
+  // ── Folder-aware drag & drop (user 2026-05-29) ───────────────────────
+  // Drop whole folders (e.g. per-vendor subfolders of invoices/contracts/
+  // tax docs) and we recurse the directory tree, pull every supported file,
+  // and queue them. Skips junk (.DS_Store, dotfiles) and unsupported types.
+  const _DOC_EXTS = ['.pdf', '.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp'];
+  function _docsReadEntry(entry, out) {
+    return new Promise(resolve => {
+      if (!entry) return resolve();
+      if (entry.isFile) {
+        entry.file(f => { out.push(f); resolve(); }, () => resolve());
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        const collected = [];
+        const readBatch = () => reader.readEntries(ents => {
+          if (!ents.length) {
+            Promise.all(collected.map(e => _docsReadEntry(e, out))).then(resolve);
+          } else {
+            collected.push(...ents);   // dirs return in ≤100-entry batches
+            readBatch();
+          }
+        }, () => resolve());
+        readBatch();
+      } else { resolve(); }
+    });
+  }
+  async function _docsFilesFromDrop(dt) {
+    const items = dt && dt.items;
+    if (items && items.length && items[0].webkitGetAsEntry) {
+      const roots = [];
+      for (const it of items) {
+        const e = it.webkitGetAsEntry && it.webkitGetAsEntry();
+        if (e) roots.push(e);
+      }
+      if (roots.length) {
+        const out = [];
+        await Promise.all(roots.map(e => _docsReadEntry(e, out)));
+        return out;
+      }
+    }
+    return Array.from((dt && dt.files) || []);
+  }
+  function _docsFilterSupported(files) {
+    const accepted = [], skipped = [];
+    for (const f of files) {
+      const n = f.name || '';
+      if (!n || n.startsWith('.')) continue;            // .DS_Store, dotfiles
+      const lower = n.toLowerCase();
+      if (_DOC_EXTS.some(x => lower.endsWith(x))) accepted.push(f);
+      else skipped.push(n);
+    }
+    return { accepted, skipped };
+  }
+
   const dz = document.getElementById('docsDropZone');
   const fi = document.getElementById('docsFileInput');
   dz.addEventListener('dragover',e=>{e.preventDefault();dz.style.borderColor='#5b8af9';});
   dz.addEventListener('dragleave',()=>{dz.style.borderColor='';});
-  dz.addEventListener('drop',e=>{e.preventDefault();dz.style.borderColor='';docsAddFiles(Array.from(e.dataTransfer.files));});
+  dz.addEventListener('drop', async e => {
+    e.preventDefault(); dz.style.borderColor='';
+    const all = await _docsFilesFromDrop(e.dataTransfer);
+    const { accepted, skipped } = _docsFilterSupported(all);
+    docsAddFiles(accepted);
+    if (skipped.length) {
+      console.log(`[docs] Skipped ${skipped.length} unsupported file(s): ` + skipped.slice(0,20).join(', '));
+    }
+    if (accepted.length) {
+      const det = document.getElementById('docsUploadBanner-detail') || null;
+      console.log(`[docs] Queued ${accepted.length} file(s) from drop`
+        + (skipped.length ? ` (skipped ${skipped.length} unsupported)` : ''));
+    } else if (skipped.length) {
+      alert(`No supported documents found in what you dropped.\nSupported: PDF, JPG, PNG, HEIC.\nSkipped ${skipped.length} other file(s).`);
+    }
+  });
   fi.addEventListener('change',()=>{docsAddFiles(Array.from(fi.files));fi.value='';});
+
+  // Optional "choose a folder" picker (sibling to the file picker) — same
+  // recursive behavior without needing a drag. Wired if the element exists.
+  const fdir = document.getElementById('docsFolderInput');
+  if (fdir) {
+    fdir.addEventListener('change', () => {
+      const { accepted, skipped } = _docsFilterSupported(Array.from(fdir.files || []));
+      docsAddFiles(accepted);
+      if (skipped.length) console.log(`[docs] Folder pick skipped ${skipped.length} unsupported file(s)`);
+      fdir.value='';
+    });
+  }
 
   window.docsOpenCamera  = ()=>document.getElementById('docsCameraInput').click();
   window.docsOpenGallery = ()=>document.getElementById('docsGalleryInput').click();
