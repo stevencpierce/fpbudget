@@ -13130,6 +13130,25 @@ def crew_new():
         flash(f"Invalid email address: {_email}", "error")
         return redirect(url_for("crew_list"))
 
+    # Dedup guard (user 2026-05-29): don't create a second record for
+    # someone already in the database. Match on email first (the strongest
+    # key), then fall back to a case-insensitive name match. On a hit,
+    # return the EXISTING member instead of a copy — so the budget-tab
+    # "add new person" flow transparently assigns the existing person, and
+    # bulk re-submits don't pile up duplicates.
+    _dupe = None
+    if _email:
+        _dupe = CrewMember.query.filter(func.lower(CrewMember.email) == _email.lower()).first()
+    if not _dupe:
+        _dupe = CrewMember.query.filter(func.lower(CrewMember.name) == name.lower()).first()
+    if _dupe:
+        if want_json:
+            return jsonify({"ok": True, "id": _dupe.id, "name": _dupe.name,
+                            "department": _dupe.department or "", "company": _dupe.company or "",
+                            "duplicate": True}), 200
+        flash(f"“{_dupe.name}” is already in the crew database — not added again.", "error")
+        return redirect(url_for("crew_list"))
+
     m = CrewMember(
         name=name,
         department=_get("department") or None,
