@@ -2742,6 +2742,22 @@
                detail modal so the user doesn't have to close and find the
                row in the list view. The buttons hide/show via JS based on
                docDetailCategory's current value. #}
+            {# Budget-line coding — assign this doc's transaction to a budget
+               line right here, with the smart vendor→line suggestion. Shown
+               only when the doc has a linked Actuals transaction. Reuses the
+               actuals picker machinery (actualsSetLine + the shared options
+               template). 2026-05-29. #}
+            <div id="docDetailCodingBlock" class="field" style="margin-bottom:.6rem;display:none">
+              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Budget line (Actuals)</label>
+              <div id="docDetailSuggest" style="margin:2px 0 5px;display:none"></div>
+              <select id="docDetailLinePicker" class="actuals-line-picker"
+                      data-tid="" data-current="" data-populated="0"
+                      onfocus="_actualsFillPicker(this)" onchange="actualsSetLine(this)"
+                      style="width:100%;font-size:12.5px;padding:5px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:6px">
+                <option value="">— pick budget line —</option>
+              </select>
+              <div id="docDetailCodingStatus" style="font-size:10.5px;color:var(--text-muted);margin-top:3px"></div>
+            </div>
             <div id="docDetailPoActions" class="field" style="margin-bottom:.6rem;display:none">
               <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Purchase Order</label>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -4800,7 +4816,56 @@
     // detail modal is editing in-place — a no-op load is fine.
     document.getElementById('docDetailMeta').textContent =
       'Upload ID #' + uid;
+    _docDetailLoadCoding(uid);
   };
+
+  // Load the budget-line coding context for the open doc and wire the
+  // in-modal picker + smart suggestion. Reuses the Actuals machinery
+  // (window.actualsSetLine / window._actualsFillPicker). 2026-05-29.
+  async function _docDetailLoadCoding(uid) {
+    const block  = document.getElementById('docDetailCodingBlock');
+    const picker = document.getElementById('docDetailLinePicker');
+    const sugEl  = document.getElementById('docDetailSuggest');
+    const statusEl = document.getElementById('docDetailCodingStatus');
+    if (!block || !picker) return;
+    // reset
+    block.style.display = 'none';
+    sugEl.style.display = 'none'; sugEl.innerHTML = '';
+    picker.dataset.populated = '0';
+    picker.innerHTML = '<option value="">— pick budget line —</option>';
+    picker.dataset.tid = ''; picker.dataset.current = ''; statusEl.textContent = '';
+    if (typeof window._actualsFillPicker !== 'function') return;
+    try {
+      const r = await fetch('/docs/upload/' + uid + '/coding', { credentials: 'same-origin' });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.txn_id) return;                 // non-ledger doc — no line coding
+      picker.dataset.tid = d.txn_id;
+      picker.dataset.current = d.current || '';
+      window._actualsFillPicker(picker);      // clone options + select current
+      block.style.display = '';
+      if (d.not_project) { picker.disabled = true; statusEl.textContent = 'Marked “not a project expense.”'; return; }
+      const sel = picker.options[picker.selectedIndex];
+      statusEl.textContent = d.current && sel ? ('Currently: ' + sel.text.trim()) : 'Not yet coded.';
+      // Smart suggestion chip — only when not already coded.
+      if (d.suggestion && !d.current) {
+        const s = d.suggestion;
+        sugEl.style.display = '';
+        sugEl.innerHTML = '<button type="button" id="docDetailSuggestBtn" '
+          + 'style="font-size:11.5px;padding:4px 9px;background:#10231a;border:1px solid #1f6f4a;'
+          + 'border-radius:5px;color:#5fd0a0;cursor:pointer;max-width:100%;white-space:normal;text-align:left;line-height:1.3">'
+          + '💡 Suggested: ' + _esc(String(s.code)) + ' · ' + _esc(String(s.label)) + '</button>';
+        document.getElementById('docDetailSuggestBtn').onclick = () => {
+          picker.value = String(s.line_id);
+          if (picker.value === String(s.line_id)) {
+            sugEl.style.display = 'none';
+            statusEl.textContent = 'Coding…';
+            actualsSetLine(picker);
+          }
+        };
+      }
+    } catch (e) { /* silent — coding is best-effort */ }
+  }
 
   window.closeDocDetail = function (ev) {
     if (ev && ev.target && ev.target.id !== 'docDetailOverlay') return;

@@ -19724,6 +19724,42 @@ def docs_upload_raw(uid):
     return resp_out
 
 
+@app.route("/docs/upload/<int:uid>/coding", methods=["GET"])
+@login_required
+def docs_upload_coding(uid):
+    """Coding context for the doc-detail modal so the user can assign a
+    budget line + see the smart suggestion right in the popup (user
+    2026-05-29). Returns the linked transaction id, its current coding as a
+    picker value (WORKING line id, or 'section:<code>', or ''), and the
+    vendor→line suggestion. txn_id is None for non-ledger docs (no line)."""
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+    txn = (Transaction.query.filter_by(doc_upload_id=uid)
+           .order_by(Transaction.id).first())
+    if not txn:
+        return jsonify({"txn_id": None})
+    cur = ''
+    if txn.budget_line_id:
+        bl = BudgetLine.query.get(txn.budget_line_id)
+        # Picker values are WORKING line ids; an Actual line points back via
+        # source_line_id, a Working line is its own id.
+        cur = str((bl.source_line_id or bl.id) if bl else txn.budget_line_id)
+    elif txn.account_code:
+        cur = 'section:%s' % txn.account_code
+    try:
+        sug = _actuals_vendor_suggestions(upload.project_id).get(txn.id)
+    except Exception:
+        sug = None
+    return jsonify({
+        "txn_id":      txn.id,
+        "current":     cur,
+        "suggestion":  sug,
+        "not_project": bool(getattr(txn, 'not_project_expense', False)),
+    })
+
+
 @app.route("/docs/upload/<int:uid>/preview-link", methods=["GET"])
 @login_required
 def docs_upload_preview_link(uid):
