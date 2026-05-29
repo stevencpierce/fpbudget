@@ -2211,14 +2211,21 @@
     {# Status filter chips — click a chip to show only rows matching that
        status. "All" clears the filter. Counts shown next to each chip
        are computed at render time from the doc_uploads list. #}
-    {% set _status_counts = namespace(all=doc_uploads|length, pending=0, processing=0, review=0, done=0, error=0, duplicate=0) %}
+    {# Counts. "review" now means anything needing a human decision —
+       low-confidence OCR (status=review) OR a still-pending duplicate
+       (is_duplicate AND status!=duplicate). "confirmed_dup" is the
+       already-resolved set (status=duplicate) that lives on the demoted
+       Duplicates tab for un-flagging mistakes. (User 2026-05-29.) #}
+    {% set _status_counts = namespace(all=doc_uploads|length, pending=0, processing=0, review=0, done=0, error=0, duplicate=0, confirmed_dup=0, pending_dup=0) %}
     {% for u in doc_uploads %}
       {% if u.status == 'pending' %}{% set _status_counts.pending = _status_counts.pending + 1 %}{% endif %}
       {% if u.status == 'processing' %}{% set _status_counts.processing = _status_counts.processing + 1 %}{% endif %}
-      {% if u.status == 'review' %}{% set _status_counts.review = _status_counts.review + 1 %}{% endif %}
       {% if u.status == 'done' or u.status == 'filed' %}{% set _status_counts.done = _status_counts.done + 1 %}{% endif %}
       {% if u.status == 'error' %}{% set _status_counts.error = _status_counts.error + 1 %}{% endif %}
-      {% if u.is_duplicate %}{% set _status_counts.duplicate = _status_counts.duplicate + 1 %}{% endif %}
+      {% if u.status == 'duplicate' %}{% set _status_counts.confirmed_dup = _status_counts.confirmed_dup + 1 %}{% endif %}
+      {% set _is_pending_dup = (u.is_duplicate and u.status != 'duplicate') %}
+      {% if _is_pending_dup %}{% set _status_counts.pending_dup = _status_counts.pending_dup + 1 %}{% endif %}
+      {% if u.status == 'review' or _is_pending_dup %}{% set _status_counts.review = _status_counts.review + 1 %}{% endif %}
     {% endfor %}
     {# ── Doc subtabs (per user 2026-05-29) ───────────────────────────────
        Replaces the flat status-chip row with a tab bar. "Needs Review"
@@ -2239,15 +2246,38 @@
         <span class="docs-subtab-count" style="font-size:11px;background:var(--bg-input);color:var(--text-muted);padding:0 6px;border-radius:9px">{{ count }}</span>
       </button>
       {%- endmacro %}
-      {% if _status_counts.review > 0 %}{{ _subtab('review', 'Needs Review', _status_counts.review, '⚠') }}{% endif %}
+      {# Most prominent: the combined Review tab (low-confidence + pending
+         duplicates). Then attention statuses, All, the doc-type tabs, and
+         finally the demoted Duplicates (confirmed) tab at the very end. #}
+      {% if _status_counts.review > 0 %}{{ _subtab('review', 'Review', _status_counts.review, '⚠') }}{% endif %}
       {% if _processing_n > 0 %}{{ _subtab('processing', 'Processing', _processing_n, '⏳') }}{% endif %}
-      {% if _status_counts.duplicate > 0 %}{{ _subtab('duplicate', 'Duplicates', _status_counts.duplicate, '🔁') }}{% endif %}
       {% if _status_counts.error > 0 %}{{ _subtab('error', 'Errors', _status_counts.error, '⛔') }}{% endif %}
       {{ _subtab('all', 'All', _status_counts.all) }}
       {% for grp in doc_groups %}
         {{ _subtab('type:' ~ grp.key, grp.label, grp.rows|length) }}
       {% endfor %}
+      {# Always render the Duplicates (confirmed) tab so JS can reveal it
+         the moment the first dupe is confirmed; hidden at 0 via init. #}
+      <span id="docs-dup-tab-wrap" style="{% if _status_counts.confirmed_dup == 0 %}display:none{% endif %}">{{ _subtab('duplicate', 'Duplicates', _status_counts.confirmed_dup, '🔁') }}</span>
     </div>
+
+    {# Review-tab toolbar: bulk "confirm everything still flagged as a
+       duplicate" (the unflagged original of each group is kept
+       automatically) + a hint that Compare opens the side-by-side group.
+       Shown only while the Review tab is active and pending dupes exist. #}
+    {% if _status_counts.pending_dup > 0 %}
+    <div id="docs-review-toolbar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;
+                margin-bottom:10px;padding:9px 13px;background:#211c10;
+                border:1px solid #4a3a1a;border-radius:8px;font-size:12.5px">
+      <span style="color:#fbbf24;font-weight:600">🔁 {{ _status_counts.pending_dup }} possible duplicate{{ 's' if _status_counts.pending_dup != 1 else '' }} to review</span>
+      <span class="muted" style="font-size:11.5px">Click <strong>⇆ Compare</strong> on a row to see the whole group side-by-side, or:</span>
+      <button type="button" onclick="docsConfirmAllDuplicates()"
+              style="margin-left:auto;background:#1e1a2a;border:1px solid #2d2a40;color:#a78bfa;
+                     padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;white-space:nowrap">
+        Move all flagged → /_DUPLICATES/
+      </button>
+    </div>
+    {% endif %}
 
     {# Vendor / filename / note search — mirrors the Actuals-tab vendor
        search the user relies on. Filters within the active subtab. #}
@@ -2361,6 +2391,7 @@
         {% set _size_display = ('%.1f KB'|format(_size_kb)) if _size_kb < 1024 else ('%.1f MB'|format(_size_kb / 1024)) %}
         <div class="doc-row" data-upload-id="{{ u.id }}" data-status="{{ u.status }}"
              data-group-key="{{ grp.key }}"
+             data-file-hash="{{ u.file_hash or '' }}"
              data-sort-date="{{ u.uploaded_at.isoformat() if u.uploaded_at else '' }}"
              data-sort-uploader="{{ _uploader_label|lower }}"
              data-sort-filename="{{ _display_name|lower }}"
@@ -2488,9 +2519,9 @@
             {% if _dup_pending %}
             <button class="doc-dup-compare-btn" data-uid="{{ u.id }}"
                     data-original="{{ u.duplicate_of_id or '' }}"
-                    title="Compare this document side-by-side with the one it matched"
-                    onclick="event.stopPropagation();docsOpenDupCompare({{ u.id }})"
-                    style="background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer;white-space:nowrap;">⇆ Compare</button>
+                    title="Review this whole duplicate group side-by-side and decide keep/duplicate for each"
+                    onclick="event.stopPropagation();docsOpenDupGroup({{ u.id }})"
+                    style="background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer;white-space:nowrap;">⇆ Compare group</button>
             <button class="doc-dup-keep-btn" data-uid="{{ u.id }}"
                     title="These are genuinely separate documents — keep both"
                     onclick="event.stopPropagation();docsResolveDuplicate({{ u.id }},'keep',this)"
@@ -2728,30 +2759,29 @@
          style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1200;
                 align-items:center;justify-content:center;padding:24px">
       <div style="background:var(--bg,#141414);border:1px solid var(--border);border-radius:12px;
-                  width:min(1100px,96vw);max-height:92vh;display:flex;flex-direction:column;
+                  width:min(1280px,97vw);max-height:93vh;display:flex;flex-direction:column;
                   box-shadow:0 12px 48px rgba(0,0,0,.5)" onclick="event.stopPropagation()">
         <div style="display:flex;align-items:center;justify-content:space-between;
                     padding:14px 18px;border-bottom:1px solid var(--border)">
-          <h3 style="margin:0;font-size:1rem">⇆ Compare possible duplicate</h3>
+          <h3 style="margin:0;font-size:1rem">⇆ Review duplicate group</h3>
           <button type="button" onclick="closeDupCompare()"
                   style="background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">✕</button>
         </div>
         <p class="muted" style="margin:0;padding:8px 18px 0;font-size:.78rem">
-          These two files have identical contents. If they're genuinely separate
-          (e.g. a recurring flat-fee invoice), choose <strong>Keep both</strong>.
-          If it's a re-upload of the same document, choose <strong>It's a duplicate</strong>.
+          These files have identical contents. Mark each one <strong>Keep</strong> (a real,
+          separate document) or <strong>Duplicate</strong> (file it away). At least one must
+          be kept — duplicates move to <code>/_DUPLICATES/</code> when you Apply.
         </p>
         <div id="docDupCompareBody"
              style="flex:1;overflow:auto;padding:14px 18px;display:flex;gap:14px;align-items:stretch">
           {# panes injected by JS #}
         </div>
-        <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;
+        <div style="display:flex;align-items:center;gap:8px;
                     padding:12px 18px;border-top:1px solid var(--border)">
+          <span id="docDupApplySummary" class="muted" style="font-size:12px;margin-right:auto"></span>
           <button type="button" class="btn btn-sm" onclick="closeDupCompare()">Cancel</button>
-          <button type="button" id="docDupKeepBtn" class="btn btn-sm"
-                  style="background:#14291e;border:1px solid #1a4228;color:#22c55e">Keep both — separate</button>
-          <button type="button" id="docDupConfirmBtn" class="btn btn-sm"
-                  style="background:#1e1a2a;border:1px solid #2d2a40;color:#a78bfa">It's a duplicate</button>
+          <button type="button" id="docDupApplyBtn" class="btn btn-sm btn-primary"
+                  onclick="docDupApplyGroup()">Apply decisions</button>
         </div>
       </div>
     </div>
@@ -3296,99 +3326,253 @@
         row.style.transition = 'opacity .4s';
         row.style.opacity = '.45';
       }
+      if (typeof _docsRefreshDupCounts === 'function') _docsRefreshDupCounts();
+      if (typeof _docsApplyView === 'function') _docsApplyView();
     } catch (err) {
       alert('Network error: ' + (err && err.message || err));
       dupBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });
     }
   };
 
-  // ── Duplicate side-by-side compare ───────────────────────────────────
-  // Reads each side's metadata straight from its row in the DOM (rows
-  // always exist even when filtered/hidden) and embeds the file via the
-  // /raw endpoint so no extra round-trip is needed.
-  function _docCompareMeta(uid) {
-    const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
-    if (!row) return null;
-    const vendor = (row.querySelector('.doc-cell-vendor')?.textContent || '').trim();
-    const amount = (row.querySelector('.doc-cell-amount')?.textContent || '').trim();
-    const fname  = (row.querySelector('.doc-filename')?.textContent || '').trim();
+  // ── Duplicate GROUP review (side-by-side, per-item keep/dupe) ─────────
+  // A "group" is every doc-row sharing the same file_hash (byte-identical
+  // contents). The modal shows them all together; each gets a Keep /
+  // Duplicate toggle (≥1 must be Kept). One Apply resolves the whole group
+  // via the batch endpoint. Metadata is read straight from each row in the
+  // DOM (rows exist even when filtered/hidden); files embed via /raw.
+  // 2026-05-29 — replaces the old 2-pane pairwise compare.
+  let _docDupGroupState = {};   // { uid: 'keep' | 'dupe' }
+
+  function _docGroupMembers(uid) {
+    const seed = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
+    const hash = seed && seed.dataset.fileHash;
+    let rows;
+    if (hash) {
+      rows = Array.from(document.querySelectorAll(
+        '.doc-row[data-file-hash="' + hash + '"]'));
+    } else {
+      // No hash → fall back to seed + its recorded match.
+      rows = seed ? [seed] : [];
+      const orig = seed && seed.dataset.duplicateOf;
+      if (orig) {
+        const o = document.querySelector('.doc-row[data-upload-id="' + orig + '"]');
+        if (o) rows.push(o);
+      }
+    }
+    // Drop rows already confirmed (they live in /_DUPLICATES/ now) — the
+    // review group is just the original + still-pending copies.
+    rows = rows.filter(r => (r.dataset.status || '') !== 'duplicate');
+    // Stable order: oldest upload id first (the original tends to be first).
+    return rows.sort((a, b) => (+a.dataset.uploadId) - (+b.dataset.uploadId));
+  }
+  function _docMeta(row) {
+    const fname = (row.querySelector('.doc-filename')?.textContent || '').trim();
     return {
-      uid,
-      vendor, amount, fname,
-      date:  row.dataset.docDate  || '',
-      dtype: row.dataset.sortType || '',
-      isPdf: /\.pdf\b/i.test(fname) || /\.pdf\b/i.test(row.dataset.sortFilename || ''),
+      uid:    row.dataset.uploadId,
+      vendor: (row.querySelector('.doc-cell-vendor')?.textContent || '').trim(),
+      amount: (row.querySelector('.doc-cell-amount')?.textContent || '').trim(),
+      fname,
+      date:   row.dataset.docDate  || '',
+      dtype:  row.dataset.sortType || '',
+      status: (row.dataset.status || '').toLowerCase(),
+      isDup:  row.dataset.isDuplicate === '1',
+      isPdf:  /\.pdf\b/i.test(fname) || /\.pdf\b/i.test(row.dataset.sortFilename || ''),
     };
   }
-  function _docComparePane(meta, label, accent) {
-    const src = '/docs/upload/' + meta.uid + '/raw';
-    const preview = meta.isPdf
-      ? '<iframe src="' + src + '" style="width:100%;height:42vh;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
-      : '<img src="' + src + '" alt="preview" style="width:100%;max-height:42vh;object-fit:contain;border:1px solid var(--border);border-radius:6px;background:#0a0d12">';
-    const meta_row = (k, v) =>
-      '<div><span style="color:var(--text-muted)">' + k + ':</span> ' + _esc(v || '—') + '</div>';
+  function _docGroupPaneHTML(m) {
+    const src = '/docs/upload/' + m.uid + '/raw';
+    const preview = m.isPdf
+      ? '<iframe src="' + src + '" style="width:100%;height:38vh;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
+      : '<img src="' + src + '" alt="preview" style="width:100%;max-height:38vh;object-fit:contain;border:1px solid var(--border);border-radius:6px;background:#0a0d12">';
+    const mrow = (k, v) => '<div><span style="color:var(--text-muted)">' + k + ':</span> ' + _esc(v || '—') + '</div>';
     return ''
-      + '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px">'
-      +   '<div style="font-size:12px;font-weight:600;color:' + accent + '">' + label + ' · #' + meta.uid + '</div>'
+      + '<div class="dup-pane" data-uid="' + m.uid + '" '
+      +      'style="flex:1;min-width:240px;display:flex;flex-direction:column;gap:8px;'
+      +      'border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--bg-card)">'
+      +   '<div style="font-size:12px;font-weight:600;color:var(--text-muted)">#' + m.uid + '</div>'
       +   preview
-      +   '<div style="font-size:12.5px;line-height:1.7;word-break:break-word">'
-      +     meta_row('Vendor', meta.vendor)
-      +     meta_row('Amount', meta.amount)
-      +     meta_row('Date', meta.date)
-      +     meta_row('Type', meta.dtype)
-      +     meta_row('File', meta.fname)
+      +   '<div style="font-size:12px;line-height:1.6;word-break:break-word;flex:1">'
+      +     mrow('Vendor', m.vendor) + mrow('Amount', m.amount) + mrow('Date', m.date)
+      +     mrow('Type', m.dtype) + mrow('File', m.fname)
+      +   '</div>'
+      +   '<div class="dup-toggle" style="display:flex;gap:6px">'
+      +     '<button type="button" class="dup-keep" onclick="docDupSetChoice(\'' + m.uid + '\',\'keep\')" '
+      +        'style="flex:1;padding:6px;border-radius:6px;cursor:pointer;font-size:12px;'
+      +        'border:1px solid #1a4228;background:#14291e;color:#22c55e">Keep</button>'
+      +     '<button type="button" class="dup-dupe" onclick="docDupSetChoice(\'' + m.uid + '\',\'dupe\')" '
+      +        'style="flex:1;padding:6px;border-radius:6px;cursor:pointer;font-size:12px;'
+      +        'border:1px solid #2d2a40;background:#1e1a2a;color:#a78bfa">Duplicate</button>'
       +   '</div>'
       + '</div>';
   }
-  window.docsOpenDupCompare = function(uid) {
-    const thisRow = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
-    const origId  = thisRow ? (thisRow.dataset.duplicateOf || '') : '';
-    const body    = document.getElementById('docDupCompareBody');
-    if (!body) return;
-    const thisMeta = _docCompareMeta(uid)
-      || { uid, vendor:'', amount:'', fname:'', date:'', dtype:'', isPdf:false };
-    let html = _docComparePane(thisMeta, 'This upload (flagged)', '#fbbf24');
-    if (origId) {
-      const origMeta = _docCompareMeta(origId);
-      html += origMeta
-        ? _docComparePane(origMeta, 'Matched earlier upload', '#8fb4ff')
-        : '<div style="flex:1;display:flex;align-items:center;justify-content:center;'
-          + 'color:var(--text-muted);font-size:13px;padding:20px;text-align:center">'
-          + 'Matched upload #' + origId + ' isn\'t in the current list '
-          + '(it may have been deleted or filed away).</div>';
-    } else {
-      html += '<div style="flex:1;display:flex;align-items:center;justify-content:center;'
-            + 'color:var(--text-muted);font-size:13px;padding:20px;text-align:center">'
-            + 'No specific matched upload was recorded for this duplicate.</div>';
-    }
-    body.innerHTML = html;
-    document.getElementById('docDupKeepBtn').onclick    = () => _docCompareResolve(uid, 'keep');
-    document.getElementById('docDupConfirmBtn').onclick = () => _docCompareResolve(uid, 'confirm');
-    document.getElementById('docDupCompareOverlay').style.display = 'flex';
+  window.docDupSetChoice = function(uid, choice) {
+    _docDupGroupState[uid] = choice;
+    _docDupRefreshChoices();
   };
-  function _docCompareResolve(uid, action) {
-    const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
-    const btn = row && row.querySelector(action === 'keep' ? '.doc-dup-keep-btn' : '.doc-dup-confirm-btn');
-    closeDupCompare();
-    if (btn) {
-      docsResolveDuplicate(uid, action, btn);   // reuses confirm() + row update
+  function _docDupRefreshChoices() {
+    const panes = document.querySelectorAll('#docDupCompareBody .dup-pane');
+    let keeps = 0, dupes = 0;
+    panes.forEach(p => {
+      const choice = _docDupGroupState[p.dataset.uid] || 'keep';
+      const keepBtn = p.querySelector('.dup-keep');
+      const dupeBtn = p.querySelector('.dup-dupe');
+      const on  = (b) => { b.style.outline = '2px solid currentColor'; b.style.fontWeight = '700'; };
+      const off = (b) => { b.style.outline = 'none'; b.style.fontWeight = '400'; };
+      if (choice === 'dupe') { on(dupeBtn); off(keepBtn); dupes++; }
+      else                   { on(keepBtn); off(dupeBtn); keeps++; }
+    });
+    const sum   = document.getElementById('docDupApplySummary');
+    const apply = document.getElementById('docDupApplyBtn');
+    if (keeps === 0) {
+      if (sum) { sum.textContent = '⚠ At least one document must be kept.'; sum.style.color = '#fbbf24'; }
+      if (apply) { apply.disabled = true; apply.style.opacity = '.5'; apply.style.cursor = 'not-allowed'; }
     } else {
-      // Fallback: row buttons gone (already resolved elsewhere) — hit the
-      // endpoint directly and drop the row on success.
-      fetch('/docs/upload/' + uid + '/resolve-duplicate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
-      }).then(r => r.ok ? r.json() : Promise.reject()).then(() => {
-        if (typeof _docsApplyView === 'function') _docsApplyView();
-      }).catch(() => alert('Could not resolve — please refresh and try again.'));
+      if (sum) { sum.textContent = keeps + ' keep · ' + dupes + ' duplicate'; sum.style.color = 'var(--text-muted)'; }
+      if (apply) { apply.disabled = false; apply.style.opacity = ''; apply.style.cursor = 'pointer'; }
     }
   }
+  // Public entry — the row's "⇆ Compare" button calls this.
+  window.docsOpenDupGroup = function(uid) {
+    const members = _docGroupMembers(uid);
+    const body    = document.getElementById('docDupCompareBody');
+    if (!body || !members.length) return;
+    _docDupGroupState = {};
+    // Default: a CONFIRMED dup (already filed away) defaults to Duplicate;
+    // everything else defaults to Keep. So the unflagged original stays kept
+    // and the flagged copies start as Duplicate only if already confirmed —
+    // otherwise the user makes the call. To make the common case one-click,
+    // default flagged-pending copies to Duplicate and the lowest-id (likely
+    // original, unflagged) to Keep.
+    members.forEach(row => {
+      const m = _docMeta(row);
+      _docDupGroupState[m.uid] = (m.isDup) ? 'dupe' : 'keep';
+    });
+    body.innerHTML = members.map(row => _docGroupPaneHTML(_docMeta(row))).join('');
+    _docDupRefreshChoices();
+    document.getElementById('docDupCompareOverlay').style.display = 'flex';
+  };
+  // Backwards-compat alias (older inline onclick may still reference it).
+  window.docsOpenDupCompare = window.docsOpenDupGroup;
+
+  window.docDupApplyGroup = async function() {
+    const keep = [], confirm = [];
+    Object.keys(_docDupGroupState).forEach(uid => {
+      (_docDupGroupState[uid] === 'dupe' ? confirm : keep).push(parseInt(uid));
+    });
+    if (!keep.length) { alert('At least one document must be kept.'); return; }
+    const apply = document.getElementById('docDupApplyBtn');
+    if (apply) { apply.disabled = true; apply.textContent = 'Applying…'; }
+    try {
+      const r = await fetch('/docs/' + PROJ_ID + '/duplicates/resolve-batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keep, confirm }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert('Apply failed: ' + (d.error || r.status)); return; }
+      // Reflect results into the rows without a reload.
+      (d.results || []).forEach(res => _docApplyResolvedRow(res.upload_id, res.resolved));
+      closeDupCompare();
+      if (typeof _docsApplyView === 'function') _docsApplyView();
+      _docsRefreshDupCounts();
+    } catch (e) {
+      alert('Apply error: ' + (e && e.message || e));
+    } finally {
+      if (apply) { apply.textContent = 'Apply decisions'; }
+    }
+  };
+
+  // Bulk: confirm EVERY still-pending flagged duplicate at once (the
+  // unflagged original of each group is kept automatically). The "move all
+  // → /_DUPLICATES/" button in the Review toolbar. 2026-05-29.
+  window.docsConfirmAllDuplicates = async function() {
+    const pending = Array.from(document.querySelectorAll('#docsHistory .doc-row'))
+      .filter(r => r.dataset.isDuplicate === '1' && (r.dataset.status || '') !== 'duplicate')
+      .map(r => parseInt(r.dataset.uploadId));
+    if (!pending.length) { alert('No flagged duplicates to move.'); return; }
+    if (!confirm('Move ' + pending.length + ' flagged duplicate' + (pending.length === 1 ? '' : 's')
+                 + ' to /_DUPLICATES/?\n\nThe original copy of each is kept automatically. '
+                 + 'You can still un-flag any from the Duplicates tab afterward.')) return;
+    try {
+      const r = await fetch('/docs/' + PROJ_ID + '/duplicates/resolve-batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keep: [], confirm: pending }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert('Failed: ' + (d.error || r.status)); return; }
+      (d.results || []).forEach(res => _docApplyResolvedRow(res.upload_id, res.resolved));
+      _docsRefreshDupCounts();
+      if (typeof _docsApplyView === 'function') _docsApplyView();
+    } catch (e) {
+      alert('Error: ' + (e && e.message || e));
+    }
+  };
+
+  // Apply a resolution outcome to a single row's DOM state.
+  function _docApplyResolvedRow(uid, resolved) {
+    const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
+    if (!row) return;
+    const badge   = row.querySelector('.doc-status-badge');
+    const cluster = badge ? badge.parentElement : null;
+    if (cluster) cluster.querySelectorAll(
+      '.doc-dup-keep-btn, .doc-dup-confirm-btn, .doc-dup-compare-btn').forEach(b => b.remove());
+    if (resolved === 'keep') {
+      row.dataset.isDuplicate = '';
+      row.dataset.dupPending  = '';
+      if (badge) {
+        badge.textContent = '✓';
+        badge.style.cssText = 'font-size:11px;padding:3px 9px;border-radius:20px;background:#14291e;color:#22c55e;border:1px solid #1a4228;';
+      }
+    } else {  // confirm
+      row.dataset.status      = 'duplicate';
+      row.dataset.dupPending  = '';
+      if (badge) {
+        badge.textContent = '🔁 Dup';
+        badge.style.cssText = 'font-size:11px;padding:3px 9px;border-radius:20px;background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;';
+      }
+    }
+  }
+
+  // Recompute the Review + Duplicates subtab counts after a resolve, and
+  // hide the Review toolbar / re-home the user if Review just emptied out.
+  function _docsRefreshDupCounts() {
+    const rows = Array.from(document.querySelectorAll('#docsHistory .doc-row'));
+    let reviewN = 0, pendingDup = 0, confirmedDup = 0;
+    rows.forEach(r => {
+      const st = (r.dataset.status || '').toLowerCase();
+      const dup = r.dataset.isDuplicate === '1';
+      const pend = dup && st !== 'duplicate';
+      if (pend) pendingDup++;
+      if (st === 'duplicate') confirmedDup++;
+      if (st === 'review' || pend) reviewN++;
+    });
+    const setCount = (tab, n, wrapId) => {
+      const btn = document.querySelector('.docs-subtab[data-tab="' + tab + '"]');
+      if (!btn) return;
+      const c = btn.querySelector('.docs-subtab-count');
+      if (c) c.textContent = n;
+      // Toggle visibility on the wrapper when one exists (Duplicates tab),
+      // otherwise on the button itself (Review tab).
+      const el = wrapId ? document.getElementById(wrapId) : btn;
+      if (el) el.style.display = (n > 0) ? '' : 'none';
+    };
+    setCount('review', reviewN);
+    setCount('duplicate', confirmedDup, 'docs-dup-tab-wrap');
+    const tb = document.getElementById('docs-review-toolbar');
+    if (tb && _docsActiveTab === 'review') tb.style.display = pendingDup > 0 ? 'flex' : 'none';
+    // If the Review tab just emptied while the user is on it, send them to
+    // All so they're not staring at a now-hidden, empty tab.
+    if (reviewN === 0 && _docsActiveTab === 'review') {
+      _docsSelectTab('all');
+    }
+  }
+
   window.closeDupCompare = function(ev) {
     if (ev && ev.target && ev.target.id !== 'docDupCompareOverlay') return;
     const o = document.getElementById('docDupCompareOverlay');
     if (o) o.style.display = 'none';
     const b = document.getElementById('docDupCompareBody');
     if (b) b.innerHTML = '';   // stop iframe/img loads
+    _docDupGroupState = {};
   };
 
   // ── Inline filename rename (click filed filename) ─────────────────────
@@ -3609,11 +3793,15 @@
   function _docsRowMatchesTab(row) {
     const tab = _docsActiveTab;
     if (tab === 'all') return true;
-    const st = (row.dataset.status || '').toLowerCase();
-    if (tab === 'review')     return st === 'review';
+    const st  = (row.dataset.status || '').toLowerCase();
+    const dup = row.dataset.isDuplicate === '1';
+    const pendingDup = dup && st !== 'duplicate';   // flagged but not yet confirmed
+    // Combined Review tab: low-confidence OCR + still-pending duplicates.
+    if (tab === 'review')     return st === 'review' || pendingDup;
     if (tab === 'processing') return st === 'processing';
     if (tab === 'error')      return st === 'error';
-    if (tab === 'duplicate')  return row.dataset.isDuplicate === '1';
+    // Demoted Duplicates tab: only CONFIRMED dupes (already in /_DUPLICATES).
+    if (tab === 'duplicate')  return st === 'duplicate';
     if (tab.indexOf('type:') === 0) return (row.dataset.groupKey || '') === tab.slice(5);
     return true;
   }
@@ -3672,6 +3860,9 @@
         c.style.color      = active ? '#5b8af9' : 'var(--text-muted)';
       }
     });
+    // Review-tab bulk toolbar only shows on the Review tab.
+    const rt = document.getElementById('docs-review-toolbar');
+    if (rt) rt.style.display = (tab === 'review') ? 'flex' : 'none';
     _docsApplyView();
   }
   window._docsOnSearch = function(q) {
@@ -3684,6 +3875,7 @@
   // Landing tab: Needs Review when it exists, else All. Mirrors the
   // server-side "review tab only rendered when count>0" rule.
   (function _docsInitTab(){
+    if (typeof _docsRefreshDupCounts === 'function') _docsRefreshDupCounts();
     const hasReview = !!document.querySelector('.docs-subtab[data-tab="review"]');
     _docsSelectTab(hasReview ? 'review' : 'all');
   })();

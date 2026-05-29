@@ -18888,43 +18888,26 @@ def _trash_dropbox_paths(paths):
     return moved
 
 
-@app.route("/docs/upload/<int:uid>/resolve-duplicate", methods=["POST"])
-@login_required
-def docs_resolve_duplicate(uid):
-    """Resolve a doc flagged as a possible duplicate (per user 2026-05-29).
-
-    Body: {"action": "keep" | "confirm"}
-      • keep    — these are genuinely separate docs. Clear the flag, leave
-                  the file where it is, and (for ledger doc types) create the
-                  Actuals Transaction that was deferred at upload time.
-      • confirm — it really is a duplicate. Move the filed Dropbox file to a
-                  /_DUPLICATES/ subfolder and mark status='duplicate'.
-    """
-    upload = DocUpload.query.get_or_404(uid)
-    if current_user.role not in ('super_admin', 'admin'):
-        if upload.uploader_id != current_user.id:
-            return jsonify({"error": "Forbidden"}), 403
-
-    data   = request.get_json(silent=True) or {}
-    action = (data.get("action") or "").strip().lower()
-    _peer  = upload.duplicate_of_id
-
+def _apply_dup_resolution(upload, action):
+    """Apply one keep/confirm decision to a flagged upload. Mutates the row
+    (+ session: txn add/delete, Dropbox move) but does NOT commit — the
+    caller commits once. Returns (ok: bool, info: dict, error: str|None).
+    Shared by the single-row route and the batch / group-review route."""
+    _peer = upload.duplicate_of_id
     if action == "keep":
         upload.is_duplicate    = False
         upload.duplicate_of_id = None
-        upload.note = (f"Reviewed — confirmed distinct from #{_peer}. Kept both."
+        upload.note = (f"Reviewed — confirmed distinct from #{_peer}. Kept."
                        if _peer else "Reviewed — kept.")
         # Create the deferred Actuals Transaction for ledger doc types so a
-        # genuinely-separate spend shows up in Actuals (mirrors the upload
-        # route's auto-txn, which skips is_duplicate rows).
+        # genuinely-separate spend shows up in Actuals.
         _NON_LEDGER_TYPES = {'tax_form', 'contract', 'release', 'legal',
                              'insurance', 'misc',
                              'estimate', 'quote', 'purchase_order'}
         made_txn = None
         if (upload.status in ('done', 'review')
                 and (upload.category or '') not in _NON_LEDGER_TYPES):
-            _exists = Transaction.query.filter_by(doc_upload_id=upload.id).first()
-            if not _exists:
+            if not Transaction.query.filter_by(doc_upload_id=upload.id).first():
                 try:
                     made_txn = Transaction(
                         project_id          = upload.project_id,
@@ -18936,16 +18919,14 @@ def docs_resolve_duplicate(uid):
                         is_expense          = True,
                         note                = upload.note,
                         match_status        = 'unmatched',
-                        created_via_user_id = current_user.id,
+                        created_via_user_id = (current_user.id if current_user.is_authenticated else None),
                     )
                     db.session.add(made_txn)
+                    db.session.flush()
                 except Exception:
-                    db.session.rollback()
                     made_txn = None
-        db.session.commit()
-        logging.info(f"[DOCS] upload #{upload.id}: duplicate review → KEEP (peer #{_peer})")
-        return jsonify({"ok": True, "resolved": "keep", "upload_id": uid,
-                        "txn_id": made_txn.id if made_txn else None})
+        return True, {"resolved": "keep", "upload_id": upload.id,
+                      "txn_id": (made_txn.id if made_txn else None)}, None
 
     if action == "confirm":
         moved_to = None
@@ -18953,32 +18934,82 @@ def docs_resolve_duplicate(uid):
             try:
                 _orig_path = upload.filed_dropbox_path
                 _parent    = os.path.dirname(_orig_path) or "/"
-                _basename  = os.path.basename(_orig_path)
-                _dup_path  = f"{_parent}/_DUPLICATES/{_basename}"
-                _dbx_dup   = _dbx_client()
-                _mv = _dbx_dup.files_move_v2(_orig_path, _dup_path, autorename=True)
+                _dup_path  = f"{_parent}/_DUPLICATES/{os.path.basename(_orig_path)}"
+                _mv = _dbx_client().files_move_v2(_orig_path, _dup_path, autorename=True)
                 _final = getattr(getattr(_mv, 'metadata', None), 'path_display', None) or _dup_path
                 upload.filed_dropbox_path = _final
                 upload.filed_filename     = os.path.basename(_final)
                 moved_to = _final
             except Exception as _de:
                 logging.exception(f"[DOCS] confirm-duplicate move failed for #{upload.id}: {_de}")
-                return jsonify({"error": f"Could not move to /_DUPLICATES/: {_de}"}), 500
+                return False, {}, f"Could not move #{upload.id} to /_DUPLICATES/: {_de}"
         upload.status       = 'duplicate'
         upload.is_duplicate = True
         upload.note = (f"Confirmed duplicate of #{_peer}. Moved to /_DUPLICATES/."
                        if _peer else "Confirmed duplicate. Moved to /_DUPLICATES/.")
-        # A confirmed duplicate isn't a real spend — drop any auto-created
-        # txn so it doesn't double-count on the ledger.
+        # A confirmed duplicate isn't a real spend — drop any auto-created txn.
         try:
             Transaction.query.filter_by(doc_upload_id=upload.id).delete(synchronize_session=False)
         except Exception:
-            db.session.rollback()
-        db.session.commit()
-        logging.info(f"[DOCS] upload #{upload.id}: duplicate review → CONFIRM, moved to {moved_to}")
-        return jsonify({"ok": True, "resolved": "confirm", "upload_id": uid, "moved_to": moved_to})
+            pass
+        return True, {"resolved": "confirm", "upload_id": upload.id, "moved_to": moved_to}, None
 
-    return jsonify({"error": "action must be 'keep' or 'confirm'"}), 400
+    return False, {}, "action must be 'keep' or 'confirm'"
+
+
+@app.route("/docs/upload/<int:uid>/resolve-duplicate", methods=["POST"])
+@login_required
+def docs_resolve_duplicate(uid):
+    """Resolve ONE doc flagged as a possible duplicate.
+    Body: {"action": "keep" | "confirm"}."""
+    upload = DocUpload.query.get_or_404(uid)
+    if current_user.role not in ('super_admin', 'admin'):
+        if upload.uploader_id != current_user.id:
+            return jsonify({"error": "Forbidden"}), 403
+    action = ((request.get_json(silent=True) or {}).get("action") or "").strip().lower()
+    ok, info, err = _apply_dup_resolution(upload, action)
+    if not ok:
+        db.session.rollback()
+        return jsonify({"error": err}), 400
+    db.session.commit()
+    logging.info(f"[DOCS] upload #{upload.id}: duplicate review → {action.upper()}")
+    info["ok"] = True
+    return jsonify(info)
+
+
+@app.route("/docs/<int:pid>/duplicates/resolve-batch", methods=["POST"])
+@login_required
+def docs_resolve_duplicates_batch(pid):
+    """Resolve a whole duplicate GROUP (or sweep) in one call.
+    Body: {"keep": [uid,...], "confirm": [uid,...]}.
+    Confirms are processed first so a swap (keep a flagged copy, confirm the
+    old original) can't leave the group with zero kept rows mid-flight.
+    Partial success commits whatever worked; per-uid errors are returned."""
+    data = request.get_json(silent=True) or {}
+    def _ints(xs):
+        out = []
+        for x in (xs or []):
+            try: out.append(int(x))
+            except (TypeError, ValueError): pass
+        return out
+    keep_ids    = _ints(data.get("keep"))
+    confirm_ids = _ints(data.get("confirm"))
+    results, errors = [], []
+    for action, ids in (("confirm", confirm_ids), ("keep", keep_ids)):
+        for uid in ids:
+            up = DocUpload.query.filter_by(id=uid, project_id=pid).first()
+            if not up:
+                errors.append({"uid": uid, "error": "not found"}); continue
+            if current_user.role not in ('super_admin', 'admin') and up.uploader_id != current_user.id:
+                errors.append({"uid": uid, "error": "forbidden"}); continue
+            ok, info, err = _apply_dup_resolution(up, action)
+            (results if ok else errors).append(info if ok else {"uid": uid, "error": err})
+    db.session.commit()
+    logging.info(f"[DOCS] batch dup resolve project={pid}: "
+                 f"{len(results)} ok, {len(errors)} err "
+                 f"(keep={len(keep_ids)}, confirm={len(confirm_ids)})")
+    return jsonify({"ok": True, "results": results, "errors": errors,
+                    "kept": len(keep_ids), "confirmed": len(confirm_ids)})
 
 
 @app.route("/docs/upload/<int:uid>/delete", methods=["POST"])
