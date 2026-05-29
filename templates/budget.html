@@ -4795,6 +4795,13 @@
           : '<span style="color:var(--text-muted);font-style:italic;font-weight:400;font-size:11px">—</span>';
         const dEl = row.querySelector('.doc-cell-date');
         if (dEl) dEl.innerHTML = _fmtDocDateCell(d.doc_date);
+        // If saving re-filed the doc in Dropbox (vendor/type/date/amount
+        // change moved + renamed it), reflect the new filename in the row.
+        if (d.filed_path) {
+          const nm = d.filed_path.split('/').pop();
+          const fn = row.querySelector('.doc-filename');
+          if (fn && nm) { fn.textContent = '📎 ' + nm; fn.dataset.original = nm; }
+        }
       }
       closeDocDetail();
       // Re-apply view + sort so the edited row re-files into the right

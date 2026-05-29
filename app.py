@@ -19826,6 +19826,121 @@ def docs_upload_dropbox_link(uid):
     }), 500
 
 
+def _doc_intended_path(upload):
+    """Where this DocUpload SHOULD live in Dropbox given its CURRENT (maybe
+    user-edited) fields — mirrors the analyzer's Option-B filing layout:
+      {ops}/{project}/{TYPE_FOLDER}/{uploader}[/{vendor}]/{date_TYPE_…_amount.pdf}
+    Built from the row's own fields (not the original OCR), so vendor / type
+    / date / amount / doc-number edits all reflect. Returns None if it can't
+    resolve (no project folder / type). 2026-05-29."""
+    from fp_analyzer import DOCUMENT_TYPES, build_name, safe as _ana_safe, _ops_prefix
+    proj = ProjectSheet.query.get(upload.project_id)
+    proj_name = (proj.dropbox_folder or '').strip('/') if proj else ''
+    doc_type = (upload.category or 'misc').lower()
+    type_folder = DOCUMENT_TYPES.get(doc_type, DOCUMENT_TYPES['misc'])
+    if not proj_name or not type_folder:
+        return None
+    # Synthetic Veryfi-shaped dict so build_name applies the correct
+    # per-type token order (e.g. invoice → date_vendor_invoice#_total).
+    vr = {
+        "date":   upload.doc_date.isoformat() if upload.doc_date else "",
+        "vendor": {"name": upload.vendor or "Unknown"},
+        "total":  float(upload.amount) if upload.amount is not None else None,
+        "invoice_number":        upload.doc_number or None,
+        "purchase_order_number": upload.doc_number or None,
+        "tax_id":                upload.doc_number or None,
+    }
+    fname = build_name(vr, doc_type)
+    ops  = _ops_prefix()
+    base = f"{ops}/{proj_name}/{type_folder}" if ops else f"/{proj_name}/{type_folder}"
+    up = upload.uploader
+    raw = (up.name if (up and up.name) else
+           (up.email.split('@')[0] if (up and up.email) else 'unknown'))
+    raw = re.sub(r"[^\w\- ]", "", raw) or "unknown"   # matches upload-time _safe_user
+    user_folder = _ana_safe(raw)
+    if doc_type in ('invoice', 'contract', 'purchase_order', 'insurance'):
+        return f"{base}/{user_folder}/{_ana_safe(upload.vendor or 'Unknown_Vendor')}/{fname}"
+    return f"{base}/{user_folder}/{fname}"
+
+
+def _filing_matches(cur_path, intended_path):
+    """True if the filed file is already where it should be — comparing
+    folder + basename while ignoring a Dropbox autorename ' (1)' suffix so
+    we don't churn-move files that only differ by a collision suffix."""
+    def _norm(p):
+        b = os.path.basename(p or '')
+        b = re.sub(r' \(\d+\)(\.[^.]+)$', r'\1', b)
+        return (os.path.dirname(p or ''), b)
+    return _norm(cur_path) == _norm(intended_path)
+
+
+def _refile_doc(upload, dry=False):
+    """Move a filed doc's Dropbox copy to match its current fields. Skips
+    review/unfiled rows and special folders (_DUPLICATES / _SOURCE_ARCHIVE /
+    _UPLOADS_PENDING). Returns {changed, from, to, error?}. On a real run it
+    updates filed_dropbox_path / filed_filename (caller commits)."""
+    cur = upload.filed_dropbox_path
+    if not cur or upload.status not in ('done', 'filed'):
+        return {"changed": False, "reason": "not filed"}
+    if any(seg in cur for seg in ('/_DUPLICATES/', '/_SOURCE_ARCHIVE/', '/_UPLOADS_PENDING/')):
+        return {"changed": False, "reason": "special folder"}
+    intended = _doc_intended_path(upload)
+    if not intended:
+        return {"changed": False, "reason": "unresolved"}
+    if _filing_matches(cur, intended):
+        return {"changed": False, "reason": "already correct"}
+    if dry:
+        return {"changed": True, "dry": True, "from": cur, "to": intended,
+                "id": upload.id, "name": upload.filed_filename or upload.original_filename}
+    try:
+        from fp_analyzer import get_dropbox_client as _ana_dbx
+        meta = _ana_dbx().files_move_v2(cur, intended, autorename=True,
+                                        allow_ownership_transfer=False)
+        final = meta.metadata.path_display
+        upload.filed_dropbox_path = final
+        upload.filed_filename     = os.path.basename(final)
+        logging.info(f"[refile] upload #{upload.id}: {cur} → {final}")
+        return {"changed": True, "from": cur, "to": final, "id": upload.id}
+    except Exception as e:
+        logging.warning(f"[refile] upload #{upload.id} move failed: {e}")
+        return {"changed": False, "error": str(e), "from": cur, "to": intended, "id": upload.id}
+
+
+@app.route("/docs/<int:pid>/reconcile-filing", methods=["POST"])
+@login_required
+def docs_reconcile_filing(pid):
+    """Reconcile every filed doc in a project so its Dropbox location matches
+    the software's current metadata — fixes files left orphaned by edits made
+    before save-time re-filing existed. Pass {"dry": true} (or ?dry=1) to get
+    the planned moves without touching Dropbox. Admin only. (User 2026-05-29.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    dry = (request.args.get('dry') == '1') or bool((request.get_json(silent=True) or {}).get('dry'))
+    uploads = (DocUpload.query
+               .filter_by(project_id=pid)
+               .filter(DocUpload.status.in_(['done', 'filed']))
+               .all())
+    report = {"dry": dry, "total": len(uploads), "moved": [], "already_ok": 0,
+              "skipped": 0, "errors": []}
+    for u in uploads:
+        r = _refile_doc(u, dry=dry)
+        if r.get("changed"):
+            report["moved"].append({"id": u.id, "from": r["from"], "to": r["to"]})
+        elif r.get("error"):
+            report["errors"].append({"id": u.id, "error": r["error"]})
+        elif r.get("reason") in ("not filed", "special folder", "unresolved"):
+            report["skipped"] += 1
+        else:
+            report["already_ok"] += 1
+    if not dry:
+        db.session.commit()
+    logging.info(f"[reconcile-filing] pid={pid} dry={dry}: "
+                 f"{len(report['moved'])} {'would move' if dry else 'moved'}, "
+                 f"{report['already_ok']} ok, {report['skipped']} skipped, "
+                 f"{len(report['errors'])} errors")
+    return jsonify(report)
+
+
 @app.route("/docs/upload/<int:uid>/update", methods=["POST"])
 @login_required
 def docs_upload_update(uid):
@@ -20002,29 +20117,18 @@ def docs_upload_update(uid):
                                 f"[/update] review-confirm copy failed for upload {uid}: {_me}")
                             refile_info = {'error': str(_me)}
 
-            # Case B — type change on an already-filed doc
-            elif _category_changed and upload.filed_dropbox_path and new_type_folder:
-                old_path = upload.filed_dropbox_path
-                old_type_folder = DOCUMENT_TYPES.get(_old_category or '')
-                if old_type_folder and old_type_folder in old_path:
-                    new_path = old_path.replace(old_type_folder, new_type_folder, 1)
-                    if new_path != old_path:
-                        try:
-                            dbx = _ana_dbx()
-                            meta = dbx.files_move_v2(
-                                old_path, new_path,
-                                autorename=True, allow_ownership_transfer=False,
-                            )
-                            upload.filed_dropbox_path = meta.metadata.path_display
-                            refile_info = {
-                                'action': 'moved_to_new_type',
-                                'from':   old_path,
-                                'to':     meta.metadata.path_display,
-                            }
-                        except Exception as _me:
-                            logging.warning(
-                                f"[/update] re-file move failed for upload {uid}: {_me}")
-                            refile_info = {'error': str(_me)}
+            # Case B — already-filed doc: re-file to match ALL current
+            # fields (vendor / type / date / amount / doc-number), not just
+            # the type folder. _refile_doc computes the full intended path
+            # and moves only if it actually differs. (User 2026-05-29: a
+            # vendor correction must move the file + its vendor subfolder,
+            # not leave an orphan.)
+            else:
+                _r = _refile_doc(upload)
+                if _r.get("changed"):
+                    refile_info = {'action': 'refiled', 'from': _r.get('from'), 'to': _r.get('to')}
+                elif _r.get("error"):
+                    refile_info = {'error': _r.get('error')}
         except Exception as _e:
             logging.warning(f"[/update] re-file logic error for upload {uid}: {_e}")
 
