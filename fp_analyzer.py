@@ -128,6 +128,31 @@ def safe(text):
     return text or "Unknown"
 
 
+def extract_card_last4(vr):
+    """Pull the last 4 digits of the card / bank account from a Veryfi
+    response. Veryfi exposes payment data a few ways depending on the doc:
+      • payment.card_number   — often already the last 4
+      • payment.display_name  — e.g. "Visa ****1234"
+      • top-level card_number / account_number / bank_* fields
+    We scan the likely fields, strip non-digits, and return the last 4 (or
+    None). Masked strings like "****1234" reduce to "1234". 2026-05-30."""
+    if not vr:
+        return None
+    cands = []
+    pay = vr.get("payment")
+    if isinstance(pay, dict):
+        cands += [pay.get("card_number"), pay.get("display_name"), pay.get("type")]
+    cands += [vr.get("card_number"), vr.get("account_number"),
+              vr.get("bank_account_number"), vr.get("account_number_masked")]
+    for c in cands:
+        if not c:
+            continue
+        digits = re.sub(r"\D", "", str(c))
+        if len(digits) >= 4:
+            return digits[-4:]
+    return None
+
+
 def build_name(vr, doc_type, order=None):
     order = order or ORDER_BY_TYPE.get(doc_type, DEFAULT_ORDER)
     date_val = safe(TOKEN_FIELDS["date"](vr))

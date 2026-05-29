@@ -2316,6 +2316,7 @@
         <option value="doc-date" selected>Date</option>
         <option value="amount">Amount</option>
         <option value="type">Doc type</option>
+        <option value="card4">Card (last 4)</option>
         <option value="confidence">Confidence</option>
         <option disabled>──────────</option>
         {# Secondary metadata. #}
@@ -2412,6 +2413,7 @@
              data-sort-confidence="{{ u.confidence | float if u.confidence is not none else 0 }}"
              data-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
              data-doc-num="{{ u.doc_number or '' }}"
+             data-sort-card4="{{ u.card_last4 or '' }}"
              data-crew-member-id="{{ u.crew_member_id or '' }}"
              data-location-id="{{ u.location_id or '' }}"
              data-note="{{ u.note or '' }}"
@@ -2462,6 +2464,7 @@
                 {% if u.uploader and u.uploaded_at %} · {% endif %}
                 {% if u.uploaded_at %}{{ u.uploaded_at.strftime('%b %-d, %Y') }}{% endif %}
                 {% if u.category %} · 🏷 {{ u.category }}{% endif %}
+                <span class="doc-cell-card4">{% if u.card_last4 %} · 💳 ••{{ u.card_last4 }}{% endif %}</span>
               </div>
             </div>
             {# Column 2: DATE (doc date — when the receipt was issued, NOT
@@ -2693,6 +2696,14 @@
             <div class="field" id="docDetailDocNumField" style="margin-bottom:.6rem;display:none">
               <label id="docDetailDocNumLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Document #</label>
               <input type="text" id="docDetailDocNum" placeholder="—" style="width:100%">
+            </div>
+            {# Card / account last-4 — which card or bank account this charge
+               hit. Captured from OCR, editable, sortable in Docs + Actuals.
+               Shown for spend-type docs (mirrors the amount field). #}
+            <div class="field" id="docDetailCard4Field" style="margin-bottom:.6rem;display:none">
+              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Card / Acct (last 4)</label>
+              <input type="text" id="docDetailCard4" inputmode="numeric" maxlength="4"
+                     placeholder="e.g. 1234" style="width:100%">
             </div>
             {# Crew member picker — shown for tax_form / contract /
                release / payroll. Populated from the project's crew. #}
@@ -3328,6 +3339,7 @@
     div.dataset.sortAmount   = (d.amount   || 0).toString();
     div.dataset.docDate      = (d.doc_date || '').toString();
     div.dataset.docNum       = (d.doc_number || '').toString();
+    div.dataset.sortCard4    = (d.card_last4 || '').toString();
     div.dataset.note         = '';
     div.dataset.sortSize     = file.size || 0;
     div.dataset.sortStatus   = isFiled ? 'filed' : 'review';
@@ -3981,6 +3993,7 @@
       row.dataset.sortOriginal || '',
       (row.dataset.note    || '').toLowerCase(),
       (row.dataset.docNum  || '').toLowerCase(),
+      (row.dataset.sortCard4 || '').toLowerCase(),
     ].join(' ');
     return hay.indexOf(_docsSearchQuery) !== -1;
   }
@@ -4289,7 +4302,7 @@
   function _docDetailSig() {
     return ['docDetailVendor','docDetailAmount','docDetailOrigAmount',
             'docDetailOrigCurrency','docDetailDocDate','docDetailCategory',
-            'docDetailNote','docDetailDocNum','docDetailCrewId','docDetailLocationId']
+            'docDetailNote','docDetailDocNum','docDetailCard4','docDetailCrewId','docDetailLocationId']
       .map(id => (document.getElementById(id)?.value || '')).join('');
   }
   function _docDetailDirty() { return _docDetailSig() !== _docDetailOpenSig; }
@@ -4335,6 +4348,9 @@
     if (dL) dL.textContent = spec.date || 'Doc Date';
     const amtField = document.getElementById('docDetailAmountField');
     if (amtField) amtField.style.display = spec.amount ? '' : 'none';
+    // Card/account last-4 tracks the amount field — a charge has a card.
+    const card4Field = document.getElementById('docDetailCard4Field');
+    if (card4Field) card4Field.style.display = spec.amount ? '' : 'none';
     const dnField = document.getElementById('docDetailDocNumField');
     const dnLabel = document.getElementById('docDetailDocNumLabel');
     if (spec.docnum) {
@@ -4682,6 +4698,7 @@
           sortType:     (d.category || '').toLowerCase(),
           docDate:      d.doc_date || '',
           docNum:       d.doc_number || '',
+          sortCard4:    d.card_last4 || '',
           note:         d.note || '',
           crewMemberId: d.crew_member_id != null ? String(d.crew_member_id) : '',
           locationId:   d.location_id != null ? String(d.location_id) : '',
@@ -4719,6 +4736,7 @@
     document.getElementById('docDetailCategory').value = _categoryAlias[_rawCat] || _rawCat;
     document.getElementById('docDetailNote').value     = row?.dataset?.note || '';
     document.getElementById('docDetailDocNum').value   = row?.dataset?.docNum || '';
+    document.getElementById('docDetailCard4').value    = row?.dataset?.sortCard4 || '';
     document.getElementById('docDetailCrewId').value     = row?.dataset?.crewMemberId || '';
     document.getElementById('docDetailLocationId').value = row?.dataset?.locationId || '';
     _docDetailApplyTypeUI(row?.dataset?.sortType || '');
@@ -4996,6 +5014,7 @@
     row.dataset.sortDocDate = d.doc_date || '';
     row.dataset.docDate     = d.doc_date || '';
     row.dataset.docNum      = d.doc_number || '';
+    row.dataset.sortCard4   = d.card_last4 || '';
     row.dataset.note        = d.note || '';
     row.dataset.originalAmount   = d.original_amount || 0;
     row.dataset.originalCurrency = d.original_currency || '';
@@ -5015,6 +5034,8 @@
     }
     const dEl = row.querySelector('.doc-cell-date');
     if (dEl) dEl.innerHTML = _fmtDocDateCell(d.doc_date);
+    const c4El = row.querySelector('.doc-cell-card4');
+    if (c4El) c4El.textContent = d.card_last4 ? (' · 💳 ••' + d.card_last4) : '';
     if (d.filed_path) {
       const nm = d.filed_path.split('/').pop();
       const fn = row.querySelector('.doc-filename');
@@ -5045,6 +5066,12 @@
         trow.dataset.note    = d.note || '';
         trow.dataset.txnDate = d.doc_date || trow.dataset.txnDate;
         if (d.amount != null) trow.dataset.amount = d.amount || 0;
+        trow.dataset.sortCard4 = d.card_last4 || '';
+        const c4El = trow.querySelector('.actuals-txn-card4');
+        if (c4El) {
+          c4El.textContent = d.card_last4 ? ('💳 ••' + d.card_last4) : '';
+          c4El.style.display = d.card_last4 ? '' : 'none';
+        }
         if (d.filed_path) {
           const nm = (d.filed_path.split('/').pop() || '');
           badge.textContent = '📎 ' + (d.category || 'doc') + ' · '
@@ -5071,6 +5098,7 @@
       category: document.getElementById('docDetailCategory').value,
       note:     document.getElementById('docDetailNote').value,
       doc_number: document.getElementById('docDetailDocNum').value,
+      card_last4: document.getElementById('docDetailCard4').value,
       crew_member_id: document.getElementById('docDetailCrewId').value || null,
       location_id:    document.getElementById('docDetailLocationId').value || null,
     };
@@ -5413,6 +5441,8 @@
       <option value="amount-asc">↑ Smallest amount</option>
       <option value="vendor-asc">↑ Vendor A→Z</option>
       <option value="vendor-desc">↓ Vendor Z→A</option>
+      <option value="card4-asc">↑ Card (last 4)</option>
+      <option value="card4-desc">↓ Card (last 4)</option>
     </select>
     <input type="number" id="actuals-filter-amount-min" placeholder="$ min" step="0.01"
            style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:80px">
@@ -5649,6 +5679,7 @@
                data-txn-date="{{ t.txn_date or '' }}"
                data-amount="{{ t.amount or 0 }}"
                data-note="{{ t.note or '' }}"
+               data-sort-card4="{{ t.card_last4 or (_doc.card_last4 if _doc else '') or '' }}"
                data-uploader-id="{{ _uploader_id }}"
                data-not-project="{{ '1' if t.not_project_expense else '0' }}"
                data-claimed-elsewhere="{{ '1' if _claimed_elsewhere else '0' }}"
@@ -5681,6 +5712,9 @@
                   title="{{ t.vendor or '' }}">
               {{ t.vendor or '— vendor unknown —' }}
             </span>
+            {% set _c4 = t.card_last4 or (_doc.card_last4 if _doc else '') %}
+            <span class="actuals-txn-card4" title="Card / account last 4"
+                  style="flex-shrink:0;font-size:.62rem;color:#9aa4b2;font-variant-numeric:tabular-nums;{% if not _c4 %}display:none{% endif %}">💳 ••{{ _c4 }}</span>
             {# Doc badge — clicks open the existing Docs detail modal.
                Color palette varies by doc type for fast visual scan. #}
             {% if _doc %}
@@ -6610,6 +6644,8 @@
         const ba = parseFloat(b.dataset.amount || 0);
         const av = (a.querySelector('.actuals-txn-vendor')?.textContent || '').toLowerCase();
         const bv = (b.querySelector('.actuals-txn-vendor')?.textContent || '').toLowerCase();
+        const ac = a.dataset.sortCard4 || '';
+        const bc = b.dataset.sortCard4 || '';
         switch (sortBy) {
           case 'date-asc':    return ad < bd ? -1 : ad > bd ? 1 : 0;
           case 'date-desc':   return ad > bd ? -1 : ad < bd ? 1 : 0;
@@ -6617,6 +6653,9 @@
           case 'amount-desc': return ba - aa;
           case 'vendor-asc':  return av.localeCompare(bv);
           case 'vendor-desc': return bv.localeCompare(av);
+          // Blanks (no card captured) sort to the bottom either direction.
+          case 'card4-asc':   return (ac||'~').localeCompare(bc||'~');
+          case 'card4-desc':  return (bc||'~').localeCompare(ac||'~');
         }
         return 0;
       };

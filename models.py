@@ -103,6 +103,9 @@ class Transaction(db.Model):
     vendor              = db.Column(db.String(300))
     txn_date            = db.Column(db.String(10))   # YYYY-MM-DD
     note                = db.Column(db.Text)
+    # Last 4 of the card/account (added 2026-05-30). Synced from the linked
+    # DocUpload's card_last4 so the Actuals tab can sort/group by card.
+    card_last4          = db.Column(db.String(8), nullable=True)
 
     # ── Three-legged-stool linkage (added 2026-04-30) ─────────────────
     # FKs nullable so a freshly-ingested QBO txn (no doc, no line yet)
@@ -879,6 +882,13 @@ class DocUpload(db.Model):
     # invoice_number / purchase_order_number / tax_id fields when
     # available; user-editable in the doc-detail modal.
     doc_number = db.Column(db.String(100), nullable=True)
+
+    # Last 4 digits of the card / bank account the purchase was made on
+    # (added 2026-05-30). Pre-populated from Veryfi's payment.card_number /
+    # account fields when available; user-editable in the doc-detail modal.
+    # Stored as text to preserve any leading zeros. Sortable in Docs +
+    # Actuals so a user can group every charge on one card/account.
+    card_last4 = db.Column(db.String(8), nullable=True)
 
     # ── People / location linkage (added 2026-04-30) ───────────────────
     # Some doc types back relationships, not spend events:

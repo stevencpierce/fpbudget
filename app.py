@@ -7347,6 +7347,8 @@ def actuals_upload_receipt_to_transaction(pid, tid):
                       or vr.get("tax_id") or vr.get("ein") or None)
         if doc_number:
             doc_number = str(doc_number)[:100]
+    from fp_analyzer import extract_card_last4 as _extract_card4
+    card_last4 = _extract_card4(vr) if vr else None
 
     upload = DocUpload(
         project_id          = pid,
@@ -7362,6 +7364,7 @@ def actuals_upload_receipt_to_transaction(pid, tid):
         amount              = amount,
         doc_date            = doc_date,
         doc_number          = doc_number,
+        card_last4          = card_last4,
         confidence          = round(float(result.get("confidence") or 0) * 100, 2),
         category            = result.get("doc_type"),
         veryfi_category     = (vr.get("category") if vr else None),
@@ -7381,6 +7384,7 @@ def actuals_upload_receipt_to_transaction(pid, tid):
     if not txn.vendor and vendor_name:    txn.vendor   = vendor_name
     if txn.amount is None and amount is not None: txn.amount = amount
     if not txn.txn_date and doc_date:     txn.txn_date = doc_date.isoformat()
+    if not txn.card_last4 and card_last4: txn.card_last4 = card_last4
     txn.match_status = 'confirmed'
     txn.updated_at   = datetime.utcnow()
     db.session.commit()
@@ -18037,6 +18041,14 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS original_amount NUMERIC(16,2)",
                 "ALTER TABLE doc_upload "
                 "  ADD COLUMN IF NOT EXISTS original_currency VARCHAR(8)",
+                # 2026-05-30 — last 4 of the card / bank account a charge was
+                # made on. Captured from Veryfi OCR, user-editable, sortable
+                # in Docs + Actuals. Mirrored onto transaction for the
+                # Actuals tab's sort.
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS card_last4 VARCHAR(8)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS card_last4 VARCHAR(8)",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The
@@ -18605,6 +18617,8 @@ def docs_upload_post(pid):
                       or None)
         if doc_number:
             doc_number = str(doc_number)[:100]
+    from fp_analyzer import extract_card_last4 as _extract_card4
+    card_last4 = _extract_card4(vr) if vr else None
 
     # Late-stage duplicate re-check. Catches the race where two parallel
     # POSTs for the same file both pass the pre-analysis duplicate query
@@ -18637,6 +18651,7 @@ def docs_upload_post(pid):
         amount=amount,
         doc_date=doc_date,
         doc_number=doc_number,
+        card_last4=card_last4,
         # confidence column is 0-100; Analyzer returns 0-1
         confidence=round(float(result.get("confidence") or 0) * 100, 2),
         category=result.get("doc_type"),
@@ -18703,6 +18718,7 @@ def docs_upload_post(pid):
                 vendor              = upload.vendor,
                 amount              = upload.amount,
                 txn_date            = _txn_date,
+                card_last4          = upload.card_last4,
                 is_expense          = True,
                 note                = upload.note,
                 # No account_code yet — user picks budget line in Actuals.
@@ -18902,6 +18918,7 @@ def docs_upload_status(uid):
         "confidence": float(upload.confidence) if upload.confidence else None,
         "category": upload.category,
         "doc_number": upload.doc_number,
+        "card_last4": upload.card_last4,
         "note": upload.note,
         "crew_member_id":     upload.crew_member_id,
         "location_id":        upload.location_id,
@@ -20028,10 +20045,16 @@ def docs_reconcile_filing(pid):
         limit = int(request.args.get('limit') or body.get('limit') or 12)
     except (TypeError, ValueError):
         limit = 12
-    uploads = (DocUpload.query
-               .filter_by(project_id=pid)
-               .filter(DocUpload.status.in_(['done', 'filed']))
-               .all())
+    # Optional category filter — lets a targeted migration touch ONLY one
+    # doc type (e.g. employee_vendor_doc → per-person folders) without
+    # disturbing every other filed doc in the project. (User 2026-05-30.)
+    cat_filter = (request.args.get('category') or body.get('category') or '').strip()
+    q = (DocUpload.query
+         .filter_by(project_id=pid)
+         .filter(DocUpload.status.in_(['done', 'filed'])))
+    if cat_filter:
+        q = q.filter(DocUpload.category == cat_filter)
+    uploads = q.all()
     report = {"dry": dry, "total": len(uploads), "moved": [], "already_ok": 0,
               "skipped": 0, "errors": [], "remaining": 0}
     done_moves = 0
@@ -20062,6 +20085,45 @@ def docs_reconcile_filing(pid):
                  f"{report['already_ok']} ok, {report['skipped']} skipped, "
                  f"{len(report['errors'])} errors, {report['remaining']} remaining")
     return jsonify(report)
+
+
+@app.route("/docs/<int:pid>/backfill-card4", methods=["POST"])
+@login_required
+def docs_backfill_card4(pid):
+    """One-off: populate card_last4 on existing docs from their stored
+    Veryfi OCR JSON (veryfi_data), so the new sortable Card field isn't
+    blank on historical receipts. Idempotent — only touches rows where
+    card_last4 is NULL and veryfi_data is present. Also syncs the value
+    onto each doc's linked Transaction(s). Admin only. (User 2026-05-30.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    import json as _json
+    from fp_analyzer import extract_card_last4 as _extract_card4
+    rows = (DocUpload.query
+            .filter_by(project_id=pid)
+            .filter(DocUpload.card_last4.is_(None))
+            .filter(DocUpload.veryfi_data.isnot(None))
+            .all())
+    updated, scanned = 0, 0
+    for u in rows:
+        scanned += 1
+        try:
+            vr = _json.loads(u.veryfi_data) if u.veryfi_data else None
+        except Exception:
+            vr = None
+        c4 = _extract_card4(vr) if vr else None
+        if not c4:
+            continue
+        u.card_last4 = c4
+        for _t in Transaction.query.filter_by(doc_upload_id=u.id).all():
+            if not _t.card_last4:
+                _t.card_last4 = c4
+        updated += 1
+        if updated % 50 == 0:
+            db.session.commit()
+    db.session.commit()
+    logging.info(f"[backfill-card4] pid={pid}: scanned {scanned}, set {updated}")
+    return jsonify({"scanned": scanned, "updated": updated})
 
 
 @app.route("/docs/upload/<int:uid>/update", methods=["POST"])
@@ -20144,6 +20206,11 @@ def docs_upload_update(uid):
     if "doc_number" in data:
         dn = (data.get("doc_number") or "").strip()
         upload.doc_number = dn[:100] if dn else None
+    if "card_last4" in data:
+        # Keep digits only; store the last 4 (so "****1234" or "1234" both
+        # land as "1234"). Blank clears.
+        c4 = re.sub(r"\D", "", str(data.get("card_last4") or ""))
+        upload.card_last4 = c4[-4:] if c4 else None
     # Crew / location linkage. Empty / null clears.
     if "crew_member_id" in data:
         cm = data.get("crew_member_id")
@@ -20321,6 +20388,7 @@ def docs_upload_update(uid):
                 _t.amount   = upload.amount
                 _t.txn_date = upload.doc_date.isoformat() if upload.doc_date else None
                 _t.note     = upload.note
+                _t.card_last4 = upload.card_last4
                 _t.updated_at = _dt.utcnow()
     except Exception as _se:
         logging.warning(f"[/update] could not sync to linked txns for upload {uid}: {_se}")
@@ -20350,6 +20418,7 @@ def docs_upload_update(uid):
         "category":    upload.category,
         "note":        upload.note,
         "doc_number":  upload.doc_number,
+        "card_last4":  upload.card_last4,
         "status":      upload.status,
         "filed_path":  upload.filed_dropbox_path,
         "refile":      refile_info,
