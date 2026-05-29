@@ -13356,6 +13356,15 @@ function openCrewAssign(lineId) {
   document.getElementById('ca-search').value = '';
   document.getElementById('ca-new-form').style.display = 'none';
   document.getElementById('ca-add-new-btn').textContent = '+ New Person';
+  // Clear the "+ New Person" form on every open so the previous new
+  // person's phone / email / dept don't carry over to the next one
+  // (user 2026-05-29). Only the name auto-fills, from the live search.
+  ['ca-new-name', 'ca-new-phone', 'ca-new-email', 'ca-new-dept'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  const _caErr = document.getElementById('ca-new-error');
+  if (_caErr) _caErr.style.display = 'none';
   renderCrewList(_crewList);
   document.getElementById('crew-assign-modal').classList.remove('hidden');
   document.getElementById('ca-search').focus();
