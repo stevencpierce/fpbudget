@@ -850,6 +850,15 @@ class DocUpload(db.Model):
     filed_dropbox_path = db.Column(db.String(500), nullable=True) # full Dropbox path
     filed_at         = db.Column(db.DateTime, nullable=True)
     is_duplicate     = db.Column(db.Boolean, default=False)
+    # When an exact byte-identical match is detected on upload, this
+    # points at the upload whose hash matched. Per user 2026-05-29 the
+    # doc is NO LONGER auto-buried in /_DUPLICATES/ — it stays filed in
+    # place and is flagged for review (is_duplicate=True, status='done').
+    # The user then resolves it:
+    #   • "Keep both"      → is_duplicate=False, duplicate_of_id=None
+    #   • "It's a duplicate"→ status='duplicate', file moved to /_DUPLICATES/
+    # So the pending-review state is (is_duplicate=True AND status!='duplicate').
+    duplicate_of_id  = db.Column(db.Integer, db.ForeignKey("doc_upload.id"), nullable=True)
 
     # Mission-critical source archive (added 2026-04-30): every upload's
     # original bytes are persisted in Dropbox at _SOURCE_ARCHIVE/ and

@@ -2342,6 +2342,8 @@
              data-sort-size="{{ u.file_size or 0 }}"
              data-sort-status="{{ u.status or '' }}"
              data-is-duplicate="{{ '1' if u.is_duplicate else '' }}"
+             data-duplicate-of="{{ u.duplicate_of_id or '' }}"
+             data-dup-pending="{{ '1' if (u.is_duplicate and u.status != 'duplicate') else '' }}"
              style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;display:flex;align-items:flex-start;gap:12px;">
           {# Bulk-select checkbox — gated by docs-bulk-bar JS. Click on the
              checkbox itself doesn't bubble to the row's open-detail
@@ -2424,19 +2426,39 @@
              grid. Per user 2026-05-05 — list view became unviewable
              when PO buttons ate horizontal space. #}
           <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+            {# Duplicate states split into TWO looks (2026-05-29):
+               • pending review (is_duplicate AND status!='duplicate') →
+                 amber "🔁 Review?" + Keep/Duplicate buttons. File stays
+                 filed in place; user decides.
+               • confirmed duplicate (status=='duplicate') → purple
+                 "🔁 Duplicate"; file already moved to /_DUPLICATES/. #}
+            {% set _dup_pending = u.is_duplicate and u.status != 'duplicate' %}
             <span class="doc-status-badge" style="font-size:11px;padding:3px 9px;border-radius:20px;white-space:nowrap;
-              {% if u.is_duplicate %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
+              {% if _dup_pending %}background:#2a2414;color:#fbbf24;border:1px solid #4a3a1a;
+              {% elif u.is_duplicate or u.status == 'duplicate' %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
               {% elif u.status == 'filed' or u.status == 'done' %}background:#14291e;color:#22c55e;border:1px solid #1a4228;
               {% elif u.status == 'review' %}background:#2a2414;color:#fbbf24;border:1px solid #4a3a1a;
-              {% elif u.status == 'duplicate' %}background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;
               {% elif u.status == 'error' %}background:#2a1414;color:#ef4444;border:1px solid #4a2020;
               {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}"
               title="{% if u.confidence %}OCR confidence: {{ u.confidence }}%{% endif %}{% if u.filed_dropbox_path %} · Dropbox: {{ u.filed_dropbox_path }}{% endif %}{% if u.note %} · {{ u.note }}{% endif %}">
-              {% if u.is_duplicate %}🔁
+              {% if _dup_pending %}🔁 Review?
+              {% elif u.is_duplicate or u.status == 'duplicate' %}🔁 Dup
               {% elif u.status == 'done' or u.status == 'filed' %}✓
               {% elif u.status == 'review' %}⚠{% if u.confidence %} {{ u.confidence | int }}%{% endif %}
               {% else %}{{ u.status|capitalize }}{% endif %}
             </span>
+            {# Possible-duplicate review actions. Keep both = genuinely
+               separate (recurring invoice etc.); It's a dupe = bury it. #}
+            {% if _dup_pending %}
+            <button class="doc-dup-keep-btn" data-uid="{{ u.id }}"
+                    title="These are genuinely separate documents — keep both"
+                    onclick="event.stopPropagation();docsResolveDuplicate({{ u.id }},'keep',this)"
+                    style="background:#14291e;border:1px solid #1a4228;color:#22c55e;padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer;white-space:nowrap;">Keep both</button>
+            <button class="doc-dup-confirm-btn" data-uid="{{ u.id }}"
+                    title="This really is a duplicate — move it to /_DUPLICATES/"
+                    onclick="event.stopPropagation();docsResolveDuplicate({{ u.id }},'confirm',this)"
+                    style="background:#1e1a2a;border:1px solid #2d2a40;color:#a78bfa;padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer;white-space:nowrap;">It's a dupe</button>
+            {% endif %}
             {% if u.status == 'pending' %}
             <button class="doc-retry-btn" title="Retry filing to Dropbox"
                     style="background:#1a2540;border:1px solid #2d4070;color:#5b8af9;padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer;white-space:nowrap;">↻</button>
@@ -2805,7 +2827,7 @@
     const el = document.getElementById('docsQueue');
     el.innerHTML = '';
     docsQueue.forEach((item,idx)=>{
-      const statusMap = {pending:['var(--text-muted)','Ready'],uploading:['#f59e0b','Uploading…'],done:['#22c55e','Uploaded ✓'],review:['#fbbf24','⚠ Needs review'],duplicate:['#a78bfa','Already uploaded'],error:['#ef4444', item.errorMsg ? ('Failed — ' + item.errorMsg) : 'Failed']};
+      const statusMap = {pending:['var(--text-muted)','Ready'],uploading:['#f59e0b','Uploading…'],done:['#22c55e','Uploaded ✓'],review:['#fbbf24','⚠ Needs review'],review_dup:['#fbbf24','🔁 Possible duplicate — review below'],duplicate:['#a78bfa','Already uploaded'],error:['#ef4444', item.errorMsg ? ('Failed — ' + item.errorMsg) : 'Failed']};
       const [color, label] = statusMap[item.status] || statusMap.pending;
       const div = document.createElement('div');
       div.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:11px 13px;display:flex;align-items:center;gap:10px;';
@@ -2922,6 +2944,13 @@
       if (d && d.new_filename) item.filedName = d.new_filename;
       if (d && d.status === 'duplicate') {
         item.status = 'duplicate';
+      } else if (d && d.status === 'review_dup') {
+        // Filed in place but flagged as a possible duplicate. Don't
+        // prepend a buttonless row — flag for a one-shot reload after
+        // the batch so the server-rendered row (with Keep both / It's a
+        // dupe actions) appears. 2026-05-29.
+        item.status = 'review_dup';
+        _docsNeedsDupReload = true;
       } else if (r.status === 201) {
         item.status = 'done';
         docsPreppendHistory(item.file, d);
@@ -2940,8 +2969,15 @@
     docsRenderQueue();
   }
 
+  let _docsNeedsDupReload = false;
   window.docsUploadAll = async function(){
     for(const item of docsQueue.filter(i=>i.status==='pending')) await docsUploadOne(item);
+    // If any upload landed as a possible duplicate, reload once so the
+    // server-rendered rows show the Keep both / It's a dupe buttons.
+    if (_docsNeedsDupReload) {
+      _docsNeedsDupReload = false;
+      setTimeout(() => reloadWithTab(), 600);
+    }
   };
 
   // Build a fully-populated history row for a just-completed upload.
@@ -3080,6 +3116,66 @@
       }
     }
   });
+
+  // ── Possible-duplicate review (Keep both / It's a dupe) ──────────────────
+  // Resolves a doc the Analyzer flagged as a byte-identical match of an
+  // earlier upload. "keep" clears the flag + creates the deferred Actuals
+  // txn; "confirm" buries the file in /_DUPLICATES/. 2026-05-29.
+  window.docsResolveDuplicate = async function(uid, action, btn) {
+    const row = btn && btn.closest('.doc-row');
+    // Disable both action buttons while the request is in flight.
+    const cluster = btn && btn.parentElement;
+    const dupBtns = cluster ? cluster.querySelectorAll('.doc-dup-keep-btn, .doc-dup-confirm-btn') : [];
+    dupBtns.forEach(b => { b.disabled = true; b.style.opacity = '.5'; });
+    if (action === 'confirm' &&
+        !confirm("Confirm this is a duplicate? The file will be moved to a /_DUPLICATES/ subfolder in Dropbox.")) {
+      dupBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });
+      return;
+    }
+    try {
+      const r = await fetch('/docs/upload/' + uid + '/resolve-duplicate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        alert('Could not resolve: ' + (d.error || r.status));
+        dupBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });
+        return;
+      }
+      if (!row) return;
+      const badge = row.querySelector('.doc-status-badge');
+      // Remove both review buttons either way.
+      dupBtns.forEach(b => b.remove());
+      row.dataset.dupPending = '';
+      if (action === 'keep') {
+        row.dataset.isDuplicate = '';
+        row.dataset.duplicateOf = '';
+        if (badge) {
+          badge.textContent = '✓';
+          badge.style.cssText = 'font-size:11px;padding:3px 9px;border-radius:20px;background:#14291e;color:#22c55e;border:1px solid #1a4228;';
+        }
+        row.style.transition = 'background .6s';
+        row.style.background = 'rgba(34,197,94,.10)';
+        setTimeout(() => { row.style.background = ''; }, 900);
+      } else {
+        // Confirmed duplicate — recolor to purple and fade the row out of
+        // the clean view (it now lives in /_DUPLICATES/). It still shows
+        // under the "Duplicates" filter chip after reload.
+        if (badge) {
+          badge.textContent = '🔁 Dup';
+          badge.style.cssText = 'font-size:11px;padding:3px 9px;border-radius:20px;background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;';
+        }
+        row.dataset.status = 'duplicate';
+        row.style.transition = 'opacity .4s';
+        row.style.opacity = '.45';
+      }
+    } catch (err) {
+      alert('Network error: ' + (err && err.message || err));
+      dupBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });
+    }
+  };
 
   // ── Inline filename rename (click filed filename) ─────────────────────
   document.getElementById('docsHistory').addEventListener('click', (e) => {
@@ -4134,6 +4230,8 @@
   document.getElementById('docsHistory')?.addEventListener('click', (e) => {
     if (e.target.closest('.doc-delete-btn')) return;
     if (e.target.closest('.doc-retry-btn')) return;
+    if (e.target.closest('.doc-dup-keep-btn')) return;
+    if (e.target.closest('.doc-dup-confirm-btn')) return;
     if (e.target.closest('.editable-filename')) return;
     const row = e.target.closest('.doc-row');
     if (!row) return;

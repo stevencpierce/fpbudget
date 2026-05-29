@@ -7217,6 +7217,7 @@ def actuals_upload_receipt_to_transaction(pid, tid):
         filed_at            = datetime.utcnow() if result.get("filed_path") else None,
         source_archive_path = result.get("staged_path"),
         is_duplicate        = bool(duplicate_of) or bool(result.get("duplicate")),
+        duplicate_of_id     = duplicate_of.id if duplicate_of else None,
     )
     db.session.add(upload)
     db.session.commit()
@@ -17851,6 +17852,12 @@ def _web_worker_essential_columns():
                 # time; existing rows stay NULL until next OCR.
                 "ALTER TABLE doc_upload "
                 "  ADD COLUMN IF NOT EXISTS veryfi_category VARCHAR(100)",
+                # 2026-05-29 duplicate-review: point at the upload whose
+                # bytes matched so the docs UI can show "possible duplicate
+                # of #X" with Keep-both / It's-a-duplicate actions instead
+                # of silently auto-burying byte-identical recurring invoices.
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS duplicate_of_id INTEGER REFERENCES doc_upload(id)",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The
@@ -18470,6 +18477,11 @@ def docs_upload_post(pid):
         # deleted by the app — it's the durable source-of-truth.
         source_archive_path=result.get("staged_path"),
         is_duplicate=bool(duplicate_of) or bool(result.get("duplicate")),
+        # Record WHICH upload the bytes matched so the docs UI can link
+        # back and offer Keep-both / It's-a-duplicate. Only the exact
+        # hash match (duplicate_of) carries an id; the soft filename-
+        # collision signal (result['duplicate']) has no specific peer.
+        duplicate_of_id=duplicate_of.id if duplicate_of else None,
     )
     db.session.add(upload)
     db.session.commit()
@@ -18561,35 +18573,24 @@ def docs_upload_post(pid):
                  (f' → Actuals txn #{auto_txn.id}' if auto_txn else ''))
     except Exception: pass
 
-    # If this upload's content hash matched an earlier row, MOVE the
-    # filed Dropbox file to a /_DUPLICATES/ subfolder under whatever
-    # type-folder it landed in. Keeps the original "clean" view free of
-    # duplicates while preserving the file so the user can manually
-    # decide. Note recorded in upload.note for the UI.
+    # If this upload's content hash matched an earlier row, FLAG it for
+    # review instead of auto-burying it (per user 2026-05-29). The file
+    # stays filed in its normal type-folder (Dropbox already gave it a
+    # " (1)" suffix if the name collided), so a genuinely-separate but
+    # byte-identical recurring invoice — same vendor / amount / date,
+    # no invoice number — is never silently hidden. The docs UI shows a
+    # "Possible duplicate of #X" banner with Keep-both / It's-a-duplicate
+    # actions; /docs/upload/<uid>/resolve-duplicate does the burying only
+    # when the user confirms. Veryfi can't disambiguate byte-identical
+    # files (identical input → identical OCR), so user input is the only
+    # reliable signal here.
     if duplicate_of and result.get("filed_path"):
-        try:
-            _orig_path = result.get("filed_path")
-            _parent    = os.path.dirname(_orig_path) or "/"
-            _basename  = os.path.basename(_orig_path)
-            _dup_path  = f"{_parent}/_DUPLICATES/{_basename}"
-            _dbx_dup = _dbx_client()
-            _mv = _dbx_dup.files_move_v2(_orig_path, _dup_path, autorename=True)
-            _final = getattr(getattr(_mv, 'metadata', None), 'path_display', None) or _dup_path
-            upload.filed_dropbox_path = _final
-            upload.filed_filename     = os.path.basename(_final)
-            upload.note = (f"Duplicate of upload #{duplicate_of.id} "
-                           f"({duplicate_of.filed_filename or duplicate_of.original_filename}). "
-                           f"Moved to /_DUPLICATES/.")
-            db.session.commit()
-            logging.info(f"[DOCS] upload #{upload.id}: duplicate of #{duplicate_of.id}, moved to {_final}")
-        except Exception as _de:
-            logging.exception(f"[DOCS] failed to route duplicate to /_DUPLICATES/: {_de}")
-            # Don't fail the request — file is still safely in Dropbox
-            # at the original path. Just leave the note.
-            upload.note = (f"Duplicate of upload #{duplicate_of.id} — "
-                           f"FAILED to move to /_DUPLICATES/ ({_de}). "
-                           f"File is at {result.get('filed_path')}.")
-            db.session.commit()
+        upload.note = (f"Possible duplicate of upload #{duplicate_of.id} "
+                       f"({duplicate_of.filed_filename or duplicate_of.original_filename}). "
+                       f"Review: keep both, or confirm it's a duplicate.")
+        db.session.commit()
+        logging.info(f"[DOCS] upload #{upload.id}: flagged as possible duplicate "
+                     f"of #{duplicate_of.id} (awaiting review, NOT auto-buried)")
 
     # Force any remaining Pillow/Veryfi response buffers to release
     # before responding. Safe here because all DB work is committed.
@@ -18614,7 +18615,10 @@ def docs_upload_post(pid):
     if result.get("status") == "filed":
         _is_dup = bool(duplicate_of)
         return jsonify({
-            "status":      "duplicate" if _is_dup else "ok",
+            # "review_dup" tells the upload UI this is a flagged-but-kept
+            # possible duplicate (filed in place, awaiting Keep-both /
+            # confirm), distinct from the old "duplicate" = buried state.
+            "status":      "review_dup" if _is_dup else "ok",
             "upload_id":   upload.id,
             "filed_path":  upload.filed_dropbox_path,
             # Include the renamed filename so the JS prepend shows the
@@ -18626,7 +18630,7 @@ def docs_upload_post(pid):
             "confidence":  result.get("confidence"),
             "duplicate":   _is_dup or bool(result.get("duplicate")),
             "duplicate_of": duplicate_of.id if duplicate_of else None,
-            "message":     (f"Duplicate of #{duplicate_of.id} — moved to /_DUPLICATES/."
+            "message":     (f"Possible duplicate of #{duplicate_of.id} — filed, flagged for review."
                             if _is_dup
                             else f"Filed as {result.get('doc_type')} ({int((result.get('confidence') or 0) * 100)}% confidence)."),
             **_ocr_fields,
@@ -18837,6 +18841,99 @@ def _trash_dropbox_paths(paths):
                     break
                 continue
     return moved
+
+
+@app.route("/docs/upload/<int:uid>/resolve-duplicate", methods=["POST"])
+@login_required
+def docs_resolve_duplicate(uid):
+    """Resolve a doc flagged as a possible duplicate (per user 2026-05-29).
+
+    Body: {"action": "keep" | "confirm"}
+      • keep    — these are genuinely separate docs. Clear the flag, leave
+                  the file where it is, and (for ledger doc types) create the
+                  Actuals Transaction that was deferred at upload time.
+      • confirm — it really is a duplicate. Move the filed Dropbox file to a
+                  /_DUPLICATES/ subfolder and mark status='duplicate'.
+    """
+    upload = DocUpload.query.get_or_404(uid)
+    if current_user.role not in ('super_admin', 'admin'):
+        if upload.uploader_id != current_user.id:
+            return jsonify({"error": "Forbidden"}), 403
+
+    data   = request.get_json(silent=True) or {}
+    action = (data.get("action") or "").strip().lower()
+    _peer  = upload.duplicate_of_id
+
+    if action == "keep":
+        upload.is_duplicate    = False
+        upload.duplicate_of_id = None
+        upload.note = (f"Reviewed — confirmed distinct from #{_peer}. Kept both."
+                       if _peer else "Reviewed — kept.")
+        # Create the deferred Actuals Transaction for ledger doc types so a
+        # genuinely-separate spend shows up in Actuals (mirrors the upload
+        # route's auto-txn, which skips is_duplicate rows).
+        _NON_LEDGER_TYPES = {'tax_form', 'contract', 'release', 'legal',
+                             'insurance', 'misc',
+                             'estimate', 'quote', 'purchase_order'}
+        made_txn = None
+        if (upload.status in ('done', 'review')
+                and (upload.category or '') not in _NON_LEDGER_TYPES):
+            _exists = Transaction.query.filter_by(doc_upload_id=upload.id).first()
+            if not _exists:
+                try:
+                    made_txn = Transaction(
+                        project_id          = upload.project_id,
+                        source              = 'doc_upload',
+                        doc_upload_id       = upload.id,
+                        vendor              = upload.vendor,
+                        amount              = upload.amount,
+                        txn_date            = upload.doc_date.isoformat() if upload.doc_date else None,
+                        is_expense          = True,
+                        note                = upload.note,
+                        match_status        = 'unmatched',
+                        created_via_user_id = current_user.id,
+                    )
+                    db.session.add(made_txn)
+                except Exception:
+                    db.session.rollback()
+                    made_txn = None
+        db.session.commit()
+        logging.info(f"[DOCS] upload #{upload.id}: duplicate review → KEEP (peer #{_peer})")
+        return jsonify({"ok": True, "resolved": "keep", "upload_id": uid,
+                        "txn_id": made_txn.id if made_txn else None})
+
+    if action == "confirm":
+        moved_to = None
+        if upload.filed_dropbox_path:
+            try:
+                _orig_path = upload.filed_dropbox_path
+                _parent    = os.path.dirname(_orig_path) or "/"
+                _basename  = os.path.basename(_orig_path)
+                _dup_path  = f"{_parent}/_DUPLICATES/{_basename}"
+                _dbx_dup   = _dbx_client()
+                _mv = _dbx_dup.files_move_v2(_orig_path, _dup_path, autorename=True)
+                _final = getattr(getattr(_mv, 'metadata', None), 'path_display', None) or _dup_path
+                upload.filed_dropbox_path = _final
+                upload.filed_filename     = os.path.basename(_final)
+                moved_to = _final
+            except Exception as _de:
+                logging.exception(f"[DOCS] confirm-duplicate move failed for #{upload.id}: {_de}")
+                return jsonify({"error": f"Could not move to /_DUPLICATES/: {_de}"}), 500
+        upload.status       = 'duplicate'
+        upload.is_duplicate = True
+        upload.note = (f"Confirmed duplicate of #{_peer}. Moved to /_DUPLICATES/."
+                       if _peer else "Confirmed duplicate. Moved to /_DUPLICATES/.")
+        # A confirmed duplicate isn't a real spend — drop any auto-created
+        # txn so it doesn't double-count on the ledger.
+        try:
+            Transaction.query.filter_by(doc_upload_id=upload.id).delete(synchronize_session=False)
+        except Exception:
+            db.session.rollback()
+        db.session.commit()
+        logging.info(f"[DOCS] upload #{upload.id}: duplicate review → CONFIRM, moved to {moved_to}")
+        return jsonify({"ok": True, "resolved": "confirm", "upload_id": uid, "moved_to": moved_to})
+
+    return jsonify({"error": "action must be 'keep' or 'confirm'"}), 400
 
 
 @app.route("/docs/upload/<int:uid>/delete", methods=["POST"])
