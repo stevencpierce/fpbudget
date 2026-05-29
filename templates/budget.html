@@ -2399,6 +2399,8 @@
              data-sort-type="{{ (u.category or '')|lower }}"
              data-sort-vendor="{{ (u.vendor or '')|lower }}"
              data-sort-amount="{{ u.amount|float if u.amount else 0 }}"
+             data-original-amount="{{ u.original_amount|float if u.original_amount else 0 }}"
+             data-original-currency="{{ u.original_currency or '' }}"
              data-sort-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
              data-sort-confidence="{{ u.confidence | float if u.confidence is not none else 0 }}"
              data-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
@@ -2469,6 +2471,12 @@
             <div class="doc-cell-amount" style="text-align:right;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)">
               {% if u.amount %}${{ '%.2f'|format(u.amount|float) }}
               {% else %}<span style="color:var(--text-muted);font-style:italic;font-weight:400;font-size:11px">—</span>{% endif %}
+              {% if u.original_amount and u.original_currency %}
+              <div style="font-size:10px;color:var(--text-muted);font-weight:400"
+                   title="Original document amount (USD above is the reconciled value)">
+                {{ '{:,.0f}'.format(u.original_amount|float) }} {{ u.original_currency }}
+              </div>
+              {% endif %}
             </div>
             {# Column 4: DOC TYPE + OCR CONFIDENCE (replaced the Veryfi
                "suggested account" pill, which wasn't useful — user
@@ -2645,12 +2653,31 @@
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.6rem">
               <div class="field" id="docDetailAmountField" style="margin:0">
-                <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Amount</label>
+                <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Amount (USD)</label>
                 <input type="text" id="docDetailAmount" inputmode="decimal" placeholder="0.00" style="width:100%">
               </div>
               <div class="field" style="margin:0">
                 <label id="docDetailDocDateLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Date</label>
                 <input type="date" id="docDetailDocDate" style="width:100%">
+              </div>
+            </div>
+            {# Foreign-currency original figure (user 2026-05-29). Amount (USD)
+               above is what reconciles against the bank charge + rolls into the
+               budget; this records the document's native amount for reference. #}
+            <div style="display:grid;grid-template-columns:1fr 90px;gap:.5rem;margin-bottom:.6rem">
+              <div class="field" style="margin:0">
+                <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Original amount <span style="text-transform:none;opacity:.7">(if foreign)</span></label>
+                <input type="text" id="docDetailOrigAmount" inputmode="decimal" placeholder="e.g. 1500000" style="width:100%">
+              </div>
+              <div class="field" style="margin:0">
+                <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Currency</label>
+                <input type="text" id="docDetailOrigCurrency" maxlength="8" placeholder="KRW" style="width:100%;text-transform:uppercase"
+                       list="docDetailCurrencyList">
+                <datalist id="docDetailCurrencyList">
+                  <option value="USD"></option><option value="KRW"></option><option value="CNY"></option>
+                  <option value="JPY"></option><option value="EUR"></option><option value="GBP"></option>
+                  <option value="HKD"></option><option value="TWD"></option>
+                </datalist>
               </div>
             </div>
             {# Type-specific identifier — invoice#, PO#, tax ID, policy#, etc.
@@ -4520,6 +4547,10 @@
     // the placeholder. Real amounts always come through as floats > 0.
     const _amt = parseFloat(row?.dataset?.sortAmount || 0);
     document.getElementById('docDetailAmount').value   = _amt > 0 ? _fmtMoney(_amt) : '';
+    // Foreign-currency original figure (blank unless previously set).
+    const _oamt = parseFloat(row?.dataset?.originalAmount || 0);
+    document.getElementById('docDetailOrigAmount').value   = _oamt > 0 ? _fmtMoney(_oamt) : '';
+    document.getElementById('docDetailOrigCurrency').value = row?.dataset?.originalCurrency || '';
     document.getElementById('docDetailDocDate').value  = row?.dataset?.docDate || '';
     // Category alias for the 2026-05-11 taxonomy collapse: legacy rows
     // tagged 'quote' or 'sow' have no matching <option> after the merge,
@@ -4747,6 +4778,9 @@
     const payload = {
       vendor:   document.getElementById('docDetailVendor').value,
       amount:   _parseMoney(document.getElementById('docDetailAmount').value),
+      // Foreign-currency original figure (USD `amount` reconciles).
+      original_amount:   _parseMoney(document.getElementById('docDetailOrigAmount').value),
+      original_currency: document.getElementById('docDetailOrigCurrency').value,
       doc_date: document.getElementById('docDetailDocDate').value,
       category: document.getElementById('docDetailCategory').value,
       note:     document.getElementById('docDetailNote').value,
@@ -4784,15 +4818,24 @@
         row.dataset.docDate     = d.doc_date || '';
         row.dataset.docNum      = d.doc_number || '';
         row.dataset.note        = d.note || '';
+        row.dataset.originalAmount   = d.original_amount || 0;
+        row.dataset.originalCurrency = d.original_currency || '';
         // Visible cells.
         const vEl = row.querySelector('.doc-cell-vendor');
         if (vEl) vEl.innerHTML = d.vendor
           ? ('🏢 ' + _esc(d.vendor))
           : '<span style="color:var(--text-muted);font-style:italic">No vendor</span>';
         const aEl = row.querySelector('.doc-cell-amount');
-        if (aEl) aEl.innerHTML = (d.amount != null && +d.amount)
-          ? ('$' + Number(d.amount).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}))
-          : '<span style="color:var(--text-muted);font-style:italic;font-weight:400;font-size:11px">—</span>';
+        if (aEl) {
+          aEl.innerHTML = (d.amount != null && +d.amount)
+            ? ('$' + Number(d.amount).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}))
+            : '<span style="color:var(--text-muted);font-style:italic;font-weight:400;font-size:11px">—</span>';
+          // Foreign-currency hint under the USD amount.
+          if (d.original_amount && +d.original_amount && d.original_currency) {
+            aEl.innerHTML += '<div style="font-size:10px;color:var(--text-muted);font-weight:400">'
+              + Number(d.original_amount).toLocaleString() + ' ' + _esc(d.original_currency) + '</div>';
+          }
+        }
         const dEl = row.querySelector('.doc-cell-date');
         if (dEl) dEl.innerHTML = _fmtDocDateCell(d.doc_date);
         // If saving re-filed the doc in Dropbox (vendor/type/date/amount

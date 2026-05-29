@@ -835,7 +835,14 @@ class DocUpload(db.Model):
     # pending | processing | review | done | error | duplicate
     veryfi_data      = db.Column(db.Text, nullable=True)          # raw JSON from Veryfi
     vendor           = db.Column(db.String(200), nullable=True)
-    amount           = db.Column(db.Numeric(10, 2), nullable=True)
+    amount           = db.Column(db.Numeric(10, 2), nullable=True) # USD — reconciliation/budget value
+    # Foreign-currency invoices (user 2026-05-29): `amount` always holds the
+    # USD value that matches the bank charge (what reconciles + rolls into the
+    # budget). When the source document was in another currency, the original
+    # figure + ISO-ish code are preserved here for reference. Wider precision
+    # since KRW/JPY amounts run large (₩1,500,000 etc.).
+    original_amount   = db.Column(db.Numeric(16, 2), nullable=True)
+    original_currency = db.Column(db.String(8), nullable=True)
     doc_date         = db.Column(db.Date, nullable=True)
     confidence       = db.Column(db.Numeric(5, 2), nullable=True) # 0-100
     category         = db.Column(db.String(100), nullable=True)   # doc type (receipt/invoice/...)

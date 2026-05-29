@@ -18019,6 +18019,13 @@ def _web_worker_essential_columns():
                 # of silently auto-burying byte-identical recurring invoices.
                 "ALTER TABLE doc_upload "
                 "  ADD COLUMN IF NOT EXISTS duplicate_of_id INTEGER REFERENCES doc_upload(id)",
+                # 2026-05-29 foreign-currency invoices: `amount` stays USD
+                # (reconciliation/budget); original foreign figure + code
+                # preserved for reference.
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS original_amount NUMERIC(16,2)",
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS original_currency VARCHAR(8)",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The
@@ -20037,6 +20044,20 @@ def docs_upload_update(uid):
                 upload.amount = round(float(a), 2)
             except (TypeError, ValueError):
                 return jsonify({"error": "amount must be a number"}), 400
+    # Foreign-currency original figure (USD `amount` above is the
+    # reconciliation value). 2026-05-29.
+    if "original_amount" in data:
+        oa = data.get("original_amount")
+        if oa in (None, "", "null"):
+            upload.original_amount = None
+        else:
+            try:
+                upload.original_amount = round(float(oa), 2)
+            except (TypeError, ValueError):
+                return jsonify({"error": "original_amount must be a number"}), 400
+    if "original_currency" in data:
+        oc = (data.get("original_currency") or "").strip().upper()
+        upload.original_currency = oc[:8] or None
     if "doc_date" in data:
         d = (data.get("doc_date") or "").strip()
         if not d:
@@ -20256,6 +20277,8 @@ def docs_upload_update(uid):
         "ok":          True,
         "vendor":      upload.vendor,
         "amount":      float(upload.amount) if upload.amount is not None else None,
+        "original_amount":   float(upload.original_amount) if upload.original_amount is not None else None,
+        "original_currency": upload.original_currency,
         "doc_date":    upload.doc_date.isoformat() if upload.doc_date else None,
         "category":    upload.category,
         "note":        upload.note,
