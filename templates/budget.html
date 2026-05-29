@@ -2820,6 +2820,7 @@
   const PROJ_ID = {{ project.id }};
   const UPLOAD_URL = "{{ url_for('docs_upload_post', pid=project.id) }}";
   let docsQueue = [];
+  let _docsUploading = false;   // true while an Upload All run is in flight
 
   function docsFmtSize(b){ return b<1048576?(b/1024).toFixed(1)+' KB':(b/1048576).toFixed(1)+' MB'; }
 
@@ -2846,11 +2847,33 @@
         ${item.status!=='uploading'?`<button onclick="docsRemove(${idx})" style="background:none;border:none;color:var(--text-muted);font-size:18px;cursor:pointer;padding:4px;">×</button>`:''}`;
       el.appendChild(div);
     });
+    _docsUpdateUploadBtn();
+  }
+
+  // Single source of truth for the Upload All button's look + enabled
+  // state. Per user 2026-05-29: while an upload run is in flight the
+  // button must look and behave as locked ("Uploading…", greyed, wait
+  // cursor, disabled) so a user scrolled past the top progress banner
+  // can't click it a second time and trigger phantom duplicate/failed
+  // uploads. Outside a run, it's enabled only when there's pending work,
+  // and shows the pending count so it's obvious what's queued.
+  function _docsUpdateUploadBtn(){
     const btn = document.getElementById('docsBtnUpload');
-    btn.disabled = docsQueue.length===0 || docsQueue.every(i=>i.status==='done'||i.status==='duplicate');
+    if(!btn) return;
+    if(_docsUploading){
+      btn.disabled = true;
+      btn.textContent = '⏳ Uploading… please wait';
+      btn.style.background = '#3a3a4a';
+      btn.style.color = '#cfd2dc';
+      btn.style.cursor = 'wait';
+      return;
+    }
+    const pending = docsQueue.filter(i=>i.status==='pending').length;
+    btn.disabled = pending === 0;
+    btn.textContent = pending === 0 ? 'Upload All' : `Upload All (${pending})`;
     btn.style.background = btn.disabled ? 'var(--bg-input)' : '#5b8af9';
-    btn.style.color = btn.disabled ? 'var(--text-muted)' : '#fff';
-    btn.style.cursor = btn.disabled ? 'not-allowed' : 'pointer';
+    btn.style.color      = btn.disabled ? 'var(--text-muted)' : '#fff';
+    btn.style.cursor     = btn.disabled ? 'not-allowed' : 'pointer';
   }
 
   window.docsRemove = function(idx){ docsQueue.splice(idx,1); docsRenderQueue(); };
@@ -2971,7 +2994,19 @@
 
   let _docsNeedsDupReload = false;
   window.docsUploadAll = async function(){
-    for(const item of docsQueue.filter(i=>i.status==='pending')) await docsUploadOne(item);
+    // Re-entrancy guard: ignore a second click (or Enter) while a run is
+    // already going. Belt-and-suspenders alongside the disabled button —
+    // covers the instant before the DOM repaints the locked state.
+    if(_docsUploading) return;
+    if(!docsQueue.some(i=>i.status==='pending')) return;
+    _docsUploading = true;
+    _docsUpdateUploadBtn();              // lock the button immediately
+    try {
+      for(const item of docsQueue.filter(i=>i.status==='pending')) await docsUploadOne(item);
+    } finally {
+      _docsUploading = false;
+      _docsUpdateUploadBtn();            // unlock / reflect remaining work
+    }
     // If any upload landed as a possible duplicate, reload once so the
     // server-rendered rows show the Keep both / It's a dupe buttons.
     if (_docsNeedsDupReload) {
