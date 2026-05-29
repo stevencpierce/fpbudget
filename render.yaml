@@ -30,7 +30,15 @@ services:
     # other worker (still pid-stable) continues serving while the
     # one being recycled is replaced. The jitter avoids both workers
     # cycling at the exact same moment. 2026-05-10.
-    startCommand: gunicorn -k gthread -w 2 --threads 8 --bind 0.0.0.0:$PORT --timeout 120 --max-requests 100 --max-requests-jitter 20 app:app
+    # 2026-05-29: raised --max-requests 100 → 5000. The old value (set for
+    # the 512MB instance to dodge the OOM killer) made each worker recycle
+    # after ~100 requests — but socket.io long-polling + the /live poll
+    # (every 10s) + presence (every 20s) generate requests so fast that
+    # workers were recycling every couple minutes, and each respawn re-imports
+    # the (large) app module → visible stalls while typing/changing dropdowns.
+    # We're on 2GB/1CPU now, so memory pressure no longer justifies aggressive
+    # recycling. 5000 still sheds long-lived leaks, far less churn.
+    startCommand: gunicorn -k gthread -w 2 --threads 8 --bind 0.0.0.0:$PORT --timeout 120 --max-requests 5000 --max-requests-jitter 500 app:app
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL

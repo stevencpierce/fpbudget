@@ -2074,11 +2074,21 @@ def budget_live(pid, bid):
         profile.payroll_week_start if profile else 6)
     sched_mode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
 
+    # Bulk-load ScheduleDay rows for ALL schedule-driven lines in ONE query
+    # instead of a per-line query (was an N+1 that ran on every /live poll —
+    # every 10s, every open tab). 2026-05-29 perf fix.
+    _sched_by_line = {}
+    _sched_line_ids = [ln.id for ln in lines if ln.use_schedule]
+    if _sched_line_ids:
+        for _sd in (ScheduleDay.query
+                    .filter(ScheduleDay.budget_line_id.in_(_sched_line_ids),
+                            ScheduleDay.schedule_mode == sched_mode).all()):
+            _sched_by_line.setdefault(_sd.budget_line_id, []).append(_sd)
+
     line_results = {}
     for ln in lines:
         if ln.use_schedule:
-            sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
-            res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
+            res = calc_line_from_schedule(ln, _sched_by_line.get(ln.id, []), fringe_cfgs, profile, pw_start)
         else:
             res = calc_line(ln, fringe_cfgs)
         line_results[str(ln.id)] = {

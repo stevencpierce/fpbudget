@@ -15896,14 +15896,21 @@ document.addEventListener('change', e => {
 // emits miss (Render free tier / proxy issues / serialization failures).
 // Presence: still socket-preferred; poll only when no socket connected.
 setTimeout(function() {
+  // Visibility gate (2026-05-29 perf): skip polls while the tab is hidden,
+  // so background tabs (the user often has several budgets open) stop
+  // hammering /live + /presence. On return to the tab, refresh immediately.
+  const _vis = () => !document.hidden;
   if (!window._socket || !window._socket.connected) {
     console.log('[WS] No socket — using polling fallback');
     _collabPingPresence();
-    setInterval(_collabPingPresence, 20000);
+    setInterval(() => { if (_vis()) _collabPingPresence(); }, 20000);
   }
-  // Poll every 10s regardless of socket — this is the reliability net
+  // Poll regardless of socket — reliability net — but only when visible.
   _collabLivePatch();
-  setInterval(_collabLivePatch, 10000);
+  setInterval(() => { if (_vis()) _collabLivePatch(); }, 10000);
+  document.addEventListener('visibilitychange', () => {
+    if (_vis()) { _collabLivePatch(); if (!window._socket || !window._socket.connected) _collabPingPresence(); }
+  });
 }, 2000);
 </script>
 
