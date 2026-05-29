@@ -4274,6 +4274,25 @@
   // Click any non-edit, non-delete area of a doc-row to open. Loads a
   // Dropbox temporary link and the editable metadata.
   let _docDetailUid = null;
+  // Which list the modal was opened from — drives prev/next paging and
+  // which row(s) get patched on save ('docs' = Docs tab, 'actuals' =
+  // Actuals tab). Set in openDocDetail. (User 2026-05-30.)
+  let _docDetailContext = 'docs';
+  // Doc categories that are NOT spend events — switching to one of these
+  // deletes the linked Actuals transaction server-side, so the row must
+  // drop out of the Actuals list on save. Mirrors app.py _NON_LEDGER_CATS.
+  const _DOC_NON_LEDGER_CATS = new Set(['tax_form','contract','release','legal',
+    'insurance','misc','employee_vendor_doc','estimate','quote','purchase_order']);
+  // Snapshot of the editable fields when the modal opened — lets prev/next
+  // auto-save only when something actually changed.
+  let _docDetailOpenSig = '';
+  function _docDetailSig() {
+    return ['docDetailVendor','docDetailAmount','docDetailOrigAmount',
+            'docDetailOrigCurrency','docDetailDocDate','docDetailCategory',
+            'docDetailNote','docDetailDocNum','docDetailCrewId','docDetailLocationId']
+      .map(id => (document.getElementById(id)?.value || '')).join('');
+  }
+  function _docDetailDirty() { return _docDetailSig() !== _docDetailOpenSig; }
 
   function _docDetailFmtSize(b) { if (!b) return ''; return b<1048576?(b/1024).toFixed(1)+' KB':(b/1048576).toFixed(1)+' MB'; }
 
@@ -4553,14 +4572,28 @@
   // reflects the active subtab, search query, and sort — so paging matches
   // exactly what the user filtered to. Collapsed groups (display:none) are
   // naturally skipped. 2026-05-29.
-  function _docNavVisibleRows() {
+  // The ordered, currently-visible list the modal pages through —
+  // normalised to {uid, row}. In the Docs tab that's the filtered
+  // .doc-row list; in the Actuals tab it's every visible transaction row
+  // that has a doc badge (so prev/next walks the receipts you can edit).
+  function _docNavList() {
+    if (_docDetailContext === 'actuals') {
+      return Array.from(document.querySelectorAll('#actuals-txn-list .actuals-txn-row'))
+        .filter(r => r.style.display !== 'none')
+        .map(r => {
+          const b = r.querySelector('.actuals-doc-badge');
+          const id = b && parseInt(b.dataset.docId);
+          return id ? { uid: id, row: r } : null;
+        })
+        .filter(Boolean);
+    }
     return Array.from(document.querySelectorAll('#docsHistory .doc-row'))
-      .filter(r => r.style.display !== 'none');
+      .filter(r => r.style.display !== 'none')
+      .map(r => ({ uid: parseInt(r.dataset.uploadId), row: r }));
   }
   function _docDetailUpdateNav() {
-    const rows = _docNavVisibleRows();
-    const cur  = String(_docDetailUid);
-    const idx  = rows.findIndex(r => r.dataset.uploadId === cur);
+    const list = _docNavList();
+    const idx  = list.findIndex(x => x.uid === _docDetailUid);
     const pos  = document.getElementById('docDetailNavPos');
     const prev = document.getElementById('docDetailPrevBtn');
     const nxt  = document.getElementById('docDetailNextBtn');
@@ -4575,19 +4608,28 @@
       setBtn(prev, true); setBtn(nxt, true);
       return;
     }
-    if (pos) pos.textContent = (idx + 1) + ' / ' + rows.length;
+    if (pos) pos.textContent = (idx + 1) + ' / ' + list.length;
     setBtn(prev, idx <= 0);
-    setBtn(nxt, idx >= rows.length - 1);
+    setBtn(nxt, idx >= list.length - 1);
   }
-  window.docDetailNav = function (delta) {
-    const rows = _docNavVisibleRows();
-    if (!rows.length) return;
-    let idx = rows.findIndex(r => r.dataset.uploadId === String(_docDetailUid));
+  window.docDetailNav = async function (delta) {
+    const list = _docNavList();
+    if (!list.length) return;
+    let idx = list.findIndex(x => x.uid === _docDetailUid);
     if (idx === -1) idx = 0;
-    const target = rows[idx + delta];
+    const target = list[idx + delta];
     if (!target) return;                       // at an end — no-op
-    const uid = parseInt(target.dataset.uploadId);
-    if (uid) openDocDetail(uid, target);
+    // Auto-save the current doc's edits before paging away, in BOTH tabs
+    // (user 2026-05-30: "if you click prev/next it should save"). Only
+    // when something actually changed, so a pure browse stays instant.
+    if (_docDetailDirty()) {
+      const pos = document.getElementById('docDetailNavPos');
+      if (pos) pos.textContent = 'Saving…';
+      try { await _docDetailCommit(); } catch (e) { /* keep paging */ }
+    }
+    // In the Actuals tab the row is a transaction row (no doc dataset), so
+    // pass null → openDocDetail fetches canonical metadata from the server.
+    openDocDetail(target.uid, _docDetailContext === 'actuals' ? null : target.row);
   };
   // Keyboard: ←/→ page through, Esc closes — but never while typing in a
   // field (so caret movement / text entry isn't hijacked).
@@ -4605,8 +4647,14 @@
   });
 
   window.openDocDetail = async function (uid, row) {
+    // Tolerate the legacy (null, docId) call order used by a few inline
+    // links (by-dept detail rows, dynamically-rendered doc lists).
+    if ((uid == null) && (typeof row === 'number')) { uid = row; row = null; }
     _docDetailUid = uid;
     window._docDetailCurrentUid = uid;
+    // Decide which list we're paging/patching against from the active tab.
+    const _actPanel = document.getElementById('tab-actuals');
+    _docDetailContext = (_actPanel && _actPanel.classList.contains('active')) ? 'actuals' : 'docs';
     _docDetailUpdateNav();   // refresh prev/next position + button states
     // Hoist the modal out of the Docs tab panel on first open so the
     // user can open it from any tab (Actuals, etc.) — without this,
@@ -4686,6 +4734,9 @@
         if (el) el.oninput = () => _docDetailApplyTypeUI(
           (document.getElementById('docDetailCategory').value || '').toLowerCase());
       });
+    // Snapshot the just-populated fields so prev/next can tell whether the
+    // user changed anything (→ auto-save) vs. just browsed (→ skip save).
+    _docDetailOpenSig = _docDetailSig();
     document.getElementById('docDetailVerify').style.display = 'none';
     const previewEl = document.getElementById('docDetailPreview');
     previewEl.innerHTML = '<p class="muted" style="padding:1rem">Loading preview…</p>';
@@ -4932,84 +4983,122 @@
     }
   };
 
-  document.getElementById('docDetailSaveBtn')?.addEventListener('click', async () => {
-    if (!_docDetailUid) return;
+  // Patch the matching Docs-tab row IN PLACE from a /update response so
+  // the list reflects the edit without a full reload (preserves subtab /
+  // search / sort / scroll). 2026-05-29.
+  function _docPatchDocsRow(uid, d) {
+    const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
+    if (!row) return;
+    row.dataset.sortVendor  = (d.vendor || '').toLowerCase();
+    row.dataset.sortAmount  = d.amount || 0;
+    row.dataset.sortType    = (d.category || '').toLowerCase();
+    row.dataset.groupKey    = d.category ? d.category.toLowerCase() : '_unsorted';
+    row.dataset.sortDocDate = d.doc_date || '';
+    row.dataset.docDate     = d.doc_date || '';
+    row.dataset.docNum      = d.doc_number || '';
+    row.dataset.note        = d.note || '';
+    row.dataset.originalAmount   = d.original_amount || 0;
+    row.dataset.originalCurrency = d.original_currency || '';
+    const vEl = row.querySelector('.doc-cell-vendor');
+    if (vEl) vEl.innerHTML = d.vendor
+      ? ('🏢 ' + _esc(d.vendor))
+      : '<span style="color:var(--text-muted);font-style:italic">No vendor</span>';
+    const aEl = row.querySelector('.doc-cell-amount');
+    if (aEl) {
+      aEl.innerHTML = (d.amount != null && +d.amount)
+        ? ('$' + Number(d.amount).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}))
+        : '<span style="color:var(--text-muted);font-style:italic;font-weight:400;font-size:11px">—</span>';
+      if (d.original_amount && +d.original_amount && d.original_currency) {
+        aEl.innerHTML += '<div style="font-size:10px;color:var(--text-muted);font-weight:400">'
+          + Number(d.original_amount).toLocaleString() + ' ' + _esc(d.original_currency) + '</div>';
+      }
+    }
+    const dEl = row.querySelector('.doc-cell-date');
+    if (dEl) dEl.innerHTML = _fmtDocDateCell(d.doc_date);
+    if (d.filed_path) {
+      const nm = d.filed_path.split('/').pop();
+      const fn = row.querySelector('.doc-filename');
+      if (fn && nm) { fn.textContent = '📎 ' + nm; fn.dataset.original = nm; }
+    }
+  }
+
+  // Patch any Actuals-tab transaction row(s) showing this doc. If the new
+  // category is non-ledger the server deleted the linked transaction, so
+  // the row must drop out of the Actuals list; otherwise just refresh the
+  // visible vendor / badge so it doesn't sit there in its old form.
+  // (User 2026-05-30: edits from the Actuals tab didn't update the row,
+  // and a doc recategorised out of actuals stayed in the list.)
+  function _docPatchActualsRows(uid, d) {
+    const nonLedger = _DOC_NON_LEDGER_CATS.has((d.category || '').toLowerCase());
+    let removedAny = false;
+    document.querySelectorAll('.actuals-doc-badge[data-doc-id="' + uid + '"]').forEach(badge => {
+      const trow = badge.closest('.actuals-txn-row');
+      if (!trow) return;
+      if (nonLedger) {
+        removedAny = true;
+        trow.style.transition = 'opacity .3s';
+        trow.style.opacity = '0';
+        setTimeout(() => { trow.remove(); if (typeof _actualsRecountStats === 'function') _actualsRecountStats(); }, 300);
+      } else {
+        const vEl = trow.querySelector('.actuals-txn-vendor');
+        if (vEl && d.vendor) { vEl.textContent = d.vendor; vEl.title = d.vendor; }
+        trow.dataset.note    = d.note || '';
+        trow.dataset.txnDate = d.doc_date || trow.dataset.txnDate;
+        if (d.amount != null) trow.dataset.amount = d.amount || 0;
+        if (d.filed_path) {
+          const nm = (d.filed_path.split('/').pop() || '');
+          badge.textContent = '📎 ' + (d.category || 'doc') + ' · '
+            + (nm.length > 14 ? nm.slice(0, 14) + '…' : nm);
+        }
+      }
+    });
+    if (removedAny && typeof _actualsRecountStats === 'function') _actualsRecountStats();
+  }
+
+  // Persist the current modal's edits and patch the affected list row(s)
+  // in place. Returns the /update response (or null on failure). Shared by
+  // the Save button AND prev/next auto-save. Does NOT close the modal —
+  // callers decide. 2026-05-30.
+  window._docDetailCommit = async function () {
+    if (!_docDetailUid) return null;
+    const uid = _docDetailUid;   // capture — nav may change _docDetailUid after
     const payload = {
       vendor:   document.getElementById('docDetailVendor').value,
       amount:   _parseMoney(document.getElementById('docDetailAmount').value),
-      // Foreign-currency original figure (USD `amount` reconciles).
       original_amount:   _parseMoney(document.getElementById('docDetailOrigAmount').value),
       original_currency: document.getElementById('docDetailOrigCurrency').value,
       doc_date: document.getElementById('docDetailDocDate').value,
       category: document.getElementById('docDetailCategory').value,
       note:     document.getElementById('docDetailNote').value,
-      // Type-specific identifier (Invoice #, PO #, Tax ID, Policy #,
-      // etc.). Stored server-side; folded into the note prefix for
-      // now (no schema change). The label rendered in the modal
-      // depends on the doc type — see _DOC_TYPE_FIELD_SPEC.
       doc_number: document.getElementById('docDetailDocNum').value,
-      // Person / location linkage — only meaningful for the doc types
-      // whose spec sets crew/location:true. Server accepts NULL to clear.
       crew_member_id: document.getElementById('docDetailCrewId').value || null,
       location_id:    document.getElementById('docDetailLocationId').value || null,
     };
+    const r = await fetch('/docs/upload/' + uid + '/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { alert('Save failed: ' + (d.error || r.status)); return null; }
+    // Mark the form clean (so an immediate prev/next won't re-save).
+    if (uid === _docDetailUid) _docDetailOpenSig = _docDetailSig();
+    _docPatchDocsRow(uid, d);
+    _docPatchActualsRows(uid, d);
+    // Re-apply Docs view + sort so the edited row re-files into the right
+    // place under the CURRENT subtab/search/sort — without a reload.
+    if (typeof _docsApplyView === 'function') _docsApplyView();
+    if (typeof _docsSort === 'function') _docsSort();
+    return d;
+  };
+
+  document.getElementById('docDetailSaveBtn')?.addEventListener('click', async () => {
+    if (!_docDetailUid) return;
     const btn = document.getElementById('docDetailSaveBtn');
     btn.disabled = true; btn.textContent = 'Saving…';
     try {
-      const r = await fetch('/docs/upload/' + _docDetailUid + '/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(payload),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { alert('Save failed: ' + (d.error || r.status)); return; }
-      // Update the row IN PLACE — no full reload, so the user's active
-      // subtab, search, sort order and scroll position are preserved
-      // (user 2026-05-29: "it reloads… resets your sort by view").
-      const row = document.querySelector('.doc-row[data-upload-id="' + _docDetailUid + '"]');
-      if (row) {
-        // Dataset (drives sort / search / subtab filtering).
-        row.dataset.sortVendor  = (d.vendor || '').toLowerCase();
-        row.dataset.sortAmount  = d.amount || 0;
-        row.dataset.sortType    = (d.category || '').toLowerCase();
-        row.dataset.groupKey    = d.category ? d.category.toLowerCase() : '_unsorted';
-        row.dataset.sortDocDate = d.doc_date || '';
-        row.dataset.docDate     = d.doc_date || '';
-        row.dataset.docNum      = d.doc_number || '';
-        row.dataset.note        = d.note || '';
-        row.dataset.originalAmount   = d.original_amount || 0;
-        row.dataset.originalCurrency = d.original_currency || '';
-        // Visible cells.
-        const vEl = row.querySelector('.doc-cell-vendor');
-        if (vEl) vEl.innerHTML = d.vendor
-          ? ('🏢 ' + _esc(d.vendor))
-          : '<span style="color:var(--text-muted);font-style:italic">No vendor</span>';
-        const aEl = row.querySelector('.doc-cell-amount');
-        if (aEl) {
-          aEl.innerHTML = (d.amount != null && +d.amount)
-            ? ('$' + Number(d.amount).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}))
-            : '<span style="color:var(--text-muted);font-style:italic;font-weight:400;font-size:11px">—</span>';
-          // Foreign-currency hint under the USD amount.
-          if (d.original_amount && +d.original_amount && d.original_currency) {
-            aEl.innerHTML += '<div style="font-size:10px;color:var(--text-muted);font-weight:400">'
-              + Number(d.original_amount).toLocaleString() + ' ' + _esc(d.original_currency) + '</div>';
-          }
-        }
-        const dEl = row.querySelector('.doc-cell-date');
-        if (dEl) dEl.innerHTML = _fmtDocDateCell(d.doc_date);
-        // If saving re-filed the doc in Dropbox (vendor/type/date/amount
-        // change moved + renamed it), reflect the new filename in the row.
-        if (d.filed_path) {
-          const nm = d.filed_path.split('/').pop();
-          const fn = row.querySelector('.doc-filename');
-          if (fn && nm) { fn.textContent = '📎 ' + nm; fn.dataset.original = nm; }
-        }
-      }
-      closeDocDetail();
-      // Re-apply view + sort so the edited row re-files into the right
-      // place under the CURRENT subtab/search/sort — without a reload.
-      if (typeof _docsApplyView === 'function') _docsApplyView();
-      if (typeof _docsSort === 'function') _docsSort();
+      const d = await _docDetailCommit();
+      if (d) closeDocDetail();
     } catch (e) {
       alert('Save error: ' + e.message);
     } finally {

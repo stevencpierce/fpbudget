@@ -19930,6 +19930,19 @@ def _doc_intended_path(upload):
     user_folder = _ana_safe(raw)
     if doc_type in ('invoice', 'contract', 'purchase_order', 'insurance'):
         return f"{base}/{user_folder}/{_ana_safe(upload.vendor or 'Unknown_Vendor')}/{fname}"
+    # Employee/Vendor supporting docs are organised by the PERSON they're
+    # attached to (the crew dropdown), not the uploader — so every doc for a
+    # given person lands in one packet folder:
+    #   …/EMPLOYEE_VENDOR_DOCS/<Person>/<date>_EMPDOC_<doctype>.pdf
+    # Falls back to the uploader folder when no crew member is linked yet.
+    # (User 2026-05-30.)
+    if doc_type == 'employee_vendor_doc':
+        person_folder = None
+        if upload.crew_member_id:
+            cm = CrewMember.query.get(upload.crew_member_id)
+            if cm and (cm.name or '').strip():
+                person_folder = _ana_safe(cm.name.strip())
+        return f"{base}/{person_folder or user_folder}/{fname}"
     return f"{base}/{user_folder}/{fname}"
 
 
@@ -20216,6 +20229,13 @@ def docs_upload_update(uid):
                 if upload.category in ('invoice', 'contract', 'purchase_order', 'insurance'):
                     vendor_folder = _ana_safe(upload.vendor or 'Unknown_Vendor')
                     return f"{base}/{user_folder}/{vendor_folder}/{fname}", fname
+                # Employee/Vendor docs → per-person packet folder (crew link),
+                # falling back to the uploader folder. Mirrors
+                # _doc_intended_path. (User 2026-05-30.)
+                if upload.category == 'employee_vendor_doc' and upload.crew_member_id:
+                    _cm = CrewMember.query.get(upload.crew_member_id)
+                    if _cm and (_cm.name or '').strip():
+                        return f"{base}/{_ana_safe(_cm.name.strip())}/{fname}", fname
                 return f"{base}/{user_folder}/{fname}", fname
 
             # Case A — review confirmation (file not yet processed)
