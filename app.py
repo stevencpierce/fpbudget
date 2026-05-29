@@ -20012,6 +20012,12 @@ def docs_upload_update(uid):
     deny = _docs_check_row_access(upload)
     if deny:
         return deny
+    # `_dt` is used below (filed_at, txn updated_at) but was never defined in
+    # this function — `_dt` is only a local alias in other functions and the
+    # module imports plain `datetime`. That NameError was silently caught,
+    # so a doc's amount/vendor edit never propagated to its linked Actuals
+    # transaction (user 2026-05-29: "I change the amount and it doesn't take").
+    from datetime import datetime as _dt
 
     data = request.get_json(force=True) or {}
     _act_before = {
