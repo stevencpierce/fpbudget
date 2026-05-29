@@ -2571,6 +2571,16 @@
             <button type="button" id="docDetailZoom100" title="Actual size (100%)"
                     style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;height:26px;padding:0 8px;border-radius:5px;cursor:pointer;font-size:11px;">1:1</button>
           </div>
+          {# Prev/Next nav — walks the CURRENT filtered + sorted list
+             (visible .doc-row order) so the user can page through results
+             without closing the modal. Arrow keys ←/→ work too. 2026-05-29. #}
+          <div id="docDetailNav" style="display:flex;gap:4px;align-items:center;flex-shrink:0;margin-right:12px;">
+            <button type="button" id="docDetailPrevBtn" onclick="docDetailNav(-1)" title="Previous (←)"
+                    style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;height:28px;padding:0 11px;border-radius:5px;cursor:pointer;font-size:13px;">‹ Prev</button>
+            <span id="docDetailNavPos" style="font-size:11px;color:var(--text-muted);min-width:52px;text-align:center;">—</span>
+            <button type="button" id="docDetailNextBtn" onclick="docDetailNav(1)" title="Next (→)"
+                    style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;height:28px;padding:0 11px;border-radius:5px;cursor:pointer;font-size:13px;">Next ›</button>
+          </div>
           <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
             <a id="docDetailArchiveLink" href="#" target="_blank"
                style="font-size:11px;padding:4px 10px;border-radius:6px;background:#1a2a1e;color:#22c55e;border:1px solid #1a4228;text-decoration:none;display:none"
@@ -4172,9 +4182,66 @@
     });
   }
 
+  // ── Modal prev/next navigation ───────────────────────────────────────
+  // Walks the visible .doc-row elements in DOM order — which already
+  // reflects the active subtab, search query, and sort — so paging matches
+  // exactly what the user filtered to. Collapsed groups (display:none) are
+  // naturally skipped. 2026-05-29.
+  function _docNavVisibleRows() {
+    return Array.from(document.querySelectorAll('#docsHistory .doc-row'))
+      .filter(r => r.style.display !== 'none');
+  }
+  function _docDetailUpdateNav() {
+    const rows = _docNavVisibleRows();
+    const cur  = String(_docDetailUid);
+    const idx  = rows.findIndex(r => r.dataset.uploadId === cur);
+    const pos  = document.getElementById('docDetailNavPos');
+    const prev = document.getElementById('docDetailPrevBtn');
+    const nxt  = document.getElementById('docDetailNextBtn');
+    const setBtn = (b, disabled) => {
+      if (!b) return;
+      b.disabled = disabled;
+      b.style.opacity = disabled ? '.4' : '';
+      b.style.cursor  = disabled ? 'not-allowed' : 'pointer';
+    };
+    if (idx === -1) {
+      if (pos) pos.textContent = '—';
+      setBtn(prev, true); setBtn(nxt, true);
+      return;
+    }
+    if (pos) pos.textContent = (idx + 1) + ' / ' + rows.length;
+    setBtn(prev, idx <= 0);
+    setBtn(nxt, idx >= rows.length - 1);
+  }
+  window.docDetailNav = function (delta) {
+    const rows = _docNavVisibleRows();
+    if (!rows.length) return;
+    let idx = rows.findIndex(r => r.dataset.uploadId === String(_docDetailUid));
+    if (idx === -1) idx = 0;
+    const target = rows[idx + delta];
+    if (!target) return;                       // at an end — no-op
+    const uid = parseInt(target.dataset.uploadId);
+    if (uid) openDocDetail(uid, target);
+  };
+  // Keyboard: ←/→ page through, Esc closes — but never while typing in a
+  // field (so caret movement / text entry isn't hijacked).
+  document.addEventListener('keydown', (e) => {
+    const overlay = document.getElementById('docDetailOverlay');
+    if (!overlay || overlay.style.display === 'none') return;
+    const tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+      if (e.key === 'Escape') document.activeElement.blur();
+      return;
+    }
+    if (e.key === 'ArrowLeft')      { e.preventDefault(); docDetailNav(-1); }
+    else if (e.key === 'ArrowRight'){ e.preventDefault(); docDetailNav(1); }
+    else if (e.key === 'Escape')    { closeDocDetail(); }
+  });
+
   window.openDocDetail = async function (uid, row) {
     _docDetailUid = uid;
     window._docDetailCurrentUid = uid;
+    _docDetailUpdateNav();   // refresh prev/next position + button states
     // Hoist the modal out of the Docs tab panel on first open so the
     // user can open it from any tab (Actuals, etc.) — without this,
     // the parent tab-docs div's display:none cascades and hides the
