@@ -246,7 +246,12 @@ const ROLE_LABELS = {
 };
 
 function openAddCrew() {
-  document.getElementById('add-crew-modal').classList.remove('hidden');
+  const modal = document.getElementById('add-crew-modal');
+  // Reset the form on every open so the previous person's details don't
+  // linger after a cancel/reopen (user 2026-05-29).
+  const form = modal.querySelector('form');
+  if (form) form.reset();
+  modal.classList.remove('hidden');
 }
 
 function openEditCrew(id, m) {
