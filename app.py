@@ -4941,6 +4941,60 @@ def budget_view(pid, bid):
                     "status":      _p.get("status"),
                 }
 
+    # ── Smart vendor → budget-line suggestions for the Actuals tab ───────
+    # (User 2026-05-29.) Talent / crew invoices carry the person's name as
+    # the vendor ("Adrienne Caminer", "Elizabeth Roe", …); match that name
+    # against each budget line's description AND its assigned person, and
+    # suggest the best line on every still-uncoded transaction. Conservative
+    # on purpose — only suggests on a confident name overlap so it's signal,
+    # not noise. The user one-clicks to apply (or ignores it).
+    actuals_line_suggestions = {}   # {txn_id: {"line_id", "code", "label"}}
+    try:
+        import re as _re_sug
+        _STOP = {'the', 'and', 'inc', 'llc', 'co', 'corp', 'host', 'prod',
+                 'production', 'productions', 'fee', 'rental', 'services',
+                 'service', 'day', 'days', 'crew', 'staff'}
+        def _name_tokens(s):
+            return {t for t in _re_sug.split(r'[^a-z0-9]+', (s or '').lower())
+                    if len(t) >= 3 and t not in _STOP}
+        # Candidate lines from the pick budget: real lines only, with the
+        # token set drawn from description + any assigned person's name.
+        _cands = []
+        for _grp in actuals_pick_groups:
+            for _ln in _grp["lines"]:
+                if getattr(_ln, 'line_tag', None) in ('header', 'spacer'):
+                    continue
+                _desc = _ln.description or _ln.account_name or ''
+                _toks = _name_tokens(_desc) | _name_tokens(actuals_pick_crew.get(_ln.id, ''))
+                if _toks:
+                    _cands.append((_ln.id, _grp["code"], _desc, _toks))
+        if _cands:
+            for _t in actuals_transactions:
+                if _t.budget_line_id or _t.account_code:      # already coded
+                    continue
+                if getattr(_t, 'not_project_expense', False):
+                    continue
+                _vtoks = _name_tokens(_t.vendor)
+                if not _vtoks:
+                    continue
+                _best, _best_score = None, 0
+                for (_lid, _code, _desc, _toks) in _cands:
+                    _shared = _vtoks & _toks
+                    _score = len(_shared)
+                    # Confident match: ≥2 shared name tokens, or one solid
+                    # surname-length token (≥5 chars).
+                    if _score > _best_score and (
+                            _score >= 2 or (_score == 1 and max(len(x) for x in _shared) >= 5)):
+                        _best, _best_score = (_lid, _code, _desc), _score
+                if _best:
+                    actuals_line_suggestions[_t.id] = {
+                        "line_id": _best[0],
+                        "code":    _best[1],
+                        "label":   (_best[2] or '')[:40],
+                    }
+    except Exception as _sug_e:
+        logging.warning(f"[budget_view] actuals vendor→line suggestion build failed: {_sug_e}")
+
     # Group uploads by category for the Docs-tab view. Per user 2026-04-30:
     # tax forms, receipts, invoices, etc. should be visually clustered so
     # the list is readable. Order matches the Analyzer's filing buckets.
@@ -5042,6 +5096,7 @@ def budget_view(pid, bid):
         doc_uploads=doc_uploads,
         doc_groups=doc_groups,
         actuals_transactions=actuals_transactions,
+        actuals_line_suggestions=actuals_line_suggestions,
         actuals_claimed_elsewhere=actuals_claimed_elsewhere,
         actuals_claimed_project_names=actuals_claimed_project_names,
         actuals_is_admin_view=_is_admin_view,

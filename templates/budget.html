@@ -2308,12 +2308,12 @@
         <option value="vendor">Vendor</option>
         <option value="doc-date" selected>Date</option>
         <option value="amount">Amount</option>
-        <option value="suggested">Suggested account</option>
+        <option value="type">Doc type</option>
+        <option value="confidence">Confidence</option>
         <option disabled>──────────</option>
         {# Secondary metadata. #}
         <option value="date">Upload date</option>
         <option value="uploader">Uploader</option>
-        <option value="type">Doc type</option>
         <option value="filename">Filename</option>
         <option value="original">Original filename</option>
         <option value="size">File size</option>
@@ -2352,7 +2352,7 @@
       <div>Vendor</div>
       <div>Date</div>
       <div style="text-align:right">Amount</div>
-      <div>Suggested account</div>
+      <div>Type · Confidence</div>
     </div>
     {% endif %}
     <div id="docsHistory" style="display:flex;flex-direction:column;gap:8px;">
@@ -2400,7 +2400,7 @@
              data-sort-vendor="{{ (u.vendor or '')|lower }}"
              data-sort-amount="{{ u.amount|float if u.amount else 0 }}"
              data-sort-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
-             data-sort-suggested="{{ (u.veryfi_category or '')|lower }}"
+             data-sort-confidence="{{ u.confidence | float if u.confidence is not none else 0 }}"
              data-doc-date="{{ u.doc_date.isoformat() if u.doc_date else '' }}"
              data-doc-num="{{ u.doc_number or '' }}"
              data-crew-member-id="{{ u.crew_member_id or '' }}"
@@ -2470,19 +2470,22 @@
               {% if u.amount %}${{ '%.2f'|format(u.amount|float) }}
               {% else %}<span style="color:var(--text-muted);font-style:italic;font-weight:400;font-size:11px">—</span>{% endif %}
             </div>
-            {# Column 4: SUGGESTED ACCOUNT (deemphasized — small pill,
-               muted color). Comes from Veryfi's expense category. NULL
-               on legacy rows uploaded before this column existed. #}
+            {# Column 4: DOC TYPE + OCR CONFIDENCE (replaced the Veryfi
+               "suggested account" pill, which wasn't useful — user
+               2026-05-29). Shows the detected type with a confidence
+               badge colored by how sure the OCR was. #}
             <div style="min-width:0;">
-              {% if u.veryfi_category %}
-              <span style="display:inline-block;font-size:10.5px;padding:2px 8px;
-                           border-radius:10px;background:rgba(168,85,247,.12);
-                           color:#c084fc;border:1px solid rgba(168,85,247,.25);
-                           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-                           max-width:100%;"
-                    title="Suggested by OCR — click row to set the actual budget code">
-                💡 {{ u.veryfi_category }}
-              </span>
+              {% if u.category %}
+                {% set _cf = (u.confidence | float) if u.confidence is not none else none %}
+                {% set _cf_color = '#22c55e' if (_cf is not none and _cf >= 90) else ('#fbbf24' if (_cf is not none and _cf >= 70) else '#e08080') %}
+                {% set _ty_emoji = '🧾' if u.category in ('receipt','invoice') else ('📋' if u.category in ('estimate','quote','purchase_order') else '📄') %}
+                <span style="display:inline-flex;align-items:center;gap:5px;font-size:10.5px;padding:2px 8px;
+                             border-radius:10px;background:var(--bg-input);color:var(--text);
+                             border:1px solid var(--border);white-space:nowrap;max-width:100%;"
+                      title="Detected document type{% if _cf is not none %} · OCR confidence {{ _cf | round(0) | int }}%{% endif %}">
+                  {{ _ty_emoji }} {{ u.category | capitalize }}
+                  {% if _cf is not none %}<span style="color:{{ _cf_color }};font-weight:600">{{ _cf | round(0) | int }}%</span>{% endif %}
+                </span>
               {% else %}
               <span style="font-size:10.5px;color:var(--text-muted);font-style:italic">—</span>
               {% endif %}
@@ -3699,7 +3702,7 @@
     if (!by || !dir) return;
     const key    = by.value;
     const desc   = dir.dataset.dir === 'desc';
-    const NUMERIC = new Set(['amount', 'size']);
+    const NUMERIC = new Set(['amount', 'size', 'confidence']);
     // ISO-string keys: lexicographic sort gives correct chronological order.
     const ISO_DATE = new Set(['date', 'doc-date']);
     const list   = document.getElementById('docsHistory');
@@ -3790,7 +3793,7 @@
       vendor:     { desc: '↓ Z → A',          asc: '↑ A → Z' },
       'doc-date': { desc: '↓ Newest first',  asc: '↑ Oldest first' },
       amount:     { desc: '↓ Largest first', asc: '↑ Smallest first' },
-      suggested:  { desc: '↓ Z → A',          asc: '↑ A → Z' },
+      confidence: { desc: '↓ Highest first',  asc: '↑ Lowest first' },
       date:       { desc: '↓ Newest first',  asc: '↑ Oldest first' },
       uploader:   { desc: '↓ Z → A',          asc: '↑ A → Z' },
       filename:   { desc: '↓ Z → A',          asc: '↑ A → Z' },
@@ -5398,6 +5401,21 @@
                   style="flex-shrink:0;font-size:.6rem;color:#e08080;font-style:italic">⚠ no receipt</span>
             {% endif %}
             {% endif %}
+            {# Smart suggestion — vendor name matched to a budget line (by
+               description / assigned person). One click codes it. Only on
+               still-uncoded rows. (User 2026-05-29.) #}
+            {% set _sug = actuals_line_suggestions.get(t.id) %}
+            {% if _sug and not _coded and not t.not_project_expense %}
+            <button type="button" class="actuals-suggest-btn"
+                    data-tid="{{ t.id }}" data-line-id="{{ _sug.line_id }}"
+                    onclick="actualsApplySuggestion(this)"
+                    title="Smart match from the vendor name — click to code to {{ _sug.code }} · {{ _sug.label }}"
+                    style="flex-shrink:0;font-size:.66rem;padding:2px 8px;background:#10231a;
+                           border:1px solid #1f6f4a;border-radius:4px;color:#5fd0a0;cursor:pointer;
+                           white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis">
+              💡 {{ _sug.code }} · {{ _sug.label }}
+            </button>
+            {% endif %}
             {# Budget-line picker — 2-tier select (optgroup per section) #}
             <select class="actuals-line-picker"
                     data-tid="{{ t.id }}"
@@ -5945,6 +5963,8 @@
           row.dataset.coded = isCoded ? '1' : '0';
           row.style.background = isCoded ? '#0d1a14' : 'var(--bg-card)';
           row.style.borderColor = isCoded ? '#1a3a2a' : 'var(--border)';
+          // Coded now → the smart-suggestion chip is spent; remove it.
+          if (isCoded) { const _sb = row.querySelector('.actuals-suggest-btn'); if (_sb) _sb.remove(); }
         }
         _actualsRecountStats();
         // Re-apply the active filter so the row auto-leaves the view
@@ -5963,6 +5983,24 @@
       } finally {
         selectEl.disabled = false;
       }
+    };
+
+    // Apply a smart vendor→line suggestion: select that option in the
+    // row's picker and run the normal code path. 2026-05-29.
+    window.actualsApplySuggestion = function (btn) {
+      const row = btn.closest('.actuals-txn-row');
+      const sel = row && row.querySelector('.actuals-line-picker');
+      if (!sel) return;
+      sel.value = String(btn.dataset.lineId || '');
+      if (sel.value !== String(btn.dataset.lineId || '')) {
+        alert('Suggested line is no longer in the picker — please choose one manually.');
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = '💡 coding…';
+      actualsSetLine(sel);
+      // Row re-renders / flips to coded on success; if it doesn't, the
+      // button is gone after the next filter pass anyway.
     };
 
     window.actualsMarkNotProject = async function (tid) {
