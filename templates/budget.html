@@ -6003,6 +6003,46 @@
       // button is gone after the next filter pass anyway.
     };
 
+    // Recompute suggestions on demand and reconcile the 💡 chips in the
+    // current DOM — called when the Actuals tab is (re)opened so the chips
+    // reflect doc corrections + new line assignments made since page load.
+    // 2026-05-29. Lightweight: one GET + a per-row chip add/update/remove.
+    let _actualsSuggestRefreshing = false;
+    window.refreshActualsSuggestions = async function () {
+      if (_actualsSuggestRefreshing) return;
+      _actualsSuggestRefreshing = true;
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/suggestions`, { credentials: 'same-origin' });
+        if (!r.ok) return;
+        const sugg = (await r.json()).suggestions || {};
+        document.querySelectorAll('#actuals-txn-list .actuals-txn-row').forEach(row => {
+          const tid    = row.dataset.tid;
+          const coded  = row.dataset.coded === '1';
+          const notProj= row.dataset.notProject === '1';
+          let chip     = row.querySelector('.actuals-suggest-btn');
+          const s      = sugg[tid];
+          if (coded || notProj || !s) { if (chip) chip.remove(); return; }
+          if (!chip) {
+            chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'actuals-suggest-btn';
+            chip.setAttribute('onclick', 'actualsApplySuggestion(this)');
+            chip.style.cssText = 'flex-shrink:0;font-size:.66rem;padding:2px 8px;background:#10231a;'
+              + 'border:1px solid #1f6f4a;border-radius:4px;color:#5fd0a0;cursor:pointer;'
+              + 'white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis';
+            const picker = row.querySelector('.actuals-line-picker');
+            if (picker) picker.parentNode.insertBefore(chip, picker);
+            else row.appendChild(chip);
+          }
+          chip.dataset.tid    = tid;
+          chip.dataset.lineId = s.line_id;
+          chip.title = `Smart match from the vendor name — click to code to ${s.code} · ${s.label}`;
+          chip.textContent = `💡 ${s.code} · ${s.label}`;
+        });
+      } catch (e) { /* silent — suggestions are best-effort */ }
+      finally { _actualsSuggestRefreshing = false; }
+    };
+
     window.actualsMarkNotProject = async function (tid) {
       if (!confirm('Mark as not a project expense? It will be greyed out and excluded from rollups.')) return;
       try {
@@ -10108,6 +10148,11 @@ document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
     btn.classList.add('active');
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
     _showFloatBar(_FLOAT_BAR_TABS.has(btn.dataset.tab));
+    // Re-sync the Actuals smart-suggestion chips whenever the tab opens, so
+    // they reflect any doc corrections / line assignments since page load.
+    if (btn.dataset.tab === 'actuals' && typeof window.refreshActualsSuggestions === 'function') {
+      window.refreshActualsSuggestions();
+    }
     // Persist the active tab in the URL so page refresh keeps you here
     try {
       const u = new URL(window.location);

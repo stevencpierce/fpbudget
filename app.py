@@ -453,6 +453,86 @@ def _validate_email(email):
         return True
     return bool(re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]{2,}$', email.strip()))
 
+
+# ── Actuals vendor → budget-line smart suggestions ──────────────────────────
+# Talent/crew invoices carry the person's name as the vendor; match it to a
+# budget line by description + assigned person and suggest the best line on
+# each uncoded transaction. Computed fresh on every budget-page render AND on
+# demand via /actuals/suggestions (so it tracks doc corrections + new line
+# assignments without a full reload). Cheap: small token-set intersections.
+_SUG_STOP = {'the', 'and', 'inc', 'llc', 'co', 'corp', 'host', 'prod',
+             'production', 'productions', 'fee', 'rental', 'services',
+             'service', 'day', 'days', 'crew', 'staff'}
+
+def _sug_tokens(s):
+    return {t for t in re.split(r'[^a-z0-9]+', (s or '').lower())
+            if len(t) >= 3 and t not in _SUG_STOP}
+
+def _match_vendor_suggestions(transactions, cands):
+    """cands: list of (line_id, code, desc, token_set). Returns
+    {txn_id: {line_id, code, label}} for uncoded txns with a confident
+    vendor-name → line match (≥2 shared tokens, or one ≥5-char token)."""
+    out = {}
+    if not cands:
+        return out
+    for t in transactions:
+        if t.budget_line_id or t.account_code:
+            continue
+        if getattr(t, 'not_project_expense', False):
+            continue
+        vt = _sug_tokens(t.vendor)
+        if not vt:
+            continue
+        best, best_score = None, 0
+        for (lid, code, desc, toks) in cands:
+            shared = vt & toks
+            score = len(shared)
+            if score > best_score and (score >= 2 or (score == 1 and max(len(x) for x in shared) >= 5)):
+                best, best_score = (lid, code, desc), score
+        if best:
+            out[t.id] = {"line_id": best[0], "code": best[1], "label": (best[2] or '')[:40]}
+    return out
+
+def _actuals_vendor_suggestions(pid):
+    """Self-contained recompute (used by the on-demand refresh endpoint and
+    the page render). Resolves the project's pick budget (current Working,
+    else current Estimated), builds candidate lines, and matches uncoded
+    transactions. Returns {txn_id: {line_id, code, label}}."""
+    try:
+        pick = (Budget.query
+                .filter_by(project_id=pid, version_status='current', is_actual=False)
+                .filter(Budget.parent_budget_id.isnot(None))
+                .order_by(Budget.id.desc()).first()
+                or Budget.query
+                .filter_by(project_id=pid, version_status='current', is_actual=False)
+                .order_by(Budget.id.desc()).first())
+        if not pick:
+            return {}
+        lines = BudgetLine.query.filter_by(budget_id=pick.id).all()
+        from models import CrewMember as _CM
+        _crew_ids = {l.assigned_crew_id for l in lines if l.assigned_crew_id}
+        _crew_nm = {}
+        if _crew_ids:
+            for _cm in _CM.query.filter(_CM.id.in_(_crew_ids)).all():
+                _crew_nm[_cm.id] = _cm.name or ''
+        cands = []
+        for ln in lines:
+            if getattr(ln, 'line_tag', None) in ('header', 'spacer'):
+                continue
+            desc = ln.description or ln.account_name or ''
+            toks = _sug_tokens(desc) | _sug_tokens(_crew_nm.get(ln.assigned_crew_id, ''))
+            if toks:
+                cands.append((ln.id, ln.account_code, desc, toks))
+        txns = (Transaction.query
+                .filter_by(project_id=pid)
+                .filter(Transaction.budget_line_id.is_(None),
+                        Transaction.account_code.is_(None))
+                .all())
+        return _match_vendor_suggestions(txns, cands)
+    except Exception as _e:
+        logging.warning(f"[actuals] vendor→line suggestion recompute failed (pid={pid}): {_e}")
+        return {}
+
 app = Flask(__name__)
 app.config["SECRET_KEY"]                     = os.getenv("SECRET_KEY", "fpbudget-dev-secret")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -4941,59 +5021,10 @@ def budget_view(pid, bid):
                     "status":      _p.get("status"),
                 }
 
-    # ── Smart vendor → budget-line suggestions for the Actuals tab ───────
-    # (User 2026-05-29.) Talent / crew invoices carry the person's name as
-    # the vendor ("Adrienne Caminer", "Elizabeth Roe", …); match that name
-    # against each budget line's description AND its assigned person, and
-    # suggest the best line on every still-uncoded transaction. Conservative
-    # on purpose — only suggests on a confident name overlap so it's signal,
-    # not noise. The user one-clicks to apply (or ignores it).
-    actuals_line_suggestions = {}   # {txn_id: {"line_id", "code", "label"}}
-    try:
-        import re as _re_sug
-        _STOP = {'the', 'and', 'inc', 'llc', 'co', 'corp', 'host', 'prod',
-                 'production', 'productions', 'fee', 'rental', 'services',
-                 'service', 'day', 'days', 'crew', 'staff'}
-        def _name_tokens(s):
-            return {t for t in _re_sug.split(r'[^a-z0-9]+', (s or '').lower())
-                    if len(t) >= 3 and t not in _STOP}
-        # Candidate lines from the pick budget: real lines only, with the
-        # token set drawn from description + any assigned person's name.
-        _cands = []
-        for _grp in actuals_pick_groups:
-            for _ln in _grp["lines"]:
-                if getattr(_ln, 'line_tag', None) in ('header', 'spacer'):
-                    continue
-                _desc = _ln.description or _ln.account_name or ''
-                _toks = _name_tokens(_desc) | _name_tokens(actuals_pick_crew.get(_ln.id, ''))
-                if _toks:
-                    _cands.append((_ln.id, _grp["code"], _desc, _toks))
-        if _cands:
-            for _t in actuals_transactions:
-                if _t.budget_line_id or _t.account_code:      # already coded
-                    continue
-                if getattr(_t, 'not_project_expense', False):
-                    continue
-                _vtoks = _name_tokens(_t.vendor)
-                if not _vtoks:
-                    continue
-                _best, _best_score = None, 0
-                for (_lid, _code, _desc, _toks) in _cands:
-                    _shared = _vtoks & _toks
-                    _score = len(_shared)
-                    # Confident match: ≥2 shared name tokens, or one solid
-                    # surname-length token (≥5 chars).
-                    if _score > _best_score and (
-                            _score >= 2 or (_score == 1 and max(len(x) for x in _shared) >= 5)):
-                        _best, _best_score = (_lid, _code, _desc), _score
-                if _best:
-                    actuals_line_suggestions[_t.id] = {
-                        "line_id": _best[0],
-                        "code":    _best[1],
-                        "label":   (_best[2] or '')[:40],
-                    }
-    except Exception as _sug_e:
-        logging.warning(f"[budget_view] actuals vendor→line suggestion build failed: {_sug_e}")
+    # Smart vendor → budget-line suggestions for the Actuals tab (computed
+    # by the shared helper so the page render and the on-demand refresh
+    # endpoint stay identical). 2026-05-29.
+    actuals_line_suggestions = _actuals_vendor_suggestions(pid)
 
     # Group uploads by category for the Docs-tab view. Per user 2026-04-30:
     # tax forms, receipts, invoices, etc. should be visually clustered so
@@ -6430,6 +6461,17 @@ def actuals_set_line(pid, tid):
     except Exception as e:
         logging.exception(f"[actuals] link failed: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/projects/<int:pid>/actuals/suggestions", methods=["GET"])
+@login_required
+def actuals_suggestions(pid):
+    """On-demand recompute of the vendor→line smart suggestions, so the
+    Actuals tab can refresh its 💡 chips when reopened — picking up doc
+    corrections and new line assignments without a full page reload.
+    (User 2026-05-29.) Cheap token-overlap matching."""
+    Budget.query.filter_by(project_id=pid).first_or_404()   # 404 on bad project
+    return jsonify({"suggestions": _actuals_vendor_suggestions(pid)})
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/mark-not-project", methods=["POST"])
