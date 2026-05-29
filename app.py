@@ -19045,6 +19045,22 @@ def _apply_dup_resolution(upload, action):
                       "txn_id": (made_txn.id if made_txn else None)}, None
 
     if action == "confirm":
+        # SAFETY NET (user 2026-05-29): never bury a doc that's coded/assigned
+        # to a budget line. A flagged duplicate is always the unassigned
+        # newcomer — the earlier original is the one that carries the
+        # assignment. If THIS doc has a transaction coded to a line, refuse:
+        # the linked original must survive duplicate processing "no matter
+        # what." (Normal flagged dupes have no transaction, so this is a
+        # no-op for them; it only guards a deliberate mis-designation.)
+        _assigned = (Transaction.query
+                     .filter_by(doc_upload_id=upload.id)
+                     .filter(db.or_(Transaction.budget_line_id.isnot(None),
+                                    Transaction.account_code.isnot(None)))
+                     .first())
+        if _assigned:
+            return False, {}, (f"#{upload.id} is coded to a budget line — left as-is "
+                               f"(an assigned document is never auto-filed as a duplicate). "
+                               f"Unassign it in Actuals first if you really intend to.")
         moved_to = None
         if upload.filed_dropbox_path:
             try:
