@@ -4569,7 +4569,7 @@
     </div>
     {% else %}
 
-    <div style="display:grid;grid-template-columns:200px minmax(0,1fr);gap:16px;align-items:start">
+    <div style="display:grid;grid-template-columns:248px minmax(0,1fr);gap:16px;align-items:start">
 
       {# ── COLUMN 1: Chart of Accounts (sticky) ── #}
       {# Two-way drag-drop:
@@ -4581,7 +4581,7 @@
              quick-code (account_code only). Drop on a line = full link
              (auto-clones Working → Actual on first link). #}
       <div style="position:sticky;top:14px;max-height:calc(100vh - 80px);display:flex;flex-direction:column">
-        <h4 style="margin:0 0 8px;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Chart of Accounts</h4>
+        <h4 style="margin:0 0 8px;font-size:.84rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Chart of Accounts</h4>
         <div style="overflow-y:auto;flex:1;padding-right:2px">
           {# Wrapped in .coa-section so the drop-target handler (which
              selects .coa-section elements) picks it up — without the
@@ -4589,7 +4589,7 @@
              couldn't drop a transaction onto it. #}
           <div class="coa-section" data-code="not_project" style="margin-bottom:4px">
             <div class="coa-item" draggable="true" data-code="not_project" data-name="Not Project Expense" data-droptarget="section"
-                 style="padding:6px 10px;border-radius:5px;border:1px solid #4a2a2a;background:#1e1414;font-size:.76rem;cursor:grab">
+                 style="padding:8px 11px;border-radius:6px;border:1px solid #4a2a2a;background:#1e1414;font-size:.82rem;cursor:grab">
               <span style="color:#e05555;font-weight:600">✕ Not Project Expense</span>
             </div>
           </div>
@@ -4601,35 +4601,77 @@
           {% endfor %}
           {% for code, name in coa_sections %}
           {% set _lines = _grp_by_code.get(code, []) %}
-          <div class="coa-section" data-code="{{ code }}" style="margin-bottom:3px">
+          {# Real (non-formatting) lines drive the chevron + drop target.
+             Spacers/headers are layout-only and shouldn't make an empty
+             section look populated. #}
+          {% set _real_lines = _lines | rejectattr('line_tag', 'in', ['spacer', 'header']) | list %}
+          <div class="coa-section" data-code="{{ code }}" style="margin-bottom:4px">
             <div class="coa-item" draggable="true" data-code="{{ code }}" data-name="{{ name }}" data-droptarget="section"
-                 style="padding:6px 10px;border-radius:5px;border:1px solid var(--border);background:var(--bg-input);font-size:.76rem;display:flex;justify-content:space-between;gap:6px;align-items:center;cursor:grab">
-              <span class="coa-chevron" style="font-size:.7rem;color:var(--text-muted);width:10px;flex-shrink:0;{% if not _lines %}visibility:hidden{% endif %}">▸</span>
-              <span style="color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ name }}</span>
-              <span style="color:var(--text-muted);flex-shrink:0;font-size:.7rem">{{ code }}</span>
+                 style="padding:8px 11px;border-radius:6px;border:1px solid var(--border);background:var(--bg-input);font-size:.82rem;display:flex;justify-content:space-between;gap:6px;align-items:center;cursor:grab">
+              <span class="coa-chevron" style="font-size:.72rem;color:var(--text-muted);width:11px;flex-shrink:0;{% if not _real_lines %}visibility:hidden{% endif %}">▸</span>
+              <span style="color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500">{{ name }}</span>
+              <span style="color:var(--text-muted);flex-shrink:0;font-size:.72rem">{{ code }}</span>
             </div>
-            {% if _lines %}
-            <div class="coa-lines" style="display:none;margin:3px 0 4px 12px;padding-left:4px;border-left:1px dashed var(--border)">
+            {% if _real_lines %}
+            <div class="coa-lines" style="display:none;margin:4px 0 6px 10px;padding-left:6px;border-left:1px dashed var(--border)">
               {% for ln in _lines %}
+              {% if ln.line_tag == 'spacer' %}
+                {# Visual breather between groups — mirrors the budget tab. #}
+                <div style="height:7px"></div>
+              {% elif ln.line_tag == 'header' %}
+                {% if (ln.description or '') | trim %}
+                {# Sub-header label: not draggable, just a divider/title so a
+                   long section reads as grouped chunks instead of one slab. #}
+                <div style="margin:5px 0 2px;padding:0 2px;font-size:.68rem;font-weight:700;
+                            text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);
+                            border-bottom:1px solid var(--border);padding-bottom:3px">
+                  {{ ln.description }}
+                </div>
+                {% endif %}
+              {% else %}
+              {% set _crew = actuals_pick_crew.get(ln.id) %}
+              {% set _po   = actuals_pick_po.get(ln.id) %}
               <div class="coa-line" draggable="true" data-droptarget="line" data-line-id="{{ ln.id }}"
                    data-code="{{ ln.account_code }}" data-name="{{ ln.account_name or ln.description or '' }}"
                    data-line-desc="{{ ln.description or ln.account_name or 'untitled' }}"
-                   title="Drag onto a transaction to link to this specific budget line"
-                   style="padding:4px 8px;margin-bottom:2px;border-radius:4px;border:1px solid transparent;background:var(--bg-card);font-size:.72rem;color:var(--text-muted);display:flex;justify-content:space-between;gap:6px;cursor:grab">
-                <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ ln.description or ln.account_name or 'untitled' }}</span>
-                {% if ln.estimated_total %}
-                <span style="flex-shrink:0;font-size:.66rem;color:var(--text-muted)">${{ '%.0f'|format(ln.estimated_total|float) }}</span>
+                   title="Drag onto a transaction to link to this specific budget line{% if _crew %} · 👤 {{ _crew }}{% endif %}{% if _po %} · 📋 PO {{ _po.po_number }}{% if _po.vendor_name %} ({{ _po.vendor_name }}){% endif %}{% endif %}"
+                   style="padding:6px 9px;margin-bottom:3px;border-radius:5px;border:1px solid transparent;background:var(--bg-card);font-size:.8rem;color:var(--text-muted);display:flex;flex-direction:column;gap:3px;cursor:grab">
+                <div style="display:flex;justify-content:space-between;gap:6px;align-items:center">
+                  <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">{{ ln.description or ln.account_name or 'untitled' }}</span>
+                  {% if ln.estimated_total %}
+                  <span style="flex-shrink:0;font-size:.72rem;color:var(--text-muted)">${{ '%.0f'|format(ln.estimated_total|float) }}</span>
+                  {% endif %}
+                </div>
+                {# Assignment badges — show at a glance whether this line
+                   already has a person and/or a PO committed against it. #}
+                {% if _crew or _po %}
+                <div style="display:flex;flex-wrap:wrap;gap:4px">
+                  {% if _crew %}
+                  <span style="font-size:.66rem;padding:1px 6px;border-radius:9px;white-space:nowrap;max-width:100%;
+                               overflow:hidden;text-overflow:ellipsis;
+                               background:rgba(91,138,249,.14);color:#8fb4ff;border:1px solid rgba(91,138,249,.28)"
+                        title="Assigned: {{ _crew }}">👤 {{ _crew }}</span>
+                  {% endif %}
+                  {% if _po %}
+                  <span style="font-size:.66rem;padding:1px 6px;border-radius:9px;white-space:nowrap;max-width:100%;
+                               overflow:hidden;text-overflow:ellipsis;
+                               background:rgba(116,198,157,.14);color:#74c69d;border:1px solid rgba(116,198,157,.30)"
+                        title="PO {{ _po.po_number }}{% if _po.vendor_name %} — {{ _po.vendor_name }}{% endif %}{% if _po.status %} ({{ _po.status }}){% endif %}">📋 {{ _po.po_number }}</span>
+                  {% endif %}
+                </div>
                 {% endif %}
               </div>
+              {% endif %}
               {% endfor %}
             </div>
             {% endif %}
           </div>
           {% endfor %}
         </div>
-        <p class="muted" style="font-size:.66rem;margin:8px 0 0;line-height:1.4">
+        <p class="muted" style="font-size:.7rem;margin:8px 0 0;line-height:1.45">
           <strong>Two ways:</strong> drag a section onto a transaction → quick-code.
           OR drag a transaction onto the tree, hover a section to expand, drop on a specific line → full link with Actual budget.
+          <br><span style="opacity:.8">Badges: 👤 assigned person · 📋 committed PO.</span>
         </p>
       </div>
 

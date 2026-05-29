@@ -4899,6 +4899,35 @@ def budget_view(pid, bid):
             {"code": k[0], "name": k[1], "lines": _by_section[k]}
             for k in sorted_keys
         ]
+
+    # Per-line crew + PO badges for the Actuals "Chart of Accounts" sidebar
+    # (per user 2026-05-29: "is there a way to see in the chart of accounts
+    # if you've assigned an individual or a PO to something?"). Keyed by the
+    # PICK budget's OWN line ids so badges resolve whether the pick budget is
+    # the Working budget or the Estimated fallback. Crew names are bulk-loaded
+    # to avoid N+1; PO summaries reuse the project-wide pos_by_id built above.
+    actuals_pick_crew = {}   # {line_id: crew_name}
+    actuals_pick_po   = {}   # {line_id: {"po_number", "vendor_name", "status"}}
+    if actuals_pick_budget:
+        from models import CrewMember as _CM_badge
+        _pick_lines    = list(actuals_pick_budget.lines)
+        _pick_crew_ids = {ln.assigned_crew_id for ln in _pick_lines if ln.assigned_crew_id}
+        _pick_crew_nm  = {}
+        if _pick_crew_ids:
+            for _cm in _CM_badge.query.filter(_CM_badge.id.in_(_pick_crew_ids)).all():
+                _pick_crew_nm[_cm.id] = _cm.name or ''
+        for ln in _pick_lines:
+            if ln.assigned_crew_id:
+                actuals_pick_crew[ln.id] = _pick_crew_nm.get(ln.assigned_crew_id) or 'Assigned'
+            _po_id = getattr(ln, 'po_id', None)
+            if _po_id and _po_id in pos_by_id:
+                _p = pos_by_id[_po_id]
+                actuals_pick_po[ln.id] = {
+                    "po_number":   _p.get("po_number"),
+                    "vendor_name": _p.get("vendor_name"),
+                    "status":      _p.get("status"),
+                }
+
     # Group uploads by category for the Docs-tab view. Per user 2026-04-30:
     # tax forms, receipts, invoices, etc. should be visually clustered so
     # the list is readable. Order matches the Analyzer's filing buckets.
@@ -5005,6 +5034,8 @@ def budget_view(pid, bid):
         docs_by_id=docs_by_id,
         qbo_connection=qbo_connection,
         actuals_pick_groups=actuals_pick_groups,
+        actuals_pick_crew=actuals_pick_crew,
+        actuals_pick_po=actuals_pick_po,
         actuals_pick_budget=actuals_pick_budget,
         actuals_uploaders=actuals_uploaders,
         actual_by_line_id=actual_by_line_id,
