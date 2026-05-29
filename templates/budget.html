@@ -5425,6 +5425,22 @@
            Working→Actual auto-clone the first time. #}
         {% set _wb = current_working_bid %}
 
+        {# Shared budget-line options, rendered ONCE (was duplicated into
+           every transaction's <select> — ~45k DOM nodes). Each picker
+           clones these in lazily via _actualsFillPicker. 2026-05-29. #}
+        <select id="actualsLineOptsTpl" style="display:none" aria-hidden="true" tabindex="-1">
+          <option value="">— pick budget line —</option>
+          <option value="__clear__" style="color:#e08080">✕ Clear assignment</option>
+          {% for grp in actuals_pick_groups %}
+          <optgroup label="{{ grp.code }}  {{ grp.name }}">
+            <option value="section:{{ grp.code }}">📂 All {{ grp.name }} (section-only, no specific line)</option>
+            {% for ln in grp.lines %}
+            <option value="{{ ln.id }}">{{ ln.description or ln.account_name or 'untitled' }}{% if ln.estimated_total %} — ${{ '%.0f'|format(ln.estimated_total|float) }}{% endif %}</option>
+            {% endfor %}
+          </optgroup>
+          {% endfor %}
+        </select>
+
         <div id="actuals-txn-list">
         {% for t in actuals_transactions %}
           {% set _doc = docs_by_id.get(t.doc_upload_id) if t.doc_upload_id else None %}
@@ -5561,47 +5577,24 @@
               💡 {{ _sug.code }} · {{ _sug.label }}
             </button>
             {% endif %}
-            {# Budget-line picker — 2-tier select (optgroup per section) #}
+            {# Budget-line picker. PERF (2026-05-29): options are NOT baked
+               into every row's <select> (that was ~270 options × 171 rows ≈
+               45k DOM nodes, the bulk of the page's weight). Each select
+               renders empty with data-current; the full option list is
+               cloned in lazily from the shared #actualsLineOptsTpl template
+               on focus / when the Actuals tab opens.
+               data-current: the value this picker should show — the WORKING
+               line id (actual ids are translated via actual_to_working), or
+               "section:<code>" for section-only coding, or "". #}
+            {% set _wid_for_selected = actual_to_working.get(t.budget_line_id, t.budget_line_id) if t.budget_line_id else None %}
+            {% set _cur = (_wid_for_selected | string) if _wid_for_selected else (('section:' ~ t.account_code) if t.account_code else '') %}
             <select class="actuals-line-picker"
-                    data-tid="{{ t.id }}"
+                    data-tid="{{ t.id }}" data-current="{{ _cur }}" data-populated="0"
+                    onfocus="_actualsFillPicker(this)"
                     onchange="actualsSetLine(this)"
                     {% if t.not_project_expense %}disabled{% endif %}
                     style="flex-shrink:0;width:240px;font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px">
               <option value="">— pick budget line —</option>
-              {# Clear option: only meaningful when something IS assigned.
-                 Selecting it nulls out budget_line_id + account_code via
-                 the unlink path. #}
-              {% if t.budget_line_id or t.account_code %}
-              <option value="__clear__"
-                      style="color:#e08080">✕ Clear assignment</option>
-              {% endif %}
-              {# Source: actuals_pick_groups, populated from the project's
-                 current Working budget (falls back to Estimated). Picking
-                 a specific line auto-clones Working → Actual on first
-                 use. Picking a "section-only" entry sets the COA section
-                 without picking a sub-line — useful as catch-all coding
-                 when there's no obvious line.
-                 Note on the selected check: transaction.budget_line_id
-                 stores the ACTUAL line id, but the dropdown options are
-                 keyed by WORKING line ids (since Working is the source
-                 of truth for the dropdown). We translate via
-                 actual_to_working[actual_id] → working_id to compare. #}
-              {% set _wid_for_selected = actual_to_working.get(t.budget_line_id, t.budget_line_id) if t.budget_line_id else None %}
-              {% for grp in actuals_pick_groups %}
-              <optgroup label="{{ grp.code }}  {{ grp.name }}">
-                {# Section-only catch-all option, listed first in the group #}
-                <option value="section:{{ grp.code }}"
-                  {% if t.account_code == grp.code and not t.budget_line_id %}selected{% endif %}>
-                  📂 All {{ grp.name }} (section-only, no specific line)
-                </option>
-                {% for ln in grp.lines %}
-                <option value="{{ ln.id }}"
-                  {% if _wid_for_selected == ln.id %}selected{% endif %}>
-                  {{ ln.description or ln.account_name or 'untitled' }}{% if ln.estimated_total %} — ${{ '%.0f'|format(ln.estimated_total|float) }}{% endif %}
-                </option>
-                {% endfor %}
-              </optgroup>
-              {% endfor %}
             </select>
             <span style="flex-shrink:0;font-size:.85rem;font-weight:700;min-width:80px;text-align:right;
                          color:{% if t.is_expense %}#e05555{% else %}var(--green){% endif %}">
@@ -6132,10 +6125,26 @@
 
     // Apply a smart vendor→line suggestion: select that option in the
     // row's picker and run the normal code path. 2026-05-29.
+    // Lazy-fill a single picker from the shared options template (perf:
+    // options aren't baked into every row). Idempotent. 2026-05-29.
+    window._actualsFillPicker = function (sel) {
+      if (!sel || sel.dataset.populated === '1') return;
+      const tpl = document.getElementById('actualsLineOptsTpl');
+      if (!tpl) return;
+      sel.innerHTML = tpl.innerHTML;
+      sel.dataset.populated = '1';
+      sel.value = sel.dataset.current || '';
+    };
+    window._actualsPopulatePickers = function () {
+      document.querySelectorAll('#actuals-txn-list .actuals-line-picker:not([data-populated="1"])')
+        .forEach(window._actualsFillPicker);
+    };
+
     window.actualsApplySuggestion = function (btn) {
       const row = btn.closest('.actuals-txn-row');
       const sel = row && row.querySelector('.actuals-line-picker');
       if (!sel) return;
+      window._actualsFillPicker(sel);   // ensure options exist before setting
       sel.value = String(btn.dataset.lineId || '');
       if (sel.value !== String(btn.dataset.lineId || '')) {
         alert('Suggested line is no longer in the picker — please choose one manually.');
@@ -10295,8 +10304,11 @@ document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
     _showFloatBar(_FLOAT_BAR_TABS.has(btn.dataset.tab));
     // Re-sync the Actuals smart-suggestion chips whenever the tab opens, so
     // they reflect any doc corrections / line assignments since page load.
-    if (btn.dataset.tab === 'actuals' && typeof window.refreshActualsSuggestions === 'function') {
-      window.refreshActualsSuggestions();
+    if (btn.dataset.tab === 'actuals') {
+      // Fill the per-row budget-line pickers now that Actuals is open
+      // (options are lazy-loaded to keep the page light). 2026-05-29.
+      if (typeof window._actualsPopulatePickers === 'function') window._actualsPopulatePickers();
+      if (typeof window.refreshActualsSuggestions === 'function') window.refreshActualsSuggestions();
     }
     // Persist the active tab in the URL so page refresh keeps you here
     try {
