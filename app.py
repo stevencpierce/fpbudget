@@ -19880,13 +19880,16 @@ def _doc_intended_path(upload):
 
 
 def _filing_matches(cur_path, intended_path):
-    """True if the filed file is already where it should be — comparing
-    folder + basename while ignoring a Dropbox autorename ' (1)' suffix so
-    we don't churn-move files that only differ by a collision suffix."""
+    """True if the filed file is already where it should be. Ignores:
+      • a Dropbox autorename ' (1)' suffix (collision churn), and
+      • letter case — Dropbox is case-insensitive but case-preserving, so a
+        path differing only by case (e.g. greg_Oldenburg vs Greg_Oldenburg)
+        is the SAME location; trying to "move" it just throws a folder
+        write-conflict. Treat it as already-correct. (User 2026-05-29.)"""
     def _norm(p):
         b = os.path.basename(p or '')
         b = re.sub(r' \(\d+\)(\.[^.]+)$', r'\1', b)
-        return (os.path.dirname(p or ''), b)
+        return (os.path.dirname(p or '').lower(), b.lower())
     return _norm(cur_path) == _norm(intended_path)
 
 
