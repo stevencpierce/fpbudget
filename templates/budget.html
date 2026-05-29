@@ -2382,7 +2382,7 @@
             {# Column 1: VENDOR (primary). Falls back to filename when OCR
                didn't extract a vendor — keeps the row identifiable. #}
             <div style="min-width:0;">
-              <div style="font-size:14px;font-weight:600;color:var(--text);
+              <div class="doc-cell-vendor" style="font-size:14px;font-weight:600;color:var(--text);
                           white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                 {% if u.vendor %}🏢 {{ u.vendor }}
                 {% else %}<span style="color:var(--text-muted);font-style:italic">No vendor</span>{% endif %}
@@ -2414,7 +2414,7 @@
             </div>
             {# Column 2: DATE (doc date — when the receipt was issued, NOT
                upload date). #}
-            <div style="text-align:left;font-size:13px;font-variant-numeric:tabular-nums;">
+            <div class="doc-cell-date" style="text-align:left;font-size:13px;font-variant-numeric:tabular-nums;">
               {% if u.doc_date %}
                 <div style="color:var(--text);font-weight:500">{{ u.doc_date.strftime('%b %-d') }}</div>
                 <div style="color:var(--text-muted);font-size:11px">{{ u.doc_date.strftime('%Y') }}</div>
@@ -2423,7 +2423,7 @@
               {% endif %}
             </div>
             {# Column 3: AMOUNT — right-aligned, tabular-nums for column tidiness. #}
-            <div style="text-align:right;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)">
+            <div class="doc-cell-amount" style="text-align:right;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text)">
               {% if u.amount %}${{ '%.2f'|format(u.amount|float) }}
               {% else %}<span style="color:var(--text-muted);font-style:italic;font-weight:400;font-size:11px">—</span>{% endif %}
             </div>
@@ -2474,6 +2474,11 @@
             {# Possible-duplicate review actions. Keep both = genuinely
                separate (recurring invoice etc.); It's a dupe = bury it. #}
             {% if _dup_pending %}
+            <button class="doc-dup-compare-btn" data-uid="{{ u.id }}"
+                    data-original="{{ u.duplicate_of_id or '' }}"
+                    title="Compare this document side-by-side with the one it matched"
+                    onclick="event.stopPropagation();docsOpenDupCompare({{ u.id }})"
+                    style="background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer;white-space:nowrap;">⇆ Compare</button>
             <button class="doc-dup-keep-btn" data-uid="{{ u.id }}"
                     title="These are genuinely separate documents — keep both"
                     onclick="event.stopPropagation();docsResolveDuplicate({{ u.id }},'keep',this)"
@@ -2686,6 +2691,45 @@
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    {# ── Duplicate side-by-side compare modal (user 2026-05-29) ──────────
+       Opened from the "⇆ Compare" button on a possible-duplicate row.
+       Shows the flagged upload next to the earlier upload its bytes
+       matched, with previews + key metadata, so the user can decide
+       Keep-both vs It's-a-duplicate without flipping between rows. Panes
+       are built dynamically (starts with 2) and the footer actions reuse
+       docsResolveDuplicate(). #}
+    <div id="docDupCompareOverlay" onclick="closeDupCompare(event)"
+         style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1200;
+                align-items:center;justify-content:center;padding:24px">
+      <div style="background:var(--bg,#141414);border:1px solid var(--border);border-radius:12px;
+                  width:min(1100px,96vw);max-height:92vh;display:flex;flex-direction:column;
+                  box-shadow:0 12px 48px rgba(0,0,0,.5)" onclick="event.stopPropagation()">
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:14px 18px;border-bottom:1px solid var(--border)">
+          <h3 style="margin:0;font-size:1rem">⇆ Compare possible duplicate</h3>
+          <button type="button" onclick="closeDupCompare()"
+                  style="background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">✕</button>
+        </div>
+        <p class="muted" style="margin:0;padding:8px 18px 0;font-size:.78rem">
+          These two files have identical contents. If they're genuinely separate
+          (e.g. a recurring flat-fee invoice), choose <strong>Keep both</strong>.
+          If it's a re-upload of the same document, choose <strong>It's a duplicate</strong>.
+        </p>
+        <div id="docDupCompareBody"
+             style="flex:1;overflow:auto;padding:14px 18px;display:flex;gap:14px;align-items:stretch">
+          {# panes injected by JS #}
+        </div>
+        <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;
+                    padding:12px 18px;border-top:1px solid var(--border)">
+          <button type="button" class="btn btn-sm" onclick="closeDupCompare()">Cancel</button>
+          <button type="button" id="docDupKeepBtn" class="btn btn-sm"
+                  style="background:#14291e;border:1px solid #1a4228;color:#22c55e">Keep both — separate</button>
+          <button type="button" id="docDupConfirmBtn" class="btn btn-sm"
+                  style="background:#1e1a2a;border:1px solid #2d2a40;color:#a78bfa">It's a duplicate</button>
         </div>
       </div>
     </div>
@@ -3184,7 +3228,7 @@
     const row = btn && btn.closest('.doc-row');
     // Disable both action buttons while the request is in flight.
     const cluster = btn && btn.parentElement;
-    const dupBtns = cluster ? cluster.querySelectorAll('.doc-dup-keep-btn, .doc-dup-confirm-btn') : [];
+    const dupBtns = cluster ? cluster.querySelectorAll('.doc-dup-keep-btn, .doc-dup-confirm-btn, .doc-dup-compare-btn') : [];
     dupBtns.forEach(b => { b.disabled = true; b.style.opacity = '.5'; });
     if (action === 'confirm' &&
         !confirm("Confirm this is a duplicate? The file will be moved to a /_DUPLICATES/ subfolder in Dropbox.")) {
@@ -3234,6 +3278,95 @@
       alert('Network error: ' + (err && err.message || err));
       dupBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });
     }
+  };
+
+  // ── Duplicate side-by-side compare ───────────────────────────────────
+  // Reads each side's metadata straight from its row in the DOM (rows
+  // always exist even when filtered/hidden) and embeds the file via the
+  // /raw endpoint so no extra round-trip is needed.
+  function _docCompareMeta(uid) {
+    const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
+    if (!row) return null;
+    const vendor = (row.querySelector('.doc-cell-vendor')?.textContent || '').trim();
+    const amount = (row.querySelector('.doc-cell-amount')?.textContent || '').trim();
+    const fname  = (row.querySelector('.doc-filename')?.textContent || '').trim();
+    return {
+      uid,
+      vendor, amount, fname,
+      date:  row.dataset.docDate  || '',
+      dtype: row.dataset.sortType || '',
+      isPdf: /\.pdf\b/i.test(fname) || /\.pdf\b/i.test(row.dataset.sortFilename || ''),
+    };
+  }
+  function _docComparePane(meta, label, accent) {
+    const src = '/docs/upload/' + meta.uid + '/raw';
+    const preview = meta.isPdf
+      ? '<iframe src="' + src + '" style="width:100%;height:42vh;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
+      : '<img src="' + src + '" alt="preview" style="width:100%;max-height:42vh;object-fit:contain;border:1px solid var(--border);border-radius:6px;background:#0a0d12">';
+    const meta_row = (k, v) =>
+      '<div><span style="color:var(--text-muted)">' + k + ':</span> ' + _esc(v || '—') + '</div>';
+    return ''
+      + '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:8px">'
+      +   '<div style="font-size:12px;font-weight:600;color:' + accent + '">' + label + ' · #' + meta.uid + '</div>'
+      +   preview
+      +   '<div style="font-size:12.5px;line-height:1.7;word-break:break-word">'
+      +     meta_row('Vendor', meta.vendor)
+      +     meta_row('Amount', meta.amount)
+      +     meta_row('Date', meta.date)
+      +     meta_row('Type', meta.dtype)
+      +     meta_row('File', meta.fname)
+      +   '</div>'
+      + '</div>';
+  }
+  window.docsOpenDupCompare = function(uid) {
+    const thisRow = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
+    const origId  = thisRow ? (thisRow.dataset.duplicateOf || '') : '';
+    const body    = document.getElementById('docDupCompareBody');
+    if (!body) return;
+    const thisMeta = _docCompareMeta(uid)
+      || { uid, vendor:'', amount:'', fname:'', date:'', dtype:'', isPdf:false };
+    let html = _docComparePane(thisMeta, 'This upload (flagged)', '#fbbf24');
+    if (origId) {
+      const origMeta = _docCompareMeta(origId);
+      html += origMeta
+        ? _docComparePane(origMeta, 'Matched earlier upload', '#8fb4ff')
+        : '<div style="flex:1;display:flex;align-items:center;justify-content:center;'
+          + 'color:var(--text-muted);font-size:13px;padding:20px;text-align:center">'
+          + 'Matched upload #' + origId + ' isn\'t in the current list '
+          + '(it may have been deleted or filed away).</div>';
+    } else {
+      html += '<div style="flex:1;display:flex;align-items:center;justify-content:center;'
+            + 'color:var(--text-muted);font-size:13px;padding:20px;text-align:center">'
+            + 'No specific matched upload was recorded for this duplicate.</div>';
+    }
+    body.innerHTML = html;
+    document.getElementById('docDupKeepBtn').onclick    = () => _docCompareResolve(uid, 'keep');
+    document.getElementById('docDupConfirmBtn').onclick = () => _docCompareResolve(uid, 'confirm');
+    document.getElementById('docDupCompareOverlay').style.display = 'flex';
+  };
+  function _docCompareResolve(uid, action) {
+    const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
+    const btn = row && row.querySelector(action === 'keep' ? '.doc-dup-keep-btn' : '.doc-dup-confirm-btn');
+    closeDupCompare();
+    if (btn) {
+      docsResolveDuplicate(uid, action, btn);   // reuses confirm() + row update
+    } else {
+      // Fallback: row buttons gone (already resolved elsewhere) — hit the
+      // endpoint directly and drop the row on success.
+      fetch('/docs/upload/' + uid + '/resolve-duplicate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      }).then(r => r.ok ? r.json() : Promise.reject()).then(() => {
+        if (typeof _docsApplyView === 'function') _docsApplyView();
+      }).catch(() => alert('Could not resolve — please refresh and try again.'));
+    }
+  }
+  window.closeDupCompare = function(ev) {
+    if (ev && ev.target && ev.target.id !== 'docDupCompareOverlay') return;
+    const o = document.getElementById('docDupCompareOverlay');
+    if (o) o.style.display = 'none';
+    const b = document.getElementById('docDupCompareBody');
+    if (b) b.innerHTML = '';   // stop iframe/img loads
   };
 
   // ── Inline filename rename (click filed filename) ─────────────────────
@@ -4279,10 +4412,22 @@
         if (btn) { btn.disabled = false; btn.textContent = '🗑 Delete document'; }
         return;
       }
-      // Close modal + reload so Actuals / Docs lists refresh from
-      // server (the row vanishes everywhere it was visible).
+      // Remove the row IN PLACE (no reload) so the user keeps their
+      // subtab / search / sort / scroll. Fade it out so it's obvious the
+      // delete worked (user 2026-05-29: "it reloads… I don't know if it
+      // deleted or not").
+      const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
       closeDocDetail();
-      window.location.reload();
+      if (row) {
+        row.style.transition = 'opacity .3s';
+        row.style.opacity = '0';
+        setTimeout(() => {
+          row.remove();
+          if (typeof _docsApplyView === 'function') _docsApplyView();
+        }, 300);
+      } else if (typeof _docsApplyView === 'function') {
+        _docsApplyView();
+      }
     } catch (e) {
       alert('Delete failed: ' + e.message);
       if (btn) { btn.disabled = false; btn.textContent = '🗑 Delete document'; }
@@ -4317,24 +4462,55 @@
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { alert('Save failed: ' + (d.error || r.status)); return; }
-      // Reflect into the row's dataset + visible metadata so the list
-      // updates without a page reload.
+      // Update the row IN PLACE — no full reload, so the user's active
+      // subtab, search, sort order and scroll position are preserved
+      // (user 2026-05-29: "it reloads… resets your sort by view").
       const row = document.querySelector('.doc-row[data-upload-id="' + _docDetailUid + '"]');
       if (row) {
-        row.dataset.sortVendor = (d.vendor || '').toLowerCase();
-        row.dataset.sortAmount = d.amount || 0;
-        row.dataset.sortType   = (d.category || '').toLowerCase();
+        // Dataset (drives sort / search / subtab filtering).
+        row.dataset.sortVendor  = (d.vendor || '').toLowerCase();
+        row.dataset.sortAmount  = d.amount || 0;
+        row.dataset.sortType    = (d.category || '').toLowerCase();
+        row.dataset.groupKey    = d.category ? d.category.toLowerCase() : '_unsorted';
+        row.dataset.sortDocDate = d.doc_date || '';
+        row.dataset.docDate     = d.doc_date || '';
+        row.dataset.docNum      = d.doc_number || '';
+        row.dataset.note        = d.note || '';
+        // Visible cells.
+        const vEl = row.querySelector('.doc-cell-vendor');
+        if (vEl) vEl.innerHTML = d.vendor
+          ? ('🏢 ' + _esc(d.vendor))
+          : '<span style="color:var(--text-muted);font-style:italic">No vendor</span>';
+        const aEl = row.querySelector('.doc-cell-amount');
+        if (aEl) aEl.innerHTML = (d.amount != null && +d.amount)
+          ? ('$' + Number(d.amount).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}))
+          : '<span style="color:var(--text-muted);font-style:italic;font-weight:400;font-size:11px">—</span>';
+        const dEl = row.querySelector('.doc-cell-date');
+        if (dEl) dEl.innerHTML = _fmtDocDateCell(d.doc_date);
       }
       closeDocDetail();
-      // A page refresh would re-render the metadata strip with the new
-      // values; cleaner than splicing innerHTML.
-      window.location.reload();
+      // Re-apply view + sort so the edited row re-files into the right
+      // place under the CURRENT subtab/search/sort — without a reload.
+      if (typeof _docsApplyView === 'function') _docsApplyView();
+      if (typeof _docsSort === 'function') _docsSort();
     } catch (e) {
       alert('Save error: ' + e.message);
     } finally {
       btn.disabled = false; btn.textContent = 'Save';
     }
   });
+
+  // Render the two-line "Mon D / YYYY" date cell (or em-dash) from an
+  // ISO yyyy-mm-dd string, parsed as a local date to avoid TZ drift.
+  function _fmtDocDateCell(iso) {
+    if (!iso) return '<span style="color:var(--text-muted);font-style:italic;font-size:11px">—</span>';
+    const p = String(iso).split('-').map(Number);
+    if (p.length < 3 || !p[0]) return '<span style="color:var(--text-muted);font-style:italic;font-size:11px">—</span>';
+    const dt = new Date(p[0], (p[1]||1)-1, p[2]||1);
+    const md = dt.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+    return '<div style="color:var(--text);font-weight:500">' + md + '</div>'
+         + '<div style="color:var(--text-muted);font-size:11px">' + p[0] + '</div>';
+  }
 
   // Click-to-open binding: the row is the click target unless the user
   // clicked one of the inline buttons (delete, retry) or the editable
@@ -4344,6 +4520,7 @@
     if (e.target.closest('.doc-retry-btn')) return;
     if (e.target.closest('.doc-dup-keep-btn')) return;
     if (e.target.closest('.doc-dup-confirm-btn')) return;
+    if (e.target.closest('.doc-dup-compare-btn')) return;
     if (e.target.closest('.editable-filename')) return;
     const row = e.target.closest('.doc-row');
     if (!row) return;
