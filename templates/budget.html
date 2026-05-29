@@ -2208,21 +2208,44 @@
       {% if u.status == 'error' %}{% set _status_counts.error = _status_counts.error + 1 %}{% endif %}
       {% if u.is_duplicate %}{% set _status_counts.duplicate = _status_counts.duplicate + 1 %}{% endif %}
     {% endfor %}
-    <div id="docs-filter-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;font-size:11px">
-      <button type="button" class="docs-filter-chip" data-filter="all"
-              style="padding:4px 10px;border-radius:14px;border:1px solid #5b8af9;background:rgba(91,138,249,.18);color:#5b8af9;cursor:pointer;font-weight:600">All ({{ _status_counts.all }})</button>
-      <button type="button" class="docs-filter-chip" data-filter="pending"
-              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Pending ({{ _status_counts.pending }})</button>
-      <button type="button" class="docs-filter-chip" data-filter="processing"
-              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Processing ({{ _status_counts.processing }})</button>
-      <button type="button" class="docs-filter-chip" data-filter="review"
-              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Review ({{ _status_counts.review }})</button>
-      <button type="button" class="docs-filter-chip" data-filter="done"
-              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Done ({{ _status_counts.done }})</button>
-      <button type="button" class="docs-filter-chip" data-filter="error"
-              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Error ({{ _status_counts.error }})</button>
-      <button type="button" class="docs-filter-chip" data-filter="duplicate"
-              style="padding:4px 10px;border-radius:14px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-muted);cursor:pointer">Duplicates ({{ _status_counts.duplicate }})</button>
+    {# ── Doc subtabs (per user 2026-05-29) ───────────────────────────────
+       Replaces the flat status-chip row with a tab bar. "Needs Review"
+       is the leading + default-selected landing tab whenever there's
+       anything to review; "Duplicates" / "Errors" appear only when
+       non-empty (attention tabs). Then "All", then one tab per doc TYPE
+       (built from doc_groups, already in display order) so the long list
+       is reviewed one orderly category at a time instead of stacked
+       groups. JS (_docsSelectTab / _docsApplyView) drives selection +
+       visibility and combines with the search box below. #}
+    {% set _processing_n = _status_counts.processing %}
+    <div id="docs-subtabs" style="display:flex;flex-wrap:wrap;gap:2px;margin-bottom:10px;border-bottom:1px solid var(--border)">
+      {% macro _subtab(tab, label, count, emoji='') -%}
+      <button type="button" class="docs-subtab" data-tab="{{ tab }}"
+              style="padding:7px 13px;background:none;border:none;border-bottom:2px solid transparent;
+                     color:var(--text-muted);cursor:pointer;font-size:12.5px;white-space:nowrap;display:flex;align-items:center;gap:5px">
+        {% if emoji %}<span>{{ emoji }}</span>{% endif %}<span>{{ label }}</span>
+        <span class="docs-subtab-count" style="font-size:11px;background:var(--bg-input);color:var(--text-muted);padding:0 6px;border-radius:9px">{{ count }}</span>
+      </button>
+      {%- endmacro %}
+      {% if _status_counts.review > 0 %}{{ _subtab('review', 'Needs Review', _status_counts.review, '⚠') }}{% endif %}
+      {% if _processing_n > 0 %}{{ _subtab('processing', 'Processing', _processing_n, '⏳') }}{% endif %}
+      {% if _status_counts.duplicate > 0 %}{{ _subtab('duplicate', 'Duplicates', _status_counts.duplicate, '🔁') }}{% endif %}
+      {% if _status_counts.error > 0 %}{{ _subtab('error', 'Errors', _status_counts.error, '⛔') }}{% endif %}
+      {{ _subtab('all', 'All', _status_counts.all) }}
+      {% for grp in doc_groups %}
+        {{ _subtab('type:' ~ grp.key, grp.label, grp.rows|length) }}
+      {% endfor %}
+    </div>
+
+    {# Vendor / filename / note search — mirrors the Actuals-tab vendor
+       search the user relies on. Filters within the active subtab. #}
+    <div style="margin-bottom:10px">
+      <input type="search" id="docs-search" autocomplete="off"
+             placeholder="🔍 Search vendor, filename, or note…"
+             oninput="_docsOnSearch(this.value)"
+             style="width:100%;max-width:440px;font-size:13px;padding:7px 11px;
+                    background:var(--bg-input);color:var(--text);
+                    border:1px solid var(--border);border-radius:7px">
     </div>
 
     {# Sort toolbar: client-side reorder by column. Each row below carries
@@ -2325,6 +2348,7 @@
         {% set _size_kb = (u.file_size / 1024) if u.file_size else 0 %}
         {% set _size_display = ('%.1f KB'|format(_size_kb)) if _size_kb < 1024 else ('%.1f MB'|format(_size_kb / 1024)) %}
         <div class="doc-row" data-upload-id="{{ u.id }}" data-status="{{ u.status }}"
+             data-group-key="{{ grp.key }}"
              data-sort-date="{{ u.uploaded_at.isoformat() if u.uploaded_at else '' }}"
              data-sort-uploader="{{ _uploader_label|lower }}"
              data-sort-filename="{{ _display_name|lower }}"
@@ -3062,6 +3086,9 @@
     div.dataset.sortFilename = displayName.toLowerCase();
     div.dataset.sortOriginal = filename.toLowerCase();
     div.dataset.sortType     = docType.toLowerCase();
+    // group-key drives the type subtab filter; matches doc_groups keys
+    // (category value, or '_unsorted' when the analyzer returned no type).
+    div.dataset.groupKey     = docType ? docType.toLowerCase() : '_unsorted';
     // Pull OCR-extracted vendor/amount/date from the upload response so
     // clicking the freshly-prepended row pre-fills the modal fields.
     div.dataset.sortVendor   = (d.vendor   || '').toString();
@@ -3096,12 +3123,9 @@
     `;
     h.prepend(div);
 
-    // Keep the count chip + sort toolbar in sync.
-    const countEl = document.getElementById('docs-count');
-    if (countEl) {
-      const n = h.querySelectorAll('.doc-row').length;
-      countEl.textContent = n + ' item' + (n === 1 ? '' : 's');
-    }
+    // Re-apply the active subtab + search so the new row lands in the
+    // right view (and the count reflects what's actually visible).
+    if (typeof _docsApplyView === 'function') _docsApplyView();
   }
 
   // ── Delete + Retry Filing handlers (event-delegated) ─────────────────────
@@ -3373,14 +3397,10 @@
         h.dataset.collapsed = collapsed ? '' : '1';
         const chev = h.querySelector('.doc-group-chevron');
         if (chev) chev.style.transform = collapsed ? '' : 'rotate(-90deg)';
-        // Hide every doc-row sibling until the next header.
-        let sib = h.nextElementSibling;
-        while (sib && !sib.classList.contains('doc-group-header')) {
-          if (sib.classList.contains('doc-row')) {
-            sib.style.display = collapsed ? '' : 'none';
-          }
-          sib = sib.nextElementSibling;
-        }
+        // Defer actual row visibility to _docsApplyView so collapse state
+        // composes with the active subtab + search instead of overriding
+        // them (a collapsed group inside a filtered view must stay hidden).
+        if (typeof _docsApplyView === 'function') _docsApplyView();
       };
     });
   }
@@ -3422,39 +3442,96 @@
     _docsSort();
   }
 
-  // ── Filter chips (status) ──────────────────────────────────────────
-  // Click a chip → hide every .doc-row whose status doesn't match.
-  // Bulk select (below) only operates on visible rows.
-  let _docsActiveFilter = 'all';
-  function _docsApplyFilter(filter) {
-    _docsActiveFilter = filter;
-    document.querySelectorAll('.docs-filter-chip').forEach(chip => {
-      const active = chip.dataset.filter === filter;
-      chip.style.background    = active ? 'rgba(91,138,249,.18)' : 'var(--bg-card)';
-      chip.style.borderColor   = active ? '#5b8af9' : 'var(--border)';
-      chip.style.color         = active ? '#5b8af9' : 'var(--text-muted)';
-      chip.style.fontWeight    = active ? '600' : 'normal';
-    });
-    document.querySelectorAll('#docsHistory .doc-row').forEach(row => {
-      const st = (row.dataset.status || '').toLowerCase();
-      const isDup = row.dataset.isDuplicate === '1';
-      let show = true;
-      if (filter === 'all')           show = true;
-      else if (filter === 'duplicate') show = isDup;
-      else if (filter === 'done')      show = (st === 'done' || st === 'filed');
-      else                             show = (st === filter);
-      row.style.display = show ? '' : 'none';
-      // Drop any selection on now-hidden rows
-      if (!show) {
-        const cb = row.querySelector('.doc-select-cb');
-        if (cb && cb.checked) cb.checked = false;
+  // ── Subtabs + search (status/type tabs combined with text filter) ──────
+  // Replaces the old flat status chips (per user 2026-05-29). A row is
+  // visible when it matches BOTH the active subtab AND the search query;
+  // group headers auto-hide when none of their rows match. Collapse state
+  // (set on a header by clicking it) is also honored. This single function
+  // is the authority on row/header visibility.
+  let _docsActiveTab   = 'all';
+  let _docsSearchQuery = '';
+
+  function _docsRowMatchesTab(row) {
+    const tab = _docsActiveTab;
+    if (tab === 'all') return true;
+    const st = (row.dataset.status || '').toLowerCase();
+    if (tab === 'review')     return st === 'review';
+    if (tab === 'processing') return st === 'processing';
+    if (tab === 'error')      return st === 'error';
+    if (tab === 'duplicate')  return row.dataset.isDuplicate === '1';
+    if (tab.indexOf('type:') === 0) return (row.dataset.groupKey || '') === tab.slice(5);
+    return true;
+  }
+  function _docsRowMatchesSearch(row) {
+    if (!_docsSearchQuery) return true;
+    const hay = [
+      row.dataset.sortVendor   || '',
+      row.dataset.sortFilename || '',
+      row.dataset.sortOriginal || '',
+      (row.dataset.note    || '').toLowerCase(),
+      (row.dataset.docNum  || '').toLowerCase(),
+    ].join(' ');
+    return hay.indexOf(_docsSearchQuery) !== -1;
+  }
+  function _docsApplyView() {
+    const list = document.getElementById('docsHistory');
+    if (!list) return;
+    let curHeader = null, curCollapsed = false, curMatched = 0, visible = 0;
+    const finalizeHeader = () => {
+      // A header shows whenever ≥1 of its rows matches (even if collapsed,
+      // so the user can still expand it). Hide it when its whole group is
+      // filtered out — e.g. on a single-type subtab every other header.
+      if (curHeader) curHeader.style.display = curMatched > 0 ? '' : 'none';
+    };
+    Array.from(list.children).forEach(node => {
+      if (node.classList && node.classList.contains('doc-group-header')) {
+        finalizeHeader();
+        curHeader    = node;
+        curCollapsed = node.dataset.collapsed === '1';
+        curMatched   = 0;
+      } else if (node.classList && node.classList.contains('doc-row')) {
+        const m = _docsRowMatchesTab(node) && _docsRowMatchesSearch(node);
+        if (m) { curMatched++; visible++; }
+        node.style.display = (m && !curCollapsed) ? '' : 'none';
+        if (!m) {
+          const cb = node.querySelector('.doc-select-cb');
+          if (cb && cb.checked) cb.checked = false;
+        }
       }
     });
+    finalizeHeader();
+    const count = document.getElementById('docs-count');
+    if (count) count.textContent = `${visible} item${visible === 1 ? '' : 's'}`;
     _docsUpdateBulkBar();
   }
-  document.querySelectorAll('.docs-filter-chip').forEach(c => {
-    c.addEventListener('click', () => _docsApplyFilter(c.dataset.filter));
+  function _docsSelectTab(tab) {
+    _docsActiveTab = tab;
+    document.querySelectorAll('.docs-subtab').forEach(btn => {
+      const active = btn.dataset.tab === tab;
+      btn.style.borderBottomColor = active ? '#5b8af9' : 'transparent';
+      btn.style.color             = active ? 'var(--text)' : 'var(--text-muted)';
+      btn.style.fontWeight        = active ? '600' : 'normal';
+      const c = btn.querySelector('.docs-subtab-count');
+      if (c) {
+        c.style.background = active ? 'rgba(91,138,249,.18)' : 'var(--bg-input)';
+        c.style.color      = active ? '#5b8af9' : 'var(--text-muted)';
+      }
+    });
+    _docsApplyView();
+  }
+  window._docsOnSearch = function(q) {
+    _docsSearchQuery = (q || '').trim().toLowerCase();
+    _docsApplyView();
+  };
+  document.querySelectorAll('.docs-subtab').forEach(btn => {
+    btn.addEventListener('click', () => _docsSelectTab(btn.dataset.tab));
   });
+  // Landing tab: Needs Review when it exists, else All. Mirrors the
+  // server-side "review tab only rendered when count>0" rule.
+  (function _docsInitTab(){
+    const hasReview = !!document.querySelector('.docs-subtab[data-tab="review"]');
+    _docsSelectTab(hasReview ? 'review' : 'all');
+  })();
 
   // ── Bulk-select ────────────────────────────────────────────────────
   function _docsUpdateBulkBar() {
