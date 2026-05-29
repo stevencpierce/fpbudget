@@ -4971,6 +4971,14 @@
     if (!row) return;
     const uid = parseInt(row.dataset.uploadId);
     if (!uid) return;
+    // For a flagged (pending) duplicate, the whole row opens the side-by-side
+    // Compare group — that's the review action you're reaching for, and it
+    // removes the "missed the small button → opened the doc" misclick.
+    // (User 2026-05-29.) The detail panel is still reachable from inside it.
+    if (row.dataset.dupPending === '1' && typeof docsOpenDupGroup === 'function') {
+      docsOpenDupGroup(uid);
+      return;
+    }
     openDocDetail(uid, row);
   });
 })();
