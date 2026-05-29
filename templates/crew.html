@@ -67,8 +67,13 @@
         {% else %}—{% endif %}
       </td>
       <td>
+        {# onclick MUST be single-quoted: tojson emits JSON with literal
+           double-quotes ({"name":...}), which would terminate a
+           double-quoted attribute and silently break the Edit button.
+           Flask's tojson escapes ' and < > so single-quoting is safe even
+           for names like O'Brien. (Fix 2026-05-29.) #}
         <button class="btn btn-xs btn-outline"
-                onclick="openEditCrew({{ m.id }}, {{ {'name': m.name, 'department': m.department or '', 'company': m.company or '', 'email': m.email or '', 'phone': m.phone or '', 'default_rate': m.default_rate | float if m.default_rate else 0, 'default_rate_type': m.default_rate_type, 'default_fringe': m.default_fringe, 'default_agent_pct': m.default_agent_pct | float, 'active': m.active} | tojson }})">Edit</button>
+                onclick='openEditCrew({{ m.id }}, {{ {"name": m.name, "department": m.department or "", "company": m.company or "", "email": m.email or "", "phone": m.phone or "", "default_rate": m.default_rate | float if m.default_rate else 0, "default_rate_type": m.default_rate_type, "default_fringe": m.default_fringe, "default_agent_pct": m.default_agent_pct | float, "active": m.active} | tojson }})'>Edit</button>
         <form method="POST" action="{{ url_for('crew_delete', cid=m.id) }}" style="display:inline"
               onsubmit="return confirm('Delete {{ m.name | e }}?')">
           <button type="submit" class="btn btn-xs btn-ghost">✕</button>
