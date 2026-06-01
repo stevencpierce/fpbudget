@@ -15038,6 +15038,20 @@ function normalizePhone(v) {
       <label>Company</label>
       <input type="text" id="add-contact-company">
     </div>
+    {# Person-only: mark them as a loan-out and pick the vendor they work
+       through. Hidden in vendor mode. (User 2026-06-01.) #}
+    <div class="field" id="add-contact-loanout-field">
+      <label class="checkbox-label">
+        <input type="checkbox" id="add-contact-is-loanout" onchange="_addContactLoanoutToggle()">
+        This person is a loan-out (works through a vendor)
+      </label>
+      <select id="add-contact-loanout" style="display:none;margin-top:.35rem">
+        <option value="">— select vendor —</option>
+        {% for v in (crew_members or []) if v.is_vendor %}
+        <option value="{{ v.id }}">{{ v.name }}{% if v.company %} ({{ v.company }}){% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
     {# Vendor-only: which docs this vendor must have on file. #}
     <div class="field" id="add-contact-reqdocs-field" style="display:none">
       <label>Required documents <span class="muted" style="font-weight:400;font-size:.8rem">(what this vendor needs on file)</span></label>
@@ -15148,9 +15162,20 @@ function openAddContactModal(vendorMode) {
   document.getElementById('add-contact-email').value = '';
   document.getElementById('add-contact-company').value = '';
   document.querySelectorAll('.add-contact-req-cb').forEach(cb => cb.checked = false);
+  const lcb = document.getElementById('add-contact-is-loanout');
+  if (lcb) lcb.checked = false;
+  const lsel = document.getElementById('add-contact-loanout');
+  if (lsel) lsel.value = '';
   const vcb = document.getElementById('add-contact-is-vendor');
   if (vcb) vcb.checked = !!vendorMode;
   _addContactVendorToggle();
+  _addContactLoanoutToggle();
+}
+// Reveal the vendor dropdown when "this person is a loan-out" is ticked.
+function _addContactLoanoutToggle() {
+  const on  = document.getElementById('add-contact-is-loanout')?.checked;
+  const sel = document.getElementById('add-contact-loanout');
+  if (sel) sel.style.display = on ? '' : 'none';
 }
 // Vendor mode hides Role (vendors don't have a crew role) and shows the
 // required-docs checklist; the title + button update to read "Vendor".
@@ -15158,11 +15183,13 @@ function _addContactVendorToggle() {
   const isV = document.getElementById('add-contact-is-vendor')?.checked;
   const roleField = document.getElementById('add-contact-role-field');
   const reqField  = document.getElementById('add-contact-reqdocs-field');
+  const loField   = document.getElementById('add-contact-loanout-field');
   const title     = document.getElementById('add-contact-title');
   const nameLbl   = document.getElementById('add-contact-name-label');
   const saveBtn   = document.getElementById('add-contact-save-btn');
   if (roleField) roleField.style.display = isV ? 'none' : '';
   if (reqField)  reqField.style.display  = isV ? '' : 'none';
+  if (loField)   loField.style.display   = isV ? 'none' : '';   // loan-out is for people
   if (title)   title.textContent   = isV ? 'Add Vendor' : 'Add Contact';
   if (nameLbl) nameLbl.textContent = isV ? 'Vendor / Company Name *' : 'Name *';
   if (saveBtn) saveBtn.textContent = isV ? 'Add Vendor' : 'Add';
@@ -15187,6 +15214,8 @@ function saveNewContact() {
       company: document.getElementById('add-contact-company').value.trim(),
       is_vendor: isVendor,
       required_docs: Array.from(document.querySelectorAll('.add-contact-req-cb:checked')).map(cb => cb.value),
+      loan_out_vendor_id: (!isVendor && document.getElementById('add-contact-is-loanout')?.checked)
+        ? (document.getElementById('add-contact-loanout')?.value || null) : null,
     })
   })
   .then(r => r.json())

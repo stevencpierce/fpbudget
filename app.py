@@ -13429,6 +13429,7 @@ def direct_contact_add(pid, bid):
             _rd = ",".join(str(x).strip() for x in _rd if str(x).strip()) or None
         else:
             _rd = (str(_rd).strip() or None) if _rd else None
+        _lo = data.get("loan_out_vendor_id")
         cm = CrewMember(
             name=name,
             phone=_normalize_phone(data.get("phone", "")),
@@ -13437,6 +13438,7 @@ def direct_contact_add(pid, bid):
             department=(data.get("department") or "").strip() or None,
             is_vendor=_is_vendor,
             required_docs=_rd,
+            loan_out_vendor_id=(int(_lo) if str(_lo).strip().isdigit() else None),
         )
         db.session.add(cm)
         db.session.flush()
