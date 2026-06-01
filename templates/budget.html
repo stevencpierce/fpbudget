@@ -3528,7 +3528,7 @@
       isPdf:  /\.pdf\b/i.test(fname) || /\.pdf\b/i.test(row.dataset.sortFilename || ''),
     };
   }
-  function _docGroupPaneHTML(m) {
+  function _docGroupPaneHTML(m, single) {
     const src = '/docs/upload/' + m.uid + '/raw';
     // Preview FILLS the pane height (flex:1) so docs are big and readable
     // without fighting the embedded PDF zoom. Per-pane "Expand" makes one
@@ -3556,14 +3556,27 @@
       +     mrow('Vendor', m.vendor) + mrow('Amount', m.amount) + mrow('Date', m.date) + mrow('Type', m.dtype)
       +     '<div style="margin-top:2px"><span style="color:var(--text-muted)">File:</span> ' + _esc(m.fname || '—') + '</div>'
       +   '</div>'
-      +   '<div class="dup-toggle" style="display:flex;gap:6px;flex-shrink:0">'
-      +     '<button type="button" class="dup-keep" onclick="docDupSetChoice(\'' + m.uid + '\',\'keep\')" '
-      +        'style="flex:1;padding:7px;border-radius:6px;cursor:pointer;font-size:12px;'
-      +        'border:1px solid #1a4228;background:#14291e;color:#22c55e">Keep</button>'
-      +     '<button type="button" class="dup-dupe" onclick="docDupSetChoice(\'' + m.uid + '\',\'dupe\')" '
-      +        'style="flex:1;padding:7px;border-radius:6px;cursor:pointer;font-size:12px;'
-      +        'border:1px solid #2d2a40;background:#1e1a2a;color:#a78bfa">Duplicate</button>'
-      +   '</div>'
+      // Single-member groups (the only copy still in review — its match was
+      // already resolved or isn't loaded) resolve IMMEDIATELY via the
+      // single-doc endpoint, so the ≥1-keep rule that needs two items can't
+      // strand the user. (User 2026-06-01.)
+      + (single
+        ? ('<div class="dup-toggle" style="display:flex;gap:6px;flex-shrink:0">'
+          +   '<button type="button" onclick="docDupResolveSingle(\'' + m.uid + '\',\'keep\')" '
+          +      'style="flex:1;padding:7px;border-radius:6px;cursor:pointer;font-size:12px;'
+          +      'border:1px solid #1a4228;background:#14291e;color:#22c55e">✓ Keep — not a duplicate</button>'
+          +   '<button type="button" onclick="docDupResolveSingle(\'' + m.uid + '\',\'confirm\')" '
+          +      'style="flex:1;padding:7px;border-radius:6px;cursor:pointer;font-size:12px;'
+          +      'border:1px solid #2d2a40;background:#1e1a2a;color:#a78bfa">🔁 It\'s a duplicate</button>'
+          + '</div>')
+        : ('<div class="dup-toggle" style="display:flex;gap:6px;flex-shrink:0">'
+          +   '<button type="button" class="dup-keep" onclick="docDupSetChoice(\'' + m.uid + '\',\'keep\')" '
+          +      'style="flex:1;padding:7px;border-radius:6px;cursor:pointer;font-size:12px;'
+          +      'border:1px solid #1a4228;background:#14291e;color:#22c55e">Keep</button>'
+          +   '<button type="button" class="dup-dupe" onclick="docDupSetChoice(\'' + m.uid + '\',\'dupe\')" '
+          +      'style="flex:1;padding:7px;border-radius:6px;cursor:pointer;font-size:12px;'
+          +      'border:1px solid #2d2a40;background:#1e1a2a;color:#a78bfa">Duplicate</button>'
+          + '</div>'))
       + '</div>';
   }
   // Expand one pane to fill the modal (hide siblings); click again to restore.
@@ -3611,6 +3624,23 @@
     const body    = document.getElementById('docDupCompareBody');
     if (!body || !members.length) return;
     _docDupGroupState = {};
+    const applyBtn = document.getElementById('docDupApplyBtn');
+    const sumEl    = document.getElementById('docDupApplySummary');
+    // Degenerate group: only ONE copy is still in review (its match was
+    // already resolved, deleted, or isn't in the loaded list). The
+    // side-by-side compare + ≥1-keep gating can't resolve this, so offer a
+    // direct keep / confirm on the single doc instead. (User 2026-06-01.)
+    if (members.length === 1) {
+      body.innerHTML = _docGroupPaneHTML(_docMeta(members[0]), true);
+      if (sumEl) {
+        sumEl.textContent = 'This is the only copy still in review — keep it, or confirm it as a duplicate.';
+        sumEl.style.color = 'var(--text-muted)';
+      }
+      if (applyBtn) applyBtn.style.display = 'none';   // actions are inline
+      document.getElementById('docDupCompareOverlay').style.display = 'flex';
+      return;
+    }
+    if (applyBtn) applyBtn.style.display = '';          // restore for multi
     // Default: a CONFIRMED dup (already filed away) defaults to Duplicate;
     // everything else defaults to Keep. So the unflagged original stays kept
     // and the flagged copies start as Duplicate only if already confirmed —
@@ -3627,6 +3657,60 @@
   };
   // Backwards-compat alias (older inline onclick may still reference it).
   window.docsOpenDupCompare = window.docsOpenDupGroup;
+
+  // Resolve a SINGLE-member review group (keep | confirm) via the single-doc
+  // endpoint — used when the compare modal has only one copy left to act on.
+  // (User 2026-06-01: "compare group opens with one document and I can't keep
+  // or flag it.") Patches the row in place and closes the modal. 2026-06-01.
+  window.docDupResolveSingle = async function(uid, action) {
+    if (action === 'confirm' &&
+        !confirm("Confirm this is a duplicate? The file will be moved to a /_DUPLICATES/ subfolder in Dropbox.")) {
+      return;
+    }
+    const body = document.getElementById('docDupCompareBody');
+    if (body) body.querySelectorAll('button').forEach(b => { b.disabled = true; b.style.opacity = '.6'; });
+    try {
+      const r = await fetch('/docs/upload/' + uid + '/resolve-duplicate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        alert('Could not resolve: ' + (d.error || r.status));
+        if (body) body.querySelectorAll('button').forEach(b => { b.disabled = false; b.style.opacity = ''; });
+        return;
+      }
+      const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
+      if (row) {
+        row.dataset.dupPending = '';
+        const badge = row.querySelector('.doc-status-badge');
+        if (action === 'keep') {
+          row.dataset.isDuplicate = '';
+          row.dataset.duplicateOf = '';
+          if (badge) {
+            badge.textContent = '✓';
+            badge.style.cssText = 'font-size:11px;padding:3px 9px;border-radius:20px;background:#14291e;color:#22c55e;border:1px solid #1a4228;';
+          }
+        } else {
+          if (badge) {
+            badge.textContent = '🔁 Dup';
+            badge.style.cssText = 'font-size:11px;padding:3px 9px;border-radius:20px;background:#1e1a2a;color:#a78bfa;border:1px solid #2d2a40;';
+          }
+          row.dataset.status = 'duplicate';
+          row.style.transition = 'opacity .4s';
+          row.style.opacity = '.45';
+        }
+        row.querySelectorAll('.doc-dup-keep-btn, .doc-dup-confirm-btn, .doc-dup-compare-btn')
+           .forEach(b => b.remove());
+      }
+      closeDupCompare();
+      if (typeof _docsRefreshDupCounts === 'function') _docsRefreshDupCounts();
+      if (typeof _docsApplyView === 'function') _docsApplyView();
+    } catch (e) {
+      alert('Network error: ' + (e && e.message || e));
+      if (body) body.querySelectorAll('button').forEach(b => { b.disabled = false; b.style.opacity = ''; });
+    }
+  };
 
   window.docDupApplyGroup = async function() {
     const keep = [], confirm = [];
