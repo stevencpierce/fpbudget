@@ -3544,8 +3544,12 @@
       +      'border:1px solid var(--border);border-radius:8px;padding:10px;background:var(--bg-card)">'
       +   '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0">'
       +     '<span style="font-size:12px;font-weight:600;color:var(--text-muted)">#' + m.uid + '</span>'
+      +     '<button type="button" onclick="docDupEditDoc(\'' + m.uid + '\')" '
+      +        'title="Open this document to edit / reclassify (wrong doc type, vendor, etc.)" '
+      +        'style="margin-left:auto;background:#241a2e;border:1px solid #3a2a4a;color:#c9a8ff;'
+      +        'padding:3px 9px;border-radius:5px;cursor:pointer;font-size:11px">✎ Edit / reclassify</button>'
       +     '<button type="button" class="dup-expand-btn" onclick="docDupExpand(\'' + m.uid + '\')" '
-      +        'style="margin-left:auto;background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;'
+      +        'style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;'
       +        'padding:3px 9px;border-radius:5px;cursor:pointer;font-size:11px">⤢ Expand</button>'
       +     '<a href="' + src + '" target="_blank" rel="noopener" '
       +        'style="background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;'
@@ -3579,6 +3583,15 @@
           + '</div>'))
       + '</div>';
   }
+  // Jump from the compare view into the full doc-detail modal so a flagged
+  // duplicate that's actually MISLABELED can be reclassified / edited — the
+  // compare modal only offers keep/duplicate. (User 2026-06-01: "review and
+  // compare do the same thing, I can't reclassify.")
+  window.docDupEditDoc = function(uid) {
+    if (typeof closeDupCompare === 'function') closeDupCompare();
+    const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
+    if (typeof openDocDetail === 'function') openDocDetail(parseInt(uid), row || null);
+  };
   // Expand one pane to fill the modal (hide siblings); click again to restore.
   window.docDupExpand = function(uid) {
     const body  = document.getElementById('docDupCompareBody');
