@@ -19717,10 +19717,35 @@ def docs_upload_raw(uid):
           if upload.content_type and upload.content_type != "application/octet-stream"
           else (guessed_ct or "application/octet-stream"))
 
+    # AUTHORITATIVE: sniff the real bytes and override the type. Filenames
+    # lie here — build_name() always appends ".pdf" (even to JPEG/PNG phone
+    # photos), and some rows recorded content_type='application/pdf' for
+    # non-PDF bytes. Serving the wrong type makes the browser's PDF viewer
+    # throw "Failed to load PDF document" on what is actually an image.
+    # (User 2026-06-01: verified-in-Dropbox invoice wouldn't preview — its
+    # bytes were a JPEG named ".pdf".)
+    def _sniff_ct(buf):
+        if not buf or len(buf) < 4:
+            return None
+        if buf[:4] == b'%PDF':                       return 'application/pdf'
+        if buf[:3] == b'\xff\xd8\xff':               return 'image/jpeg'
+        if buf[:8] == b'\x89PNG\r\n\x1a\n':          return 'image/png'
+        if buf[:6] in (b'GIF87a', b'GIF89a'):        return 'image/gif'
+        if buf[:4] == b'RIFF' and buf[8:12] == b'WEBP': return 'image/webp'
+        if buf[:2] in (b'II', b'MM'):                return 'image/tiff'
+        if buf[4:8] == b'ftyp' and buf[8:12] in (
+                b'heic', b'heix', b'hevc', b'mif1', b'heif'):
+            return 'image/heic'
+        return None
+    _sniffed = _sniff_ct(content[:16] if content else b'')
+    if _sniffed:
+        ct = _sniffed
+
     # On-the-fly HEIC → JPEG conversion so iPhone receipts render in
-    # Chrome/Firefox (which can't render HEIC natively).
+    # Chrome/Firefox (which can't render HEIC natively). Trigger on the
+    # sniffed type too, since a HEIC may be misnamed ".pdf".
     _ext = (os.path.splitext(fname)[1] or '').lower()
-    if _ext in ('.heic', '.heif'):
+    if _ext in ('.heic', '.heif') or _sniffed == 'image/heic':
         try:
             import pillow_heif  # noqa: F401  (registers Pillow opener)
             from PIL import Image

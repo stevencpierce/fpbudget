@@ -4885,29 +4885,26 @@
               'transform-origin:0 0;transition:transform .08s linear;' +
               'user-select:none;-webkit-user-drag:none;cursor:grab;">';
       _initImagePreviewControls();
-    } else if (isPdf) {
-      // <embed> renders PDFs through the browser's plugin path which has
-      // its own zoom controls — no need for our toolbar. ignores
-      // X-Frame-Options (which Dropbox raw responses include).
+    } else {
+      // Everything that isn't a confident image (real PDFs, AND images that
+      // were misnamed ".pdf" by the filing pipeline) renders in an <iframe>
+      // pointed at /raw. /raw now sniffs the real bytes and serves the
+      // correct Content-Type, so the browser shows a PDF as a PDF and a
+      // JPEG-named-".pdf" as an image — instead of the PDF viewer throwing
+      // "Failed to load PDF document" on image bytes. (User 2026-06-01.)
+      // An iframe (vs <embed type="application/pdf">) honours whatever type
+      // the server sends, which is the whole point. Same-origin, so no
+      // X-Frame-Options issue. A small "open in new tab" link covers any
+      // exotic type the browser still can't render inline.
       previewEl.style.alignItems = 'stretch';
       previewEl.style.justifyContent = 'stretch';
+      previewEl.style.position = 'relative';
       previewEl.innerHTML =
-        '<embed src="' + rawUrl + '" type="application/pdf" ' +
-               'style="border:0;width:100%;height:100%;min-height:540px;display:block;">';
-    } else {
-      // Unknown type: try img with onerror fallback to "open in new tab".
-      previewEl.style.alignItems = 'center';
-      previewEl.style.justifyContent = 'center';
-      previewEl.innerHTML =
-        '<div style="padding:1rem;text-align:center">' +
-          '<img src="' + rawUrl + '" alt="preview" ' +
-               'style="max-width:100%;max-height:70vh;display:block;margin:0 auto 1rem;" ' +
-               'onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'block\';">' +
-          '<p class="muted" style="display:none">' +
-            'Preview not supported for this file type. ' +
-            '<a href="' + rawUrl + '" target="_blank" style="color:#5b8af9">Open in new tab ↗</a>' +
-          '</p>' +
-        '</div>';
+        '<iframe src="' + rawUrl + '" title="document preview" ' +
+                'style="border:0;width:100%;height:100%;min-height:540px;display:block;background:#fff"></iframe>' +
+        '<a href="' + rawUrl + '" target="_blank" rel="noopener" ' +
+           'style="position:absolute;top:8px;right:8px;font-size:11px;background:#1a2540;' +
+           'border:1px solid #2d4070;color:#8fb4ff;padding:3px 9px;border-radius:5px;text-decoration:none">↗ Open in new tab</a>';
     }
 
     // Verification banner — green on success, red if Dropbox doesn't
