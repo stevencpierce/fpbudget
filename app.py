@@ -20238,11 +20238,16 @@ def repair_clone_links(pid):
                     cl.source_line_id = target.id
         return out
 
+    # The estimated side has a version-pairing ambiguity (two Estimated
+    # budgets); skip writing working→estimated unless explicitly enabled, to
+    # avoid linking to the wrong Estimated. ?w2e=1 to include it. (2026-06-01.)
+    _do_w2e = (request.args.get('w2e') == '1')
     report = {"dry": dry,
               "budgets": {"estimated": est.id if est else None,
                           "working": wrk.id if wrk else None,
                           "actual": act.id if act else None},
-              "working_to_estimated": _relink(wrk, est, "working→estimated"),
+              "working_to_estimated": (_relink(wrk, est, "working→estimated")
+                                       if _do_w2e else {"skipped": "version-pairing review pending"}),
               "actual_to_working":    _relink(act, wrk, "actual→working")}
     if not dry:
         db.session.commit()
