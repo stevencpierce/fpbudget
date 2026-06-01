@@ -20151,6 +20151,44 @@ def docs_backfill_card4(pid):
     return jsonify({"scanned": scanned, "updated": updated})
 
 
+@app.route("/admin/veryfi/classify/<int:uid>")
+@login_required
+def admin_veryfi_classify(uid):
+    """Read-only diagnostic: run Veryfi's /classify on an existing doc's file
+    and return the predicted type + score. Lets us verify classify-first
+    routing live without uploading. Admin only. (User 2026-06-01.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+    path = upload.filed_dropbox_path or upload.source_archive_path
+    if not path:
+        return jsonify({"error": "no file on this upload"}), 404
+    try:
+        dbx = _dbx_client()
+        _ops = (_DBX_OPS_ROOT or "").rstrip("/") if _DBX_NAMESPACE_ID else ""
+        norm = path[len(_ops):] if (_ops and path.startswith(_ops + "/")) else path
+        link = None
+        for t in (norm, path) if norm != path else (norm,):
+            try:
+                link = dbx.files_get_temporary_link(t).link
+                break
+            except Exception:
+                continue
+        if not link:
+            return jsonify({"error": "could not build temp link"}), 502
+        from fp_analyzer import get_veryfi_client
+        res = get_veryfi_client().classify_document_url(file_url=link)
+        dt = (res or {}).get("document_type") if isinstance(res, dict) else None
+        return jsonify({"uid": uid, "filename": upload.filed_filename,
+                        "current_category": upload.category,
+                        "classify": dt or res})
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+
+
 @app.route("/docs/upload/<int:uid>/update", methods=["POST"])
 @login_required
 def docs_upload_update(uid):

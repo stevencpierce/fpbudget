@@ -698,6 +698,61 @@ def remove_items_from_pending(batch_token, discard_ids):
     _pending[batch_token] = keep
 
 
+# ── Classify-first routing (2026-06-01) ───────────────────────────────────────
+# Veryfi has purpose-built models per document type. We used to force EVERY
+# upload through the receipts/invoices extractor, which fabricates a vendor +
+# total for non-financial docs (a driver's license came back as a "$12 invoice
+# from texas"). Now we call /classify first and route to the right model.
+#
+# Map classify's document_type.value → (our DOCUMENT_TYPES category, route):
+#   'financial' → receipts/invoices extractor (unchanged path; _infer_type still
+#                 refines estimate/quote/SOW/PO/tax detection from OCR text, so
+#                 we DON'T override the category for these).
+#   'w9'        → dedicated W-9 extractor (legal name + EIN).
+#   'other'     → OCR text only via the documents endpoint, but the financial
+#                 fields are NOT trusted (suppressed) — categorise + send to
+#                 review. IDs / driver's licenses / passports land here.
+_CLASSIFY_ROUTE = {
+    'receipt':           ('receipt',            'financial'),
+    'invoice':           ('invoice',            'financial'),
+    'purchase_order':    ('purchase_order',     'financial'),
+    'credit_note':       ('misc',               'financial'),
+    'remittance_advice': ('misc',               'financial'),
+    'packing_slip':      ('misc',               'financial'),
+    'w9':                ('tax_form',           'w9'),
+    'w2':                ('tax_form',           'other'),
+    'w8':                ('tax_form',           'other'),
+    'check':             ('misc',               'other'),
+    'statement':         ('misc',               'other'),
+    'bank_statement':    ('misc',               'other'),
+    'contract':          ('contract',           'other'),
+    'business_card':     ('misc',               'other'),
+    'other':             ('employee_vendor_doc', 'other'),
+}
+# Only route AWAY from the (safe, proven) financial path when classify is
+# reasonably sure — a wrong "other" would needlessly strip a real receipt's
+# vendor/total. Below this, default to financial = exactly today's behavior.
+_CLASSIFY_MIN_SCORE = 0.60
+
+
+def _normalize_w9(w9):
+    """Map a Veryfi W-9 response into the common `vr` shape the rest of the
+    pipeline expects (vendor.name / date / tax_id / ocr_text). We store the
+    legal name + EIN; we deliberately do NOT surface the SSN (personal)."""
+    w9 = w9 or {}
+    name = (w9.get('business_name') or w9.get('name') or '').strip()
+    return {
+        'document_type': 'w9',
+        'vendor':  {'name': name} if name else {},
+        'total':   None,
+        'date':    w9.get('signature_date') or '',
+        'tax_id':  (w9.get('ein') or None),   # EIN only — skip SSN
+        'ocr_text': w9.get('ocr_text') or '',
+        'meta':    w9.get('meta') or {},
+        '_veryfi_route': 'w9',
+    }
+
+
 # ── Phase 1b: Analyze (Veryfi calls, parallel) ────────────────────────────────
 
 def _call_veryfi(item):
@@ -736,22 +791,69 @@ def _call_veryfi(item):
             link = dbx.files_get_temporary_link(item["staged_path"]).link
 
             vc = get_veryfi_client()
-            # process_document_url accepts a single URL or a list. We pass
-            # a list to match the SDK's documented signature.
-            # delete_after_processing=True tells Veryfi to drop its own
-            # copy after extraction — keeps their storage tidy and is a
-            # mild privacy win (we're the system of record in Dropbox).
-            vr = vc.process_document_url(
-                file_url=link,
-                delete_after_processing=True,
-            )
+
+            # ── Step 1: classify (gatekeeper). FAIL-OPEN — any hiccup leaves
+            # cls_value=None → route='financial' → exactly today's behavior.
+            cls_value, cls_score = None, 0.0
+            try:
+                cres = vc.classify_document_url(file_url=link)
+                _dt = (cres or {}).get("document_type") or {}
+                cls_value = ((_dt.get("value") or "").lower() or None)
+                cls_score = float(_dt.get("score") or 0)
+            except Exception as _ce:
+                log.warning(f"[classify] failed for {item['original_filename']}: {_ce}")
+
+            category_override, route = None, 'financial'
+            if (cls_value and cls_score >= _CLASSIFY_MIN_SCORE
+                    and cls_value in _CLASSIFY_ROUTE):
+                category_override, route = _CLASSIFY_ROUTE[cls_value]
+
+            # ── Step 2: extract with the model that fits the route.
+            vr, w9_ok = None, False
+            if route == 'w9':
+                try:
+                    vr = _normalize_w9(vc.process_w9_document_url(file_url=link))
+                    w9_ok = True
+                except Exception as _we:
+                    log.warning(f"[w9] extract failed for {item['original_filename']}, "
+                                f"falling back to documents: {_we}")
+                    vr = None
+            if vr is None:
+                # 'financial' and 'other' both OCR via the documents endpoint;
+                # 'other' simply won't trust the financial fields (next step).
+                vr = vc.process_document_url(
+                    file_url=link,
+                    delete_after_processing=True,
+                )
+
+            # ── Step 3: for non-financial docs, drop the receipt model's
+            # fabricated vendor/total so an ID isn't a "$12 invoice". Keep
+            # ocr_text for future blueprint extraction.
+            suppress_financial = (route == 'other') or (route == 'w9' and not w9_ok)
+            if suppress_financial:
+                for _k in ('total', 'invoice_number', 'purchase_order_number'):
+                    if _k in vr:
+                        vr[_k] = None
+                vr['vendor'] = {}
+                vr['payment'] = {}
+
             item["vr"] = vr
             suggested, confidence, needs_review = assess_confidence(vr)
+            # Classification is authoritative for NON-financial docs (it unlocks
+            # types the receipts heuristics can't see). For financial docs we
+            # keep _infer_type's richer estimate/quote/SOW/PO/tax detection.
+            if category_override and route != 'financial':
+                suggested    = category_override
+                confidence   = max(confidence, cls_score)
+                needs_review = True   # always confirm non-spend docs
             item["suggested_type"] = suggested
             item["confidence"]     = confidence
             item["needs_review"]   = needs_review
+            item["classify"]       = ({"value": cls_value, "score": cls_score}
+                                      if cls_value else None)
             log.info(
-                f"Analyzed {item['original_filename']}: type={suggested}, "
+                f"Analyzed {item['original_filename']}: classify={cls_value}"
+                f"@{cls_score:.2f} route={route} → type={suggested}, "
                 f"confidence={confidence}, needs_review={needs_review}"
                 + (f" (retry {attempt})" if attempt > 1 else "")
             )
