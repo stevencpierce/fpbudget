@@ -5273,6 +5273,7 @@
     // Keep the People-tab packet completeness in lockstep (crew link / type
     // changes can complete or break a packet). (User 2026-06-01.)
     if (typeof _buildPacketView === 'function') _buildPacketView();
+    if (typeof _buildLocationDocs === 'function') _buildLocationDocs();
     return d;
   };
 
@@ -8287,6 +8288,14 @@
       {% if loc.notes %}
       <div class="location-card-notes muted">{{ loc.notes }}</div>
       {% endif %}
+      {# Attached documents (location releases, COIs, permits) — linked via
+         location_id. List built client-side from the Docs-tab rows, same as
+         the People packet. (User 2026-06-01.) #}
+      <div class="loc-docs" data-location-id="{{ loc.id }}" style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px">
+        <a href="#" class="loc-docs-toggle" style="display:none;font-size:.7rem;color:#5b8af9;text-decoration:none"></a>
+        <span class="loc-docs-empty muted" style="font-size:.68rem;display:none">📄 No documents attached</span>
+        <div class="loc-docs-list" style="display:none;margin-top:5px"></div>
+      </div>
     </div>
     {% endfor %}
   </div>
@@ -13961,6 +13970,54 @@ window._buildPacketView = function(){
   });
 };
 
+// Attached documents per LOCATION (location releases, COIs, permits), shown on
+// each location card. Same client-side approach as the People packet, keyed on
+// data-location-id. No required-doc badges yet (checklist TBD). (User 2026-06-01.)
+window._buildLocationDocs = function(){
+  const blocks = Array.from(document.querySelectorAll('.loc-docs[data-location-id]'));
+  if (!blocks.length) return;
+  const TYPE_LABEL = {receipt:'Receipt', invoice:'Invoice', purchase_order:'PO',
+    estimate:'Estimate', contract:'Contract', tax_form:'Tax form', payroll:'Payroll',
+    release:'Release', insurance:'Insurance', legal:'Legal', misc:'Misc',
+    employee_vendor_doc:'Support doc'};
+  blocks.forEach(block => {
+    const lid = block.dataset.locationId;
+    const rows = Array.from(document.querySelectorAll(
+        '#docsHistory .doc-row[data-location-id="' + lid + '"]'))
+      .filter(r => (r.dataset.status || '') !== 'duplicate');
+    const toggle = block.querySelector('.loc-docs-toggle');
+    const list   = block.querySelector('.loc-docs-list');
+    const empty  = block.querySelector('.loc-docs-empty');
+    if (!rows.length) {
+      if (empty) empty.style.display = '';
+      toggle.style.display = 'none'; list.style.display = 'none'; list.innerHTML = '';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+    const label = '📁 ' + rows.length + ' doc' + (rows.length === 1 ? '' : 's');
+    toggle.style.display = '';
+    toggle.textContent = label + ' ▾';
+    toggle.onclick = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const open = list.style.display !== 'none';
+      list.style.display = open ? 'none' : 'block';
+      toggle.textContent = label + (open ? ' ▾' : ' ▴');
+    };
+    list.innerHTML = rows.map(r => {
+      const uid    = r.dataset.uploadId;
+      const type   = (r.dataset.sortType || '');
+      const vendor = (r.dataset.sortVendor || '');
+      const fname  = (r.querySelector('.doc-filename')?.textContent || '').replace(/^📎\s*/, '').trim();
+      const lbl = (type === 'employee_vendor_doc' && vendor) ? vendor : (TYPE_LABEL[type] || type || '');
+      return '<div style="padding:2px 0;font-size:.72rem">'
+        + '<a href="#" onclick="event.preventDefault();event.stopPropagation();_packetOpenDoc(\'' + uid + '\')" '
+        +    'style="color:#5b8af9;text-decoration:none">📎 ' + _pesc(fname || ('Doc #' + uid)) + '</a>'
+        + ' <span class="muted" style="font-size:.6rem">' + _pesc(lbl) + '</span>'
+        + '</div>';
+    }).join('');
+  });
+};
+
 // Run when contacts tab is first shown
 document.addEventListener('DOMContentLoaded', () => {
   const contactsTabBtn = document.querySelector('[data-tab="contacts"]');
@@ -13970,9 +14027,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (typeof _buildPacketView === 'function') _buildPacketView();
     }, 50));
   }
-  // Also run immediately in case contacts tab is default
+  const locTabBtn = document.querySelector('[data-tab="locations"]');
+  if (locTabBtn) {
+    locTabBtn.addEventListener('click', () => setTimeout(() => {
+      if (typeof _buildLocationDocs === 'function') _buildLocationDocs();
+    }, 50));
+  }
+  // Also run immediately in case contacts/locations tab is default
   validateContactSheetEmails();
   try { if (typeof _buildPacketView === 'function') _buildPacketView(); } catch (e) {}
+  try { if (typeof _buildLocationDocs === 'function') _buildLocationDocs(); } catch (e) {}
 });
 
 // ── Contact Sheet multi-select + right-click omit ─────────────────────────
