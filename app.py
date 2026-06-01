@@ -11576,6 +11576,15 @@ def location_save(pid):
                 val = val.strip().title()
             setattr(loc, f, val)
 
+    # Per-location required-doc checklist — a list of keys from the modal
+    # checkboxes, stored comma-separated. (User 2026-06-01.)
+    if "required_docs" in data:
+        rd = data.get("required_docs")
+        if isinstance(rd, (list, tuple)):
+            loc.required_docs = ",".join(str(x).strip() for x in rd if str(x).strip()) or None
+        else:
+            loc.required_docs = (str(rd).strip() or None) if rd else None
+
     # Auto-sync to global library on new location (unless user opted out)
     if is_new and data.get("save_to_library", True) and loc.name:
         existing_global = Location.query.filter_by(
@@ -18049,6 +18058,9 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS card_last4 VARCHAR(8)",
                 "ALTER TABLE transaction "
                 "  ADD COLUMN IF NOT EXISTS card_last4 VARCHAR(8)",
+                # 2026-06-01 — per-location required-doc checklist (comma-sep keys).
+                "ALTER TABLE location "
+                "  ADD COLUMN IF NOT EXISTS required_docs TEXT",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The

@@ -8291,7 +8291,9 @@
       {# Attached documents (location releases, COIs, permits) — linked via
          location_id. List built client-side from the Docs-tab rows, same as
          the People packet. (User 2026-06-01.) #}
-      <div class="loc-docs" data-location-id="{{ loc.id }}" style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px">
+      <div class="loc-docs" data-location-id="{{ loc.id }}" data-required="{{ loc.required_docs or '' }}"
+           style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px">
+        <div class="loc-docs-badges" style="font-size:.66rem;display:flex;gap:9px;flex-wrap:wrap;margin-bottom:4px"></div>
         <a href="#" class="loc-docs-toggle" style="display:none;font-size:.7rem;color:#5b8af9;text-decoration:none"></a>
         <span class="loc-docs-empty muted" style="font-size:.68rem;display:none">📄 No documents attached</span>
         <div class="loc-docs-list" style="display:none;margin-top:5px"></div>
@@ -9596,6 +9598,18 @@
       <div class="field">
         <label>Notes</label>
         <textarea id="loc-notes" rows="2" placeholder="Parking instructions, access codes, key contacts…"></textarea>
+      </div>
+      {# Per-location required documents — user checks what THIS location needs.
+         Drives the completeness badge on the location card. (User 2026-06-01.) #}
+      <div class="field" style="margin-top:.5rem">
+        <label>Required documents <span class="muted" style="font-weight:400;font-size:.8rem">(what this location needs on file)</span></label>
+        <div id="loc-required-docs" style="display:flex;flex-wrap:wrap;gap:.5rem .9rem;margin-top:.25rem">
+          <label class="checkbox-label"><input type="checkbox" class="loc-req-cb" value="agreement"> Agreement / Release</label>
+          <label class="checkbox-label"><input type="checkbox" class="loc-req-cb" value="coi"> Insurance (COI)</label>
+          <label class="checkbox-label"><input type="checkbox" class="loc-req-cb" value="permit"> Permit</label>
+          <label class="checkbox-label"><input type="checkbox" class="loc-req-cb" value="parking"> Parking</label>
+          <label class="checkbox-label"><input type="checkbox" class="loc-req-cb" value="other"> Other</label>
+        </div>
       </div>
       <div class="field" style="margin-top:.5rem">
         <label class="checkbox-label">
@@ -13664,6 +13678,7 @@ const _locData = [{% for loc in project_locations %}{
   billing_type: {{ (loc.billing_type or 'per_day') | tojson }},
   daily_rate: {{ loc.daily_rate | float if loc.daily_rate else 'null' }},
   notes: {{ (loc.notes or '') | tojson }},
+  required_docs: {{ (loc.required_docs or '') | tojson }},
 }{% if not loop.last %},{% endif %}{% endfor %}];
 
 // ── Google Maps URL auto-fill ─────────────────────────────────────────────
@@ -13792,6 +13807,9 @@ function openLocationModal(data) {
   document.getElementById('loc-billing-type').value  = data ? (data.billing_type||'per_day') : 'per_day';
   document.getElementById('loc-daily-rate').value    = data ? (data.daily_rate||'') : '';
   document.getElementById('loc-notes').value         = data ? (data.notes||'') : '';
+  // Required-doc checkboxes from the comma-separated list.
+  const _req = (data && data.required_docs ? String(data.required_docs).split(',') : []).map(s => s.trim());
+  document.querySelectorAll('.loc-req-cb').forEach(cb => { cb.checked = _req.includes(cb.value); });
   // "Save to library" checkbox only relevant for new locations
   const libCb = document.getElementById('loc-save-to-library');
   if (libCb) { libCb.checked = !data; libCb.closest('.field').style.display = data ? 'none' : ''; }
@@ -13846,6 +13864,7 @@ async function saveLocation() {
     billing_type:   document.getElementById('loc-billing-type').value,
     daily_rate:     parseFloat(document.getElementById('loc-daily-rate').value) || null,
     notes:          document.getElementById('loc-notes').value.trim() || null,
+    required_docs:  Array.from(document.querySelectorAll('.loc-req-cb:checked')).map(cb => cb.value),
   };
   if (id) payload.id = parseInt(id);
   const btn = document.querySelector('#location-modal .btn-primary');
@@ -13980,11 +13999,42 @@ window._buildLocationDocs = function(){
     estimate:'Estimate', contract:'Contract', tax_form:'Tax form', payroll:'Payroll',
     release:'Release', insurance:'Insurance', legal:'Legal', misc:'Misc',
     employee_vendor_doc:'Support doc'};
+  const REQ_LABELS = {agreement:{l:'Agreement', i:'📄'}, coi:{l:'COI', i:'🛡'},
+    permit:{l:'Permit', i:'📋'}, parking:{l:'Parking', i:'🅿️'}, other:{l:'Other', i:'📎'}};
+  // Decide which requirement keys a given attached doc satisfies.
+  const satisfies = (type, hay) => {
+    const k = [];
+    if (type === 'release' || type === 'contract' || /agreement|release/.test(hay)) k.push('agreement');
+    if (type === 'insurance' || /insurance|\bcoi\b|certificate/.test(hay)) k.push('coi');
+    if (/permit/.test(hay)) k.push('permit');
+    if (/parking/.test(hay)) k.push('parking');
+    k.push('other');   // any attached doc satisfies a generic "Other" requirement
+    return k;
+  };
   blocks.forEach(block => {
     const lid = block.dataset.locationId;
+    const required = (block.dataset.required || '').split(',').map(s => s.trim()).filter(Boolean);
     const rows = Array.from(document.querySelectorAll(
         '#docsHistory .doc-row[data-location-id="' + lid + '"]'))
       .filter(r => (r.dataset.status || '') !== 'duplicate');
+    // Which requirement keys are satisfied by the attached docs.
+    const have = new Set();
+    rows.forEach(r => {
+      const type = (r.dataset.sortType || '');
+      const hay  = ((r.dataset.sortVendor || '') + ' ' +
+                    (r.querySelector('.doc-filename')?.textContent || '')).toLowerCase();
+      satisfies(type, hay).forEach(k => have.add(k));
+    });
+    const badgesEl = block.querySelector('.loc-docs-badges');
+    if (badgesEl) {
+      badgesEl.innerHTML = required.map(k => {
+        const meta = REQ_LABELS[k] || {l:k, i:'📎'};
+        const ok = have.has(k);
+        return '<span title="' + meta.l + (ok ? ' on file' : ' missing') + '" '
+          + 'style="color:' + (ok ? '#22c55e' : '#8a7170') + '">'
+          + (ok ? '✅' : '⬜') + ' ' + meta.i + ' ' + meta.l + '</span>';
+      }).join('');
+    }
     const toggle = block.querySelector('.loc-docs-toggle');
     const list   = block.querySelector('.loc-docs-list');
     const empty  = block.querySelector('.loc-docs-empty');

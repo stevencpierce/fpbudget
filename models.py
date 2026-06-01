@@ -535,6 +535,10 @@ class Location(db.Model):
     notes           = db.Column(db.Text,    nullable=True)
     active          = db.Column(db.Boolean, default=True)
     omit_flags      = db.Column(db.Text, nullable=True)   # JSON: {"main":{name,phone,email},"dayof":{name,phone,email}}
+    # Per-location required-doc checklist (comma-separated keys, e.g.
+    # "agreement,coi,permit"). User picks what THIS location requires; the
+    # Locations tab badges measure attached docs against it. (2026-06-01.)
+    required_docs   = db.Column(db.Text, nullable=True)
     days            = db.relationship("LocationDay", backref="location", lazy=True,
                                       cascade="all, delete-orphan")
 
