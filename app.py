@@ -20219,10 +20219,19 @@ def sync_actual_from_working(pid):
         except Exception:
             pass
         return v
+    # Opt-in writes: create-missing (the main fix — make Actual mirror Working
+    # by adding lines Working has but Actual lacks) and field-edits (fringe/
+    # rate/etc. on existing lines, which change computed values — held behind
+    # its own flag). Dry-run still reports both.
+    _do_create = (request.args.get('create') == '1')
+    _do_fields = (request.args.get('fields') == '1')
     FIELDS = ['is_labor', 'use_schedule', 'sort_order', 'qty', 'days', 'rate',
               'rate_type', 'fringe_type', 'agent_pct', 'line_tag']
-    report = {"dry": dry, "working": wrk.id, "actual": act.id,
+    report = {"dry": dry, "applied": {"create": _do_create and not dry, "fields": _do_fields and not dry},
+              "working": wrk.id, "actual": act.id,
               "changed": [], "unlinked": 0, "untouched": 0}
+
+    # ── 1) Field-edits on existing matched lines ──────────────────────
     for a in _alines:
         w = _wlines.get(a.source_line_id) if a.source_line_id else None
         if not w:
@@ -20233,22 +20242,46 @@ def sync_actual_from_working(pid):
             wv, av = getattr(w, f, None), getattr(a, f, None)
             if wv != av:
                 diffs[f] = [_sv(av), _sv(wv)]
-                if not dry:
+                if _do_fields and not dry:
                     setattr(a, f, wv)
-        # parent_line_id remap: Working parent → its Actual mirror line.
         new_parent = None
         if w.parent_line_id:
             ap = _act_by_src.get(w.parent_line_id)
             new_parent = ap.id if ap else None
         if a.parent_line_id != new_parent:
             diffs['parent_line_id'] = [a.parent_line_id, new_parent]
-            if not dry:
+            if _do_fields and not dry:
                 a.parent_line_id = new_parent
         if diffs:
             report["changed"].append({"id": a.id, "desc": (a.description or '')[:32], "diffs": diffs})
         else:
             report["untouched"] += 1
-    if not dry:
+
+    # ── 2) Create missing Actual lines for Working lines with no mirror ──
+    _skip = {'id', 'budget_id', 'source_line_id', 'parent_line_id'}
+    _cols = [c for c in BudgetLine.__table__.columns.keys() if c not in _skip]
+    missing = [w for w in _wlines.values() if w.id not in _act_by_src]
+    report["missing_count"] = len(missing)
+    report["created"] = [{"working_id": w.id, "desc": (w.description or '')[:32]} for w in missing]
+    if _do_create and not dry and missing:
+        for w in missing:
+            nl = BudgetLine(budget_id=act.id, source_line_id=w.id)
+            for c in _cols:
+                setattr(nl, c, getattr(w, c))
+            db.session.add(nl)
+            db.session.flush()
+            _act_by_src[w.id] = nl
+        # second pass: remap every Actual line's parent to its Working parent's mirror
+        for w in _wlines.values():
+            a = _act_by_src.get(w.id)
+            if not a:
+                continue
+            np = (_act_by_src.get(w.parent_line_id).id
+                  if w.parent_line_id and _act_by_src.get(w.parent_line_id) else None)
+            if a.parent_line_id != np:
+                a.parent_line_id = np
+
+    if (_do_create or _do_fields) and not dry:
         db.session.commit()
     report["changed_count"] = len(report["changed"])
     return jsonify(report)
