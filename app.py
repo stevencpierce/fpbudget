@@ -20294,6 +20294,230 @@ def actual_audit(pid):
     })
 
 
+@app.route("/projects/<int:pid>/rebuild-actual-mirror", methods=["POST"])
+@login_required
+def rebuild_actual_mirror(pid):
+    """Make the Actual budget structurally MIRROR the Working budget by fixing
+    the duplicate-clone corruption surfaced by /actual-audit. Three operations,
+    each independently gated; dry-run by default (apply only with ?apply=1):
+
+      DEDUP (always planned): for every Working line that >1 Actual line points
+        at (source_line_id), keep the Actual line carrying the most dependent
+        rows (transactions/crew/schedule/sub-budget/location — tiebreak: lowest
+        id) and DELETE the empty twin(s). Before deleting a twin we:
+          • migrate any dependent rows it does carry onto the keeper
+            (txn.budget_line_id + .suggested_budget_line_id, crew, schedule,
+            sub-budget, location), and
+          • re-parent any Actual line whose parent_line_id pointed at the twin
+            to the keeper,
+        so nothing is orphaned and no transaction is lost.
+
+      CREATE (?create=1, default on apply): clone every Working line that has NO
+        Actual mirror into the Actual budget (so new Working lines — e.g. a kit
+        fee — appear in Actual), parent remapped through the source chain.
+
+      ORPHANS: Actual lines whose source_line_id is null/invalid. Those with
+        ZERO dependents are deleted (?drop_orphans=1). Those carrying data are
+        NEVER touched here — they're reported under orphans_kept for manual
+        review (could be a real expense whose Working line was deleted).
+
+    Does NOT change planned/computed fields on surviving lines (fringe/rate/
+    sort) — that's the separate /sync-actual-from-working?fields=1 path.
+    Admin only. (User 2026-06-01.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    apply = (request.args.get('apply') == '1')
+    do_create = (request.args.get('create') == '1') or apply  # default-on when applying
+    drop_orphans = (request.args.get('drop_orphans') == '1')
+    ProjectSheet.query.get_or_404(pid)
+    all_b = Budget.query.filter_by(project_id=pid).all()
+    def _pick(kind):
+        return (next((b for b in all_b if _budget_type(b.budget_mode) == kind
+                      and not b.is_actual and b.version_status == 'current'), None)
+                or next((b for b in all_b if _budget_type(b.budget_mode) == kind
+                         and not b.is_actual and b.version_status != 'archived'), None))
+    wrk = _pick('working')
+    act = (next((b for b in all_b if b.is_actual and b.version_status == 'current'), None)
+           or next((b for b in all_b if b.is_actual and b.version_status != 'archived'), None))
+    if not (wrk and act):
+        return jsonify({"error": "could not resolve working + actual budgets"}), 400
+
+    wlines = BudgetLine.query.filter_by(budget_id=wrk.id).all()
+    alines = BudgetLine.query.filter_by(budget_id=act.id).all()
+    w_by_id = {l.id: l for l in wlines}
+    a_by_id = {l.id: l for l in alines}
+    a_ids = list(a_by_id.keys())
+
+    from sqlalchemy import func as _f
+    def _counts(model, col='budget_line_id'):
+        if not a_ids:
+            return {}
+        rows = (db.session.query(getattr(model, col), _f.count(model.id))
+                .filter(getattr(model, col).in_(a_ids))
+                .group_by(getattr(model, col)).all())
+        return {k: int(v) for k, v in rows if k is not None}
+    c_txn  = _counts(Transaction)
+    c_txns = _counts(Transaction, 'suggested_budget_line_id')
+    c_crew = _counts(CrewAssignment)
+    c_sch  = _counts(ScheduleDay)
+    c_sub  = _counts(SubBudgetLine)
+    c_loc  = _counts(Location)
+    def _dep_total(lid):
+        return (c_txn.get(lid, 0) + c_txns.get(lid, 0) + c_crew.get(lid, 0)
+                + c_sch.get(lid, 0) + c_sub.get(lid, 0) + c_loc.get(lid, 0))
+
+    # children-by-parent within the actual budget (for safe reparenting)
+    children_of = {}
+    for l in alines:
+        if l.parent_line_id:
+            children_of.setdefault(l.parent_line_id, []).append(l.id)
+
+    # group actual lines by the working line they mirror
+    src_map = {}
+    orphan_lines = []
+    for a in alines:
+        if a.source_line_id and a.source_line_id in w_by_id:
+            src_map.setdefault(a.source_line_id, []).append(a)
+        else:
+            orphan_lines.append(a)
+
+    report = {"dry": (not apply), "applied": apply,
+              "budgets": {"working": wrk.id, "actual": act.id},
+              "counts_before": {"working": len(wlines), "actual": len(alines)},
+              "dedup": {"groups": 0, "delete": [], "migrations": [], "reparents": []},
+              "create": {"count": 0, "lines": []},
+              "orphans_dropped": [], "orphans_kept": [],
+              "errors": []}
+
+    delete_ids = set()
+    keeper_for = {}   # twin_id -> keeper_id
+
+    # ── 1) DEDUP ──────────────────────────────────────────────────────
+    for wid, grp in src_map.items():
+        if len(grp) <= 1:
+            continue
+        report["dedup"]["groups"] += 1
+        grp_sorted = sorted(grp, key=lambda l: (-_dep_total(l.id), l.id))
+        keeper = grp_sorted[0]
+        for twin in grp_sorted[1:]:
+            delete_ids.add(twin.id)
+            keeper_for[twin.id] = keeper.id
+            mig = {"twin": twin.id, "keeper": keeper.id, "desc": (twin.description or '')[:30],
+                   "moved": {"txn": c_txn.get(twin.id, 0), "txn_sugg": c_txns.get(twin.id, 0),
+                             "crew": c_crew.get(twin.id, 0), "sched": c_sch.get(twin.id, 0),
+                             "sub": c_sub.get(twin.id, 0), "loc": c_loc.get(twin.id, 0)}}
+            if any(mig["moved"].values()):
+                report["dedup"]["migrations"].append(mig)
+            else:
+                report["dedup"]["delete"].append({"twin": twin.id, "keeper": keeper.id,
+                                                  "desc": (twin.description or '')[:30]})
+
+    # reparent plan: any actual line whose parent is a doomed twin → keeper
+    for twin_id in list(delete_ids):
+        for child_id in children_of.get(twin_id, []):
+            if child_id in delete_ids:
+                continue
+            report["dedup"]["reparents"].append({"child": child_id, "from": twin_id,
+                                                  "to": keeper_for[twin_id]})
+
+    # ── 2) CREATE missing mirrors ─────────────────────────────────────
+    missing = [w for w in wlines if w.id not in src_map]
+    report["create"]["count"] = len(missing)
+    report["create"]["lines"] = [{"working_id": w.id, "desc": (w.description or '')[:32],
+                                   "tag": w.line_tag} for w in missing]
+
+    # ── 3) ORPHANS ────────────────────────────────────────────────────
+    for o in orphan_lines:
+        if _dep_total(o.id) == 0:
+            report["orphans_dropped"].append({"id": o.id, "desc": (o.description or '')[:32],
+                                               "src": o.source_line_id, "tag": o.line_tag})
+        else:
+            report["orphans_kept"].append({"id": o.id, "desc": (o.description or '')[:32],
+                                           "src": o.source_line_id, "tag": o.line_tag,
+                                           "deps": {"txn": c_txn.get(o.id, 0),
+                                                    "txn_sugg": c_txns.get(o.id, 0),
+                                                    "crew": c_crew.get(o.id, 0),
+                                                    "sched": c_sch.get(o.id, 0),
+                                                    "sub": c_sub.get(o.id, 0),
+                                                    "loc": c_loc.get(o.id, 0)}})
+
+    report["projected_actual_lines"] = (len(alines) - len(delete_ids)
+                                        + (len(missing) if do_create else 0)
+                                        - (len(report["orphans_dropped"]) if drop_orphans else 0))
+
+    # ── APPLY ─────────────────────────────────────────────────────────
+    if apply:
+        try:
+            # a) migrate dependents off each twin onto its keeper, then reparent
+            for twin_id in delete_ids:
+                keep = keeper_for[twin_id]
+                Transaction.query.filter_by(budget_line_id=twin_id).update(
+                    {"budget_line_id": keep}, synchronize_session=False)
+                Transaction.query.filter_by(suggested_budget_line_id=twin_id).update(
+                    {"suggested_budget_line_id": keep}, synchronize_session=False)
+                ScheduleDay.query.filter_by(budget_line_id=twin_id).update(
+                    {"budget_line_id": keep}, synchronize_session=False)
+                SubBudgetLine.query.filter_by(budget_line_id=twin_id).update(
+                    {"budget_line_id": keep}, synchronize_session=False)
+                Location.query.filter_by(budget_line_id=twin_id).update(
+                    {"budget_line_id": keep}, synchronize_session=False)
+                # crew: avoid (budget_line_id, instance) unique clash — bump
+                # instance numbers past whatever the keeper already uses.
+                ca_twin = CrewAssignment.query.filter_by(budget_line_id=twin_id).all()
+                if ca_twin:
+                    maxi = db.session.query(_f.max(CrewAssignment.instance)).filter_by(
+                        budget_line_id=keep).scalar() or 0
+                    for i, ca in enumerate(ca_twin, start=1):
+                        ca.budget_line_id = keep
+                        ca.instance = maxi + i
+                # reparent children of the twin onto the keeper
+                BudgetLine.query.filter_by(parent_line_id=twin_id).update(
+                    {"parent_line_id": keep}, synchronize_session=False)
+            db.session.flush()
+            # b) delete the twins
+            if delete_ids:
+                BudgetLine.query.filter(BudgetLine.id.in_(delete_ids)).delete(
+                    synchronize_session=False)
+            db.session.flush()
+            # c) create missing mirrors
+            if do_create and missing:
+                _skip = {'id', 'budget_id', 'source_line_id', 'parent_line_id'}
+                _cols = [c for c in BudgetLine.__table__.columns.keys() if c not in _skip]
+                act_by_src = {l.source_line_id: l for l in
+                              BudgetLine.query.filter_by(budget_id=act.id).all()
+                              if l.source_line_id}
+                for w in missing:
+                    nl = BudgetLine(budget_id=act.id, source_line_id=w.id)
+                    for c in _cols:
+                        setattr(nl, c, getattr(w, c))
+                    db.session.add(nl)
+                    db.session.flush()
+                    act_by_src[w.id] = nl
+                # remap parents through the source chain for ALL actual lines
+                for a in BudgetLine.query.filter_by(budget_id=act.id).all():
+                    if not a.source_line_id:
+                        continue
+                    w = w_by_id.get(a.source_line_id)
+                    np = (act_by_src.get(w.parent_line_id).id
+                          if (w and w.parent_line_id and act_by_src.get(w.parent_line_id))
+                          else None)
+                    if a.parent_line_id != np:
+                        a.parent_line_id = np
+            # d) drop zero-dep orphans
+            if drop_orphans and report["orphans_dropped"]:
+                oid = [o["id"] for o in report["orphans_dropped"]]
+                BudgetLine.query.filter(BudgetLine.id.in_(oid)).delete(
+                    synchronize_session=False)
+            db.session.commit()
+            report["counts_after"] = {"actual": len(BudgetLine.query.filter_by(budget_id=act.id).all())}
+        except Exception as e:
+            db.session.rollback()
+            report["errors"].append(str(e))
+            return jsonify(report), 500
+
+    return jsonify(report)
+
+
 @app.route("/projects/<int:pid>/sync-actual-from-working", methods=["POST"])
 @login_required
 def sync_actual_from_working(pid):
