@@ -1225,12 +1225,13 @@
              Actual views (user 2026-05-29). #}
           {# source_line_id resolution first (correct across reordered/kit-fee
              budgets), then positional, then description. (User 2026-06-01.) #}
-          {% set _est_live = xb_est.get(ln.id, none) %}
+          {# Match cross-budget by normalized description first — robust to
+             sort_order collisions (kit fee shares parent's sort_order) AND to
+             corrupted source_line_id links. Positional only as last resort.
+             (User 2026-06-01.) #}
+          {% set _est_live = estimated_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
           {% if _est_live is none %}
             {% set _est_live = estimated_line_totals.get((ln.account_code, ln.sort_order), none) %}
-          {% endif %}
-          {% if _est_live is none %}
-            {% set _est_live = estimated_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
           {% endif %}
           {% if _est_live is not none %}
             {% set _frozen = _est_live %}
@@ -1251,7 +1252,7 @@
              2026-05-07. #}
           <td class="col-num col-working line-working">
             {% if is_actual_view %}
-              {% set _wlt_act = xb_work.get(ln.id, none) %}
+              {% set _wlt_act = working_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
               {% if _wlt_act is none %}{% set _wlt_act = working_line_totals.get((ln.account_code, ln.sort_order), none) %}{% endif %}
               {% if _wlt_act is not none %}
                 <span class="muted" style="font-size:.85rem"
@@ -1270,7 +1271,7 @@
              Previously the Estimated view tried actual_by_line_id
              (keyed by Working ids) and always missed → dash. Hidden
              when no Actual budget exists yet. 2026-05-08. #}
-          {% set _actual = xb_act.get(ln.id, none) %}
+          {% set _actual = actual_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
           {% if _actual is none %}{% set _actual = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
           {% set _actual = (_actual or 0) | float %}
           <td class="col-num col-actual line-actual">
@@ -1307,7 +1308,7 @@
           <td class="col-num line-total"><strong data-base="{{ res.est_total }}">{{ (res.est_total * _sec_fee_m) | currency }}</strong></td>
           <td class="col-num col-working line-working">
             {% if working_exists %}
-              {% set _wlt = xb_work.get(ln.id, none) %}
+              {% set _wlt = working_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
               {% if _wlt is none %}{% set _wlt = working_line_totals.get((ln.account_code, ln.sort_order), none) %}{% endif %}
               {% if _wlt is not none %}
               <span class="muted" style="font-size:.85rem" title="Current Working budget total for this line">{{ (_wlt * _sec_fee_m) | currency }}</span>
@@ -1320,7 +1321,7 @@
           </td>
           {# Estimated view's Actual column — same key-based lookup as
              Working view above. 2026-05-08. #}
-          {% set _actual_e = xb_act.get(ln.id, none) %}
+          {% set _actual_e = actual_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
           {% if _actual_e is none %}{% set _actual_e = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
           {% set _actual_e = (_actual_e or 0) | float %}
           <td class="col-num col-actual">
@@ -1336,7 +1337,7 @@
              view so the basis selector drives this cell too. E is the
              current line (the budget being viewed), W is the sister
              Working budget's value if it exists, A is per-line actual. #}
-          {% set _wlt_for_var = xb_work.get(ln.id, none) %}
+          {% set _wlt_for_var = working_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
           {% if _wlt_for_var is none %}{% set _wlt_for_var = working_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
           {% set _wlt_for_var = _wlt_for_var or 0 %}
           <td class="col-num col-variance line-variance line-var-cell"

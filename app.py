@@ -4267,7 +4267,10 @@ def budget_view(pid, bid):
     )
 
     working_line_totals = {}
+    working_line_totals_by_desc = {}   # {(account_code, lower desc): total} — sort-order-collision-proof fallback
     working_line_results = {}  # {working_line.id: full _wres dict}
+    def _wdesc_key(_l):
+        return (_l.account_code, (_l.description or '').strip().lower())
     if current_working_bid:
         if current_working_bid == budget.id:
             # FAST PATH: we're viewing the Working budget — its lines AND
@@ -4283,6 +4286,7 @@ def budget_view(pid, bid):
                 working_line_totals[(ln.account_code, ln.sort_order)] = (
                     r.get('est_total', 0) or 0
                 )
+                working_line_totals_by_desc[_wdesc_key(ln)] = (r.get('est_total', 0) or 0)
                 working_line_results[ln.id] = r
         else:
             # Cross-view: viewing Estimated/Actual, separate Working budget
@@ -4321,6 +4325,7 @@ def budget_view(pid, bid):
                     else:
                         _wres = calc_line(_wln, _wb_fringe)
                     working_line_totals[(_wln.account_code, _wln.sort_order)] = _wres['est_total']
+                    working_line_totals_by_desc[_wdesc_key(_wln)] = _wres['est_total']
                     working_line_results[_wln.id] = _wres
                 except Exception:
                     pass  # skip any line that fails to calc; column shows — for that line
@@ -4768,10 +4773,12 @@ def budget_view(pid, bid):
 
     actual_line_totals = {}
     actual_line_totals_by_lid = {}  # by Actual line id (used in Actual view)
+    actual_line_totals_by_desc = {}  # {(account_code, lower desc): total}
     if peer_actual_bid:
         try:
             _alines = BudgetLine.query.filter_by(budget_id=peer_actual_bid).all()
             _alid_to_key = {l.id: (l.account_code, l.sort_order) for l in _alines}
+            _alid_to_desc = {l.id: (l.account_code, (l.description or '').strip().lower()) for l in _alines}
             _txns = (Transaction.query
                      .filter(Transaction.project_id == pid,
                              Transaction.budget_line_id.isnot(None),
@@ -4787,6 +4794,9 @@ def budget_view(pid, bid):
                 actual_line_totals[_key] = actual_line_totals.get(_key, 0.0) + _amt
                 actual_line_totals_by_lid[_tx.budget_line_id] = (
                     actual_line_totals_by_lid.get(_tx.budget_line_id, 0.0) + _amt)
+                _dkey = _alid_to_desc.get(_tx.budget_line_id)
+                if _dkey:
+                    actual_line_totals_by_desc[_dkey] = actual_line_totals_by_desc.get(_dkey, 0.0) + _amt
         except Exception as _ate:
             logging.warning(f"[budget_view] actual rollup failed: {_ate}")
 
@@ -5170,6 +5180,8 @@ def budget_view(pid, bid):
         est_section_lookup=est_section_lookup,
         actual_line_totals=actual_line_totals,
         actual_line_totals_by_lid=actual_line_totals_by_lid,
+        actual_line_totals_by_desc=actual_line_totals_by_desc,
+        working_line_totals_by_desc=working_line_totals_by_desc,
         xb_est=xb_est, xb_work=xb_work, xb_act=xb_act,
         manual_by_section=manual_by_section,
         project_locations=project_locations,
