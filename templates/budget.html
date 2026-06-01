@@ -1332,8 +1332,18 @@
           </td>
           {# Estimated view's Actual column — same key-based lookup as
              Working view above. 2026-05-08. #}
-          {% set _actual_e = actual_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
-          {% if _actual_e is none %}{% set _actual_e = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
+          {# When viewing the Actual budget (its budget_mode is mislabeled
+             'estimated', so this Estimated-layout branch renders it), ln IS the
+             actual line — resolve its spend by its OWN id, exact. By-desc /
+             positional are only valid when ln is a sister-budget line; they
+             collide for same-account lines and made a freshly created kit-fee
+             mirror show another 2000-level line's spend (user 2026-06-01). #}
+          {% if is_actual_view %}
+            {% set _actual_e = actual_line_totals_by_lid.get(ln.id, 0) %}
+          {% else %}
+            {% set _actual_e = actual_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
+            {% if _actual_e is none %}{% set _actual_e = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
+          {% endif %}
           {% set _actual_e = (_actual_e or 0) | float %}
           <td class="col-num col-actual">
             {% if has_actual_budget %}
