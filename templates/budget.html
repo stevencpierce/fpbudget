@@ -2727,13 +2727,27 @@
             {# Crew member picker — shown for tax_form / contract /
                release / payroll. Populated from the project's crew. #}
             <div class="field" id="docDetailCrewField" style="margin-bottom:.6rem;display:none">
-              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Crew Member</label>
+              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Person / Vendor</label>
               <select id="docDetailCrewId" style="width:100%">
                 <option value="">— not linked —</option>
                 {% for cm in (crew_members or []) %}
-                <option value="{{ cm.id }}">{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.role %} — {{ cm.role }}{% endif %}</option>
+                <option value="{{ cm.id }}">{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.is_vendor %} (vendor){% elif cm.role %} — {{ cm.role }}{% endif %}</option>
                 {% endfor %}
               </select>
+              {# Create a new person/vendor without leaving the doc popup —
+                 for when a doc arrives for someone not in the system yet.
+                 (User 2026-06-01.) #}
+              <a href="#" id="docDetailNewCrewLink" onclick="event.preventDefault();docDetailNewCrewShow()"
+                 style="font-size:11px;color:#5b8af9;text-decoration:none;display:inline-block;margin-top:4px">+ New person / vendor</a>
+              <div id="docDetailNewCrew" style="display:none;margin-top:6px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-input)">
+                <input type="text" id="docDetailNewCrewName" placeholder="Name" style="width:100%;margin-bottom:6px">
+                <label class="checkbox-label" style="font-size:11px"><input type="checkbox" id="docDetailNewCrewVendor"> This is a vendor / company</label>
+                <div style="display:flex;gap:6px;margin-top:6px">
+                  <button type="button" class="btn btn-xs btn-primary" onclick="docDetailNewCrewSave()">Add &amp; select</button>
+                  <button type="button" class="btn btn-xs btn-ghost" onclick="docDetailNewCrewHide()">Cancel</button>
+                </div>
+                <div id="docDetailNewCrewStatus" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div>
+              </div>
             </div>
             {# Location picker — shown for insurance/COI and location releases. #}
             <div class="field" id="docDetailLocationField" style="margin-bottom:.6rem;display:none">
@@ -4894,6 +4908,7 @@
     document.getElementById('docDetailDocNum').value   = row?.dataset?.docNum || '';
     document.getElementById('docDetailCard4').value    = row?.dataset?.sortCard4 || '';
     document.getElementById('docDetailCrewId').value     = row?.dataset?.crewMemberId || '';
+    if (typeof docDetailNewCrewHide === 'function') docDetailNewCrewHide();   // reset inline creator
     document.getElementById('docDetailLocationId').value = row?.dataset?.locationId || '';
     _docDetailApplyTypeUI(row?.dataset?.sortType || '');
     // Re-apply when the user changes the type dropdown so labels /
@@ -5100,6 +5115,49 @@
     if (ev && ev.target && ev.target.id !== 'docDetailOverlay') return;
     document.getElementById('docDetailOverlay').style.display = 'none';
     _docDetailUid = null;
+  };
+
+  // ── Create a new person / vendor from inside the doc popup ───────────
+  // For when a doc arrives for someone not in the crew DB yet. Creates the
+  // crew record (optionally a vendor), adds the option, and selects it.
+  window.docDetailNewCrewShow = function () {
+    const f = document.getElementById('docDetailNewCrew');
+    if (f) { f.style.display = 'block'; document.getElementById('docDetailNewCrewName').focus(); }
+  };
+  window.docDetailNewCrewHide = function () {
+    const f = document.getElementById('docDetailNewCrew');
+    if (!f) return;
+    f.style.display = 'none';
+    document.getElementById('docDetailNewCrewName').value = '';
+    document.getElementById('docDetailNewCrewVendor').checked = false;
+    document.getElementById('docDetailNewCrewStatus').textContent = '';
+  };
+  window.docDetailNewCrewSave = async function () {
+    const name = (document.getElementById('docDetailNewCrewName').value || '').trim();
+    const isVendor = document.getElementById('docDetailNewCrewVendor').checked;
+    const status = document.getElementById('docDetailNewCrewStatus');
+    if (!name) { status.textContent = 'Name required'; return; }
+    status.textContent = 'Adding…';
+    try {
+      const r = await fetch('/crew/new?fmt=json', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, is_vendor: isVendor }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.id) { status.textContent = 'Failed: ' + (d.error || r.status); return; }
+      const sel = document.getElementById('docDetailCrewId');
+      let opt = Array.from(sel.options).find(o => o.value === String(d.id));
+      if (!opt) {
+        opt = document.createElement('option');
+        opt.value = String(d.id);
+        opt.textContent = d.name + (isVendor ? ' (vendor)' : '');
+        sel.appendChild(opt);
+      }
+      sel.value = String(d.id);
+      docDetailNewCrewHide();
+    } catch (e) {
+      status.textContent = 'Error: ' + (e && e.message || e);
+    }
   };
 
   // ── Delete the currently-open document ───────────────────────────────
