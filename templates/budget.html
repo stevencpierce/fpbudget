@@ -8559,6 +8559,46 @@
   </div>
   {% endif %}
 
+  {# ── OTHER PEOPLE WITH DOCUMENTS ─────────────────────────────────────
+     Anyone who has a document linked to them but isn't on a budget line, a
+     direct contact, a vendor, or a loan-out — e.g. a person created from the
+     doc popup. Otherwise their packet would be invisible. (User 2026-06-01.) #}
+  {% set _shown_ids = [] %}
+  {% for r in ns.crew_rows %}{% if r.crew_member_id %}{% set _ = _shown_ids.append(r.crew_member_id) %}{% endif %}{% endfor %}
+  {% for v in _vendors %}{% set _ = _shown_ids.append(v.id) %}{% endfor %}
+  {% for dc in (direct_contacts or []) %}{% if dc.crew_member_id %}{% set _ = _shown_ids.append(dc.crew_member_id) %}{% endif %}{% endfor %}
+  {% for c in (crew_members or []) if c.loan_out_vendor_id %}{% set _ = _shown_ids.append(c.id) %}{% endfor %}
+  {% set _doc_crew_ids = (doc_uploads or []) | selectattr('crew_member_id') | map(attribute='crew_member_id') | list %}
+  {% set _others = (crew_members or []) | rejectattr('is_vendor') | selectattr('id', 'in', _doc_crew_ids) | rejectattr('id', 'in', _shown_ids) | list %}
+  {% if _others %}
+  <div class="contact-sheet-section">
+    <div class="contact-sheet-section-header">
+      <span class="contact-sheet-section-icon">📎</span> Other People with Documents
+    </div>
+    <table class="contact-table">
+      <thead><tr><th>Name</th><th>Company</th><th>Documents</th><th class="cs-screen-only"></th></tr></thead>
+      <tbody>
+        {% for p in _others %}
+        <tr class="contact-row-item" data-crew-member-id="{{ p.id }}">
+          <td>{{ p.name }}</td>
+          <td class="contact-company">{{ p.company or '—' }}</td>
+          <td>
+            <div class="cs-docs" data-crew-member-id="{{ p.id }}" style="line-height:1.4">
+              <span class="cs-docs-badges"></span>
+              <a href="#" class="cs-docs-toggle" style="display:none;color:#5b8af9;text-decoration:none;margin-left:6px"></a>
+              <div class="cs-docs-list" style="display:none;margin-top:3px"></div>
+            </div>
+          </td>
+          <td class="cs-screen-only">
+            <button class="btn btn-xs btn-ghost" onclick="openCrewEditModal({{ p.id }}, '{{ p.name|replace("'","\\'") }}')" title="Edit / set loan-out">✎</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
   {# ── DIRECT CONTACTS SECTION ── #}
   {% if direct_contacts %}
   <div class="contact-sheet-section">
