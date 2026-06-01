@@ -4624,6 +4624,7 @@ def budget_view(pid, bid):
     # historical/audit needs but is no longer the column source.
     # 2026-05-07.
     estimated_line_totals = {}
+    est_total_by_eid = {}   # by Estimated line id — for source_line_id resolution
     # Secondary index keyed by (account_code, normalized description). The
     # primary (account_code, sort_order) key desyncs the moment a Working/
     # Actual line is duplicated, reordered, inserted, or deleted (sort_order
@@ -4648,6 +4649,7 @@ def budget_view(pid, bid):
                 _ev = r.get('est_total', 0) or 0
                 estimated_line_totals[(ln.account_code, ln.sort_order)] = _ev
                 estimated_line_totals_by_desc[_desc_key(ln)] = _ev
+                est_total_by_eid[ln.id] = _ev
         else:
             # Cross-view: query + calc the separate Estimated budget.
             # Bulk-fetch ScheduleDay rows in one query (see C-6 note above
@@ -4690,6 +4692,7 @@ def budget_view(pid, bid):
                         _eres = calc_line(_eln, _eb_fringe)
                     estimated_line_totals[(_eln.account_code, _eln.sort_order)] = _eres['est_total']
                     estimated_line_totals_by_desc[_desc_key(_eln)] = _eres['est_total']
+                    est_total_by_eid[_eln.id] = _eres['est_total']
                 except Exception:
                     pass  # skip any line that fails to calc
 
@@ -4786,6 +4789,54 @@ def budget_view(pid, bid):
                     actual_line_totals_by_lid.get(_tx.budget_line_id, 0.0) + _amt)
         except Exception as _ate:
             logging.warning(f"[budget_view] actual rollup failed: {_ate}")
+
+    # ── Cross-budget per-line resolution via the source_line_id clone chain ──
+    # The Estimated/Working/Actual comparison columns used to match a line to
+    # its counterpart in the other budgets by (account_code, sort_order)
+    # position. When the three budgets' orderings diverge — lines added /
+    # removed / reordered, kit fees living as separate child lines at
+    # different positions — that position maps to the WRONG line (a kit fee
+    # showing its parent's number, etc.; user 2026-06-01). Resolve instead via
+    # the explicit clone link: Actual.source_line_id → Working line;
+    # Working.source_line_id → Estimated line. xb_* are keyed by the CURRENT
+    # view's line id; the template prefers them and falls back to the old
+    # positional dicts for lines with no clone link (legacy / hand-added).
+    xb_est, xb_work, xb_act = {}, {}, {}
+    try:
+        _work_total_by_wid = {wid: (r.get('est_total') if r else None)
+                              for wid, r in working_line_results.items()}
+        _wid_to_eid = {}
+        if current_working_bid:
+            for _wid, _eid in (db.session.query(BudgetLine.id, BudgetLine.source_line_id)
+                               .filter(BudgetLine.budget_id == current_working_bid,
+                                       BudgetLine.source_line_id.isnot(None)).all()):
+                _wid_to_eid[_wid] = _eid
+        _eid_to_wid = {e: w for w, e in _wid_to_eid.items()}
+        _aid_to_wid = actual_to_working                       # {actual_id: working_id}
+        _wid_to_aid = {w: a for a, w in actual_to_working.items()}
+        _view_actual = bool(budget.is_actual)
+        _view_est    = (not _view_actual) and _budget_type(budget.budget_mode) == 'estimated'
+        for ln in lines:
+            if _view_actual:
+                wid = ln.source_line_id or _aid_to_wid.get(ln.id)
+                eid = _wid_to_eid.get(wid)
+                aid = ln.id
+            elif _view_est:
+                eid = ln.id
+                wid = _eid_to_wid.get(ln.id)
+                aid = _wid_to_aid.get(wid)
+            else:  # working view
+                wid = ln.id
+                eid = ln.source_line_id
+                aid = _wid_to_aid.get(ln.id)
+            if eid is not None and eid in est_total_by_eid:
+                xb_est[ln.id] = est_total_by_eid[eid]
+            if wid is not None and wid in _work_total_by_wid:
+                xb_work[ln.id] = _work_total_by_wid[wid]
+            if aid is not None and aid in actual_line_totals_by_lid:
+                xb_act[ln.id] = actual_line_totals_by_lid[aid]
+    except Exception as _xbe:
+        logging.warning(f"[budget_view] source_line_id cross-budget resolve failed: {_xbe}")
 
     # Build version groups: list of {version_number, estimated, working, is_current}
     # sorted descending so newest version is first.
@@ -5119,6 +5170,7 @@ def budget_view(pid, bid):
         est_section_lookup=est_section_lookup,
         actual_line_totals=actual_line_totals,
         actual_line_totals_by_lid=actual_line_totals_by_lid,
+        xb_est=xb_est, xb_work=xb_work, xb_act=xb_act,
         manual_by_section=manual_by_section,
         project_locations=project_locations,
         loc_day_map=loc_day_map,
