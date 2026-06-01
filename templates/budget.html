@@ -13991,11 +13991,14 @@ window._buildPacketView = function(){
         if (taxSub.test(hay)) present.tax = true;   // a W-9/W-4 filed as a support doc
       }
     });
-    // Compact badges — present=green, missing=muted (not alarming).
-    block.querySelector('.cs-docs-badges').innerHTML = REQ.map(q =>
-      '<span title="' + q.label + (present[q.key] ? ' on file' : ' missing') + '" '
-      + 'style="color:' + (present[q.key] ? '#22c55e' : '#8a7170') + '">'
-      + (present[q.key] ? '✅' : '⬜') + q.icon + '</span>').join('');
+    // Plain-text status (no emoji emblems): present=green label, missing=red
+    // "Needs <label>". (User 2026-06-01.)
+    block.querySelector('.cs-docs-badges').innerHTML = REQ.map(q => {
+      const ok = present[q.key];
+      return '<span style="color:' + (ok ? '#3fb950' : '#e0707a')
+        + ';font-weight:' + (ok ? '500' : '600') + '">'
+        + (ok ? q.label : 'Needs ' + q.label) + '</span>';
+    }).join('<span style="color:var(--text-muted)"> · </span>');
     const toggle = block.querySelector('.cs-docs-toggle');
     const list   = block.querySelector('.cs-docs-list');
     const label  = '📁 ' + docs.length + ' doc' + (docs.length === 1 ? '' : 's');
@@ -14069,12 +14072,12 @@ window._buildLocationDocs = function(){
     const badgesEl = block.querySelector('.loc-docs-badges');
     if (badgesEl) {
       badgesEl.innerHTML = required.map(k => {
-        const meta = REQ_LABELS[k] || {l:k, i:'📎'};
+        const meta = REQ_LABELS[k] || {l:k};
         const ok = have.has(k);
-        return '<span title="' + meta.l + (ok ? ' on file' : ' missing') + '" '
-          + 'style="color:' + (ok ? '#22c55e' : '#8a7170') + '">'
-          + (ok ? '✅' : '⬜') + ' ' + meta.i + ' ' + meta.l + '</span>';
-      }).join('');
+        return '<span style="color:' + (ok ? '#3fb950' : '#e0707a')
+          + ';font-weight:' + (ok ? '500' : '600') + '">'
+          + (ok ? meta.l : 'Needs ' + meta.l) + '</span>';
+      }).join('<span style="color:var(--text-muted)"> · </span>');
     }
     const toggle = block.querySelector('.loc-docs-toggle');
     const list   = block.querySelector('.loc-docs-list');
@@ -14141,10 +14144,10 @@ window._buildVendorView = function(){
     const have = new Set(); docs.forEach(d => satisfies(d).forEach(k => have.add(k)));
     const badgesEl = card.querySelector('.vendor-badges');
     if (badgesEl) badgesEl.innerHTML = required.map(k => {
-      const meta = REQ_LABELS[k] || {l:k,i:'📎'}; const ok = have.has(k);
-      return '<span title="' + meta.l + (ok?' on file':' missing') + '" style="color:' + (ok?'#22c55e':'#8a7170') + '">'
-        + (ok?'✅':'⬜') + ' ' + meta.i + ' ' + meta.l + '</span>';
-    }).join('');
+      const meta = REQ_LABELS[k] || {l:k}; const ok = have.has(k);
+      return '<span style="color:' + (ok?'#3fb950':'#e0707a') + ';font-weight:' + (ok?'500':'600') + '">'
+        + (ok ? meta.l : 'Needs ' + meta.l) + '</span>';
+    }).join('<span style="color:var(--text-muted)"> · </span>');
     const toggle = card.querySelector('.vendor-docs-toggle');
     const list = card.querySelector('.vendor-docs-list');
     const lbl = '📁 ' + docs.length + ' doc' + (docs.length === 1 ? '' : 's');

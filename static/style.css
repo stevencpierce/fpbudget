@@ -2795,24 +2795,33 @@ a.tab-link:hover { background: var(--bg-3); }
 .contact-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: .83rem;
+  font-size: .98rem;          /* larger, easier to read (user 2026-06-01) */
   margin-bottom: .25rem;
 }
 .contact-table th {
   text-align: left;
-  font-size: .7rem;
+  font-size: .8rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: .05em;
   color: var(--text-muted);
-  padding: .3rem .5rem;
+  padding: .4rem .55rem;
   border-bottom: 1px solid var(--border);
 }
 .contact-row-item td {
-  padding: .4rem .5rem;
+  padding: .58rem .55rem;
   border-bottom: 1px solid rgba(46,51,73,.15);
   vertical-align: middle;
 }
+/* Per-person document status + doc list folded into the contact sheet —
+   bump these up too so they're readable alongside the larger rows. */
+.cs-docs { font-size: .82rem !important; }
+.cs-docs-badges, .loc-docs-badges, .vendor-badges { font-size: .82rem !important; }
+.cs-docs-toggle, .loc-docs-toggle, .vendor-docs-toggle { font-size: .82rem !important; }
+.cs-docs-list, .loc-docs-list, .vendor-docs-list { font-size: .82rem !important; }
+.cs-docs-list a, .loc-docs-list a, .vendor-docs-list a { font-size: .85rem; }
+.vendor-card { font-size: .9rem; }
+.vendor-loanout { font-size: .85rem !important; }
 .contact-row-secondary td { background: rgba(46,51,73,.06); }
 .contact-row-item:last-child td { border-bottom: none; }
 .contact-role { font-size: .8rem; color: var(--text-muted); }
