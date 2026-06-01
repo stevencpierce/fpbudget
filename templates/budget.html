@@ -1271,8 +1271,19 @@
              Previously the Estimated view tried actual_by_line_id
              (keyed by Working ids) and always missed → dash. Hidden
              when no Actual budget exists yet. 2026-05-08. #}
-          {% set _actual = actual_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
-          {% if _actual is none %}{% set _actual = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
+          {# In the ACTUAL view, ln IS the actual budget line, so resolve its
+             spend by its OWN id (exact). The description/positional fallbacks
+             below are only for the Working/Estimated comparison columns, where
+             ln is a sister-budget line and we must map across — those keys
+             collide for same-named or same-position lines (e.g. a freshly
+             created kit fee mirror picking up another 2000-level line's spend,
+             user 2026-06-01), so they must never drive the Actual view. #}
+          {% if is_actual_view %}
+            {% set _actual = actual_line_totals_by_lid.get(ln.id, 0) %}
+          {% else %}
+            {% set _actual = actual_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
+            {% if _actual is none %}{% set _actual = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
+          {% endif %}
           {% set _actual = (_actual or 0) | float %}
           <td class="col-num col-actual line-actual">
             {% if is_actual_view %}
