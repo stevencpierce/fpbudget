@@ -20179,6 +20179,75 @@ def _refile_doc(upload, dry=False):
         return {"changed": False, "error": str(e), "from": cur, "to": intended, "id": upload.id}
 
 
+@app.route("/projects/<int:pid>/repair-clone-links", methods=["POST"])
+@login_required
+def repair_clone_links(pid):
+    """Repair the cross-budget clone chain so Working→Estimated and
+    Actual→Working source_line_id links point at the TRUE counterpart, matched
+    by (account_code, normalized description) with a positional tiebreak for
+    same-named lines. Fixes the corruption behind kit fees showing a parent's
+    numbers + crew bleeding onto kit rows. Dry-run first (?dry=1) returns the
+    proposed relinks without writing. Admin only. (User 2026-06-01.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    dry = (request.args.get('dry') == '1') or bool((request.get_json(silent=True) or {}).get('dry'))
+    ProjectSheet.query.get_or_404(pid)
+    all_b = Budget.query.filter_by(project_id=pid).all()
+    def _pick(kind):
+        return (next((b for b in all_b if _budget_type(b.budget_mode) == kind
+                      and (kind != 'working' or not b.is_actual)
+                      and b.version_status == 'current'), None)
+                or next((b for b in all_b if _budget_type(b.budget_mode) == kind
+                         and (kind != 'working' or not b.is_actual)
+                         and b.version_status != 'archived'), None))
+    est = _pick('estimated')
+    wrk = _pick('working')
+    act = next((b for b in all_b if b.is_actual and b.version_status == 'current'), None) \
+        or next((b for b in all_b if b.is_actual and b.version_status != 'archived'), None)
+
+    def _norm(l):
+        return (l.account_code, (l.description or '').strip().lower())
+
+    def _relink(child_b, parent_b, tag):
+        out = {"tag": tag, "relinked": [], "no_match": [], "already_ok": 0}
+        if not (child_b and parent_b):
+            return out
+        p_lines = sorted(BudgetLine.query.filter_by(budget_id=parent_b.id).all(),
+                         key=lambda x: (x.account_code or 0, x.sort_order or 0))
+        p_idx = {}
+        for pl in p_lines:
+            p_idx.setdefault(_norm(pl), []).append(pl)
+        used = {}
+        for cl in sorted(BudgetLine.query.filter_by(budget_id=child_b.id).all(),
+                         key=lambda x: (x.account_code or 0, x.sort_order or 0)):
+            k = _norm(cl)
+            cands = p_idx.get(k, [])
+            if not cands:
+                out["no_match"].append({"id": cl.id, "desc": (cl.description or '')[:34]})
+                continue
+            pos = used.get(k, 0)
+            target = cands[pos] if pos < len(cands) else cands[-1]
+            used[k] = pos + 1
+            if cl.source_line_id == target.id:
+                out["already_ok"] += 1
+            else:
+                out["relinked"].append({"id": cl.id, "desc": (cl.description or '')[:34],
+                                        "old_src": cl.source_line_id, "new_src": target.id})
+                if not dry:
+                    cl.source_line_id = target.id
+        return out
+
+    report = {"dry": dry,
+              "budgets": {"estimated": est.id if est else None,
+                          "working": wrk.id if wrk else None,
+                          "actual": act.id if act else None},
+              "working_to_estimated": _relink(wrk, est, "working→estimated"),
+              "actual_to_working":    _relink(act, wrk, "actual→working")}
+    if not dry:
+        db.session.commit()
+    return jsonify(report)
+
+
 @app.route("/docs/<int:pid>/reconcile-filing", methods=["POST"])
 @login_required
 def docs_reconcile_filing(pid):
