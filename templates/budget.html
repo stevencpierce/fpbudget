@@ -4337,81 +4337,89 @@
     });
   }
 
-  // ── Background verification of Filed rows ─────────────────────────────
-  // For every "Filed" row currently in the DOM, hit /verify in the
-  // background. If Dropbox returns not_found, flip the row's badge to
-  // RED ("Missing from Dropbox") and outline the row in red so the
-  // user can never silently lose a receipt. Throttled to 4 in-flight
-  // at a time so we don't hammer Dropbox on a project with hundreds.
-  async function _docsVerifyAllFiled() {
-    const rows = Array.from(document.querySelectorAll('#docsHistory .doc-row'))
-      .filter(r => {
-        const s = (r.dataset.status || '').toLowerCase();
-        return s === 'filed' || s === 'done';
-      });
-    const QUEUE = rows.slice();
-    const CONCURRENCY = 4;
-
-    async function _verifyOne(row) {
-      const uid = row.dataset.uploadId;
-      if (!uid) return;
-      try {
-        const r = await fetch('/docs/upload/' + uid + '/verify', { credentials: 'same-origin' });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok || !d.ok) return;  // network/server hiccup — leave row as-is
-        if (d.verified) {
-          // Mark the row as Dropbox-confirmed. Tiny green dot in the
-          // status badge so the user can SEE it was verified, not just
-          // trust the DB row's status field.
-          const badge = row.querySelector('.doc-status-badge');
-          if (badge && !badge.dataset.verifiedMarked) {
-            badge.dataset.verifiedMarked = '1';
-            badge.title = (badge.title || '') + ' · Verified in Dropbox';
-            const dot = document.createElement('span');
-            dot.textContent = ' ✓';
-            dot.style.cssText = 'opacity:.85;margin-left:2px';
-            badge.appendChild(dot);
-          }
-          row.dataset.verified = '1';
-        } else {
-          // FILE IS MISSING. Make this LOUD so the user can't miss it.
-          row.style.border = '1px solid #ef4444';
-          row.style.background = '#2a0d0d';
-          row.dataset.verified = '0';
-          const badge = row.querySelector('.doc-status-badge');
-          if (badge) {
-            badge.textContent = '⚠ Missing from Dropbox';
-            badge.style.cssText = 'font-size:11px;padding:3px 9px;border-radius:20px;white-space:nowrap;background:#2a1414;color:#ef4444;border:1px solid #ef4444;font-weight:600;';
-            badge.title = 'This file is not at the recorded Dropbox path. Possible causes: ' +
-                          'Dropbox upload silently failed, file was moved/deleted in Dropbox, ' +
-                          'or the recorded path is stale. ' +
-                          (d.reason || '');
-          }
+  // ── LAZY verification of Filed rows ───────────────────────────────────
+  // Previously fired /verify for EVERY filed doc on every page load — on a
+  // project with hundreds of docs that's hundreds of Dropbox round-trips,
+  // which made the page slow (user 2026-06-01). Now each row is verified
+  // against Dropbox only when it scrolls into view on the Docs tab (and at
+  // most once). The detail modal still does its own verify on open, so the
+  // "missing file" safety net is intact for anything you actually look at.
+  async function _verifyOne(row) {
+    const uid = row.dataset.uploadId;
+    if (!uid || row.dataset.verifyChecked) return;
+    row.dataset.verifyChecked = '1';
+    try {
+      const r = await fetch('/docs/upload/' + uid + '/verify', { credentials: 'same-origin' });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) { delete row.dataset.verifyChecked; return; }  // allow retry
+      if (d.verified) {
+        const badge = row.querySelector('.doc-status-badge');
+        if (badge && !badge.dataset.verifiedMarked) {
+          badge.dataset.verifiedMarked = '1';
+          badge.title = (badge.title || '') + ' · Verified in Dropbox';
+          const dot = document.createElement('span');
+          dot.textContent = ' ✓';
+          dot.style.cssText = 'opacity:.85;margin-left:2px';
+          badge.appendChild(dot);
         }
-      } catch (e) {
-        // Network failure — silent; the row stays in its server-rendered state.
+        row.dataset.verified = '1';
+      } else {
+        // FILE IS MISSING. Make this LOUD so the user can't miss it.
+        row.style.border = '1px solid #ef4444';
+        row.style.background = '#2a0d0d';
+        row.dataset.verified = '0';
+        const badge = row.querySelector('.doc-status-badge');
+        if (badge) {
+          badge.textContent = '⚠ Missing from Dropbox';
+          badge.style.cssText = 'font-size:11px;padding:3px 9px;border-radius:20px;white-space:nowrap;background:#2a1414;color:#ef4444;border:1px solid #ef4444;font-weight:600;';
+          badge.title = 'This file is not at the recorded Dropbox path. Possible causes: ' +
+                        'Dropbox upload silently failed, file was moved/deleted in Dropbox, ' +
+                        'or the recorded path is stale. ' + (d.reason || '');
+        }
       }
+    } catch (e) {
+      delete row.dataset.verifyChecked;   // network failure — allow retry later
     }
+  }
 
-    const workers = [];
-    for (let i = 0; i < CONCURRENCY; i++) {
-      workers.push((async () => {
-        while (QUEUE.length) {
-          const r = QUEUE.shift();
-          if (r) await _verifyOne(r);
-        }
-      })());
+  let _docsVerifyObserver = null;
+  function _docsLazyVerifyInit() {
+    const rows = Array.from(document.querySelectorAll('#docsHistory .doc-row')).filter(r => {
+      const s = (r.dataset.status || '').toLowerCase();
+      return (s === 'filed' || s === 'done') && !r.dataset.verifyChecked && !r.dataset.verifyObserved;
+    });
+    if (!rows.length) return;
+    if (!('IntersectionObserver' in window)) {
+      // No IO support — just verify the rows that are actually on screen now.
+      rows.filter(r => r.offsetParent !== null).slice(0, 40).forEach(_verifyOne);
+      return;
     }
-    await Promise.all(workers);
+    if (!_docsVerifyObserver) {
+      _docsVerifyObserver = new IntersectionObserver((entries) => {
+        entries.forEach(e => {
+          if (e.isIntersecting) {
+            _docsVerifyObserver.unobserve(e.target);
+            _verifyOne(e.target);
+          }
+        });
+      }, { rootMargin: '250px' });
+    }
+    rows.forEach(r => { r.dataset.verifyObserved = '1'; _docsVerifyObserver.observe(r); });
   }
-  // Run once after DOMContentLoaded so the docs tab is up before we
-  // start spamming /verify. setTimeout gives the rest of the page a
-  // chance to settle (presence ping, sockets, etc.).
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => setTimeout(_docsVerifyAllFiled, 800));
-  } else {
-    setTimeout(_docsVerifyAllFiled, 800);
-  }
+  // Kick off ONLY when the Docs tab is opened (not on every page load), and
+  // re-run after view changes so rows revealed by a subtab/search get picked
+  // up. Each call only observes still-unobserved filed rows (idempotent).
+  window._docsLazyVerifyInit = _docsLazyVerifyInit;
+  (function _wireDocsLazyVerify() {
+    const btn = document.querySelector('[data-tab="docs"]');
+    if (btn) btn.addEventListener('click', () => setTimeout(_docsLazyVerifyInit, 250));
+    const initIfActive = () => {
+      const panel = document.getElementById('tab-docs');
+      if (panel && panel.classList.contains('active')) setTimeout(_docsLazyVerifyInit, 600);
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initIfActive);
+    else initIfActive();
+  })();
 
   // ── Document detail modal ────────────────────────────────────────────
   // Click any non-edit, non-delete area of a doc-row to open. Loads a
