@@ -2198,8 +2198,10 @@
       }
     </style>
 
-    <!-- Upload queue -->
-    <div id="docsQueue" style="margin-top:16px;display:flex;flex-direction:column;gap:8px;"></div>
+    <!-- Upload queue — capped height + internal scroll so a big batch
+         doesn't push the drop zone / Upload All button down the page; the
+         controls stay in a uniform spot during a long upload. (User 2026-06-01.) -->
+    <div id="docsQueue" style="margin-top:16px;display:flex;flex-direction:column;gap:8px;max-height:260px;overflow-y:auto;"></div>
     <button id="docsBtnUpload" onclick="docsUploadAll()" disabled
       style="width:100%;padding:13px;border-radius:10px;margin-top:12px;background:#5b8af9;border:none;color:#fff;font-size:15px;font-weight:600;cursor:pointer;">
       Upload All
