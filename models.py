@@ -381,6 +381,14 @@ class CrewMember(db.Model):
     phone               = db.Column(db.String(50), nullable=True)
     company             = db.Column(db.String(200), nullable=True)
     active              = db.Column(db.Boolean, default=True)
+    # ── Vendor / loan-out (added 2026-06-01) ───────────────────────────
+    # A vendor is a person-like entity (treated like a crew member). People
+    # who provide services through a loan-out company point at that vendor
+    # via loan_out_vendor_id, so the People tab can nest them under it.
+    is_vendor           = db.Column(db.Boolean, default=False)
+    loan_out_vendor_id  = db.Column(db.Integer, db.ForeignKey("crew_member.id"), nullable=True)
+    # Per-vendor required-doc checklist (comma-separated keys), like Location.
+    required_docs       = db.Column(db.Text, nullable=True)
     support_contacts    = db.relationship("SupportContact", backref="crew_member",
                                           lazy=True, cascade="all, delete-orphan",
                                           foreign_keys="SupportContact.crew_member_id")

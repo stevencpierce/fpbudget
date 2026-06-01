@@ -13225,7 +13225,15 @@ def crew_new():
         email=_email,
         phone=_normalize_phone(_get("phone")),
         company=_get("company") or None,
+        is_vendor=bool(_get("is_vendor")),
+        loan_out_vendor_id=(int(_get("loan_out_vendor_id")) if str(_get("loan_out_vendor_id")).strip().isdigit() else None),
     )
+    _rd_new = (request.json if want_json else request.form)
+    _rd = _rd_new.get("required_docs") if _rd_new else None
+    if isinstance(_rd, (list, tuple)):
+        m.required_docs = ",".join(str(x).strip() for x in _rd if str(x).strip()) or None
+    elif _rd:
+        m.required_docs = str(_rd).strip() or None
     db.session.add(m)
     db.session.commit()
 
@@ -13261,6 +13269,19 @@ def crew_edit(cid):
     m.email = _email
     m.phone = _normalize_phone(_get("phone", "").strip())
     m.company = _get("company", "").strip() or None
+    # Vendor / loan-out + per-vendor required docs.
+    _src = request.json if want_json else request.form
+    if _src is not None and ("is_vendor" in _src):
+        m.is_vendor = bool(_src.get("is_vendor"))
+    if _src is not None and ("loan_out_vendor_id" in _src):
+        _lo = _src.get("loan_out_vendor_id")
+        m.loan_out_vendor_id = int(_lo) if str(_lo).strip().isdigit() else None
+    if _src is not None and ("required_docs" in _src):
+        _rd = _src.get("required_docs")
+        if isinstance(_rd, (list, tuple)):
+            m.required_docs = ",".join(str(x).strip() for x in _rd if str(x).strip()) or None
+        else:
+            m.required_docs = (str(_rd).strip() or None) if _rd else None
     if not want_json:
         m.active = request.form.get("active") == "1"
     db.session.commit()
@@ -13281,6 +13302,9 @@ def crew_get_json(cid):
         "default_rate_type": m.default_rate_type or "day_10",
         "default_fringe": m.default_fringe or "N",
         "default_agent_pct": float(m.default_agent_pct or 0) * 100,
+        "is_vendor": bool(getattr(m, 'is_vendor', False)),
+        "loan_out_vendor_id": getattr(m, 'loan_out_vendor_id', None),
+        "required_docs": getattr(m, 'required_docs', None) or "",
     })
 
 
@@ -18060,6 +18084,13 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS card_last4 VARCHAR(8)",
                 # 2026-06-01 — per-location required-doc checklist (comma-sep keys).
                 "ALTER TABLE location "
+                "  ADD COLUMN IF NOT EXISTS required_docs TEXT",
+                # 2026-06-01 — vendors as people + loan-out child relationship.
+                "ALTER TABLE crew_member "
+                "  ADD COLUMN IF NOT EXISTS is_vendor BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE crew_member "
+                "  ADD COLUMN IF NOT EXISTS loan_out_vendor_id INTEGER REFERENCES crew_member(id)",
+                "ALTER TABLE crew_member "
                 "  ADD COLUMN IF NOT EXISTS required_docs TEXT",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently

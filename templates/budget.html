@@ -5274,6 +5274,7 @@
     // changes can complete or break a packet). (User 2026-06-01.)
     if (typeof _buildPacketView === 'function') _buildPacketView();
     if (typeof _buildLocationDocs === 'function') _buildLocationDocs();
+    if (typeof _buildVendorView === 'function') _buildVendorView();
     return d;
   };
 
@@ -8458,6 +8459,46 @@
     </div>
     {% endif %}
   </div>
+
+  {# ── VENDORS & LOAN-OUTS ─────────────────────────────────────────────
+     Vendors are person-like entities; people who work through a loan-out
+     company nest under it. Completeness badges per the vendor's own required
+     docs; doc lists built client-side (data-crew-member-id). (User 2026-06-01.) #}
+  {% set _vendors = (crew_members or []) | selectattr('is_vendor') | list %}
+  {% if _vendors %}
+  <div class="contact-sheet-section">
+    <div class="contact-sheet-section-header">
+      <span class="contact-sheet-section-icon">🏢</span> Vendors &amp; Loan-Outs
+    </div>
+    <div style="display:flex;flex-direction:column;gap:6px;padding:4px 0">
+      {% for v in _vendors %}
+      <div class="vendor-card" data-crew-member-id="{{ v.id }}" data-required="{{ v.required_docs or '' }}"
+           style="border:1px solid var(--border);border-radius:8px;background:var(--bg-card);padding:9px 12px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-weight:600">{{ v.name }}</span>
+          {% if v.company %}<span class="muted" style="font-size:.72rem">{{ v.company }}</span>{% endif %}
+          <span class="vendor-badges" style="font-size:.66rem;display:flex;gap:9px;flex-wrap:wrap"></span>
+          <a href="#" class="vendor-docs-toggle" style="display:none;margin-left:auto;font-size:.66rem;color:#5b8af9;text-decoration:none"></a>
+          <button class="btn btn-xs btn-ghost cs-screen-only" onclick="openCrewEditModal({{ v.id }}, '{{ v.name|replace("'","\\'") }}')" title="Edit vendor">✎</button>
+        </div>
+        <div class="vendor-docs-list" style="display:none;margin-top:5px"></div>
+        {% set _children = (crew_members or []) | selectattr('loan_out_vendor_id', 'equalto', v.id) | list %}
+        {% if _children %}
+        <div style="margin-top:6px;border-top:1px dashed var(--border);padding-top:5px">
+          <div class="muted" style="font-size:.62rem;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px">Loan-outs</div>
+          {% for c in _children %}
+          <div class="vendor-loanout" data-crew-member-id="{{ c.id }}" style="display:flex;align-items:center;gap:8px;padding:2px 0 2px 12px;font-size:.76rem">
+            <span>↳ {{ c.name }}</span>
+            <span class="vendor-loanout-docs muted" style="font-size:.64rem"></span>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 
   {# ── DIRECT CONTACTS SECTION ── #}
   {% if direct_contacts %}
@@ -14068,6 +14109,63 @@ window._buildLocationDocs = function(){
   });
 };
 
+// Vendors & Loan-Outs section (People tab). Per-vendor required-doc badges
+// (W-9 / COI / Contract / Other) + attached docs, and a doc count on each
+// nested loan-out person. (User 2026-06-01.)
+window._buildVendorView = function(){
+  const cards = Array.from(document.querySelectorAll('.vendor-card[data-crew-member-id]'));
+  if (!cards.length) return;
+  const REQ_LABELS = {w9:{l:'W-9',i:'🧾'}, coi:{l:'COI',i:'🛡'}, contract:{l:'Contract',i:'📄'}, other:{l:'Other',i:'📎'}};
+  const docsFor = (cid) => Array.from(document.querySelectorAll(
+      '#docsHistory .doc-row[data-crew-member-id="' + cid + '"]'))
+    .filter(r => (r.dataset.status || '') !== 'duplicate')
+    .map(r => ({
+      uid: r.dataset.uploadId,
+      type: (r.dataset.sortType || ''),
+      vendor: (r.dataset.sortVendor || ''),
+      fname: (r.querySelector('.doc-filename')?.textContent || '').replace(/^📎\s*/, '').trim()
+    }));
+  const satisfies = (d) => {
+    const hay = (d.vendor + ' ' + d.fname).toLowerCase();
+    const k = [];
+    if (d.type === 'tax_form' || /w-?9/.test(hay)) k.push('w9');
+    if (d.type === 'insurance' || /insurance|\bcoi\b|certificate/.test(hay)) k.push('coi');
+    if (d.type === 'contract') k.push('contract');
+    k.push('other');
+    return k;
+  };
+  cards.forEach(card => {
+    const cid = card.dataset.crewMemberId;
+    const required = (card.dataset.required || '').split(',').map(s => s.trim()).filter(Boolean);
+    const docs = docsFor(cid);
+    const have = new Set(); docs.forEach(d => satisfies(d).forEach(k => have.add(k)));
+    const badgesEl = card.querySelector('.vendor-badges');
+    if (badgesEl) badgesEl.innerHTML = required.map(k => {
+      const meta = REQ_LABELS[k] || {l:k,i:'📎'}; const ok = have.has(k);
+      return '<span title="' + meta.l + (ok?' on file':' missing') + '" style="color:' + (ok?'#22c55e':'#8a7170') + '">'
+        + (ok?'✅':'⬜') + ' ' + meta.i + ' ' + meta.l + '</span>';
+    }).join('');
+    const toggle = card.querySelector('.vendor-docs-toggle');
+    const list = card.querySelector('.vendor-docs-list');
+    const lbl = '📁 ' + docs.length + ' doc' + (docs.length === 1 ? '' : 's');
+    if (docs.length) {
+      toggle.style.display = ''; toggle.textContent = lbl + ' ▾';
+      toggle.onclick = (e) => { e.preventDefault(); const open = list.style.display !== 'none';
+        list.style.display = open ? 'none' : 'block'; toggle.textContent = lbl + (open ? ' ▾' : ' ▴'); };
+      list.innerHTML = docs.map(d => '<div style="padding:2px 0;font-size:.72rem">'
+        + '<a href="#" onclick="event.preventDefault();_packetOpenDoc(\'' + d.uid + '\')" style="color:#5b8af9;text-decoration:none">📎 '
+        + _pesc(d.fname || ('Doc #' + d.uid)) + '</a> <span class="muted" style="font-size:.6rem">'
+        + _pesc(d.type === 'employee_vendor_doc' && d.vendor ? d.vendor : d.type) + '</span></div>').join('');
+    } else { toggle.style.display = 'none'; list.style.display = 'none'; list.innerHTML = ''; }
+  });
+  // Loan-out people: show their doc count.
+  document.querySelectorAll('.vendor-loanout[data-crew-member-id]').forEach(el => {
+    const n = docsFor(el.dataset.crewMemberId).length;
+    const span = el.querySelector('.vendor-loanout-docs');
+    if (span) span.textContent = n ? ('· 📁 ' + n + ' doc' + (n === 1 ? '' : 's')) : '· no docs';
+  });
+};
+
 // Run when contacts tab is first shown
 document.addEventListener('DOMContentLoaded', () => {
   const contactsTabBtn = document.querySelector('[data-tab="contacts"]');
@@ -14075,6 +14173,7 @@ document.addEventListener('DOMContentLoaded', () => {
     contactsTabBtn.addEventListener('click', () => setTimeout(() => {
       validateContactSheetEmails();
       if (typeof _buildPacketView === 'function') _buildPacketView();
+      if (typeof _buildVendorView === 'function') _buildVendorView();
     }, 50));
   }
   const locTabBtn = document.querySelector('[data-tab="locations"]');
@@ -14087,6 +14186,7 @@ document.addEventListener('DOMContentLoaded', () => {
   validateContactSheetEmails();
   try { if (typeof _buildPacketView === 'function') _buildPacketView(); } catch (e) {}
   try { if (typeof _buildLocationDocs === 'function') _buildLocationDocs(); } catch (e) {}
+  try { if (typeof _buildVendorView === 'function') _buildVendorView(); } catch (e) {}
 });
 
 // ── Contact Sheet multi-select + right-click omit ─────────────────────────
@@ -14863,6 +14963,35 @@ function normalizePhone(v) {
         <input type="text" id="crew-edit-department">
       </div>
     </div>
+    {# ── Vendor / loan-out (2026-06-01) ── #}
+    <div class="field" style="margin-top:.25rem">
+      <label class="checkbox-label">
+        <input type="checkbox" id="crew-edit-is-vendor" onchange="_crewVendorToggle()">
+        This is a vendor / company (loan-out)
+      </label>
+    </div>
+    {# For a PERSON: which vendor they loan out through. Hidden when this
+       record is itself a vendor. #}
+    <div class="field" id="crew-edit-loanout-field">
+      <label>Loan-out company <span class="muted" style="font-weight:400;font-size:.8rem">(if they work through a vendor)</span></label>
+      <select id="crew-edit-loanout">
+        <option value="">— none —</option>
+        {% for v in (crew_members or []) if v.is_vendor %}
+        <option value="{{ v.id }}">{{ v.name }}{% if v.company %} ({{ v.company }}){% endif %}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {# For a VENDOR: which docs this vendor must have on file. Hidden unless
+       'is vendor' is checked. #}
+    <div class="field" id="crew-edit-reqdocs-field" style="display:none">
+      <label>Required documents <span class="muted" style="font-weight:400;font-size:.8rem">(what this vendor needs on file)</span></label>
+      <div id="crew-edit-reqdocs" style="display:flex;flex-wrap:wrap;gap:.5rem .9rem;margin-top:.25rem">
+        <label class="checkbox-label"><input type="checkbox" class="crew-req-cb" value="w9"> W-9</label>
+        <label class="checkbox-label"><input type="checkbox" class="crew-req-cb" value="coi"> Insurance (COI)</label>
+        <label class="checkbox-label"><input type="checkbox" class="crew-req-cb" value="contract"> Contract</label>
+        <label class="checkbox-label"><input type="checkbox" class="crew-req-cb" value="other"> Other</label>
+      </div>
+    </div>
     <div class="modal-actions">
       <button type="button" class="btn btn-outline" onclick="closeCrewEditModal()">Cancel</button>
       <button type="button" class="btn btn-primary" onclick="saveCrewEdit()">Save</button>
@@ -14936,7 +15065,23 @@ function openCrewEditModal(cid, name) {
       document.getElementById('crew-edit-email').value = d.email || '';
       document.getElementById('crew-edit-company').value = d.company || '';
       document.getElementById('crew-edit-department').value = d.department || '';
+      // Vendor / loan-out + required docs.
+      const vcb = document.getElementById('crew-edit-is-vendor');
+      if (vcb) vcb.checked = !!d.is_vendor;
+      const lo = document.getElementById('crew-edit-loanout');
+      if (lo) lo.value = d.loan_out_vendor_id ? String(d.loan_out_vendor_id) : '';
+      const req = (d.required_docs ? String(d.required_docs).split(',') : []).map(s => s.trim());
+      document.querySelectorAll('.crew-req-cb').forEach(cb => { cb.checked = req.includes(cb.value); });
+      _crewVendorToggle();
     });
+}
+// Show the loan-out picker for a PERSON, the required-docs checklist for a VENDOR.
+function _crewVendorToggle() {
+  const isV = document.getElementById('crew-edit-is-vendor')?.checked;
+  const lo  = document.getElementById('crew-edit-loanout-field');
+  const rq  = document.getElementById('crew-edit-reqdocs-field');
+  if (lo) lo.style.display = isV ? 'none' : '';
+  if (rq) rq.style.display = isV ? '' : 'none';
 }
 function closeCrewEditModal() {
   document.getElementById('crew-edit-modal').classList.add('hidden');
@@ -14951,6 +15096,9 @@ function saveCrewEdit() {
     email: document.getElementById('crew-edit-email').value.trim(),
     company: document.getElementById('crew-edit-company').value.trim(),
     department: document.getElementById('crew-edit-department').value.trim(),
+    is_vendor: document.getElementById('crew-edit-is-vendor')?.checked || false,
+    loan_out_vendor_id: document.getElementById('crew-edit-loanout')?.value || null,
+    required_docs: Array.from(document.querySelectorAll('.crew-req-cb:checked')).map(cb => cb.value),
   };
   if (!data.name) { alert('Name is required'); return; }
   fetch(`/crew/${cid}/edit?fmt=json`, {
