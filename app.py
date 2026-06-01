@@ -19281,6 +19281,11 @@ def docs_upload_delete(uid):
     except Exception:
         # Tables may not exist yet on a fresh DB before self-heal runs.
         db.session.rollback()
+    # Clear the self-referential duplicate_of_id on any rows that point at
+    # this upload (it was the "original" of a flagged duplicate) — otherwise
+    # the delete hits doc_upload_duplicate_of_id_fkey. (User 2026-06-01.)
+    DocUpload.query.filter_by(duplicate_of_id=upload.id).update(
+        {"duplicate_of_id": None, "is_duplicate": False}, synchronize_session=False)
     db.session.delete(upload)
     db.session.commit()
     try:
@@ -19353,6 +19358,11 @@ def docs_bulk_delete(pid):
             )
         except Exception:
             db.session.rollback()
+        # Clear self-referential duplicate_of_id pointers into the deleted set
+        # (FK: doc_upload_duplicate_of_id_fkey). (User 2026-06-01.)
+        DocUpload.query.filter(
+            DocUpload.duplicate_of_id.in_(upload_ids_to_delete)
+        ).update({"duplicate_of_id": None, "is_duplicate": False}, synchronize_session=False)
         DocUpload.query.filter(
             DocUpload.id.in_(upload_ids_to_delete)
         ).delete(synchronize_session=False)
