@@ -20217,6 +20217,57 @@ def docs_backfill_card4(pid):
     return jsonify({"scanned": scanned, "updated": updated})
 
 
+@app.route("/docs/<int:pid>/relabel-subtype", methods=["POST"])
+@login_required
+def docs_relabel_subtype(pid):
+    """Bulk-relabel the sub-type (stored in `vendor`) of Employee/Vendor docs
+    whose current value matches one of `match` → `to`, then re-file each in
+    Dropbox so the filename/folder follow. Per-item commit + `limit` so a
+    worker timeout can't desync; client loops until remaining == 0. Admin only.
+    Body: {match: ["dtr", ...], to: "Tax Credit Documents", limit: 12}.
+    (User 2026-06-01.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    body  = request.get_json(silent=True) or {}
+    match = {str(m).strip().lower() for m in (body.get("match") or []) if str(m).strip()}
+    to    = (body.get("to") or "").strip()
+    try:
+        limit = int(body.get("limit") or 12)
+    except (TypeError, ValueError):
+        limit = 12
+    if not match or not to:
+        return jsonify({"error": "match[] and to are required"}), 400
+    rows = (DocUpload.query
+            .filter_by(project_id=pid, category='employee_vendor_doc')
+            .filter(DocUpload.vendor.isnot(None))
+            .all())
+    targets = [u for u in rows if (u.vendor or '').strip().lower() in match]
+    report = {"matched": len(targets), "relabeled": 0, "moved": [], "errors": [], "remaining": 0}
+    done = 0
+    for u in targets:
+        if (u.vendor or '').strip() == to:
+            continue  # already correct
+        if limit and done >= limit:
+            report["remaining"] += 1
+            continue
+        u.vendor = to
+        report["relabeled"] += 1
+        try:
+            r = _refile_doc(u)
+            if r.get("changed"):
+                report["moved"].append({"id": u.id, "to": r.get("to")})
+            elif r.get("error"):
+                report["errors"].append({"id": u.id, "error": r.get("error")})
+        except Exception as e:
+            report["errors"].append({"id": u.id, "error": str(e)})
+        db.session.commit()
+        done += 1
+    logging.info(f"[relabel-subtype] pid={pid}: matched {report['matched']}, "
+                 f"relabeled {report['relabeled']}, moved {len(report['moved'])}, "
+                 f"errors {len(report['errors'])}, remaining {report['remaining']}")
+    return jsonify(report)
+
+
 @app.route("/admin/veryfi/classify/<int:uid>")
 @login_required
 def admin_veryfi_classify(uid):
