@@ -20179,6 +20179,122 @@ def _refile_doc(upload, dry=False):
         return {"changed": False, "error": str(e), "from": cur, "to": intended, "id": upload.id}
 
 
+@app.route("/projects/<int:pid>/actual-audit", methods=["GET"])
+@login_required
+def actual_audit(pid):
+    """READ-ONLY diagnostic for the Actual-mirrors-Working invariant. Reports,
+    without writing anything:
+      • line counts for estimated / working / actual budgets
+      • actual_orphans  : Actual lines whose source_line_id is NULL or does not
+                          point at a line in the current Working budget — with a
+                          count of every dependent row (txns, crew, schedule,
+                          sub-budget, docs, locations) so we know what is at
+                          stake before touching them, plus a best-guess merge
+                          target (a Working line with the same account+desc).
+      • working_missing : Working lines with no Actual mirror (these SHOULD be
+                          created so Actual reflects Working).
+      • dup_src         : Working line ids that >1 Actual line points at
+                          (true duplicate mirrors) — the live-bug shape.
+      • actual_dup_desc : (account_code, lower desc) groups inside the Actual
+                          budget with more than one line.
+    Admin only. (User 2026-06-01.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    ProjectSheet.query.get_or_404(pid)
+    all_b = Budget.query.filter_by(project_id=pid).all()
+    def _pick(kind):
+        return (next((b for b in all_b if _budget_type(b.budget_mode) == kind
+                      and not b.is_actual and b.version_status == 'current'), None)
+                or next((b for b in all_b if _budget_type(b.budget_mode) == kind
+                         and not b.is_actual and b.version_status != 'archived'), None))
+    est = _pick('estimated')
+    wrk = _pick('working')
+    act = (next((b for b in all_b if b.is_actual and b.version_status == 'current'), None)
+           or next((b for b in all_b if b.is_actual and b.version_status != 'archived'), None))
+    if not (wrk and act):
+        return jsonify({"error": "could not resolve working + actual budgets"}), 400
+
+    wlines = BudgetLine.query.filter_by(budget_id=wrk.id).all()
+    alines = BudgetLine.query.filter_by(budget_id=act.id).all()
+    w_by_id = {l.id: l for l in wlines}
+    # Working line lookup by (account, normalized desc) for orphan merge hints.
+    w_by_key = {}
+    for w in wlines:
+        w_by_key.setdefault((w.account_code, (w.description or '').strip().lower()), []).append(w.id)
+
+    a_ids = [l.id for l in alines]
+    def _counts(model, col='budget_line_id'):
+        if not a_ids:
+            return {}
+        from sqlalchemy import func as _f
+        rows = (db.session.query(getattr(model, col), _f.count(model.id))
+                .filter(getattr(model, col).in_(a_ids))
+                .group_by(getattr(model, col)).all())
+        return {k: int(v) for k, v in rows if k is not None}
+    c_txn  = _counts(Transaction)
+    c_txns = _counts(Transaction, 'suggested_budget_line_id')
+    c_crew = _counts(CrewAssignment)
+    c_sch  = _counts(ScheduleDay)
+    c_sub  = _counts(SubBudgetLine)
+    c_doc  = _counts(DocUpload)
+    c_docs = _counts(DocUpload, 'suggested_budget_line_id')
+    c_loc  = _counts(Location)
+    def _deps(lid):
+        return {"txn": c_txn.get(lid, 0), "txn_sugg": c_txns.get(lid, 0),
+                "crew": c_crew.get(lid, 0), "sched": c_sch.get(lid, 0),
+                "sub": c_sub.get(lid, 0), "doc": c_doc.get(lid, 0),
+                "doc_sugg": c_docs.get(lid, 0), "loc": c_loc.get(lid, 0)}
+
+    # actual lines grouped by the working line they mirror
+    src_map = {}
+    orphans = []
+    for a in alines:
+        if a.source_line_id and a.source_line_id in w_by_id:
+            src_map.setdefault(a.source_line_id, []).append(a.id)
+        else:
+            hint = w_by_key.get((a.account_code, (a.description or '').strip().lower()), [])
+            d = _deps(a.id)
+            orphans.append({"id": a.id, "code": a.account_code,
+                            "desc": (a.description or '')[:40],
+                            "src": a.source_line_id, "parent": a.parent_line_id,
+                            "tag": a.line_tag, "deps": d,
+                            "dep_total": sum(d.values()),
+                            "merge_hint_working_ids": hint})
+    dup_src = [{"working_id": wid, "working_desc": (w_by_id[wid].description or '')[:40],
+                "actual_ids": ids, "deps_each": {str(i): _deps(i) for i in ids}}
+               for wid, ids in src_map.items() if len(ids) > 1]
+    working_missing = [{"id": w.id, "code": w.account_code, "desc": (w.description or '')[:40],
+                        "tag": w.line_tag, "parent": w.parent_line_id}
+                       for w in wlines if w.id not in src_map]
+
+    # duplicate (account, desc) groups inside actual
+    a_by_key = {}
+    for a in alines:
+        a_by_key.setdefault((a.account_code, (a.description or '').strip().lower()), []).append(a)
+    actual_dup_desc = []
+    for (code, desc), grp in a_by_key.items():
+        if len(grp) > 1 and desc:
+            actual_dup_desc.append({"code": code, "desc": desc[:40],
+                                    "lines": [{"id": g.id, "src": g.source_line_id,
+                                               "parent": g.parent_line_id, "tag": g.line_tag,
+                                               "deps": _deps(g.id)} for g in grp]})
+
+    return jsonify({
+        "budgets": {"estimated": {"id": est.id if est else None,
+                                  "lines": (len(BudgetLine.query.filter_by(budget_id=est.id).all()) if est else 0)},
+                    "working": {"id": wrk.id, "lines": len(wlines)},
+                    "actual":  {"id": act.id, "lines": len(alines)}},
+        "summary": {"actual_orphans": len(orphans),
+                    "working_missing_mirror": len(working_missing),
+                    "dup_src_groups": len(dup_src),
+                    "actual_dup_desc_groups": len(actual_dup_desc)},
+        "actual_orphans": sorted(orphans, key=lambda o: -o["dep_total"]),
+        "working_missing": working_missing,
+        "dup_src": dup_src,
+        "actual_dup_desc": actual_dup_desc,
+    })
+
+
 @app.route("/projects/<int:pid>/sync-actual-from-working", methods=["POST"])
 @login_required
 def sync_actual_from_working(pid):
