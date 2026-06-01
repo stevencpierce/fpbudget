@@ -20194,12 +20194,13 @@ def repair_clone_links(pid):
     ProjectSheet.query.get_or_404(pid)
     all_b = Budget.query.filter_by(project_id=pid).all()
     def _pick(kind):
+        # Always exclude the Actual budget — it can carry budget_mode
+        # 'estimated'/'working', so it would otherwise hijack this pick. The
+        # Actual is resolved separately via is_actual below.
         return (next((b for b in all_b if _budget_type(b.budget_mode) == kind
-                      and (kind != 'working' or not b.is_actual)
-                      and b.version_status == 'current'), None)
+                      and not b.is_actual and b.version_status == 'current'), None)
                 or next((b for b in all_b if _budget_type(b.budget_mode) == kind
-                         and (kind != 'working' or not b.is_actual)
-                         and b.version_status != 'archived'), None))
+                         and not b.is_actual and b.version_status != 'archived'), None))
     est = _pick('estimated')
     wrk = _pick('working')
     act = next((b for b in all_b if b.is_actual and b.version_status == 'current'), None) \
