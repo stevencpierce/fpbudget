@@ -20735,6 +20735,8 @@ def debug_line(bid):
             "id": ln.id,
             "account_code": ln.account_code,
             "sort_order": ln.sort_order,
+            "source_line_id": ln.source_line_id,
+            "parent_line_id": ln.parent_line_id,
             "description": ln.description,
             "is_labor": bool(ln.is_labor),
             "use_schedule": bool(ln.use_schedule),
