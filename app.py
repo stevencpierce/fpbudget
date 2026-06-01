@@ -20236,14 +20236,13 @@ def actual_audit(pid):
     c_crew = _counts(CrewAssignment)
     c_sch  = _counts(ScheduleDay)
     c_sub  = _counts(SubBudgetLine)
-    c_doc  = _counts(DocUpload)
-    c_docs = _counts(DocUpload, 'suggested_budget_line_id')
     c_loc  = _counts(Location)
     def _deps(lid):
+        # DocUpload links to a line indirectly (via Transaction.doc_upload_id),
+        # so it is captured by the txn count — it has no budget_line_id of its own.
         return {"txn": c_txn.get(lid, 0), "txn_sugg": c_txns.get(lid, 0),
                 "crew": c_crew.get(lid, 0), "sched": c_sch.get(lid, 0),
-                "sub": c_sub.get(lid, 0), "doc": c_doc.get(lid, 0),
-                "doc_sugg": c_docs.get(lid, 0), "loc": c_loc.get(lid, 0)}
+                "sub": c_sub.get(lid, 0), "loc": c_loc.get(lid, 0)}
 
     # actual lines grouped by the working line they mirror
     src_map = {}
