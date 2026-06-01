@@ -20518,6 +20518,111 @@ def rebuild_actual_mirror(pid):
     return jsonify(report)
 
 
+@app.route("/admin/qbo-imports/purge", methods=["POST"])
+@login_required
+def qbo_imports_purge(pid=None):
+    """Undo electronic (QuickBooks) imports — delete Transactions with
+    source='qbo_sync'. Receipts (doc_upload), typed rows (manual_entry) and
+    invoice splits are NEVER touched. Dry-run by default; ?apply=1 to delete.
+    Scope: ?project=<pid> limits to one project; default = all projects.
+
+    Before deleting we:
+      • release cross-project claims that point at a project whose qbo rows
+        are being removed (clear claimed_by_project_id on surviving rows),
+      • detach any child transaction whose parent is being deleted
+        (parent_transaction_id → NULL) so no split is orphaned.
+    Linked DocUploads are left intact (the link lives on the txn side).
+    Admin only. (User 2026-06-01.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    apply = (request.args.get('apply') == '1')
+    scope_pid = request.args.get('project')
+    try:
+        scope_pid = int(scope_pid) if scope_pid not in (None, '', 'all') else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "project must be an integer or 'all'"}), 400
+
+    q = Transaction.query.filter(Transaction.source == 'qbo_sync')
+    if scope_pid is not None:
+        q = q.filter(Transaction.project_id == scope_pid)
+    rows = q.all()
+
+    # Per-project breakdown so the user can confirm scope before deleting.
+    by_proj = {}
+    dates = []
+    ids = []
+    for t in rows:
+        ids.append(t.id)
+        if t.txn_date:
+            dates.append(t.txn_date)
+        p = by_proj.setdefault(t.project_id, {"total": 0, "coded": 0, "uncoded": 0,
+                                              "claimed": 0, "with_doc": 0,
+                                              "amount": 0.0})
+        p["total"] += 1
+        if t.budget_line_id:
+            p["coded"] += 1
+        else:
+            p["uncoded"] += 1
+        if t.claimed_by_project_id:
+            p["claimed"] += 1
+        if t.doc_upload_id:
+            p["with_doc"] += 1
+        p["amount"] += float(t.amount or 0)
+
+    # Context: what is being PRESERVED (so the user sees the blast radius).
+    preserved = {}
+    for src in ('manual_entry', 'doc_upload', 'invoice_split'):
+        pq = Transaction.query.filter(Transaction.source == src)
+        if scope_pid is not None:
+            pq = pq.filter(Transaction.project_id == scope_pid)
+        preserved[src] = pq.count()
+
+    # Project names for readability
+    pnames = {p.id: p.name for p in ProjectSheet.query.all()}
+    report = {"dry": (not apply), "applied": apply,
+              "scope": ("all projects" if scope_pid is None else f"project {scope_pid}"),
+              "qbo_sync_total": len(rows),
+              "date_range": ([min(dates), max(dates)] if dates else None),
+              "by_project": {f"{pid_}{(' · '+pnames[pid_]) if pnames.get(pid_) else ''}": v
+                             for pid_, v in sorted(by_proj.items())},
+              "preserved_counts": preserved,
+              "errors": []}
+
+    if apply and ids:
+        try:
+            idset = set(ids)
+            # 1) detach children whose parent is being deleted
+            child_q = Transaction.query.filter(
+                Transaction.parent_transaction_id.in_(idset))
+            detached = 0
+            for c in child_q.all():
+                if c.id not in idset:        # don't bother for rows also dying
+                    c.parent_transaction_id = None
+                    detached += 1
+            # 2) release cross-project claims pointing at affected projects
+            affected_projects = set(by_proj.keys())
+            released = (Transaction.query
+                        .filter(Transaction.claimed_by_project_id.in_(affected_projects))
+                        .filter(~Transaction.id.in_(idset))
+                        .update({"claimed_by_project_id": None},
+                                synchronize_session=False))
+            db.session.flush()
+            # 3) delete the qbo_sync rows
+            deleted = (Transaction.query
+                       .filter(Transaction.id.in_(idset))
+                       .delete(synchronize_session=False))
+            db.session.commit()
+            report["deleted"] = int(deleted)
+            report["children_detached"] = detached
+            report["claims_released"] = int(released or 0)
+        except Exception as e:
+            db.session.rollback()
+            report["errors"].append(str(e))
+            return jsonify(report), 500
+
+    return jsonify(report)
+
+
 @app.route("/projects/<int:pid>/sync-actual-from-working", methods=["POST"])
 @login_required
 def sync_actual_from_working(pid):
