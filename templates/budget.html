@@ -8360,6 +8360,7 @@
     <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
       <span class="cs-hint muted" style="font-size:.75rem">Right-click rows to suppress fields</span>
       <button class="btn btn-sm btn-primary cs-screen-only" onclick="openAddContactModal()">+ Add Contact</button>
+      <button class="btn btn-sm btn-outline cs-screen-only" onclick="openAddContactModal(true)">+ Add Vendor</button>
     </div>
   </div>
 
@@ -15006,12 +15007,18 @@ function normalizePhone(v) {
 <div id="add-contact-modal" class="modal hidden">
   <div class="modal-overlay"></div><!-- no click-to-close on data-entry modals -->
   <div class="modal-box">
-    <h2>Add Contact</h2>
+    <h2 id="add-contact-title">Add Contact</h2>
     <div class="field">
-      <label>Name *</label>
-      <input type="text" id="add-contact-name" required placeholder="Full name">
+      <label class="checkbox-label">
+        <input type="checkbox" id="add-contact-is-vendor" onchange="_addContactVendorToggle()">
+        This is a vendor / company (loan-out)
+      </label>
     </div>
     <div class="field">
+      <label id="add-contact-name-label">Name *</label>
+      <input type="text" id="add-contact-name" required placeholder="Full name">
+    </div>
+    <div class="field" id="add-contact-role-field">
       <label>Role / Title</label>
       <input type="text" id="add-contact-role" placeholder="e.g. Exec Producer, Client Contact">
     </div>
@@ -15031,9 +15038,19 @@ function normalizePhone(v) {
       <label>Company</label>
       <input type="text" id="add-contact-company">
     </div>
+    {# Vendor-only: which docs this vendor must have on file. #}
+    <div class="field" id="add-contact-reqdocs-field" style="display:none">
+      <label>Required documents <span class="muted" style="font-weight:400;font-size:.8rem">(what this vendor needs on file)</span></label>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem .9rem;margin-top:.25rem">
+        <label class="checkbox-label"><input type="checkbox" class="add-contact-req-cb" value="w9"> W-9</label>
+        <label class="checkbox-label"><input type="checkbox" class="add-contact-req-cb" value="coi"> Insurance (COI)</label>
+        <label class="checkbox-label"><input type="checkbox" class="add-contact-req-cb" value="contract"> Contract</label>
+        <label class="checkbox-label"><input type="checkbox" class="add-contact-req-cb" value="other"> Other</label>
+      </div>
+    </div>
     <div class="modal-actions">
       <button type="button" class="btn btn-outline" onclick="closeAddContactModal()">Cancel</button>
-      <button type="button" class="btn btn-primary" onclick="saveNewContact()">Add</button>
+      <button type="button" class="btn btn-primary" id="add-contact-save-btn" onclick="saveNewContact()">Add</button>
     </div>
   </div>
 </div>
@@ -15120,14 +15137,35 @@ function saveCrewEdit() {
   });
 }
 
-// ── Add Direct Contact Modal ────────────────────────────────────────────────
-function openAddContactModal() {
+// ── Add Direct Contact / Vendor Modal ───────────────────────────────────────
+// vendorMode=true opens it as "Add Vendor": pre-checks the vendor flag and
+// shows the required-docs checklist. (User 2026-06-01.)
+function openAddContactModal(vendorMode) {
   document.getElementById('add-contact-modal').classList.remove('hidden');
   document.getElementById('add-contact-name').value = '';
   document.getElementById('add-contact-role').value = '';
   document.getElementById('add-contact-phone').value = '';
   document.getElementById('add-contact-email').value = '';
   document.getElementById('add-contact-company').value = '';
+  document.querySelectorAll('.add-contact-req-cb').forEach(cb => cb.checked = false);
+  const vcb = document.getElementById('add-contact-is-vendor');
+  if (vcb) vcb.checked = !!vendorMode;
+  _addContactVendorToggle();
+}
+// Vendor mode hides Role (vendors don't have a crew role) and shows the
+// required-docs checklist; the title + button update to read "Vendor".
+function _addContactVendorToggle() {
+  const isV = document.getElementById('add-contact-is-vendor')?.checked;
+  const roleField = document.getElementById('add-contact-role-field');
+  const reqField  = document.getElementById('add-contact-reqdocs-field');
+  const title     = document.getElementById('add-contact-title');
+  const nameLbl   = document.getElementById('add-contact-name-label');
+  const saveBtn   = document.getElementById('add-contact-save-btn');
+  if (roleField) roleField.style.display = isV ? 'none' : '';
+  if (reqField)  reqField.style.display  = isV ? '' : 'none';
+  if (title)   title.textContent   = isV ? 'Add Vendor' : 'Add Contact';
+  if (nameLbl) nameLbl.textContent = isV ? 'Vendor / Company Name *' : 'Name *';
+  if (saveBtn) saveBtn.textContent = isV ? 'Add Vendor' : 'Add';
 }
 function closeAddContactModal() {
   document.getElementById('add-contact-modal').classList.add('hidden');
@@ -15137,6 +15175,7 @@ function saveNewContact() {
   if (emailInput && !validateEmailField(emailInput)) return;
   const name = document.getElementById('add-contact-name').value.trim();
   if (!name) { alert('Name is required'); return; }
+  const isVendor = document.getElementById('add-contact-is-vendor')?.checked || false;
   fetch(DIRECT_CONTACT_ADD_URL, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -15146,6 +15185,8 @@ function saveNewContact() {
       phone: document.getElementById('add-contact-phone').value.trim(),
       email: document.getElementById('add-contact-email').value.trim(),
       company: document.getElementById('add-contact-company').value.trim(),
+      is_vendor: isVendor,
+      required_docs: Array.from(document.querySelectorAll('.add-contact-req-cb:checked')).map(cb => cb.value),
     })
   })
   .then(r => r.json())

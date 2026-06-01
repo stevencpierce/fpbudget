@@ -13423,21 +13423,32 @@ def direct_contact_add(pid, bid):
         email = (data.get("email") or "").strip() or None
         if email and not _validate_email(email):
             return jsonify({"error": f"Invalid email: {email}"}), 400
+        _is_vendor = bool(data.get("is_vendor"))
+        _rd = data.get("required_docs")
+        if isinstance(_rd, (list, tuple)):
+            _rd = ",".join(str(x).strip() for x in _rd if str(x).strip()) or None
+        else:
+            _rd = (str(_rd).strip() or None) if _rd else None
         cm = CrewMember(
             name=name,
             phone=_normalize_phone(data.get("phone", "")),
             email=email,
             company=(data.get("company") or "").strip() or None,
             department=(data.get("department") or "").strip() or None,
+            is_vendor=_is_vendor,
+            required_docs=_rd,
         )
         db.session.add(cm)
         db.session.flush()
 
-    # Add as direct contact if not already
-    existing = BudgetDirectContact.query.filter_by(budget_id=bid, crew_member_id=cm.id).first()
-    if not existing:
-        dc = BudgetDirectContact(budget_id=bid, crew_member_id=cm.id, role=data.get("role", ""))
-        db.session.add(dc)
+    # A VENDOR lives in the Vendors & Loan-Outs section (editable from its own
+    # card), so we don't also list it under "Additional Contacts". For regular
+    # contacts, add the direct-contact link if not already present.
+    if not bool(data.get("is_vendor")):
+        existing = BudgetDirectContact.query.filter_by(budget_id=bid, crew_member_id=cm.id).first()
+        if not existing:
+            dc = BudgetDirectContact(budget_id=bid, crew_member_id=cm.id, role=data.get("role", ""))
+            db.session.add(dc)
 
     db.session.commit()
     return jsonify({"ok": True, "id": cm.id, "name": cm.name})
