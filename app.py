@@ -20179,6 +20179,81 @@ def _refile_doc(upload, dry=False):
         return {"changed": False, "error": str(e), "from": cur, "to": intended, "id": upload.id}
 
 
+@app.route("/projects/<int:pid>/sync-actual-from-working", methods=["POST"])
+@login_required
+def sync_actual_from_working(pid):
+    """Make the Actual budget MIRROR the Working budget structurally: for every
+    Actual line linked to a Working line (source_line_id), copy the structural
+    + planned fields from its Working counterpart — is_labor, use_schedule,
+    sort_order, qty/days/rate/rate_type/fringe_type/agent_pct, line_tag — and
+    remap parent_line_id through the source chain. Fixes corrupted Actual lines
+    (kit fees flagged is_labor, sharing the parent's sort_order, null parent,
+    wrong planned value). Does NOT touch transactions (actual spend is keyed by
+    Actual line id, which is unchanged). Dry-run by default (?dry=1). Admin
+    only. Prereq: run /repair-clone-links first so source_line_id is correct.
+    (User 2026-06-01.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    dry = (request.args.get('dry') == '1') or bool((request.get_json(silent=True) or {}).get('dry'))
+    ProjectSheet.query.get_or_404(pid)
+    all_b = Budget.query.filter_by(project_id=pid).all()
+    wrk = (next((b for b in all_b if _budget_type(b.budget_mode) == 'working'
+                 and not b.is_actual and b.version_status == 'current'), None)
+           or next((b for b in all_b if _budget_type(b.budget_mode) == 'working'
+                    and not b.is_actual and b.version_status != 'archived'), None))
+    act = (next((b for b in all_b if b.is_actual and b.version_status == 'current'), None)
+           or next((b for b in all_b if b.is_actual and b.version_status != 'archived'), None))
+    if not (wrk and act):
+        return jsonify({"error": "could not resolve working + actual budgets"}), 400
+
+    _wlines = {l.id: l for l in BudgetLine.query.filter_by(budget_id=wrk.id).all()}
+    _alines = BudgetLine.query.filter_by(budget_id=act.id).all()
+    # Actual line keyed by the Working line it mirrors (for parent remap).
+    _act_by_src = {l.source_line_id: l for l in _alines if l.source_line_id}
+
+    def _sv(v):
+        try:
+            from decimal import Decimal as _D
+            if isinstance(v, _D):
+                return float(v)
+        except Exception:
+            pass
+        return v
+    FIELDS = ['is_labor', 'use_schedule', 'sort_order', 'qty', 'days', 'rate',
+              'rate_type', 'fringe_type', 'agent_pct', 'line_tag']
+    report = {"dry": dry, "working": wrk.id, "actual": act.id,
+              "changed": [], "unlinked": 0, "untouched": 0}
+    for a in _alines:
+        w = _wlines.get(a.source_line_id) if a.source_line_id else None
+        if not w:
+            report["unlinked"] += 1
+            continue
+        diffs = {}
+        for f in FIELDS:
+            wv, av = getattr(w, f, None), getattr(a, f, None)
+            if wv != av:
+                diffs[f] = [_sv(av), _sv(wv)]
+                if not dry:
+                    setattr(a, f, wv)
+        # parent_line_id remap: Working parent → its Actual mirror line.
+        new_parent = None
+        if w.parent_line_id:
+            ap = _act_by_src.get(w.parent_line_id)
+            new_parent = ap.id if ap else None
+        if a.parent_line_id != new_parent:
+            diffs['parent_line_id'] = [a.parent_line_id, new_parent]
+            if not dry:
+                a.parent_line_id = new_parent
+        if diffs:
+            report["changed"].append({"id": a.id, "desc": (a.description or '')[:32], "diffs": diffs})
+        else:
+            report["untouched"] += 1
+    if not dry:
+        db.session.commit()
+    report["changed_count"] = len(report["changed"])
+    return jsonify(report)
+
+
 @app.route("/projects/<int:pid>/repair-clone-links", methods=["POST"])
 @login_required
 def repair_clone_links(pid):
