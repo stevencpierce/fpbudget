@@ -8283,48 +8283,6 @@
     {% endif %}
   {% endfor %}
 
-  {# ── DOCUMENT PACKETS (per-person) ──────────────────────────────────
-     One card per crew member with a linked document. Completeness (ID /
-     tax form / contract) + the doc list are computed client-side from the
-     Docs-tab rows (which carry data-crew-member-id), so no extra server
-     query. Summary banner flags who's missing what. (User 2026-06-01.) #}
-  {% set pns = namespace(seen=[], people=[]) %}
-  {% for row in ns.crew_rows %}
-    {% if row.crew_member_id and row.crew_member_id not in pns.seen %}
-      {% set _ = pns.seen.append(row.crew_member_id) %}
-      {% set _ = pns.people.append(row) %}
-    {% endif %}
-  {% endfor %}
-  <div class="packet-wrap" style="margin-bottom:1.4rem">
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:.5rem">
-      <h3 style="margin:0">Document Packets</h3>
-      <span class="muted" style="font-size:.78rem">Each person's ID, tax form &amp; contract — click a name to view their documents</span>
-      <label style="margin-left:auto;font-size:.76rem;display:flex;align-items:center;gap:6px;cursor:pointer">
-        <input type="checkbox" id="packet-incomplete-only" onchange="_buildPacketView()"> Show only incomplete
-      </label>
-    </div>
-    <div id="packet-summary" style="margin-bottom:.6rem"></div>
-    <div id="packet-roster" style="display:flex;flex-direction:column;gap:6px">
-      {% for p in pns.people %}
-      <div class="packet-card" data-crew-member-id="{{ p.crew_member_id }}" data-name="{{ p.name }}"
-           style="border:1px solid var(--border);border-radius:8px;background:var(--bg-card);overflow:hidden">
-        <div class="packet-head" onclick="_packetToggle(this)"
-             style="display:flex;align-items:center;gap:10px;padding:9px 12px;cursor:pointer">
-          <span class="packet-chev" style="width:12px;color:var(--text-muted);font-size:11px">▸</span>
-          <span style="font-weight:600;min-width:150px">{{ p.name }}</span>
-          <span class="muted" style="font-size:.72rem;min-width:110px">{{ p.role }}</span>
-          <span class="packet-badges" style="font-size:.72rem;display:flex;gap:12px;flex-wrap:wrap"></span>
-          <span class="packet-count muted" style="margin-left:auto;font-size:.72rem"></span>
-        </div>
-        <div class="packet-docs" style="display:none;border-top:1px solid var(--border);padding:8px 12px 10px 34px"></div>
-      </div>
-      {% endfor %}
-    </div>
-    {% if not pns.people %}
-    <p class="muted" style="font-size:.8rem">No crew with linked documents yet. Assign crew to budget lines, then link their docs (ID, tax form, contract) in the Docs tab to see packets here.</p>
-    {% endif %}
-  </div>
-
   <div class="contact-sheet-toolbar">
     <h3 style="margin:0">Contact Sheet</h3>
     <span class="muted" style="font-size:.8rem">Crew assigned to this budget + additional contacts</span>
@@ -8363,6 +8321,7 @@
           {% endif %}
           <tr class="contact-row-item cs-row"
               data-entry-type="crew" data-entry-id="{{ row.ca_id }}"
+              data-crew-member-id="{{ row.crew_member_id or '' }}"
               onclick="csRowClick(event, this)"
               oncontextmenu="csRowRightClick(event, this)">
             <td class="cs-role-number-cell" style="width:2.5rem;text-align:center">
@@ -8379,6 +8338,18 @@
             <td class="cs-field {% if row.omit.get('name') %}cs-omit{% endif %}" data-field="name">
               <span class="cs-val">{{ row.name }}</span>
               {% if row.omit.get('name') %}<span class="cs-omit-badge">OMIT</span>{% endif %}
+              {# Document-packet completeness + doc access, folded into the
+                 contact sheet (screen-only; the printed/exported sheet stays
+                 clean). JS fills badges/list from the Docs-tab rows. #}
+              {% if row.crew_member_id %}
+              <div class="cs-docs cs-screen-only" data-crew-member-id="{{ row.crew_member_id }}"
+                   style="margin-top:3px;line-height:1.4">
+                <span class="cs-docs-badges" style="font-size:.66rem;display:inline-flex;gap:7px"></span>
+                <a href="#" class="cs-docs-toggle"
+                   style="display:none;font-size:.64rem;color:#5b8af9;text-decoration:none;margin-left:6px"></a>
+                <div class="cs-docs-list" style="display:none;margin-top:3px"></div>
+              </div>
+              {% endif %}
             </td>
             <td class="cs-field {% if row.omit.get('phone') %}cs-omit{% endif %}" data-field="phone">
               <span class="cs-val">{% if row.phone %}<a href="tel:{{ row.phone }}" class="contact-link">{{ row.phone }}</a>{% else %}<span class="muted">—</span>{% endif %}</span>
@@ -13847,39 +13818,29 @@ function validateContactSheetEmails() {
     }
   });
 }
-// ── Document Packets (per-person doc completeness) ────────────────────────
-// Builds the People-tab packet cards from the Docs-tab rows (which carry
-// data-crew-member-id). Required docs: photo ID, tax form, contract.
-// (User 2026-06-01.)
+// ── Document packets folded into the Contact Sheet ────────────────────────
+// Per crew row we show a compact ID / tax / contract completeness badge and a
+// "📁 N docs" toggle that expands their linked documents inline. Computed
+// client-side from the Docs-tab rows (data-crew-member-id). Screen-only, so
+// the exported/printed contact sheet stays clean. (User 2026-06-01: drop the
+// top alert; combine badges into the contact sheet.)
 function _pesc(s){ return String(s==null?'':s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function _packetToggle(head){
-  const card = head.closest('.packet-card'); if (!card) return;
-  const docs = card.querySelector('.packet-docs');
-  const chev = head.querySelector('.packet-chev');
-  const open = docs.style.display !== 'none';
-  docs.style.display = open ? 'none' : 'block';
-  if (chev) chev.textContent = open ? '▸' : '▾';
-}
 window._packetOpenDoc = function(uid){
   const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
   if (typeof openDocDetail === 'function') openDocDetail(parseInt(uid), row || null);
 };
 window._buildPacketView = function(){
-  const cards = Array.from(document.querySelectorAll('.packet-card'));
-  if (!cards.length) return;
+  const blocks = Array.from(document.querySelectorAll('.cs-docs[data-crew-member-id]'));
+  if (!blocks.length) return;
   const REQ = [
-    {key:'id',       label:'ID',       icon:'🪪'},
+    {key:'id',       label:'Photo ID', icon:'🪪'},
     {key:'tax',      label:'Tax form', icon:'🧾'},
     {key:'contract', label:'Contract', icon:'📄'},
   ];
   const idRe = /(\bid\b|licen|driver|\bdl\b|passport|state id)/i;
-  const incompleteOnly = document.getElementById('packet-incomplete-only') &&
-                         document.getElementById('packet-incomplete-only').checked;
-  const incomplete = [];
-  cards.forEach(card => {
-    const cid  = card.dataset.crewMemberId;
-    const name = card.dataset.name || 'This person';
+  blocks.forEach(block => {
+    const cid  = block.dataset.crewMemberId;
     const rows = Array.from(document.querySelectorAll(
         '#docsHistory .doc-row[data-crew-member-id="' + cid + '"]'))
       .filter(r => (r.dataset.status || '') !== 'duplicate');
@@ -13895,40 +13856,35 @@ window._buildPacketView = function(){
       else if (type === 'contract') present.contract = true;
       else if (type === 'employee_vendor_doc' && idRe.test(vendor + ' ' + fname)) present.id = true;
     });
-    const missing = REQ.filter(q => !present[q.key]);
-    if (missing.length) incomplete.push({name, missing: missing.map(m => m.label)});
-    card.querySelector('.packet-badges').innerHTML = REQ.map(q =>
-      '<span style="color:' + (present[q.key] ? '#22c55e' : '#e0808a') + '">'
-      + (present[q.key] ? '✅' : '⛔') + ' ' + q.icon + ' ' + q.label + '</span>').join('');
-    card.querySelector('.packet-count').textContent = docs.length + ' doc' + (docs.length === 1 ? '' : 's');
-    const docsEl = card.querySelector('.packet-docs');
-    docsEl.innerHTML = docs.length
-      ? docs.map(d =>
-          '<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:.78rem">'
-          + '<span style="font-size:.62rem;color:var(--text-muted);min-width:130px">' + _pesc(d.type || '—') + '</span>'
-          + '<a href="#" onclick="event.preventDefault();_packetOpenDoc(\'' + d.uid + '\')" '
-          +    'style="color:#5b8af9;text-decoration:none">📎 ' + _pesc(d.fname || ('Doc #' + d.uid)) + '</a>'
-          + '</div>').join('')
-      : '<span class="muted" style="font-size:.75rem">No documents linked yet.</span>';
-    card.style.display = (incompleteOnly && !missing.length) ? 'none' : '';
-  });
-  const sum = document.getElementById('packet-summary');
-  if (sum) {
-    if (!incomplete.length) {
-      sum.innerHTML = '<div style="background:#14291e;border:1px solid #1a4228;color:#22c55e;'
-        + 'border-radius:6px;padding:8px 12px;font-size:.8rem">✅ All ' + cards.length
-        + ' packets complete.</div>';
+    // Compact badges — present=green, missing=muted (not alarming).
+    block.querySelector('.cs-docs-badges').innerHTML = REQ.map(q =>
+      '<span title="' + q.label + (present[q.key] ? ' on file' : ' missing') + '" '
+      + 'style="color:' + (present[q.key] ? '#22c55e' : '#8a7170') + '">'
+      + (present[q.key] ? '✅' : '⬜') + q.icon + '</span>').join('');
+    const toggle = block.querySelector('.cs-docs-toggle');
+    const list   = block.querySelector('.cs-docs-list');
+    const label  = '📁 ' + docs.length + ' doc' + (docs.length === 1 ? '' : 's');
+    if (docs.length) {
+      toggle.style.display = '';
+      toggle.textContent = label + ' ▾';
+      toggle.onclick = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const open = list.style.display !== 'none';
+        list.style.display = open ? 'none' : 'block';
+        toggle.textContent = label + (open ? ' ▾' : ' ▴');
+      };
+      list.innerHTML = docs.map(d =>
+        '<div style="padding:2px 0;font-size:.72rem">'
+        + '<a href="#" onclick="event.preventDefault();event.stopPropagation();_packetOpenDoc(\'' + d.uid + '\')" '
+        +    'style="color:#5b8af9;text-decoration:none">📎 ' + _pesc(d.fname || ('Doc #' + d.uid)) + '</a>'
+        + ' <span class="muted" style="font-size:.6rem">' + _pesc(d.type || '') + '</span>'
+        + '</div>').join('');
     } else {
-      sum.innerHTML = '<div style="background:#2a1414;border:1px solid #4a2020;color:#f0b0b0;'
-        + 'border-radius:6px;padding:8px 12px;font-size:.8rem">'
-        + '<strong style="color:#e0808a">⚠ ' + incomplete.length + ' of ' + cards.length
-        + ' packets incomplete</strong>'
-        + '<div style="margin-top:4px;display:flex;flex-direction:column;gap:2px">'
-        + incomplete.map(p => '<span>• <strong>' + _pesc(p.name) + '</strong> — missing '
-            + p.missing.join(', ') + '</span>').join('')
-        + '</div></div>';
+      toggle.style.display = 'none';
+      list.style.display = 'none';
+      list.innerHTML = '';
     }
-  }
+  });
 };
 
 // Run when contacts tab is first shown
