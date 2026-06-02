@@ -20983,6 +20983,41 @@ def _refile_doc(upload, dry=False):
         return {"changed": False, "error": str(e), "from": cur, "to": intended, "id": upload.id}
 
 
+@app.route("/projects/<int:pid>/debug-mirror", methods=["GET"])
+@login_required
+def debug_mirror(pid):
+    """Diagnostic: what does the auto-mirror resolve + do? Returns the resolved
+    working/actual budget ids, how many Working lines lack a mirror, and the
+    result (or error) of calling ensure_actual_mirrors. (User 2026-06-02.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden"}), 403
+    all_b = Budget.query.filter_by(project_id=pid).all()
+    wbid = next((b.id for b in all_b if _budget_type(b.budget_mode) == 'working'
+                 and not b.is_actual and b.version_status == 'current'), None)
+    abid = next((b.id for b in all_b if b.is_actual and b.version_status == 'current'), None)
+    w = Budget.query.get(wbid) if wbid else None
+    a = Budget.query.get(abid) if abid else None
+    have = {l.source_line_id for l in a.lines if l.source_line_id} if a else set()
+    missing = [l.id for l in (w.lines if w else []) if l.id not in have]
+    result = {"wbid": wbid, "abid": abid,
+              "working_line_count": (len(w.lines) if w else 0),
+              "actual_source_links": len(have),
+              "missing_count": len(missing), "missing_ids": missing[:10],
+              "wbudget_mode": (w.budget_mode if w else None),
+              "abudget_mode": (a.budget_mode if a else None)}
+    from actuals import ensure_actual_mirrors
+    try:
+        result["added"] = ensure_actual_mirrors(pid, working_bid=wbid, actual_bid=abid)
+        result["error"] = None
+    except Exception as e:
+        db.session.rollback()
+        import traceback as _tb
+        result["added"] = None
+        result["error"] = type(e).__name__ + ': ' + str(e)[:200]
+        result["tb"] = _tb.format_exc()[-400:]
+    return jsonify(result)
+
+
 @app.route("/projects/<int:pid>/actual-audit", methods=["GET"])
 @login_required
 def actual_audit(pid):
