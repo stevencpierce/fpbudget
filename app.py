@@ -1125,7 +1125,7 @@ def admin_docs_wipe_project(pid):
     })
 
 
-@app.route("/admin/docs/project/<int:pid>/scan-audit", methods=["GET"])
+@app.route("/admin/docs/project/<int:pid>/scan-audit", methods=["GET", "POST"])
 @login_required
 def admin_docs_scan_audit(pid):
     """READ-ONLY: compare Dropbox files against DocUpload rows to find receipts
@@ -1140,7 +1140,7 @@ def admin_docs_scan_audit(pid):
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
             return jsonify({"error": "Forbidden"}), 403
     project = ProjectSheet.query.get_or_404(pid)
-    q = (request.args.get('q') or '').strip().lower()
+    q = (request.args.get('q') or (request.get_json(silent=True) or {}).get('q') or '').strip().lower()
     from collections import Counter as _Counter
 
     ups = DocUpload.query.filter_by(project_id=pid).all()
