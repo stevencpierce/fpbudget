@@ -606,51 +606,77 @@ def run_auto_match(project_id):
                            not_project_expense=False)
                 .all())
 
-    suggestions = 0
-    inspected = 0
+    # Receipts already linked to an electronic txn (suggested OR confirmed)
+    # are spoken for — never re-suggest one to a second charge.
+    taken_docs = {t.doc_upload_id for t in Transaction.query.filter(
+        Transaction.project_id == project_id,
+        Transaction.source.in_(('qbo_sync', 'csv_import')),
+        Transaction.doc_upload_id.isnot(None)).all() if t.doc_upload_id}
+
+    # Pre-parse dates once.
+    q_rows = []
     for q in qbo_unmatched:
         if q.amount is None or not q.txn_date:
             continue
         try:
-            q_dt = _dt.date.fromisoformat(q.txn_date[:10])
+            q_rows.append((q, _dt.date.fromisoformat(q.txn_date[:10])))
         except (TypeError, ValueError):
             continue
-        best = None
-        best_score = 0.0
-        for d in doc_open:
-            inspected += 1
-            if d.amount is None or not d.txn_date:
+    d_rows = []
+    for d in doc_open:
+        if d.amount is None or not d.txn_date:
+            continue
+        try:
+            d_rows.append((d, _dt.date.fromisoformat(d.txn_date[:10])))
+        except (TypeError, ValueError):
+            continue
+
+    suggestions = 0
+    inspected = 0
+
+    def _pass(accept, label):
+        """One matching sweep. `accept(vendor_score, day_gap)` decides
+        eligibility; amount is always gated exact. Strong (vendor-similar)
+        pass runs first so it claims receipts before the looser pass."""
+        nonlocal suggestions, inspected
+        for q, q_dt in q_rows:
+            if q.match_status == 'suggested':     # already matched in pass 1
                 continue
-            if abs(float(d.amount) - float(q.amount)) > 0.01:
-                continue
-            try:
-                d_dt = _dt.date.fromisoformat(d.txn_date[:10])
-            except (TypeError, ValueError):
-                continue
-            day_gap = abs((d_dt - q_dt).days)
-            if day_gap > 3:
-                continue
-            vendor_score = _vendor_similarity(q.vendor, d.vendor)
-            if vendor_score < 0.45:
-                continue
-            # Composite score: amount=1.0 (already gated), date proximity
-            # (1.0 = same day, 0.7 at 3 days), vendor fuzzy.
-            date_score = max(0.0, 1.0 - (day_gap / 10.0))
-            score = (1.0 + date_score + vendor_score) / 3.0
-            if score > best_score:
-                best_score = score
-                best = d
-        if best:
-            q.doc_upload_id    = best.doc_upload_id
-            q.match_status     = 'suggested'
-            q.match_confidence = round(best_score, 3)
-            q.updated_at       = datetime.utcnow()
-            suggestions += 1
-            log.info(
-                f"[actuals automatch] QBO txn #{q.id} ({q.vendor!r}, "
-                f"${q.amount}) → doc upload #{best.doc_upload_id} via "
-                f"DocTxn #{best.id}, score={best_score:.3f}"
-            )
+            best, best_score = None, 0.0
+            for d, d_dt in d_rows:
+                inspected += 1
+                if d.doc_upload_id in taken_docs:
+                    continue
+                if abs(float(d.amount) - float(q.amount)) > 0.01:
+                    continue
+                day_gap = abs((d_dt - q_dt).days)
+                vendor_score = _vendor_similarity(q.vendor, d.vendor)
+                if not accept(vendor_score, day_gap):
+                    continue
+                date_score = max(0.0, 1.0 - (day_gap / 10.0))
+                # vendor_score still feeds the score, so vendor-less (Tier-2)
+                # matches rank below real name matches in the review list.
+                score = (1.0 + date_score + vendor_score) / 3.0
+                if score > best_score:
+                    best_score, best = score, d
+            if best:
+                q.doc_upload_id    = best.doc_upload_id
+                q.match_status     = 'suggested'
+                q.match_confidence = round(best_score, 3)
+                q.updated_at       = datetime.utcnow()
+                taken_docs.add(best.doc_upload_id)
+                suggestions += 1
+                log.info(f"[actuals automatch:{label}] txn #{q.id} "
+                         f"({q.vendor!r}, ${q.amount}) → doc upload "
+                         f"#{best.doc_upload_id}, score={best_score:.3f}")
+
+    # Pass 1 — strong: vendor-similar AND within 3 days.
+    _pass(lambda v, g: v >= 0.45 and g <= 3, "strong")
+    # Pass 2 — exact amount + within 5 days, vendor optional. Amount+date is a
+    # solid signal for bank descriptors that don't resemble the receipt's
+    # vendor name (e.g. "SQ *CASA VIDEO"); surfaced as a suggestion to confirm.
+    # (User 2026-06-02.)
+    _pass(lambda v, g: g <= 5, "amt+date")
     db.session.commit()
     log.info(
         f"[actuals automatch] project #{project_id}: {suggestions} suggestions "
