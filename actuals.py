@@ -16,7 +16,7 @@ import logging
 from datetime import datetime
 from sqlalchemy.orm import attributes
 
-from models import db, Budget, BudgetLine, Transaction, ProjectSheet
+from models import db, Budget, BudgetLine, Transaction, ProjectSheet, DocUpload
 
 log = logging.getLogger(__name__)
 
@@ -628,6 +628,15 @@ def run_auto_match(project_id):
                 .filter_by(project_id=project_id, source='doc_upload',
                            not_project_expense=False)
                 .all())
+    # Never match against receipts flagged as duplicates (pending review still
+    # has a txn; confirmed ones are moved to /_DUPLICATES/). They stay out of
+    # every list until "Keep" pulls them back. (User 2026-06-02.)
+    _dup_doc_ids = {r[0] for r in db.session.query(DocUpload.id)
+                    .filter(DocUpload.project_id == project_id,
+                            db.or_(DocUpload.is_duplicate == True,        # noqa: E712
+                                   DocUpload.status == 'duplicate')).all()}
+    if _dup_doc_ids:
+        doc_open = [t for t in doc_open if t.doc_upload_id not in _dup_doc_ids]
 
     # Receipts already linked to an electronic txn (suggested OR confirmed)
     # are spoken for — never re-suggest one to a second charge.

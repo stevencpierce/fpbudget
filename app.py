@@ -7370,6 +7370,9 @@ def actuals_docs_list_for_picker(pid):
         # Filter out error / corrupt rows — only show usable docs.
         if d.status == 'error':
             continue
+        # Skip flagged duplicates — they're parked until pulled back.
+        if d.is_duplicate or d.status == 'duplicate':
+            continue
         if not d.filed_dropbox_path and not d.source_archive_path:
             continue
         out.append({
@@ -7444,6 +7447,10 @@ def actuals_reconcile_data(pid):
     receipts = []
     for d in doc_rows:
         if d.id in linked_doc_ids:
+            continue
+        # Flagged duplicates (pending or confirmed) never appear in any matching
+        # list — they're parked until "Keep" pulls them back. (User 2026-06-02.)
+        if d.is_duplicate or d.status == 'duplicate':
             continue
         # Hide pure non-ledger doc types (tax forms, contracts, etc.)
         # from this view — they don't pair with transactions by design.
@@ -7548,8 +7555,10 @@ def actuals_receipt_candidates(pid, tid):
             .options(_defer(DocUpload.veryfi_data)).all())
     _cents = lambda v: None if v is None else round((abs(v) - int(abs(v))) * 100)
     t_cents = _cents(t_amt)
-    # Eligible (unlinked, ledger-type) receipts.
+    # Eligible (unlinked, ledger-type, NON-duplicate) receipts. Flagged
+    # duplicates (pending or confirmed) are excluded from matching entirely.
     elig = [d for d in docs if d.id not in linked
+            and not d.is_duplicate and d.status != 'duplicate'
             and (d.category or '') not in ('tax_form', 'contract', 'release', 'legal', 'insurance')]
     # Process-of-elimination: how many unlinked receipts share the charge's
     # EXACT amount? If exactly one, that one is almost certainly it.
@@ -19522,9 +19531,17 @@ def _apply_dup_resolution(upload, action):
         upload.is_duplicate = True
         upload.note = (f"Confirmed duplicate of #{_peer}. Moved to /_DUPLICATES/."
                        if _peer else "Confirmed duplicate. Moved to /_DUPLICATES/.")
-        # A confirmed duplicate isn't a real spend — drop any auto-created txn.
+        # A confirmed duplicate isn't a real spend — drop the receipt's OWN
+        # auto-created doc_upload txn. Scoped to source='doc_upload' so we never
+        # delete a bank charge (qbo_sync/csv_import) that was suggested-matched
+        # to this receipt — that charge is real and must survive. (User 2026-06-02.)
         try:
-            Transaction.query.filter_by(doc_upload_id=upload.id).delete(synchronize_session=False)
+            Transaction.query.filter_by(doc_upload_id=upload.id, source='doc_upload').delete(synchronize_session=False)
+            # Any electronic txn that was tentatively paired to this now-duplicate
+            # receipt is unlinked (not deleted) so it returns to the unmatched pile.
+            Transaction.query.filter_by(doc_upload_id=upload.id).update(
+                {"doc_upload_id": None, "match_status": "unmatched", "match_confidence": None},
+                synchronize_session=False)
         except Exception:
             pass
         return True, {"resolved": "confirm", "upload_id": upload.id, "moved_to": moved_to}, None
