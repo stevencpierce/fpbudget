@@ -7215,13 +7215,17 @@
       _actualsResolveFilters();
     };
 
-    // Default-apply the "Need coding" filter on initial render so the
-    // user sees the work-to-do queue first. They can click "All" /
-    // "Coded" / etc. to widen the view.
+    // Grouped 3-section view is the default. Show ALL rows (so sections are
+    // complete), then bucket them into Needs-receipt / Receipts / Linked.
+    // Stat-card + filter-bar still work on top (they hide rows within sections).
+    function _actualsInitView() {
+      if (typeof actualsApplyFilter === 'function') actualsApplyFilter('all');
+      if (typeof window._actualsSectionize === 'function') window._actualsSectionize();
+    }
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => actualsApplyFilter('uncoded'));
+      document.addEventListener('DOMContentLoaded', _actualsInitView);
     } else {
-      actualsApplyFilter('uncoded');
+      _actualsInitView();
     }
 
     // Initial recount on page load — defensive; server-rendered values
@@ -7401,6 +7405,7 @@
       }
       if (typeof _actualsRecountStats === 'function') _actualsRecountStats();
       if (typeof _actualsRefreshReviewBtn === 'function') _actualsRefreshReviewBtn();
+      if (typeof window._actualsSectionize === 'function') window._actualsSectionize();  // re-bucket
     }
     window.actualsUnmatch = async function (tid) {
       if (!confirm('Unlink this receipt from the charge? The receipt returns to the pool; the charge stays.')) return;
@@ -7423,6 +7428,61 @@
         if (d.transaction_id) _actualsRowToUnlinked(d.transaction_id);
         if (typeof _actualsToast === 'function') _actualsToast('Undid match: ' + (d.vendor || 'charge') + (d.amount != null ? (' · $' + Number(d.amount).toFixed(2)) : ''), 'green');
       } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Error: ' + e.message, 'red'); }
+    };
+
+    // ── Grouped 3-section Match view (Needs receipt / Receipts to place / Linked) ──
+    window._actualsSectionize = function () {
+      const list = document.getElementById('actuals-txn-list');
+      if (!list) return;
+      let wrap = document.getElementById('actuals-sections');
+      if (!wrap) {
+        wrap = document.createElement('div');
+        wrap.id = 'actuals-sections';
+        list.parentNode.insertBefore(wrap, list);
+      }
+      wrap.innerHTML = '';
+      const defs = [
+        { key: 'needs',    title: '⚡ Needs receipt',     color: '#e0a040', desc: 'charges with no proof yet', collapsed: false },
+        { key: 'receipts', title: '🧾 Receipts to place', color: '#7ba6e8', desc: 'uploaded receipts not yet on a charge', collapsed: false },
+        { key: 'linked',   title: '🔗 Linked',            color: '#74c69d', desc: 'matched pairs (suggested + confirmed)', collapsed: true },
+      ];
+      const bodies = {};
+      defs.forEach(d => {
+        const sec = document.createElement('div'); sec.style.cssText = 'margin-bottom:14px';
+        const hdr = document.createElement('div');
+        hdr.style.cssText = 'display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;background:var(--bg-card);border:1px solid var(--border);border-left:3px solid ' + d.color + ';border-radius:8px 8px 0 0';
+        hdr.innerHTML = '<span style="font-weight:600;font-size:.88rem">' + d.title + '</span>'
+          + '<span class="sec-count" style="font-size:.78rem;color:' + d.color + ';font-weight:700"></span>'
+          + '<span class="muted" style="font-size:.72rem;margin-left:6px">— ' + d.desc + '</span>'
+          + '<span class="sec-chev" style="margin-left:auto;color:var(--text-muted);font-size:.8rem">' + (d.collapsed ? '▸' : '▾') + '</span>';
+        const body = document.createElement('div');
+        body.style.cssText = 'border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;padding:8px;display:flex;flex-direction:column;gap:0' + (d.collapsed ? ';display:none' : '');
+        hdr.addEventListener('click', () => {
+          const hidden = body.style.display === 'none';
+          body.style.display = hidden ? 'flex' : 'none';
+          hdr.querySelector('.sec-chev').textContent = hidden ? '▾' : '▸';
+        });
+        sec.appendChild(hdr); sec.appendChild(body); wrap.appendChild(sec);
+        bodies[d.key] = body;
+      });
+      const counts = { needs: 0, receipts: 0, linked: 0 };
+      Array.from(list.children).forEach(node => {
+        if (!node.classList) return;
+        if (node.classList.contains('actuals-suggested-banner')) return;   // moved with its row
+        if (!node.classList.contains('actuals-txn-row')) return;
+        if (node.dataset.claimedElsewhere === '1') return;                 // leave hidden admin rows out
+        const src = node.dataset.source, hasDoc = node.dataset.hasDoc;
+        const key = (src === 'doc_upload') ? 'receipts' : (hasDoc === '1' ? 'linked' : 'needs');
+        const banner = document.querySelector('.actuals-suggested-banner[data-tid="' + node.dataset.tid + '"]');
+        if (banner) bodies[key].appendChild(banner);
+        bodies[key].appendChild(node);
+        counts[key]++;
+      });
+      ['needs', 'receipts', 'linked'].forEach((k, i) => {
+        const el = wrap.querySelectorAll('.sec-count')[i];
+        if (el) el.textContent = ' (' + counts[k] + ')';
+      });
+      list.style.display = 'none';   // original flat list now empty
     };
 
     // ── Side-by-side Match Review (confirm/dismiss in place, no reload) ──
