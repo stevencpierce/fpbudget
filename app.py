@@ -1258,6 +1258,140 @@ def admin_docs_scan_audit(pid):
     })
 
 
+@app.route("/admin/docs/project/<int:pid>/import-missing", methods=["POST"])
+@login_required
+def admin_docs_import_missing(pid):
+    """Import every Dropbox file in the project that has no DocUpload row, with
+    date/amount/category/vendor parsed from the Analyzer filename so it's
+    immediately matchable. Walks the WHOLE project root (skips _TRASH /
+    _DUPLICATES / _SOURCE_ARCHIVE). Defensive: truncates to column limits,
+    guards amount overflow, commits in batches, returns sanitized errors.
+    Dry-run by default; ?apply=1 to write. (User 2026-06-02.)"""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    project = ProjectSheet.query.get_or_404(pid)
+    if not project.dropbox_folder:
+        return jsonify({"error": "Project has no Dropbox folder configured"}), 400
+    apply = (request.args.get('apply') == '1') or bool((request.get_json(silent=True) or {}).get('apply'))
+    import mimetypes as _mt
+    from datetime import datetime as _dt
+    try:
+        dbx = _dbx_client()
+    except Exception as e:
+        return jsonify({"error": "Dropbox init failed", "detail": type(e).__name__}), 500
+    proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
+                 else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+    existing_full, existing_names = set(), set()
+    for u in DocUpload.query.with_entities(
+                DocUpload.filed_dropbox_path, DocUpload.original_filename,
+                DocUpload.filed_filename).filter_by(project_id=pid).all():
+        if u.filed_dropbox_path:
+            existing_full.add(u.filed_dropbox_path.lower())
+            existing_names.add(os.path.basename(u.filed_dropbox_path).lower())
+        for nm in (u.filed_filename, u.original_filename):
+            if nm:
+                existing_names.add(nm.lower())
+
+    def _clip(s, n):
+        return s[:n] if (isinstance(s, str) and len(s) > n) else s
+
+    created, scanned, errors, sample, batch = 0, 0, [], [], 0
+    try:
+        res = dbx.files_list_folder(proj_root, recursive=True)
+    except Exception as e:
+        return jsonify({"error": "list failed", "detail": type(e).__name__}), 500
+    while True:
+        for entry in res.entries:
+            if not hasattr(entry, 'size'):
+                continue
+            pl = (entry.path_display or '').lower()
+            if '/_trash' in pl or '/_source_archive' in pl or '/_duplicates' in pl:
+                continue
+            scanned += 1
+            if pl in existing_full:
+                continue
+            fn = entry.name or ''
+            if fn.lower() in existing_names:
+                continue
+            existing_names.add(fn.lower()); existing_full.add(pl)   # dedupe within this walk
+            p = _parse_analyzer_filename(fn)
+            amt = p.get('amount')
+            if amt is not None and (amt >= 10_000_000 or amt < 0):
+                amt = None                                          # Numeric(10,2) guard
+            dd = None
+            if p.get('doc_date'):
+                try:
+                    dd = _dt.strptime(p['doc_date'], '%Y-%m-%d').date()
+                except ValueError:
+                    dd = None
+            if apply:
+                try:
+                    db.session.add(DocUpload(
+                        project_id=pid, uploader_id=current_user.id,
+                        uploaded_at=getattr(entry, 'server_modified', None) or _dt.utcnow(),
+                        original_filename=_clip(fn, 300), filed_filename=_clip(fn, 300),
+                        filed_dropbox_path=_clip(entry.path_display, 500),
+                        filed_at=getattr(entry, 'server_modified', None) or _dt.utcnow(),
+                        file_size=getattr(entry, 'size', None),
+                        content_type=_clip(_mt.guess_type(fn)[0] or 'application/octet-stream', 100),
+                        status='filed', category=_clip(p.get('category'), 100),
+                        vendor=_clip(p.get('vendor'), 200), amount=amt, doc_date=dd,
+                        note='Imported from Dropbox scan'))
+                    batch += 1
+                    if batch >= 150:
+                        db.session.commit(); batch = 0
+                except Exception as _ce:
+                    db.session.rollback(); batch = 0
+                    errors.append(_clip(type(_ce).__name__ + ' @ ' + fn, 140))
+            created += 1
+            if len(sample) < 25:
+                sample.append({"category": p.get('category'), "amount": amt, "date": p.get('doc_date')})
+        if not res.has_more:
+            break
+        try:
+            res = dbx.files_list_folder_continue(res.cursor)
+        except Exception as _ce:
+            errors.append('continue: ' + type(_ce).__name__); break
+    if apply:
+        try:
+            db.session.commit()
+        except Exception as _ce:
+            db.session.rollback(); errors.append('final commit: ' + type(_ce).__name__)
+
+    txns_created = 0
+    if apply and created:
+        _NL = {'tax_form', 'contract', 'release', 'legal', 'insurance', 'misc',
+               'employee_vendor_doc', 'estimate', 'quote', 'purchase_order'}
+        for u in (DocUpload.query.filter_by(project_id=pid)
+                  .filter(DocUpload.note == 'Imported from Dropbox scan').all()):
+            if (u.category or '') in _NL:
+                continue
+            if Transaction.query.filter_by(doc_upload_id=u.id).first():
+                continue
+            try:
+                db.session.add(Transaction(
+                    project_id=pid, source='doc_upload', doc_upload_id=u.id,
+                    vendor=u.vendor, amount=u.amount,
+                    txn_date=u.doc_date.isoformat() if u.doc_date else None,
+                    is_expense=True, match_status='unmatched',
+                    created_via_user_id=current_user.id if current_user.is_authenticated else None))
+                txns_created += 1
+            except Exception:
+                db.session.rollback()
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+    return jsonify({"dry": (not apply), "applied": apply, "scanned": scanned,
+                    "created": created, "txns_created": txns_created,
+                    "errors": errors[:25], "sample": sample})
+
+
 @app.route("/admin/docs/project/<int:pid>/reconcile", methods=["POST"])
 @login_required
 def admin_docs_reconcile_project(pid):
