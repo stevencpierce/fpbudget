@@ -5513,6 +5513,10 @@
               title="Review and confirm the auto-suggested receipt↔charge matches">
         🔎 Review matches <span id="actualsReviewCount" style="font-weight:700"></span>
       </button>
+      <button type="button" class="btn btn-sm" onclick="actualsUndoLastMatch()"
+              title="Undo the most recent confirmed match — unlinks it and frees the receipt">
+        ↩ Undo last match
+      </button>
       <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-sync-panel')">↻ Sync QBO</button>
       <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-import-panel')">⬆ Import CSV</button>
       <button type="button" class="btn btn-sm btn-ghost" onclick="toggleActualsPanel('actuals-settings-panel')">⚙ Settings</button>
@@ -6124,6 +6128,12 @@
                style="flex-shrink:0;font-size:.66rem;padding:2px 7px;background:{{ _bg }};border:1px solid {{ _bd }};border-radius:4px;color:{{ _fg }};text-decoration:none">
               📎 {{ _cat }} · {{ (_doc.filed_filename or _doc.original_filename or '')[:14] }}{% if (_doc.filed_filename or _doc.original_filename or '')|length > 14 %}…{% endif %}
             </a>
+            {% if t.source in ('qbo_sync', 'reconciled', 'csv_import') %}
+            <button type="button" onclick="actualsUnmatch({{ t.id }})"
+                    title="Unlink this receipt — returns it to the pool, keeps the charge"
+                    style="flex-shrink:0;font-size:.6rem;padding:2px 6px;background:none;
+                           border:1px solid #4a2020;border-radius:4px;color:#e08080;cursor:pointer">✕ unlink</button>
+            {% endif %}
             {% else %}
             {# No receipt yet — show a clickable Upload button. Opens
                a hidden file picker bound to this transaction. #}
@@ -7369,6 +7379,49 @@
         if (typeof _actualsToast === 'function') _actualsToast('Linked receipt ↔ charge', 'green');
         actualsCloseFindReceipt();
         setTimeout(() => location.reload(), 600);
+      } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Error: ' + e.message, 'red'); }
+    };
+
+    // ── Unmatch a receipt + Undo last match (AJAX, no reload) ──
+    function _actualsRowToUnlinked(tid) {
+      const row = document.querySelector('.actuals-txn-row[data-tid="' + tid + '"]');
+      if (!row) return;
+      row.dataset.hasDoc = '0';
+      row.dataset.matchStatus = 'unmatched';
+      row.querySelectorAll('.actuals-doc-badge, [onclick^="actualsUnmatch"]').forEach(e => e.remove());
+      const banner = document.querySelector('.actuals-suggested-banner[data-tid="' + tid + '"]');
+      if (banner) banner.remove();
+      if (!row.querySelector('[onclick^="actualsFindReceipt"]')) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('onclick', 'actualsFindReceipt(' + tid + ')');
+        b.style.cssText = 'flex-shrink:0;font-size:.66rem;padding:2px 7px;background:#13251a;border:1px solid #2a5a3a;border-radius:4px;color:#74c69d;cursor:pointer';
+        b.textContent = '🔍 Find receipt';
+        row.appendChild(b);
+      }
+      if (typeof _actualsRecountStats === 'function') _actualsRecountStats();
+      if (typeof _actualsRefreshReviewBtn === 'function') _actualsRefreshReviewBtn();
+    }
+    window.actualsUnmatch = async function (tid) {
+      if (!confirm('Unlink this receipt from the charge? The receipt returns to the pool; the charge stays.')) return;
+      try {
+        const r = await fetch('/projects/' + PROJ_ID + '/actuals/transaction/' + tid + '/unmatch',
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await r.json();
+        if (!r.ok) { if (typeof _actualsToast === 'function') _actualsToast('Unmatch failed: ' + (d.error || r.status), 'red'); return; }
+        _actualsRowToUnlinked(tid);
+        if (typeof _actualsToast === 'function') _actualsToast('Unlinked' + (d.restored_receipt ? ' · receipt back in pool' : ''), 'green');
+      } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Error: ' + e.message, 'red'); }
+    };
+    window.actualsUndoLastMatch = async function () {
+      try {
+        const r = await fetch('/projects/' + PROJ_ID + '/actuals/undo-last-match',
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await r.json();
+        if (!r.ok) { if (typeof _actualsToast === 'function') _actualsToast('Undo failed: ' + (d.error || r.status), 'red'); return; }
+        if (!d.undone) { if (typeof _actualsToast === 'function') _actualsToast(d.message || 'No recent match to undo', 'yellow'); return; }
+        if (d.transaction_id) _actualsRowToUnlinked(d.transaction_id);
+        if (typeof _actualsToast === 'function') _actualsToast('Undid match: ' + (d.vendor || 'charge') + (d.amount != null ? (' · $' + Number(d.amount).toFixed(2)) : ''), 'green');
       } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Error: ' + e.message, 'red'); }
     };
 

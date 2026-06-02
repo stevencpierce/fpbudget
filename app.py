@@ -7397,6 +7397,57 @@ def actuals_dismiss_suggestion(pid, tid):
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/unmatch", methods=["POST"])
+@login_required
+def actuals_unmatch(pid, tid):
+    """Unlink a receipt from a charge (suggested OR confirmed) and return the
+    receipt to the unlinked pool. The charge survives. (User 2026-06-02.)"""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden"}), 403
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    from actuals import unmatch_receipt
+    try:
+        info = unmatch_receipt(tid)
+        try:
+            _log_activity(action='update', entity_type='transaction_match',
+                          entity_id=tid, entity_label=(txn.vendor or f'Txn #{tid}')[:80],
+                          project_id=pid, after={'match_status': 'unmatched'},
+                          note=f'Unmatched receipt from {(txn.vendor or "charge")[:60]}')
+        except Exception:
+            pass
+        return jsonify({"ok": True, **info})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/projects/<int:pid>/actuals/undo-last-match", methods=["POST"])
+@login_required
+def actuals_undo_last_match(pid):
+    """Undo the most recent confirmed match in this project (fat-finger
+    insurance). Unlinks it and restores the receipt. (User 2026-06-02.)"""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden"}), 403
+    ProjectSheet.query.get_or_404(pid)
+    from actuals import last_match_for_project, unmatch_receipt
+    last = last_match_for_project(pid)
+    if not last:
+        return jsonify({"ok": True, "undone": False, "message": "No recent match to undo."})
+    label = (last.vendor or f'Txn #{last.id}')
+    info = unmatch_receipt(last.id)
+    try:
+        _log_activity(action='update', entity_type='transaction_match',
+                      entity_id=last.id, entity_label=label[:80], project_id=pid,
+                      after={'match_status': 'unmatched'},
+                      note=f'Undid last match: {label[:60]}')
+    except Exception:
+        pass
+    return jsonify({"ok": True, "undone": True, "transaction_id": last.id,
+                    "vendor": last.vendor,
+                    "amount": float(last.amount) if last.amount is not None else None,
+                    **info})
+
+
 @app.route("/projects/<int:pid>/actuals/matches/confirm-bulk", methods=["POST"])
 @login_required
 def actuals_confirm_matches_bulk(pid):

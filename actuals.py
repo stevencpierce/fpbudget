@@ -765,6 +765,65 @@ def dismiss_suggestion(transaction_id):
     return {'transaction_id': t.id}
 
 
+_NON_LEDGER_DOC_TYPES = {'tax_form', 'contract', 'release', 'legal', 'insurance',
+                         'misc', 'employee_vendor_doc', 'estimate', 'quote',
+                         'purchase_order'}
+
+
+def unmatch_receipt(transaction_id):
+    """Reverse a match (suggested OR confirmed): unlink the receipt from this
+    bank charge and put the receipt BACK in the unlinked pool so it can be
+    re-matched. The bank charge itself survives (it's a real spend); only the
+    receipt link is removed. If confirming had deleted the receipt's own
+    doc_upload row, recreate it (ledger types only) so it reappears for
+    matching. (User 2026-06-02.)"""
+    t = Transaction.query.get(transaction_id)
+    if not t:
+        raise ValueError(f"transaction {transaction_id} not found")
+    doc_id = t.doc_upload_id
+    info = {"transaction_id": t.id, "unlinked_doc_id": doc_id,
+            "vendor": t.vendor, "restored_receipt": False}
+    if t.source == 'doc_upload':
+        # This row IS the receipt's own row — "unmatch" here just clears any
+        # coding/confirm, doesn't unlink itself from itself.
+        t.match_status = 'unmatched'
+        t.match_confidence = None
+        t.updated_at = datetime.utcnow()
+        db.session.commit()
+        return info
+    t.doc_upload_id    = None
+    t.match_status     = 'unmatched'
+    t.match_confidence = None
+    t.updated_at       = datetime.utcnow()
+    if doc_id:
+        doc = DocUpload.query.get(doc_id)
+        if doc and (doc.category or '') not in _NON_LEDGER_DOC_TYPES:
+            has_sister = (Transaction.query
+                          .filter_by(doc_upload_id=doc_id, source='doc_upload')
+                          .first())
+            if not has_sister:
+                db.session.add(Transaction(
+                    project_id=t.project_id, source='doc_upload', doc_upload_id=doc_id,
+                    vendor=doc.vendor, amount=doc.amount,
+                    txn_date=doc.doc_date.isoformat() if doc.doc_date else None,
+                    is_expense=True, match_status='unmatched'))
+                info["restored_receipt"] = True
+    db.session.commit()
+    return info
+
+
+def last_match_for_project(project_id):
+    """The most recently confirmed receipt↔charge match in a project — the
+    target for 'Undo last match'. (User 2026-06-02.)"""
+    return (Transaction.query
+            .filter(Transaction.project_id == project_id,
+                    Transaction.match_status == 'confirmed',
+                    Transaction.doc_upload_id.isnot(None))
+            .order_by(Transaction.updated_at.desc().nullslast(),
+                      Transaction.id.desc())
+            .first())
+
+
 # ── Working → Actual sync (additive only — deletions become orphans) ──
 
 def sync_working_to_actual(project_id, user_id=None):
