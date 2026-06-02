@@ -5832,6 +5832,11 @@
             title="Confirm every suggested match, including lower-confidence amount-only ones">
       ✓ Confirm all
     </button>
+    <button type="button" class="btn btn-xs" onclick="actualsReviewOneByOne()"
+            style="font-size:.72rem;padding:4px 10px;color:#7ba6e8"
+            title="Step through each match in a side-by-side popup — charge + receipt together, confirm without leaving the page">
+      ⤢ Review one-by-one
+    </button>
     <button type="button" class="btn btn-xs" onclick="actualsBulkDismiss()"
             style="font-size:.72rem;padding:4px 10px;color:#bba070"
             title="Reject all suggestions (unlinks them; you can re-run Auto-Match later)">
@@ -6013,8 +6018,8 @@
                data-doc-img="{{ '1' if (_doc and _doc.content_type and _doc.content_type.startswith('image/')) else '0' }}"
                style="display:flex;align-items:center;gap:10px;padding:8px 12px;margin-bottom:4px;
                       background:#2a2414;border:1px solid #4a3a1a;border-radius:6px 6px 0 0">
-            <span class="recpt-thumb" onclick="openDocDetail({{ t.doc_upload_id }}, null);return false"
-                  title="Click to open the receipt"
+            <span class="recpt-thumb" onclick="actualsReviewOneByOne({{ t.id }});return false"
+                  title="Open side-by-side: this charge + the receipt, to confirm"
                   style="flex-shrink:0;width:34px;height:34px;border-radius:4px;background:#1a1408;
                          border:1px solid #4a3a1a;display:flex;align-items:center;justify-content:center;
                          font-size:.85rem;overflow:hidden;cursor:pointer">📄</span>
@@ -6435,6 +6440,35 @@
                     background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px">
       <div id="findRcptList" style="max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:6px">
         <div class="muted" style="padding:12px;font-size:.85rem">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Side-by-side Match Review modal (confirm in place, no reload) ── #}
+  <div id="matchReviewOverlay" style="display:none;position:fixed;inset:0;z-index:10000;
+       background:rgba(0,0,0,.82);align-items:center;justify-content:center;padding:24px">
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;
+                width:min(980px,97vw);max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.55)">
+      <div style="display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)">
+        <h3 style="margin:0;font-size:1rem">⚡ Confirm match</h3>
+        <span id="mrProgress" style="font-size:.78rem;color:var(--text-muted)"></span>
+        <span id="mrConf"></span>
+        <button type="button" onclick="actualsMRClose()" style="margin-left:auto;background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">✕</button>
+      </div>
+      <div style="flex:1;overflow:auto;padding:16px 18px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div id="mrTxn" style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg-input)"></div>
+        <div id="mrDoc" style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--bg-card);display:flex;flex-direction:column;gap:8px;min-height:340px"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--border)">
+        <button type="button" class="btn btn-sm" onclick="actualsMRStep(-1)">← Prev</button>
+        <span id="mrAmtMatch" style="font-size:.78rem;margin-left:6px"></span>
+        <button type="button" class="btn btn-sm" onclick="actualsMRDismiss()"
+                style="margin-left:auto;color:#e0a040;border-color:#4a3a1a">✕ Not a match</button>
+        <button type="button" class="btn btn-sm btn-primary" onclick="actualsMRConfirm()">✓ Confirm match</button>
+        <button type="button" class="btn btn-sm" onclick="actualsMRStep(1)">Next →</button>
+      </div>
+      <div style="padding:0 18px 10px;font-size:.7rem;color:var(--text-muted)">
+        Keys: <strong>C</strong> confirm · <strong>X</strong> not a match · <strong>←/→</strong> prev/next · <strong>Esc</strong> close
       </div>
     </div>
   </div>
@@ -7331,6 +7365,105 @@
         setTimeout(() => location.reload(), 600);
       } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Error: ' + e.message, 'red'); }
     };
+
+    // ── Side-by-side Match Review (confirm/dismiss in place, no reload) ──
+    const _mrEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const _mrFmt = n => (n == null || isNaN(n)) ? '—' : ('$' + Math.abs(Number(n)).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}));
+    let _mrQueue = [], _mrIdx = 0;
+    function _mrSyncCounts() {
+      const banners = document.querySelectorAll('.actuals-suggested-banner');
+      if (typeof _actualsRefreshReviewBtn === 'function') _actualsRefreshReviewBtn();
+      const rc = document.getElementById('actuals-review-count'); if (rc) rc.textContent = banners.length;
+      const hc = document.getElementById('actuals-review-hc');
+      if (hc) hc.textContent = [...banners].filter(b => parseFloat(b.dataset.confidence || 0) >= 0.9).length;
+    }
+    window.actualsReviewOneByOne = function (startTid) {
+      _mrQueue = [...document.querySelectorAll('.actuals-suggested-banner')].map(b => ({
+        tid: b.dataset.tid, docId: b.dataset.docId, conf: parseFloat(b.dataset.confidence || 0), banner: b }));
+      if (!_mrQueue.length) { if (typeof _actualsToast === 'function') _actualsToast('No suggested matches to review', 'red'); return; }
+      _mrIdx = 0;
+      if (startTid) { const i = _mrQueue.findIndex(q => String(q.tid) === String(startTid)); if (i >= 0) _mrIdx = i; }
+      document.getElementById('matchReviewOverlay').style.display = 'flex';
+      _mrRender();
+    };
+    async function _mrRender() {
+      if (!_mrQueue.length) { actualsMRClose(); return; }
+      if (_mrIdx < 0) _mrIdx = 0;
+      if (_mrIdx >= _mrQueue.length) _mrIdx = _mrQueue.length - 1;
+      const q = _mrQueue[_mrIdx];
+      document.getElementById('mrProgress').textContent = 'Match ' + (_mrIdx + 1) + ' of ' + _mrQueue.length;
+      const confEl = document.getElementById('mrConf'), hc = q.conf >= 0.9;
+      confEl.textContent = Math.round(q.conf * 100) + '%';
+      confEl.style.cssText = 'font-size:.74rem;padding:2px 8px;border-radius:10px;background:' + (hc ? '#13251a' : '#221d0c') + ';color:' + (hc ? '#74c69d' : '#e0a040') + ';border:1px solid ' + (hc ? '#2a5a3a' : '#4a3a1a');
+      const row = document.querySelector('.actuals-txn-row[data-tid="' + q.tid + '"]');
+      const tVendor = (row && row.querySelector('.actuals-txn-vendor')?.textContent.trim()) || '(no vendor)';
+      const tAmt = parseFloat(row ? row.dataset.amount : NaN);
+      const tDate = row ? row.dataset.txnDate : '';
+      const tCard = row ? row.dataset.sortCard4 : '';
+      const tNote = row ? row.dataset.note : '';
+      document.getElementById('mrTxn').innerHTML =
+        '<div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:#7ba6e8;margin-bottom:8px">🏦 Bank charge</div>'
+        + '<div style="font-size:1.05rem;font-weight:700;margin-bottom:6px;word-break:break-word">' + _mrEsc(tVendor) + '</div>'
+        + '<div style="font-size:1.7rem;font-weight:700;font-variant-numeric:tabular-nums;margin-bottom:10px">' + _mrFmt(tAmt) + '</div>'
+        + '<div style="font-size:.82rem;line-height:1.9;color:var(--text-muted)">'
+        + '<div>Date: <span style="color:var(--text)">' + _mrEsc(tDate || '—') + '</span></div>'
+        + (tCard ? '<div>Card: <span style="color:var(--text)">••' + _mrEsc(tCard) + '</span></div>' : '')
+        + (tNote ? '<div>Note: <span style="color:var(--text)">' + _mrEsc(tNote) + '</span></div>' : '')
+        + '</div>';
+      const docEl = document.getElementById('mrDoc');
+      docEl.innerHTML = '<div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:#f0c060">🧾 Receipt</div><div class="muted" style="padding:20px">Loading…</div>';
+      document.getElementById('mrAmtMatch').textContent = '';
+      try {
+        const meta = await (await fetch('/docs/upload/' + q.docId + '/meta')).json();
+        const src = '/docs/upload/' + q.docId + '/raw';
+        const preview = meta.is_pdf
+          ? '<iframe src="' + src + '#zoom=page-width" style="width:100%;flex:1;min-height:240px;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
+          : '<img src="' + src + '" style="width:100%;flex:1;min-height:240px;object-fit:contain;border:1px solid var(--border);border-radius:6px;background:#0a0d12">';
+        docEl.innerHTML =
+          '<div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:#f0c060">🧾 Receipt</div>'
+          + preview
+          + '<div style="font-size:.82rem;line-height:1.6"><div style="font-weight:600">' + _mrEsc(meta.vendor || meta.filename || 'Receipt') + '</div>'
+          + '<div style="color:var(--text-muted)">Amount: <span style="color:var(--text);font-weight:600">' + _mrFmt(meta.amount) + '</span> · Date: <span style="color:var(--text)">' + _mrEsc(meta.doc_date || '—') + '</span></div>'
+          + '<div style="color:var(--text-muted);font-size:.72rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + _mrEsc(meta.filename) + '">📎 ' + _mrEsc(meta.filename) + '</div></div>'
+          + '<a href="' + src + '" target="_blank" rel="noopener" style="font-size:.72rem;color:#8fb4ff;text-decoration:none">↗ Open full receipt</a>';
+        if (meta.amount != null && !isNaN(tAmt)) {
+          const same = Math.abs(Math.abs(meta.amount) - Math.abs(tAmt)) <= 0.01;
+          document.getElementById('mrAmtMatch').innerHTML = same
+            ? '<span style="color:#74c69d">✓ amounts match</span>'
+            : '<span style="color:#e08080">⚠ differ: ' + _mrFmt(tAmt) + ' vs ' + _mrFmt(meta.amount) + '</span>';
+        }
+      } catch (e) { docEl.innerHTML += '<div style="color:#e08080;padding:10px">Could not load receipt.</div>'; }
+    }
+    window.actualsMRStep = function (dir) { _mrIdx += dir; _mrRender(); };
+    window.actualsMRClose = function () { document.getElementById('matchReviewOverlay').style.display = 'none'; };
+    async function _mrAct(kind) {
+      const q = _mrQueue[_mrIdx]; if (!q) return;
+      const url = (kind === 'confirm')
+        ? '/actuals/transaction/' + q.tid + '/confirm-match'
+        : '/actuals/transaction/' + q.tid + '/dismiss-suggestion';
+      try {
+        const r = await fetch('/projects/' + PROJ_ID + url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await r.json();
+        if (!r.ok) { if (typeof _actualsToast === 'function') _actualsToast((kind === 'confirm' ? 'Confirm' : 'Dismiss') + ' failed: ' + (d.error || r.status), 'red'); return; }
+        if (q.banner && q.banner.remove) q.banner.remove();   // drop from list, no reload
+        _mrQueue.splice(_mrIdx, 1);
+        _mrSyncCounts();
+        if (!_mrQueue.length) { if (typeof _actualsToast === 'function') _actualsToast('All caught up 🎉', 'green'); actualsMRClose(); return; }
+        if (_mrIdx >= _mrQueue.length) _mrIdx = _mrQueue.length - 1;
+        _mrRender();
+      } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Error: ' + e.message, 'red'); }
+    }
+    window.actualsMRConfirm = function () { _mrAct('confirm'); };
+    window.actualsMRDismiss = function () { _mrAct('dismiss'); };
+    document.addEventListener('keydown', e => {
+      const ov = document.getElementById('matchReviewOverlay');
+      if (!ov || ov.style.display === 'none') return;
+      if (e.key === 'Escape') actualsMRClose();
+      else if (e.key === 'ArrowRight') actualsMRStep(1);
+      else if (e.key === 'ArrowLeft') actualsMRStep(-1);
+      else if (e.key === 'c' || e.key === 'C') actualsMRConfirm();
+      else if (e.key === 'x' || e.key === 'X') actualsMRDismiss();
+    });
 
     // ── Reconcile sub-tab: side-by-side unmatched txns ↔ receipts ──
     // Drag a receipt onto a transaction to fire /link-doc and pair them.
