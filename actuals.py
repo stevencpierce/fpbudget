@@ -540,32 +540,55 @@ def _vendor_similarity(a, b):
 
     No external dep: lowercases, strips punctuation, then computes:
       • exact match               → 1.0
-      • token-set Jaccard         → ratio of shared words / union
       • substring containment     → 0.85 if one wholly contains the other
+      • token-set Jaccard (≥0.5)  → ratio of shared words / union
       • prefix match (≥4 chars)   → 0.7
-    Anything below 0.45 is treated as no-match by the caller."""
+
+    Card/bank descriptors prefix the real merchant with a payment processor —
+    "SQ *CASA VIDEO", "IN *GOVISION LLC", "TST* TACO", "PAYPAL *SOUTHWESTAI".
+    So we also try the merchant part AFTER the "*" and take the best score, so
+    those land at full strength instead of being diluted by the prefix token.
+    (User 2026-06-02.) Anything below 0.45 is treated as no-match by the caller."""
     import re as _re
     if not a or not b:
         return 0.0
-    norm = lambda s: _re.sub(r'[^a-z0-9 ]', '', s.lower()).strip()
-    A, B = norm(a), norm(b)
-    if not A or not B:
-        return 0.0
-    if A == B:
-        return 1.0
-    if A in B or B in A:
-        return 0.85
-    a_tok, b_tok = set(A.split()), set(B.split())
-    if a_tok and b_tok:
-        inter = a_tok & b_tok
-        union = a_tok | b_tok
+    norm = lambda s: _re.sub(r'\s+', ' ', _re.sub(r'[^a-z0-9 ]', ' ', (s or '').lower())).strip()
+
+    def _variants(raw):
+        vs = set()
+        base = norm(raw)
+        if base:
+            vs.add(base)
+        if '*' in (raw or ''):                 # merchant after the processor mark
+            tail = norm((raw or '').split('*')[-1])
+            if tail:
+                vs.add(tail)
+        return vs
+
+    def _core(A, B):
+        if not A or not B:
+            return 0.0
+        if A == B:
+            return 1.0
+        if A in B or B in A:
+            return 0.85
+        at, bt = set(A.split()), set(B.split())
+        inter, union = at & bt, at | bt
         if inter and union:
             jaccard = len(inter) / len(union)
             if jaccard >= 0.5:
                 return jaccard
-    if len(A) >= 4 and len(B) >= 4 and A[:4] == B[:4]:
-        return 0.7
-    return 0.0
+        if len(A) >= 4 and len(B) >= 4 and A[:4] == B[:4]:
+            return 0.7
+        return 0.0
+
+    best = 0.0
+    for A in _variants(a):
+        for B in _variants(b):
+            s = _core(A, B)
+            if s > best:
+                best = s
+    return best
 
 
 def run_auto_match(project_id):
