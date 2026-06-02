@@ -7546,30 +7546,47 @@ def actuals_receipt_candidates(pid, tid):
     docs = (DocUpload.query
             .filter(DocUpload.project_id == pid, DocUpload.status != 'error')
             .options(_defer(DocUpload.veryfi_data)).all())
+    _cents = lambda v: None if v is None else round((abs(v) - int(abs(v))) * 100)
+    t_cents = _cents(t_amt)
+    # Eligible (unlinked, ledger-type) receipts.
+    elig = [d for d in docs if d.id not in linked
+            and (d.category or '') not in ('tax_form', 'contract', 'release', 'legal', 'insurance')]
+    # Process-of-elimination: how many unlinked receipts share the charge's
+    # EXACT amount? If exactly one, that one is almost certainly it.
+    exact_pool = 0
+    if t_amt is not None:
+        exact_pool = sum(1 for d in elig
+                         if d.amount is not None and abs(float(d.amount) - t_amt) <= 0.01)
     out = []
-    for d in docs:
-        if d.id in linked:
-            continue
-        if (d.category or '') in ('tax_form', 'contract', 'release', 'legal', 'insurance'):
-            continue
+    for d in elig:
         d_amt = float(d.amount) if d.amount is not None else None
         amt_exact = (t_amt is not None and d_amt is not None and abs(d_amt - t_amt) <= 0.01)
+        close = (not amt_exact and t_amt and d_amt is not None
+                 and abs(d_amt - t_amt) <= max(2.0, abs(t_amt) * 0.03))   # OCR misread / tip
+        cents_match = (not amt_exact and t_cents is not None
+                       and _cents(d_amt) == t_cents)                       # handwritten total: cents line up
         gap = abs((d.doc_date - t_dt).days) if (t_dt and d.doc_date) else None
         vscore = _vendor_similarity(txn.vendor, d.vendor)
+        only_exact = (amt_exact and exact_pool == 1)
         score = 0.0
         if amt_exact:
             score += 0.5
-        elif t_amt and d_amt and abs(d_amt - t_amt) <= max(1.0, abs(t_amt) * 0.02):
-            score += 0.2          # within ~2% (rounding / tip)
+        elif close:
+            score += 0.28
+        elif cents_match:
+            score += 0.18        # weak alone, but a strong tiebreaker w/ date+vendor
         score += 0.3 * vscore
         if gap is not None:
             score += 0.2 * max(0.0, 1.0 - gap / 14.0)
+        if only_exact:
+            score += 0.25        # only receipt at this exact amount → almost surely it
         out.append({"doc_id": d.id, "vendor": d.vendor or '', "amount": d_amt,
                     "doc_date": d.doc_date.isoformat() if d.doc_date else None,
                     "filename": d.filed_filename or d.original_filename or f'Upload #{d.id}',
                     "category": d.category or '',
                     "is_image": bool(d.content_type and d.content_type.startswith('image/')),
-                    "amt_exact": amt_exact, "day_gap": gap,
+                    "amt_exact": amt_exact, "close": bool(close), "cents_match": bool(cents_match),
+                    "only_exact": only_exact, "day_gap": gap,
                     "vendor_score": round(vscore, 2), "score": round(score, 3)})
     out.sort(key=lambda x: -x["score"])
     return jsonify({"ok": True,

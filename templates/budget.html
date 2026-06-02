@@ -7333,7 +7333,10 @@
       if (!rows.length) { list.innerHTML = '<div class="muted" style="padding:12px;font-size:.85rem">No matching receipts.</div>'; return; }
       list.innerHTML = rows.map(c => {
         const badges = [];
+        if (c.only_exact) badges.push('<span style="color:#f0c060">⭐ only $ match</span>');
         if (c.amt_exact) badges.push('<span style="color:#74c69d">✓ exact $</span>');
+        else if (c.close) badges.push('<span style="color:#e0a040">~ close $</span>');
+        else if (c.cents_match) badges.push('<span style="color:#9aa4b2">¢ cents match</span>');
         if (c.day_gap != null) badges.push('<span style="color:#bba070">' + c.day_gap + 'd apart</span>');
         if (c.vendor_score >= 0.45) badges.push('<span style="color:#7ba6e8">vendor ' + Math.round(c.vendor_score * 100) + '%</span>');
         const thumb = c.is_image
@@ -7713,17 +7716,21 @@
         const uni = new Set([...at, ...bt]).size;
         return uni ? inter / uni : 0;
       }
+      const _cents = x => (x == null) ? null : Math.round((Math.abs(x) - Math.trunc(Math.abs(x))) * 100);
       function _recScore(t, d) {
         const ta = t.amount == null ? null : Math.abs(t.amount);
         const da = d.amount == null ? null : Math.abs(d.amount);
         const exact = ta != null && da != null && Math.abs(da - ta) <= 0.01;
+        const close = !exact && ta && da != null && Math.abs(da - ta) <= Math.max(2, ta * 0.03);
+        const centsMatch = !exact && ta != null && da != null && _cents(ta) === _cents(da);
         let s = 0;
         if (exact) s += 0.5;
-        else if (ta && da && Math.abs(da - ta) <= Math.max(1, ta * 0.02)) s += 0.2;
+        else if (close) s += 0.28;
+        else if (centsMatch) s += 0.18;
         const v = _vsim(t.vendor, d.vendor); s += 0.3 * v;
         let gap = null;
         if (t.txn_date && d.doc_date) { gap = Math.abs((new Date(t.txn_date) - new Date(d.doc_date)) / 86400000); s += 0.2 * Math.max(0, 1 - gap / 14); }
-        return { score: s, exact, gap: gap == null ? null : Math.round(gap), v };
+        return { score: s, exact, close, centsMatch, gap: gap == null ? null : Math.round(gap), v };
       }
       window._recSelectTxn = function (txnId) {
         const t = _recState.txns.find(x => String(x.id) === String(txnId));
@@ -7734,14 +7741,24 @@
         });
         const docCol = document.getElementById('reconcile-doc-col');
         if (!docCol) return;
-        const ranked = _recState.docs.map(d => ({ d, ...(_recScore(t, d)) })).sort((a, b) => b.score - a.score);
+        const _ta = t.amount == null ? null : Math.abs(t.amount);
+        const _exactPool = (_ta == null) ? 0 : _recState.docs.filter(d => d.amount != null && Math.abs(Math.abs(d.amount) - _ta) <= 0.01).length;
+        const ranked = _recState.docs.map(d => {
+          const r = _recScore(t, d);
+          r.onlyExact = (r.exact && _exactPool === 1);
+          if (r.onlyExact) r.score += 0.25;
+          return { d, ...r };
+        }).sort((a, b) => b.score - a.score);
         const head = '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;margin-bottom:6px;'
           + 'background:#13251a;border:1px solid #2a5a3a;border-radius:6px;font-size:.74rem">'
           + '<span style="color:#74c69d">Receipts likely matching <strong>' + _esc(t.vendor || 'this charge') + '</strong> · ' + _fmt$(t.amount) + '</span>'
           + '<button type="button" onclick="_recClearSel()" style="margin-left:auto;font-size:.7rem;padding:2px 8px;background:none;border:1px solid #2a5a3a;border-radius:4px;color:#74c69d;cursor:pointer">✕ Clear</button></div>';
-        const cards = ranked.slice(0, 25).map(({ d, score, exact, gap, v }) => {
+        const cards = ranked.slice(0, 25).map(({ d, score, exact, close, centsMatch, onlyExact, gap, v }) => {
           const badges = [];
+          if (onlyExact) badges.push('<span style="color:#f0c060">⭐ only $ match</span>');
           if (exact) badges.push('<span style="color:#74c69d">✓ exact $</span>');
+          else if (close) badges.push('<span style="color:#e0a040">~ close $</span>');
+          else if (centsMatch) badges.push('<span style="color:#9aa4b2">¢ cents</span>');
           if (gap != null) badges.push('<span style="color:#bba070">' + gap + 'd</span>');
           if (v >= 0.45) badges.push('<span style="color:#7ba6e8">' + Math.round(v * 100) + '%</span>');
           const strong = score >= 0.5;
