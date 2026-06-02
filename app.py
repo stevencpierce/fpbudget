@@ -20623,6 +20623,219 @@ def qbo_imports_purge(pid=None):
     return jsonify(report)
 
 
+# ── Bank-CSV actuals import (e.g. Chase monthly export) ───────────────────────
+_BANK_CSV_SYNONYMS = {
+    # role -> ordered candidate header names (lowercased, exact-first then contains)
+    'date':   ['transaction date', 'trans date', 'txn date', 'date', 'posting date'],
+    'pdate':  ['post date', 'posted date'],
+    'desc':   ['description', 'payee', 'merchant', 'name', 'transaction'],
+    'amount': ['amount', 'amt'],
+    'debit':  ['debit', 'withdrawal', 'withdrawals', 'money out', 'charge', 'charges'],
+    'credit': ['credit', 'deposit', 'deposits', 'money in'],
+    'card':   ['card', 'card number', 'card no', 'last 4', 'last four', 'card last 4'],
+    'type':   ['type', 'transaction type'],
+    'cat':    ['category'],
+    'memo':   ['memo', 'notes', 'note'],
+}
+
+
+def _bank_pick_col(fieldnames, role):
+    """Resolve a CSV header to a logical role. Exact match wins, then substring."""
+    fields = [(f, (f or '').strip().lower()) for f in (fieldnames or [])]
+    cands = _BANK_CSV_SYNONYMS.get(role, [])
+    for c in cands:                                  # exact
+        for orig, low in fields:
+            if low == c:
+                return orig
+    for c in cands:                                  # substring
+        for orig, low in fields:
+            if c in low:
+                return orig
+    return None
+
+
+def _bank_parse_money(s):
+    """'-$1,234.56' / '(1,234.56)' / '' -> float or None."""
+    if s is None:
+        return None
+    t = str(s).strip()
+    if not t:
+        return None
+    neg = t.startswith('(') and t.endswith(')')
+    t = t.replace('(', '').replace(')', '').replace('$', '').replace(',', '').strip()
+    if not t:
+        return None
+    try:
+        v = float(t)
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+def _bank_parse_date(s):
+    """Return YYYY-MM-DD or None."""
+    t = (s or '').strip()
+    if not t:
+        return None
+    from datetime import datetime as _dt
+    for fmt in ('%m/%d/%Y', '%Y-%m-%d', '%m/%d/%y', '%m-%d-%Y', '%d/%m/%Y'):
+        try:
+            return _dt.strptime(t, fmt).strftime('%Y-%m-%d')
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_bank_csv(content):
+    """Parse a bank/credit-card CSV into normalized rows + stats. Handles both a
+    single signed Amount column and split Debit/Credit columns. Returns
+    (rows, stats) where each row is a dict ready for a Transaction:
+      {txn_date, vendor, amount(+), is_expense, card_last4, note, kind, _raw_line}
+    kind ∈ charge | credit | payment | zero. Payment rows (paying the card off)
+    are parsed but flagged so the caller can skip them — they aren't expenses."""
+    reader = csv.DictReader(io.StringIO(content))
+    fn = reader.fieldnames or []
+    col = {r: _bank_pick_col(fn, r) for r in _BANK_CSV_SYNONYMS}
+    rows, errors = [], []
+    for i, raw in enumerate(reader, start=2):   # line 1 = header
+        g = lambda r: (raw.get(col[r]) if col.get(r) else None)
+        date = _bank_parse_date(g('date')) or _bank_parse_date(g('pdate'))
+        vendor = (g('desc') or '').strip()
+        ttype = (g('type') or '').strip()
+        amt = _bank_parse_money(g('amount'))
+        if amt is None:    # split debit/credit layout
+            d = _bank_parse_money(g('debit'))
+            c = _bank_parse_money(g('credit'))
+            if d not in (None, 0):
+                amt = -abs(d)
+            elif c not in (None, 0):
+                amt = abs(c)
+        if not date or amt is None:
+            errors.append({"line": i, "reason": "unparseable date/amount",
+                           "vendor": vendor[:40]})
+            continue
+        card = ''.join(ch for ch in (g('card') or '') if ch.isdigit())[-4:]
+        note_bits = [b for b in [(g('cat') or '').strip(), (g('memo') or '').strip()] if b]
+        note = ' · '.join(note_bits) or None
+        is_payment = 'payment' in ttype.lower()
+        if amt == 0:
+            kind = 'zero'
+        elif amt < 0:
+            kind = 'charge'
+        elif is_payment:
+            kind = 'payment'
+        else:
+            kind = 'credit'
+        rows.append({"txn_date": date, "vendor": vendor[:300],
+                     "amount": round(abs(amt), 2),
+                     "is_expense": (kind == 'charge'),
+                     "card_last4": card or None, "note": note,
+                     "kind": kind, "type": ttype})
+    stats = {"detected_columns": {k: v for k, v in col.items() if v},
+             "parse_errors": errors}
+    return rows, stats
+
+
+@app.route("/projects/<int:pid>/actuals/import-bank-csv", methods=["POST"])
+@login_required
+def actuals_import_bank_csv(pid):
+    """Import monthly bank / credit-card CSV (Chase etc.) into project actuals as
+    source='csv_import' Transactions. Dry-run preview by default; ?apply=1 to
+    commit. Charges (negative amounts) import as expenses; refunds/returns as
+    credits (is_expense=False); card-payment rows are SKIPPED (not project
+    expenses). De-dupes against rows already imported with the same
+    (date, vendor, |amount|, card) so overlapping months don't double up.
+    (User 2026-06-02.)"""
+    if current_user.role == 'viewer':
+        return jsonify({"error": "Forbidden — viewers cannot import"}), 403
+    ProjectSheet.query.get_or_404(pid)
+    apply = (request.args.get('apply') == '1')
+    include_payments = (request.args.get('include_payments') == '1')
+    f = request.files.get('file')
+    if not f:
+        return jsonify({"error": "No file uploaded"}), 400
+    try:
+        content = f.read().decode('utf-8-sig')
+    except UnicodeDecodeError:
+        return jsonify({"error": "File must be UTF-8 encoded CSV"}), 400
+
+    rows, stats = _parse_bank_csv(content)
+    if not stats["detected_columns"].get('date') or not (
+            stats["detected_columns"].get('amount')
+            or stats["detected_columns"].get('debit')
+            or stats["detected_columns"].get('credit')):
+        return jsonify({"error": "Could not find a date column and an amount "
+                                 "(or debit/credit) column in this CSV.",
+                        "detected_columns": stats["detected_columns"],
+                        "header": list((csv.reader(io.StringIO(content)).__next__()
+                                        if content else []))}), 400
+
+    # Existing csv_import fingerprints for de-dup
+    existing = set()
+    for t in (Transaction.query
+              .filter(Transaction.project_id == pid,
+                      Transaction.source == 'csv_import').all()):
+        existing.add((t.txn_date, (t.vendor or '').strip().lower(),
+                      float(t.amount or 0), t.card_last4 or ''))
+
+    importable, dups, payments, zeros = [], 0, 0, 0
+    seen_batch = set()
+    for r in rows:
+        if r["kind"] == 'zero':
+            zeros += 1
+            continue
+        if r["kind"] == 'payment' and not include_payments:
+            payments += 1
+            continue
+        fp = (r["txn_date"], r["vendor"].strip().lower(), r["amount"], r["card_last4"] or '')
+        if fp in existing or fp in seen_batch:
+            dups += 1
+            continue
+        seen_batch.add(fp)
+        importable.append(r)
+
+    dates = [r["txn_date"] for r in importable]
+    by_card = {}
+    for r in importable:
+        by_card[r["card_last4"] or '—'] = by_card.get(r["card_last4"] or '—', 0) + 1
+    report = {
+        "dry": (not apply), "applied": apply, "project": pid,
+        "detected_columns": stats["detected_columns"],
+        "rows_in_file": len(rows),
+        "to_import": len(importable),
+        "charges": sum(1 for r in importable if r["kind"] == 'charge'),
+        "credits": sum(1 for r in importable if r["kind"] == 'credit'),
+        "skipped_card_payments": payments,
+        "skipped_duplicates": dups,
+        "skipped_zero": zeros,
+        "parse_errors": stats["parse_errors"][:25],
+        "parse_error_count": len(stats["parse_errors"]),
+        "date_range": ([min(dates), max(dates)] if dates else None),
+        "by_card": by_card,
+        "sample": [{"date": r["txn_date"], "vendor": r["vendor"][:40],
+                    "amount": r["amount"], "expense": r["is_expense"],
+                    "card": r["card_last4"], "note": r["note"]}
+                   for r in importable[:15]],
+        "errors": [],
+    }
+    if apply and importable:
+        try:
+            for r in importable:
+                db.session.add(Transaction(
+                    project_id=pid, amount=r["amount"], is_expense=r["is_expense"],
+                    vendor=r["vendor"], txn_date=r["txn_date"], note=r["note"],
+                    card_last4=r["card_last4"], source='csv_import',
+                    match_status='unmatched',
+                    created_via_user_id=getattr(current_user, 'id', None)))
+            db.session.commit()
+            report["created"] = len(importable)
+        except Exception as e:
+            db.session.rollback()
+            report["errors"].append(str(e))
+            return jsonify(report), 500
+    return jsonify(report)
+
+
 @app.route("/projects/<int:pid>/sync-actual-from-working", methods=["POST"])
 @login_required
 def sync_actual_from_working(pid):
