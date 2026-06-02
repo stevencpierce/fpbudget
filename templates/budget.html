@@ -5532,7 +5532,7 @@
      left for a later pass. #}
   <style>
     #tab-actuals .actuals-txn-row{
-      transition: padding .2s ease, min-height .2s ease,
+      transition: padding .2s ease, min-height .2s ease, background .2s ease,
                   box-shadow .2s ease, border-left-color .2s ease;
     }
     /* data-fulfill=0 is the compact baseline (the row's own inline padding).
@@ -5556,6 +5556,24 @@
     #tab-actuals .actuals-legs .leg.on{ background:#74c69d; border-color:#74c69d; }
     #tab-actuals .actuals-txn-row[data-fulfill="2"] .actuals-legs .leg,
     #tab-actuals .actuals-txn-row[data-fulfill="3"] .actuals-legs .leg{ width:8px; height:8px; }
+
+    /* ── Color coordination — graduated by match progress (the "boxes") ──
+       0 grey → 1 amber → 2 blue → 3 green, as a left accent stripe plus a
+       faint row tint. Special-state rows (suggested / not-a-project /
+       claimed elsewhere) keep their own distinct cue, so they're excluded.
+       (user 2026-06-02) */
+    #tab-actuals .actuals-txn-row[data-fulfill]:not([data-match-status="suggested"]):not([data-not-project="1"]):not([data-claimed-elsewhere="1"]){
+      border-left:3px solid #6b7280 !important;
+    }
+    #tab-actuals .actuals-txn-row[data-fulfill="1"]:not([data-match-status="suggested"]):not([data-not-project="1"]):not([data-claimed-elsewhere="1"]){
+      border-left-color:#e0a040 !important; background:rgba(224,160,64,.06) !important;
+    }
+    #tab-actuals .actuals-txn-row[data-fulfill="2"]:not([data-match-status="suggested"]):not([data-not-project="1"]):not([data-claimed-elsewhere="1"]){
+      border-left-color:#5b8af9 !important; background:rgba(91,138,249,.07) !important;
+    }
+    #tab-actuals .actuals-txn-row[data-fulfill="3"]:not([data-match-status="suggested"]):not([data-not-project="1"]):not([data-claimed-elsewhere="1"]){
+      border-left-color:#74c69d !important; background:rgba(116,198,157,.10) !important;
+    }
   </style>
   {# ── Header bar with action buttons ── #}
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:8px">
@@ -5848,6 +5866,8 @@
             style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
       <option value="date-desc">↓ Newest first</option>
       <option value="date-asc">↑ Oldest first</option>
+      <option value="progress-desc">↓ Most matched (3→0)</option>
+      <option value="progress-asc">↑ Needs work first (0→3)</option>
       <option value="amount-desc">↓ Largest amount</option>
       <option value="amount-asc">↑ Smallest amount</option>
       <option value="vendor-asc">↑ Vendor A→Z</option>
@@ -7253,6 +7273,8 @@
         const bv = (b.querySelector('.actuals-txn-vendor')?.textContent || '').toLowerCase();
         const ac = a.dataset.sortCard4 || '';
         const bc = b.dataset.sortCard4 || '';
+        const af = parseInt(a.dataset.fulfill || 0, 10);
+        const bf = parseInt(b.dataset.fulfill || 0, 10);
         switch (sortBy) {
           case 'date-asc':    return ad < bd ? -1 : ad > bd ? 1 : 0;
           case 'date-desc':   return ad > bd ? -1 : ad < bd ? 1 : 0;
@@ -7263,6 +7285,10 @@
           // Blanks (no card captured) sort to the bottom either direction.
           case 'card4-asc':   return (ac||'~').localeCompare(bc||'~');
           case 'card4-desc':  return (bc||'~').localeCompare(ac||'~');
+          // Restack by match progress; tiebreak newest-first within a tier
+          // so each "stack" of equally-matched items stays date-ordered.
+          case 'progress-desc': return (bf - af) || (ad > bd ? -1 : ad < bd ? 1 : 0);
+          case 'progress-asc':  return (af - bf) || (ad > bd ? -1 : ad < bd ? 1 : 0);
         }
         return 0;
       };
@@ -8259,6 +8285,14 @@
           const row = m.target.closest && m.target.closest('.actuals-txn-row');
           if (row && !seen.has(row)) { seen.add(row); _actualsComputeFulfill(row); }
         });
+        // Restack live when sorting by progress, so a just-matched item
+        // animates up/down into its new tier. Other sorts are unaffected.
+        if (seen.size) {
+          const sortBy = (document.getElementById('actuals-sort-by') || {}).value || '';
+          if (sortBy.startsWith('progress') && typeof _actualsApplySort === 'function') {
+            _actualsApplySort();
+          }
+        }
       });
       obs.observe(list, {
         subtree: true,
