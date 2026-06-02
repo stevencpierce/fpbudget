@@ -7080,6 +7080,87 @@ def actuals_run_auto_match(pid):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/projects/<int:pid>/actuals/automatch-trace")
+@login_required
+def actuals_automatch_trace(pid):
+    """READ-ONLY: trace WHY auto-match does/doesn't pair a given vendor's rows.
+    For ?vendor=<substr> (default 'airbnb'), shows the electronic (csv/qbo)
+    rows, whether each is in the eligible unmatched pool (and if not, why), and
+    for the first eligible one the top doc candidates with each gate's value
+    (amount diff / day gap / vendor score). Admin only. (User 2026-06-02.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    import datetime as _dt
+    from actuals import _vendor_similarity
+    sub = (request.args.get('vendor') or 'airbnb').strip().lower()
+
+    def _match(t):
+        return sub in (t.vendor or '').lower()
+
+    elec = (Transaction.query
+            .filter(Transaction.project_id == pid,
+                    Transaction.source.in_(('qbo_sync', 'csv_import')))
+            .all())
+    docs = (Transaction.query
+            .filter_by(project_id=pid, source='doc_upload')
+            .all())
+    elec_hit = [t for t in elec if _match(t)]
+    docs_hit = [t for t in docs if _match(t)]
+
+    def _why_excluded(t):
+        reasons = []
+        if t.match_status != 'unmatched':
+            reasons.append(f"match_status={t.match_status}")
+        if t.doc_upload_id is not None:
+            reasons.append(f"doc_upload_id={t.doc_upload_id}")
+        if t.not_project_expense:
+            reasons.append("not_project_expense")
+        return reasons
+
+    def _row(t):
+        return {"id": t.id, "vendor": t.vendor, "amount": float(t.amount or 0),
+                "date": t.txn_date, "match_status": t.match_status,
+                "doc_upload_id": t.doc_upload_id,
+                "not_project_expense": t.not_project_expense,
+                "eligible": (not _why_excluded(t)) if t.source in ('qbo_sync', 'csv_import') else None,
+                "excluded_because": _why_excluded(t)}
+
+    out = {"vendor_filter": sub,
+           "electronic_rows": [_row(t) for t in elec_hit[:8]],
+           "doc_rows": [_row(t) for t in docs_hit[:8]],
+           "candidate_trace": []}
+
+    # For the first eligible electronic row, score the doc candidates.
+    elig = next((t for t in elec_hit if not _why_excluded(t)), None)
+    if elig and elig.txn_date and elig.amount is not None:
+        try:
+            q_dt = _dt.date.fromisoformat(elig.txn_date[:10])
+        except (TypeError, ValueError):
+            q_dt = None
+        out["traced_electronic_row"] = _row(elig)
+        out["traced_q_date_parsed"] = (q_dt.isoformat() if q_dt else "PARSE_FAILED")
+        cands = []
+        for d in docs:                       # scan ALL docs, not just vendor hits
+            if d.amount is None or abs(float(d.amount) - float(elig.amount)) > 0.01:
+                continue
+            try:
+                d_dt = _dt.date.fromisoformat((d.txn_date or '')[:10])
+                gap = abs((d_dt - q_dt).days) if q_dt else None
+            except (TypeError, ValueError):
+                d_dt, gap = None, "DATE_PARSE_FAILED"
+            cands.append({"doc_id": d.id, "vendor": d.vendor,
+                          "amount": float(d.amount or 0), "date": d.txn_date,
+                          "raw_date_repr": repr(d.txn_date),
+                          "day_gap": gap,
+                          "vendor_score": round(_vendor_similarity(elig.vendor, d.vendor), 3),
+                          "passes": (gap is not None and gap != "DATE_PARSE_FAILED"
+                                     and isinstance(gap, int) and gap <= 3
+                                     and _vendor_similarity(elig.vendor, d.vendor) >= 0.45)})
+        out["candidate_trace"] = cands[:10]
+        out["amount_matched_doc_count"] = len(cands)
+    return jsonify(out)
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/confirm-match", methods=["POST"])
 @login_required
 def actuals_confirm_match(pid, tid):
