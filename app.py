@@ -490,7 +490,8 @@ def _match_vendor_suggestions(transactions, cands):
             if score > best_score and (score >= 2 or (score == 1 and max(len(x) for x in shared) >= 5)):
                 best, best_score = (lid, code, desc), score
         if best:
-            out[t.id] = {"line_id": best[0], "code": best[1], "label": (best[2] or '')[:40]}
+            out[t.id] = {"line_id": best[0], "code": best[1], "label": (best[2] or '')[:40],
+                         "score": best_score}
     return out
 
 def _actuals_vendor_suggestions(pid):
@@ -7620,6 +7621,43 @@ def actuals_undo_last_match(pid):
                     "vendor": last.vendor,
                     "amount": float(last.amount) if last.amount is not None else None,
                     **info})
+
+
+@app.route("/projects/<int:pid>/actuals/code-suggested-bulk", methods=["POST"])
+@login_required
+def actuals_code_suggested_bulk(pid):
+    """Bulk auto-code (cross-point 3): apply the vendor→line suggestions to
+    uncoded transactions. Dry-run by default (?apply=1 to write). min_score
+    (default 2 shared tokens) keeps it high-confidence. (User 2026-06-02.)"""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden — viewers cannot code"}), 403
+    ProjectSheet.query.get_or_404(pid)
+    body = request.get_json(silent=True) or {}
+    apply = (request.args.get('apply') == '1') or bool(body.get('apply'))
+    try:
+        min_score = int(body.get('min_score') or 2)
+    except (TypeError, ValueError):
+        min_score = 2
+    sugg = _actuals_vendor_suggestions(pid)
+    targets = [(tid, s) for tid, s in sugg.items() if int(s.get('score', 0)) >= min_score]
+    if not apply:
+        return jsonify({"dry": True, "would_code": len(targets), "min_score": min_score,
+                        "total_suggested": len(sugg),
+                        "sample": [{"label": s["label"], "code": s["code"], "score": s["score"]}
+                                   for _, s in targets[:15]]})
+    from actuals import link_transaction_to_line
+    coded, failed = 0, 0
+    for tid, s in targets:
+        try:
+            link_transaction_to_line(tid, s["line_id"], user_id=getattr(current_user, 'id', None))
+            db.session.commit()
+            coded += 1
+        except Exception as e:
+            db.session.rollback()
+            failed += 1
+            logging.warning(f"[bulk-code] txn {tid}: {e}")
+    logging.info(f"[bulk-code] pid={pid} min_score={min_score}: {coded} coded, {failed} failed")
+    return jsonify({"ok": True, "coded": coded, "failed": failed})
 
 
 @app.route("/projects/<int:pid>/actuals/matches/confirm-bulk", methods=["POST"])
@@ -19816,6 +19854,81 @@ def _trash_dropbox_paths(paths):
     return moved
 
 
+def _flag_person_doc_duplicate(upload):
+    """If this employee/vendor person-doc (W-9, ID, driver's license, etc.)
+    duplicates one the SAME person already has of the SAME sub-type, flag the
+    newer copy is_duplicate + duplicate_of_id so it enters the compare/dup
+    review (instead of silently piling up). Sub-type is stored in `vendor`.
+    Returns the original's id if flagged, else None. (User 2026-06-02.)"""
+    if (upload.category or '') != 'employee_vendor_doc':
+        return None
+    if not upload.crew_member_id or not (upload.vendor or '').strip():
+        return None
+    if upload.is_duplicate or upload.status == 'duplicate':
+        return None
+    sub = upload.vendor.strip().lower()
+    peers = (DocUpload.query
+             .filter(DocUpload.project_id == upload.project_id,
+                     DocUpload.crew_member_id == upload.crew_member_id,
+                     DocUpload.category == 'employee_vendor_doc',
+                     DocUpload.id != upload.id,
+                     DocUpload.is_duplicate == False,           # noqa: E712
+                     DocUpload.status != 'duplicate')
+             .all())
+    match = next((d for d in peers if (d.vendor or '').strip().lower() == sub), None)
+    if not match:
+        return None
+    # Lower id = the original; flag the newer as the duplicate.
+    orig, dup = (match, upload) if match.id < upload.id else (upload, match)
+    dup.is_duplicate    = True
+    dup.duplicate_of_id = orig.id
+    return orig.id
+
+
+@app.route("/docs/<int:pid>/scan-person-duplicates", methods=["POST"])
+@login_required
+def docs_scan_person_duplicates(pid):
+    """Find person-doc duplicates project-wide: same crew member + same sub-type
+    (W-9/ID/etc.). Lowest-id kept as the original; the rest flagged for the
+    compare/dup review. Dry-run by default; ?apply=1 to write. (User 2026-06-02.)"""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden"}), 403
+    ProjectSheet.query.get_or_404(pid)
+    body = request.get_json(silent=True) or {}
+    apply = (request.args.get('apply') == '1') or bool(body.get('apply'))
+    rows = (DocUpload.query
+            .filter(DocUpload.project_id == pid,
+                    DocUpload.category == 'employee_vendor_doc',
+                    DocUpload.crew_member_id.isnot(None),
+                    DocUpload.status != 'duplicate')
+            .all())
+    groups = {}
+    for d in rows:
+        sub = (d.vendor or '').strip().lower()
+        if not sub:
+            continue
+        groups.setdefault((d.crew_member_id, sub), []).append(d)
+    flagged = []
+    for grp in groups.values():
+        if len(grp) <= 1:
+            continue
+        grp.sort(key=lambda x: x.id)
+        orig = grp[0]
+        for d in grp[1:]:
+            if d.is_duplicate:
+                continue
+            flagged.append({"id": d.id, "duplicate_of": orig.id,
+                            "crew_member_id": d.crew_member_id, "sub_type": d.vendor})
+            if apply:
+                d.is_duplicate = True
+                d.duplicate_of_id = orig.id
+    if apply and flagged:
+        db.session.commit()
+    return jsonify({"dry": (not apply), "applied": apply,
+                    "groups_with_dupes": sum(1 for g in groups.values() if len(g) > 1),
+                    "flagged": len(flagged), "sample": flagged[:25]})
+
+
 def _apply_dup_resolution(upload, action):
     """Apply one keep/confirm decision to a flagged upload. Mutates the row
     (+ session: txn add/delete, Dropbox move) but does NOT commit — the
@@ -22179,6 +22292,15 @@ def docs_upload_update(uid):
                 _t.updated_at = _dt.utcnow()
     except Exception as _se:
         logging.warning(f"[/update] could not sync to linked txns for upload {uid}: {_se}")
+
+    # Person-doc duplicate guard: if this is an employee/vendor doc (W-9, ID,
+    # etc.) for a person who already has the SAME sub-type, flag it for review
+    # so it lands in the compare/dup workflow instead of silently duplicating.
+    _dup_orig = None
+    try:
+        _dup_orig = _flag_person_doc_duplicate(upload)
+    except Exception as _pde:
+        logging.warning(f"[/update] person-doc dup check failed for upload {uid}: {_pde}")
 
     db.session.commit()
     try:

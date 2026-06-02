@@ -2323,6 +2323,16 @@
     </div>
     {% endif %}
 
+    {# Person-doc duplicate scan: flags W-9/ID/etc. that a person already has,
+       so they enter the Compare/dup review. (User 2026-06-02.) #}
+    <div style="margin-bottom:10px">
+      <button type="button" onclick="docsScanPersonDuplicates()"
+              style="background:#1e1a2a;border:1px solid #2d2a40;color:#a78bfa;
+                     padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px">
+        🔍 Find duplicate person docs (same person + type)
+      </button>
+    </div>
+
     {# Vendor / filename / note search — mirrors the Actuals-tab vendor
        search the user relies on. Filters within the active subtab. #}
     <div style="margin-bottom:10px">
@@ -3875,6 +3885,22 @@
     }
   };
 
+  // Scan for person-doc duplicates (same crew member + same sub-type) and flag
+  // them for the Compare/dup review. (User 2026-06-02.)
+  window.docsScanPersonDuplicates = async function() {
+    try {
+      const dry = await (await fetch('/docs/' + PROJ_ID + '/scan-person-duplicates',
+        { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' })).json();
+      const n = dry.flagged || 0;
+      if (!n) { alert('No duplicate person docs found (same person + same type).'); return; }
+      if (!confirm('Found ' + n + ' duplicate person doc' + (n!==1?'s':'') + ' (a person already has that type). Flag them for review? You can then Compare and file each as a duplicate or keep both.')) return;
+      const d = await (await fetch('/docs/' + PROJ_ID + '/scan-person-duplicates?apply=1',
+        { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' })).json();
+      alert('Flagged ' + (d.flagged||0) + ' for review. Reloading the Docs Review tab…');
+      location.reload();
+    } catch(e) { alert('Scan failed: ' + e.message); }
+  };
+
   // Bulk: confirm EVERY still-pending flagged duplicate at once (the
   // unflagged original of each group is kept automatically). The "move all
   // → /_DUPLICATES/" button in the Review toolbar. 2026-05-29.
@@ -4546,7 +4572,7 @@
   // type-prefix (e.g. "invoice#: 12345") so no schema change is needed.
   const _DOC_TYPE_FIELD_SPEC = {
     receipt:        { vendor:'Vendor',       amount:true,  date:'Receipt Date',    docnum:null },
-    invoice:        { vendor:'Vendor',       amount:true,  date:'Invoice Date',    docnum:'Invoice #' },
+    invoice:        { vendor:'Vendor',       amount:true,  date:'Invoice Date',    docnum:'Invoice #', crew:true, location:false },
     // Per-spec flags: crew = shows the Crew Member picker (tax forms,
     // contracts, releases, payroll → backed by a person). location =
     // shows the Location picker (COIs, location releases → backed by
@@ -5516,6 +5542,10 @@
       <button type="button" class="btn btn-sm" onclick="actualsUndoLastMatch()"
               title="Undo the most recent confirmed match — unlinks it and frees the receipt">
         ↩ Undo last match
+      </button>
+      <button type="button" class="btn btn-sm" onclick="actualsAutoCode()"
+              title="Auto-code uncoded charges to budget lines using vendor→line suggestions (cross-point 3)">
+        ✨ Auto-code lines
       </button>
       <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-sync-panel')">↻ Sync QBO</button>
       <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-import-panel')">⬆ Import CSV</button>
@@ -7424,6 +7454,20 @@
         if (typeof _actualsToast === 'function') _actualsToast('Unlinked' + (d.restored_receipt ? ' · receipt back in pool' : ''), 'green');
       } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Error: ' + e.message, 'red'); }
     };
+    window.actualsAutoCode = async function () {
+      try {
+        const dry = await (await fetch('/projects/' + PROJ_ID + '/actuals/code-suggested-bulk',
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
+        const n = dry.would_code || 0;
+        if (!n) { if (typeof _actualsToast === 'function') _actualsToast('No high-confidence line suggestions to apply', 'yellow'); return; }
+        if (!confirm('Auto-code ' + n + ' uncoded charge' + (n !== 1 ? 's' : '') + ' to their suggested budget lines? (high-confidence only — you can re-code any individually.)')) return;
+        const d = await (await fetch('/projects/' + PROJ_ID + '/actuals/code-suggested-bulk?apply=1',
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
+        if (typeof _actualsToast === 'function') _actualsToast('Coded ' + (d.coded || 0) + (d.failed ? (' · ' + d.failed + ' failed') : '') + '. Reloading…', 'green');
+        setTimeout(() => location.reload(), 900);
+      } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Auto-code error: ' + e.message, 'red'); }
+    };
+
     window.actualsUndoLastMatch = async function () {
       try {
         const r = await fetch('/projects/' + PROJ_ID + '/actuals/undo-last-match',
