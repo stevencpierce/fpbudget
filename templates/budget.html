@@ -5519,61 +5519,54 @@
    commit): structure + click-to-code + Sync button. Slice 2 adds
    drag-drop and modals. #}
 <div class="tab-panel" id="tab-actuals">
-  {# ── "Growing item" visual state (user 2026-06-02) ──
-     Each actuals item is a receipt/invoice working toward three matches:
-     a document, an electronic transaction (confirmed), and a budget line —
-     the "three boxes." As each box is crossed off the row grows physically
-     larger, so a glance up the list shows how far along everything is. The
-     ladder is driven by data-fulfill (0..3), which is rendered server-side
-     and kept in sync client-side by the MutationObserver near the actuals
-     init (it watches the existing data-coded / data-has-doc /
-     data-match-status attrs, so every match action animates the growth for
-     free). Color coordination / re-stacking by progress is intentionally
-     left for a later pass. #}
+  {# ── Three-bucket columns per Actuals row (user 2026-06-02) ──
+     Each transaction shows three cells — 🏦 Transaction · 📎 Document ·
+     🏷 Budget line — each either FILLED (solid + color-coded) or EMPTY
+     (thin dashed with a quick action). Keeps one compact row per txn even
+     with a huge list; scan a column to spot every gap. Filled/empty is
+     driven purely by the row's existing data-has-txn / data-has-doc /
+     data-coded attributes — the same attrs every match action already keeps
+     current — so coding/unlinking flips the cell with no extra wiring.
+     data-fulfill (0..3) still powers the Progress sort + the green "fully
+     reconciled" stripe. #}
   <style>
-    #tab-actuals .actuals-txn-row{
-      transition: padding .2s ease, min-height .2s ease, background .2s ease,
-                  box-shadow .2s ease, border-left-color .2s ease;
-    }
-    /* data-fulfill=0 is the compact baseline (the row's own inline padding).
-       Each step up bumps padding + min-height so the item literally grows. */
-    #tab-actuals .actuals-txn-row[data-fulfill="1"]{ padding:10px 11px !important; min-height:40px; }
-    #tab-actuals .actuals-txn-row[data-fulfill="2"]{ padding:13px 13px !important; min-height:50px;
-                                                      box-shadow:0 3px 12px -7px rgba(0,0,0,.5); }
-    #tab-actuals .actuals-txn-row[data-fulfill="3"]{ padding:17px 15px !important; min-height:62px;
-                                                      box-shadow:0 5px 18px -8px rgba(116,198,157,.40); }
-    /* Key text scales up with the box so the most-complete items read big. */
-    #tab-actuals .actuals-txn-row[data-fulfill="2"] .actuals-txn-vendor{ font-size:.9rem; }
-    #tab-actuals .actuals-txn-row[data-fulfill="3"] .actuals-txn-vendor{ font-size:1rem; }
-    #tab-actuals .actuals-txn-row[data-fulfill="3"] .actuals-txn-amt{ font-size:.95rem; }
-    /* Three-box "legs" indicator: receipt · electronic match · budget line. */
-    #tab-actuals .actuals-legs{ flex-shrink:0; display:inline-flex; gap:3px; align-items:center; }
-    #tab-actuals .actuals-legs .leg{
-      width:7px; height:7px; border-radius:2px;
-      border:1px solid var(--border); background:transparent;
-      transition: background .2s ease, border-color .2s ease, width .2s ease, height .2s ease;
-    }
-    #tab-actuals .actuals-legs .leg.on{ background:#74c69d; border-color:#74c69d; }
-    #tab-actuals .actuals-txn-row[data-fulfill="2"] .actuals-legs .leg,
-    #tab-actuals .actuals-txn-row[data-fulfill="3"] .actuals-legs .leg{ width:8px; height:8px; }
+    #tab-actuals .actuals-txn-row{ transition: box-shadow .2s ease; }
+    #tab-actuals .actuals-txn-row[data-fulfill="3"]{ box-shadow: inset 3px 0 0 #74c69d; }
 
-    /* ── Color coordination — graduated by match progress (the "boxes") ──
-       0 grey → 1 amber → 2 blue → 3 green, as a left accent stripe plus a
-       faint row tint. Special-state rows (suggested / not-a-project /
-       claimed elsewhere) keep their own distinct cue, so they're excluded.
-       (user 2026-06-02) */
-    #tab-actuals .actuals-txn-row[data-fulfill]:not([data-match-status="suggested"]):not([data-not-project="1"]):not([data-claimed-elsewhere="1"]){
-      border-left:3px solid #6b7280 !important;
+    #tab-actuals .ax-cells{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;
+                            width:540px; flex-shrink:0; }
+    #tab-actuals .ax-cell{
+      display:flex; align-items:center; gap:6px; min-width:0;
+      border:1px solid var(--border); border-radius:5px; padding:3px 8px;
+      font-size:.72rem; line-height:1.45; overflow:hidden;
+      transition: background .2s ease, border-color .2s ease, opacity .2s ease;
     }
-    #tab-actuals .actuals-txn-row[data-fulfill="1"]:not([data-match-status="suggested"]):not([data-not-project="1"]):not([data-claimed-elsewhere="1"]){
-      border-left-color:#e0a040 !important; background:rgba(224,160,64,.06) !important;
+    #tab-actuals .ax-cell .ax-c-txt{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    #tab-actuals .ax-cell .ax-filled, #tab-actuals .ax-cell .ax-empty{
+      display:flex; align-items:center; gap:6px; min-width:0; width:100%;
     }
-    #tab-actuals .actuals-txn-row[data-fulfill="2"]:not([data-match-status="suggested"]):not([data-not-project="1"]):not([data-claimed-elsewhere="1"]){
-      border-left-color:#5b8af9 !important; background:rgba(91,138,249,.07) !important;
-    }
-    #tab-actuals .actuals-txn-row[data-fulfill="3"]:not([data-match-status="suggested"]):not([data-not-project="1"]):not([data-claimed-elsewhere="1"]){
-      border-left-color:#74c69d !important; background:rgba(116,198,157,.10) !important;
-    }
+    #tab-actuals .ax-cell .ax-empty .ax-c-txt{ color:var(--text-muted); font-style:italic; flex:1; }
+
+    /* FILLED — color-coded per bucket, keyed on the row's state attrs */
+    #tab-actuals .actuals-txn-row[data-has-txn="1"] .ax-cell-txn { background:rgba(91,138,249,.12);  border-color:rgba(91,138,249,.45); }
+    #tab-actuals .actuals-txn-row[data-has-doc="1"] .ax-cell-doc { background:rgba(224,160,64,.12);  border-color:rgba(224,160,64,.45); }
+    #tab-actuals .actuals-txn-row[data-coded="1"]   .ax-cell-line{ background:rgba(116,198,157,.14); border-color:rgba(116,198,157,.45); }
+
+    /* EMPTY — thin dashed, faint */
+    #tab-actuals .actuals-txn-row[data-has-txn="0"] .ax-cell-txn,
+    #tab-actuals .actuals-txn-row[data-has-doc="0"] .ax-cell-doc,
+    #tab-actuals .actuals-txn-row[data-coded="0"]   .ax-cell-line{ border-style:dashed; opacity:.72; }
+
+    /* show exactly one of the filled / empty sub-blocks per state */
+    #tab-actuals .actuals-txn-row[data-has-txn="1"] .ax-cell-txn .ax-empty,
+    #tab-actuals .actuals-txn-row[data-has-doc="1"] .ax-cell-doc .ax-empty{ display:none; }
+    #tab-actuals .actuals-txn-row[data-has-txn="0"] .ax-cell-txn .ax-filled,
+    #tab-actuals .actuals-txn-row[data-has-doc="0"] .ax-cell-doc .ax-filled{ display:none; }
+
+    /* the budget-line picker fills its cell */
+    #tab-actuals .ax-cell-line .actuals-line-picker{ width:100%; min-width:0; flex:1; }
+    #tab-actuals .ax-colhint{ display:flex; gap:8px; align-items:center; padding:2px 10px 8px;
+                              font-size:.64rem; color:var(--text-muted); }
   </style>
   {# ── Header bar with action buttons ── #}
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:8px">
@@ -6095,6 +6088,14 @@
           {% endfor %}
         </select>
 
+        {# Legend for the three bucket columns on every row. #}
+        <div class="ax-colhint">
+          <span>Each row →</span>
+          <span style="color:#9ec0ff">🏦 Transaction</span><span>·</span>
+          <span style="color:#f0c88a">📎 Document</span><span>·</span>
+          <span style="color:#8fe0b8">🏷 Budget line</span>
+          <span style="margin-left:6px">— filled = matched · dashed = still needed</span>
+        </div>
         <div id="actuals-txn-list">
         {% for t in actuals_transactions %}
           {% set _doc = docs_by_id.get(t.doc_upload_id) if t.doc_upload_id else None %}
@@ -6144,17 +6145,24 @@
              never see the row at all (filtered server-side). #}
           {% set _claimed_elsewhere = (t.claimed_by_project_id is not none and t.claimed_by_project_id != project.id) %}
           {% set _claimer_name = actuals_claimed_project_names.get(t.claimed_by_project_id, '') if _claimed_elsewhere else '' %}
-          {# Three "boxes" crossed off: a document, a confirmed electronic
-             match, and a budget-line code. Drives the growing-row ladder.
-             Excluded rows (not-a-project / claimed elsewhere) stay compact. #}
+          {# Three "boxes": 🏦 transaction · 📎 document · 🏷 budget line.
+             _txn_filled = this row already carries an electronic charge
+             (anything but an as-yet-unmatched doc upload). _fulfill (0..3)
+             powers the Progress sort + the green "fully reconciled" stripe;
+             excluded rows (not-a-project / claimed elsewhere) stay at 0. #}
           {% set _confirmed = (t.match_status == 'confirmed') %}
-          {% set _legs = (1 if _has_doc else 0) + (1 if _confirmed else 0) + (1 if _coded else 0) %}
+          {% set _txn_filled = (t.source and t.source != 'doc_upload') %}
+          {% set _legs = (1 if _txn_filled else 0) + (1 if _has_doc else 0) + (1 if _coded else 0) %}
           {% set _fulfill = 0 if (t.not_project_expense or _claimed_elsewhere) else _legs %}
+          {% set _c4 = t.card_last4 or (_doc.card_last4 if _doc else '') %}
+          {% set _src_label = {'qbo_sync':'QBO','csv_import':'CSV','reconciled':'Reconciled','manual_entry':'Manual','invoice_split':'Split','doc_upload':'Receipt'}.get(t.source, t.source or 'charge') %}
+          {% set _src_icon = {'qbo_sync':'🏦','csv_import':'🏦','reconciled':'🔗','manual_entry':'✏️','invoice_split':'↳','doc_upload':'📄'}.get(t.source, '❓') %}
           <div class="actuals-txn-row" draggable="true"
                data-tid="{{ t.id }}"
                data-source="{{ t.source or '' }}"
                data-coded="{{ '1' if _coded else '0' }}"
                data-has-doc="{{ '1' if _has_doc else '0' }}"
+               data-has-txn="{{ '1' if _txn_filled else '0' }}"
                data-fulfill="{{ _fulfill }}"
                data-match-status="{{ t.match_status or 'unmatched' }}"
                data-txn-date="{{ t.txn_date or '' }}"
@@ -6165,152 +6173,114 @@
                data-not-project="{{ '1' if t.not_project_expense else '0' }}"
                data-claimed-elsewhere="{{ '1' if _claimed_elsewhere else '0' }}"
                style="display:flex;align-items:center;gap:8px;padding:7px 10px;margin-bottom:4px;
-                      border:1px solid {% if _is_sugg %}#4a3a1a{% elif _claimed_elsewhere %}#4a3a2a{% elif t.not_project_expense %}#3a2a2a{% elif _coded %}#1a3a2a{% else %}var(--border){% endif %};
+                      border:1px solid {% if _is_sugg %}#4a3a1a{% elif _claimed_elsewhere %}#4a3a2a{% elif t.not_project_expense %}#3a2a2a{% else %}var(--border){% endif %};
                       {% if _is_sugg %}border-top:none;border-left:3px solid #f0c060;border-radius:0 0 8px 8px;{% else %}border-radius:6px;{% endif %}
-                      background:{% if _is_sugg %}#1e1b12{% elif _claimed_elsewhere %}#1a1610{% elif t.not_project_expense %}#150d0d{% elif _coded %}#0d1a14{% else %}var(--bg-card){% endif %};
+                      background:{% if _is_sugg %}#1e1b12{% elif _claimed_elsewhere %}#1a1610{% elif t.not_project_expense %}#150d0d{% else %}var(--bg-card){% endif %};
                       {% if _claimed_elsewhere or t.not_project_expense %}opacity:.55{% endif %}">
             {% if _claimed_elsewhere %}
             <span title="Admin-only view: this electronic transaction is owned by another project's budget. Non-admins don't see this row."
                   style="flex-shrink:0;font-size:.6rem;padding:2px 6px;background:#2a2010;border:1px solid #5a4a20;border-radius:3px;color:#e0a040">
-              🔒 Claimed: {{ _claimer_name or 'other project' }}
+              🔒 {{ _claimer_name or 'other project' }}
             </span>
             {% endif %}
-            {# Source pill #}
-            <span style="flex-shrink:0;font-size:.7rem;width:24px;text-align:center"
-                  title="Source: {{ t.source or 'unknown' }}">
-              {% if t.source == 'doc_upload' %}📄
-              {% elif t.source == 'qbo_sync' %}🏦
-              {% elif t.source == 'csv_import' %}🏦
-              {% elif t.source == 'reconciled' %}🔗
-              {% elif t.source == 'manual_entry' %}✏️
-              {% elif t.source == 'invoice_split' %}↳
-              {% else %}❓{% endif %}
-            </span>
-            {# Three-box progress: receipt · electronic match · budget line.
-               Filled pips mirror the row's data-fulfill growth. #}
-            <span class="actuals-legs"
-                  title="Matching progress — receipt · electronic match · budget line">
-              <i class="leg{{ ' on' if _has_doc else '' }}"></i>
-              <i class="leg{{ ' on' if _confirmed else '' }}"></i>
-              <i class="leg{{ ' on' if _coded else '' }}"></i>
-            </span>
-            <span style="flex-shrink:0;font-size:.72rem;color:var(--text-muted);min-width:80px">
-              {{ t.txn_date or '—' }}
-            </span>
+            {# Source pill · date · vendor · amount (the at-a-glance left block) #}
+            <span style="flex-shrink:0;font-size:.7rem;width:22px;text-align:center"
+                  title="Source: {{ t.source or 'unknown' }}">{{ _src_icon }}</span>
+            <span style="flex-shrink:0;font-size:.72rem;color:var(--text-muted);width:78px">{{ t.txn_date or '—' }}</span>
             <span class="actuals-txn-vendor"
-                  style="flex:1;min-width:0;font-size:.83rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                  title="{{ t.vendor or '' }}">
-              {{ t.vendor or '— vendor unknown —' }}
-            </span>
-            {% set _c4 = t.card_last4 or (_doc.card_last4 if _doc else '') %}
-            <span class="actuals-txn-card4" title="Card / account last 4"
-                  style="flex-shrink:0;font-size:.62rem;color:#9aa4b2;font-variant-numeric:tabular-nums;{% if not _c4 %}display:none{% endif %}">💳 ••{{ _c4 }}</span>
-            {# Doc badge — clicks open the existing Docs detail modal.
-               Color palette varies by doc type for fast visual scan. #}
-            {% if _doc %}
-            {% set _cat = (_doc.category or 'misc') %}
-            {% set _palette = {
-              'receipt':        ('#1a2a3e', '#2e4a6e', '#7ba6e8'),
-              'invoice':        ('#2a2414', '#4a3a1a', '#f0c060'),
-              'estimate':       ('#143030', '#1e4848', '#5fc8c8'),
-              'quote':          ('#143030', '#1e4848', '#5fc8c8'),
-              'purchase_order': ('#2a1f10', '#5a3e1a', '#f08c4a'),
-              'contract':       ('#1f1430', '#3a2a5a', '#9a7ee0'),
-              'insurance':      ('#2a1414', '#4a2020', '#e08080'),
-              'tax_form':       ('#2a1418', '#4a202a', '#e0809a'),
-              'payroll':        ('#2a1424', '#4a2040', '#e080c8'),
-              'legal':          ('#1a1430', '#2a2050', '#7e7ee0'),
-              'release':        ('#1a2e1a', '#2a4e2a', '#7ad07a'),
-              'misc':           ('#1e1e1e', '#3a3a3a', '#bbb'),
-            } %}
-            {% set _bg, _bd, _fg = _palette.get(_cat, _palette['misc']) %}
-            <a href="#" class="actuals-doc-badge"
-               data-doc-id="{{ _doc.id }}"
-               onclick="openDocDetail({{ _doc.id }}, null);return false"
-               title="View {{ _cat }} — hover to preview, click to open"
-               style="flex-shrink:0;font-size:.66rem;padding:2px 7px;background:{{ _bg }};border:1px solid {{ _bd }};border-radius:4px;color:{{ _fg }};text-decoration:none">
-              📎 {{ _cat }} · {{ (_doc.filed_filename or _doc.original_filename or '')[:14] }}{% if (_doc.filed_filename or _doc.original_filename or '')|length > 14 %}…{% endif %}
-            </a>
-            {% if t.source in ('qbo_sync', 'reconciled', 'csv_import') %}
-            <button type="button" onclick="actualsUnmatch({{ t.id }})"
-                    title="Unlink this receipt — returns it to the pool, keeps the charge"
-                    style="flex-shrink:0;font-size:.6rem;padding:2px 6px;background:none;
-                           border:1px solid #4a2020;border-radius:4px;color:#e08080;cursor:pointer">✕ unlink</button>
-            {% endif %}
-            {% else %}
-            {# No receipt yet — show a clickable Upload button. Opens
-               a hidden file picker bound to this transaction. #}
-            <button type="button" onclick="actualsFindReceipt({{ t.id }})"
-                    title="Search existing receipts that match this charge and link one"
-                    style="flex-shrink:0;font-size:.66rem;padding:2px 7px;
-                           background:#13251a;border:1px solid #2a5a3a;
-                           border-radius:4px;color:#74c69d;cursor:pointer">
-              🔍 Find receipt
-            </button>
-            <button type="button" class="actuals-upload-btn"
-                    data-tid="{{ t.id }}"
-                    title="Upload a new receipt file for this transaction"
-                    style="flex-shrink:0;font-size:.66rem;padding:2px 7px;
-                           background:#1a2540;border:1px solid #2d4070;
-                           border-radius:4px;color:#5b8af9;cursor:pointer">
-              📎 Add Receipt
-            </button>
-            {% if t.source in ('qbo_sync', 'reconciled', 'csv_import') %}
-            <span title="Electronic transaction without a receipt — flagged for follow-up"
-                  style="flex-shrink:0;font-size:.6rem;color:#e08080;font-style:italic">⚠ no receipt</span>
-            {% endif %}
-            {% endif %}
-            {# Smart suggestion — vendor name matched to a budget line (by
-               description / assigned person). One click codes it. Only on
-               still-uncoded rows. (User 2026-05-29.) #}
-            {% set _sug = actuals_line_suggestions.get(t.id) %}
-            {% if _sug and not _coded and not t.not_project_expense %}
-            <button type="button" class="actuals-suggest-btn"
-                    data-tid="{{ t.id }}" data-line-id="{{ _sug.line_id }}"
-                    onclick="actualsApplySuggestion(this)"
-                    title="Smart match from the vendor name — click to code to {{ _sug.code }} · {{ _sug.label }}"
-                    style="flex-shrink:0;font-size:.66rem;padding:2px 8px;background:#10231a;
-                           border:1px solid #1f6f4a;border-radius:4px;color:#5fd0a0;cursor:pointer;
-                           white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis">
-              💡 {{ _sug.code }} · {{ _sug.label }}
-            </button>
-            {% endif %}
-            {# Budget-line picker. PERF (2026-05-29): options are NOT baked
-               into every row's <select> (that was ~270 options × 171 rows ≈
-               45k DOM nodes, the bulk of the page's weight). Each select
-               renders empty with data-current; the full option list is
-               cloned in lazily from the shared #actualsLineOptsTpl template
-               on focus / when the Actuals tab opens.
-               data-current: the value this picker should show — the WORKING
-               line id (actual ids are translated via actual_to_working), or
-               "section:<code>" for section-only coding, or "". #}
-            {% set _wid_for_selected = actual_to_working.get(t.budget_line_id, t.budget_line_id) if t.budget_line_id else None %}
-            {% set _cur = (_wid_for_selected | string) if _wid_for_selected else (('section:' ~ t.account_code) if t.account_code else '') %}
-            <select class="actuals-line-picker"
-                    data-tid="{{ t.id }}" data-current="{{ _cur }}" data-populated="0"
-                    onfocus="_actualsFillPicker(this)"
-                    onchange="actualsSetLine(this)"
-                    {% if t.not_project_expense %}disabled{% endif %}
-                    style="flex-shrink:0;width:240px;font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px">
-              <option value="">— pick budget line —</option>
-            </select>
+                  style="flex:1;min-width:90px;font-size:.83rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                  title="{{ t.vendor or '' }}">{{ t.vendor or '— vendor unknown —' }}</span>
             <span class="actuals-txn-amt"
-                  style="flex-shrink:0;font-size:.85rem;font-weight:700;min-width:80px;text-align:right;
-                         color:{% if t.is_expense %}#e05555{% else %}var(--green){% endif %}">
-              {% if t.is_expense %}−{% else %}+{% endif %}{{ (t.amount or 0) | currency }}
-            </span>
-            <button type="button" class="btn btn-xs btn-ghost"
-                    onclick="actualsOpenEditTxn({{ t.id }}, {{ t.doc_upload_id or 'null' }})"
-                    title="{% if t.doc_upload_id %}Open receipt preview + edit{% else %}Edit vendor / date / amount / note{% endif %}"
-                    style="flex-shrink:0;font-size:.7rem;padding:2px 6px;color:var(--text-muted)">{% if t.doc_upload_id %}🔍{% else %}✎{% endif %}</button>
-            {% if not t.not_project_expense %}
-            <button type="button" class="btn btn-xs btn-ghost"
-                    onclick="actualsMarkNotProject({{ t.id }})"
-                    title="Mark as not a project expense"
-                    style="flex-shrink:0;font-size:.66rem;padding:2px 6px;color:var(--text-muted)">✕</button>
-            {% else %}
-            <span style="flex-shrink:0;font-size:.65rem;color:#e05555;background:#2a1414;border:1px solid #4a2020;border-radius:3px;padding:1px 5px">not project</span>
-            {% endif %}
+                  style="flex-shrink:0;font-size:.83rem;font-weight:700;width:86px;text-align:right;
+                         color:{% if t.is_expense %}#e05555{% else %}var(--green){% endif %}">{% if t.is_expense %}−{% else %}+{% endif %}{{ (t.amount or 0) | currency }}</span>
+
+            {# ── The three bucket columns: filled (solid + color) or empty
+                 (dashed + quick action). Filled/empty visibility is driven by
+                 the row's data-has-txn / data-has-doc / data-coded attrs via
+                 CSS, so existing match actions flip the cells automatically. #}
+            <div class="ax-cells">
+              {# 1 · Transaction (the electronic charge) #}
+              <div class="ax-cell ax-cell-txn" title="Electronic transaction">
+                <span class="ax-filled">
+                  <span style="flex-shrink:0">{{ _src_icon }}</span>
+                  <span class="actuals-txn-card4" title="Card / account last 4"
+                        style="flex-shrink:0;color:#9aa4b2;font-variant-numeric:tabular-nums;{% if not _c4 %}display:none{% endif %}">💳 ••{{ _c4 }}</span>
+                  <span class="ax-c-txt" style="color:var(--text-muted)">{{ _src_label }}</span>
+                </span>
+                <span class="ax-empty"><span class="ax-c-txt">no charge linked</span></span>
+              </div>
+              {# 2 · Backup document (receipt / invoice) #}
+              <div class="ax-cell ax-cell-doc" title="Backup document">
+                <span class="ax-filled">
+                  {% if _doc %}
+                  {% set _cat = (_doc.category or 'misc') %}
+                  {% set _docfg = {
+                    'receipt':'#7ba6e8','invoice':'#f0c060','estimate':'#5fc8c8','quote':'#5fc8c8',
+                    'purchase_order':'#f08c4a','contract':'#9a7ee0','insurance':'#e08080','tax_form':'#e0809a',
+                    'payroll':'#e080c8','legal':'#7e7ee0','release':'#7ad07a','misc':'#cbb' }.get(_cat, '#f0c88a') %}
+                  <a href="#" class="actuals-doc-badge ax-c-txt"
+                     data-doc-id="{{ _doc.id }}"
+                     onclick="openDocDetail({{ _doc.id }}, null);return false"
+                     title="View {{ _cat }} — hover to preview, click to open"
+                     style="color:{{ _docfg }};text-decoration:none">📎 {{ _cat }} · {{ (_doc.filed_filename or _doc.original_filename or '')[:16] }}{% if (_doc.filed_filename or _doc.original_filename or '')|length > 16 %}…{% endif %}</a>
+                  {% else %}
+                  <span class="ax-c-txt" style="color:#f0c88a">📎 receipt</span>
+                  {% endif %}
+                  {% if t.source in ('qbo_sync', 'reconciled', 'csv_import') %}
+                  <button type="button" onclick="actualsUnmatch({{ t.id }})"
+                          title="Unlink this receipt — returns it to the pool, keeps the charge"
+                          style="flex-shrink:0;font-size:.58rem;padding:0 5px;background:none;border:1px solid #4a2020;border-radius:4px;color:#e08080;cursor:pointer">✕</button>
+                  {% endif %}
+                </span>
+                <span class="ax-empty">
+                  <button type="button" onclick="actualsFindReceipt({{ t.id }})"
+                          title="Search existing receipts that match this charge and link one"
+                          style="flex-shrink:0;font-size:.66rem;padding:1px 6px;background:#13251a;border:1px solid #2a5a3a;border-radius:4px;color:#74c69d;cursor:pointer">🔍 Find</button>
+                  <button type="button" class="actuals-upload-btn" data-tid="{{ t.id }}"
+                          title="Upload a new receipt file for this transaction"
+                          style="flex-shrink:0;font-size:.66rem;padding:1px 6px;background:#1a2540;border:1px solid #2d4070;border-radius:4px;color:#5b8af9;cursor:pointer">📎 Add</button>
+                </span>
+              </div>
+              {# 3 · Budget-line assignment. The picker IS the control; the
+                   cell colors green via [data-coded="1"]. Smart-suggestion chip
+                   sits before the picker (JS inserts/removes it there too). #}
+              {% set _sug = actuals_line_suggestions.get(t.id) %}
+              {% set _wid_for_selected = actual_to_working.get(t.budget_line_id, t.budget_line_id) if t.budget_line_id else None %}
+              {% set _cur = (_wid_for_selected | string) if _wid_for_selected else (('section:' ~ t.account_code) if t.account_code else '') %}
+              <div class="ax-cell ax-cell-line" title="Budget-line assignment">
+                {% if _sug and not _coded and not t.not_project_expense %}
+                <button type="button" class="actuals-suggest-btn"
+                        data-tid="{{ t.id }}" data-line-id="{{ _sug.line_id }}"
+                        onclick="actualsApplySuggestion(this)"
+                        title="Smart match from the vendor name — click to code to {{ _sug.code }} · {{ _sug.label }}"
+                        style="flex-shrink:0;font-size:.62rem;padding:1px 5px;background:#10231a;border:1px solid #1f6f4a;border-radius:4px;color:#5fd0a0;cursor:pointer;white-space:nowrap;max-width:80px;overflow:hidden;text-overflow:ellipsis">💡 {{ _sug.code }}</button>
+                {% endif %}
+                <select class="actuals-line-picker"
+                        data-tid="{{ t.id }}" data-current="{{ _cur }}" data-populated="0"
+                        onfocus="_actualsFillPicker(this)"
+                        onchange="actualsSetLine(this)"
+                        {% if t.not_project_expense %}disabled{% endif %}
+                        style="font-size:.7rem;padding:2px 4px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px">
+                  <option value="">— pick line —</option>
+                </select>
+              </div>
+            </div>
+
+            {# Trailing row actions: edit + mark-not-project #}
+            <div style="flex-shrink:0;display:flex;align-items:center;gap:2px">
+              <button type="button" class="btn btn-xs btn-ghost"
+                      onclick="actualsOpenEditTxn({{ t.id }}, {{ t.doc_upload_id or 'null' }})"
+                      title="{% if t.doc_upload_id %}Open receipt preview + edit{% else %}Edit vendor / date / amount / note{% endif %}"
+                      style="flex-shrink:0;font-size:.7rem;padding:2px 5px;color:var(--text-muted)">{% if t.doc_upload_id %}🔍{% else %}✎{% endif %}</button>
+              {% if not t.not_project_expense %}
+              <button type="button" class="btn btn-xs btn-ghost"
+                      onclick="actualsMarkNotProject({{ t.id }})"
+                      title="Mark as not a project expense"
+                      style="flex-shrink:0;font-size:.66rem;padding:2px 5px;color:var(--text-muted)">✕</button>
+              {% else %}
+              <span style="flex-shrink:0;font-size:.62rem;color:#e05555;background:#2a1414;border:1px solid #4a2020;border-radius:3px;padding:1px 5px">not project</span>
+              {% endif %}
+            </div>
           </div>
         {% endfor %}
         </div>
@@ -6919,13 +6889,13 @@
         } else if (value.startsWith('section:')) {
           _actualsToast('Coded to section. Pick a specific line for per-line tracking.', 'green');
         }
-        // Reflect coded state on the row.
+        // Reflect coded state on the row. The line CELL recolors itself off
+        // data-coded via CSS (the three-bucket layout), so we only flip the
+        // attribute here — no whole-row repaint.
         const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
         if (row) {
           const isCoded = value !== '__clear__';
           row.dataset.coded = isCoded ? '1' : '0';
-          row.style.background = isCoded ? '#0d1a14' : 'var(--bg-card)';
-          row.style.borderColor = isCoded ? '#1a3a2a' : 'var(--border)';
           // Coded now → the smart-suggestion chip is spent; remove it.
           if (isCoded) { const _sb = row.querySelector('.actuals-suggest-btn'); if (_sb) _sb.remove(); }
         }
@@ -7508,17 +7478,12 @@
       if (!row) return;
       row.dataset.hasDoc = '0';
       row.dataset.matchStatus = 'unmatched';
-      row.querySelectorAll('.actuals-doc-badge, [onclick^="actualsUnmatch"]').forEach(e => e.remove());
+      // Remove the filled doc badge; the Document cell's dashed empty
+      // placeholder (Find / Add) auto-reveals via CSS now that
+      // data-has-doc="0", so no button needs to be re-created here.
+      row.querySelectorAll('.actuals-doc-badge').forEach(e => e.remove());
       const banner = document.querySelector('.actuals-suggested-banner[data-tid="' + tid + '"]');
       if (banner) banner.remove();
-      if (!row.querySelector('[onclick^="actualsFindReceipt"]')) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.setAttribute('onclick', 'actualsFindReceipt(' + tid + ')');
-        b.style.cssText = 'flex-shrink:0;font-size:.66rem;padding:2px 7px;background:#13251a;border:1px solid #2a5a3a;border-radius:4px;color:#74c69d;cursor:pointer';
-        b.textContent = '🔍 Find receipt';
-        row.appendChild(b);
-      }
       if (typeof _actualsRecountStats === 'function') _actualsRecountStats();
       if (typeof _actualsRefreshReviewBtn === 'function') _actualsRefreshReviewBtn();
       if (typeof window._actualsSectionize === 'function') window._actualsSectionize();  // re-bucket
@@ -8254,26 +8219,22 @@
       if (el) el.addEventListener('change', _actualsResolveFilters);
     });
 
-    // ── "Growing item" state (user 2026-06-02) ───────────────────────
-    // Each row works toward three matches — a document, a confirmed
-    // electronic transaction, and a budget line. Derive data-fulfill
-    // (0..3) from the existing match-state attrs so the row grows a step
-    // per box crossed off (see the ladder <style> in #tab-actuals). A
-    // MutationObserver recomputes it whenever any of those attrs change,
-    // so every existing match/unmatch/code action animates for free —
-    // no need to touch the ~30 sites that mutate those attributes.
+    // ── Three-bucket fulfillment state (user 2026-06-02) ──────────────
+    // Each row works toward three boxes — a transaction, a document, and a
+    // budget line. Derive data-fulfill (0..3) from the row's state attrs so
+    // the Progress sort + the green "fully reconciled" stripe stay correct.
+    // A MutationObserver recomputes it whenever those attrs change, so every
+    // existing match/unmatch/code action keeps it current without touching
+    // the ~30 sites that mutate them. (The cells themselves recolor purely
+    // via CSS attribute selectors — this only maintains the derived total.)
     function _actualsComputeFulfill(row) {
       if (!row || !row.dataset) return;
-      const hasDoc    = row.dataset.hasDoc === '1';
-      const confirmed = row.dataset.matchStatus === 'confirmed';
-      const coded     = row.dataset.coded === '1';
-      const excluded  = row.dataset.notProject === '1' || row.dataset.claimedElsewhere === '1';
-      const n = excluded ? 0 : ((hasDoc ? 1 : 0) + (confirmed ? 1 : 0) + (coded ? 1 : 0));
+      const hasTxn   = row.dataset.hasTxn === '1';
+      const hasDoc   = row.dataset.hasDoc === '1';
+      const coded    = row.dataset.coded === '1';
+      const excluded = row.dataset.notProject === '1' || row.dataset.claimedElsewhere === '1';
+      const n = excluded ? 0 : ((hasTxn ? 1 : 0) + (hasDoc ? 1 : 0) + (coded ? 1 : 0));
       row.dataset.fulfill = String(n);
-      const pips = row.querySelectorAll('.actuals-legs .leg');
-      if (pips[0]) pips[0].classList.toggle('on', hasDoc);
-      if (pips[1]) pips[1].classList.toggle('on', confirmed);
-      if (pips[2]) pips[2].classList.toggle('on', coded);
     }
     (function () {
       const list = document.getElementById('actuals-txn-list');
@@ -8297,7 +8258,7 @@
       obs.observe(list, {
         subtree: true,
         attributes: true,
-        attributeFilter: ['data-coded', 'data-has-doc', 'data-match-status',
+        attributeFilter: ['data-coded', 'data-has-doc', 'data-has-txn',
                           'data-not-project', 'data-claimed-elsewhere'],
       });
     })();
