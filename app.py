@@ -1125,6 +1125,46 @@ def admin_docs_wipe_project(pid):
     })
 
 
+_ANALYZER_TYPE_TO_CAT = {
+    'RECEIPT': 'receipt', 'INVOICE': 'invoice', 'ESTIMATE': 'estimate',
+    'QUOTE': 'quote', 'EMPDOC': 'employee_vendor_doc', 'CONTRACT': 'contract',
+    'PO': 'purchase_order', 'TAXFORM': 'tax_form', 'TAX': 'tax_form',
+    'RELEASE': 'release', 'LEGAL': 'legal', 'INSURANCE': 'insurance',
+}
+
+
+def _parse_analyzer_filename(name):
+    """Pull (doc_date, category, vendor, amount) out of an Analyzer-filed
+    filename like '2026-04-27_RECEIPT_Office_Supplies_Software_Video_Village_140.45.pdf'.
+    Best-effort — date + amount are the reliable, match-critical bits. Returns
+    a dict with any fields it could recover. (User 2026-06-02.)"""
+    import re as _re
+    out = {'doc_date': None, 'category': None, 'vendor': None, 'amount': None}
+    base = (name or '').rsplit('.', 1)[0]
+    base = _re.sub(r'\s*\(\d+\)\s*$', '', base).strip()      # strip Dropbox " (1)"
+    parts = [p for p in base.split('_') if p != '']
+    if parts and _re.match(r'^\d{4}-\d{2}-\d{2}$', parts[0]):
+        out['doc_date'] = parts[0]; parts = parts[1:]
+    elif parts and parts[0].lower() == 'unknown':
+        parts = parts[1:]
+    if parts:
+        cat = _ANALYZER_TYPE_TO_CAT.get(parts[0].upper())
+        if cat or parts[0].isupper():
+            out['category'] = cat
+            parts = parts[1:]
+    if parts and _re.match(r'^\d{1,3}(,\d{3})*(\.\d{1,2})?$|^\d+(\.\d{1,2})?$', parts[-1]):
+        try:
+            out['amount'] = float(parts[-1].replace(',', ''))
+        except ValueError:
+            pass
+        parts = parts[:-1]
+    if parts and _re.match(r'^[0-9a-f]{16,}$', parts[-1].lower()):   # drop content-hash token
+        parts = parts[:-1]
+    vend = ' '.join(p for p in parts if p and p.lower() != 'unknown').strip()
+    out['vendor'] = vend or None
+    return out
+
+
 @app.route("/admin/docs/project/<int:pid>/scan-audit", methods=["GET", "POST"])
 @login_required
 def admin_docs_scan_audit(pid):
@@ -1166,12 +1206,9 @@ def admin_docs_scan_audit(pid):
 
     orphans, scanned, dbx_err = [], 0, None
     try:
-        from fp_analyzer import DOCUMENT_TYPES
         dbx = _dbx_client()
         proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
                      else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
-        subfolders = set(DOCUMENT_TYPES.values())
-        subfolders.add("01_ADMIN/RECEIPTS FOLDER")
         existing_full, existing_names = set(), set()
         for u in ups:
             if u.filed_dropbox_path:
@@ -1180,31 +1217,31 @@ def admin_docs_scan_audit(pid):
             for nm in (u.filed_filename, u.original_filename):
                 if nm:
                     existing_names.add(nm.lower())
-        for sub in sorted(subfolders):
-            fp = f"{proj_root}/{sub}"
+        # Walk the ENTIRE project root recursively — earlier we only walked an
+        # enumerated subfolder set, which MISSED receipts filed under person
+        # folders (PROCESSED DOCUMENTS/<name>/) and any other location, so they
+        # were never imported or even flagged as orphans. (User 2026-06-02.)
+        res = dbx.files_list_folder(proj_root, recursive=True)
+        while True:
+            for entry in res.entries:
+                if not hasattr(entry, 'size'):
+                    continue
+                pl = (entry.path_display or '').lower()
+                if '/_trash' in pl or '/_source_archive' in pl:
+                    continue   # trash + the pre-processing archive copy aren't real orphans
+                scanned += 1
+                if pl in existing_full or (entry.name or '').lower() in existing_names:
+                    continue
+                if '/_duplicates' in pl:
+                    continue
+                if len(orphans) < 100:
+                    orphans.append({"filename": entry.name, "path": entry.path_display})
+            if not res.has_more:
+                break
             try:
-                res = dbx.files_list_folder(fp, recursive=True)
-            except Exception as _e:
-                continue
-            while True:
-                for entry in res.entries:
-                    if not hasattr(entry, 'size'):
-                        continue
-                    scanned += 1
-                    if (entry.path_display or '').lower() in existing_full:
-                        continue
-                    if (entry.name or '').lower() in existing_names:
-                        continue
-                    if '_duplicates' in (entry.path_display or '').lower() or '_trash' in (entry.path_display or '').lower():
-                        continue   # parked files aren't orphans
-                    if len(orphans) < 60:
-                        orphans.append({"filename": entry.name, "path": entry.path_display})
-                if not res.has_more:
-                    break
-                try:
-                    res = dbx.files_list_folder_continue(res.cursor)
-                except Exception:
-                    break
+                res = dbx.files_list_folder_continue(res.cursor)
+            except Exception:
+                break
     except Exception as _e:
         dbx_err = str(_e)
 
@@ -1335,83 +1372,82 @@ def admin_docs_reconcile_project(pid):
     from datetime import datetime as _dt
     import mimetypes as _mt
 
-    for sub in sorted(subfolders):
-        folder_path = f"{proj_root}/{sub}"
-        # Reverse-map subfolder → doc_type label for the category column.
-        # Pick the first matching key (most DOCUMENT_TYPES values are
-        # unique; shared ones collapse to whichever key sorts first).
-        doc_type_for_folder = next(
-            (k for k, v in DOCUMENT_TYPES.items() if v == sub),
-            None,
-        )
+    _do_dry = (request.args.get('dry') == '1') or bool((request.get_json(silent=True) or {}).get('dry'))
 
-        try:
-            res = dbx.files_list_folder(folder_path, recursive=True)
-        except Exception as _le:
-            _msg = str(_le)
-            if "not_found" in _msg:
-                continue  # folder doesn't exist for this project; skip silently
-            errors.append(f"list {folder_path}: {_msg}")
-            continue
-
-        while True:
-            for entry in res.entries:
-                # Skip folders and deleted-metadata entries.
-                if not hasattr(entry, 'size'):
-                    continue
-                scanned += 1
-                path_lower_key = (entry.path_display or "").lower()
-                if path_lower_key in existing_full:
-                    continue
-
-                filename = entry.name or ""
-                # Final dedupe gate: have we already seen this filename
-                # for this project? Catches rows whose filed_dropbox_path
-                # has drifted from what Dropbox now reports (rename in
-                # Dropbox web UI, namespace prefix change, etc.). Trades
-                # a small false-positive rate (two genuinely different
-                # files with the same name across folders won't both be
-                # tracked) for zero false-positive duplicate rows.
-                if filename.lower() in existing_names:
-                    continue
-
-                ext = os.path.splitext(filename)[1].lower()
-                guessed_ct = _mt.guess_type(filename)[0] or "application/octet-stream"
-
+    # Walk the ENTIRE project root recursively. Previously we walked only an
+    # enumerated subfolder set, which MISSED receipts filed under person
+    # folders (PROCESSED DOCUMENTS/<name>/) or any non-listed location — they
+    # were never imported, so they never surfaced for matching. Parse each
+    # Analyzer filename to backfill date/amount/category/vendor so the imported
+    # receipt is immediately matchable (not a blank row). Skip trash, parked
+    # duplicates, and the pre-processing _SOURCE_ARCHIVE copy. (User 2026-06-02.)
+    try:
+        res = dbx.files_list_folder(proj_root, recursive=True)
+    except Exception as _le:
+        return jsonify({"error": f"list {proj_root}: {_le}"}), 500
+    while True:
+        for entry in res.entries:
+            if not hasattr(entry, 'size'):
+                continue
+            pl = (entry.path_display or "").lower()
+            if '/_trash' in pl or '/_source_archive' in pl or '/_duplicates' in pl:
+                continue
+            scanned += 1
+            if pl in existing_full:
+                continue
+            filename = entry.name or ""
+            if filename.lower() in existing_names:
+                continue
+            guessed_ct = _mt.guess_type(filename)[0] or "application/octet-stream"
+            parsed = _parse_analyzer_filename(filename)
+            _dd = None
+            if parsed.get('doc_date'):
                 try:
-                    new_row = DocUpload(
-                        project_id=pid,
-                        uploader_id=current_user.id,
-                        uploaded_at=getattr(entry, 'server_modified', None) or _dt.utcnow(),
-                        r2_key=None,
-                        original_filename=filename,
-                        filed_filename=filename,
-                        filed_dropbox_path=entry.path_display,
-                        filed_at=getattr(entry, 'server_modified', None) or _dt.utcnow(),
-                        file_size=getattr(entry, 'size', None),
-                        content_type=guessed_ct,
-                        status='filed',
-                        category=doc_type_for_folder,
-                        note="Reconciled from Dropbox scan",
-                    )
-                    db.session.add(new_row)
-                    created += 1
-                    if len(sample) < 15:
-                        sample.append({
-                            "filename": filename,
-                            "path":     entry.path_display,
-                            "doc_type": doc_type_for_folder,
-                        })
-                except Exception as _ce:
-                    errors.append(f"create row for {entry.path_display}: {_ce}")
-
-            if not res.has_more:
-                break
+                    _dd = _dt.strptime(parsed['doc_date'], '%Y-%m-%d').date()
+                except ValueError:
+                    _dd = None
             try:
-                res = dbx.files_list_folder_continue(res.cursor)
+                new_row = DocUpload(
+                    project_id=pid,
+                    uploader_id=current_user.id,
+                    uploaded_at=getattr(entry, 'server_modified', None) or _dt.utcnow(),
+                    r2_key=None,
+                    original_filename=filename,
+                    filed_filename=filename,
+                    filed_dropbox_path=entry.path_display,
+                    filed_at=getattr(entry, 'server_modified', None) or _dt.utcnow(),
+                    file_size=getattr(entry, 'size', None),
+                    content_type=guessed_ct,
+                    status='filed',
+                    category=parsed.get('category'),
+                    vendor=parsed.get('vendor'),
+                    amount=parsed.get('amount'),
+                    doc_date=_dd,
+                    note="Reconciled from Dropbox scan",
+                )
+                if not _do_dry:
+                    db.session.add(new_row)
+                    existing_names.add(filename.lower())   # don't double-create archive vs processed
+                    existing_full.add(pl)
+                created += 1
+                if len(sample) < 25:
+                    sample.append({"filename": filename, "path": entry.path_display,
+                                   "category": parsed.get('category'),
+                                   "amount": parsed.get('amount'), "date": parsed.get('doc_date')})
             except Exception as _ce:
-                errors.append(f"continue {folder_path}: {_ce}")
-                break
+                errors.append(f"create row for {entry.path_display}: {_ce}")
+        if not res.has_more:
+            break
+        try:
+            res = dbx.files_list_folder_continue(res.cursor)
+        except Exception as _ce:
+            errors.append(f"continue: {_ce}")
+            break
+
+    if _do_dry:
+        db.session.rollback()
+        return jsonify({"dry": True, "would_create": created, "scanned": scanned,
+                        "sample": sample, "errors": errors[:20]})
 
     try:
         db.session.commit()
@@ -1477,7 +1513,8 @@ def admin_docs_reconcile_project(pid):
         "ok":       True,
         "scanned":  scanned,
         "created":  created,
-        "existing": len(existing_paths),
+        "txns_created": txns_created,
+        "existing": len(existing_full),
         "sample":   sample,
         "errors":   errors[:20],
         "proj_root": proj_root,
