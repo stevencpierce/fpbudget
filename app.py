@@ -7264,6 +7264,89 @@ def actuals_dismiss_suggestion(pid, tid):
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/projects/<int:pid>/actuals/matches/confirm-bulk", methods=["POST"])
+@login_required
+def actuals_confirm_matches_bulk(pid):
+    """Confirm many suggested matches in one click. Body:
+      {min_confidence: 0-1 (default 0), tids: [optional explicit id list]}.
+    Confirms every 'suggested' txn that has a doc and meets the filter.
+    (User 2026-06-02.)"""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden — viewers cannot confirm"}), 403
+    ProjectSheet.query.get_or_404(pid)
+    body = request.get_json(silent=True) or {}
+    try:
+        minc = float(body.get('min_confidence') or 0)
+    except (TypeError, ValueError):
+        minc = 0.0
+    tids = body.get('tids')
+    tidset = set(tids) if isinstance(tids, list) else None
+    rows = (Transaction.query
+            .filter_by(project_id=pid, match_status='suggested')
+            .filter(Transaction.doc_upload_id.isnot(None)).all())
+    from actuals import confirm_match
+    confirmed, failed = 0, 0
+    for t in rows:
+        if tidset is not None and t.id not in tidset:
+            continue
+        if float(t.match_confidence or 0) < minc:
+            continue
+        try:
+            confirm_match(t.id)
+            confirmed += 1
+        except Exception as e:
+            failed += 1
+            db.session.rollback()
+            logging.warning(f"[bulk-confirm] txn {t.id}: {e}")
+    logging.info(f"[bulk-confirm] pid={pid} min_conf={minc}: {confirmed} confirmed, {failed} failed")
+    try:
+        _log_activity(action='update', entity_type='transaction_match',
+                      entity_id=pid, entity_label=f'Project #{pid}', project_id=pid,
+                      after={'confirmed': confirmed},
+                      note=f'Bulk-confirmed {confirmed} match{"es" if confirmed != 1 else ""}'
+                           + (f' (>= {int(minc*100)}% confidence)' if minc else ''))
+    except Exception:
+        pass
+    return jsonify({"ok": True, "confirmed": confirmed, "failed": failed})
+
+
+@app.route("/projects/<int:pid>/actuals/matches/dismiss-bulk", methods=["POST"])
+@login_required
+def actuals_dismiss_matches_bulk(pid):
+    """Dismiss many suggested matches at once. Body:
+      {max_confidence: 0-1 (optional — only dismiss BELOW this),
+       tids: [optional explicit id list]}. (User 2026-06-02.)"""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden — viewers cannot dismiss"}), 403
+    ProjectSheet.query.get_or_404(pid)
+    body = request.get_json(silent=True) or {}
+    maxc = body.get('max_confidence')
+    try:
+        maxc = float(maxc) if maxc is not None else None
+    except (TypeError, ValueError):
+        maxc = None
+    tids = body.get('tids')
+    tidset = set(tids) if isinstance(tids, list) else None
+    rows = (Transaction.query
+            .filter_by(project_id=pid, match_status='suggested')
+            .filter(Transaction.doc_upload_id.isnot(None)).all())
+    from actuals import dismiss_suggestion
+    dismissed = 0
+    for t in rows:
+        if tidset is not None and t.id not in tidset:
+            continue
+        if maxc is not None and float(t.match_confidence or 0) >= maxc:
+            continue
+        try:
+            dismiss_suggestion(t.id)
+            dismissed += 1
+        except Exception as e:
+            db.session.rollback()
+            logging.warning(f"[bulk-dismiss] txn {t.id}: {e}")
+    logging.info(f"[bulk-dismiss] pid={pid}: {dismissed} dismissed")
+    return jsonify({"ok": True, "dismissed": dismissed})
+
+
 @app.route("/projects/<int:pid>/actuals/docs.json", methods=["GET"])
 @login_required
 def actuals_docs_list_for_picker(pid):

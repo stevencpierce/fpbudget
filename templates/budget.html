@@ -5455,6 +5455,11 @@
               title="Find candidate pairings between QBO transactions and uploaded receipts">
         ⚡ Auto-Match
       </button>
+      <button type="button" id="actualsReviewBtn" class="btn btn-sm btn-primary"
+              onclick="actualsReviewMatches()" style="display:none"
+              title="Review and confirm the auto-suggested receipt↔charge matches">
+        🔎 Review matches <span id="actualsReviewCount" style="font-weight:700"></span>
+      </button>
       <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-sync-panel')">↻ Sync QBO</button>
       <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-import-panel')">⬆ Import CSV</button>
       <button type="button" class="btn btn-sm btn-ghost" onclick="toggleActualsPanel('actuals-settings-panel')">⚙ Settings</button>
@@ -5756,6 +5761,33 @@
             style="font-size:.7rem;padding:3px 9px;color:var(--text-muted)">✕ Not project</button>
   </div>
 
+  {# ── Review-matches bar (shown only in review mode) ── #}
+  <div id="actuals-review-bar"
+       style="display:none;flex-wrap:wrap;gap:8px;align-items:center;
+              padding:9px 13px;margin-bottom:10px;position:sticky;top:0;z-index:5;
+              background:#221d0c;border:1px solid #4a3a1a;border-radius:8px">
+    <span style="font-size:.8rem;color:#f0c060;font-weight:600">🔎 Reviewing
+      <span id="actuals-review-count">0</span> suggested matches</span>
+    <span class="muted" style="font-size:.72rem">— confirm to lock receipt↔charge pairings</span>
+    <button type="button" class="btn btn-xs btn-primary" onclick="actualsBulkConfirm(0.9)"
+            style="margin-left:auto;font-size:.72rem;padding:4px 10px"
+            title="Confirm only the high-confidence matches (vendor + amount + date all align)">
+      ✓ Confirm high-confidence (<span id="actuals-review-hc">0</span>)
+    </button>
+    <button type="button" class="btn btn-xs" onclick="actualsBulkConfirm(0)"
+            style="font-size:.72rem;padding:4px 10px;color:#74c69d"
+            title="Confirm every suggested match, including lower-confidence amount-only ones">
+      ✓ Confirm all
+    </button>
+    <button type="button" class="btn btn-xs" onclick="actualsBulkDismiss()"
+            style="font-size:.72rem;padding:4px 10px;color:#bba070"
+            title="Reject all suggestions (unlinks them; you can re-run Auto-Match later)">
+      ✕ Dismiss all
+    </button>
+    <button type="button" class="btn btn-xs btn-ghost" onclick="actualsExitReview()"
+            style="font-size:.72rem;padding:4px 10px">Done</button>
+  </div>
+
   <div id="actuals-pane-match" class="actuals-pane">
     {# Friendly empty-state when no pickable budget lines exist —
        otherwise the dropdown silently shows nothing and the user is
@@ -5922,16 +5954,24 @@
              auto-matcher proposes a pairing. User confirms or
              dismisses before the merge becomes permanent. #}
           {% if t.match_status == 'suggested' and t.doc_upload_id %}
+          {% set _conf = (t.match_confidence or 0) | float %}
           <div class="actuals-suggested-banner" data-tid="{{ t.id }}"
+               data-confidence="{{ _conf }}" data-doc-id="{{ t.doc_upload_id }}"
+               data-doc-img="{{ '1' if (_doc and _doc.content_type and _doc.content_type.startswith('image/')) else '0' }}"
                style="display:flex;align-items:center;gap:10px;padding:8px 12px;margin-bottom:4px;
                       background:#2a2414;border:1px solid #4a3a1a;border-radius:6px 6px 0 0">
+            <span class="recpt-thumb" onclick="openDocDetail({{ t.doc_upload_id }}, null);return false"
+                  title="Click to open the receipt"
+                  style="flex-shrink:0;width:34px;height:34px;border-radius:4px;background:#1a1408;
+                         border:1px solid #4a3a1a;display:flex;align-items:center;justify-content:center;
+                         font-size:.85rem;overflow:hidden;cursor:pointer">📄</span>
             <span style="font-size:.78rem;color:#f0c060;font-weight:600">
               ⚡ Suggested match
             </span>
-            <span style="font-size:.74rem;color:#bba070">
-              auto-paired with receipt
+            <span style="font-size:.74rem;color:#bba070;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+              receipt
               {% if _doc %}<strong>{{ _doc.filed_filename or _doc.original_filename }}</strong>{% endif %}
-              ({{ ((t.match_confidence or 0)*100)|int }}% confidence)
+              · <span style="color:{% if _conf >= 0.9 %}#74c69d{% else %}#e0a040{% endif %}">{{ (_conf*100)|int }}%</span>
             </span>
             <button type="button" onclick="actualsConfirmMatch({{ t.id }})"
                     style="margin-left:auto;font-size:.7rem;padding:3px 9px;background:#1a3a2a;border:1px solid #2a5a3a;border-radius:4px;color:#74c69d;cursor:pointer">
@@ -7066,6 +7106,89 @@
     } else {
       _actualsRecountStats();
     }
+
+    // ── Review-matches mode: focused list of suggested pairings + bulk ──
+    function _actualsRefreshReviewBtn() {
+      const n = document.querySelectorAll('.actuals-suggested-banner').length;
+      const btn = document.getElementById('actualsReviewBtn');
+      const cnt = document.getElementById('actualsReviewCount');
+      if (btn) { btn.style.display = n ? '' : 'none'; if (cnt) cnt.textContent = n ? '(' + n + ')' : ''; }
+      return n;
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', _actualsRefreshReviewBtn);
+    } else { _actualsRefreshReviewBtn(); }
+
+    let _reviewThumbObs = null;
+    function _initReviewThumbs() {
+      if (_reviewThumbObs) _reviewThumbObs.disconnect();
+      _reviewThumbObs = new IntersectionObserver((entries) => {
+        entries.forEach(e => {
+          if (!e.isIntersecting) return;
+          const banner = e.target;
+          _reviewThumbObs.unobserve(banner);
+          if (banner.dataset.thumbLoaded === '1' || banner.dataset.docImg !== '1') return;
+          banner.dataset.thumbLoaded = '1';
+          const docId = banner.dataset.docId, slot = banner.querySelector('.recpt-thumb');
+          if (!docId || !slot) return;
+          const img = new Image();
+          img.src = '/docs/upload/' + docId + '/raw';
+          img.style.cssText = 'width:100%;height:100%;object-fit:cover';
+          img.onload = () => { slot.textContent = ''; slot.appendChild(img); };
+        });
+      }, { rootMargin: '300px' });
+      document.querySelectorAll('.actuals-suggested-banner').forEach(b => _reviewThumbObs.observe(b));
+    }
+
+    window.actualsReviewMatches = function () {
+      if (typeof window.showActualsPane === 'function') window.showActualsPane('match');
+      const banners = [...document.querySelectorAll('.actuals-suggested-banner')];
+      if (!banners.length) { if (typeof _actualsToast === 'function') _actualsToast('No suggested matches to review', 'red'); return; }
+      const sugTids = new Set(banners.map(b => b.dataset.tid));
+      document.querySelectorAll('.actuals-txn-row').forEach(r => {
+        r.style.display = sugTids.has(r.dataset.tid) ? '' : 'none';
+      });
+      ['actuals-filter-bar', 'actuals-bulk-bar'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+      document.getElementById('actuals-review-bar').style.display = 'flex';
+      const hc = banners.filter(b => parseFloat(b.dataset.confidence || 0) >= 0.9).length;
+      document.getElementById('actuals-review-count').textContent = banners.length;
+      document.getElementById('actuals-review-hc').textContent = hc;
+      _initReviewThumbs();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+
+    window.actualsExitReview = function () { location.reload(); };
+
+    async function _actualsBulkMatch(url, payload, verb) {
+      const bar = document.getElementById('actuals-review-bar');
+      bar.style.opacity = '.6'; bar.style.pointerEvents = 'none';
+      try {
+        const r = await fetch('/projects/' + PROJ_ID + url, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload || {}) });
+        const d = await r.json();
+        if (!r.ok) { if (typeof _actualsToast === 'function') _actualsToast(verb + ' failed: ' + (d.error || r.status), 'red'); bar.style.opacity = ''; bar.style.pointerEvents = ''; return; }
+        const k = (verb === 'Confirm') ? d.confirmed : d.dismissed;
+        if (typeof _actualsToast === 'function') _actualsToast(verb + 'ed ' + (k || 0) + (d.failed ? (' · ' + d.failed + ' failed') : ''), 'green');
+        setTimeout(() => location.reload(), 700);
+      } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Error: ' + e.message, 'red'); bar.style.opacity = ''; bar.style.pointerEvents = ''; }
+    }
+
+    window.actualsBulkConfirm = function (minConf) {
+      const banners = document.querySelectorAll('.actuals-suggested-banner');
+      const n = minConf ? [...banners].filter(b => parseFloat(b.dataset.confidence || 0) >= minConf).length : banners.length;
+      if (!n) { if (typeof _actualsToast === 'function') _actualsToast('Nothing to confirm', 'red'); return; }
+      const lbl = minConf ? ('the ' + n + ' high-confidence') : ('all ' + n);
+      if (!confirm('Confirm ' + lbl + ' match' + (n !== 1 ? 'es' : '') + '? Each links its receipt to the bank charge (the receipt’s placeholder row is merged in).')) return;
+      _actualsBulkMatch('/actuals/matches/confirm-bulk', { min_confidence: minConf || 0 }, 'Confirm');
+    };
+
+    window.actualsBulkDismiss = function () {
+      const n = document.querySelectorAll('.actuals-suggested-banner').length;
+      if (!n) return;
+      if (!confirm('Dismiss all ' + n + ' suggested matches? They’ll be unlinked (re-run Auto-Match anytime).')) return;
+      _actualsBulkMatch('/actuals/matches/dismiss-bulk', {}, 'Dismiss');
+    };
 
     // ── Reconcile sub-tab: side-by-side unmatched txns ↔ receipts ──
     // Drag a receipt onto a transaction to fire /link-doc and pair them.
