@@ -7524,6 +7524,59 @@ def actuals_link_existing_doc(pid, tid):
     })
 
 
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/receipt-candidates", methods=["GET"])
+@login_required
+def actuals_receipt_candidates(pid, tid):
+    """Ranked unlinked-receipt candidates for ONE transaction — powers the
+    per-row 'Find receipt' picker. Scores by amount (exact = strong signal),
+    vendor similarity, and date proximity; returns the top ~20 best-first so
+    the user clicks instead of dragging. Read-only. (User 2026-06-02.)"""
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    from actuals import _vendor_similarity
+    import datetime as _dt
+    t_amt = float(txn.amount) if txn.amount is not None else None
+    try:
+        t_dt = _dt.date.fromisoformat((txn.txn_date or '')[:10])
+    except (TypeError, ValueError):
+        t_dt = None
+    linked = {row[0] for row in db.session.query(Transaction.doc_upload_id)
+              .filter(Transaction.project_id == pid,
+                      Transaction.doc_upload_id.isnot(None)).all() if row[0]}
+    from sqlalchemy.orm import defer as _defer
+    docs = (DocUpload.query
+            .filter(DocUpload.project_id == pid, DocUpload.status != 'error')
+            .options(_defer(DocUpload.veryfi_data)).all())
+    out = []
+    for d in docs:
+        if d.id in linked:
+            continue
+        if (d.category or '') in ('tax_form', 'contract', 'release', 'legal', 'insurance'):
+            continue
+        d_amt = float(d.amount) if d.amount is not None else None
+        amt_exact = (t_amt is not None and d_amt is not None and abs(d_amt - t_amt) <= 0.01)
+        gap = abs((d.doc_date - t_dt).days) if (t_dt and d.doc_date) else None
+        vscore = _vendor_similarity(txn.vendor, d.vendor)
+        score = 0.0
+        if amt_exact:
+            score += 0.5
+        elif t_amt and d_amt and abs(d_amt - t_amt) <= max(1.0, abs(t_amt) * 0.02):
+            score += 0.2          # within ~2% (rounding / tip)
+        score += 0.3 * vscore
+        if gap is not None:
+            score += 0.2 * max(0.0, 1.0 - gap / 14.0)
+        out.append({"doc_id": d.id, "vendor": d.vendor or '', "amount": d_amt,
+                    "doc_date": d.doc_date.isoformat() if d.doc_date else None,
+                    "filename": d.filed_filename or d.original_filename or f'Upload #{d.id}',
+                    "category": d.category or '',
+                    "is_image": bool(d.content_type and d.content_type.startswith('image/')),
+                    "amt_exact": amt_exact, "day_gap": gap,
+                    "vendor_score": round(vscore, 2), "score": round(score, 3)})
+    out.sort(key=lambda x: -x["score"])
+    return jsonify({"ok": True,
+                    "txn": {"id": txn.id, "vendor": txn.vendor, "amount": t_amt, "date": txn.txn_date},
+                    "candidates": out[:20], "total_unlinked": len(out)})
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/upload-receipt", methods=["POST"])
 @login_required
 def actuals_upload_receipt_to_transaction(pid, tid):

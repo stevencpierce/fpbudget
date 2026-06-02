@@ -6066,9 +6066,16 @@
             {% else %}
             {# No receipt yet — show a clickable Upload button. Opens
                a hidden file picker bound to this transaction. #}
+            <button type="button" onclick="actualsFindReceipt({{ t.id }})"
+                    title="Search existing receipts that match this charge and link one"
+                    style="flex-shrink:0;font-size:.66rem;padding:2px 7px;
+                           background:#13251a;border:1px solid #2a5a3a;
+                           border-radius:4px;color:#74c69d;cursor:pointer">
+              🔍 Find receipt
+            </button>
             <button type="button" class="actuals-upload-btn"
                     data-tid="{{ t.id }}"
-                    title="Attach a receipt to this transaction"
+                    title="Upload a new receipt file for this transaction"
                     style="flex-shrink:0;font-size:.66rem;padding:2px 7px;
                            background:#1a2540;border:1px solid #2d4070;
                            border-radius:4px;color:#5b8af9;cursor:pointer">
@@ -6355,6 +6362,26 @@
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
         <button type="button" class="btn btn-sm" onclick="actualsCloseEditTxn()">Cancel</button>
         <button type="button" class="btn btn-sm btn-primary" id="editTxnSaveBtn" onclick="actualsSaveEditTxn()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  {# ── Find-receipt picker modal (per-row manual match) ── #}
+  <div id="findRcptOverlay" onclick="if(event.target===this)actualsCloseFindReceipt()"
+       style="display:none;position:fixed;inset:0;width:100vw;height:100vh;z-index:9999;
+              align-items:flex-start;justify-content:center;background:rgba(0,0,0,.78);overflow:auto;padding:40px 0">
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;
+                width:640px;max-width:96vw;padding:18px 22px;box-shadow:0 20px 60px rgba(0,0,0,.5)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <h3 style="margin:0;font-size:1rem">🔍 Find a receipt for this charge</h3>
+        <button type="button" class="btn btn-sm btn-ghost" onclick="actualsCloseFindReceipt()">✕</button>
+      </div>
+      <div id="findRcptTxn" style="font-size:.8rem;color:var(--text-muted);margin-bottom:10px"></div>
+      <input type="text" id="findRcptSearch" placeholder="Filter receipts by vendor / filename…" oninput="actualsFindReceiptFilter()"
+             style="width:100%;font-size:.82rem;padding:6px 10px;margin-bottom:10px;
+                    background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px">
+      <div id="findRcptList" style="max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:6px">
+        <div class="muted" style="padding:12px;font-size:.85rem">Loading…</div>
       </div>
     </div>
   </div>
@@ -7188,6 +7215,68 @@
       if (!n) return;
       if (!confirm('Dismiss all ' + n + ' suggested matches? They’ll be unlinked (re-run Auto-Match anytime).')) return;
       _actualsBulkMatch('/actuals/matches/dismiss-bulk', {}, 'Dismiss');
+    };
+
+    // ── Per-row "Find receipt" picker (manual match without dragging) ──
+    let _findRcptTid = null, _findRcptCands = [];
+    const _frEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const _frFmt = n => n == null ? '—' : ('$' + Number(n).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}));
+    window.actualsFindReceipt = async function (tid) {
+      _findRcptTid = tid;
+      const ov = document.getElementById('findRcptOverlay');
+      const list = document.getElementById('findRcptList');
+      document.getElementById('findRcptSearch').value = '';
+      list.innerHTML = '<div class="muted" style="padding:12px;font-size:.85rem">Loading…</div>';
+      ov.style.display = 'flex';
+      try {
+        const r = await fetch('/projects/' + PROJ_ID + '/actuals/transaction/' + tid + '/receipt-candidates');
+        const d = await r.json();
+        if (!r.ok) { list.innerHTML = '<div style="padding:12px;color:#e08080">' + (d.error || 'Failed') + '</div>'; return; }
+        document.getElementById('findRcptTxn').innerHTML =
+          'Charge: <strong style="color:var(--text)">' + _frEsc(d.txn.vendor || '(no vendor)') + '</strong> · '
+          + _frFmt(d.txn.amount) + ' · ' + _frEsc(d.txn.date || '') + ' &nbsp;·&nbsp; ' + d.total_unlinked + ' unlinked receipts';
+        _findRcptCands = d.candidates || [];
+        _renderFindRcpt();
+      } catch (e) { list.innerHTML = '<div style="padding:12px;color:#e08080">Error: ' + e.message + '</div>'; }
+    };
+    function _renderFindRcpt() {
+      const list = document.getElementById('findRcptList');
+      const q = (document.getElementById('findRcptSearch').value || '').toLowerCase();
+      const rows = _findRcptCands.filter(c => !q || (c.vendor + ' ' + c.filename).toLowerCase().includes(q));
+      if (!rows.length) { list.innerHTML = '<div class="muted" style="padding:12px;font-size:.85rem">No matching receipts.</div>'; return; }
+      list.innerHTML = rows.map(c => {
+        const badges = [];
+        if (c.amt_exact) badges.push('<span style="color:#74c69d">✓ exact $</span>');
+        if (c.day_gap != null) badges.push('<span style="color:#bba070">' + c.day_gap + 'd apart</span>');
+        if (c.vendor_score >= 0.45) badges.push('<span style="color:#7ba6e8">vendor ' + Math.round(c.vendor_score * 100) + '%</span>');
+        const thumb = c.is_image
+          ? '<img src="/docs/upload/' + c.doc_id + '/raw" loading="lazy" style="width:40px;height:40px;object-fit:cover;border-radius:4px;flex-shrink:0">'
+          : '<span style="width:40px;height:40px;display:flex;align-items:center;justify-content:center;background:#1a1a1a;border-radius:4px;flex-shrink:0">📄</span>';
+        return '<div onclick="_actualsLinkReceipt(' + c.doc_id + ')" '
+          + 'style="display:flex;align-items:center;gap:10px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;cursor:pointer;background:var(--bg-input)" '
+          + 'onmouseover="this.style.borderColor=\'#2a5a3a\'" onmouseout="this.style.borderColor=\'var(--border)\'">'
+          + thumb
+          + '<div style="flex:1;min-width:0"><div style="font-size:.82rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _frEsc(c.vendor || '(no vendor)') + '</div>'
+          + '<div style="font-size:.7rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _frEsc(c.filename) + '</div></div>'
+          + '<div style="text-align:right;flex-shrink:0"><div style="font-size:.82rem;font-weight:600">' + _frFmt(c.amount) + '</div>'
+          + '<div style="font-size:.66rem;color:var(--text-muted)">' + _frEsc(c.doc_date || '') + '</div></div>'
+          + '<div style="font-size:.62rem;text-align:right;flex-shrink:0;min-width:88px;line-height:1.5">' + badges.join('<br>') + '</div></div>';
+      }).join('');
+    }
+    window.actualsFindReceiptFilter = _renderFindRcpt;
+    window.actualsCloseFindReceipt = function () { document.getElementById('findRcptOverlay').style.display = 'none'; _findRcptTid = null; };
+    window._actualsLinkReceipt = async function (docId) {
+      if (!_findRcptTid) return;
+      try {
+        const r = await fetch('/projects/' + PROJ_ID + '/actuals/transaction/' + _findRcptTid + '/link-doc', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ doc_upload_id: docId }) });
+        const d = await r.json();
+        if (!r.ok) { if (typeof _actualsToast === 'function') _actualsToast('Link failed: ' + (d.error || r.status), 'red'); return; }
+        if (typeof _actualsToast === 'function') _actualsToast('Linked receipt ↔ charge', 'green');
+        actualsCloseFindReceipt();
+        setTimeout(() => location.reload(), 600);
+      } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Error: ' + e.message, 'red'); }
     };
 
     // ── Reconcile sub-tab: side-by-side unmatched txns ↔ receipts ──
