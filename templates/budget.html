@@ -6384,7 +6384,7 @@
             <strong style="color:var(--green)">${d.to_import}</strong> to import
             (${d.charges} charges, ${d.credits} credits)
             ${d.date_range ? `· <span class="muted">${_csvEsc(d.date_range[0])} → ${_csvEsc(d.date_range[1])}</span>` : ''}<br>
-            <span class="muted">Skipped: ${d.skipped_card_payments} card payments · ${d.skipped_duplicates} already imported · ${d.skipped_zero} zero${d.parse_error_count ? ` · <span style="color:#e0a040">${d.parse_error_count} unparseable</span>` : ''}</span><br>
+            <span class="muted">Skipped: ${d.skipped_card_payments} card payments · ${d.skipped_transfers || 0} transfers · ${d.skipped_duplicates} already imported · ${d.skipped_zero} zero${d.parse_error_count ? ` · <span style="color:#e0a040">${d.parse_error_count} unparseable</span>` : ''}</span><br>
             <span class="muted">Cards: ${byCard}</span>
           </div>
           ${rows ? `<div style="max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:6px">

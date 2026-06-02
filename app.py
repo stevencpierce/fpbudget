@@ -20717,13 +20717,25 @@ def _parse_bank_csv(content):
         card = ''.join(ch for ch in (g('card') or '') if ch.isdigit())[-4:]
         note_bits = [b for b in [(g('cat') or '').strip(), (g('memo') or '').strip()] if b]
         note = ' · '.join(note_bits) or None
-        is_payment = 'payment' in ttype.lower()
+        # Classify. Transfers between accounts and credit-card payoffs are NOT
+        # project expenses (and a card payoff in a checking export would double-
+        # count against the charges imported from that card's own statement), so
+        # detect them by Type code AND description, regardless of amount sign.
+        ttl, vl = ttype.lower(), vendor.lower()
+        is_transfer = ('xfer' in ttl or 'transfer' in ttl
+                       or 'online transfer' in vl or 'transfer to' in vl
+                       or 'transfer from' in vl)
+        is_payment = ('payment' in ttl or 'loan_pmt' in ttl
+                      or 'payment to chase card' in vl or 'to chase card ending' in vl
+                      or 'card payment' in vl)
         if amt == 0:
             kind = 'zero'
-        elif amt < 0:
-            kind = 'charge'
+        elif is_transfer:
+            kind = 'transfer'
         elif is_payment:
             kind = 'payment'
+        elif amt < 0:
+            kind = 'charge'
         else:
             kind = 'credit'
         rows.append({"txn_date": date, "vendor": vendor[:300],
@@ -20778,7 +20790,7 @@ def actuals_import_bank_csv(pid):
         existing.add((t.txn_date, (t.vendor or '').strip().lower(),
                       float(t.amount or 0), t.card_last4 or ''))
 
-    importable, dups, payments, zeros = [], 0, 0, 0
+    importable, dups, payments, transfers, zeros = [], 0, 0, 0, 0
     seen_batch = set()
     for r in rows:
         if r["kind"] == 'zero':
@@ -20786,6 +20798,9 @@ def actuals_import_bank_csv(pid):
             continue
         if r["kind"] == 'payment' and not include_payments:
             payments += 1
+            continue
+        if r["kind"] == 'transfer' and not include_payments:
+            transfers += 1
             continue
         fp = (r["txn_date"], r["vendor"].strip().lower(), r["amount"], r["card_last4"] or '')
         if fp in existing or fp in seen_batch:
@@ -20806,6 +20821,7 @@ def actuals_import_bank_csv(pid):
         "charges": sum(1 for r in importable if r["kind"] == 'charge'),
         "credits": sum(1 for r in importable if r["kind"] == 'credit'),
         "skipped_card_payments": payments,
+        "skipped_transfers": transfers,
         "skipped_duplicates": dups,
         "skipped_zero": zeros,
         "parse_errors": stats["parse_errors"][:25],
