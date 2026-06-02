@@ -3783,7 +3783,11 @@ def budget_audit_json(pid, bid):
     if budget.is_actual:
         try:
             from actuals import ensure_actual_mirrors
-            ensure_actual_mirrors(pid)
+            _proj_budgets = Budget.query.filter_by(project_id=pid).all()
+            _wbid = next((b.id for b in _proj_budgets
+                          if _budget_type(b.budget_mode) == 'working'
+                          and not b.is_actual and b.version_status == 'current'), None)
+            ensure_actual_mirrors(pid, working_bid=_wbid, actual_bid=bid)
         except Exception as _eam:
             logging.warning(f"[budget_view] ensure_actual_mirrors failed: {_eam}")
             db.session.rollback()

@@ -512,21 +512,22 @@ def _materialize_missing_actual_line(working_line, actual_budget_id):
     return new_line
 
 
-def ensure_actual_mirrors(project_id):
+def ensure_actual_mirrors(project_id, working_bid=None, actual_bid=None):
     """ADDITIVE-only guarantee that every current Working line has an Actual
     peer. Never updates or deletes — safe to call on every Actual-view load so a
     line added in Working immediately appears in Actual (and an actualized
-    expense can be dragged onto it). Returns the count created. (User 2026-06-02.)"""
-    actual = get_current_actual_budget(project_id)
-    # Resolve Working by budget_mode first (matches how the rest of the app /
-    # the audit pick it) — get_current_working_budget requires parent_budget_id,
-    # which some working budgets lack, so it could miss the real one. Fallback
-    # to the parent-based resolver. (User 2026-06-02.)
-    working = (Budget.query
-               .filter_by(project_id=project_id, is_actual=False,
-                          version_status='current', budget_mode='working')
-               .order_by(Budget.id.desc()).first()
-               or get_current_working_budget(project_id))
+    expense can be dragged onto it). The caller may pass the resolved working /
+    actual budget ids (budget_view resolves them via _budget_type, which is the
+    authoritative pick); otherwise we resolve here. Returns count created.
+    (User 2026-06-02.)"""
+    actual = (Budget.query.get(actual_bid) if actual_bid
+              else get_current_actual_budget(project_id))
+    working = (Budget.query.get(working_bid) if working_bid
+               else (Budget.query
+                     .filter_by(project_id=project_id, is_actual=False,
+                                version_status='current', budget_mode='working')
+                     .order_by(Budget.id.desc()).first()
+                     or get_current_working_budget(project_id)))
     if not actual or not working:
         return 0
     have = {l.source_line_id for l in actual.lines if l.source_line_id is not None}
