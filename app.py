@@ -1364,11 +1364,11 @@ def admin_docs_import_missing(pid):
 
     txns_created = 0
     if apply and created:
-        _NL = {'tax_form', 'contract', 'release', 'legal', 'insurance', 'misc',
-               'employee_vendor_doc', 'estimate', 'quote', 'purchase_order'}
         for u in (DocUpload.query.filter_by(project_id=pid)
                   .filter(DocUpload.note == 'Imported from Dropbox scan').all()):
-            if (u.category or '') in _NL:
+            # Only receipts/invoices become Actuals transactions. Other imported
+            # doc types stay in Docs but never enter the Actuals tab. (User 2026-06-02.)
+            if (u.category or '') not in ('receipt', 'invoice'):
                 continue
             if Transaction.query.filter_by(doc_upload_id=u.id).first():
                 continue
@@ -1387,8 +1387,34 @@ def admin_docs_import_missing(pid):
         except Exception:
             db.session.rollback()
 
+    # Clean the Actuals tab to receipts/invoices only: drop doc-only txns whose
+    # receipt is NOT a receipt/invoice AND that aren't coded or confirmed (so we
+    # never touch real work). The DocUpload stays in Docs. (User 2026-06-02.)
+    removed_non_proof = 0
+    if apply:
+        _proof_ids = {r[0] for r in db.session.query(DocUpload.id)
+                      .filter(DocUpload.project_id == pid,
+                              DocUpload.category.in_(('receipt', 'invoice'))).all()}
+        cand = (Transaction.query
+                .filter(Transaction.project_id == pid,
+                        Transaction.source == 'doc_upload',
+                        Transaction.doc_upload_id.isnot(None),
+                        Transaction.budget_line_id.is_(None),
+                        Transaction.account_code.is_(None),
+                        Transaction.match_status != 'confirmed').all())
+        rm_ids = [t.id for t in cand if t.doc_upload_id not in _proof_ids]
+        if rm_ids:
+            try:
+                removed_non_proof = (Transaction.query
+                                     .filter(Transaction.id.in_(rm_ids))
+                                     .delete(synchronize_session=False))
+                db.session.commit()
+            except Exception:
+                db.session.rollback(); removed_non_proof = 0
+
     return jsonify({"dry": (not apply), "applied": apply, "scanned": scanned,
                     "created": created, "txns_created": txns_created,
+                    "removed_non_proof_txns": removed_non_proof,
                     "errors": errors[:25], "sample": sample})
 
 
@@ -7770,10 +7796,10 @@ def actuals_reconcile_data(pid):
         # list — they're parked until "Keep" pulls them back. (User 2026-06-02.)
         if d.is_duplicate or d.status == 'duplicate':
             continue
-        # Hide pure non-ledger doc types (tax forms, contracts, etc.)
-        # from this view — they don't pair with transactions by design.
-        if (d.category or '') in ('tax_form', 'contract', 'release',
-                                  'legal', 'insurance', 'misc'):
+        # Only receipts/invoices are valid spend proof — everything else
+        # (estimates, employee docs, tax-credit docs, contracts, POs, …) is
+        # never part of Actuals matching. (User 2026-06-02.)
+        if (d.category or '') not in ('receipt', 'invoice'):
             continue
         receipts.append({
             "id":              d.id,
@@ -7873,11 +7899,13 @@ def actuals_receipt_candidates(pid, tid):
             .options(_defer(DocUpload.veryfi_data)).all())
     _cents = lambda v: None if v is None else round((abs(v) - int(abs(v))) * 100)
     t_cents = _cents(t_amt)
-    # Eligible (unlinked, ledger-type, NON-duplicate) receipts. Flagged
-    # duplicates (pending or confirmed) are excluded from matching entirely.
+    # Eligible: unlinked, NON-duplicate, and ONLY receipts/invoices — the only
+    # doc types that are proof of an actual spend. Estimates, employee docs,
+    # tax-credit docs, contracts, POs, etc. never participate in Actuals
+    # matching. (User 2026-06-02.)
     elig = [d for d in docs if d.id not in linked
             and not d.is_duplicate and d.status != 'duplicate'
-            and (d.category or '') not in ('tax_form', 'contract', 'release', 'legal', 'insurance')]
+            and (d.category or '') in ('receipt', 'invoice')]
     # Process-of-elimination: how many unlinked receipts share the charge's
     # EXACT amount? If exactly one, that one is almost certainly it.
     exact_pool = 0

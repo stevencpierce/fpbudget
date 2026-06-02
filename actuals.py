@@ -637,6 +637,12 @@ def run_auto_match(project_id):
                                    DocUpload.status == 'duplicate')).all()}
     if _dup_doc_ids:
         doc_open = [t for t in doc_open if t.doc_upload_id not in _dup_doc_ids]
+    # Only receipts/invoices are valid spend proof — restrict the receipt pool
+    # to them so estimates/employee-docs/etc. never get matched. (User 2026-06-02.)
+    _proof_doc_ids = {r[0] for r in db.session.query(DocUpload.id)
+                      .filter(DocUpload.project_id == project_id,
+                              DocUpload.category.in_(('receipt', 'invoice'))).all()}
+    doc_open = [t for t in doc_open if t.doc_upload_id in _proof_doc_ids]
 
     # Receipts already linked to an electronic txn (suggested OR confirmed)
     # are spoken for — never re-suggest one to a second charge.
