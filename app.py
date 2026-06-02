@@ -17941,6 +17941,10 @@ def _do_boot_work():
         "ALTER TABLE catalog_item ADD COLUMN role_tag VARCHAR(80)",
         "ALTER TABLE catalog_item ADD COLUMN phase VARCHAR(20)",
         "ALTER TABLE budget_line ADD COLUMN catalog_item_id INTEGER REFERENCES catalog_item(id)",
+        # Server-side Dropbox bulk import (2026-06-02): batch tag on docs.
+        # doc_import_batch table itself is created by db.create_all() above;
+        # this adds the back-pointer column to the existing doc_upload table.
+        "ALTER TABLE doc_upload ADD COLUMN import_batch_id INTEGER REFERENCES doc_import_batch(id)",
     ]
     for _sql in _migrations:
         try:
@@ -17978,6 +17982,9 @@ def _do_boot_work():
         "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claimed_by_project_id INTEGER REFERENCES project_sheet(id)",
         "CREATE INDEX IF NOT EXISTS ix_transaction_claimed_by ON transaction (claimed_by_project_id)",
         "CREATE INDEX IF NOT EXISTS ix_transaction_qbo_txn_id ON transaction (qbo_txn_id, qbo_txn_type)",
+        # Server-side Dropbox bulk import batch tag (2026-06-02)
+        "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS import_batch_id INTEGER REFERENCES doc_import_batch(id)",
+        "CREATE INDEX IF NOT EXISTS ix_doc_upload_import_batch ON doc_upload (import_batch_id)",
     ]
     if _is_pg:
         try:

@@ -882,6 +882,15 @@ class DocUpload(db.Model):
     # So the pending-review state is (is_duplicate=True AND status!='duplicate').
     duplicate_of_id  = db.Column(db.Integer, db.ForeignKey("doc_upload.id"), nullable=True)
 
+    # Bulk-import batch tag (added 2026-06-02). When a doc enters via the
+    # server-side Dropbox importer (import_dropbox_batch.py) rather than a
+    # browser upload, this points at the DocImportBatch run it came from.
+    # NULL for ordinary interactive uploads. Lets the Docs UI group + filter
+    # everything that landed from one folder sweep, and — because those
+    # sweeps are flagged expect_duplicates — review the dup flags as a set.
+    import_batch_id  = db.Column(db.Integer, db.ForeignKey("doc_import_batch.id"),
+                                 nullable=True)
+
     # Mission-critical source archive (added 2026-04-30): every upload's
     # original bytes are persisted in Dropbox at _SOURCE_ARCHIVE/ and
     # this column points to that location. Even if filed_dropbox_path
@@ -920,6 +929,53 @@ class DocUpload(db.Model):
 
     uploader  = db.relationship("User",         foreign_keys=[uploader_id])
     project   = db.relationship("ProjectSheet", foreign_keys=[project_id])
+    import_batch = db.relationship("DocImportBatch", foreign_keys=[import_batch_id],
+                                   back_populates="uploads")
+
+
+class DocImportBatch(db.Model):
+    """One server-side bulk-import run of a Dropbox folder through the
+    document pipeline (import_dropbox_batch.py).
+
+    The interactive uploader is one-file-at-a-time and browser-initiated;
+    this is the batch counterpart. A row here is created up front, every
+    DocUpload the run produces points back at it via import_batch_id, and
+    the counters are tallied as the sweep progresses so the run is
+    resumable/auditable even if it dies partway.
+
+    `expect_duplicates` is the "this batch likely has many dups, we're
+    fishing for the missing ones" flag the operator sets per user
+    2026-06-02. It does NOT change pipeline behaviour — the existing
+    per-file hash dedup (is_duplicate / duplicate_of_id) still flags
+    byte-identical files for review rather than burying them — it just
+    records intent so the Docs UI can say "expected" next to the dup
+    count instead of alarming.
+    """
+    __tablename__ = "doc_import_batch"
+    id            = db.Column(db.Integer, primary_key=True)
+    project_id    = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
+    finished_at   = db.Column(db.DateTime, nullable=True)
+
+    label         = db.Column(db.String(200), nullable=True)   # human label for the run
+    source_path   = db.Column(db.String(600), nullable=True)   # Dropbox folder swept
+    expect_duplicates = db.Column(db.Boolean, default=True, nullable=False)
+    status        = db.Column(db.String(20), default='running')  # running | done | error
+
+    # Tallies, updated as the sweep runs.
+    total_files   = db.Column(db.Integer, default=0)   # candidate files found
+    processed     = db.Column(db.Integer, default=0)   # rows actually created
+    filed         = db.Column(db.Integer, default=0)   # status='done'
+    review        = db.Column(db.Integer, default=0)   # status='review'
+    duplicates    = db.Column(db.Integer, default=0)   # is_duplicate=True
+    errors        = db.Column(db.Integer, default=0)   # status='error'
+    skipped       = db.Column(db.Integer, default=0)   # non-doc files / filtered out
+
+    project   = db.relationship("ProjectSheet", foreign_keys=[project_id])
+    creator   = db.relationship("User",         foreign_keys=[created_by_user_id])
+    uploads   = db.relationship("DocUpload", foreign_keys="DocUpload.import_batch_id",
+                                back_populates="import_batch")
 
 
 class ActivityLog(db.Model):
