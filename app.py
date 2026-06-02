@@ -1125,6 +1125,102 @@ def admin_docs_wipe_project(pid):
     })
 
 
+@app.route("/admin/docs/project/<int:pid>/scan-audit", methods=["GET"])
+@login_required
+def admin_docs_scan_audit(pid):
+    """READ-ONLY: compare Dropbox files against DocUpload rows to find receipts
+    that never reached the DB (orphans), plus DocUpload health (status/category
+    breakdown, how many lack an amount, are duplicates, or are already linked).
+    ?q=<text> searches existing DocUploads (filename/vendor/amount). Helps
+    answer 'why isn't this receipt showing up?'. (User 2026-06-02.)"""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    project = ProjectSheet.query.get_or_404(pid)
+    q = (request.args.get('q') or '').strip().lower()
+    from collections import Counter as _Counter
+
+    ups = DocUpload.query.filter_by(project_id=pid).all()
+    linked_ids = {r[0] for r in db.session.query(Transaction.doc_upload_id)
+                  .filter(Transaction.project_id == pid,
+                          Transaction.doc_upload_id.isnot(None)).all() if r[0]}
+    by_status = _Counter((u.status or '?') for u in ups)
+    by_cat = _Counter((u.category or '?') for u in ups)
+    matches = []
+    if q:
+        for u in ups:
+            hay = ' '.join([str(u.original_filename or ''), str(u.filed_filename or ''),
+                            str(u.vendor or ''), str(u.amount or '')]).lower()
+            if q in hay:
+                matches.append({"id": u.id, "vendor": u.vendor,
+                                "amount": float(u.amount) if u.amount is not None else None,
+                                "date": u.doc_date.isoformat() if u.doc_date else None,
+                                "status": u.status, "category": u.category,
+                                "is_duplicate": bool(u.is_duplicate),
+                                "linked": (u.id in linked_ids),
+                                "filename": u.filed_filename or u.original_filename,
+                                "note": (u.note or '')[:70]})
+
+    orphans, scanned, dbx_err = [], 0, None
+    try:
+        from fp_analyzer import DOCUMENT_TYPES
+        dbx = _dbx_client()
+        proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
+                     else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+        subfolders = set(DOCUMENT_TYPES.values())
+        subfolders.add("01_ADMIN/RECEIPTS FOLDER")
+        existing_full, existing_names = set(), set()
+        for u in ups:
+            if u.filed_dropbox_path:
+                existing_full.add(u.filed_dropbox_path.lower())
+                existing_names.add(os.path.basename(u.filed_dropbox_path).lower())
+            for nm in (u.filed_filename, u.original_filename):
+                if nm:
+                    existing_names.add(nm.lower())
+        for sub in sorted(subfolders):
+            fp = f"{proj_root}/{sub}"
+            try:
+                res = dbx.files_list_folder(fp, recursive=True)
+            except Exception as _e:
+                continue
+            while True:
+                for entry in res.entries:
+                    if not hasattr(entry, 'size'):
+                        continue
+                    scanned += 1
+                    if (entry.path_display or '').lower() in existing_full:
+                        continue
+                    if (entry.name or '').lower() in existing_names:
+                        continue
+                    if '_duplicates' in (entry.path_display or '').lower() or '_trash' in (entry.path_display or '').lower():
+                        continue   # parked files aren't orphans
+                    if len(orphans) < 60:
+                        orphans.append({"filename": entry.name, "path": entry.path_display})
+                if not res.has_more:
+                    break
+                try:
+                    res = dbx.files_list_folder_continue(res.cursor)
+                except Exception:
+                    break
+    except Exception as _e:
+        dbx_err = str(_e)
+
+    return jsonify({
+        "project": project.name, "dropbox_folder": project.dropbox_folder,
+        "docupload_total": len(ups),
+        "by_status": dict(by_status), "by_category": dict(by_cat),
+        "null_amount": sum(1 for u in ups if u.amount is None),
+        "duplicates": sum(1 for u in ups if u.is_duplicate or u.status == 'duplicate'),
+        "linked_to_txn": len(linked_ids & {u.id for u in ups}),
+        "dropbox_files_scanned": scanned,
+        "orphan_count": len(orphans), "orphans_sample": orphans,
+        "search_q": q, "search_matches": matches, "dbx_error": dbx_err,
+    })
+
+
 @app.route("/admin/docs/project/<int:pid>/reconcile", methods=["POST"])
 @login_required
 def admin_docs_reconcile_project(pid):
