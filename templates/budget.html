@@ -5456,8 +5456,28 @@
         ⚡ Auto-Match
       </button>
       <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-sync-panel')">↻ Sync QBO</button>
+      <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-import-panel')">⬆ Import CSV</button>
       <button type="button" class="btn btn-sm btn-ghost" onclick="toggleActualsPanel('actuals-settings-panel')">⚙ Settings</button>
     </div>
+  </div>
+
+  {# ── Import bank/credit-card CSV panel (collapsible) ── #}
+  <div id="actuals-import-panel" style="display:none;margin-bottom:12px;padding:14px 16px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px">
+    <h4 style="margin:0 0 8px;font-size:.85rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em">Import bank / credit-card CSV</h4>
+    <p style="font-size:.78rem;color:var(--text-muted);margin:0 0 10px;line-height:1.5">
+      Upload a monthly bank or credit-card export (e.g. Chase). <strong>Charges</strong> import as expenses,
+      <strong>refunds</strong> as credits, and <strong>card-payment</strong> rows are skipped. The card last-4 is captured for sorting.
+      You'll see a preview before anything is saved, and re-importing an overlapping period won't create duplicates.
+    </p>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <input type="file" id="actuals-csv-file" accept=".csv,text/csv" style="font-size:.8rem">
+      <label style="font-size:.74rem;color:var(--text-muted);display:flex;align-items:center;gap:5px">
+        <input type="checkbox" id="actuals-csv-include-payments"> include card-payment rows
+      </label>
+      <button type="button" class="btn btn-sm btn-primary" onclick="actualsCsvPreview({{ project.id }})">Preview</button>
+      <span id="actuals-csv-status" class="muted" style="font-size:.78rem"></span>
+    </div>
+    <div id="actuals-csv-preview" style="display:none;margin-top:12px"></div>
   </div>
 
   {# ── Sync Panel (collapsible) ── #}
@@ -6323,6 +6343,83 @@
           }
         });
       }
+    };
+
+    // ── Bank/credit-card CSV import: preview then commit ──────────────
+    const _csvEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
+      c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const _csvFmt = n => '$' + Number(n || 0).toLocaleString(undefined,
+      {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+    window.actualsCsvPreview = async function (pid) {
+      const fileEl = document.getElementById('actuals-csv-file');
+      const status = document.getElementById('actuals-csv-status');
+      const out    = document.getElementById('actuals-csv-preview');
+      const incPay = document.getElementById('actuals-csv-include-payments');
+      if (!fileEl || !fileEl.files || !fileEl.files.length) {
+        if (status) { status.textContent = '✕ Choose a CSV file first.'; status.style.color = '#e08080'; }
+        return;
+      }
+      if (status) { status.textContent = 'Analyzing…'; status.style.color = 'var(--text-muted)'; }
+      const fd = new FormData(); fd.append('file', fileEl.files[0]);
+      const qs = (incPay && incPay.checked) ? '?include_payments=1' : '';
+      try {
+        const r = await fetch(`/projects/${pid}/actuals/import-bank-csv${qs}`, { method: 'POST', body: fd });
+        const d = await r.json();
+        if (!r.ok) {
+          if (status) { status.textContent = '✕ ' + (d.error || ('HTTP ' + r.status)); status.style.color = '#e05555'; }
+          if (out) out.style.display = 'none';
+          return;
+        }
+        if (status) status.textContent = '';
+        const byCard = Object.entries(d.by_card || {}).map(([k, v]) => `${_csvEsc(k)}: ${v}`).join(' · ') || '—';
+        const rows = (d.sample || []).map(s => `<tr>
+            <td style="padding:2px 8px">${_csvEsc(s.date)}</td>
+            <td style="padding:2px 8px">${_csvEsc(s.vendor)}</td>
+            <td style="padding:2px 8px;text-align:right;color:${s.expense ? 'var(--text)' : 'var(--green)'}">${s.expense ? '' : '+'}${_csvFmt(s.amount)}</td>
+            <td style="padding:2px 8px">${_csvEsc(s.card || '—')}</td>
+            <td style="padding:2px 8px;color:var(--text-muted)">${_csvEsc(s.note || '')}</td></tr>`).join('');
+        out.innerHTML = `
+          <div style="font-size:.8rem;line-height:1.6;margin-bottom:8px">
+            <strong style="color:var(--green)">${d.to_import}</strong> to import
+            (${d.charges} charges, ${d.credits} credits)
+            ${d.date_range ? `· <span class="muted">${_csvEsc(d.date_range[0])} → ${_csvEsc(d.date_range[1])}</span>` : ''}<br>
+            <span class="muted">Skipped: ${d.skipped_card_payments} card payments · ${d.skipped_duplicates} already imported · ${d.skipped_zero} zero${d.parse_error_count ? ` · <span style="color:#e0a040">${d.parse_error_count} unparseable</span>` : ''}</span><br>
+            <span class="muted">Cards: ${byCard}</span>
+          </div>
+          ${rows ? `<div style="max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:6px">
+            <table style="width:100%;border-collapse:collapse;font-size:.76rem">
+              <thead><tr style="position:sticky;top:0;background:var(--bg-card)">
+                <th style="padding:4px 8px;text-align:left">Date</th><th style="padding:4px 8px;text-align:left">Vendor</th>
+                <th style="padding:4px 8px;text-align:right">Amount</th><th style="padding:4px 8px;text-align:left">Card</th>
+                <th style="padding:4px 8px;text-align:left">Category</th></tr></thead>
+              <tbody>${rows}</tbody></table>
+            </div><div class="muted" style="font-size:.72rem;margin-top:4px">Showing first ${(d.sample || []).length} of ${d.to_import}.</div>` : ''}
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+            <button type="button" class="btn btn-sm btn-primary" ${d.to_import ? '' : 'disabled'} onclick="actualsCsvCommit(${pid})">✓ Import ${d.to_import} transactions</button>
+            <span id="actuals-csv-commit-status" class="muted" style="font-size:.78rem"></span>
+          </div>`;
+        out.style.display = '';
+      } catch (e) {
+        if (status) { status.textContent = '✕ ' + e.message; status.style.color = '#e05555'; }
+      }
+    };
+
+    window.actualsCsvCommit = async function (pid) {
+      const fileEl = document.getElementById('actuals-csv-file');
+      const incPay = document.getElementById('actuals-csv-include-payments');
+      const cs     = document.getElementById('actuals-csv-commit-status');
+      if (!fileEl || !fileEl.files || !fileEl.files.length) return;
+      if (cs) { cs.textContent = 'Importing…'; cs.style.color = 'var(--text-muted)'; }
+      const fd = new FormData(); fd.append('file', fileEl.files[0]);
+      const qs = '?apply=1' + ((incPay && incPay.checked) ? '&include_payments=1' : '');
+      try {
+        const r = await fetch(`/projects/${pid}/actuals/import-bank-csv${qs}`, { method: 'POST', body: fd });
+        const d = await r.json();
+        if (!r.ok) { if (cs) { cs.textContent = '✕ ' + (d.error || ('HTTP ' + r.status)); cs.style.color = '#e05555'; } return; }
+        if (cs) { cs.textContent = `✓ Imported ${d.created || 0}. Reloading…`; cs.style.color = 'var(--green)'; }
+        setTimeout(() => location.reload(), 900);
+      } catch (e) { if (cs) { cs.textContent = '✕ ' + e.message; cs.style.color = '#e05555'; } }
     };
 
     // ── Per-project QBO account picker ────────────────────────────────
