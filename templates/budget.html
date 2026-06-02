@@ -5601,7 +5601,7 @@
      without a paper trail in QBO. #}
   {% set _t_need_rcpt = [] %}
   {% for _t in _t_actionable %}
-    {% if (_t.source in ('qbo_sync', 'reconciled')) and not _t.doc_upload_id and not _t.not_project_expense %}
+    {% if (_t.source in ('qbo_sync', 'reconciled', 'csv_import')) and not _t.doc_upload_id and not _t.not_project_expense %}
       {% set _ = _t_need_rcpt.append(_t) %}
     {% endif %}
   {% endfor %}
@@ -5980,6 +5980,7 @@
                   title="Source: {{ t.source or 'unknown' }}">
               {% if t.source == 'doc_upload' %}📄
               {% elif t.source == 'qbo_sync' %}🏦
+              {% elif t.source == 'csv_import' %}🏦
               {% elif t.source == 'reconciled' %}🔗
               {% elif t.source == 'manual_entry' %}✏️
               {% elif t.source == 'invoice_split' %}↳
@@ -6033,7 +6034,7 @@
                            border-radius:4px;color:#5b8af9;cursor:pointer">
               📎 Add Receipt
             </button>
-            {% if t.source in ('qbo_sync', 'reconciled') %}
+            {% if t.source in ('qbo_sync', 'reconciled', 'csv_import') %}
             <span title="Electronic transaction without a receipt — flagged for follow-up"
                   style="flex-shrink:0;font-size:.6rem;color:#e08080;font-style:italic">⚠ no receipt</span>
             {% endif %}
@@ -6562,9 +6563,9 @@
         if (codedRow) coded++; else uncoded++;
         // Need-receipt flag: electronic-only. Cash / off-system / manual
         // rows are valid without a paper trail.
-        if (!hasDoc && (src === 'qbo_sync' || src === 'reconciled')) needRcpt++;
+        if (!hasDoc && (src === 'qbo_sync' || src === 'reconciled' || src === 'csv_import')) needRcpt++;
         if (src === 'doc_upload')   docOnly++;
-        if (src === 'qbo_sync')     qboCnt++;
+        if (src === 'qbo_sync' || src === 'csv_import') qboCnt++;
         if (src === 'manual_entry') manCnt++;
       });
       const setN = (filt, n) => {
@@ -6925,7 +6926,7 @@
         if (f === 'coded')         pass = r.dataset.coded === '1';
         else if (f === 'uncoded')  pass = r.dataset.coded === '0' && r.dataset.notProject !== '1';
         else if (f === 'no_doc')   pass = r.dataset.hasDoc === '0' && r.dataset.notProject !== '1'
-                                          && (r.dataset.source === 'qbo_sync' || r.dataset.source === 'reconciled');
+                                          && (r.dataset.source === 'qbo_sync' || r.dataset.source === 'reconciled' || r.dataset.source === 'csv_import');
         else if (f === 'doc_only') pass = r.dataset.source === 'doc_upload';
         else if (f === 'finished') {
           // Audit-clean: coded + has receipt + confirmed.

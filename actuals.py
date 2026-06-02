@@ -591,11 +591,15 @@ def run_auto_match(project_id):
     Returns summary dict.
     """
     import datetime as _dt
+    # Electronic bank-feed rows that want a receipt: QBO pulls AND bank/
+    # credit-card CSV imports. (Previously qbo_sync only, so CSV-imported
+    # charges never got matched to receipts — user 2026-06-02.)
     qbo_unmatched = (Transaction.query
-                     .filter_by(project_id=project_id, source='qbo_sync',
-                                match_status='unmatched',
-                                doc_upload_id=None,
-                                not_project_expense=False)
+                     .filter(Transaction.project_id == project_id,
+                             Transaction.source.in_(('qbo_sync', 'csv_import')),
+                             Transaction.match_status == 'unmatched',
+                             Transaction.doc_upload_id.is_(None),
+                             Transaction.not_project_expense == False)
                      .all())
     doc_open = (Transaction.query
                 .filter_by(project_id=project_id, source='doc_upload',
