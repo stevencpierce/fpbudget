@@ -1221,7 +1221,7 @@ def admin_docs_scan_audit(pid):
         # enumerated subfolder set, which MISSED receipts filed under person
         # folders (PROCESSED DOCUMENTS/<name>/) and any other location, so they
         # were never imported or even flagged as orphans. (User 2026-06-02.)
-        res = dbx.files_list_folder(proj_root, recursive=True)
+        res = dbx.files_list_folder(proj_root + "/01_ADMIN/PROCESSED DOCUMENTS", recursive=True)
         while True:
             for entry in res.entries:
                 if not hasattr(entry, 'size'):
@@ -1301,7 +1301,7 @@ def admin_docs_import_missing(pid):
 
     created, scanned, errors, sample, batch = 0, 0, [], [], 0
     try:
-        res = dbx.files_list_folder(proj_root, recursive=True)
+        res = dbx.files_list_folder(proj_root + "/01_ADMIN/PROCESSED DOCUMENTS", recursive=True)
     except Exception as e:
         return jsonify({"error": "list failed", "detail": type(e).__name__}), 500
     while True:
@@ -1542,7 +1542,7 @@ def admin_docs_reconcile_project(pid):
     # receipt is immediately matchable (not a blank row). Skip trash, parked
     # duplicates, and the pre-processing _SOURCE_ARCHIVE copy. (User 2026-06-02.)
     try:
-        res = dbx.files_list_folder(proj_root, recursive=True)
+        res = dbx.files_list_folder(proj_root + "/01_ADMIN/PROCESSED DOCUMENTS", recursive=True)
     except Exception as _le:
         return jsonify({"error": f"list {proj_root}: {_le}"}), 500
     while True:
