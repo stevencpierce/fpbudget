@@ -7094,6 +7094,60 @@ def actuals_automatch_trace(pid):
     from actuals import _vendor_similarity
     sub = (request.args.get('vendor') or 'airbnb').strip().lower()
 
+    # ?analyze=1 — window-sensitivity: how many MORE unmatched electronic rows
+    # would match (exact amount + vendor>=0.45) if the ±3-day window widened.
+    if request.args.get('analyze') == '1':
+        elec = (Transaction.query
+                .filter(Transaction.project_id == pid,
+                        Transaction.source.in_(('qbo_sync', 'csv_import')),
+                        Transaction.match_status == 'unmatched',
+                        Transaction.doc_upload_id.is_(None),
+                        Transaction.not_project_expense == False).all())
+        docs = (Transaction.query
+                .filter_by(project_id=pid, source='doc_upload',
+                           not_project_expense=False).all())
+        doc_by_amt = {}
+        for d in docs:
+            if d.amount is None:
+                continue
+            doc_by_amt.setdefault(round(float(d.amount), 2), []).append(d)
+        buckets = {"<=3": 0, "4-7": 0, "8-14": 0, "15-30": 0, ">30": 0, "no_amt_doc": 0, "amt_doc_low_vendor": 0}
+        examples = []
+        for q in elec:
+            if q.amount is None or not q.txn_date:
+                continue
+            try:
+                q_dt = _dt.date.fromisoformat(q.txn_date[:10])
+            except (TypeError, ValueError):
+                continue
+            cands = doc_by_amt.get(round(float(q.amount), 2), [])
+            if not cands:
+                buckets["no_amt_doc"] += 1
+                continue
+            best_gap, best_d = None, None
+            for d in cands:
+                if _vendor_similarity(q.vendor, d.vendor) < 0.45:
+                    continue
+                try:
+                    g = abs((_dt.date.fromisoformat((d.txn_date or '')[:10]) - q_dt).days)
+                except (TypeError, ValueError):
+                    continue
+                if best_gap is None or g < best_gap:
+                    best_gap, best_d = g, d
+            if best_gap is None:
+                buckets["amt_doc_low_vendor"] += 1
+                continue
+            b = ("<=3" if best_gap <= 3 else "4-7" if best_gap <= 7
+                 else "8-14" if best_gap <= 14 else "15-30" if best_gap <= 30 else ">30")
+            buckets[b] += 1
+            if b in ("4-7", "8-14") and len(examples) < 12:
+                examples.append({"q": f"{q.txn_date} {q.vendor} ${float(q.amount)}",
+                                 "doc": f"{best_d.txn_date} {best_d.vendor}", "gap": best_gap})
+        return jsonify({"unmatched_electronic": len(elec), "open_docs": len(docs),
+                        "would_match_within": buckets,
+                        "note": "buckets count rows whose nearest exact-amount, vendor>=0.45 receipt falls in that day-gap range",
+                        "examples_4_to_14_days": examples})
+
     def _match(t):
         return sub in (t.vendor or '').lower()
 
