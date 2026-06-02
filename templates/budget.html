@@ -6008,16 +6008,19 @@
           {% set _doc = docs_by_id.get(t.doc_upload_id) if t.doc_upload_id else None %}
           {% set _coded = (t.budget_line_id is not none) or (t.account_code is not none) %}
           {% set _has_doc = (t.doc_upload_id is not none) or (t.source == 'doc_upload') %}
-          {# Suggested-match banner — shown above the row when the
-             auto-matcher proposes a pairing. User confirms or
-             dismisses before the merge becomes permanent. #}
-          {% if t.match_status == 'suggested' and t.doc_upload_id %}
+          {% set _is_sugg = (t.match_status == 'suggested' and t.doc_upload_id) %}
+          {# Suggested-match banner — the gold HEADER of the suggestion card; the
+             transaction row below is its body. They connect (no gap, banner has
+             no bottom border, row has no top border) so the pair reads as one
+             unit. (User 2026-06-02.) #}
+          {% if _is_sugg %}
           {% set _conf = (t.match_confidence or 0) | float %}
           <div class="actuals-suggested-banner" data-tid="{{ t.id }}"
                data-confidence="{{ _conf }}" data-doc-id="{{ t.doc_upload_id }}"
                data-doc-img="{{ '1' if (_doc and _doc.content_type and _doc.content_type.startswith('image/')) else '0' }}"
-               style="display:flex;align-items:center;gap:10px;padding:8px 12px;margin-bottom:4px;
-                      background:#2a2414;border:1px solid #4a3a1a;border-radius:6px 6px 0 0">
+               style="display:flex;align-items:center;gap:10px;padding:8px 12px;margin:10px 0 0;
+                      background:#2a2414;border:1px solid #4a3a1a;border-bottom:none;border-radius:8px 8px 0 0;
+                      border-left:3px solid #f0c060">
             <span class="recpt-thumb" onclick="actualsReviewOneByOne({{ t.id }});return false"
                   title="Open side-by-side: this charge + the receipt, to confirm"
                   style="flex-shrink:0;width:34px;height:34px;border-radius:4px;background:#1a1408;
@@ -6063,9 +6066,9 @@
                data-not-project="{{ '1' if t.not_project_expense else '0' }}"
                data-claimed-elsewhere="{{ '1' if _claimed_elsewhere else '0' }}"
                style="display:flex;align-items:center;gap:8px;padding:7px 10px;margin-bottom:4px;
-                      border:1px solid {% if _claimed_elsewhere %}#4a3a2a{% elif t.not_project_expense %}#3a2a2a{% elif _coded %}#1a3a2a{% else %}var(--border){% endif %};
-                      border-radius:6px;
-                      background:{% if _claimed_elsewhere %}#1a1610{% elif t.not_project_expense %}#150d0d{% elif _coded %}#0d1a14{% else %}var(--bg-card){% endif %};
+                      border:1px solid {% if _is_sugg %}#4a3a1a{% elif _claimed_elsewhere %}#4a3a2a{% elif t.not_project_expense %}#3a2a2a{% elif _coded %}#1a3a2a{% else %}var(--border){% endif %};
+                      {% if _is_sugg %}border-top:none;border-left:3px solid #f0c060;border-radius:0 0 8px 8px;{% else %}border-radius:6px;{% endif %}
+                      background:{% if _is_sugg %}#1e1b12{% elif _claimed_elsewhere %}#1a1610{% elif t.not_project_expense %}#150d0d{% elif _coded %}#0d1a14{% else %}var(--bg-card){% endif %};
                       {% if _claimed_elsewhere or t.not_project_expense %}opacity:.55{% endif %}">
             {% if _claimed_elsewhere %}
             <span title="Admin-only view: this electronic transaction is owned by another project's budget. Non-admins don't see this row."
