@@ -3774,24 +3774,6 @@ def budget_audit_json(pid, bid):
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     from budget_calc import _effective_days
 
-    # Standing rule: the Actual budget always mirrors Working's line structure.
-    # Before rendering the Actual view, additively create a mirror for any
-    # Working line that lacks one — so a line just added in Working immediately
-    # appears here and an actualized expense can be dragged onto it. Additive
-    # only (never deletes/edits); cheap no-op when nothing's missing.
-    # (User 2026-06-02.)
-    if budget.is_actual:
-        try:
-            from actuals import ensure_actual_mirrors
-            _proj_budgets = Budget.query.filter_by(project_id=pid).all()
-            _wbid = next((b.id for b in _proj_budgets
-                          if _budget_type(b.budget_mode) == 'working'
-                          and not b.is_actual and b.version_status == 'current'), None)
-            ensure_actual_mirrors(pid, working_bid=_wbid, actual_bid=bid)
-        except Exception as _eam:
-            logging.warning(f"[budget_view] ensure_actual_mirrors failed: {_eam}")
-            db.session.rollback()
-
     TOL = 0.01
 
     def _f(x):
@@ -4222,6 +4204,24 @@ def budget_view(pid, bid):
     except Exception as _heal_e:
         app.logger.warning(f"[budget_view] unbudgeted self-heal failed: {_heal_e}")
         db.session.rollback()
+
+    # Standing rule: the Actual budget always mirrors Working's line structure.
+    # When viewing the Actual budget, additively create a mirror for any Working
+    # line lacking one (so a line just added in Working appears here and an
+    # actualized expense can be dragged onto it). Runs BEFORE the lines query so
+    # new mirrors render this load. Additive only; cheap no-op when in sync.
+    # (User 2026-06-02.)
+    _this_budget = next((b for b in all_budgets if b.id == bid), None)
+    if _this_budget and _this_budget.is_actual:
+        try:
+            from actuals import ensure_actual_mirrors
+            _wbid = next((b.id for b in all_budgets
+                          if _budget_type(b.budget_mode) == 'working'
+                          and not b.is_actual and b.version_status == 'current'), None)
+            ensure_actual_mirrors(pid, working_bid=_wbid, actual_bid=bid)
+        except Exception as _eam:
+            app.logger.warning(f"[budget_view] ensure_actual_mirrors failed: {_eam}")
+            db.session.rollback()
 
     lines = BudgetLine.query.filter_by(budget_id=bid).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
