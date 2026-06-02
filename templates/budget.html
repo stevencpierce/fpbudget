@@ -6448,16 +6448,16 @@
   <div id="matchReviewOverlay" style="display:none;position:fixed;inset:0;z-index:10000;
        background:rgba(0,0,0,.82);align-items:center;justify-content:center;padding:24px">
     <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;
-                width:min(980px,97vw);max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.55)">
+                width:min(1400px,98vw);height:95vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.55)">
       <div style="display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border)">
         <h3 style="margin:0;font-size:1rem">⚡ Confirm match</h3>
         <span id="mrProgress" style="font-size:.78rem;color:var(--text-muted)"></span>
         <span id="mrConf"></span>
         <button type="button" onclick="actualsMRClose()" style="margin-left:auto;background:none;border:none;color:var(--text-muted);font-size:20px;cursor:pointer">✕</button>
       </div>
-      <div style="flex:1;overflow:auto;padding:16px 18px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
-        <div id="mrTxn" style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg-input)"></div>
-        <div id="mrDoc" style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--bg-card);display:flex;flex-direction:column;gap:8px;min-height:340px"></div>
+      <div style="flex:1;min-height:0;overflow:hidden;padding:16px 18px;display:grid;grid-template-columns:300px 1fr;grid-template-rows:minmax(0,1fr);gap:16px">
+        <div id="mrTxn" style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg-input);overflow:auto;min-height:0"></div>
+        <div id="mrDoc" style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--bg-card);display:flex;flex-direction:column;gap:8px;min-height:0;overflow:hidden"></div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--border)">
         <button type="button" class="btn btn-sm" onclick="actualsMRStep(-1)">← Prev</button>
@@ -7417,8 +7417,8 @@
         const meta = await (await fetch('/docs/upload/' + q.docId + '/meta')).json();
         const src = '/docs/upload/' + q.docId + '/raw';
         const preview = meta.is_pdf
-          ? '<iframe src="' + src + '#zoom=page-width" style="width:100%;flex:1;min-height:240px;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
-          : '<img src="' + src + '" style="width:100%;flex:1;min-height:240px;object-fit:contain;border:1px solid var(--border);border-radius:6px;background:#0a0d12">';
+          ? '<iframe src="' + src + '#zoom=page-width" style="width:100%;flex:1;min-height:0;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
+          : '<img src="' + src + '" style="width:100%;flex:1;min-height:0;object-fit:contain;border:1px solid var(--border);border-radius:6px;background:#0a0d12">';
         docEl.innerHTML =
           '<div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:#f0c060">🧾 Receipt</div>'
           + preview
