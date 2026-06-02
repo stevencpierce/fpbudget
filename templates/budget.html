@@ -5519,6 +5519,44 @@
    commit): structure + click-to-code + Sync button. Slice 2 adds
    drag-drop and modals. #}
 <div class="tab-panel" id="tab-actuals">
+  {# ── "Growing item" visual state (user 2026-06-02) ──
+     Each actuals item is a receipt/invoice working toward three matches:
+     a document, an electronic transaction (confirmed), and a budget line —
+     the "three boxes." As each box is crossed off the row grows physically
+     larger, so a glance up the list shows how far along everything is. The
+     ladder is driven by data-fulfill (0..3), which is rendered server-side
+     and kept in sync client-side by the MutationObserver near the actuals
+     init (it watches the existing data-coded / data-has-doc /
+     data-match-status attrs, so every match action animates the growth for
+     free). Color coordination / re-stacking by progress is intentionally
+     left for a later pass. #}
+  <style>
+    #tab-actuals .actuals-txn-row{
+      transition: padding .2s ease, min-height .2s ease,
+                  box-shadow .2s ease, border-left-color .2s ease;
+    }
+    /* data-fulfill=0 is the compact baseline (the row's own inline padding).
+       Each step up bumps padding + min-height so the item literally grows. */
+    #tab-actuals .actuals-txn-row[data-fulfill="1"]{ padding:10px 11px !important; min-height:40px; }
+    #tab-actuals .actuals-txn-row[data-fulfill="2"]{ padding:13px 13px !important; min-height:50px;
+                                                      box-shadow:0 3px 12px -7px rgba(0,0,0,.5); }
+    #tab-actuals .actuals-txn-row[data-fulfill="3"]{ padding:17px 15px !important; min-height:62px;
+                                                      box-shadow:0 5px 18px -8px rgba(116,198,157,.40); }
+    /* Key text scales up with the box so the most-complete items read big. */
+    #tab-actuals .actuals-txn-row[data-fulfill="2"] .actuals-txn-vendor{ font-size:.9rem; }
+    #tab-actuals .actuals-txn-row[data-fulfill="3"] .actuals-txn-vendor{ font-size:1rem; }
+    #tab-actuals .actuals-txn-row[data-fulfill="3"] .actuals-txn-amt{ font-size:.95rem; }
+    /* Three-box "legs" indicator: receipt · electronic match · budget line. */
+    #tab-actuals .actuals-legs{ flex-shrink:0; display:inline-flex; gap:3px; align-items:center; }
+    #tab-actuals .actuals-legs .leg{
+      width:7px; height:7px; border-radius:2px;
+      border:1px solid var(--border); background:transparent;
+      transition: background .2s ease, border-color .2s ease, width .2s ease, height .2s ease;
+    }
+    #tab-actuals .actuals-legs .leg.on{ background:#74c69d; border-color:#74c69d; }
+    #tab-actuals .actuals-txn-row[data-fulfill="2"] .actuals-legs .leg,
+    #tab-actuals .actuals-txn-row[data-fulfill="3"] .actuals-legs .leg{ width:8px; height:8px; }
+  </style>
   {# ── Header bar with action buttons ── #}
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:8px">
     <div>
@@ -6086,11 +6124,18 @@
              never see the row at all (filtered server-side). #}
           {% set _claimed_elsewhere = (t.claimed_by_project_id is not none and t.claimed_by_project_id != project.id) %}
           {% set _claimer_name = actuals_claimed_project_names.get(t.claimed_by_project_id, '') if _claimed_elsewhere else '' %}
+          {# Three "boxes" crossed off: a document, a confirmed electronic
+             match, and a budget-line code. Drives the growing-row ladder.
+             Excluded rows (not-a-project / claimed elsewhere) stay compact. #}
+          {% set _confirmed = (t.match_status == 'confirmed') %}
+          {% set _legs = (1 if _has_doc else 0) + (1 if _confirmed else 0) + (1 if _coded else 0) %}
+          {% set _fulfill = 0 if (t.not_project_expense or _claimed_elsewhere) else _legs %}
           <div class="actuals-txn-row" draggable="true"
                data-tid="{{ t.id }}"
                data-source="{{ t.source or '' }}"
                data-coded="{{ '1' if _coded else '0' }}"
                data-has-doc="{{ '1' if _has_doc else '0' }}"
+               data-fulfill="{{ _fulfill }}"
                data-match-status="{{ t.match_status or 'unmatched' }}"
                data-txn-date="{{ t.txn_date or '' }}"
                data-amount="{{ t.amount or 0 }}"
@@ -6120,6 +6165,14 @@
               {% elif t.source == 'manual_entry' %}✏️
               {% elif t.source == 'invoice_split' %}↳
               {% else %}❓{% endif %}
+            </span>
+            {# Three-box progress: receipt · electronic match · budget line.
+               Filled pips mirror the row's data-fulfill growth. #}
+            <span class="actuals-legs"
+                  title="Matching progress — receipt · electronic match · budget line">
+              <i class="leg{{ ' on' if _has_doc else '' }}"></i>
+              <i class="leg{{ ' on' if _confirmed else '' }}"></i>
+              <i class="leg{{ ' on' if _coded else '' }}"></i>
             </span>
             <span style="flex-shrink:0;font-size:.72rem;color:var(--text-muted);min-width:80px">
               {{ t.txn_date or '—' }}
@@ -6221,7 +6274,8 @@
                     style="flex-shrink:0;width:240px;font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px">
               <option value="">— pick budget line —</option>
             </select>
-            <span style="flex-shrink:0;font-size:.85rem;font-weight:700;min-width:80px;text-align:right;
+            <span class="actuals-txn-amt"
+                  style="flex-shrink:0;font-size:.85rem;font-weight:700;min-width:80px;text-align:right;
                          color:{% if t.is_expense %}#e05555{% else %}var(--green){% endif %}">
               {% if t.is_expense %}−{% else %}+{% endif %}{{ (t.amount or 0) | currency }}
             </span>
@@ -8173,6 +8227,46 @@
       if (el) el.addEventListener('input', _actualsResolveFilters);
       if (el) el.addEventListener('change', _actualsResolveFilters);
     });
+
+    // ── "Growing item" state (user 2026-06-02) ───────────────────────
+    // Each row works toward three matches — a document, a confirmed
+    // electronic transaction, and a budget line. Derive data-fulfill
+    // (0..3) from the existing match-state attrs so the row grows a step
+    // per box crossed off (see the ladder <style> in #tab-actuals). A
+    // MutationObserver recomputes it whenever any of those attrs change,
+    // so every existing match/unmatch/code action animates for free —
+    // no need to touch the ~30 sites that mutate those attributes.
+    function _actualsComputeFulfill(row) {
+      if (!row || !row.dataset) return;
+      const hasDoc    = row.dataset.hasDoc === '1';
+      const confirmed = row.dataset.matchStatus === 'confirmed';
+      const coded     = row.dataset.coded === '1';
+      const excluded  = row.dataset.notProject === '1' || row.dataset.claimedElsewhere === '1';
+      const n = excluded ? 0 : ((hasDoc ? 1 : 0) + (confirmed ? 1 : 0) + (coded ? 1 : 0));
+      row.dataset.fulfill = String(n);
+      const pips = row.querySelectorAll('.actuals-legs .leg');
+      if (pips[0]) pips[0].classList.toggle('on', hasDoc);
+      if (pips[1]) pips[1].classList.toggle('on', confirmed);
+      if (pips[2]) pips[2].classList.toggle('on', coded);
+    }
+    (function () {
+      const list = document.getElementById('actuals-txn-list');
+      if (!list) return;
+      list.querySelectorAll('.actuals-txn-row').forEach(_actualsComputeFulfill);
+      const obs = new MutationObserver(muts => {
+        const seen = new Set();
+        muts.forEach(m => {
+          const row = m.target.closest && m.target.closest('.actuals-txn-row');
+          if (row && !seen.has(row)) { seen.add(row); _actualsComputeFulfill(row); }
+        });
+      });
+      obs.observe(list, {
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['data-coded', 'data-has-doc', 'data-match-status',
+                          'data-not-project', 'data-claimed-elsewhere'],
+      });
+    })();
 
     // ── Hover preview on doc badges ───────────────────────────────────
     // Float a small thumbnail next to the badge while hovering. Image
