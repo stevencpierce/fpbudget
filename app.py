@@ -7635,9 +7635,9 @@ def actuals_code_suggested_bulk(pid):
     body = request.get_json(silent=True) or {}
     apply = (request.args.get('apply') == '1') or bool(body.get('apply'))
     try:
-        min_score = int(body.get('min_score') or 2)
+        min_score = int(body.get('min_score') or 1)
     except (TypeError, ValueError):
-        min_score = 2
+        min_score = 1
     sugg = _actuals_vendor_suggestions(pid)
     targets = [(tid, s) for tid, s in sugg.items() if int(s.get('score', 0)) >= min_score]
     if not apply:

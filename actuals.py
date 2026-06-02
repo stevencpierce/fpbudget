@@ -518,7 +518,15 @@ def ensure_actual_mirrors(project_id):
     line added in Working immediately appears in Actual (and an actualized
     expense can be dragged onto it). Returns the count created. (User 2026-06-02.)"""
     actual = get_current_actual_budget(project_id)
-    working = get_current_working_budget(project_id)
+    # Resolve Working by budget_mode first (matches how the rest of the app /
+    # the audit pick it) — get_current_working_budget requires parent_budget_id,
+    # which some working budgets lack, so it could miss the real one. Fallback
+    # to the parent-based resolver. (User 2026-06-02.)
+    working = (Budget.query
+               .filter_by(project_id=project_id, is_actual=False,
+                          version_status='current', budget_mode='working')
+               .order_by(Budget.id.desc()).first()
+               or get_current_working_budget(project_id))
     if not actual or not working:
         return 0
     have = {l.source_line_id for l in actual.lines if l.source_line_id is not None}
