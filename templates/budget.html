@@ -6275,8 +6275,8 @@
   <div id="actuals-pane-reconcile" class="actuals-pane" style="display:none">
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;flex-wrap:wrap">
       <div style="font-size:.8rem;color:var(--text-muted)">
-        Drag a receipt onto a transaction to pair them. One receipt can be dropped on multiple transactions
-        (think Lyft week rollups). Smart matches — same amount + within 7 days — glow green.
+        <strong style="color:#74c69d">Click a charge</strong> on the left to instantly shortlist its likely receipts (ranked by amount, then date — works even with no vendor), then click one to pair.
+        Or drag a receipt onto a charge. Smart matches glow green.
       </div>
       <button type="button" class="btn btn-xs" id="reconcile-refresh"
               style="margin-left:auto;font-size:.72rem;padding:3px 9px"
@@ -7456,8 +7456,95 @@
               }
             });
           }
+          // Click a CHARGE → shortlist its likely receipts (user 2026-06-02).
+          if (card.classList.contains('reconcile-txn-card')) {
+            card.addEventListener('click', e => {
+              if (card.style.opacity === '.4') return;   // mid-drag
+              window._recSelectTxn(card.dataset.txnId);
+            });
+          }
         });
       }
+
+      // ── Click-to-shortlist: pick a charge → rank its likely receipts ──
+      let _recSelTxn = null;
+      function _vsim(a, b) {
+        a = (a || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').trim();
+        b = (b || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').trim();
+        if (!a || !b) return 0;
+        if (a === b) return 1;
+        if (a.includes(b) || b.includes(a)) return 0.85;
+        const at = new Set(a.split(/\s+/)), bt = new Set(b.split(/\s+/));
+        const inter = [...at].filter(x => bt.has(x)).length;
+        const uni = new Set([...at, ...bt]).size;
+        return uni ? inter / uni : 0;
+      }
+      function _recScore(t, d) {
+        const ta = t.amount == null ? null : Math.abs(t.amount);
+        const da = d.amount == null ? null : Math.abs(d.amount);
+        const exact = ta != null && da != null && Math.abs(da - ta) <= 0.01;
+        let s = 0;
+        if (exact) s += 0.5;
+        else if (ta && da && Math.abs(da - ta) <= Math.max(1, ta * 0.02)) s += 0.2;
+        const v = _vsim(t.vendor, d.vendor); s += 0.3 * v;
+        let gap = null;
+        if (t.txn_date && d.doc_date) { gap = Math.abs((new Date(t.txn_date) - new Date(d.doc_date)) / 86400000); s += 0.2 * Math.max(0, 1 - gap / 14); }
+        return { score: s, exact, gap: gap == null ? null : Math.round(gap), v };
+      }
+      window._recSelectTxn = function (txnId) {
+        const t = _recState.txns.find(x => String(x.id) === String(txnId));
+        if (!t) return;
+        _recSelTxn = t;
+        document.querySelectorAll('.reconcile-txn-card').forEach(c => {
+          c.style.boxShadow = (String(c.dataset.txnId) === String(txnId)) ? 'inset 0 0 0 2px #22c55e' : '';
+        });
+        const docCol = document.getElementById('reconcile-doc-col');
+        if (!docCol) return;
+        const ranked = _recState.docs.map(d => ({ d, ...(_recScore(t, d)) })).sort((a, b) => b.score - a.score);
+        const head = '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;margin-bottom:6px;'
+          + 'background:#13251a;border:1px solid #2a5a3a;border-radius:6px;font-size:.74rem">'
+          + '<span style="color:#74c69d">Receipts likely matching <strong>' + _esc(t.vendor || 'this charge') + '</strong> · ' + _fmt$(t.amount) + '</span>'
+          + '<button type="button" onclick="_recClearSel()" style="margin-left:auto;font-size:.7rem;padding:2px 8px;background:none;border:1px solid #2a5a3a;border-radius:4px;color:#74c69d;cursor:pointer">✕ Clear</button></div>';
+        const cards = ranked.slice(0, 25).map(({ d, score, exact, gap, v }) => {
+          const badges = [];
+          if (exact) badges.push('<span style="color:#74c69d">✓ exact $</span>');
+          if (gap != null) badges.push('<span style="color:#bba070">' + gap + 'd</span>');
+          if (v >= 0.45) badges.push('<span style="color:#7ba6e8">' + Math.round(v * 100) + '%</span>');
+          const strong = score >= 0.5;
+          const bd = strong ? '#2a5a3a' : 'var(--border)';
+          return '<div onclick="_recLinkSel(' + d.id + ')" '
+            + 'style="padding:8px 10px;margin-bottom:6px;background:var(--bg-input);border:1px solid ' + bd + ';border-radius:6px;cursor:pointer" '
+            + 'onmouseover="this.style.borderColor=\'#22c55e\'" onmouseout="this.style.borderColor=\'' + bd + '\'">'
+            + '<div style="display:flex;align-items:baseline;gap:8px"><span style="font-weight:600;font-size:13px">📄 ' + _esc(d.vendor || d.filename || 'Receipt') + '</span>'
+            + '<span style="margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums">' + _fmt$(d.amount) + '</span></div>'
+            + '<div style="display:flex;gap:8px;margin-top:3px;font-size:11px;color:var(--text-muted)"><span>' + _fmtDate(d.doc_date) + '</span>'
+            + '<span style="margin-left:auto">' + badges.join(' · ') + '</span></div>'
+            + '<div style="font-size:10.5px;color:var(--text-muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📎 ' + _esc(d.filename) + '</div></div>';
+        }).join('');
+        docCol.innerHTML = head + (cards || '<div style="color:var(--text-muted);padding:1rem;font-style:italic;font-size:.82rem">No receipts to suggest.</div>');
+        const dc = document.getElementById('reconcile-doc-count'); if (dc) dc.textContent = ranked.length;
+      };
+      window._recClearSel = function () {
+        _recSelTxn = null;
+        document.querySelectorAll('.reconcile-txn-card').forEach(c => c.style.boxShadow = '');
+        _applyFilters();
+      };
+      window._recLinkSel = async function (docId) {
+        if (!_recSelTxn) return;
+        const txnId = _recSelTxn.id, vend = _recSelTxn.vendor || 'charge';
+        try {
+          const r = await fetch('/projects/' + PID + '/actuals/transaction/' + txnId + '/link-doc', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ doc_upload_id: parseInt(docId) }) });
+          const j = await r.json();
+          if (!r.ok) { if (typeof _actualsToast === 'function') _actualsToast(j.error || 'Link failed', 'red'); return; }
+          if (typeof _actualsToast === 'function') _actualsToast('Linked ↔ ' + vend, 'green');
+          _recState.txns = _recState.txns.filter(t => String(t.id) !== String(txnId));
+          _recState.docs = _recState.docs.filter(d => String(d.id) !== String(docId));
+          _recSelTxn = null;
+          _applyFilters();
+        } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Link failed: ' + e.message, 'red'); }
+      };
       window._reconcileRender = async function() {
         try {
           const r = await fetch(`/projects/${PID}/actuals/reconcile.json`);
