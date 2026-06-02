@@ -7160,9 +7160,6 @@
     // of the rows, so we move both together.
     function _actualsApplySort() {
       const sortBy = (document.getElementById('actuals-sort-by') || {}).value || 'date-desc';
-      const list = document.getElementById('actuals-txn-list');
-      if (!list) return;
-      const rows = Array.from(list.querySelectorAll('.actuals-txn-row'));
       const cmp = (a, b) => {
         const ad = a.dataset.txnDate || '';
         const bd = b.dataset.txnDate || '';
@@ -7185,15 +7182,24 @@
         }
         return 0;
       };
-      rows.sort(cmp);
-      // Re-append rows + their suggested-match banner (if any) in the
-      // new order. The banner was rendered immediately before each
-      // row in the original DOM, so we keep that pairing.
-      rows.forEach(r => {
-        const tid    = r.dataset.tid;
-        const banner = list.querySelector(`.actuals-suggested-banner[data-tid="${tid}"]`);
-        if (banner) list.appendChild(banner);
-        list.appendChild(r);
+      // Sort WITHIN each container. In grouped view that's each section body;
+      // otherwise the flat list. Keeps each suggested-match banner with its row.
+      const wrap = document.getElementById('actuals-sections');
+      let containers;
+      if (wrap) {
+        containers = Array.from(wrap.querySelectorAll(':scope > div > div:nth-child(2)'));
+      } else {
+        const list = document.getElementById('actuals-txn-list');
+        containers = list ? [list] : [];
+      }
+      containers.forEach(c => {
+        const rows = Array.from(c.querySelectorAll('.actuals-txn-row'));
+        rows.sort(cmp);
+        rows.forEach(r => {
+          const banner = document.querySelector(`.actuals-suggested-banner[data-tid="${r.dataset.tid}"]`);
+          if (banner) c.appendChild(banner);
+          c.appendChild(r);
+        });
       });
     }
 

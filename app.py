@@ -3773,6 +3773,20 @@ def budget_audit_json(pid, bid):
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     from budget_calc import _effective_days
 
+    # Standing rule: the Actual budget always mirrors Working's line structure.
+    # Before rendering the Actual view, additively create a mirror for any
+    # Working line that lacks one — so a line just added in Working immediately
+    # appears here and an actualized expense can be dragged onto it. Additive
+    # only (never deletes/edits); cheap no-op when nothing's missing.
+    # (User 2026-06-02.)
+    if budget.is_actual:
+        try:
+            from actuals import ensure_actual_mirrors
+            ensure_actual_mirrors(pid)
+        except Exception as _eam:
+            logging.warning(f"[budget_view] ensure_actual_mirrors failed: {_eam}")
+            db.session.rollback()
+
     TOL = 0.01
 
     def _f(x):

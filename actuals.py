@@ -512,6 +512,41 @@ def _materialize_missing_actual_line(working_line, actual_budget_id):
     return new_line
 
 
+def ensure_actual_mirrors(project_id):
+    """ADDITIVE-only guarantee that every current Working line has an Actual
+    peer. Never updates or deletes — safe to call on every Actual-view load so a
+    line added in Working immediately appears in Actual (and an actualized
+    expense can be dragged onto it). Returns the count created. (User 2026-06-02.)"""
+    actual = get_current_actual_budget(project_id)
+    working = get_current_working_budget(project_id)
+    if not actual or not working:
+        return 0
+    have = {l.source_line_id for l in actual.lines if l.source_line_id is not None}
+    added = 0
+    for w in working.lines:
+        if w.id not in have:
+            _materialize_missing_actual_line(w, actual.id)
+            added += 1
+    if added:
+        db.session.flush()
+        # Second pass: connect child lines (kit fees etc.) to their parent's
+        # mirror via the source chain.
+        a_lines = BudgetLine.query.filter_by(budget_id=actual.id).all()
+        a_by_src = {l.source_line_id: l for l in a_lines if l.source_line_id}
+        w_by_id = {w.id: w for w in working.lines}
+        for a in a_lines:
+            if not a.source_line_id:
+                continue
+            w = w_by_id.get(a.source_line_id)
+            np = (a_by_src.get(w.parent_line_id).id
+                  if (w and w.parent_line_id and a_by_src.get(w.parent_line_id)) else None)
+            if a.parent_line_id != np:
+                a.parent_line_id = np
+        db.session.commit()
+        log.info(f"[actuals] ensure_actual_mirrors project={project_id}: +{added} mirror line(s)")
+    return added
+
+
 def unlink_transaction(transaction_id):
     """Clear ALL coding on a transaction — budget_line_id, account_code,
     account_code_name, match_status. Doesn't delete the Actual line
