@@ -20204,6 +20204,28 @@ def docs_upload_coding(uid):
     })
 
 
+@app.route("/docs/upload/<int:uid>/meta", methods=["GET"])
+@login_required
+def docs_upload_meta(uid):
+    """Thin metadata for one DocUpload — lets the duplicate-compare modal show
+    the ORIGINAL doc (which lives outside the Review list) beside the flagged
+    copy so the user can actually compare. Read-only. (User 2026-06-02.)"""
+    d = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(d)
+    if deny:
+        return deny
+    fname = d.filed_filename or d.original_filename or f'Upload #{d.id}'
+    ct = (d.content_type or '').lower()
+    return jsonify({
+        "id": d.id, "vendor": d.vendor or '',
+        "amount": float(d.amount) if d.amount is not None else None,
+        "doc_date": d.doc_date.isoformat() if d.doc_date else None,
+        "filename": fname, "category": d.category or '', "status": d.status or '',
+        "is_pdf": bool('pdf' in ct or fname.lower().endswith('.pdf')),
+        "is_image": bool(ct.startswith('image/')),
+    })
+
+
 @app.route("/docs/upload/<int:uid>/preview-link", methods=["GET"])
 @login_required
 def docs_upload_preview_link(uid):

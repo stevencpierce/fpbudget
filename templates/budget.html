@@ -3598,6 +3598,29 @@
       isPdf:  /\.pdf\b/i.test(fname) || /\.pdf\b/i.test(row.dataset.sortFilename || ''),
     };
   }
+  // Reference-only pane (the ORIGINAL a flagged copy duplicates) — preview +
+  // metadata, no Keep/Duplicate actions, green-tinted "Original on file" tag.
+  function _docRefPaneHTML(m) {
+    const src = '/docs/upload/' + m.uid + '/raw';
+    const preview = m.isPdf
+      ? '<iframe src="' + src + '#zoom=page-width" style="width:100%;height:100%;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
+      : '<img src="' + src + '" alt="original" style="width:100%;height:100%;object-fit:contain;border:1px solid var(--border);border-radius:6px;background:#0a0d12">';
+    const mrow = (k, v) => '<span style="margin-right:14px;white-space:nowrap"><span style="color:var(--text-muted)">' + k + ':</span> ' + _esc(v || '—') + '</span>';
+    return ''
+      + '<div class="dup-pane" style="flex:1;min-width:260px;min-height:0;display:flex;flex-direction:column;gap:8px;'
+      +      'border:1px solid #2a5a3a;border-radius:8px;padding:10px;background:var(--bg-card)">'
+      +   '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0">'
+      +     '<span style="font-size:12px;font-weight:600;color:#74c69d">📌 Original on file · #' + m.uid + '</span>'
+      +     '<a href="' + src + '" target="_blank" rel="noopener" style="margin-left:auto;background:#1a2540;'
+      +        'border:1px solid #2d4070;color:#8fb4ff;padding:3px 9px;border-radius:5px;font-size:11px;text-decoration:none">↗ Full size</a>'
+      +   '</div>'
+      +   '<div class="dup-preview" style="flex:1;min-height:300px">' + preview + '</div>'
+      +   '<div style="font-size:11.5px;line-height:1.5;word-break:break-word;flex-shrink:0">'
+      +     mrow('Vendor', m.vendor) + mrow('Amount', m.amount) + mrow('Date', m.date) + mrow('Type', m.dtype)
+      +     '<div style="margin-top:2px"><span style="color:var(--text-muted)">File:</span> ' + _esc(m.fname || '—') + '</div>'
+      +   '</div>'
+      + '</div>';
+  }
   function _docGroupPaneHTML(m, single) {
     const src = '/docs/upload/' + m.uid + '/raw';
     // Preview FILLS the pane height (flex:1) so docs are big and readable
@@ -3714,12 +3737,42 @@
     // side-by-side compare + ≥1-keep gating can't resolve this, so offer a
     // direct keep / confirm on the single doc instead. (User 2026-06-01.)
     if (members.length === 1) {
-      body.innerHTML = _docGroupPaneHTML(_docMeta(members[0]), true);
+      const seed   = members[0];
+      const origId = seed.dataset.duplicateOf;
+      const origInDom = origId && document.querySelector('.doc-row[data-upload-id="' + origId + '"]');
+      if (applyBtn) applyBtn.style.display = 'none';   // actions are inline
+      // If we know which doc it duplicates and that original isn't loaded in
+      // the Review list, FETCH it so the user can actually compare instead of
+      // staring at a lone receipt. (User 2026-06-02.)
+      if (origId && !origInDom) {
+        body.innerHTML = '<div style="padding:18px;color:var(--text-muted)">Loading the original to compare…</div>';
+        document.getElementById('docDupCompareOverlay').style.display = 'flex';
+        fetch('/docs/upload/' + origId + '/meta')
+          .then(r => r.ok ? r.json() : null)
+          .then(orig => {
+            const flagged = _docMeta(seed);
+            if (orig) {
+              const origMeta = {
+                uid: String(orig.id), vendor: orig.vendor,
+                amount: (orig.amount != null) ? ('$' + Number(orig.amount).toFixed(2)) : '',
+                fname: orig.filename, date: orig.doc_date || '',
+                dtype: orig.category || '', isPdf: orig.is_pdf,
+              };
+              body.innerHTML = _docRefPaneHTML(origMeta) + _docGroupPaneHTML(flagged, true);
+              if (sumEl) { sumEl.textContent = 'Left = the original already on file (#' + orig.id + '). Right = the new copy flagged as a duplicate — Keep it if it’s genuinely different, or confirm it’s a dupe.'; sumEl.style.color = 'var(--text-muted)'; }
+            } else {
+              body.innerHTML = _docGroupPaneHTML(flagged, true);
+              if (sumEl) { sumEl.textContent = 'Couldn’t load the original (#' + origId + ') — it may have been deleted. Keep this copy, or confirm it as a duplicate.'; sumEl.style.color = 'var(--text-muted)'; }
+            }
+          })
+          .catch(() => { body.innerHTML = _docGroupPaneHTML(_docMeta(seed), true); });
+        return;
+      }
+      body.innerHTML = _docGroupPaneHTML(_docMeta(seed), true);
       if (sumEl) {
         sumEl.textContent = 'This is the only copy still in review — keep it, or confirm it as a duplicate.';
         sumEl.style.color = 'var(--text-muted)';
       }
-      if (applyBtn) applyBtn.style.display = 'none';   // actions are inline
       document.getElementById('docDupCompareOverlay').style.display = 'flex';
       return;
     }
