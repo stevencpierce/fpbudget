@@ -1855,6 +1855,228 @@ def admin_docs_source_import(pid):
     })
 
 
+# ── Server-side background drainer for source-folder import ─────────────────
+# A browser-driven loop gets frozen by Chrome's background-tab timer throttling,
+# so a long (hundreds of files) import can't run unattended there. This runs the
+# whole drain in a daemon thread on the server, independent of the browser, with
+# per-file commits (resumable) and a polled status dict. (User 2026-06-03.)
+_SOURCE_DRAIN = {}   # pid -> progress dict
+
+
+def _source_drain_amounts_in_name(nm):
+    import re as _re
+    out = set()
+    for m in _re.findall(r'\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2}', nm or ''):
+        try:
+            v = float(m.replace(',', ''))
+            if v >= 1:
+                out.add(int(round(v * 100)))
+        except ValueError:
+            pass
+    return out
+
+
+def _source_drain_worker(flask_app, pid, src_path, user_id, include_amt):
+    import hashlib as _hl, json as _json, re as _re
+    from datetime import datetime as _dt
+    from fp_analyzer import analyze_and_file_single, extract_card_last4 as _extract_card4
+    prog = _SOURCE_DRAIN[pid]
+    with flask_app.app_context():
+        try:
+            project = ProjectSheet.query.get(pid)
+            user = User.query.get(user_id)
+            _raw_user = (getattr(user, 'name', None)
+                         or (user.email or '').split('@')[0] or 'unknown') if user else 'unknown'
+            _safe_user = _re.sub(r"[^\w\- ]", "", _raw_user) or "unknown"
+            dbx = _dbx_client()
+            proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
+                         else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+            SKIP = {'.ds_store', 'thumbs.db', 'desktop.ini', 'icon\r'}
+
+            # Build exclusion + amount sets ONCE; keep them current incrementally.
+            proc_hashes, proc_names = set(), set()
+            for e in _walk_dbx_files(dbx, proj_root + "/01_ADMIN/PROCESSED DOCUMENTS"):
+                proc_hashes.add(e.content_hash); proc_names.add((e.name or '').lower())
+            for u in DocUpload.query.with_entities(
+                        DocUpload.original_filename, DocUpload.filed_filename
+                    ).filter_by(project_id=pid).all():
+                for nm in (u.original_filename, u.filed_filename):
+                    if nm:
+                        proc_names.add(nm.lower())
+            existing_cents = set()
+            if not include_amt:
+                for (a,) in db.session.query(Transaction.amount).filter(
+                        Transaction.project_id == pid, Transaction.amount.isnot(None)).all():
+                    try: existing_cents.add(int(round(float(a) * 100)))
+                    except Exception: pass
+                for (a,) in db.session.query(DocUpload.amount).filter(
+                        DocUpload.project_id == pid, DocUpload.amount.isnot(None)).all():
+                    try: existing_cents.add(int(round(float(a) * 100)))
+                    except Exception: pass
+
+            # Walk the source folder ONCE → ordered candidate list.
+            candidates = []
+            for e in _walk_dbx_files(dbx, src_path):
+                nm = (e.name or '')
+                if nm.lower() in SKIP or nm.startswith('.') or getattr(e, 'size', 0) == 0:
+                    continue
+                if e.content_hash in proc_hashes or nm.lower() in proc_names:
+                    continue
+                if not include_amt:
+                    amts = _source_drain_amounts_in_name(nm)
+                    if amts and (amts & existing_cents):
+                        continue
+                candidates.append(e)
+            prog['total'] = len(candidates)
+
+            consec_fail = 0
+            for target in candidates:
+                if not prog['running']:
+                    break
+                nm = (target.name or '')
+                if nm.lower() in proc_names:      # imported earlier this run / dup name
+                    prog['skipped'] += 1; continue
+                try:
+                    _md, resp = dbx.files_download(target.path_display)
+                    data = resp.content
+                    file_hash = _hl.sha256(data).hexdigest()
+                    dup = (DocUpload.query.filter_by(project_id=pid, file_hash=file_hash)
+                           .filter(DocUpload.filed_dropbox_path.isnot(None))
+                           .filter(DocUpload.status != 'review').first())
+                    result = analyze_and_file_single(
+                        file_bytes=data, filename=nm,
+                        project_name=project.dropbox_folder, user_name=_safe_user)
+                    vr = result.get("vr") or {}
+                    vendor_name = amount = doc_date = doc_number = None
+                    if vr:
+                        v = vr.get("vendor") or {}
+                        vendor_name = v.get("name") or v.get("raw_name")
+                        try: amount = float(vr.get("total")) if vr.get("total") is not None else None
+                        except Exception: amount = None
+                        try:
+                            _d = vr.get("date") or ""
+                            doc_date = _dt.strptime(_d[:10], "%Y-%m-%d").date() if _d else None
+                        except Exception: doc_date = None
+                        doc_number = (vr.get("invoice_number") or vr.get("purchase_order_number")
+                                      or vr.get("tax_id") or vr.get("ein") or None)
+                        if doc_number:
+                            doc_number = str(doc_number)[:100]
+                    _fn = _source_drain_amounts_in_name(nm)
+                    if _fn:
+                        amount = max(_fn) / 100.0
+                    _doc_cat = result.get("doc_type")
+                    if ('invoice' in nm.lower()
+                            and (_doc_cat or '') in ('estimate', 'quote', 'purchase_order', 'misc', '', None)):
+                        _doc_cat = 'invoice'
+                    status_map = {"filed": "done", "needs_review": "review", "error": "error"}
+                    up = DocUpload(
+                        project_id=pid, uploader_id=user_id, original_filename=nm,
+                        file_size=len(data), content_type='application/octet-stream',
+                        file_hash=file_hash, status=status_map.get(result.get("status"), "error"),
+                        veryfi_data=_json.dumps(vr) if vr else None, vendor=vendor_name,
+                        amount=amount, doc_date=doc_date, doc_number=doc_number,
+                        card_last4=(_extract_card4(vr) if vr else None),
+                        confidence=round(float(result.get("confidence") or 0) * 100, 2),
+                        category=_doc_cat, veryfi_category=(vr.get("category") if vr else None),
+                        filed_filename=result.get("new_filename") or None,
+                        filed_dropbox_path=result.get("filed_path") or result.get("staged_path"),
+                        filed_at=_dt.utcnow() if result.get("filed_path") else None,
+                        source_archive_path=result.get("staged_path"),
+                        is_duplicate=bool(dup) or bool(result.get("duplicate")),
+                        duplicate_of_id=dup.id if dup else None,
+                        note='Imported from source-folder audit')
+                    db.session.add(up); db.session.commit()
+                    proc_names.add(nm.lower()); proc_hashes.add(target.content_hash)
+                    prog['imported'] += 1
+                    if up.is_duplicate:
+                        prog['dups'] += 1
+                    if (up.status in ('done', 'review') and not up.is_duplicate
+                            and (up.category or '') in ('receipt', 'invoice')):
+                        try:
+                            db.session.add(Transaction(
+                                project_id=pid, source='doc_upload', doc_upload_id=up.id,
+                                vendor=up.vendor, amount=up.amount,
+                                txn_date=up.doc_date.isoformat() if up.doc_date else None,
+                                card_last4=up.card_last4, is_expense=True,
+                                match_status='unmatched', created_via_user_id=user_id))
+                            db.session.commit(); prog['txns'] += 1
+                        except Exception:
+                            db.session.rollback()
+                    prog['last'] = nm; consec_fail = 0
+                except Exception as _pe:
+                    db.session.rollback()
+                    prog['failed'] += 1
+                    if len(prog['errors']) < 30:
+                        prog['errors'].append((type(_pe).__name__ + ' @ ' + nm)[:140])
+                    consec_fail += 1
+                    if consec_fail >= 5:
+                        prog['note'] = 'aborted after 5 consecutive failures'
+                        break
+                finally:
+                    prog['processed'] += 1
+        except Exception as _we:
+            prog['errors'].append('worker:' + type(_we).__name__)
+        finally:
+            prog['running'] = False
+            prog['done'] = True
+            try:
+                db.session.remove()
+            except Exception:
+                pass
+
+
+@app.route("/admin/docs/project/<int:pid>/source-import-drain", methods=["POST"])
+@login_required
+def admin_docs_source_import_drain(pid):
+    """Start a SERVER-SIDE background drain of all missing source originals
+    (same logic/fixes as /source-import, but runs in a daemon thread so it
+    survives browser-tab throttling). Returns immediately; poll
+    /source-import-drain-status. Re-callable: a finished run can be restarted to
+    catch stragglers (dedup makes it safe). (User 2026-06-03.)"""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    project = ProjectSheet.query.get_or_404(pid)
+    if not project.dropbox_folder:
+        return jsonify({"error": "Project has no Dropbox folder configured"}), 400
+    body = request.get_json(silent=True) or {}
+    src_path = _resolve_dbx_path(body.get('source_path') or request.args.get('source_path'))
+    if not src_path:
+        return jsonify({"error": "source_path required"}), 400
+    cur = _SOURCE_DRAIN.get(pid)
+    if cur and cur.get('running'):
+        return jsonify({"already_running": True, **{k: cur[k] for k in
+                       ('total', 'processed', 'imported', 'txns', 'dups', 'failed', 'last')}})
+    include_amt = bool(body.get('include_amount_in_system'))
+    _SOURCE_DRAIN[pid] = {'running': True, 'done': False, 'total': None, 'processed': 0,
+                          'imported': 0, 'txns': 0, 'dups': 0, 'failed': 0, 'skipped': 0,
+                          'last': None, 'errors': [], 'note': None, 'src': src_path}
+    import threading
+    t = threading.Thread(target=_source_drain_worker,
+                         args=(app, pid, src_path, current_user.id, include_amt),
+                         daemon=True)
+    t.start()
+    return jsonify({"started": True, "source_path": src_path,
+                    "include_amount_in_system": include_amt})
+
+
+@app.route("/admin/docs/project/<int:pid>/source-import-drain-status", methods=["GET"])
+@login_required
+def admin_docs_source_import_drain_status(pid):
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    p = _SOURCE_DRAIN.get(pid)
+    if not p:
+        return jsonify({"exists": False})
+    return jsonify({"exists": True, **{k: p[k] for k in
+                   ('running', 'done', 'total', 'processed', 'imported', 'txns',
+                    'dups', 'failed', 'skipped', 'last', 'note')},
+                    "errors": p['errors'][:10]})
+
+
 @app.route("/admin/docs/project/<int:pid>/reconcile", methods=["POST"])
 @login_required
 def admin_docs_reconcile_project(pid):
