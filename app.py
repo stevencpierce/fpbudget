@@ -1782,6 +1782,23 @@ def admin_docs_source_import(pid):
                 doc_number = str(doc_number)[:100]
         status_map = {"filed": "done", "needs_review": "review", "error": "error"}
         upload_status = status_map.get(result.get("status"), "error")
+
+        # Fix 1 (User 2026-06-03): the dollar amount the user curated INTO the
+        # filename is more reliable than OCR on these backups (especially the
+        # foreign-language receipts OCR misreads). Prefer it when present; for
+        # multiple amounts take the largest magnitude (the total vs a tip/fee),
+        # stored positive.
+        _fn_amts = _amounts_in_name(e.name)
+        if _fn_amts:
+            amount = max(_fn_amts) / 100.0
+        # Fix 2 (User 2026-06-03): "INVOICE+PROOFofPAYMENT" PDFs often misclassify
+        # as estimate/quote/PO — forecast types that never reach the ledger. If
+        # the filename says invoice, force category=invoice so it becomes an
+        # Actuals transaction.
+        _doc_cat = result.get("doc_type")
+        if ('invoice' in (e.name or '').lower()
+                and (_doc_cat or '') in ('estimate', 'quote', 'purchase_order', 'misc', '', None)):
+            _doc_cat = 'invoice'
         try:
             up = DocUpload(
                 project_id=pid, uploader_id=current_user.id,
@@ -1792,7 +1809,7 @@ def admin_docs_source_import(pid):
                 doc_number=doc_number,
                 card_last4=(_extract_card4(vr) if vr else None),
                 confidence=round(float(result.get("confidence") or 0) * 100, 2),
-                category=result.get("doc_type"),
+                category=_doc_cat,
                 veryfi_category=(vr.get("category") if vr else None),
                 filed_filename=result.get("new_filename") or None,
                 filed_dropbox_path=result.get("filed_path") or result.get("staged_path"),
