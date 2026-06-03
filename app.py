@@ -1419,6 +1419,331 @@ def admin_docs_import_missing(pid):
                     "errors": errors[:25], "sample": sample})
 
 
+def _resolve_dbx_path(raw, project=None):
+    """Turn a user-supplied path (local CloudStorage / /Volumes mount, or an
+    already-Dropbox-relative path) into a path the namespace-scoped client can
+    use. The app's Dropbox client is rooted at the shared-folder namespace whose
+    root IS '_FP OPERATIONS FOLDER', so we strip everything up to & including
+    that segment. (User 2026-06-03 — Cliburn source-folder audit.)"""
+    import re as _re
+    if not raw:
+        return None
+    p = str(raw).strip().strip('"').strip("'").replace('\\', '/')
+    # Cut at the ops-folder marker (case-insensitive), keep what's after it.
+    m = _re.search(r'_FP OPERATIONS FOLDER/?', p, _re.IGNORECASE)
+    if m:
+        rel = '/' + p[m.end():].strip('/')
+    elif p.startswith('/'):
+        rel = p                      # already looks Dropbox-relative
+    else:
+        rel = '/' + p.strip('/')
+    rel = _re.sub(r'/+', '/', rel).rstrip('/')
+    if _DBX_NAMESPACE_ID:
+        return rel                   # namespace root == ops folder
+    return f"{_DBX_OPS_ROOT.rstrip('/')}{rel}"
+
+
+def _walk_dbx_files(dbx, root):
+    """Yield FileMetadata entries under `root` recursively, skipping trash.
+    Tolerates pagination errors by stopping cleanly."""
+    try:
+        res = dbx.files_list_folder(root, recursive=True)
+    except Exception:
+        return
+    while True:
+        for entry in res.entries:
+            if not hasattr(entry, 'content_hash'):   # FolderMetadata / deleted
+                continue
+            if '/_trash' in (entry.path_display or '').lower():
+                continue
+            yield entry
+        if not res.has_more:
+            break
+        try:
+            res = dbx.files_list_folder_continue(res.cursor)
+        except Exception:
+            break
+
+
+@app.route("/admin/docs/project/<int:pid>/source-audit", methods=["POST"])
+@login_required
+def admin_docs_source_audit(pid):
+    """READ-ONLY: reconcile a folder of ORIGINAL receipts (a backup folder whose
+    filenames differ from the Analyzer-renamed copies) against what the software
+    has already filed. Matching is by Dropbox content_hash (free from metadata,
+    no byte download), so it's exact and fast even for big folders.
+
+    For every file in the source folder, bucket it as:
+      * in_software  — its bytes are already in the project's PROCESSED
+        DOCUMENTS tree (filed copy OR _SOURCE_ARCHIVE original) ⇒ it went
+        through the app.
+      * name_match    — no content_hash match, but a file/DocUpload with the
+        same basename exists (likely the same receipt re-exported/re-scanned;
+        needs a human eye, NOT auto-imported).
+      * missing       — neither ⇒ this original never reached the software.
+
+    Body: {"source_path": "<path>"}. Makes NO writes. (User 2026-06-03.)"""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    project = ProjectSheet.query.get_or_404(pid)
+    if not project.dropbox_folder:
+        return jsonify({"error": "Project has no Dropbox folder configured"}), 400
+    body = request.get_json(silent=True) or {}
+    src_path = _resolve_dbx_path(body.get('source_path') or request.args.get('source_path'))
+    if not src_path:
+        return jsonify({"error": "source_path required"}), 400
+    try:
+        dbx = _dbx_client()
+    except Exception as e:
+        return jsonify({"error": "Dropbox init failed", "detail": type(e).__name__}), 500
+
+    proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
+                 else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+
+    # 1) Index everything the software already has: content hashes (filed copies
+    #    + original-bytes archive) and basenames, from the processed tree.
+    proc_hashes, proc_names = set(), set()
+    proc_scanned = 0
+    for e in _walk_dbx_files(dbx, proj_root + "/01_ADMIN/PROCESSED DOCUMENTS"):
+        proc_scanned += 1
+        proc_hashes.add(e.content_hash)
+        proc_names.add((e.name or '').lower())
+    # DocUpload basenames too (covers rows whose file moved or whose name was
+    # the original, pre-rename form).
+    for u in DocUpload.query.with_entities(
+                DocUpload.original_filename, DocUpload.filed_filename
+            ).filter_by(project_id=pid).all():
+        for nm in (u.original_filename, u.filed_filename):
+            if nm:
+                proc_names.add(nm.lower())
+
+    # 2) Walk the source originals folder; bucket by hash, then name.
+    SKIP = {'.ds_store', 'thumbs.db', 'desktop.ini', 'icon\r'}
+    in_software = name_match = missing = src_total = 0
+    missing_sample, name_sample = [], []
+    src_err = None
+    try:
+        for e in _walk_dbx_files(dbx, src_path):
+            nm = (e.name or '')
+            if nm.lower() in SKIP or nm.startswith('.') or getattr(e, 'size', 0) == 0:
+                continue
+            src_total += 1
+            if e.content_hash in proc_hashes:
+                in_software += 1
+            elif nm.lower() in proc_names:
+                name_match += 1
+                if len(name_sample) < 40:
+                    name_sample.append({"filename": nm, "path": e.path_display,
+                                        "size": getattr(e, 'size', None)})
+            else:
+                missing += 1
+                if len(missing_sample) < 200:
+                    missing_sample.append({"filename": nm, "path": e.path_display,
+                                           "size": getattr(e, 'size', None)})
+    except Exception as _e:
+        src_err = type(_e).__name__
+
+    return jsonify({
+        "project": project.name,
+        "source_path": src_path,
+        "source_files": src_total,
+        "processed_files_indexed": proc_scanned,
+        "in_software": in_software,
+        "name_match_only": name_match,
+        "missing": missing,
+        "missing_sample": missing_sample,
+        "name_match_sample": name_sample,
+        "source_error": src_err,
+        "note": "Matching by Dropbox content_hash. 'missing' = original bytes "
+                "not found anywhere in the project's processed/archive tree.",
+    })
+
+
+@app.route("/admin/docs/project/<int:pid>/source-import", methods=["POST"])
+@login_required
+def admin_docs_source_import(pid):
+    """Pull the MISSING originals (per source-audit's content_hash logic) back
+    into the software: download each from the source folder and run it through
+    the real upload pipeline (Veryfi OCR → auto-file → DocUpload → Actuals
+    Transaction), exactly like an interactive upload. The pipeline's own SHA-256
+    dedup still applies, so a re-run is safe.
+
+    Body: {"source_path": "<path>", "apply": bool, "limit": int}. Dry-run by
+    default (apply=false) — reports which files WOULD be imported without
+    touching anything. `limit` caps how many files are OCR'd per call (OCR is
+    slow; run repeatedly to drain a large backlog). (User 2026-06-03.)"""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    project = ProjectSheet.query.get_or_404(pid)
+    if not project.dropbox_folder:
+        return jsonify({"error": "Project has no Dropbox folder configured"}), 400
+    body = request.get_json(silent=True) or {}
+    src_path = _resolve_dbx_path(body.get('source_path') or request.args.get('source_path'))
+    if not src_path:
+        return jsonify({"error": "source_path required"}), 400
+    apply = bool(body.get('apply')) or (request.args.get('apply') == '1')
+    try:
+        limit = int(body.get('limit') or request.args.get('limit') or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 50))
+    try:
+        dbx = _dbx_client()
+    except Exception as e:
+        return jsonify({"error": "Dropbox init failed", "detail": type(e).__name__}), 500
+
+    proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
+                 else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+
+    # Re-derive the missing set (same content_hash logic as the audit).
+    proc_hashes, proc_names = set(), set()
+    for e in _walk_dbx_files(dbx, proj_root + "/01_ADMIN/PROCESSED DOCUMENTS"):
+        proc_hashes.add(e.content_hash)
+        proc_names.add((e.name or '').lower())
+    for u in DocUpload.query.with_entities(
+                DocUpload.original_filename, DocUpload.filed_filename
+            ).filter_by(project_id=pid).all():
+        for nm in (u.original_filename, u.filed_filename):
+            if nm:
+                proc_names.add(nm.lower())
+
+    SKIP = {'.ds_store', 'thumbs.db', 'desktop.ini', 'icon\r'}
+    missing = []
+    for e in _walk_dbx_files(dbx, src_path):
+        nm = (e.name or '')
+        if nm.lower() in SKIP or nm.startswith('.') or getattr(e, 'size', 0) == 0:
+            continue
+        if e.content_hash in proc_hashes or nm.lower() in proc_names:
+            continue
+        missing.append(e)
+    total_missing = len(missing)
+    batch = missing[:limit]
+
+    if not apply:
+        return jsonify({
+            "dry": True, "source_path": src_path,
+            "total_missing": total_missing, "would_import_now": len(batch),
+            "remaining_after": max(0, total_missing - len(batch)),
+            "sample": [{"filename": e.name, "size": getattr(e, 'size', None)} for e in batch],
+            "note": "Dry run. POST apply=true to OCR + file these. Re-run to drain the rest.",
+        })
+
+    # APPLY: download + run the real pipeline per file.
+    import re as _re, json as _json
+    from datetime import datetime as _dt
+    from fp_analyzer import analyze_and_file_single, extract_card_last4 as _extract_card4
+    _raw_user = (getattr(current_user, 'name', None)
+                 or (current_user.email or '').split('@')[0] or 'unknown')
+    _safe_user = _re.sub(r"[^\w\- ]", "", _raw_user) or "unknown"
+
+    imported, dup_flagged, errors, txns = 0, 0, [], 0
+    detail = []
+    for e in batch:
+        try:
+            _md, resp = dbx.files_download(e.path_display)
+            data = resp.content
+        except Exception as _de:
+            errors.append(f"download {e.name}: {type(_de).__name__}")
+            continue
+        import hashlib as _hl
+        file_hash = _hl.sha256(data).hexdigest()
+        # Skip if the exact bytes are already a filed DocUpload (defensive — the
+        # content_hash pre-filter should have caught it, but SHA-256 is the
+        # pipeline's own dedup key).
+        dup = (DocUpload.query.filter_by(project_id=pid, file_hash=file_hash)
+               .filter(DocUpload.filed_dropbox_path.isnot(None))
+               .filter(DocUpload.status != 'review').first())
+        try:
+            result = analyze_and_file_single(
+                file_bytes=data, filename=e.name,
+                project_name=project.dropbox_folder, user_name=_safe_user)
+        except Exception as _ae:
+            errors.append(f"analyze {e.name}: {type(_ae).__name__}")
+            continue
+        vr = result.get("vr") or {}
+        vendor_name = amount = doc_date = doc_number = None
+        if vr:
+            v = vr.get("vendor") or {}
+            vendor_name = v.get("name") or v.get("raw_name")
+            try:
+                amount = float(vr.get("total")) if vr.get("total") is not None else None
+            except Exception:
+                amount = None
+            try:
+                _d = vr.get("date") or ""
+                doc_date = _dt.strptime(_d[:10], "%Y-%m-%d").date() if _d else None
+            except Exception:
+                doc_date = None
+            doc_number = (vr.get("invoice_number") or vr.get("purchase_order_number")
+                          or vr.get("tax_id") or vr.get("ein") or None)
+            if doc_number:
+                doc_number = str(doc_number)[:100]
+        status_map = {"filed": "done", "needs_review": "review", "error": "error"}
+        upload_status = status_map.get(result.get("status"), "error")
+        try:
+            up = DocUpload(
+                project_id=pid, uploader_id=current_user.id,
+                original_filename=e.name, file_size=len(data),
+                content_type='application/octet-stream', file_hash=file_hash,
+                status=upload_status, veryfi_data=_json.dumps(vr) if vr else None,
+                vendor=vendor_name, amount=amount, doc_date=doc_date,
+                doc_number=doc_number,
+                card_last4=(_extract_card4(vr) if vr else None),
+                confidence=round(float(result.get("confidence") or 0) * 100, 2),
+                category=result.get("doc_type"),
+                veryfi_category=(vr.get("category") if vr else None),
+                filed_filename=result.get("new_filename") or None,
+                filed_dropbox_path=result.get("filed_path") or result.get("staged_path"),
+                filed_at=_dt.utcnow() if result.get("filed_path") else None,
+                source_archive_path=result.get("staged_path"),
+                is_duplicate=bool(dup) or bool(result.get("duplicate")),
+                duplicate_of_id=dup.id if dup else None,
+                note='Imported from source-folder audit')
+            db.session.add(up)
+            db.session.commit()
+        except Exception as _ce:
+            db.session.rollback()
+            errors.append(f"save {e.name}: {type(_ce).__name__}")
+            continue
+        imported += 1
+        if up.is_duplicate:
+            dup_flagged += 1
+        # Actuals Transaction for receipts/invoices that aren't duplicates.
+        if (up.status in ('done', 'review') and not up.is_duplicate
+                and (up.category or '') in ('receipt', 'invoice')):
+            try:
+                db.session.add(Transaction(
+                    project_id=pid, source='doc_upload', doc_upload_id=up.id,
+                    vendor=up.vendor, amount=up.amount,
+                    txn_date=up.doc_date.isoformat() if up.doc_date else None,
+                    card_last4=up.card_last4, is_expense=True,
+                    match_status='unmatched',
+                    created_via_user_id=current_user.id))
+                db.session.commit(); txns += 1
+            except Exception:
+                db.session.rollback()
+        if len(detail) < 25:
+            detail.append({"filename": e.name, "category": up.category,
+                           "amount": float(up.amount) if up.amount is not None else None,
+                           "status": up.status, "duplicate": bool(up.is_duplicate)})
+
+    return jsonify({
+        "dry": False, "applied": True, "source_path": src_path,
+        "total_missing": total_missing, "processed_this_call": len(batch),
+        "imported": imported, "duplicate_flagged": dup_flagged,
+        "txns_created": txns, "remaining": max(0, total_missing - len(batch)),
+        "errors": errors[:25], "detail": detail,
+    })
+
+
 @app.route("/admin/docs/project/<int:pid>/reconcile", methods=["POST"])
 @login_required
 def admin_docs_reconcile_project(pid):
