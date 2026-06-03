@@ -7523,19 +7523,26 @@
         sec.appendChild(hdr); sec.appendChild(body); wrap.appendChild(sec);
         bodies[d.key] = body;
       });
+      // Perf: index banners once (avoids a querySelector per row) and build
+      // each section into a DocumentFragment off-DOM, then append once — turns
+      // ~2,000 live-DOM moves/reflows into 3. (User 2026-06-03.)
       const counts = { needs: 0, receipts: 0, linked: 0 };
+      const frags = { needs: document.createDocumentFragment(),
+                      receipts: document.createDocumentFragment(),
+                      linked: document.createDocumentFragment() };
+      const bannerByTid = {};
+      list.querySelectorAll('.actuals-suggested-banner').forEach(b => { bannerByTid[b.dataset.tid] = b; });
       Array.from(list.children).forEach(node => {
-        if (!node.classList) return;
-        if (node.classList.contains('actuals-suggested-banner')) return;   // moved with its row
-        if (!node.classList.contains('actuals-txn-row')) return;
+        if (!node.classList || !node.classList.contains('actuals-txn-row')) return;
         if (node.dataset.claimedElsewhere === '1') return;                 // leave hidden admin rows out
         const src = node.dataset.source, hasDoc = node.dataset.hasDoc;
         const key = (src === 'doc_upload') ? 'receipts' : (hasDoc === '1' ? 'linked' : 'needs');
-        const banner = document.querySelector('.actuals-suggested-banner[data-tid="' + node.dataset.tid + '"]');
-        if (banner) bodies[key].appendChild(banner);
-        bodies[key].appendChild(node);
+        const banner = bannerByTid[node.dataset.tid];
+        if (banner) frags[key].appendChild(banner);
+        frags[key].appendChild(node);
         counts[key]++;
       });
+      ['needs', 'receipts', 'linked'].forEach(k => bodies[k].appendChild(frags[k]));
       ['needs', 'receipts', 'linked'].forEach((k, i) => {
         const el = wrap.querySelectorAll('.sec-count')[i];
         if (el) el.textContent = ' (' + counts[k] + ')';
