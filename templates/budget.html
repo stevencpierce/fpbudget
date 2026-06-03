@@ -7328,7 +7328,11 @@
       });
       const lbl = document.getElementById('actuals-filter-count');
       if (lbl) lbl.textContent = (shown === total) ? `${total} txns` : `${shown} of ${total} shown`;
-      _actualsApplySort();
+      // Sorting is intentionally NOT called here. Filtering only toggles row
+      // visibility and never changes order, so re-sorting (which re-appends all
+      // ~1,200 rows) on every tile click was the main tile-switch freeze. Sort
+      // runs only when the sort dropdown changes, on init, and after a
+      // re-bucket. (User 2026-06-03.)
     }
 
     // Sort the visible rows in DOM order. The list container is
@@ -7374,14 +7378,21 @@
         const list = document.getElementById('actuals-txn-list');
         containers = list ? [list] : [];
       }
+      // Index banners once (was a full-document querySelector PER row → O(n)
+      // doc scans) and re-append via a DocumentFragment (one reflow per
+      // container, not per row). (User 2026-06-03.)
+      const _bannerByTid = {};
+      document.querySelectorAll('.actuals-suggested-banner').forEach(b => { _bannerByTid[b.dataset.tid] = b; });
       containers.forEach(c => {
         const rows = Array.from(c.querySelectorAll('.actuals-txn-row'));
         rows.sort(cmp);
+        const frag = document.createDocumentFragment();
         rows.forEach(r => {
-          const banner = document.querySelector(`.actuals-suggested-banner[data-tid="${r.dataset.tid}"]`);
-          if (banner) c.appendChild(banner);
-          c.appendChild(r);
+          const banner = _bannerByTid[r.dataset.tid];
+          if (banner) frag.appendChild(banner);
+          frag.appendChild(r);
         });
+        c.appendChild(frag);
       });
     }
 
@@ -7409,6 +7420,7 @@
     function _actualsInitView() {
       if (typeof actualsApplyFilter === 'function') actualsApplyFilter('all');
       if (typeof window._actualsSectionize === 'function') window._actualsSectionize();
+      if (typeof _actualsApplySort === 'function') _actualsApplySort();   // initial order
     }
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', _actualsInitView);
@@ -8332,15 +8344,19 @@
       const s = document.getElementById('actuals-sort-by');
       if (s) s.value = 'date-desc';
       _actualsResolveFilters();
+      _actualsApplySort();   // sort decoupled from filtering — apply explicitly
     };
     ['actuals-filter-date-from','actuals-filter-date-to','actuals-filter-vendor',
      'actuals-filter-section','actuals-filter-receipt','actuals-filter-uploader',
-     'actuals-filter-amount-min','actuals-filter-amount-max',
-     'actuals-sort-by'].forEach(id => {
+     'actuals-filter-amount-min','actuals-filter-amount-max'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener('input', _actualsResolveFilters);
       if (el) el.addEventListener('change', _actualsResolveFilters);
     });
+    // Sort is decoupled from filtering — only re-order when the sort selection
+    // itself changes (filtering never changes order). (User 2026-06-03.)
+    const _sortSel = document.getElementById('actuals-sort-by');
+    if (_sortSel) _sortSel.addEventListener('change', function () { _actualsApplySort(); });
 
     // ── Three-bucket fulfillment state (user 2026-06-02) ──────────────
     // Each row works toward three boxes — a transaction, a document, and a
