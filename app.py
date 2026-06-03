@@ -102,7 +102,7 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     SupportContact, ProjectUnion, ProjectClient, CallSheetSend, CallSheetRecipient,
                     BudgetDirectContact, CompanySettings, DocUpload, CatalogItem,
                     TravelDetail, CateringBill, ActivityLog,
-                    SubBudget, SubBudgetLine)
+                    SubBudget, SubBudgetLine, EstimateShare)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -9716,6 +9716,24 @@ def export_pdf(pid, bid):
     for _r in (est_top_sheet.get("rows") if est_top_sheet else []) or []:
         est_section_lookup[_r["code"]] = _r
 
+    # ── Version labels for the budgets represented in this export ──────
+    # The PDF compares an Estimated column against Working/Actual; show the
+    # actual version of EACH budget whose column appears so the export is
+    # unambiguous about exactly which versions were compared. (User 2026-06-03.)
+    def _ver_str(b):
+        if not b:
+            return None
+        lbl = getattr(b, 'version_label', None)
+        if lbl:
+            return str(lbl)
+        n = getattr(b, 'version_number', None)
+        return ('v%d' % n) if n else None
+    est_budget_obj = (budget if budget.budget_mode == 'estimated'
+                      else (_est_peer if ('_est_peer' in locals() and _est_peer) else budget))
+    est_ver  = _ver_str(est_budget_obj)
+    work_ver = _ver_str(budget) if is_working_view else None
+    work_ver_label = ('Actual' if budget.budget_mode == 'actual' else 'Working')
+
     # ── Per-person travel/per-diem mirror rows (opt-in PDF export)
     # Reuses compute_travel_mirror_per_line — same helper the in-app
     # Budget tab uses to render the small italic "↪ Hotel — Crew /
@@ -9764,6 +9782,7 @@ def export_pdf(pid, bid):
         var_basis=var_basis,
         include_travel_notes=include_travel_notes,
         travel_mirror_by_line=travel_mirror_by_line,
+        est_ver=est_ver, work_ver=work_ver, work_ver_label=work_ver_label,
         today=date.today(),
     )
 
@@ -9779,6 +9798,280 @@ def export_pdf(pid, bid):
         mimetype="application/pdf",
         headers={"Content-Disposition": _content_disposition_attachment(fname)}
     )
+
+
+# ════════════════════════════════════════════════════════════════════════
+# Client estimate portal — send a budget as an estimate; client reviews &
+# approves at a public /e/<token> link. (User 2026-06-03.)
+# ════════════════════════════════════════════════════════════════════════
+
+def _estimate_version_label(budget):
+    mode_word = 'Working' if budget.budget_mode in ('working', 'actual') else 'Estimated'
+    if budget.budget_mode == 'actual':
+        mode_word = 'Actual'
+    lbl = getattr(budget, 'version_label', None)
+    if not lbl and getattr(budget, 'version_number', None):
+        lbl = 'v%d' % budget.version_number
+    return f"{mode_word} {lbl}".strip() if lbl else mode_word
+
+
+def _build_estimate_snapshot(project, budget, detail_mode):
+    """Freeze the budget's section/line totals + presentation meta at send
+    time, so the client always sees exactly what was sent and the approval is
+    bound to this version even if the budget changes later. (User 2026-06-03.)"""
+    from budget_calc import FP_COA_SECTIONS
+    lines = (BudgetLine.query.filter_by(budget_id=budget.id)
+             .order_by(BudgetLine.account_code, BudgetLine.sort_order).all())
+    fringe_cfgs = get_fringe_configs(db.session, project.id)
+    profile = budget.payroll_profile
+    pw_start = (budget.payroll_week_start if budget.payroll_week_start is not None
+                else (profile.payroll_week_start if profile else 6))
+    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    line_total = {}
+    for ln in lines:
+        if ln.use_schedule:
+            sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
+            res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
+        else:
+            res = calc_line(ln, fringe_cfgs)
+        line_total[ln.id] = float((res or {}).get('est_total') or 0)
+
+    def _section_for_code(code):
+        best = None
+        for start, _ in FP_COA_SECTIONS:
+            if code is not None and code >= start:
+                best = start
+            else:
+                break
+        return best
+    sec_name = dict(FP_COA_SECTIONS)
+    secs = {}
+    for ln in lines:
+        sk = _section_for_code(ln.account_code)
+        if sk not in secs:
+            secs[sk] = {"code": sk, "name": sec_name.get(sk, ""), "total": 0.0, "lines": []}
+        t = line_total.get(ln.id, 0.0)
+        secs[sk]["total"] += t
+        if detail_mode and not getattr(ln, 'is_header', False):
+            secs[sk]["lines"].append({
+                "code": ln.account_code,
+                "desc": (ln.description or '').strip(),
+                "total": round(t, 2)})
+    sections = []
+    grand = 0.0
+    for sk, _ in FP_COA_SECTIONS:
+        if sk in secs:
+            s = secs[sk]
+            s["total"] = round(s["total"], 2)
+            grand += s["total"]
+            sections.append(s)
+
+    cs = CompanySettings.query.get(1) or CompanySettings()
+    company_addr = [getattr(cs, 'address_line1', None), getattr(cs, 'address_line2', None),
+                    ', '.join([x for x in [getattr(cs, 'city', None), getattr(cs, 'state', None),
+                                           getattr(cs, 'zip_code', None)] if x])]
+    snap = {
+        "project_name": project.name,
+        "version_label": _estimate_version_label(budget),
+        "date": date.today().isoformat(),
+        "prepared_by": getattr(budget, 'prepared_by', None),
+        "prepared_by_title": getattr(budget, 'prepared_by_title', None),
+        "prepared_by_email": getattr(budget, 'prepared_by_email', None),
+        "prepared_by_phone": getattr(budget, 'prepared_by_phone', None),
+        "client_name": getattr(budget, 'client_name', None),
+        "company": {
+            "name": getattr(cs, 'company_name', None),
+            "address": [a for a in company_addr if a],
+            "phone": getattr(cs, 'phone', None),
+            "email": getattr(cs, 'email', None),
+        },
+        "detail_mode": bool(detail_mode),
+        "grand_total": round(grand, 2),
+        "sections": sections,
+    }
+    return snap, round(grand, 2)
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/estimate/share", methods=["POST"])
+@login_required
+def estimate_share_create(pid, bid):
+    """Create a client-facing estimate share for this budget. Freezes a
+    snapshot, returns a public link, and optionally emails the client.
+    (User 2026-06-03.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    project = ProjectSheet.query.get_or_404(pid)
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    body = request.get_json(silent=True) or {}
+    client_name = (body.get('client_name') or '').strip()[:200] or None
+    client_email = (body.get('client_email') or '').strip()[:200] or None
+    detail_mode = bool(body.get('detail_mode'))
+    do_email = bool(body.get('send_email')) and bool(client_email)
+
+    try:
+        snap, grand = _build_estimate_snapshot(project, budget, detail_mode)
+    except Exception as e:
+        logging.exception("estimate snapshot failed")
+        return jsonify({"error": "Could not build estimate snapshot", "detail": type(e).__name__}), 500
+
+    import json as _json
+    from datetime import timedelta as _td
+    token = secrets.token_urlsafe(32)
+    share = EstimateShare(
+        project_id=pid, budget_id=bid, token=token,
+        client_name=client_name, client_email=client_email,
+        detail_mode=detail_mode, version_label=snap.get("version_label"),
+        snapshot_json=_json.dumps(snap), grand_total=grand,
+        status='sent', created_by_user_id=current_user.id,
+        sent_at=datetime.utcnow(),
+        expires_at=datetime.utcnow() + _td(days=90))
+    db.session.add(share)
+    db.session.commit()
+
+    link = url_for('estimate_portal', token=token, _external=True)
+
+    emailed = False
+    email_error = None
+    if do_email:
+        if not app.config.get('MAIL_USERNAME'):
+            email_error = "Email isn't configured on the server (MAIL_USERNAME unset) — use the copyable link instead."
+        else:
+            who = client_name or "there"
+            subj = f"{project.name} — Estimate for your review"
+            bodytxt = (f"Hi {who},\n\n"
+                       f"Please review the estimate for {project.name} "
+                       f"({snap.get('version_label')}). You can view and approve it here:\n\n"
+                       f"{link}\n\n"
+                       f"Estimated total: ${grand:,.2f}\n\n"
+                       f"Thank you,\n"
+                       f"{snap['company'].get('name') or (budget.prepared_by or '')}")
+            emailed = _send_email(client_email, subj, bodytxt)
+            if emailed:
+                share.emailed = True
+                db.session.commit()
+            else:
+                email_error = "Email send failed — use the copyable link instead."
+
+    return jsonify({"ok": True, "share_id": share.id, "token": token, "link": link,
+                    "emailed": emailed, "email_error": email_error,
+                    "version_label": snap.get("version_label"),
+                    "grand_total": grand})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/estimate/shares", methods=["GET"])
+@login_required
+def estimate_share_list(pid, bid):
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access:
+            return jsonify({"error": "Forbidden"}), 403
+    shares = (EstimateShare.query.filter_by(project_id=pid, budget_id=bid)
+              .order_by(EstimateShare.created_at.desc()).all())
+    out = []
+    for s in shares:
+        out.append({
+            "id": s.id, "token": s.token,
+            "link": url_for('estimate_portal', token=s.token, _external=True),
+            "client_name": s.client_name, "client_email": s.client_email,
+            "detail_mode": s.detail_mode, "version_label": s.version_label,
+            "grand_total": float(s.grand_total) if s.grand_total is not None else None,
+            "status": s.status, "emailed": s.emailed,
+            "created_at": s.created_at.isoformat() + 'Z' if s.created_at else None,
+            "first_viewed_at": s.first_viewed_at.isoformat() + 'Z' if s.first_viewed_at else None,
+            "view_count": s.view_count,
+            "responded_at": s.responded_at.isoformat() + 'Z' if s.responded_at else None,
+            "approver_name": s.approver_name, "approver_note": s.approver_note,
+        })
+    return jsonify({"shares": out})
+
+
+@app.route("/estimate/share/<int:sid>/revoke", methods=["POST"])
+@login_required
+def estimate_share_revoke(sid):
+    s = EstimateShare.query.get_or_404(sid)
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=s.project_id, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    s.status = 'revoked'
+    db.session.commit()
+    return jsonify({"ok": True, "status": s.status})
+
+
+@app.route("/e/<token>", methods=["GET"])
+def estimate_portal(token):
+    """PUBLIC (no login): client-facing estimate review/approval page."""
+    s = EstimateShare.query.filter_by(token=token).first()
+    if not s:
+        return render_template("estimate_portal.html", not_found=True), 404
+    revoked = (s.status == 'revoked')
+    expired = bool(s.expires_at and datetime.utcnow() > s.expires_at)
+    if not revoked and not expired:
+        s.view_count = (s.view_count or 0) + 1
+        now = datetime.utcnow()
+        if not s.first_viewed_at:
+            s.first_viewed_at = now
+        s.last_viewed_at = now
+        if s.status == 'sent':
+            s.status = 'viewed'
+        db.session.commit()
+    import json as _json
+    snap = {}
+    try:
+        snap = _json.loads(s.snapshot_json) if s.snapshot_json else {}
+    except Exception:
+        snap = {}
+    return render_template("estimate_portal.html",
+                           share=s, snap=snap, revoked=revoked, expired=expired,
+                           not_found=False)
+
+
+@app.route("/e/<token>/respond", methods=["POST"])
+def estimate_portal_respond(token):
+    """PUBLIC: client approves or declines. Records typed-name e-signature."""
+    s = EstimateShare.query.filter_by(token=token).first()
+    if not s:
+        return jsonify({"error": "Not found"}), 404
+    if s.status == 'revoked':
+        return jsonify({"error": "This estimate link has been revoked."}), 410
+    if s.expires_at and datetime.utcnow() > s.expires_at:
+        return jsonify({"error": "This estimate link has expired."}), 410
+    if s.status in ('approved', 'declined'):
+        return jsonify({"error": f"Already {s.status}.", "status": s.status}), 409
+    body = request.get_json(silent=True) or {}
+    action = (body.get('action') or '').strip().lower()
+    name = (body.get('name') or '').strip()[:200]
+    note = (body.get('note') or '').strip()[:2000] or None
+    if action not in ('approve', 'decline'):
+        return jsonify({"error": "Invalid action"}), 400
+    if action == 'approve' and not name:
+        return jsonify({"error": "Please type your name to approve."}), 400
+    s.status = 'approved' if action == 'approve' else 'declined'
+    s.approver_name = name or None
+    s.approver_note = note
+    s.responded_at = datetime.utcnow()
+    try:
+        s.approver_ip = (request.headers.get('X-Forwarded-For', request.remote_addr) or '')[:64]
+    except Exception:
+        pass
+    db.session.commit()
+    # Notify the sender by email (best-effort) so they see the response.
+    try:
+        creator = User.query.get(s.created_by_user_id) if s.created_by_user_id else None
+        if creator and creator.email and app.config.get('MAIL_USERNAME'):
+            proj = ProjectSheet.query.get(s.project_id)
+            verb = 'APPROVED' if s.status == 'approved' else 'DECLINED'
+            _send_email(creator.email,
+                        f"Estimate {verb}: {proj.name if proj else ''} ({s.version_label})",
+                        f"{s.approver_name or s.client_name or 'The client'} {verb.lower()} the estimate"
+                        f" ({s.version_label}).\n\n"
+                        + (f"Note: {note}\n\n" if note else "")
+                        + f"Total: ${float(s.grand_total or 0):,.2f}")
+    except Exception:
+        pass
+    return jsonify({"ok": True, "status": s.status})
 
 
 # ── Smart CSV import ──────────────────────────────────────────────────────────

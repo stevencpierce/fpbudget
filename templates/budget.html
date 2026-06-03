@@ -136,8 +136,90 @@
         <div class="dropdown-divider"></div>
         <a href="#" data-preview-target="mmb"     onclick="openExportPreview(event, 'mmb')">Preview as Movie Magic…</a>
         <a href="#" data-preview-target="showbiz" onclick="openExportPreview(event, 'showbiz')">Preview as ShowBiz…</a>
+        <div class="dropdown-divider"></div>
+        <a href="#" onclick="openEstimateShare(event)">📤 Send as Estimate (client portal)…</a>
       </div>
     </div>
+
+    <!-- Send-as-Estimate modal: create a client-facing review/approval link
+         for THIS budget, optionally emailed. (User 2026-06-03.) -->
+    <div id="estshare-overlay" class="export-opts-overlay hidden" onclick="closeEstimateShare(event)">
+      <div class="export-opts-card" onclick="event.stopPropagation()" style="max-width:560px">
+        <div class="export-opts-head">
+          <div>
+            <h3 class="export-opts-title">Send as Estimate</h3>
+            <p class="export-opts-sub">Creates a secure link a client can open to review &amp; approve. No login needed for them.</p>
+          </div>
+          <button type="button" class="export-opts-close" onclick="closeEstimateShare()" aria-label="Close">×</button>
+        </div>
+        <div style="padding:4px 18px 8px">
+          <div id="estshare-form">
+            <label class="f" style="display:block;font-weight:600;margin:10px 0 4px;font-size:13px">Client name</label>
+            <input type="text" id="estshare-name" placeholder="e.g. Jane Smith" style="width:100%;padding:10px;border:1px solid #cfd6df;border-radius:8px;font-size:15px">
+            <label class="f" style="display:block;font-weight:600;margin:12px 0 4px;font-size:13px">Client email <span style="color:#6b7785;font-weight:400">(optional — needed to email)</span></label>
+            <input type="text" id="estshare-email" placeholder="client@example.com" style="width:100%;padding:10px;border:1px solid #cfd6df;border-radius:8px;font-size:15px">
+            <label class="f" style="display:block;font-weight:600;margin:14px 0 4px;font-size:13px">What the client sees</label>
+            <label style="display:block;font-size:14px;margin:4px 0"><input type="radio" name="estshare-detail" value="0" checked> Summary (section totals)</label>
+            <label style="display:block;font-size:14px;margin:4px 0"><input type="radio" name="estshare-detail" value="1"> Full line-by-line detail</label>
+            <label style="display:block;font-size:14px;margin:14px 0 4px"><input type="checkbox" id="estshare-email-toggle"> Also email this link to the client now</label>
+            <div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">
+              <button type="button" class="btn btn-sm" onclick="closeEstimateShare()">Cancel</button>
+              <button type="button" class="btn btn-sm btn-primary" id="estshare-go" onclick="submitEstimateShare()">Create link</button>
+            </div>
+          </div>
+          <div id="estshare-result" style="display:none">
+            <div id="estshare-msg" style="font-size:14px;margin:8px 0 12px"></div>
+            <label class="f" style="display:block;font-weight:600;margin:6px 0 4px;font-size:13px">Shareable link</label>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="estshare-link" readonly style="flex:1;padding:10px;border:1px solid #cfd6df;border-radius:8px;font-size:13px;background:#f7f9fc">
+              <button type="button" class="btn btn-sm btn-primary" onclick="copyEstimateLink()">Copy</button>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">
+              <button type="button" class="btn btn-sm" onclick="closeEstimateShare()">Done</button>
+              <a id="estshare-open" href="#" target="_blank" class="btn btn-sm btn-outline">Open portal ↗</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      function openEstimateShare(e){ if(e) e.preventDefault();
+        document.getElementById('estshare-form').style.display='block';
+        document.getElementById('estshare-result').style.display='none';
+        var go=document.getElementById('estshare-go'); go.disabled=false; go.textContent='Create link';
+        document.getElementById('estshare-overlay').classList.remove('hidden');
+      }
+      function closeEstimateShare(e){ if(e && e.target && e.target.id!=='estshare-overlay') return;
+        document.getElementById('estshare-overlay').classList.add('hidden');
+      }
+      async function submitEstimateShare(){
+        var btn=document.getElementById('estshare-go'); btn.disabled=true; btn.textContent='Creating…';
+        var detail=(document.querySelector('input[name="estshare-detail"]:checked')||{}).value==='1';
+        var payload={ client_name:document.getElementById('estshare-name').value,
+          client_email:document.getElementById('estshare-email').value,
+          detail_mode:detail, send_email:document.getElementById('estshare-email-toggle').checked };
+        try{
+          var r=await fetch('{{ url_for("estimate_share_create", pid=project.id, bid=budget.id) }}',{
+            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+          var j=await r.json();
+          if(!r.ok || !j.ok){ alert((j&&j.error)||'Could not create the estimate link.'); btn.disabled=false; btn.textContent='Create link'; return; }
+          document.getElementById('estshare-link').value=j.link;
+          document.getElementById('estshare-open').href=j.link;
+          var tot=(typeof j.grand_total==='number')?('$'+j.grand_total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'';
+          var msg='Link created for <b>'+(j.version_label||'this budget')+'</b>'+(tot?(' · '+tot):'')+'.';
+          if(j.emailed) msg+=' <span style="color:#2a5a3a">Emailed to the client.</span>';
+          else if(j.email_error) msg+=' <span style="color:#9a3030">'+j.email_error+'</span>';
+          document.getElementById('estshare-msg').innerHTML=msg;
+          document.getElementById('estshare-form').style.display='none';
+          document.getElementById('estshare-result').style.display='block';
+        }catch(err){ alert('Network error creating the link.'); }
+        btn.disabled=false; btn.textContent='Create link';
+      }
+      function copyEstimateLink(){ var i=document.getElementById('estshare-link'); i.select();
+        try{ navigator.clipboard.writeText(i.value); }catch(e){ try{document.execCommand('copy');}catch(_){} }
+      }
+    </script>
 
     <!-- Export Options modal — centered, two-column layout. Compact
          chip-style toggles instead of stacked checkboxes so the user

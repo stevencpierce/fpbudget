@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>{% if not_found %}Estimate not found{% else %}{{ snap.project_name }} — Estimate{% endif %}</title>
+<style>
+  :root { --ink:#1c2430; --muted:#6b7785; --line:#e6e9ee; --bg:#f4f6f9;
+          --brand:#23314a; --accent:#2a5a3a; --danger:#9a3030; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         background:var(--bg); color:var(--ink); line-height:1.5; padding:0 0 60px; }
+  .wrap { max-width:780px; margin:0 auto; padding:0 16px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px;
+          box-shadow:0 1px 3px rgba(20,30,50,.05); margin:16px 0; overflow:hidden; }
+  .pad { padding:20px; }
+  @media (min-width:600px){ .pad{ padding:28px; } }
+
+  .topbar { background:var(--brand); color:#fff; }
+  .topbar .pad { display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; align-items:flex-start; }
+  .company-name { font-size:18px; font-weight:700; letter-spacing:.2px; }
+  .company-detail { font-size:12px; opacity:.85; margin-top:4px; }
+  .doc-tag { text-align:right; font-size:12px; opacity:.9; }
+  .doc-tag .big { font-size:13px; font-weight:700; opacity:1; display:inline-block;
+                  background:rgba(255,255,255,.15); padding:3px 9px; border-radius:999px; }
+
+  h1 { font-size:22px; font-weight:700; }
+  @media (min-width:600px){ h1{ font-size:26px; } }
+  .sub { color:var(--muted); font-size:14px; margin-top:4px; }
+  .meta-grid { display:flex; flex-wrap:wrap; gap:8px 28px; margin-top:14px; font-size:13px; }
+  .meta-grid b { color:var(--muted); font-weight:600; }
+
+  .total-card { display:flex; justify-content:space-between; align-items:center;
+                background:linear-gradient(180deg,#fbfdff,#f1f5fb); border-top:1px solid var(--line); }
+  .total-card .label { font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; }
+  .total-card .amt { font-size:26px; font-weight:800; }
+  @media (min-width:600px){ .total-card .amt{ font-size:30px; } }
+
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:11px 14px; font-size:14px; }
+  th { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted);
+       border-bottom:2px solid var(--line); }
+  td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .sec-row td { background:#f8fafc; font-weight:700; border-top:1px solid var(--line); }
+  .line-row td { color:#33414f; border-top:1px solid #f1f3f6; }
+  .line-row td:first-child { padding-left:26px; }
+  .grand td { border-top:2px solid var(--ink); font-weight:800; font-size:16px; }
+
+  .banner { padding:14px 18px; border-radius:12px; font-size:14px; margin:16px 0; }
+  .banner.ok { background:#e8f3ec; border:1px solid #bcd9c6; color:var(--accent); }
+  .banner.no { background:#f6e7e7; border:1px solid #e0bcbc; color:var(--danger); }
+  .banner.warn { background:#fdf6e3; border:1px solid #ecdca6; color:#7a5d00; }
+
+  label.f { display:block; font-size:13px; font-weight:600; margin:14px 0 6px; }
+  input[type=text], textarea { width:100%; border:1px solid #cfd6df; border-radius:10px;
+       padding:12px 14px; font-size:16px; font-family:inherit; color:var(--ink); }
+  textarea { min-height:74px; resize:vertical; }
+  .btns { display:flex; flex-wrap:wrap; gap:10px; margin-top:18px; }
+  button { font-size:16px; font-weight:700; border:0; border-radius:10px; padding:14px 20px;
+           cursor:pointer; flex:1 1 180px; min-height:50px; }
+  .approve { background:var(--accent); color:#fff; }
+  .decline { background:#fff; color:var(--danger); border:1px solid #e0bcbc; }
+  button:disabled { opacity:.5; cursor:default; }
+  .fineprint { font-size:12px; color:var(--muted); margin-top:14px; }
+  .center { text-align:center; padding:60px 20px; }
+  .center h1 { margin-bottom:8px; }
+</style>
+</head>
+<body>
+{% if not_found %}
+  <div class="wrap"><div class="card"><div class="center">
+    <h1>Estimate not found</h1>
+    <p class="sub">This link isn’t valid. Please check with your contact for an updated link.</p>
+  </div></div></div>
+{% else %}
+  <div class="wrap">
+    <div class="card topbar"><div class="pad">
+      <div>
+        <div class="company-name">{{ snap.company.name or snap.project_name }}</div>
+        <div class="company-detail">
+          {% for a in snap.company.address %}{{ a }}<br>{% endfor %}
+          {% if snap.company.phone %}{{ snap.company.phone }}{% endif %}
+          {% if snap.company.email %}{% if snap.company.phone %} &nbsp;·&nbsp; {% endif %}{{ snap.company.email }}{% endif %}
+        </div>
+      </div>
+      <div class="doc-tag">
+        <span class="big">ESTIMATE</span><br>
+        {% if snap.version_label %}{{ snap.version_label }}<br>{% endif %}
+        {{ snap.date }}
+      </div>
+    </div></div>
+
+    {% if revoked %}
+      <div class="banner no">This estimate link has been revoked. Please contact your sender for a current version.</div>
+    {% elif expired %}
+      <div class="banner warn">This estimate link has expired. Please contact your sender for a current version.</div>
+    {% endif %}
+
+    <div class="card">
+      <div class="pad">
+        <h1>{{ snap.project_name }}</h1>
+        <div class="sub">Estimate for your review{% if snap.client_name %}, {{ snap.client_name }}{% endif %}.</div>
+        <div class="meta-grid">
+          {% if snap.version_label %}<div><b>Version</b><br>{{ snap.version_label }}</div>{% endif %}
+          <div><b>Date</b><br>{{ snap.date }}</div>
+          {% if snap.prepared_by %}<div><b>Prepared by</b><br>{{ snap.prepared_by }}{% if snap.prepared_by_title %}, {{ snap.prepared_by_title }}{% endif %}</div>{% endif %}
+        </div>
+      </div>
+      <div class="total-card pad">
+        <span class="label">Estimated Total</span>
+        <span class="amt">{{ snap.grand_total | currency }}</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <table>
+        <thead><tr><th>{{ 'Line item' if snap.detail_mode else 'Section' }}</th><th class="num">Amount</th></tr></thead>
+        <tbody>
+          {% for sec in snap.sections %}
+            <tr class="sec-row"><td>{{ sec.name or ('Section ' ~ sec.code) }}</td><td class="num">{{ sec.total | currency }}</td></tr>
+            {% if snap.detail_mode %}
+              {% for ln in sec.lines %}
+                <tr class="line-row"><td>{{ ln.desc or '—' }}</td><td class="num">{{ ln.total | currency }}</td></tr>
+              {% endfor %}
+            {% endif %}
+          {% endfor %}
+          <tr class="grand"><td>Grand Total</td><td class="num">{{ snap.grand_total | currency }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    {% if share.status == 'approved' %}
+      <div class="banner ok">
+        <strong>Approved.</strong> Signed by {{ share.approver_name }}{% if share.responded_at %} on {{ share.responded_at.strftime('%B %d, %Y') }}{% endif %}.
+        {% if share.approver_note %}<br>Note: “{{ share.approver_note }}”{% endif %}
+      </div>
+    {% elif share.status == 'declined' %}
+      <div class="banner no">
+        <strong>Changes requested / declined.</strong>{% if share.approver_name %} By {{ share.approver_name }}.{% endif %}
+        {% if share.approver_note %}<br>Note: “{{ share.approver_note }}”{% endif %}
+      </div>
+    {% elif not revoked and not expired %}
+      <div class="card"><div class="pad">
+        <h1 style="font-size:18px;">Approve this estimate</h1>
+        <div class="sub">Type your full name to sign and approve, or request changes below.</div>
+        <div id="err" class="banner no" style="display:none;"></div>
+        <label class="f" for="nm">Your full name</label>
+        <input type="text" id="nm" autocomplete="name" placeholder="e.g. Jane Smith">
+        <label class="f" for="nt">Note (optional)</label>
+        <textarea id="nt" placeholder="Any comments or change requests…"></textarea>
+        <div class="btns">
+          <button class="approve" id="btnApprove">✓ Approve estimate</button>
+          <button class="decline" id="btnDecline">Request changes</button>
+        </div>
+        <div class="fineprint">Typing your name and clicking Approve acts as your electronic signature for {{ snap.version_label or 'this estimate' }}, total {{ snap.grand_total | currency }}.</div>
+      </div></div>
+    {% endif %}
+
+    <div class="fineprint" style="text-align:center; padding:8px 0 0;">Powered by Framework Productions budgeting.</div>
+  </div>
+
+  <script>
+    (function(){
+      var token = {{ share.token | tojson }};
+      var err = document.getElementById('err');
+      function show(msg){ if(err){ err.textContent=msg; err.style.display='block'; window.scrollTo(0,err.offsetTop-40);} }
+      function send(action){
+        var name=(document.getElementById('nm')||{}).value||'';
+        var note=(document.getElementById('nt')||{}).value||'';
+        if(action==='approve' && !name.trim()){ show('Please type your name to approve.'); return; }
+        if(action==='decline' && !note.trim()){ show('Please add a note describing the changes you’d like.'); return; }
+        var a=document.getElementById('btnApprove'), d=document.getElementById('btnDecline');
+        if(a) a.disabled=true; if(d) d.disabled=true;
+        fetch('/e/'+encodeURIComponent(token)+'/respond', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({action:action, name:name, note:note})
+        }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+          .then(function(res){
+            if(res.ok && res.j.ok){ location.reload(); }
+            else { show(res.j.error || 'Something went wrong. Please try again.');
+                   if(a) a.disabled=false; if(d) d.disabled=false; }
+          }).catch(function(){ show('Network error. Please try again.');
+                   if(a) a.disabled=false; if(d) d.disabled=false; });
+      }
+      var ba=document.getElementById('btnApprove'); if(ba) ba.onclick=function(){ send('approve'); };
+      var bd=document.getElementById('btnDecline'); if(bd) bd.onclick=function(){ send('decline'); };
+    })();
+  </script>
+{% endif %}
+</body>
+</html>

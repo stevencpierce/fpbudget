@@ -8,7 +8,7 @@
     size: letter landscape;
     margin: 0.65in 0.6in 0.7in 0.6in;
     @bottom-center {
-      content: "{{ project.name | replace('"', '\"') }} \B7 {{ budget.name | replace('"', '\"') }} \B7 " counter(page) " of " counter(pages);
+      content: "{{ project.name | replace('"', '\"') }} \B7 {{ budget.name | replace('"', '\"') }}{% if est_ver or work_ver %} \B7 {% if est_ver %}Est {{ est_ver }}{% endif %}{% if work_ver %}{% if est_ver %}/{% endif %}{{ 'Act' if work_ver_label == 'Actual' else 'Wrk' }} {{ work_ver }}{% endif %}{% endif %} \B7 " counter(page) " of " counter(pages);
       font-family: Arial, sans-serif;
       font-size: 8pt;
       color: #888;
@@ -307,7 +307,10 @@
     <div class="meta-row">
       <span class="version-badge">{{ 'Working Budget' if is_working_view else 'Estimated Budget' }}</span><br>
       {% if budget.client_name %}<strong>Client:</strong> {{ budget.client_name }}<br>{% endif %}
-      <strong>Version:</strong> {{ budget.name }}<br>
+      {% if est_ver or work_ver %}<strong>Versions:</strong>
+        {% if est_ver %}Estimated {{ est_ver }}{% endif %}
+        {% if work_ver %}{% if est_ver %} &nbsp;·&nbsp; {% endif %}{{ work_ver_label }} {{ work_ver }}{% endif %}<br>{% endif %}
+      <strong>Budget:</strong> {{ budget.name }}<br>
       <strong>Date:</strong> {{ today.strftime('%B %d, %Y') }}<br>
       {% if budget.prepared_by %}
         <strong>Prepared by:</strong> {{ budget.prepared_by }}{% if budget.prepared_by_title %}, {{ budget.prepared_by_title }}{% endif %}<br>

@@ -1097,3 +1097,47 @@ class SubBudgetLine(db.Model):
         db.Index('ix_sbl_sub_budget', 'sub_budget_id'),
         db.Index('ix_sbl_budget_line', 'budget_line_id'),
     )
+
+
+# ── Client estimate share / approval portal (2026-06-03) ───────────────
+# One row per "send this budget to a client as an estimate" action. The
+# client opens /e/<token> (no login) to review and approve. We freeze a
+# SNAPSHOT of the totals + version at send time so the client always sees
+# exactly what was sent and the approval is bound to that specific version,
+# even if the budget is edited afterward.
+class EstimateShare(db.Model):
+    __tablename__ = "estimate_share"
+    id              = db.Column(db.Integer, primary_key=True)
+    project_id      = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
+    budget_id       = db.Column(db.Integer, db.ForeignKey("budget.id"), nullable=False)
+    token           = db.Column(db.String(64), unique=True, index=True, nullable=False)
+    client_name     = db.Column(db.String(200), nullable=True)
+    client_email    = db.Column(db.String(200), nullable=True)
+    # Per-send choice: full line-by-line detail vs. summary top-sheet only.
+    detail_mode     = db.Column(db.Boolean, default=False, nullable=False)
+    version_label   = db.Column(db.String(80), nullable=True)   # e.g. "Estimated v2"
+    snapshot_json   = db.Column(db.Text, nullable=True)          # frozen totals at send time
+    grand_total     = db.Column(db.Numeric(14, 2), nullable=True)
+    # sent | viewed | approved | declined | revoked
+    status          = db.Column(db.String(20), default='sent', nullable=False)
+    created_at      = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    sent_at         = db.Column(db.DateTime, nullable=True)
+    emailed         = db.Column(db.Boolean, default=False, nullable=False)
+    first_viewed_at = db.Column(db.DateTime, nullable=True)
+    last_viewed_at  = db.Column(db.DateTime, nullable=True)
+    view_count      = db.Column(db.Integer, default=0, nullable=False)
+    responded_at    = db.Column(db.DateTime, nullable=True)
+    approver_name   = db.Column(db.String(200), nullable=True)   # typed-name e-signature
+    approver_note   = db.Column(db.Text, nullable=True)
+    approver_ip     = db.Column(db.String(64), nullable=True)
+    expires_at      = db.Column(db.DateTime, nullable=True)
+
+    project = db.relationship("ProjectSheet", foreign_keys=[project_id])
+    budget  = db.relationship("Budget",       foreign_keys=[budget_id])
+    creator = db.relationship("User",         foreign_keys=[created_by_user_id])
+
+    __table_args__ = (
+        db.Index('ix_estimate_share_project', 'project_id'),
+        db.Index('ix_estimate_share_budget', 'budget_id'),
+    )
