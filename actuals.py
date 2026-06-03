@@ -780,8 +780,15 @@ def confirm_match(qbo_transaction_id):
     q = Transaction.query.get(qbo_transaction_id)
     if not q:
         raise ValueError(f"transaction {qbo_transaction_id} not found")
-    if q.match_status != 'suggested' or not q.doc_upload_id:
-        raise ValueError("not in 'suggested' state with a doc_upload_id")
+    # Must have a linked receipt to confirm. We accept BOTH 'suggested' and
+    # 'confirmed' states: assigning a budget line first (link_transaction_to_line)
+    # flips the row to 'confirmed' before the user clicks Confirm on the receipt
+    # match, and we still need to merge the receipt's sister txn in that case.
+    # (User 2026-06-03 — "Confirm failed: not in 'suggested' state".)
+    if not q.doc_upload_id:
+        raise ValueError("no linked receipt (doc_upload_id) to confirm")
+    if q.match_status not in ('suggested', 'confirmed'):
+        raise ValueError(f"unexpected match_status '{q.match_status}' — cannot confirm")
     # Find the doc_upload Transaction that backs the same DocUpload.
     sister = (Transaction.query
               .filter_by(doc_upload_id=q.doc_upload_id, source='doc_upload')
