@@ -7535,6 +7535,12 @@
         wrap.id = 'actuals-sections';
         list.parentNode.insertBefore(wrap, list);
       }
+      // Idempotency: a prior run moved every row OUT of the flat list into
+      // these section bodies. Re-bucket callers (unlink / dismiss / code)
+      // invoke us again — so first reclaim those rows back into the flat
+      // list, otherwise we'd re-read an empty list and wipe everything.
+      wrap.querySelectorAll('.actuals-txn-row, .actuals-suggested-banner')
+          .forEach(n => list.appendChild(n));
       wrap.innerHTML = '';
       const defs = [
         { key: 'needs',    title: '⚡ Needs receipt',     color: '#e0a040', desc: 'charges with no proof yet', collapsed: false },
@@ -8255,7 +8261,11 @@
           }
         }
       });
-      obs.observe(list, {
+      // Observe the common parent (not just the flat list): the grouped
+      // view moves rows into a sibling #actuals-sections, so watching the
+      // parent keeps data-fulfill (the 3/3 stripe + progress sort) live in
+      // both flat and grouped layouts.
+      obs.observe(list.parentNode || list, {
         subtree: true,
         attributes: true,
         attributeFilter: ['data-coded', 'data-has-doc', 'data-has-txn',
