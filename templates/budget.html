@@ -5404,7 +5404,7 @@
         trow.dataset.sortCard4 = d.card_last4 || '';
         const c4El = trow.querySelector('.actuals-txn-card4');
         if (c4El) {
-          c4El.textContent = d.card_last4 ? ('💳 ••' + d.card_last4) : '';
+          c4El.textContent = d.card_last4 ? ('••' + d.card_last4) : '';
           c4El.style.display = d.card_last4 ? '' : 'none';
         }
         if (d.filed_path) {
@@ -5534,28 +5534,33 @@
     #tab-actuals .actuals-txn-row[data-fulfill="3"]{ box-shadow: inset 3px 0 0 #74c69d; }
 
     #tab-actuals .ax-cells{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;
-                            width:540px; flex-shrink:0; }
+                            width:552px; flex-shrink:0; }
     #tab-actuals .ax-cell{
-      display:flex; align-items:center; gap:6px; min-width:0;
-      border:1px solid var(--border); border-radius:5px; padding:3px 8px;
-      font-size:.72rem; line-height:1.45; overflow:hidden;
+      display:flex; align-items:center; gap:6px; min-width:0; min-height:30px;
+      border:1px solid var(--border); border-radius:6px; padding:4px 9px;
+      font-size:.72rem; line-height:1.4; overflow:hidden;
       transition: background .2s ease, border-color .2s ease, opacity .2s ease;
     }
+    #tab-actuals .ax-cell .ax-ic{ flex-shrink:0; font-size:.82rem; line-height:1; }
     #tab-actuals .ax-cell .ax-c-txt{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     #tab-actuals .ax-cell .ax-filled, #tab-actuals .ax-cell .ax-empty{
       display:flex; align-items:center; gap:6px; min-width:0; width:100%;
     }
-    #tab-actuals .ax-cell .ax-empty .ax-c-txt{ color:var(--text-muted); font-style:italic; flex:1; }
+    #tab-actuals .ax-cell .ax-empty .ax-lbl{ color:var(--text-muted); flex:1; }
 
-    /* FILLED — color-coded per bucket, keyed on the row's state attrs */
-    #tab-actuals .actuals-txn-row[data-has-txn="1"] .ax-cell-txn { background:rgba(91,138,249,.12);  border-color:rgba(91,138,249,.45); }
-    #tab-actuals .actuals-txn-row[data-has-doc="1"] .ax-cell-doc { background:rgba(224,160,64,.12);  border-color:rgba(224,160,64,.45); }
-    #tab-actuals .actuals-txn-row[data-coded="1"]   .ax-cell-line{ background:rgba(116,198,157,.14); border-color:rgba(116,198,157,.45); }
+    /* FILLED — solid tint + colored border per bucket */
+    #tab-actuals .actuals-txn-row[data-has-txn="1"] .ax-cell-txn { background:rgba(91,138,249,.16);  border-color:rgba(91,138,249,.55); }
+    #tab-actuals .actuals-txn-row[data-has-doc="1"] .ax-cell-doc { background:rgba(224,160,64,.16);  border-color:rgba(224,160,64,.55); }
+    #tab-actuals .actuals-txn-row[data-coded="1"]   .ax-cell-line{ background:rgba(116,198,157,.18); border-color:rgba(116,198,157,.55); }
 
-    /* EMPTY — thin dashed, faint */
+    /* EMPTY / still-needed — dashed outline, grey icon, muted label.
+       No cell-wide dimming, so the dashed gap reads clearly at a glance. */
     #tab-actuals .actuals-txn-row[data-has-txn="0"] .ax-cell-txn,
     #tab-actuals .actuals-txn-row[data-has-doc="0"] .ax-cell-doc,
-    #tab-actuals .actuals-txn-row[data-coded="0"]   .ax-cell-line{ border-style:dashed; opacity:.72; }
+    #tab-actuals .actuals-txn-row[data-coded="0"]   .ax-cell-line{ border-style:dashed; background:rgba(255,255,255,.015); }
+    #tab-actuals .actuals-txn-row[data-has-txn="0"] .ax-cell-txn .ax-ic,
+    #tab-actuals .actuals-txn-row[data-has-doc="0"] .ax-cell-doc .ax-ic,
+    #tab-actuals .actuals-txn-row[data-coded="0"]   .ax-cell-line .ax-ic{ opacity:.4; filter:grayscale(1); }
 
     /* show exactly one of the filled / empty sub-blocks per state */
     #tab-actuals .actuals-txn-row[data-has-txn="1"] .ax-cell-txn .ax-empty,
@@ -5563,10 +5568,18 @@
     #tab-actuals .actuals-txn-row[data-has-txn="0"] .ax-cell-txn .ax-filled,
     #tab-actuals .actuals-txn-row[data-has-doc="0"] .ax-cell-doc .ax-filled{ display:none; }
 
-    /* the budget-line picker fills its cell */
-    #tab-actuals .ax-cell-line .actuals-line-picker{ width:100%; min-width:0; flex:1; }
+    /* the budget-line picker sits beside its 🏷 icon — styled as plain text,
+       not a heavy dropdown, so the Line bucket doesn't visually dominate */
+    #tab-actuals .ax-cell-line .actuals-line-picker{ flex:1; min-width:0; width:100%;
+        background:transparent; border:none; color:var(--text); font-size:.72rem;
+        padding:1px 0; cursor:pointer; }
+    #tab-actuals .actuals-txn-row[data-coded="0"] .ax-cell-line .actuals-line-picker{ color:var(--text-muted); }
+    /* the Add-receipt CTA fills its empty cell */
+    #tab-actuals .ax-add-receipt{ flex:1; text-align:left; background:none; border:none;
+        color:#7ba6e8; font-size:.72rem; cursor:pointer; padding:0; }
+    #tab-actuals .ax-add-receipt:hover{ text-decoration:underline; }
     #tab-actuals .ax-colhint{ display:flex; gap:8px; align-items:center; padding:2px 10px 8px;
-                              font-size:.64rem; color:var(--text-muted); }
+                              font-size:.66rem; color:var(--text-muted); }
   </style>
   {# ── Header bar with action buttons ── #}
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:8px">
@@ -6090,11 +6103,11 @@
 
         {# Legend for the three bucket columns on every row. #}
         <div class="ax-colhint">
-          <span>Each row →</span>
+          <span style="font-weight:600;color:var(--text)">Every charge needs all three:</span>
           <span style="color:#9ec0ff">🏦 Transaction</span><span>·</span>
-          <span style="color:#f0c88a">📎 Document</span><span>·</span>
+          <span style="color:#f0c88a">🧾 Document</span><span>·</span>
           <span style="color:#8fe0b8">🏷 Budget line</span>
-          <span style="margin-left:6px">— filled = matched · dashed = still needed</span>
+          <span style="margin-left:6px">— solid = done, dashed = still needed</span>
         </div>
         <div id="actuals-txn-list">
         {% for t in actuals_transactions %}
@@ -6200,18 +6213,19 @@
                  CSS, so existing match actions flip the cells automatically. #}
             <div class="ax-cells">
               {# 1 · Transaction (the electronic charge) #}
-              <div class="ax-cell ax-cell-txn" title="Electronic transaction">
+              <div class="ax-cell ax-cell-txn" title="Electronic transaction (bank / card charge)">
                 <span class="ax-filled">
-                  <span style="flex-shrink:0">{{ _src_icon }}</span>
+                  <span class="ax-ic">🏦</span>
                   <span class="actuals-txn-card4" title="Card / account last 4"
-                        style="flex-shrink:0;color:#9aa4b2;font-variant-numeric:tabular-nums;{% if not _c4 %}display:none{% endif %}">💳 ••{{ _c4 }}</span>
+                        style="flex-shrink:0;color:#9aa4b2;font-variant-numeric:tabular-nums;{% if not _c4 %}display:none{% endif %}">••{{ _c4 }}</span>
                   <span class="ax-c-txt" style="color:var(--text-muted)">{{ _src_label }}</span>
                 </span>
-                <span class="ax-empty"><span class="ax-c-txt">no charge linked</span></span>
+                <span class="ax-empty"><span class="ax-ic">🏦</span><span class="ax-lbl">No charge yet</span></span>
               </div>
               {# 2 · Backup document (receipt / invoice) #}
-              <div class="ax-cell ax-cell-doc" title="Backup document">
+              <div class="ax-cell ax-cell-doc" title="Backup document (receipt / invoice)">
                 <span class="ax-filled">
+                  <span class="ax-ic">🧾</span>
                   {% if _doc %}
                   {% set _cat = (_doc.category or 'misc') %}
                   {% set _docfg = {
@@ -6222,9 +6236,9 @@
                      data-doc-id="{{ _doc.id }}"
                      onclick="openDocDetail({{ _doc.id }}, null);return false"
                      title="View {{ _cat }} — hover to preview, click to open"
-                     style="color:{{ _docfg }};text-decoration:none">📎 {{ _cat }} · {{ (_doc.filed_filename or _doc.original_filename or '')[:16] }}{% if (_doc.filed_filename or _doc.original_filename or '')|length > 16 %}…{% endif %}</a>
+                     style="color:{{ _docfg }};text-decoration:none">{{ _cat }} · {{ (_doc.filed_filename or _doc.original_filename or '')[:16] }}{% if (_doc.filed_filename or _doc.original_filename or '')|length > 16 %}…{% endif %}</a>
                   {% else %}
-                  <span class="ax-c-txt" style="color:#f0c88a">📎 receipt</span>
+                  <span class="ax-c-txt" style="color:#f0c88a">receipt</span>
                   {% endif %}
                   {% if t.source in ('qbo_sync', 'reconciled', 'csv_import') %}
                   <button type="button" onclick="actualsUnmatch({{ t.id }})"
@@ -6233,12 +6247,9 @@
                   {% endif %}
                 </span>
                 <span class="ax-empty">
-                  <button type="button" onclick="actualsFindReceipt({{ t.id }})"
-                          title="Search existing receipts that match this charge and link one"
-                          style="flex-shrink:0;font-size:.66rem;padding:1px 6px;background:#13251a;border:1px solid #2a5a3a;border-radius:4px;color:#74c69d;cursor:pointer">🔍 Find</button>
-                  <button type="button" class="actuals-upload-btn" data-tid="{{ t.id }}"
-                          title="Upload a new receipt file for this transaction"
-                          style="flex-shrink:0;font-size:.66rem;padding:1px 6px;background:#1a2540;border:1px solid #2d4070;border-radius:4px;color:#5b8af9;cursor:pointer">📎 Add</button>
+                  <span class="ax-ic">🧾</span>
+                  <button type="button" class="actuals-upload-btn ax-add-receipt" data-tid="{{ t.id }}"
+                          title="Upload a receipt for this charge">Add receipt</button>
                 </span>
               </div>
               {# 3 · Budget-line assignment. The picker IS the control; the
@@ -6248,6 +6259,7 @@
               {% set _wid_for_selected = actual_to_working.get(t.budget_line_id, t.budget_line_id) if t.budget_line_id else None %}
               {% set _cur = (_wid_for_selected | string) if _wid_for_selected else (('section:' ~ t.account_code) if t.account_code else '') %}
               <div class="ax-cell ax-cell-line" title="Budget-line assignment">
+                <span class="ax-ic">🏷</span>
                 {% if _sug and not _coded and not t.not_project_expense %}
                 <button type="button" class="actuals-suggest-btn"
                         data-tid="{{ t.id }}" data-line-id="{{ _sug.line_id }}"
@@ -6259,9 +6271,8 @@
                         data-tid="{{ t.id }}" data-current="{{ _cur }}" data-populated="0"
                         onfocus="_actualsFillPicker(this)"
                         onchange="actualsSetLine(this)"
-                        {% if t.not_project_expense %}disabled{% endif %}
-                        style="font-size:.7rem;padding:2px 4px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px">
-                  <option value="">— pick line —</option>
+                        {% if t.not_project_expense %}disabled{% endif %}>
+                  <option value="">Add budget line</option>
                 </select>
               </div>
             </div>
