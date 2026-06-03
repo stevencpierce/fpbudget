@@ -1521,10 +1521,45 @@ def admin_docs_source_audit(pid):
             if nm:
                 proc_names.add(nm.lower())
 
+    # Semantic safety net: this kind of backup folder is often CURATED — files
+    # hand-renamed / re-combined (e.g. "INVOICE+PROOFofPAYMENT.pdf"), so their
+    # bytes differ from whatever was uploaded and content_hash alone over-counts
+    # "missing". So for every byte-missing file we also parse its dollar amount
+    # from the filename and check it against amounts ALREADY in the project
+    # (transactions + docs). A byte-missing file whose amount is already in the
+    # system is almost certainly the same expense in a different wrapper — NOT a
+    # true gap. (User 2026-06-03.)
+    import re as _re
+    def _amounts_in_name(nm):
+        # tokens like 7900.00 / 16,100.00 ; ignore bare ints (too noisy).
+        out = set()
+        for m in _re.findall(r'\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2}', nm or ''):
+            try:
+                v = float(m.replace(',', ''))
+                if v >= 1:
+                    out.add(int(round(v * 100)))
+            except ValueError:
+                pass
+        return out
+    existing_cents = set()
+    for (a,) in db.session.query(Transaction.amount).filter(
+            Transaction.project_id == pid, Transaction.amount.isnot(None)).all():
+        try: existing_cents.add(int(round(float(a) * 100)))
+        except Exception: pass
+    for (a,) in db.session.query(DocUpload.amount).filter(
+            DocUpload.project_id == pid, DocUpload.amount.isnot(None)).all():
+        try: existing_cents.add(int(round(float(a) * 100)))
+        except Exception: pass
+
     # 2) Walk the source originals folder; bucket by hash, then name.
     SKIP = {'.ds_store', 'thumbs.db', 'desktop.ini', 'icon\r'}
+    src_prefix = src_path.rstrip('/') + '/'
     in_software = name_match = missing = src_total = 0
-    missing_sample, name_sample = [], []
+    # missing sub-buckets (content_hash miss + name miss):
+    amt_in_system = amt_no_match = no_amount = 0
+    missing_sample, name_sample, true_gap_sample = [], [], []
+    from collections import Counter as _Counter
+    by_subfolder = _Counter()
     src_err = None
     try:
         for e in _walk_dbx_files(dbx, src_path):
@@ -1534,16 +1569,31 @@ def admin_docs_source_audit(pid):
             src_total += 1
             if e.content_hash in proc_hashes:
                 in_software += 1
-            elif nm.lower() in proc_names:
+                continue
+            if nm.lower() in proc_names:
                 name_match += 1
                 if len(name_sample) < 40:
-                    name_sample.append({"filename": nm, "path": e.path_display,
-                                        "size": getattr(e, 'size', None)})
+                    name_sample.append({"filename": nm, "path": e.path_display})
+                continue
+            # byte-missing → classify by amount-in-filename vs amounts in system
+            missing += 1
+            pd = (e.path_display or '')
+            sub = pd[len(src_prefix):].split('/')[0] if pd.lower().startswith(src_prefix.lower()) and '/' in pd[len(src_prefix):] else '(root)'
+            by_subfolder[sub] += 1
+            amts = _amounts_in_name(nm)
+            row = {"filename": nm, "path": e.path_display,
+                   "size": getattr(e, 'size', None),
+                   "amounts": sorted(a/100 for a in amts)}
+            if amts and (amts & existing_cents):
+                amt_in_system += 1
+            elif amts:
+                amt_no_match += 1
+                if len(true_gap_sample) < 60:
+                    true_gap_sample.append(row)
             else:
-                missing += 1
-                if len(missing_sample) < 200:
-                    missing_sample.append({"filename": nm, "path": e.path_display,
-                                           "size": getattr(e, 'size', None)})
+                no_amount += 1
+            if len(missing_sample) < 60:
+                missing_sample.append(row)
     except Exception as _e:
         src_err = type(_e).__name__
 
@@ -1552,14 +1602,22 @@ def admin_docs_source_audit(pid):
         "source_path": src_path,
         "source_files": src_total,
         "processed_files_indexed": proc_scanned,
-        "in_software": in_software,
+        "in_software_exact": in_software,
         "name_match_only": name_match,
-        "missing": missing,
+        "byte_missing": missing,
+        # the breakdown that actually matters:
+        "missing_amount_already_in_system": amt_in_system,
+        "missing_amount_NOT_in_system": amt_no_match,
+        "missing_no_amount_in_filename": no_amount,
+        "by_subfolder": dict(by_subfolder.most_common()),
+        "true_gap_sample": true_gap_sample,
         "missing_sample": missing_sample,
         "name_match_sample": name_sample,
         "source_error": src_err,
-        "note": "Matching by Dropbox content_hash. 'missing' = original bytes "
-                "not found anywhere in the project's processed/archive tree.",
+        "note": "byte_missing = no content_hash match. Of those, "
+                "'amount_already_in_system' is almost certainly the same expense "
+                "in a different file wrapper (not a real gap). The real review "
+                "set is 'amount_NOT_in_system' + 'no_amount_in_filename'.",
     })
 
 
@@ -1615,14 +1673,46 @@ def admin_docs_source_import(pid):
             if nm:
                 proc_names.add(nm.lower())
 
+    # Same semantic guard as the audit: by default DON'T re-import a byte-missing
+    # file whose dollar amount is already present in the project (it's the same
+    # expense in a different wrapper). Pass include_amount_in_system=true to
+    # override. (User 2026-06-03.)
+    include_amt_in_system = bool(body.get('include_amount_in_system'))
+    import re as _re
+    def _amounts_in_name(nm):
+        out = set()
+        for m in _re.findall(r'\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2}', nm or ''):
+            try:
+                v = float(m.replace(',', ''))
+                if v >= 1:
+                    out.add(int(round(v * 100)))
+            except ValueError:
+                pass
+        return out
+    existing_cents = set()
+    if not include_amt_in_system:
+        for (a,) in db.session.query(Transaction.amount).filter(
+                Transaction.project_id == pid, Transaction.amount.isnot(None)).all():
+            try: existing_cents.add(int(round(float(a) * 100)))
+            except Exception: pass
+        for (a,) in db.session.query(DocUpload.amount).filter(
+                DocUpload.project_id == pid, DocUpload.amount.isnot(None)).all():
+            try: existing_cents.add(int(round(float(a) * 100)))
+            except Exception: pass
+
     SKIP = {'.ds_store', 'thumbs.db', 'desktop.ini', 'icon\r'}
-    missing = []
+    missing, skipped_amt_in_system = [], 0
     for e in _walk_dbx_files(dbx, src_path):
         nm = (e.name or '')
         if nm.lower() in SKIP or nm.startswith('.') or getattr(e, 'size', 0) == 0:
             continue
         if e.content_hash in proc_hashes or nm.lower() in proc_names:
             continue
+        if not include_amt_in_system:
+            amts = _amounts_in_name(nm)
+            if amts and (amts & existing_cents):
+                skipped_amt_in_system += 1
+                continue
         missing.append(e)
     total_missing = len(missing)
     batch = missing[:limit]
@@ -1630,10 +1720,14 @@ def admin_docs_source_import(pid):
     if not apply:
         return jsonify({
             "dry": True, "source_path": src_path,
-            "total_missing": total_missing, "would_import_now": len(batch),
+            "candidates_after_amount_filter": total_missing,
+            "skipped_amount_already_in_system": skipped_amt_in_system,
+            "include_amount_in_system": include_amt_in_system,
+            "would_import_now": len(batch),
             "remaining_after": max(0, total_missing - len(batch)),
             "sample": [{"filename": e.name, "size": getattr(e, 'size', None)} for e in batch],
-            "note": "Dry run. POST apply=true to OCR + file these. Re-run to drain the rest.",
+            "note": "Dry run. POST apply=true to OCR + file these. Re-run to drain the rest. "
+                    "Set include_amount_in_system=true to also import files whose amount already exists.",
         })
 
     # APPLY: download + run the real pipeline per file.
