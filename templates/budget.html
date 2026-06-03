@@ -7315,6 +7315,14 @@
       document.querySelectorAll('.actuals-txn-row').forEach(r => {
         r.style.display = sugTids.has(r.dataset.tid) ? '' : 'none';
       });
+      // Suggested rows live in the (collapsed-by-default) Linked section, so
+      // EXPAND every section body during review or they'd stay hidden inside
+      // a collapsed section. (User 2026-06-03.)
+      const _wrap = document.getElementById('actuals-sections');
+      if (_wrap) {
+        _wrap.querySelectorAll(':scope > div > div:nth-child(2)').forEach(b => { b.style.display = 'flex'; });
+        _wrap.querySelectorAll('.sec-chev').forEach(c => { c.textContent = '▾'; });
+      }
       ['actuals-filter-bar', 'actuals-bulk-bar'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
       document.getElementById('actuals-review-bar').style.display = 'flex';
       const hc = banners.filter(b => parseFloat(b.dataset.confidence || 0) >= 0.9).length;
