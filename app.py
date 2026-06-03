@@ -1971,6 +1971,7 @@ def _source_drain_worker(flask_app, pid, src_path, user_id, include_amt):
                     status_map = {"filed": "done", "needs_review": "review", "error": "error"}
                     up = DocUpload(
                         project_id=pid, uploader_id=user_id, original_filename=nm,
+                        uploaded_at=_dt.utcnow(),
                         file_size=len(data), content_type='application/octet-stream',
                         file_hash=file_hash, status=status_map.get(result.get("status"), "error"),
                         veryfi_data=_json.dumps(vr) if vr else None, vendor=vendor_name,
@@ -2014,6 +2015,17 @@ def _source_drain_worker(flask_app, pid, src_path, user_id, include_amt):
                         break
                 finally:
                     prog['processed'] += 1
+                    # Release per-file working set so OCR'ing big multi-page PDFs
+                    # doesn't grow the worker until Render's 512MB OOM killer
+                    # reaps it (which would silently kill this thread). (2026-06-03)
+                    try:
+                        del data
+                    except Exception:
+                        pass
+                    try:
+                        import gc as _gc; _gc.collect()
+                    except Exception:
+                        pass
         except Exception as _we:
             prog['errors'].append('worker:' + type(_we).__name__)
         finally:
@@ -2046,10 +2058,16 @@ def admin_docs_source_import_drain(pid):
     src_path = _resolve_dbx_path(body.get('source_path') or request.args.get('source_path'))
     if not src_path:
         return jsonify({"error": "source_path required"}), 400
-    cur = _SOURCE_DRAIN.get(pid)
-    if cur and cur.get('running'):
-        return jsonify({"already_running": True, **{k: cur[k] for k in
-                       ('total', 'processed', 'imported', 'txns', 'dups', 'failed', 'last')}})
+    # DB-derived single-flight (works across gunicorn workers, unlike an
+    # in-memory flag): if an import landed in the last 90s, a drain is actively
+    # running somewhere — don't spawn a second one that would race it. Pass
+    # force=true to override (e.g. after a confirmed stall). (User 2026-06-03.)
+    force = bool(body.get('force')) or (request.args.get('force') == '1')
+    last_dt, secs = _drain_heartbeat(pid)
+    if last_dt is not None and secs is not None and secs < 90 and not force:
+        return jsonify({"already_running": True, "seconds_since_last_import": round(secs, 1),
+                        "hint": "A drain is active (an import landed <90s ago). "
+                                "Pass force=true to start another anyway."})
     include_amt = bool(body.get('include_amount_in_system'))
     _SOURCE_DRAIN[pid] = {'running': True, 'done': False, 'total': None, 'processed': 0,
                           'imported': 0, 'txns': 0, 'dups': 0, 'failed': 0, 'skipped': 0,
@@ -2063,18 +2081,46 @@ def admin_docs_source_import_drain(pid):
                     "include_amount_in_system": include_amt})
 
 
+def _drain_heartbeat(pid):
+    """(latest import timestamp, seconds-since) for source-folder imports in this
+    project — the DB-derived heartbeat that survives worker splits/restarts."""
+    from datetime import datetime as _dt
+    row = (db.session.query(db.func.max(DocUpload.uploaded_at))
+           .filter(DocUpload.project_id == pid,
+                   DocUpload.note == 'Imported from source-folder audit').first())
+    last_dt = row[0] if row else None
+    if not last_dt:
+        return None, None
+    try:
+        return last_dt, (_dt.utcnow() - last_dt).total_seconds()
+    except Exception:
+        return last_dt, None
+
+
 @app.route("/admin/docs/project/<int:pid>/source-import-drain-status", methods=["GET"])
 @login_required
 def admin_docs_source_import_drain_status(pid):
+    """DB-derived progress (worker-independent): total imported so far, whether a
+    drain is currently active (an import landed in the last 90s), and this
+    worker's in-memory counters if it happens to be the one running the thread."""
     if not current_user.is_authenticated:
         return jsonify({"error": "Not authenticated"}), 401
+    imported_total = (DocUpload.query
+                      .filter(DocUpload.project_id == pid,
+                              DocUpload.note == 'Imported from source-folder audit').count())
+    last_dt, secs = _drain_heartbeat(pid)
+    active = (secs is not None and secs < 90)
+    out = {"imported_total": imported_total,
+           "last_import_at": last_dt.isoformat() + 'Z' if last_dt else None,
+           "seconds_since_last_import": round(secs, 1) if secs is not None else None,
+           "active": active}
     p = _SOURCE_DRAIN.get(pid)
-    if not p:
-        return jsonify({"exists": False})
-    return jsonify({"exists": True, **{k: p[k] for k in
-                   ('running', 'done', 'total', 'processed', 'imported', 'txns',
-                    'dups', 'failed', 'skipped', 'last', 'note')},
-                    "errors": p['errors'][:10]})
+    if p:
+        out["this_worker"] = {k: p[k] for k in
+                              ('running', 'done', 'total', 'processed', 'imported',
+                               'txns', 'dups', 'failed', 'skipped', 'last', 'note')}
+        out["this_worker"]["errors"] = p['errors'][:10]
+    return jsonify(out)
 
 
 @app.route("/admin/docs/project/<int:pid>/reconcile", methods=["POST"])
