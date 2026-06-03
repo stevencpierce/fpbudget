@@ -9043,8 +9043,28 @@
         });
         const d = await r.json();
         if (!r.ok) { _actualsToast('Confirm failed: ' + (d.error || r.status), 'red'); return; }
-        _actualsToast('Match confirmed.', 'green');
-        setTimeout(() => window.location.reload(), 600);
+        // Handle JUST this line — no full reload, view & filter preserved.
+        const banner = document.querySelector(`.actuals-suggested-banner[data-tid="${tid}"]`);
+        if (banner) banner.remove();
+        const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
+        if (row) {
+          row.dataset.matchStatus = 'confirmed';
+          row.style.transition = 'box-shadow .3s';
+          row.style.boxShadow = 'inset 0 0 0 2px #2a5a3a';
+          setTimeout(() => { row.style.boxShadow = ''; }, 1400);
+        }
+        // The receipt's own placeholder row was merged away on confirm — drop it.
+        if (d.merged_doc_txn) {
+          const sister = document.querySelector(`.actuals-txn-row[data-tid="${d.merged_doc_txn}"]`);
+          if (sister) sister.remove();
+        }
+        if (typeof _actualsRefreshReviewBtn === 'function') _actualsRefreshReviewBtn();
+        if (typeof _actualsRecountStats === 'function') _actualsRecountStats();
+        const rc = document.getElementById('actuals-review-count');
+        if (rc) rc.textContent = document.querySelectorAll('.actuals-suggested-banner').length;
+        const hc = document.getElementById('actuals-review-hc');
+        if (hc) hc.textContent = [...document.querySelectorAll('.actuals-suggested-banner')].filter(b => parseFloat(b.dataset.confidence || 0) >= 0.9).length;
+        _actualsToast('Match confirmed', 'green');
       } catch (e) {
         _actualsToast('Confirm error: ' + e.message, 'red');
       }
