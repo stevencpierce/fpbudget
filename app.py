@@ -19715,6 +19715,38 @@ def _web_worker_essential_columns():
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claimed_by_project_id INTEGER REFERENCES project_sheet(id)",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_claimed_by ON transaction (claimed_by_project_id)",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_qbo_txn_id ON transaction (qbo_txn_id, qbo_txn_type)",
+                # Client estimate portal (2026-06-03). preDeploy create_all is
+                # unreliable for brand-new tables (same reason travel_detail /
+                # catering_bill are healed here), so create it per-worker too.
+                """CREATE TABLE IF NOT EXISTS estimate_share (
+                     id                 SERIAL PRIMARY KEY,
+                     project_id         INTEGER NOT NULL REFERENCES project_sheet(id),
+                     budget_id          INTEGER NOT NULL REFERENCES budget(id),
+                     token              VARCHAR(64) NOT NULL,
+                     client_name        VARCHAR(200),
+                     client_email       VARCHAR(200),
+                     detail_mode        BOOLEAN DEFAULT FALSE NOT NULL,
+                     version_label      VARCHAR(80),
+                     snapshot_json      TEXT,
+                     grand_total        NUMERIC(14,2),
+                     status             VARCHAR(20) DEFAULT 'sent' NOT NULL,
+                     created_at         TIMESTAMP,
+                     created_by_user_id INTEGER REFERENCES users(id),
+                     sent_at            TIMESTAMP,
+                     emailed            BOOLEAN DEFAULT FALSE NOT NULL,
+                     first_viewed_at    TIMESTAMP,
+                     last_viewed_at     TIMESTAMP,
+                     view_count         INTEGER DEFAULT 0 NOT NULL,
+                     responded_at       TIMESTAMP,
+                     approver_name      VARCHAR(200),
+                     approver_note      TEXT,
+                     approver_ip        VARCHAR(64),
+                     expires_at         TIMESTAMP
+                   )""",
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_estimate_share_token ON estimate_share (token)",
+                "CREATE INDEX IF NOT EXISTS ix_estimate_share_project ON estimate_share (project_id)",
+                "CREATE INDEX IF NOT EXISTS ix_estimate_share_budget ON estimate_share (budget_id)",
+                "CREATE INDEX IF NOT EXISTS ix_estimate_share_created ON estimate_share (created_at)",
                 # Production day flag on ProductionDay (set from Schedule)
                 "ALTER TABLE production_day ADD COLUMN IF NOT EXISTS is_production_day BOOLEAN DEFAULT FALSE NOT NULL",
                 # Craft Services per-day flag (2026-05-06). Promoted from
