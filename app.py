@@ -10104,6 +10104,54 @@ def estimate_share_revoke(sid):
     return jsonify({"ok": True, "status": s.status})
 
 
+def _serialize_estimate_share(s):
+    return {
+        "id": s.id, "token": s.token,
+        "link": url_for('estimate_portal', token=s.token, _external=True),
+        "client_name": s.client_name, "client_email": s.client_email,
+        "detail_mode": s.detail_mode, "version_label": s.version_label,
+        "budget_id": s.budget_id,
+        "budget_name": (s.budget.name if s.budget else None),
+        "grand_total": float(s.grand_total) if s.grand_total is not None else None,
+        "status": s.status, "emailed": s.emailed,
+        "created_at": s.created_at.isoformat() + 'Z' if s.created_at else None,
+        "sent_at": s.sent_at.isoformat() + 'Z' if s.sent_at else None,
+        "first_viewed_at": s.first_viewed_at.isoformat() + 'Z' if s.first_viewed_at else None,
+        "view_count": s.view_count,
+        "responded_at": s.responded_at.isoformat() + 'Z' if s.responded_at else None,
+        "approver_name": s.approver_name, "approver_note": s.approver_note,
+    }
+
+
+@app.route("/projects/<int:pid>/estimate/shares", methods=["GET"])
+@login_required
+def estimate_share_list_project(pid):
+    """All client estimate links sent for this project (across budget versions),
+    newest first — powers the 'Manage sent estimates' panel. (User 2026-06-04.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access:
+            return jsonify({"error": "Forbidden"}), 403
+    shares = (EstimateShare.query.filter_by(project_id=pid)
+              .order_by(EstimateShare.created_at.desc()).all())
+    return jsonify({"shares": [_serialize_estimate_share(s) for s in shares]})
+
+
+@app.route("/estimate/share/<int:sid>/delete", methods=["POST"])
+@login_required
+def estimate_share_delete(sid):
+    """Permanently remove a share record (vs. revoke, which just disables the
+    link but keeps the audit row). (User 2026-06-04.)"""
+    s = EstimateShare.query.get_or_404(sid)
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=s.project_id, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    db.session.delete(s)
+    db.session.commit()
+    return jsonify({"ok": True, "deleted": sid})
+
+
 @app.route("/e/<token>", methods=["GET"])
 def estimate_portal(token):
     """PUBLIC (no login): client-facing estimate review/approval page."""

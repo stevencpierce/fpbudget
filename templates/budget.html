@@ -138,6 +138,24 @@
         <a href="#" data-preview-target="showbiz" onclick="openExportPreview(event, 'showbiz')">Preview as ShowBiz…</a>
         <div class="dropdown-divider"></div>
         <a href="#" onclick="openEstimateShare(event)">📤 Send as Estimate (client portal)…</a>
+        <a href="#" onclick="openEstimateManager(event)">📋 Manage sent estimates…</a>
+      </div>
+    </div>
+
+    <!-- Manage sent estimates: list every client portal link for this project,
+         copy/open it, revoke (disable link) or delete (remove record). (User 2026-06-04.) -->
+    <div id="estmanage-overlay" class="export-opts-overlay hidden" onclick="closeEstimateManager(event)">
+      <div class="export-opts-card" onclick="event.stopPropagation()" style="max-width:760px">
+        <div class="export-opts-head">
+          <div>
+            <h3 class="export-opts-title">Sent estimates</h3>
+            <p class="export-opts-sub">Every client portal link for this project. Revoke disables a link; Delete removes the record.</p>
+          </div>
+          <button type="button" class="export-opts-close" onclick="closeEstimateManager()" aria-label="Close">×</button>
+        </div>
+        <div id="estmanage-body" style="padding:4px 14px 12px;max-height:60vh;overflow:auto">
+          <div style="padding:24px;text-align:center;color:var(--text-muted)">Loading…</div>
+        </div>
       </div>
     </div>
 
@@ -219,6 +237,61 @@
       function copyEstimateLink(){ var i=document.getElementById('estshare-link'); i.select();
         try{ navigator.clipboard.writeText(i.value); }catch(e){ try{document.execCommand('copy');}catch(_){} }
       }
+
+      // ── Manage sent estimates ───────────────────────────────────────────
+      function openEstimateManager(e){ if(e) e.preventDefault();
+        document.getElementById('estmanage-overlay').classList.remove('hidden');
+        _loadEstimateManager();
+      }
+      function closeEstimateManager(e){ if(e && e.target && e.target.id!=='estmanage-overlay') return;
+        document.getElementById('estmanage-overlay').classList.add('hidden');
+      }
+      function _estStatusBadge(s){
+        var map={sent:['Sent','#3a3f4a','#cfd6df'], viewed:['Viewed','#1d3a5a','#9ec0ff'],
+                 approved:['Approved','#1a3a2a','#74c69d'], declined:['Changes requested','#3a1a1a','#e08080'],
+                 revoked:['Revoked','#2a2a2a','#8a8a8a']};
+        var m=map[s]||['?','#333','#ccc'];
+        return '<span style="font-size:.66rem;padding:2px 8px;border-radius:999px;background:'+m[1]+';color:'+m[2]+'">'+m[0]+'</span>';
+      }
+      function _fmtEstDate(iso){ if(!iso) return '—'; try{ var d=new Date(iso); return d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}); }catch(e){ return iso; } }
+      async function _loadEstimateManager(){
+        var body=document.getElementById('estmanage-body');
+        body.innerHTML='<div style="padding:24px;text-align:center;color:var(--text-muted)">Loading…</div>';
+        try{
+          var d=await (await fetch('{{ url_for("estimate_share_list_project", pid=project.id) }}',{cache:'no-store'})).json();
+          var shares=(d.shares||[]);
+          if(!shares.length){ body.innerHTML='<div style="padding:24px;text-align:center;color:var(--text-muted)">No estimates have been sent yet. Use “Send as Estimate” to create one.</div>'; return; }
+          var rows=shares.map(function(s){
+            var revoked=(s.status==='revoked');
+            var total=(typeof s.grand_total==='number')?('$'+s.grand_total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'';
+            var viewed=s.view_count?(' · '+s.view_count+' view'+(s.view_count!==1?'s':'')):'';
+            var appr=s.approver_name?('<div style="font-size:.7rem;color:#74c69d;margin-top:2px">✓ '+_esc(s.approver_name)+(s.responded_at?(' · '+_fmtEstDate(s.responded_at)):'')+'</div>'):'';
+            return '<div style="border:1px solid var(--border);border-radius:10px;padding:11px 13px;margin-bottom:9px;'+(revoked?'opacity:.55;':'')+'">'
+              +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+              +'<div style="font-weight:600">'+_esc(s.client_name||'(no client name)')+'</div>'
+              +_estStatusBadge(s.status)
+              +'<div style="font-size:.72rem;color:var(--text-muted)">'+_esc(s.version_label||'')+' · '+_esc(s.budget_name||'')+'</div>'
+              +'<div style="margin-left:auto;font-weight:700">'+total+'</div>'
+              +'</div>'
+              +'<div style="font-size:.72rem;color:var(--text-muted);margin-top:3px">Sent '+_fmtEstDate(s.sent_at||s.created_at)+(s.emailed?' · emailed':'')+viewed+(s.client_email?(' · '+_esc(s.client_email)):'')+'</div>'
+              +appr
+              +'<div style="display:flex;gap:7px;margin-top:9px;flex-wrap:wrap">'
+              +'<input type="text" readonly value="'+_esc(s.link)+'" style="flex:1;min-width:160px;padding:6px 8px;border:1px solid #cfd6df;border-radius:6px;font-size:12px;background:#fff;color:#1c2430" onclick="this.select()">'
+              +'<button type="button" class="btn btn-xs btn-primary" onclick="_estCopy(this,\''+s.token+'\')">Copy</button>'
+              +(revoked?'':'<a class="btn btn-xs btn-outline" href="'+_esc(s.link)+'" target="_blank">Open ↗</a>')
+              +(revoked?'':'<button type="button" class="btn btn-xs" onclick="_estRevoke('+s.id+')" style="color:#d9a441">Revoke</button>')
+              +'<button type="button" class="btn btn-xs" onclick="_estDelete('+s.id+')" style="color:#e05555">Delete</button>'
+              +'</div></div>';
+          }).join('');
+          body.innerHTML=rows;
+        }catch(err){ body.innerHTML='<div style="padding:24px;color:#e05555">Could not load: '+err.message+'</div>'; }
+      }
+      function _esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+      function _estCopy(btn, token){ var link=location.origin+'/e/'+token; (navigator.clipboard?navigator.clipboard.writeText(link):Promise.reject()).then(function(){ btn.textContent='Copied'; setTimeout(function(){btn.textContent='Copy';},1200); }).catch(function(){ var inp=btn.previousElementSibling; if(inp){inp.select(); try{document.execCommand('copy');btn.textContent='Copied';setTimeout(function(){btn.textContent='Copy';},1200);}catch(_){}}}); }
+      async function _estRevoke(sid){ if(!confirm('Revoke this estimate link? The client will no longer be able to open it.')) return;
+        try{ var r=await fetch('/estimate/share/'+sid+'/revoke',{method:'POST'}); if(r.ok) _loadEstimateManager(); else alert('Revoke failed'); }catch(e){ alert('Revoke error: '+e.message); } }
+      async function _estDelete(sid){ if(!confirm('Permanently delete this estimate record? This removes it from the list. (Revoke instead if you just want to disable the link.)')) return;
+        try{ var r=await fetch('/estimate/share/'+sid+'/delete',{method:'POST'}); if(r.ok) _loadEstimateManager(); else alert('Delete failed'); }catch(e){ alert('Delete error: '+e.message); } }
     </script>
 
     <!-- Export Options modal — centered, two-column layout. Compact
