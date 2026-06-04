@@ -5482,7 +5482,22 @@
         if (vEl && d.vendor) { vEl.textContent = d.vendor; vEl.title = d.vendor; }
         trow.dataset.note    = d.note || '';
         trow.dataset.txnDate = d.doc_date || trow.dataset.txnDate;
-        if (d.amount != null) trow.dataset.amount = d.amount || 0;
+        // Update the VISIBLE date cell too — previously only the data attr was
+        // patched, so an edited receipt date didn't show until a page refresh.
+        // (User 2026-06-03.)
+        if (d.doc_date) {
+          const dEl = trow.querySelector('.actuals-txn-date');
+          if (dEl) dEl.textContent = d.doc_date;
+        }
+        if (d.amount != null) {
+          trow.dataset.amount = d.amount || 0;
+          const amtEl = trow.querySelector('.actuals-txn-amt');
+          if (amtEl) {
+            const neg = amtEl.textContent.trim().charAt(0) === '−';
+            amtEl.textContent = (neg ? '−' : '+') + '$' +
+              Number(d.amount || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+          }
+        }
         trow.dataset.sortCard4 = d.card_last4 || '';
         const c4El = trow.querySelector('.actuals-txn-card4');
         if (c4El) {
@@ -5992,6 +6007,16 @@
             style="font-size:.7rem;padding:3px 9px;color:#5b8af9;opacity:.45;cursor:not-allowed">🔗 Merge pair</button>
     <button type="button" class="btn btn-xs" onclick="actualsBulkMarkNotProject()"
             style="font-size:.7rem;padding:3px 9px;color:var(--text-muted)">✕ Not project</button>
+    <span style="width:1px;height:18px;background:#1a3a2a;align-self:center"></span>
+    {# Batch line-assignment: code every selected row to one line in a single
+       request (was one POST per row → slow). Lazy-filled on focus. (User 2026-06-03.) #}
+    <select id="actuals-bulk-line" data-populated="0" onfocus="_actualsFillPicker(this)"
+            title="Assign all selected rows to this budget line"
+            style="font-size:.72rem;max-width:220px;padding:2px 4px">
+      <option value="">Assign to line…</option>
+    </select>
+    <button type="button" class="btn btn-xs btn-primary" onclick="actualsBulkAssignLine()"
+            style="font-size:.7rem;padding:3px 9px">Assign selected</button>
   </div>
 
   {# ── Review-matches bar (shown only in review mode) ── #}
@@ -6281,7 +6306,7 @@
             {# Source pill · date · vendor · amount (the at-a-glance left block) #}
             <span style="flex-shrink:0;font-size:.7rem;width:22px;text-align:center"
                   title="Source: {{ t.source or 'unknown' }}">{{ _src_icon }}</span>
-            <span style="flex-shrink:0;font-size:.72rem;color:var(--text-muted);width:78px">{{ t.txn_date or '—' }}</span>
+            <span class="actuals-txn-date" style="flex-shrink:0;font-size:.72rem;color:var(--text-muted);width:78px">{{ t.txn_date or '—' }}</span>
             <span class="actuals-txn-vendor"
                   style="flex:1;min-width:90px;font-size:.83rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                   title="{{ t.vendor or '' }}">{{ t.vendor or '— vendor unknown —' }}</span>
@@ -7002,10 +7027,13 @@
           if (isCoded) { const _sb = row.querySelector('.actuals-suggest-btn'); if (_sb) _sb.remove(); }
         }
         _actualsRecountStats();
-        // Re-apply the active filter so the row auto-leaves the view
-        // when its coded state no longer matches the current filter
-        // (e.g. on "Need coding", a freshly-coded row hides itself).
-        actualsApplyFilter(_actualsActiveFilter);
+        // Re-apply the active filter so a freshly-coded row auto-leaves a
+        // filtered view (e.g. "Needs coding"). BUT not while reviewing matches:
+        // re-filtering there un-hides every non-suggested row and kicks the user
+        // out of Review mode — their #7 complaint. (User 2026-06-03.)
+        if (!window._actualsInReview) {
+          actualsApplyFilter(_actualsActiveFilter);
+        }
         // After a clear, force the dropdown back to the placeholder.
         if (value === '__clear__') {
           selectEl.value = '';
@@ -7472,6 +7500,7 @@
     }
 
     window.actualsReviewMatches = function () {
+      window._actualsInReview = true;
       if (typeof window.showActualsPane === 'function') window.showActualsPane('match');
       const banners = [...document.querySelectorAll('.actuals-suggested-banner')];
       if (!banners.length) { if (typeof _actualsToast === 'function') _actualsToast('No suggested matches to review', 'red'); return; }
@@ -7496,7 +7525,17 @@
       window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
-    window.actualsExitReview = function () { location.reload(); };
+    window.actualsExitReview = function () {
+      // Restore the normal view in place — no full reload (was slow). Clear the
+      // review flag, hide the review bar, bring the filter/bulk bars back, then
+      // re-show rows per the active filter and re-bucket sections to default.
+      // (User 2026-06-03.)
+      window._actualsInReview = false;
+      const rb = document.getElementById('actuals-review-bar'); if (rb) rb.style.display = 'none';
+      ['actuals-filter-bar', 'actuals-bulk-bar'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = ''; });
+      if (typeof actualsApplyFilter === 'function') actualsApplyFilter(_actualsActiveFilter || 'all');
+      if (typeof window._actualsSectionize === 'function') window._actualsSectionize();
+    };
 
     async function _actualsBulkMatch(url, payload, verb) {
       const bar = document.getElementById('actuals-review-bar');
@@ -8214,6 +8253,48 @@
       _selectedTids.clear();
       _lastClickedTid = null;
       _renderSelection();
+    };
+
+    // Batch-assign every selected row to one budget line (or section) in a
+    // single request — replaces firing one /set-line POST per row. (User 2026-06-03.)
+    window.actualsBulkAssignLine = async function () {
+      const sel = document.getElementById('actuals-bulk-line');
+      const value = sel && sel.value;
+      if (!value) { _actualsToast('Pick a budget line first.', 'yellow'); return; }
+      if (_selectedTids.size === 0) { _actualsToast('No rows selected.', 'yellow'); return; }
+      const tids = Array.from(_selectedTids);
+      const payload = value.startsWith('section:')
+        ? { transaction_ids: tids, account_code: value.slice(8) }
+        : { transaction_ids: tids, budget_line_id: value };
+      const lbl = (sel.options[sel.selectedIndex] || {}).text || 'line';
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transactions/set-line-bulk`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const d = await r.json();
+        if (!r.ok) { _actualsToast('Assign failed: ' + (d.error || r.status), 'red'); return; }
+        // Update each selected row in place — no reload.
+        tids.forEach(tid => {
+          const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
+          if (!row) return;
+          row.dataset.coded = '1';
+          const sb = row.querySelector('.actuals-suggest-btn'); if (sb) sb.remove();
+          const p = row.querySelector('.actuals-line-picker');
+          if (p) {
+            p.dataset.current = value;
+            if (p.dataset.populated === '1') { p.value = value; }
+            else { p.innerHTML = '<option value="' + value + '" selected>' + (d.line_label || lbl) + '</option>'; }
+          }
+        });
+        _actualsToast(`Assigned ${d.updated || tids.length} to ${d.line_label || lbl}` +
+                      (d.failed ? ` · ${d.failed} failed` : ''), 'green');
+        actualsBulkClear();
+        if (typeof _actualsRecountStats === 'function') _actualsRecountStats();
+        if (!window._actualsInReview && typeof actualsApplyFilter === 'function') {
+          actualsApplyFilter(_actualsActiveFilter);
+        }
+      } catch (e) {
+        _actualsToast('Assign error: ' + e.message, 'red');
+      }
     };
 
     window.actualsBulkMerge = async function () {
@@ -9388,9 +9469,28 @@
           _actualsToast('Save failed: ' + (d.error || r.status), 'red');
           return;
         }
+        // Update the row in place — no full reload (was slow + lost the view).
+        // (User 2026-06-03.)
+        const row = document.querySelector(`.actuals-txn-row[data-tid="${_editTxnId}"]`);
+        if (row) {
+          const vEl = row.querySelector('.actuals-txn-vendor');
+          if (vEl) { vEl.textContent = payload.vendor || '— vendor unknown —'; vEl.title = payload.vendor || ''; }
+          const dEl = row.querySelector('.actuals-txn-date');
+          if (dEl) dEl.textContent = payload.txn_date || '—';
+          row.dataset.txnDate = payload.txn_date || '';
+          row.dataset.note = payload.note || '';
+          if (payload.amount !== '' && payload.amount != null) {
+            row.dataset.amount = payload.amount;
+            const amtEl = row.querySelector('.actuals-txn-amt');
+            if (amtEl) {
+              const neg = amtEl.textContent.trim().charAt(0) === '−';
+              amtEl.textContent = (neg ? '−' : '+') + '$' +
+                Number(payload.amount || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+            }
+          }
+        }
         _actualsToast('Transaction saved.', 'green');
         actualsCloseEditTxn();
-        setTimeout(() => window.location.reload(), 400);
       } catch (e) {
         _actualsToast('Save error: ' + e.message, 'red');
       } finally {

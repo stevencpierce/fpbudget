@@ -6064,19 +6064,28 @@ def budget_view(pid, bid):
     # Group its lines by COA section for the optgroup dropdown.
     actuals_pick_groups = []
     if actuals_pick_budget:
+        # Group the picker's options by MAJOR COA SECTION (e.g. "4000 ·
+        # Production"), not by each line's own account_code. The old key was
+        # (account_code, account_name) which is unique per line, so the dropdown
+        # rendered hundreds of one-line <optgroup>s with no real section
+        # structure — "everything runs together". Now each <optgroup> is a real
+        # section header with its lines beneath it. (User 2026-06-03.)
         _by_section = {}
         for ln in sorted(actuals_pick_budget.lines,
                           key=lambda l: (l.account_code or 0, l.sort_order or 0, l.id)):
-            key = (ln.account_code, ln.account_name)
-            _by_section.setdefault(key, []).append(ln)
-        # Preserve FP_COA_SECTIONS ordering so dropdown matches sidebar.
+            try:
+                sec_code = _section_for_code(int(ln.account_code)) if ln.account_code is not None else None
+            except (TypeError, ValueError):
+                sec_code = None
+            _by_section.setdefault(sec_code, []).append(ln)
         section_order = {code: i for i, (code, _) in enumerate(FP_COA_SECTIONS)}
         sorted_keys = sorted(
             _by_section.keys(),
-            key=lambda k: (section_order.get(k[0], 9999), k[0] or 0),
+            key=lambda c: (section_order.get(c, 9999), c or 0),
         )
         actuals_pick_groups = [
-            {"code": k[0], "name": k[1], "lines": _by_section[k]}
+            {"code": k, "name": (_section_name(k) if k is not None else 'Other'),
+             "lines": _by_section[k]}
             for k in sorted_keys
         ]
 
@@ -7949,6 +7958,81 @@ def actuals_set_coa(pid, tid):
         "budget_line_auto_created":     bool(locals().get('_ensure_result', {}).get('created')),
         "working_was_just_created":     bool(locals().get('_ensure_result', {}).get('working_was_just_created')),
     })
+
+
+@app.route("/projects/<int:pid>/actuals/transactions/set-line-bulk", methods=["POST"])
+@login_required
+def actuals_set_line_bulk(pid):
+    """Assign MANY transactions to one budget line (or COA section) in a SINGLE
+    request. Previously the UI fired one POST per row, which was slow for big
+    batches. Reuses link_transaction_to_line so the Working→Actual clone + line
+    translation are identical to single-row coding. (User 2026-06-03.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access:
+            return jsonify({"error": "Forbidden"}), 403
+    data = request.get_json(silent=True) or {}
+    tids = data.get("transaction_ids") or []
+    line_id = data.get("budget_line_id")
+    account_code = data.get("account_code")
+    if not isinstance(tids, list) or not tids:
+        return jsonify({"error": "no transaction_ids"}), 400
+    if not line_id and not account_code:
+        return jsonify({"error": "budget_line_id or account_code required"}), 400
+
+    from actuals import link_transaction_to_line
+    updated, failed, errors, line_label = 0, 0, [], None
+
+    # Section-only: ensure the section exists on the Working budget once (not
+    # per row), mirroring set-coa.
+    if account_code and not line_id:
+        try:
+            code_int = int(account_code)
+            nm = dict(FP_COA_SECTIONS).get(code_int, '')
+            from actuals import ensure_section_in_working_budget
+            ensure_section_in_working_budget(pid, code_int, nm)
+        except Exception as _e:
+            logging.warning(f"[set-line-bulk] ensure-section failed: {_e}")
+
+    for tid in tids:
+        try:
+            txn = Transaction.query.filter_by(id=int(tid), project_id=pid).first()
+            if not txn:
+                failed += 1
+                continue
+            if line_id:
+                link_transaction_to_line(int(tid), int(line_id), user_id=current_user.id)
+                if line_label is None:
+                    db.session.refresh(txn)
+                    line_label = txn.account_code_name or (str(txn.account_code) if txn.account_code else None)
+            else:
+                code_int = int(account_code)
+                nm = dict(FP_COA_SECTIONS).get(code_int, '')
+                txn.account_code = code_int
+                txn.account_code_name = nm[:100]
+                txn.budget_line_id = None
+                txn.not_project_expense = False
+                txn.match_status = 'confirmed'
+                txn.updated_at = datetime.utcnow()
+                db.session.commit()
+                if line_label is None:
+                    line_label = (str(code_int) + ' ' + nm).strip()
+            updated += 1
+        except Exception as e:
+            db.session.rollback()
+            failed += 1
+            if len(errors) < 10:
+                errors.append(f"#{tid}: {type(e).__name__}")
+    try:
+        _log_activity(action='update', entity_type='transaction', entity_id=0,
+                      entity_label=f'Bulk-coded {updated} txns',
+                      project_id=pid, before=None,
+                      after={'line_label': line_label, 'count': updated},
+                      note=f'Bulk-assigned {updated} transaction(s) to {line_label or "line"}')
+    except Exception:
+        pass
+    return jsonify({"ok": True, "updated": updated, "failed": failed,
+                    "errors": errors, "line_label": line_label})
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/edit", methods=["POST"])
