@@ -86,8 +86,8 @@
       </div>
       <div class="doc-tag">
         <span class="big">ESTIMATE</span><br>
-        {% if snap.version_label %}{{ snap.version_label }}<br>{% endif %}
-        {{ snap.date }}
+        {% if snap.version_label %}<strong>{{ snap.version_label }}</strong><br>{% endif %}
+        {{ sent_display or snap.date }}
       </div>
     </div></div>
 
@@ -103,7 +103,7 @@
         <div class="sub">Estimate for your review{% if snap.client_name %}, {{ snap.client_name }}{% endif %}.</div>
         <div class="meta-grid">
           {% if snap.version_label %}<div><b>Version</b><br>{{ snap.version_label }}</div>{% endif %}
-          <div><b>Date</b><br>{{ snap.date }}</div>
+          <div><b>Sent</b><br>{{ sent_display or snap.date }}</div>
           {% if snap.prepared_by %}<div><b>Prepared by</b><br>{{ snap.prepared_by }}{% if snap.prepared_by_title %}, {{ snap.prepared_by_title }}{% endif %}</div>{% endif %}
         </div>
       </div>

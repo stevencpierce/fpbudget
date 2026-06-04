@@ -9896,7 +9896,12 @@ def _estimate_version_label(budget):
     lbl = getattr(budget, 'version_label', None)
     if not lbl and getattr(budget, 'version_number', None):
         lbl = 'v%d' % budget.version_number
-    return f"{mode_word} {lbl}".strip() if lbl else mode_word
+    # Always show a version number — a budget that predates versioning (no
+    # label/number) is the first version. Better than a bare "Estimated".
+    # (User 2026-06-04.)
+    if not lbl:
+        lbl = 'v1'
+    return f"{mode_word} {lbl}".strip()
 
 
 def _build_estimate_snapshot(project, budget, detail_mode):
@@ -9911,44 +9916,59 @@ def _build_estimate_snapshot(project, budget, detail_mode):
     pw_start = (budget.payroll_week_start if budget.payroll_week_start is not None
                 else (profile.payroll_week_start if profile else 6))
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
-    line_total = {}
-    for ln in lines:
-        if ln.use_schedule:
-            sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
-            res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
-        else:
-            res = calc_line(ln, fringe_cfgs)
-        line_total[ln.id] = float((res or {}).get('est_total') or 0)
 
-    def _section_for_code(code):
-        best = None
-        for start, _ in FP_COA_SECTIONS:
-            if code is not None and code >= start:
-                best = start
+    # Use the SAME Top Sheet calc the on-screen budget + PDF use, so the totals
+    # the client sees match exactly. Summing raw line totals (the old approach)
+    # omitted the company fee, fringes rolled at section level, workers' comp,
+    # payroll fee and production insurance — so the grand total was wrong.
+    # (User 2026-06-04.)
+    ts = calc_top_sheet(budget, lines, fringe_cfgs, {}, profile, pw_start)
+    grand = round(float(ts.get("grand_total_estimated") or 0), 2)
+    dispersed = bool(ts.get("company_fee_dispersed"))
+    fee = round(float(ts.get("company_fee") or 0), 2)
+
+    sections = []
+    for row in ts.get("rows", []):
+        sections.append({
+            "code": row.get("code"),
+            "name": row.get("account") or '',
+            "total": round(float(row.get("estimated") or 0), 2),
+            "lines": [],
+        })
+    # When the company fee is NOT dispersed it's a separate top-sheet line; add
+    # it so the sections sum to the grand total. (Dispersed → already folded into
+    # each section's total, so no separate line.)
+    if not dispersed and fee:
+        sections.append({"code": 99999, "name": "Production Company Fee",
+                         "total": fee, "lines": []})
+
+    # Optional per-line breakdown under each section (best-effort: section-level
+    # adds like fringe / WC / fee live at the section total, not on a line).
+    if detail_mode:
+        def _sec_for(code):
+            best = None
+            for start, _ in FP_COA_SECTIONS:
+                if code is not None and code >= start:
+                    best = start
+                else:
+                    break
+            return best
+        by_code = {s["code"]: s for s in sections}
+        for ln in lines:
+            if getattr(ln, 'is_header', False):
+                continue
+            sdict = by_code.get(_sec_for(ln.account_code))
+            if not sdict:
+                continue
+            if ln.use_schedule:
+                sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
+                res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
             else:
-                break
-        return best
-    sec_name = dict(FP_COA_SECTIONS)
-    secs = {}
-    for ln in lines:
-        sk = _section_for_code(ln.account_code)
-        if sk not in secs:
-            secs[sk] = {"code": sk, "name": sec_name.get(sk, ""), "total": 0.0, "lines": []}
-        t = line_total.get(ln.id, 0.0)
-        secs[sk]["total"] += t
-        if detail_mode and not getattr(ln, 'is_header', False):
-            secs[sk]["lines"].append({
+                res = calc_line(ln, fringe_cfgs)
+            sdict["lines"].append({
                 "code": ln.account_code,
                 "desc": (ln.description or '').strip(),
-                "total": round(t, 2)})
-    sections = []
-    grand = 0.0
-    for sk, _ in FP_COA_SECTIONS:
-        if sk in secs:
-            s = secs[sk]
-            s["total"] = round(s["total"], 2)
-            grand += s["total"]
-            sections.append(s)
+                "total": round(float((res or {}).get('est_total') or 0), 2)})
 
     cs = CompanySettings.query.get(1) or CompanySettings()
     company_addr = [getattr(cs, 'address_line1', None), getattr(cs, 'address_line2', None),
@@ -10107,9 +10127,20 @@ def estimate_portal(token):
         snap = _json.loads(s.snapshot_json) if s.snapshot_json else {}
     except Exception:
         snap = {}
+    # Date + TIME the estimate was sent, in the budget's timezone — so a client
+    # who gets several in one day can tell them apart. (User 2026-06-04.)
+    sent_display = None
+    if s.sent_at:
+        try:
+            from zoneinfo import ZoneInfo
+            tzname = getattr(s.budget, 'timezone', None) or 'America/Los_Angeles'
+            _dt_local = s.sent_at.replace(tzinfo=ZoneInfo('UTC')).astimezone(ZoneInfo(tzname))
+            sent_display = _dt_local.strftime('%b %-d, %Y · %-I:%M %p %Z')
+        except Exception:
+            sent_display = s.sent_at.strftime('%b %d, %Y · %H:%M UTC')
     return render_template("estimate_portal.html",
                            share=s, snap=snap, revoked=revoked, expired=expired,
-                           not_found=False)
+                           sent_display=sent_display, not_found=False)
 
 
 @app.route("/e/<token>/respond", methods=["POST"])
