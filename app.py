@@ -2648,6 +2648,43 @@ def enforce_docs_only_role():
         return redirect(url_for("docs_dashboard"))
 
 
+@app.before_request
+def enforce_project_access():
+    """Central project-level authorization (review CR-2, 2026-06-04).
+
+    Every route whose URL carries <int:pid> (164 of them) is gated here:
+    non-admin users must hold a ProjectAccess row for that project, and
+    mutating methods additionally require editor or better. Previously only
+    the page-load routes checked access — the ~70 AJAX read/mutation routes
+    relied on @login_required alone, so any authenticated user could read,
+    edit, export, or delete ANY project's budgets and transactions by
+    changing the id in the URL (IDOR).
+
+    Notes:
+      * Unauthenticated requests pass through — @login_required (or the
+        route's own token auth) handles those; this gate only scopes
+        AUTHENTICATED users to their projects.
+      * Child-row ownership (bid/tid/lid belonging to pid) is enforced by the
+        routes' existing filter_by(..., project_id=pid) queries.
+      * docs_* endpoints keep their own finer-grained checks; docs uploads by
+        viewer/docs_only roles stay allowed (POSTs to docs endpoints exempt
+        from the editor requirement).
+    """
+    pid = (request.view_args or {}).get('pid')
+    if pid is None or not current_user.is_authenticated:
+        return
+    if getattr(current_user, 'role', None) in ('super_admin', 'admin'):
+        return
+    pa = ProjectAccess.query.filter_by(project_id=pid,
+                                       user_id=current_user.id).first()
+    if pa is None:
+        abort(403)
+    if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        role = 'editor' if pa.role == 'collaborator' else (pa.role or '')
+        if role in ('viewer', 'docs_only') and not (request.endpoint or '').startswith('docs'):
+            abort(403)
+
+
 def _user_project_role(pid):
     """Return the current user's effective role for a project.
 
@@ -18913,6 +18950,11 @@ def _user_can_access_project(pid):
 def project_share(pid):
     if not _user_can_access_project(pid):
         abort(403)
+    # Granting access is an ACL change — owner/admin only. Previously any
+    # member (even a viewer) could add collaborators, escalating a colluding
+    # account to edit rights. (Review CR-2/HIGH-3, 2026-06-04.)
+    if request.method == "POST":
+        _require_project_role(pid, 'owner')
     project = ProjectSheet.query.get_or_404(pid)
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
