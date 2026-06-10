@@ -1166,6 +1166,37 @@ def _parse_analyzer_filename(name):
     return out
 
 
+# Canonical filename→amounts parser (CONSOLIDATED 2026-06-04 — was duplicated
+# 3x with a regex that read dot-dates as money: "Receipt 2026.05.14.pdf"
+# parsed $2,026.05 and OVERRODE the OCR total on the ledger. Code review CR-4.)
+_AMOUNT_TOKEN_RE = re.compile(
+    # not preceded by a digit or dot (rejects the "05.14" inside 2026.05.14),
+    # then 1,234.56 or 1234.56, not followed by more dot-digits (rejects the
+    # "2026.05" prefix of a dot-date).
+    r'(?<![\d.])(\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2})(?!\.?\d)')
+
+
+def _amounts_in_name(nm):
+    """Dollar amounts curated into a filename, as integer cents. Hardened:
+    skips dot-date fragments and year.month-looking tokens; ignores bare ints
+    (too noisy) and sub-$1 tokens."""
+    out = set()
+    for m in _AMOUNT_TOKEN_RE.findall(nm or ''):
+        try:
+            v = float(m.replace(',', ''))
+        except ValueError:
+            continue
+        if v < 1:
+            continue
+        # "2026.05" (year.month) heuristic: 4-digit 19xx/20xx integer part with
+        # a <=12 two-digit decimal is a date fragment, not money.
+        ip, dp = m.replace(',', '').split('.')
+        if len(ip) == 4 and ip[:2] in ('19', '20') and int(dp) <= 12:
+            continue
+        out.add(int(round(v * 100)))
+    return out
+
+
 @app.route("/admin/docs/project/<int:pid>/scan-audit", methods=["GET", "POST"])
 @login_required
 def admin_docs_scan_audit(pid):
@@ -1529,18 +1560,7 @@ def admin_docs_source_audit(pid):
     # (transactions + docs). A byte-missing file whose amount is already in the
     # system is almost certainly the same expense in a different wrapper — NOT a
     # true gap. (User 2026-06-03.)
-    import re as _re
-    def _amounts_in_name(nm):
-        # tokens like 7900.00 / 16,100.00 ; ignore bare ints (too noisy).
-        out = set()
-        for m in _re.findall(r'\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2}', nm or ''):
-            try:
-                v = float(m.replace(',', ''))
-                if v >= 1:
-                    out.add(int(round(v * 100)))
-            except ValueError:
-                pass
-        return out
+    # (Uses the canonical module-level _amounts_in_name — hardened 2026-06-04.)
     existing_cents = set()
     for (a,) in db.session.query(Transaction.amount).filter(
             Transaction.project_id == pid, Transaction.amount.isnot(None)).all():
@@ -1678,17 +1698,7 @@ def admin_docs_source_import(pid):
     # expense in a different wrapper). Pass include_amount_in_system=true to
     # override. (User 2026-06-03.)
     include_amt_in_system = bool(body.get('include_amount_in_system'))
-    import re as _re
-    def _amounts_in_name(nm):
-        out = set()
-        for m in _re.findall(r'\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2}', nm or ''):
-            try:
-                v = float(m.replace(',', ''))
-                if v >= 1:
-                    out.add(int(round(v * 100)))
-            except ValueError:
-                pass
-        return out
+    # (Uses the canonical module-level _amounts_in_name — hardened 2026-06-04.)
     existing_cents = set()
     if not include_amt_in_system:
         for (a,) in db.session.query(Transaction.amount).filter(
@@ -1863,17 +1873,9 @@ def admin_docs_source_import(pid):
 _SOURCE_DRAIN = {}   # pid -> progress dict
 
 
-def _source_drain_amounts_in_name(nm):
-    import re as _re
-    out = set()
-    for m in _re.findall(r'\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2}', nm or ''):
-        try:
-            v = float(m.replace(',', ''))
-            if v >= 1:
-                out.add(int(round(v * 100)))
-        except ValueError:
-            pass
-    return out
+# Alias kept for the drain worker's call sites; the canonical hardened parser
+# lives next to _parse_analyzer_filename. (Consolidated 2026-06-04, CR-4.)
+_source_drain_amounts_in_name = _amounts_in_name
 
 
 def _source_drain_worker(flask_app, pid, src_path, user_id, include_amt):
