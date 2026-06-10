@@ -5042,7 +5042,10 @@
   // that has a doc badge (so prev/next walks the receipts you can edit).
   function _docNavList() {
     if (_docDetailContext === 'actuals') {
-      return Array.from(document.querySelectorAll('#actuals-txn-list .actuals-txn-row'))
+      // Rows live in #actuals-sections after sectionize (the default grouped
+      // view) — the old #actuals-txn-list-only selector returned [] and froze
+      // prev/next. (Review 2026-06-04.)
+      return Array.from(document.querySelectorAll('#actuals-sections .actuals-txn-row, #actuals-txn-list .actuals-txn-row'))
         .filter(r => r.style.display !== 'none')
         .map(r => {
           const b = r.querySelector('.actuals-doc-badge');
@@ -6358,6 +6361,7 @@
                data-has-txn="{{ '1' if _txn_filled else '0' }}"
                data-fulfill="{{ _fulfill }}"
                data-match-status="{{ t.match_status or 'unmatched' }}"
+               data-acct-code="{{ t.account_code or '' }}"
                data-txn-date="{{ t.txn_date or '' }}"
                data-amount="{{ t.amount or 0 }}"
                data-note="{{ t.note or '' }}"
@@ -7096,6 +7100,12 @@
         if (row) {
           const isCoded = value !== '__clear__';
           row.dataset.coded = isCoded ? '1' : '0';
+          // Keep the section-filter's source of truth current (2026-06-04):
+          // section coding → we know the code; line coding → code unknown
+          // client-side, drop the attr so the filter falls back to the
+          // (populated, user just used it) picker's optgroup; clear → empty.
+          if (value.startsWith('section:')) row.dataset.acctCode = value.slice(8);
+          else row.dataset.acctCode = '';
           // Coded now → the smart-suggestion chip is spent; remove it.
           if (isCoded) { const _sb = row.querySelector('.actuals-suggest-btn'); if (_sb) _sb.remove(); }
         }
@@ -7167,7 +7177,9 @@
         const r = await fetch(`/projects/${PROJ_ID}/actuals/suggestions`, { credentials: 'same-origin' });
         if (!r.ok) return;
         const sugg = (await r.json()).suggestions || {};
-        document.querySelectorAll('#actuals-txn-list .actuals-txn-row').forEach(row => {
+        // Rows live in #actuals-sections after sectionize — include both
+        // containers or this silently no-ops. (Review 2026-06-04.)
+        document.querySelectorAll('#actuals-sections .actuals-txn-row, #actuals-txn-list .actuals-txn-row').forEach(row => {
           const tid    = row.dataset.tid;
           const coded  = row.dataset.coded === '1';
           const notProj= row.dataset.notProject === '1';
@@ -7341,6 +7353,31 @@
     // whenever they change; we don't have one writing display only
     // for the other to overwrite.
     let _actualsActiveFilter = 'uncoded';
+
+    // Section starts parsed ONCE from the shared options template (whose
+    // optgroups are now real COA sections). _actualsSectionForCode(2610) →
+    // 2600. Used by the section filter so it works off each row's
+    // data-acct-code instead of requiring a populated picker. (2026-06-04.)
+    let _actualsSectionStarts = null;
+    function _actualsSectionForCode(code) {
+      if (_actualsSectionStarts === null) {
+        _actualsSectionStarts = [];
+        const tpl = document.getElementById('actualsLineOptsTpl');
+        if (tpl) {
+          tpl.querySelectorAll('optgroup').forEach(g => {
+            const m = (g.label || '').match(/^(\d+)/);
+            if (m) _actualsSectionStarts.push(parseInt(m[1], 10));
+          });
+          _actualsSectionStarts.sort((a, b) => a - b);
+        }
+      }
+      let best = NaN;
+      for (const s of _actualsSectionStarts) {
+        if (code >= s) best = s; else break;
+      }
+      return best;
+    }
+
     function _actualsResolveFilters() {
       const f = _actualsActiveFilter;
       // Filter-bar values
@@ -7399,16 +7436,26 @@
           if (!hay.includes(vendor)) pass = false;
         }
         if (pass && section) {
-          const sel = r.querySelector('.actuals-line-picker');
+          // Primary: the row's own account code → section (works for lazy
+          // pickers, which only seed one option with no optgroup — the old
+          // OPTGROUP-only check hid every coded row whose picker hadn't been
+          // focused; review 2026-06-04). Fallback: populated-picker optgroup
+          // (covers rows coded this session before any reload).
           let matched = false;
-          if (sel && sel.value) {
-            if (sel.value.startsWith('section:')) {
-              matched = sel.value.slice(8) === String(section);
-            } else {
-              const opt = sel.options[sel.selectedIndex];
-              const grp = opt && opt.parentElement;
-              if (grp && grp.tagName === 'OPTGROUP') {
-                matched = grp.label.startsWith(String(section) + ' ');
+          const ac = parseInt(r.dataset.acctCode || '', 10);
+          if (!isNaN(ac)) {
+            matched = (_actualsSectionForCode(ac) === parseInt(section, 10));
+          } else {
+            const sel = r.querySelector('.actuals-line-picker');
+            if (sel && sel.value) {
+              if (sel.value.startsWith('section:')) {
+                matched = sel.value.slice(8) === String(section);
+              } else {
+                const opt = sel.options[sel.selectedIndex];
+                const grp = opt && opt.parentElement;
+                if (grp && grp.tagName === 'OPTGROUP') {
+                  matched = grp.label.startsWith(String(section) + ' ');
+                }
               }
             }
           }
@@ -7605,7 +7652,11 @@
       // (User 2026-06-03.)
       window._actualsInReview = false;
       const rb = document.getElementById('actuals-review-bar'); if (rb) rb.style.display = 'none';
-      ['actuals-filter-bar', 'actuals-bulk-bar'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = ''; });
+      const fb = document.getElementById('actuals-filter-bar'); if (fb) fb.style.display = '';
+      // Bulk bar only returns if rows are actually selected — restoring it
+      // unconditionally showed an empty "0 selected" bar. (Review 2026-06-04.)
+      const bb = document.getElementById('actuals-bulk-bar');
+      if (bb) bb.style.display = document.querySelector('.actuals-txn-row[data-selected="1"]') ? 'flex' : 'none';
       if (typeof actualsApplyFilter === 'function') actualsApplyFilter(_actualsActiveFilter || 'all');
       if (typeof window._actualsSectionize === 'function') window._actualsSectionize();
     };
@@ -8474,7 +8525,10 @@
       if (!(e.metaKey || e.ctrlKey)) return;
       if (e.key !== 'a' && e.key !== 'A') return;
       const tab = document.getElementById('tab-actuals');
-      if (!tab || tab.style.display === 'none') return;
+      // Tabs toggle via the 'active' class, not inline display — the old
+      // style.display check was always false, so Cmd+A was intercepted on
+      // EVERY tab and silently selected hidden Actuals rows. (Review 2026-06-04.)
+      if (!tab || !tab.classList.contains('active')) return;
       // Only intercept when focus is in the tab (not in a text input).
       const ae = document.activeElement;
       if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) return;
@@ -8866,7 +8920,14 @@
           const vendor = row ? (row.querySelector('.actuals-txn-vendor')?.textContent.trim() || '') : '';
           const date   = row ? (row.dataset.txnDate || '') : '';
           const amt    = row ? parseFloat(row.dataset.amount || 0) : 0;
-          target.innerHTML = `Linking to: <strong>${(vendor || '— no vendor —')}</strong>${date ? ' · ' + date : ''}${amt ? ' · $' + amt.toFixed(2) : ''}`;
+          // Build with textContent — vendor comes from OCR/QBO, not trusted
+          // for innerHTML. (Review CR-5, 2026-06-04.)
+          target.textContent = 'Linking to: ';
+          const _vb = document.createElement('strong');
+          _vb.textContent = vendor || '— no vendor —';
+          target.appendChild(_vb);
+          target.appendChild(document.createTextNode(
+            (date ? ' · ' + date : '') + (amt ? ' · $' + amt.toFixed(2) : '')));
         }
         const status = document.getElementById('_actuals-upload-status');
         if (status) status.textContent = '';
@@ -9185,6 +9246,10 @@
                     sel.appendChild(newOpt);
                     sel.value = wantId;
                   }
+                  // Without this, the lazy picker's focus-fill resets value to
+                  // the STALE dataset.current and visually reverts the
+                  // assignment. (Review 2026-06-04.)
+                  sel.dataset.current = wantId;
                 }
               }
             } else { fail++; }
@@ -9356,9 +9421,20 @@
             const sel = row.querySelector('.actuals-line-picker');
             if (sel) {
               const wantId = String(lineId);
+              let _ddFound = false;
               for (const opt of sel.options) {
-                if (opt.value === wantId) { sel.value = wantId; break; }
+                if (opt.value === wantId) { sel.value = wantId; _ddFound = true; break; }
               }
+              if (!_ddFound) {
+                const _ddOpt = document.createElement('option');
+                _ddOpt.value = wantId;
+                _ddOpt.textContent = 'Assigned line';
+                sel.appendChild(_ddOpt);
+                sel.value = wantId;
+              }
+              // Prevent the focus-fill from reverting to stale dataset.current.
+              // (Review 2026-06-04.)
+              sel.dataset.current = wantId;
             }
           } else {
             // Section-only drag — surface auto-create signals from the
@@ -9464,8 +9540,18 @@
         if (row) {
           row.dataset.matchStatus = 'unmatched';
           row.dataset.hasDoc = '0';
+          // Remove the doc badge too — leaving it meant later doc edits
+          // patched a row that no longer carries that doc. (Review 2026-06-04.)
+          const _bdg = row.querySelector('.actuals-doc-badge'); if (_bdg) _bdg.remove();
         }
         _actualsRecountStats();
+        // Keep the Review-mode counters in sync (Confirm already did this;
+        // Dismiss didn't). (Review 2026-06-04.)
+        if (typeof _actualsRefreshReviewBtn === 'function') _actualsRefreshReviewBtn();
+        const _rc = document.getElementById('actuals-review-count');
+        if (_rc) _rc.textContent = document.querySelectorAll('.actuals-suggested-banner').length;
+        const _hc = document.getElementById('actuals-review-hc');
+        if (_hc) _hc.textContent = [...document.querySelectorAll('.actuals-suggested-banner')].filter(b => parseFloat(b.dataset.confidence || 0) >= 0.9).length;
       } catch (e) {
         _actualsToast('Error: ' + e.message, 'red');
       }
@@ -16640,26 +16726,39 @@ async function loadSupportContacts(crewId) {
     list.innerHTML = '<p class="muted" style="font-size:.85rem">No representation on file.</p>';
     return;
   }
+  // Escape all data-derived strings (XSS — this list previously interpolated
+  // name/company/phone/email raw into innerHTML; review CR-5, 2026-06-04).
+  const _repEsc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
+      c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  window._repContactsById = {};
   list.innerHTML = contacts.map(sc => {
+    window._repContactsById[sc.id] = sc;
     const feeLabel = sc.fee_pct != null
-      ? `<span class="rep-fee-badge">${sc.fee_pct}% ${sc.fee_type === 'on_top' ? '(on top)' : sc.fee_type === 'inclusive' ? '(inclusive)' : ''}</span>`
+      ? `<span class="rep-fee-badge">${_repEsc(sc.fee_pct)}% ${sc.fee_type === 'on_top' ? '(on top)' : sc.fee_type === 'inclusive' ? '(inclusive)' : ''}</span>`
       : '';
     return `
-    <div class="rep-item" data-id="${sc.id}">
+    <div class="rep-item" data-id="${_repEsc(sc.id)}">
       <div class="rep-item-header">
-        <span class="rep-role-badge">${sc.role_type}</span>
-        <strong>${sc.name}</strong>
-        ${sc.company ? `<span class="muted">${sc.company}</span>` : ''}
+        <span class="rep-role-badge">${_repEsc(sc.role_type)}</span>
+        <strong>${_repEsc(sc.name)}</strong>
+        ${sc.company ? `<span class="muted">${_repEsc(sc.company)}</span>` : ''}
         ${feeLabel}
         <div style="margin-left:auto;display:flex;gap:.25rem">
-          <button class="btn btn-xs btn-ghost" onclick="editSupport(${JSON.stringify(sc).replace(/"/g,'&quot;')})">✎</button>
-          <button class="btn btn-xs btn-ghost" onclick="deleteSupport(${sc.id})">✕</button>
+          <button class="btn btn-xs btn-ghost" onclick="editSupportById(${parseInt(sc.id, 10) || 0})">✎</button>
+          <button class="btn btn-xs btn-ghost" onclick="deleteSupport(${parseInt(sc.id, 10) || 0})">✕</button>
         </div>
       </div>
-      ${sc.phone ? `<div style="font-size:.8rem"><a href="tel:${sc.phone}" class="contact-link">${sc.phone}</a></div>` : ''}
-      ${sc.email ? `<div style="font-size:.8rem"><a href="mailto:${sc.email}" class="contact-link">${sc.email}</a></div>` : ''}
+      ${sc.phone ? `<div style="font-size:.8rem"><a href="tel:${encodeURIComponent(sc.phone)}" class="contact-link">${_repEsc(sc.phone)}</a></div>` : ''}
+      ${sc.email ? `<div style="font-size:.8rem"><a href="mailto:${encodeURIComponent(sc.email)}" class="contact-link">${_repEsc(sc.email)}</a></div>` : ''}
     </div>
   `;}).join('');
+}
+
+// Data-id indirection for the edit button (replaces JSON.stringify-in-onclick,
+// which both broke on quotes and was an XSS vector). (Review CR-5.)
+function editSupportById(id) {
+  const sc = (window._repContactsById || {})[id];
+  if (sc && typeof editSupport === 'function') editSupport(sc);
 }
 
 function openRepForm(data) {
