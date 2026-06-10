@@ -10152,6 +10152,39 @@ def estimate_share_delete(sid):
     return jsonify({"ok": True, "deleted": sid})
 
 
+@app.route("/admin/backup/transactions.json", methods=["GET"])
+@login_required
+@super_admin_required
+def admin_backup_transactions():
+    """READ-ONLY archive: every transaction's coding-relevant fields as JSON.
+    Pulled before/after risky fixes so coding can be diffed and restored
+    independent of Render PITR. (Code review remediation, 2026-06-04.)"""
+    rows = (Transaction.query
+            .with_entities(Transaction.id, Transaction.project_id,
+                           Transaction.source, Transaction.vendor,
+                           Transaction.amount, Transaction.txn_date,
+                           Transaction.is_expense, Transaction.account_code,
+                           Transaction.account_code_name,
+                           Transaction.budget_line_id, Transaction.match_status,
+                           Transaction.doc_upload_id,
+                           Transaction.not_project_expense,
+                           Transaction.qbo_txn_id, Transaction.qbo_txn_type)
+            .order_by(Transaction.id).all())
+    out = [{"id": r.id, "project_id": r.project_id, "source": r.source,
+            "vendor": r.vendor,
+            "amount": float(r.amount) if r.amount is not None else None,
+            "txn_date": r.txn_date, "is_expense": bool(r.is_expense),
+            "account_code": r.account_code,
+            "account_code_name": r.account_code_name,
+            "budget_line_id": r.budget_line_id, "match_status": r.match_status,
+            "doc_upload_id": r.doc_upload_id,
+            "not_project_expense": bool(r.not_project_expense),
+            "qbo_txn_id": r.qbo_txn_id, "qbo_txn_type": r.qbo_txn_type}
+           for r in rows]
+    return jsonify({"generated_at": datetime.utcnow().isoformat() + 'Z',
+                    "count": len(out), "transactions": out})
+
+
 @app.route("/e/<token>", methods=["GET"])
 def estimate_portal(token):
     """PUBLIC (no login): client-facing estimate review/approval page."""
@@ -20260,67 +20293,20 @@ def _web_worker_essential_columns():
                      last_used    TIMESTAMP DEFAULT NOW(),
                      CONSTRAINT uq_category_vendor UNIQUE (qbo_category, vendor_name)
                    )""",
-                # COA refresh on transaction.account_code: any row
-                # carrying a legacy code from the pre-2026-04 COA gets
-                # translated to the new MMB/ShowBiz-aligned code in a
-                # SINGLE CASE WHEN pass. Sequential UPDATEs were buggy
-                # (chained re-mapping: old 600→new 2000 then old 2000→
-                # new 2600 swept the just-promoted rows on to 2600) and
-                # had a wrong target for code 100 (1100 instead of
-                # 3300). See coa_change_log + COA_LEGACY_MAPPING in
-                # budget_calc.py for the canonical mapping. Idempotent
-                # because rows with old codes vanish on first run, and
-                # the WHERE…IN clause is a no-op once they're gone.
-                #
-                # 2026-05-08: rewrite. Existing already-corrupted rows
-                # cannot be repaired here (we can no longer tell whether
-                # a 2600 row was originally 600, 1000, or 2000) — see
-                # admin audit query.
-                """UPDATE transaction
-                   SET account_code = CASE account_code
-                     WHEN 100   THEN 3300
-                     WHEN 600   THEN 2000
-                     WHEN 700   THEN 2100
-                     WHEN 800   THEN 2300
-                     WHEN 900   THEN 2200
-                     WHEN 1000  THEN 2000
-                     WHEN 1200  THEN 4000
-                     WHEN 2000  THEN 2600
-                     WHEN 3000  THEN 2700
-                     WHEN 3100  THEN 5000
-                     WHEN 3200  THEN 2900
-                     WHEN 3300  THEN 2800
-                     WHEN 4000  THEN 3000
-                     WHEN 4500  THEN 3100
-                     WHEN 5000  THEN 3200
-                     WHEN 6000  THEN 3400
-                     WHEN 7000  THEN 3500
-                     WHEN 7500  THEN 3600
-                     WHEN 8000  THEN 3700
-                     WHEN 8500  THEN 3800
-                     WHEN 9000  THEN 3300
-                     WHEN 11000 THEN 4500
-                     WHEN 11500 THEN 4600
-                     WHEN 11600 THEN 4700
-                     WHEN 12000 THEN 6100
-                     WHEN 12500 THEN 4800
-                     WHEN 13000 THEN 6200
-                     WHEN 13200 THEN 6400
-                     WHEN 14000 THEN 6000
-                     WHEN 15000 THEN 6500
-                     WHEN 16000 THEN 6300
-                     WHEN 17000 THEN 6300
-                     WHEN 18000 THEN 4900
-                     WHEN 19000 THEN 6600
-                     WHEN 20000 THEN 6700
-                     WHEN 20500 THEN 6800
-                     ELSE account_code
-                   END
-                   WHERE account_code IN (100,600,700,800,900,1000,1200,
-                       2000,3000,3100,3200,3300,4000,4500,5000,6000,
-                       7000,7500,8000,8500,9000,11000,11500,11600,12000,
-                       12500,13000,13200,14000,15000,16000,17000,18000,
-                       19000,20000,20500)""",
+                # ── REMOVED 2026-06-04: the COA-renumber UPDATE that used to
+                # live here was ACTIVELY CORRUPTING coding. It ran on EVERY
+                # worker boot/recycle, and its "legacy" source codes (1000,
+                # 2000, 3000, 3100, 3200, 3300, 4000, 4500, 5000, 6000) are
+                # also valid CURRENT codes — so a transaction a user coded to
+                # 2000 (Production Staff) was silently rewritten to 2600
+                # (Camera Equipment) on the next recycle, 3300→2800, 6000→3400,
+                # etc. The claim that it was "idempotent because rows with old
+                # codes vanish" was false: new user coding constantly re-creates
+                # those codes. The CoaMigrationLog-guarded ONE-TIME version in
+                # _do_boot_work is the only legitimate copy of this migration.
+                # DO NOT RE-ADD a data UPDATE to this per-worker list — anything
+                # that mutates rows must be run-once-guarded (CoaMigrationLog /
+                # system_task_log pattern). (Code review 2026-06-04, CR-1.)
                 # ── 2026-04-30: Actual-budget peer mode (Phase 2a) ────
                 # Budget.is_actual flag distinguishes the auto-cloned
                 # actuals budget from Estimated/Working planning peers.
