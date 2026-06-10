@@ -1,5 +1,23 @@
 # FPBudget Full Code Review — 2026-06-04
 
+## REMEDIATION STATUS (updated as fixes land — each is its own revertable commit)
+
+| Finding | Status | Commit |
+|---|---|---|
+| CR-1 COA remap corrupting coding on every boot | ✅ FIXED (removed; tombstone comment) | 6315e7e |
+| CR-2 IDOR — missing project auth on ~70 routes | ✅ FIXED (central before_request gate + project_share owner-gate) | f96307c |
+| CR-3 Refunds inflate/vanish from actuals | ✅ FIXED (signed rollups; QBO Credit flag; BillPayment; CreditCardCredit) | c67714c |
+| CR-4 Filename dates parsed as dollar amounts | ✅ FIXED (hardened parser, consolidated 3 copies) | 0cbdbb6 |
+| CR-5 XSS (Representation modal, attach-receipt vendor) | ✅ FIXED | 692e1d7 |
+| Frontend regressions (section filter, dead queries, Cmd+A, drag-drop revert, review counts, bulk bar) | ✅ FIXED | 692e1d7 |
+| Archive: /admin/backup/transactions.json (super_admin, read-only) | ✅ ADDED | 6315e7e |
+| HIGH/MEDIUM items below | ⏳ not yet started | — |
+
+Rollback: `git revert <commit>` for any single fix; DB state via Render PITR
+and the /admin/backup/transactions.json snapshots (one pulled 2026-06-10
+16:58Z: 1,866 txns, 415 coded).
+
+
 Six parallel review passes (security, financial correctness, reliability/infra,
 frontend, document pipeline/integrations, architecture) over ~62k lines.
 Findings verified against actual code; the two most severe were independently
