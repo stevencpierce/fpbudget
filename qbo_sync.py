@@ -204,7 +204,19 @@ def _extract_txn_fields(txn, entity, acct_ref, account_meta):
     if not txn_id:
         return None
 
-    is_expense = (entity == "Purchase")
+    # is_expense semantics (review CR-3, 2026-06-04):
+    #   Purchase                → expense, UNLESS Credit=true (a CC refund
+    #                             recorded as a Purchase credit — was imported
+    #                             as a POSITIVE expense, inflating actuals).
+    #   BillPayment             → expense (real money out of the bank; was
+    #                             False, making vendor-bill spend invisible).
+    #   Deposit / CreditCardCredit → credit/refund.
+    if entity == "Purchase":
+        is_expense = not bool(txn.get("Credit"))
+    elif entity == "BillPayment":
+        is_expense = True
+    else:                       # Deposit, CreditCardCredit
+        is_expense = False
     amount     = float(txn.get("TotalAmt", 0))
     raw_date   = txn.get("TxnDate", "")  # YYYY-MM-DD
 
@@ -303,7 +315,10 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
     # added to capture CC refunds. JournalEntry omitted — multi-line
     # splits need a different parser.
     account_id_set = set(str(a) for a in account_ids)
-    for entity in ("Purchase", "Deposit", "BillPayment"):
+    # CreditCardCredit actually queried now (review CR-3 — the comment above
+    # claimed it was covered but the tuple never included it, so CC refunds
+    # were never imported at all).
+    for entity in ("Purchase", "Deposit", "BillPayment", "CreditCardCredit"):
         query = (
             f"SELECT * FROM {entity} WHERE "
             f"TxnDate >= '{start_date}' AND TxnDate <= '{end_date}' "
@@ -390,7 +405,8 @@ def fetch_transactions_cdc(conn, db, account_ids, changed_since,
     resp      = requests.get(
         f"{_qbo_base_url()}/{conn.realm_id}/cdc",
         headers=_headers(token),
-        params={"entities": "Purchase,Deposit", "changedSince": iso},
+        params={"entities": "Purchase,Deposit,BillPayment,CreditCardCredit",
+                "changedSince": iso},
         timeout=60,
     )
     if resp.status_code != 200:
@@ -401,13 +417,16 @@ def fetch_transactions_cdc(conn, db, account_ids, changed_since,
     out         = []
     for response_block in payload.get("CDCResponse", []):
         for query_resp in response_block.get("QueryResponse", []):
-            for entity in ("Purchase", "Deposit"):
+            for entity in ("Purchase", "Deposit", "BillPayment", "CreditCardCredit"):
                 for txn in query_resp.get(entity, []):
-                    acct_ref = (
-                        (txn.get("DepositToAccountRef") or {}).get("value")
-                        if entity == "Deposit"
-                        else (txn.get("AccountRef") or {}).get("value")
-                    )
+                    if entity == "Deposit":
+                        acct_ref = (txn.get("DepositToAccountRef") or {}).get("value")
+                    elif entity == "BillPayment":
+                        acct_ref = ((txn.get("CheckPayment") or {}).get("BankAccountRef", {}).get("value")
+                                    or (txn.get("CreditCardPayment") or {}).get("CCAccountRef", {}).get("value")
+                                    or (txn.get("APAccountRef") or {}).get("value"))
+                    else:   # Purchase / CreditCardCredit — top-level AccountRef
+                        acct_ref = (txn.get("AccountRef") or {}).get("value")
                     if acct_ref not in account_ids:
                         continue
                     fields = _extract_txn_fields(txn, entity, acct_ref, account_meta)

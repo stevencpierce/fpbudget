@@ -77,7 +77,7 @@ from flask import (Flask, render_template, redirect, url_for, request,
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
                          login_required, current_user)
 from dotenv import load_dotenv
-from sqlalchemy import func, text
+from sqlalchemy import func, text, case as sa_case
 from sqlalchemy.exc import IntegrityError
 from weasyprint import HTML as WeasyprintHTML
 
@@ -4447,18 +4447,29 @@ def _actuals_by_section_code(pid):
 
     Coalesce Transaction.account_code with the linked BudgetLine's
     account_code so any txn with EITHER set lands in the rollup.
+
+    2026-06-04 (review CR-3): SIGNED sum — credits/refunds (is_expense=False)
+    that the user coded to a line/section now SUBTRACT instead of being
+    excluded (net spend was permanently overstated after any refund).
     """
     rows = (db.session.query(
                 func.coalesce(Transaction.account_code,
                               BudgetLine.account_code).label('code'),
-                func.sum(Transaction.amount))
+                func.sum(_signed_amount()))
             .outerjoin(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
             .filter(Transaction.project_id == pid,
-                    Transaction.is_expense == True,
                     Transaction.not_project_expense == False)
             .group_by('code')
             .all())
     return {r[0]: float(r[1]) for r in rows if r[0] is not None}
+
+
+def _signed_amount():
+    """SQL expression: expense amounts positive, credit/refund amounts negative
+    — so coded refunds reduce actuals instead of being excluded (review CR-3).
+    Function (not module constant) so each query gets a fresh expression."""
+    return sa_case((Transaction.is_expense == True, Transaction.amount),
+                   else_=-Transaction.amount)
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/audit.json")
@@ -5113,11 +5124,10 @@ def budget_view(pid, bid):
     for r in db.session.query(
         Transaction.account_code,
         Transaction.account_code_name,
-        func.sum(Transaction.amount).label("total"),
+        func.sum(_signed_amount()).label("total"),   # credits subtract (CR-3)
         func.count(Transaction.id).label("count")
     ).filter(
         Transaction.project_id == pid,
-        Transaction.is_expense == True,
         Transaction.not_project_expense == False,
         Transaction.account_code != None,
     ).group_by(Transaction.account_code, Transaction.account_code_name).all():
@@ -5166,12 +5176,11 @@ def budget_view(pid, bid):
             from sqlalchemy import func as _func
             for src_line_id, amt in (
                 db.session.query(BudgetLine.source_line_id,
-                                 _func.sum(Transaction.amount))
+                                 _func.sum(_signed_amount()))   # credits subtract (CR-3)
                 .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
                 .filter(BudgetLine.budget_id == _actual_budget.id,
                         BudgetLine.source_line_id.isnot(None),
                         Transaction.not_project_expense == False,
-                        Transaction.is_expense == True,
                         _exclude_estimate_linked_txns_clause())
                 .group_by(BudgetLine.source_line_id)
                 .all()
@@ -5192,12 +5201,11 @@ def budget_view(pid, bid):
         from sqlalchemy import func as _func2
         for _ac, _amt in (
             db.session.query(Transaction.account_code,
-                             _func2.sum(Transaction.amount))
+                             _func2.sum(_signed_amount()))   # credits subtract (CR-3)
             .filter(Transaction.project_id == pid,
                     Transaction.budget_line_id.is_(None),
                     Transaction.account_code.isnot(None),
                     Transaction.not_project_expense == False,
-                    Transaction.is_expense == True,
                     _exclude_estimate_linked_txns_clause())
             .group_by(Transaction.account_code)
             .all()
@@ -5801,14 +5809,14 @@ def budget_view(pid, bid):
                      .filter(Transaction.project_id == pid,
                              Transaction.budget_line_id.isnot(None),
                              Transaction.not_project_expense == False,
-                             Transaction.is_expense == True,
                              _exclude_estimate_linked_txns_clause())
                      .all())
             for _tx in _txns:
                 _key = _alid_to_key.get(_tx.budget_line_id)
                 if _key is None:
                     continue
-                _amt = float(_tx.amount or 0)
+                # Signed: coded credits/refunds subtract from the line (CR-3).
+                _amt = float(_tx.amount or 0) * (1 if _tx.is_expense else -1)
                 actual_line_totals[_key] = actual_line_totals.get(_key, 0.0) + _amt
                 actual_line_totals_by_lid[_tx.budget_line_id] = (
                     actual_line_totals_by_lid.get(_tx.budget_line_id, 0.0) + _amt)
@@ -13895,14 +13903,13 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                                      .subquery())
             from sqlalchemy import or_ as _or_po
             _billed_q = (db.session
-                         .query(_func_po.coalesce(_func_po.sum(Transaction.amount), 0))
+                         .query(_func_po.coalesce(_func_po.sum(_signed_amount()), 0))
                          .join(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
                          .filter(_or_po(
                                      BudgetLine.po_id == po.id,
                                      BudgetLine.source_line_id.in_(_working_po_lines_sub),
                                  ),
                                  Transaction.not_project_expense == False,
-                                 Transaction.is_expense == True,
                                  _exclude_estimate_linked_txns_clause()))
             _billed = float(_billed_q.scalar() or 0)
         except Exception as _be:
@@ -14673,12 +14680,11 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
                                   .filter(BudgetLine.id.in_(_line_ids))
                                   .subquery())
             _billed_q = (db.session
-                         .query(_func_sb.coalesce(_func_sb.sum(Transaction.amount), 0))
+                         .query(_func_sb.coalesce(_func_sb.sum(_signed_amount()), 0))
                          .join(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
                          .filter(_or_sb(BudgetLine.id.in_(_line_ids),
                                         BudgetLine.source_line_id.in_(_working_lines_sub)),
                                  Transaction.not_project_expense == False,
-                                 Transaction.is_expense == True,
                                  _exclude_estimate_linked_txns_clause()))
             billed = float(_billed_q.scalar() or 0)
     except Exception as _bbe:
