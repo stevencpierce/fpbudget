@@ -22719,9 +22719,15 @@ def qbo_repair_refunds():
         or _dt.date.today().isoformat()
     if not _date_re.match(start_date) or not _date_re.match(end_date):
         return jsonify({"error": "start_date/end_date must be YYYY-MM-DD"}), 400
+    # Which corrections to apply: credit_only (safe — removes wrongly-counted
+    # spend) | expense_only (ADDS spend; double-count risk vs CSV) | both.
+    direction = (body.get('direction') or request.args.get('direction') or 'both').lower()
+    if direction not in ('both', 'credit_only', 'expense_only'):
+        return jsonify({"error": "direction must be both|credit_only|expense_only"}), 400
     from qbo_sync import repair_is_expense
     try:
-        result = repair_is_expense(project, conn, db, start_date, end_date, apply=apply)
+        result = repair_is_expense(project, conn, db, start_date, end_date,
+                                   apply=apply, direction=direction)
     except Exception as e:
         logging.exception("qbo repair-refunds failed")
         return jsonify({"error": "Repair failed", "detail": type(e).__name__}), 500

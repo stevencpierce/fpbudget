@@ -561,7 +561,8 @@ def _find_unreconciled_doc_match(db, project_id, qbo_row):
     return best if best_score >= 0.7 else None
 
 
-def repair_is_expense(project_sheet, conn, db, start_date, end_date, apply=False):
+def repair_is_expense(project_sheet, conn, db, start_date, end_date, apply=False,
+                      direction='both'):
     """Repair pre-CR-3 rows: re-fetch QBO txns in [start_date, end_date] WITHOUT
     skipping existing ones, and correct is_expense on already-imported local
     rows whose direction is now known to be wrong:
@@ -570,7 +571,15 @@ def repair_is_expense(project_sheet, conn, db, start_date, end_date, apply=False
       • BillPayments imported as credits → flip to expense.
     Also reports QBO txns with no local row (e.g. CreditCardCredit refunds that
     predate the entity being queried) so they can be re-synced. Dry-run unless
-    apply=True; only the is_expense boolean is touched. (Code review 2026-06-04.)"""
+    apply=True; only the is_expense boolean is touched.
+
+    direction: which corrections to APPLY (reporting always covers both).
+      'credit_only'  — only expense→credit flips (removes wrongly-counted spend;
+                       always safe).
+      'expense_only' — only credit→expense flips (ADDS spend; double-counts if
+                       the project also imports the same charges via bank CSV —
+                       check overlap first).
+      'both'         — apply everything. (Code review 2026-06-04.)"""
     from models import Transaction
     account_ids = json.loads(project_sheet.qbo_account_ids or "[]")
     if not account_ids:
@@ -599,15 +608,20 @@ def repair_is_expense(project_sheet, conn, db, start_date, end_date, apply=False
             rec = {"id": local.id, "date": local.txn_date, "vendor": local.vendor,
                    "amount": float(local.amount or 0), "type": r["qbo_txn_type"],
                    "was_expense": bool(local.is_expense), "now_expense": bool(r["is_expense"])}
-            (flip_to_credit if local.is_expense else flip_to_expense).append(rec)
-            if apply:
+            to_credit = bool(local.is_expense)        # expense→credit flip
+            (flip_to_credit if to_credit else flip_to_expense).append(rec)
+            apply_this = apply and (
+                direction == 'both'
+                or (direction == 'credit_only' and to_credit)
+                or (direction == 'expense_only' and not to_credit))
+            if apply_this:
                 local.is_expense = bool(r["is_expense"])
                 local.updated_at = datetime.datetime.utcnow()
                 fixed += 1
     if apply and fixed:
         db.session.commit()
     return {"window": [start_date, end_date], "fetched": len(rows),
-            "applied": apply, "fixed": fixed,
+            "applied": apply, "direction": direction, "fixed": fixed,
             "flip_to_credit_count": len(flip_to_credit),
             "flip_to_expense_count": len(flip_to_expense),
             "missing_in_local_count": len(missing),
