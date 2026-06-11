@@ -11,7 +11,17 @@
 | CR-5 XSS (Representation modal, attach-receipt vendor) | ✅ FIXED | 692e1d7 |
 | Frontend regressions (section filter, dead queries, Cmd+A, drag-drop revert, review counts, bulk bar) | ✅ FIXED | 692e1d7 |
 | Archive: /admin/backup/transactions.json (super_admin, read-only) | ✅ ADDED | 6315e7e |
-| HIGH/MEDIUM items below | ⏳ not yet started | — |
+| HIGH confirm_match data loss + purge deletes matched + cross-project coding | ✅ FIXED | ea09be7 |
+| HIGH CSV sign polarity (Amex) + dedup drops identical same-day charges | ✅ FIXED | af04d80 |
+| OLD REFUNDS repair tool (/admin/qbo-imports/repair-refunds, dry-run) | ✅ ADDED | caf0c27 |
+| HIGH filename-collision-as-duplicate + error-upload archive pointer | ✅ FIXED | 4a58564 |
+| HIGH _walk_dbx_files truncation guard; source_path scoping; prod secret fail-fast; /readyz | ✅ FIXED | 4929811 |
+| HIGH concurrent Actual-clone duplicate (unique constraints) | ⏳ pending | — |
+| HIGH manual-merge children/qbo_txn_id; QBO pagination | ⏳ pending | — |
+| HIGH CSRF protection | ⏳ pending (most invasive) | — |
+| Reliability: per-worker DDL on every boot; drain single-flight race | ⏳ pending | — |
+| Pipeline: retry-filing dead; gating-list divergence; releases invisible | ⏳ pending | — |
+| MEDIUM/LOW items | ⏳ pending | — |
 
 Rollback: `git revert <commit>` for any single fix; DB state via Render PITR
 and the /admin/backup/transactions.json snapshots (one pulled 2026-06-10
