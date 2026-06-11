@@ -1298,6 +1298,11 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
             "status":            "error",
             "doc_type":          item.get("suggested_type"),
             "filed_path":        None,
+            # The original bytes were already staged to _SOURCE_ARCHIVE before
+            # the error — surface that path so the DocUpload row points at the
+            # durable copy (was None, leaving the bytes unrecoverable and
+            # invisible to every recovery tool). (Code review 2026-06-04.)
+            "staged_path":       item.get("staged_path"),
             "confidence":        float(item.get("confidence") or 0.0),
             "new_filename":      None,
             "original_filename": filename,

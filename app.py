@@ -1825,7 +1825,7 @@ def admin_docs_source_import(pid):
                 filed_dropbox_path=result.get("filed_path") or result.get("staged_path"),
                 filed_at=_dt.utcnow() if result.get("filed_path") else None,
                 source_archive_path=result.get("staged_path"),
-                is_duplicate=bool(dup) or bool(result.get("duplicate")),
+                is_duplicate=bool(dup),  # byte-hash only; autorename ≠ duplicate (CR 2026-06-04)
                 duplicate_of_id=dup.id if dup else None,
                 note='Imported from source-folder audit')
             db.session.add(up)
@@ -1985,7 +1985,7 @@ def _source_drain_worker(flask_app, pid, src_path, user_id, include_amt):
                         filed_dropbox_path=result.get("filed_path") or result.get("staged_path"),
                         filed_at=_dt.utcnow() if result.get("filed_path") else None,
                         source_archive_path=result.get("staged_path"),
-                        is_duplicate=bool(dup) or bool(result.get("duplicate")),
+                        is_duplicate=bool(dup),  # byte-hash only; autorename ≠ duplicate (CR 2026-06-04)
                         duplicate_of_id=dup.id if dup else None,
                         note='Imported from source-folder audit')
                     db.session.add(up); db.session.commit()
@@ -8970,7 +8970,7 @@ def actuals_upload_receipt_to_transaction(pid, tid):
         filed_dropbox_path  = result.get("filed_path") or result.get("staged_path"),
         filed_at            = datetime.utcnow() if result.get("filed_path") else None,
         source_archive_path = result.get("staged_path"),
-        is_duplicate        = bool(duplicate_of) or bool(result.get("duplicate")),
+        is_duplicate        = bool(duplicate_of),  # byte-hash only; autorename ≠ duplicate (CR 2026-06-04)
         duplicate_of_id     = duplicate_of.id if duplicate_of else None,
     )
     db.session.add(upload)
@@ -20717,7 +20717,11 @@ def docs_upload_post(pid):
         # was filed, sent to review, or errored. The archive is never
         # deleted by the app — it's the durable source-of-truth.
         source_archive_path=result.get("staged_path"),
-        is_duplicate=bool(duplicate_of) or bool(result.get("duplicate")),
+        # byte-hash match ONLY. A Dropbox autorename (" (1)" suffix) means a
+        # DIFFERENT receipt happened to produce the same vendor/date/total
+        # filename — NOT a duplicate. Treating it as one buried real spend with
+        # no transaction. (Code review 2026-06-04.)
+        is_duplicate=bool(duplicate_of),
         # Record WHICH upload the bytes matched so the docs UI can link
         # back and offer Keep-both / It's-a-duplicate. Only the exact
         # hash match (duplicate_of) carries an id; the soft filename-
