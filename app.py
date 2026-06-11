@@ -7890,6 +7890,15 @@ def actuals_merge_transactions(pid):
     else:
         canon, loser = b, a
 
+    # Refuse to merge two DISTINCT QuickBooks charges — deleting the loser would
+    # destroy a real bank record AND, since its qbo_txn_id would no longer exist
+    # in any row, the next sync would re-import it as a fresh duplicate. (Code
+    # review 2026-06-04.)
+    if (a.qbo_txn_id and b.qbo_txn_id and a.qbo_txn_id != b.qbo_txn_id):
+        return jsonify({"error": "Both rows are distinct QuickBooks charges "
+                                 "(different qbo_txn_id). Merging would delete a "
+                                 "real bank record — unmatch one first if it's wrong."}), 400
+
     _before = {
         'canon_id':           canon.id,
         'canon_source':       canon.source,
@@ -7962,6 +7971,16 @@ def actuals_merge_transactions(pid):
     # the DocUpload itself stays, just transferred to canonical).
     loser.doc_upload_id   = None
     loser.budget_line_id  = None
+
+    # Reparent the loser's invoice-split children onto the canonical row before
+    # deleting it — otherwise the parent_transaction_id FK blocks the delete on
+    # Postgres (500 mid-merge) / orphans them on SQLite. (Code review 2026-06-04.)
+    _reparented = (Transaction.query
+                   .filter(Transaction.parent_transaction_id == loser.id)
+                   .update({"parent_transaction_id": canon.id},
+                           synchronize_session=False))
+    if _reparented:
+        transferred.append(f'{_reparented}_child_split(s)_reparented')
 
     _loser_amt    = float(loser.amount or 0)
     _loser_vendor = loser.vendor or ''

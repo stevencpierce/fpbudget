@@ -319,22 +319,37 @@ def fetch_transactions(conn, db, account_ids, start_date, end_date,
     # claimed it was covered but the tuple never included it, so CC refunds
     # were never imported at all).
     for entity in ("Purchase", "Deposit", "BillPayment", "CreditCardCredit"):
-        query = (
-            f"SELECT * FROM {entity} WHERE "
-            f"TxnDate >= '{start_date}' AND TxnDate <= '{end_date}' "
-            f"MAXRESULTS 1000"
-        )
-        resp = requests.get(
-            f"{_qbo_base_url()}/{conn.realm_id}/query",
-            headers=_headers(token), params={"query": query}, timeout=60,
-        )
-        if resp.status_code != 200:
-            log.warning(f"[qbo] {entity} query failed: {resp.status_code} {resp.text[:200]}")
-            continue
-        rows = resp.json().get("QueryResponse", {}).get(entity, [])
-        log.info(f"[qbo] {entity}: QBO returned {len(rows)} rows pre-filter")
-        if len(rows) >= 1000:
-            log.warning(f"[qbo] {entity} query hit MAXRESULTS 1000 — narrow the date range.")
+        # Paginate with STARTPOSITION. A single `MAXRESULTS 1000` query silently
+        # dropped every row past the first 1000 in a wide window — those txns
+        # then become permanently unsyncable once the window ages out of the
+        # lookback. (Code review 2026-06-04.)
+        rows = []
+        start_pos, page_size = 1, 1000
+        while True:
+            query = (
+                f"SELECT * FROM {entity} WHERE "
+                f"TxnDate >= '{start_date}' AND TxnDate <= '{end_date}' "
+                f"STARTPOSITION {start_pos} MAXRESULTS {page_size}"
+            )
+            resp = requests.get(
+                f"{_qbo_base_url()}/{conn.realm_id}/query",
+                headers=_headers(token), params={"query": query}, timeout=60,
+            )
+            if resp.status_code != 200:
+                log.warning(f"[qbo] {entity} query failed at pos {start_pos}: "
+                            f"{resp.status_code} {resp.text[:200]}"
+                            + (" (PARTIAL — later pages missing)" if start_pos > 1 else ""))
+                break
+            page = resp.json().get("QueryResponse", {}).get(entity, [])
+            rows.extend(page)
+            if len(page) < page_size:
+                break
+            start_pos += page_size
+            if start_pos > 50000:        # safety cap — abnormal volume
+                log.warning(f"[qbo] {entity}: pagination safety cap at {start_pos}")
+                break
+        log.info(f"[qbo] {entity}: QBO returned {len(rows)} rows pre-filter "
+                 f"(paged in {((len(rows)-1)//page_size)+1 if rows else 0} request(s))")
         kept = 0
         skipped_dup = 0
         seen_refs = set()
