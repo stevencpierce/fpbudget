@@ -546,6 +546,61 @@ def _find_unreconciled_doc_match(db, project_id, qbo_row):
     return best if best_score >= 0.7 else None
 
 
+def repair_is_expense(project_sheet, conn, db, start_date, end_date, apply=False):
+    """Repair pre-CR-3 rows: re-fetch QBO txns in [start_date, end_date] WITHOUT
+    skipping existing ones, and correct is_expense on already-imported local
+    rows whose direction is now known to be wrong:
+      • CC refunds (Purchase with Credit=true) imported as POSITIVE expenses
+        → flip to credit (they were inflating actuals).
+      • BillPayments imported as credits → flip to expense.
+    Also reports QBO txns with no local row (e.g. CreditCardCredit refunds that
+    predate the entity being queried) so they can be re-synced. Dry-run unless
+    apply=True; only the is_expense boolean is touched. (Code review 2026-06-04.)"""
+    from models import Transaction
+    account_ids = json.loads(project_sheet.qbo_account_ids or "[]")
+    if not account_ids:
+        raise ValueError("No QBO accounts configured for this project.")
+    try:
+        account_meta = {a["id"]: a for a in list_qbo_accounts(conn, db)}
+    except Exception:
+        account_meta = {}
+    rows = fetch_transactions(conn, db, account_ids, start_date, end_date,
+                              skip_keys=set(), account_meta=account_meta)
+    flip_to_credit, flip_to_expense, missing = [], [], []
+    fixed = 0
+    for r in rows:
+        local = (Transaction.query
+                 .filter(Transaction.project_id == project_sheet.id,
+                         Transaction.qbo_txn_id == r["qbo_txn_id"],
+                         Transaction.qbo_txn_type == r["qbo_txn_type"])
+                 .first())
+        if local is None:
+            if len(missing) < 200:
+                missing.append({"qbo_txn_id": r["qbo_txn_id"], "type": r["qbo_txn_type"],
+                                "date": r["txn_date"], "vendor": r["vendor"],
+                                "amount": r["amount"], "is_expense": r["is_expense"]})
+            continue
+        if bool(local.is_expense) != bool(r["is_expense"]):
+            rec = {"id": local.id, "date": local.txn_date, "vendor": local.vendor,
+                   "amount": float(local.amount or 0), "type": r["qbo_txn_type"],
+                   "was_expense": bool(local.is_expense), "now_expense": bool(r["is_expense"])}
+            (flip_to_credit if local.is_expense else flip_to_expense).append(rec)
+            if apply:
+                local.is_expense = bool(r["is_expense"])
+                local.updated_at = datetime.datetime.utcnow()
+                fixed += 1
+    if apply and fixed:
+        db.session.commit()
+    return {"window": [start_date, end_date], "fetched": len(rows),
+            "applied": apply, "fixed": fixed,
+            "flip_to_credit_count": len(flip_to_credit),
+            "flip_to_expense_count": len(flip_to_expense),
+            "missing_in_local_count": len(missing),
+            "flip_to_credit": flip_to_credit[:100],
+            "flip_to_expense": flip_to_expense[:100],
+            "missing_in_local": missing[:100]}
+
+
 def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
     """Pull QBO transactions for one project into the shared Transaction
     table. Idempotent — re-running is a no-op for txns already imported.

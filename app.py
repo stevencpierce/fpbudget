@@ -22585,6 +22585,58 @@ def rebuild_actual_mirror(pid):
     return jsonify(report)
 
 
+@app.route("/admin/qbo-imports/repair-refunds", methods=["POST"])
+@login_required
+def qbo_repair_refunds():
+    """Repair pre-2026-06-04 QBO rows where refunds imported as POSITIVE
+    expenses (CC refunds / Purchase-with-Credit) and BillPayments imported as
+    credits. Re-queries QBO over a date window and corrects is_expense on
+    existing local rows (only that boolean is touched). Reports QBO refunds with
+    no local row too. DRY-RUN by default; ?apply=1 to write. Admin only.
+    Body/params: project=<pid> (required), start_date, end_date (YYYY-MM-DD;
+    default = last 365 days → today). (Code review 2026-06-04.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    from models import QBOConnection
+    conn = QBOConnection.query.first()
+    if not conn or not conn.refresh_token:
+        return jsonify({"error": "QuickBooks not connected. Go to Admin → QBO to authorize.",
+                        "needs_oauth": True}), 400
+    body = request.get_json(silent=True) or {}
+    apply = (request.args.get('apply') == '1') or bool(body.get('apply'))
+    pid_raw = request.args.get('project') or body.get('project')
+    try:
+        pid = int(pid_raw)
+    except (TypeError, ValueError):
+        return jsonify({"error": "project (pid) required"}), 400
+    project = ProjectSheet.query.get_or_404(pid)
+    import re as _re, datetime as _dt
+    _date_re = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    start_date = (body.get('start_date') or request.args.get('start_date') or '').strip() \
+        or (_dt.date.today() - _dt.timedelta(days=365)).isoformat()
+    end_date = (body.get('end_date') or request.args.get('end_date') or '').strip() \
+        or _dt.date.today().isoformat()
+    if not _date_re.match(start_date) or not _date_re.match(end_date):
+        return jsonify({"error": "start_date/end_date must be YYYY-MM-DD"}), 400
+    from qbo_sync import repair_is_expense
+    try:
+        result = repair_is_expense(project, conn, db, start_date, end_date, apply=apply)
+    except Exception as e:
+        logging.exception("qbo repair-refunds failed")
+        return jsonify({"error": "Repair failed", "detail": type(e).__name__}), 500
+    if apply and result.get('fixed'):
+        try:
+            _log_activity(action='update', entity_type='transaction', entity_id=0,
+                          entity_label=f"QBO refund repair ({result['fixed']} fixed)",
+                          project_id=pid, before=None, after={'fixed': result['fixed']},
+                          note=(f"Repaired is_expense on {result['fixed']} QBO rows "
+                                f"({result['flip_to_credit_count']} refunds→credit, "
+                                f"{result['flip_to_expense_count']} bill payments→expense)"))
+        except Exception:
+            pass
+    return jsonify(result)
+
+
 @app.route("/admin/qbo-imports/purge", methods=["POST"])
 @login_required
 def qbo_imports_purge(pid=None):
