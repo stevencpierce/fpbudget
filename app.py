@@ -535,7 +535,16 @@ def _actuals_vendor_suggestions(pid):
         return {}
 
 app = Flask(__name__)
-app.config["SECRET_KEY"]                     = os.getenv("SECRET_KEY", "fpbudget-dev-secret")
+# Fail fast in production rather than signing sessions with a guessable default
+# key (anyone could forge an admin session). Local dev keeps the convenience
+# fallback. RENDER is set in Render's environment. (Code review 2026-06-04.)
+_IS_PROD = bool(os.getenv("RENDER"))
+_SECRET_KEY = os.getenv("SECRET_KEY")
+if not _SECRET_KEY:
+    if _IS_PROD:
+        raise RuntimeError("SECRET_KEY must be set in production (RENDER env present).")
+    _SECRET_KEY = "fpbudget-dev-secret"
+app.config["SECRET_KEY"]                     = _SECRET_KEY
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 # ── SocketIO ──────────────────────────────────────────────────────────────────
@@ -621,7 +630,13 @@ def in_tz_filter(dt, tz_str, fmt=None):
     return local.strftime(f).lower()
 
 ADMIN_EMAIL        = os.getenv("ADMIN_EMAIL", "steven@thefp.tv")
-ADMIN_PASSWORD     = os.getenv("ADMIN_PASSWORD", "changeme123")
+# Never seed/keep the admin account on a known default password in production.
+# (Code review 2026-06-04.)
+ADMIN_PASSWORD     = os.getenv("ADMIN_PASSWORD")
+if not ADMIN_PASSWORD:
+    if _IS_PROD:
+        raise RuntimeError("ADMIN_PASSWORD must be set in production (RENDER env present).")
+    ADMIN_PASSWORD = "changeme123"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 
 @app.context_processor
@@ -1474,12 +1489,31 @@ def _resolve_dbx_path(raw, project=None):
     return f"{_DBX_OPS_ROOT.rstrip('/')}{rel}"
 
 
-def _walk_dbx_files(dbx, root):
+def _path_in_project(src_path, project):
+    """True iff a resolved Dropbox path is within the project's OWN folder — so a
+    project editor can't point the scan/import tools at another project's
+    receipts. (Code review 2026-06-04.)"""
+    if not src_path or not project or not getattr(project, 'dropbox_folder', None):
+        return False
+    proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
+                 else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
+    s = src_path.rstrip('/').lower()
+    r = proj_root.rstrip('/').lower()
+    return s == r or s.startswith(r + '/')
+
+
+def _walk_dbx_files(dbx, root, status=None):
     """Yield FileMetadata entries under `root` recursively, skipping trash.
-    Tolerates pagination errors by stopping cleanly."""
+    If `status` (a dict) is passed and any Dropbox list/continue call fails, sets
+    status['truncated']=True — callers that build a dedup/exclusion set from this
+    walk MUST refuse to import on a truncated walk, or a partial set causes mass
+    re-import of already-filed receipts. (Code review 2026-06-04.)"""
     try:
         res = dbx.files_list_folder(root, recursive=True)
-    except Exception:
+    except Exception as e:
+        if status is not None:
+            status['truncated'] = True
+            status['error'] = type(e).__name__
         return
     while True:
         for entry in res.entries:
@@ -1492,7 +1526,10 @@ def _walk_dbx_files(dbx, root):
             break
         try:
             res = dbx.files_list_folder_continue(res.cursor)
-        except Exception:
+        except Exception as e:
+            if status is not None:
+                status['truncated'] = True
+                status['error'] = type(e).__name__
             break
 
 
@@ -1527,6 +1564,9 @@ def admin_docs_source_audit(pid):
     src_path = _resolve_dbx_path(body.get('source_path') or request.args.get('source_path'))
     if not src_path:
         return jsonify({"error": "source_path required"}), 400
+    if not _path_in_project(src_path, project):
+        return jsonify({"error": "source_path must be inside this project's own "
+                                 "Dropbox folder."}), 403
     try:
         dbx = _dbx_client()
     except Exception as e:
@@ -1667,6 +1707,9 @@ def admin_docs_source_import(pid):
     src_path = _resolve_dbx_path(body.get('source_path') or request.args.get('source_path'))
     if not src_path:
         return jsonify({"error": "source_path required"}), 400
+    if not _path_in_project(src_path, project):
+        return jsonify({"error": "source_path must be inside this project's own "
+                                 "Dropbox folder."}), 403
     apply = bool(body.get('apply')) or (request.args.get('apply') == '1')
     try:
         limit = int(body.get('limit') or request.args.get('limit') or 10)
@@ -1681,11 +1724,19 @@ def admin_docs_source_import(pid):
     proj_root = (f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID
                  else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}")
 
-    # Re-derive the missing set (same content_hash logic as the audit).
+    # Re-derive the missing set (same content_hash logic as the audit). If the
+    # Dropbox walk truncates we must NOT import — a partial proc_hashes set would
+    # treat already-filed receipts as missing and re-import them. (CR 2026-06-04.)
     proc_hashes, proc_names = set(), set()
-    for e in _walk_dbx_files(dbx, proj_root + "/01_ADMIN/PROCESSED DOCUMENTS"):
+    _walk_status = {}
+    for e in _walk_dbx_files(dbx, proj_root + "/01_ADMIN/PROCESSED DOCUMENTS", status=_walk_status):
         proc_hashes.add(e.content_hash)
         proc_names.add((e.name or '').lower())
+    if _walk_status.get('truncated'):
+        return jsonify({"error": "Dropbox listing was incomplete (rate-limited or "
+                                 "transient error); refusing to import to avoid "
+                                 "re-importing already-filed receipts. Try again.",
+                        "detail": _walk_status.get('error')}), 503
     for u in DocUpload.query.with_entities(
                 DocUpload.original_filename, DocUpload.filed_filename
             ).filter_by(project_id=pid).all():
@@ -1896,9 +1947,19 @@ def _source_drain_worker(flask_app, pid, src_path, user_id, include_amt):
             SKIP = {'.ds_store', 'thumbs.db', 'desktop.ini', 'icon\r'}
 
             # Build exclusion + amount sets ONCE; keep them current incrementally.
+            # Abort if the proc-tree walk truncated — a partial set would
+            # re-import already-filed receipts. (Code review 2026-06-04.)
             proc_hashes, proc_names = set(), set()
-            for e in _walk_dbx_files(dbx, proj_root + "/01_ADMIN/PROCESSED DOCUMENTS"):
+            _walk_status = {}
+            for e in _walk_dbx_files(dbx, proj_root + "/01_ADMIN/PROCESSED DOCUMENTS", status=_walk_status):
                 proc_hashes.add(e.content_hash); proc_names.add((e.name or '').lower())
+            if _walk_status.get('truncated'):
+                prog['running'] = False
+                prog['done'] = True
+                prog['note'] = ('aborted: Dropbox listing incomplete (' +
+                                str(_walk_status.get('error')) + ') — not importing on a '
+                                'partial file list; re-run when Dropbox is healthy')
+                return
             for u in DocUpload.query.with_entities(
                         DocUpload.original_filename, DocUpload.filed_filename
                     ).filter_by(project_id=pid).all():
@@ -2060,6 +2121,9 @@ def admin_docs_source_import_drain(pid):
     src_path = _resolve_dbx_path(body.get('source_path') or request.args.get('source_path'))
     if not src_path:
         return jsonify({"error": "source_path required"}), 400
+    if not _path_in_project(src_path, project):
+        return jsonify({"error": "source_path must be inside this project's own "
+                                 "Dropbox folder."}), 403
     # DB-derived single-flight (works across gunicorn workers, unlike an
     # in-memory flag): if an import landed in the last 90s, a drain is actively
     # running somewhere — don't spawn a second one that would race it. Pass
@@ -2982,6 +3046,20 @@ def reset_password(token):
 @app.route("/health")
 def health():
     return "ok"
+
+
+@app.route("/readyz")
+def readyz():
+    """Readiness probe WITH a DB round-trip — for monitoring/alerting. Kept
+    SEPARATE from /health (Render's liveness probe stays static so a transient
+    DB blip, which hits all workers equally, doesn't trigger a restart storm).
+    (Code review 2026-06-04.)"""
+    try:
+        db.session.execute(db.text("SELECT 1"))
+        return jsonify({"status": "ok", "db": "up"})
+    except Exception as e:
+        return jsonify({"status": "degraded", "db": "down",
+                        "detail": type(e).__name__}), 503
 
 
 @app.route("/admin/dbx-ls")
