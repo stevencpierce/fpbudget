@@ -423,6 +423,13 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     # second link in this project) vs on Working / Estimated (first
     # link → triggers the auto-init / auto-clone chain).
     line_budget = Budget.query.get(working_line.budget_id)
+    # Cross-project guard: a stale UI or crafted request must not code one
+    # project's money to another project's budget line. (Code review 2026-06-04.)
+    if line_budget and line_budget.project_id != project_id:
+        raise ValueError(
+            f"budget line {working_line_id} belongs to project "
+            f"{line_budget.project_id}, not transaction {transaction_id}'s "
+            f"project {project_id}")
     actual_was_just_made  = False
     working_was_just_made = False
 
@@ -794,14 +801,33 @@ def confirm_match(qbo_transaction_id):
               .filter_by(doc_upload_id=q.doc_upload_id, source='doc_upload')
               .first())
     if sister and sister.id != q.id:
-        # Promote the QBO txn's coding from the sister if it had any
-        # (rare — sister was the placeholder; user might have coded it
-        # before the match landed).
+        # Preserve everything useful from the sister (the receipt's own row)
+        # before deleting it. Previously coding was promoted ONLY when q had
+        # none, silently losing a different line / card / note when both rows
+        # were coded. (Code review 2026-06-04.)
         if not q.budget_line_id and sister.budget_line_id:
             q.budget_line_id      = sister.budget_line_id
             q.account_code        = sister.account_code
             q.account_code_name   = sister.account_code_name
+        elif (sister.budget_line_id and q.budget_line_id
+              and sister.budget_line_id != q.budget_line_id):
+            # Both coded to DIFFERENT lines — keep the bank row's coding but
+            # record the receipt's so it isn't silently lost.
+            _n = (q.note or '')
+            q.note = (_n + (' | ' if _n else '') +
+                      f"receipt was coded to {sister.account_code or ''} "
+                      f"{sister.account_code_name or ''}".strip())[:500]
+        if not q.card_last4 and sister.card_last4:
+            q.card_last4 = sister.card_last4
+        if not (q.note or '').strip() and sister.note:
+            q.note = sister.note
         db.session.delete(sister)
+    # Mark reconciled (not still 'qbo_sync') so the QBO-purge tool — which
+    # deletes source='qbo_sync' rows — can never wipe a confirmed match. Mirrors
+    # the sync-time and manual-merge reconcile paths; qbo_txn_id is preserved so
+    # a future sync still dedupes against it. (Code review 2026-06-04.)
+    if q.source in ('qbo_sync', 'csv_import'):
+        q.source = 'reconciled'
     q.match_status = 'confirmed'
     q.updated_at   = datetime.utcnow()
     db.session.commit()

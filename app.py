@@ -22609,7 +22609,14 @@ def qbo_imports_purge(pid=None):
     except (TypeError, ValueError):
         return jsonify({"error": "project must be an integer or 'all'"}), 400
 
-    q = Transaction.query.filter(Transaction.source == 'qbo_sync')
+    # Defense-in-depth: never delete a qbo_sync row that is matched to a receipt
+    # (doc_upload_id set). Confirming a match now flips source→'reconciled', but
+    # rows confirmed before that fix are still source='qbo_sync' with a doc link;
+    # deleting them would lose the receipt's only ledger row. (Code review
+    # 2026-06-04.)
+    q = (Transaction.query
+         .filter(Transaction.source == 'qbo_sync')
+         .filter(Transaction.doc_upload_id.is_(None)))
     if scope_pid is not None:
         q = q.filter(Transaction.project_id == scope_pid)
     rows = q.all()
@@ -22638,11 +22645,17 @@ def qbo_imports_purge(pid=None):
 
     # Context: what is being PRESERVED (so the user sees the blast radius).
     preserved = {}
-    for src in ('manual_entry', 'doc_upload', 'invoice_split'):
+    for src in ('manual_entry', 'doc_upload', 'invoice_split', 'reconciled'):
         pq = Transaction.query.filter(Transaction.source == src)
         if scope_pid is not None:
             pq = pq.filter(Transaction.project_id == scope_pid)
         preserved[src] = pq.count()
+    # qbo_sync rows kept because they're matched to a receipt (excluded above).
+    _mq = (Transaction.query.filter(Transaction.source == 'qbo_sync')
+           .filter(Transaction.doc_upload_id.isnot(None)))
+    if scope_pid is not None:
+        _mq = _mq.filter(Transaction.project_id == scope_pid)
+    preserved['qbo_sync_matched_kept'] = _mq.count()
 
     # Project names for readability
     pnames = {p.id: p.name for p in ProjectSheet.query.all()}
