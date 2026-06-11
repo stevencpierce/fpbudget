@@ -22766,30 +22766,39 @@ def _bank_parse_date(s):
     return None
 
 
-def _parse_bank_csv(content):
+def _parse_bank_csv(content, charge_sign='auto'):
     """Parse a bank/credit-card CSV into normalized rows + stats. Handles both a
     single signed Amount column and split Debit/Credit columns. Returns
     (rows, stats) where each row is a dict ready for a Transaction:
-      {txn_date, vendor, amount(+), is_expense, card_last4, note, kind, _raw_line}
-    kind ∈ charge | credit | payment | zero. Payment rows (paying the card off)
-    are parsed but flagged so the caller can skip them — they aren't expenses."""
+      {txn_date, vendor, amount(+), is_expense, card_last4, note, kind, type}
+    kind ∈ charge | credit | payment | transfer | zero.
+
+    Sign convention is NOT assumed: Chase exports charges as NEGATIVE, but Amex
+    (and others) export charges as POSITIVE — assuming neg=charge inverted a whole
+    Amex statement, classifying every charge as a credit so spend vanished from
+    rollups. `charge_sign` ∈ auto | pos | neg: 'auto' detects polarity from the
+    file (split debit/credit layout is unambiguous; for a single signed column,
+    if positives dominate spend rows we treat positive=charge). The chosen
+    polarity is reported so the user can verify before applying. (Code review
+    2026-06-04.)"""
     reader = csv.DictReader(io.StringIO(content))
     fn = reader.fieldnames or []
     col = {r: _bank_pick_col(fn, r) for r in _BANK_CSV_SYNONYMS}
-    rows, errors = [], []
+    raw_rows, errors = [], []
+    used_split = False
     for i, raw in enumerate(reader, start=2):   # line 1 = header
         g = lambda r: (raw.get(col[r]) if col.get(r) else None)
         date = _bank_parse_date(g('date')) or _bank_parse_date(g('pdate'))
         vendor = (g('desc') or '').strip()
         ttype = (g('type') or '').strip()
         amt = _bank_parse_money(g('amount'))
-        if amt is None:    # split debit/credit layout
+        if amt is None:    # split debit/credit layout (unambiguous: debit=charge)
             d = _bank_parse_money(g('debit'))
             c = _bank_parse_money(g('credit'))
             if d not in (None, 0):
-                amt = -abs(d)
+                amt = -abs(d); used_split = True
             elif c not in (None, 0):
-                amt = abs(c)
+                amt = abs(c); used_split = True
         if not date or amt is None:
             errors.append({"line": i, "reason": "unparseable date/amount",
                            "vendor": vendor[:40]})
@@ -22797,10 +22806,7 @@ def _parse_bank_csv(content):
         card = ''.join(ch for ch in (g('card') or '') if ch.isdigit())[-4:]
         note_bits = [b for b in [(g('cat') or '').strip(), (g('memo') or '').strip()] if b]
         note = ' · '.join(note_bits) or None
-        # Classify. Transfers between accounts and credit-card payoffs are NOT
-        # project expenses (and a card payoff in a checking export would double-
-        # count against the charges imported from that card's own statement), so
-        # detect them by Type code AND description, regardless of amount sign.
+        # Transfers / card-payoffs are NOT project expenses (sign-independent).
         ttl, vl = ttype.lower(), vendor.lower()
         is_transfer = ('xfer' in ttl or 'transfer' in ttl
                        or 'online transfer' in vl or 'transfer to' in vl
@@ -22808,23 +22814,48 @@ def _parse_bank_csv(content):
         is_payment = ('payment' in ttl or 'loan_pmt' in ttl
                       or 'payment to chase card' in vl or 'to chase card ending' in vl
                       or 'card payment' in vl)
+        raw_rows.append({"txn_date": date, "vendor": vendor[:300], "amt": amt,
+                         "card_last4": card or None, "note": note, "type": ttype,
+                         "is_transfer": is_transfer, "is_payment": is_payment})
+
+    # Decide polarity from real spend/credit rows (exclude transfers/payments/zero).
+    spend = [r for r in raw_rows if not r["is_transfer"] and not r["is_payment"] and r["amt"] != 0]
+    pos = sum(1 for r in spend if r["amt"] > 0)
+    neg = sum(1 for r in spend if r["amt"] < 0)
+    if charge_sign == 'pos':
+        positive_is_charge, polarity_source = True, 'forced'
+    elif charge_sign == 'neg':
+        positive_is_charge, polarity_source = False, 'forced'
+    elif used_split:
+        positive_is_charge, polarity_source = False, 'split-columns'   # debit already made negative
+    else:
+        # Card/bank statements have far more charges than credits. If positives
+        # clearly dominate, the file uses positive=charge (Amex-style).
+        positive_is_charge = (pos > neg and pos >= 3 * max(neg, 1))
+        polarity_source = 'auto'
+
+    rows = []
+    for r in raw_rows:
+        amt = r["amt"]
         if amt == 0:
             kind = 'zero'
-        elif is_transfer:
+        elif r["is_transfer"]:
             kind = 'transfer'
-        elif is_payment:
+        elif r["is_payment"]:
             kind = 'payment'
-        elif amt < 0:
-            kind = 'charge'
         else:
-            kind = 'credit'
-        rows.append({"txn_date": date, "vendor": vendor[:300],
+            is_charge = (amt > 0) if positive_is_charge else (amt < 0)
+            kind = 'charge' if is_charge else 'credit'
+        rows.append({"txn_date": r["txn_date"], "vendor": r["vendor"],
                      "amount": round(abs(amt), 2),
                      "is_expense": (kind == 'charge'),
-                     "card_last4": card or None, "note": note,
-                     "kind": kind, "type": ttype})
+                     "card_last4": r["card_last4"], "note": r["note"],
+                     "kind": kind, "type": r["type"]})
     stats = {"detected_columns": {k: v for k, v in col.items() if v},
-             "parse_errors": errors}
+             "parse_errors": errors,
+             "charge_polarity": ('positive = charge' if positive_is_charge else 'negative = charge'),
+             "polarity_source": polarity_source,
+             "spend_sign_counts": {"positive": pos, "negative": neg}}
     return rows, stats
 
 
@@ -22851,7 +22882,10 @@ def actuals_import_bank_csv(pid):
     except UnicodeDecodeError:
         return jsonify({"error": "File must be UTF-8 encoded CSV"}), 400
 
-    rows, stats = _parse_bank_csv(content)
+    charge_sign = (request.args.get('charge_sign') or 'auto').lower()
+    if charge_sign not in ('auto', 'pos', 'neg'):
+        charge_sign = 'auto'
+    rows, stats = _parse_bank_csv(content, charge_sign=charge_sign)
     if not stats["detected_columns"].get('date') or not (
             stats["detected_columns"].get('amount')
             or stats["detected_columns"].get('debit')
@@ -22862,16 +22896,20 @@ def actuals_import_bank_csv(pid):
                         "header": list((csv.reader(io.StringIO(content)).__next__()
                                         if content else []))}), 400
 
-    # Existing csv_import fingerprints for de-dup
-    existing = set()
+    # De-dup by COUNT, not presence, so legitimately-identical same-day charges
+    # (two $6.75 coffees on the same card) both import, while overlapping months
+    # still don't double up. Skip a row only while we haven't yet matched the
+    # number already in the DB for that fingerprint. (Code review 2026-06-04.)
+    from collections import Counter as _Counter
+    existing_counts = _Counter()
     for t in (Transaction.query
               .filter(Transaction.project_id == pid,
                       Transaction.source == 'csv_import').all()):
-        existing.add((t.txn_date, (t.vendor or '').strip().lower(),
-                      float(t.amount or 0), t.card_last4 or ''))
+        existing_counts[(t.txn_date, (t.vendor or '').strip().lower(),
+                         float(t.amount or 0), t.card_last4 or '')] += 1
 
     importable, dups, payments, transfers, zeros = [], 0, 0, 0, 0
-    seen_batch = set()
+    batch_counts = _Counter()
     for r in rows:
         if r["kind"] == 'zero':
             zeros += 1
@@ -22883,10 +22921,11 @@ def actuals_import_bank_csv(pid):
             transfers += 1
             continue
         fp = (r["txn_date"], r["vendor"].strip().lower(), r["amount"], r["card_last4"] or '')
-        if fp in existing or fp in seen_batch:
+        batch_counts[fp] += 1
+        # first existing_counts[fp] occurrences in this file are already in the DB
+        if batch_counts[fp] <= existing_counts.get(fp, 0):
             dups += 1
             continue
-        seen_batch.add(fp)
         importable.append(r)
 
     dates = [r["txn_date"] for r in importable]
@@ -22896,6 +22935,9 @@ def actuals_import_bank_csv(pid):
     report = {
         "dry": (not apply), "applied": apply, "project": pid,
         "detected_columns": stats["detected_columns"],
+        "charge_polarity": stats.get("charge_polarity"),
+        "polarity_source": stats.get("polarity_source"),
+        "spend_sign_counts": stats.get("spend_sign_counts"),
         "rows_in_file": len(rows),
         "to_import": len(importable),
         "charges": sum(1 for r in importable if r["kind"] == 'charge'),
