@@ -6136,61 +6136,97 @@
      MATCH PANE — COA sidebar | Transaction list
      ════════════════════════════════════════════════════════════ #}
   {# ── Filter bar (date / vendor / section / receipt / amount) ── #}
+  {# ── Filter bar (reworked 2026-06-11): the four everyday filters — card,
+       vendor, amount, date — come FIRST with visible labels; the secondary
+       refinements and sort sit after a divider. Same control ids as before so
+       all the JS keeps working; new: the 💳 Card filter (populated from the
+       rows at init) and labeled groups. #}
+  <style>
+    .axf-group{ display:flex;flex-direction:column;gap:2px; }
+    .axf-label{ font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;padding-left:1px; }
+    .axf-row{ display:flex;align-items:center;gap:4px; }
+    .axf-in{ font-size:.74rem;padding:4px 6px;background:var(--bg-input);color:var(--text);
+             border:1px solid var(--border);border-radius:5px; }
+    .axf-sep{ width:1px;align-self:stretch;background:var(--border);margin:0 4px; }
+  </style>
   <div id="actuals-filter-bar"
-       style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+       style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;
               padding:10px 12px;margin-bottom:10px;
               background:var(--bg-card);border:1px solid var(--border);border-radius:8px">
-    <span style="font-size:.72rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Filters</span>
-    <input type="date" id="actuals-filter-date-from" title="Date from"
-           style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
-    <span style="font-size:.7rem;color:var(--text-muted)">→</span>
-    <input type="date" id="actuals-filter-date-to" title="Date to"
-           style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
-    <input type="text" id="actuals-filter-vendor" placeholder="Vendor / note search…"
-           style="font-size:.74rem;padding:4px 8px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;flex:1;min-width:140px">
-    <select id="actuals-filter-section" title="Filter by COA section"
-            style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
-      <option value="">All sections</option>
-      {% for code, name in coa_sections %}
-      <option value="{{ code }}">{{ code }} {{ name }}</option>
-      {% endfor %}
-    </select>
-    <select id="actuals-filter-receipt" title="Receipt presence"
-            style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
-      <option value="">Receipt: any</option>
-      <option value="yes">Has receipt</option>
-      <option value="no">No receipt</option>
-    </select>
+    <div class="axf-group">
+      <span class="axf-label">💳 Card</span>
+      <select id="actuals-filter-card" class="axf-in" title="Filter by card / account last 4">
+        <option value="">Any card</option>
+      </select>
+    </div>
+    <div class="axf-group" style="flex:1;min-width:150px">
+      <span class="axf-label">Vendor / note</span>
+      <input type="text" id="actuals-filter-vendor" class="axf-in" placeholder="Search vendor or note…" style="width:100%">
+    </div>
+    <div class="axf-group">
+      <span class="axf-label">Amount</span>
+      <span class="axf-row">
+        <input type="number" id="actuals-filter-amount-min" class="axf-in" placeholder="$ min" step="0.01" style="width:78px">
+        <span style="font-size:.7rem;color:var(--text-muted)">–</span>
+        <input type="number" id="actuals-filter-amount-max" class="axf-in" placeholder="$ max" step="0.01" style="width:78px">
+      </span>
+    </div>
+    <div class="axf-group">
+      <span class="axf-label">Date</span>
+      <span class="axf-row">
+        <input type="date" id="actuals-filter-date-from" class="axf-in" title="Date from">
+        <span style="font-size:.7rem;color:var(--text-muted)">–</span>
+        <input type="date" id="actuals-filter-date-to" class="axf-in" title="Date to">
+      </span>
+    </div>
+    <div class="axf-sep"></div>
+    <div class="axf-group">
+      <span class="axf-label">Section</span>
+      <select id="actuals-filter-section" class="axf-in" title="Filter by COA section">
+        <option value="">All</option>
+        {% for code, name in coa_sections %}
+        <option value="{{ code }}">{{ code }} {{ name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="axf-group">
+      <span class="axf-label">Receipt</span>
+      <select id="actuals-filter-receipt" class="axf-in" title="Receipt presence">
+        <option value="">Any</option>
+        <option value="yes">Has receipt</option>
+        <option value="no">No receipt</option>
+      </select>
+    </div>
     {% if actuals_uploaders %}
-    <select id="actuals-filter-uploader" title="Filter by who entered or uploaded the transaction"
-            style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
-      <option value="">Uploader: any</option>
-      {% for uid, name in actuals_uploaders %}
-      <option value="{{ uid }}">{{ name }}</option>
-      {% endfor %}
-    </select>
+    <div class="axf-group">
+      <span class="axf-label">Uploader</span>
+      <select id="actuals-filter-uploader" class="axf-in" title="Who entered or uploaded it">
+        <option value="">Any</option>
+        {% for uid, name in actuals_uploaders %}
+        <option value="{{ uid }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+    </div>
     {% endif %}
-    <select id="actuals-sort-by" title="Sort order"
-            style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:auto">
-      <option value="date-desc">↓ Newest first</option>
-      <option value="date-asc">↑ Oldest first</option>
-      <option value="progress-desc">↓ Most matched (3→0)</option>
-      <option value="progress-asc">↑ Needs work first (0→3)</option>
-      <option value="amount-desc">↓ Largest amount</option>
-      <option value="amount-asc">↑ Smallest amount</option>
-      <option value="vendor-asc">↑ Vendor A→Z</option>
-      <option value="vendor-desc">↓ Vendor Z→A</option>
-      <option value="card4-asc">↑ Card (last 4)</option>
-      <option value="card4-desc">↓ Card (last 4)</option>
-    </select>
-    <input type="number" id="actuals-filter-amount-min" placeholder="$ min" step="0.01"
-           style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:80px">
-    <span style="font-size:.7rem;color:var(--text-muted)">→</span>
-    <input type="number" id="actuals-filter-amount-max" placeholder="$ max" step="0.01"
-           style="font-size:.72rem;padding:3px 5px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:4px;width:80px">
+    <div class="axf-sep"></div>
+    <div class="axf-group">
+      <span class="axf-label">Sort</span>
+      <select id="actuals-sort-by" class="axf-in" title="Sort order">
+        <option value="date-desc">↓ Newest first</option>
+        <option value="date-asc">↑ Oldest first</option>
+        <option value="progress-desc">↓ Most matched (3→0)</option>
+        <option value="progress-asc">↑ Needs work first (0→3)</option>
+        <option value="amount-desc">↓ Largest amount</option>
+        <option value="amount-asc">↑ Smallest amount</option>
+        <option value="vendor-asc">↑ Vendor A→Z</option>
+        <option value="vendor-desc">↓ Vendor Z→A</option>
+        <option value="card4-asc">↑ Card (last 4)</option>
+        <option value="card4-desc">↓ Card (last 4)</option>
+      </select>
+    </div>
     <button type="button" class="btn btn-xs btn-ghost" onclick="actualsClearFilters()"
-            style="font-size:.7rem;padding:3px 8px">✕ Clear</button>
-    <span id="actuals-filter-count" class="muted" style="font-size:.7rem;margin-left:auto"></span>
+            style="font-size:.7rem;padding:5px 8px">✕ Clear</button>
+    <span id="actuals-filter-count" class="muted" style="font-size:.7rem;margin-left:auto;align-self:center"></span>
   </div>
 
   {# ── Bulk action bar (only visible when rows are selected) ── #}
@@ -7517,11 +7553,19 @@
       const dFrom    = (document.getElementById('actuals-filter-date-from') || {}).value || '';
       const dTo      = (document.getElementById('actuals-filter-date-to')   || {}).value || '';
       const vendor   = ((document.getElementById('actuals-filter-vendor')  || {}).value || '').toLowerCase().trim();
+      const card     = (document.getElementById('actuals-filter-card')     || {}).value || '';
       const section  = (document.getElementById('actuals-filter-section')  || {}).value || '';
       const receipt  = (document.getElementById('actuals-filter-receipt')  || {}).value || '';
       const uploader = (document.getElementById('actuals-filter-uploader') || {}).value || '';
       const amtMin   = parseFloat((document.getElementById('actuals-filter-amount-min') || {}).value || 'NaN');
       const amtMax   = parseFloat((document.getElementById('actuals-filter-amount-max') || {}).value || 'NaN');
+
+      // Index banners ONCE — a full-document querySelector per row inside the
+      // loop was the filter hot-path cost on ~1,200 rows. (Perf 2026-06-11.)
+      const bannerByTid = {};
+      document.querySelectorAll('.actuals-suggested-banner').forEach(b => { bannerByTid[b.dataset.tid] = b; });
+
+      if (typeof window._actualsSaveFilterState === 'function') window._actualsSaveFilterState();
 
       let shown = 0, total = 0;
       document.querySelectorAll('.actuals-txn-row').forEach(r => {
@@ -7599,11 +7643,12 @@
           if (receipt === 'no'  && r.dataset.hasDoc === '1') pass = false;
         }
         if (pass && uploader && (r.dataset.uploaderId || '') !== uploader) pass = false;
+        if (pass && card && (r.dataset.sortCard4 || '') !== card) pass = false;
         if (pass && !isNaN(amtMin) && parseFloat(r.dataset.amount || 0) < amtMin) pass = false;
         if (pass && !isNaN(amtMax) && parseFloat(r.dataset.amount || 0) > amtMax) pass = false;
 
         r.style.display = pass ? 'flex' : 'none';
-        const banner = document.querySelector(`.actuals-suggested-banner[data-tid="${r.dataset.tid}"]`);
+        const banner = bannerByTid[r.dataset.tid];
         if (banner) banner.style.display = pass ? 'flex' : 'none';
         if (pass) shown++;
       });
@@ -7699,7 +7744,14 @@
     // complete), then bucket them into Needs-receipt / Receipts / Linked.
     // Stat-card + filter-bar still work on top (they hide rows within sections).
     function _actualsInitView() {
-      if (typeof actualsApplyFilter === 'function') actualsApplyFilter('all');
+      // Restore the saved view (stat-card filter + filter fields + sort) so a
+      // reload — e.g. after uploading a receipt — doesn't reset it. (2026-06-11.)
+      let _saved = null;
+      try {
+        if (typeof window._actualsPopulateCardFilter === 'function') window._actualsPopulateCardFilter();
+        if (typeof _actualsRestoreFilterState === 'function') _saved = _actualsRestoreFilterState();
+      } catch (e) { _saved = null; }
+      if (typeof actualsApplyFilter === 'function') actualsApplyFilter((_saved && _saved.f) || 'all');
       if (typeof window._actualsSectionize === 'function') window._actualsSectionize();
       if (typeof _actualsApplySort === 'function') _actualsApplySort();   // initial order
     }
@@ -8673,31 +8725,91 @@
     });
 
     // ── Filter bar wiring ─────────────────────────────────────────────
-    // Live re-runs the unified filter resolver on every input change.
+    // Text/number inputs are DEBOUNCED (each keystroke used to run the full
+    // ~1,200-row resolver synchronously — the "slow and clunky" typing feel);
+    // selects/dates apply immediately. (User 2026-06-11.)
+    const _AXF_FIELD_IDS = ['actuals-filter-card','actuals-filter-date-from','actuals-filter-date-to',
+      'actuals-filter-vendor','actuals-filter-section','actuals-filter-receipt',
+      'actuals-filter-uploader','actuals-filter-amount-min','actuals-filter-amount-max'];
+
+    // Persist the whole view (stat-card filter + every field + sort) so a
+    // reload — e.g. after uploading a receipt to a row — comes back to the
+    // EXACT same filtered view instead of resetting. (User 2026-06-11.)
+    const _AXF_STORE_KEY = 'fpb-actuals-view-' + PROJ_ID;
+    window._actualsSaveFilterState = function () {
+      try {
+        const fields = {};
+        _AXF_FIELD_IDS.forEach(id => { const el = document.getElementById(id); if (el && el.value) fields[id] = el.value; });
+        sessionStorage.setItem(_AXF_STORE_KEY, JSON.stringify({
+          f: _actualsActiveFilter || 'all',
+          sort: (document.getElementById('actuals-sort-by') || {}).value || 'date-desc',
+          fields: fields }));
+      } catch (e) { /* storage unavailable — non-fatal */ }
+    };
+    function _actualsRestoreFilterState() {
+      try {
+        const raw = sessionStorage.getItem(_AXF_STORE_KEY);
+        if (!raw) return null;
+        const st = JSON.parse(raw);
+        Object.entries(st.fields || {}).forEach(([id, v]) => {
+          const el = document.getElementById(id); if (el) el.value = v;
+        });
+        const s = document.getElementById('actuals-sort-by');
+        if (s && st.sort) s.value = st.sort;
+        return st;
+      } catch (e) { return null; }
+    }
+
+    // Build the 💳 Card dropdown from the rows actually on the page.
+    function _actualsPopulateCardFilter() {
+      const sel = document.getElementById('actuals-filter-card');
+      if (!sel) return;
+      const counts = {};
+      document.querySelectorAll('.actuals-txn-row').forEach(r => {
+        const c = r.dataset.sortCard4 || '';
+        if (c) counts[c] = (counts[c] || 0) + 1;
+      });
+      const keep = sel.value;
+      sel.innerHTML = '<option value="">Any card</option>' +
+        Object.keys(counts).sort().map(c =>
+          '<option value="' + c + '">••' + c + ' (' + counts[c] + ')</option>').join('');
+      if (keep) sel.value = keep;
+    }
+    window._actualsPopulateCardFilter = _actualsPopulateCardFilter;
+
     window.actualsClearFilters = function () {
-      ['actuals-filter-date-from','actuals-filter-date-to','actuals-filter-vendor',
-       'actuals-filter-section','actuals-filter-receipt','actuals-filter-uploader',
-       'actuals-filter-amount-min','actuals-filter-amount-max'].forEach(id => {
+      _AXF_FIELD_IDS.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.value = '';
       });
       // Reset sort to the default newest-first.
       const s = document.getElementById('actuals-sort-by');
       if (s) s.value = 'date-desc';
+      try { sessionStorage.removeItem(_AXF_STORE_KEY); } catch (e) {}
       _actualsResolveFilters();
       _actualsApplySort();   // sort decoupled from filtering — apply explicitly
     };
-    ['actuals-filter-date-from','actuals-filter-date-to','actuals-filter-vendor',
-     'actuals-filter-section','actuals-filter-receipt','actuals-filter-uploader',
-     'actuals-filter-amount-min','actuals-filter-amount-max'].forEach(id => {
+
+    let _axfDebounceT = null;
+    function _axfDebouncedResolve() {
+      clearTimeout(_axfDebounceT);
+      _axfDebounceT = setTimeout(_actualsResolveFilters, 180);
+    }
+    // Typed fields → debounced; pickers/dates → immediate on change.
+    ['actuals-filter-vendor','actuals-filter-amount-min','actuals-filter-amount-max'].forEach(id => {
       const el = document.getElementById(id);
-      if (el) el.addEventListener('input', _actualsResolveFilters);
+      if (el) el.addEventListener('input', _axfDebouncedResolve);
+      if (el) el.addEventListener('change', _actualsResolveFilters);
+    });
+    ['actuals-filter-card','actuals-filter-date-from','actuals-filter-date-to',
+     'actuals-filter-section','actuals-filter-receipt','actuals-filter-uploader'].forEach(id => {
+      const el = document.getElementById(id);
       if (el) el.addEventListener('change', _actualsResolveFilters);
     });
     // Sort is decoupled from filtering — only re-order when the sort selection
     // itself changes (filtering never changes order). (User 2026-06-03.)
     const _sortSel = document.getElementById('actuals-sort-by');
-    if (_sortSel) _sortSel.addEventListener('change', function () { _actualsApplySort(); });
+    if (_sortSel) _sortSel.addEventListener('change', function () { _actualsApplySort(); _actualsSaveFilterState(); });
 
     // ── Three-bucket fulfillment state (user 2026-06-02) ──────────────
     // Each row works toward three boxes — a transaction, a document, and a
