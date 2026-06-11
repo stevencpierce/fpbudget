@@ -1815,7 +1815,8 @@ def admin_docs_source_import(pid):
         # pipeline's own dedup key).
         dup = (DocUpload.query.filter_by(project_id=pid, file_hash=file_hash)
                .filter(DocUpload.filed_dropbox_path.isnot(None))
-               .filter(DocUpload.status != 'review').first())
+               .filter(DocUpload.status != 'review')
+               .filter(DocUpload.status != 'deleted').first())
         try:
             result = analyze_and_file_single(
                 file_bytes=data, filename=e.name,
@@ -2005,7 +2006,8 @@ def _source_drain_worker(flask_app, pid, src_path, user_id, include_amt):
                     file_hash = _hl.sha256(data).hexdigest()
                     dup = (DocUpload.query.filter_by(project_id=pid, file_hash=file_hash)
                            .filter(DocUpload.filed_dropbox_path.isnot(None))
-                           .filter(DocUpload.status != 'review').first())
+                           .filter(DocUpload.status != 'review')
+               .filter(DocUpload.status != 'deleted').first())
                     result = analyze_and_file_single(
                         file_bytes=data, filename=nm,
                         project_name=project.dropbox_folder, user_name=_safe_user)
@@ -6074,6 +6076,7 @@ def budget_view(pid, bid):
     from sqlalchemy.orm import defer as _defer
     doc_uploads = (DocUpload.query
                    .filter_by(project_id=pid)
+                   .filter(DocUpload.status != 'deleted')   # Trash (2026-06-11)
                    .options(_defer(DocUpload.veryfi_data))
                    .order_by(DocUpload.uploaded_at.desc())
                    .all())
@@ -8992,6 +8995,7 @@ def actuals_upload_receipt_to_transaction(pid, tid):
         .filter_by(project_id=pid, file_hash=file_hash)
         .filter(DocUpload.filed_dropbox_path.isnot(None))
         .filter(DocUpload.status != 'review')
+               .filter(DocUpload.status != 'deleted')
         .first()
     )
 
@@ -20222,6 +20226,11 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS original_amount NUMERIC(16,2)",
                 "ALTER TABLE doc_upload "
                 "  ADD COLUMN IF NOT EXISTS original_currency VARCHAR(8)",
+                # 2026-06-11 — soft delete / Trash (restorable deletes).
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS trash_meta TEXT",
                 # 2026-05-30 — last 4 of the card / bank account a charge was
                 # made on. Captured from Veryfi OCR, user-editable, sortable
                 # in Docs + Actuals. Mirrored onto transaction for the
@@ -20609,6 +20618,7 @@ def docs_project(pid):
             abort(403)
     uploads = (DocUpload.query
                .filter_by(project_id=pid)
+               .filter(DocUpload.status != 'deleted')   # Trash (2026-06-11)
                .order_by(DocUpload.uploaded_at.desc()).all())
     # Pass latest budget for tab bar (docs_only users won't see budget tabs)
     budget = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
@@ -20658,6 +20668,7 @@ def docs_upload_post(pid):
         # real processed location. We don't want a not-yet-confirmed
         # upload to ghost-flag a fresh retry as a duplicate.
         .filter(DocUpload.status != 'review')
+               .filter(DocUpload.status != 'deleted')
         .first()
     )
 
@@ -20777,6 +20788,7 @@ def docs_upload_post(pid):
             .filter_by(project_id=pid, file_hash=file_hash)
             .filter(DocUpload.filed_dropbox_path.isnot(None))
             .filter(DocUpload.status != 'review')
+               .filter(DocUpload.status != 'deleted')
             .first()
         )
 
@@ -21147,11 +21159,14 @@ def admin_trash_purge():
     return jsonify({"ok": True, "days": days, **result})
 
 
-def _trash_dropbox_paths(paths):
+def _trash_dropbox_paths(paths, moves_out=None):
     """Move a list of Dropbox paths to /_TRASH/<YYYY-MM-DD>/ for delete
     operations. Returns count of successful moves. Best-effort; never
     raises. The trash folder uses today's date so a day's deletes
-    cluster together in case the user wants to recover a file."""
+    cluster together in case the user wants to recover a file.
+    If `moves_out` is a list, appends {"src","dest"} for each successful move —
+    the soft-delete/restore path records these so /restore can move files back.
+    (2026-06-11.)"""
     paths = [p for p in (paths or []) if p]
     if not paths:
         return 0
@@ -21173,8 +21188,12 @@ def _trash_dropbox_paths(paths):
         dest = f"{trash_root}/{safe_frag}"
         for path_try in (norm, src) if norm != src else (norm,):
             try:
-                dbx.files_move_v2(path_try, dest, autorename=True)
+                res = dbx.files_move_v2(path_try, dest, autorename=True)
                 moved += 1
+                if moves_out is not None:
+                    # autorename may have altered dest — record the REAL one.
+                    real_dest = getattr(getattr(res, 'metadata', None), 'path_display', None) or dest
+                    moves_out.append({"src": path_try, "dest": real_dest})
                 break
             except Exception as _me:
                 if "not_found" in str(_me).lower():
@@ -21413,57 +21432,48 @@ def docs_resolve_duplicates_batch(pid):
 @app.route("/docs/upload/<int:uid>/delete", methods=["POST"])
 @login_required
 def docs_upload_delete(uid):
+    """SOFT delete → Trash (2026-06-11, was a hard delete). The row stays with
+    status='deleted' so it can be restored from the Docs Trash; Dropbox copies
+    move to /_TRASH/ with their locations recorded in trash_meta for restore.
+
+    Transactions: the doc's OWN ledger row(s) (source='doc_upload') are deleted
+    (restore recreates one); a MATCHED BANK ROW is only unlinked — the old code
+    deleted it too, silently destroying the bank charge when you deleted its
+    receipt. PO links and duplicate back-pointers are left intact (the row
+    still exists). Hard removal = /docs/upload/<uid>/purge from the Trash."""
     upload = DocUpload.query.get_or_404(uid)
     if current_user.role not in ('super_admin', 'admin'):
         if upload.uploader_id != current_user.id:
             return jsonify({"error": "Forbidden"}), 403
+    if upload.status == 'deleted':
+        return jsonify({"ok": True, "already": True, "soft": True})
     pid = upload.project_id
     _act_label  = upload.filed_filename or upload.original_filename or f'Upload #{uid}'
     _act_vendor = upload.vendor
     _act_amount = float(upload.amount or 0)
-    # Move BOTH the filed copy AND the source archive copy to /_TRASH/.
-    # Without this, deleting a row leaves orphaned Dropbox files that
-    # show up on the next /reconcile run as "rediscovered" uploads.
+    # Move BOTH the filed copy AND the source archive copy to /_TRASH/,
+    # recording the real destinations so /restore can move them back.
     paths_to_trash = []
     if upload.filed_dropbox_path:
         paths_to_trash.append(upload.filed_dropbox_path)
     if upload.source_archive_path and upload.source_archive_path != upload.filed_dropbox_path:
         paths_to_trash.append(upload.source_archive_path)
-    trashed = _trash_dropbox_paths(paths_to_trash)
-    # Legacy R2 cleanup (no-op for new uploads; harmless if key is dead).
-    if upload.r2_key:
-        try:
-            _r2_client().delete_object(Bucket=_R2_BUCKET, Key=upload.r2_key)
-        except Exception:
-            pass
-    # Delete child Transaction(s) first to avoid FK violation. Per the
-    # 2026-04-30 wire, every DocUpload typically has one Transaction
-    # row with doc_upload_id set — but a single doc could back several
-    # txns (invoice splits) so use a loop, not assume cardinality.
-    Transaction.query.filter_by(doc_upload_id=upload.id).delete(synchronize_session=False)
-    # Detach from any PurchaseOrder that points at this upload as its
-    # source doc, and remove po_doc_attachment junction rows. Without
-    # these, FK violations block the delete (purchase_order.source_doc_upload_id
-    # and po_doc_attachment.doc_upload_id both reference doc_upload).
-    try:
-        db.session.execute(
-            text("UPDATE purchase_order SET source_doc_upload_id=NULL "
-                 "WHERE source_doc_upload_id=:uid"),
-            {"uid": upload.id},
-        )
-        db.session.execute(
-            text("DELETE FROM po_doc_attachment WHERE doc_upload_id=:uid"),
-            {"uid": upload.id},
-        )
-    except Exception:
-        # Tables may not exist yet on a fresh DB before self-heal runs.
-        db.session.rollback()
-    # Clear the self-referential duplicate_of_id on any rows that point at
-    # this upload (it was the "original" of a flagged duplicate) — otherwise
-    # the delete hits doc_upload_duplicate_of_id_fkey. (User 2026-06-01.)
-    DocUpload.query.filter_by(duplicate_of_id=upload.id).update(
-        {"duplicate_of_id": None, "is_duplicate": False}, synchronize_session=False)
-    db.session.delete(upload)
+    _moves = []
+    trashed = _trash_dropbox_paths(paths_to_trash, moves_out=_moves)
+    # The doc's own ledger row(s) go (restore recreates); matched bank rows are
+    # UNLINKED, never deleted — their coding survives.
+    removed_doc_txns = (Transaction.query
+                        .filter_by(doc_upload_id=upload.id, source='doc_upload')
+                        .delete(synchronize_session=False))
+    unlinked_bank = (Transaction.query
+                     .filter(Transaction.doc_upload_id == upload.id,
+                             Transaction.source != 'doc_upload')
+                     .update({"doc_upload_id": None, "match_status": "unmatched",
+                              "match_confidence": None}, synchronize_session=False))
+    import json as _json
+    upload.trash_meta = _json.dumps({"prior_status": upload.status, "moves": _moves})
+    upload.status     = 'deleted'
+    upload.deleted_at = datetime.utcnow()
     db.session.commit()
     try:
         _log_activity(action='delete', entity_type='doc_upload',
@@ -21471,9 +21481,141 @@ def docs_upload_delete(uid):
                       project_id=pid,
                       before={'vendor': _act_vendor, 'amount': _act_amount},
                       after=None,
-                      note=f'Deleted "{_act_label}" (Dropbox files moved to /_TRASH/)')
+                      note=f'Moved "{_act_label}" to Trash (restorable; Dropbox copies in /_TRASH/)')
     except Exception: pass
-    return jsonify({"status": "deleted", "trashed_files": trashed})
+    return jsonify({"status": "deleted", "soft": True, "trashed_files": trashed,
+                    "removed_doc_txns": removed_doc_txns,
+                    "unlinked_bank_rows": unlinked_bank})
+
+
+@app.route("/docs/<int:pid>/trash", methods=["GET"])
+@login_required
+def docs_trash_list(pid):
+    """Docs Trash: soft-deleted documents for this project, newest first.
+    (User 2026-06-11 — recoverable deletes.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access:
+            return jsonify({"error": "Forbidden"}), 403
+    rows = (DocUpload.query.filter_by(project_id=pid, status='deleted')
+            .order_by(DocUpload.deleted_at.desc().nullslast()).limit(300).all())
+    out = [{"id": u.id,
+            "filename": u.filed_filename or u.original_filename,
+            "vendor": u.vendor, "category": u.category,
+            "amount": float(u.amount) if u.amount is not None else None,
+            "doc_date": u.doc_date.isoformat() if u.doc_date else None,
+            "deleted_at": (u.deleted_at.isoformat() + 'Z') if u.deleted_at else None}
+           for u in rows]
+    return jsonify({"trash": out, "count": len(out)})
+
+
+@app.route("/docs/upload/<int:uid>/restore", methods=["POST"])
+@login_required
+def docs_upload_restore(uid):
+    """Restore a soft-deleted doc from the Trash: move its Dropbox copies back
+    to their original locations, restore the prior status, and recreate the
+    Actuals transaction for ledger types. (User 2026-06-11.)"""
+    upload = DocUpload.query.get_or_404(uid)
+    if current_user.role not in ('super_admin', 'admin'):
+        if upload.uploader_id != current_user.id:
+            return jsonify({"error": "Forbidden"}), 403
+    if upload.status != 'deleted':
+        return jsonify({"error": "Not in the Trash"}), 400
+    import json as _json
+    meta = {}
+    try:
+        meta = _json.loads(upload.trash_meta) if upload.trash_meta else {}
+    except Exception:
+        meta = {}
+    moved_back, move_errors = 0, []
+    try:
+        dbx = _dbx_client()
+        for mv in (meta.get('moves') or []):
+            try:
+                dbx.files_move_v2(mv['dest'], mv['src'], autorename=True)
+                moved_back += 1
+            except Exception as _me:
+                if 'not_found' not in str(_me).lower():
+                    move_errors.append(type(_me).__name__)
+    except Exception as _ce:
+        move_errors.append('dbx_init:' + type(_ce).__name__)
+    upload.status     = meta.get('prior_status') or ('done' if upload.filed_dropbox_path else 'review')
+    upload.deleted_at = None
+    upload.trash_meta = None
+    db.session.commit()
+    # Recreate the Actuals row for ledger doc types (mirrors unmatch_receipt).
+    txn_recreated = False
+    if ((upload.category or '') in ('receipt', 'invoice')
+            and not upload.is_duplicate
+            and upload.status in ('done', 'review')
+            and not Transaction.query.filter_by(doc_upload_id=upload.id,
+                                                source='doc_upload').first()):
+        try:
+            db.session.add(Transaction(
+                project_id=upload.project_id, source='doc_upload',
+                doc_upload_id=upload.id, vendor=upload.vendor,
+                amount=upload.amount,
+                txn_date=upload.doc_date.isoformat() if upload.doc_date else None,
+                card_last4=upload.card_last4, is_expense=True,
+                match_status='unmatched',
+                created_via_user_id=current_user.id))
+            db.session.commit()
+            txn_recreated = True
+        except Exception:
+            db.session.rollback()
+    try:
+        _log_activity(action='update', entity_type='doc_upload', entity_id=uid,
+                      entity_label=(upload.filed_filename or upload.original_filename
+                                    or f'Upload #{uid}'),
+                      project_id=upload.project_id, before=None,
+                      after={'status': upload.status},
+                      note='Restored from Trash')
+    except Exception: pass
+    return jsonify({"ok": True, "status": upload.status,
+                    "files_moved_back": moved_back, "move_errors": move_errors,
+                    "txn_recreated": txn_recreated})
+
+
+@app.route("/docs/upload/<int:uid>/purge", methods=["POST"])
+@login_required
+def docs_upload_purge(uid):
+    """PERMANENTLY remove a doc that is already in the Trash (the old hard
+    delete, now only reachable from there). Dropbox copies stay in /_TRASH/
+    until the 30-day purge. (User 2026-06-11.)"""
+    upload = DocUpload.query.get_or_404(uid)
+    if current_user.role not in ('super_admin', 'admin'):
+        if upload.uploader_id != current_user.id:
+            return jsonify({"error": "Forbidden"}), 403
+    if upload.status != 'deleted':
+        return jsonify({"error": "Move it to the Trash first (delete), then purge."}), 400
+    pid = upload.project_id
+    _lbl = upload.filed_filename or upload.original_filename or f'Upload #{uid}'
+    if upload.r2_key:
+        try:
+            _r2_client().delete_object(Bucket=_R2_BUCKET, Key=upload.r2_key)
+        except Exception:
+            pass
+    Transaction.query.filter_by(doc_upload_id=upload.id).update(
+        {"doc_upload_id": None}, synchronize_session=False)
+    try:
+        db.session.execute(
+            text("UPDATE purchase_order SET source_doc_upload_id=NULL "
+                 "WHERE source_doc_upload_id=:uid"), {"uid": upload.id})
+        db.session.execute(
+            text("DELETE FROM po_doc_attachment WHERE doc_upload_id=:uid"),
+            {"uid": upload.id})
+    except Exception:
+        db.session.rollback()
+    DocUpload.query.filter_by(duplicate_of_id=upload.id).update(
+        {"duplicate_of_id": None, "is_duplicate": False}, synchronize_session=False)
+    db.session.delete(upload)
+    db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='doc_upload', entity_id=uid,
+                      entity_label=_lbl, project_id=pid, before=None, after=None,
+                      note=f'Purged "{_lbl}" from Trash (permanent)')
+    except Exception: pass
+    return jsonify({"ok": True, "purged": uid})
 
 
 @app.route("/docs/<int:pid>/bulk-delete", methods=["POST"])

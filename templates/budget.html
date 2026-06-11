@@ -2538,7 +2538,28 @@
               style="font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer;
                      background:var(--bg-card);border:1px solid var(--border);color:var(--text);"
               title="Download every document's metadata as a CSV — for accounting / audit hand-off.">📥 Export CSV</button>
+      <button type="button" id="docs-trash-btn" onclick="openDocsTrash()"
+              style="font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer;
+                     background:var(--bg-card);border:1px solid var(--border);color:var(--text);"
+              title="Deleted documents — restore anything deleted by mistake.">🗑 Trash</button>
       <span id="docs-count" style="margin-left:auto">{{ doc_uploads|length }} item{{ 's' if doc_uploads|length != 1 else '' }}</span>
+    </div>
+
+    {# ── Docs Trash modal: restore or permanently purge soft-deleted docs.
+         (User 2026-06-11 — recoverable deletes.) #}
+    <div id="docs-trash-overlay" class="export-opts-overlay hidden" onclick="closeDocsTrash(event)">
+      <div class="export-opts-card" onclick="event.stopPropagation()" style="max-width:680px">
+        <div class="export-opts-head">
+          <div>
+            <h3 class="export-opts-title">🗑 Trash</h3>
+            <p class="export-opts-sub">Deleted documents. Restore puts the file, its Dropbox copies, and its Actuals row back. Dropbox copies auto-purge after 30 days.</p>
+          </div>
+          <button type="button" class="export-opts-close" onclick="closeDocsTrash()" aria-label="Close">×</button>
+        </div>
+        <div id="docs-trash-body" style="padding:4px 14px 12px;max-height:60vh;overflow:auto">
+          <div style="padding:24px;text-align:center;color:var(--text-muted)">Loading…</div>
+        </div>
+      </div>
     </div>
 
     {# Bulk action bar — visible only when ≥1 row checkbox is checked. #}
@@ -3619,12 +3640,14 @@
       e.preventDefault();
       e.stopPropagation();
       const name = row.querySelector('div > div > div')?.textContent?.trim() || 'this document';
-      if (!confirm(`Delete ${name}? This removes it from the software but does NOT delete the copy already filed to Dropbox.`)) return;
+      if (!confirm(`Move ${name} to the Trash? You can restore it from Docs → 🗑 Trash.`)) return;
       const r = await fetch('/docs/upload/' + uid + '/delete', { method: 'POST' });
       if (r.ok) {
         row.style.transition = 'opacity .3s';
         row.style.opacity = '0';
         setTimeout(() => row.remove(), 300);
+        // Mirror in the Actuals tab without a reload. (User 2026-06-11.)
+        if (typeof _docRemoveActualsRowsForDoc === 'function') _docRemoveActualsRowsForDoc(uid);
       } else {
         const d = await r.json().catch(() => ({}));
         alert('Delete failed: ' + (d.error || r.status));
@@ -5453,12 +5476,12 @@
     const titleEl = document.getElementById('docDetailTitle');
     const name = (titleEl && titleEl.textContent) ? titleEl.textContent.trim() : `Upload #${uid}`;
     if (!confirm(
-      `Delete "${name}"?\n\n` +
+      `Move "${name}" to the Trash?\n\n` +
       `This will:\n` +
-      `  • Move both Dropbox copies (filed + source archive) to /_TRASH/\n` +
-      `  • Delete the linked transaction row if there is one\n` +
-      `  • Unlink it from any PO using it as a source doc or attachment\n\n` +
-      `This cannot be undone from the software (recoverable from Dropbox /_TRASH/ for 30 days).`
+      `  • Remove it from the Docs list and Actuals\n` +
+      `  • Unlink it from any matched bank charge (the charge keeps its coding)\n` +
+      `  • Move the Dropbox copies to /_TRASH/\n\n` +
+      `You can restore it from Docs → 🗑 Trash (files auto-purge after 30 days).`
     )) return;
     const btn = document.getElementById('docDetailDeleteBtn');
     if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
@@ -5488,6 +5511,9 @@
       } else if (typeof _docsApplyView === 'function') {
         _docsApplyView();
       }
+      // Also update the ACTUALS tab in place — the doc's own row disappears,
+      // a matched bank row reverts to "needs receipt". (User 2026-06-11.)
+      _docRemoveActualsRowsForDoc(uid);
     } catch (e) {
       alert('Delete failed: ' + e.message);
       if (btn) { btn.disabled = false; btn.textContent = '🗑 Delete document'; }
@@ -5545,8 +5571,19 @@
   function _docPatchActualsRows(uid, d) {
     const nonLedger = _DOC_NON_LEDGER_CATS.has((d.category || '').toLowerCase());
     let removedAny = false;
-    document.querySelectorAll('.actuals-doc-badge[data-doc-id="' + uid + '"]').forEach(badge => {
-      const trow = badge.closest('.actuals-txn-row');
+    // Collect target rows BOTH via the doc badge (matched bank rows) AND via
+    // the row-level data-doc-id (doc-source rows whose badge may be absent or
+    // shaped differently) — patching only by badge missed rows, so edits from
+    // the popup didn't show without a refresh. (User 2026-06-11.)
+    const _targets = new Map();
+    document.querySelectorAll('.actuals-doc-badge[data-doc-id="' + uid + '"]').forEach(b => {
+      const tr = b.closest('.actuals-txn-row');
+      if (tr) _targets.set(tr, b);
+    });
+    document.querySelectorAll('.actuals-txn-row[data-doc-id="' + uid + '"]').forEach(tr => {
+      if (!_targets.has(tr)) _targets.set(tr, tr.querySelector('.actuals-doc-badge'));
+    });
+    _targets.forEach((badge, trow) => {
       if (!trow) return;
       if (nonLedger) {
         removedAny = true;
@@ -5580,7 +5617,7 @@
           c4El.textContent = d.card_last4 ? ('••' + d.card_last4) : '';
           c4El.style.display = d.card_last4 ? '' : 'none';
         }
-        if (d.filed_path) {
+        if (d.filed_path && badge) {
           const nm = (d.filed_path.split('/').pop() || '');
           badge.textContent = '📎 ' + (d.category || 'doc') + ' · '
             + (nm.length > 14 ? nm.slice(0, 14) + '…' : nm);
@@ -5589,6 +5626,98 @@
     });
     if (removedAny && typeof _actualsRecountStats === 'function') _actualsRecountStats();
   }
+
+  // Remove/unlink the Actuals rows backed by a doc that was just deleted —
+  // mirrors what the server did: the doc's own row disappears, a matched bank
+  // row is unlinked (keeps its coding) and reverts to "needs receipt". No
+  // reload. (User 2026-06-11.)
+  function _docRemoveActualsRowsForDoc(uid) {
+    const seen = new Set();
+    const handle = (trow) => {
+      if (!trow || seen.has(trow)) return;
+      seen.add(trow);
+      if ((trow.dataset.source || '') === 'doc_upload') {
+        const banner = document.querySelector('.actuals-suggested-banner[data-tid="' + trow.dataset.tid + '"]');
+        if (banner) banner.remove();
+        trow.style.transition = 'opacity .3s';
+        trow.style.opacity = '0';
+        setTimeout(() => trow.remove(), 300);
+      } else {
+        trow.querySelectorAll('.actuals-doc-badge').forEach(b => b.remove());
+        trow.dataset.hasDoc = '0';
+        trow.dataset.matchStatus = 'unmatched';
+        trow.dataset.docId = '';
+        const banner = document.querySelector('.actuals-suggested-banner[data-tid="' + trow.dataset.tid + '"]');
+        if (banner) banner.remove();
+      }
+    };
+    document.querySelectorAll('.actuals-txn-row[data-doc-id="' + uid + '"]').forEach(handle);
+    document.querySelectorAll('.actuals-doc-badge[data-doc-id="' + uid + '"]').forEach(b => handle(b.closest('.actuals-txn-row')));
+    setTimeout(() => { if (typeof window._actualsRecountStats === 'function') window._actualsRecountStats(); }, 350);
+  }
+
+  // ── Docs Trash modal (restore / purge soft-deleted docs) ──────────────
+  window.openDocsTrash = function () {
+    document.getElementById('docs-trash-overlay').classList.remove('hidden');
+    _loadDocsTrash();
+  };
+  window.closeDocsTrash = function (e) {
+    if (e && e.target && e.target.id !== 'docs-trash-overlay') return;
+    document.getElementById('docs-trash-overlay').classList.add('hidden');
+  };
+  function _trashEsc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g,
+      c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+  async function _loadDocsTrash() {
+    const body = document.getElementById('docs-trash-body');
+    body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted)">Loading…</div>';
+    try {
+      const d = await (await fetch('/docs/' + PROJ_ID + '/trash', {cache: 'no-store'})).json();
+      const rows = d.trash || [];
+      if (!rows.length) {
+        body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-muted)">Trash is empty.</div>';
+        return;
+      }
+      body.innerHTML = rows.map(r => {
+        const amt = (typeof r.amount === 'number')
+          ? ('$' + r.amount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})) : '';
+        const when = r.deleted_at ? new Date(r.deleted_at).toLocaleString(undefined,
+          {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'}) : '';
+        return '<div style="border:1px solid var(--border);border-radius:10px;padding:10px 13px;margin-bottom:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+          + '<div style="min-width:0;flex:1">'
+          +   '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _trashEsc(r.filename || ('Upload #' + r.id)) + '</div>'
+          +   '<div style="font-size:.72rem;color:var(--text-muted)">'
+          +     _trashEsc(r.category || 'doc') + (r.vendor ? (' · ' + _trashEsc(r.vendor)) : '')
+          +     (amt ? (' · ' + amt) : '') + (when ? (' · deleted ' + when) : '') + '</div>'
+          + '</div>'
+          + '<button type="button" class="btn btn-xs btn-primary" onclick="docsTrashRestore(' + r.id + ')">↩ Restore</button>'
+          + '<button type="button" class="btn btn-xs" style="color:#e05555" onclick="docsTrashPurge(' + r.id + ')">Delete forever</button>'
+          + '</div>';
+      }).join('');
+    } catch (err) {
+      body.innerHTML = '<div style="padding:24px;color:#e05555">Could not load the Trash: ' + _trashEsc(err.message) + '</div>';
+    }
+  }
+  window.docsTrashRestore = async function (uid) {
+    try {
+      const r = await fetch('/docs/upload/' + uid + '/restore', {method: 'POST'});
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { alert('Restore failed: ' + (j.error || r.status)); return; }
+      _loadDocsTrash();
+      alert('Restored.' + (j.txn_recreated ? ' Its Actuals row was recreated.' : '')
+            + ' Reload the page to see it back in the lists.');
+    } catch (e) { alert('Restore error: ' + e.message); }
+  };
+  window.docsTrashPurge = async function (uid) {
+    if (!confirm('Permanently delete this document record? This cannot be undone. (The Dropbox copies stay in /_TRASH/ until the 30-day purge.)')) return;
+    try {
+      const r = await fetch('/docs/upload/' + uid + '/purge', {method: 'POST'});
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { alert('Purge failed: ' + (j.error || r.status)); return; }
+      _loadDocsTrash();
+    } catch (e) { alert('Purge error: ' + e.message); }
+  };
 
   // Persist the current modal's edits and patch the affected list row(s)
   // in place. Returns the /update response (or null on failure). Shared by
@@ -6355,6 +6484,7 @@
           {% set _src_icon = {'qbo_sync':'🏦','csv_import':'🏦','reconciled':'🔗','manual_entry':'✏️','invoice_split':'↳','doc_upload':'📄'}.get(t.source, '❓') %}
           <div class="actuals-txn-row" draggable="true"
                data-tid="{{ t.id }}"
+               data-doc-id="{{ t.doc_upload_id or '' }}"
                data-source="{{ t.source or '' }}"
                data-coded="{{ '1' if _coded else '0' }}"
                data-has-doc="{{ '1' if _has_doc else '0' }}"
@@ -7045,6 +7175,9 @@
       setN('finished', finished);
       setN('ocr_review', ocrReview);
     }
+    // Exposed so the Docs script block (separate IIFE) can recount after it
+    // deletes/patches a doc that backs Actuals rows. (User 2026-06-11.)
+    window._actualsRecountStats = _actualsRecountStats;
 
     // Click-to-code: change a budget-line dropdown → POST → refresh row state.
     // The dropdown supports three value forms:

@@ -889,6 +889,15 @@ class DocUpload(db.Model):
     # archive copy is the durable source-of-truth and can be recovered.
     source_archive_path = db.Column(db.String(500), nullable=True)
 
+    # Soft delete / Trash (2026-06-11): deleting a doc no longer destroys the
+    # row — status flips to 'deleted', deleted_at stamps it, and trash_meta
+    # records {prior_status, moves:[{src,dest}]} (the Dropbox files' trash
+    # locations) so /restore can move everything back. Rows with
+    # status='deleted' are excluded from the docs list, matching, and
+    # duplicate checks; hard removal is the separate /purge action.
+    deleted_at = db.Column(db.DateTime, nullable=True)
+    trash_meta = db.Column(db.Text, nullable=True)
+
     # Type-specific identifier (added 2026-04-30): Invoice #, PO #, Tax
     # ID (EIN/SSN), Policy #, etc. Pre-populated from Veryfi's
     # invoice_number / purchase_order_number / tax_id fields when

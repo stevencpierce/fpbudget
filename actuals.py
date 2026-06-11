@@ -685,7 +685,8 @@ def run_auto_match(project_id):
     _dup_doc_ids = {r[0] for r in db.session.query(DocUpload.id)
                     .filter(DocUpload.project_id == project_id,
                             db.or_(DocUpload.is_duplicate == True,        # noqa: E712
-                                   DocUpload.status == 'duplicate')).all()}
+                                   DocUpload.status == 'duplicate',
+                                   DocUpload.status == 'deleted')).all()}   # Trash (2026-06-11)
     if _dup_doc_ids:
         doc_open = [t for t in doc_open if t.doc_upload_id not in _dup_doc_ids]
     # Only receipts/invoices are valid spend proof — restrict the receipt pool
