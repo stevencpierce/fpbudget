@@ -17507,6 +17507,32 @@ def admin_docs_convert_foreign(pid):
 _REPROCESS = {}   # pid -> progress dict (best-effort, per-worker; DB is truth)
 
 
+def _call_veryfi_bounded(item, secs=90):
+    """Run fp_analyzer._call_veryfi with a hard wall-clock cap. The Veryfi SDK
+    has no client-side timeout, so one doc Veryfi can't fetch (huge/corrupt
+    file, server-side stall) blocks the whole reprocess loop indefinitely. Run
+    it in a daemon thread and abandon it if it overruns — returns None on
+    timeout so the caller records an error, stamps the doc, and moves on. The
+    stuck thread is daemon and the run is bounded, so a rare leak is harmless."""
+    import threading as _th
+    from fp_analyzer import _call_veryfi
+    box = {}
+
+    def _run():
+        try:
+            box['item'] = _call_veryfi(item)
+        except Exception as e:   # noqa: BLE001
+            box['err'] = e
+    t = _th.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(secs)
+    if t.is_alive():
+        return None              # timed out — leave the thread to die on its own
+    if 'err' in box:
+        raise box['err']
+    return box.get('item')
+
+
 def _unpaired_docs_base_query(pid):
     """Receipts/invoices NOT paired to an electronic charge, for project `pid`.
 
@@ -17561,9 +17587,11 @@ def _reprocess_worker(flask_app, pid, user_id, limit):
                     continue
                 try:
                     item = {"original_filename": d.original_filename or '', "staged_path": path}
-                    item = _call_veryfi(item)
-                    vr = item.get("vr") or {}
-                    if item.get("error") or not vr:
+                    item = _call_veryfi_bounded(item, secs=90)
+                    vr = (item or {}).get("vr") or {}
+                    if item is None or item.get("error") or not vr:
+                        # None = OCR timed out (Veryfi couldn't fetch/parse this
+                        # file); record + stamp so the queue keeps draining.
                         prog['errors'] = prog.get('errors', 0) + 1
                         prog['processed'] += 1
                         _stamp(d)
