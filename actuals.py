@@ -767,6 +767,13 @@ def run_auto_match(project_id):
     # vendor name (e.g. "SQ *CASA VIDEO"); surfaced as a suggestion to confirm.
     # (User 2026-06-02.)
     _pass(lambda v, g: g <= 5, "amt+date")
+    # Pass 2b — exact amount + SAME VENDOR, WIDE date window (≤60d). Travel and
+    # subscriptions post weeks after the receipt date (book a flight 7/1, charged
+    # 7/26), so a same-vendor exact-amount pair shouldn't be rejected just for a
+    # date gap. The vendor gate keeps coincidental same-amounts apart ($20 SaaS
+    # vs $20 FedEx). (User 2026-06-11 — "same amount, similar name, dates just
+    # differ".)
+    _pass(lambda v, g: v >= 0.50 and g <= 60, "amt+vendor-widedate")
 
     # Pass 3 — TIP-tolerant. A card charge routinely exceeds the receipt by a
     # tip (restaurants, rideshare): receipt $40.00 → card $48.00. Passes 1-2
