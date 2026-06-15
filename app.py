@@ -3056,12 +3056,15 @@ def readyz():
     SEPARATE from /health (Render's liveness probe stays static so a transient
     DB blip, which hits all workers equally, doesn't trigger a restart storm).
     (Code review 2026-06-04.)"""
+    # Surface the deployed commit (Render sets RENDER_GIT_COMMIT) so deploy
+    # state is verifiable from the shell without the dashboard. (2026-06-11.)
+    commit = (os.getenv('RENDER_GIT_COMMIT') or '')[:12] or 'unknown'
     try:
         db.session.execute(db.text("SELECT 1"))
-        return jsonify({"status": "ok", "db": "up"})
+        return jsonify({"status": "ok", "db": "up", "commit": commit})
     except Exception as e:
         return jsonify({"status": "degraded", "db": "down",
-                        "detail": type(e).__name__}), 503
+                        "detail": type(e).__name__, "commit": commit}), 503
 
 
 @app.route("/admin/dbx-ls")
