@@ -4582,11 +4582,23 @@ def _actuals_by_section_code(pid):
 
 
 def _signed_amount():
-    """SQL expression: expense amounts positive, credit/refund amounts negative
-    — so coded refunds reduce actuals instead of being excluded (review CR-3).
-    Function (not module constant) so each query gets a fresh expression."""
+    """SQL expression for actuals rollups: expense amounts count, credits count
+    as ZERO (excluded).
+
+    History: CR-3 (2026-06-04) made credits SUBTRACT (return -amount) so refunds
+    would net against spend. In practice that drove whole Top Sheet sections deep
+    NEGATIVE — credit-card payoffs, transfers, and rental-hold reversals are
+    is_expense=False but are NOT refunds of an in-section project cost, so netting
+    them produced nonsensical negative actuals (user report 2026-06-11). Reverted
+    to expense-only: credits no longer inflate actuals (they import as
+    is_expense=False and contribute 0) and no longer push sections negative. True
+    refund netting needs to distinguish refund-credits from payment/transfer
+    credits, which the data doesn't yet support — tracked for later.
+
+    Kept as a function (fresh expression per query) so all rollup call sites flip
+    with this one definition."""
     return sa_case((Transaction.is_expense == True, Transaction.amount),
-                   else_=-Transaction.amount)
+                   else_=0)
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/audit.json")
@@ -5932,8 +5944,9 @@ def budget_view(pid, bid):
                 _key = _alid_to_key.get(_tx.budget_line_id)
                 if _key is None:
                     continue
-                # Signed: coded credits/refunds subtract from the line (CR-3).
-                _amt = float(_tx.amount or 0) * (1 if _tx.is_expense else -1)
+                # Expense-only: credits contribute 0 (see _signed_amount — CR-3's
+                # subtract-credits drove sections negative; 2026-06-11).
+                _amt = float(_tx.amount or 0) * (1 if _tx.is_expense else 0)
                 actual_line_totals[_key] = actual_line_totals.get(_key, 0.0) + _amt
                 actual_line_totals_by_lid[_tx.budget_line_id] = (
                     actual_line_totals_by_lid.get(_tx.budget_line_id, 0.0) + _amt)
