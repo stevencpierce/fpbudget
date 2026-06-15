@@ -17493,6 +17493,163 @@ def admin_docs_convert_foreign(pid):
                     "errors": errors[:25]})
 
 
+# ── Background re-OCR of unpaired receipts (2026-06-11) ─────────────────────
+# Re-runs Veryfi on receipts NOT linked to an electronic charge, to fix bad OCR
+# amounts/dates and pick up a currency code (then convert to USD), so actuals
+# read correctly and the matcher has clean data. Daemon thread + status poll,
+# mirroring the source-import drain. Re-OCR costs Veryfi credits, so it's
+# explicitly opt-in and bounded by `limit`.
+_REPROCESS = {}   # pid -> progress dict
+
+
+def _reprocess_worker(flask_app, pid, user_id, limit):
+    import json as _json
+    from datetime import datetime as _dt
+    prog = _REPROCESS[pid]
+    with flask_app.app_context():
+        try:
+            from fp_analyzer import _call_veryfi, extract_card_last4 as _c4
+            # Docs already paired to an electronic charge — leave them alone.
+            paired = {r[0] for r in db.session.query(Transaction.doc_upload_id)
+                      .filter(Transaction.project_id == pid,
+                              Transaction.source.in_(('qbo_sync', 'csv_import', 'reconciled')),
+                              Transaction.doc_upload_id.isnot(None)).all() if r[0]}
+            docs = (DocUpload.query
+                    .filter(DocUpload.project_id == pid,
+                            DocUpload.category.in_(('receipt', 'invoice')),
+                            DocUpload.status.notin_(('deleted', 'duplicate')),
+                            DocUpload.is_duplicate == False)      # noqa: E712
+                    .order_by(DocUpload.id).all())
+            docs = [d for d in docs if d.id not in paired][:limit]
+            prog['total'] = len(docs)
+            for d in docs:
+                if not prog['running']:
+                    break
+                path = d.source_archive_path or d.filed_dropbox_path
+                if not path:
+                    prog['skipped'] += 1
+                    prog['processed'] += 1
+                    continue
+                try:
+                    item = {"original_filename": d.original_filename or '', "staged_path": path}
+                    item = _call_veryfi(item)
+                    vr = item.get("vr") or {}
+                    if item.get("error") or not vr:
+                        prog['errors'] = prog.get('errors', 0) + 1
+                        prog['processed'] += 1
+                        continue
+                    v = vr.get("vendor") or {}
+                    new_vendor = v.get("name") or v.get("raw_name") or d.vendor
+                    try:
+                        new_total = float(vr.get("total")) if vr.get("total") is not None else None
+                    except Exception:
+                        new_total = None
+                    new_date = d.doc_date
+                    try:
+                        _ds = (vr.get("date") or "")[:10]
+                        if _ds:
+                            new_date = _dt.strptime(_ds, "%Y-%m-%d").date()
+                    except Exception:
+                        pass
+                    ccy = _normalize_ccy(vr.get("currency_code"))
+                    orig_amt, orig_ccy = None, None
+                    usd_amount = new_total
+                    if new_total is not None and ccy and ccy != 'USD':
+                        _usd, _rate, _ = _convert_to_usd(new_total, ccy,
+                                                         new_date.isoformat() if new_date else None)
+                        orig_amt, orig_ccy = new_total, ccy
+                        if _usd is not None:
+                            usd_amount = _usd
+                    # Apply updates
+                    d.vendor = new_vendor
+                    if new_date:
+                        d.doc_date = new_date
+                    if usd_amount is not None:
+                        d.amount = usd_amount
+                    if orig_ccy:
+                        d.original_amount = orig_amt
+                        d.original_currency = orig_ccy
+                    _c = _c4(vr)
+                    if _c:
+                        d.card_last4 = _c
+                    d.veryfi_data = _json.dumps(vr)
+                    # Mirror onto the receipt's own ledger row.
+                    upd = {"vendor": d.vendor}
+                    if usd_amount is not None:
+                        upd["amount"] = usd_amount
+                    if new_date:
+                        upd["txn_date"] = new_date.isoformat()
+                    (Transaction.query
+                     .filter_by(doc_upload_id=d.id, source='doc_upload')
+                     .update(upd, synchronize_session=False))
+                    db.session.commit()
+                    prog['reprocessed'] += 1
+                    prog['last'] = (d.vendor or '')[:40]
+                except Exception as _pe:
+                    db.session.rollback()
+                    prog['errors'] = prog.get('errors', 0) + 1
+                finally:
+                    prog['processed'] += 1
+                    try:
+                        import gc as _gc; _gc.collect()
+                    except Exception:
+                        pass
+            # Re-match now that the receipt data is cleaner.
+            if prog.get('reprocessed'):
+                try:
+                    from actuals import run_auto_match
+                    prog['auto_match_suggestions'] = run_auto_match(pid).get('suggestions')
+                except Exception:
+                    pass
+        except Exception as _we:
+            prog['fatal'] = type(_we).__name__
+        finally:
+            prog['running'] = False
+            prog['done'] = True
+            try:
+                db.session.remove()
+            except Exception:
+                pass
+
+
+@app.route("/admin/docs/project/<int:pid>/reprocess-unpaired", methods=["POST"])
+@login_required
+def admin_docs_reprocess_unpaired(pid):
+    """Start a background re-OCR of receipts not paired to an electronic charge.
+    Returns immediately; poll /reprocess-unpaired-status. Re-OCR uses Veryfi
+    credits. Body/params: limit (default 250). (User 2026-06-11.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    cur = _REPROCESS.get(pid)
+    if cur and cur.get('running'):
+        return jsonify({"already_running": True,
+                        **{k: cur.get(k) for k in ('total', 'processed', 'reprocessed')}})
+    body = request.get_json(silent=True) or {}
+    try:
+        limit = max(1, min(int(body.get('limit') or request.args.get('limit') or 250), 1000))
+    except (TypeError, ValueError):
+        limit = 250
+    _REPROCESS[pid] = {'running': True, 'done': False, 'total': None, 'processed': 0,
+                       'reprocessed': 0, 'skipped': 0, 'errors': 0, 'last': None}
+    import threading
+    threading.Thread(target=_reprocess_worker, args=(app, pid, current_user.id, limit),
+                     daemon=True).start()
+    return jsonify({"started": True, "limit": limit})
+
+
+@app.route("/admin/docs/project/<int:pid>/reprocess-unpaired-status", methods=["GET"])
+@login_required
+def admin_docs_reprocess_status(pid):
+    p = _REPROCESS.get(pid)
+    if not p:
+        return jsonify({"exists": False})
+    return jsonify({"exists": True, **{k: p.get(k) for k in
+                   ('running', 'done', 'total', 'processed', 'reprocessed',
+                    'skipped', 'errors', 'last', 'auto_match_suggestions', 'fatal')}})
+
+
 @app.template_filter("pct")
 def pct_filter(v):
     try:
