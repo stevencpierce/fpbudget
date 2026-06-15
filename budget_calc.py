@@ -609,6 +609,7 @@ def sync_schedule_driven_lines(budget_id, db_session):
                 orphan.line_tag = tag
                 existing_auto[tag] = orphan
 
+    deleted_line_ids = set()
     for tag, count in counts.items():
         if count == 0 and tag not in existing_auto:
             continue  # Don't create zero-count lines that were never used
@@ -620,6 +621,21 @@ def sync_schedule_driven_lines(budget_id, db_session):
             ln = existing_auto[tag]
             # User opted out of auto-calc for this line — leave it alone
             if getattr(ln, 'sync_omit', False):
+                continue
+            # Schedule no longer flags this line on ANY day → it's a purely
+            # schedule-derived auto line with nothing left to derive. Delete
+            # it so the budget mirrors the schedule. Without this, the code
+            # below forced days=1 / quantity=1 (see the `else 1` fallback and
+            # the hc default of 1) and set estimated_total=0 — but calc_line
+            # recomputes the displayed amount as qty×days×rate, so the line
+            # came back as a phantom 1×1×rate charge. User report 2026-06-15:
+            # cleared every flight from the schedule but the flight line
+            # lingered at its full unit rate, and schedule detail showed no
+            # items. sync_omit lines are exempt above (user-managed by hand).
+            if count == 0:
+                db_session.delete(ln)
+                deleted_line_ids.add(ln.id)
+                existing_auto.pop(tag, None)
                 continue
         else:
             ln = BudgetLine(
@@ -656,6 +672,11 @@ def sync_schedule_driven_lines(budget_id, db_session):
         effective_rate = _float(getattr(ln, 'rate', None)) or unit_r
         # estimated_total = qty × days × rate (matches user's mental model)
         ln.estimated_total = round(qty_val * count * effective_rate, 2)
+
+    # Drop any lines we deleted above from the in-memory list so the meal
+    # re-sort below doesn't touch rows that are pending deletion.
+    if deleted_line_ids:
+        all_lines = [ln for ln in all_lines if ln.id not in deleted_line_ids]
 
     # Re-sort the meals section: Courtesy Breakfast → First Meal → Second Meal →
     # Working Meals → Craft Services → everything else (by current sort_order).
