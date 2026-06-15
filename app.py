@@ -17499,7 +17499,26 @@ def admin_docs_convert_foreign(pid):
 # read correctly and the matcher has clean data. Daemon thread + status poll,
 # mirroring the source-import drain. Re-OCR costs Veryfi credits, so it's
 # explicitly opt-in and bounded by `limit`.
-_REPROCESS = {}   # pid -> progress dict
+_REPROCESS = {}   # pid -> progress dict (best-effort, per-worker; DB is truth)
+
+
+def _unpaired_docs_base_query(pid):
+    """Receipts/invoices NOT paired to an electronic charge, for project `pid`.
+
+    Shared by the re-OCR worker and the status endpoint so both agree on the
+    denominator. 'Paired' = a qbo_sync/csv_import/reconciled transaction points
+    at the doc. Excludes deleted / duplicate docs.
+    """
+    paired_ids = (db.session.query(Transaction.doc_upload_id)
+                  .filter(Transaction.project_id == pid,
+                          Transaction.source.in_(('qbo_sync', 'csv_import', 'reconciled')),
+                          Transaction.doc_upload_id.isnot(None)))
+    return (DocUpload.query
+            .filter(DocUpload.project_id == pid,
+                    DocUpload.category.in_(('receipt', 'invoice')),
+                    DocUpload.status.notin_(('deleted', 'duplicate')),
+                    DocUpload.is_duplicate == False,           # noqa: E712
+                    DocUpload.id.notin_(paired_ids)))
 
 
 def _reprocess_worker(flask_app, pid, user_id, limit):
@@ -17509,19 +17528,23 @@ def _reprocess_worker(flask_app, pid, user_id, limit):
     with flask_app.app_context():
         try:
             from fp_analyzer import _call_veryfi, extract_card_last4 as _c4
-            # Docs already paired to an electronic charge — leave them alone.
-            paired = {r[0] for r in db.session.query(Transaction.doc_upload_id)
-                      .filter(Transaction.project_id == pid,
-                              Transaction.source.in_(('qbo_sync', 'csv_import', 'reconciled')),
-                              Transaction.doc_upload_id.isnot(None)).all() if r[0]}
-            docs = (DocUpload.query
-                    .filter(DocUpload.project_id == pid,
-                            DocUpload.category.in_(('receipt', 'invoice')),
-                            DocUpload.status.notin_(('deleted', 'duplicate')),
-                            DocUpload.is_duplicate == False)      # noqa: E712
-                    .order_by(DocUpload.id).all())
-            docs = [d for d in docs if d.id not in paired][:limit]
+            # Resumable: only docs not yet stamped this campaign. A worker
+            # recycle leaves reprocessed_at set on whatever was done, so a
+            # re-kick picks up exactly the remainder instead of starting over.
+            docs = (_unpaired_docs_base_query(pid)
+                    .filter(DocUpload.reprocessed_at.is_(None))
+                    .order_by(DocUpload.id).limit(limit).all())
             prog['total'] = len(docs)
+
+            def _stamp(doc):
+                # Mark attempted (success OR failure OR skip) in its own txn so
+                # the queue always drains and nothing is retried forever.
+                try:
+                    doc.reprocessed_at = _dt.utcnow()
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+
             for d in docs:
                 if not prog['running']:
                     break
@@ -17529,6 +17552,7 @@ def _reprocess_worker(flask_app, pid, user_id, limit):
                 if not path:
                     prog['skipped'] += 1
                     prog['processed'] += 1
+                    _stamp(d)
                     continue
                 try:
                     item = {"original_filename": d.original_filename or '', "staged_path": path}
@@ -17537,6 +17561,7 @@ def _reprocess_worker(flask_app, pid, user_id, limit):
                     if item.get("error") or not vr:
                         prog['errors'] = prog.get('errors', 0) + 1
                         prog['processed'] += 1
+                        _stamp(d)
                         continue
                     v = vr.get("vendor") or {}
                     new_vendor = v.get("name") or v.get("raw_name") or d.vendor
@@ -17582,12 +17607,14 @@ def _reprocess_worker(flask_app, pid, user_id, limit):
                     (Transaction.query
                      .filter_by(doc_upload_id=d.id, source='doc_upload')
                      .update(upd, synchronize_session=False))
+                    d.reprocessed_at = _dt.utcnow()
                     db.session.commit()
                     prog['reprocessed'] += 1
                     prog['last'] = (d.vendor or '')[:40]
                 except Exception as _pe:
                     db.session.rollback()
                     prog['errors'] = prog.get('errors', 0) + 1
+                    _stamp(d)
                 finally:
                     prog['processed'] += 1
                     try:
@@ -17617,7 +17644,10 @@ def _reprocess_worker(flask_app, pid, user_id, limit):
 def admin_docs_reprocess_unpaired(pid):
     """Start a background re-OCR of receipts not paired to an electronic charge.
     Returns immediately; poll /reprocess-unpaired-status. Re-OCR uses Veryfi
-    credits. Body/params: limit (default 250). (User 2026-06-11.)"""
+    credits. Body/params: limit (default 250); reset=1 clears prior
+    reprocessed_at stamps to force a full fresh pass. The job is resumable —
+    progress lives in doc_upload.reprocessed_at, so re-kicking after a worker
+    recycle continues the remainder. (User 2026-06-11; resumable 2026-06-15.)"""
     if current_user.role not in ('super_admin', 'admin'):
         access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
         if not access or access.role not in ('owner', 'collaborator', 'editor'):
@@ -17631,23 +17661,56 @@ def admin_docs_reprocess_unpaired(pid):
         limit = max(1, min(int(body.get('limit') or request.args.get('limit') or 250), 1000))
     except (TypeError, ValueError):
         limit = 250
+    reset = str(body.get('reset') or request.args.get('reset') or '').lower() in ('1', 'true', 'yes')
+    if reset:
+        _unpaired_docs_base_query(pid).update({DocUpload.reprocessed_at: None},
+                                              synchronize_session=False)
+        db.session.commit()
     _REPROCESS[pid] = {'running': True, 'done': False, 'total': None, 'processed': 0,
                        'reprocessed': 0, 'skipped': 0, 'errors': 0, 'last': None}
     import threading
     threading.Thread(target=_reprocess_worker, args=(app, pid, current_user.id, limit),
                      daemon=True).start()
-    return jsonify({"started": True, "limit": limit})
+    return jsonify({"started": True, "limit": limit, "reset": reset})
 
 
 @app.route("/admin/docs/project/<int:pid>/reprocess-unpaired-status", methods=["GET"])
 @login_required
 def admin_docs_reprocess_status(pid):
-    p = _REPROCESS.get(pid)
-    if not p:
-        return jsonify({"exists": False})
-    return jsonify({"exists": True, **{k: p.get(k) for k in
-                   ('running', 'done', 'total', 'processed', 'reprocessed',
-                    'skipped', 'errors', 'last', 'auto_match_suggestions', 'fatal')}})
+    """DB-derived progress — readable from ANY worker and accurate after a
+    recycle (unlike the old per-worker in-memory dict). 'remaining' counts
+    unpaired docs not yet stamped; 'done' is true when the queue is drained."""
+    from sqlalchemy import func as _func
+    base = _unpaired_docs_base_query(pid)
+    total = base.count()
+    remaining = base.filter(DocUpload.reprocessed_at.is_(None)).count()
+    last_at = (base.filter(DocUpload.reprocessed_at.isnot(None))
+               .with_entities(_func.max(DocUpload.reprocessed_at)).scalar())
+    processed = total - remaining
+    # "active" heuristic: a doc was stamped within the last 90s → a worker is
+    # almost certainly still churning. Survives the status hitting a different
+    # worker than the one running the job.
+    active = False
+    secs_since = None
+    if last_at is not None:
+        try:
+            secs_since = (datetime.utcnow() - last_at).total_seconds()
+            active = secs_since < 90 and remaining > 0
+        except Exception:
+            pass
+    mem = _REPROCESS.get(pid) or {}
+    return jsonify({
+        "exists": total > 0 or processed > 0,
+        "total": total, "processed": processed, "remaining": remaining,
+        "done": remaining == 0 and total >= 0,
+        "active": active or bool(mem.get('running')),
+        "last_stamp_age_s": round(secs_since) if secs_since is not None else None,
+        # best-effort live detail from whichever worker happens to serve this:
+        "running": bool(mem.get('running')), "errors": mem.get('errors'),
+        "reprocessed": mem.get('reprocessed'), "last": mem.get('last'),
+        "auto_match_suggestions": mem.get('auto_match_suggestions'),
+        "fatal": mem.get('fatal'),
+    })
 
 
 @app.template_filter("pct")
@@ -20568,6 +20631,11 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
                 "ALTER TABLE doc_upload "
                 "  ADD COLUMN IF NOT EXISTS trash_meta TEXT",
+                # 2026-06-15 — resumable background re-OCR. Stamped per doc by
+                # the reprocess-unpaired worker so the queue drains and the job
+                # survives a worker recycle (progress = row state, not memory).
+                "ALTER TABLE doc_upload "
+                "  ADD COLUMN IF NOT EXISTS reprocessed_at TIMESTAMP",
                 # 2026-06-11 — historical FX rate cache for foreign receipts.
                 """CREATE TABLE IF NOT EXISTS fx_rate (
                      id         SERIAL PRIMARY KEY,

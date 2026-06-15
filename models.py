@@ -898,6 +898,14 @@ class DocUpload(db.Model):
     deleted_at = db.Column(db.DateTime, nullable=True)
     trash_meta = db.Column(db.Text, nullable=True)
 
+    # Background re-OCR bookkeeping (2026-06-15): the reprocess-unpaired job
+    # stamps this each time it (re-)runs Veryfi on the doc — on success AND on
+    # OCR failure/skip, so the queue always drains. The worker selects docs
+    # where this is NULL, which makes the job resumable: a Render worker
+    # recycle no longer restarts from zero, and progress is readable from any
+    # worker (it's row state, not the old per-worker in-memory dict).
+    reprocessed_at = db.Column(db.DateTime, nullable=True)
+
     # Type-specific identifier (added 2026-04-30): Invoice #, PO #, Tax
     # ID (EIN/SSN), Policy #, etc. Pre-populated from Veryfi's
     # invoice_number / purchase_order_number / tax_id fields when
