@@ -16,7 +16,8 @@ import logging
 from datetime import datetime
 from sqlalchemy.orm import attributes
 
-from models import db, Budget, BudgetLine, Transaction, ProjectSheet, DocUpload
+from models import (db, Budget, BudgetLine, Transaction, ProjectSheet, DocUpload,
+                    MatchRejection)
 
 log = logging.getLogger(__name__)
 
@@ -703,6 +704,10 @@ def run_auto_match(project_id):
         Transaction.source.in_(('qbo_sync', 'csv_import')),
         Transaction.doc_upload_id.isnot(None)).all() if t.doc_upload_id}
 
+    # User-rejected pairs ("Not a match") — never propose these again.
+    rejected_pairs = {(r.transaction_id, r.doc_upload_id) for r in
+                      MatchRejection.query.filter_by(project_id=project_id).all()}
+
     # Pre-parse dates once.
     q_rows = []
     for q in qbo_unmatched:
@@ -736,6 +741,8 @@ def run_auto_match(project_id):
             for d, d_dt in d_rows:
                 inspected += 1
                 if d.doc_upload_id in taken_docs:
+                    continue
+                if (q.id, d.doc_upload_id) in rejected_pairs:
                     continue
                 if abs(float(d.amount) - float(q.amount)) > 0.01:
                     continue
@@ -789,6 +796,8 @@ def run_auto_match(project_id):
             best, best_score = None, 0.0
             for d, d_dt in d_rows:
                 if d.doc_upload_id in taken_docs:
+                    continue
+                if (q.id, d.doc_upload_id) in rejected_pairs:
                     continue
                 dv, qv = float(d.amount), float(q.amount)
                 if dv <= 0:
@@ -887,18 +896,28 @@ def confirm_match(qbo_transaction_id):
     return {'transaction_id': q.id, 'merged_doc_txn': sister.id if sister else None}
 
 
-def dismiss_suggestion(transaction_id):
-    """User rejected the auto-matcher's suggestion. Clears the match
-    pointers without deleting the suggestion log."""
+def dismiss_suggestion(transaction_id, remember=True, user_id=None):
+    """User rejected the auto-matcher's suggestion ("Not a match"). Clears the
+    match pointers and — when remember=True — records the rejected pair so
+    run_auto_match never proposes this charge↔receipt pairing again. Without
+    that persistence the next auto-match run just re-suggested it."""
     t = Transaction.query.get(transaction_id)
     if not t:
         raise ValueError(f"transaction {transaction_id} not found")
+    rejected_doc = t.doc_upload_id
+    if remember and rejected_doc:
+        exists = (MatchRejection.query
+                  .filter_by(transaction_id=t.id, doc_upload_id=rejected_doc).first())
+        if not exists:
+            db.session.add(MatchRejection(
+                project_id=t.project_id, transaction_id=t.id,
+                doc_upload_id=rejected_doc, created_by=user_id))
     t.doc_upload_id    = None
     t.match_status     = 'unmatched'
     t.match_confidence = None
     t.updated_at       = datetime.utcnow()
     db.session.commit()
-    return {'transaction_id': t.id}
+    return {'transaction_id': t.id, 'rejected_doc_upload_id': rejected_doc if remember else None}
 
 
 _NON_LEDGER_DOC_TYPES = {'tax_form', 'contract', 'release', 'legal', 'insurance',

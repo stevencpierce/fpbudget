@@ -1175,3 +1175,22 @@ class FxRate(db.Model):
     __table_args__ = (
         db.UniqueConstraint('date', 'currency', name='uq_fx_rate_date_ccy'),
     )
+
+
+# ── Persistent "not a match" rejections (2026-06-15) ───────────────────
+# When the user clicks "Not a match" on a suggested receipt↔charge pairing,
+# we remember it here so run_auto_match never proposes that exact pair again.
+# Without this the matcher re-suggested dismissed pairs on every run, which is
+# why rejected matches kept reappearing. Keyed by (transaction_id of the bank
+# charge, doc_upload_id of the receipt) — both stable identities.
+class MatchRejection(db.Model):
+    __tablename__ = "match_rejection"
+    id             = db.Column(db.Integer, primary_key=True)
+    project_id     = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
+    transaction_id = db.Column(db.Integer, nullable=False)   # the bank/QBO charge
+    doc_upload_id  = db.Column(db.Integer, nullable=False)    # the receipt
+    created_at     = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by     = db.Column(db.Integer, nullable=True)
+    __table_args__ = (
+        db.UniqueConstraint('transaction_id', 'doc_upload_id', name='uq_match_rejection_pair'),
+    )

@@ -8517,11 +8517,15 @@ def actuals_confirm_match(pid, tid):
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/dismiss-suggestion", methods=["POST"])
 @login_required
 def actuals_dismiss_suggestion(pid, tid):
-    """User rejects the auto-matcher's suggestion."""
+    """User marks the auto-matcher's suggestion as 'Not a match'. Separates the
+    pair AND remembers the rejection so it's never re-suggested. (Pass
+    remember=0 to just unlink without remembering.)"""
     txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    body = request.get_json(silent=True) or {}
+    remember = str(body.get('remember', '1')).lower() not in ('0', 'false', 'no')
     from actuals import dismiss_suggestion
     try:
-        result = dismiss_suggestion(tid)
+        result = dismiss_suggestion(tid, remember=remember, user_id=current_user.id)
         try:
             _label = (txn.vendor or f'Txn #{txn.id}')[:80]
             _log_activity(
@@ -8529,7 +8533,8 @@ def actuals_dismiss_suggestion(pid, tid):
                 entity_id=txn.id, entity_label=_label,
                 project_id=pid,
                 after={'match_status': 'unmatched'},
-                note=f'Dismissed suggested match for {_label}')
+                note=(f'Not a match: {_label} — won\'t be re-suggested' if remember
+                      else f'Dismissed suggested match for {_label}'))
         except Exception: pass
         return jsonify({"ok": True, **result})
     except ValueError as e:
@@ -20636,6 +20641,17 @@ def _web_worker_essential_columns():
                 # survives a worker recycle (progress = row state, not memory).
                 "ALTER TABLE doc_upload "
                 "  ADD COLUMN IF NOT EXISTS reprocessed_at TIMESTAMP",
+                # 2026-06-15 — persistent "not a match" rejections so the
+                # auto-matcher never re-suggests a pair the user rejected.
+                """CREATE TABLE IF NOT EXISTS match_rejection (
+                     id             SERIAL PRIMARY KEY,
+                     project_id     INTEGER NOT NULL,
+                     transaction_id INTEGER NOT NULL,
+                     doc_upload_id  INTEGER NOT NULL,
+                     created_at     TIMESTAMP,
+                     created_by     INTEGER,
+                     CONSTRAINT uq_match_rejection_pair UNIQUE (transaction_id, doc_upload_id)
+                   )""",
                 # 2026-06-11 — historical FX rate cache for foreign receipts.
                 """CREATE TABLE IF NOT EXISTS fx_rate (
                      id         SERIAL PRIMARY KEY,
