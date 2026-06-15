@@ -1604,9 +1604,15 @@
                 {# Working: own po_id, no lookup needed. #}
                 {% set _eff_po_id = ln.po_id %}
               {% else %}
-                {# Estimated: mirror the Working sister by
-                   (account_code, sort_order). #}
-                {% set _eff_po_id = working_po_by_key.get((ln.account_code, ln.sort_order)) %}
+                {# Estimated: the clicked line stores its own po_id
+                   (line_assign_po writes it on the line that was
+                   clicked, including Estimated rows), so honor that
+                   first and only fall back to the Working sister match
+                   by (account_code, sort_order). Without the own-id
+                   read, an Estimated assignment was invisible whenever
+                   no Working sister existed or the sort_order had
+                   drifted after a schedule re-sort. #}
+                {% set _eff_po_id = ln.po_id or working_po_by_key.get((ln.account_code, ln.sort_order)) %}
               {% endif %}
               {% set _po = pos_by_id.get(_eff_po_id) if _eff_po_id else None %}
               {% set _hint = ' (saves to Working + Actuals)' if not (is_working_view and not is_actual_view) else '' %}
