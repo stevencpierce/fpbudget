@@ -2091,6 +2091,15 @@ def _source_drain_worker(flask_app, pid, src_path, user_id, include_amt):
                         import gc as _gc; _gc.collect()
                     except Exception:
                         pass
+            # All receipts imported — run the matcher once so they get paired
+            # with open bank charges without a manual ⚡ Auto-Match. (2026-06-11.)
+            if prog.get('imported'):
+                try:
+                    from actuals import run_auto_match
+                    _am = run_auto_match(pid)
+                    prog['auto_match_suggestions'] = _am.get('suggestions')
+                except Exception as _ame:
+                    prog['errors'].append('automatch:' + type(_ame).__name__)
         except Exception as _we:
             prog['errors'].append('worker:' + type(_we).__name__)
         finally:
@@ -23286,6 +23295,17 @@ def actuals_import_bank_csv(pid):
                     created_via_user_id=getattr(current_user, 'id', None)))
             db.session.commit()
             report["created"] = len(importable)
+            # Auto-run the matcher so the freshly-imported charges get paired
+            # with open receipts immediately — previously suggestions only
+            # appeared after a manual ⚡ Auto-Match click. (User 2026-06-11.)
+            try:
+                from actuals import run_auto_match
+                _am = run_auto_match(pid)
+                report["auto_match"] = {"suggestions": _am.get("suggestions"),
+                                        "qbo_unmatched": _am.get("qbo_unmatched"),
+                                        "doc_open": _am.get("doc_open")}
+            except Exception as _ame:
+                report["auto_match_error"] = type(_ame).__name__
         except Exception as e:
             db.session.rollback()
             report["errors"].append(str(e))
