@@ -102,7 +102,7 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     SupportContact, ProjectUnion, ProjectClient, CallSheetSend, CallSheetRecipient,
                     BudgetDirectContact, CompanySettings, DocUpload, CatalogItem,
                     TravelDetail, CateringBill, ActivityLog,
-                    SubBudget, SubBudgetLine, EstimateShare)
+                    SubBudget, SubBudgetLine, EstimateShare, FxRate)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -17340,6 +17340,159 @@ def currency_filter(v):
         return "$0.00"
 
 
+# ── Foreign-currency → USD conversion (2026-06-11) ─────────────────────────
+# Receipts in CNY/KRW/GBP/EUR/… are converted to USD using the rate on the
+# receipt's date, from frankfurter.dev (ECB data; free; no key). Rates cached
+# in fx_rate (immutable historical facts). All best-effort: on any failure the
+# caller keeps the original amount and flags the doc for manual review.
+_FX_ALIASES = {
+    'RMB': 'CNY', 'YUAN': 'CNY', '元': 'CNY', '￥': 'CNY', '¥': 'CNY',
+    '£': 'GBP', 'GBP£': 'GBP', '€': 'EUR', 'EU': 'EUR', '₩': 'KRW', 'WON': 'KRW',
+    'US$': 'USD', 'US': 'USD', '$': 'USD', 'USD$': 'USD',
+}
+# Currencies frankfurter/ECB publishes (the ones we can auto-convert).
+_FX_SUPPORTED = {'USD', 'EUR', 'GBP', 'CNY', 'KRW', 'JPY', 'CAD', 'AUD', 'CHF',
+                 'HKD', 'SGD', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'MXN', 'NZD',
+                 'ZAR', 'BRL', 'INR', 'IDR', 'ILS', 'MYR', 'PHP', 'THB', 'TRY',
+                 'HUF', 'RON', 'ISK', 'BGN'}
+
+
+def _normalize_ccy(c):
+    if not c:
+        return None
+    c = str(c).strip().upper()
+    return _FX_ALIASES.get(c, c)
+
+
+def _usd_rate_for(currency, date_str):
+    """USD value of 1 unit of `currency` on date_str (YYYY-MM-DD). Cached in
+    fx_rate. Returns float or None (unsupported / no date / fetch failed)."""
+    cur = _normalize_ccy(currency)
+    if cur == 'USD':
+        return 1.0
+    if not cur or cur not in _FX_SUPPORTED or not date_str:
+        return None
+    d = str(date_str)[:10]
+    if len(d) != 10:
+        return None
+    row = FxRate.query.filter_by(date=d, currency=cur).first()
+    if row:
+        return float(row.usd_rate)
+    try:
+        import requests as _rq
+        r = _rq.get(f"https://api.frankfurter.dev/v1/{d}",
+                    params={"base": cur, "symbols": "USD"}, timeout=8)
+        if r.status_code != 200:
+            return None
+        rate = (r.json().get("rates") or {}).get("USD")
+        if rate is None:
+            return None
+        try:
+            db.session.add(FxRate(date=d, currency=cur, usd_rate=rate))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        return float(rate)
+    except Exception as _e:
+        logging.warning(f"[fx] rate fetch failed {cur} {d}: {type(_e).__name__}")
+        return None
+
+
+def _convert_to_usd(amount, currency, date_str):
+    """(usd_amount, rate, normalized_ccy). usd_amount/rate are None when the
+    currency is non-USD but unconvertible (caller keeps the original + flags)."""
+    cur = _normalize_ccy(currency)
+    try:
+        amt = float(amount)
+    except (TypeError, ValueError):
+        return (None, None, cur)
+    if cur is None or cur == 'USD':
+        return (round(amt, 2), 1.0, 'USD')
+    rate = _usd_rate_for(cur, date_str)
+    if rate is None:
+        return (None, None, cur)
+    return (round(amt * rate, 2), rate, cur)
+
+
+@app.route("/admin/docs/project/<int:pid>/convert-foreign", methods=["POST"])
+@login_required
+def admin_docs_convert_foreign(pid):
+    """Convert existing foreign-currency receipts to USD using each receipt's
+    OCR currency + total and the FX rate on its date. Sets original_amount /
+    original_currency, rewrites amount to USD, and updates the linked Actuals
+    transaction. Skips docs already converted (original_currency set). Dry-run by
+    default; ?apply=1 to write. Body/params: limit (default 500). (User
+    2026-06-11.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    body = request.get_json(silent=True) or {}
+    apply = (request.args.get('apply') == '1') or bool(body.get('apply'))
+    try:
+        limit = max(1, min(int(body.get('limit') or request.args.get('limit') or 500), 2000))
+    except (TypeError, ValueError):
+        limit = 500
+    import json as _json
+    rows = (DocUpload.query
+            .filter(DocUpload.project_id == pid,
+                    DocUpload.status != 'deleted',
+                    DocUpload.original_currency.is_(None),   # not yet converted
+                    DocUpload.veryfi_data.isnot(None))
+            .all())
+    converted, skipped, unconvertible, errors = 0, 0, [], []
+    sample = []
+    by_ccy = {}
+    for d in rows:
+        try:
+            vr = _json.loads(d.veryfi_data) if d.veryfi_data else {}
+        except Exception:
+            vr = {}
+        ccy = _normalize_ccy(vr.get('currency_code'))
+        if not ccy or ccy == 'USD':
+            skipped += 1
+            continue
+        try:
+            foreign_total = float(vr.get('total'))
+        except (TypeError, ValueError):
+            unconvertible.append({"id": d.id, "reason": "no OCR total", "ccy": ccy})
+            continue
+        date_str = (d.doc_date.isoformat() if d.doc_date else (vr.get('date') or '')[:10]) or None
+        usd, rate, _ = _convert_to_usd(foreign_total, ccy, date_str)
+        by_ccy[ccy] = by_ccy.get(ccy, 0) + 1
+        if usd is None:
+            unconvertible.append({"id": d.id, "ccy": ccy, "amount": foreign_total,
+                                  "reason": ("no date" if not date_str else "rate unavailable")})
+            continue
+        if len(sample) < 25:
+            sample.append({"id": d.id, "vendor": d.vendor,
+                           "from": f"{foreign_total:,.2f} {ccy}", "to_usd": usd,
+                           "rate": rate, "date": date_str})
+        if apply:
+            try:
+                d.original_amount = round(foreign_total, 2)
+                d.original_currency = ccy
+                d.amount = usd
+                d.note = ((d.note + ' | ') if (d.note or '').strip() else '') + \
+                    f"Converted {foreign_total:,.2f} {ccy} → ${usd:,.2f} @ {rate:.5f} on {date_str}"
+                # Keep the linked Actuals transaction(s) in USD too.
+                (Transaction.query
+                 .filter_by(doc_upload_id=d.id)
+                 .update({"amount": usd}, synchronize_session=False))
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                errors.append(f"#{d.id}: {type(e).__name__}")
+                continue
+        converted += 1
+    return jsonify({"dry": (not apply), "applied": apply,
+                    "convertible": converted, "skipped_usd_or_none": skipped,
+                    "unconvertible_count": len(unconvertible),
+                    "by_currency": by_ccy,
+                    "sample": sample, "unconvertible": unconvertible[:25],
+                    "errors": errors[:25]})
+
+
 @app.template_filter("pct")
 def pct_filter(v):
     try:
@@ -20258,6 +20411,15 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
                 "ALTER TABLE doc_upload "
                 "  ADD COLUMN IF NOT EXISTS trash_meta TEXT",
+                # 2026-06-11 — historical FX rate cache for foreign receipts.
+                """CREATE TABLE IF NOT EXISTS fx_rate (
+                     id         SERIAL PRIMARY KEY,
+                     date       VARCHAR(10) NOT NULL,
+                     currency   VARCHAR(8)  NOT NULL,
+                     usd_rate   NUMERIC(18,8) NOT NULL,
+                     fetched_at TIMESTAMP,
+                     CONSTRAINT uq_fx_rate_date_ccy UNIQUE (date, currency)
+                   )""",
                 # 2026-05-30 — last 4 of the card / bank account a charge was
                 # made on. Captured from Veryfi OCR, user-editable, sortable
                 # in Docs + Actuals. Mirrored onto transaction for the
@@ -20802,6 +20964,28 @@ def docs_upload_post(pid):
     from fp_analyzer import extract_card_last4 as _extract_card4
     card_last4 = _extract_card4(vr) if vr else None
 
+    # Foreign-currency receipts → convert to USD by the receipt's date so the
+    # ledger + matching use USD. Original foreign figure is kept; if conversion
+    # isn't possible (unsupported currency / no date / fetch fail) we keep the
+    # original amount and flag a note. (User 2026-06-11.)
+    fx_original_amount = None
+    fx_original_currency = None
+    fx_note = None
+    if vr and amount is not None:
+        _ccy = _normalize_ccy(vr.get("currency_code"))
+        if _ccy and _ccy != 'USD':
+            fx_original_amount = amount
+            fx_original_currency = _ccy
+            _usd, _rate, _ = _convert_to_usd(amount, _ccy,
+                                             doc_date.isoformat() if doc_date else None)
+            if _usd is not None:
+                fx_note = (f"Converted {fx_original_amount:,.2f} {_ccy} → "
+                           f"${_usd:,.2f} @ {_rate:.5f} on {doc_date}")
+                amount = _usd
+            else:
+                fx_note = (f"Foreign receipt ({_ccy}) — auto-conversion unavailable; "
+                           f"amount is still {_ccy}, set USD manually")
+
     # Late-stage duplicate re-check. Catches the race where two parallel
     # POSTs for the same file both pass the pre-analysis duplicate query
     # (because neither has committed yet), then both file to Dropbox.
@@ -20831,7 +21015,10 @@ def docs_upload_post(pid):
         status=upload_status,
         veryfi_data=_json.dumps(vr) if vr else None,
         vendor=vendor_name,
-        amount=amount,
+        amount=amount,                       # USD (converted if foreign)
+        original_amount=fx_original_amount,  # foreign figure, if any
+        original_currency=fx_original_currency,
+        note=fx_note,
         doc_date=doc_date,
         doc_number=doc_number,
         card_last4=card_last4,

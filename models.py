@@ -1150,3 +1150,20 @@ class EstimateShare(db.Model):
         db.Index('ix_estimate_share_project', 'project_id'),
         db.Index('ix_estimate_share_budget', 'budget_id'),
     )
+
+
+# ── Historical FX rate cache (2026-06-11) ──────────────────────────────
+# Foreign-currency receipts (CNY/KRW/GBP/EUR/…) are converted to USD using
+# the rate on the receipt's date, pulled from frankfurter.dev (ECB data,
+# free, no key). Rates are immutable historical facts, so we cache them by
+# (date, currency) and never re-fetch. usd_rate = USD value of 1 unit.
+class FxRate(db.Model):
+    __tablename__ = "fx_rate"
+    id         = db.Column(db.Integer, primary_key=True)
+    date       = db.Column(db.String(10), nullable=False)   # YYYY-MM-DD (rate date requested)
+    currency   = db.Column(db.String(8),  nullable=False)   # ISO base, e.g. CNY
+    usd_rate   = db.Column(db.Numeric(18, 8), nullable=False)
+    fetched_at = db.Column(db.DateTime, default=datetime.utcnow)
+    __table_args__ = (
+        db.UniqueConstraint('date', 'currency', name='uq_fx_rate_date_ccy'),
+    )
