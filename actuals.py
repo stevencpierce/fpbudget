@@ -767,6 +767,51 @@ def run_auto_match(project_id):
     # vendor name (e.g. "SQ *CASA VIDEO"); surfaced as a suggestion to confirm.
     # (User 2026-06-02.)
     _pass(lambda v, g: g <= 5, "amt+date")
+
+    # Pass 3 — TIP-tolerant. A card charge routinely exceeds the receipt by a
+    # tip (restaurants, rideshare): receipt $40.00 → card $48.00. Passes 1-2
+    # gate amount to the exact penny and miss every one of these. Here the
+    # charge must be the SAME vendor, within +30% of and not below the receipt,
+    # and within 2 days. Lower confidence (amount isn't exact) so it sorts below
+    # exact matches and reads as "eyeball me". (User 2026-06-11.)
+    def _pass_tip():
+        nonlocal suggestions, inspected
+        for q, q_dt in q_rows:
+            if q.match_status == 'suggested':
+                continue
+            best, best_score = None, 0.0
+            for d, d_dt in d_rows:
+                if d.doc_upload_id in taken_docs:
+                    continue
+                dv, qv = float(d.amount), float(q.amount)
+                if dv <= 0:
+                    continue
+                ratio = qv / dv
+                if ratio < 1.0 or ratio > 1.30:        # charge ≥ receipt, ≤ +30%
+                    continue
+                day_gap = abs((d_dt - q_dt).days)
+                if day_gap > 2:
+                    continue
+                inspected += 1
+                vendor_score = _vendor_similarity(q.vendor, d.vendor)
+                if vendor_score < 0.45:                 # same vendor required here
+                    continue
+                tip_close = max(0.0, 1.0 - (ratio - 1.0) / 0.30)   # 1.0 exact → 0 at +30%
+                # Confidence band ~0.45–0.62: clearly below exact matches.
+                score = 0.45 + 0.10 * vendor_score + 0.07 * tip_close
+                if score > best_score:
+                    best_score, best = score, d
+            if best:
+                q.doc_upload_id    = best.doc_upload_id
+                q.match_status     = 'suggested'
+                q.match_confidence = round(best_score, 3)
+                q.updated_at       = datetime.utcnow()
+                taken_docs.add(best.doc_upload_id)
+                suggestions += 1
+                log.info(f"[actuals automatch:tip] txn #{q.id} ({q.vendor!r}, "
+                         f"${q.amount}) → doc #{best.doc_upload_id} "
+                         f"(receipt ${best.amount}), score={best_score:.3f}")
+    _pass_tip()
     db.session.commit()
     log.info(
         f"[actuals automatch] project #{project_id}: {suggestions} suggestions "
