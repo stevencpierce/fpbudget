@@ -14596,8 +14596,10 @@ def line_assign_po(pid, bid, lid):
                           project's current Working budget
     Then writes po_id on the Working sister AND on every Actual clone
     of that Working line (so PO rollups stay consistent without
-    requiring a re-clone). The Estimated line itself doesn't carry
-    po_id — it inherits read-only via the same key match.
+    requiring a re-clone). The clicked line — including an Estimated
+    one — also stores its own po_id (see below), so its badge renders
+    from its own value and falls back to the Working sister key match
+    only when its own po_id is unset.
 
     Net effect for the user: clicking the +PO badge in any view
     edits the project-wide assignment, and the badge re-renders
