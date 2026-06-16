@@ -10398,6 +10398,123 @@ def admin_backup_transactions():
                     "count": len(out), "transactions": out})
 
 
+@app.route("/admin/coa-audit", methods=["GET", "POST"])
+@login_required
+@super_admin_required
+def admin_coa_audit():
+    """Find + fix chart-of-account drift left by the 2026-04 renumber (which
+    rewrote budget_line codes but NOT the denormalized account_code /
+    account_code_name copied onto each Transaction). GET = read-only report
+    (open it in the browser). POST ?fix=txn_resync&apply=1 = re-sync every
+    coded transaction's account_code + name from its linked budget line (the
+    migrated source of truth). Optional ?project=<pid> to scope. Snapshot via
+    /admin/backup/transactions.json first if you want a restore point.
+    (User 2026-06-16 — 'no leftover ghosts from earlier codes'.)"""
+    from budget_calc import COA_LEGACY_MAPPING
+    _current_starts = {s for s, _ in FP_COA_SECTIONS}
+    pid = request.args.get('project', type=int)
+
+    def _line_name(ln):
+        return (getattr(ln, 'account_name', None)
+                or getattr(ln, 'description', None) or '')
+
+    # ── Transactions whose denormalized code/name disagree with their line.
+    tq = Transaction.query.filter(Transaction.budget_line_id.isnot(None))
+    if pid:
+        tq = tq.filter(Transaction.project_id == pid)
+    txns = tq.all()
+    line_ids = {t.budget_line_id for t in txns if t.budget_line_id}
+    lines = {l.id: l for l in BudgetLine.query.filter(BudgetLine.id.in_(line_ids)).all()} if line_ids else {}
+    txn_drift, txn_samples = 0, []
+    to_fix = []
+    for t in txns:
+        ln = lines.get(t.budget_line_id)
+        if not ln:
+            continue
+        want_code = ln.account_code
+        want_name = _line_name(ln)
+        if t.account_code != want_code or (t.account_code_name or '') != (want_name or ''):
+            txn_drift += 1
+            to_fix.append((t, want_code, want_name))
+            if len(txn_samples) < 25:
+                txn_samples.append({
+                    "txn_id": t.id, "project_id": t.project_id, "vendor": t.vendor,
+                    "txn_code": t.account_code, "txn_name": t.account_code_name,
+                    "line_code": want_code, "line_name": want_name,
+                    "txn_section": _section_name(_section_for_code(t.account_code)) if t.account_code is not None else None,
+                    "line_section": _section_name(_section_for_code(want_code)) if want_code is not None else None,
+                })
+
+    # ── Budget lines whose stored name doesn't match the section its code
+    # falls in (un-migrated sub-codes / mis-coded lines — human review).
+    lq = BudgetLine.query
+    if pid:
+        from sqlalchemy import exists as _exists
+        lq = lq.join(Budget, Budget.id == BudgetLine.budget_id).filter(Budget.project_id == pid)
+    _valid_names = {n.strip().lower(): s for s, n in FP_COA_SECTIONS}
+    line_drift, line_samples = 0, []
+    for ln in lq.all():
+        if ln.account_code is None:
+            continue
+        nm = (_line_name(ln) or '').strip().lower()
+        sec_name = _section_name(_section_for_code(ln.account_code))
+        if nm in _valid_names and nm != (sec_name or '').strip().lower():
+            line_drift += 1
+            if len(line_samples) < 25:
+                line_samples.append({
+                    "line_id": ln.id, "budget_id": ln.budget_id,
+                    "code": ln.account_code, "name": _line_name(ln),
+                    "code_section": sec_name})
+
+    # ── Section-only transactions (no line) carrying a legacy-only code.
+    sq = Transaction.query.filter(Transaction.budget_line_id.is_(None),
+                                  Transaction.account_code.isnot(None))
+    if pid:
+        sq = sq.filter(Transaction.project_id == pid)
+    legacy_only = 0
+    for t in sq.all():
+        if t.account_code in COA_LEGACY_MAPPING and t.account_code not in _current_starts:
+            legacy_only += 1
+
+    report = {
+        "scope": ("project " + str(pid)) if pid else "ALL projects",
+        "txn_code_name_drift": txn_drift,
+        "txn_samples": txn_samples,
+        "budget_line_section_mismatch": line_drift,
+        "line_samples": line_samples,
+        "section_only_legacy_code_txns": legacy_only,
+        "note": ("GET is read-only. To repair the transaction drift, POST "
+                 "this URL with ?fix=txn_resync&apply=1 — it copies each "
+                 "transaction's account_code + name from its linked budget "
+                 "line. Budget-line mismatches are listed for manual review "
+                 "(the right fix depends on whether the code or the name is "
+                 "correct)."),
+    }
+
+    if request.method == "POST" and request.args.get('fix') == 'txn_resync':
+        if request.args.get('apply') != '1':
+            report["dry_run"] = True
+            report["would_fix"] = txn_drift
+            return jsonify(report)
+        fixed = 0
+        for t, want_code, want_name in to_fix:
+            t.account_code = want_code
+            t.account_code_name = want_name or None
+            fixed += 1
+        db.session.commit()
+        try:
+            _log_activity(action='update', entity_type='coa_audit', entity_id=pid or 0,
+                          entity_label='COA txn re-sync', project_id=pid,
+                          note=f'Re-synced {fixed} transaction account codes from their budget lines')
+        except Exception:
+            pass
+        report["applied"] = True
+        report["txns_fixed"] = fixed
+        return jsonify(report)
+
+    return jsonify(report)
+
+
 @app.route("/e/<token>", methods=["GET"])
 def estimate_portal(token):
     """PUBLIC (no login): client-facing estimate review/approval page."""
