@@ -242,8 +242,19 @@
   <button class="btn-upload-all" id="btnUploadAll" disabled onclick="uploadAll()">Upload All</button>
 
   <!-- History -->
-  <div class="section-title" style="display:flex;align-items:center;justify-content:space-between">
+  <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
     <span>Previously Uploaded</span>
+    <span style="display:flex;align-items:center;gap:8px;margin-left:auto">
+    {# Re-scan all receipts for fuzzy duplicates (same amount + close date +
+       similar vendor) — catches same-receipt-different-file dupes the upload
+       byte-hash misses. Flags them into the existing keep/confirm review.
+       (User 2026-06-16.) #}
+    <button type="button" id="btn-scan-dupes" onclick="scanReceiptDuplicates()"
+            style="font-size:11px;padding:4px 10px;border-radius:6px;
+                   background:#15203a;color:#9bc0ff;border:1px solid #2d4a7a;cursor:pointer"
+            title="Scan every receipt for duplicates by amount → date → vendor and flag them for review">
+      🔍 Scan for duplicates
+    </button>
     {# Super-admin testing tool: wipe every DocUpload for this project and
        move its Dropbox file to /_TRASH/{date}_{slug}/. For clean-start
        iteration during development. Double-confirmed + server-gated by
@@ -256,6 +267,7 @@
       🗑 Wipe all receipts (test)
     </button>
     {% endif %}
+    </span>
   </div>
   <div class="history-list" id="historyList">
     {% if uploads %}
@@ -464,6 +476,31 @@ if (_wipeBtn) {
       _wipeBtn.textContent = '🗑 Wipe all receipts (test)';
     }
   });
+}
+
+// Re-scan all receipts for fuzzy duplicates (amount → date → vendor). Dry-run
+// first to show the count, then flag for review on confirm. (User 2026-06-16.)
+async function scanReceiptDuplicates() {
+  const btn = document.getElementById('btn-scan-dupes');
+  if (!btn) return;
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = '⏳ Scanning…';
+  try {
+    const dry = await (await fetch(`/docs/${PROJECT_ID}/scan-receipt-duplicates`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
+    if (dry.error) { alert('Scan failed: ' + dry.error); return; }
+    if (!dry.flagged) { alert('No new duplicates found (matching by amount, then date, then vendor).'); return; }
+    if (!confirm(`Found ${dry.flagged} possible duplicate${dry.flagged !== 1 ? 's' : ''} across ${dry.groups} group${dry.groups !== 1 ? 's' : ''} — same amount, within a few days, similar vendor.\n\nFlag them for review? Nothing is deleted — each gets a "possible duplicate" tag and you keep or confirm it below.`)) return;
+    btn.textContent = '⏳ Flagging…';
+    const ap = await (await fetch(`/docs/${PROJECT_ID}/scan-receipt-duplicates?apply=1`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
+    if (ap.error) { alert('Flagging failed: ' + ap.error); return; }
+    alert(`Flagged ${ap.flagged} receipt${ap.flagged !== 1 ? 's' : ''} as possible duplicates. They're tagged for review in the list below.`);
+    location.reload();
+  } catch (e) {
+    alert('Scan error: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
 }
 
 let queue = []; // {file, id, status, thumbUrl}

@@ -22117,6 +22117,92 @@ def docs_scan_person_duplicates(pid):
                     "flagged": len(flagged), "sample": flagged[:25]})
 
 
+@app.route("/docs/<int:pid>/scan-receipt-duplicates", methods=["POST"])
+@login_required
+def docs_scan_receipt_duplicates(pid):
+    """Fuzzy duplicate scan for receipts/invoices — catches the SAME receipt
+    saved as a different file (re-scan, screenshot vs PDF), which the byte-hash
+    check on upload misses. Grouping priority per user 2026-06-16: amount first
+    (most reliable OCR field), then date (within ±date_window days), then vendor
+    similarity as corroboration (allowed to be blank/loose since vendor OCR is
+    least reliable). Lowest-id kept as the original; the rest flagged
+    is_duplicate=True (pending review) so they surface in the existing
+    keep/confirm duplicate UI. Dry-run by default; ?apply=1 writes.
+    (No perceptual image hashing yet — amount+date+vendor only.)"""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden"}), 403
+    ProjectSheet.query.get_or_404(pid)
+    body = request.get_json(silent=True) or {}
+    apply = (request.args.get('apply') == '1') or bool(body.get('apply'))
+    try:
+        date_window = max(0, int(body.get('date_window') or request.args.get('date_window') or 3))
+    except (TypeError, ValueError):
+        date_window = 3
+    from actuals import _vendor_similarity
+    rows = (DocUpload.query
+            .filter(DocUpload.project_id == pid,
+                    DocUpload.category.in_(('receipt', 'invoice')),
+                    DocUpload.status.notin_(('duplicate', 'deleted')),
+                    DocUpload.is_duplicate == False,        # noqa: E712
+                    DocUpload.amount.isnot(None))
+            .all())
+    # Primary key: exact amount (to the cent).
+    by_amt = {}
+    for d in rows:
+        try:
+            by_amt.setdefault(round(float(d.amount), 2), []).append(d)
+        except (TypeError, ValueError):
+            continue
+    flagged, groups_out = [], []
+    for amt, grp in by_amt.items():
+        if len(grp) < 2:
+            continue
+        grp.sort(key=lambda x: x.id)
+        used = set()
+        for i, a in enumerate(grp):
+            if a.id in used:
+                continue
+            cluster = [a]
+            for b in grp[i + 1:]:
+                if b.id in used:
+                    continue
+                # Secondary: date proximity (both dated → within window; if a
+                # date is missing, don't let that alone block the match).
+                close = True
+                if a.doc_date and b.doc_date:
+                    close = abs((a.doc_date - b.doc_date).days) <= date_window
+                # Tertiary: vendor corroboration (blank on either side = allow).
+                av, bv = (a.vendor or '').strip(), (b.vendor or '').strip()
+                vok = (not av or not bv) or _vendor_similarity(av, bv) >= 0.40
+                if close and vok:
+                    cluster.append(b)
+                    used.add(b.id)
+            if len(cluster) > 1:
+                used.add(a.id)
+                orig, dupes = cluster[0], cluster[1:]
+                _meta = lambda x: {"id": x.id,
+                                   "file": x.filed_filename or x.original_filename or f"Doc #{x.id}",
+                                   "vendor": x.vendor, "date": x.doc_date.isoformat() if x.doc_date else None}
+                groups_out.append({"amount": amt, "keeper": _meta(orig),
+                                   "dupes": [_meta(x) for x in dupes]})
+                for x in dupes:
+                    flagged.append({"id": x.id, "duplicate_of": orig.id})
+                    if apply:
+                        x.is_duplicate = True
+                        x.duplicate_of_id = orig.id
+    if apply and flagged:
+        db.session.commit()
+        try:
+            _log_activity(action='update', entity_type='doc_dup_scan', entity_id=pid,
+                          entity_label='Receipt duplicate scan', project_id=pid,
+                          note=f'Flagged {len(flagged)} possible receipt duplicate(s) in {len(groups_out)} group(s)')
+        except Exception:
+            pass
+    return jsonify({"dry": (not apply), "applied": apply,
+                    "groups": len(groups_out), "flagged": len(flagged),
+                    "date_window": date_window, "sample_groups": groups_out[:40]})
+
+
 def _apply_dup_resolution(upload, action):
     """Apply one keep/confirm decision to a flagged upload. Mutates the row
     (+ session: txn add/delete, Dropbox move) but does NOT commit — the
