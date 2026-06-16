@@ -9568,34 +9568,33 @@
     // /actuals/transaction/<tid>/upload-receipt which runs the full
     // analyzer pipeline + sets doc_upload_id WITHOUT creating a
     // duplicate doc-source Transaction.
+    // File-drag highlight that STAYS while hovering a row (User 2026-06-16).
+    // The old dragenter/dragleave depth-counting flickered the dashed box off
+    // as the cursor crossed the row's child cells. Instead, re-assert the
+    // outline on every dragover (fires continuously) and keep ONE highlighted
+    // row; clear it on drop / dragend.
+    let _fileHLRow = null;
+    function _setFileHL(row) {
+      if (_fileHLRow && _fileHLRow !== row) { _fileHLRow.style.outline = ''; _fileHLRow.style.outlineOffset = ''; }
+      row.style.outline = '2px dashed var(--blue)'; row.style.outlineOffset = '-2px';
+      _fileHLRow = row;
+    }
+    function _clearFileHL() { if (_fileHLRow) { _fileHLRow.style.outline = ''; _fileHLRow.style.outlineOffset = ''; _fileHLRow = null; } }
+    document.addEventListener('dragend', _clearFileHL);
+    const _isFileDrag = e => !!(e.dataTransfer && e.dataTransfer.types && Array.from(e.dataTransfer.types).includes('Files'));
     document.querySelectorAll('.actuals-txn-row').forEach(row => {
-      let fileEnter = 0;  // dragenter/leave fire per child; track depth
-      row.addEventListener('dragenter', e => {
-        // Only react to FILE drags; row-onto-COA drags don't carry
-        // dataTransfer.types containing 'Files'.
-        if (!e.dataTransfer || !e.dataTransfer.types) return;
-        if (!Array.from(e.dataTransfer.types).includes('Files')) return;
-        e.preventDefault();
-        fileEnter++;
-        row.style.outline = '2px dashed var(--blue)';
-        row.style.outlineOffset = '-2px';
-      });
+      row.addEventListener('dragenter', e => { if (!_isFileDrag(e)) return; e.preventDefault(); _setFileHL(row); });
       row.addEventListener('dragover', e => {
-        if (!e.dataTransfer || !e.dataTransfer.types) return;
-        if (!Array.from(e.dataTransfer.types).includes('Files')) return;
+        if (!_isFileDrag(e)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
-      });
-      row.addEventListener('dragleave', () => {
-        fileEnter = Math.max(0, fileEnter - 1);
-        if (fileEnter === 0) row.style.outline = '';
+        _setFileHL(row);   // re-assert every frame so it never flickers off
       });
       row.addEventListener('drop', async e => {
         if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
         e.preventDefault();
         e.stopPropagation();
-        fileEnter = 0;
-        row.style.outline = '';
+        _clearFileHL();
         const tid  = parseInt(row.dataset.tid);
         const file = e.dataTransfer.files[0];
         if (e.dataTransfer.files.length > 1) {
