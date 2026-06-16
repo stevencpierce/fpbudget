@@ -6687,7 +6687,7 @@
      bulk-code selected rows. Reuses the Match pane's pickers/handlers
      (actualsSetLine, _actualsFillPicker) + the shared options template.
      ════════════════════════════════════════════════════════════ #}
-  <div id="actuals-pane-code" class="actuals-pane" style="display:none">
+  <div id="actuals-pane-code" class="actuals-pane code-view-tiles" style="display:none">
     <style>
       .code-bulkbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;
         background:var(--bg-card);border:1px solid var(--border);border-radius:8px;margin-bottom:10px;font-size:.78rem}
@@ -6717,6 +6717,20 @@
       .code-sugg{flex-shrink:0;font-size:.62rem;padding:2px 5px;background:#10231a;border:1px solid #1f6f4a;
         border-radius:4px;color:#5fd0a0;cursor:pointer;white-space:nowrap;max-width:78px;overflow:hidden;text-overflow:ellipsis}
       .code-row[data-coded="1"] .code-picker{color:#74c69d;border-color:#2a5a3a}
+      .code-viewtoggle{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+      .code-viewtoggle button{font-size:.72rem;padding:4px 10px;background:none;border:none;color:var(--text-muted);cursor:pointer}
+      .code-viewtoggle button.on{background:var(--blue);color:#fff}
+      /* ── Tile view: reshape the same rows into a responsive card grid ── */
+      .code-view-tiles .code-group-body{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;padding:10px}
+      .code-view-tiles .code-row{flex-direction:column;align-items:stretch;gap:5px;padding:10px;
+        border:1px solid var(--border);border-radius:8px;position:relative}
+      .code-view-tiles .code-row:hover{background:var(--bg-hover,rgba(255,255,255,.03))}
+      .code-view-tiles .code-chk{position:absolute;top:8px;left:8px;z-index:2;background:var(--bg-card);border-radius:3px}
+      .code-view-tiles .code-thumb{width:100%;height:128px;border-radius:6px;font-size:1.6rem;order:1}
+      .code-view-tiles .code-vendor{flex:none;white-space:normal;line-height:1.25;font-weight:500;order:2}
+      .code-view-tiles .code-amt{width:auto;text-align:left;font-size:.92rem;order:3}
+      .code-view-tiles .code-date{width:auto;order:4}
+      .code-view-tiles .code-linecell{width:100%;order:5}
     </style>
 
     <div class="code-bulkbar">
@@ -6732,6 +6746,10 @@
       <label style="margin-left:auto;display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--text-muted)">
         <input type="checkbox" id="code-needs-only" onchange="codeFilterNeeds(this)"> Only “needs coding”
       </label>
+      <span class="code-viewtoggle">
+        <button type="button" id="code-view-tiles-btn" class="on" onclick="codeSetView('tiles')" title="Thumbnail tiles">▦ Tiles</button>
+        <button type="button" id="code-view-list-btn" onclick="codeSetView('list')" title="Compact list">≣ List</button>
+      </span>
     </div>
 
     {% if not actuals_code_groups %}
@@ -7282,10 +7300,15 @@
       if (which === 'reconcile' && typeof window._reconcileRender === 'function') {
         window._reconcileRender();
       }
-      // Entering Code → lazy-load thumbnails for any already-open department
-      // (the "Needs coding" group is open by default).
-      if (which === 'code' && typeof window.codeLoadThumbs === 'function') {
-        document.querySelectorAll('#actuals-pane-code .code-group.open').forEach(window.codeLoadThumbs);
+      // Entering Code → restore the saved tiles/list preference, then
+      // lazy-load thumbnails for any already-open department (the "Needs
+      // coding" group is open by default).
+      if (which === 'code') {
+        let _v = 'tiles';
+        try { _v = localStorage.getItem('fpCodeView') || 'tiles'; } catch (e) {}
+        if (typeof window.codeSetView === 'function') window.codeSetView(_v);
+        else if (typeof window.codeLoadThumbs === 'function')
+          document.querySelectorAll('#actuals-pane-code .code-group.open').forEach(window.codeLoadThumbs);
       }
     };
 
@@ -7573,6 +7596,21 @@
           codeLoadThumbs(g);
         }
       });
+    };
+    // Toggle tile grid vs compact list (same rows, reshaped via CSS).
+    window.codeSetView = function (mode) {
+      const pane = document.getElementById('actuals-pane-code');
+      if (!pane) return;
+      const tiles = mode !== 'list';
+      pane.classList.toggle('code-view-tiles', tiles);
+      const tb = document.getElementById('code-view-tiles-btn');
+      const lb = document.getElementById('code-view-list-btn');
+      if (tb) tb.classList.toggle('on', tiles);
+      if (lb) lb.classList.toggle('on', !tiles);
+      try { localStorage.setItem('fpCodeView', mode); } catch (e) {}
+      if (tiles) {  // tiles need the images; load any open group's thumbs
+        pane.querySelectorAll('.code-group.open').forEach(window.codeLoadThumbs);
+      }
     };
 
     // Recompute suggestions on demand and reconcile the 💡 chips in the
