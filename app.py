@@ -6275,6 +6275,40 @@ def budget_view(pid, bid):
     # endpoint stay identical). 2026-05-29.
     actuals_line_suggestions = _actuals_vendor_suggestions(pid)
 
+    # ── "Code expenses" sub-tab: project-expense rows grouped by COA
+    # department (2026-06-15). A register-style view (Quicken/QuickBooks
+    # inspired) for fine-tuning which line each charge/receipt lands on,
+    # one department at a time. Uncoded rows surface in a leading
+    # "Needs coding" bucket. Reuses actuals_transactions — no extra query.
+    _code_buckets = {}   # section_code (or None) -> {"items": [...], "total": float}
+    for t in actuals_transactions:
+        if t.not_project_expense:
+            continue
+        sec = None
+        if t.account_code is not None:
+            try:
+                sec = _section_for_code(int(t.account_code))
+            except (TypeError, ValueError):
+                sec = None
+        b = _code_buckets.setdefault(sec, {"items": [], "total": 0.0})
+        b["items"].append(t)
+        try:
+            b["total"] += float(t.amount or 0)
+        except (TypeError, ValueError):
+            pass
+    _sec_order = {code: i for i, (code, _) in enumerate(FP_COA_SECTIONS)}
+    actuals_code_groups = []
+    if None in _code_buckets:                       # uncoded first
+        actuals_code_groups.append({
+            "code": None, "name": "Needs coding", "items": _code_buckets[None]["items"],
+            "count": len(_code_buckets[None]["items"]), "total": _code_buckets[None]["total"]})
+    for sec in sorted((k for k in _code_buckets if k is not None),
+                      key=lambda c: (_sec_order.get(c, 9999), c)):
+        actuals_code_groups.append({
+            "code": sec, "name": _section_name(sec) or f"Section {sec}",
+            "items": _code_buckets[sec]["items"],
+            "count": len(_code_buckets[sec]["items"]), "total": _code_buckets[sec]["total"]})
+
     # Group uploads by category for the Docs-tab view. Per user 2026-04-30:
     # tax forms, receipts, invoices, etc. should be visually clustered so
     # the list is readable. Order matches the Analyzer's filing buckets.
@@ -6380,6 +6414,7 @@ def budget_view(pid, bid):
         doc_uploads=doc_uploads,
         doc_groups=doc_groups,
         actuals_transactions=actuals_transactions,
+        actuals_code_groups=actuals_code_groups,
         actuals_line_suggestions=actuals_line_suggestions,
         actuals_claimed_elsewhere=actuals_claimed_elsewhere,
         actuals_claimed_project_names=actuals_claimed_project_names,

@@ -6129,6 +6129,15 @@
             style="padding:8px 18px;background:none;border:none;border-bottom:2px solid var(--blue);color:var(--text);cursor:pointer;font-size:.88rem">
       Match
     </button>
+    {# Code expenses (2026-06-15): register-style view grouped by department
+       for fine-tuning line assignment, with thumbnails + bulk coding. #}
+    <button type="button" id="actuals-subtab-code"
+            onclick="showActualsPane('code')"
+            class="actuals-subtab"
+            title="Review expenses by department and code them to specific lines (register view)"
+            style="padding:8px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);cursor:pointer;font-size:.88rem">
+      📋 Code expenses
+    </button>
     {# By Department sub-tab retired 2026-05-01 — its functionality is
        now in the Budget tab itself (mode-switcher → Actual). The
        expandable line + section-only views live alongside the rest of
@@ -6671,6 +6680,115 @@
   </div>
 
   {# ════════════════════════════════════════════════════════════
+     CODE EXPENSES PANE — register view grouped by department
+     (2026-06-15). Expenses grouped by COA department with subtotals;
+     expand a department to see its receipts (thumbnails lazy-load on
+     expand), code each to a line inline, accept smart suggestions, or
+     bulk-code selected rows. Reuses the Match pane's pickers/handlers
+     (actualsSetLine, _actualsFillPicker) + the shared options template.
+     ════════════════════════════════════════════════════════════ #}
+  <div id="actuals-pane-code" class="actuals-pane" style="display:none">
+    <style>
+      .code-bulkbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 12px;
+        background:var(--bg-card);border:1px solid var(--border);border-radius:8px;margin-bottom:10px;font-size:.78rem}
+      .code-group{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden}
+      .code-group-head{display:flex;align-items:center;gap:10px;padding:9px 12px;cursor:pointer;
+        background:var(--bg-card);user-select:none}
+      .code-group-head:hover{background:var(--bg-hover,rgba(255,255,255,.03))}
+      .code-caret{font-size:.7rem;color:var(--text-muted);transition:transform .12s;display:inline-block;width:10px}
+      .code-group.open .code-caret{transform:rotate(90deg)}
+      .code-dept{font-weight:600;font-size:.86rem;color:var(--text)}
+      .code-meta{margin-left:auto;font-size:.74rem;color:var(--text-muted)}
+      .code-needs .code-dept{color:#e0a040}
+      .code-row{display:flex;align-items:center;gap:10px;padding:6px 12px;border-top:1px solid var(--border)}
+      .code-row:hover{background:var(--bg-hover,rgba(255,255,255,.03))}
+      .code-thumb{flex-shrink:0;width:40px;height:40px;border-radius:5px;background:var(--bg-input);
+        border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
+        overflow:hidden;font-size:1rem;color:var(--text-muted)}
+      .code-thumb img{width:100%;height:100%;object-fit:cover;cursor:pointer}
+      .code-thumb.clickable{cursor:pointer}
+      .code-date{flex-shrink:0;width:74px;font-size:.74rem;color:var(--text-muted)}
+      .code-vendor{flex:1;min-width:0;font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .code-card{margin-left:6px;font-size:.66rem;color:var(--text-muted)}
+      .code-amt{flex-shrink:0;width:90px;text-align:right;font-size:.82rem;font-variant-numeric:tabular-nums}
+      .code-linecell{flex-shrink:0;width:240px;display:flex;align-items:center;gap:5px}
+      .code-picker{flex:1;min-width:0;font-size:.74rem;padding:4px 6px;background:var(--bg-input);
+        color:var(--text);border:1px solid var(--border);border-radius:5px}
+      .code-sugg{flex-shrink:0;font-size:.62rem;padding:2px 5px;background:#10231a;border:1px solid #1f6f4a;
+        border-radius:4px;color:#5fd0a0;cursor:pointer;white-space:nowrap;max-width:78px;overflow:hidden;text-overflow:ellipsis}
+      .code-row[data-coded="1"] .code-picker{color:#74c69d;border-color:#2a5a3a}
+    </style>
+
+    <div class="code-bulkbar">
+      <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+        <input type="checkbox" id="code-selall" onchange="codeToggleAll(this)"> Select all shown
+      </label>
+      <span id="code-selcount" style="color:var(--text-muted)">0 selected</span>
+      <select id="code-bulk-line" class="code-picker" style="width:230px" data-populated="0"
+              onfocus="_codeFillBulk(this)">
+        <option value="">Code selected to…</option>
+      </select>
+      <button type="button" class="btn btn-xs" onclick="codeBulkApply()">Apply to selected</button>
+      <label style="margin-left:auto;display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--text-muted)">
+        <input type="checkbox" id="code-needs-only" onchange="codeFilterNeeds(this)"> Only “needs coding”
+      </label>
+    </div>
+
+    {% if not actuals_code_groups %}
+    <p class="muted" style="font-size:.82rem;padding:20px;text-align:center">No project expenses yet.</p>
+    {% endif %}
+
+    {% for g in actuals_code_groups %}
+    <div class="code-group{{ ' code-needs' if g.code is none else '' }}{{ ' open' if g.code is none else '' }}"
+         data-code="{{ g.code if g.code is not none else 'none' }}">
+      <div class="code-group-head" onclick="codeToggleGroup(this)">
+        <span class="code-caret">▸</span>
+        <span class="code-dept">{% if g.code is none %}⚠ {% endif %}{{ g.name }}{% if g.code is not none %} · {{ g.code }}{% endif %}</span>
+        <span class="code-meta">{{ g.count }} item{{ 's' if g.count != 1 else '' }} · ${{ '{:,.2f}'.format(g.total) }}</span>
+      </div>
+      <div class="code-group-body" style="{{ '' if g.code is none else 'display:none' }}">
+        {% for t in g['items'] %}
+        {% set _doc = docs_by_id.get(t.doc_upload_id) if t.doc_upload_id else None %}
+        {% set _hasimg = (_doc and _doc.content_type and _doc.content_type.startswith('image/')) %}
+        {% set _sug = actuals_line_suggestions.get(t.id) %}
+        {% set _coded = (t.budget_line_id is not none) or (t.account_code is not none) %}
+        {% set _wid = actual_to_working.get(t.budget_line_id, t.budget_line_id) if t.budget_line_id else None %}
+        {% set _cur = (_wid | string) if _wid else (('section:' ~ t.account_code) if t.account_code is not none else '') %}
+        <div class="code-row" data-tid="{{ t.id }}" data-coded="{{ '1' if _coded else '0' }}"
+             data-needs="{{ '0' if _coded else '1' }}">
+          <input type="checkbox" class="code-chk" data-tid="{{ t.id }}" onchange="codeSelCount()">
+          <span class="code-thumb{{ ' clickable' if t.doc_upload_id else '' }}"
+                data-doc="{{ t.doc_upload_id or '' }}" data-img="{{ '1' if _hasimg else '0' }}"
+                {% if t.doc_upload_id %}onclick="actualsOpenEditTxn({{ t.id }}, {{ t.doc_upload_id }})" title="Open receipt"{% endif %}>
+            {% if t.doc_upload_id %}🧾{% else %}<span style="font-size:.7rem">—</span>{% endif %}
+          </span>
+          <span class="code-date">{{ t.txn_date[:10] if t.txn_date else '' }}</span>
+          <span class="code-vendor">{{ t.vendor or 'Unknown vendor' }}{% if t.card_last4 %}<span class="code-card">••{{ t.card_last4 }}</span>{% endif %}</span>
+          <span class="code-amt">${{ '{:,.2f}'.format(t.amount or 0) }}</span>
+          <span class="code-linecell">
+            {% if _sug and not _coded %}
+            <button type="button" class="code-sugg" data-tid="{{ t.id }}" data-line-id="{{ _sug.line_id }}"
+                    onclick="codeApplySuggestion(this)"
+                    title="Code to {{ _sug.code }} · {{ _sug.label }}">💡 {{ _sug.code }}</button>
+            {% endif %}
+            <select class="actuals-line-picker code-picker" data-tid="{{ t.id }}" data-current="{{ _cur }}"
+                    data-populated="0" onfocus="_actualsFillPicker(this)" onchange="codeSetLine(this)"
+                    {% if t.not_project_expense %}disabled{% endif %}>
+              {% if _cur %}
+              <option value="{{ _cur }}" selected>{{ t.account_code_name or t.account_code or 'Assigned line' }}</option>
+              {% else %}
+              <option value="">Assign line…</option>
+              {% endif %}
+            </select>
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# ════════════════════════════════════════════════════════════
      BY DEPARTMENT PANE — the legacy section rollup
      ════════════════════════════════════════════════════════════ #}
   <div id="actuals-pane-bydept" class="actuals-pane" style="display:none">
@@ -7144,10 +7262,12 @@
       document.getElementById('actuals-pane-bydept').style.display   = which === 'bydept'   ? '' : 'none';
       const recPane = document.getElementById('actuals-pane-reconcile');
       if (recPane) recPane.style.display = which === 'reconcile' ? '' : 'none';
-      // Hide the global filter bar in Reconcile view — it has its own
-      // mini-filters (the COA dropdown / amount tolerance / receipt search).
+      const codePane = document.getElementById('actuals-pane-code');
+      if (codePane) codePane.style.display = which === 'code' ? '' : 'none';
+      // Hide the global filter bar in Reconcile + Code views — each has its
+      // own controls (Reconcile: mini-filters; Code: department grouping).
       const fbar = document.getElementById('actuals-filter-bar');
-      if (fbar) fbar.style.display = which === 'reconcile' ? 'none' : '';
+      if (fbar) fbar.style.display = (which === 'reconcile' || which === 'code') ? 'none' : '';
       // toggle subtab visual state
       document.querySelectorAll('.actuals-subtab').forEach(b => {
         b.style.borderBottomColor = 'transparent';
@@ -7161,6 +7281,11 @@
       // First time entering Reconcile → render the two columns.
       if (which === 'reconcile' && typeof window._reconcileRender === 'function') {
         window._reconcileRender();
+      }
+      // Entering Code → lazy-load thumbnails for any already-open department
+      // (the "Needs coding" group is open by default).
+      if (which === 'code' && typeof window.codeLoadThumbs === 'function') {
+        document.querySelectorAll('#actuals-pane-code .code-group.open').forEach(window.codeLoadThumbs);
       }
     };
 
@@ -7343,6 +7468,111 @@
       actualsSetLine(sel);
       // Row re-renders / flips to coded on success; if it doesn't, the
       // button is gone after the next filter pass anyway.
+    };
+
+    {# ── Code-expenses pane (department register) ───────────────────── #}
+    // Expand/collapse a department; lazy-load its receipt thumbnails the
+    // first time it opens so we never fire hundreds of image requests at once.
+    window.codeToggleGroup = function (head) {
+      const grp = head.closest('.code-group');
+      const body = grp.querySelector('.code-group-body');
+      const open = grp.classList.toggle('open');
+      body.style.display = open ? '' : 'none';
+      if (open) codeLoadThumbs(grp);
+    };
+    window.codeLoadThumbs = function (grp) {
+      grp.querySelectorAll('.code-thumb[data-img="1"]:not([data-loaded="1"])').forEach(th => {
+        const doc = th.dataset.doc; if (!doc) return;
+        th.dataset.loaded = '1';
+        const img = document.createElement('img');
+        img.loading = 'lazy'; img.alt = 'receipt';
+        img.src = `/docs/upload/${doc}/raw`;
+        img.onerror = () => { th.dataset.loaded = '0'; img.remove(); };
+        th.innerHTML = ''; th.appendChild(img);
+      });
+    };
+    // Inline coding — reuse the Match handler (it persists + updates the
+    // canonical row + stat cards), then reflect coded state on THIS row.
+    window.codeSetLine = function (sel) {
+      const row = sel.closest('.code-row');
+      window.actualsSetLine(sel);
+      if (row && sel.value && sel.value !== '__clear__') {
+        row.dataset.coded = '1'; row.dataset.needs = '0';
+        const chip = row.querySelector('.code-sugg'); if (chip) chip.remove();
+        if (document.getElementById('code-needs-only') && document.getElementById('code-needs-only').checked) {
+          row.style.display = 'none';
+        }
+      }
+    };
+    window.codeApplySuggestion = function (btn) {
+      const row = btn.closest('.code-row');
+      const sel = row && row.querySelector('.code-picker');
+      if (!sel) return;
+      window._actualsFillPicker(sel);
+      sel.value = String(btn.dataset.lineId || '');
+      if (sel.value !== String(btn.dataset.lineId || '')) {
+        alert('Suggested line is no longer in the picker — please pick one manually.');
+        return;
+      }
+      btn.disabled = true; btn.textContent = '💡 coding…';
+      codeSetLine(sel);
+    };
+    // Selection + bulk coding.
+    window.codeSelCount = function () {
+      const n = document.querySelectorAll('#actuals-pane-code .code-chk:checked').length;
+      const el = document.getElementById('code-selcount');
+      if (el) el.textContent = n + ' selected';
+    };
+    window.codeToggleAll = function (cb) {
+      document.querySelectorAll('#actuals-pane-code .code-chk').forEach(c => {
+        const row = c.closest('.code-row');
+        if (row && row.offsetParent !== null) c.checked = cb.checked;  // only visible rows
+      });
+      codeSelCount();
+    };
+    window._codeFillBulk = function (sel) {
+      if (sel.dataset.populated === '1') return;
+      const tpl = document.getElementById('actualsLineOptsTpl');
+      if (!tpl) return;
+      sel.innerHTML = '<option value="">Code selected to…</option>' + tpl.innerHTML;
+      sel.dataset.populated = '1'; sel.value = '';
+    };
+    window.codeBulkApply = async function () {
+      const val = (document.getElementById('code-bulk-line') || {}).value;
+      if (!val) { _actualsToast('Pick a line to code the selected rows to.', 'yellow'); return; }
+      const checked = [...document.querySelectorAll('#actuals-pane-code .code-chk:checked')];
+      if (!checked.length) { _actualsToast('No rows selected.', 'yellow'); return; }
+      if (!confirm('Code ' + checked.length + ' selected expense' + (checked.length !== 1 ? 's' : '') + ' to this line?')) return;
+      for (const c of checked) {
+        const row = c.closest('.code-row');
+        const sel = row && row.querySelector('.code-picker');
+        if (!sel) continue;
+        window._actualsFillPicker(sel);
+        sel.value = val;
+        if (sel.value === val) { await window.actualsSetLine(sel);
+          row.dataset.coded = '1'; row.dataset.needs = '0';
+          const chip = row.querySelector('.code-sugg'); if (chip) chip.remove();
+          c.checked = false; }
+      }
+      codeSelCount();
+      _actualsToast('Coded ' + checked.length + ' expense' + (checked.length !== 1 ? 's' : '') + '. They’ll group under their department on reload.', 'green');
+    };
+    // "Only needs coding" — hide already-coded rows + departments.
+    window.codeFilterNeeds = function (cb) {
+      const on = cb.checked;
+      document.querySelectorAll('#actuals-pane-code .code-row').forEach(r => {
+        r.style.display = (on && r.dataset.needs === '0') ? 'none' : '';
+      });
+      document.querySelectorAll('#actuals-pane-code .code-group').forEach(g => {
+        if (!on) { g.style.display = ''; return; }
+        const anyNeeds = [...g.querySelectorAll('.code-row')].some(r => r.dataset.needs === '1');
+        g.style.display = anyNeeds ? '' : 'none';
+        if (anyNeeds && !g.classList.contains('open')) {
+          g.classList.add('open');
+          const body = g.querySelector('.code-group-body'); if (body) body.style.display = '';
+          codeLoadThumbs(g);
+        }
+      });
     };
 
     // Recompute suggestions on demand and reconcile the 💡 chips in the
