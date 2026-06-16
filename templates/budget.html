@@ -6134,9 +6134,9 @@
     <button type="button" id="actuals-subtab-code"
             onclick="showActualsPane('code')"
             class="actuals-subtab"
-            title="Review expenses by department and code them to specific lines (register view)"
+            title="Review what's coded to each department and subdivide into specific lines"
             style="padding:8px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-muted);cursor:pointer;font-size:.88rem">
-      📋 Code expenses
+      📋 Coded expenses
     </button>
     {# By Department sub-tab retired 2026-05-01 — its functionality is
        now in the Budget tab itself (mode-switcher → Actual). The
@@ -6721,12 +6721,14 @@
       .code-viewtoggle button{font-size:.72rem;padding:4px 10px;background:none;border:none;color:var(--text-muted);cursor:pointer}
       .code-viewtoggle button.on{background:var(--blue);color:#fff}
       /* ── Tile view: reshape the same rows into a responsive card grid ── */
-      .code-view-tiles .code-group-body{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;padding:10px}
+      .code-view-tiles .code-group-body{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px;padding:12px}
       .code-view-tiles .code-row{flex-direction:column;align-items:stretch;gap:5px;padding:10px;
         border:1px solid var(--border);border-radius:8px;position:relative}
       .code-view-tiles .code-row:hover{background:var(--bg-hover,rgba(255,255,255,.03))}
       .code-view-tiles .code-chk{position:absolute;top:8px;left:8px;z-index:2;background:var(--bg-card);border-radius:3px}
-      .code-view-tiles .code-thumb{width:100%;height:128px;border-radius:6px;font-size:1.6rem;order:1}
+      .code-view-tiles .code-thumb{width:100%;height:230px;border-radius:6px;font-size:2rem;order:1}
+      .code-view-tiles .code-thumb img{object-fit:contain;background:#0d0d0d;transition:transform .15s}
+      .code-view-tiles .code-thumb:hover img{transform:scale(1.04)}
       .code-view-tiles .code-vendor{flex:none;white-space:normal;line-height:1.25;font-weight:500;order:2}
       .code-view-tiles .code-amt{width:auto;text-align:left;font-size:.92rem;order:3}
       .code-view-tiles .code-date{width:auto;order:4}
@@ -6743,9 +6745,8 @@
         <option value="">Code selected to…</option>
       </select>
       <button type="button" class="btn btn-xs" onclick="codeBulkApply()">Apply to selected</button>
-      <label style="margin-left:auto;display:flex;align-items:center;gap:5px;cursor:pointer;color:var(--text-muted)">
-        <input type="checkbox" id="code-needs-only" onchange="codeFilterNeeds(this)"> Only “needs coding”
-      </label>
+      <button type="button" id="code-showneeds-btn" class="btn btn-xs" style="margin-left:auto"
+              onclick="codeToggleNeeds(this)" title="Show the uncoded expenses bucket">Show needs coding</button>
       <span class="code-viewtoggle">
         <button type="button" id="code-view-tiles-btn" class="on" onclick="codeSetView('tiles')" title="Thumbnail tiles">▦ Tiles</button>
         <button type="button" id="code-view-list-btn" onclick="codeSetView('list')" title="Compact list">≣ List</button>
@@ -6757,14 +6758,15 @@
     {% endif %}
 
     {% for g in actuals_code_groups %}
-    <div class="code-group{{ ' code-needs' if g.code is none else '' }}{{ ' open' if g.code is none else '' }}"
-         data-code="{{ g.code if g.code is not none else 'none' }}">
+    <div class="code-group{{ ' code-needs' if g.code is none else '' }}"
+         data-code="{{ g.code if g.code is not none else 'none' }}"
+         style="{{ 'display:none' if g.code is none else '' }}">
       <div class="code-group-head" onclick="codeToggleGroup(this)">
         <span class="code-caret">▸</span>
         <span class="code-dept">{% if g.code is none %}⚠ {% endif %}{{ g.name }}{% if g.code is not none %} · {{ g.code }}{% endif %}</span>
         <span class="code-meta">{{ g.count }} item{{ 's' if g.count != 1 else '' }} · ${{ '{:,.2f}'.format(g.total) }}</span>
       </div>
-      <div class="code-group-body" style="{{ '' if g.code is none else 'display:none' }}">
+      <div class="code-group-body" style="display:none">
         {% for t in g['items'] %}
         {% set _doc = docs_by_id.get(t.doc_upload_id) if t.doc_upload_id else None %}
         {% set _hasimg = (_doc and _doc.content_type and _doc.content_type.startswith('image/')) %}
@@ -7610,6 +7612,20 @@
       try { localStorage.setItem('fpCodeView', mode); } catch (e) {}
       if (tiles) {  // tiles need the images; load any open group's thumbs
         pane.querySelectorAll('.code-group.open').forEach(window.codeLoadThumbs);
+      }
+    };
+    // Show/hide the (uncoded) "Needs coding" bucket — hidden by default since
+    // this tab is for reviewing what's ALREADY coded. (User 2026-06-16.)
+    window.codeToggleNeeds = function (btn) {
+      const grp = document.querySelector('#actuals-pane-code .code-group.code-needs');
+      if (!grp) { if (btn) btn.style.display = 'none'; return; }
+      const show = grp.style.display === 'none';
+      grp.style.display = show ? '' : 'none';
+      if (btn) btn.textContent = show ? 'Hide needs coding' : 'Show needs coding';
+      if (show && !grp.classList.contains('open')) {  // auto-expand on first show
+        grp.classList.add('open');
+        const body = grp.querySelector('.code-group-body'); if (body) body.style.display = '';
+        codeLoadThumbs(grp);
       }
     };
 
