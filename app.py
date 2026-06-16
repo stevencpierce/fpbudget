@@ -7841,6 +7841,36 @@ def actuals_suggestions(pid):
     return jsonify({"suggestions": _actuals_vendor_suggestions(pid)})
 
 
+@app.route("/projects/<int:pid>/actuals/match-candidates", methods=["POST"])
+@login_required
+def actuals_match_candidates(pid):
+    """Configurable candidate finder for the Review-matches screen. Body:
+    {amount_tol (number $), date_window (int days | 'off'), use_vendor (bool)}.
+    Returns per-charge shortlists with confidence. (User 2026-06-16.)"""
+    ProjectSheet.query.get_or_404(pid)
+    body = request.get_json(silent=True) or {}
+    try:
+        amount_tol = max(0.0, float(body.get('amount_tol', 0) or 0))
+    except (TypeError, ValueError):
+        amount_tol = 0.0
+    _dw = body.get('date_window', 3)
+    if _dw in (None, '', 'off', 'any', 'Any'):
+        date_window = None
+    else:
+        try:
+            date_window = max(0, int(_dw))
+        except (TypeError, ValueError):
+            date_window = 3
+    use_vendor = bool(body.get('use_vendor'))
+    from actuals import find_match_candidates
+    try:
+        return jsonify(find_match_candidates(pid, amount_tol=amount_tol,
+                                             date_window=date_window, use_vendor=use_vendor))
+    except Exception as e:
+        logging.exception("[actuals] match-candidates failed")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/mark-not-project", methods=["POST"])
 @login_required
 def actuals_mark_not_project(pid, tid):

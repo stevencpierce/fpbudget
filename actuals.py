@@ -842,6 +842,145 @@ def run_auto_match(project_id):
     }
 
 
+def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
+                          use_vendor=False, limit_charges=300):
+    """Configurable candidate finder for the Review-matches screen (User
+    2026-06-16). For every still-unmatched electronic charge, return a ranked
+    shortlist of candidate receipts that satisfy the criteria, each with a
+    confidence %. Amount is the primary gate (uses the FX-converted USD amount
+    already stored on foreign receipts). date_window=None means "ignore date";
+    use_vendor=False means "don't even check the vendor name". The caller
+    suggests the top candidate when confidence ≥ 80% and it isn't a near-tie,
+    and always shows the alternatives so the user can confirm or switch.
+
+    Efficient on huge projects: receipts are sorted by amount and the per-charge
+    scan is bounded to the [amount-tol, amount+tol] slice via bisect.
+    """
+    import datetime as _dt, bisect as _bisect
+    amount_tol = max(0.0, float(amount_tol or 0.0))
+
+    qbo_unmatched = (Transaction.query
+                     .filter(Transaction.project_id == project_id,
+                             Transaction.source.in_(('qbo_sync', 'csv_import')),
+                             Transaction.match_status == 'unmatched',
+                             Transaction.doc_upload_id.is_(None),
+                             Transaction.not_project_expense == False)  # noqa: E712
+                     .all())
+    doc_open = (Transaction.query
+                .filter_by(project_id=project_id, source='doc_upload',
+                           not_project_expense=False)
+                .all())
+    _dup_doc_ids = {r[0] for r in db.session.query(DocUpload.id)
+                    .filter(DocUpload.project_id == project_id,
+                            db.or_(DocUpload.is_duplicate == True,       # noqa: E712
+                                   DocUpload.status == 'duplicate',
+                                   DocUpload.status == 'deleted')).all()}
+    _proof_doc_ids = {r[0] for r in db.session.query(DocUpload.id)
+                      .filter(DocUpload.project_id == project_id,
+                              DocUpload.category.in_(('receipt', 'invoice'))).all()}
+    taken_docs = {t.doc_upload_id for t in Transaction.query.filter(
+        Transaction.project_id == project_id,
+        Transaction.source.in_(('qbo_sync', 'csv_import')),
+        Transaction.doc_upload_id.isnot(None)).all() if t.doc_upload_id}
+    rejected_pairs = {(r.transaction_id, r.doc_upload_id) for r in
+                      MatchRejection.query.filter_by(project_id=project_id).all()}
+
+    # Doc display metadata (filename + image flag for the thumbnail).
+    doc_meta = {}
+    _need = [t.doc_upload_id for t in doc_open if t.doc_upload_id]
+    if _need:
+        for d in (DocUpload.query
+                  .filter(DocUpload.id.in_(set(_need))).all()):
+            doc_meta[d.id] = {
+                "file": d.filed_filename or d.original_filename or f"Doc #{d.id}",
+                "is_image": bool(d.content_type and d.content_type.startswith('image/')),
+            }
+
+    # Build the receipt pool (amount, date) and sort by amount for bisect.
+    d_rows = []
+    for d in doc_open:
+        did = d.doc_upload_id
+        if (did is None or did in _dup_doc_ids or did not in _proof_doc_ids
+                or did in taken_docs or d.amount is None or not d.txn_date):
+            continue
+        try:
+            d_dt = _dt.date.fromisoformat(d.txn_date[:10])
+        except (TypeError, ValueError):
+            continue
+        d_rows.append((float(d.amount), d_dt, d))
+    d_rows.sort(key=lambda r: r[0])
+    d_amounts = [r[0] for r in d_rows]
+
+    def _confidence(amt_delta, day_gap, vendor_sim):
+        amt_s = 1.0 if amt_delta < 0.01 else max(0.0, 1.0 - amt_delta / max(amount_tol, 1.0))
+        if date_window is None:
+            date_s = None
+        else:
+            date_s = 1.0 if day_gap == 0 else max(0.0, 1.0 - day_gap / max(float(date_window), 1.0))
+        if use_vendor and date_s is not None:
+            return 0.50 * amt_s + 0.25 * date_s + 0.25 * vendor_sim
+        if use_vendor:
+            return 0.65 * amt_s + 0.35 * vendor_sim
+        if date_s is not None:
+            return 0.65 * amt_s + 0.35 * date_s
+        return amt_s
+
+    results = []
+    for q in qbo_unmatched:
+        if q.amount is None or not q.txn_date:
+            continue
+        try:
+            q_amt = float(q.amount)
+            q_dt = _dt.date.fromisoformat(q.txn_date[:10])
+        except (TypeError, ValueError):
+            continue
+        lo = _bisect.bisect_left(d_amounts, q_amt - amount_tol - 0.001)
+        hi = _bisect.bisect_right(d_amounts, q_amt + amount_tol + 0.001)
+        cands = []
+        for idx in range(lo, hi):
+            d_amt, d_dt, d = d_rows[idx]
+            if (q.id, d.doc_upload_id) in rejected_pairs:
+                continue
+            day_gap = abs((d_dt - q_dt).days)
+            if date_window is not None and day_gap > date_window:
+                continue
+            vendor_sim = _vendor_similarity(q.vendor, d.vendor)
+            if use_vendor and vendor_sim < 0.30:
+                continue
+            conf = _confidence(abs(d_amt - q_amt), day_gap, vendor_sim)
+            meta = doc_meta.get(d.doc_upload_id, {})
+            cands.append({
+                "doc_upload_id": d.doc_upload_id,
+                "file": meta.get("file"), "is_image": meta.get("is_image", False),
+                "vendor": d.vendor, "amount": d_amt, "date": d.txn_date[:10] if d.txn_date else None,
+                "amount_delta": round(abs(d_amt - q_amt), 2),
+                "day_gap": day_gap, "vendor_match": vendor_sim >= 0.45,
+                "confidence": round(conf, 4),
+            })
+        if not cands:
+            continue
+        cands.sort(key=lambda c: (-c["confidence"], c["amount_delta"], c["day_gap"]))
+        top = cands[0]
+        ambiguous = len(cands) > 1 and cands[1]["confidence"] >= top["confidence"] - 0.05
+        suggested = (top["confidence"] >= 0.80) and not ambiguous
+        results.append({
+            "charge": {"id": q.id, "vendor": q.vendor, "amount": q_amt,
+                       "date": q.txn_date[:10] if q.txn_date else None,
+                       "card4": getattr(q, 'card_last4', None)},
+            "suggested_doc_id": top["doc_upload_id"] if suggested else None,
+            "top_confidence": top["confidence"],
+            "ambiguous": ambiguous,
+            "candidates": cands[:6],
+        })
+    # Best (most confident) charges first; cap payload.
+    results.sort(key=lambda r: -r["top_confidence"])
+    return {
+        "criteria": {"amount_tol": amount_tol, "date_window": date_window, "use_vendor": use_vendor},
+        "charges_with_candidates": len(results),
+        "results": results[:limit_charges],
+    }
+
+
 def confirm_match(qbo_transaction_id):
     """User confirms a suggested match. Merges the doc_upload txn into
     the qbo_sync txn — the QBO row keeps its identity (it's the bank
