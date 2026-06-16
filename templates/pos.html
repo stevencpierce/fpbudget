@@ -496,17 +496,30 @@
        has role='source' and shows with a 📎 prefix; additional ones
        show with a + prefix. Per user 2026-05-05. #}
     {% if po.attachments %}
-    <div style="font-size:.78rem;color:var(--text-muted);display:flex;flex-direction:column;gap:3px">
+    <div style="font-size:.78rem;color:var(--text-muted);display:flex;flex-direction:column;gap:4px">
       {% for att in po.attachments %}
-      <div style="display:flex;align-items:center;gap:6px">
+      {% set _is_est = (att.category in ('estimate','quote','contract','purchase_order')) %}
+      <div class="po-att-row" style="display:flex;align-items:center;gap:6px;{% if att.superseded %}opacity:.5{% endif %}">
         <span>{% if att.role == 'source' %}📎 source{% else %}+ added{% endif %}:</span>
         {% if att.filename %}
-        <a href="{{ url_for('docs_dashboard') if false else '#' }}"
+        <a href="#"
            onclick="event.preventDefault();window.open('/docs/upload/' + {{ att.doc_id }} + '/raw', '_blank')"
-           style="color:#5b8af9;text-decoration:none">{{ att.filename }}</a>
+           style="color:#5b8af9;text-decoration:none;{% if att.superseded %}text-decoration:line-through{% endif %}">{{ att.filename }}</a>
         {% endif %}
-        {% if att.amount %}<span style="font-variant-numeric:tabular-nums">${{ '{:,.2f}'.format(att.amount) }}</span>{% endif %}
-        {% if att.note %}<span style="font-style:italic;font-size:.72rem">— {{ att.note }}</span>{% endif %}
+        {% if att.amount %}<span style="font-variant-numeric:tabular-nums;{% if att.superseded %}text-decoration:line-through{% endif %}">${{ '{:,.2f}'.format(att.amount) }}</span>{% endif %}
+        {% if att.superseded %}
+        <span style="font-size:.68rem;color:#c08a40;font-style:italic">superseded{% if att.superseded_at %} {{ att.superseded_at[:10] }}{% endif %}</span>
+        {% elif not po.archived %}
+        {% if _is_est %}
+        <button type="button" class="btn btn-xs btn-ghost" style="font-size:.66rem;padding:1px 6px;margin-left:2px"
+                onclick='openReplaceModal({{ po.id }}, {{ att.id }}, {{ (att.filename or "estimate")|tojson }})'
+                title="Got an updated quote? Attach it and keep this one as superseded history">↻ Replace</button>
+        {% endif %}
+        <button type="button" class="btn btn-xs btn-ghost" style="font-size:.66rem;padding:1px 6px;color:#c0605a"
+                onclick='removeAttachment({{ po.id }}, {{ att.id }}, {{ att.amount or 0 }}, {{ (att.filename or "this doc")|tojson }})'
+                title="Remove this attachment from the PO (the file stays in Docs)">✕</button>
+        {% endif %}
+        {% if att.note and not att.superseded %}<span style="font-style:italic;font-size:.72rem">— {{ att.note }}</span>{% endif %}
       </div>
       {% endfor %}
     </div>
@@ -588,10 +601,103 @@
   </div>
 </div>
 
+{# ── Replace-estimate modal (2026-06-15): swap an attached estimate for an
+   updated quote, keeping the old one as superseded history. ── #}
+<div id="replace-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="closeReplaceModal()"></div>
+  <div class="modal-box" style="min-width:440px;max-width:560px">
+    <h2 style="margin-bottom:4px">↻ Replace estimate</h2>
+    <p class="muted" style="font-size:.8rem;margin-bottom:10px">
+      Replacing <strong id="replace-old-label"></strong>. The old quote stays on the PO as
+      superseded history; the new one becomes current and feeds the totals.
+    </p>
+    <div class="field">
+      <label>Updated quote / estimate</label>
+      <select id="replace-doc-select"><option value="">Loading documents…</option></select>
+      <p class="muted" style="font-size:.72rem;margin-top:4px">
+        Upload the new quote in the Docs tab first if it isn't listed below.
+      </p>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;margin:10px 0">
+      <input type="checkbox" id="replace-adjust-cap" checked>
+      Adjust the PO cap by the price difference
+    </label>
+    <div class="modal-actions" style="margin-top:14px">
+      <button type="button" class="btn btn-outline" onclick="closeReplaceModal()">Cancel</button>
+      <button type="button" class="btn btn-primary" id="replace-confirm-btn" onclick="doReplaceEstimate()">Replace</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const PROJECT_ID = {{ project.id }};
 const PO_DATA    = {{ pos | tojson }};
 let _editingPoId = null;
+
+// ── Replace / remove attached estimates (2026-06-15) ──────────────────
+let _replacePoId = null, _replaceOldAttId = null;
+async function openReplaceModal(poId, attId, label) {
+  _replacePoId = poId; _replaceOldAttId = attId;
+  document.getElementById('replace-old-label').textContent = label || 'estimate';
+  document.getElementById('replace-adjust-cap').checked = true;
+  const sel = document.getElementById('replace-doc-select');
+  sel.innerHTML = '<option value="">Loading documents…</option>';
+  document.getElementById('replace-modal').classList.remove('hidden');
+  try {
+    const r = await fetch(`/projects/${PROJECT_ID}/actuals/docs.json`, { credentials: 'same-origin' });
+    const docs = ((await r.json()).docs) || [];
+    const estCats = ['estimate', 'quote', 'contract', 'purchase_order'];
+    docs.sort((a, b) => (estCats.includes((a.category || '').toLowerCase()) ? 0 : 1)
+                        - (estCats.includes((b.category || '').toLowerCase()) ? 0 : 1));
+    const fmt = n => Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    sel.innerHTML = '<option value="">Choose the updated quote…</option>' + docs.map(d => {
+      const amt = d.amount != null ? ' — $' + fmt(d.amount) : '';
+      const cat = d.category ? ' [' + d.category + ']' : '';
+      const lbl = (d.label || ('Doc #' + d.id)) + amt + cat;
+      return `<option value="${d.id}">${lbl.replace(/</g, '&lt;')}</option>`;
+    }).join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">Could not load documents</option>';
+  }
+}
+function closeReplaceModal() {
+  document.getElementById('replace-modal').classList.add('hidden');
+  _replacePoId = null; _replaceOldAttId = null;
+}
+async function doReplaceEstimate() {
+  const docId = document.getElementById('replace-doc-select').value;
+  if (!docId) { alert('Pick the updated quote first.'); return; }
+  const adjust = document.getElementById('replace-adjust-cap').checked;
+  const btn = document.getElementById('replace-confirm-btn');
+  btn.disabled = true; btn.textContent = 'Replacing…';
+  try {
+    const r = await fetch(`/projects/${PROJECT_ID}/pos/${_replacePoId}/replace-estimate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ old_att_id: _replaceOldAttId, new_doc_upload_id: Number(docId), adjust_cap: adjust }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { alert('Replace failed: ' + (j.error || r.status)); btn.disabled = false; btn.textContent = 'Replace'; return; }
+    window.location.reload();
+  } catch (e) {
+    alert('Replace error: ' + e.message); btn.disabled = false; btn.textContent = 'Replace';
+  }
+}
+async function removeAttachment(poId, attId, amount, label) {
+  if (!confirm('Remove “' + label + '” from this PO?\n\nThe file stays in your Docs — it’s just unlinked from this PO.')) return;
+  let adjust = false;
+  if (amount && Number(amount) > 0) {
+    adjust = confirm('Also reduce the PO cap by $' +
+      Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '?');
+  }
+  try {
+    const r = await fetch(`/projects/${PROJECT_ID}/pos/${poId}/detach-doc/${attId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adjust_cap: adjust }),
+    });
+    if (r.ok) { window.location.reload(); }
+    else { const j = await r.json().catch(() => ({})); alert('Remove failed: ' + (j.error || r.status)); }
+  } catch (e) { alert('Remove error: ' + e.message); }
+}
 
 function openPoModal(poId) {
   _editingPoId = poId || null;

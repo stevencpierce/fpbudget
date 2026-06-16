@@ -1037,6 +1037,13 @@ class PoDocAttachment(db.Model):
     role            = db.Column(db.String(20), default='additional')  # source | additional
     created_at      = db.Column(db.DateTime, default=datetime.utcnow)
     created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    # Supersede / replace history (2026-06-15): when an estimate is replaced
+    # by an updated quote, the old attachment is NOT deleted — it's stamped
+    # superseded_at (and superseded_by_att_id points at the replacement) so
+    # the price history survives. Superseded attachments stay visible on the
+    # PO (struck through) but are excluded from estimates_total + the cap.
+    superseded_at        = db.Column(db.DateTime, nullable=True)
+    superseded_by_att_id = db.Column(db.Integer, nullable=True)
 
     po           = db.relationship("PurchaseOrder", foreign_keys=[po_id])
     doc          = db.relationship("DocUpload",     foreign_keys=[doc_upload_id])

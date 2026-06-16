@@ -13976,6 +13976,7 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                     .filter_by(po_id=po.id)
                     .order_by(PoDocAttachment.created_at).all()):
             d = db.session.get(DocUpload, att.doc_upload_id)
+            _superseded = getattr(att, 'superseded_at', None)
             out["attachments"].append({
                 "id":       att.id,
                 "doc_id":   att.doc_upload_id,
@@ -13985,6 +13986,8 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                 "role":     att.role or "additional",
                 "category": (d.category if d else None),
                 "created_at": att.created_at.isoformat() if att.created_at else None,
+                "superseded": bool(_superseded),
+                "superseded_at": _superseded.isoformat() if _superseded else None,
             })
     except Exception:
         pass
@@ -14063,6 +14066,8 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
         _rcp_sum = 0.0
         _all_sum = 0.0
         for a in (out.get("attachments") or []):
+            if a.get("superseded"):
+                continue   # replaced by a newer quote — not part of live totals
             amt = a.get("amount") or 0
             if not amt:
                 continue
@@ -14631,16 +14636,96 @@ def po_attach_doc(pid, po_id):
 @app.route("/projects/<int:pid>/pos/<int:po_id>/detach-doc/<int:att_id>", methods=["POST"])
 @login_required
 def po_detach_doc(pid, po_id, att_id):
-    """Remove a doc attachment from a PO. Doesn't touch cap (manual
-    cleanup if needed)."""
+    """Remove a doc attachment from a PO (the file stays in Docs). Body:
+    {adjust_cap}. When adjust_cap is true and the PO has a cap, reduce the
+    cap by the (non-superseded) attachment's amount. If the removed doc was
+    the PO's source estimate, clear source_doc_upload_id too. (Replace is the
+    history-preserving path; this is the hard remove for mistakes.)"""
     from models import PurchaseOrder, PoDocAttachment
     ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'editor')
-    PurchaseOrder.query.filter_by(id=po_id, project_id=pid).first_or_404()
+    po = PurchaseOrder.query.filter_by(id=po_id, project_id=pid).first_or_404()
     att = PoDocAttachment.query.filter_by(id=att_id, po_id=po_id).first_or_404()
+    data = request.get_json(silent=True) or {}
+    adjust_cap = bool(data.get('adjust_cap'))
+    cap_delta = 0.0
+    if (adjust_cap and not getattr(att, 'superseded_at', None)
+            and att.amount is not None and po.total_committed is not None):
+        cap_delta = -float(att.amount)
+        po.total_committed = round(max(0.0, float(po.total_committed) + cap_delta), 2)
+    if po.source_doc_upload_id == att.doc_upload_id:
+        po.source_doc_upload_id = None
     db.session.delete(att)
     db.session.commit()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "po": _po_to_dict(po, with_rollup=True, project_id=pid)})
+
+
+@app.route("/projects/<int:pid>/pos/<int:po_id>/replace-estimate", methods=["POST"])
+@login_required
+def po_replace_estimate(pid, po_id):
+    """Replace an attached estimate with an updated quote, preserving history.
+    Body: {old_att_id, new_doc_upload_id, adjust_cap, note}. Attaches the new
+    doc (same role as the old), stamps the old one superseded (kept on the PO,
+    struck through, excluded from totals), repoints source_doc_upload_id when
+    the source is the one being replaced, and shifts the cap by
+    (new_amount - old_amount) when adjust_cap. (User 2026-06-15.)"""
+    from models import PurchaseOrder, PoDocAttachment
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    po = PurchaseOrder.query.filter_by(id=po_id, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    try:
+        old_att_id = int(data.get('old_att_id'))
+        new_doc_id = int(data.get('new_doc_upload_id'))
+    except (TypeError, ValueError):
+        return jsonify({"error": "old_att_id and new_doc_upload_id are required"}), 400
+    old = PoDocAttachment.query.filter_by(id=old_att_id, po_id=po.id).first_or_404()
+    if getattr(old, 'superseded_at', None):
+        return jsonify({"error": "That estimate is already superseded."}), 409
+    new_doc = DocUpload.query.filter_by(id=new_doc_id, project_id=pid).first()
+    if not new_doc:
+        return jsonify({"error": "Replacement doc not on this project"}), 404
+    # Block attaching the same doc, or a doc already actively attached.
+    if new_doc.id == old.doc_upload_id:
+        return jsonify({"error": "Pick a different document than the one being replaced."}), 400
+    dupe = (PoDocAttachment.query
+            .filter_by(po_id=po.id, doc_upload_id=new_doc.id)
+            .filter(PoDocAttachment.superseded_at.is_(None)).first())
+    if dupe:
+        return jsonify({"error": "That document is already attached to this PO."}), 409
+    note = (data.get('note') or '').strip()[:300] or None
+    adjust_cap = bool(data.get('adjust_cap', True))
+    old_label = None
+    _od = db.session.get(DocUpload, old.doc_upload_id)
+    if _od:
+        old_label = _od.filed_filename or _od.original_filename or f"Doc #{_od.id}"
+    new_att = PoDocAttachment(
+        po_id=po.id, doc_upload_id=new_doc.id, amount=new_doc.amount,
+        role=old.role or 'additional',
+        note=note or (f'Updated quote — replaces {old_label}' if old_label else 'Updated quote'),
+        created_by_user_id=current_user.id if current_user.is_authenticated else None,
+    )
+    db.session.add(new_att)
+    db.session.flush()                       # need new_att.id for the back-link
+    old.superseded_at = datetime.utcnow()
+    old.superseded_by_att_id = new_att.id
+    if (old.role or '') == 'source' or po.source_doc_upload_id == old.doc_upload_id:
+        po.source_doc_upload_id = new_doc.id
+    cap_delta = 0.0
+    if adjust_cap and po.total_committed is not None:
+        cap_delta = float(new_doc.amount or 0) - float(old.amount or 0)
+        po.total_committed = round(max(0.0, float(po.total_committed) + cap_delta), 2)
+    db.session.commit()
+    try:
+        _new_label = new_doc.filed_filename or new_doc.original_filename or f"Doc #{new_doc.id}"
+        _log_activity(action='update', entity_type='purchase_order',
+                      entity_id=po.id, entity_label=f"{po.po_number} — {po.vendor_name}",
+                      project_id=pid,
+                      note=(f'Replaced estimate "{old_label}" with "{_new_label}"'
+                            + (f' (cap {"+"if cap_delta>=0 else ""}${cap_delta:,.2f})' if cap_delta else '')))
+    except Exception:
+        pass
+    return jsonify({"ok": True, "po": _po_to_dict(po, with_rollup=True, project_id=pid)})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/po", methods=["POST"])
@@ -20704,6 +20789,11 @@ def _web_worker_essential_columns():
                 # survives a worker recycle (progress = row state, not memory).
                 "ALTER TABLE doc_upload "
                 "  ADD COLUMN IF NOT EXISTS reprocessed_at TIMESTAMP",
+                # 2026-06-15 — PO estimate replace/supersede history.
+                "ALTER TABLE po_doc_attachment "
+                "  ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMP",
+                "ALTER TABLE po_doc_attachment "
+                "  ADD COLUMN IF NOT EXISTS superseded_by_att_id INTEGER",
                 # 2026-06-15 — persistent "not a match" rejections so the
                 # auto-matcher never re-suggests a pair the user rejected.
                 """CREATE TABLE IF NOT EXISTS match_rejection (
