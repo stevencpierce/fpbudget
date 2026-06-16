@@ -468,6 +468,65 @@ def _sug_tokens(s):
     return {t for t in re.split(r'[^a-z0-9]+', (s or '').lower())
             if len(t) >= 3 and t not in _SUG_STOP}
 
+# ── Master-category (section) inference for suggestions ───────────────────────
+# When the vendor name can't be matched to a specific budget LINE (the common
+# case), intuit the master COA SECTION from Veryfi's expense category or vendor
+# keywords, so the user can one-click dump it into e.g. Travel / Shipping and
+# subdivide later in the Coded-expenses tab. Conservative on purpose — a wrong
+# section suggestion is worse than none. (User 2026-06-16.)
+# Veryfi category substring → section start code.
+_VERYFI_CAT_TO_SECTION = [
+    ("lodging", 3500), ("hotel", 3500), ("travel", 3500), ("airfare", 3500), ("airline", 3500),
+    ("car rental", 3400), ("rental car", 3400), ("transportation", 3400), ("fuel", 3400),
+    ("gas", 3400), ("parking", 3400), ("toll", 3400), ("taxi", 3400), ("ride share", 3400),
+    ("meals", 3700), ("restaurant", 3700), ("dining", 3700), ("food", 3700), ("entertainment", 3700),
+    ("shipping", 3600), ("postage", 3600), ("freight", 3600), ("courier", 3600),
+    ("insurance", 6000),
+    ("advertising", 6300), ("marketing", 6300),
+    ("software", 6400), ("subscription", 6400), ("saas", 6400), ("web", 6400),
+    ("office supplies", 6500), ("utilities", 6500), ("bank", 6500), ("fees", 6500),
+]
+# Vendor-name substring → section start code (ordered: specific before generic).
+_VENDOR_KW_TO_SECTION = [
+    ("uber eats", 3700), ("grubhub", 3700), ("doordash", 3700), ("starbucks", 3700),
+    ("mcdonald", 3700), ("chipotle", 3700), ("restaurant", 3700), ("cafe", 3700),
+    ("coffee", 3700), ("pizza", 3700), ("taco", 3700), ("deli", 3700), ("bakery", 3700),
+    ("catering", 3700), ("grill", 3700),
+    ("southwest", 3500), ("delta air", 3500), ("united airlines", 3500),
+    ("american airlines", 3500), ("jetblue", 3500), ("alaska air", 3500), ("spirit air", 3500),
+    ("frontier air", 3500), ("airline", 3500), ("marriott", 3500), ("hilton", 3500),
+    ("hyatt", 3500), ("airbnb", 3500), ("holiday inn", 3500), ("best western", 3500),
+    ("courtyard", 3500), ("residence inn", 3500), ("hotel", 3500), ("motel", 3500),
+    ("uber", 3400), ("lyft", 3400), ("sixt", 3400), ("hertz", 3400), ("enterprise rent", 3400),
+    ("avis", 3400), ("budget rent", 3400), ("zipcar", 3400), ("turo", 3400), ("shell", 3400),
+    ("chevron", 3400), ("exxon", 3400), (" mobil", 3400), ("texaco", 3400), ("valero", 3400),
+    ("parking", 3400), ("fastrak", 3400),
+    ("fedex", 3600), ("usps", 3600), ("dhl", 3600), ("shipstation", 3600), ("pirate ship", 3600),
+    ("freight", 3600), ("postal", 3600),
+    ("insurance", 6000), ("geico", 6000), ("state farm", 6000), ("hiscox", 6000), ("allstate", 6000),
+    ("adobe", 6400), ("frame.io", 6400), ("dropbox", 6400), ("amazon web", 6400), ("microsoft", 6400),
+    ("github", 6400), ("openai", 6400), ("anthropic", 6400), ("figma", 6400), ("notion", 6400),
+    ("b&h", 2600), ("bhphoto", 2600), ("adorama", 2600), ("lensrental", 2600),
+    ("lens rental", 2600), ("filmtools", 2600), ("sandisk", 2600),
+]
+
+
+def _intuit_section(vendor, veryfi_cat):
+    """Best-guess master COA section start for an uncoded expense, or None.
+    Prefers Veryfi's own category; falls back to vendor-name keywords."""
+    vc = (veryfi_cat or '').strip().lower()
+    if vc:
+        for kw, code in _VERYFI_CAT_TO_SECTION:
+            if kw in vc:
+                return code
+    vn = (vendor or '').strip().lower()
+    if vn:
+        for kw, code in _VENDOR_KW_TO_SECTION:
+            if kw in vn:
+                return code
+    return None
+
+
 def _match_vendor_suggestions(transactions, cands):
     """cands: list of (line_id, code, desc, token_set). Returns
     {txn_id: {line_id, code, label}} for uncoded txns with a confident
@@ -529,7 +588,27 @@ def _actuals_vendor_suggestions(pid):
                 .filter(Transaction.budget_line_id.is_(None),
                         Transaction.account_code.is_(None))
                 .all())
-        return _match_vendor_suggestions(txns, cands)
+        out = _match_vendor_suggestions(txns, cands)
+        # Section-level fallback: for uncoded txns with NO specific-line match,
+        # intuit the master category (Travel / Shipping / Insurance / …) from
+        # Veryfi's category or the vendor name. Encoded as line_id="section:N"
+        # so the existing chip + picker apply path codes it section-only — the
+        # user then subdivides in the Coded-expenses tab. (User 2026-06-16.)
+        _doc_ids = {t.doc_upload_id for t in txns if t.doc_upload_id and t.id not in out}
+        _veryfi_cat = {}
+        if _doc_ids:
+            for d in (DocUpload.query
+                      .with_entities(DocUpload.id, DocUpload.veryfi_category)
+                      .filter(DocUpload.id.in_(_doc_ids)).all()):
+                _veryfi_cat[d.id] = d.veryfi_category
+        for t in txns:
+            if t.id in out or getattr(t, 'not_project_expense', False):
+                continue
+            sec = _intuit_section(t.vendor, _veryfi_cat.get(t.doc_upload_id))
+            if sec is not None:
+                out[t.id] = {"line_id": f"section:{sec}", "code": sec,
+                             "label": _section_name(sec), "kind": "section"}
+        return out
     except Exception as _e:
         logging.warning(f"[actuals] vendor→line suggestion recompute failed (pid={pid}): {_e}")
         return {}

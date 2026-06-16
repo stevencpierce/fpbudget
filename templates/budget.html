@@ -6634,8 +6634,8 @@
                 <button type="button" class="actuals-suggest-btn"
                         data-tid="{{ t.id }}" data-line-id="{{ _sug.line_id }}"
                         onclick="actualsApplySuggestion(this)"
-                        title="Smart match from the vendor name — click to code to {{ _sug.code }} · {{ _sug.label }}"
-                        style="flex-shrink:0;font-size:.62rem;padding:1px 5px;background:#10231a;border:1px solid #1f6f4a;border-radius:4px;color:#5fd0a0;cursor:pointer;white-space:nowrap;max-width:80px;overflow:hidden;text-overflow:ellipsis">💡 {{ _sug.code }}</button>
+                        title="{% if _sug.kind == 'section' %}Looks like {{ _sug.label }} — click to drop into that category (subdivide later){% else %}Smart match from the vendor name — click to code to {{ _sug.code }} · {{ _sug.label }}{% endif %}"
+                        style="flex-shrink:0;font-size:.62rem;padding:1px 5px;background:#10231a;border:1px solid #1f6f4a;border-radius:4px;color:#5fd0a0;cursor:pointer;white-space:nowrap;max-width:90px;overflow:hidden;text-overflow:ellipsis">{% if _sug.kind == 'section' %}📂 {{ _sug.label }}{% else %}💡 {{ _sug.code }}{% endif %}</button>
                 {% endif %}
                 {# Lazy picker: seed with ONLY the current assignment (so a coded
                    row still SHOWS its line at a glance) — the full ~300-option
@@ -6789,7 +6789,7 @@
             {% if _sug and not _coded %}
             <button type="button" class="code-sugg" data-tid="{{ t.id }}" data-line-id="{{ _sug.line_id }}"
                     onclick="codeApplySuggestion(this)"
-                    title="Code to {{ _sug.code }} · {{ _sug.label }}">💡 {{ _sug.code }}</button>
+                    title="{% if _sug.kind == 'section' %}Looks like {{ _sug.label }} — drop into that category{% else %}Code to {{ _sug.code }} · {{ _sug.label }}{% endif %}">{% if _sug.kind == 'section' %}📂 {{ _sug.label }}{% else %}💡 {{ _sug.code }}{% endif %}</button>
             {% endif %}
             <select class="actuals-line-picker code-picker" data-tid="{{ t.id }}" data-current="{{ _cur }}"
                     data-populated="0" onfocus="_actualsFillPicker(this)" onchange="codeSetLine(this)"
@@ -7664,8 +7664,13 @@
           }
           chip.dataset.tid    = tid;
           chip.dataset.lineId = s.line_id;
-          chip.title = `Smart match from the vendor name — click to code to ${s.code} · ${s.label}`;
-          chip.textContent = `💡 ${s.code} · ${s.label}`;
+          if (s.kind === 'section') {
+            chip.title = `Looks like ${s.label} — click to drop into that category (subdivide later)`;
+            chip.textContent = `📂 ${s.label}`;
+          } else {
+            chip.title = `Smart match from the vendor name — click to code to ${s.code} · ${s.label}`;
+            chip.textContent = `💡 ${s.code} · ${s.label}`;
+          }
         });
       } catch (e) { /* silent — suggestions are best-effort */ }
       finally { _actualsSuggestRefreshing = false; }
