@@ -6365,6 +6365,11 @@
              (auto-clones Working → Actual on first link). #}
       <div style="position:sticky;top:14px;max-height:calc(100vh - 80px);display:flex;flex-direction:column">
         <h4 style="margin:0 0 8px;font-size:.84rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Chart of Accounts</h4>
+        {# Recently-used coding targets (User 2026-06-16): the last few lines/
+           sections you dropped onto, pinned at the top so you can re-code a
+           run of similar charges without re-expanding the tree. Populated by
+           JS from localStorage. #}
+        <div id="coa-recent" style="display:none;margin-bottom:8px"></div>
         <div style="overflow-y:auto;flex:1;padding-right:2px">
           {# Wrapped in .coa-section so the drop-target handler (which
              selects .coa-section elements) picks it up — without the
@@ -9695,6 +9700,83 @@
       });
     });
 
+    // Single-highlight guarantee (User 2026-06-16): per-element dragleave is
+    // unreliable (it fires when crossing child nodes), so drop-target boxes
+    // piled up. Clear EVERY COA highlight before lighting the current target,
+    // and wipe them all when the drag ends.
+    window._coaClearHighlights = function () {
+      document.querySelectorAll('#tab-actuals .coa-item, #tab-actuals .coa-line').forEach(el => {
+        el.style.outline = ''; el.style.outlineOffset = '';
+        el.style.background = ''; el.style.borderColor = ''; el.style.color = '';
+      });
+    };
+    document.addEventListener('dragend', () => window._coaClearHighlights());
+
+    // ── Recently-used coding targets (User 2026-06-16) ─────────────────────
+    // The last few lines/sections you dropped onto, pinned at the top of the
+    // COA sidebar as drop targets — re-code a run of similar charges without
+    // re-expanding the tree. Stored per-project in localStorage.
+    const _recentKey = 'fpRecentCoa.' + PROJ_ID;
+    function _recentLoad() { try { return JSON.parse(localStorage.getItem(_recentKey) || '[]'); } catch (e) { return []; } }
+    window._recordRecent = function (entry) {
+      if (!entry || (entry.code === 'not_project')) return;
+      let list = _recentLoad();
+      const key = o => o.kind + ':' + (o.lineId != null ? ('L' + o.lineId) : ('S' + o.code));
+      list = list.filter(x => key(x) !== key(entry));
+      list.unshift(entry);
+      try { localStorage.setItem(_recentKey, JSON.stringify(list.slice(0, 5))); } catch (e) {}
+      _renderRecent();
+    };
+    async function _coaApplyDrop(opts) {
+      const tids = (_draggingTxn && _draggingTxn.tids) || [];
+      if (!tids.length) return;
+      let ok = 0, fail = 0;
+      for (const tid of tids) {
+        try {
+          const r = (opts.lineId != null)
+            ? await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-line`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ budget_line_id: parseInt(opts.lineId) }) })
+            : await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account_code: opts.code, account_code_name: opts.name || '' }) });
+          if (r.ok) { ok++; if (typeof _refreshRowAfterCode === 'function') _refreshRowAfterCode(tid, opts.code !== 'not_project', opts.code === 'not_project'); } else fail++;
+        } catch (e) { fail++; }
+      }
+      if (typeof _actualsToast === 'function') _actualsToast(`${ok} coded${fail ? ` (${fail} failed)` : ''}.`, fail ? 'yellow' : 'green');
+      if (typeof actualsBulkClear === 'function') actualsBulkClear();
+    }
+    function _renderRecent() {
+      const host = document.getElementById('coa-recent');
+      if (!host) return;
+      const list = _recentLoad();
+      if (!list.length) { host.style.display = 'none'; host.innerHTML = ''; return; }
+      host.style.display = '';
+      host.innerHTML = '<div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:4px;display:flex;align-items:center">★ Recently used<a href="#" id="coa-recent-clear" style="margin-left:auto;color:var(--text-muted);font-size:.6rem;text-decoration:none">clear</a></div>';
+      list.forEach(e => {
+        const isLine = e.kind === 'line';
+        const el = document.createElement('div');
+        el.style.cssText = 'padding:6px 9px;margin-bottom:3px;border-radius:5px;border:1px solid var(--border);background:var(--bg-card);font-size:.78rem;display:flex;align-items:center;gap:6px';
+        el.innerHTML = '<span style="color:var(--text-muted);flex-shrink:0;font-size:.7rem">' + (isLine ? '🏷' : '📂') + '</span>'
+          + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">' + ((e.label || e.name || e.code || '') + '').replace(/</g, '&lt;') + '</span>'
+          + '<span style="color:var(--text-muted);flex-shrink:0;font-size:.66rem">' + (e.code || '') + '</span>';
+        el.addEventListener('dragover', ev => {
+          if (!_draggingTxn) return;
+          ev.preventDefault(); ev.stopPropagation(); ev.dataTransfer.dropEffect = 'move';
+          window._coaClearHighlights();
+          el.style.background = '#1a3a2a'; el.style.borderColor = '#2a5a3a';
+        });
+        el.addEventListener('dragleave', () => { el.style.background = 'var(--bg-card)'; el.style.borderColor = 'var(--border)'; });
+        el.addEventListener('drop', async ev => {
+          if (!_draggingTxn) return;
+          ev.preventDefault(); ev.stopPropagation();
+          el.style.background = 'var(--bg-card)'; el.style.borderColor = 'var(--border)';
+          await _coaApplyDrop(isLine ? { lineId: e.lineId, code: e.code } : { code: e.code, name: e.name });
+          _recordRecent(e);   // bump it back to the top
+        });
+        host.appendChild(el);
+      });
+      const clr = document.getElementById('coa-recent-clear');
+      if (clr) clr.addEventListener('click', ev => { ev.preventDefault(); try { localStorage.removeItem(_recentKey); } catch (e) {} _renderRecent(); });
+    }
+    _renderRecent();
+
     // Section drop target: hover-to-expand + drop = quick-code.
     document.querySelectorAll('.coa-section').forEach(section => {
       const header = section.querySelector('.coa-item[data-droptarget="section"]');
@@ -9706,6 +9788,7 @@
         if (!_draggingTxn) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
+        window._coaClearHighlights();
         header.style.outline = '2px solid var(--blue)';
         header.style.outlineOffset = '-2px';
         // Schedule expand if we have lines and they're collapsed.
@@ -9755,6 +9838,7 @@
           _actualsToast(`${ok} marked not project${fail ? ` (${fail} failed)` : ''}.`, fail ? 'yellow' : 'green');
         } else {
           _actualsToast(`${ok} coded to ${code} · ${name}${fail ? ` (${fail} failed)` : ''}.`, fail ? 'yellow' : 'green');
+          if (ok) _recordRecent({ kind: 'section', code: code, name: name, label: name });
         }
         actualsBulkClear();
       });
@@ -9767,6 +9851,7 @@
         e.preventDefault();
         e.stopPropagation();
         e.dataTransfer.dropEffect = 'move';
+        window._coaClearHighlights();
         lineEl.style.background = '#1a3a2a';
         lineEl.style.borderColor = '#2a5a3a';
         lineEl.style.color = 'var(--green)';
@@ -9841,6 +9926,8 @@
         } else {
           _actualsToast(`${ok} linked${fail ? ` (${fail} failed)` : ''}.`, fail ? 'yellow' : 'green');
         }
+        if (ok) _recordRecent({ kind: 'line', lineId: lineEl.dataset.lineId, code: lineEl.dataset.code,
+                                name: lineEl.dataset.name, label: lineEl.dataset.lineDesc || lineEl.dataset.name });
         actualsBulkClear();
         // After auto-init the dropdown options are stale (they were
         // built from Estimated lines before Working/Actual existed).
