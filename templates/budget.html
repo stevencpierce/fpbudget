@@ -12624,87 +12624,119 @@ window.saveInlinePo = async function() {
       if (chev) chev.textContent = open ? '▸' : '▾';
     });
   });
-  // Drag-drop reassignment: drag a .actual-txn-subrow onto another
-  // line-row (assign to that line) or onto a .section-block (section-
-  // only). Calls the existing /set-line or /set-coa endpoints.
-  let _draggingTxnSub = null;
+  // Drag-drop reassignment with multi-select (2026-06-16). Click subrows to
+  // select (clear highlight + count), then drag any selected one to move the
+  // whole set onto a line (/set-line) or section header (/set-coa); many rows
+  // go through the bulk endpoint. Reload preserves scroll so it doesn't feel
+  // like a jump. Dragging an UNSELECTED row just moves that one.
+  const _selTids = new Set();
+  let _draggingTids = null;
+  const _allSubrows = () => document.querySelectorAll('.actual-txn-subrow');
+  function _paintSel() {
+    _allSubrows().forEach(r => {
+      const on = _selTids.has(parseInt(r.dataset.tid));
+      r.style.background    = on ? 'rgba(91,138,249,.20)' : '';
+      r.style.outline       = on ? '2px solid #5b8af9' : '';
+      r.style.outlineOffset = on ? '-2px' : '';
+    });
+    const hint = document.getElementById('txn-sel-hint');
+    if (hint) {
+      if (_selTids.size) { hint.style.display = ''; hint.querySelector('span').textContent =
+        _selTids.size + ' selected — drag any one onto a line or section'; }
+      else hint.style.display = 'none';
+    }
+  }
+  if (!document.getElementById('txn-sel-hint')) {
+    const h = document.createElement('div');
+    h.id = 'txn-sel-hint';
+    h.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:9999;'
+      + 'display:none;background:#15203a;border:1px solid #5b8af9;color:#cfe0ff;padding:6px 14px;'
+      + 'border-radius:18px;font-size:.78rem;box-shadow:0 2px 12px rgba(0,0,0,.45)';
+    h.innerHTML = '<span></span> · <a href="#" id="txn-sel-clear" style="color:#9bbcff;text-decoration:none">clear</a>';
+    document.body.appendChild(h);
+    h.querySelector('#txn-sel-clear').addEventListener('click', ev => { ev.preventDefault(); _selTids.clear(); _paintSel(); });
+  }
+  function _saveScrollThenReload() {
+    try {
+      const m = window.location.pathname.match(/\/projects\/(\d+)\//);
+      const pid = m ? m[1] : 'x';
+      sessionStorage.setItem('fpbudget.scrollY.' + pid, String(window.scrollY));
+      sessionStorage.setItem('fpbudget.scrollAt.' + pid, String(Date.now()));
+    } catch (_) {}
+    window.location.reload();
+  }
+  async function _assignDragged(opts) {
+    const tids = _draggingTids || [];
+    if (!tids.length) return;
+    const lineId = opts.lineId, code = opts.code;
+    try {
+      let r;
+      if (tids.length === 1) {
+        const url = (lineId != null)
+          ? `/projects/${PID}/actuals/transaction/${tids[0]}/set-line`
+          : `/projects/${PID}/actuals/transaction/${tids[0]}/set-coa`;
+        const body = (lineId != null) ? { budget_line_id: lineId } : { account_code: code };
+        r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      } else {
+        const body = (lineId != null)
+          ? { transaction_ids: tids, budget_line_id: lineId }
+          : { transaction_ids: tids, account_code: code };
+        r = await fetch(`/projects/${PID}/actuals/transactions/set-line-bulk`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      }
+      if (!r.ok) { const j = await r.json().catch(() => ({})); alert('Reassign failed: ' + (j.error || r.status)); return; }
+      _selTids.clear();
+      _saveScrollThenReload();
+    } catch (err) { alert('Reassign failed: ' + err.message); }
+  }
   document.querySelectorAll('.actual-txn-subrow').forEach(sub => {
+    const tid = parseInt(sub.dataset.tid);
+    sub.addEventListener('click', e => {
+      if (e.target.closest('a, button, input, select, textarea')) return;  // let inner controls work
+      if (_selTids.has(tid)) _selTids.delete(tid); else _selTids.add(tid);
+      _paintSel();
+    });
     sub.addEventListener('dragstart', e => {
-      _draggingTxnSub = { tid: parseInt(sub.dataset.tid) };
-      sub.style.opacity = '.4';
+      _draggingTids = (_selTids.has(tid) && _selTids.size) ? Array.from(_selTids) : [tid];
       e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', 'txn:' + sub.dataset.tid);
+      e.dataTransfer.setData('text/plain', 'txn:' + _draggingTids.join(','));
+      _draggingTids.forEach(t => { const r = document.querySelector('.actual-txn-subrow[data-tid="' + t + '"]'); if (r) r.style.opacity = '.45'; });
     });
     sub.addEventListener('dragend', () => {
-      sub.style.opacity = '';
-      _draggingTxnSub = null;
+      _allSubrows().forEach(r => { r.style.opacity = ''; });
+      _draggingTids = null; _paintSel();
     });
   });
-  // Drop on a line row → /set-line
+  // Drop on a line row → assign (bulk if multi-selected)
   document.querySelectorAll('.line-row').forEach(row => {
     row.addEventListener('dragover', e => {
-      if (!_draggingTxnSub) return;
-      e.preventDefault();
-      e.stopPropagation();
-      row.style.outline = '2px solid #22c55e';
-      row.style.outlineOffset = '-2px';
+      if (!_draggingTids) return;
+      e.preventDefault(); e.stopPropagation();
+      row.style.outline = '2px solid #22c55e'; row.style.outlineOffset = '-2px';
     });
     row.addEventListener('dragleave', () => { row.style.outline = ''; });
-    row.addEventListener('drop', async e => {
-      if (!_draggingTxnSub) return;
-      e.preventDefault();
-      e.stopPropagation();
+    row.addEventListener('drop', e => {
+      if (!_draggingTids) return;
+      e.preventDefault(); e.stopPropagation();
       row.style.outline = '';
-      const lineId = parseInt(row.dataset.id);
-      const tid    = _draggingTxnSub.tid;
-      try {
-        const r = await fetch(`/projects/${PID}/actuals/transaction/${tid}/set-line`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ budget_line_id: lineId }),
-        });
-        if (!r.ok) {
-          const j = await r.json().catch(() => ({}));
-          alert('Reassign failed: ' + (j.error || r.status));
-          return;
-        }
-        // Reload to re-render the line groupings — cheap and the user
-        // expects to see the moved txn under its new line.
-        window.location.reload();
-      } catch (err) {
-        alert('Reassign failed: ' + err.message);
-      }
+      _assignDragged({ lineId: parseInt(row.dataset.id) });
     });
   });
-  // Drop on a section header → /set-coa (section-only)
+  // Drop on a section header → section-only (bulk if multi-selected)
   document.querySelectorAll('.section-block').forEach(block => {
     const header = block.querySelector('.section-header');
     if (!header) return;
     header.addEventListener('dragover', e => {
-      if (!_draggingTxnSub) return;
+      if (!_draggingTids) return;
       e.preventDefault();
       header.style.outline = '2px solid #a855f7';
     });
     header.addEventListener('dragleave', () => { header.style.outline = ''; });
-    header.addEventListener('drop', async e => {
-      if (!_draggingTxnSub) return;
+    header.addEventListener('drop', e => {
+      if (!_draggingTids) return;
       e.preventDefault();
       header.style.outline = '';
-      const code = block.dataset.section;
-      const tid  = _draggingTxnSub.tid;
-      try {
-        const r = await fetch(`/projects/${PID}/actuals/transaction/${tid}/set-coa`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ account_code: code }),
-        });
-        if (!r.ok) {
-          const j = await r.json().catch(() => ({}));
-          alert('Reassign failed: ' + (j.error || r.status));
-          return;
-        }
-        window.location.reload();
-      } catch (err) {
-        alert('Reassign failed: ' + err.message);
-      }
+      _assignDragged({ code: block.dataset.section });
     });
   });
 })();
