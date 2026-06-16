@@ -5840,6 +5840,15 @@
   <style>
     #tab-actuals .actuals-txn-row{ transition: box-shadow .2s ease; }
     #tab-actuals .actuals-txn-row[data-fulfill="3"]{ box-shadow: inset 3px 0 0 #74c69d; }
+    /* Linked pair (charge + receipt) that is STILL UNCODED — amber stripe so it
+       doesn't get lost in the collapsed "Linked" band after a drag-upload.
+       (User 2026-06-16: "uploaded a receipt to an uncoded charge, it left
+       Needs-coding and I couldn't find it.") */
+    #tab-actuals .actuals-txn-row[data-has-doc="1"][data-has-txn="1"][data-coded="0"]{
+      box-shadow: inset 3px 0 0 #e0a040; }
+    #tab-actuals .actuals-txn-row[data-has-doc="1"][data-has-txn="1"][data-coded="0"] .ax-cell-line::after{
+      content:"needs coding"; font-size:.58rem; color:#e0a040; margin-left:6px;
+      border:1px solid #5a4520; border-radius:3px; padding:0 4px; white-space:nowrap; }
 
     #tab-actuals .ax-cells{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;
                             width:552px; flex-shrink:0; }
@@ -9589,9 +9598,21 @@
           _actualsToast('This transaction already has a receipt linked. Open it to replace.', 'yellow');
           return;
         }
-        // Visual progress indicator on the row.
-        const prev = row.style.background;
-        row.style.background = '#1a2540';
+        // Clear, unmistakable progress on the row: pulsing outline + an
+        // inline "uploading / reading receipt" badge. (User 2026-06-16 —
+        // the faint tint wasn't visible enough; "I didn't know it was working".)
+        const prevBg = row.style.background, prevOutline = row.style.outline;
+        row.style.background = '#15203a';
+        row.style.outline = '2px solid var(--blue)';
+        row.style.outlineOffset = '-2px';
+        const badge = document.createElement('div');
+        badge.textContent = '⏳ Uploading & reading receipt…';
+        badge.style.cssText = 'position:absolute;top:2px;right:6px;z-index:5;font-size:.66rem;'
+          + 'background:#15203a;border:1px solid var(--blue);color:#cfe0ff;padding:2px 8px;border-radius:10px';
+        const _prevPos = row.style.position; row.style.position = 'relative';
+        row.appendChild(badge);
+        if (typeof _actualsToast === 'function') _actualsToast('⏳ Uploading receipt — reading it with OCR…', 'yellow');
+        const _restore = () => { row.style.background = prevBg; row.style.outline = prevOutline; row.style.position = _prevPos; badge.remove(); };
         const fd = new FormData();
         fd.append('file', file);
         try {
@@ -9599,15 +9620,23 @@
             method: 'POST', body: fd,
           });
           const d = await r.json();
-          row.style.background = prev;
           if (!r.ok) {
+            _restore();
             _actualsToast('Upload failed: ' + (d.error || r.status), 'red');
             return;
           }
-          _actualsToast(`Receipt uploaded and linked: ${d.filed_filename || file.name}`, 'green');
-          setTimeout(() => window.location.reload(), 800);
+          badge.textContent = '✓ Linked';
+          // Tell the user EXACTLY where it went: a receipt-link moves the row
+          // into the Linked group; if it's still uncoded it stays flagged
+          // "needs coding" (amber). Avoids the "where did it go?" confusion.
+          const _coded = row.dataset.coded === '1';
+          _actualsToast(_coded
+            ? `Receipt linked: ${d.filed_filename || file.name}. Now in the Linked group.`
+            : `Receipt linked: ${d.filed_filename || file.name}. It moved to “Linked” and is flagged “needs coding” (amber) — still needs a budget line.`,
+            'green');
+          setTimeout(() => window.location.reload(), 1100);
         } catch (err) {
-          row.style.background = prev;
+          _restore();
           _actualsToast('Upload error: ' + err.message, 'red');
         }
       });
