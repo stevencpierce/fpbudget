@@ -7873,6 +7873,101 @@ def actuals_match_candidates(pid):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/projects/<int:pid>/actuals/split-candidates", methods=["POST"])
+@login_required
+def actuals_split_candidates(pid):
+    """Detect split receipts (one receipt = sum of several charges). Body:
+    {date_window (default 5), card}. (User 2026-06-16.)"""
+    ProjectSheet.query.get_or_404(pid)
+    body = request.get_json(silent=True) or {}
+    try:
+        date_window = max(0, int(body.get('date_window') or 5))
+    except (TypeError, ValueError):
+        date_window = 5
+    card = body.get('card') or None
+    from actuals import find_split_candidates
+    try:
+        return jsonify(find_split_candidates(pid, date_window=date_window, card=card))
+    except Exception as e:
+        logging.exception("[actuals] split-candidates failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/projects/<int:pid>/actuals/link-split", methods=["POST"])
+@login_required
+def actuals_link_split(pid):
+    """Link ONE receipt to MULTIPLE charges as an intentional split. Body:
+    {keeper_doc_id, charge_tids:[...], remove_doc_ids:[...]}. Each charge gets
+    doc_upload_id=keeper, match_status='confirmed', and a shared split_group;
+    the keeper's own doc-source row is removed (it's now backing real charges),
+    and any redundant duplicate receipts (the same file uploaded once per line)
+    are folded into the keeper. (User 2026-06-16.)"""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden"}), 403
+    ProjectSheet.query.get_or_404(pid)
+    data = request.get_json(force=True) or {}
+    try:
+        keeper = int(data.get('keeper_doc_id'))
+        tids = [int(t) for t in (data.get('charge_tids') or [])]
+    except (TypeError, ValueError):
+        return jsonify({"error": "keeper_doc_id and charge_tids required"}), 400
+    remove = []
+    for x in (data.get('remove_doc_ids') or []):
+        try:
+            if int(x) != keeper:
+                remove.append(int(x))
+        except (TypeError, ValueError):
+            pass
+    if not keeper or len(tids) < 2:
+        return jsonify({"error": "Need a receipt and at least two charges to split."}), 400
+    doc = DocUpload.query.filter_by(id=keeper, project_id=pid).first()
+    if not doc:
+        return jsonify({"error": "Receipt not on this project"}), 404
+    sg = f"SG-{keeper}"
+    linked = 0
+    for tid in tids:
+        txn = Transaction.query.filter_by(id=tid, project_id=pid).first()
+        if not txn:
+            continue
+        txn.doc_upload_id = keeper
+        txn.match_status = 'confirmed'
+        txn.split_group = sg
+        if not txn.vendor and doc.vendor:
+            txn.vendor = doc.vendor
+        if txn.source in ('qbo_sync', 'csv_import'):
+            txn.source = 'reconciled'
+        txn.updated_at = datetime.utcnow()
+        linked += 1
+    # The keeper's OWN auto-created doc_upload row is now redundant (the receipt
+    # is backing real charges) — drop it so it isn't double-counted.
+    Transaction.query.filter_by(doc_upload_id=keeper, source='doc_upload').delete(synchronize_session=False)
+    # Fold redundant duplicate receipts into the keeper.
+    folded = 0
+    for rid in remove:
+        rdoc = DocUpload.query.filter_by(id=rid, project_id=pid).first()
+        if not rdoc:
+            continue
+        # Any charge still pointing at the dup → repoint to the keeper.
+        Transaction.query.filter(Transaction.project_id == pid,
+                                 Transaction.doc_upload_id == rid,
+                                 Transaction.source != 'doc_upload').update(
+            {"doc_upload_id": keeper}, synchronize_session=False)
+        Transaction.query.filter_by(doc_upload_id=rid, source='doc_upload').delete(synchronize_session=False)
+        rdoc.is_duplicate = True
+        rdoc.duplicate_of_id = keeper
+        rdoc.status = 'duplicate'
+        folded += 1
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='transaction_match', entity_id=keeper,
+                      entity_label=f'Split receipt #{keeper}', project_id=pid,
+                      note=f'Linked receipt #{keeper} to {linked} charges as a split'
+                           + (f'; folded {folded} duplicate receipt(s)' if folded else ''))
+    except Exception:
+        pass
+    return jsonify({"ok": True, "linked": linked, "folded": folded, "split_group": sg})
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/mark-not-project", methods=["POST"])
 @login_required
 def actuals_mark_not_project(pid, tid):
@@ -21050,6 +21145,9 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS card_last4 VARCHAR(8)",
                 "ALTER TABLE transaction "
                 "  ADD COLUMN IF NOT EXISTS card_last4 VARCHAR(8)",
+                # 2026-06-16 — split receipts (one receipt backs N charges).
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS split_group VARCHAR(40)",
                 # 2026-06-01 — per-location required-doc checklist (comma-sep keys).
                 "ALTER TABLE location "
                 "  ADD COLUMN IF NOT EXISTS required_docs TEXT",

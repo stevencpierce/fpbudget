@@ -1003,6 +1003,105 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
     }
 
 
+def find_split_candidates(project_id, date_window=5, card=None, max_combo=3):
+    """Detect SPLIT receipts — one receipt whose total equals the SUM of several
+    unmatched charges (e.g. Turo posts a rental as two card charges). The card
+    statement shows the individual charges; the receipt shows the total, so
+    `total == sum(charges)` is the tell. Conservative on purpose: candidate
+    charges must share the receipt's card OR have a strong vendor match, fall
+    within ±date_window days, each be smaller than the total, and a 2–3 charge
+    combination must sum to the total within ±$0.02. (User 2026-06-16.)"""
+    import datetime as _dt, itertools as _it
+
+    charges = (Transaction.query
+               .filter(Transaction.project_id == project_id,
+                       Transaction.source.in_(('qbo_sync', 'csv_import')),
+                       Transaction.match_status == 'unmatched',
+                       Transaction.doc_upload_id.is_(None),
+                       Transaction.not_project_expense == False)  # noqa: E712
+               .all())
+    doc_open = (Transaction.query
+                .filter_by(project_id=project_id, source='doc_upload',
+                           not_project_expense=False).all())
+    _dup = {r[0] for r in db.session.query(DocUpload.id).filter(
+        DocUpload.project_id == project_id,
+        db.or_(DocUpload.is_duplicate == True, DocUpload.status == 'duplicate',  # noqa: E712
+               DocUpload.status == 'deleted')).all()}
+    _proof = {r[0] for r in db.session.query(DocUpload.id).filter(
+        DocUpload.project_id == project_id,
+        DocUpload.category.in_(('receipt', 'invoice'))).all()}
+    taken = {t.doc_upload_id for t in Transaction.query.filter(
+        Transaction.project_id == project_id,
+        Transaction.source.in_(('qbo_sync', 'csv_import')),
+        Transaction.doc_upload_id.isnot(None)).all() if t.doc_upload_id}
+    docmeta = {}
+    _ids = [t.doc_upload_id for t in doc_open if t.doc_upload_id]
+    if _ids:
+        for d in DocUpload.query.filter(DocUpload.id.in_(set(_ids))).all():
+            docmeta[d.id] = {"file": d.filed_filename or d.original_filename or f"Doc #{d.id}",
+                             "card": d.card_last4,
+                             "is_image": bool(d.content_type and d.content_type.startswith('image/'))}
+    card = (str(card).strip() if card not in (None, '', 'any', 'Any', 'all') else None)
+
+    def _pdate(s):
+        try:
+            return _dt.date.fromisoformat(s[:10])
+        except (TypeError, ValueError):
+            return None
+    crows = [(c, float(c.amount), _pdate(c.txn_date)) for c in charges
+             if c.amount is not None and c.txn_date]
+
+    results = []
+    for d in doc_open:
+        did = d.doc_upload_id
+        if (not did or did in _dup or did not in _proof or did in taken
+                or d.amount is None or not d.txn_date):
+            continue
+        total = round(float(d.amount), 2)
+        ddate = _pdate(d.txn_date)
+        if not ddate:
+            continue
+        dcard = (docmeta.get(did, {}).get('card') or '').strip()
+        if card and dcard != card:
+            continue
+        cands = []
+        for c, camt, cdate in crows:
+            if camt >= total - 0.005:        # a single ~= total is a 1:1 match, not a split
+                continue
+            if cdate and abs((cdate - ddate).days) > date_window:
+                continue
+            ccard = (getattr(c, 'card_last4', None) or '').strip()
+            same_card = bool(dcard and ccard and dcard == ccard)
+            if not (same_card or _vendor_similarity(d.vendor, c.vendor) >= 0.45):
+                continue
+            cands.append((c, camt, cdate, same_card))
+        if len(cands) < 2:
+            continue
+        cands = cands[:12]                   # bound the subset-sum search
+        found = None
+        for n in range(2, max_combo + 1):
+            for combo in _it.combinations(cands, n):
+                if abs(round(sum(x[1] for x in combo), 2) - total) <= 0.02:
+                    found = combo
+                    break
+            if found:
+                break
+        if not found:
+            continue
+        m = docmeta.get(did, {})
+        results.append({
+            "doc": {"id": did, "file": m.get("file"), "is_image": m.get("is_image", False),
+                    "vendor": d.vendor, "amount": total,
+                    "date": d.txn_date[:10] if d.txn_date else None, "card": dcard or None},
+            "charges": [{"tid": x[0].id, "vendor": x[0].vendor, "amount": x[1],
+                         "date": x[0].txn_date[:10] if x[0].txn_date else None,
+                         "card": (getattr(x[0], 'card_last4', None) or None),
+                         "same_card": x[3]} for x in found],
+            "total": total, "n": len(found),
+        })
+    return {"splits": results[:100], "count": len(results)}
+
+
 def confirm_match(qbo_transaction_id):
     """User confirms a suggested match. Merges the doc_upload txn into
     the qbo_sync txn — the QBO row keeps its identity (it's the bank

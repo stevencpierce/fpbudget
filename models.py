@@ -122,6 +122,13 @@ class Transaction(db.Model):
     match_confidence  = db.Column(db.Numeric(4, 3), nullable=True)
     suggested_budget_line_id = db.Column(db.Integer, db.ForeignKey("budget_line.id"), nullable=True)
     suggested_account_code   = db.Column(db.Integer, nullable=True)
+    # Split receipt (2026-06-16): when ONE receipt backs several charges (e.g.
+    # Turo posts a rental as two card charges), each of those charge rows shares
+    # a split_group id and all point doc_upload_id at the SAME receipt. The
+    # receipt total should equal the sum of the group's amounts. Marks the link
+    # as intentional so the duplicate scan + auto-matcher don't re-flag it, and
+    # lets exports show the shared source + allocation.
+    split_group       = db.Column(db.String(40), nullable=True, index=True)
 
     # ── QBO ingestion fields (used when source='qbo_sync') ─────────────
     qbo_txn_id      = db.Column(db.String(50), nullable=True)

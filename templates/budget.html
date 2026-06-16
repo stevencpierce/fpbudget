@@ -10313,11 +10313,19 @@
       const host = document.getElementById('mr-results');
       host.innerHTML = '<div class="muted" style="padding:20px;text-align:center">Searching…</div>';
       try {
-        const r = await fetch(`/projects/${PROJ_ID}/actuals/match-candidates`, {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ amount_tol, date_window, use_vendor, card }) });
+        // Run the 1:1 candidate search and the split detector together.
+        const [r, sr] = await Promise.all([
+          fetch(`/projects/${PROJ_ID}/actuals/match-candidates`, {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ amount_tol, date_window, use_vendor, card }) }),
+          fetch(`/projects/${PROJ_ID}/actuals/split-candidates`, {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ date_window: (date_window==='off'?14:date_window), card }) }),
+        ]);
         const d = await r.json();
         if (!r.ok) { host.innerHTML = '<div style="padding:20px;color:#e08080">Error: '+(d.error||r.status)+'</div>'; return; }
+        let splits = [];
+        try { const sd = await sr.json(); if (sr.ok) splits = sd.splits || []; } catch (e) {}
         // Populate the card dropdown from the available cards (keep selection).
         const cardSel = document.getElementById('mr-card');
         if (cardSel && d.available_cards) {
@@ -10326,15 +10334,41 @@
             d.available_cards.map(c => `<option value="${c}"${c===cur?' selected':''}>•• ${c}</option>`).join('');
           cardSel.value = cur;
         }
-        mrRender(d);
+        mrRender(d, splits);
       } catch (e) { host.innerHTML = '<div style="padding:20px;color:#e08080">Error: '+e.message+'</div>'; }
     };
-    window.mrRender = function (d) {
+    window._mrSplits = {};
+    window.mrRender = function (d, splits) {
       const host = document.getElementById('mr-results');
-      document.getElementById('mr-count').textContent = (d.charges_with_candidates||0) + ' charges with candidates';
-      if (!d.results || !d.results.length) { host.innerHTML = '<div class="muted" style="padding:24px;text-align:center">No candidates within these criteria — loosen the amount or date.</div>'; return; }
+      splits = splits || [];
+      window._mrSplits = {};
+      document.getElementById('mr-count').textContent = (d.charges_with_candidates||0) + ' charges with candidates'
+        + (splits.length ? ` · ${splits.length} possible split${splits.length!==1?'s':''}` : '');
       const esc = s => (s||'').toString().replace(/</g,'&lt;');
-      host.innerHTML = d.results.map(res => {
+      // ── Possible splits (one receipt = sum of several charges) ──
+      let splitHtml = '';
+      if (splits.length) {
+        splitHtml = '<div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:#9bc0ff;margin:0 0 8px">📑 Possible splits — one receipt backs several charges</div>'
+          + splits.map(s => {
+            window._mrSplits[s.doc.id] = s.charges.map(c => c.tid);
+            const thumb = s.doc.is_image ? `<img loading="lazy" src="/docs/upload/${s.doc.id}/raw" style="width:38px;height:48px;object-fit:cover;border-radius:4px">` : '<span style="width:38px;height:48px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-input,#22263a);border-radius:4px">🧾</span>';
+            const rows = s.charges.map(c => `<div style="display:flex;gap:8px;font-size:.74rem;padding:2px 0"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.vendor)} · ${c.date||''}${c.card?' · ••'+c.card:''}</span><span style="font-variant-numeric:tabular-nums">$${_fmcFmt(c.amount)}</span>${c.same_card?'<span class="mr-chip ok">card ✓</span>':''}</div>`).join('');
+            return `<div class="mr-card" data-split="${s.doc.id}" style="border:1px solid #2d4a7a;border-radius:8px;padding:10px 12px;margin-bottom:10px;background:#0f1830">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">${thumb}
+                <div style="flex:1;min-width:0">
+                  <div style="font-weight:600">${esc(s.doc.vendor)||'Receipt'} · $${_fmcFmt(s.doc.total)}<span class="mr-chip ok" style="margin-left:8px">= sum of ${s.n} charges ✓</span></div>
+                  <div style="font-size:.72rem;color:var(--text-muted)">${esc(s.doc.file)}${s.doc.card?' · ••'+s.doc.card:''} · ${s.doc.date||''}</div>
+                </div>
+                <span style="display:flex;gap:6px">
+                  <button type="button" class="btn btn-xs btn-primary" onclick="mrAcceptSplit(${s.doc.id}, this)">✓ Link as split</button>
+                  <button type="button" class="btn btn-xs btn-ghost" onclick="mrSkipSplit(${s.doc.id})">Skip</button>
+                </span>
+              </div>
+              <div style="border-top:1px solid var(--border);padding-top:6px">${rows}</div></div>`;
+          }).join('') + (d.results && d.results.length ? '<div style="height:8px;border-bottom:1px solid var(--border);margin-bottom:12px"></div>' : '');
+      }
+      if ((!d.results || !d.results.length) && !splits.length) { host.innerHTML = '<div class="muted" style="padding:24px;text-align:center">No candidates within these criteria — loosen the amount or date.</div>'; return; }
+      host.innerHTML = splitHtml + (d.results||[]).map(res => {
         const c = res.charge; const conf = Math.round((res.top_confidence||0)*100);
         const cands = res.candidates.map((cd,i) => {
           const sel = res.suggested_doc_id ? cd.doc_upload_id===res.suggested_doc_id : i===0;
@@ -10381,6 +10415,22 @@
       } catch (e) { _actualsToast('Error: '+e.message,'red'); btn.disabled=false; btn.textContent='✓ Confirm'; }
     };
     window.mrSkip = function (cid) { const card=document.querySelector('.mr-card[data-cid="'+cid+'"]'); if (card) card.remove(); };
+    window.mrSkipSplit = function (docId) { const card=document.querySelector('.mr-card[data-split="'+docId+'"]'); if (card) card.remove(); };
+    window.mrAcceptSplit = async function (docId, btn) {
+      const tids = (window._mrSplits || {})[docId] || [];
+      if (tids.length < 2) { _actualsToast('Split needs at least two charges.', 'yellow'); return; }
+      btn.disabled = true; btn.textContent = '…';
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/link-split`, {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ keeper_doc_id: docId, charge_tids: tids }) });
+        const j = await r.json().catch(()=>({}));
+        if (!r.ok) { _actualsToast('Split failed: '+(j.error||r.status),'red'); btn.disabled=false; btn.textContent='✓ Link as split'; return; }
+        const card = document.querySelector('.mr-card[data-split="'+docId+'"]');
+        if (card) { card.style.transition='opacity .3s'; card.style.opacity='0'; setTimeout(()=>card.remove(),300); }
+        _actualsToast(`Split linked — 1 receipt → ${j.linked} charges ✓`,'green');
+      } catch (e) { _actualsToast('Error: '+e.message,'red'); btn.disabled=false; btn.textContent='✓ Link as split'; }
+    };
 
     // ── Reprocess unmatched receipts (background re-OCR) ────────────────
     // Re-OCRs every receipt not yet paired to a charge. Resumable + DB-backed
