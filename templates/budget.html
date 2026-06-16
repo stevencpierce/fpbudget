@@ -10167,7 +10167,7 @@
     // Adjustable amount/date/vendor → per-charge shortlists with confidence.
     // Suggests the top when ≥80% & not a near-tie; always shows alternatives;
     // confirm or switch. Confirm = link-doc then confirm-match (merge).
-    window._mrBuild = function () {
+    window._fmcBuild = function () {
       let m = document.getElementById('match-review-modal');
       if (m) return m;
       m = document.createElement('div');
@@ -10212,13 +10212,13 @@
       mkSeg(m.querySelector('#mr-date'), [{v:'off',l:'Any'},{v:'1',l:'±1d'},{v:'3',l:'±3d'},{v:'5',l:'±5d'},{v:'7',l:'±7d'}], '3');
       return m;
     };
-    window.openMatchReview = function () { const m = window._mrBuild(); m.style.display = ''; mrFind(); };
-    function _mrSegVal(id){ const b=document.querySelector('#'+id+' button.on'); return b?b.dataset.v:null; }
-    function _mrFmt(n){ return Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+    window.openMatchReview = function () { const m = window._fmcBuild(); m.style.display = ''; mrFind(); };
+    function _fmcSeg(id){ const b=document.querySelector('#'+id+' button.on'); return b?b.dataset.v:null; }
+    function _fmcFmt(n){ return Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
     window.mrFind = async function () {
-      const amtSel=_mrSegVal('mr-amt');
+      const amtSel=_fmcSeg('mr-amt');
       const amount_tol = amtSel==='custom' ? (parseFloat(document.getElementById('mr-amt-custom').value)||0) : parseFloat(amtSel);
-      const dSel=_mrSegVal('mr-date');
+      const dSel=_fmcSeg('mr-date');
       const date_window = dSel==='off' ? 'off' : parseInt(dSel);
       const use_vendor = document.getElementById('mr-vendor').checked;
       const host = document.getElementById('mr-results');
@@ -10241,7 +10241,7 @@
         const c = res.charge; const conf = Math.round((res.top_confidence||0)*100);
         const cands = res.candidates.map((cd,i) => {
           const sel = res.suggested_doc_id ? cd.doc_upload_id===res.suggested_doc_id : i===0;
-          const amtChip = cd.amount_delta<0.005 ? '<span class="mr-chip ok">exact $</span>' : '<span class="mr-chip warn">$'+_mrFmt(cd.amount_delta)+' off</span>';
+          const amtChip = cd.amount_delta<0.005 ? '<span class="mr-chip ok">exact $</span>' : '<span class="mr-chip warn">$'+_fmcFmt(cd.amount_delta)+' off</span>';
           const dateChip = cd.day_gap===0 ? '<span class="mr-chip ok">same day</span>' : '<span class="mr-chip mut">'+cd.day_gap+'d apart</span>';
           const vChip = cd.vendor_match ? '<span class="mr-chip ok">vendor ✓</span>' : '<span class="mr-chip mut">diff vendor</span>';
           const thumb = cd.is_image ? `<img loading="lazy" src="/docs/upload/${cd.doc_upload_id}/raw" style="width:38px;height:48px;object-fit:cover;border-radius:4px">` : '<span style="width:38px;height:48px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-input,#22263a);border-radius:4px">🧾</span>';
@@ -10249,7 +10249,7 @@
             <input type="radio" name="mr-${c.id}" value="${cd.doc_upload_id}" ${sel?'checked':''}>${thumb}
             <span style="flex:1;min-width:0">
               <span style="font-size:.78rem;font-weight:500;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(cd.file)||'receipt'}</span>
-              <span style="font-size:.72rem;color:var(--text-muted)">${esc(cd.vendor)} · $${_mrFmt(cd.amount)} · ${cd.date||''}</span>
+              <span style="font-size:.72rem;color:var(--text-muted)">${esc(cd.vendor)} · $${_fmcFmt(cd.amount)} · ${cd.date||''}</span>
               <span style="display:flex;gap:5px;margin-top:2px">${amtChip}${dateChip}${vChip}</span>
             </span>
             <a href="#" onclick="event.preventDefault();window.open('/docs/upload/${cd.doc_upload_id}/raw','_blank')" style="font-size:.7rem;color:#5b8af9">open</a></label>`;
@@ -10259,7 +10259,7 @@
         return `<div class="mr-card" data-cid="${c.id}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;background:var(--bg-card,#1a1d27)">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
             <span style="font-weight:600">${esc(c.vendor)||'Unknown'}</span>
-            <span style="font-size:.78rem;color:var(--text-muted)">$${_mrFmt(c.amount)} · ${c.date||''}${c.card4?' · ••'+c.card4:''}</span>${badge}
+            <span style="font-size:.78rem;color:var(--text-muted)">$${_fmcFmt(c.amount)} · ${c.date||''}${c.card4?' · ••'+c.card4:''}</span>${badge}
             <span style="margin-left:auto;display:flex;gap:6px">
               <button type="button" class="btn btn-xs btn-primary" onclick="mrConfirm(${c.id}, this)">✓ Confirm</button>
               <button type="button" class="btn btn-xs btn-ghost" onclick="mrSkip(${c.id})">Skip</button></span>
