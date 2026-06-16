@@ -912,18 +912,16 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
     d_amounts = [r[0] for r in d_rows]
 
     def _confidence(amt_delta, day_gap, vendor_sim):
+        # Filtering (amount_tol / date_window / use_vendor) decides which pairs
+        # are *eligible*; confidence always scores the ACTUAL closeness so a
+        # coincidental same-amount pair (different vendor, months apart) never
+        # reads as a confident suggestion even with date/vendor filters off.
+        # Amount is primary; date proximity (30-day horizon) + vendor similarity
+        # corroborate. (User 2026-06-16 — fixed the "$20 FedEx ≈ $20 Turboscribe
+        # 163 days apart = 100%" false positive.)
         amt_s = 1.0 if amt_delta < 0.01 else max(0.0, 1.0 - amt_delta / max(amount_tol, 1.0))
-        if date_window is None:
-            date_s = None
-        else:
-            date_s = 1.0 if day_gap == 0 else max(0.0, 1.0 - day_gap / max(float(date_window), 1.0))
-        if use_vendor and date_s is not None:
-            return 0.50 * amt_s + 0.25 * date_s + 0.25 * vendor_sim
-        if use_vendor:
-            return 0.65 * amt_s + 0.35 * vendor_sim
-        if date_s is not None:
-            return 0.65 * amt_s + 0.35 * date_s
-        return amt_s
+        date_s = max(0.0, 1.0 - day_gap / 30.0)
+        return 0.50 * amt_s + 0.30 * date_s + 0.20 * vendor_sim
 
     results = []
     for q in qbo_unmatched:
