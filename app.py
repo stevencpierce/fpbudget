@@ -7862,10 +7862,12 @@ def actuals_match_candidates(pid):
         except (TypeError, ValueError):
             date_window = 3
     use_vendor = bool(body.get('use_vendor'))
+    card = body.get('card') or None
     from actuals import find_match_candidates
     try:
         return jsonify(find_match_candidates(pid, amount_tol=amount_tol,
-                                             date_window=date_window, use_vendor=use_vendor))
+                                             date_window=date_window, use_vendor=use_vendor,
+                                             card=card))
     except Exception as e:
         logging.exception("[actuals] match-candidates failed")
         return jsonify({"error": str(e)}), 500

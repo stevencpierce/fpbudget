@@ -843,7 +843,7 @@ def run_auto_match(project_id):
 
 
 def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
-                          use_vendor=False, limit_charges=300):
+                          use_vendor=False, card=None, limit_charges=300):
     """Configurable candidate finder for the Review-matches screen (User
     2026-06-16). For every still-unmatched electronic charge, return a ranked
     shortlist of candidate receipts that satisfy the criteria, each with a
@@ -894,7 +894,24 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
             doc_meta[d.id] = {
                 "file": d.filed_filename or d.original_filename or f"Doc #{d.id}",
                 "is_image": bool(d.content_type and d.content_type.startswith('image/')),
+                "card": (d.card_last4 or None),
             }
+
+    # Available cards (last-4) across the unmatched charges + open receipts —
+    # lets the UI offer a "card" dropdown; selecting one narrows both sides to
+    # the same card. (User 2026-06-16.) Computed before filtering so the full
+    # list always shows.
+    card = (str(card).strip() if card not in (None, '', 'any', 'Any', 'all') else None)
+    _all_cards = set()
+    for t in qbo_unmatched:
+        _c = (getattr(t, 'card_last4', None) or '').strip()
+        if _c:
+            _all_cards.add(_c)
+    for _m in doc_meta.values():
+        _c = (_m.get('card') or '').strip()
+        if _c:
+            _all_cards.add(_c)
+    available_cards = sorted(_all_cards)
 
     # Build the receipt pool (amount, date) and sort by amount for bisect.
     d_rows = []
@@ -902,6 +919,8 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
         did = d.doc_upload_id
         if (did is None or did in _dup_doc_ids or did not in _proof_doc_ids
                 or did in taken_docs or d.amount is None or not d.txn_date):
+            continue
+        if card and (doc_meta.get(did, {}).get('card') or '').strip() != card:
             continue
         try:
             d_dt = _dt.date.fromisoformat(d.txn_date[:10])
@@ -927,6 +946,8 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
     for q in qbo_unmatched:
         if q.amount is None or not q.txn_date:
             continue
+        if card and (getattr(q, 'card_last4', None) or '').strip() != card:
+            continue
         try:
             q_amt = float(q.amount)
             q_dt = _dt.date.fromisoformat(q.txn_date[:10])
@@ -950,6 +971,7 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
             cands.append({
                 "doc_upload_id": d.doc_upload_id,
                 "file": meta.get("file"), "is_image": meta.get("is_image", False),
+                "card": meta.get("card"),
                 "vendor": d.vendor, "amount": d_amt, "date": d.txn_date[:10] if d.txn_date else None,
                 "amount_delta": round(abs(d_amt - q_amt), 2),
                 "day_gap": day_gap, "vendor_match": vendor_sim >= 0.45,
@@ -973,7 +995,9 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
     # Best (most confident) charges first; cap payload.
     results.sort(key=lambda r: -r["top_confidence"])
     return {
-        "criteria": {"amount_tol": amount_tol, "date_window": date_window, "use_vendor": use_vendor},
+        "criteria": {"amount_tol": amount_tol, "date_window": date_window,
+                     "use_vendor": use_vendor, "card": card},
+        "available_cards": available_cards,
         "charges_with_candidates": len(results),
         "results": results[:limit_charges],
     }
