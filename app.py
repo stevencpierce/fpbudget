@@ -13878,8 +13878,12 @@ def activity_feed(pid, bid):
             "summary":      summary,
             "dollar_delta": float(r.dollar_delta or 0),
             "undone":       bool(r.undone_at),
-            "can_undo":     (r.undone_at is None and r.action in ('create', 'update', 'delete')
-                             and r.entity_type == 'budget_line'),
+            "mine":         (r.user_id == current_user.id),
+            "can_undo":     (r.undone_at is None
+                             and ((r.entity_type == 'budget_line' and r.action in ('create', 'update', 'delete'))
+                                  or r.entity_type in ('transaction', 'transaction_match'))
+                             and (getattr(current_user, 'role', None) in ('admin', 'super_admin')
+                                  or r.user_id == current_user.id)),
             "field_changes": fc,
             "note":         r.note or None,
         })
@@ -13895,21 +13899,30 @@ def activity_undo(pid, bid, aid):
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     _require_project_role(pid, 'editor')
     import json as _json_u
-    row = ActivityLog.query.filter_by(id=aid, budget_id=bid).first_or_404()
+    from sqlalchemy import or_ as _or_au
+    row = (ActivityLog.query
+           .filter(ActivityLog.id == aid,
+                   _or_au(ActivityLog.budget_id == bid, ActivityLog.project_id == pid))
+           .first_or_404())
     if row.undone_at is not None:
         return jsonify({"ok": False, "error": "Already undone"}), 409
-    if row.entity_type != 'budget_line':
-        return jsonify({"ok": False, "error": "Undo only supported on budget lines for now"}), 400
+    if row.entity_type not in ('budget_line', 'transaction', 'transaction_match'):
+        return jsonify({"ok": False, "error": "Undo isn't supported for this action yet"}), 400
 
     # Visibility check — user must be allowed to see this row to undo it
     if not _scoped_activity_query(budget_id=bid).filter(ActivityLog.id == aid).first():
         abort(403)
+    # Permission (User 2026-06-16): admins/super-admins undo anything; everyone
+    # else only their own actions.
+    if (getattr(current_user, 'role', None) not in ('admin', 'super_admin')
+            and row.user_id != current_user.id):
+        return jsonify({"ok": False, "error": "You can only undo your own actions."}), 403
 
-    # Stale-check: any later entry on the same entity_id blocks undo
+    # Stale-check: any later entry on the same entity blocks undo
     if row.entity_id is not None:
         newer = ActivityLog.query.filter(
-            ActivityLog.budget_id == bid,
-            ActivityLog.entity_type == 'budget_line',
+            _or_au(ActivityLog.budget_id == bid, ActivityLog.project_id == pid),
+            ActivityLog.entity_type == row.entity_type,
             ActivityLog.entity_id == row.entity_id,
             ActivityLog.id > row.id,
             ActivityLog.undone_at == None,  # noqa: E711
@@ -13924,7 +13937,7 @@ def activity_undo(pid, bid, aid):
     before = _json_u.loads(row.before_json) if row.before_json else None
     after  = _json_u.loads(row.after_json)  if row.after_json  else None
 
-    if row.action == 'create':
+    if row.entity_type == 'budget_line' and row.action == 'create':
         # Revert create → delete the line (and its cascading children)
         ln = BudgetLine.query.filter_by(id=row.entity_id, budget_id=bid).first()
         if ln:
@@ -13939,7 +13952,7 @@ def activity_undo(pid, bid, aid):
                 .delete(synchronize_session=False)
             db.session.delete(ln)
 
-    elif row.action == 'update':
+    elif row.entity_type == 'budget_line' and row.action == 'update':
         # Revert update → reapply pre-change values
         ln = BudgetLine.query.filter_by(id=row.entity_id, budget_id=bid).first()
         if ln and before:
@@ -13954,7 +13967,7 @@ def activity_undo(pid, bid, aid):
                     except Exception:
                         pass
 
-    elif row.action == 'delete':
+    elif row.entity_type == 'budget_line' and row.action == 'delete':
         # Revert delete → recreate with the same id + saved field values.
         # Schedule/crew/travel children are NOT restored (those would need
         # their own snapshots; phase-2 work).
@@ -13968,6 +13981,34 @@ def activity_undo(pid, bid, aid):
                 except Exception:
                     pass
             db.session.add(ln)
+
+    elif row.entity_type == 'transaction':
+        # Coding (set-line / set-coa / clear / edit): restore the before-snapshot
+        # the action logged. (User 2026-06-16.)
+        txn = Transaction.query.filter_by(id=row.entity_id, project_id=pid).first()
+        if not txn:
+            return jsonify({"ok": False, "error": "That transaction no longer exists."}), 400
+        if not before:
+            return jsonify({"ok": False, "error": "No saved state to restore for this action."}), 400
+        for k in ('budget_line_id', 'account_code', 'account_code_name',
+                  'doc_upload_id', 'match_status', 'match_confidence',
+                  'not_project_expense'):
+            if k in before:
+                try:
+                    setattr(txn, k, before[k])
+                except Exception:
+                    pass
+        txn.updated_at = datetime.utcnow()
+
+    elif row.entity_type == 'transaction_match':
+        # A receipt↔charge pairing — reverse it (unlink the receipt, return it
+        # to the pool, restore the receipt's own ledger row). (User 2026-06-16.)
+        from actuals import unmatch_receipt
+        try:
+            unmatch_receipt(row.entity_id)
+        except Exception as _ue:
+            db.session.rollback()
+            return jsonify({"ok": False, "error": f"Could not reverse the match: {_ue}"}), 400
 
     row.undone_at    = datetime.utcnow()
     row.undone_by_id = current_user.id
@@ -13983,7 +14024,7 @@ def activity_undo(pid, bid, aid):
     # Log the undo itself so the audit trail shows "X reverted Y"
     try:
         _log_activity(
-            action='restore', entity_type='budget_line',
+            action='restore', entity_type=row.entity_type,
             entity_id=row.entity_id, entity_label=row.entity_label,
             budget_id=bid, project_id=pid,
             before=after, after=before,
@@ -13994,6 +14035,50 @@ def activity_undo(pid, bid, aid):
         db.session.rollback()
 
     return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/activity/undo-batch", methods=["POST"])
+@login_required
+def activity_undo_batch(pid, bid):
+    """Undo several activity entries in one call. Body: {ids:[...]}. Each entry
+    is permission- and stale-checked independently; failures are reported per
+    id rather than aborting the batch. (User 2026-06-16.)"""
+    from sqlalchemy import or_ as _or_ub
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'editor')
+    ids = (request.get_json(silent=True) or {}).get('ids') or []
+    is_admin = getattr(current_user, 'role', None) in ('admin', 'super_admin')
+    undone, failed, touched_budget = 0, [], False
+    for aid in ids:
+        try:
+            aid = int(aid)
+        except (TypeError, ValueError):
+            failed.append({"id": aid, "error": "bad id"}); continue
+        row = (ActivityLog.query.filter(ActivityLog.id == aid,
+               _or_ub(ActivityLog.budget_id == bid, ActivityLog.project_id == pid)).first())
+        if not row:
+            failed.append({"id": aid, "error": "not found"}); continue
+        if row.undone_at is not None:
+            failed.append({"id": aid, "error": "already undone"}); continue
+        if row.entity_type not in ('budget_line', 'transaction', 'transaction_match'):
+            failed.append({"id": aid, "error": "unsupported"}); continue
+        if not _scoped_activity_query(budget_id=bid).filter(ActivityLog.id == aid).first():
+            failed.append({"id": aid, "error": "forbidden"}); continue
+        if not is_admin and row.user_id != current_user.id:
+            failed.append({"id": aid, "error": "not yours"}); continue
+        try:
+            resp = activity_undo(pid, bid, aid)
+            body = resp[0] if isinstance(resp, tuple) else resp
+            ok = body.get_json().get('ok') if hasattr(body, 'get_json') else False
+            if ok:
+                undone += 1
+                if row.entity_type == 'budget_line':
+                    touched_budget = True
+            else:
+                failed.append({"id": aid, "error": (body.get_json() or {}).get('error', 'failed')})
+        except Exception as _be:
+            failed.append({"id": aid, "error": str(_be)})
+    return jsonify({"ok": True, "undone": undone, "failed": failed})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/calc")

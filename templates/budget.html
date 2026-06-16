@@ -9704,7 +9704,10 @@
     // piled up. Clear EVERY COA highlight before lighting the current target,
     // and wipe them all when the drag ends.
     window._coaClearHighlights = function () {
-      document.querySelectorAll('#tab-actuals .coa-item, #tab-actuals .coa-line').forEach(el => {
+      // Global selector — .coa-item / .coa-line are unique to the COA sidebar.
+      // (The #tab-actuals prefix could miss them depending on DOM nesting,
+      // which made clear-all a no-op → every box stayed lit. User 2026-06-16.)
+      document.querySelectorAll('.coa-item, .coa-line').forEach(el => {
         el.style.outline = ''; el.style.outlineOffset = '';
         el.style.background = ''; el.style.borderColor = ''; el.style.color = '';
       });
@@ -11182,7 +11185,9 @@
       <button class="btn btn-xs" data-act-entity="actuals" style="opacity:.7">Actuals</button>
       <button class="btn btn-xs" data-act-entity="qbo"     style="opacity:.7">QBO</button>
     </div>
-    <button class="btn btn-xs btn-ghost" id="activity-refresh" style="margin-left:auto">↻ Refresh</button>
+    <button type="button" class="btn btn-xs btn-primary" id="activity-undo-selected"
+            style="margin-left:auto;display:none" onclick="activityUndoSelected()">↶ Undo selected (<span id="act-sel-count">0</span>)</button>
+    <button class="btn btn-xs btn-ghost" id="activity-refresh">↻ Refresh</button>
   </div>
   <div id="activity-empty" style="display:none;color:var(--text-muted);padding:1rem;text-align:center;font-style:italic">
     No activity to show.
@@ -21009,7 +21014,7 @@ setTimeout(function() {
       if (empty) empty.style.display = 'none';
       tbody.innerHTML = data.items.map(it => {
         const undoBtn = (it.can_undo && !it.undone)
-          ? `<button class="btn btn-xs" data-act-undo="${it.id}">Undo</button>`
+          ? `<input type="checkbox" class="act-sel" value="${it.id}" onchange="activitySelCount()" title="Select for bulk undo" style="margin-right:6px;vertical-align:middle"><button class="btn btn-xs" data-act-undo="${it.id}">Undo</button>`
           : (it.undone ? '<span class="muted" style="font-size:.75rem">undone</span>' : '');
         // Prefer the server-side `note` for richer summaries on docs/
         // actuals/qbo events. Fall back to `summary` for legacy budget
@@ -21051,10 +21056,34 @@ setTimeout(function() {
           }
         });
       });
+      activitySelCount();   // reset the bulk-undo bar after a re-render
     } catch (e) {
       tbody.innerHTML = `<tr><td colspan="5" style="color:#ef4444;text-align:center;padding:1rem">Failed to load: ${e.message}</td></tr>`;
     }
   }
+  // Bulk-undo: select multiple activity rows and undo them at once. Permissions
+  // (own / admin) are enforced server-side per row. (User 2026-06-16.)
+  window.activitySelCount = function () {
+    const n = document.querySelectorAll('#activity-tbody .act-sel:checked').length;
+    const c = document.getElementById('act-sel-count'); if (c) c.textContent = n;
+    const btn = document.getElementById('activity-undo-selected'); if (btn) btn.style.display = n ? '' : 'none';
+  };
+  window.activityUndoSelected = async function () {
+    const ids = [...document.querySelectorAll('#activity-tbody .act-sel:checked')].map(c => parseInt(c.value));
+    if (!ids.length) return;
+    if (!confirm(`Undo ${ids.length} selected change${ids.length !== 1 ? 's' : ''}?`)) return;
+    const btn = document.getElementById('activity-undo-selected');
+    if (btn) { btn.disabled = true; btn.textContent = 'Undoing…'; }
+    try {
+      const r = await fetch(`/projects/${PID}/budget/${BID}/activity/undo-batch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(j.error || 'Undo failed'); }
+      else if (j.failed && j.failed.length) { alert(`Undid ${j.undone}. ${j.failed.length} couldn’t be undone (not yours, already undone, or superseded).`); }
+      loadActivityFeed();
+    } catch (e) { alert('Undo failed: ' + e.message); }
+    finally { if (btn) { btn.disabled = false; btn.innerHTML = '↶ Undo selected (<span id="act-sel-count">0</span>)'; } }
+  };
   // Filter chip clicks
   document.querySelectorAll('#activity-filters [data-act-filter]').forEach(btn => {
     btn.addEventListener('click', () => {
