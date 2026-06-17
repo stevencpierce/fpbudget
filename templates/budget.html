@@ -4443,6 +4443,42 @@
     ].join(' ');
     return hay.indexOf(_docsSearchQuery) !== -1;
   }
+  // Collapse byte-identical duplicate sets into ONE row + an expander, so a
+  // receipt uploaded 3× reads as a single item with its copies tucked under it
+  // instead of N separate rows. Expand-only: each copy keeps its own Keep /
+  // It's-a-dupe actions. Review tab only. (User 2026-06-17.)
+  let _dupGroupsExpanded = {};   // file_hash -> bool
+  function _docsCollapseDupGroups() {
+    const list = document.getElementById('docsHistory');
+    if (!list) return;
+    list.querySelectorAll('.dup-group-bar').forEach(n => n.remove());
+    if (_docsActiveTab !== 'review') return;
+    const byHash = {};
+    Array.from(list.querySelectorAll('.doc-row')).forEach(r => {
+      const h = r.dataset.fileHash; if (h) (byHash[h] = byHash[h] || []).push(r);
+    });
+    Object.keys(byHash).forEach(h => {
+      const members = byHash[h];
+      if (members.length < 2) return;                                   // not a set
+      if (!members.some(m => m.dataset.dupPending === '1')) return;     // no pending dup
+      if (!members.some(m => m.style.display !== 'none')) return;       // nothing visible
+      const rep = members.find(m => m.dataset.isDuplicate !== '1') || members[0];  // original heads the set
+      const others = members.filter(m => m !== rep);
+      const expanded = !!_dupGroupsExpanded[h];
+      rep.style.display = '';
+      others.forEach(m => { m.style.display = expanded ? '' : 'none'; });
+      const v = (rep.dataset.sortVendor || 'receipt').replace(/</g, '&lt;');
+      const a = rep.dataset.sortAmount;
+      const bar = document.createElement('div');
+      bar.className = 'dup-group-bar';
+      bar.style.cssText = 'display:flex;align-items:center;gap:8px;margin:6px 0 0;padding:5px 11px;font-size:11px;color:#a78bfa;background:#1a1426;border:1px solid #2d2440;border-radius:6px;cursor:pointer';
+      bar.innerHTML = '<span>📑 Duplicate set · ' + members.length + ' identical copies · ' + v +
+        (a ? (' · $' + (+a).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})) : '') +
+        '</span><span style="margin-left:auto">' + (expanded ? '▾ collapse' : '▸ show all ' + members.length) + '</span>';
+      bar.onclick = () => { _dupGroupsExpanded[h] = !_dupGroupsExpanded[h]; _docsApplyView(); };
+      rep.parentNode.insertBefore(bar, rep);
+    });
+  }
   function _docsApplyView() {
     const list = document.getElementById('docsHistory');
     if (!list) return;
@@ -4470,8 +4506,12 @@
       }
     });
     finalizeHeader();
+    _docsCollapseDupGroups();   // fold duplicate sets into one expandable row
     const count = document.getElementById('docs-count');
-    if (count) count.textContent = `${visible} item${visible === 1 ? '' : 's'}`;
+    if (count) {
+      const vis = Array.from(list.querySelectorAll('.doc-row')).filter(r => r.style.display !== 'none').length;
+      count.textContent = `${vis} item${vis === 1 ? '' : 's'}`;
+    }
     _docsUpdateBulkBar();
   }
   function _docsSelectTab(tab) {

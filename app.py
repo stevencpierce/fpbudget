@@ -1291,6 +1291,64 @@ def _amounts_in_name(nm):
     return out
 
 
+@app.route("/admin/docs/project/<int:pid>/dup-coding-audit", methods=["GET"])
+@login_required
+def admin_docs_dup_coding_audit(pid):
+    """READ-ONLY: find byte-identical receipt sets (same file_hash) where more
+    than one copy carries a CODED transaction — the same spend counted twice in
+    Actuals. Lists each set + which copies are coded (and on what source).
+    Changes nothing. (User 2026-06-17.)"""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    ProjectSheet.query.get_or_404(pid)
+    from collections import defaultdict as _dd
+    ups = (DocUpload.query.filter_by(project_id=pid)
+           .filter(DocUpload.file_hash.isnot(None), DocUpload.file_hash != '').all())
+    groups = _dd(list)
+    for u in ups:
+        groups[u.file_hash].append(u)
+    coded_rows = (db.session.query(Transaction.doc_upload_id, Transaction.amount,
+                                   Transaction.account_code_name, Transaction.account_code,
+                                   Transaction.source)
+                  .filter(Transaction.project_id == pid,
+                          Transaction.doc_upload_id.isnot(None),
+                          db.or_(Transaction.budget_line_id.isnot(None),
+                                 Transaction.account_code.isnot(None))).all())
+    coded_by_doc = _dd(list)
+    for r in coded_rows:
+        coded_by_doc[r[0]].append({"amount": float(r[1]) if r[1] is not None else None,
+                                   "code": r[2] or (str(r[3]) if r[3] else None),
+                                   "source": r[4]})
+    out = []
+    for h, members in groups.items():
+        if len(members) < 2:
+            continue
+        coded_members = [m for m in members if m.id in coded_by_doc]
+        if len(coded_members) < 2:
+            continue   # only flag genuine double-counts (>=2 coded copies)
+        amt = next((m.amount for m in members if m.amount), None)
+        out.append({
+            "file_hash": h[:12],
+            "copies": len(members),
+            "coded_copies": len(coded_members),
+            "vendor": (members[0].vendor or ''),
+            "amount": float(amt) if amt is not None else None,
+            "overcount": (float(amt) * (len(coded_members) - 1)) if amt is not None else None,
+            "docs": [{"id": m.id, "filed": m.filed_filename or m.original_filename,
+                      "is_duplicate": bool(m.is_duplicate), "status": m.status,
+                      "coded": (m.id in coded_by_doc),
+                      "codings": coded_by_doc.get(m.id, [])} for m in members],
+        })
+    out.sort(key=lambda g: (g["overcount"] or 0), reverse=True)
+    total_overcount = round(sum((g["overcount"] or 0) for g in out), 2)
+    return jsonify({"ok": True, "project_id": pid, "double_counted_sets": len(out),
+                    "total_overcount": total_overcount, "sets": out})
+
+
 @app.route("/admin/docs/project/<int:pid>/scan-audit", methods=["GET", "POST"])
 @login_required
 def admin_docs_scan_audit(pid):
