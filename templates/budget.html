@@ -5897,6 +5897,13 @@
     #tab-actuals .ax-add-receipt:hover{ text-decoration:underline; }
     #tab-actuals .ax-colhint{ display:flex; gap:8px; align-items:center; padding:2px 10px 8px;
                               font-size:.66rem; color:var(--text-muted); }
+    /* COA drag-drop highlight (User 2026-06-17): driven by a CSS class, NOT
+       inline-style mutation. The boxes carry their base look (background,
+       border, color) as INLINE styles, so clearing inline styles to '' on
+       dragover stripped every box's background → all boxes went white. With
+       a class, clearing just removes the class and the inline base survives. */
+    .coa-item.coa-hl{ outline:2px solid var(--blue); outline-offset:-2px; }
+    .coa-line.coa-hl{ background:#1a3a2a !important; border-color:#2a5a3a !important; color:var(--green) !important; }
   </style>
   {# ── Header bar with action buttons ── #}
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:8px">
@@ -9704,12 +9711,16 @@
     // piled up. Clear EVERY COA highlight before lighting the current target,
     // and wipe them all when the drag ends.
     window._coaClearHighlights = function () {
-      // Global selector — .coa-item / .coa-line are unique to the COA sidebar.
-      // (The #tab-actuals prefix could miss them depending on DOM nesting,
-      // which made clear-all a no-op → every box stayed lit. User 2026-06-16.)
-      document.querySelectorAll('.coa-item, .coa-line').forEach(el => {
-        el.style.outline = ''; el.style.outlineOffset = '';
-        el.style.background = ''; el.style.borderColor = ''; el.style.color = '';
+      // Class-based (User 2026-06-17): just drop the highlight class. The old
+      // version set el.style.background/borderColor/color = '' on every box,
+      // but those properties hold each box's INLINE base look — wiping them
+      // turned all boxes white on every dragover. Removing a class leaves the
+      // inline base untouched.
+      document.querySelectorAll('.coa-hl').forEach(el => el.classList.remove('coa-hl'));
+      // Recently-used tiles highlight via inline bg (not .coa-item/.coa-line),
+      // so reset them to their base explicitly.
+      document.querySelectorAll('#coa-recent .coa-recent-item').forEach(el => {
+        el.style.background = 'var(--bg-card)'; el.style.borderColor = 'var(--border)';
       });
     };
     document.addEventListener('dragend', () => window._coaClearHighlights());
@@ -9754,6 +9765,7 @@
       list.forEach(e => {
         const isLine = e.kind === 'line';
         const el = document.createElement('div');
+        el.className = 'coa-recent-item';
         el.style.cssText = 'padding:6px 9px;margin-bottom:3px;border-radius:5px;border:1px solid var(--border);background:var(--bg-card);font-size:.78rem;display:flex;align-items:center;gap:6px';
         el.innerHTML = '<span style="color:var(--text-muted);flex-shrink:0;font-size:.7rem">' + (isLine ? '🏷' : '📂') + '</span>'
           + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">' + ((e.label || e.name || e.code || '') + '').replace(/</g, '&lt;') + '</span>'
@@ -9791,8 +9803,7 @@
         e.preventDefault();
         e.dataTransfer.dropEffect = 'move';
         window._coaClearHighlights();
-        header.style.outline = '2px solid var(--blue)';
-        header.style.outlineOffset = '-2px';
+        header.classList.add('coa-hl');
         // Schedule expand if we have lines and they're collapsed.
         if (lines && lines.style.display === 'none') {
           if (_hoverExpandTimer) return;
@@ -9807,7 +9818,7 @@
         // Only clear when leaving the section entirely, not when moving
         // between header / lines / line children inside it.
         if (!section.contains(e.relatedTarget)) {
-          header.style.outline = '';
+          header.classList.remove('coa-hl');
           if (_hoverExpandTimer) {
             clearTimeout(_hoverExpandTimer);
             _hoverExpandTimer = null;
@@ -9818,7 +9829,7 @@
         if (!_draggingTxn) return;
         e.preventDefault();
         e.stopPropagation();
-        header.style.outline = '';
+        header.classList.remove('coa-hl');
         const tids = _draggingTxn.tids || [];
         const code = header.dataset.code;
         const name = header.dataset.name || '';
@@ -9854,22 +9865,16 @@
         e.stopPropagation();
         e.dataTransfer.dropEffect = 'move';
         window._coaClearHighlights();
-        lineEl.style.background = '#1a3a2a';
-        lineEl.style.borderColor = '#2a5a3a';
-        lineEl.style.color = 'var(--green)';
+        lineEl.classList.add('coa-hl');
       });
       lineEl.addEventListener('dragleave', () => {
-        lineEl.style.background = '';
-        lineEl.style.borderColor = '';
-        lineEl.style.color = '';
+        lineEl.classList.remove('coa-hl');
       });
       lineEl.addEventListener('drop', async e => {
         if (!_draggingTxn) return;
         e.preventDefault();
         e.stopPropagation();
-        lineEl.style.background = '';
-        lineEl.style.borderColor = '';
-        lineEl.style.color = '';
+        lineEl.classList.remove('coa-hl');
         const tids   = _draggingTxn.tids || [];
         const lineId = parseInt(lineEl.dataset.lineId);
         let ok = 0, fail = 0;
