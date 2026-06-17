@@ -3701,27 +3701,47 @@
       return;
     }
     try {
-      let force = false;
       let r = await fetch('/docs/upload/' + uid + '/resolve-duplicate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
       });
       let d = await r.json().catch(() => ({}));
-      // Coded duplicate: server asks for explicit confirmation before un-coding.
+      // Linked / coded duplicate: server returns 409 with what it's tied to so
+      // we can ask the user how to handle it before burying. (User 2026-06-17.)
       if (r.status === 409 && d.needs_force) {
-        const amt = (d.amount != null) ? (' ($' + Number(d.amount).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}) + ')') : '';
-        if (!confirm('This duplicate' + amt + ' is coded to ' + (d.coded_to || 'a budget line') +
-                     '.\n\nBurying it will remove that duplicate transaction from Actuals (de-double-counting it). The original copy keeps its coding.\n\nProceed?')) {
-          dupBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });
-          return;
+        const charges = d.linked_charges || [];
+        const money = a => (a != null) ? ('$' + Number(a).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})) : '$?';
+        let link_mode = null;
+        if (charges.length && d.keeper) {
+          // Real choice: re-point the charge(s) to the kept original, or unlink.
+          const list = charges.map(c => '  • ' + (c.vendor || 'charge') + ' ' + money(c.amount) +
+                          (c.date ? (' · ' + c.date) : '') + (c.code ? (' · ' + c.code) : '')).join('\n');
+          const transfer = confirm(
+            'This duplicate is linked to ' + charges.length + ' charge' + (charges.length > 1 ? 's' : '') + ':\n' + list +
+            '\n\nKept original: ' + (d.keeper.filed || ('#' + d.keeper.id)) +
+            '\n\n[ OK ]  Re-point the charge' + (charges.length > 1 ? 's' : '') + ' to the kept original (keep the match — recommended)\n' +
+            '[ Cancel ]  Unlink ' + (charges.length > 1 ? 'them' : 'it') + ' back to the unmatched pool');
+          link_mode = transfer ? 'transfer' : 'unlink';
+        } else {
+          // Coded but no transferable charge/keeper — just confirm the un-code + bury.
+          const amt = (d.amount != null) ? (' (' + money(d.amount) + ')') : '';
+          if (!confirm('This duplicate' + amt + (d.coded_to ? (' is coded to ' + d.coded_to) : ' is linked') +
+                       '.\n\nBurying it removes that duplicate transaction from Actuals (de-double-counting). The original copy keeps its coding.\n\nProceed?')) {
+            dupBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });
+            return;
+          }
+          link_mode = 'unlink';
         }
-        force = true;
         r = await fetch('/docs/upload/' + uid + '/resolve-duplicate', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action, force: true }),
+          body: JSON.stringify({ action, force: true, link_mode }),
         });
         d = await r.json().catch(() => ({}));
+        if (r.ok && d.transferred_charges) {
+          alert('Re-pointed ' + d.transferred_charges + ' charge' + (d.transferred_charges > 1 ? 's' : '') +
+                ' to the kept original. The duplicate was buried.');
+        }
       }
       if (!r.ok) {
         alert('Could not resolve: ' + (d.error || r.status));

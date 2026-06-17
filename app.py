@@ -22490,7 +22490,7 @@ def docs_scan_receipt_duplicates(pid):
                     "date_window": date_window, "sample_groups": groups_out[:40]})
 
 
-def _apply_dup_resolution(upload, action, force=False):
+def _apply_dup_resolution(upload, action, force=False, link_mode=None):
     """Apply one keep/confirm decision to a flagged upload. Mutates the row
     (+ session: txn add/delete, Dropbox move) but does NOT commit — the
     caller commits once. Returns (ok: bool, info: dict, error: str|None).
@@ -22549,15 +22549,62 @@ def _apply_dup_resolution(upload, action, force=False):
                      .filter(db.or_(Transaction.budget_line_id.isnot(None),
                                     Transaction.account_code.isnot(None)))
                      .first())
-        if _assigned and not force:
-            # Don't hard-refuse — tell the caller it's coded so the UI can ask
-            # the user to confirm un-coding it, then retry with force=True.
+        # Electronic charges (bank/CSV) currently matched to THIS copy — the
+        # user must decide whether to unlink them or re-point them to the kept
+        # original before we bury this copy. (User 2026-06-17.)
+        _linked_charges = (Transaction.query
+                           .filter(Transaction.doc_upload_id == upload.id,
+                                   Transaction.source.in_(('qbo_sync', 'csv_import')))
+                           .all())
+        # The canonical copy of this set (same bytes, not itself a duplicate) —
+        # the target for "re-point the charge to the original".
+        keeper = None
+        if upload.file_hash:
+            keeper = (DocUpload.query
+                      .filter(DocUpload.project_id == upload.project_id,
+                              DocUpload.file_hash == upload.file_hash,
+                              DocUpload.id != upload.id,
+                              DocUpload.is_duplicate == False)   # noqa: E712
+                      .order_by(DocUpload.id.asc()).first())
+        if not keeper and upload.duplicate_of_id:
+            keeper = DocUpload.query.get(upload.duplicate_of_id)
+
+        if (_assigned or _linked_charges) and not force:
+            # Don't hard-refuse — hand the UI everything it needs to prompt:
+            # what it's coded to, which charges are linked, and the kept copy
+            # it could re-point them to. UI retries with force + link_mode.
             _code = (_assigned.account_code_name
-                     or (str(_assigned.account_code) if _assigned.account_code else 'a budget line'))
-            return False, {"needs_force": True, "coded_to": _code,
-                           "amount": (float(upload.amount) if upload.amount is not None else None)}, (
-                f"#{upload.id} is coded to {_code}. Confirm to un-code this duplicate and bury it "
-                f"(the original copy keeps its coding).")
+                     or (str(_assigned.account_code) if (_assigned and _assigned.account_code) else None)) if _assigned else None
+            return False, {
+                "needs_force": True,
+                "coded_to": _code,
+                "amount": (float(upload.amount) if upload.amount is not None else None),
+                "linked_charges": [{
+                    "tid": c.id, "vendor": c.vendor,
+                    "amount": (float(c.amount) if c.amount is not None else None),
+                    "date": c.txn_date,
+                    "code": c.account_code_name or (str(c.account_code) if c.account_code else None),
+                    "source": c.source,
+                } for c in _linked_charges],
+                "keeper": ({"id": keeper.id,
+                            "filed": (keeper.filed_filename or keeper.original_filename)} if keeper else None),
+            }, f"#{upload.id} is linked or coded — choose how to handle it before burying."
+
+        # FORCE path. link_mode='transfer' re-points the linked charge(s) onto
+        # the kept copy (so the charge keeps a receipt — the canonical one);
+        # otherwise they're unlinked back to the pool by the cleanup below.
+        transferred = 0
+        if force and link_mode == 'transfer' and keeper and _linked_charges:
+            for c in _linked_charges:
+                c.doc_upload_id = keeper.id          # canonical copy now backs this charge
+                transferred += 1
+            # The kept copy's own phantom ledger row is now superseded by the
+            # real charge — drop it so the spend isn't double-counted.
+            try:
+                Transaction.query.filter_by(doc_upload_id=keeper.id, source='doc_upload')\
+                    .delete(synchronize_session=False)
+            except Exception:
+                pass
         moved_to = None
         if upload.filed_dropbox_path:
             try:
@@ -22589,7 +22636,10 @@ def _apply_dup_resolution(upload, action, force=False):
                 synchronize_session=False)
         except Exception:
             pass
-        return True, {"resolved": "confirm", "upload_id": upload.id, "moved_to": moved_to}, None
+        return True, {"resolved": "confirm", "upload_id": upload.id, "moved_to": moved_to,
+                      "link_mode": (link_mode or 'unlink'),
+                      "transferred_charges": transferred,
+                      "transferred_to": (keeper.id if transferred else None)}, None
 
     return False, {}, "action must be 'keep' or 'confirm'"
 
@@ -22606,7 +22656,8 @@ def docs_resolve_duplicate(uid):
     _body = request.get_json(silent=True) or {}
     action = (_body.get("action") or "").strip().lower()
     force = bool(_body.get("force"))
-    ok, info, err = _apply_dup_resolution(upload, action, force=force)
+    link_mode = (_body.get("link_mode") or "").strip().lower() or None
+    ok, info, err = _apply_dup_resolution(upload, action, force=force, link_mode=link_mode)
     if not ok:
         db.session.rollback()
         # needs_force = coded doc; 409 so the UI can prompt + retry with force.
@@ -22635,6 +22686,7 @@ def docs_resolve_duplicates_batch(pid):
     keep_ids    = _ints(data.get("keep"))
     confirm_ids = _ints(data.get("confirm"))
     force = bool(data.get("force"))
+    link_mode = (data.get("link_mode") or "").strip().lower() or None
     results, errors = [], []
     for action, ids in (("confirm", confirm_ids), ("keep", keep_ids)):
         for uid in ids:
@@ -22643,7 +22695,7 @@ def docs_resolve_duplicates_batch(pid):
                 errors.append({"uid": uid, "error": "not found"}); continue
             if current_user.role not in ('super_admin', 'admin') and up.uploader_id != current_user.id:
                 errors.append({"uid": uid, "error": "forbidden"}); continue
-            ok, info, err = _apply_dup_resolution(up, action, force=force)
+            ok, info, err = _apply_dup_resolution(up, action, force=force, link_mode=link_mode)
             (results if ok else errors).append(info if ok else {"uid": uid, "error": err})
     db.session.commit()
     logging.info(f"[DOCS] batch dup resolve project={pid}: "
