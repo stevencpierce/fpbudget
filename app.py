@@ -13844,6 +13844,49 @@ def activity_feed(pid, bid):
         q = q.filter(ActivityLog.created_at >= datetime.utcnow() - _td(days=7))
 
     rows = q.order_by(ActivityLog.created_at.desc()).limit(limit).all()
+
+    # Enrich each row with a `detail` block looked up LIVE from the receipt /
+    # charge it references, so the feed shows what you're actually looking at
+    # (renamed-to filename, vendor, amount, date, code) instead of just the
+    # original filename or a bare label. (User 2026-06-17.) Batched to avoid
+    # N+1 queries across the (up to 1000-row) feed.
+    _doc_ids = {r.entity_id for r in rows
+                if r.entity_type in ('doc_upload',) and r.entity_id}
+    _txn_ids = {r.entity_id for r in rows
+                if r.entity_type in ('transaction', 'transaction_match') and r.entity_id}
+    _txns = {t.id: t for t in Transaction.query.filter(Transaction.id.in_(_txn_ids)).all()} if _txn_ids else {}
+    # Receipts referenced directly, plus those linked to the charges above.
+    _doc_ids |= {t.doc_upload_id for t in _txns.values() if t.doc_upload_id}
+    _docs = {d.id: d for d in DocUpload.query.filter(DocUpload.id.in_(_doc_ids)).all()} if _doc_ids else {}
+
+    def _doc_detail(d):
+        if not d:
+            return None
+        return {
+            'kind': 'receipt',
+            'original': d.original_filename or None,
+            'filed': d.filed_filename or None,
+            'vendor': d.vendor or None,
+            'amount': float(d.amount) if d.amount is not None else None,
+            'date': d.doc_date.isoformat() if d.doc_date else None,
+            'status': d.status or None,
+            'doc_type': d.category or None,
+        }
+
+    def _txn_detail(t):
+        if not t:
+            return None
+        ld = _docs.get(t.doc_upload_id) if t.doc_upload_id else None
+        return {
+            'kind': 'charge',
+            'vendor': t.vendor or None,
+            'amount': float(t.amount) if t.amount is not None else None,
+            'date': t.txn_date or None,
+            'code': t.account_code_name or (str(t.account_code) if t.account_code else None),
+            'match_status': t.match_status or None,
+            'linked_receipt': (ld.filed_filename or ld.original_filename) if ld else None,
+        }
+
     out = []
     for r in rows:
         try:
@@ -13886,6 +13929,9 @@ def activity_feed(pid, bid):
                                   or r.user_id == current_user.id)),
             "field_changes": fc,
             "note":         r.note or None,
+            "detail":       (_doc_detail(_docs.get(r.entity_id)) if r.entity_type == 'doc_upload'
+                             else _txn_detail(_txns.get(r.entity_id)) if r.entity_type in ('transaction', 'transaction_match')
+                             else None),
         })
     return jsonify({"items": out, "count": len(out), "filter": flt, "entity": entity})
 

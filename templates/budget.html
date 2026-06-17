@@ -21002,6 +21002,27 @@ setTimeout(function() {
     const color = d > 0 ? '#f59e0b' : '#10b981';  // increase=warn, decrease=savings
     return `<span style="color:${color};font-weight:600">${sign}$${abs}</span>`;
   }
+  // Second line under an activity row: what the receipt/charge actually is —
+  // renamed-to filename, vendor, amount, date, code, linked receipt. (User 2026-06-17.)
+  function _activityDetail(d) {
+    if (!d) return '';
+    const esc = s => (s == null ? '' : ('' + s)).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+    const money = a => a == null ? '' : ('$' + Math.abs(a).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}));
+    const bits = [];
+    if (d.kind === 'receipt') {
+      if (d.filed && d.filed !== d.original) bits.push('renamed → <span style="color:var(--text)">' + esc(d.filed) + '</span>');
+      const meta = [d.vendor && esc(d.vendor), d.amount != null && money(d.amount), d.date && esc(d.date), d.doc_type && esc(d.doc_type)].filter(Boolean);
+      if (meta.length) bits.push(meta.join(' · '));
+      if (d.status) bits.push('status: ' + esc(d.status));
+    } else if (d.kind === 'charge') {
+      const meta = [d.vendor && esc(d.vendor), d.amount != null && money(d.amount), d.date && esc(d.date)].filter(Boolean);
+      if (meta.length) bits.push(meta.join(' · '));
+      if (d.code) bits.push('code: ' + esc(d.code));
+      if (d.linked_receipt) bits.push('📎 ' + esc(d.linked_receipt));
+    }
+    if (!bits.length) return '';
+    return '<div style="font-size:.72rem;color:var(--text-muted);margin-top:2px;line-height:1.35">' + bits.join('<br>') + '</div>';
+  }
   async function loadActivityFeed() {
     const tbody = document.getElementById('activity-tbody');
     const empty = document.getElementById('activity-empty');
@@ -21034,7 +21055,7 @@ setTimeout(function() {
         return `<tr ${it.undone ? 'style="opacity:.55;'+stripe+'"' : 'style="'+stripe+'"'}>
           <td style="font-size:.85em;color:var(--text-muted);padding-left:.6rem">${_fmtActivityWhen(it.when)}</td>
           <td>${whoEsc}</td>
-          <td>${iconHtml}${summaryEsc}</td>
+          <td>${iconHtml}${summaryEsc}${_activityDetail(it.detail)}</td>
           <td class="col-num">${_fmtActivityDelta(it.dollar_delta)}</td>
           <td>${undoBtn}</td>
         </tr>`;
