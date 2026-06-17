@@ -10512,7 +10512,7 @@
             return `<div class="mr-card" data-split="${s.doc.id}" style="border:1px solid #2d4a7a;border-radius:8px;padding:10px 12px;margin-bottom:10px;background:#0f1830">
               <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">${thumb}
                 <div style="flex:1;min-width:0">
-                  <div style="font-weight:600">${esc(s.doc.vendor)||'Receipt'} · $${_fmcFmt(s.doc.total)}<span class="mr-chip ok" style="margin-left:8px">= sum of ${s.n} charges ✓</span></div>
+                  <div style="font-weight:600">${esc(s.doc.vendor)||'Receipt'} · $${_fmcFmt(s.total != null ? s.total : s.doc.amount)}<span class="mr-chip ok" style="margin-left:8px">= sum of ${s.n} charges ✓</span></div>
                   <div style="font-size:.72rem;color:var(--text-muted)">${esc(s.doc.file)}${s.doc.card?' · ••'+s.doc.card:''} · ${s.doc.date||''}</div>
                 </div>
                 <span style="display:flex;gap:6px">
@@ -10685,22 +10685,42 @@
       if (!clusters.length) { body.innerHTML = '<div class="muted" style="padding:28px;text-align:center">✓ No duplicate transactions found.</div>'; return; }
       const kindBadge = k => k === 'reimport' ? '<span class="mr-chip warn">♻ re-import</span>'
                           : k === 'matchable' ? '<span class="mr-chip ok">🔗 should be matched</span>'
+                          : k === 'phantom'   ? '<span class="mr-chip warn">♻ duplicate ledger row</span>'
+                          : k === 'review'    ? '<span class="mr-chip mut">👀 review manually</span>'
                           : '<span class="mr-chip warn">⚠ possible duplicate</span>';
+      // Pick a sensible default keeper: a coded electronic charge, else any
+      // electronic charge, else the first row. (Phantom doc_upload rows are
+      // the ones we want to drop.)
+      const defaultKeep = c => {
+        const elec = c.rows.filter(r => r.source !== 'doc_upload');
+        return ((elec.find(r => r.coded) || elec[0] || c.rows[0]) || {}).tid;
+      };
       body.innerHTML = clusters.map((c, ci) => {
-        const rows = c.rows.map((r, ri) => `
+        const keepTid = defaultKeep(c);
+        const rows = c.rows.map((r) => `
           <label style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);margin-bottom:5px;font-size:.76rem;cursor:pointer">
-            <input type="radio" name="dtx-keep-${ci}" value="${r.tid}" ${ri === 0 ? 'checked' : ''} title="Keep this one">
+            <input type="radio" name="dtx-keep-${ci}" value="${r.tid}" ${r.tid === keepTid ? 'checked' : ''} title="Keep this one">
             <span style="flex:1;min-width:0">
               <span style="font-weight:600">${esc(r.vendor) || '—'}</span> · ${money(r.amount)} · ${r.date || ''}${r.card ? (' · ••' + r.card) : ''}
               <span style="color:var(--text-muted)"> · ${esc(r.source)}${r.coded ? (' · ' + esc(r.coded)) : ' · uncoded'}${r.doc_upload_id ? ' · 📎 receipt' : ''}</span>
             </span>
-            ${r.deletable ? '' : '<span class="mr-chip mut" title="Receipt-linked — keepable but not removable here">protected</span>'}
+            ${r.phantom ? '<span class="mr-chip warn" title="Redundant — its receipt is already on the charge">phantom</span>'
+                        : (r.deletable ? '' : '<span class="mr-chip mut" title="Receipt-linked — keepable but not removable here">protected</span>')}
           </label>`).join('');
-        const actions = c.kind === 'matchable'
-          ? `<button class="btn btn-xs btn-primary" onclick="document.getElementById('dup-txn-modal').style.display='none';openMatchReview()">🔗 Match in Find-matches</button>
-             <button class="btn btn-xs btn-ghost" onclick="dtxDismiss('${c.key}',${ci})">Keep all — separate</button>`
-          : `<button class="btn btn-xs btn-primary" onclick="dtxRemoveOthers(${ci})">🗑 Remove the others</button>
-             <button class="btn btn-xs btn-ghost" onclick="dtxDismiss('${c.key}',${ci})">Keep all — separate</button>`;
+        const dismissBtn = `<button class="btn btn-xs btn-ghost" onclick="dtxDismiss('${c.key}',${ci})">Keep all — separate</button>`;
+        let actions, note = '';
+        if (c.kind === 'matchable') {
+          actions = `<button class="btn btn-xs btn-primary" onclick="document.getElementById('dup-txn-modal').style.display='none';openMatchReview()">🔗 Match in Find-matches</button>${dismissBtn}`;
+          note = 'An unmatched charge + a receipt for the same spend — link them in Find-matches.';
+        } else if (c.kind === 'phantom') {
+          actions = `<button class="btn btn-xs btn-primary" onclick="dtxRemoveOthers(${ci})">🗑 Remove the redundant row</button>${dismissBtn}`;
+          note = 'The receipt is already attached to the bank charge — the extra doc_upload row double-counts it. Keep the charge, drop the extra.';
+        } else if (c.kind === 'review') {
+          actions = dismissBtn;
+          note = 'These are already matched/coded in different ways — review them on the Actuals list. Nothing safe to auto-remove here.';
+        } else {
+          actions = `<button class="btn btn-xs btn-primary" onclick="dtxRemoveOthers(${ci})">🗑 Remove the others</button>${dismissBtn}`;
+        }
         return `<div class="mr-card" data-dtx="${ci}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:12px;background:var(--bg-card,#1a1d27)">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
             ${kindBadge(c.kind)} <span style="font-weight:600">${money(c.amount)}</span>
@@ -10708,7 +10728,7 @@
             <span style="margin-left:auto;display:flex;gap:6px">${actions}</span>
           </div>
           ${rows}
-          ${c.kind === 'matchable' ? '<div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">A receipt row + a bank charge for the same spend — link them (keeps the charge\'s receipt) instead of deleting.</div>' : ''}
+          ${note ? ('<div style="font-size:.7rem;color:var(--text-muted);margin-top:4px">' + note + '</div>') : ''}
         </div>`;
       }).join('');
     };

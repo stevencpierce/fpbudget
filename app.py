@@ -8674,17 +8674,27 @@ def actuals_scan_dup_transactions(pid):
     txns = (Transaction.query.filter_by(project_id=pid)
             .filter(Transaction.not_project_expense == False).all())   # noqa: E712
     dismissed = {d.dup_key for d in TransactionDupDismissal.query.filter_by(project_id=pid).all()}
+    # Receipts already carried by an electronic charge — a doc_upload row whose
+    # receipt is in here is a redundant PHANTOM (the charge is the real ledger
+    # row), so it's safe to remove and de-double-count. (User 2026-06-17.)
+    elec_doc_ids = {t.doc_upload_id for t in txns
+                    if t.source in ('qbo_sync', 'csv_import', 'reconciled') and t.doc_upload_id}
 
     def _vnorm(v):
         return _re_dup.sub(r'[^a-z0-9]', '', (v or '').lower())[:18]
 
     def _row(t):
+        phantom = (t.source == 'doc_upload' and t.doc_upload_id in elec_doc_ids)
         return {"tid": t.id, "source": t.source, "vendor": t.vendor,
                 "amount": float(t.amount) if t.amount is not None else None,
                 "date": (t.txn_date[:10] if t.txn_date else None), "card": t.card_last4,
                 "coded": t.account_code_name or (str(t.account_code) if t.account_code else None),
                 "doc_upload_id": t.doc_upload_id, "match_status": t.match_status,
-                "deletable": (t.source in ('qbo_sync', 'csv_import', 'manual_entry') and not t.doc_upload_id)}
+                "phantom": phantom,
+                # deletable: an electronic re-import with no receipt, OR a
+                # redundant doc_upload phantom (receipt represented elsewhere).
+                "deletable": ((t.source in ('qbo_sync', 'csv_import', 'manual_entry') and not t.doc_upload_id)
+                              or phantom)}
 
     clusters, seen = [], set()
     # Tier 1 — same qbo_txn_id (definite re-import; confirmed rows flip to
@@ -8719,12 +8729,24 @@ def actuals_scan_dup_transactions(pid):
         key = 'attr:' + akey
         if key in dismissed:
             continue
-        has_doc = any(m.source == 'doc_upload' for m in members)
-        has_elec = any(m.source in ('qbo_sync', 'csv_import', 'reconciled') for m in members)
-        clusters.append({"key": key, "kind": ('matchable' if (has_doc and has_elec) else 'duplicate'),
+        has_doc  = any(m.source == 'doc_upload' for m in members)
+        has_phantom = any(m.source == 'doc_upload' and m.doc_upload_id in elec_doc_ids for m in members)
+        has_open_elec = any(m.source in ('qbo_sync', 'csv_import')
+                            and m.match_status == 'unmatched' and not m.doc_upload_id
+                            for m in members)
+        if has_phantom:
+            kind = 'phantom'        # redundant doc_upload row → safe to remove
+        elif has_doc and has_open_elec:
+            kind = 'matchable'      # unmatched charge + a receipt → link them
+        elif not has_doc:
+            kind = 'duplicate'      # electronic re-imports
+        else:
+            kind = 'review'         # mixed/already-matched states → user decides
+        clusters.append({"key": key, "kind": kind,
                          "amount": abs(float(members[0].amount or 0)),
                          "rows": [_row(t) for t in members]})
-    overcount = sum((c["amount"] * (len(c["rows"]) - 1)) for c in clusters if c["kind"] != "matchable")
+    overcount = sum((c["amount"] * (len(c["rows"]) - 1)) for c in clusters
+                    if c["kind"] in ("duplicate", "reimport", "phantom"))
     clusters.sort(key=lambda c: -(c["amount"] * (len(c["rows"]) - 1)))
     return jsonify({"ok": True, "project_id": pid, "cluster_count": len(clusters),
                     "potential_overcount": round(overcount, 2), "clusters": clusters})
@@ -8760,9 +8782,21 @@ def actuals_delete_duplicate_txn(pid, tid):
     if getattr(current_user, 'role', None) == 'viewer':
         return jsonify({"error": "Forbidden"}), 403
     t = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
-    if t.doc_upload_id or t.source == 'doc_upload':
-        return jsonify({"error": "This row is linked to a receipt — unmatch it or use the "
-                        "receipt duplicate flow instead of deleting it here."}), 400
+    if t.source == 'doc_upload':
+        # Only deletable if the receipt is ALSO carried by an electronic charge
+        # (then this doc_upload row is a redundant phantom). Otherwise deleting
+        # it would orphan the receipt — refuse.
+        rep = (Transaction.query
+               .filter(Transaction.project_id == pid,
+                       Transaction.doc_upload_id == t.doc_upload_id,
+                       Transaction.source.in_(('qbo_sync', 'csv_import', 'reconciled')),
+                       Transaction.id != tid).first())
+        if not rep:
+            return jsonify({"error": "Deleting this would orphan the receipt — match it to a "
+                            "charge or use the receipt duplicate flow instead."}), 400
+    elif t.doc_upload_id:
+        return jsonify({"error": "This charge is linked to a receipt — unmatch it first "
+                        "instead of deleting it here."}), 400
     before = {"source": t.source, "vendor": t.vendor,
               "amount": float(t.amount) if t.amount is not None else None,
               "txn_date": t.txn_date, "card_last4": t.card_last4,
