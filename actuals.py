@@ -744,7 +744,10 @@ def run_auto_match(project_id):
                     continue
                 if (q.id, d.doc_upload_id) in rejected_pairs:
                     continue
-                if abs(float(d.amount) - float(q.amount)) > 0.01:
+                # Gate on MAGNITUDE so refunds match: a refund receipt is stored
+                # negative while its bank credit is the same dollars, opposite
+                # sign. (User 2026-06-17.)
+                if abs(abs(float(d.amount)) - abs(float(q.amount))) > 0.01:
                     continue
                 day_gap = abs((d_dt - q_dt).days)
                 vendor_score = _vendor_similarity(q.vendor, d.vendor)
@@ -754,6 +757,11 @@ def run_auto_match(project_id):
                 # vendor_score still feeds the score, so vendor-less (Tier-2)
                 # matches rank below real name matches in the review list.
                 score = (1.0 + date_score + vendor_score) / 3.0
+                # Prefer a same-sign pair when both exist (a normal expense),
+                # but still allow the opposite-sign refund pairing to win when
+                # it's the only magnitude match.
+                if (float(d.amount) < 0) != (float(q.amount) < 0):
+                    score *= 0.9
                 if score > best_score:
                     best_score, best = score, d
             if best:
@@ -927,8 +935,13 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
         except (TypeError, ValueError):
             continue
         d_rows.append((float(d.amount), d_dt, d))
-    d_rows.sort(key=lambda r: r[0])
-    d_amounts = [r[0] for r in d_rows]
+    # Sort/bisect on the MAGNITUDE so refunds match too: a refund receipt is
+    # stored negative (e.g. -107.17) while the bank credit is the same dollar
+    # amount with a different sign — same |amount|, opposite sign. Matching on
+    # |amount| pairs them; the sign difference is surfaced as a "refund?" flag.
+    # (User 2026-06-17.)
+    d_rows.sort(key=lambda r: abs(r[0]))
+    d_amounts = [abs(r[0]) for r in d_rows]
 
     def _confidence(amt_delta, day_gap, vendor_sim):
         # Filtering (amount_tol / date_window / use_vendor) decides which pairs
@@ -953,8 +966,9 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
             q_dt = _dt.date.fromisoformat(q.txn_date[:10])
         except (TypeError, ValueError):
             continue
-        lo = _bisect.bisect_left(d_amounts, q_amt - amount_tol - 0.001)
-        hi = _bisect.bisect_right(d_amounts, q_amt + amount_tol + 0.001)
+        q_abs = abs(q_amt)
+        lo = _bisect.bisect_left(d_amounts, q_abs - amount_tol - 0.001)
+        hi = _bisect.bisect_right(d_amounts, q_abs + amount_tol + 0.001)
         cands = []
         for idx in range(lo, hi):
             d_amt, d_dt, d = d_rows[idx]
@@ -966,14 +980,17 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
             vendor_sim = _vendor_similarity(q.vendor, d.vendor)
             if use_vendor and vendor_sim < 0.30:
                 continue
-            conf = _confidence(abs(d_amt - q_amt), day_gap, vendor_sim)
+            amt_delta = abs(abs(d_amt) - q_abs)            # magnitude delta
+            opposite_sign = (d_amt < 0) != (q_amt < 0)     # likely a refund pairing
+            conf = _confidence(amt_delta, day_gap, vendor_sim)
             meta = doc_meta.get(d.doc_upload_id, {})
             cands.append({
                 "doc_upload_id": d.doc_upload_id,
                 "file": meta.get("file"), "is_image": meta.get("is_image", False),
                 "card": meta.get("card"),
                 "vendor": d.vendor, "amount": d_amt, "date": d.txn_date[:10] if d.txn_date else None,
-                "amount_delta": round(abs(d_amt - q_amt), 2),
+                "amount_delta": round(amt_delta, 2),
+                "opposite_sign": opposite_sign,
                 "day_gap": day_gap, "vendor_match": vendor_sim >= 0.45,
                 "confidence": round(conf, 4),
             })
