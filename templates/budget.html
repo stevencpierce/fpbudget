@@ -6079,6 +6079,10 @@
               title="Auto-code uncoded charges to budget lines using vendor→line suggestions (cross-point 3)">
         ✨ Auto-code lines
       </button>
+      <button type="button" id="actualsReconcileBtn" class="btn btn-sm btn-primary" onclick="openReconcile()"
+              title="Reconcile: review every spend with duplicate receipts, duplicate/phantom charges, or unmatched pairs — all in one place">
+        🧹 Reconcile duplicates
+      </button>
       <button type="button" id="actualsDupTxnBtn" class="btn btn-sm" onclick="openDupTxnReview()"
               title="Scan for duplicate transactions (re-imports / double-counts) and confirm they're separate or remove the extra">
         🔁 Scan for duplicate transactions
@@ -10758,6 +10762,135 @@
         } catch (e) { fail++; }
       }
       _actualsToast(`Removed ${ok} duplicate${ok !== 1 ? 's' : ''}${fail ? (' · ' + fail + ' failed') : ''}.`, fail ? 'yellow' : 'green');
+      if (card) card.remove();
+      if (ok && !fail) setTimeout(() => location.reload(), 900);
+    };
+
+    // ── Reconcile (Phase 1, User 2026-06-17) — unified duplicate review ──
+    // One workspace over reconcile-scan: each spend cluster shows its receipts
+    // + charges in two lanes with the dedup actions inline. Reuses the existing
+    // resolve endpoints (docs resolve-batch, txn delete-duplicate, dismiss).
+    window._rcBuild = function () {
+      let m = document.getElementById('reconcile-modal');
+      if (m) return m;
+      m = document.createElement('div');
+      m.id = 'reconcile-modal';
+      m.style.cssText = 'display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.8)';
+      m.innerHTML = `
+        <style>
+          #reconcile-modal .mr-chip{font-size:.62rem;padding:1px 6px;border-radius:4px;white-space:nowrap}
+          #reconcile-modal .mr-chip.ok{background:#10231a;color:#5fd0a0;border:1px solid #1f6f4a}
+          #reconcile-modal .mr-chip.warn{background:#2a2414;color:#e0c060;border:1px solid #5a4520}
+          #reconcile-modal .mr-chip.mut{background:var(--bg-input,#22263a);color:var(--text-muted)}
+          #reconcile-modal .rc-lane{border:1px solid var(--border);border-radius:7px;padding:8px;margin-top:6px}
+          #reconcile-modal .rc-lane h4{margin:0 0 6px;font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)}
+          #reconcile-modal label.rc-row{display:flex;align-items:center;gap:9px;padding:5px 7px;border-radius:6px;border:1px solid var(--border);margin-bottom:4px;font-size:.76rem;cursor:pointer}
+        </style>
+        <div style="position:absolute;top:2vh;left:50%;transform:translateX(-50%);width:900px;max-width:96vw;height:96vh;display:flex;flex-direction:column;background:var(--bg-card,#1a1d27);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border)">
+            <h3 style="margin:0;font-size:1rem">🧹 Reconcile</h3>
+            <span id="rc-count" style="font-size:.8rem;color:var(--text-muted)"></span>
+            <button type="button" class="btn btn-sm btn-ghost" style="margin-left:auto" onclick="document.getElementById('reconcile-modal').style.display='none'">✕ Close</button>
+          </div>
+          <div id="rc-body" style="flex:1;overflow-y:auto;padding:12px 16px"></div>
+        </div>`;
+      document.body.appendChild(m);
+      m.addEventListener('click', e => { if (e.target === m) m.style.display = 'none'; });
+      return m;
+    };
+    window.openReconcile = async function () {
+      const m = window._rcBuild(); m.style.display = '';
+      const body = document.getElementById('rc-body');
+      body.innerHTML = '<div class="muted" style="padding:24px;text-align:center">Scanning every spend for duplicates…</div>';
+      try {
+        const d = await (await fetch(`/projects/${PROJ_ID}/actuals/reconcile-scan`)).json();
+        window._rcData = d; rcRender(d);
+      } catch (e) { body.innerHTML = '<div style="padding:20px;color:#e08080">Scan failed: ' + e.message + '</div>'; }
+    };
+    window.rcRender = function (d) {
+      const body = document.getElementById('rc-body');
+      const esc = s => (s || '').toString().replace(/</g, '&lt;');
+      const money = a => a == null ? '$?' : ('$' + Number(Math.abs(a)).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}));
+      const clusters = d.clusters || [];
+      document.getElementById('rc-count').textContent = clusters.length ? `${clusters.length} spend${clusters.length !== 1 ? 's' : ''} to reconcile` : '';
+      if (!clusters.length) { body.innerHTML = '<div class="muted" style="padding:28px;text-align:center">✓ Nothing to reconcile — no duplicate receipts or charges found.</div>'; return; }
+      body.innerHTML = clusters.map((c, ci) => {
+        const badges = [];
+        if (c.flags.dup_receipts) badges.push('<span class="mr-chip warn">📎 duplicate receipts</span>');
+        if (c.flags.dup_charges)  badges.push('<span class="mr-chip warn">🏦 duplicate charges</span>');
+        if (c.flags.phantom)      badges.push('<span class="mr-chip warn">♻ phantom row</span>');
+        if (c.flags.needs_match)  badges.push('<span class="mr-chip ok">🔗 needs match</span>');
+        const recKeep = (c.receipts[0] || {}).doc_id;
+        const recRows = c.receipts.map(r => `
+          <label class="rc-row">
+            ${c.receipts.length > 1 ? `<input type="radio" name="rc-rec-${ci}" value="${r.doc_id}" ${r.doc_id === recKeep ? 'checked' : ''}>` : '<span style="width:13px"></span>'}
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.file) || ('Receipt #' + r.doc_id)} <span style="color:var(--text-muted)">· ${money(r.amount)} · ${esc(r.status || '')}</span></span>
+            ${r.dup ? '<span class="mr-chip warn">identical</span>' : ''}${r.on_charge ? '<span class="mr-chip ok">on a charge</span>' : ''}
+          </label>`).join('');
+        const recAction = c.receipts.length > 1 ? `<button class="btn btn-xs btn-primary" onclick="rcMergeReceipts(${ci})">Keep selected · merge the rest</button>` : '';
+        const elec = c.charges.filter(x => x.source !== 'doc_upload');
+        const chKeep = ((elec.find(x => x.coded) || elec[0] || c.charges[0]) || {}).tid;
+        const chRows = c.charges.map(r => `
+          <label class="rc-row">
+            ${c.charges.length > 1 ? `<input type="radio" name="rc-ch-${ci}" value="${r.tid}" ${r.tid === chKeep ? 'checked' : ''}>` : '<span style="width:13px"></span>'}
+            <span style="flex:1;min-width:0">${esc(r.source)} <span style="color:var(--text-muted)">· ${money(r.amount)} · ${r.coded ? esc(r.coded) : 'uncoded'}${r.doc_upload_id ? ' · 📎' : ''}</span></span>
+            ${r.phantom ? '<span class="mr-chip warn">phantom</span>' : ''}${r.reimport ? '<span class="mr-chip warn">re-import</span>' : ''}${(!r.deletable && !r.phantom) ? '<span class="mr-chip mut">protected</span>' : ''}
+          </label>`).join('');
+        const chDeletable = c.charges.filter(x => x.deletable).length;
+        const chAction = (c.charges.length > 1 && chDeletable) ? `<button class="btn btn-xs btn-primary" onclick="rcRemoveCharges(${ci})">Keep selected · remove duplicates</button>` : '';
+        return `<div class="mr-card" data-rc="${ci}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:12px;background:var(--bg-card,#1a1d27)">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+            <span style="font-weight:600">${money(c.amount)}</span>
+            <span style="color:var(--text-muted);font-size:.78rem">${esc(c.vendor) || '—'} · ${c.date || ''}${c.card ? (' · ••' + c.card) : ''}</span>
+            ${badges.join(' ')}
+            <span style="margin-left:auto"><button class="btn btn-xs btn-ghost" onclick="rcDismiss('${c.key}',${ci})">Mark separate</button></span>
+          </div>
+          ${c.receipts.length ? `<div class="rc-lane"><h4>📎 Receipts (${c.receipts.length})</h4>${recRows}${recAction ? ('<div style="margin-top:5px">' + recAction + '</div>') : ''}</div>` : ''}
+          ${c.charges.length ? `<div class="rc-lane"><h4>🏦 Charges (${c.charges.length})</h4>${chRows}${chAction ? ('<div style="margin-top:5px">' + chAction + '</div>') : ''}</div>` : ''}
+        </div>`;
+      }).join('');
+    };
+    window.rcDismiss = async function (key, ci) {
+      try {
+        await fetch(`/projects/${PROJ_ID}/actuals/dup-transactions/dismiss`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({dup_key:key})});
+        const card = document.querySelector('.mr-card[data-rc="' + ci + '"]'); if (card) card.remove();
+        _actualsToast('Marked separate ✓', 'green');
+      } catch (e) { _actualsToast('Error: ' + e.message, 'red'); }
+    };
+    window.rcMergeReceipts = async function (ci) {
+      const card = document.querySelector('.mr-card[data-rc="' + ci + '"]');
+      const keep = card && card.querySelector('input[name="rc-rec-' + ci + '"]:checked');
+      if (!keep) { _actualsToast('Pick the receipt to keep.', 'yellow'); return; }
+      const keepId = parseInt(keep.value);
+      const cluster = (window._rcData.clusters || [])[ci] || {receipts: []};
+      const confirmIds = cluster.receipts.filter(r => r.doc_id !== keepId).map(r => r.doc_id);
+      if (!confirmIds.length) { _actualsToast('Nothing to merge.', 'yellow'); return; }
+      if (!confirm(`Merge ${confirmIds.length} duplicate receipt${confirmIds.length > 1 ? 's' : ''} into the kept one? The extras move to /_DUPLICATES/ and any charge they back is re-pointed to the kept receipt.`)) return;
+      try {
+        const r = await fetch(`/docs/${PROJ_ID}/duplicates/resolve-batch`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keep:[keepId], confirm:confirmIds, force:true, link_mode:'transfer'})});
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { _actualsToast('Merge failed: ' + (j.error || r.status), 'red'); return; }
+        _actualsToast(`Merged ${j.confirmed != null ? j.confirmed : confirmIds.length} duplicate receipt(s) ✓`, 'green');
+        if (card) card.remove();
+        setTimeout(() => location.reload(), 900);
+      } catch (e) { _actualsToast('Error: ' + e.message, 'red'); }
+    };
+    window.rcRemoveCharges = async function (ci) {
+      const card = document.querySelector('.mr-card[data-rc="' + ci + '"]');
+      const keep = card && card.querySelector('input[name="rc-ch-' + ci + '"]:checked');
+      const cluster = (window._rcData.clusters || [])[ci] || {charges: []};
+      const keepTid = keep ? parseInt(keep.value) : null;
+      const toDelete = cluster.charges.filter(x => x.tid !== keepTid && x.deletable);
+      if (!toDelete.length) { _actualsToast('Nothing removable here — the others are receipt-linked (match/unmatch them).', 'yellow'); return; }
+      if (!confirm(`Remove ${toDelete.length} duplicate/phantom charge${toDelete.length > 1 ? 's' : ''} (keeping the selected one)? Logged in Activity.`)) return;
+      let ok = 0, fail = 0;
+      for (const x of toDelete) {
+        try {
+          const resp = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${x.tid}/delete-duplicate`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+          if (resp.ok) ok++; else fail++;
+        } catch (e) { fail++; }
+      }
+      _actualsToast(`Removed ${ok}${fail ? (' · ' + fail + ' failed') : ''}.`, fail ? 'yellow' : 'green');
       if (card) card.remove();
       if (ok && !fail) setTimeout(() => location.reload(), 900);
     };
