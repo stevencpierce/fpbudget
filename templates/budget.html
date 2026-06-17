@@ -3701,12 +3701,28 @@
       return;
     }
     try {
-      const r = await fetch('/docs/upload/' + uid + '/resolve-duplicate', {
+      let force = false;
+      let r = await fetch('/docs/upload/' + uid + '/resolve-duplicate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
       });
-      const d = await r.json().catch(() => ({}));
+      let d = await r.json().catch(() => ({}));
+      // Coded duplicate: server asks for explicit confirmation before un-coding.
+      if (r.status === 409 && d.needs_force) {
+        const amt = (d.amount != null) ? (' ($' + Number(d.amount).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}) + ')') : '';
+        if (!confirm('This duplicate' + amt + ' is coded to ' + (d.coded_to || 'a budget line') +
+                     '.\n\nBurying it will remove that duplicate transaction from Actuals (de-double-counting it). The original copy keeps its coding.\n\nProceed?')) {
+          dupBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });
+          return;
+        }
+        force = true;
+        r = await fetch('/docs/upload/' + uid + '/resolve-duplicate', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, force: true }),
+        });
+        d = await r.json().catch(() => ({}));
+      }
       if (!r.ok) {
         alert('Could not resolve: ' + (d.error || r.status));
         dupBtns.forEach(b => { b.disabled = false; b.style.opacity = ''; });

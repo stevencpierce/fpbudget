@@ -22432,11 +22432,17 @@ def docs_scan_receipt_duplicates(pid):
                     "date_window": date_window, "sample_groups": groups_out[:40]})
 
 
-def _apply_dup_resolution(upload, action):
+def _apply_dup_resolution(upload, action, force=False):
     """Apply one keep/confirm decision to a flagged upload. Mutates the row
     (+ session: txn add/delete, Dropbox move) but does NOT commit — the
     caller commits once. Returns (ok: bool, info: dict, error: str|None).
-    Shared by the single-row route and the batch / group-review route."""
+    Shared by the single-row route and the batch / group-review route.
+
+    force=True (set when the user EXPLICITLY clicks "It's a dupe" and then
+    confirms the coded-doc warning): bury even an assigned duplicate. Its own
+    phantom doc_upload transaction is deleted (de-double-counts the ledger);
+    any electronic charge matched to it is unlinked but keeps its own coding.
+    (User 2026-06-17.)"""
     _peer = upload.duplicate_of_id
     if action == "keep":
         upload.is_duplicate    = False
@@ -22485,10 +22491,15 @@ def _apply_dup_resolution(upload, action):
                      .filter(db.or_(Transaction.budget_line_id.isnot(None),
                                     Transaction.account_code.isnot(None)))
                      .first())
-        if _assigned:
-            return False, {}, (f"#{upload.id} is coded to a budget line — left as-is "
-                               f"(an assigned document is never auto-filed as a duplicate). "
-                               f"Unassign it in Actuals first if you really intend to.")
+        if _assigned and not force:
+            # Don't hard-refuse — tell the caller it's coded so the UI can ask
+            # the user to confirm un-coding it, then retry with force=True.
+            _code = (_assigned.account_code_name
+                     or (str(_assigned.account_code) if _assigned.account_code else 'a budget line'))
+            return False, {"needs_force": True, "coded_to": _code,
+                           "amount": (float(upload.amount) if upload.amount is not None else None)}, (
+                f"#{upload.id} is coded to {_code}. Confirm to un-code this duplicate and bury it "
+                f"(the original copy keeps its coding).")
         moved_to = None
         if upload.filed_dropbox_path:
             try:
@@ -22534,11 +22545,14 @@ def docs_resolve_duplicate(uid):
     if current_user.role not in ('super_admin', 'admin'):
         if upload.uploader_id != current_user.id:
             return jsonify({"error": "Forbidden"}), 403
-    action = ((request.get_json(silent=True) or {}).get("action") or "").strip().lower()
-    ok, info, err = _apply_dup_resolution(upload, action)
+    _body = request.get_json(silent=True) or {}
+    action = (_body.get("action") or "").strip().lower()
+    force = bool(_body.get("force"))
+    ok, info, err = _apply_dup_resolution(upload, action, force=force)
     if not ok:
         db.session.rollback()
-        return jsonify({"error": err}), 400
+        # needs_force = coded doc; 409 so the UI can prompt + retry with force.
+        return jsonify({"error": err, **(info or {})}), (409 if (info or {}).get("needs_force") else 400)
     db.session.commit()
     logging.info(f"[DOCS] upload #{upload.id}: duplicate review → {action.upper()}")
     info["ok"] = True
@@ -22562,6 +22576,7 @@ def docs_resolve_duplicates_batch(pid):
         return out
     keep_ids    = _ints(data.get("keep"))
     confirm_ids = _ints(data.get("confirm"))
+    force = bool(data.get("force"))
     results, errors = [], []
     for action, ids in (("confirm", confirm_ids), ("keep", keep_ids)):
         for uid in ids:
@@ -22570,7 +22585,7 @@ def docs_resolve_duplicates_batch(pid):
                 errors.append({"uid": uid, "error": "not found"}); continue
             if current_user.role not in ('super_admin', 'admin') and up.uploader_id != current_user.id:
                 errors.append({"uid": uid, "error": "forbidden"}); continue
-            ok, info, err = _apply_dup_resolution(up, action)
+            ok, info, err = _apply_dup_resolution(up, action, force=force)
             (results if ok else errors).append(info if ok else {"uid": uid, "error": err})
     db.session.commit()
     logging.info(f"[DOCS] batch dup resolve project={pid}: "
