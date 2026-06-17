@@ -22668,6 +22668,55 @@ def docs_resolve_duplicate(uid):
     return jsonify(info)
 
 
+@app.route("/docs/<int:pid>/dup-links", methods=["POST"])
+@login_required
+def docs_dup_links(pid):
+    """READ-ONLY: for a set of DocUpload ids, return the electronic charges
+    matched to each, what each is coded to, and the kept original of its set.
+    Powers the Compare-group modal's per-copy linkage display so you can see
+    'these are connected' before deciding. (User 2026-06-17.)"""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    ProjectSheet.query.get_or_404(pid)
+    if current_user.role not in ('super_admin', 'admin'):
+        if not ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first():
+            return jsonify({"error": "Forbidden"}), 403
+    raw = (request.get_json(silent=True) or {}).get("ids") or []
+    ids = []
+    for x in raw:
+        try: ids.append(int(x))
+        except (TypeError, ValueError): pass
+    out = {}
+    ups = ({u.id: u for u in DocUpload.query
+            .filter(DocUpload.project_id == pid, DocUpload.id.in_(ids)).all()} if ids else {})
+    for uid, u in ups.items():
+        charges = (Transaction.query
+                   .filter(Transaction.doc_upload_id == uid,
+                           Transaction.source.in_(('qbo_sync', 'csv_import'))).all())
+        coded = (Transaction.query.filter_by(doc_upload_id=uid)
+                 .filter(db.or_(Transaction.budget_line_id.isnot(None),
+                                Transaction.account_code.isnot(None))).first())
+        keeper = None
+        if u.file_hash:
+            keeper = (DocUpload.query
+                      .filter(DocUpload.project_id == pid, DocUpload.file_hash == u.file_hash,
+                              DocUpload.id != uid, DocUpload.is_duplicate == False)  # noqa: E712
+                      .order_by(DocUpload.id.asc()).first())
+        if not keeper and u.duplicate_of_id:
+            keeper = DocUpload.query.get(u.duplicate_of_id)
+        out[uid] = {
+            "linked_charges": [{"tid": c.id, "vendor": c.vendor,
+                                "amount": (float(c.amount) if c.amount is not None else None),
+                                "date": c.txn_date,
+                                "code": c.account_code_name or (str(c.account_code) if c.account_code else None),
+                                "source": c.source} for c in charges],
+            "coded_to": (coded.account_code_name
+                         or (str(coded.account_code) if (coded and coded.account_code) else None)) if coded else None,
+            "keeper": ({"id": keeper.id, "filed": (keeper.filed_filename or keeper.original_filename)} if keeper else None),
+        }
+    return jsonify({"ok": True, "links": out})
+
+
 @app.route("/docs/<int:pid>/duplicates/resolve-batch", methods=["POST"])
 @login_required
 def docs_resolve_duplicates_batch(pid):

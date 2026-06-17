@@ -3906,6 +3906,45 @@
           + '</div>'))
       + '</div>';
   }
+  // Per-copy linkage banner for the compare modal: shows the charge(s) a copy
+  // is matched to (and/or what it's coded to) so you can see the connection
+  // before burying it. (User 2026-06-17.)
+  window._dupGroupLinks = {};
+  function _docRenderDupLink(info) {
+    if (!info) return '';
+    const charges = info.linked_charges || [];
+    if (!charges.length && !info.coded_to) return '';
+    const money = a => (a != null) ? ('$' + Number(a).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})) : '$?';
+    let html = '<div class="dup-link-note" style="flex-shrink:0;font-size:11px;background:#1a1426;border:1px solid #2d2440;border-radius:6px;padding:6px 9px;color:#c9a8ff;line-height:1.5">';
+    if (charges.length) {
+      html += '🔗 Linked to ' + charges.length + ' charge' + (charges.length > 1 ? 's' : '') + ':<br>' +
+        charges.map(c => '&nbsp;• ' + _esc(c.vendor || 'charge') + ' ' + money(c.amount) +
+          (c.date ? (' · ' + _esc(c.date)) : '') + (c.code ? (' · ' + _esc(c.code)) : '')).join('<br>');
+      if (info.keeper) html += '<br><span style="color:var(--text-muted)">On bury: re-point to the kept original, or unlink.</span>';
+    } else if (info.coded_to) {
+      html += '🏷 Coded to ' + _esc(info.coded_to);
+    }
+    html += '</div>';
+    return html;
+  }
+  // Fetch linkage for the group's members and inject the banners into each pane.
+  function _docLoadDupLinks(members) {
+    const body = document.getElementById('docDupCompareBody');
+    if (!body || !members.length) return;
+    const uids = members.map(r => parseInt(r.dataset ? r.dataset.uploadId : r)).filter(Boolean);
+    fetch('/docs/' + PROJ_ID + '/dup-links', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: uids }),
+    }).then(r => r.ok ? r.json() : null).then(j => {
+      window._dupGroupLinks = (j && j.links) || {};
+      uids.forEach(uid => {
+        const note = _docRenderDupLink(window._dupGroupLinks[uid]);
+        if (!note) return;
+        const pane = body.querySelector('.dup-pane[data-uid="' + uid + '"]');
+        const toggle = pane && pane.querySelector('.dup-toggle');
+        if (pane && toggle) toggle.insertAdjacentHTML('beforebegin', note);
+      });
+    }).catch(() => {});
+  }
   // Jump from the compare view into the full doc-detail modal so a flagged
   // duplicate that's actually MISLABELED can be reclassified / edited — the
   // compare modal only offers keep/duplicate. (User 2026-06-01: "review and
@@ -4019,6 +4058,7 @@
     });
     body.innerHTML = members.map(row => _docGroupPaneHTML(_docMeta(row))).join('');
     _docDupRefreshChoices();
+    _docLoadDupLinks(members);   // show each copy's linked charge inline
     document.getElementById('docDupCompareOverlay').style.display = 'flex';
   };
   // Backwards-compat alias (older inline onclick may still reference it).
@@ -4084,12 +4124,37 @@
       (_docDupGroupState[uid] === 'dupe' ? confirm : keep).push(parseInt(uid));
     });
     if (!keep.length) { alert('At least one document must be kept.'); return; }
+    // If any copy being buried is linked to a charge (or coded), ask how to
+    // handle it — re-point to the kept original, or unlink. (User 2026-06-17.)
+    const links = window._dupGroupLinks || {};
+    const linkedConfirms = confirm.filter(uid => {
+      const i = links[uid]; return i && ((i.linked_charges && i.linked_charges.length) || i.coded_to);
+    });
+    let force = false, link_mode = null;
+    if (linkedConfirms.length) {
+      force = true;
+      const transferable = linkedConfirms.some(uid => {
+        const i = links[uid]; return i.keeper && i.linked_charges && i.linked_charges.length;
+      });
+      if (transferable) {
+        const lines = linkedConfirms.flatMap(uid => (links[uid].linked_charges || [])
+          .map(c => '  • ' + (c.vendor || 'charge') + ' $' + (c.amount != null ? Number(c.amount).toFixed(2) : '?') +
+                    (c.date ? (' · ' + c.date) : '') + (c.code ? (' · ' + c.code) : ''))).join('\n');
+        const t = window.confirm(
+          'Some duplicates you\'re burying are matched to charges:\n' + lines +
+          '\n\n[ OK ]  Re-point the charge(s) to the kept original (keep the match)\n' +
+          '[ Cancel ]  Unlink them back to the unmatched pool');
+        link_mode = t ? 'transfer' : 'unlink';
+      } else {
+        link_mode = 'unlink';
+      }
+    }
     const apply = document.getElementById('docDupApplyBtn');
     if (apply) { apply.disabled = true; apply.textContent = 'Applying…'; }
     try {
       const r = await fetch('/docs/' + PROJ_ID + '/duplicates/resolve-batch', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keep, confirm }),
+        body: JSON.stringify({ keep, confirm, force, link_mode }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { alert('Apply failed: ' + (d.error || r.status)); return; }
