@@ -8818,6 +8818,102 @@ def actuals_delete_duplicate_txn(pid, tid):
     return jsonify({"ok": True, "deleted": tid})
 
 
+@app.route("/projects/<int:pid>/actuals/reconcile-scan", methods=["GET"])
+@login_required
+def actuals_reconcile_scan(pid):
+    """READ-ONLY foundation for the unified Reconcile review (Phase 1, User
+    2026-06-17): group RECEIPTS and TRANSACTIONS that refer to the same spend
+    (|amount| + date + vendor + card) into ONE cluster with two lanes, and
+    pre-compute the duplicate flags (byte-identical receipts, re-imported /
+    phantom charges, unmatched pairs). Returns only clusters needing attention."""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    ProjectSheet.query.get_or_404(pid)
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    import re as _re_r
+    from collections import defaultdict as _dd_r
+    txns = (Transaction.query.filter_by(project_id=pid)
+            .filter(Transaction.not_project_expense == False).all())   # noqa: E712
+    docs = (DocUpload.query.filter_by(project_id=pid)
+            .filter(DocUpload.category.in_(('receipt', 'invoice')))
+            .filter(DocUpload.status != 'deleted').all())
+    dismissed = {d.dup_key for d in TransactionDupDismissal.query.filter_by(project_id=pid).all()}
+    elec_doc_ids = {t.doc_upload_id for t in txns
+                    if t.source in ('qbo_sync', 'csv_import', 'reconciled') and t.doc_upload_id}
+
+    def _vnorm(v):
+        return _re_r.sub(r'[^a-z0-9]', '', (v or '').lower())[:18]
+
+    def _sig(amount, date, vendor, card):
+        if amount is None or not date or not vendor or not card:
+            return None
+        return '%.2f|%s|%s|%s' % (abs(float(amount)), date[:10], _vnorm(vendor), card)
+
+    groups = _dd_r(lambda: {"txns": [], "docs": []})
+    for t in txns:
+        s = _sig(t.amount, t.txn_date, t.vendor, t.card_last4)
+        if s:
+            groups[s]["txns"].append(t)
+    for d in docs:
+        s = _sig(d.amount, (d.doc_date.isoformat() if d.doc_date else None), d.vendor, d.card_last4)
+        if s:
+            groups[s]["docs"].append(d)
+
+    clusters = []
+    for sig, g in groups.items():
+        gt, gd = g["txns"], g["docs"]
+        if (len(gt) + len(gd)) < 2:
+            continue
+        key = 'sig:' + sig
+        if key in dismissed:
+            continue
+        hash_counts = _dd_r(int)
+        for d in gd:
+            if d.file_hash:
+                hash_counts[d.file_hash] += 1
+        receipts = [{"doc_id": d.id, "file": (d.filed_filename or d.original_filename),
+                     "amount": (float(d.amount) if d.amount is not None else None),
+                     "status": d.status, "on_charge": (d.id in elec_doc_ids),
+                     "dup": bool(d.file_hash and hash_counts[d.file_hash] > 1)} for d in gd]
+        qid_counts = _dd_r(int)
+        for t in gt:
+            if t.source == 'qbo_sync' and t.qbo_txn_id:
+                qid_counts[t.qbo_txn_id] += 1
+        charges = []
+        for t in gt:
+            phantom = (t.source == 'doc_upload' and t.doc_upload_id in elec_doc_ids)
+            charges.append({"tid": t.id, "source": t.source,
+                            "amount": (float(t.amount) if t.amount is not None else None),
+                            "match_status": t.match_status, "doc_upload_id": t.doc_upload_id,
+                            "coded": t.account_code_name or (str(t.account_code) if t.account_code else None),
+                            "phantom": phantom,
+                            "reimport": bool(t.source == 'qbo_sync' and t.qbo_txn_id and qid_counts[t.qbo_txn_id] > 1),
+                            "deletable": ((t.source in ('qbo_sync', 'csv_import', 'manual_entry') and not t.doc_upload_id) or phantom)})
+        n_elec = len([c for c in charges if c["source"] in ('qbo_sync', 'csv_import', 'reconciled')])
+        flags = {
+            "dup_receipts": len(gd) > 1,
+            "dup_charges": (any(c["reimport"] for c in charges) or n_elec > 1),
+            "phantom": any(c["phantom"] for c in charges),
+            "needs_match": (any(c["source"] in ('qbo_sync', 'csv_import') and c["match_status"] == 'unmatched'
+                                and not c["doc_upload_id"] for c in charges)
+                            and any(not r["on_charge"] for r in receipts)),
+        }
+        if not any(flags.values()):
+            continue   # already reconciled (1 charge + 1 receipt, matched) — skip
+        clusters.append({
+            "key": key, "amount": abs(float((gt[0].amount if gt else gd[0].amount) or 0)),
+            "date": sig.split('|')[1], "vendor": (gt[0].vendor if gt else gd[0].vendor),
+            "card": sig.split('|')[3],
+            "receipts": receipts, "charges": charges, "flags": flags,
+        })
+    clusters.sort(key=lambda c: -c["amount"])
+    return jsonify({"ok": True, "project_id": pid, "cluster_count": len(clusters),
+                    "clusters": clusters[:300]})
+
+
 @app.route("/projects/<int:pid>/actuals/automatch-trace")
 @login_required
 def actuals_automatch_trace(pid):
