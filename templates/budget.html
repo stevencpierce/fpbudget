@@ -6150,11 +6150,6 @@
       </p>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button type="button" id="actualsAutoMatchBtn" class="btn btn-sm"
-              onclick="actualsRunAutoMatch()"
-              title="Find candidate pairings between QBO transactions and uploaded receipts">
-        ⚡ Auto-Match
-      </button>
       <button type="button" id="actualsFindMatchBtn" class="btn btn-sm btn-primary"
               onclick="openMatchReview()"
               title="Find receipt matches with adjustable amount / date / vendor criteria, review candidates, confirm or change">
@@ -6169,17 +6164,9 @@
               title="Undo the most recent confirmed match — unlinks it and frees the receipt">
         ↩ Undo last match
       </button>
-      <button type="button" class="btn btn-sm" onclick="actualsAutoCode()"
-              title="Auto-code uncoded charges to budget lines using vendor→line suggestions (cross-point 3)">
-        ✨ Auto-code lines
-      </button>
       <button type="button" id="actualsReconcileBtn" class="btn btn-sm btn-primary" onclick="openReconcile()"
               title="Reconcile: review every spend with duplicate receipts, duplicate/phantom charges, or unmatched pairs — all in one place">
-        🧹 Reconcile duplicates
-      </button>
-      <button type="button" id="actualsDupTxnBtn" class="btn btn-sm" onclick="openDupTxnReview()"
-              title="Scan for duplicate transactions (re-imports / double-counts) and confirm they're separate or remove the extra">
-        🔁 Scan for duplicate transactions
+        🧹 Reconcile
       </button>
       <button type="button" id="actualsReprocessBtn" class="btn btn-sm" onclick="actualsReprocessReceipts()"
               title="Re-run OCR on every receipt not yet matched to a charge — refreshes vendor/amount/date, converts foreign currency to USD, then re-matches. Uses Veryfi credits. Resumable.">
@@ -10908,39 +10895,54 @@
       const clusters = d.clusters || [];
       document.getElementById('rc-count').textContent = clusters.length ? `${clusters.length} spend${clusters.length !== 1 ? 's' : ''} to reconcile` : '';
       if (!clusters.length) { body.innerHTML = '<div class="muted" style="padding:28px;text-align:center">✓ Nothing to reconcile — no duplicate receipts or charges found.</div>'; return; }
+      // Friendly source labels — a 'doc_upload' transaction is NOT a separate
+      // bank charge, it's the receipt's own auto-created ledger row.
+      const srcLabel = s => ({
+        csv_import: 'Bank charge', qbo_sync: 'Bank charge', reconciled: 'Bank charge',
+        doc_upload: 'Receipt’s own ledger row', manual_entry: 'Manual entry',
+      }[s] || s);
       body.innerHTML = clusters.map((c, ci) => {
-        const badges = [];
-        if (c.flags.dup_receipts) badges.push('<span class="mr-chip warn">📎 duplicate receipts</span>');
-        if (c.flags.dup_charges)  badges.push('<span class="mr-chip warn">🏦 duplicate charges</span>');
-        if (c.flags.phantom)      badges.push('<span class="mr-chip warn">♻ phantom row</span>');
-        if (c.flags.needs_match)  badges.push('<span class="mr-chip ok">🔗 needs match</span>');
+        const bankCharges = c.charges.filter(x => x.source !== 'doc_upload');
+        const codedBank = bankCharges.find(x => x.coded);
+        // One plain-English line saying what this cluster actually is.
+        let summary;
+        if (c.flags.dup_receipts && c.receipts.length > 1) {
+          summary = `📎 The same receipt was uploaded ${c.receipts.length} times. Keep one — the rest get filed as duplicates.`;
+        } else if (c.flags.phantom) {
+          summary = `♻ This spend is in your ledger twice: the real bank charge${codedBank ? (' (coded ' + esc(codedBank.coded) + ')') : ''} <b>and</b> the receipt’s own leftover row. They’re already linked — just remove the leftover row to fix the double-count.`;
+        } else if (c.flags.dup_charges) {
+          summary = `🏦 This charge was imported ${bankCharges.length} times. Keep one, remove the duplicate import(s).`;
+        } else if (c.flags.needs_match) {
+          summary = `🔗 An unmatched charge and a receipt for the same spend — likely the same purchase, not yet linked.`;
+        } else {
+          summary = `Same amount, date, vendor and card — check whether these are one spend or genuinely separate.`;
+        }
         const recKeep = (c.receipts[0] || {}).doc_id;
         const recRows = c.receipts.map(r => `
           <label class="rc-row">
             ${c.receipts.length > 1 ? `<input type="radio" name="rc-rec-${ci}" value="${r.doc_id}" ${r.doc_id === recKeep ? 'checked' : ''}>` : '<span style="width:13px"></span>'}
-            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.file) || ('Receipt #' + r.doc_id)} <span style="color:var(--text-muted)">· ${money(r.amount)} · ${esc(r.status || '')}</span></span>
-            ${r.dup ? '<span class="mr-chip warn">identical</span>' : ''}${r.on_charge ? '<span class="mr-chip ok">on a charge</span>' : ''}
+            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.file) || ('Receipt #' + r.doc_id)} <span style="color:var(--text-muted)">· ${money(r.amount)}</span></span>
+            ${r.dup ? '<span class="mr-chip warn">identical copy</span>' : ''}${r.on_charge ? '<span class="mr-chip ok">✓ attached to a charge</span>' : ''}
           </label>`).join('');
         const recAction = c.receipts.length > 1 ? `<button class="btn btn-xs btn-primary" onclick="rcMergeReceipts(${ci})">Keep selected · merge the rest</button>` : '';
-        const elec = c.charges.filter(x => x.source !== 'doc_upload');
-        const chKeep = ((elec.find(x => x.coded) || elec[0] || c.charges[0]) || {}).tid;
+        const chKeep = ((bankCharges.find(x => x.coded) || bankCharges[0] || c.charges[0]) || {}).tid;
         const chRows = c.charges.map(r => `
           <label class="rc-row">
             ${c.charges.length > 1 ? `<input type="radio" name="rc-ch-${ci}" value="${r.tid}" ${r.tid === chKeep ? 'checked' : ''}>` : '<span style="width:13px"></span>'}
-            <span style="flex:1;min-width:0">${esc(r.source)} <span style="color:var(--text-muted)">· ${money(r.amount)} · ${r.coded ? esc(r.coded) : 'uncoded'}${r.doc_upload_id ? ' · 📎' : ''}</span></span>
-            ${r.phantom ? '<span class="mr-chip warn">phantom</span>' : ''}${r.reimport ? '<span class="mr-chip warn">re-import</span>' : ''}${(!r.deletable && !r.phantom) ? '<span class="mr-chip mut">protected</span>' : ''}
+            <span style="flex:1;min-width:0">${srcLabel(r.source)} <span style="color:var(--text-muted)">· ${money(r.amount)} · ${r.coded ? esc(r.coded) : 'uncoded'}${(r.doc_upload_id && r.source !== 'doc_upload') ? ' · ✓ has receipt' : ''}</span></span>
+            ${r.phantom ? '<span class="mr-chip warn">= the receipt above · remove</span>' : ''}${r.reimport ? '<span class="mr-chip warn">imported again</span>' : ''}${(!r.deletable && !r.phantom) ? '<span class="mr-chip mut" title="Kept; not removable here">keep</span>' : ''}
           </label>`).join('');
         const chDeletable = c.charges.filter(x => x.deletable).length;
-        const chAction = (c.charges.length > 1 && chDeletable) ? `<button class="btn btn-xs btn-primary" onclick="rcRemoveCharges(${ci})">Keep selected · remove duplicates</button>` : '';
+        const chAction = (c.charges.length > 1 && chDeletable) ? `<button class="btn btn-xs btn-primary" onclick="rcRemoveCharges(${ci})">Keep selected · remove the rest</button>` : '';
         return `<div class="mr-card" data-rc="${ci}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:12px;background:var(--bg-card,#1a1d27)">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
             <span style="font-weight:600">${money(c.amount)}</span>
             <span style="color:var(--text-muted);font-size:.78rem">${esc(c.vendor) || '—'} · ${c.date || ''}${c.card ? (' · ••' + c.card) : ''}</span>
-            ${badges.join(' ')}
-            <span style="margin-left:auto"><button class="btn btn-xs btn-ghost" onclick="rcDismiss('${c.key}',${ci})">Mark separate</button></span>
+            <span style="margin-left:auto"><button class="btn btn-xs btn-ghost" onclick="rcDismiss('${c.key}',${ci})">Not a duplicate</button></span>
           </div>
-          ${c.receipts.length ? `<div class="rc-lane"><h4>📎 Receipts (${c.receipts.length})</h4>${recRows}${recAction ? ('<div style="margin-top:5px">' + recAction + '</div>') : ''}</div>` : ''}
-          ${c.charges.length ? `<div class="rc-lane"><h4>🏦 Charges (${c.charges.length})</h4>${chRows}${chAction ? ('<div style="margin-top:5px">' + chAction + '</div>') : ''}</div>` : ''}
+          <div style="font-size:.74rem;color:var(--text);line-height:1.45;margin-bottom:6px">${summary}</div>
+          ${c.receipts.length ? `<div class="rc-lane"><h4>📎 Receipt${c.receipts.length > 1 ? 's (' + c.receipts.length + ')' : ''}</h4>${recRows}${recAction ? ('<div style="margin-top:5px">' + recAction + '</div>') : ''}</div>` : ''}
+          ${c.charges.length ? `<div class="rc-lane"><h4>🏦 Ledger rows (${c.charges.length})</h4>${chRows}${chAction ? ('<div style="margin-top:5px">' + chAction + '</div>') : ''}</div>` : ''}
         </div>`;
       }).join('');
     };
