@@ -10280,7 +10280,10 @@
           <div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border)">
             <h3 style="margin:0;font-size:1rem">🎯 Find matches</h3>
             <span id="mr-count" style="font-size:.8rem;color:var(--text-muted)"></span>
-            <button type="button" class="btn btn-sm btn-ghost" style="margin-left:auto" onclick="document.getElementById('match-review-modal').style.display='none'">✕ Close</button>
+            <span style="margin-left:auto"></span>
+            <button type="button" class="btn btn-sm btn-primary" id="mr-confirm-hc" style="display:none"
+                    title="Confirm every ⚡ suggested match at 80%+ confidence in one go" onclick="mrConfirmAllHigh()">✓ Confirm all high-confidence (<span id="mr-hc-n">0</span>)</button>
+            <button type="button" class="btn btn-sm btn-ghost" onclick="document.getElementById('match-review-modal').style.display='none'">✕ Close</button>
           </div>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg-input,#22263a)">
             <span style="font-size:.78rem;color:var(--text-muted)">💲 Amount</span><span id="mr-amt"></span>
@@ -10375,8 +10378,15 @@
               <div style="border-top:1px solid var(--border);padding-top:6px">${rows}</div></div>`;
           }).join('') + (d.results && d.results.length ? '<div style="height:8px;border-bottom:1px solid var(--border);margin-bottom:12px"></div>' : '');
       }
-      if ((!d.results || !d.results.length) && !splits.length) { host.innerHTML = '<div class="muted" style="padding:24px;text-align:center">No candidates within these criteria — loosen the amount or date.</div>'; return; }
-      host.innerHTML = splitHtml + (d.results||[]).map(res => {
+      if ((!d.results || !d.results.length) && !splits.length) {
+        host.innerHTML = '<div class="muted" style="padding:24px;text-align:center">No candidates within these criteria — loosen the amount or date.</div>';
+        const hcBtn0 = document.getElementById('mr-confirm-hc'); if (hcBtn0) hcBtn0.style.display = 'none';
+        return;
+      }
+      // High-confidence first so the slam-dunks are right at the top.
+      const HIGH = 0.8;
+      const results = (d.results || []).slice().sort((a, b) => (b.top_confidence || 0) - (a.top_confidence || 0));
+      host.innerHTML = splitHtml + results.map(res => {
         const c = res.charge; const conf = Math.round((res.top_confidence||0)*100);
         const cands = res.candidates.map((cd,i) => {
           const sel = res.suggested_doc_id ? cd.doc_upload_id===res.suggested_doc_id : i===0;
@@ -10395,7 +10405,7 @@
         }).join('');
         const badge = res.suggested_doc_id ? `<span class="mr-chip ok" style="font-size:.7rem">⚡ suggested · ${conf}%</span>`
                                            : `<span class="mr-chip warn" style="font-size:.7rem">pick one · top ${conf}%</span>`;
-        return `<div class="mr-card" data-cid="${c.id}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;background:var(--bg-card,#1a1d27)">
+        return `<div class="mr-card" data-cid="${c.id}" data-conf="${res.top_confidence||0}" data-suggested="${res.suggested_doc_id||''}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;background:var(--bg-card,#1a1d27)">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
             <span style="font-weight:600">${esc(c.vendor)||'Unknown'}</span>
             <span style="font-size:.78rem;color:var(--text-muted)">$${_fmcFmt(c.amount)} · ${c.date||''}${c.card4?' · ••'+c.card4:''}</span>${badge}
@@ -10405,6 +10415,45 @@
           </div>
           <div style="display:flex;flex-direction:column;gap:6px">${cands}</div></div>`;
       }).join('');
+      // Surface the bulk "confirm all high-confidence" button + count.
+      const hcN = results.filter(r => r.suggested_doc_id && (r.top_confidence || 0) >= HIGH).length;
+      const hcBtn = document.getElementById('mr-confirm-hc');
+      if (hcBtn) {
+        hcBtn.style.display = hcN ? '' : 'none';
+        const nEl = document.getElementById('mr-hc-n'); if (nEl) nEl.textContent = hcN;
+      }
+    };
+    // Confirm every ⚡ suggested match at ≥80% in one pass (sequential to avoid
+    // hammering the server). Each uses the pre-selected (suggested) receipt. (User 2026-06-17.)
+    window.mrConfirmAllHigh = async function () {
+      const HIGH = 0.8;
+      const cards = [...document.querySelectorAll('.mr-card[data-cid]')]
+        .filter(card => card.dataset.suggested && parseFloat(card.dataset.conf || 0) >= HIGH);
+      if (!cards.length) { _actualsToast('No high-confidence matches to confirm.', 'yellow'); return; }
+      if (!confirm(`Confirm ${cards.length} high-confidence match${cards.length !== 1 ? 'es' : ''}? Each links its ⚡ suggested receipt — you can still undo any from the Activity tab.`)) return;
+      const hcBtn = document.getElementById('mr-confirm-hc');
+      if (hcBtn) { hcBtn.disabled = true; }
+      let ok = 0, fail = 0;
+      for (const card of cards) {
+        const cid = card.dataset.cid;
+        if (hcBtn) hcBtn.innerHTML = `Confirming… ${ok + fail + 1}/${cards.length}`;
+        const sel = card.querySelector('input[name="mr-' + cid + '"]:checked')
+                 || card.querySelector('input[name="mr-' + cid + '"]');
+        if (!sel) { fail++; continue; }
+        try {
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${cid}/link-doc`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ doc_upload_id: parseInt(sel.value) }) });
+          if (!r.ok) { fail++; continue; }
+          await fetch(`/projects/${PROJ_ID}/actuals/transaction/${cid}/confirm-match`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+          ok++;
+          card.style.transition = 'opacity .25s'; card.style.opacity = '0';
+          setTimeout(() => card.remove(), 250);
+        } catch (e) { fail++; }
+      }
+      _actualsToast(`Confirmed ${ok} match${ok !== 1 ? 'es' : ''}${fail ? ` · ${fail} failed` : ''}.`, fail ? 'yellow' : 'green');
+      if (hcBtn) { hcBtn.disabled = false; }
+      mrFind();   // refresh counts + remaining candidates
     };
     window.mrConfirm = async function (cid, btn) {
       const card = document.querySelector('.mr-card[data-cid="'+cid+'"]');
