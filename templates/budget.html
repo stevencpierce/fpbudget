@@ -3051,6 +3051,19 @@
               <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Note</label>
               <textarea id="docDetailNote" rows="3" placeholder="Optional note…" style="width:100%;resize:vertical"></textarea>
             </div>
+            {# Receipt-side matcher (User 2026-06-17): find the charge(s) that
+               back THIS receipt — one 1:1, or several that sum to the total
+               (a split). Default = unmatched charges; toggle to search all. #}
+            <div class="field" id="docDetailTxnFind" style="margin-bottom:.6rem">
+              <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Match to transaction(s)</label>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <button type="button" id="docDetailFindTxnBtn" onclick="docDetailFindTxns()"
+                        style="padding:6px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#5b8af9;font-size:12px;cursor:pointer">🔗 Find transactions for this receipt</button>
+                <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted);cursor:pointer">
+                  <input type="checkbox" id="docDetailInclMatched" onchange="if(document.getElementById('docDetailTxnResults').innerHTML)docDetailFindTxns()"> include already-matched</label>
+              </div>
+              <div id="docDetailTxnResults" style="margin-top:7px"></div>
+            </div>
             <div id="docDetailMeta" style="font-size:11px;color:var(--text-muted);margin:8px 0 12px;line-height:1.5"></div>
             <div style="display:flex;gap:6px;justify-content:space-between;align-items:center;">
               {# Left side: destructive action — delete the doc from the
@@ -4866,6 +4879,82 @@
   // Click any non-edit, non-delete area of a doc-row to open. Loads a
   // Dropbox temporary link and the editable metadata.
   let _docDetailUid = null;
+
+  // ── Receipt-side transaction matcher (User 2026-06-17) ──────────────
+  // From the open receipt, find the charge(s) it backs — one 1:1, or several
+  // that sum to the total (a split). Reuses link-doc/confirm-match + link-split.
+  window.docDetailFindTxns = async function () {
+    const uid = _docDetailUid;
+    if (!uid) return;
+    const host = document.getElementById('docDetailTxnResults');
+    const inclMatched = document.getElementById('docDetailInclMatched').checked;
+    host.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">Searching…</div>';
+    try {
+      const d = await (await fetch(`/projects/${PROJ_ID}/docs/upload/${uid}/transaction-candidates?include_matched=${inclMatched ? 1 : 0}`)).json();
+      window._ddTxnDoc = d.doc || {}; window._ddTxnCands = d.candidates || [];
+      ddRenderTxns();
+    } catch (e) { host.innerHTML = '<div style="color:#e08080;font-size:11px">Error: ' + e.message + '</div>'; }
+  };
+  function ddRenderTxns() {
+    const host = document.getElementById('docDetailTxnResults');
+    const cands = window._ddTxnCands || [];
+    const esc = s => (s || '').toString().replace(/</g, '&lt;');
+    const money = a => a == null ? '$?' : ('$' + Number(a).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}));
+    if (!cands.length) {
+      host.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">No candidate charges' +
+        (document.getElementById('docDetailInclMatched').checked ? '' : ' — try “include already-matched”') + '.</div>';
+      return;
+    }
+    const rows = cands.map(c => `
+      <label style="display:flex;align-items:center;gap:7px;padding:5px 7px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;font-size:11.5px;cursor:pointer">
+        <input type="checkbox" class="dd-txn-cb" value="${c.tid}" data-amt="${c.amount}" onchange="ddTxnSelChanged()">
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.vendor) || 'charge'} <span style="color:var(--text-muted)">· ${money(c.amount)} · ${c.date || ''}${c.card ? (' · ••' + c.card) : ''}${c.coded ? (' · ' + esc(c.coded)) : ''}</span></span>
+        ${c.kind === 'exact' ? '<span style="color:#5fd0a0">exact</span>' : '<span style="color:var(--text-muted)">part</span>'}
+        ${(c.match_status !== 'unmatched' || c.doc_upload_id) ? '<span style="color:#e0c060" title="already linked to a receipt">matched</span>' : ''}
+      </label>`).join('');
+    host.innerHTML = rows
+      + '<div id="dd-txn-sum" style="font-size:11px;color:var(--text-muted);margin:4px 0"></div>'
+      + '<button type="button" id="dd-txn-link" onclick="ddLinkTxns()" disabled style="padding:5px 11px;border-radius:6px;background:#1f6f4a;border:1px solid #2a8a5e;color:#fff;font-size:12px;cursor:pointer;opacity:.5">Link selected</button>';
+    ddTxnSelChanged();
+  }
+  window.ddTxnSelChanged = function () {
+    const cbs = [...document.querySelectorAll('.dd-txn-cb:checked')];
+    const sum = cbs.reduce((a, cb) => a + Math.abs(parseFloat(cb.dataset.amt) || 0), 0);
+    const total = Math.abs((window._ddTxnDoc || {}).total || 0);
+    const sumEl = document.getElementById('dd-txn-sum');
+    const btn = document.getElementById('dd-txn-link');
+    if (!cbs.length) { if (sumEl) sumEl.textContent = ''; if (btn) { btn.disabled = true; btn.style.opacity = '.5'; btn.textContent = 'Link selected'; } return; }
+    const match = total && Math.abs(sum - total) <= 0.02;
+    if (sumEl) sumEl.innerHTML = cbs.length + ' selected · sum $' + sum.toFixed(2) + ' / receipt $' + total.toFixed(2) +
+      (match ? ' <span style="color:#5fd0a0">✓ matches</span>' : ' <span style="color:#e0c060">≠ total</span>');
+    if (btn) {
+      const ok = (cbs.length === 1) || match;   // single = 1:1; multiple must sum to the total
+      btn.disabled = !ok; btn.style.opacity = ok ? '1' : '.5';
+      btn.textContent = cbs.length >= 2 ? ('Link as split (' + cbs.length + ')') : 'Link selected';
+    }
+  };
+  window.ddLinkTxns = async function () {
+    const uid = _docDetailUid;
+    const tids = [...document.querySelectorAll('.dd-txn-cb:checked')].map(cb => parseInt(cb.value));
+    if (!uid || !tids.length) return;
+    const btn = document.getElementById('dd-txn-link'); if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      if (tids.length >= 2) {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/link-split`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keeper_doc_id: parseInt(uid), charge_tids: tids})});
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { alert('Split link failed: ' + (j.error || r.status)); if (btn) { btn.disabled = false; } return; }
+        alert('Linked this receipt to ' + (j.linked || tids.length) + ' charges as a split ✓');
+      } else {
+        const tid = tids[0];
+        let r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/link-doc`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({doc_upload_id: parseInt(uid)})});
+        if (!r.ok) { const j = await r.json().catch(() => ({})); alert('Link failed: ' + (j.error || r.status)); if (btn) { btn.disabled = false; } return; }
+        await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/confirm-match`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+        alert('Linked ✓');
+      }
+      docDetailFindTxns();   // refresh the candidate list
+    } catch (e) { alert('Error: ' + e.message); if (btn) { btn.disabled = false; } }
+  };
+
   // Which list the modal was opened from — drives prev/next paging and
   // which row(s) get patched on save ('docs' = Docs tab, 'actuals' =
   // Actuals tab). Set in openDocDetail. (User 2026-05-30.)
@@ -5289,6 +5378,11 @@
     if ((uid == null) && (typeof row === 'number')) { uid = row; row = null; }
     _docDetailUid = uid;
     window._docDetailCurrentUid = uid;
+    // Reset the receipt-side transaction search for the newly-opened doc.
+    const _ddTxnRes = document.getElementById('docDetailTxnResults');
+    if (_ddTxnRes) _ddTxnRes.innerHTML = '';
+    const _ddIncl = document.getElementById('docDetailInclMatched');
+    if (_ddIncl) _ddIncl.checked = false;
     // Decide which list we're paging/patching against from the active tab.
     const _actPanel = document.getElementById('tab-actuals');
     _docDetailContext = (_actPanel && _actPanel.classList.contains('active')) ? 'actuals' : 'docs';

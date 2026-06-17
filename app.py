@@ -9458,6 +9458,66 @@ def actuals_link_existing_doc(pid, tid):
     })
 
 
+@app.route("/projects/<int:pid>/docs/upload/<int:uid>/transaction-candidates", methods=["GET"])
+@login_required
+def doc_transaction_candidates(pid, uid):
+    """Candidate CHARGES to link to THIS receipt — the receipt-side matcher.
+    A receipt's total often equals ONE charge, or the SUM of several (a split:
+    e.g. an Uber order charged as meal + tip). Returns 1:1 matches plus smaller
+    same-card/same-vendor components that can sum to the total. Default: only
+    UNMATCHED charges; ?include_matched=1 also returns already-matched ones so
+    you can search across everything. Read-only. (User 2026-06-17.)"""
+    ProjectSheet.query.get_or_404(pid)
+    if current_user.role not in ('super_admin', 'admin'):
+        if not ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first():
+            return jsonify({"error": "Forbidden"}), 403
+    doc = DocUpload.query.filter_by(id=uid, project_id=pid).first_or_404()
+    from actuals import _vendor_similarity
+    import datetime as _dt
+    include_matched = (request.args.get('include_matched') in ('1', 'true', 'yes'))
+    total = abs(float(doc.amount)) if doc.amount is not None else None
+    dcard = (doc.card_last4 or '').strip()
+    d_dt = doc.doc_date if doc.doc_date else None
+    q = (Transaction.query
+         .filter(Transaction.project_id == pid,
+                 Transaction.source.in_(('qbo_sync', 'csv_import')),
+                 Transaction.not_project_expense == False))   # noqa: E712
+    if not include_matched:
+        q = q.filter(Transaction.match_status == 'unmatched',
+                     Transaction.doc_upload_id.is_(None))
+    out = []
+    for c in q.all():
+        if c.amount is None:
+            continue
+        camt = abs(float(c.amount))
+        try:
+            c_dt = _dt.date.fromisoformat((c.txn_date or '')[:10])
+        except (TypeError, ValueError):
+            c_dt = None
+        gap = abs((c_dt - d_dt).days) if (c_dt and d_dt) else None
+        ccard = (getattr(c, 'card_last4', None) or '').strip()
+        vsim = _vendor_similarity(doc.vendor, c.vendor)
+        same_card = bool(ccard and dcard and ccard == dcard)
+        exact = (total is not None and abs(camt - total) <= 0.01)
+        component = (total is not None and camt < total - 0.005 and (same_card or vsim >= 0.45))
+        if not (exact or component):
+            continue
+        out.append({"tid": c.id, "vendor": c.vendor, "amount": float(c.amount),
+                    "date": (c.txn_date[:10] if c.txn_date else None), "card": ccard or None,
+                    "match_status": c.match_status, "doc_upload_id": c.doc_upload_id,
+                    "coded": c.account_code_name or (str(c.account_code) if c.account_code else None),
+                    "same_card": same_card, "vendor_match": vsim >= 0.45,
+                    "day_gap": gap, "kind": ("exact" if exact else "component")})
+    out.sort(key=lambda r: (0 if r["kind"] == "exact" else 1,
+                            0 if r["same_card"] else 1,
+                            r["day_gap"] if r["day_gap"] is not None else 999))
+    return jsonify({"ok": True,
+                    "doc": {"id": doc.id, "vendor": doc.vendor, "total": total,
+                            "card": dcard or None,
+                            "date": (doc.doc_date.isoformat() if doc.doc_date else None)},
+                    "include_matched": include_matched, "candidates": out[:50]})
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/receipt-candidates", methods=["GET"])
 @login_required
 def actuals_receipt_candidates(pid, tid):
