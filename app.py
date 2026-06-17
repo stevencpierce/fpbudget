@@ -102,7 +102,8 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     SupportContact, ProjectUnion, ProjectClient, CallSheetSend, CallSheetRecipient,
                     BudgetDirectContact, CompanySettings, DocUpload, CatalogItem,
                     TravelDetail, CateringBill, ActivityLog,
-                    SubBudget, SubBudgetLine, EstimateShare, FxRate)
+                    SubBudget, SubBudgetLine, EstimateShare, FxRate,
+                    TransactionDupDismissal)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -8649,6 +8650,138 @@ def actuals_run_auto_match(pid):
     except Exception as e:
         logging.exception(f"[actuals] auto-match failed: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/projects/<int:pid>/actuals/scan-dup-transactions", methods=["GET", "POST"])
+@login_required
+def actuals_scan_dup_transactions(pid):
+    """READ-ONLY: cluster likely-duplicate transactions so the user can confirm
+    they're separate (or remove an accidental re-import). Conservative signals:
+      • same qbo_txn_id (a re-imported QBO record — near-certain), OR
+      • same |amount| + same date + same vendor + same card_last4.
+    Skips intentional split_group sets and clusters already dismissed as
+    separate. A cluster mixing a doc_upload row with an electronic charge is
+    'matchable' (link, don't delete). (User 2026-06-17.)"""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Not authenticated"}), 401
+    ProjectSheet.query.get_or_404(pid)
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access or access.role not in ('owner', 'collaborator', 'editor'):
+            return jsonify({"error": "Forbidden"}), 403
+    import re as _re_dup
+    from collections import defaultdict as _dd_dup
+    txns = (Transaction.query.filter_by(project_id=pid)
+            .filter(Transaction.not_project_expense == False).all())   # noqa: E712
+    dismissed = {d.dup_key for d in TransactionDupDismissal.query.filter_by(project_id=pid).all()}
+
+    def _vnorm(v):
+        return _re_dup.sub(r'[^a-z0-9]', '', (v or '').lower())[:18]
+
+    def _row(t):
+        return {"tid": t.id, "source": t.source, "vendor": t.vendor,
+                "amount": float(t.amount) if t.amount is not None else None,
+                "date": (t.txn_date[:10] if t.txn_date else None), "card": t.card_last4,
+                "coded": t.account_code_name or (str(t.account_code) if t.account_code else None),
+                "doc_upload_id": t.doc_upload_id, "match_status": t.match_status,
+                "deletable": (t.source in ('qbo_sync', 'csv_import', 'manual_entry') and not t.doc_upload_id)}
+
+    clusters, seen = [], set()
+    # Tier 1 — same qbo_txn_id (definite re-import; confirmed rows flip to
+    # source='reconciled', so only still-qbo_sync re-imports cluster here).
+    by_qid = _dd_dup(list)
+    for t in txns:
+        if t.source == 'qbo_sync' and t.qbo_txn_id:
+            by_qid[t.qbo_txn_id].append(t)
+    for qid, members in by_qid.items():
+        if len(members) < 2:
+            continue
+        key = 'qbo:' + str(qid)
+        if key in dismissed:
+            continue
+        clusters.append({"key": key, "kind": "reimport",
+                         "amount": abs(float(members[0].amount or 0)),
+                         "rows": [_row(t) for t in members]})
+        seen.update(t.id for t in members)
+    # Tier 2 — same |amount| + date + vendor + card.
+    by_attr = _dd_dup(list)
+    for t in txns:
+        if t.id in seen or t.amount is None or not t.txn_date or not t.vendor or not t.card_last4:
+            continue
+        akey = '%.2f|%s|%s|%s' % (abs(float(t.amount)), t.txn_date[:10], _vnorm(t.vendor), t.card_last4)
+        by_attr[akey].append(t)
+    for akey, members in by_attr.items():
+        if len(members) < 2:
+            continue
+        sgs = {m.split_group for m in members if m.split_group}
+        if len(sgs) == 1 and all(m.split_group for m in members):
+            continue   # intentional split set
+        key = 'attr:' + akey
+        if key in dismissed:
+            continue
+        has_doc = any(m.source == 'doc_upload' for m in members)
+        has_elec = any(m.source in ('qbo_sync', 'csv_import', 'reconciled') for m in members)
+        clusters.append({"key": key, "kind": ('matchable' if (has_doc and has_elec) else 'duplicate'),
+                         "amount": abs(float(members[0].amount or 0)),
+                         "rows": [_row(t) for t in members]})
+    overcount = sum((c["amount"] * (len(c["rows"]) - 1)) for c in clusters if c["kind"] != "matchable")
+    clusters.sort(key=lambda c: -(c["amount"] * (len(c["rows"]) - 1)))
+    return jsonify({"ok": True, "project_id": pid, "cluster_count": len(clusters),
+                    "potential_overcount": round(overcount, 2), "clusters": clusters})
+
+
+@app.route("/projects/<int:pid>/actuals/dup-transactions/dismiss", methods=["POST"])
+@login_required
+def actuals_dismiss_dup_transactions(pid):
+    """Mark a duplicate-transaction cluster as genuinely SEPARATE so the scan
+    won't flag it again. Body: {"dup_key": "..."}. (User 2026-06-17.)"""
+    ProjectSheet.query.get_or_404(pid)
+    if current_user.role not in ('super_admin', 'admin'):
+        if not ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first():
+            return jsonify({"error": "Forbidden"}), 403
+    key = ((request.get_json(silent=True) or {}).get("dup_key") or "").strip()
+    if not key:
+        return jsonify({"error": "dup_key required"}), 400
+    if not TransactionDupDismissal.query.filter_by(project_id=pid, dup_key=key).first():
+        db.session.add(TransactionDupDismissal(
+            project_id=pid, dup_key=key,
+            created_by=(current_user.id if current_user.is_authenticated else None)))
+        db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/delete-duplicate", methods=["POST"])
+@login_required
+def actuals_delete_duplicate_txn(pid, tid):
+    """Delete ONE transaction the user confirmed is a duplicate re-import.
+    Refuses a row that carries a receipt link (use Match / the receipt dup flow
+    instead, so a receipt's only ledger row is never lost). Detaches children
+    and logs a full before-snapshot. (User 2026-06-17.)"""
+    if getattr(current_user, 'role', None) == 'viewer':
+        return jsonify({"error": "Forbidden"}), 403
+    t = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    if t.doc_upload_id or t.source == 'doc_upload':
+        return jsonify({"error": "This row is linked to a receipt — unmatch it or use the "
+                        "receipt duplicate flow instead of deleting it here."}), 400
+    before = {"source": t.source, "vendor": t.vendor,
+              "amount": float(t.amount) if t.amount is not None else None,
+              "txn_date": t.txn_date, "card_last4": t.card_last4,
+              "account_code": t.account_code, "account_code_name": t.account_code_name,
+              "budget_line_id": t.budget_line_id, "qbo_txn_id": t.qbo_txn_id,
+              "match_status": t.match_status}
+    Transaction.query.filter_by(parent_transaction_id=tid).update(
+        {"parent_transaction_id": None}, synchronize_session=False)
+    _label = (t.vendor or f'Txn #{tid}')[:80]
+    _amt = float(t.amount or 0)
+    db.session.delete(t)
+    try:
+        _log_activity(action='delete', entity_type='transaction', entity_id=tid,
+                      entity_label=_label, project_id=pid, before=before, dollar_delta=-_amt,
+                      note=f'Removed duplicate transaction: {_label} ${_amt:,.2f}')
+    except Exception:
+        pass
+    db.session.commit()
+    return jsonify({"ok": True, "deleted": tid})
 
 
 @app.route("/projects/<int:pid>/actuals/automatch-trace")
@@ -21316,6 +21449,16 @@ def _web_worker_essential_columns():
                      created_at     TIMESTAMP,
                      created_by     INTEGER,
                      CONSTRAINT uq_match_rejection_pair UNIQUE (transaction_id, doc_upload_id)
+                   )""",
+                # 2026-06-17 — "these duplicate-looking transactions are
+                # actually separate" dismissals so the dup-txn scan won't nag.
+                """CREATE TABLE IF NOT EXISTS transaction_dup_dismissal (
+                     id         SERIAL PRIMARY KEY,
+                     project_id INTEGER NOT NULL,
+                     dup_key    VARCHAR(200) NOT NULL,
+                     created_at TIMESTAMP,
+                     created_by INTEGER,
+                     CONSTRAINT uq_txn_dup_dismissal UNIQUE (project_id, dup_key)
                    )""",
                 # 2026-06-11 — historical FX rate cache for foreign receipts.
                 """CREATE TABLE IF NOT EXISTS fx_rate (

@@ -1208,3 +1208,18 @@ class MatchRejection(db.Model):
     __table_args__ = (
         db.UniqueConstraint('transaction_id', 'doc_upload_id', name='uq_match_rejection_pair'),
     )
+
+
+class TransactionDupDismissal(db.Model):
+    """A duplicate-transaction cluster the user reviewed and confirmed is
+    genuinely SEPARATE (e.g. two real $40 Ubers same day). Keyed by the
+    cluster's stable signature so the scan doesn't re-flag it. (User 2026-06-17.)"""
+    __tablename__ = "transaction_dup_dismissal"
+    id         = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
+    dup_key    = db.Column(db.String(200), nullable=False)   # qbo:<id> | attr:<amt>|<date>|<vendor>|<card>
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by = db.Column(db.Integer, nullable=True)
+    __table_args__ = (
+        db.UniqueConstraint('project_id', 'dup_key', name='uq_txn_dup_dismissal'),
+    )
