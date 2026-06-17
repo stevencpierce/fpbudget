@@ -9499,7 +9499,12 @@ def doc_transaction_candidates(pid, uid):
         vsim = _vendor_similarity(doc.vendor, c.vendor)
         same_card = bool(ccard and dcard and ccard == dcard)
         exact = (total is not None and abs(camt - total) <= 0.01)
-        component = (total is not None and camt < total - 0.005 and (same_card or vsim >= 0.45))
+        # A split component must be the right card/vendor AND near the receipt
+        # date (within a week) — otherwise every same-card charge in the project
+        # shows up as noise. (User 2026-06-17.)
+        within_date = (gap is None or gap <= 7)
+        component = (total is not None and camt < total - 0.005
+                     and (same_card or vsim >= 0.45) and within_date)
         if not (exact or component):
             continue
         out.append({"tid": c.id, "vendor": c.vendor, "amount": float(c.amount),
@@ -9508,7 +9513,11 @@ def doc_transaction_candidates(pid, uid):
                     "coded": c.account_code_name or (str(c.account_code) if c.account_code else None),
                     "same_card": same_card, "vendor_match": vsim >= 0.45,
                     "day_gap": gap, "kind": ("exact" if exact else "component")})
+    # exact 1:1 first; then same-vendor (the receipt's own charges, e.g. Uber
+    # Eats for an Uber receipt) above coincidental same-card noise; then nearest
+    # date.
     out.sort(key=lambda r: (0 if r["kind"] == "exact" else 1,
+                            0 if r["vendor_match"] else 1,
                             0 if r["same_card"] else 1,
                             r["day_gap"] if r["day_gap"] is not None else 999))
     return jsonify({"ok": True,
