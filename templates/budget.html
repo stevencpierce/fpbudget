@@ -528,7 +528,7 @@
     <button type="button" class="btn btn-sm" onclick="dashCleanup(this)"
             title="Run AI cleanup over your documents: normalize vendor names and flag bad extractions. Auto-applies high-confidence fixes; lower-confidence ones land below for your review.">✨ Clean up data</button>
     <button type="button" class="btn btn-sm" onclick="dashScanDupes(this)"
-            title="Scan for the same spend coded into the budget more than once (double-counted actuals).">🔍 Scan for duplicates</button>
+            title="Scan for issues: the same spend coded twice (double-counted), plus budget mismatches — POs billed over their cap and lines over plan.">🔍 Scan for issues</button>
   </div>
 
   <div class="dash-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
@@ -8077,6 +8077,14 @@
              <button type="button" class="btn btn-xs" onclick="dashResolveTxn(${it.id},'delete_txn',${m.tid},this)" title="Delete this duplicate charge">Delete</button>
            </div>`).join('');
         actions += `<div style="margin-top:6px"><button type="button" class="btn btn-xs btn-ghost" onclick="dashAskAi(${it.id},this)">🤖 Ask AI</button></div>`;
+      } else if (it.type === 'budget_mismatch') {
+        const p = it.payload || {};
+        if (p.kind === 'po_over_cap') {
+          actions += `<a class="btn btn-xs btn-primary" href="/projects/${PROJ_ID}/pos">Open POs</a>`;
+        } else {
+          actions += `<button type="button" class="btn btn-xs btn-primary" onclick="document.querySelector('[data-tab=actuals]').click()">Open Actuals</button>`;
+        }
+        actions += `<button type="button" class="btn btn-xs btn-ghost" onclick="dashAskAi(${it.id},this)">🤖 Ask AI</button>`;
       }
       return `<div class="dash-flag" data-fid="${it.id}" style="border:1px solid var(--border);border-left:3px solid ${c};border-radius:8px;padding:10px 12px;margin-bottom:8px;background:var(--bg-card)">
         <div style="display:flex;align-items:flex-start;gap:8px">
@@ -8283,10 +8291,13 @@
       if (btn) { btn.disabled = true; btn.textContent = '🔍 Scanning…'; }
       try {
         const j = await (await fetch(`/projects/${PROJ_ID}/actuals/scan-anomalies`, { method: 'POST' })).json();
-        if (typeof _actualsToast === 'function') _actualsToast(`Found ${j.flags || 0} possible duplicate group(s).`, (j.flags ? 'yellow' : 'green'));
+        const total = (j.total_flags != null) ? j.total_flags : (j.flags || 0);
+        if (typeof _actualsToast === 'function') _actualsToast(
+          total ? `Found ${j.flags || 0} duplicate group(s) + ${j.budget_flags || 0} budget mismatch(es).`
+                : 'No issues found.', (total ? 'yellow' : 'green'));
         dashLoadAnomalies();
       } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Scan failed: ' + e.message, 'yellow'); }
-      if (btn) { btn.disabled = false; btn.textContent = _o || '🔍 Scan for duplicates'; }
+      if (btn) { btn.disabled = false; btn.textContent = _o || '🔍 Scan for issues'; }
     };
     // Load the queue when the Dashboard tab opens, and on first paint if active.
     (function () {

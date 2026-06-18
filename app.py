@@ -9180,19 +9180,106 @@ def _run_double_coded_scan(pid):
     return len(clusters), flags
 
 
+def _run_budget_mismatch_scan(pid):
+    """Flag where money doesn't match the plan: (a) POs billed over their committed
+    cap, and (b) non-labor budget lines whose actual spend significantly exceeds
+    the planned amount. Upserts AnomalyFlag(type='budget_mismatch'). Does NOT
+    commit. Returns flag count. (User 2026-06-18.)"""
+    from models import PurchaseOrder, BudgetLine, Budget
+    flags = 0
+    # (a) POs over their committed cap — reuse the canonical PO rollup.
+    try:
+        for po in PurchaseOrder.query.filter_by(project_id=pid, archived=False).all():
+            if po.total_committed is None:
+                continue
+            try:
+                d = _po_to_dict(po, with_rollup=True, project_id=pid)
+            except Exception:
+                continue
+            if not d.get('over_cap'):
+                continue
+            cap = float(po.total_committed)
+            billed = float(d.get('billed_total') or 0)
+            over = billed - cap
+            f = _flag_anomaly(pid, 'budget_mismatch', severity='high',
+                              title=f'PO over cap · ${over:,.2f} over',
+                              explanation=(f'PO {po.po_number or po.id} '
+                                           f'({po.vendor_name or "vendor"}) has ${billed:,.2f} billed '
+                                           f'against a ${cap:,.2f} cap — ${over:,.2f} over. Check the '
+                                           f'invoices and coding on this PO.'),
+                              confidence=None,
+                              payload={"kind": "po_over_cap", "po_id": po.id, "cap": round(cap, 2),
+                                       "billed": round(billed, 2), "over": round(over, 2),
+                                       "po_number": po.po_number, "vendor": po.vendor_name},
+                              dedup_key=f'po_over_cap:{po.id}')
+            if f is not None:
+                flags += 1
+    except Exception as e:
+        logging.warning(f"[budget-scan] PO pass failed: {e}")
+    # (b) non-labor Actual budget lines over their planned amount.
+    try:
+        actual = (Budget.query.filter_by(project_id=pid, is_actual=True, version_status='current')
+                  .order_by(Budget.id.desc()).first())
+        if actual:
+            sums = {}
+            for t in (Transaction.query
+                      .filter(Transaction.project_id == pid,
+                              Transaction.budget_line_id.isnot(None),
+                              Transaction.not_project_expense == False).all()):   # noqa: E712
+                if t.amount is None:
+                    continue
+                try:
+                    amt = float(t.amount)
+                except (TypeError, ValueError):
+                    continue
+                if amt <= 0:   # expenses only (refunds/credits are negative)
+                    continue
+                sums[t.budget_line_id] = sums.get(t.budget_line_id, 0.0) + amt
+            for ln in BudgetLine.query.filter_by(budget_id=actual.id).all():
+                if getattr(ln, 'is_labor', False):
+                    continue
+                planned = float(ln.estimated_total or 0)
+                if planned <= 0:
+                    continue
+                actual_amt = sums.get(ln.id, 0.0)
+                over = actual_amt - planned
+                # Only flag a meaningful overage: ≥ $50 AND ≥ 10% over plan.
+                if over < 50 or over < planned * 0.10:
+                    continue
+                label = ln.description or ln.account_name or f'Line {ln.id}'
+                f = _flag_anomaly(pid, 'budget_mismatch', severity='medium',
+                                  title=f'Over budget · {label}'[:120],
+                                  explanation=(f'"{label}" has ${actual_amt:,.2f} actual vs '
+                                               f'${planned:,.2f} planned — ${over:,.2f} over. Verify the '
+                                               f'coded charges/invoices match the budget line.'),
+                                  confidence=None,
+                                  payload={"kind": "line_over_budget", "line_id": ln.id,
+                                           "planned": round(planned, 2), "actual": round(actual_amt, 2),
+                                           "over": round(over, 2), "line": label},
+                                  dedup_key=f'line_over_budget:{ln.id}')
+                if f is not None:
+                    flags += 1
+    except Exception as e:
+        logging.warning(f"[budget-scan] line pass failed: {e}")
+    return flags
+
+
 @app.route("/projects/<int:pid>/actuals/scan-anomalies", methods=["POST"])
 @login_required
 def actuals_scan_anomalies(pid):
-    """Scan for double-coded duplicates (same spend coded to the budget more
-    than once) and upsert AnomalyFlag review-queue rows. (User 2026-06-18.)"""
+    """Scan for issues and upsert AnomalyFlag review-queue rows: double-coded
+    duplicates (same spend coded twice) + budget mismatches (POs over cap, lines
+    over plan). (User 2026-06-18.)"""
     ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'editor')
     clusters, flags = _run_double_coded_scan(pid)
+    budget_flags = _run_budget_mismatch_scan(pid)
     try:
         db.session.commit()
     except Exception:
         db.session.rollback()
-    return jsonify({"ok": True, "clusters": clusters, "flags": flags})
+    return jsonify({"ok": True, "clusters": clusters, "flags": flags,
+                    "budget_flags": budget_flags, "total_flags": flags + budget_flags})
 
 
 def _anomaly_to_dict(f):
