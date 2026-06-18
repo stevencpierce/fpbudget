@@ -2913,6 +2913,7 @@
               <div class="field" id="docDetailAmountField" style="margin:0">
                 <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Amount (USD)</label>
                 <input type="text" id="docDetailAmount" inputmode="decimal" placeholder="0.00" style="width:100%">
+                <div style="font-size:10px;color:var(--text-muted);margin-top:2px">↩ Refund/credit? Enter a <b>negative</b> amount, e.g. −50.00</div>
               </div>
               <div class="field" style="margin:0">
                 <label id="docDetailDocDateLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Date</label>
@@ -5434,13 +5435,15 @@
     // camelCase access (data-doc-date → dataset.docDate).
     document.getElementById('docDetailVendor').value   = row?.dataset?.sortVendor || '';
     _docDetailSetSubtype(row?.dataset?.sortVendor || '');   // supporting-doc dropdown
-    // Amount of "0" is meaningless to a user — leave blank so they see
-    // the placeholder. Real amounts always come through as floats > 0.
+    // Amount of "0" is meaningless to a user — leave blank so they see the
+    // placeholder. But a REFUND is stored as a negative amount, so show any
+    // non-zero value (was `> 0`, which blanked refunds on reopen and made it
+    // look like the edit didn't save). (User 2026-06-17.)
     const _amt = parseFloat(row?.dataset?.sortAmount || 0);
-    document.getElementById('docDetailAmount').value   = _amt > 0 ? _fmtMoney(_amt) : '';
+    document.getElementById('docDetailAmount').value   = (Number.isFinite(_amt) && _amt !== 0) ? _fmtMoney(_amt) : '';
     // Foreign-currency original figure (blank unless previously set).
     const _oamt = parseFloat(row?.dataset?.originalAmount || 0);
-    document.getElementById('docDetailOrigAmount').value   = _oamt > 0 ? _fmtMoney(_oamt) : '';
+    document.getElementById('docDetailOrigAmount').value   = (Number.isFinite(_oamt) && _oamt !== 0) ? _fmtMoney(_oamt) : '';
     document.getElementById('docDetailOrigCurrency').value = row?.dataset?.originalCurrency || '';
     document.getElementById('docDetailDocDate').value  = row?.dataset?.docDate || '';
     // Category alias for the 2026-05-11 taxonomy collapse: legacy rows
