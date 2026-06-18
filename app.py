@@ -8921,6 +8921,47 @@ def actuals_reconcile_scan(pid):
                     "clusters": clusters[:300]})
 
 
+@app.route("/projects/<int:pid>/actuals/reconcile-ai-judge", methods=["POST"])
+@login_required
+def actuals_reconcile_ai_judge(pid):
+    """AI-layer §A2: ask Claude to judge an ambiguous reconcile cluster — are
+    these the SAME spend (duplicate) or genuinely SEPARATE (e.g. two hotel
+    nights for different people, per-passenger airfare)? Reasons over the JSON
+    only; logs to ai_event; mutates nothing. Fail-open. (User 2026-06-17.)"""
+    ProjectSheet.query.get_or_404(pid)
+    if current_user.role not in ('super_admin', 'admin'):
+        if not ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first():
+            return jsonify({"error": "Forbidden"}), 403
+    import ai_layer, time as _t, json as _j
+    body = request.get_json(silent=True) or {}
+    items = body.get("items") or []
+    if len(items) < 2:
+        return jsonify({"error": "Need at least two items to compare."}), 400
+    payload = {
+        "instruction": ("These records share an amount/date/vendor/card and may be the SAME "
+                        "spend (duplicates to merge/remove) OR genuinely SEPARATE charges "
+                        "(e.g. two hotel nights for different guests, per-passenger airfare on "
+                        "one receipt). Decide which. If the data can't distinguish them, say so "
+                        "and recommend review rather than guessing."),
+        "new_document": items[0],
+        "possible_matches": items[1:],
+    }
+    t0 = _t.time()
+    verdict = ai_layer.detect_anomalies(payload)
+    latency = int((_t.time() - t0) * 1000)
+    try:
+        from models import AiEvent
+        db.session.add(AiEvent(
+            project_id=pid, doc_upload_id=(body.get("doc_id") or None),
+            feature='anomaly', provider=verdict.get('_provider'), model=verdict.get('_model'),
+            request_json=_j.dumps(payload, default=str)[:8000],
+            response_json=_j.dumps(verdict, default=str)[:8000], latency_ms=latency))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    return jsonify({"ok": True, "verdict": verdict, "latency_ms": latency})
+
+
 @app.route("/projects/<int:pid>/actuals/automatch-trace")
 @login_required
 def actuals_automatch_trace(pid):

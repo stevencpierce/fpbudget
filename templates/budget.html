@@ -11088,13 +11088,51 @@
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
             <span style="font-weight:600">${money(c.amount)}</span>
             <span style="color:var(--text-muted);font-size:.78rem">${esc(c.vendor) || '—'} · ${c.date || ''}${c.card ? (' · ••' + c.card) : ''}</span>
-            <span style="margin-left:auto"><button class="btn btn-xs btn-ghost" onclick="rcDismiss('${c.key}',${ci})">Not a duplicate</button></span>
+            <span style="margin-left:auto;display:flex;gap:6px">
+              <button class="btn btn-xs btn-ghost" onclick="rcAiJudge(${ci})" title="Ask AI: are these the same spend (duplicate) or genuinely separate?">🤖 Ask AI</button>
+              <button class="btn btn-xs btn-ghost" onclick="rcDismiss('${c.key}',${ci})">Not a duplicate</button>
+            </span>
           </div>
           <div style="font-size:.74rem;color:var(--text);line-height:1.45;margin-bottom:6px">${summary}</div>
+          <div id="rc-ai-${ci}" style="margin-bottom:6px"></div>
           ${c.receipts.length ? `<div class="rc-lane"><h4>📎 Receipt${c.receipts.length > 1 ? 's (' + c.receipts.length + ')' : ''}</h4>${recRows}${recAction ? ('<div style="margin-top:5px">' + recAction + '</div>') : ''}</div>` : ''}
           ${c.charges.length ? `<div class="rc-lane"><h4>🏦 Ledger rows (${c.charges.length})</h4>${chRows}${chAction ? ('<div style="margin-top:5px">' + chAction + '</div>') : ''}</div>` : ''}
         </div>`;
       }).join('');
+    };
+    // Ask Claude whether a cluster's records are the same spend (duplicate) or
+    // genuinely separate (e.g. two hotel nights for different guests). Reasons
+    // over the JSON only; advisory — never auto-acts. (User 2026-06-17.)
+    window.rcAiJudge = async function (ci) {
+      const c = (window._rcData.clusters || [])[ci];
+      const out = document.getElementById('rc-ai-' + ci);
+      if (!c || !out) return;
+      out.innerHTML = '<span style="font-size:.72rem;color:var(--text-muted)">🤖 Asking Claude…</span>';
+      const items = [
+        ...c.receipts.map(r => ({ type: 'receipt', vendor: c.vendor, amount: r.amount, date: c.date, card: c.card, file: r.file, on_charge: r.on_charge })),
+        ...c.charges.map(x => ({ type: 'charge', source: x.source, vendor: c.vendor, amount: x.amount, date: c.date, card: c.card, coded: x.coded || null })),
+      ];
+      if (items.length < 2) { out.innerHTML = '<span style="font-size:.72rem;color:var(--text-muted)">Need two records to compare.</span>'; return; }
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/reconcile-ai-judge`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items, doc_id: (c.receipts[0] || {}).doc_id }) });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { out.innerHTML = '<span style="font-size:.72rem;color:#e08080">AI error: ' + (d.error || r.status) + '</span>'; return; }
+        const v = d.verdict || {};
+        if (v._provider === 'none') { out.innerHTML = '<span style="font-size:.72rem;color:#e0c060">AI unavailable (no key set).</span>'; return; }
+        const conf = Math.round((v.confidence || 0) * 100);
+        const dup = !!v.is_duplicate;
+        const expl = v.explanation || (v.anomalies && v.anomalies[0] && v.anomalies[0].explanation) || '';
+        const color = dup ? '#e0c060' : '#5fd0a0';
+        const verdictTxt = dup ? ('⚠ Likely the SAME spend (duplicate) · ' + conf + '%')
+                               : ('✓ Likely SEPARATE charges · ' + conf + '%');
+        out.innerHTML = '<div style="font-size:.74rem;background:#10131c;border:1px solid var(--border);border-radius:6px;padding:6px 9px;line-height:1.4">'
+          + '<span style="color:' + color + ';font-weight:600">🤖 ' + verdictTxt + '</span>'
+          + (expl ? ('<br><span style="color:var(--text-muted)">' + String(expl).replace(/</g, '&lt;') + '</span>') : '')
+          + (v.recommended_action ? ('<br><span style="color:var(--text-muted);font-size:.68rem">recommended: ' + v.recommended_action + '</span>') : '')
+          + '</div>';
+      } catch (e) { out.innerHTML = '<span style="font-size:.72rem;color:#e08080">AI error: ' + e.message + '</span>'; }
     };
     window.rcDismiss = async function (key, ci) {
       try {

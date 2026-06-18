@@ -102,8 +102,10 @@ _ANOMALY_TOOL = {
                 },
             }},
             "recommended_action": {"type": "string", "enum": ["accept", "review", "reject"]},
+            "explanation": {"type": "string",
+                "description": "One short, user-facing sentence summarizing the verdict."},
         },
-        "required": ["is_duplicate", "confidence", "recommended_action"],
+        "required": ["is_duplicate", "confidence", "recommended_action", "explanation"],
     },
 }
 
