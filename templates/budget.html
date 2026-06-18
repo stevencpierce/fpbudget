@@ -8587,10 +8587,11 @@
         const hdr = document.createElement('div');
         hdr.style.cssText = 'display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;background:var(--bg-card);border:1px solid var(--border);border-left:3px solid ' + d.color + ';border-radius:8px 8px 0 0';
         hdr.innerHTML = '<span style="font-weight:600;font-size:.88rem">' + d.title + '</span>'
-          + '<span class="sec-count" style="font-size:.78rem;color:' + d.color + ';font-weight:700"></span>'
+          + '<span class="sec-count" id="ax-seccount-' + d.key + '" style="font-size:.78rem;color:' + d.color + ';font-weight:700"></span>'
           + '<span class="muted" style="font-size:.72rem;margin-left:6px">— ' + d.desc + '</span>'
           + '<span class="sec-chev" style="margin-left:auto;color:var(--text-muted);font-size:.8rem">' + (d.collapsed ? '▸' : '▾') + '</span>';
         const body = document.createElement('div');
+        body.id = 'ax-secbody-' + d.key;
         body.style.cssText = 'border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;padding:8px;display:flex;flex-direction:column;gap:0' + (d.collapsed ? ';display:none' : '');
         hdr.addEventListener('click', () => {
           const hidden = body.style.display === 'none';
@@ -9882,16 +9883,42 @@
             _actualsToast('Upload failed: ' + (d.error || r.status), 'red');
             return;
           }
-          badge.textContent = '✓ Linked';
-          // Tell the user EXACTLY where it went: a receipt-link moves the row
-          // into the Linked group; if it's still uncoded it stays flagged
-          // "needs coding" (amber). Avoids the "where did it go?" confusion.
+          // ── In-place update — no full page reload (User 2026-06-17) ──
+          _restore();                                   // clear progress badge + styling
           const _coded = row.dataset.coded === '1';
+          row.dataset.hasDoc = '1';
+          row.dataset.docId = String(d.upload_id || '');
+          if (row.dataset.matchStatus !== 'confirmed') row.dataset.matchStatus = 'suggested';
+          row.dataset.fulfill = _coded ? '3' : '2';     // txn+doc(+code) — drives stripes via CSS
+          // Fill the 📎 receipt cell with a clickable badge.
+          const _filled = row.querySelector('.ax-cell-doc .ax-filled');
+          if (_filled) {
+            const _cat = d.doc_type || 'receipt';
+            const _nm  = (d.filed_filename || file.name || '');
+            const _short = _nm.length > 16 ? (_nm.slice(0, 16) + '…') : _nm;
+            _filled.innerHTML = '<span class="ax-ic">🧾</span>'
+              + '<a href="#" class="actuals-doc-badge ax-c-txt" data-doc-id="' + (d.upload_id || '') + '" '
+              + 'onclick="openDocDetail(' + (d.upload_id || 0) + ', null);return false" '
+              + 'style="color:#7ba6e8;text-decoration:none">' + _mrEsc(_cat) + ' · ' + _mrEsc(_short) + '</a>';
+          }
+          // Move the row (+ its suggestion banner) into the 🔗 Linked group and
+          // refresh the section counts — no reload.
+          const _linkedBody = document.getElementById('ax-secbody-linked');
+          if (_linkedBody) {
+            const _bn = document.querySelector('.actuals-suggested-banner[data-tid="' + tid + '"]');
+            if (_bn) _linkedBody.appendChild(_bn);
+            _linkedBody.appendChild(row);
+            ['needs', 'receipts', 'linked'].forEach(k => {
+              const b = document.getElementById('ax-secbody-' + k);
+              const c = document.getElementById('ax-seccount-' + k);
+              if (b && c) c.textContent = ' (' + b.querySelectorAll('.actuals-txn-row').length + ')';
+            });
+          }
+          if (typeof _actualsRecountStats === 'function') _actualsRecountStats();
           _actualsToast(_coded
-            ? `Receipt linked: ${d.filed_filename || file.name}. Now in the Linked group.`
-            : `Receipt linked: ${d.filed_filename || file.name}. It moved to “Linked” and is flagged “needs coding” (amber) — still needs a budget line.`,
+            ? `Receipt linked: ${d.filed_filename || file.name}. Moved to Linked.`
+            : `Receipt linked: ${d.filed_filename || file.name}. Moved to Linked — still flagged “needs coding” (amber).`,
             'green');
-          setTimeout(() => window.location.reload(), 1100);
         } catch (err) {
           _restore();
           _actualsToast('Upload error: ' + err.message, 'red');
