@@ -4095,6 +4095,36 @@
   // Backwards-compat alias (older inline onclick may still reference it).
   window.docsOpenDupCompare = window.docsOpenDupGroup;
 
+  // Open the compare overlay for an EXPLICIT set of doc ids — used by Reconcile,
+  // where a cluster's receipts share amount/date/vendor but may NOT be
+  // byte-identical (so file_hash grouping would show only one). (User 2026-06-17.)
+  window.docsOpenCompareSet = function(docIds) {
+    docIds = (docIds || []).map(Number).filter(Boolean);
+    const _ov = document.getElementById('docDupCompareOverlay');
+    if (_ov && _ov.parentElement !== document.body) document.body.appendChild(_ov);
+    const body = document.getElementById('docDupCompareBody');
+    if (!body) return;
+    // One id → reuse the normal opener (handles the "fetch the original" case).
+    if (docIds.length <= 1) { window.docsOpenDupGroup(docIds[0]); return; }
+    const members = docIds
+      .map(id => document.querySelector('.doc-row[data-upload-id="' + id + '"]'))
+      .filter(Boolean);
+    if (!members.length) {
+      if (typeof _actualsToast === 'function') _actualsToast('Could not load those receipts to compare.', 'yellow');
+      return;
+    }
+    _docDupGroupState = {};
+    const applyBtn = document.getElementById('docDupApplyBtn');
+    const sumEl    = document.getElementById('docDupApplySummary');
+    if (applyBtn) applyBtn.style.display = '';
+    members.forEach(row => { const m = _docMeta(row); _docDupGroupState[m.uid] = (m.isDup) ? 'dupe' : 'keep'; });
+    body.innerHTML = members.map(row => _docGroupPaneHTML(_docMeta(row))).join('');
+    _docDupRefreshChoices();
+    _docLoadDupLinks(members);
+    if (sumEl) { sumEl.textContent = members.length + ' receipts for the same spend — compare, then keep the right one.'; sumEl.style.color = 'var(--text-muted)'; }
+    document.getElementById('docDupCompareOverlay').style.display = 'flex';
+  };
+
   // Resolve a SINGLE-member review group (keep | confirm) via the single-doc
   // endpoint — used when the compare modal has only one copy left to act on.
   // (User 2026-06-01: "compare group opens with one document and I can't keep
@@ -11025,9 +11055,12 @@
         // Default-keep the copy ALREADY attached to a charge (so the link is
         // preserved without re-pointing), else the first. (User 2026-06-17.)
         const recKeep = ((c.receipts.find(r => r.on_charge) || c.receipts[0]) || {}).doc_id;
+        // Compare the WHOLE set (all receipts in this cluster), not just the
+        // file-hash-identical ones. (User 2026-06-17.)
+        const recIds = c.receipts.map(r => r.doc_id).join(',');
         const _thumb = r => r.is_image
-          ? `<img loading="lazy" src="/docs/upload/${r.doc_id}/raw" title="Click to view / compare" onclick="event.preventDefault();event.stopPropagation();docsOpenDupGroup(${r.doc_id})" style="width:30px;height:38px;object-fit:cover;border-radius:4px;cursor:zoom-in;flex-shrink:0">`
-          : `<span title="Click to view / compare" onclick="event.preventDefault();event.stopPropagation();docsOpenDupGroup(${r.doc_id})" style="width:30px;height:38px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-input,#22263a);border-radius:4px;cursor:zoom-in;flex-shrink:0">📄</span>`;
+          ? `<img loading="lazy" src="/docs/upload/${r.doc_id}/raw" title="Click to view / compare all" onclick="event.preventDefault();event.stopPropagation();docsOpenCompareSet([${recIds}])" style="width:30px;height:38px;object-fit:cover;border-radius:4px;cursor:zoom-in;flex-shrink:0">`
+          : `<span title="Click to view / compare all" onclick="event.preventDefault();event.stopPropagation();docsOpenCompareSet([${recIds}])" style="width:30px;height:38px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-input,#22263a);border-radius:4px;cursor:zoom-in;flex-shrink:0">📄</span>`;
         const recRows = c.receipts.map(r => `
           <label class="rc-row">
             ${c.receipts.length > 1 ? `<input type="radio" name="rc-rec-${ci}" value="${r.doc_id}" ${r.doc_id === recKeep ? 'checked' : ''}>` : '<span style="width:13px"></span>'}
@@ -11036,7 +11069,7 @@
             ${r.dup ? '<span class="mr-chip warn">identical copy</span>' : ''}${r.on_charge ? '<span class="mr-chip ok">✓ attached to a charge</span>' : ''}
           </label>`).join('');
         const recAction = c.receipts.length > 1
-          ? `<button class="btn btn-xs btn-ghost" onclick="docsOpenDupGroup(${(c.receipts[0]||{}).doc_id})" title="Open the side-by-side compare view">⇆ Compare</button>
+          ? `<button class="btn btn-xs btn-ghost" onclick="docsOpenCompareSet([${recIds}])" title="Open all of these side by side">⇆ Compare</button>
              <button class="btn btn-xs btn-primary" onclick="rcMergeReceipts(${ci})">Keep selected · merge the rest</button>` : '';
         const chKeep = ((bankCharges.find(x => x.coded) || bankCharges[0] || c.charges[0]) || {}).tid;
         const chRows = c.charges.map(r => `
