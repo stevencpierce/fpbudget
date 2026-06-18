@@ -3899,6 +3899,73 @@ def project_rename(pid):
     return redirect(url_for("dashboard"))
 
 
+def _clone_project_data(src_p, new_p, old_slug, new_slug, line_map, loc_id_map):
+    """Clone receipts (DocUpload) + actuals (Transaction) from the source project
+    to the new one for a fully ISOLATED sandbox: Dropbox paths are remapped to the
+    copied folder, and every FK reference (budget line, doc, parent txn, location,
+    duplicate-of) is remapped to the new rows. Cross-project claim is cleared.
+    Returns {docs, txns}. (User 2026-06-18.)"""
+    from models import DocUpload as _DU, Transaction as _TX
+
+    def _remap_path(p):
+        if p and old_slug and f"/{old_slug}/" in p:
+            return p.replace(f"/{old_slug}/", f"/{new_slug}/")
+        return p
+
+    def _clone_row(model, src_row, overrides):
+        new = model()
+        for col in model.__table__.columns:
+            if col.name == 'id':
+                continue
+            setattr(new, col.name, getattr(src_row, col.name, None))
+        for k, v in overrides.items():
+            setattr(new, k, v)
+        return new
+
+    # ── Receipts (DocUpload) ──
+    doc_id_map = {}
+    src_docs = _DU.query.filter_by(project_id=src_p.id).all()
+    for d in src_docs:
+        nd = _clone_row(_DU, d, {
+            'project_id': new_p.id,
+            'filed_dropbox_path': _remap_path(d.filed_dropbox_path),
+            'source_archive_path': _remap_path(d.source_archive_path),
+            'location_id': loc_id_map.get(d.location_id) if getattr(d, 'location_id', None) else None,
+            'duplicate_of_id': None,   # remapped in pass 2
+        })
+        db.session.add(nd)
+        db.session.flush()
+        doc_id_map[d.id] = nd.id
+    for d in src_docs:
+        if d.duplicate_of_id and d.duplicate_of_id in doc_id_map:
+            db.session.query(_DU).filter_by(id=doc_id_map[d.id]).update(
+                {'duplicate_of_id': doc_id_map[d.duplicate_of_id]}, synchronize_session=False)
+
+    # ── Actuals (Transaction) ──
+    txn_id_map = {}
+    src_txns = _TX.query.filter_by(project_id=src_p.id).all()
+    for t in src_txns:
+        nt = _clone_row(_TX, t, {
+            'project_id': new_p.id,
+            'budget_line_id': line_map.get(t.budget_line_id) if t.budget_line_id else None,
+            'suggested_budget_line_id': (line_map.get(t.suggested_budget_line_id)
+                                         if getattr(t, 'suggested_budget_line_id', None) else None),
+            'doc_upload_id': doc_id_map.get(t.doc_upload_id) if t.doc_upload_id else None,
+            'parent_transaction_id': None,   # remapped in pass 2
+            'claimed_by_project_id': None,   # don't carry cross-project claims into the sandbox
+        })
+        db.session.add(nt)
+        db.session.flush()
+        txn_id_map[t.id] = nt.id
+    for t in src_txns:
+        if t.parent_transaction_id and t.parent_transaction_id in txn_id_map:
+            db.session.query(_TX).filter_by(id=txn_id_map[t.id]).update(
+                {'parent_transaction_id': txn_id_map[t.parent_transaction_id]},
+                synchronize_session=False)
+
+    return {'docs': len(src_docs), 'txns': len(src_txns)}
+
+
 @app.route("/projects/<int:pid>/duplicate", methods=["POST"])
 @login_required
 def project_duplicate(pid):
@@ -4004,12 +4071,25 @@ def project_duplicate(pid):
         #    logic kicks in exactly the same as for Working clones.
         src_budgets = Budget.query.filter_by(project_id=src_p.id).order_by(
             Budget.created_at.asc()).all()
+        dup_line_map = {}
         for sb in src_budgets:
             new_b = _create_budget_from_source(
                 new_p.id, sb, sb.name, sb.budget_mode or 'estimated',
                 parent_bid=None, version_number=sb.version_number,
             )
             new_b.version_status = sb.version_status
+            dup_line_map.update(getattr(new_b, '_dup_line_map', {}))
+
+        # 5b. Optional: clone receipts + actuals into a fully isolated sandbox
+        #     (Dropbox paths remapped to the copied folder). Opt-in via
+        #     include_data so the lightweight "structure only" duplicate stays
+        #     the default. (User 2026-06-18.)
+        include_data = str(request.form.get('include_data') or '').lower() in ('1', 'true', 'yes', 'on')
+        data_counts = None
+        if include_data:
+            db.session.flush()
+            data_counts = _clone_project_data(src_p, new_p, src_p.dropbox_folder,
+                                              new_slug, dup_line_map, loc_id_map)
 
         # 6. Grant the duplicating user owner access on the new project.
         db.session.add(ProjectAccess(
@@ -4022,10 +4102,17 @@ def project_duplicate(pid):
                           entity_id=new_p.id, entity_label=new_name,
                           project_id=new_p.id,
                           before=None,
-                          after={'name': new_name, 'duplicated_from': src_p.id},
-                          note=f'Duplicated from "{src_p.name}"')
+                          after={'name': new_name, 'duplicated_from': src_p.id,
+                                 'included_data': bool(data_counts)},
+                          note=f'Duplicated from "{src_p.name}"'
+                               + (f' with {data_counts["docs"]} docs + {data_counts["txns"]} txns'
+                                  if data_counts else ''))
         except Exception: pass
-        flash(f"Duplicated '{src_p.name}' → '{new_name}'.", "success")
+        if data_counts:
+            flash(f"Duplicated '{src_p.name}' → '{new_name}' with "
+                  f"{data_counts['docs']} receipts + {data_counts['txns']} transactions.", "success")
+        else:
+            flash(f"Duplicated '{src_p.name}' → '{new_name}'.", "success")
         return redirect(url_for("project_budget_redirect", pid=new_p.id))
     except Exception as e:
         db.session.rollback()
@@ -4412,8 +4499,10 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
     )
     db.session.add(b)
     db.session.flush()
+    b._dup_line_map = {}   # transient: old_line_id → new_line_id, for project-copy txn remap
     if source:
         line_id_map = _copy_budget_lines(source.id, b.id)
+        b._dup_line_map = dict(line_id_map)
         db.session.flush()
         _copy_schedule_days(source.id, b.id, line_id_map, dest_mode=new_mode)
         db.session.flush()

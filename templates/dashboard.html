@@ -85,6 +85,7 @@
         </form>
         <form method="POST" action="{{ url_for('project_duplicate', pid=p.id) }}" class="proj-duplicate-form">
           <input type="hidden" name="name" value="">
+          <input type="hidden" name="include_data" value="">
           <button type="button" class="proj-menu-item proj-duplicate-btn"
                   data-pid="{{ p.id }}" data-name="{{ p.name | e }}">Duplicate Project</button>
         </form>
@@ -437,7 +438,14 @@ document.addEventListener('click', function(e) {
   if (!trimmed) { alert('Name cannot be empty.'); return; }
   const form = btn.closest('form.proj-duplicate-form');
   if (!form) return;
+  // Offer a FULL isolated copy (receipts + transactions, Dropbox folder copied
+  // and paths remapped) vs the lightweight budgets-only duplicate.
+  const withData = confirm('Include ALL receipts + transactions too?\n\n'
+    + 'OK = full isolated copy (a real test bed — its own Dropbox folder, safe to edit).\n'
+    + 'Cancel = budgets + lines only.');
   form.querySelector('input[name="name"]').value = trimmed;
+  const idEl = form.querySelector('input[name="include_data"]');
+  if (idEl) idEl.value = withData ? '1' : '';
   form.submit();
 });
 
