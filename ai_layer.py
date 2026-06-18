@@ -54,6 +54,9 @@ class AIProvider:
     def clean_document(self, payload, image_url=None):
         raise NotImplementedError
 
+    def pick_match(self, payload):
+        raise NotImplementedError
+
 
 class _NeutralProvider(AIProvider):
     """Fail-open stand-in when no real provider is configured/reachable."""
@@ -77,6 +80,11 @@ class _NeutralProvider(AIProvider):
         return {"clean_vendor": None, "vendor_confidence": 0.0, "amount_ok": True,
                 "suggested_amount": None, "date_ok": True, "suggested_date": None,
                 "issues": [], "overall_confidence": 0.0, "_provider": "none"}
+
+    def pick_match(self, payload):
+        return {"best_doc_id": None, "confidence": 0.0,
+                "reasoning": "AI matching unavailable (no provider/key)",
+                "_provider": "none"}
 
 
 # Forced-output schemas (Claude tool-use) — see spec §3/§4.
@@ -147,6 +155,21 @@ _CLEAN_TOOL = {
                 "description": "0.0–1.0 overall confidence the extracted data is correct."},
         },
         "required": ["clean_vendor", "vendor_confidence", "overall_confidence"],
+    },
+}
+_MATCH_TOOL = {
+    "name": "pick_match",
+    "description": "Pick which candidate receipt (if any) documents this charge.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "best_doc_id": {"type": ["integer", "null"],
+                "description": "doc_upload_id of the matching receipt from CANDIDATES, "
+                               "or null if none is a confident match."},
+            "confidence": {"type": "number", "description": "0.0–1.0"},
+            "reasoning": {"type": "string", "description": "Short, internal."},
+        },
+        "required": ["best_doc_id", "confidence"],
     },
 }
 
@@ -232,6 +255,22 @@ class ClaudeProvider(AIProvider):
         out["_vision"] = bool(image_url)
         return out
 
+    def pick_match(self, payload):
+        system = (
+            "You match a bank/card CHARGE to the RECEIPT that documents it, choosing "
+            "from CANDIDATES (each has a doc_id). A match means the same merchant AND "
+            "the same amount — or a plausibly tip-adjusted / rounded amount — within a "
+            "few days. A refund receipt pairs with a refund/credit charge of the same "
+            "magnitude (opposite sign). Return the chosen candidate's doc_id and your "
+            "confidence, or best_doc_id=null if none is a confident match. Be "
+            "conservative: when unsure, return null rather than guessing. Reason only "
+            "from the data given."
+        )
+        out = self._call(system, payload, _MATCH_TOOL)
+        out["_provider"] = "claude"
+        out["_model"] = _CLAUDE_MODEL
+        return out
+
 
 def get_provider(task):
     """Provider for a task ('categorize'|'anomaly'), honoring AI_ROUTE_*. Falls
@@ -255,9 +294,11 @@ def status():
         "route_categorize": _route("categorize"),
         "route_anomaly": _route("anomaly"),
         "route_clean": _route("clean"),
+        "route_match": _route("match"),
         "categorize_available": get_provider("categorize").name,
         "anomaly_available": get_provider("anomaly").name,
         "clean_available": get_provider("clean").name,
+        "match_available": get_provider("match").name,
     }
 
 
@@ -291,3 +332,14 @@ def clean_document(payload, image_url=None):
     except Exception as e:
         log.warning("[ai_layer] clean_document failed (%s): %s", getattr(p, "name", "?"), e)
         return _NeutralProvider().clean_document(payload)
+
+
+def pick_match(payload):
+    """Fail-open receipt↔charge matcher. payload: {charge:{...}, candidates:[{doc_id,...}]}.
+    Returns {best_doc_id, confidence, reasoning}."""
+    p = get_provider("match")
+    try:
+        return p.pick_match(payload)
+    except Exception as e:
+        log.warning("[ai_layer] pick_match failed (%s): %s", getattr(p, "name", "?"), e)
+        return _NeutralProvider().pick_match(payload)

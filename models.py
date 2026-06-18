@@ -162,6 +162,10 @@ class Transaction(db.Model):
     # AI vendor-cleanup watermark for charges with no receipt (CSV/QBO). NULL =
     # not yet cleaned; lets batch cleanup resume. (2026-06-18.)
     ai_cleaned_at          = db.Column(db.DateTime, nullable=True)
+    # AI matching: watermark (charge examined by the AI match pass — lets batches
+    # resume + skip declined charges) + who proposed the current match.
+    ai_match_checked_at    = db.Column(db.DateTime, nullable=True)
+    match_source           = db.Column(db.String(12), nullable=True)  # heuristic | ai | manual
 
     # ── Provenance ──────────────────────────────────────────────────────
     created_via_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)

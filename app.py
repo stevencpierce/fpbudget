@@ -8989,6 +8989,123 @@ def actuals_clear_suggestions(pid):
     return jsonify({"ok": True, "cleared": n})
 
 
+@app.route("/projects/<int:pid>/actuals/ai-match", methods=["POST"])
+@login_required
+def actuals_ai_match(pid):
+    """AI-driven matching: for each still-unmatched charge, feed its heuristic
+    candidate receipts to the AI to pick the best (or none) and write a SUGGESTED
+    match — which surfaces in the existing gold 'Suggested match' banner for
+    one-click Confirm. Batched (returns `remaining`); a per-charge watermark
+    (ai_match_checked_at) lets it resume and skip declined charges. A single
+    exact-amount + vendor candidate is taken without an AI call. (User 2026-06-18.)"""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    body = request.get_json(silent=True) or {}
+    try:
+        limit = min(12, max(1, int(body.get('limit', 6))))
+    except (TypeError, ValueError):
+        limit = 6
+    force = bool(body.get('force'))
+    import ai_layer, time as _t
+    from actuals import find_match_candidates
+    try:
+        cand = find_match_candidates(pid, amount_tol=3.0, date_window=None, use_vendor=False)
+    except Exception as e:
+        logging.exception("[ai-match] candidate build failed")
+        return jsonify({"error": str(e)}), 500
+    by_charge = {c["charge"]["id"]: c for c in cand}
+
+    q = (Transaction.query
+         .filter(Transaction.project_id == pid,
+                 Transaction.source.in_(('qbo_sync', 'csv_import')),
+                 Transaction.match_status == 'unmatched',
+                 Transaction.doc_upload_id.is_(None),
+                 Transaction.not_project_expense == False))   # noqa: E712
+    if not force:
+        q = q.filter(Transaction.ai_match_checked_at.is_(None))
+    total_remaining = q.count()
+    rows = q.order_by(Transaction.id.desc()).limit(limit).all()
+
+    used = set()
+    suggested = 0
+    ai_calls = 0
+    for txn in rows:
+        txn.ai_match_checked_at = datetime.utcnow()
+        entry = by_charge.get(txn.id)
+        cands = [c for c in (entry["candidates"] if entry else [])
+                 if c["doc_upload_id"] not in used]
+        if not cands:
+            continue
+        best_id, best_conf, src = None, 0.0, 'ai'
+        exacts = [c for c in cands
+                  if (c.get("amount_delta") or 9) <= 0.01 and c.get("vendor_match")]
+        if len(exacts) == 1:
+            best_id = exacts[0]["doc_upload_id"]
+            best_conf = max(0.9, float(exacts[0].get("confidence") or 0.9))
+            src = 'heuristic'
+        else:
+            payload = {"charge": entry["charge"],
+                       "candidates": [{"doc_id": c["doc_upload_id"], "vendor": c.get("vendor"),
+                                       "amount": c.get("amount"), "date": c.get("date"),
+                                       "card": c.get("card"), "amount_delta": c.get("amount_delta"),
+                                       "day_gap": c.get("day_gap"),
+                                       "opposite_sign": c.get("opposite_sign"),
+                                       "vendor_match": c.get("vendor_match")} for c in cands]}
+            t0 = _t.time()
+            res = ai_layer.pick_match(payload)
+            ai_calls += 1
+            _ai_log_event(pid, None, 'match', res.get('_provider'), res.get('_model'),
+                          payload, res, int((_t.time() - t0) * 1000))
+            try:
+                bid = res.get("best_doc_id")
+                bid = int(bid) if bid is not None else None
+            except (TypeError, ValueError):
+                bid = None
+            try:
+                conf = float(res.get("confidence") or 0)
+            except (TypeError, ValueError):
+                conf = 0.0
+            if bid in {c["doc_upload_id"] for c in cands} and conf >= 0.6:
+                best_id, best_conf, src = bid, conf, 'ai'
+        if best_id is not None:
+            txn.doc_upload_id = best_id
+            txn.match_status = 'suggested'
+            txn.match_confidence = round(best_conf, 3)
+            txn.match_source = src
+            txn.updated_at = datetime.utcnow()
+            used.add(best_id)
+            suggested += 1
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    return jsonify({"ok": True, "processed": len(rows), "suggested": suggested,
+                    "ai_calls": ai_calls, "remaining": max(0, total_remaining - len(rows))})
+
+
+@app.route("/projects/<int:pid>/actuals/clear-match-suggestions", methods=["POST"])
+@login_required
+def actuals_clear_match_suggestions(pid):
+    """Undo all SUGGESTED (not confirmed) matches + reset the AI-match watermark,
+    so the AI match pass can be re-run from scratch (testing). (User 2026-06-18.)"""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    n = (Transaction.query
+         .filter(Transaction.project_id == pid,
+                 Transaction.match_status == 'suggested')
+         .update({Transaction.match_status: 'unmatched',
+                  Transaction.doc_upload_id: None,
+                  Transaction.match_confidence: None,
+                  Transaction.match_source: None},
+                 synchronize_session=False))
+    (Transaction.query
+     .filter(Transaction.project_id == pid,
+             Transaction.ai_match_checked_at.isnot(None))
+     .update({Transaction.ai_match_checked_at: None}, synchronize_session=False))
+    db.session.commit()
+    return jsonify({"ok": True, "cleared": n})
+
+
 @app.route("/projects/<int:pid>/docs/ai-cleanup", methods=["POST"])
 @login_required
 def docs_ai_cleanup(pid):
@@ -22773,6 +22890,9 @@ def _web_worker_essential_columns():
                 "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS ai_cleaned_at TIMESTAMP",
                 # 2026-06-18 — AI vendor-cleanup watermark on charges (CSV/QBO).
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS ai_cleaned_at TIMESTAMP",
+                # 2026-06-18 — AI matching watermark + match source tag.
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS ai_match_checked_at TIMESTAMP",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS match_source VARCHAR(12)",
                 # 2026-06-11 — historical FX rate cache for foreign receipts.
                 """CREATE TABLE IF NOT EXISTS fx_rate (
                      id         SERIAL PRIMARY KEY,
