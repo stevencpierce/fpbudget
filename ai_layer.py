@@ -51,7 +51,7 @@ class AIProvider:
     def detect_anomalies(self, payload):
         raise NotImplementedError
 
-    def clean_document(self, payload):
+    def clean_document(self, payload, image_url=None):
         raise NotImplementedError
 
 
@@ -71,7 +71,7 @@ class _NeutralProvider(AIProvider):
         return {"is_duplicate": False, "duplicate_of_id": None, "confidence": 0.0,
                 "anomalies": [], "recommended_action": "review", "_provider": "none"}
 
-    def clean_document(self, payload):
+    def clean_document(self, payload, image_url=None):
         # No-op: keep whatever the OCR produced, confidence 0 so nothing is
         # auto-applied and nothing is queued as a "fix".
         return {"clean_vendor": None, "vendor_confidence": 0.0, "amount_ok": True,
@@ -160,15 +160,23 @@ class ClaudeProvider(AIProvider):
     def available(self):
         return bool(_HAS_ANTHROPIC and self._key)
 
-    def _call(self, system, user_obj, tool):
+    def _call(self, system, user_obj, tool, image_url=None):
         client = _anthropic.Anthropic(api_key=self._key, timeout=_TIMEOUT_S)
+        # When an image is supplied (low-confidence docs), attach it so the model
+        # can read the actual receipt, not just the OCR JSON. (claude-haiku-4-5
+        # supports vision.)
+        content = []
+        if image_url:
+            content.append({"type": "image",
+                            "source": {"type": "url", "url": image_url}})
+        content.append({"type": "text", "text": json.dumps(user_obj, default=str)})
         msg = client.messages.create(
             model=_CLAUDE_MODEL,
             max_tokens=900,
             system=system,
             tools=[tool],
             tool_choice={"type": "tool", "name": tool["name"]},
-            messages=[{"role": "user", "content": json.dumps(user_obj, default=str)}],
+            messages=[{"role": "user", "content": content}],
         )
         for block in msg.content:
             if getattr(block, "type", None) == "tool_use":
@@ -202,20 +210,26 @@ class ClaudeProvider(AIProvider):
         out["_model"] = _CLAUDE_MODEL
         return out
 
-    def clean_document(self, payload):
+    def clean_document(self, payload, image_url=None):
         system = (
             "You clean up OCR-extracted fields of an expense document so they read well "
             "to a human. Produce a short, recognizable merchant name for clean_vendor "
             "(drop store/terminal numbers, ALL-CAPS noise, city/state codes, payment-"
             "processor cruft). If KNOWN_VENDORS contains an entry that clearly refers to "
             "the same merchant, return that exact string so the project stays consistent. "
-            "Sanity-check amount and date; flag anything implausible in issues. Reason ONLY "
-            "from the data given — never invent a vendor you cannot infer from the input. "
-            "Be honest with confidence: low when the raw name is ambiguous."
+            "Sanity-check amount and date; flag anything implausible in issues. "
+            + ("An IMAGE of the document is attached — read it directly to verify and "
+               "correct the vendor, amount, and date when the OCR text looks wrong or "
+               "ambiguous, and raise your confidence accordingly. "
+               if image_url else
+               "Reason ONLY from the data given — never invent a vendor you cannot infer "
+               "from the input. ")
+            + "Be honest with confidence: low when the source is ambiguous."
         )
-        out = self._call(system, payload, _CLEAN_TOOL)
+        out = self._call(system, payload, _CLEAN_TOOL, image_url=image_url)
         out["_provider"] = "claude"
         out["_model"] = _CLAUDE_MODEL
+        out["_vision"] = bool(image_url)
         return out
 
 
@@ -267,11 +281,13 @@ def detect_anomalies(payload):
         return _NeutralProvider().detect_anomalies(payload)
 
 
-def clean_document(payload):
-    """Fail-open OCR cleanup. payload: {document:{...}, known_vendors:[...]}"""
+def clean_document(payload, image_url=None):
+    """Fail-open OCR cleanup. payload: {document:{...}, known_vendors:[...]}.
+    image_url: optional URL of the receipt image — passed to the model (vision)
+    so it can read the actual document on low-confidence extractions."""
     p = get_provider("clean")
     try:
-        return p.clean_document(payload)
+        return p.clean_document(payload, image_url=image_url)
     except Exception as e:
         log.warning("[ai_layer] clean_document failed (%s): %s", getattr(p, "name", "?"), e)
         return _NeutralProvider().clean_document(payload)

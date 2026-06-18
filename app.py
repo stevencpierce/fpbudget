@@ -8649,6 +8649,28 @@ def _flag_anomaly(pid, kind, severity='medium', title=None, explanation=None,
         return None
 
 
+def _doc_image_temp_link(doc):
+    """Short-lived Dropbox link to a doc's image, for the vision model to read.
+    Returns a URL or None. Fail-soft."""
+    path = getattr(doc, 'filed_dropbox_path', None) or getattr(doc, 'source_archive_path', None)
+    if not path:
+        return None
+    try:
+        ops_prefix = (_DBX_OPS_ROOT or "").rstrip("/") if _DBX_NAMESPACE_ID else ""
+        norm = path
+        if ops_prefix and norm.startswith(ops_prefix + "/"):
+            norm = norm[len(ops_prefix):]
+        dbx = _dbx_client()
+        for p in ((norm, path) if norm != path else (norm,)):
+            try:
+                return dbx.files_get_temporary_link(p).link
+            except Exception:
+                continue
+    except Exception as e:
+        logging.warning(f"[ai-clean] temp link failed for doc #{getattr(doc,'id','?')}: {e}")
+    return None
+
+
 def _ai_known_vendors(pid, limit=80):
     """Clean vendor names already used in this project (from VendorAlias) — the
     consistency hint for clean_document so the same merchant always normalizes
@@ -8723,8 +8745,20 @@ def _ai_clean_document(upload, known=None, force=False):
                        if isinstance(li, dict) and li.get("description")][:20],
     }
     payload = {"document": document, "known_vendors": known}
+    # On LOW-confidence image docs, attach the actual receipt image so the model
+    # reads it directly (vision) instead of trusting the shaky OCR text. PDFs and
+    # high-confidence docs stay text-only. (User 2026-06-18.)
+    image_url = None
+    try:
+        ct = (upload.content_type or '').lower()
+        conf = upload.confidence
+        low_conf = (conf is None) or (float(conf) < 70)
+        if ct.startswith('image/') and low_conf:
+            image_url = _doc_image_temp_link(upload)
+    except Exception:
+        image_url = None
     t0 = _t.time()
-    res = ai_layer.clean_document(payload)
+    res = ai_layer.clean_document(payload, image_url=image_url)
     latency = int((_t.time() - t0) * 1000)
     _ai_log_event(pid, upload.id, 'clean', res.get('_provider'), res.get('_model'),
                   payload, res, latency)
