@@ -8763,13 +8763,9 @@ def docs_ai_cleanup(pid):
                     "flagged": flagged, "remaining": max(0, total_remaining - len(docs))})
 
 
-@app.route("/projects/<int:pid>/actuals/scan-anomalies", methods=["POST"])
-@login_required
-def actuals_scan_anomalies(pid):
-    """Scan for double-coded duplicates (same spend coded to the budget more
-    than once) and upsert AnomalyFlag review-queue rows. (User 2026-06-18.)"""
-    ProjectSheet.query.get_or_404(pid)
-    _require_project_role(pid, 'editor')
+def _run_double_coded_scan(pid):
+    """Scan for double-coded spend and upsert AnomalyFlag rows. Does NOT commit
+    (caller commits). Returns (clusters_found, flags_upserted)."""
     from actuals import scan_double_coded
     clusters = scan_double_coded(pid)
     flags = 0
@@ -8795,11 +8791,22 @@ def actuals_scan_anomalies(pid):
                           dedup_key=dedup)
         if f is not None:
             flags += 1
+    return len(clusters), flags
+
+
+@app.route("/projects/<int:pid>/actuals/scan-anomalies", methods=["POST"])
+@login_required
+def actuals_scan_anomalies(pid):
+    """Scan for double-coded duplicates (same spend coded to the budget more
+    than once) and upsert AnomalyFlag review-queue rows. (User 2026-06-18.)"""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    clusters, flags = _run_double_coded_scan(pid)
     try:
         db.session.commit()
     except Exception:
         db.session.rollback()
-    return jsonify({"ok": True, "clusters": len(clusters), "flags": flags})
+    return jsonify({"ok": True, "clusters": clusters, "flags": flags})
 
 
 def _anomaly_to_dict(f):
@@ -19304,6 +19311,15 @@ def _reprocess_worker(flask_app, pid, user_id, limit):
                      .filter_by(doc_upload_id=d.id, source='doc_upload')
                      .update(upd, synchronize_session=False))
                     d.reprocessed_at = _dt.utcnow()
+                    # AI data cleanup on the freshly re-OCR'd doc (vendor
+                    # normalization + extraction flags). force=True because OCR
+                    # just rewrote the vendor. Advisory, fail-open. (2026-06-18.)
+                    try:
+                        r = _ai_clean_document(d, force=True)
+                        if r and r.get('applied'):
+                            prog['cleaned'] = prog.get('cleaned', 0) + 1
+                    except Exception as _cle:
+                        logging.warning(f"[reprocess] cleanup failed for doc #{d.id}: {_cle}")
                     db.session.commit()
                     prog['reprocessed'] += 1
                     prog['last'] = (d.vendor or '')[:40]
@@ -19324,6 +19340,14 @@ def _reprocess_worker(flask_app, pid, user_id, limit):
                     prog['auto_match_suggestions'] = run_auto_match(pid).get('suggestions')
                 except Exception:
                     pass
+                # Refresh the double-coded review queue so the Dashboard is ready
+                # when the user comes back. (2026-06-18.)
+                try:
+                    _clusters, _flags = _run_double_coded_scan(pid)
+                    db.session.commit()
+                    prog['dup_flags'] = _flags
+                except Exception:
+                    db.session.rollback()
         except Exception as _we:
             prog['fatal'] = type(_we).__name__
         finally:
