@@ -443,11 +443,55 @@ document.addEventListener('click', function(e) {
   const withData = confirm('Include ALL receipts + transactions too?\n\n'
     + 'OK = full isolated copy (a real test bed — its own Dropbox folder, safe to edit).\n'
     + 'Cancel = budgets + lines only.');
-  form.querySelector('input[name="name"]').value = trimmed;
-  const idEl = form.querySelector('input[name="include_data"]');
-  if (idEl) idEl.value = withData ? '1' : '';
-  form.submit();
+  duplicateProjectBg(form.getAttribute('action'), trimmed, withData);
 });
+
+// Background duplication: POST to start, then poll status (runs server-side so a
+// big copy never holds a request). Shows a fixed progress banner.
+function _dupBanner(msg, kind) {
+  let el = document.getElementById('dup-banner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'dup-banner';
+    el.style.cssText = 'position:fixed;left:50%;bottom:20px;transform:translateX(-50%);'
+      + 'z-index:9999;padding:10px 16px;border-radius:8px;font-size:13px;max-width:90vw;'
+      + 'box-shadow:0 4px 16px rgba(0,0,0,.35);background:#1e2533;color:#dfe6f2;border:1px solid #33405a';
+    document.body.appendChild(el);
+  }
+  el.style.borderColor = kind === 'error' ? '#7a3a3a' : (kind === 'done' ? '#2a6a48' : '#33405a');
+  el.textContent = msg;
+  el.style.display = msg ? 'block' : 'none';
+}
+async function duplicateProjectBg(action, name, withData) {
+  _dupBanner('Starting duplication of “' + name + '”…');
+  let j;
+  try {
+    const body = new URLSearchParams({ name: name, include_data: withData ? '1' : '' });
+    const r = await fetch(action, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body, credentials: 'same-origin' });
+    j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.job_id) { _dupBanner('Could not start: ' + (j.error || r.status), 'error'); return; }
+  } catch (e) { _dupBanner('Could not start duplication: ' + e.message, 'error'); return; }
+  _dupBanner('Duplicating “' + name + '”… this can take a minute for large projects. You can keep working.');
+  const statusUrl = '/projects/duplicate-status/' + j.job_id + '?name=' + encodeURIComponent(name);
+  let tries = 0;
+  const poll = async () => {
+    tries++;
+    if (tries > 160) { _dupBanner('Still working… refresh the page in a bit to see “' + name + '”.'); return; }
+    try {
+      const s = await (await fetch(statusUrl, { credentials: 'same-origin' })).json();
+      if (s.state === 'done' && s.new_pid) {
+        _dupBanner('Done — opening “' + name + '”…', 'done');
+        window.location = s.open_url || ('/projects/' + s.new_pid + '/budget');
+        return;
+      }
+      if (s.state === 'error') { _dupBanner('Duplication failed: ' + (s.error || 'unknown'), 'error'); return; }
+    } catch (e) { /* transient; keep polling */ }
+    setTimeout(poll, 3000);
+  };
+  setTimeout(poll, 3000);
+}
 
 function filterProjects() {
   const q = document.getElementById('proj-search').value.toLowerCase();

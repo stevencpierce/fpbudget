@@ -3966,159 +3966,171 @@ def _clone_project_data(src_p, new_p, old_slug, new_slug, line_map, loc_id_map):
     return {'docs': len(src_docs), 'txns': len(src_txns)}
 
 
-@app.route("/projects/<int:pid>/duplicate", methods=["POST"])
-@login_required
-def project_duplicate(pid):
-    """Duplicate a project — clone every Budget, project-scoped Locations,
-    FringeConfigs, and provision a fresh Dropbox folder by copying the
-    source project's folder tree. Admin or super_admin only.
-    """
-    if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
-        flash("Only admins can duplicate projects.", "error")
-        return redirect(url_for("dashboard"))
-    src_p = ProjectSheet.query.get_or_404(pid)
-    new_name = (request.form.get("name") or "").strip()
-    if not new_name:
-        new_name = f"{src_p.name} (copy)"
-    # Uniqueness check
-    if ProjectSheet.query.filter(ProjectSheet.name == new_name).first():
-        flash(f"A project named '{new_name}' already exists.", "error")
-        return redirect(url_for("dashboard"))
+_PROJECT_DUP = {}   # job_id -> {state, name, new_pid, error, docs, txns}
 
-    try:
-        # 1. Create the new ProjectSheet
-        new_p = ProjectSheet(
-            name=new_name,
-            client_name=src_p.client_name,
-            status='active',
-        )
-        db.session.add(new_p)
-        db.session.flush()
 
-        # 2. Generate a fresh slug + provision a Dropbox folder by
-        #    copying the SOURCE project's folder (so the duplicated
-        #    project keeps the same on-disk layout incl. any custom
-        #    subfolders). Falls back to copying the template if the
-        #    source folder copy fails.
-        new_slug = _unique_project_slug(new_name, src_p.client_name, exclude_id=new_p.id)
-        new_p.dropbox_folder = new_slug
+def _duplicate_worker(flask_app, job_id, src_pid, new_name, include_data, user_id):
+    """Background project duplication so a large copy never ties up a web worker
+    (mirrors the reprocess pattern). Clones every Budget, project Locations +
+    FringeConfigs, copies the Dropbox folder tree, and — when include_data —
+    receipts + transactions into a fully isolated sandbox. Updates
+    _PROJECT_DUP[job_id]. (Background since 2026-06-18.)"""
+    with flask_app.app_context():
+        prog = _PROJECT_DUP.setdefault(job_id, {})
+        prog.update(state='running', name=new_name, new_pid=None, error=None, docs=0, txns=0)
         try:
-            has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
-            if (has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN')) and src_p.dropbox_folder:
-                dbx = _dbx_client()
-                if _DBX_NAMESPACE_ID:
-                    src_path  = f"/{src_p.dropbox_folder}"
-                    dest_path = f"/{new_slug}"
-                else:
-                    src_path  = f"{_DBX_OPS_ROOT}/{src_p.dropbox_folder}"
-                    dest_path = f"{_DBX_OPS_ROOT}/{new_slug}"
-                dbx.files_copy_v2(src_path, dest_path)
-                logging.info(f"[DBX DUP] {src_path} → {dest_path}")
-            else:
-                _provision_dropbox_folder(new_slug)
-        except Exception as e:
-            logging.error(f"[DBX DUP] folder copy failed: {type(e).__name__}: {e} — "
-                          f"falling back to template provision")
+            src_p = ProjectSheet.query.get(src_pid)
+            if not src_p:
+                prog.update(state='error', error='source project no longer exists')
+                return
+            src_name = src_p.name
+            # 1. Create the new ProjectSheet
+            new_p = ProjectSheet(name=new_name, client_name=src_p.client_name, status='active')
+            db.session.add(new_p)
+            db.session.flush()
+
+            # 2. Fresh slug + Dropbox folder (copy the source tree; fall back to template).
+            new_slug = _unique_project_slug(new_name, src_p.client_name, exclude_id=new_p.id)
+            new_p.dropbox_folder = new_slug
             try:
-                _provision_dropbox_folder(new_slug)
+                has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
+                if (has_refresh or os.getenv('DROPBOX_ACCESS_TOKEN')) and src_p.dropbox_folder:
+                    dbx = _dbx_client()
+                    if _DBX_NAMESPACE_ID:
+                        src_path, dest_path = f"/{src_p.dropbox_folder}", f"/{new_slug}"
+                    else:
+                        src_path = f"{_DBX_OPS_ROOT}/{src_p.dropbox_folder}"
+                        dest_path = f"{_DBX_OPS_ROOT}/{new_slug}"
+                    dbx.files_copy_v2(src_path, dest_path)
+                    logging.info(f"[DBX DUP] {src_path} → {dest_path}")
+                else:
+                    _provision_dropbox_folder(new_slug)
+            except Exception as e:
+                logging.error(f"[DBX DUP] folder copy failed: {type(e).__name__}: {e} — "
+                              f"falling back to template provision")
+                try:
+                    _provision_dropbox_folder(new_slug)
+                except Exception:
+                    pass
+
+            # 3. Project-scoped FringeConfigs.
+            for fc in FringeConfig.query.filter_by(project_id=src_p.id).all():
+                db.session.add(FringeConfig(
+                    project_id=new_p.id, fringe_type=fc.fringe_type, label=fc.label,
+                    rate=fc.rate, is_flat=fc.is_flat, flat_amount=fc.flat_amount,
+                    ot_applies=fc.ot_applies))
+
+            # 4. Project-scoped Locations (budget_line_id intentionally dropped).
+            from models import Location as _Loc
+            loc_id_map = {}
+            for lc in _Loc.query.filter_by(project_id=src_p.id).all():
+                new_lc = _Loc(
+                    project_id=new_p.id, name=lc.name, facility_name=lc.facility_name,
+                    location_type=lc.location_type, address=lc.address, map_url=lc.map_url,
+                    contact_name=lc.contact_name, contact_email=lc.contact_email,
+                    contact_phone=lc.contact_phone, dayof_name=lc.dayof_name,
+                    dayof_email=lc.dayof_email, dayof_phone=lc.dayof_phone,
+                    billing_type=lc.billing_type, daily_rate=lc.daily_rate, notes=lc.notes,
+                    active=lc.active, omit_flags=lc.omit_flags)
+                db.session.add(new_lc)
+                db.session.flush()
+                loc_id_map[lc.id] = new_lc.id
+
+            # 5. Clone every Budget (reuses _create_budget_from_source).
+            src_budgets = Budget.query.filter_by(project_id=src_p.id).order_by(
+                Budget.created_at.asc()).all()
+            dup_line_map = {}
+            for sb in src_budgets:
+                new_b = _create_budget_from_source(
+                    new_p.id, sb, sb.name, sb.budget_mode or 'estimated',
+                    parent_bid=None, version_number=sb.version_number)
+                new_b.version_status = sb.version_status
+                dup_line_map.update(getattr(new_b, '_dup_line_map', {}))
+
+            # 5b. Optional: receipts + actuals into a fully isolated sandbox.
+            data_counts = None
+            if include_data:
+                db.session.flush()
+                data_counts = _clone_project_data(src_p, new_p, src_p.dropbox_folder,
+                                                  new_slug, dup_line_map, loc_id_map)
+
+            # 6. Owner access for the duplicating user.
+            if user_id:
+                db.session.add(ProjectAccess(project_id=new_p.id, user_id=user_id, role="owner"))
+
+            db.session.commit()
+            try:
+                _log_activity(action='create', entity_type='project', entity_id=new_p.id,
+                              entity_label=new_name, project_id=new_p.id, before=None,
+                              after={'name': new_name, 'duplicated_from': src_pid,
+                                     'included_data': bool(data_counts)},
+                              note=f'Duplicated from "{src_name}"'
+                                   + (f' with {data_counts["docs"]} docs + {data_counts["txns"]} txns'
+                                      if data_counts else ''))
+            except Exception:
+                pass
+            prog.update(state='done', new_pid=new_p.id,
+                        docs=(data_counts or {}).get('docs', 0),
+                        txns=(data_counts or {}).get('txns', 0))
+            logging.info(f"[dup] project {src_pid} → {new_p.id} '{new_name}' done")
+        except Exception as e:
+            db.session.rollback()
+            logging.exception("duplicate worker failed")
+            prog.update(state='error', error=str(e))
+        finally:
+            try:
+                db.session.remove()
             except Exception:
                 pass
 
-        # 3. Copy project-scoped FringeConfigs.
-        for fc in FringeConfig.query.filter_by(project_id=src_p.id).all():
-            db.session.add(FringeConfig(
-                project_id=new_p.id,
-                fringe_type=fc.fringe_type,
-                label=fc.label,
-                rate=fc.rate,
-                is_flat=fc.is_flat,
-                flat_amount=fc.flat_amount,
-                ot_applies=fc.ot_applies,
-            ))
 
-        # 4. Copy project-scoped Locations.
-        from models import Location as _Loc
-        loc_id_map = {}
-        for lc in _Loc.query.filter_by(project_id=src_p.id).all():
-            new_lc = _Loc(
-                project_id=new_p.id,
-                name=lc.name,
-                facility_name=lc.facility_name,
-                location_type=lc.location_type,
-                address=lc.address,
-                map_url=lc.map_url,
-                contact_name=lc.contact_name,
-                contact_email=lc.contact_email,
-                contact_phone=lc.contact_phone,
-                dayof_name=lc.dayof_name,
-                dayof_email=lc.dayof_email,
-                dayof_phone=lc.dayof_phone,
-                billing_type=lc.billing_type,
-                daily_rate=lc.daily_rate,
-                notes=lc.notes,
-                active=lc.active,
-                omit_flags=lc.omit_flags,
-                # budget_line_id intentionally NOT copied — points at
-                # source budget's lines and would orphan on the clone.
-            )
-            db.session.add(new_lc)
-            db.session.flush()
-            loc_id_map[lc.id] = new_lc.id
+@app.route("/projects/<int:pid>/duplicate", methods=["POST"])
+@login_required
+def project_duplicate(pid):
+    """Kick off a BACKGROUND project duplication (so a large copy never holds a
+    web worker). Returns JSON {job_id}; poll /projects/duplicate-status/<job_id>.
+    include_data=1 also clones receipts + transactions into an isolated sandbox.
+    Admin/super_admin only. (Background since 2026-06-18.)"""
+    if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+        return jsonify({"error": "Only admins can duplicate projects."}), 403
+    src_p = ProjectSheet.query.get_or_404(pid)
+    new_name = (request.form.get("name") or "").strip() or f"{src_p.name} (copy)"
+    if ProjectSheet.query.filter(ProjectSheet.name == new_name).first():
+        return jsonify({"error": f"A project named '{new_name}' already exists."}), 400
+    include_data = str(request.form.get('include_data') or '').lower() in ('1', 'true', 'yes', 'on')
+    import uuid as _uuid
+    job_id = _uuid.uuid4().hex[:12]
+    _PROJECT_DUP[job_id] = {'state': 'running', 'name': new_name, 'new_pid': None,
+                            'error': None, 'docs': 0, 'txns': 0, 'src': pid,
+                            'include_data': include_data}
+    import threading
+    threading.Thread(target=_duplicate_worker,
+                     args=(app, job_id, pid, new_name, include_data, current_user.id),
+                     daemon=True).start()
+    return jsonify({"started": True, "job_id": job_id, "name": new_name,
+                    "include_data": include_data})
 
-        # 5. Clone every Budget on the source project. We use the
-        #    existing _create_budget_from_source helper for each one
-        #    so all the careful settings-inheritance + schedule-copy
-        #    logic kicks in exactly the same as for Working clones.
-        src_budgets = Budget.query.filter_by(project_id=src_p.id).order_by(
-            Budget.created_at.asc()).all()
-        dup_line_map = {}
-        for sb in src_budgets:
-            new_b = _create_budget_from_source(
-                new_p.id, sb, sb.name, sb.budget_mode or 'estimated',
-                parent_bid=None, version_number=sb.version_number,
-            )
-            new_b.version_status = sb.version_status
-            dup_line_map.update(getattr(new_b, '_dup_line_map', {}))
 
-        # 5b. Optional: clone receipts + actuals into a fully isolated sandbox
-        #     (Dropbox paths remapped to the copied folder). Opt-in via
-        #     include_data so the lightweight "structure only" duplicate stays
-        #     the default. (User 2026-06-18.)
-        include_data = str(request.form.get('include_data') or '').lower() in ('1', 'true', 'yes', 'on')
-        data_counts = None
-        if include_data:
-            db.session.flush()
-            data_counts = _clone_project_data(src_p, new_p, src_p.dropbox_folder,
-                                              new_slug, dup_line_map, loc_id_map)
-
-        # 6. Grant the duplicating user owner access on the new project.
-        db.session.add(ProjectAccess(
-            project_id=new_p.id, user_id=current_user.id, role="owner"
-        ))
-
-        db.session.commit()
-        try:
-            _log_activity(action='create', entity_type='project',
-                          entity_id=new_p.id, entity_label=new_name,
-                          project_id=new_p.id,
-                          before=None,
-                          after={'name': new_name, 'duplicated_from': src_p.id,
-                                 'included_data': bool(data_counts)},
-                          note=f'Duplicated from "{src_p.name}"'
-                               + (f' with {data_counts["docs"]} docs + {data_counts["txns"]} txns'
-                                  if data_counts else ''))
-        except Exception: pass
-        if data_counts:
-            flash(f"Duplicated '{src_p.name}' → '{new_name}' with "
-                  f"{data_counts['docs']} receipts + {data_counts['txns']} transactions.", "success")
-        else:
-            flash(f"Duplicated '{src_p.name}' → '{new_name}'.", "success")
-        return redirect(url_for("project_budget_redirect", pid=new_p.id))
-    except Exception as e:
-        db.session.rollback()
-        logging.exception("project_duplicate failed")
-        flash(f"Could not duplicate project — {e}", "error")
-        return redirect(url_for("dashboard"))
+@app.route("/projects/duplicate-status/<job_id>", methods=["GET"])
+@login_required
+def project_duplicate_status(job_id):
+    """Progress for a background duplication. Worker-agnostic: if this worker
+    doesn't hold the in-memory job (multi-worker), it falls back to detecting the
+    finished project by its (unique) name."""
+    prog = _PROJECT_DUP.get(job_id)
+    if prog:
+        out = {k: prog.get(k) for k in ('state', 'name', 'new_pid', 'error', 'docs', 'txns')}
+    else:
+        out = {'state': 'running', 'name': request.args.get('name'), 'new_pid': None}
+    name = out.get('name') or request.args.get('name')
+    if not out.get('new_pid') and name:
+        p = ProjectSheet.query.filter(ProjectSheet.name == name).first()
+        if p:
+            out['state'] = 'done'
+            out['new_pid'] = p.id
+    if out.get('new_pid'):
+        out['open_url'] = f"/projects/{out['new_pid']}/budget"
+    return jsonify(out)
 
 
 @app.route("/projects/<int:pid>/wrap", methods=["POST"])
