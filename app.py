@@ -8347,6 +8347,180 @@ def actuals_merge_transactions(pid):
     })
 
 
+# ── AI auto-coding (advisory) — categorize uncoded charges ────────────────
+# ai_layer.categorize() proposes a COA section; we store it on the txn as a
+# suggestion ONLY. The user accepts via the existing set-coa path. A learned
+# vendor→code mapping (VendorCategoryMap) short-circuits the model. Everything
+# here is fail-open: a model/key problem must never block uploads or the page.
+def _ai_coa_taxonomy():
+    from budget_calc import FP_COA_SECTIONS
+    return [{"id": str(code), "label": name} for code, name in FP_COA_SECTIONS]
+
+
+def _ai_past_corrections(pid, limit=200):
+    """Learned vendor→code mappings (this project first, then global) as the
+    LLM's PAST_CORRECTIONS hints."""
+    from models import VendorCategoryMap
+    from budget_calc import FP_COA_NAMES
+    rows = (VendorCategoryMap.query
+            .filter(db.or_(VendorCategoryMap.project_id == pid,
+                           VendorCategoryMap.project_id.is_(None)),
+                    VendorCategoryMap.account_code.isnot(None))
+            .order_by(VendorCategoryMap.confirm_count.desc())
+            .limit(limit).all())
+    return [{"vendor": r.vendor_canonical, "account_code": str(r.account_code),
+             "account_code_name": FP_COA_NAMES.get(r.account_code, ""),
+             "confirm_count": r.confirm_count or 1} for r in rows]
+
+
+def _ai_log_event(pid, doc_id, feature, provider, model, req, resp, latency):
+    """Queue an AiEvent audit row on the session (caller commits). Fail-soft."""
+    try:
+        import json as _j
+        from models import AiEvent
+        db.session.add(AiEvent(
+            project_id=pid, doc_upload_id=doc_id, feature=feature,
+            provider=provider, model=model,
+            request_json=_j.dumps(req, default=str)[:8000],
+            response_json=_j.dumps(resp, default=str)[:8000], latency_ms=latency))
+    except Exception:
+        pass
+
+
+def _ai_suggest_code_for_txn(txn, taxonomy=None, past=None, force=False):
+    """Advisory COA suggestion for ONE uncoded charge. Memory-first (a learned
+    vendor mapping wins, no model call), else ai_layer.categorize(). Writes
+    ai_suggested_* onto txn (caller commits). Returns the suggestion dict or
+    None. Never raises."""
+    if txn is None or txn.account_code is not None or txn.not_project_expense:
+        return None
+    if txn.ai_suggested_code is not None and not force:
+        return None
+    from budget_calc import FP_COA_NAMES
+    from actuals import canon_vendor
+    import ai_layer, time as _t, json as _j
+    pid = txn.project_id
+    vendor = txn.vendor or ''
+    doc_id = getattr(txn, 'doc_upload_id', None)
+
+    # 1) Memory-first: a confirmed vendor mapping short-circuits the LLM.
+    cv = canon_vendor(vendor)
+    if cv:
+        from models import VendorCategoryMap
+        m = (VendorCategoryMap.query
+             .filter(VendorCategoryMap.vendor_canonical == cv,
+                     VendorCategoryMap.account_code.isnot(None),
+                     db.or_(VendorCategoryMap.project_id == pid,
+                            VendorCategoryMap.project_id.is_(None)))
+             .order_by(VendorCategoryMap.project_id.isnot(None).desc(),
+                       VendorCategoryMap.confirm_count.desc())
+             .first())
+        if m and m.account_code in FP_COA_NAMES:
+            txn.ai_suggested_code = m.account_code
+            txn.ai_suggested_code_name = (FP_COA_NAMES.get(m.account_code, '') or '')[:100]
+            txn.ai_code_confidence = 0.96
+            txn.ai_code_reason = (f'Matches how "{vendor}" was coded before')[:300]
+            _ai_log_event(pid, doc_id, 'categorize', 'memory', None,
+                          {"vendor": vendor, "canon": cv},
+                          {"account_code": m.account_code, "via": "vendor_map"}, 0)
+            return {"code": m.account_code, "name": txn.ai_suggested_code_name,
+                    "confidence": 0.96, "source": "memory"}
+
+    # 2) Ask the model.
+    if taxonomy is None:
+        taxonomy = _ai_coa_taxonomy()
+    if past is None:
+        past = _ai_past_corrections(pid)
+    vd = {}
+    doc = db.session.get(DocUpload, doc_id) if doc_id else None
+    if doc is not None and doc.veryfi_data:
+        try:
+            vd = doc.veryfi_data if isinstance(doc.veryfi_data, dict) else _j.loads(doc.veryfi_data)
+        except Exception:
+            vd = {}
+    document = {
+        "vendor": vendor,
+        "amount": float(txn.amount) if txn.amount is not None else None,
+        "date": txn.txn_date,
+        "veryfi_category": (doc.veryfi_category if doc else None) or vd.get("category"),
+        "qbo_category": getattr(txn, 'qbo_category', None),
+        "line_items": [li.get("description") for li in (vd.get("line_items") or [])
+                       if isinstance(li, dict) and li.get("description")][:20],
+    }
+    payload = {"taxonomy": taxonomy, "document": document, "past_corrections": past}
+    t0 = _t.time()
+    res = ai_layer.categorize(payload)
+    latency = int((_t.time() - t0) * 1000)
+    _ai_log_event(pid, doc_id, 'categorize', res.get('_provider'), res.get('_model'),
+                  payload, res, latency)
+    code = None
+    try:
+        cid = res.get("document_category_id")
+        if cid is not None and str(cid).strip().isdigit():
+            code = int(str(cid).strip())
+    except Exception:
+        code = None
+    try:
+        conf = float(res.get("confidence") or 0)
+    except (TypeError, ValueError):
+        conf = 0.0
+    if code is None or code not in FP_COA_NAMES or conf < 0.45:
+        return None
+    txn.ai_suggested_code = code
+    txn.ai_suggested_code_name = (FP_COA_NAMES.get(code, '') or '')[:100]
+    txn.ai_code_confidence = round(conf, 3)
+    txn.ai_code_reason = (res.get("reasoning") or '')[:300]
+    return {"code": code, "name": txn.ai_suggested_code_name,
+            "confidence": conf, "source": res.get('_provider')}
+
+
+@app.route("/projects/<int:pid>/actuals/ai-suggest-codes", methods=["POST"])
+@login_required
+def actuals_ai_suggest_codes(pid):
+    """Batch: run AI categorize over UNCODED charges and store advisory
+    suggestions. Processes a small batch per call (memory hits are instant;
+    LLM calls aren't) and returns `remaining` so the UI can loop until dry.
+    Body: {limit?, force?}. (User 2026-06-18.)"""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    body = request.get_json(silent=True) or {}
+    try:
+        limit = min(20, max(1, int(body.get('limit', 10))))
+    except (TypeError, ValueError):
+        limit = 10
+    force = bool(body.get('force'))
+    q = (Transaction.query
+         .filter(Transaction.project_id == pid,
+                 Transaction.account_code.is_(None),
+                 Transaction.not_project_expense == False,   # noqa: E712
+                 Transaction.vendor.isnot(None),
+                 db.or_(Transaction.claimed_by_project_id.is_(None),
+                        Transaction.claimed_by_project_id == pid)))
+    if not force:
+        q = q.filter(Transaction.ai_suggested_code.is_(None))
+    total_remaining = q.count()
+    rows = q.order_by(Transaction.id.desc()).limit(limit).all()
+    taxonomy = _ai_coa_taxonomy()
+    past = _ai_past_corrections(pid)
+    suggested = 0
+    no_match = 0
+    for txn in rows:
+        try:
+            if _ai_suggest_code_for_txn(txn, taxonomy=taxonomy, past=past, force=force):
+                suggested += 1
+            else:
+                no_match += 1
+        except Exception as e:
+            logging.warning(f"[ai-suggest] txn #{getattr(txn,'id','?')} failed: {e}")
+            no_match += 1
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    return jsonify({"ok": True, "processed": len(rows), "suggested": suggested,
+                    "no_match": no_match, "remaining": max(0, total_remaining - len(rows))})
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-coa", methods=["POST"])
 @login_required
 def actuals_set_coa(pid, tid):
@@ -8399,8 +8573,21 @@ def actuals_set_coa(pid, tid):
         except Exception as _ee:
             logging.warning(f"[actuals/set-coa] ensure-section failed: {_ee}")
             _ensure_result = {'created': False, 'working_was_just_created': False}
+    # Coding decided → drop any advisory AI suggestion on this row.
+    txn.ai_suggested_code = None
+    txn.ai_suggested_code_name = None
+    txn.ai_code_confidence = None
+    txn.ai_code_reason = None
     txn.updated_at = datetime.utcnow()
     _sync_claim_state(txn)
+    # Reinforce the learned vendor→category mapping when a real section was set
+    # (so AI/memory can auto-suggest this vendor next time). (2026-06-18.)
+    if txn.account_code and not txn.not_project_expense and txn.vendor:
+        try:
+            from actuals import record_vendor_category
+            record_vendor_category(pid, txn.vendor, txn.account_code)
+        except Exception as _ve:
+            logging.warning(f"[set-coa] vendor-cat record failed: {_ve}")
     db.session.commit()
     try:
         _amt = float(txn.amount or 0)
@@ -21791,6 +21978,15 @@ def _web_worker_essential_columns():
                 # 2026-06-16 — split receipts (one receipt backs N charges).
                 "ALTER TABLE transaction "
                 "  ADD COLUMN IF NOT EXISTS split_group VARCHAR(40)",
+                # 2026-06-18 — AI auto-coding suggestion (advisory, never applied).
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS ai_suggested_code INTEGER",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS ai_suggested_code_name VARCHAR(100)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS ai_code_confidence NUMERIC(4,3)",
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS ai_code_reason VARCHAR(300)",
                 # 2026-06-01 — per-location required-doc checklist (comma-sep keys).
                 "ALTER TABLE location "
                 "  ADD COLUMN IF NOT EXISTS required_docs TEXT",
@@ -22465,6 +22661,14 @@ def docs_upload_post(pid):
             )
             db.session.add(auto_txn)
             db.session.flush()
+            # Advisory AI coding suggestion (2026-06-18). Fail-open: a model
+            # hiccup must never block the upload. Stored on the txn; the user
+            # sees a "✨ suggested" chip in Actuals and clicks Accept to code.
+            try:
+                _ai_suggest_code_for_txn(auto_txn)
+            except Exception as _ae:
+                logging.warning(f"[docs/upload] ai categorize failed for txn "
+                                f"#{auto_txn.id}: {_ae}")
             # Cross-project claim: a receipt upload is an affirmative
             # "this expense belongs here" signal. Fire _sync_claim_state
             # so any QBO sibling on another project (same vendor + amount

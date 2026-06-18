@@ -149,6 +149,17 @@ class Transaction(db.Model):
                                       db.ForeignKey("project_sheet.id"),
                                       nullable=True)
 
+    # ── AI auto-coding suggestion (2026-06-18) ─────────────────────────
+    # Advisory only: ai_layer.categorize() (or a learned vendor→code mapping)
+    # proposes a COA section for an UNCODED charge. Kept separate from
+    # account_code so the Actuals UI can show a "✨ suggested" chip; the user
+    # clicks Accept (→ set-coa) to confirm. Cleared the instant the row is
+    # coded. NEVER auto-applied — AI is advisory, per the app's AI rules.
+    ai_suggested_code      = db.Column(db.Integer, nullable=True)
+    ai_suggested_code_name = db.Column(db.String(100), nullable=True)
+    ai_code_confidence     = db.Column(db.Numeric(4, 3), nullable=True)
+    ai_code_reason         = db.Column(db.String(300), nullable=True)
+
     # ── Provenance ──────────────────────────────────────────────────────
     created_via_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)

@@ -13,6 +13,7 @@ in `qbo_sync.py` — separate concern. This module is what happens
 *after* a Transaction exists, regardless of source.
 """
 import logging
+import re as _re
 from datetime import datetime
 from sqlalchemy.orm import attributes
 
@@ -20,6 +21,47 @@ from models import (db, Budget, BudgetLine, Transaction, ProjectSheet, DocUpload
                     MatchRejection)
 
 log = logging.getLogger(__name__)
+
+
+# ── Learned vendor → COA mapping (2026-06-18 AI auto-coding) ──────────────
+def canon_vendor(v):
+    """Normalize a vendor string into the learned-mapping key: lowercase,
+    drop store/terminal numbers + punctuation, collapse whitespace. Keeps
+    'AMAZON MKTPLACE #1234' and 'amazon mktplace' on the same key."""
+    s = (v or '').lower()
+    s = _re.sub(r'[#*]+\s*\d+', ' ', s)        # store / terminal numbers
+    s = _re.sub(r'\b\d{3,}\b', ' ', s)          # long digit runs
+    s = _re.sub(r'[^a-z0-9 ]+', ' ', s)         # punctuation
+    s = _re.sub(r'\s+', ' ', s).strip()
+    return s[:200]
+
+
+def record_vendor_category(project_id, vendor, account_code, budget_line_id=None):
+    """Upsert the learned vendor→COA mapping so future docs short-circuit the
+    LLM. Strengthens confirm_count on repeat confirmations. Does NOT commit —
+    the caller commits with its own change. Fail-soft."""
+    if not vendor or account_code is None:
+        return
+    cv = canon_vendor(vendor)
+    if not cv:
+        return
+    try:
+        from models import VendorCategoryMap
+        row = (VendorCategoryMap.query
+               .filter_by(project_id=project_id, vendor_canonical=cv).first())
+        if row:
+            row.account_code = account_code
+            if budget_line_id is not None:
+                row.budget_line_id = budget_line_id
+            row.confirm_count = (row.confirm_count or 0) + 1
+            row.last_confirmed_at = datetime.utcnow()
+        else:
+            db.session.add(VendorCategoryMap(
+                project_id=project_id, vendor_canonical=cv,
+                account_code=account_code, budget_line_id=budget_line_id,
+                confirm_count=1, last_confirmed_at=datetime.utcnow()))
+    except Exception as e:
+        log.warning("[vendor-cat] record failed for %r → %s: %s", vendor, account_code, e)
 
 
 # ── Working → Actual cloning ──────────────────────────────────────────
@@ -485,6 +527,14 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     txn.updated_at        = datetime.utcnow()
     if user_id:
         txn.created_via_user_id = user_id
+    # The row is now coded → drop any advisory AI suggestion, and reinforce the
+    # learned vendor→category mapping so future uploads can short-circuit the
+    # model. (2026-06-18 auto-coding.)
+    txn.ai_suggested_code = None
+    txn.ai_suggested_code_name = None
+    txn.ai_code_confidence = None
+    txn.ai_code_reason = None
+    record_vendor_category(project_id, txn.vendor, actual_line.account_code)
     db.session.commit()
 
     return {

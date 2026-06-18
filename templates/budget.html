@@ -6280,6 +6280,11 @@
               title="Find receipt matches with adjustable amount / date / vendor criteria, review candidates, confirm or change">
         🎯 Find matches
       </button>
+      <button type="button" id="actualsSuggestCodesBtn" class="btn btn-sm"
+              onclick="actualsSuggestCodes(this)"
+              title="Ask AI to suggest a budget category for every uncoded charge. Suggestions only — you click ✨ Accept on each row (or pick your own).">
+        ✨ Suggest codes
+      </button>
       <button type="button" id="actualsReviewBtn" class="btn btn-sm btn-primary"
               onclick="actualsReviewMatches()" style="display:none"
               title="Review and confirm the auto-suggested receipt↔charge matches">
@@ -7022,6 +7027,17 @@
                         onclick="actualsApplySuggestion(this)"
                         title="{% if _sug.kind == 'section' %}Looks like {{ _sug.label }} — click to drop into that category (subdivide later){% else %}Smart match from the vendor name — click to code to {{ _sug.code }} · {{ _sug.label }}{% endif %}"
                         style="flex-shrink:0;font-size:.62rem;padding:1px 5px;background:#10231a;border:1px solid #1f6f4a;border-radius:4px;color:#5fd0a0;cursor:pointer;white-space:nowrap;max-width:90px;overflow:hidden;text-overflow:ellipsis">{% if _sug.kind == 'section' %}📂 {{ _sug.label }}{% else %}💡 {{ _sug.code }}{% endif %}</button>
+                {% endif %}
+                {# AI categorize suggestion (advisory). Shown only when there's no
+                   token-overlap suggestion above and the row is still uncoded. #}
+                {% if t.ai_suggested_code and not _sug and not _coded and not t.not_project_expense %}
+                {% set _aiconf = (t.ai_code_confidence or 0) | float %}
+                <button type="button" class="actuals-ai-suggest-btn"
+                        data-tid="{{ t.id }}" data-code="{{ t.ai_suggested_code }}"
+                        data-name="{{ t.ai_suggested_code_name or '' }}"
+                        onclick="actualsAcceptAiCode(this)"
+                        title="AI suggests {{ t.ai_suggested_code }} · {{ t.ai_suggested_code_name }} ({{ (_aiconf*100)|int }}% confident){% if t.ai_code_reason %} — {{ t.ai_code_reason }}{% endif %}. Click to code; pick from the dropdown to override."
+                        style="flex-shrink:0;font-size:.62rem;padding:1px 5px;background:#1a1630;border:1px solid #4a3a7a;border-radius:4px;color:#b79dff;cursor:pointer;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis">✨ {{ t.ai_suggested_code_name }} {{ (_aiconf*100)|int }}%</button>
                 {% endif %}
                 {# Lazy picker: seed with ONLY the current assignment (so a coded
                    row still SHOWS its line at a glance) — the full ~300-option
@@ -7879,6 +7895,67 @@
       actualsSetLine(sel);
       // Row re-renders / flips to coded on success; if it doesn't, the
       // button is gone after the next filter pass anyway.
+    };
+
+    // ── AI auto-coding (advisory) ─────────────────────────────────────
+    // Accept a per-row ✨ suggestion: code the charge to the suggested COA
+    // section via the same set-coa path as drag-drop. Reinforces the learned
+    // vendor mapping server-side. (User 2026-06-18.)
+    window.actualsAcceptAiCode = async function (btn) {
+      const tid  = btn.dataset.tid;
+      const code = btn.dataset.code;
+      const name = btn.dataset.name || '';
+      if (!tid || !code) return;
+      const _orig = btn.textContent;
+      btn.disabled = true; btn.textContent = '✨ coding…';
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_code: parseInt(code), account_code_name: name }) });
+        if (r.ok) {
+          if (typeof _refreshRowAfterCode === 'function') _refreshRowAfterCode(tid, true, false);
+          if (typeof _recordRecent === 'function') _recordRecent({ kind: 'section', code: parseInt(code), name: name, label: name });
+          if (typeof _actualsToast === 'function') _actualsToast(`Coded to ${code} · ${name}`, 'green');
+          btn.remove();
+        } else {
+          btn.disabled = false; btn.textContent = _orig;
+          if (typeof _actualsToast === 'function') _actualsToast('Coding failed.', 'yellow');
+        }
+      } catch (e) {
+        btn.disabled = false; btn.textContent = _orig;
+        if (typeof _actualsToast === 'function') _actualsToast('Coding error: ' + e.message, 'yellow');
+      }
+    };
+
+    // Toolbar: run AI categorize over every uncoded charge, in small server
+    // batches, looping until none remain. Suggestions are advisory — the page
+    // reloads so the ✨ chips render; nothing is auto-applied.
+    window.actualsSuggestCodes = async function (btn) {
+      const _orig = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '✨ Thinking…'; }
+      let suggested = 0, processed = 0;
+      try {
+        for (let i = 0; i < 60; i++) {   // hard cap on batches
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/ai-suggest-codes`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ limit: 10 }) });
+          if (!r.ok) break;
+          const j = await r.json();
+          suggested += j.suggested || 0; processed += j.processed || 0;
+          if (btn) btn.textContent = `✨ ${suggested} suggested…`;
+          if (!j.processed || !j.remaining) break;
+        }
+        if (typeof _actualsToast === 'function') {
+          _actualsToast(processed
+            ? `AI suggested codes for ${suggested} of ${processed} charge(s). Reloading…`
+            : 'No uncoded charges to suggest.', 'green');
+        }
+        if (processed) setTimeout(() => window.location.reload(), 1000);
+        else if (btn) { btn.disabled = false; btn.textContent = _orig; }
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.textContent = _orig; }
+        if (typeof _actualsToast === 'function') _actualsToast('Suggest codes failed: ' + e.message, 'yellow');
+      }
     };
 
     {# ── Code-expenses pane (department register) ───────────────────── #}
