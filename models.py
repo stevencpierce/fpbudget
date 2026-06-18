@@ -159,6 +159,9 @@ class Transaction(db.Model):
     ai_suggested_code_name = db.Column(db.String(100), nullable=True)
     ai_code_confidence     = db.Column(db.Numeric(4, 3), nullable=True)
     ai_code_reason         = db.Column(db.String(300), nullable=True)
+    # AI vendor-cleanup watermark for charges with no receipt (CSV/QBO). NULL =
+    # not yet cleaned; lets batch cleanup resume. (2026-06-18.)
+    ai_cleaned_at          = db.Column(db.DateTime, nullable=True)
 
     # ── Provenance ──────────────────────────────────────────────────────
     created_via_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)

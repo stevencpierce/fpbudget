@@ -8774,6 +8774,120 @@ def _ai_clean_document(upload, known=None, force=False):
     return result
 
 
+def _ai_clean_transaction(txn, known=None, force=False):
+    """Advisory vendor cleanup for ONE charge (CSV/QBO/manual with no receipt).
+    Mirror of _ai_clean_document for the Actuals side: memory-first via
+    VendorAlias, else clean_document AI; auto-applies a clean vendor at >=0.70,
+    else queues a vendor_cleanup review-flag (keyed to the txn). Stamps
+    ai_cleaned_at so batches drain. Caller commits. Fail-open: never raises."""
+    if txn is None:
+        return None
+    if getattr(txn, 'ai_cleaned_at', None) is not None and not force:
+        return None
+    import ai_layer, time as _t, json as _j
+    from actuals import apply_vendor_alias_lookup, record_vendor_alias
+    pid = txn.project_id
+    raw = (txn.vendor or '').strip()
+    result = {"applied": False, "flagged": False, "clean_vendor": None}
+    if not raw:
+        txn.ai_cleaned_at = datetime.utcnow()
+        return result
+
+    # 1) Memory-first: a learned alias wins, no model call.
+    alias = apply_vendor_alias_lookup(pid, raw)
+    if alias and alias.strip().lower() != raw.lower():
+        txn.vendor = alias[:300]
+        record_vendor_alias(pid, raw, alias)
+        txn.ai_cleaned_at = datetime.utcnow()
+        _ai_log_event(pid, None, 'clean', 'memory', None,
+                      {"raw_vendor": raw, "tid": txn.id},
+                      {"clean_vendor": alias, "via": "alias"}, 0)
+        result.update(applied=True, clean_vendor=alias)
+        return result
+
+    # 2) Ask the model.
+    if known is None:
+        known = _ai_known_vendors(pid)
+    document = {
+        "raw_vendor": raw,
+        "amount": float(txn.amount) if txn.amount is not None else None,
+        "date": txn.txn_date,
+        "veryfi_category": getattr(txn, 'qbo_category', None),
+        "doc_type": "bank/card charge",
+        "line_items": [],
+    }
+    payload = {"document": document, "known_vendors": known}
+    t0 = _t.time()
+    res = ai_layer.clean_document(payload)
+    _ai_log_event(pid, None, 'clean', res.get('_provider'), res.get('_model'),
+                  payload, res, int((_t.time() - t0) * 1000))
+    clean = (res.get("clean_vendor") or '').strip()
+    try:
+        vconf = float(res.get("vendor_confidence") or 0)
+    except (TypeError, ValueError):
+        vconf = 0.0
+    differs = bool(clean) and clean.lower() != raw.lower()
+    if clean and differs and vconf >= 0.70:
+        txn.vendor = clean[:300]
+        record_vendor_alias(pid, raw, clean)
+        result.update(applied=True, clean_vendor=clean)
+    elif clean and differs and vconf > 0:
+        _flag_anomaly(pid, 'vendor_cleanup', severity='low',
+                      title='Confirm vendor name',
+                      explanation=(f'Charge vendor reads "{raw}". '
+                                   f'AI suggests "{clean}" ({int(vconf*100)}% confident).'),
+                      confidence=round(vconf, 3), transaction_id=txn.id,
+                      payload={"raw": raw, "suggested": clean, "confidence": vconf,
+                               "transaction_id": txn.id},
+                      dedup_key=f'vendor_cleanup_txn:{txn.id}')
+        result["flagged"] = True
+    txn.ai_cleaned_at = datetime.utcnow()
+    return result
+
+
+@app.route("/projects/<int:pid>/actuals/ai-cleanup", methods=["POST"])
+@login_required
+def actuals_ai_cleanup(pid):
+    """Batch vendor cleanup over charges with NO receipt (CSV/QBO/manual) — the
+    Actuals-side counterpart to /docs/ai-cleanup. Small batch per call; returns
+    `remaining` so the UI loops until dry. (User 2026-06-18.)"""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    body = request.get_json(silent=True) or {}
+    try:
+        limit = min(15, max(1, int(body.get('limit', 8))))
+    except (TypeError, ValueError):
+        limit = 8
+    force = bool(body.get('force'))
+    q = (Transaction.query
+         .filter(Transaction.project_id == pid,
+                 Transaction.vendor.isnot(None),
+                 Transaction.doc_upload_id.is_(None),   # doc-linked charges clean via the doc
+                 Transaction.source.in_(('csv_import', 'qbo_sync', 'manual_entry', 'reconciled'))))
+    if not force:
+        q = q.filter(Transaction.ai_cleaned_at.is_(None))
+    total_remaining = q.count()
+    rows = q.order_by(Transaction.id.desc()).limit(limit).all()
+    known = _ai_known_vendors(pid)
+    applied = 0
+    flagged = 0
+    for t in rows:
+        try:
+            r = _ai_clean_transaction(t, known=known, force=force)
+            if r and r.get('applied'):
+                applied += 1
+            if r and r.get('flagged'):
+                flagged += 1
+        except Exception as e:
+            logging.warning(f"[actuals/ai-cleanup] txn #{getattr(t,'id','?')} failed: {e}")
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    return jsonify({"ok": True, "processed": len(rows), "applied": applied,
+                    "flagged": flagged, "remaining": max(0, total_remaining - len(rows))})
+
+
 @app.route("/projects/<int:pid>/actuals/ai-suggest-codes", methods=["POST"])
 @login_required
 def actuals_ai_suggest_codes(pid):
@@ -8972,6 +9086,15 @@ def anomaly_resolve(pid, fid):
                 doc.vendor = suggested[:200]
                 for tx in Transaction.query.filter_by(doc_upload_id=doc.id).all():
                     tx.vendor = suggested[:300]
+                from actuals import record_vendor_alias
+                record_vendor_alias(pid, raw, suggested)
+                applied = f'vendor → {suggested}'
+        elif action == 'apply_vendor' and f.transaction_id:
+            suggested = (body.get('value') or payload.get('suggested') or '').strip()
+            tx = Transaction.query.filter_by(id=f.transaction_id, project_id=pid).first()
+            if suggested and tx:
+                raw = tx.vendor or ''
+                tx.vendor = suggested[:300]
                 from actuals import record_vendor_alias
                 record_vendor_alias(pid, raw, suggested)
                 applied = f'vendor → {suggested}'
@@ -22594,6 +22717,8 @@ def _web_worker_essential_columns():
                 "CREATE INDEX IF NOT EXISTS ix_vendor_alias_raw ON vendor_alias (raw_canonical)",
                 # 2026-06-18 — AI data-cleanup watermark on docs.
                 "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS ai_cleaned_at TIMESTAMP",
+                # 2026-06-18 — AI vendor-cleanup watermark on charges (CSV/QBO).
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS ai_cleaned_at TIMESTAMP",
                 # 2026-06-11 — historical FX rate cache for foreign receipts.
                 """CREATE TABLE IF NOT EXISTS fx_rate (
                      id         SERIAL PRIMARY KEY,

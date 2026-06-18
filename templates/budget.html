@@ -6331,6 +6331,11 @@
               title="Ask AI to suggest a budget category for every uncoded charge. Suggestions only — you click ✨ Accept on each row (or pick your own).">
         ✨ Suggest codes
       </button>
+      <button type="button" id="actualsCleanupBtn" class="btn btn-sm"
+              onclick="actualsCleanup(this)"
+              title="Tidy the vendor names on CSV/QBO charges that have no receipt (e.g. 'SQ *BLUE BOTTLE' → 'Blue Bottle'). High-confidence fixes apply automatically; the rest land in the Dashboard review queue.">
+        ✨ Clean up vendors
+      </button>
       <button type="button" id="actualsReviewBtn" class="btn btn-sm btn-primary"
               onclick="actualsReviewMatches()" style="display:none"
               title="Review and confirm the auto-suggested receipt↔charge matches">
@@ -8101,23 +8106,51 @@
       } catch (e) { if (vEl) { vEl.style.display = 'block'; vEl.textContent = 'AI error: ' + e.message; } }
       if (btn) { btn.disabled = false; btn.textContent = '🤖 Ask AI'; }
     };
+    // Loop one cleanup endpoint until it drains. Returns {applied,flagged,processed}.
+    async function _loopCleanup(url, onTick) {
+      let applied = 0, flagged = 0, processed = 0;
+      for (let i = 0; i < 120; i++) {
+        let r;
+        try { r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 8 }) }); }
+        catch (e) { break; }
+        if (!r.ok) break;
+        const j = await r.json();
+        applied += j.applied || 0; flagged += j.flagged || 0; processed += j.processed || 0;
+        if (onTick) onTick(applied);
+        if (!j.processed || !j.remaining) break;
+      }
+      return { applied, flagged, processed };
+    }
+    // Dashboard "Clean up data" — sweeps BOTH receipts (Docs) and charges
+    // (Actuals: CSV/QBO/manual with no receipt) so the whole project converges.
     window.dashCleanup = async function (btn) {
       const _o = btn ? btn.textContent : '';
       if (btn) { btn.disabled = true; btn.textContent = '✨ Cleaning…'; }
-      let applied = 0, flagged = 0, processed = 0;
       try {
-        for (let i = 0; i < 80; i++) {
-          const r = await fetch(`/projects/${PROJ_ID}/docs/ai-cleanup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 8 }) });
-          if (!r.ok) break;
-          const j = await r.json();
-          applied += j.applied || 0; flagged += j.flagged || 0; processed += j.processed || 0;
-          if (btn) btn.textContent = `✨ ${applied} cleaned…`;
-          if (!j.processed || !j.remaining) break;
-        }
-        if (typeof _actualsToast === 'function') _actualsToast(processed ? `Cleaned ${applied} vendor name(s); ${flagged} flagged for review.` : 'No documents to clean.', 'green');
+        const tick = (n) => { if (btn) btn.textContent = `✨ ${n} cleaned…`; };
+        const docs = await _loopCleanup(`/projects/${PROJ_ID}/docs/ai-cleanup`, (n) => tick(n));
+        const txns = await _loopCleanup(`/projects/${PROJ_ID}/actuals/ai-cleanup`, (n) => tick(docs.applied + n));
+        const applied = docs.applied + txns.applied, flagged = docs.flagged + txns.flagged;
+        const total = docs.processed + txns.processed;
+        if (typeof _actualsToast === 'function') _actualsToast(total
+          ? `Cleaned ${applied} vendor name(s) across receipts + charges; ${flagged} flagged for review.`
+          : 'Nothing left to clean.', 'green');
         dashLoadAnomalies();
       } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Cleanup failed: ' + e.message, 'yellow'); }
       if (btn) { btn.disabled = false; btn.textContent = _o || '✨ Clean up data'; }
+    };
+    // Actuals-tab button — clean ONLY the charges (CSV/QBO) side.
+    window.actualsCleanup = async function (btn) {
+      const _o = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '✨ Cleaning…'; }
+      try {
+        const res = await _loopCleanup(`/projects/${PROJ_ID}/actuals/ai-cleanup`, (n) => { if (btn) btn.textContent = `✨ ${n} cleaned…`; });
+        if (typeof _actualsToast === 'function') _actualsToast(res.processed
+          ? `Cleaned ${res.applied} charge vendor name(s); ${res.flagged} flagged for review. Reloading…`
+          : 'No charges needed cleaning.', 'green');
+        if (res.applied || res.flagged) setTimeout(() => window.location.reload(), 1100);
+      } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Cleanup failed: ' + e.message, 'yellow'); }
+      if (btn) { btn.disabled = false; btn.textContent = _o || '✨ Clean up vendors'; }
     };
     window.dashScanDupes = async function (btn) {
       const _o = btn ? btn.textContent : '';
