@@ -921,20 +921,30 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
             _all_cards.add(_c)
     available_cards = sorted(_all_cards)
 
-    # Build the receipt pool (amount, date) and sort by amount for bisect.
+    # Build the receipt pool from DocUpload DIRECTLY (not from doc_upload txns)
+    # so EVERY available receipt is matchable — including ones whose own ledger
+    # row was removed by a prior match/dedup. This mirrors the per-row 'find
+    # receipt' picker (which is why that surfaces receipts Find-matches used to
+    # miss). (User 2026-06-17.)
+    _docs_pool = (DocUpload.query
+                  .filter(DocUpload.project_id == project_id,
+                          DocUpload.category.in_(('receipt', 'invoice')),
+                          DocUpload.status != 'deleted',
+                          DocUpload.status != 'duplicate',
+                          DocUpload.is_duplicate == False)   # noqa: E712
+                  .all())
     d_rows = []
-    for d in doc_open:
-        did = d.doc_upload_id
-        if (did is None or did in _dup_doc_ids or did not in _proof_doc_ids
-                or did in taken_docs or d.amount is None or not d.txn_date):
+    for doc in _docs_pool:
+        if doc.id in taken_docs:                      # already linked to a charge
             continue
-        if card and (doc_meta.get(did, {}).get('card') or '').strip() != card:
+        if doc.amount is None or not doc.doc_date:
             continue
-        try:
-            d_dt = _dt.date.fromisoformat(d.txn_date[:10])
-        except (TypeError, ValueError):
+        _dcard = (doc.card_last4 or '').strip()
+        if card and _dcard != card:
             continue
-        d_rows.append((float(d.amount), d_dt, d))
+        if _dcard:
+            _all_cards.add(_dcard)
+        d_rows.append((float(doc.amount), doc.doc_date, doc))
     # Sort/bisect on the MAGNITUDE so refunds match too: a refund receipt is
     # stored negative (e.g. -107.17) while the bank credit is the same dollar
     # amount with a different sign — same |amount|, opposite sign. Matching on
@@ -942,6 +952,7 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
     # (User 2026-06-17.)
     d_rows.sort(key=lambda r: abs(r[0]))
     d_amounts = [abs(r[0]) for r in d_rows]
+    available_cards = sorted(_all_cards)   # include the receipt pool's cards
 
     def _confidence(amt_delta, day_gap, vendor_sim):
         # Filtering (amount_tol / date_window / use_vendor) decides which pairs
@@ -971,8 +982,8 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
         hi = _bisect.bisect_right(d_amounts, q_abs + amount_tol + 0.001)
         cands = []
         for idx in range(lo, hi):
-            d_amt, d_dt, d = d_rows[idx]
-            if (q.id, d.doc_upload_id) in rejected_pairs:
+            d_amt, d_dt, d = d_rows[idx]          # d is a DocUpload
+            if (q.id, d.id) in rejected_pairs:
                 continue
             day_gap = abs((d_dt - q_dt).days)
             if date_window is not None and day_gap > date_window:
@@ -983,12 +994,13 @@ def find_match_candidates(project_id, amount_tol=0.0, date_window=3,
             amt_delta = abs(abs(d_amt) - q_abs)            # magnitude delta
             opposite_sign = (d_amt < 0) != (q_amt < 0)     # likely a refund pairing
             conf = _confidence(amt_delta, day_gap, vendor_sim)
-            meta = doc_meta.get(d.doc_upload_id, {})
             cands.append({
-                "doc_upload_id": d.doc_upload_id,
-                "file": meta.get("file"), "is_image": meta.get("is_image", False),
-                "card": meta.get("card"),
-                "vendor": d.vendor, "amount": d_amt, "date": d.txn_date[:10] if d.txn_date else None,
+                "doc_upload_id": d.id,
+                "file": (d.filed_filename or d.original_filename or ("Doc #" + str(d.id))),
+                "is_image": bool(d.content_type and d.content_type.startswith('image/')),
+                "card": (d.card_last4 or None),
+                "vendor": d.vendor, "amount": d_amt,
+                "date": d.doc_date.isoformat() if d.doc_date else None,
                 "amount_delta": round(amt_delta, 2),
                 "opposite_sign": opposite_sign,
                 "day_gap": day_gap, "vendor_match": vendor_sim >= 0.45,

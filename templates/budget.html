@@ -10651,7 +10651,7 @@
         });
       };
       mkSeg(m.querySelector('#mr-amt'), [{v:'0',l:'Exact'},{v:'1',l:'±$1'},{v:'5',l:'±$5'},{v:'10',l:'±$10'},{v:'custom',l:'Custom'}], '0');
-      mkSeg(m.querySelector('#mr-date'), [{v:'off',l:'Any'},{v:'1',l:'±1d'},{v:'3',l:'±3d'},{v:'5',l:'±5d'},{v:'7',l:'±7d'}], '3');
+      mkSeg(m.querySelector('#mr-date'), [{v:'off',l:'Any'},{v:'1',l:'±1d'},{v:'3',l:'±3d'},{v:'5',l:'±5d'},{v:'7',l:'±7d'},{v:'30',l:'±30d'}], 'off');
       return m;
     };
     window.openMatchReview = function () { const m = window._fmcBuild(); m.style.display = ''; mrFind(); };
