@@ -25334,6 +25334,65 @@ def admin_veryfi_classify(uid):
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
 
+@app.route("/docs/upload/<int:uid>/reocr", methods=["POST"])
+@login_required
+def docs_upload_reocr(uid):
+    """Re-run OCR (Veryfi) on ONE document on demand and RETURN the freshly
+    extracted fields — vendor / amount / date / card, plus foreign-currency
+    original + USD conversion — WITHOUT saving. The detail panel fills them in
+    so the user can review and Save. Lets you re-read a receipt OCR got wrong
+    (e.g. a foreign transaction that wasn't recognized). (User 2026-06-17.)"""
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+    from datetime import datetime as _dt
+    path = upload.source_archive_path or upload.filed_dropbox_path
+    if not path:
+        return jsonify({"error": "No stored file to re-read for this document."}), 400
+    item = {"original_filename": upload.original_filename or '', "staged_path": path}
+    try:
+        item = _call_veryfi_bounded(item, secs=90)
+    except Exception as e:
+        logging.exception(f"[reocr] Veryfi failed for #{uid}: {e}")
+        return jsonify({"error": f"OCR failed: {e}"}), 500
+    vr = (item or {}).get("vr") or {}
+    if item is None or item.get("error") or not vr:
+        return jsonify({"error": "OCR couldn't read this file (timed out or returned nothing)."}), 502
+    from fp_analyzer import extract_card_last4 as _c4
+    v = vr.get("vendor") or {}
+    vendor = v.get("name") or v.get("raw_name")
+    try:
+        total = float(vr.get("total")) if vr.get("total") is not None else None
+    except (TypeError, ValueError):
+        total = None
+    doc_date = None
+    try:
+        _ds = (vr.get("date") or "")[:10]
+        if _ds:
+            doc_date = _dt.strptime(_ds, "%Y-%m-%d").date().isoformat()
+    except Exception:
+        pass
+    ccy = _normalize_ccy(vr.get("currency_code"))
+    orig_amt, orig_ccy, usd, fx_note = None, None, total, None
+    if total is not None and ccy and ccy != 'USD':
+        _usd, _rate, _ = _convert_to_usd(total, ccy, doc_date)
+        orig_amt, orig_ccy = total, ccy
+        if _usd is not None:
+            usd = _usd
+            fx_note = f"{ccy} {total:,.2f} → ${_usd:,.2f}"
+        else:
+            fx_note = f"Detected {ccy} {total:,.2f}, but no exchange rate was available."
+    return jsonify({
+        "ok": True,
+        "vendor": vendor,
+        "amount": (round(usd, 2) if usd is not None else None),
+        "original_amount": orig_amt, "original_currency": orig_ccy,
+        "doc_date": doc_date, "card_last4": _c4(vr),
+        "currency": ccy, "fx_note": fx_note,
+    })
+
+
 @app.route("/docs/upload/<int:uid>/update", methods=["POST"])
 @login_required
 def docs_upload_update(uid):
