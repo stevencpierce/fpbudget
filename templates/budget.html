@@ -6275,6 +6275,10 @@
     #tab-actuals .actuals-txn-row[data-has-txn="1"] .ax-cell-txn { background:rgba(91,138,249,.16);  border-color:rgba(91,138,249,.55); }
     #tab-actuals .actuals-txn-row[data-has-doc="1"] .ax-cell-doc { background:rgba(224,160,64,.16);  border-color:rgba(224,160,64,.55); }
     #tab-actuals .actuals-txn-row[data-coded="1"]   .ax-cell-line{ background:rgba(116,198,157,.18); border-color:rgba(116,198,157,.55); }
+    /* ✨ Rows with a pending AI code suggestion — purple left edge so they're
+       scannable in a long list. (User 2026-06-18.) */
+    #tab-actuals .actuals-txn-row:has(.actuals-ai-suggest-btn){ box-shadow: inset 3px 0 0 #8a6dff; }
+    #tab-actuals.ax-suggested-only .actuals-txn-row:not(:has(.actuals-ai-suggest-btn)){ display:none !important; }
 
     /* EMPTY / still-needed — dashed outline, grey icon, muted label.
        No cell-wide dimming, so the dashed gap reads clearly at a glance. */
@@ -6912,6 +6916,18 @@
           <span style="color:#f0c88a">🧾 Document</span><span>·</span>
           <span style="color:#8fe0b8">🏷 Budget line</span>
           <span style="margin-left:6px">— solid = done, dashed = still needed</span>
+        </div>
+        {# ✨ AI line-suggestion review bar — makes the per-row suggestion chips
+           findable in a long list. Populated/toggled by JS. (User 2026-06-18.) #}
+        <div id="actuals-sugg-bar" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;
+             margin:8px 0;padding:8px 12px;border:1px solid #4a3a7a;border-radius:8px;
+             background:#1a1630;font-size:.82rem">
+          <span style="color:#b79dff;font-weight:600">✨ <span id="actuals-sugg-count">0</span> AI-suggested codes</span>
+          <span style="color:var(--text-muted)">— review the budget line AI picked for each uncoded charge.</span>
+          <span style="flex:1"></span>
+          <button type="button" id="actuals-sugg-toggle" class="btn btn-xs" onclick="actualsToggleSuggestedOnly(this)">Show only these</button>
+          <button type="button" class="btn btn-xs btn-primary" onclick="actualsAcceptAllSuggestions(this)"
+                  title="Apply every AI-suggested code at once. You can still re-code any row afterward.">Accept all</button>
         </div>
         <div id="actuals-txn-list">
         {% for t in actuals_transactions %}
@@ -7968,6 +7984,7 @@
           if (typeof _recordRecent === 'function') _recordRecent({ kind: 'section', code: parseInt(code), name: name, label: name });
           if (typeof _actualsToast === 'function') _actualsToast(`Coded to ${code} · ${name}`, 'green');
           btn.remove();
+          if (typeof _actualsRefreshSuggBar === 'function') _actualsRefreshSuggBar();
         } else {
           btn.disabled = false; btn.textContent = _orig;
           if (typeof _actualsToast === 'function') _actualsToast('Coding failed.', 'yellow');
@@ -8152,6 +8169,59 @@
       } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Cleanup failed: ' + e.message, 'yellow'); }
       if (btn) { btn.disabled = false; btn.textContent = _o || '✨ Clean up vendors'; }
     };
+
+    // ── AI line-suggestion review bar (Actuals) — 2026-06-18 ──────────
+    function _actualsRefreshSuggBar() {
+      const bar = document.getElementById('actuals-sugg-bar');
+      if (!bar) return;
+      const n = document.querySelectorAll('.actuals-ai-suggest-btn').length;
+      const cEl = document.getElementById('actuals-sugg-count');
+      if (cEl) cEl.textContent = n;
+      bar.style.display = n ? 'flex' : 'none';
+      if (!n) {
+        const panel = document.getElementById('tab-actuals');
+        if (panel) panel.classList.remove('ax-suggested-only');
+        const tg = document.getElementById('actuals-sugg-toggle');
+        if (tg) tg.textContent = 'Show only these';
+      }
+    }
+    window._actualsRefreshSuggBar = _actualsRefreshSuggBar;
+    window.actualsToggleSuggestedOnly = function (btn) {
+      const panel = document.getElementById('tab-actuals');
+      if (!panel) return;
+      const on = panel.classList.toggle('ax-suggested-only');
+      if (btn) btn.textContent = on ? 'Show all charges' : 'Show only these';
+    };
+    window.actualsAcceptAllSuggestions = async function (btn) {
+      const chips = Array.from(document.querySelectorAll('.actuals-ai-suggest-btn'));
+      if (!chips.length) return;
+      if (!confirm('Apply all ' + chips.length + ' AI-suggested codes? You can re-code any row afterward.')) return;
+      const _o = btn ? btn.textContent : '';
+      if (btn) btn.disabled = true;
+      let ok = 0, fail = 0;
+      for (const chip of chips) {
+        const tid = chip.dataset.tid, code = chip.dataset.code, name = chip.dataset.name || '';
+        if (btn) btn.textContent = 'Applying ' + (ok + fail + 1) + '/' + chips.length + '…';
+        try {
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_code: parseInt(code), account_code_name: name }) });
+          if (r.ok) { ok++; if (typeof _refreshRowAfterCode === 'function') _refreshRowAfterCode(tid, true, false); chip.remove(); }
+          else fail++;
+        } catch (e) { fail++; }
+      }
+      if (typeof _actualsToast === 'function') _actualsToast('Coded ' + ok + ' charge(s)' + (fail ? ' (' + fail + ' failed)' : '') + '.', fail ? 'yellow' : 'green');
+      _actualsRefreshSuggBar();
+      if (btn) { btn.disabled = false; btn.textContent = _o || 'Accept all'; }
+    };
+    // Refresh the bar when the Actuals tab opens (and on load if it's active).
+    (function () {
+      const tb = document.querySelector('[data-tab="actuals"]');
+      if (tb) tb.addEventListener('click', () => setTimeout(_actualsRefreshSuggBar, 200));
+      const p = document.getElementById('tab-actuals');
+      if (p && p.classList.contains('active')) setTimeout(_actualsRefreshSuggBar, 400);
+    })();
+
     window.dashScanDupes = async function (btn) {
       const _o = btn ? btn.textContent : '';
       if (btn) { btn.disabled = true; btn.textContent = '🔍 Scanning…'; }

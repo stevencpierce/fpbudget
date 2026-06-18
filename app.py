@@ -8740,7 +8740,7 @@ def _ai_clean_document(upload, known=None, force=False):
         oconf = 0.0
     differs = bool(clean) and clean.lower() != raw.lower()
 
-    if clean and differs and vconf >= 0.70:
+    if clean and differs and vconf >= 0.80:
         upload.vendor = clean[:200]
         _mirror_vendor(clean)
         record_vendor_alias(pid, raw, clean)
@@ -8827,7 +8827,7 @@ def _ai_clean_transaction(txn, known=None, force=False):
     except (TypeError, ValueError):
         vconf = 0.0
     differs = bool(clean) and clean.lower() != raw.lower()
-    if clean and differs and vconf >= 0.70:
+    if clean and differs and vconf >= 0.80:
         txn.vendor = clean[:300]
         record_vendor_alias(pid, raw, clean)
         result.update(applied=True, clean_vendor=clean)
