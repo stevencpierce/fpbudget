@@ -6832,9 +6832,14 @@
             <span class="actuals-txn-vendor"
                   style="flex:1;min-width:90px;font-size:.83rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                   title="{{ t.vendor or '' }}">{{ t.vendor or '— vendor unknown —' }}</span>
+            {# A negative amount is a REFUND/credit (money IN), even though the
+               row is still is_expense — show it as +$X (green), not −$-X.
+               (User 2026-06-17.) #}
+            {% set _ax_amt = (t.amount or 0) | float %}
+            {% set _ax_inflow = (_ax_amt < 0) or (not t.is_expense) %}
             <span class="actuals-txn-amt"
                   style="flex-shrink:0;font-size:.83rem;font-weight:700;width:86px;text-align:right;
-                         color:{% if t.is_expense %}#e05555{% else %}var(--green){% endif %}">{% if t.is_expense %}−{% else %}+{% endif %}{{ (t.amount or 0) | currency }}</span>
+                         color:{% if _ax_inflow %}var(--green){% else %}#e05555{% endif %}">{% if _ax_inflow %}+{% else %}−{% endif %}{{ (_ax_amt | abs) | currency }}</span>
 
             {# ── The three bucket columns: filled (solid + color) or empty
                  (dashed + quick action). Filled/empty visibility is driven by
