@@ -8794,6 +8794,12 @@ def actuals_delete_duplicate_txn(pid, tid):
         if not rep:
             return jsonify({"error": "Deleting this would orphan the receipt — match it to a "
                             "charge or use the receipt duplicate flow instead."}), 400
+        # Preserve coding: if this leftover row is coded but the surviving bank
+        # charge isn't, copy the code over so we don't lose it. (User 2026-06-17.)
+        if (t.account_code or t.budget_line_id) and not (rep.account_code or rep.budget_line_id):
+            rep.account_code      = t.account_code
+            rep.account_code_name = t.account_code_name
+            rep.budget_line_id    = t.budget_line_id
     elif t.doc_upload_id:
         return jsonify({"error": "This charge is linked to a receipt — unmatch it first "
                         "instead of deleting it here."}), 400

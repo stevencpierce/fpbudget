@@ -10909,7 +10909,7 @@
         if (c.flags.dup_receipts && c.receipts.length > 1) {
           summary = `📎 The same receipt was uploaded ${c.receipts.length} times. Keep one — the rest get filed as duplicates.`;
         } else if (c.flags.phantom) {
-          summary = `♻ This spend is in your ledger twice: the real bank charge${codedBank ? (' (coded ' + esc(codedBank.coded) + ')') : ''} <b>and</b> the receipt’s own leftover row. They’re already linked — just remove the leftover row to fix the double-count.`;
+          summary = `♻ Counted twice. This receipt is already attached to its real bank charge — but it <b>also</b> has its own leftover ledger row (auto-created when the receipt was uploaded), which double-counts the ${money(c.amount)}. Remove the leftover row below; the bank charge stays${codedBank ? (' (coded ' + esc(codedBank.coded) + ')') : ''}.`;
         } else if (c.flags.dup_charges) {
           summary = `🏦 This charge was imported ${bankCharges.length} times. Keep one, remove the duplicate import(s).`;
         } else if (c.flags.needs_match) {
@@ -10933,7 +10933,11 @@
             ${r.phantom ? '<span class="mr-chip warn">= the receipt above · remove</span>' : ''}${r.reimport ? '<span class="mr-chip warn">imported again</span>' : ''}${(!r.deletable && !r.phantom) ? '<span class="mr-chip mut" title="Kept; not removable here">keep</span>' : ''}
           </label>`).join('');
         const chDeletable = c.charges.filter(x => x.deletable).length;
-        const chAction = (c.charges.length > 1 && chDeletable) ? `<button class="btn btn-xs btn-primary" onclick="rcRemoveCharges(${ci})">Keep selected · remove the rest</button>` : '';
+        let chAction = '';
+        if (chDeletable) {
+          const chLabel = (c.charges.length > 1) ? 'Keep selected · remove the rest' : '🗑 Remove the duplicate ledger row';
+          chAction = `<button class="btn btn-xs btn-primary" onclick="rcRemoveCharges(${ci})">${chLabel}</button>`;
+        }
         return `<div class="mr-card" data-rc="${ci}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:12px;background:var(--bg-card,#1a1d27)">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
             <span style="font-weight:600">${money(c.amount)}</span>
