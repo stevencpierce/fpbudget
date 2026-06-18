@@ -8883,6 +8883,7 @@ def actuals_reconcile_scan(pid):
         receipts = [{"doc_id": d.id, "file": (d.filed_filename or d.original_filename),
                      "amount": (float(d.amount) if d.amount is not None else None),
                      "status": d.status, "on_charge": (d.id in elec_doc_ids),
+                     "is_image": bool(d.content_type and d.content_type.startswith('image/')),
                      "dup": bool(d.file_hash and hash_counts[d.file_hash] > 1)} for d in gd]
         qid_counts = _dd_r(int)
         for t in gt:

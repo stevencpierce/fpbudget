@@ -10942,14 +10942,22 @@
         } else {
           summary = `Same amount, date, vendor and card — check whether these are one spend or genuinely separate.`;
         }
-        const recKeep = (c.receipts[0] || {}).doc_id;
+        // Default-keep the copy ALREADY attached to a charge (so the link is
+        // preserved without re-pointing), else the first. (User 2026-06-17.)
+        const recKeep = ((c.receipts.find(r => r.on_charge) || c.receipts[0]) || {}).doc_id;
+        const _thumb = r => r.is_image
+          ? `<img loading="lazy" src="/docs/upload/${r.doc_id}/raw" title="Click to view / compare" onclick="event.preventDefault();event.stopPropagation();docsOpenDupGroup(${r.doc_id})" style="width:30px;height:38px;object-fit:cover;border-radius:4px;cursor:zoom-in;flex-shrink:0">`
+          : `<span title="Click to view / compare" onclick="event.preventDefault();event.stopPropagation();docsOpenDupGroup(${r.doc_id})" style="width:30px;height:38px;display:inline-flex;align-items:center;justify-content:center;background:var(--bg-input,#22263a);border-radius:4px;cursor:zoom-in;flex-shrink:0">📄</span>`;
         const recRows = c.receipts.map(r => `
           <label class="rc-row">
             ${c.receipts.length > 1 ? `<input type="radio" name="rc-rec-${ci}" value="${r.doc_id}" ${r.doc_id === recKeep ? 'checked' : ''}>` : '<span style="width:13px"></span>'}
+            ${_thumb(r)}
             <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.file) || ('Receipt #' + r.doc_id)} <span style="color:var(--text-muted)">· ${money(r.amount)}</span></span>
             ${r.dup ? '<span class="mr-chip warn">identical copy</span>' : ''}${r.on_charge ? '<span class="mr-chip ok">✓ attached to a charge</span>' : ''}
           </label>`).join('');
-        const recAction = c.receipts.length > 1 ? `<button class="btn btn-xs btn-primary" onclick="rcMergeReceipts(${ci})">Keep selected · merge the rest</button>` : '';
+        const recAction = c.receipts.length > 1
+          ? `<button class="btn btn-xs btn-ghost" onclick="docsOpenDupGroup(${(c.receipts[0]||{}).doc_id})" title="Open the side-by-side compare view">⇆ Compare</button>
+             <button class="btn btn-xs btn-primary" onclick="rcMergeReceipts(${ci})">Keep selected · merge the rest</button>` : '';
         const chKeep = ((bankCharges.find(x => x.coded) || bankCharges[0] || c.charges[0]) || {}).tid;
         const chRows = c.charges.map(r => `
           <label class="rc-row">
