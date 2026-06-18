@@ -6485,9 +6485,37 @@ def budget_view(pid, bid):
             doc_groups.append({"key": key or "_unsorted",
                                "label": (key or 'Unsorted').title(),
                                "rows": rows})
+    # Dashboard summary counts — cheap aggregates for the Dashboard tab cards.
+    try:
+        from models import AnomalyFlag as _AF
+        dashboard_stats = {
+            'uncoded': Transaction.query.filter(
+                Transaction.project_id == pid,
+                Transaction.not_project_expense == False,   # noqa: E712
+                Transaction.account_code.is_(None)).count(),
+            'unmatched': Transaction.query.filter(
+                Transaction.project_id == pid,
+                Transaction.match_status == 'unmatched').count(),
+            'ai_pending': Transaction.query.filter(
+                Transaction.project_id == pid,
+                Transaction.account_code.is_(None),
+                Transaction.ai_suggested_code.isnot(None)).count(),
+            'docs_review': DocUpload.query.filter(
+                DocUpload.project_id == pid,
+                DocUpload.status.notin_(('deleted', 'error')),
+                db.or_(DocUpload.status == 'review', DocUpload.confidence < 70)).count(),
+            'anomalies': _AF.query.filter_by(project_id=pid, resolved=False).count(),
+            'dup_alerts': _AF.query.filter_by(project_id=pid, resolved=False,
+                                              type='double_coded').count(),
+        }
+    except Exception as _de:
+        logging.warning(f"[dashboard] stats failed: {_de}")
+        dashboard_stats = {}
+
     return render_template("budget.html",
         project=project,
         budget=budget,
+        dashboard_stats=dashboard_stats,
         all_budgets=all_budgets,
         version_groups=version_groups,
         peer_estimated_bid=peer_estimated_bid,
@@ -8474,6 +8502,177 @@ def _ai_suggest_code_for_txn(txn, taxonomy=None, past=None, force=False):
             "confidence": conf, "source": res.get('_provider')}
 
 
+# ── AI data cleanup + review-queue (AnomalyFlag) ──────────────────────────
+def _flag_anomaly(pid, kind, severity='medium', title=None, explanation=None,
+                  confidence=None, doc_upload_id=None, transaction_id=None,
+                  payload=None, dedup_key=None):
+    """Queue an AnomalyFlag review-queue row (caller commits). Idempotent on
+    dedup_key: if an UNRESOLVED flag with the same key exists, refresh it in
+    place instead of inserting a duplicate. Returns the flag or None. Fail-soft."""
+    try:
+        import json as _j
+        from models import AnomalyFlag
+        existing = None
+        if dedup_key:
+            prior = (AnomalyFlag.query
+                     .filter_by(project_id=pid, dedup_key=dedup_key)
+                     .order_by(AnomalyFlag.id.desc()).first())
+            if prior is not None:
+                if prior.resolved:
+                    # User already dismissed this exact thing → don't nag again.
+                    if (prior.resolution or '') == 'dismissed':
+                        return None
+                    # Resolved by a fix but it recurs → fall through to a new flag.
+                else:
+                    existing = prior
+        pj = _j.dumps(payload, default=str)[:8000] if payload is not None else None
+        if existing:
+            existing.title = title or existing.title
+            existing.explanation = explanation or existing.explanation
+            existing.severity = severity or existing.severity
+            if confidence is not None:
+                existing.confidence = confidence
+            if pj is not None:
+                existing.payload_json = pj
+            if transaction_id is not None:
+                existing.transaction_id = transaction_id
+            return existing
+        flag = AnomalyFlag(project_id=pid, type=kind, severity=severity, title=title,
+                           explanation=explanation, confidence=confidence,
+                           doc_upload_id=doc_upload_id, transaction_id=transaction_id,
+                           payload_json=pj, dedup_key=dedup_key, resolved=False)
+        db.session.add(flag)
+        return flag
+    except Exception as e:
+        logging.warning(f"[anomaly] flag failed ({kind}): {e}")
+        return None
+
+
+def _ai_known_vendors(pid, limit=80):
+    """Clean vendor names already used in this project (from VendorAlias) — the
+    consistency hint for clean_document so the same merchant always normalizes
+    the same way."""
+    names, seen = [], set()
+    try:
+        from models import VendorAlias
+        for r in (VendorAlias.query
+                  .filter(db.or_(VendorAlias.project_id == pid,
+                                 VendorAlias.project_id.is_(None)))
+                  .order_by(VendorAlias.confirm_count.desc()).limit(limit).all()):
+            k = (r.clean_name or '').strip().lower()
+            if k and k not in seen:
+                seen.add(k)
+                names.append(r.clean_name.strip())
+    except Exception:
+        pass
+    return names[:limit]
+
+
+def _ai_clean_document(upload, known=None, force=False):
+    """Advisory OCR cleanup for ONE DocUpload: normalize the vendor name and
+    flag bad extractions. Memory-first (a learned alias short-circuits the LLM).
+    Auto-applies a clean vendor at >=0.70 confidence; below that it queues a
+    vendor_cleanup review-flag. Mirrors the clean name onto linked transactions.
+    Raw OCR is preserved in veryfi_data. Stamps ai_cleaned_at so batches drain.
+    Caller commits. Fail-open: never raises."""
+    if upload is None:
+        return None
+    if getattr(upload, 'ai_cleaned_at', None) is not None and not force:
+        return None
+    import ai_layer, time as _t, json as _j
+    from actuals import apply_vendor_alias_lookup, record_vendor_alias
+    from models import Transaction
+    pid = upload.project_id
+    raw = (upload.vendor or '').strip()
+    result = {"applied": False, "flagged": False, "clean_vendor": None}
+
+    def _mirror_vendor(clean):
+        for tx in Transaction.query.filter_by(doc_upload_id=upload.id).all():
+            tx.vendor = clean[:300]
+
+    # 1) Memory-first: a learned alias wins, no model call.
+    if raw:
+        alias = apply_vendor_alias_lookup(pid, raw)
+        if alias and alias.strip().lower() != raw.lower():
+            upload.vendor = alias[:200]
+            _mirror_vendor(alias)
+            record_vendor_alias(pid, raw, alias)
+            upload.ai_cleaned_at = datetime.utcnow()
+            _ai_log_event(pid, upload.id, 'clean', 'memory', None,
+                          {"raw_vendor": raw}, {"clean_vendor": alias, "via": "alias"}, 0)
+            result.update(applied=True, clean_vendor=alias)
+            return result
+
+    # 2) Ask the model.
+    if known is None:
+        known = _ai_known_vendors(pid)
+    vd = {}
+    if upload.veryfi_data:
+        try:
+            vd = upload.veryfi_data if isinstance(upload.veryfi_data, dict) else _j.loads(upload.veryfi_data)
+        except Exception:
+            vd = {}
+    document = {
+        "raw_vendor": raw,
+        "amount": float(upload.amount) if upload.amount is not None else None,
+        "date": upload.doc_date.isoformat() if upload.doc_date else None,
+        "veryfi_category": upload.veryfi_category or vd.get("category"),
+        "doc_type": upload.category,
+        "line_items": [li.get("description") for li in (vd.get("line_items") or [])
+                       if isinstance(li, dict) and li.get("description")][:20],
+    }
+    payload = {"document": document, "known_vendors": known}
+    t0 = _t.time()
+    res = ai_layer.clean_document(payload)
+    latency = int((_t.time() - t0) * 1000)
+    _ai_log_event(pid, upload.id, 'clean', res.get('_provider'), res.get('_model'),
+                  payload, res, latency)
+
+    clean = (res.get("clean_vendor") or '').strip()
+    try:
+        vconf = float(res.get("vendor_confidence") or 0)
+    except (TypeError, ValueError):
+        vconf = 0.0
+    try:
+        oconf = float(res.get("overall_confidence") or 0)
+    except (TypeError, ValueError):
+        oconf = 0.0
+    differs = bool(clean) and clean.lower() != raw.lower()
+
+    if clean and differs and vconf >= 0.70:
+        upload.vendor = clean[:200]
+        _mirror_vendor(clean)
+        record_vendor_alias(pid, raw, clean)
+        result.update(applied=True, clean_vendor=clean)
+    elif clean and differs and vconf > 0:
+        _flag_anomaly(pid, 'vendor_cleanup', severity='low',
+                      title='Confirm vendor name',
+                      explanation=(f'OCR read the vendor as "{raw or "(blank)"}". '
+                                   f'AI suggests "{clean}" ({int(vconf*100)}% confident).'),
+                      confidence=round(vconf, 3), doc_upload_id=upload.id,
+                      payload={"raw": raw, "suggested": clean, "confidence": vconf},
+                      dedup_key=f'vendor_cleanup:{upload.id}')
+        result["flagged"] = True
+
+    # Data sanity (amount / date) issues.
+    if (res.get("amount_ok") is False) or (res.get("date_ok") is False):
+        issues = res.get("issues") or []
+        notes = '; '.join(i.get("note", "") for i in issues
+                          if isinstance(i, dict) and i.get("note"))[:400]
+        _flag_anomaly(pid, 'data_issue', severity='medium',
+                      title='Check extracted data',
+                      explanation=(notes or 'AI flagged the amount or date as possibly wrong.'),
+                      confidence=round(oconf, 3), doc_upload_id=upload.id,
+                      payload={"amount_ok": res.get("amount_ok"), "date_ok": res.get("date_ok"),
+                               "suggested_amount": res.get("suggested_amount"),
+                               "suggested_date": res.get("suggested_date"), "issues": issues},
+                      dedup_key=f'data_issue:{upload.id}')
+        result["flagged"] = True
+
+    upload.ai_cleaned_at = datetime.utcnow()
+    return result
+
+
 @app.route("/projects/<int:pid>/actuals/ai-suggest-codes", methods=["POST"])
 @login_required
 def actuals_ai_suggest_codes(pid):
@@ -8519,6 +8718,245 @@ def actuals_ai_suggest_codes(pid):
         db.session.rollback()
     return jsonify({"ok": True, "processed": len(rows), "suggested": suggested,
                     "no_match": no_match, "remaining": max(0, total_remaining - len(rows))})
+
+
+@app.route("/projects/<int:pid>/docs/ai-cleanup", methods=["POST"])
+@login_required
+def docs_ai_cleanup(pid):
+    """Batch: run the AI data-cleanup pass over docs not yet cleaned (vendor
+    normalization + extraction sanity). Small batch per call (memory hits are
+    instant, LLM calls aren't); returns `remaining` so the UI loops until dry.
+    Mirrors actuals_ai_suggest_codes. (User 2026-06-18.)"""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    body = request.get_json(silent=True) or {}
+    try:
+        limit = min(15, max(1, int(body.get('limit', 8))))
+    except (TypeError, ValueError):
+        limit = 8
+    force = bool(body.get('force'))
+    q = (DocUpload.query
+         .filter(DocUpload.project_id == pid,
+                 DocUpload.status.notin_(('deleted', 'error')),
+                 DocUpload.vendor.isnot(None)))
+    if not force:
+        q = q.filter(DocUpload.ai_cleaned_at.is_(None))
+    total_remaining = q.count()
+    docs = q.order_by(DocUpload.id.desc()).limit(limit).all()
+    known = _ai_known_vendors(pid)
+    applied = 0
+    flagged = 0
+    for d in docs:
+        try:
+            r = _ai_clean_document(d, known=known, force=force)
+            if r and r.get('applied'):
+                applied += 1
+            if r and r.get('flagged'):
+                flagged += 1
+        except Exception as e:
+            logging.warning(f"[docs/ai-cleanup] doc #{getattr(d,'id','?')} failed: {e}")
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    return jsonify({"ok": True, "processed": len(docs), "applied": applied,
+                    "flagged": flagged, "remaining": max(0, total_remaining - len(docs))})
+
+
+@app.route("/projects/<int:pid>/actuals/scan-anomalies", methods=["POST"])
+@login_required
+def actuals_scan_anomalies(pid):
+    """Scan for double-coded duplicates (same spend coded to the budget more
+    than once) and upsert AnomalyFlag review-queue rows. (User 2026-06-18.)"""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    from actuals import scan_double_coded
+    clusters = scan_double_coded(pid)
+    flags = 0
+    for c in clusters:
+        coded = [m for m in c["members"] if m["coded"]]
+        if len(coded) < 2:
+            continue
+        tids = sorted(m["tid"] for m in coded)
+        dedup = "double_coded:" + "-".join(str(t) for t in tids)
+        secs = ", ".join(sorted({(m["account_code_name"] or str(m["account_code"]))
+                                 for m in coded if (m["account_code_name"] or m["account_code"])}))
+        title = f'Possible double-coded spend · ${c["amount"]:,.2f}'
+        expl = (f'{len(coded)} charges for {c["vendor"] or "this vendor"} on '
+                f'{c["date"] or "the same date"} (${c["amount"]:,.2f} each) are all coded to '
+                f'the budget' + (f' ({secs})' if secs else '') +
+                f'. That double-counts about ${c["overcount"]:,.2f}. '
+                f'Keep one and un-code or remove the rest.')
+        f = _flag_anomaly(pid, 'double_coded', severity='high', title=title,
+                          explanation=expl, transaction_id=tids[0],
+                          payload={"members": c["members"], "overcount": c["overcount"],
+                                   "amount": c["amount"], "vendor": c["vendor"],
+                                   "date": c["date"]},
+                          dedup_key=dedup)
+        if f is not None:
+            flags += 1
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    return jsonify({"ok": True, "clusters": len(clusters), "flags": flags})
+
+
+def _anomaly_to_dict(f):
+    import json as _j
+    try:
+        payload = _j.loads(f.payload_json) if f.payload_json else None
+    except Exception:
+        payload = None
+    return {"id": f.id, "type": f.type, "severity": f.severity, "title": f.title,
+            "explanation": f.explanation,
+            "confidence": float(f.confidence) if f.confidence is not None else None,
+            "doc_upload_id": f.doc_upload_id, "transaction_id": f.transaction_id,
+            "payload": payload,
+            "created_at": f.created_at.isoformat() if f.created_at else None}
+
+
+@app.route("/projects/<int:pid>/anomalies", methods=["GET"])
+@login_required
+def project_anomalies(pid):
+    """Unresolved review-queue items for the Dashboard Action Center."""
+    ProjectSheet.query.get_or_404(pid)
+    if current_user.role not in ('super_admin', 'admin'):
+        if not ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first():
+            return jsonify({"error": "Forbidden"}), 403
+    from models import AnomalyFlag
+    flags = (AnomalyFlag.query.filter_by(project_id=pid, resolved=False)
+             .order_by(AnomalyFlag.created_at.desc()).all())
+    items = [_anomaly_to_dict(f) for f in flags]
+    rank = {'high': 0, 'medium': 1, 'low': 2}
+    items.sort(key=lambda it: rank.get(it['severity'], 3))
+    by_type = {}
+    for it in items:
+        by_type[it["type"]] = by_type.get(it["type"], 0) + 1
+    return jsonify({"ok": True, "count": len(items), "by_type": by_type, "items": items})
+
+
+@app.route("/projects/<int:pid>/anomalies/<int:fid>/resolve", methods=["POST"])
+@login_required
+def anomaly_resolve(pid, fid):
+    """Apply a fix for a review-queue item, then mark it resolved. Body:
+    {action, value?, transaction_id?}. Actions: apply_vendor | accept_amount |
+    uncode | mark_not_project | delete_txn | (any other → resolve-only)."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    from models import AnomalyFlag
+    import json as _j
+    f = AnomalyFlag.query.filter_by(id=fid, project_id=pid).first_or_404()
+    body = request.get_json(silent=True) or {}
+    action = (body.get('action') or '').strip()
+    tid = body.get('transaction_id')
+    try:
+        payload = _j.loads(f.payload_json) if f.payload_json else {}
+    except Exception:
+        payload = {}
+    applied = None
+    try:
+        if action == 'apply_vendor' and f.doc_upload_id:
+            suggested = (body.get('value') or payload.get('suggested') or '').strip()
+            doc = db.session.get(DocUpload, f.doc_upload_id)
+            if suggested and doc:
+                raw = doc.vendor or ''
+                doc.vendor = suggested[:200]
+                for tx in Transaction.query.filter_by(doc_upload_id=doc.id).all():
+                    tx.vendor = suggested[:300]
+                from actuals import record_vendor_alias
+                record_vendor_alias(pid, raw, suggested)
+                applied = f'vendor → {suggested}'
+        elif action == 'accept_amount' and f.doc_upload_id:
+            amt = body.get('value', payload.get('suggested_amount'))
+            doc = db.session.get(DocUpload, f.doc_upload_id)
+            if amt is not None and doc:
+                doc.amount = amt
+                for tx in Transaction.query.filter_by(doc_upload_id=doc.id).all():
+                    tx.amount = amt
+                applied = f'amount → {amt}'
+        elif action in ('uncode', 'mark_not_project', 'delete_txn') and tid:
+            tx = Transaction.query.filter_by(id=int(tid), project_id=pid).first()
+            if tx:
+                if action == 'delete_txn':
+                    db.session.delete(tx)
+                    applied = f'deleted charge #{tid}'
+                else:
+                    tx.account_code = None
+                    tx.account_code_name = None
+                    tx.budget_line_id = None
+                    tx.match_status = 'unmatched'
+                    if action == 'mark_not_project':
+                        tx.not_project_expense = True
+                        applied = f'marked charge #{tid} not a project expense'
+                    else:
+                        applied = f'un-coded charge #{tid}'
+                    try:
+                        _sync_claim_state(tx)
+                    except Exception:
+                        pass
+        f.resolved = True
+        f.resolution = action or 'resolved'
+        f.resolved_by = current_user.id if current_user.is_authenticated else None
+        f.resolved_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify({"ok": True, "applied": applied})
+    except Exception as e:
+        db.session.rollback()
+        logging.exception(f"[anomaly resolve] {action} failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/projects/<int:pid>/anomalies/<int:fid>/dismiss", methods=["POST"])
+@login_required
+def anomaly_dismiss(pid, fid):
+    """Dismiss a review-queue item with no change ('not a duplicate' / 'vendor is
+    fine'). Suppresses re-flagging of the same dedup_key on later scans."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    from models import AnomalyFlag
+    f = AnomalyFlag.query.filter_by(id=fid, project_id=pid).first_or_404()
+    f.resolved = True
+    f.resolution = 'dismissed'
+    f.resolved_by = current_user.id if current_user.is_authenticated else None
+    f.resolved_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/anomalies/<int:fid>/ask-ai", methods=["POST"])
+@login_required
+def anomaly_ask_ai(pid, fid):
+    """Ask the model for a verdict on a flagged duplicate cluster — reuses
+    ai_layer.detect_anomalies (the same 'Ask AI' brain as Reconcile). Advisory;
+    logged to ai_event. (User 2026-06-18.)"""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    from models import AnomalyFlag
+    import ai_layer, json as _j, time as _t
+    f = AnomalyFlag.query.filter_by(id=fid, project_id=pid).first_or_404()
+    try:
+        payload_in = _j.loads(f.payload_json) if f.payload_json else {}
+    except Exception:
+        payload_in = {}
+    members = payload_in.get("members") or []
+    if len(members) >= 2:
+        new_doc, matches = members[0], members[1:]
+    else:
+        new_doc, matches = {"flag": f.type, "explanation": f.explanation}, []
+    payload = {"instruction": ("These transactions may be the SAME spend coded into the "
+                              "budget more than once. Decide if they are duplicates and "
+                              "recommend keep-one vs separate."),
+               "new_document": new_doc, "possible_matches": matches}
+    t0 = _t.time()
+    verdict = ai_layer.detect_anomalies(payload)
+    _ai_log_event(pid, f.doc_upload_id, 'anomaly', verdict.get('_provider'),
+                  verdict.get('_model'), payload, verdict, int((_t.time() - t0) * 1000))
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    return jsonify({"ok": True, "verdict": verdict})
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-coa", methods=["POST"])
@@ -21958,6 +22396,27 @@ def _web_worker_essential_columns():
                      resolved_at   TIMESTAMP,
                      created_at    TIMESTAMP
                    )""",
+                # 2026-06-18 — AnomalyFlag → general review-queue row.
+                "ALTER TABLE anomaly_flag ADD COLUMN IF NOT EXISTS transaction_id INTEGER",
+                "ALTER TABLE anomaly_flag ADD COLUMN IF NOT EXISTS title VARCHAR(200)",
+                "ALTER TABLE anomaly_flag ADD COLUMN IF NOT EXISTS confidence NUMERIC(4,3)",
+                "ALTER TABLE anomaly_flag ADD COLUMN IF NOT EXISTS payload_json TEXT",
+                "ALTER TABLE anomaly_flag ADD COLUMN IF NOT EXISTS dedup_key VARCHAR(160)",
+                "ALTER TABLE anomaly_flag ADD COLUMN IF NOT EXISTS resolution VARCHAR(40)",
+                "CREATE INDEX IF NOT EXISTS ix_anomaly_flag_dedup_key ON anomaly_flag (dedup_key)",
+                # 2026-06-18 — learned raw-vendor → clean display-name aliases.
+                """CREATE TABLE IF NOT EXISTS vendor_alias (
+                     id                SERIAL PRIMARY KEY,
+                     project_id        INTEGER,
+                     raw_canonical     VARCHAR(200) NOT NULL,
+                     clean_name        VARCHAR(200) NOT NULL,
+                     confirm_count     INTEGER DEFAULT 1,
+                     last_confirmed_at TIMESTAMP,
+                     CONSTRAINT uq_vendor_alias UNIQUE (project_id, raw_canonical)
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_vendor_alias_raw ON vendor_alias (raw_canonical)",
+                # 2026-06-18 — AI data-cleanup watermark on docs.
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS ai_cleaned_at TIMESTAMP",
                 # 2026-06-11 — historical FX rate cache for foreign receipts.
                 """CREATE TABLE IF NOT EXISTS fx_rate (
                      id         SERIAL PRIMARY KEY,
@@ -22612,6 +23071,16 @@ def docs_upload_post(pid):
     )
     db.session.add(upload)
     db.session.commit()
+
+    # AI data cleanup (vendor normalization + extraction sanity). Advisory and
+    # fail-open; runs BEFORE the auto-Transaction so the charge inherits the
+    # clean vendor name. Auto-applies ≥0.70, else queues a review flag. (2026-06-18.)
+    try:
+        _ai_clean_document(upload)
+        db.session.commit()
+    except Exception as _cle:
+        logging.warning(f"[docs/upload] ai cleanup failed for upload #{upload.id}: {_cle}")
+        db.session.rollback()
 
     # ── Auto-create a Transaction row for every doc upload (2026-04-30) ─
     # Each receipt / invoice / etc. that lands in Docs becomes an

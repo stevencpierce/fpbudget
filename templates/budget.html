@@ -453,7 +453,7 @@
 <!-- Tabs + Mode switcher row -->
 <div class="tabs-row">
   <div class="tabs">
-    {% if not dept_filter %}<button class="tab-btn {% if not sections %}{% else %}active{% endif %}" data-tab="topsheet">Top Sheet</button>{% endif %}
+    {% if not dept_filter %}<button class="tab-btn {% if not sections %}{% else %}active{% endif %}" data-tab="topsheet">Dashboard</button>{% endif %}
     <button class="tab-btn {% if dept_filter or not sections %}active{% elif not sections %}active{% endif %}" data-tab="working">Budget</button>
     <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=budget.id) }}">Schedule</a>
     <button class="tab-btn" data-tab="travel">Travel</button>
@@ -515,6 +515,52 @@
     </form>
   </div>
   {% endif %}
+
+  {# ── Dashboard summary + Action Center (2026-06-18) ─────────────────── #}
+  {% set _ts = top_sheet or {} %}
+  {% set _gte = (_ts.get('grand_total_estimated', 0) or 0) %}
+  {% set _gta = (_ts.get('grand_total_actual', 0) or 0) %}
+  {% set _var = _gte - _gta %}
+  {% set _ds = dashboard_stats or {} %}
+  <div class="dashboard-head" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 12px">
+    <h3 style="margin:0;font-size:1.05rem">📊 Dashboard</h3>
+    <span style="flex:1"></span>
+    <button type="button" class="btn btn-sm" onclick="dashCleanup(this)"
+            title="Run AI cleanup over your documents: normalize vendor names and flag bad extractions. Auto-applies high-confidence fixes; lower-confidence ones land below for your review.">✨ Clean up data</button>
+    <button type="button" class="btn btn-sm" onclick="dashScanDupes(this)"
+            title="Scan for the same spend coded into the budget more than once (double-counted actuals).">🔍 Scan for duplicates</button>
+  </div>
+
+  <div class="dash-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:14px">
+    <div class="dash-card" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card)">
+      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Estimated</div>
+      <div style="font-size:1.15rem;font-weight:700;font-variant-numeric:tabular-nums">${{ '{:,.0f}'.format(_gte) }}</div>
+    </div>
+    <div class="dash-card" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card)">
+      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Actual</div>
+      <div style="font-size:1.15rem;font-weight:700;font-variant-numeric:tabular-nums">${{ '{:,.0f}'.format(_gta) }}</div>
+    </div>
+    <div class="dash-card" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card)">
+      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Variance (Est − Act)</div>
+      <div style="font-size:1.15rem;font-weight:700;font-variant-numeric:tabular-nums;color:{% if _var >= 0 %}#74c69d{% else %}#e08080{% endif %}">{% if _var < 0 %}−{% endif %}${{ '{:,.0f}'.format(_var if _var >= 0 else -_var) }}</div>
+    </div>
+    <div class="dash-card" onclick="document.querySelector('[data-tab=actuals]').click()" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card);cursor:pointer" title="Go to Actuals">
+      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Uncoded charges</div>
+      <div style="font-size:1.15rem;font-weight:700">{{ _ds.get('uncoded', 0) }}{% if _ds.get('ai_pending', 0) %} <span style="font-size:.62rem;color:#b79dff;font-weight:600">✨{{ _ds.get('ai_pending', 0) }} suggested</span>{% endif %}</div>
+    </div>
+    <div class="dash-card" onclick="document.querySelector('[data-tab=actuals]').click()" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card);cursor:pointer" title="Go to Actuals">
+      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Unmatched charges</div>
+      <div style="font-size:1.15rem;font-weight:700">{{ _ds.get('unmatched', 0) }}</div>
+    </div>
+    <div class="dash-card" onclick="document.querySelector('[data-tab=docs]').click()" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card);cursor:pointer" title="Go to Docs">
+      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Docs to review</div>
+      <div style="font-size:1.15rem;font-weight:700">{{ _ds.get('docs_review', 0) }}</div>
+    </div>
+  </div>
+
+  <div id="dash-action-center" style="margin-bottom:16px">
+    <div style="font-size:.7rem;color:var(--text-muted)">Loading review queue…</div>
+  </div>
 
   <div class="topsheet-controls">
     <span class="muted" style="font-size:.8rem">Variance basis:</span>
@@ -7957,6 +8003,139 @@
         if (typeof _actualsToast === 'function') _actualsToast('Suggest codes failed: ' + e.message, 'yellow');
       }
     };
+
+    // ── Dashboard / Action Center (review queue) — 2026-06-18 ──────────
+    function _dashEsc(s) { return (s || '').toString().replace(/</g, '&lt;'); }
+    window.dashLoadAnomalies = async function () {
+      const host = document.getElementById('dash-action-center');
+      if (!host) return;
+      host.innerHTML = '<div style="font-size:.7rem;color:var(--text-muted)">Loading review queue…</div>';
+      try {
+        const j = await (await fetch(`/projects/${PROJ_ID}/anomalies`)).json();
+        dashRenderAnomalies(j.items || []);
+      } catch (e) {
+        host.innerHTML = '<div style="color:#e08080;font-size:.7rem">Could not load review queue: ' + _dashEsc(e.message) + '</div>';
+      }
+    };
+    function dashRenderAnomalies(items) {
+      const host = document.getElementById('dash-action-center');
+      if (!host) return;
+      if (!items.length) {
+        host.innerHTML = '<div style="border:1px dashed var(--border);border-radius:8px;padding:14px;text-align:center;color:var(--text-muted);font-size:.8rem">✓ Nothing needs review. Use “Clean up data” or “Scan for duplicates” to check again.</div>';
+        return;
+      }
+      const sev = { high: '#e08080', medium: '#e0c060', low: '#9ec0ff' };
+      const head = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><h4 style="margin:0;font-size:.92rem">⚠ Action Center</h4><span style="font-size:.7rem;color:var(--text-muted)">${items.length} item${items.length > 1 ? 's' : ''} need review</span></div>`;
+      host.innerHTML = head + items.map(it => dashCardHtml(it, sev)).join('');
+    }
+    function dashCardHtml(it, sev) {
+      const c = sev[it.severity] || '#9ec0ff';
+      let actions = '';
+      if (it.type === 'vendor_cleanup') {
+        const s = (it.payload && it.payload.suggested) || '';
+        if (s) actions = `<button type="button" class="btn btn-xs btn-primary" onclick="dashResolve(${it.id},'apply_vendor',this)">Use “${_dashEsc(s)}”</button>`;
+      } else if (it.type === 'data_issue') {
+        if (it.payload && it.payload.suggested_amount != null)
+          actions += `<button type="button" class="btn btn-xs btn-primary" onclick="dashResolve(${it.id},'accept_amount',this)">Accept $${_dashEsc(it.payload.suggested_amount)}</button>`;
+      } else if (it.type === 'double_coded') {
+        const members = (it.payload && it.payload.members) || [];
+        actions += members.filter(m => m.coded).map(m =>
+          `<div style="display:flex;gap:6px;align-items:center;margin-top:4px;font-size:.72rem">
+             <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">#${m.tid} · ${_dashEsc(m.vendor)} · $${(m.amount != null ? Math.abs(m.amount).toFixed(2) : '?')}${m.account_code_name ? (' · ' + _dashEsc(m.account_code_name)) : ''}</span>
+             <button type="button" class="btn btn-xs" onclick="dashResolveTxn(${it.id},'uncode',${m.tid},this)" title="Remove this charge's budget coding (keeps the charge)">Un-code</button>
+             <button type="button" class="btn btn-xs" onclick="dashResolveTxn(${it.id},'delete_txn',${m.tid},this)" title="Delete this duplicate charge">Delete</button>
+           </div>`).join('');
+        actions += `<div style="margin-top:6px"><button type="button" class="btn btn-xs btn-ghost" onclick="dashAskAi(${it.id},this)">🤖 Ask AI</button></div>`;
+      }
+      return `<div class="dash-flag" data-fid="${it.id}" style="border:1px solid var(--border);border-left:3px solid ${c};border-radius:8px;padding:10px 12px;margin-bottom:8px;background:var(--bg-card)">
+        <div style="display:flex;align-items:flex-start;gap:8px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.82rem;font-weight:600">${_dashEsc(it.title || it.type)}${it.confidence != null ? ` <span style="color:var(--text-muted);font-weight:400">· ${Math.round(it.confidence * 100)}%</span>` : ''}</div>
+            <div style="font-size:.74rem;color:var(--text-muted);margin-top:2px">${_dashEsc(it.explanation || '')}</div>
+            <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">${actions}</div>
+          </div>
+          <button type="button" class="btn btn-xs btn-ghost" onclick="dashDismiss(${it.id},this)" title="Dismiss — not an issue">✕</button>
+        </div>
+        <div class="dash-ai-verdict" style="display:none;margin-top:6px;font-size:.74rem;color:#b79dff"></div>
+      </div>`;
+    }
+    function _dashRemoveCard(fid) {
+      const el = document.querySelector('.dash-flag[data-fid="' + fid + '"]');
+      if (el) el.remove();
+      const host = document.getElementById('dash-action-center');
+      if (host && !host.querySelector('.dash-flag')) dashRenderAnomalies([]);
+    }
+    window.dashResolve = async function (fid, action, btn) {
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/anomalies/${fid}/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+        if (r.ok) { _dashRemoveCard(fid); if (typeof _actualsToast === 'function') _actualsToast('Done ✓', 'green'); }
+        else { if (btn) btn.disabled = false; alert('Action failed'); }
+      } catch (e) { if (btn) btn.disabled = false; alert('Error: ' + e.message); }
+    };
+    window.dashResolveTxn = async function (fid, action, tid, btn) {
+      if (action === 'delete_txn' && !confirm('Delete charge #' + tid + '? This removes the duplicate from Actuals.')) return;
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/anomalies/${fid}/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, transaction_id: tid }) });
+        if (r.ok) { _dashRemoveCard(fid); if (typeof _actualsToast === 'function') _actualsToast('Resolved ✓', 'green'); }
+        else { if (btn) btn.disabled = false; alert('Action failed'); }
+      } catch (e) { if (btn) btn.disabled = false; alert('Error: ' + e.message); }
+    };
+    window.dashDismiss = async function (fid, btn) {
+      if (btn) btn.disabled = true;
+      try { const r = await fetch(`/projects/${PROJ_ID}/anomalies/${fid}/dismiss`, { method: 'POST' }); if (r.ok) _dashRemoveCard(fid); else if (btn) btn.disabled = false; }
+      catch (e) { if (btn) btn.disabled = false; }
+    };
+    window.dashAskAi = async function (fid, btn) {
+      const card = document.querySelector('.dash-flag[data-fid="' + fid + '"]');
+      const vEl = card && card.querySelector('.dash-ai-verdict');
+      if (btn) { btn.disabled = true; btn.textContent = '🤖 thinking…'; }
+      try {
+        const j = await (await fetch(`/projects/${PROJ_ID}/anomalies/${fid}/ask-ai`, { method: 'POST' })).json();
+        const v = j.verdict || {};
+        if (vEl) {
+          vEl.style.display = 'block';
+          vEl.textContent = '🤖 ' + (v.explanation || (v.is_duplicate ? 'Likely the same spend (duplicate).' : 'These look like separate charges.')) + (v.confidence ? ` (${Math.round(v.confidence * 100)}%)` : '') + ' · suggests: ' + (v.recommended_action || 'review');
+        }
+      } catch (e) { if (vEl) { vEl.style.display = 'block'; vEl.textContent = 'AI error: ' + e.message; } }
+      if (btn) { btn.disabled = false; btn.textContent = '🤖 Ask AI'; }
+    };
+    window.dashCleanup = async function (btn) {
+      const _o = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '✨ Cleaning…'; }
+      let applied = 0, flagged = 0, processed = 0;
+      try {
+        for (let i = 0; i < 80; i++) {
+          const r = await fetch(`/projects/${PROJ_ID}/docs/ai-cleanup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 8 }) });
+          if (!r.ok) break;
+          const j = await r.json();
+          applied += j.applied || 0; flagged += j.flagged || 0; processed += j.processed || 0;
+          if (btn) btn.textContent = `✨ ${applied} cleaned…`;
+          if (!j.processed || !j.remaining) break;
+        }
+        if (typeof _actualsToast === 'function') _actualsToast(processed ? `Cleaned ${applied} vendor name(s); ${flagged} flagged for review.` : 'No documents to clean.', 'green');
+        dashLoadAnomalies();
+      } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Cleanup failed: ' + e.message, 'yellow'); }
+      if (btn) { btn.disabled = false; btn.textContent = _o || '✨ Clean up data'; }
+    };
+    window.dashScanDupes = async function (btn) {
+      const _o = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '🔍 Scanning…'; }
+      try {
+        const j = await (await fetch(`/projects/${PROJ_ID}/actuals/scan-anomalies`, { method: 'POST' })).json();
+        if (typeof _actualsToast === 'function') _actualsToast(`Found ${j.flags || 0} possible duplicate group(s).`, (j.flags ? 'yellow' : 'green'));
+        dashLoadAnomalies();
+      } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Scan failed: ' + e.message, 'yellow'); }
+      if (btn) { btn.disabled = false; btn.textContent = _o || '🔍 Scan for duplicates'; }
+    };
+    // Load the queue when the Dashboard tab opens, and on first paint if active.
+    (function () {
+      const tb = document.querySelector('[data-tab="topsheet"]');
+      if (tb) tb.addEventListener('click', () => setTimeout(dashLoadAnomalies, 150));
+      const panel = document.getElementById('tab-topsheet');
+      if (panel && panel.classList.contains('active')) setTimeout(dashLoadAnomalies, 500);
+    })();
 
     {# ── Code-expenses pane (department register) ───────────────────── #}
     // Expand/collapse a department; lazy-load its receipt thumbnails the

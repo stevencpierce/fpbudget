@@ -51,6 +51,9 @@ class AIProvider:
     def detect_anomalies(self, payload):
         raise NotImplementedError
 
+    def clean_document(self, payload):
+        raise NotImplementedError
+
 
 class _NeutralProvider(AIProvider):
     """Fail-open stand-in when no real provider is configured/reachable."""
@@ -67,6 +70,13 @@ class _NeutralProvider(AIProvider):
     def detect_anomalies(self, payload):
         return {"is_duplicate": False, "duplicate_of_id": None, "confidence": 0.0,
                 "anomalies": [], "recommended_action": "review", "_provider": "none"}
+
+    def clean_document(self, payload):
+        # No-op: keep whatever the OCR produced, confidence 0 so nothing is
+        # auto-applied and nothing is queued as a "fix".
+        return {"clean_vendor": None, "vendor_confidence": 0.0, "amount_ok": True,
+                "suggested_amount": None, "date_ok": True, "suggested_date": None,
+                "issues": [], "overall_confidence": 0.0, "_provider": "none"}
 
 
 # Forced-output schemas (Claude tool-use) — see spec §3/§4.
@@ -106,6 +116,37 @@ _ANOMALY_TOOL = {
                 "description": "One short, user-facing sentence summarizing the verdict."},
         },
         "required": ["is_duplicate", "confidence", "recommended_action", "explanation"],
+    },
+}
+_CLEAN_TOOL = {
+    "name": "clean_document",
+    "description": "Clean up the OCR-extracted fields of a document for human-facing display.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "clean_vendor": {"type": ["string", "null"],
+                "description": "A short, human-readable merchant name (e.g. 'Amazon', "
+                               "'United Airlines'). Prefer an exact match from KNOWN_VENDORS "
+                               "when the raw name clearly refers to the same merchant, to keep "
+                               "the project consistent. Null if you cannot tell."},
+            "vendor_confidence": {"type": "number", "description": "0.0–1.0 for clean_vendor."},
+            "amount_ok": {"type": "boolean",
+                "description": "False if the amount looks wrong/implausible for this document."},
+            "suggested_amount": {"type": ["number", "null"]},
+            "date_ok": {"type": "boolean"},
+            "suggested_date": {"type": ["string", "null"], "description": "YYYY-MM-DD or null."},
+            "issues": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "note": {"type": "string"},
+                },
+            }},
+            "overall_confidence": {"type": "number",
+                "description": "0.0–1.0 overall confidence the extracted data is correct."},
+        },
+        "required": ["clean_vendor", "vendor_confidence", "overall_confidence"],
     },
 }
 
@@ -161,6 +202,22 @@ class ClaudeProvider(AIProvider):
         out["_model"] = _CLAUDE_MODEL
         return out
 
+    def clean_document(self, payload):
+        system = (
+            "You clean up OCR-extracted fields of an expense document so they read well "
+            "to a human. Produce a short, recognizable merchant name for clean_vendor "
+            "(drop store/terminal numbers, ALL-CAPS noise, city/state codes, payment-"
+            "processor cruft). If KNOWN_VENDORS contains an entry that clearly refers to "
+            "the same merchant, return that exact string so the project stays consistent. "
+            "Sanity-check amount and date; flag anything implausible in issues. Reason ONLY "
+            "from the data given — never invent a vendor you cannot infer from the input. "
+            "Be honest with confidence: low when the raw name is ambiguous."
+        )
+        out = self._call(system, payload, _CLEAN_TOOL)
+        out["_provider"] = "claude"
+        out["_model"] = _CLAUDE_MODEL
+        return out
+
 
 def get_provider(task):
     """Provider for a task ('categorize'|'anomaly'), honoring AI_ROUTE_*. Falls
@@ -183,8 +240,10 @@ def status():
         "timeout_s": _TIMEOUT_S,
         "route_categorize": _route("categorize"),
         "route_anomaly": _route("anomaly"),
+        "route_clean": _route("clean"),
         "categorize_available": get_provider("categorize").name,
         "anomaly_available": get_provider("anomaly").name,
+        "clean_available": get_provider("clean").name,
     }
 
 
@@ -206,3 +265,13 @@ def detect_anomalies(payload):
     except Exception as e:
         log.warning("[ai_layer] detect_anomalies failed (%s): %s", getattr(p, "name", "?"), e)
         return _NeutralProvider().detect_anomalies(payload)
+
+
+def clean_document(payload):
+    """Fail-open OCR cleanup. payload: {document:{...}, known_vendors:[...]}"""
+    p = get_provider("clean")
+    try:
+        return p.clean_document(payload)
+    except Exception as e:
+        log.warning("[ai_layer] clean_document failed (%s): %s", getattr(p, "name", "?"), e)
+        return _NeutralProvider().clean_document(payload)

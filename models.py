@@ -923,6 +923,9 @@ class DocUpload(db.Model):
     # recycle no longer restarts from zero, and progress is readable from any
     # worker (it's row state, not the old per-worker in-memory dict).
     reprocessed_at = db.Column(db.DateTime, nullable=True)
+    # When the AI data-cleanup pass last ran on this doc (vendor normalization +
+    # extraction sanity). NULL = not yet cleaned; lets batch cleanup resume.
+    ai_cleaned_at  = db.Column(db.DateTime, nullable=True)
 
     # Type-specific identifier (added 2026-04-30): Invoice #, PO #, Tax
     # ID (EIN/SSN), Policy #, etc. Pre-populated from Veryfi's
@@ -1273,15 +1276,41 @@ class AiEvent(db.Model):
 
 
 class AnomalyFlag(db.Model):
-    """A surfaced duplicate/anomaly flag for a document (spec §8)."""
+    """A surfaced anomaly / review-queue item (spec §8). Backs the Dashboard
+    "Action Center". type: vendor_cleanup | data_issue | double_coded | duplicate.
+    payload_json carries the proposed fix or duplicate-cluster members; dedup_key
+    stops the same thing being re-flagged on every scan."""
     __tablename__ = "anomaly_flag"
-    id            = db.Column(db.Integer, primary_key=True)
-    project_id    = db.Column(db.Integer, nullable=True)
-    doc_upload_id = db.Column(db.Integer, nullable=True)
-    type          = db.Column(db.String(40))
-    severity      = db.Column(db.String(10))
-    explanation   = db.Column(db.Text)
-    resolved      = db.Column(db.Boolean, default=False)
-    resolved_by   = db.Column(db.Integer, nullable=True)
-    resolved_at   = db.Column(db.DateTime, nullable=True)
-    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
+    id             = db.Column(db.Integer, primary_key=True)
+    project_id     = db.Column(db.Integer, nullable=True)
+    doc_upload_id  = db.Column(db.Integer, nullable=True)
+    transaction_id = db.Column(db.Integer, nullable=True)
+    type           = db.Column(db.String(40))
+    title          = db.Column(db.String(200), nullable=True)
+    severity       = db.Column(db.String(10))
+    explanation    = db.Column(db.Text)
+    confidence     = db.Column(db.Numeric(4, 3), nullable=True)
+    payload_json   = db.Column(db.Text, nullable=True)
+    dedup_key      = db.Column(db.String(160), nullable=True, index=True)
+    resolved       = db.Column(db.Boolean, default=False)
+    resolution     = db.Column(db.String(40), nullable=True)
+    resolved_by    = db.Column(db.Integer, nullable=True)
+    resolved_at    = db.Column(db.DateTime, nullable=True)
+    created_at     = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class VendorAlias(db.Model):
+    """Learned raw-vendor → clean display-name mapping (AI data cleanup,
+    2026-06-18). Mirrors VendorCategoryMap: each confirmed/auto-applied cleanup
+    writes a row so repeat vendors normalize consistently and for free (no LLM).
+    Keyed on canon_vendor(raw)."""
+    __tablename__ = "vendor_alias"
+    id                = db.Column(db.Integer, primary_key=True)
+    project_id        = db.Column(db.Integer, nullable=True)   # null = global default
+    raw_canonical     = db.Column(db.String(200), nullable=False, index=True)
+    clean_name        = db.Column(db.String(200), nullable=False)
+    confirm_count     = db.Column(db.Integer, default=1)
+    last_confirmed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    __table_args__ = (
+        db.UniqueConstraint('project_id', 'raw_canonical', name='uq_vendor_alias'),
+    )

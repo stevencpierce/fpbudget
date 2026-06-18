@@ -64,6 +64,118 @@ def record_vendor_category(project_id, vendor, account_code, budget_line_id=None
         log.warning("[vendor-cat] record failed for %r → %s: %s", vendor, account_code, e)
 
 
+# ── Learned raw-vendor → clean display-name aliases (2026-06-18 cleanup) ──
+def apply_vendor_alias_lookup(project_id, raw_vendor):
+    """Return a known clean display name for this raw vendor (project-specific
+    first, then global), or None. Lets cleanup short-circuit the LLM."""
+    cv = canon_vendor(raw_vendor)
+    if not cv:
+        return None
+    try:
+        from models import VendorAlias
+        row = (VendorAlias.query
+               .filter(VendorAlias.raw_canonical == cv,
+                       db.or_(VendorAlias.project_id == project_id,
+                              VendorAlias.project_id.is_(None)))
+               .order_by(VendorAlias.project_id.isnot(None).desc(),
+                         VendorAlias.confirm_count.desc())
+               .first())
+        return row.clean_name if row else None
+    except Exception as e:
+        log.warning("[vendor-alias] lookup failed for %r: %s", raw_vendor, e)
+        return None
+
+
+def record_vendor_alias(project_id, raw_vendor, clean_name):
+    """Upsert the learned raw→clean vendor alias. Does NOT commit. Fail-soft."""
+    if not raw_vendor or not clean_name:
+        return
+    cv = canon_vendor(raw_vendor)
+    if not cv:
+        return
+    clean_name = clean_name.strip()[:200]
+    try:
+        from models import VendorAlias
+        row = (VendorAlias.query
+               .filter_by(project_id=project_id, raw_canonical=cv).first())
+        if row:
+            row.clean_name = clean_name
+            row.confirm_count = (row.confirm_count or 0) + 1
+            row.last_confirmed_at = datetime.utcnow()
+        else:
+            db.session.add(VendorAlias(
+                project_id=project_id, raw_canonical=cv, clean_name=clean_name,
+                confirm_count=1, last_confirmed_at=datetime.utcnow()))
+    except Exception as e:
+        log.warning("[vendor-alias] record failed for %r → %r: %s", raw_vendor, clean_name, e)
+
+
+# ── Double-coded duplicate detection (2026-06-18) ─────────────────────────
+def scan_double_coded(project_id):
+    """Find groups of transactions that look like the SAME spend coded into the
+    budget more than once (double-counted actuals). Clusters by
+    abs(amount)|date|canon_vendor|card_last4; flags a cluster only when ≥2 of
+    its members are CODED (account_code or budget_line_id set), excluding members
+    that share a split_group or the same doc_upload_id (legitimate splits / the
+    same receipt). Read-only — returns cluster dicts, writes nothing.
+
+    Returns: [{key, amount, overcount, vendor, date, members:[{tid, vendor,
+    amount, coded, account_code, account_code_name, source, doc_upload_id,
+    split_group}]}]"""
+    rows = (Transaction.query
+            .filter(Transaction.project_id == project_id,
+                    Transaction.not_project_expense == False,   # noqa: E712
+                    Transaction.amount.isnot(None))
+            .all())
+    clusters = {}
+    for t in rows:
+        try:
+            amt = abs(float(t.amount))
+        except (TypeError, ValueError):
+            continue
+        if amt <= 0:
+            continue
+        date = (t.txn_date or '')[:10]
+        key = "%.2f|%s|%s|%s" % (amt, date, canon_vendor(t.vendor), (t.card_last4 or '').strip())
+        clusters.setdefault(key, []).append(t)
+
+    out = []
+    for key, members in clusters.items():
+        if len(members) < 2:
+            continue
+        coded = [m for m in members
+                 if (m.account_code is not None or m.budget_line_id is not None)]
+        if len(coded) < 2:
+            continue
+        # Exclude legitimate splits: every coded member shares one split_group,
+        # or they all point at the same receipt.
+        sgs = {m.split_group for m in coded if m.split_group}
+        if len(sgs) == 1 and all(m.split_group for m in coded):
+            continue
+        doc_ids = {m.doc_upload_id for m in coded if m.doc_upload_id}
+        if len(doc_ids) == 1 and all(m.doc_upload_id for m in coded):
+            continue
+        amt = abs(float(coded[0].amount))
+        out.append({
+            "key": key,
+            "amount": round(amt, 2),
+            "overcount": round(amt * (len(coded) - 1), 2),   # extra copies
+            "vendor": coded[0].vendor or '',
+            "date": (coded[0].txn_date or '')[:10],
+            "members": [{
+                "tid": m.id, "vendor": m.vendor or '',
+                "amount": float(m.amount) if m.amount is not None else None,
+                "coded": (m.account_code is not None or m.budget_line_id is not None),
+                "account_code": m.account_code,
+                "account_code_name": m.account_code_name,
+                "source": m.source, "doc_upload_id": m.doc_upload_id,
+                "split_group": m.split_group,
+            } for m in members],
+        })
+    out.sort(key=lambda c: c["overcount"], reverse=True)
+    return out
+
+
 # ── Working → Actual cloning ──────────────────────────────────────────
 
 def get_current_actual_budget(project_id):
