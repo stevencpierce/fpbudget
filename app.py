@@ -17396,6 +17396,31 @@ def get_quote():
     return jsonify({"quote": f'{text}\n— {attribution}', "type": qtype, "source": "fallback"})
 
 
+@app.route("/admin/ai/ping", methods=["GET"])
+@login_required
+def admin_ai_ping():
+    """Health check for the AI layer (spec §1/§9). Returns provider status; with
+    ?test=1 runs ONE live categorize against a sample (uses a Claude call if the
+    key is set). Super-admin/admin only. (User 2026-06-17.)"""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden"}), 403
+    import ai_layer
+    out = {"status": ai_layer.status()}
+    if request.args.get('test') == '1':
+        sample = {
+            "taxonomy": [
+                {"id": "travel",   "name": "Travel", "examples": ["flights", "hotels", "rideshare", "gas"]},
+                {"id": "meals",    "name": "Meals & Entertainment", "examples": ["restaurants", "coffee"]},
+                {"id": "supplies", "name": "Supplies", "examples": ["amazon", "office"]},
+            ],
+            "document": {"vendor": "Shell", "category": "Gas", "total": 42.10,
+                         "line_items": [{"description": "Unleaded fuel"}]},
+            "past_corrections": [],
+        }
+        out["categorize_test"] = ai_layer.categorize(sample)
+    return jsonify(out)
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/<date_str>/save", methods=["POST"])
 @login_required
 def callsheet_save(pid, bid, date_str):
@@ -21665,6 +21690,44 @@ def _web_worker_essential_columns():
                      created_at TIMESTAMP,
                      created_by INTEGER,
                      CONSTRAINT uq_txn_dup_dismissal UNIQUE (project_id, dup_key)
+                   )""",
+                # 2026-06-17 — AI layer (spec §8): learned vendor→category map,
+                # per-call audit/tuning log, and surfaced anomaly flags.
+                """CREATE TABLE IF NOT EXISTS vendor_category_map (
+                     id                SERIAL PRIMARY KEY,
+                     project_id        INTEGER,
+                     vendor_canonical  VARCHAR(200) NOT NULL,
+                     account_code      INTEGER,
+                     budget_line_id    INTEGER,
+                     category_id       VARCHAR(60),
+                     confirm_count     INTEGER DEFAULT 1,
+                     last_confirmed_at TIMESTAMP,
+                     CONSTRAINT uq_vendor_cat_map UNIQUE (project_id, vendor_canonical)
+                   )""",
+                """CREATE TABLE IF NOT EXISTS ai_event (
+                     id                  SERIAL PRIMARY KEY,
+                     project_id          INTEGER,
+                     doc_upload_id       INTEGER,
+                     feature             VARCHAR(20),
+                     provider            VARCHAR(20),
+                     model               VARCHAR(60),
+                     request_json        TEXT,
+                     response_json       TEXT,
+                     latency_ms          INTEGER,
+                     user_final_decision TEXT,
+                     created_at          TIMESTAMP
+                   )""",
+                """CREATE TABLE IF NOT EXISTS anomaly_flag (
+                     id            SERIAL PRIMARY KEY,
+                     project_id    INTEGER,
+                     doc_upload_id INTEGER,
+                     type          VARCHAR(40),
+                     severity      VARCHAR(10),
+                     explanation   TEXT,
+                     resolved      BOOLEAN DEFAULT FALSE,
+                     resolved_by   INTEGER,
+                     resolved_at   TIMESTAMP,
+                     created_at    TIMESTAMP
                    )""",
                 # 2026-06-11 — historical FX rate cache for foreign receipts.
                 """CREATE TABLE IF NOT EXISTS fx_rate (

@@ -1223,3 +1223,54 @@ class TransactionDupDismissal(db.Model):
     __table_args__ = (
         db.UniqueConstraint('project_id', 'dup_key', name='uq_txn_dup_dismissal'),
     )
+
+
+# ── AI layer (FP Budget AI-Layer spec §8, 2026-06-17) ───────────────────────
+class VendorCategoryMap(db.Model):
+    """Learned vendor → category mapping (spec §B4). Each user correction
+    writes/strengthens a row so future docs can short-circuit the LLM. Our
+    taxonomy is the COA, so we store account_code / budget_line_id."""
+    __tablename__ = "vendor_category_map"
+    id                = db.Column(db.Integer, primary_key=True)
+    project_id        = db.Column(db.Integer, nullable=True)   # null = global default
+    vendor_canonical  = db.Column(db.String(200), nullable=False, index=True)
+    account_code      = db.Column(db.Integer, nullable=True)
+    budget_line_id    = db.Column(db.Integer, nullable=True)
+    category_id       = db.Column(db.String(60), nullable=True)
+    confirm_count     = db.Column(db.Integer, default=1)
+    last_confirmed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    __table_args__ = (
+        db.UniqueConstraint('project_id', 'vendor_canonical', name='uq_vendor_cat_map'),
+    )
+
+
+class AiEvent(db.Model):
+    """Audit + tuning log for every model call (spec §8). Doubles as the dataset
+    for prompt/threshold tuning and the provider A/B test."""
+    __tablename__ = "ai_event"
+    id                  = db.Column(db.Integer, primary_key=True)
+    project_id          = db.Column(db.Integer, nullable=True)
+    doc_upload_id       = db.Column(db.Integer, nullable=True)
+    feature             = db.Column(db.String(20))   # 'categorize' | 'anomaly'
+    provider            = db.Column(db.String(20))
+    model               = db.Column(db.String(60))
+    request_json        = db.Column(db.Text)
+    response_json       = db.Column(db.Text)
+    latency_ms          = db.Column(db.Integer, nullable=True)
+    user_final_decision = db.Column(db.Text, nullable=True)
+    created_at          = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class AnomalyFlag(db.Model):
+    """A surfaced duplicate/anomaly flag for a document (spec §8)."""
+    __tablename__ = "anomaly_flag"
+    id            = db.Column(db.Integer, primary_key=True)
+    project_id    = db.Column(db.Integer, nullable=True)
+    doc_upload_id = db.Column(db.Integer, nullable=True)
+    type          = db.Column(db.String(40))
+    severity      = db.Column(db.String(10))
+    explanation   = db.Column(db.Text)
+    resolved      = db.Column(db.Boolean, default=False)
+    resolved_by   = db.Column(db.Integer, nullable=True)
+    resolved_at   = db.Column(db.DateTime, nullable=True)
+    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
