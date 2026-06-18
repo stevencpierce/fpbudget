@@ -8969,6 +8969,26 @@ def actuals_ai_suggest_codes(pid):
                     "no_match": no_match, "remaining": max(0, total_remaining - len(rows))})
 
 
+@app.route("/projects/<int:pid>/actuals/clear-suggestions", methods=["POST"])
+@login_required
+def actuals_clear_suggestions(pid):
+    """Wipe all AI code suggestions on a project's charges so 'Suggest codes' can
+    be re-run from scratch (handy for testing). Does NOT touch confirmed coding.
+    (User 2026-06-18.)"""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    n = (Transaction.query
+         .filter(Transaction.project_id == pid,
+                 Transaction.ai_suggested_code.isnot(None))
+         .update({Transaction.ai_suggested_code: None,
+                  Transaction.ai_suggested_code_name: None,
+                  Transaction.ai_code_confidence: None,
+                  Transaction.ai_code_reason: None},
+                 synchronize_session=False))
+    db.session.commit()
+    return jsonify({"ok": True, "cleared": n})
+
+
 @app.route("/projects/<int:pid>/docs/ai-cleanup", methods=["POST"])
 @login_required
 def docs_ai_cleanup(pid):

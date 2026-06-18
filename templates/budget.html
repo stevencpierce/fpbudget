@@ -6301,6 +6301,16 @@
         background:transparent; border:none; color:var(--text); font-size:.72rem;
         padding:1px 0; cursor:pointer; }
     #tab-actuals .actuals-txn-row[data-coded="0"] .ax-cell-line .actuals-line-picker{ color:var(--text-muted); }
+    /* Line cell stacks: picker row on top (always full-width + clickable), the
+       ✨ AI suggestion on its own row below so it never squeezes the dropdown. */
+    #tab-actuals .ax-cell-line{ flex-direction:column; align-items:stretch; gap:5px; }
+    #tab-actuals .ax-cell-line .ax-line-top{ display:flex; align-items:center; gap:6px; min-width:0; width:100%; }
+    #tab-actuals .ax-cell-line .actuals-ai-suggest-btn{
+        display:block; width:100%; text-align:left; box-sizing:border-box;
+        font-size:.68rem; padding:3px 8px; background:#1a1630; border:1px solid #4a3a7a;
+        border-radius:5px; color:#b79dff; cursor:pointer; white-space:nowrap;
+        overflow:hidden; text-overflow:ellipsis; }
+    #tab-actuals .ax-cell-line .actuals-ai-suggest-btn:hover{ background:#241a45; border-color:#6a55a0; }
     /* the Add-receipt CTA fills its empty cell */
     #tab-actuals .ax-add-receipt{ flex:1; text-align:left; background:none; border:none;
         color:#7ba6e8; font-size:.72rem; cursor:pointer; padding:0; }
@@ -6928,6 +6938,8 @@
           <button type="button" id="actuals-sugg-toggle" class="btn btn-xs" onclick="actualsToggleSuggestedOnly(this)">Show only these</button>
           <button type="button" class="btn btn-xs btn-primary" onclick="actualsAcceptAllSuggestions(this)"
                   title="Apply every AI-suggested code at once. You can still re-code any row afterward.">Accept all</button>
+          <button type="button" class="btn btn-xs" onclick="actualsClearSuggestions(this)"
+                  title="Wipe all AI suggestions so you can re-run 'Suggest codes' from scratch (testing).">↻ Clear &amp; re-run</button>
         </div>
         <div id="actuals-txn-list">
         {% for t in actuals_transactions %}
@@ -7087,41 +7099,33 @@
               {% set _wid_for_selected = actual_to_working.get(t.budget_line_id, t.budget_line_id) if t.budget_line_id else None %}
               {% set _cur = (_wid_for_selected | string) if _wid_for_selected else (('section:' ~ t.account_code) if t.account_code else '') %}
               <div class="ax-cell ax-cell-line" title="Budget-line assignment">
-                <span class="ax-ic">🏷</span>
-                {% if _sug and not _coded and not t.not_project_expense %}
-                <button type="button" class="actuals-suggest-btn"
-                        data-tid="{{ t.id }}" data-line-id="{{ _sug.line_id }}"
-                        onclick="actualsApplySuggestion(this)"
-                        title="{% if _sug.kind == 'section' %}Looks like {{ _sug.label }} — click to drop into that category (subdivide later){% else %}Smart match from the vendor name — click to code to {{ _sug.code }} · {{ _sug.label }}{% endif %}"
-                        style="flex-shrink:0;font-size:.62rem;padding:1px 5px;background:#10231a;border:1px solid #1f6f4a;border-radius:4px;color:#5fd0a0;cursor:pointer;white-space:nowrap;max-width:90px;overflow:hidden;text-overflow:ellipsis">{% if _sug.kind == 'section' %}📂 {{ _sug.label }}{% else %}💡 {{ _sug.code }}{% endif %}</button>
-                {% endif %}
-                {# AI categorize suggestion (advisory). Shown only when there's no
-                   token-overlap suggestion above and the row is still uncoded. #}
-                {% if t.ai_suggested_code and not _sug and not _coded and not t.not_project_expense %}
+                {# Picker row — always full width + clickable, never squeezed by a
+                   chip. The AI suggestion (if any) sits on its OWN row below. #}
+                <div class="ax-line-top">
+                  <span class="ax-ic">🏷</span>
+                  {# Lazy picker: seed with ONLY the current assignment; the full
+                     ~300-option list is cloned in on focus by _actualsFillPicker. #}
+                  <select class="actuals-line-picker"
+                          data-tid="{{ t.id }}" data-current="{{ _cur }}" data-populated="0"
+                          onfocus="_actualsFillPicker(this)"
+                          onchange="actualsSetLine(this)"
+                          {% if t.not_project_expense %}disabled{% endif %}>
+                    {% if _cur %}
+                    <option value="{{ _cur }}" selected>{{ t.account_code_name or t.account_code or 'Assigned line' }}</option>
+                    {% else %}
+                    <option value="">Add budget line</option>
+                    {% endif %}
+                  </select>
+                </div>
+                {# AI code suggestion (advisory) — the single suggestion source. #}
+                {% if t.ai_suggested_code and not _coded and not t.not_project_expense %}
                 {% set _aiconf = (t.ai_code_confidence or 0) | float %}
                 <button type="button" class="actuals-ai-suggest-btn"
                         data-tid="{{ t.id }}" data-code="{{ t.ai_suggested_code }}"
                         data-name="{{ t.ai_suggested_code_name or '' }}"
                         onclick="actualsAcceptAiCode(this)"
-                        title="AI suggests {{ t.ai_suggested_code }} · {{ t.ai_suggested_code_name }} ({{ (_aiconf*100)|int }}% confident){% if t.ai_code_reason %} — {{ t.ai_code_reason }}{% endif %}. Click to code; pick from the dropdown to override."
-                        style="flex-shrink:0;font-size:.62rem;padding:1px 5px;background:#1a1630;border:1px solid #4a3a7a;border-radius:4px;color:#b79dff;cursor:pointer;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis">✨ {{ t.ai_suggested_code_name }} {{ (_aiconf*100)|int }}%</button>
+                        title="AI suggests {{ t.ai_suggested_code }} · {{ t.ai_suggested_code_name }} ({{ (_aiconf*100)|int }}% confident){% if t.ai_code_reason %} — {{ t.ai_code_reason }}{% endif %}. Click to apply; pick from the dropdown to override.">✨ Use {{ t.ai_suggested_code_name }} · {{ (_aiconf*100)|int }}%</button>
                 {% endif %}
-                {# Lazy picker: seed with ONLY the current assignment (so a coded
-                   row still SHOWS its line at a glance) — the full ~300-option
-                   list is cloned in on focus by _actualsFillPicker. Pre-filling
-                   every row's picker created ~300 <option> nodes × ~1,200 rows =
-                   ~350k DOM nodes and made the whole tab crawl. (User 2026-06-03.) #}
-                <select class="actuals-line-picker"
-                        data-tid="{{ t.id }}" data-current="{{ _cur }}" data-populated="0"
-                        onfocus="_actualsFillPicker(this)"
-                        onchange="actualsSetLine(this)"
-                        {% if t.not_project_expense %}disabled{% endif %}>
-                  {% if _cur %}
-                  <option value="{{ _cur }}" selected>{{ t.account_code_name or t.account_code or 'Assigned line' }}</option>
-                  {% else %}
-                  <option value="">Add budget line</option>
-                  {% endif %}
-                </select>
               </div>
             </div>
 
@@ -8214,6 +8218,26 @@
       _actualsRefreshSuggBar();
       if (btn) { btn.disabled = false; btn.textContent = _o || 'Accept all'; }
     };
+    // Wipe all AI suggestions, then re-run the suggest pass from scratch (testing).
+    window.actualsClearSuggestions = async function (btn) {
+      if (!confirm('Clear all AI suggestions and re-run from scratch?')) return;
+      const _o = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '↻ Clearing…'; }
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/clear-suggestions`, { method: 'POST', credentials: 'same-origin' });
+        if (!r.ok) {
+          if (btn) { btn.disabled = false; btn.textContent = _o; }
+          if (typeof _actualsToast === 'function') _actualsToast('Clear failed.', 'yellow');
+          return;
+        }
+        // Re-run the suggest pass — it loops then reloads the page when done.
+        if (typeof actualsSuggestCodes === 'function') { await actualsSuggestCodes(btn); }
+        else { window.location.reload(); }
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.textContent = _o; }
+        if (typeof _actualsToast === 'function') _actualsToast('Clear error: ' + e.message, 'yellow');
+      }
+    };
     // Refresh the bar when the Actuals tab opens (and on load if it's active).
     (function () {
       const tb = document.querySelector('[data-tab="actuals"]');
@@ -8380,6 +8404,9 @@
     // 2026-05-29. Lightweight: one GET + a per-row chip add/update/remove.
     let _actualsSuggestRefreshing = false;
     window.refreshActualsSuggestions = async function () {
+      // Disabled (2026-06-18): the token-overlap green chips are retired — the
+      // AI suggestion (purple ✨ chip) is now the single suggestion source.
+      return;
       if (_actualsSuggestRefreshing) return;
       _actualsSuggestRefreshing = true;
       try {
