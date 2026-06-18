@@ -9504,13 +9504,13 @@
       modal.style.cssText = `
         display:none; position:fixed; top:0; left:0; right:0; bottom:0;
         z-index:10000; background:rgba(0,0,0,.78);
-        align-items:center; justify-content:center;
+        align-items:flex-start; justify-content:center; padding-top:6vh;
       `;
       modal.innerHTML = `
         <div onclick="event.stopPropagation()"
              style="background:var(--bg-card, #1a1d27);border:1px solid var(--border);
                     border-radius:10px;padding:18px 22px;width:560px;max-width:96vw;
-                    max-height:90vh;display:flex;flex-direction:column;
+                    max-height:88vh;display:flex;flex-direction:column;
                     box-shadow:0 20px 60px rgba(0,0,0,.5)">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
             <h3 style="margin:0;font-size:1rem">📤 Attach receipt</h3>
@@ -9546,14 +9546,14 @@
               </div>
             </div>
           </div>
-          <div id="_actuals-upload-pane-existing" style="display:none;flex:1;min-height:0;display:none;flex-direction:column">
+          <div id="_actuals-upload-pane-existing" style="display:none;flex-direction:column">
             <div style="font-size:.74rem;color:var(--text-muted);margin-bottom:8px">
               Pick an existing receipt from this project's docs. Same receipt can back multiple transactions (e.g. a Lyft week-rollup).
             </div>
-            <input type="text" id="_actuals-upload-existing-search" placeholder="Search vendor / filename…"
-                   style="font-size:.78rem;padding:6px 10px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px;margin-bottom:8px">
+            <input type="text" id="_actuals-upload-existing-search" placeholder="Search vendor, amount, or filename…"
+                   style="font-size:.78rem;padding:6px 10px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px;margin-bottom:8px;flex-shrink:0">
             <div id="_actuals-upload-existing-list"
-                 style="flex:1;overflow-y:auto;max-height:380px;border:1px solid var(--border);border-radius:5px;padding:4px">
+                 style="height:380px;overflow-y:auto;border:1px solid var(--border);border-radius:5px;padding:4px;flex-shrink:0">
               <div class="muted" style="font-size:.78rem;padding:10px;text-align:center">Loading…</div>
             </div>
           </div>
@@ -9649,7 +9649,10 @@
       }
       const filtered = docs.filter(d => {
         if (!search) return true;
-        return ((d.label || '') + ' ' + (d.vendor || '') + ' ' + (d.category || '')).toLowerCase().includes(search);
+        // Searchable: label/vendor/category + amount (both signed and absolute,
+        // so "107.17" matches a -107.17 refund). (User 2026-06-17.)
+        const amtStr = (d.amount != null) ? (Number(d.amount).toFixed(2) + ' ' + Math.abs(Number(d.amount)).toFixed(2)) : '';
+        return ((d.label || '') + ' ' + (d.vendor || '') + ' ' + (d.category || '') + ' ' + amtStr).toLowerCase().includes(search);
       });
       if (!filtered.length) {
         list.innerHTML = `<div class="muted" style="font-size:.78rem;padding:14px;text-align:center">No matches for "${search}".</div>`;
