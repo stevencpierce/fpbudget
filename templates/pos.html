@@ -615,8 +615,15 @@
       <label>Updated quote / estimate</label>
       <select id="replace-doc-select"><option value="">Loading documents…</option></select>
       <p class="muted" style="font-size:.72rem;margin-top:4px">
-        Upload the new quote in the Docs tab first if it isn't listed below.
+        Pick an existing doc above, or upload a new one right here ↓
       </p>
+    </div>
+    <div class="field" style="margin-top:8px">
+      <label>…or upload a new quote</label>
+      <input type="file" id="replace-upload-file" accept="image/*,application/pdf,.heic,.heif"
+             onchange="if(this.files&&this.files[0]){document.getElementById('replace-doc-select').value='';}"
+             style="font-size:.8rem;width:100%">
+      <div id="replace-upload-status" style="font-size:.72rem;color:var(--text-muted);margin-top:4px"></div>
     </div>
     <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;margin:10px 0">
       <input type="checkbox" id="replace-adjust-cap" checked>
@@ -665,12 +672,31 @@ function closeReplaceModal() {
   _replacePoId = null; _replaceOldAttId = null;
 }
 async function doReplaceEstimate() {
-  const docId = document.getElementById('replace-doc-select').value;
-  if (!docId) { alert('Pick the updated quote first.'); return; }
-  const adjust = document.getElementById('replace-adjust-cap').checked;
+  let docId = document.getElementById('replace-doc-select').value;
+  const fileInput = document.getElementById('replace-upload-file');
+  const file = fileInput && fileInput.files && fileInput.files[0];
   const btn = document.getElementById('replace-confirm-btn');
-  btn.disabled = true; btn.textContent = 'Replacing…';
+  const st  = document.getElementById('replace-upload-status');
+  if (!docId && !file) { alert('Pick an existing quote above, or choose a file to upload.'); return; }
+  btn.disabled = true;
   try {
+    // Inline upload: send the new file through the normal docs pipeline (OCR +
+    // file to Dropbox), then use the returned upload id. (User 2026-06-17.)
+    if (file) {
+      btn.textContent = 'Uploading…';
+      if (st) { st.textContent = '⏳ Uploading & reading "' + file.name + '"…'; st.style.color = 'var(--text-muted)'; }
+      const fd = new FormData(); fd.append('file', file);
+      const ur = await fetch(`/docs/${PROJECT_ID}/upload`, { method: 'POST', body: fd, credentials: 'same-origin' });
+      const uj = await ur.json().catch(() => ({}));
+      if (!ur.ok || !uj.upload_id) {
+        alert('Upload failed: ' + (uj.error || ur.status));
+        btn.disabled = false; btn.textContent = 'Replace'; if (st) st.textContent = ''; return;
+      }
+      docId = uj.upload_id;
+      if (st) { st.textContent = '✓ Uploaded — replacing…'; st.style.color = '#22c55e'; }
+    }
+    const adjust = document.getElementById('replace-adjust-cap').checked;
+    btn.textContent = 'Replacing…';
     const r = await fetch(`/projects/${PROJECT_ID}/pos/${_replacePoId}/replace-estimate`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ old_att_id: _replaceOldAttId, new_doc_upload_id: Number(docId), adjust_cap: adjust }),
