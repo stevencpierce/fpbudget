@@ -9570,6 +9570,7 @@ def doc_transaction_candidates(pid, uid):
                             r["day_gap"] if r["day_gap"] is not None else 999))
     return jsonify({"ok": True,
                     "doc": {"id": doc.id, "vendor": doc.vendor, "total": total,
+                            "total_signed": (float(doc.amount) if doc.amount is not None else None),
                             "card": dcard or None,
                             "date": (doc.doc_date.isoformat() if doc.doc_date else None)},
                     "include_matched": include_matched, "candidates": out[:50]})

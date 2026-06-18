@@ -509,6 +509,11 @@
         {% if att.amount %}<span style="font-variant-numeric:tabular-nums;{% if att.superseded %}text-decoration:line-through{% endif %}">${{ '{:,.2f}'.format(att.amount) }}</span>{% endif %}
         {% if att.superseded %}
         <span style="font-size:.68rem;color:#c08a40;font-style:italic">superseded{% if att.superseded_at %} {{ att.superseded_at[:10] }}{% endif %}</span>
+        {% if not po.archived %}
+        <button type="button" class="btn btn-xs btn-ghost" style="font-size:.66rem;padding:1px 6px;color:#c0605a"
+                onclick='removeAttachment({{ po.id }}, {{ att.id }}, 0, {{ (att.filename or "this doc")|tojson }})'
+                title="Delete this superseded estimate from the PO history (file stays in Docs)">✕</button>
+        {% endif %}
         {% elif not po.archived %}
         {% if _is_est %}
         <button type="button" class="btn btn-xs btn-ghost" style="font-size:.66rem;padding:1px 6px;margin-left:2px"

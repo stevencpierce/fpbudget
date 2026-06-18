@@ -4946,25 +4946,72 @@
   function ddRenderTxns() {
     const host = document.getElementById('docDetailTxnResults');
     const cands = window._ddTxnCands || [];
+    const doc = window._ddTxnDoc || {};
     const esc = s => (s || '').toString().replace(/</g, '&lt;');
-    const money = a => a == null ? '$?' : ('$' + Number(a).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}));
+    // Signed display: refund/credit (negative) shows green "+$x · refund",
+    // a charge (positive) shows "−$x · charge", so the user can verify they're
+    // matching a refund to a refund (not a refund receipt to a positive charge).
+    const moneyAbs = a => '$' + Math.abs(Number(a)).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    const signTag = a => {
+      const n = Number(a);
+      if (!isFinite(n)) return '<span style="color:var(--text-muted)">$?</span>';
+      return n < 0
+        ? '<span style="color:#5fd0a0;font-weight:600">+' + moneyAbs(n) + '</span> <span style="color:#5fd0a0">refund</span>'
+        : '<span style="font-weight:600">−' + moneyAbs(n) + '</span> <span style="color:var(--text-muted)">charge</span>';
+    };
     if (!cands.length) {
       host.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">No candidate charges' +
         (document.getElementById('docDetailInclMatched').checked ? '' : ' — try “include already-matched”') + '.</div>';
       return;
     }
-    const rows = cands.map(c => `
-      <label style="display:flex;align-items:center;gap:7px;padding:5px 7px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;font-size:11.5px;cursor:pointer">
-        <input type="checkbox" class="dd-txn-cb" value="${c.tid}" data-amt="${c.amount}" onchange="ddTxnSelChanged()">
-        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.vendor) || 'charge'} <span style="color:var(--text-muted)">· ${money(c.amount)} · ${c.date || ''}${c.card ? (' · ••' + c.card) : ''}${c.coded ? (' · ' + esc(c.coded)) : ''}</span></span>
-        ${c.kind === 'exact' ? '<span style="color:#5fd0a0">exact</span>' : '<span style="color:var(--text-muted)">part</span>'}
-        ${(c.match_status !== 'unmatched' || c.doc_upload_id) ? '<span style="color:#e0c060" title="already linked to a receipt">matched</span>' : ''}
-      </label>`).join('');
-    host.innerHTML = rows
+    // This receipt's own sign — refund (<0) vs charge (>0) — to flag mismatches.
+    const docSign = (doc.total_signed != null && Number(doc.total_signed) !== 0)
+      ? Math.sign(Number(doc.total_signed)) : 0;
+    const docKind = docSign < 0 ? 'refund' : (docSign > 0 ? 'charge' : null);
+    const rows = cands.map((c, i) => {
+      const cSign = (c.amount != null && Number(c.amount) !== 0) ? Math.sign(Number(c.amount)) : 0;
+      const mismatch = (docSign !== 0 && cSign !== 0 && docSign !== cSign);
+      const matched = (c.match_status !== 'unmatched' || c.doc_upload_id);
+      const details =
+        '<div id="dd-txn-det-' + i + '" style="display:none;margin-top:5px;padding:6px 8px;background:var(--bg-subtle,rgba(255,255,255,.03));border-radius:6px;font-size:11px;line-height:1.6;color:var(--text-muted)">'
+        + '<div><b style="color:var(--text)">' + (esc(c.vendor) || 'charge') + '</b></div>'
+        + '<div>Amount: ' + signTag(c.amount) + ' &nbsp;<span style="opacity:.7">(raw ' + Number(c.amount).toFixed(2) + ')</span></div>'
+        + '<div>Date: ' + (c.date || '—') + (c.day_gap != null ? ' · ' + c.day_gap + 'd from receipt' : '') + '</div>'
+        + '<div>Card: ' + (c.card ? ('••' + c.card) : '—') + (c.same_card ? ' <span style="color:#5fd0a0">· same card ✓</span>' : '') + '</div>'
+        + '<div>Coded: ' + (c.coded ? esc(c.coded) : '<span style="opacity:.7">uncoded</span>') + '</div>'
+        + '<div>Vendor match: ' + (c.vendor_match ? '<span style="color:#5fd0a0">yes</span>' : 'weak') + ' · Kind: ' + c.kind + '</div>'
+        + '<div>Status: ' + esc(c.match_status || 'unmatched') + (matched ? ' <span style="color:#e0c060">· already linked to a receipt</span>' : '') + '</div>'
+        + (mismatch ? '<div style="color:#e08a6a;margin-top:3px">⚠ This is a <b>' + (cSign < 0 ? 'refund' : 'charge') + '</b> but the receipt is a <b>' + docKind + '</b> — signs disagree.</div>' : '')
+        + '</div>';
+      return `
+      <div style="border:1px solid ${mismatch ? '#7a4a3a' : 'var(--border)'};border-radius:6px;margin-bottom:5px;padding:6px 8px;font-size:11.5px">
+        <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
+          <input type="checkbox" class="dd-txn-cb" value="${c.tid}" data-amt="${c.amount}" onchange="ddTxnSelChanged()" style="margin-top:2px">
+          <span style="flex:1;min-width:0">
+            <span style="font-weight:600">${esc(c.vendor) || 'charge'}</span>
+            ${c.kind === 'exact' ? '<span style="color:#5fd0a0;margin-left:5px">exact</span>' : '<span style="color:var(--text-muted);margin-left:5px">part</span>'}
+            ${matched ? '<span style="color:#e0c060;margin-left:5px" title="already linked to a receipt">matched</span>' : ''}
+            ${mismatch ? '<span style="color:#e08a6a;margin-left:5px" title="sign mismatch">⚠ sign</span>' : ''}
+            <br>
+            <span style="display:inline-block;margin-top:2px">${signTag(c.amount)}<span style="color:var(--text-muted)"> · ${c.date || '—'}${c.card ? (' · ••' + c.card) : ''}${c.coded ? (' · ' + esc(c.coded)) : ''}</span></span>
+          </span>
+          <button type="button" onclick="event.preventDefault();event.stopPropagation();ddTxnToggleDet(${i})" style="flex:none;padding:1px 7px;border:1px solid var(--border);border-radius:5px;background:transparent;color:var(--text-muted);font-size:11px;cursor:pointer">details</button>
+        </label>
+        ${details}
+      </div>`;
+    }).join('');
+    const docHdr = docKind
+      ? '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">This receipt is a <b style="color:' + (docSign < 0 ? '#5fd0a0' : 'var(--text)') + '">' + docKind + '</b> for ' + moneyAbs(doc.total_signed) + '. Matching charges should also be a <b>' + docKind + '</b>.</div>'
+      : '';
+    host.innerHTML = docHdr + rows
       + '<div id="dd-txn-sum" style="font-size:11px;color:var(--text-muted);margin:4px 0"></div>'
       + '<button type="button" id="dd-txn-link" onclick="ddLinkTxns()" disabled style="padding:5px 11px;border-radius:6px;background:#1f6f4a;border:1px solid #2a8a5e;color:#fff;font-size:12px;cursor:pointer;opacity:.5">Link selected</button>';
     ddTxnSelChanged();
   }
+  window.ddTxnToggleDet = function (i) {
+    const el = document.getElementById('dd-txn-det-' + i);
+    if (el) el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+  };
   window.ddTxnSelChanged = function () {
     const cbs = [...document.querySelectorAll('.dd-txn-cb:checked')];
     const sum = cbs.reduce((a, cb) => a + Math.abs(parseFloat(cb.dataset.amt) || 0), 0);
