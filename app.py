@@ -19394,6 +19394,58 @@ def admin_docs_reprocess_unpaired(pid):
     return jsonify({"started": True, "limit": limit, "reset": reset})
 
 
+@app.route("/cron/reprocess-unpaired", methods=["POST", "GET"])
+def cron_reprocess_unpaired():
+    """Unattended trigger for the reprocess job (no browser session needed) —
+    for a scheduled 4pm-ET kick-off. The worker re-OCRs unpaired receipts, then
+    runs AI cleanup + the double-coded scan. Auth: a secret token (env CRON_TOKEN)
+    via ?token=, an X-Cron-Token header, or JSON body. DISABLED unless CRON_TOKEN
+    is set on the server. Target with ?pid= or ?project=<name substring>.
+    (User 2026-06-18.)"""
+    expected = os.getenv("CRON_TOKEN")
+    body = request.get_json(silent=True) or {}
+    token = (request.args.get("token") or request.headers.get("X-Cron-Token")
+             or body.get("token"))
+    if not expected or not token or token != expected:
+        return jsonify({"error": "forbidden"}), 403
+    # Resolve the target project by id or by name substring.
+    proj = None
+    pid_raw = request.args.get("pid") or body.get("pid")
+    if pid_raw:
+        try:
+            proj = ProjectSheet.query.get(int(pid_raw))
+        except (TypeError, ValueError):
+            proj = None
+    if proj is None:
+        name = (request.args.get("project") or body.get("project") or '').strip()
+        if name:
+            proj = (ProjectSheet.query
+                    .filter(ProjectSheet.name.ilike(f"%{name}%"))
+                    .order_by(ProjectSheet.id.desc()).first())
+    if proj is None:
+        return jsonify({"error": "project not found (pass ?pid= or ?project=)"}), 404
+    pid = proj.id
+    cur = _REPROCESS.get(pid)
+    if cur and cur.get('running'):
+        return jsonify({"already_running": True, "pid": pid})
+    try:
+        limit = max(1, min(int(request.args.get("limit") or body.get("limit") or 250), 1000))
+    except (TypeError, ValueError):
+        limit = 250
+    reset = str(request.args.get("reset") or body.get("reset") or '').lower() in ('1', 'true', 'yes')
+    if reset:
+        _unpaired_docs_base_query(pid).update({DocUpload.reprocessed_at: None},
+                                              synchronize_session=False)
+        db.session.commit()
+    _REPROCESS[pid] = {'running': True, 'done': False, 'total': None, 'processed': 0,
+                       'reprocessed': 0, 'skipped': 0, 'errors': 0, 'last': None}
+    import threading
+    threading.Thread(target=_reprocess_worker, args=(app, pid, None, limit),
+                     daemon=True).start()
+    logging.info(f"[cron] reprocess+cleanup started for project {pid} ('{proj.name}'), limit {limit}")
+    return jsonify({"started": True, "pid": pid, "project": proj.name, "limit": limit, "reset": reset})
+
+
 @app.route("/admin/docs/project/<int:pid>/reprocess-unpaired-status", methods=["GET"])
 @login_required
 def admin_docs_reprocess_status(pid):
