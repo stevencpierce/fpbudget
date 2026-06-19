@@ -8118,6 +8118,9 @@
           actions += `<button type="button" class="btn btn-xs btn-primary" onclick="document.querySelector('[data-tab=actuals]').click()">Open Actuals</button>`;
         }
         actions += `<button type="button" class="btn btn-xs btn-ghost" onclick="dashAskAi(${it.id},this)">🤖 Ask AI</button>`;
+      } else if (it.type === 'people_line') {
+        const p = it.payload || {};
+        actions += `<button type="button" class="btn btn-xs btn-primary" onclick="dashResolve(${it.id},'apply_people_line',this)" title="Code this charge to ${_dashEsc(p.line_label||'their line')} and attach ${_dashEsc(p.crew_name||'the person')}">Apply → ${_dashEsc(p.line_label || 'line')}</button>`;
       }
       // Universal: always let the user OPEN the underlying item to decide. For
       // doc-based flags this opens the document (image + editable fields), which
@@ -8374,7 +8377,7 @@
         const j = await (await fetch(`/projects/${PROJ_ID}/actuals/scan-anomalies`, { method: 'POST' })).json();
         const total = (j.total_flags != null) ? j.total_flags : (j.flags || 0);
         if (typeof _actualsToast === 'function') _actualsToast(
-          total ? `Found ${j.flags || 0} duplicate group(s) + ${j.budget_flags || 0} budget mismatch(es).`
+          total ? `Found ${j.flags || 0} duplicate(s) + ${j.budget_flags || 0} budget mismatch(es) + ${j.people_flags || 0} person→line suggestion(s).`
                 : 'No issues found.', (total ? 'yellow' : 'green'));
         dashLoadAnomalies();
       } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Scan failed: ' + e.message, 'yellow'); }

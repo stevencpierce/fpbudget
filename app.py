@@ -9306,22 +9306,101 @@ def _run_budget_mismatch_scan(pid):
     return flags
 
 
+def _crew_lines_for_project(pid):
+    """Map crew members to their (single) Working budget line — so a person can be
+    matched to a precise line. Returns (crew_one {crew_id: working_line_id},
+    crews {id: CrewMember}, line_labels {line_id: label}). Only crew assigned to
+    EXACTLY ONE line are returned (unambiguous). (User 2026-06-18.)"""
+    from models import CrewMember, CrewAssignment, BudgetLine
+    from actuals import get_current_working_budget
+    wb = get_current_working_budget(pid)
+    if not wb:
+        return {}, {}, {}
+    assigns = {}
+    for ca in (CrewAssignment.query
+               .join(BudgetLine, CrewAssignment.budget_line_id == BudgetLine.id)
+               .filter(BudgetLine.budget_id == wb.id).all()):
+        if ca.crew_member_id:
+            assigns.setdefault(ca.crew_member_id, set()).add(ca.budget_line_id)
+    for ln in (BudgetLine.query
+               .filter(BudgetLine.budget_id == wb.id,
+                       BudgetLine.assigned_crew_id.isnot(None)).all()):
+        assigns.setdefault(ln.assigned_crew_id, set()).add(ln.id)
+    crew_one = {cid: next(iter(lids)) for cid, lids in assigns.items() if len(lids) == 1}
+    if not crew_one:
+        return {}, {}, {}
+    crews = {c.id: c for c in CrewMember.query.filter(CrewMember.id.in_(list(crew_one.keys()))).all()}
+    line_labels = {ln.id: (ln.description or ln.account_name or f'Line {ln.id}')
+                   for ln in BudgetLine.query.filter(BudgetLine.id.in_(list(crew_one.values()))).all()}
+    return crew_one, crews, line_labels
+
+
+def _run_people_line_scan(pid):
+    """Suggest coding a charge to a PERSON's specific budget line: when an
+    (uncoded-to-line) charge's vendor name matches a crew member who has a single
+    budget line, queue a people_line review flag. Suggest-only — applied via
+    anomaly_resolve 'apply_people_line'. Does NOT commit. Returns count."""
+    from actuals import _vendor_similarity
+    crew_one, crews, line_labels = _crew_lines_for_project(pid)
+    if not crew_one:
+        return 0
+    txns = (Transaction.query
+            .filter(Transaction.project_id == pid,
+                    Transaction.budget_line_id.is_(None),
+                    Transaction.not_project_expense == False,   # noqa: E712
+                    Transaction.vendor.isnot(None)).all())
+    flags = 0
+    for t in txns:
+        v = (t.vendor or '').strip()
+        if not v:
+            continue
+        best, best_sim = None, 0.0
+        for cid in crew_one:
+            cm = crews.get(cid)
+            if not cm or not cm.name:
+                continue
+            sim = _vendor_similarity(v, cm.name)
+            if sim > best_sim:
+                best_sim, best = sim, cid
+        if best is None or best_sim < 0.80:
+            continue
+        lid = crew_one[best]
+        cm = crews[best]
+        label = line_labels.get(lid, 'their line')
+        f = _flag_anomaly(pid, 'people_line', severity='low',
+                          title=f'Code to {cm.name} · {label}'[:120],
+                          explanation=(f'"{v}" looks like {cm.name}, who is on the budget line '
+                                       f'"{label}". Apply to code this charge to that line and '
+                                       f'attach the person.'),
+                          confidence=round(best_sim, 3), transaction_id=t.id,
+                          doc_upload_id=t.doc_upload_id,
+                          payload={"crew_member_id": best, "crew_name": cm.name,
+                                   "working_line_id": lid, "line_label": label,
+                                   "transaction_id": t.id},
+                          dedup_key=f'people_line:{t.id}')
+        if f is not None:
+            flags += 1
+    return flags
+
+
 @app.route("/projects/<int:pid>/actuals/scan-anomalies", methods=["POST"])
 @login_required
 def actuals_scan_anomalies(pid):
     """Scan for issues and upsert AnomalyFlag review-queue rows: double-coded
-    duplicates (same spend coded twice) + budget mismatches (POs over cap, lines
-    over plan). (User 2026-06-18.)"""
+    duplicates, budget mismatches (POs over cap, lines over plan), and people→line
+    coding suggestions (invoice person → their budget line). (User 2026-06-18.)"""
     ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'editor')
     clusters, flags = _run_double_coded_scan(pid)
     budget_flags = _run_budget_mismatch_scan(pid)
+    people_flags = _run_people_line_scan(pid)
     try:
         db.session.commit()
     except Exception:
         db.session.rollback()
     return jsonify({"ok": True, "clusters": clusters, "flags": flags,
-                    "budget_flags": budget_flags, "total_flags": flags + budget_flags})
+                    "budget_flags": budget_flags, "people_flags": people_flags,
+                    "total_flags": flags + budget_flags + people_flags})
 
 
 def _anomaly_to_dict(f):
@@ -9398,6 +9477,21 @@ def anomaly_resolve(pid, fid):
                 from actuals import record_vendor_alias
                 record_vendor_alias(pid, raw, suggested)
                 applied = f'vendor → {suggested}'
+        elif action == 'apply_people_line':
+            lid = payload.get('working_line_id')
+            cid = payload.get('crew_member_id')
+            tid = payload.get('transaction_id') or f.transaction_id
+            if lid and tid:
+                from actuals import link_transaction_to_line
+                link_transaction_to_line(int(tid), int(lid),
+                                         user_id=(current_user.id if current_user.is_authenticated else None))
+                tx = Transaction.query.filter_by(id=int(tid), project_id=pid).first()
+                if tx and tx.doc_upload_id and cid:
+                    doc = db.session.get(DocUpload, tx.doc_upload_id)
+                    if doc:
+                        doc.crew_member_id = int(cid)
+                applied = (f'coded to {payload.get("line_label") or "line"}'
+                           + (f' + attached {payload.get("crew_name")}' if cid else ''))
         elif action == 'accept_amount' and f.doc_upload_id:
             amt = body.get('value', payload.get('suggested_amount'))
             doc = db.session.get(DocUpload, f.doc_upload_id)
