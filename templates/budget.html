@@ -6262,8 +6262,9 @@
       content:"needs coding"; font-size:.58rem; color:#e0a040; margin-left:6px;
       border:1px solid #5a4520; border-radius:3px; padding:0 4px; white-space:nowrap; }
 
-    #tab-actuals .ax-cells{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;
-                            width:552px; flex-shrink:0; }
+    /* Give the Budget-line column extra room — line names get long. (User 2026-06-18.) */
+    #tab-actuals .ax-cells{ display:grid; grid-template-columns:1fr 1fr 1.7fr; gap:6px;
+                            width:660px; flex-shrink:0; }
     #tab-actuals .ax-cell{
       display:flex; align-items:center; gap:6px; min-width:0; min-height:30px;
       border:1px solid var(--border); border-radius:6px; padding:4px 9px;
@@ -6311,6 +6312,9 @@
        ✨ AI suggestion on its own row below so it never squeezes the dropdown. */
     #tab-actuals .ax-cell-line{ flex-direction:column; align-items:stretch; gap:5px; }
     #tab-actuals .ax-cell-line .ax-line-top{ display:flex; align-items:center; gap:6px; min-width:0; width:100%; }
+    #tab-actuals .ax-cell-line .ax-jump-line{ flex:none; font-size:.72rem; line-height:1; padding:1px 5px;
+        background:transparent; border:1px solid var(--border); border-radius:4px; color:#5b8af9; cursor:pointer; }
+    #tab-actuals .ax-cell-line .ax-jump-line:hover{ background:rgba(91,138,249,.15); border-color:#5b8af9; }
     #tab-actuals .ax-cell-line .actuals-ai-suggest-btn{
         display:block; width:100%; text-align:left; box-sizing:border-box;
         font-size:.68rem; padding:3px 8px; background:#1a1630; border:1px solid #4a3a7a;
@@ -7127,6 +7131,10 @@
                     <option value="">Add budget line</option>
                     {% endif %}
                   </select>
+                  {% if _cur and 'section:' not in _cur %}
+                  <button type="button" class="ax-jump-line" onclick="actualsJumpToLine('{{ _cur }}')"
+                          title="Go to this line on the Budget tab">↗</button>
+                  {% endif %}
                 </div>
                 {# AI code suggestion (advisory) — the single suggestion source. #}
                 {% if t.ai_suggested_code and not _coded and not t.not_project_expense %}
@@ -7960,6 +7968,24 @@
     window._actualsPopulatePickers = function () {
       document.querySelectorAll('#actuals-txn-list .actuals-line-picker:not([data-populated="1"])')
         .forEach(window._actualsFillPicker);
+    };
+
+    // ↗ Jump from a coded Actuals row to its budget line on the Budget tab + flash it.
+    window.actualsJumpToLine = function (workingLineId) {
+      if (!workingLineId) return;
+      const bt = document.querySelector('[data-tab="working"]');
+      if (bt) bt.click();
+      setTimeout(() => {
+        const t = document.querySelector('.line-row[data-id="' + workingLineId + '"]');
+        if (t) {
+          t.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          t.style.transition = 'background .8s';
+          t.style.background = 'rgba(91,138,249,.25)';
+          setTimeout(() => { t.style.background = ''; }, 1500);
+        } else if (typeof _actualsToast === 'function') {
+          _actualsToast('That line lives on a different budget view (Estimated/Actual).', 'yellow');
+        }
+      }, 300);
     };
 
     window.actualsApplySuggestion = function (btn) {
@@ -11615,6 +11641,14 @@
           const chLabel = (c.charges.length > 1) ? 'Keep selected · remove the rest' : '🗑 Remove the duplicate ledger row';
           chAction = `<button class="btn btn-xs btn-primary" onclick="rcRemoveCharges(${ci})">${chLabel}</button>`;
         }
+        // "Link them": an unmatched charge + an unlinked receipt for the same spend
+        // → link the receipt to the charge (instead of only removing). (User 2026-06-18.)
+        let linkAction = '';
+        const _uCharge = c.charges.find(x => x.source !== 'doc_upload' && !x.doc_upload_id && x.match_status !== 'confirmed');
+        const _uReceipt = c.receipts.find(r => !r.on_charge);
+        if (_uCharge && _uReceipt) {
+          linkAction = `<button class="btn btn-xs btn-primary" onclick="rcLinkThem(${ci}, ${_uCharge.tid}, ${_uReceipt.doc_id})" title="Same spend — attach this receipt to this charge and mark it matched">🔗 Link them</button>`;
+        }
         return `<div class="mr-card" data-rc="${ci}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:12px;background:var(--bg-card,#1a1d27)">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
             <span style="font-weight:600">${money(c.amount)}</span>
@@ -11625,6 +11659,7 @@
             </span>
           </div>
           <div style="font-size:.74rem;color:var(--text);line-height:1.45;margin-bottom:6px">${summary}</div>
+          ${linkAction ? ('<div style="margin-bottom:8px">' + linkAction + '</div>') : ''}
           <div id="rc-ai-${ci}" style="margin-bottom:6px"></div>
           ${c.receipts.length ? `<div class="rc-lane"><h4>📎 Receipt${c.receipts.length > 1 ? 's (' + c.receipts.length + ')' : ''}</h4>${recRows}${recAction ? ('<div style="margin-top:5px">' + recAction + '</div>') : ''}</div>` : ''}
           ${c.charges.length ? `<div class="rc-lane"><h4>🏦 Ledger rows (${c.charges.length})</h4>${chRows}${chAction ? ('<div style="margin-top:5px">' + chAction + '</div>') : ''}</div>` : ''}
@@ -11706,6 +11741,19 @@
       }
       _actualsToast(`Removed ${ok}${fail ? (' · ' + fail + ' failed') : ''}.`, fail ? 'yellow' : 'green');
       if (ok) _rcCardDone(card, true); else if (card && fail) { /* leave card so user can retry */ }
+    };
+    // 🔗 Link them — attach the receipt to the charge (same spend) + mark matched.
+    window.rcLinkThem = async function (ci, tid, docId) {
+      const card = document.querySelector('.mr-card[data-rc="' + ci + '"]');
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/link-doc`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ doc_upload_id: docId }) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { _actualsToast('Link failed: ' + (j.error || r.status), 'red'); return; }
+        _actualsToast('Linked the receipt to the charge ✓', 'green');
+        if (card) _rcCardDone(card, true);
+      } catch (e) { _actualsToast('Link error: ' + e.message, 'red'); }
     };
 
     // ── Reprocess unmatched receipts (background re-OCR) ────────────────
