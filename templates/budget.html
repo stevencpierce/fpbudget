@@ -6315,6 +6315,8 @@
     #tab-actuals .ax-cell-line .ax-jump-line{ flex:none; font-size:.72rem; line-height:1; padding:1px 5px;
         background:transparent; border:1px solid var(--border); border-radius:4px; color:#5b8af9; cursor:pointer; }
     #tab-actuals .ax-cell-line .ax-jump-line:hover{ background:rgba(91,138,249,.15); border-color:#5b8af9; }
+    #tab-actuals .ax-cell-line .ax-line-person{ font-size:.66rem; color:#8fe0b8; white-space:nowrap;
+        overflow:hidden; text-overflow:ellipsis; max-width:100%; }
     #tab-actuals .ax-cell-line .actuals-ai-suggest-btn{
         display:block; width:100%; text-align:left; box-sizing:border-box;
         font-size:.68rem; padding:3px 8px; background:#1a1630; border:1px solid #4a3a7a;
@@ -7146,6 +7148,12 @@
                         data-name="{{ t.ai_suggested_code_name or '' }}"
                         onclick="actualsAcceptAiCode(this)"
                         title="AI suggests {{ t.ai_suggested_code }} · {{ t.ai_suggested_code_name }} ({{ (_aiconf*100)|int }}% confident){% if t.ai_code_reason %} — {{ t.ai_code_reason }}{% endif %}. Click to apply; pick from the dropdown to override.">✨ Use {{ t.ai_suggested_code_name }} · {{ (_aiconf*100)|int }}%</button>
+                {% endif %}
+                {# Assigned person on crew-invoice rows: the budget line this charge
+                   is coded to has an assigned crew member. (User 2026-06-18.) #}
+                {% set _crewname = (actuals_line_crew.get(_cur|int) if (_cur and 'section:' not in _cur) else None) %}
+                {% if _crewname %}
+                <div class="ax-line-person" title="Assigned to this budget line">👤 {{ _crewname }}</div>
                 {% endif %}
               </div>
             </div>

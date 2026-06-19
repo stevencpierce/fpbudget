@@ -6620,24 +6620,47 @@ def budget_view(pid, bid):
     # shows the SPECIFIC line a charge is coded to — not just its section name.
     # (User 2026-06-18.)
     actuals_line_labels = {}
+    actuals_line_crew = {}   # Working line id → assigned person's name (crew invoices)
     try:
         from actuals import get_current_working_budget as _gcw
+        from models import CrewMember as _CM, CrewAssignment as _CA
         _wb_lbl = _gcw(pid)
         if _wb_lbl:
-            for _ln in BudgetLine.query.filter_by(budget_id=_wb_lbl.id).all():
+            _wlines = BudgetLine.query.filter_by(budget_id=_wb_lbl.id).all()
+            for _ln in _wlines:
                 _desc = (_ln.description or _ln.account_name or '').strip()
                 _lab = (f"{_ln.account_code} · {_desc}" if (_ln.account_code and _desc)
                         else (_desc or str(_ln.account_code or '') or f"Line {_ln.id}"))
                 actuals_line_labels[_ln.id] = _lab[:90]
+            # Resolve each line's assigned crew member (assigned_crew_id, else the
+            # first CrewAssignment) → show the person on crew-invoice rows.
+            _ids = [ln.id for ln in _wlines]
+            _ca_by_line = {}
+            if _ids:
+                for _ca in _CA.query.filter(_CA.budget_line_id.in_(_ids)).all():
+                    _ca_by_line.setdefault(_ca.budget_line_id, _ca.crew_member_id)
+            _line_cid = {}
+            for _ln in _wlines:
+                _cid = _ln.assigned_crew_id or _ca_by_line.get(_ln.id)
+                if _cid:
+                    _line_cid[_ln.id] = _cid
+            if _line_cid:
+                _names = {c.id: c.name for c in
+                          _CM.query.filter(_CM.id.in_(set(_line_cid.values()))).all()}
+                for _lid, _cid in _line_cid.items():
+                    if _names.get(_cid):
+                        actuals_line_crew[_lid] = _names[_cid]
     except Exception as _le:
         logging.warning(f"[actuals] line labels failed: {_le}")
         actuals_line_labels = {}
+        actuals_line_crew = {}
 
     return render_template("budget.html",
         project=project,
         budget=budget,
         dashboard_stats=dashboard_stats,
         actuals_line_labels=actuals_line_labels,
+        actuals_line_crew=actuals_line_crew,
         all_budgets=all_budgets,
         version_groups=version_groups,
         peer_estimated_bid=peer_estimated_bid,
