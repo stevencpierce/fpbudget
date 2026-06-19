@@ -6616,10 +6616,28 @@ def budget_view(pid, bid):
         logging.warning(f"[dashboard] stats failed: {_de}")
         dashboard_stats = {}
 
+    # Label map (Working line id → "code · description") so the Actuals picker
+    # shows the SPECIFIC line a charge is coded to — not just its section name.
+    # (User 2026-06-18.)
+    actuals_line_labels = {}
+    try:
+        from actuals import get_current_working_budget as _gcw
+        _wb_lbl = _gcw(pid)
+        if _wb_lbl:
+            for _ln in BudgetLine.query.filter_by(budget_id=_wb_lbl.id).all():
+                _desc = (_ln.description or _ln.account_name or '').strip()
+                _lab = (f"{_ln.account_code} · {_desc}" if (_ln.account_code and _desc)
+                        else (_desc or str(_ln.account_code or '') or f"Line {_ln.id}"))
+                actuals_line_labels[_ln.id] = _lab[:90]
+    except Exception as _le:
+        logging.warning(f"[actuals] line labels failed: {_le}")
+        actuals_line_labels = {}
+
     return render_template("budget.html",
         project=project,
         budget=budget,
         dashboard_stats=dashboard_stats,
+        actuals_line_labels=actuals_line_labels,
         all_budgets=all_budgets,
         version_groups=version_groups,
         peer_estimated_bid=peer_estimated_bid,

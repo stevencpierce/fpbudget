@@ -7125,8 +7125,10 @@
                           onfocus="_actualsFillPicker(this)"
                           onchange="actualsSetLine(this)"
                           {% if t.not_project_expense %}disabled{% endif %}>
-                    {% if _cur %}
-                    <option value="{{ _cur }}" selected>{{ t.account_code_name or t.account_code or 'Assigned line' }}</option>
+                    {% if _cur and 'section:' not in _cur %}
+                    <option value="{{ _cur }}" selected>{{ actuals_line_labels.get(_cur|int) or t.account_code_name or 'Assigned line' }}</option>
+                    {% elif _cur %}
+                    <option value="{{ _cur }}" selected>{{ t.account_code_name or t.account_code or 'Section' }} · section only</option>
                     {% else %}
                     <option value="">Add budget line</option>
                     {% endif %}
