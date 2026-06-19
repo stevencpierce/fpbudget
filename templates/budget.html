@@ -8111,15 +8111,28 @@
         if (it.payload && it.payload.suggested_amount != null)
           actions += `<button type="button" class="btn btn-xs btn-primary" onclick="dashResolve(${it.id},'accept_amount',this)">Accept $${_dashEsc(it.payload.suggested_amount)}</button>`;
       } else if (it.type === 'double_coded') {
-        const members = (it.payload && it.payload.members) || [];
-        actions += members.filter(m => m.coded).map(m =>
-          `<div style="display:flex;gap:6px;align-items:center;margin-top:4px;font-size:.72rem">
-             <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">#${m.tid} · ${_dashEsc(m.vendor)} · $${(m.amount != null ? Math.abs(m.amount).toFixed(2) : '?')}${m.account_code_name ? (' · ' + _dashEsc(m.account_code_name)) : ''}</span>
-             <button type="button" class="btn btn-xs btn-ghost" onclick="dashViewTxn(${m.tid}, ${m.doc_upload_id != null ? m.doc_upload_id : 'null'})" title="Open this charge">👁</button>
-             <button type="button" class="btn btn-xs" onclick="dashResolveTxn(${it.id},'uncode',${m.tid},this)" title="Remove this charge's budget coding (keeps the charge)">Un-code</button>
-             <button type="button" class="btn btn-xs" onclick="dashResolveTxn(${it.id},'delete_txn',${m.tid},this)" title="Delete this duplicate charge">Delete</button>
-           </div>`).join('');
-        actions += `<div style="margin-top:6px"><button type="button" class="btn btn-xs btn-ghost" onclick="dashAskAi(${it.id},this)">🤖 Ask AI</button></div>`;
+        const members = (it.payload && it.payload.members || []).filter(m => m.coded);
+        // Differentiate the rows: the one WITH a receipt is the keeper (green),
+        // the bare copy is the likely duplicate (amber). Each in its own box;
+        // Delete is red, Un-code amber. (User 2026-06-18.)
+        actions += '<div style="font-size:.7rem;color:var(--text-muted);margin:2px 0 5px">Same spend coded twice — keep the one with a receipt, remove the other.</div>';
+        actions += members.map(m => {
+          const hasDoc = m.doc_upload_id != null;
+          const tone = hasDoc ? { bd: '#2a6a48', bg: 'rgba(116,198,157,.10)', tag: '#74c69d', label: 'KEEP · has receipt' }
+                              : { bd: '#7a5a2a', bg: 'rgba(224,200,96,.08)', tag: '#e0c060', label: 'likely DUPLICATE' };
+          return `<div style="border:1px solid ${tone.bd};background:${tone.bg};border-radius:6px;padding:6px 8px;margin-bottom:5px">
+             <div style="display:flex;gap:6px;align-items:center;font-size:.72rem">
+               <span style="flex:none;font-weight:700;color:${tone.tag};font-size:.62rem;text-transform:uppercase;letter-spacing:.04em">${tone.label}</span>
+               <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">#${m.tid} · ${_dashEsc(m.vendor)} · $${(m.amount != null ? Math.abs(m.amount).toFixed(2) : '?')}${m.account_code_name ? (' · ' + _dashEsc(m.account_code_name)) : ''}</span>
+             </div>
+             <div style="display:flex;gap:6px;margin-top:5px;justify-content:flex-end">
+               <button type="button" class="btn btn-xs btn-ghost" onclick="dashViewTxn(${m.tid}, ${hasDoc ? m.doc_upload_id : 'null'})" title="Show this charge">View</button>
+               <button type="button" class="btn btn-xs" style="border-color:#7a5a2a;color:#e0c060" onclick="dashResolveTxn(${it.id},'uncode',${m.tid},this)" title="Remove this charge's budget coding (keeps the charge)">Un-code</button>
+               <button type="button" class="btn btn-xs" style="border-color:#7a3a3a;color:#e08080" onclick="dashResolveTxn(${it.id},'delete_txn',${m.tid},this)" title="Delete this duplicate charge">Delete</button>
+             </div>
+           </div>`;
+        }).join('');
+        actions += `<div style="margin-top:2px"><button type="button" class="btn btn-xs btn-ghost" onclick="dashAskAi(${it.id},this)">🤖 Ask AI</button></div>`;
       } else if (it.type === 'budget_mismatch') {
         const p = it.payload || {};
         if (p.kind === 'po_over_cap') {
@@ -8136,9 +8149,9 @@
       // doc-based flags this opens the document (image + editable fields), which
       // also gives 'check extracted data' a real action. (User 2026-06-18.)
       if (it.doc_upload_id) {
-        actions += `<button type="button" class="btn btn-xs btn-ghost" onclick="dashViewDoc(${it.doc_upload_id})" title="Open the document — image + vendor/amount/date you can fix">👁 View document</button>`;
+        actions += `<button type="button" class="btn btn-xs btn-ghost" onclick="dashViewDoc(${it.doc_upload_id})" title="Open the document — image + vendor/amount/date you can fix">🔍 View document</button>`;
       } else if (it.transaction_id && it.type !== 'double_coded') {
-        actions += `<button type="button" class="btn btn-xs btn-ghost" onclick="dashViewTxn(${it.transaction_id}, null)" title="Open this charge">👁 View charge</button>`;
+        actions += `<button type="button" class="btn btn-xs btn-ghost" onclick="dashViewTxn(${it.transaction_id}, null)" title="Show this charge in Actuals">🔍 View charge</button>`;
       }
       return `<div class="dash-flag" data-fid="${it.id}" style="border:1px solid var(--border);border-left:3px solid ${c};border-radius:8px;padding:10px 12px;margin-bottom:8px;background:var(--bg-card)">
         <div style="display:flex;align-items:flex-start;gap:8px">
@@ -8165,9 +8178,26 @@
       else window.open('/docs/upload/' + docId + '/raw', '_blank');
     };
     window.dashViewTxn = function (tid, docId) {
-      if (typeof window.actualsOpenEditTxn === 'function') window.actualsOpenEditTxn(tid, docId || null);
-      else if (docId && typeof window.openDocDetail === 'function') window.openDocDetail(docId, null);
-      else { const t = document.querySelector('[data-tab="actuals"]'); if (t) t.click(); }
+      // Prefer the receipt (modal) when there is one; otherwise reliably show the
+      // charge in Actuals by scrolling to + flashing its row. (User 2026-06-18.)
+      if (docId && typeof window.openDocDetail === 'function') { window.openDocDetail(docId, null); return; }
+      const show = () => {
+        const row = document.querySelector('.actuals-txn-row[data-tid="' + tid + '"]');
+        if (row) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          const prev = row.style.background;
+          row.style.transition = 'background .8s';
+          row.style.background = 'rgba(91,138,249,.22)';
+          setTimeout(() => { row.style.background = prev || ''; }, 1600);
+        } else if (typeof window.actualsOpenEditTxn === 'function') {
+          window.actualsOpenEditTxn(tid, docId || null);
+        } else if (typeof _actualsToast === 'function') {
+          _actualsToast('Could not locate that charge — it may be filtered or coded away.', 'yellow');
+        }
+      };
+      const panel = document.getElementById('tab-actuals');
+      if (panel && panel.classList.contains('active')) { show(); }
+      else { const t = document.querySelector('[data-tab="actuals"]'); if (t) t.click(); setTimeout(show, 450); }
     };
     window.dashResolve = async function (fid, action, btn) {
       if (btn) btn.disabled = true;

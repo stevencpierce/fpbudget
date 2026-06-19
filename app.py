@@ -10191,10 +10191,22 @@ def actuals_reconcile_scan(pid):
                             "phantom": phantom,
                             "reimport": bool(t.source == 'qbo_sync' and t.qbo_txn_id and qid_counts[t.qbo_txn_id] > 1),
                             "deletable": ((t.source in ('qbo_sync', 'csv_import', 'manual_entry') and not t.doc_upload_id) or phantom)})
-        n_elec = len([c for c in charges if c["source"] in ('qbo_sync', 'csv_import', 'reconciled')])
+        # Sign-aware duplicate flags: a charge (+) and its refund (−) share a
+        # magnitude (kept grouped so they can be matched) but are NOT duplicates —
+        # only 2+ of the SAME sign are. (User 2026-06-18.)
+        def _sgn(a):
+            try:
+                a = float(a)
+            except (TypeError, ValueError):
+                return 0
+            return 1 if a > 0 else (-1 if a < 0 else 0)
+        _elec_signs = [_sgn(c["amount"]) for c in charges
+                       if c["source"] in ('qbo_sync', 'csv_import', 'reconciled')]
+        _rec_signs = [_sgn(r["amount"]) for r in receipts]
         flags = {
-            "dup_receipts": len(gd) > 1,
-            "dup_charges": (any(c["reimport"] for c in charges) or n_elec > 1),
+            "dup_receipts": (_rec_signs.count(1) > 1 or _rec_signs.count(-1) > 1),
+            "dup_charges": (any(c["reimport"] for c in charges)
+                            or _elec_signs.count(1) > 1 or _elec_signs.count(-1) > 1),
             "phantom": any(c["phantom"] for c in charges),
             "needs_match": (any(c["source"] in ('qbo_sync', 'csv_import') and c["match_status"] == 'unmatched'
                                 and not c["doc_upload_id"] for c in charges)

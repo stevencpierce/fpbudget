@@ -130,13 +130,17 @@ def scan_double_coded(project_id):
     clusters = {}
     for t in rows:
         try:
-            amt = abs(float(t.amount))
+            amt = float(t.amount)
         except (TypeError, ValueError):
             continue
-        if amt <= 0:
+        if amt == 0:
             continue
         date = (t.txn_date or '')[:10]
-        key = "%.2f|%s|%s|%s" % (amt, date, canon_vendor(t.vendor), (t.card_last4 or '').strip())
+        # Key on the SIGNED amount so a charge (+) and its refund (−) of the same
+        # magnitude are NOT treated as duplicates — only same-sign repeats are.
+        # (User 2026-06-18.)
+        sign = '+' if amt > 0 else '-'
+        key = "%s%.2f|%s|%s|%s" % (sign, abs(amt), date, canon_vendor(t.vendor), (t.card_last4 or '').strip())
         clusters.setdefault(key, []).append(t)
 
     out = []
