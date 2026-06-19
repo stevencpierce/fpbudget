@@ -8079,6 +8079,7 @@
         actions += members.filter(m => m.coded).map(m =>
           `<div style="display:flex;gap:6px;align-items:center;margin-top:4px;font-size:.72rem">
              <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">#${m.tid} · ${_dashEsc(m.vendor)} · $${(m.amount != null ? Math.abs(m.amount).toFixed(2) : '?')}${m.account_code_name ? (' · ' + _dashEsc(m.account_code_name)) : ''}</span>
+             <button type="button" class="btn btn-xs btn-ghost" onclick="dashViewTxn(${m.tid}, ${m.doc_upload_id != null ? m.doc_upload_id : 'null'})" title="Open this charge">👁</button>
              <button type="button" class="btn btn-xs" onclick="dashResolveTxn(${it.id},'uncode',${m.tid},this)" title="Remove this charge's budget coding (keeps the charge)">Un-code</button>
              <button type="button" class="btn btn-xs" onclick="dashResolveTxn(${it.id},'delete_txn',${m.tid},this)" title="Delete this duplicate charge">Delete</button>
            </div>`).join('');
@@ -8091,6 +8092,14 @@
           actions += `<button type="button" class="btn btn-xs btn-primary" onclick="document.querySelector('[data-tab=actuals]').click()">Open Actuals</button>`;
         }
         actions += `<button type="button" class="btn btn-xs btn-ghost" onclick="dashAskAi(${it.id},this)">🤖 Ask AI</button>`;
+      }
+      // Universal: always let the user OPEN the underlying item to decide. For
+      // doc-based flags this opens the document (image + editable fields), which
+      // also gives 'check extracted data' a real action. (User 2026-06-18.)
+      if (it.doc_upload_id) {
+        actions += `<button type="button" class="btn btn-xs btn-ghost" onclick="dashViewDoc(${it.doc_upload_id})" title="Open the document — image + vendor/amount/date you can fix">👁 View document</button>`;
+      } else if (it.transaction_id && it.type !== 'double_coded') {
+        actions += `<button type="button" class="btn btn-xs btn-ghost" onclick="dashViewTxn(${it.transaction_id}, null)" title="Open this charge">👁 View charge</button>`;
       }
       return `<div class="dash-flag" data-fid="${it.id}" style="border:1px solid var(--border);border-left:3px solid ${c};border-radius:8px;padding:10px 12px;margin-bottom:8px;background:var(--bg-card)">
         <div style="display:flex;align-items:flex-start;gap:8px">
@@ -8110,6 +8119,17 @@
       const host = document.getElementById('dash-action-center');
       if (host && !host.querySelector('.dash-flag')) dashRenderAnomalies([]);
     }
+    // Open the underlying document (image + editable vendor/amount/date) or charge
+    // so the user can SEE what a flag refers to and fix it. (User 2026-06-18.)
+    window.dashViewDoc = function (docId) {
+      if (typeof window.openDocDetail === 'function') window.openDocDetail(docId, null);
+      else window.open('/docs/upload/' + docId + '/raw', '_blank');
+    };
+    window.dashViewTxn = function (tid, docId) {
+      if (typeof window.actualsOpenEditTxn === 'function') window.actualsOpenEditTxn(tid, docId || null);
+      else if (docId && typeof window.openDocDetail === 'function') window.openDocDetail(docId, null);
+      else { const t = document.querySelector('[data-tab="actuals"]'); if (t) t.click(); }
+    };
     window.dashResolve = async function (fid, action, btn) {
       if (btn) btn.disabled = true;
       try {
