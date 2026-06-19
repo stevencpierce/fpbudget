@@ -8191,22 +8191,26 @@
     window.actualsAiMatch = async function (btn) {
       const _o = btn ? btn.textContent : '';
       if (btn) { btn.disabled = true; btn.textContent = '🤖 Matching…'; }
-      let suggested = 0, processed = 0;
+      let suggested = 0, processed = 0, errored = false;
       try {
         for (let i = 0; i < 80; i++) {
-          let r;
-          try { r = await fetch(`/projects/${PROJ_ID}/actuals/ai-match`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 6 }) }); }
-          catch (e) { break; }
-          if (!r.ok) break;
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/ai-match`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 6 }) });
+          if (!r.ok) {
+            errored = true;
+            let detail = r.status;
+            try { const ej = await r.json(); if (ej && ej.error) detail = ej.error; } catch (e) {}
+            if (typeof _actualsToast === 'function') _actualsToast('AI match failed (' + detail + ').', 'yellow');
+            break;
+          }
           const j = await r.json();
           suggested += j.suggested || 0; processed += j.processed || 0;
           if (btn) btn.textContent = `🤖 ${suggested} matched…`;
           if (!j.processed || !j.remaining) break;
         }
-        if (typeof _actualsToast === 'function') _actualsToast(processed
+        if (!errored && typeof _actualsToast === 'function') _actualsToast(processed
           ? `AI proposed ${suggested} match(es). Reloading to review — click Confirm on each.`
-          : 'No unmatched charges to match.', 'green');
-        if (suggested) setTimeout(() => window.location.reload(), 1100);
+          : 'No unmatched charges left to match.', 'green');
+        if (!errored && suggested) setTimeout(() => window.location.reload(), 1100);
         else if (btn) { btn.disabled = false; btn.textContent = _o || '🤖 AI match'; }
       } catch (e) {
         if (btn) { btn.disabled = false; btn.textContent = _o || '🤖 AI match'; }

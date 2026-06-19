@@ -9013,7 +9013,8 @@ def actuals_ai_match(pid):
     except Exception as e:
         logging.exception("[ai-match] candidate build failed")
         return jsonify({"error": str(e)}), 500
-    by_charge = {c["charge"]["id"]: c for c in cand}
+    # find_match_candidates returns {results:[{charge, candidates, ...}], ...}.
+    by_charge = {c["charge"]["id"]: c for c in (cand.get("results") or [])}
 
     q = (Transaction.query
          .filter(Transaction.project_id == pid,
