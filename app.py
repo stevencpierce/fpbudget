@@ -6608,6 +6608,9 @@ def budget_view(pid, bid):
             'anomalies': _AF.query.filter_by(project_id=pid, resolved=False).count(),
             'dup_alerts': _AF.query.filter_by(project_id=pid, resolved=False,
                                               type='double_coded').count(),
+            'matches_to_review': Transaction.query.filter(
+                Transaction.project_id == pid,
+                Transaction.match_status == 'suggested').count(),
         }
     except Exception as _de:
         logging.warning(f"[dashboard] stats failed: {_de}")
@@ -9105,6 +9108,44 @@ def actuals_clear_match_suggestions(pid):
      .update({Transaction.ai_match_checked_at: None}, synchronize_session=False))
     db.session.commit()
     return jsonify({"ok": True, "cleared": n})
+
+
+@app.route("/projects/<int:pid>/actuals/unmatch-all", methods=["POST"])
+@login_required
+def actuals_unmatch_all(pid):
+    """TEST RESET: unlink EVERY charge from its receipt and return all matched
+    charges (suggested AND confirmed) to the unmatched pool, reverting
+    reconciled→csv_import so they re-enter the candidate pool, and clearing the
+    AI-match watermark. Receipts (DocUpload) become available candidates again.
+    Body {confirm:true} required — intended for a sandbox project. (User 2026-06-18.)"""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    body = request.get_json(silent=True) or {}
+    if not body.get('confirm'):
+        return jsonify({"error": "pass {confirm: true} to confirm this reset"}), 400
+    reverted = (Transaction.query
+                .filter(Transaction.project_id == pid, Transaction.source == 'reconciled')
+                .update({Transaction.source: 'csv_import'}, synchronize_session=False))
+    unmatched = (Transaction.query
+                 .filter(Transaction.project_id == pid,
+                         Transaction.source.in_(('qbo_sync', 'csv_import')),
+                         db.or_(Transaction.doc_upload_id.isnot(None),
+                                Transaction.match_status != 'unmatched',
+                                Transaction.ai_match_checked_at.isnot(None)))
+                 .update({Transaction.doc_upload_id: None,
+                          Transaction.match_status: 'unmatched',
+                          Transaction.match_confidence: None,
+                          Transaction.match_source: None,
+                          Transaction.ai_match_checked_at: None},
+                         synchronize_session=False))
+    # Also clear any 'remembered' rejections so nothing is suppressed in the re-test.
+    try:
+        from models import MatchRejection
+        MatchRejection.query.filter_by(project_id=pid).delete(synchronize_session=False)
+    except Exception:
+        pass
+    db.session.commit()
+    return jsonify({"ok": True, "unmatched": unmatched, "reverted_reconciled": reverted})
 
 
 @app.route("/projects/<int:pid>/docs/ai-cleanup", methods=["POST"])

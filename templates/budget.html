@@ -556,6 +556,12 @@
       <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Docs to review</div>
       <div style="font-size:1.15rem;font-weight:700">{{ _ds.get('docs_review', 0) }}</div>
     </div>
+    {% if _ds.get('matches_to_review', 0) %}
+    <div class="dash-card" onclick="dashOpenMatchReview()" style="border:1px solid #4a3a1a;border-radius:8px;padding:10px 12px;background:#2a2414;cursor:pointer" title="Review the receipt↔charge matches AI proposed">
+      <div style="font-size:.64rem;text-transform:uppercase;letter-spacing:.06em;color:#f0c060">⚡ Matches to review</div>
+      <div style="font-size:1.15rem;font-weight:700;color:#f0c060">{{ _ds.get('matches_to_review', 0) }} <span style="font-size:.62rem;font-weight:600">→ review</span></div>
+    </div>
+    {% endif %}
   </div>
 
   <div id="dash-action-center" style="margin-bottom:16px">
@@ -8207,15 +8213,33 @@
           if (btn) btn.textContent = `🤖 ${suggested} matched…`;
           if (!j.processed || !j.remaining) break;
         }
-        if (!errored && typeof _actualsToast === 'function') _actualsToast(processed
-          ? `AI proposed ${suggested} match(es). Reloading to review — click Confirm on each.`
-          : 'No unmatched charges left to match.', 'green');
-        if (!errored && suggested) setTimeout(() => window.location.reload(), 1100);
-        else if (btn) { btn.disabled = false; btn.textContent = _o || '🤖 AI match'; }
+        if (!errored && suggested) {
+          // New proposals — reload so the gold banners render, then auto-open the
+          // Review-matches view (flag survives the reload).
+          if (typeof _actualsToast === 'function') _actualsToast(`AI proposed ${suggested} match(es). Opening review…`, 'green');
+          try { sessionStorage.setItem('fpOpenMatchReview', '1'); } catch (e) {}
+          setTimeout(() => window.location.reload(), 1000);
+        } else if (!errored) {
+          // Nothing new examined. If matches are already waiting, open review now.
+          const rc = document.getElementById('actualsReviewBtn');
+          if (rc && rc.offsetParent !== null && typeof actualsReviewMatches === 'function') {
+            if (typeof _actualsToast === 'function') _actualsToast('No new charges — opening the matches already waiting.', 'green');
+            actualsReviewMatches();
+          } else if (typeof _actualsToast === 'function') {
+            _actualsToast('No unmatched charges left to match.', 'green');
+          }
+          if (btn) { btn.disabled = false; btn.textContent = _o || '🤖 AI match'; }
+        } else if (btn) { btn.disabled = false; btn.textContent = _o || '🤖 AI match'; }
       } catch (e) {
         if (btn) { btn.disabled = false; btn.textContent = _o || '🤖 AI match'; }
         if (typeof _actualsToast === 'function') _actualsToast('AI match failed: ' + e.message, 'yellow');
       }
+    };
+    // Open the Review-matches view from the Dashboard card.
+    window.dashOpenMatchReview = function () {
+      const tb = document.querySelector('[data-tab="actuals"]');
+      if (tb) tb.click();
+      setTimeout(() => { if (typeof actualsReviewMatches === 'function') actualsReviewMatches(); }, 350);
     };
 
     // ── AI line-suggestion review bar (Actuals) — 2026-06-18 ──────────
@@ -8288,6 +8312,13 @@
       if (tb) tb.addEventListener('click', () => setTimeout(_actualsRefreshSuggBar, 200));
       const p = document.getElementById('tab-actuals');
       if (p && p.classList.contains('active')) setTimeout(_actualsRefreshSuggBar, 400);
+      // After an AI-match run reloads the page, auto-open the Review-matches view.
+      let _wantReview = false;
+      try { _wantReview = sessionStorage.getItem('fpOpenMatchReview') === '1'; if (_wantReview) sessionStorage.removeItem('fpOpenMatchReview'); } catch (e) {}
+      if (_wantReview) setTimeout(() => {
+        const t = document.querySelector('[data-tab="actuals"]'); if (t) t.click();
+        setTimeout(() => { if (typeof actualsReviewMatches === 'function') actualsReviewMatches(); }, 400);
+      }, 500);
     })();
 
     window.dashScanDupes = async function (btn) {
