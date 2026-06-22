@@ -19463,6 +19463,38 @@ def callsheet_view(pid, bid, date_str=None):
     for d in days_today:
         days_by_line_inst[(d.budget_line_id, d.crew_instance or 1)] = d
 
+    # Travel details for today's schedule days, keyed by schedule_day_id, so each
+    # person's flight/hotel/car (with confirmation #) renders on their call sheet.
+    # (User 2026-06-22, travel Slice 2.)
+    _sd_ids_today = [d.id for d in days_today]
+    _travel_by_sd = {}
+    if _sd_ids_today:
+        for _td in TravelDetail.query.filter(
+                TravelDetail.schedule_day_id.in_(_sd_ids_today)).all():
+            _travel_by_sd.setdefault(_td.schedule_day_id, []).append(_td)
+
+    def _cs_td_view(td):
+        def _tm(x): return x.strftime('%-I:%M %p') if x else None
+        def _dd(x): return x.strftime('%b %-d') if x else None
+        v = {"kind": td.kind, "confirmation_no": td.confirmation_no, "notes": td.notes}
+        if td.kind == 'flight':
+            v.update(airline=td.airline, flight_no=td.flight_no,
+                     depart_airport=td.depart_airport, arrive_airport=td.arrive_airport,
+                     depart_at=_tm(td.depart_at), arrive_at=_tm(td.arrive_at))
+        elif td.kind == 'hotel':
+            v.update(hotel_name=td.hotel_name, hotel_address=td.hotel_address,
+                     check_in=_dd(td.check_in), check_out=_dd(td.check_out),
+                     room_type=td.room_type)
+        elif td.kind == 'car_rental':
+            v.update(rental_co=td.rental_co, pickup_location=td.pickup_location,
+                     pickup_at=_tm(td.pickup_at), return_at=_tm(td.return_at))
+        return v
+
+    def _cs_travel_for(sd):
+        if not sd:
+            return []
+        return [_cs_td_view(t) for t in _travel_by_sd.get(sd.id, [])]
+
     crew_rows = []  # {section_code, section_name, role, name, day_type, phone, email}
     for ln in lines_today:
         sec_code = _section_for_code(ln.account_code)
@@ -19486,6 +19518,7 @@ def callsheet_view(pid, bid, date_str=None):
                     'phone': phone or '',
                     'email': email or '',
                     'account_code': ln.account_code,
+                    'travel': _cs_travel_for(sd),
                 })
         else:
             # Line has no assignment yet — show role with blank name
@@ -19501,6 +19534,7 @@ def callsheet_view(pid, bid, date_str=None):
                     'phone': '',
                     'email': '',
                     'account_code': ln.account_code,
+                    'travel': _cs_travel_for(sd),
                 })
 
     # Separate ATL/Talent from crew.

@@ -603,6 +603,19 @@ Example:
                     onblur="crewCallBlur(this)"
                     oninput="this.dataset.isOverride='true'">{{ cs_data.get('crew_call_times', {}).get(crew_key, '') or '' }}</td>
               </tr>
+              {% if r.travel %}
+              <tr class="cs-crew-travel-row">
+                <td colspan="3" style="padding:1px 8px 5px 8px;border-top:none">
+                  {% for t in r.travel %}
+                  <div style="font-size:.72rem;color:#3a4453;line-height:1.45;white-space:normal">
+                    {% if t.kind == 'flight' %}✈️ {{ t.airline or 'Flight' }}{% if t.flight_no %} {{ t.flight_no }}{% endif %}{% if t.depart_airport or t.arrive_airport %} · {{ t.depart_airport or '?' }}→{{ t.arrive_airport or '?' }}{% endif %}{% if t.depart_at %} · {{ t.depart_at }}{% if t.arrive_at %}–{{ t.arrive_at }}{% endif %}{% endif %}{% if t.confirmation_no %} · <span style="font-weight:700;color:#1c2430">Conf {{ t.confirmation_no }}</span>{% endif %}
+                    {% elif t.kind == 'hotel' %}🏨 {{ t.hotel_name or 'Hotel' }}{% if t.check_in or t.check_out %} · {{ t.check_in or '?' }}–{{ t.check_out or '?' }}{% endif %}{% if t.room_type %} · {{ t.room_type }}{% endif %}{% if t.confirmation_no %} · <span style="font-weight:700;color:#1c2430">Conf {{ t.confirmation_no }}</span>{% endif %}
+                    {% elif t.kind == 'car_rental' %}🚗 {{ t.rental_co or 'Car rental' }}{% if t.pickup_location %} · {{ t.pickup_location }}{% endif %}{% if t.pickup_at %} · {{ t.pickup_at }}{% if t.return_at %}–{{ t.return_at }}{% endif %}{% endif %}{% if t.confirmation_no %} · <span style="font-weight:700;color:#1c2430">Conf {{ t.confirmation_no }}</span>{% endif %}{% endif %}
+                  </div>
+                  {% endfor %}
+                </td>
+              </tr>
+              {% endif %}
               {% endfor %}
             </tbody>
           </table>
