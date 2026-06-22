@@ -10018,6 +10018,16 @@ def actuals_edit_transaction(pid, tid):
                 except Exception:
                     pass
 
+    # Smart vendor rename: when the vendor changes, propagate the new name to
+    # every other item in this project that shares the old vendor's canonical key
+    # and learn the alias for future imports. (User 2026-06-22.)
+    _vendor_prop = {"count": 0, "items": [], "canon": ""}
+    if "vendor" in data and txn.vendor:
+        _old_v = _edit_before.get('vendor')
+        if _old_v:
+            from actuals import propagate_vendor_rename
+            _vendor_prop = propagate_vendor_rename(pid, _old_v, txn.vendor, exclude_tid=txn.id)
+
     db.session.commit()
     try:
         _edit_after = {'vendor': txn.vendor,
@@ -10042,7 +10052,40 @@ def actuals_edit_transaction(pid, tid):
         "amount": float(txn.amount) if txn.amount is not None else None,
         "txn_date": txn.txn_date,
         "note":     txn.note,
+        "vendor_propagation": _vendor_prop,
+        "old_vendor": _edit_before.get('vendor'),
     })
+
+
+@app.route("/projects/<int:pid>/actuals/vendor-rename/undo", methods=["POST"])
+@login_required
+def actuals_vendor_rename_undo(pid):
+    """Revert a smart vendor-rename propagation: restore the prior vendor on each
+    listed transaction/document and drop the learned alias for that canon."""
+    data = request.get_json(force=True) or {}
+    items = data.get("items") or []
+    canon = (data.get("canon") or "").strip()
+    n = 0
+    for it in items:
+        try:
+            if it.get("type") == "txn":
+                r = Transaction.query.filter_by(id=it.get("id"), project_id=pid).first()
+            else:
+                r = DocUpload.query.filter_by(id=it.get("id"), project_id=pid).first()
+            if r is not None:
+                r.vendor = (it.get("old") or None)
+                n += 1
+        except Exception:
+            pass
+    if canon:
+        try:
+            from models import VendorAlias
+            VendorAlias.query.filter_by(project_id=pid, raw_canonical=canon).delete(
+                synchronize_session=False)
+        except Exception:
+            pass
+    db.session.commit()
+    return jsonify({"ok": True, "reverted": n})
 
 
 @app.route("/projects/<int:pid>/actuals/init", methods=["GET"])

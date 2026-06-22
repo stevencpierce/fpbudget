@@ -9867,6 +9867,44 @@
       setTimeout(() => t.remove(), 4000);
     }
 
+    // Undo-capable toast for smart vendor-rename propagation.
+    function _vendorRenameToast(prop, oldVendor, newVendor) {
+      const t = document.createElement('div');
+      t.style.cssText = `position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+        background:#1a3a2a;color:#74c69d;border:1px solid #2a5a3a;border-radius:6px;
+        padding:10px 16px;font-size:.85rem;z-index:9999;box-shadow:0 6px 24px rgba(0,0,0,.5);
+        max-width:560px;display:flex;align-items:center;gap:14px`;
+      const msg = document.createElement('span');
+      msg.textContent = `Saved — also renamed ${prop.count} other item${prop.count===1?'':'s'} ` +
+        `to “${newVendor}”.`;
+      const undo = document.createElement('button');
+      undo.textContent = 'Undo';
+      undo.style.cssText = `background:none;border:1px solid #2a5a3a;color:#9fe0b6;
+        border-radius:5px;padding:3px 12px;font-size:.8rem;cursor:pointer;flex:none`;
+      undo.onclick = async () => {
+        undo.disabled = true; undo.textContent = 'Undoing…';
+        try {
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/vendor-rename/undo`, {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({items: prop.items, canon: prop.canon})});
+          const d = await r.json();
+          if (r.ok) {
+            (prop.items || []).forEach(it => {
+              if (it.type !== 'txn') return;
+              const r2 = document.querySelector(`.actuals-txn-row[data-tid="${it.id}"]`);
+              if (r2) { const v2 = r2.querySelector('.actuals-txn-vendor');
+                if (v2) { v2.textContent = it.old || '— vendor unknown —'; v2.title = it.old || ''; } }
+            });
+            t.remove();
+            _actualsToast(`Reverted ${d.reverted} item${d.reverted===1?'':'s'}.`, 'yellow');
+          } else { _actualsToast('Undo failed: ' + (d.error || r.status), 'red'); }
+        } catch (e) { _actualsToast('Undo error: ' + e.message, 'red'); }
+      };
+      t.appendChild(msg); t.appendChild(undo);
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 9000);
+    }
+
     // ── Multi-select (Cmd/Shift click) + bulk drag ────────────────────
     const _selectedTids = new Set();
     let _lastClickedTid = null;  // anchor for shift-range
@@ -12018,7 +12056,22 @@
             }
           }
         }
-        _actualsToast('Transaction saved.', 'green');
+        // Smart vendor rename: reflect any propagated siblings in the grid and
+        // offer a one-click Undo. (User 2026-06-22.)
+        const prop = d.vendor_propagation || {count: 0, items: []};
+        if (prop.count > 0) {
+          (prop.items || []).forEach(it => {
+            if (it.type !== 'txn') return;
+            const r2 = document.querySelector(`.actuals-txn-row[data-tid="${it.id}"]`);
+            if (r2) {
+              const v2 = r2.querySelector('.actuals-txn-vendor');
+              if (v2) { v2.textContent = payload.vendor || '— vendor unknown —'; v2.title = payload.vendor || ''; }
+            }
+          });
+          _vendorRenameToast(prop, d.old_vendor, payload.vendor);
+        } else {
+          _actualsToast('Transaction saved.', 'green');
+        }
         actualsCloseEditTxn();
       } catch (e) {
         _actualsToast('Save error: ' + e.message, 'red');

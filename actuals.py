@@ -110,6 +110,54 @@ def record_vendor_alias(project_id, raw_vendor, clean_name):
         log.warning("[vendor-alias] record failed for %r → %r: %s", raw_vendor, clean_name, e)
 
 
+def propagate_vendor_rename(project_id, old_vendor, new_vendor, exclude_tid=None):
+    """Smart vendor rename: relabel every OTHER transaction + document in the
+    project that shares the OLD vendor's canonical key (canon_vendor) to NEW, and
+    learn the alias so future imports auto-apply. canon_vendor() groups variants
+    like 'BRITISH A 1254247311910' / '...908' onto one key, so renaming one
+    'British Airways' charge sweeps the rest. Does NOT commit (caller commits).
+    Returns {count, items:[{type,id,old}], canon}. Fail-soft. (User 2026-06-22.)"""
+    new_vendor = (new_vendor or '').strip()
+    cv = canon_vendor(old_vendor)
+    if not new_vendor or not cv:
+        return {"count": 0, "items": [], "canon": cv}
+    changed = []
+    try:
+        seen_docs = set()
+        txns = (Transaction.query
+                .filter(Transaction.project_id == project_id,
+                        Transaction.vendor.isnot(None))
+                .all())
+        for t in txns:
+            if exclude_tid and t.id == exclude_tid:
+                if t.doc_upload_id:
+                    seen_docs.add(t.doc_upload_id)
+                continue
+            if canon_vendor(t.vendor) == cv and (t.vendor or '') != new_vendor:
+                changed.append({"type": "txn", "id": t.id, "old": t.vendor})
+                t.vendor = new_vendor[:300]
+                if t.doc_upload_id:
+                    d = DocUpload.query.get(t.doc_upload_id)
+                    if d and (d.vendor or '') != new_vendor:
+                        changed.append({"type": "doc", "id": d.id, "old": d.vendor})
+                        d.vendor = new_vendor[:200]
+                    seen_docs.add(t.doc_upload_id)
+        docs = (DocUpload.query
+                .filter(DocUpload.project_id == project_id,
+                        DocUpload.vendor.isnot(None))
+                .all())
+        for d in docs:
+            if d.id in seen_docs:
+                continue
+            if canon_vendor(d.vendor) == cv and (d.vendor or '') != new_vendor:
+                changed.append({"type": "doc", "id": d.id, "old": d.vendor})
+                d.vendor = new_vendor[:200]
+        record_vendor_alias(project_id, old_vendor, new_vendor)
+    except Exception as e:
+        log.warning("[vendor-rename] propagate failed: %s", e)
+    return {"count": len(changed), "items": changed, "canon": cv}
+
+
 # ── Double-coded duplicate detection (2026-06-18) ─────────────────────────
 def scan_double_coded(project_id):
     """Find groups of transactions that look like the SAME spend coded into the
