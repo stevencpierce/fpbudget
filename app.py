@@ -10024,7 +10024,9 @@ def actuals_edit_transaction(pid, tid):
     _vendor_prop = {"count": 0, "items": [], "canon": ""}
     if "vendor" in data and txn.vendor:
         _old_v = _edit_before.get('vendor')
-        if _old_v:
+        # Only when the vendor genuinely changed — re-saving an unchanged row must
+        # not sweep canonical siblings.
+        if _old_v and (_old_v or '').strip() != (txn.vendor or '').strip():
             from actuals import propagate_vendor_rename
             _vendor_prop = propagate_vendor_rename(pid, _old_v, txn.vendor, exclude_tid=txn.id)
 
