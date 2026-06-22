@@ -8359,6 +8359,16 @@
         host.innerHTML = '<div style="color:#e08080;font-size:.7rem">Could not load review queue: ' + _dashEsc(e.message) + '</div>';
       }
     };
+    // Type metadata for the grouped, collapsible Action Center. (User 2026-06-22:
+    // the flat list got too long to scroll — group by kind, collapse, and cap the
+    // height so each kind is one compact header until expanded.)
+    const _DASH_GROUP_META = {
+      double_coded:    { icon: '⧉',  label: 'Duplicate charges',   order: 1 },
+      budget_mismatch: { icon: '📊', label: 'Budget mismatches',   order: 2 },
+      data_issue:      { icon: '⚠',  label: 'Check extracted data', order: 3 },
+      people_line:     { icon: '👤', label: 'Assign to person',     order: 4 },
+      vendor_cleanup:  { icon: '🏷️', label: 'Confirm vendors',      order: 5 },
+    };
     function dashRenderAnomalies(items) {
       const host = document.getElementById('dash-action-center');
       if (!host) return;
@@ -8367,9 +8377,39 @@
         return;
       }
       const sev = { high: '#e08080', medium: '#e0c060', low: '#9ec0ff' };
-      const head = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><h4 style="margin:0;font-size:.92rem">⚠ Action Center</h4><span style="font-size:.7rem;color:var(--text-muted)">${items.length} item${items.length > 1 ? 's' : ''} need review</span></div>`;
-      host.innerHTML = head + items.map(it => dashCardHtml(it, sev)).join('');
+      const groups = {};
+      items.forEach(it => { (groups[it.type] = groups[it.type] || []).push(it); });
+      const types = Object.keys(groups).sort((a, b) =>
+        ((_DASH_GROUP_META[a]?.order || 9) - (_DASH_GROUP_META[b]?.order || 9)));
+      const head = `<style>#dash-action-center .dash-group>summary::-webkit-details-marker{display:none}
+          #dash-action-center .dash-group>summary::marker{content:''}</style>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <h4 style="margin:0;font-size:.92rem">⚠ Action Center</h4>
+          <span style="font-size:.7rem;color:var(--text-muted)">${items.length} item${items.length > 1 ? 's' : ''} need review</span>
+          <button type="button" class="btn btn-xs btn-ghost" style="margin-left:auto" onclick="dashToggleAllGroups()">Expand / collapse all</button>
+        </div>`;
+      const body = types.map((t, i) => {
+        const m = _DASH_GROUP_META[t] || { icon: '•', label: t };
+        const cards = groups[t].map(it => dashCardHtml(it, sev)).join('');
+        // Open the top-priority group by default (when not huge); collapse the rest.
+        const openAttr = (i === 0 && groups[t].length <= 8) ? ' open' : '';
+        return `<details class="dash-group"${openAttr} style="margin-bottom:8px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card)">
+            <summary style="cursor:pointer;list-style:none;padding:8px 12px;display:flex;align-items:center;gap:8px;font-size:.82rem;font-weight:600">
+              <span>${m.icon}</span><span>${_dashEsc(m.label)}</span>
+              <span style="color:var(--text-muted);font-weight:400">(${groups[t].length})</span>
+              <span style="margin-left:auto;color:var(--text-muted);font-size:.78rem">▾</span>
+            </summary>
+            <div style="padding:0 10px 6px">${cards}</div>
+          </details>`;
+      }).join('');
+      host.innerHTML = head +
+        `<div id="dash-ac-scroll" style="max-height:440px;overflow-y:auto;padding-right:4px">${body}</div>`;
     }
+    window.dashToggleAllGroups = function () {
+      const gs = document.querySelectorAll('#dash-ac-scroll .dash-group');
+      const anyClosed = [...gs].some(g => !g.open);
+      gs.forEach(g => { g.open = anyClosed; });
+    };
     function dashCardHtml(it, sev) {
       const c = sev[it.severity] || '#9ec0ff';
       let actions = '';
