@@ -2654,6 +2654,47 @@ def _send_email(to, subject, body, attachment_bytes=None, attachment_filename=No
         return False
 
 
+def _project_notify_recipients(pid, extra_emails=None):
+    """Active Super-Admin / Admin users who are ON this project (have a
+    ProjectAccess row), plus any explicit extra addresses, de-duped. This is the
+    audience for project-update emails. Scoped to Super/Admin for now per
+    user request 2026-06-22 ("for now let's just work Super and Admin")."""
+    seen = {}
+    try:
+        rows = (User.query
+                .join(ProjectAccess, ProjectAccess.user_id == User.id)
+                .filter(ProjectAccess.project_id == pid,
+                        User.role.in_(('super_admin', 'admin')),
+                        User.is_active == True)
+                .all())
+        for u in rows:
+            if u.email:
+                seen[u.email.lower()] = (u.email, u.name or u.email)
+    except Exception:
+        logging.warning("project notify recipient lookup failed", exc_info=True)
+    for e in (extra_emails or []):
+        if e and e.lower() not in seen:
+            seen[e.lower()] = (e, e)
+    return list(seen.values())
+
+
+def _notify_project_event(pid, subject, body, extra_emails=None):
+    """Best-effort email to the project's Super/Admin audience about a
+    project-level event (estimate sent / approved / declined / new version).
+    Fail-open: a mail problem never breaks the originating action. Returns count
+    of messages sent."""
+    if not app.config.get('MAIL_USERNAME'):
+        return 0
+    sent = 0
+    for email, _name in _project_notify_recipients(pid, extra_emails=extra_emails):
+        try:
+            if _send_email(email, subject, body):
+                sent += 1
+        except Exception:
+            logging.warning("project notify send failed for %s", email, exc_info=True)
+    return sent
+
+
 def _send_sms(to_phone, body):
     """Send SMS via Twilio — silently no-ops if not configured."""
     sid   = os.getenv('TWILIO_ACCOUNT_SID', '')
@@ -4582,6 +4623,19 @@ def budget_new(pid):
                                    parent_bid=source.id if source else None,
                                    version_number=next_vnum)
     db.session.commit()
+
+    # Notify the project's Super/Admin audience that a new version was created.
+    try:
+        _who = current_user.name or current_user.email
+        _budget_link = url_for('budget_view', pid=pid, bid=b.id, _external=True)
+        _notify_project_event(
+            pid,
+            f"New budget version — {project.name} (v{next_vnum})",
+            (f"{_who} created a new Estimated budget version for {project.name}.\n\n"
+             f"Version: v{next_vnum} — {b.name}\n\n"
+             f"Open it: {_budget_link}"))
+    except Exception:
+        logging.warning("new-version notify failed", exc_info=True)
 
     flash(f"Created {b.name} — now add a Working budget when ready.", "success")
     return redirect(url_for("budget_view", pid=pid, bid=b.id))
@@ -12277,10 +12331,42 @@ def estimate_share_create(pid, bid):
             else:
                 email_error = "Email send failed — use the copyable link instead."
 
+    # Notify the project's Super/Admin audience that an estimate went out.
+    try:
+        _budget_link = url_for('budget_view', pid=pid, bid=bid, _external=True)
+        _who = current_user.name or current_user.email
+        _notify_project_event(
+            pid,
+            f"Estimate sent — {project.name} ({snap.get('version_label')})",
+            (f"{_who} sent an estimate to the client for {project.name}.\n\n"
+             f"Version: {snap.get('version_label')}\n"
+             f"Client: {client_name or '—'}"
+             + (f" <{client_email}>" if client_email else "") + "\n"
+             f"Estimated total: ${grand:,.2f}\n"
+             f"Emailed to client: {'yes' if emailed else 'no (link shared manually)'}\n\n"
+             f"Open the budget: {_budget_link}"))
+    except Exception:
+        logging.warning("estimate-sent notify failed", exc_info=True)
+
     return jsonify({"ok": True, "share_id": share.id, "token": token, "link": link,
                     "emailed": emailed, "email_error": email_error,
                     "version_label": snap.get("version_label"),
                     "grand_total": grand})
+
+
+@app.route("/projects/<int:pid>/notify-preview", methods=["GET"])
+@login_required
+def project_notify_preview(pid):
+    """Dry-run: who WOULD be emailed for project-update events (no send)."""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden"}), 403
+    recips = _project_notify_recipients(pid)
+    return jsonify({
+        "project_id": pid,
+        "mail_configured": bool(app.config.get('MAIL_USERNAME')),
+        "audience": "active super_admin + admin on this project",
+        "recipients": [{"email": e, "name": n} for e, n in recips],
+    })
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/estimate/shares", methods=["GET"])
@@ -12589,20 +12675,25 @@ def estimate_portal_respond(token):
     except Exception:
         pass
     db.session.commit()
-    # Notify the sender by email (best-effort) so they see the response.
+    # Notify the project's Super/Admin audience (plus the original sender) of the response.
     try:
+        proj = ProjectSheet.query.get(s.project_id)
         creator = User.query.get(s.created_by_user_id) if s.created_by_user_id else None
-        if creator and creator.email and app.config.get('MAIL_USERNAME'):
-            proj = ProjectSheet.query.get(s.project_id)
-            verb = 'APPROVED' if s.status == 'approved' else 'DECLINED'
-            _send_email(creator.email,
-                        f"Estimate {verb}: {proj.name if proj else ''} ({s.version_label})",
-                        f"{s.approver_name or s.client_name or 'The client'} {verb.lower()} the estimate"
-                        f" ({s.version_label}).\n\n"
-                        + (f"Note: {note}\n\n" if note else "")
-                        + f"Total: ${float(s.grand_total or 0):,.2f}")
+        verb = 'APPROVED' if s.status == 'approved' else 'DECLINED'
+        _who = s.approver_name or s.client_name or 'The client'
+        _budget_link = url_for('budget_view', pid=s.project_id, bid=s.budget_id, _external=True)
+        _notify_project_event(
+            s.project_id,
+            f"Estimate {verb} — {proj.name if proj else ''} ({s.version_label})",
+            (f"{_who} {verb.lower()} the estimate for "
+             f"{proj.name if proj else 'this project'} ({s.version_label}).\n\n"
+             + (f"Note from client: {note}\n\n" if note else "")
+             + f"{'Approved' if s.status == 'approved' else 'Estimate'} total: "
+             f"${float(s.grand_total or 0):,.2f}\n\n"
+             f"Open the budget: {_budget_link}"),
+            extra_emails=([creator.email] if (creator and creator.email) else None))
     except Exception:
-        pass
+        logging.warning("estimate-response notify failed", exc_info=True)
     return jsonify({"ok": True, "status": s.status})
 
 
