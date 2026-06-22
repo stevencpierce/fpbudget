@@ -3821,25 +3821,76 @@ def project_delete(pid):
         flash("Only a super admin can permanently delete projects.", "error")
         return redirect(url_for("dashboard"))
     p = ProjectSheet.query.get_or_404(pid)
+    pname = p.name
     # Archive to Dropbox before any DB deletion
     _archive_project_dropbox(p)
-    # Null out parent_budget_id self-references so Postgres allows deletion
-    Budget.query.filter_by(project_id=pid).update(
-        {"parent_budget_id": None}, synchronize_session=False)
-    db.session.flush()
-    # Cascade-delete each budget and its FK-constrained children
-    for b in Budget.query.filter_by(project_id=pid).all():
-        _delete_budget_cascade(b.id)
-    # Clean up project-level FK tables not on ORM cascade
-    from models import Location
-    DocUpload.query.filter_by(project_id=pid).delete(synchronize_session=False)
-    Location.query.filter_by(project_id=pid).delete(synchronize_session=False)
-    ProjectAccess.query.filter_by(project_id=pid).delete(synchronize_session=False)
-    ProjectUnion.query.filter_by(project_id=pid).delete(synchronize_session=False)
-    ProjectClient.query.filter_by(project_id=pid).delete(synchronize_session=False)
-    db.session.delete(p)
-    db.session.commit()
-    flash(f"Project '{p.name}' deleted.", "success")
+
+    from models import (Location, EstimateShare, SubBudget, PurchaseOrder,
+                        MatchRejection, TransactionDupDismissal, ActivityLog,
+                        AiEvent, AnomalyFlag, VendorAlias)
+    try:
+        # FK-safe deletion order. Anything that points at budget.id (EstimateShare,
+        # SubBudget — both NOT NULL) MUST go before the budgets are deleted, or the
+        # delete 500s the moment a project has an estimate share / sub-budget.
+        # (Bug fix 2026-06-22.)
+
+        # 1. budget-referencing project tables (sub_budget_line cascades via ondelete)
+        EstimateShare.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        SubBudget.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+        # 2. Cross-project dup claims pointing AT this project → null the back-ref
+        Transaction.query.filter(Transaction.claimed_by_project_id == pid).update(
+            {"claimed_by_project_id": None}, synchronize_session=False)
+
+        # 3. This project's transactions — null self parent-ref, then delete BEFORE
+        #    DocUpload (transaction.doc_upload_id → doc_upload).
+        _txn_ids = [r[0] for r in db.session.query(Transaction.id)
+                    .filter_by(project_id=pid).all()]
+        if _txn_ids:
+            Transaction.query.filter(Transaction.parent_transaction_id.in_(_txn_ids)).update(
+                {"parent_transaction_id": None}, synchronize_session=False)
+            db.session.flush()
+            Transaction.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+        # 4. Null parent_budget_id self-refs, then cascade-delete each budget.
+        Budget.query.filter_by(project_id=pid).update(
+            {"parent_budget_id": None}, synchronize_session=False)
+        db.session.flush()
+        for b in Budget.query.filter_by(project_id=pid).all():
+            _delete_budget_cascade(b.id)
+
+        # 5. Purchase orders (po_doc_attachment cascades via ondelete).
+        PurchaseOrder.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+        # 6. Documents — null self dup-ref first, then delete (before Location:
+        #    doc_upload.location_id → location).
+        DocUpload.query.filter_by(project_id=pid).update(
+            {"duplicate_of_id": None}, synchronize_session=False)
+        db.session.flush()
+        DocUpload.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+        # 7. Remaining project-scoped FK tables.
+        Location.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        ProjectAccess.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        ProjectUnion.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        ProjectClient.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        MatchRejection.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        TransactionDupDismissal.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        ActivityLog.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+        # 8. Plain-int project_id columns (no DB FK, but avoid orphan rows).
+        AiEvent.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        AnomalyFlag.query.filter_by(project_id=pid).delete(synchronize_session=False)
+        VendorAlias.query.filter_by(project_id=pid).delete(synchronize_session=False)
+
+        db.session.delete(p)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logging.exception("project_delete failed for pid=%s", pid)
+        flash(f"Could not delete project — {type(e).__name__}: {e}", "error")
+        return redirect(url_for("dashboard"))
+    flash(f"Project '{pname}' deleted.", "success")
     return redirect(url_for("dashboard"))
 
 
