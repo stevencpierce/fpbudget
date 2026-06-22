@@ -6656,9 +6656,66 @@ def budget_view(pid, bid):
         actuals_line_labels = {}
         actuals_line_crew = {}
 
+    # ── Client estimate approval: badge + history ───────────────────────────
+    # When a client approves (or declines) a sent estimate through the portal,
+    # the EstimateShare row records who and when. Surface the latest approval as
+    # a header badge and keep the full history so prior approvals are never lost
+    # even as the budget changes afterward. (User request 2026-06-22.)
+    _share_tz = getattr(project, 'timezone', None) or 'America/New_York'
+    def _share_disp(dt):
+        if not dt:
+            return ''
+        try:
+            from zoneinfo import ZoneInfo
+            return (dt.replace(tzinfo=ZoneInfo('UTC'))
+                      .astimezone(ZoneInfo(_share_tz))
+                      .strftime('%b %-d, %Y · %-I:%M %p %Z'))
+        except Exception:
+            return dt.strftime('%b %-d, %Y at %-I:%M %p')
+    try:
+        _shares = (EstimateShare.query
+                   .filter_by(project_id=pid, budget_id=bid)
+                   .order_by(EstimateShare.created_at.desc())
+                   .all())
+    except Exception:
+        _shares = []
+    try:
+        _cur_grand = (round(float(top_sheet.get("grand_total_estimated")), 2)
+                      if top_sheet and top_sheet.get("grand_total_estimated") is not None else None)
+    except Exception:
+        _cur_grand = None
+    estimate_share_history = []
+    for s in _shares:
+        estimate_share_history.append({
+            "id": s.id,
+            "status": s.status,
+            "version_label": s.version_label or '',
+            "client_name": s.client_name or '',
+            "client_email": s.client_email or '',
+            "approver_name": s.approver_name or '',
+            "approver_note": s.approver_note or '',
+            "grand_total": (float(s.grand_total) if s.grand_total is not None else None),
+            "created_disp": _share_disp(s.created_at),
+            "sent_disp": _share_disp(s.sent_at),
+            "responded_disp": _share_disp(s.responded_at),
+        })
+    estimate_approval = next((h for h in estimate_share_history if h["status"] == 'approved'), None)
+    if estimate_approval is not None:
+        _appr_gt = estimate_approval.get("grand_total")
+        estimate_approval["current_grand_total"] = _cur_grand
+        estimate_approval["changed_since"] = bool(
+            _appr_gt is not None and _cur_grand is not None and abs(_appr_gt - _cur_grand) >= 0.01)
+        estimate_approval["delta"] = (round(_cur_grand - _appr_gt, 2)
+                                      if (_appr_gt is not None and _cur_grand is not None) else None)
+    # Latest non-approved status (for an "awaiting"/"declined" badge when nothing approved yet)
+    estimate_latest = estimate_share_history[0] if estimate_share_history else None
+
     return render_template("budget.html",
         project=project,
         budget=budget,
+        estimate_approval=estimate_approval,
+        estimate_latest=estimate_latest,
+        estimate_share_history=estimate_share_history,
         dashboard_stats=dashboard_stats,
         actuals_line_labels=actuals_line_labels,
         actuals_line_crew=actuals_line_crew,
