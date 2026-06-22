@@ -254,12 +254,34 @@ function initGantt(pid, bid, activeProfileId) {
   // ── Use-schedule checkbox ─────────────────────────────────────────────────
   document.querySelectorAll('.use-sched-cb').forEach(cb => {
     cb.addEventListener('change', async function() {
-      const res = await fetch(`/projects/${_pid}/budget/${_bid}/line`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({id: parseInt(this.dataset.id), use_schedule: this.checked})
-      });
-      if (!res.ok) { alert('Save failed'); this.checked = !this.checked; }
+      const want = this.checked;
+      const save = async (override) => {
+        const payload = {id: parseInt(this.dataset.id), use_schedule: want};
+        if (override) payload.override_estimated = true;
+        return fetch(`/projects/${_pid}/budget/${_bid}/line`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+      };
+      let res = await save(false);
+      // Editing the Estimated budget while a Working budget exists is gated —
+      // confirm and retry with override, same as the Budget grid. (User 2026-06-18.)
+      if (res.status === 409) {
+        let body = {};
+        try { body = await res.json(); } catch (e) {}
+        if (body.estimated_protected) {
+          if (confirm((body.message || 'Editing Estimated will not affect Working.') + '\n\nProceed?')) {
+            res = await save(true);
+          } else { this.checked = !want; return; }
+        }
+      }
+      if (!res.ok) {
+        let msg = 'HTTP ' + res.status;
+        try { const j = await res.json(); if (j && (j.error || j.message)) msg = j.error || j.message; } catch (e) {}
+        alert('Save failed: ' + msg);
+        this.checked = !want;
+      }
     });
   });
 
