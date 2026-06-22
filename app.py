@@ -5601,7 +5601,41 @@ def budget_view(pid, bid):
         sections = [s for s in sections if s['code'] == dept_filter]
 
     fringes      = FringeConfig.query.filter_by(project_id=None).order_by(FringeConfig.fringe_type).all()
-    crew_members = CrewMember.query.filter_by(active=True).order_by(CrewMember.name).all()
+    # Full company roster — used ONLY for crew ASSIGNMENT (pick anyone onto a line).
+    all_crew_members = CrewMember.query.filter_by(active=True).order_by(CrewMember.name).all()
+    # Project-scoped crew + vendors for the doc/vendor pickers and vendors section.
+    # CrewMember has no project_id, so scope by association: assigned on one of this
+    # project's budget lines, or linked to one of its documents. Without this,
+    # vendors (stored as is_vendor CrewMembers) leaked across every project.
+    # (Bug fix 2026-06-22.)
+    _pb_ids = [b.id for b in Budget.query.filter_by(project_id=pid).all()]
+    _cm_ids = set()
+    if _pb_ids:
+        _l_ids = [r[0] for r in db.session.query(BudgetLine.id)
+                  .filter(BudgetLine.budget_id.in_(_pb_ids)).all()]
+        if _l_ids:
+            for (cmid,) in (db.session.query(CrewAssignment.crew_member_id)
+                            .filter(CrewAssignment.budget_line_id.in_(_l_ids),
+                                    CrewAssignment.crew_member_id.isnot(None)).distinct()):
+                if cmid:
+                    _cm_ids.add(cmid)
+    for (cmid,) in (db.session.query(DocUpload.crew_member_id)
+                    .filter(DocUpload.project_id == pid,
+                            DocUpload.crew_member_id.isnot(None)).distinct()):
+        if cmid:
+            _cm_ids.add(cmid)
+    if _cm_ids:
+        # Keep loan-out groupings intact: include parents of included members and
+        # children of included vendors.
+        for c in all_crew_members:
+            if c.id in _cm_ids and getattr(c, 'loan_out_vendor_id', None):
+                _cm_ids.add(c.loan_out_vendor_id)
+        for c in all_crew_members:
+            if getattr(c, 'loan_out_vendor_id', None) in _cm_ids:
+                _cm_ids.add(c.id)
+        crew_members = [c for c in all_crew_members if c.id in _cm_ids]
+    else:
+        crew_members = []
     all_templates = BudgetTemplate.query.order_by(BudgetTemplate.name).all()
 
     # Per-line actuals for Compare tab
@@ -6850,6 +6884,7 @@ def budget_view(pid, bid):
         top_sheet=top_sheet,
         fringes=fringes,
         crew_members=crew_members,
+        all_crew_members=all_crew_members,
         actuals_by_code=actuals_by_code_full,
         coa_sections=FP_COA_SECTIONS,
         all_templates=all_templates,

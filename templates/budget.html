@@ -18435,7 +18435,7 @@ document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
 })();
 
 // ── Crew assignment ───────────────────────────────────────────────────────
-const _crewList = [{% for cm in crew_members %}{id:{{ cm.id }},name:{{ cm.name | tojson }},dept:{{ (cm.department or '') | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}];
+const _crewList = [{% for cm in all_crew_members %}{id:{{ cm.id }},name:{{ cm.name | tojson }},dept:{{ (cm.department or '') | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}];
 
 function openCrewAssign(lineId) {
   document.getElementById('ca-line-id').value = lineId;
