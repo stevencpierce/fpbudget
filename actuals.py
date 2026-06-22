@@ -127,6 +127,37 @@ def scan_double_coded(project_id):
                     Transaction.not_project_expense == False,   # noqa: E712
                     Transaction.amount.isnot(None))
             .all())
+
+    # Pre-load any linked documents so the dedup can use their distinguishing
+    # identifiers (invoice/ticket number, original filename) — not just the
+    # canonicalized vendor. (User 2026-06-22.)
+    _doc_ids = {t.doc_upload_id for t in rows if t.doc_upload_id}
+    _docmap = {}
+    if _doc_ids:
+        try:
+            for d in DocUpload.query.filter(DocUpload.id.in_(_doc_ids)).all():
+                _docmap[d.id] = d
+        except Exception:
+            _docmap = {}
+
+    def _ident_sig(t):
+        """Signature of the charge's DISTINGUISHING identifiers. canon_vendor()
+        deliberately strips long digit runs (so 'AMAZON #1234' groups with
+        'AMAZON #5678'), but for duplicate detection those numbers are exactly
+        what separate two real purchases — e.g. two British Airways tickets
+        'BRITISH A 1254247311910' vs '...908'. Recover them from the raw vendor
+        text plus the linked doc's invoice number / filename. Two charges with
+        different signatures are NOT the same spend."""
+        ids = set(_re.findall(r'\d{4,}', (t.vendor or '')))
+        d = _docmap.get(t.doc_upload_id) if t.doc_upload_id else None
+        if d is not None:
+            dn = _re.sub(r'\s+', '', str(getattr(d, 'doc_number', None) or ''))
+            if dn:
+                ids.add('dn:' + dn.lower())
+            for tok in _re.findall(r'\d{4,}', (getattr(d, 'original_filename', None) or '')):
+                ids.add('fn:' + tok)
+        return '|'.join(sorted(ids))
+
     clusters = {}
     for t in rows:
         try:
@@ -138,9 +169,12 @@ def scan_double_coded(project_id):
         date = (t.txn_date or '')[:10]
         # Key on the SIGNED amount so a charge (+) and its refund (−) of the same
         # magnitude are NOT treated as duplicates — only same-sign repeats are.
-        # (User 2026-06-18.)
+        # (User 2026-06-18.) Also key on the distinguishing-identifier signature
+        # so two charges that differ only by ticket/invoice number stay separate
+        # (User 2026-06-22.)
         sign = '+' if amt > 0 else '-'
-        key = "%s%.2f|%s|%s|%s" % (sign, abs(amt), date, canon_vendor(t.vendor), (t.card_last4 or '').strip())
+        key = "%s%.2f|%s|%s|%s|%s" % (sign, abs(amt), date, canon_vendor(t.vendor),
+                                      (t.card_last4 or '').strip(), _ident_sig(t))
         clusters.setdefault(key, []).append(t)
 
     out = []
