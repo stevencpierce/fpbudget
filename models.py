@@ -934,6 +934,15 @@ class DocUpload(db.Model):
     # extraction sanity). NULL = not yet cleaned; lets batch cleanup resume.
     ai_cleaned_at  = db.Column(db.DateTime, nullable=True)
 
+    # AI-extracted travel-reservation details (added 2026-06-22): JSON blob from
+    # ai_layer.extract_travel for hotel/flight/car docs — {kind, confirmation_no,
+    # airline, flight_no, depart_at, arrive_at, depart_airport, arrive_airport,
+    # hotel_name, hotel_address, check_in, check_out, room_type, traveler_name,
+    # confidence}. Suggestion only until the user applies it to a person + travel
+    # day via the doc-detail Travel panel. Watermark in travel_extracted_at.
+    travel_json          = db.Column(db.Text, nullable=True)
+    travel_extracted_at  = db.Column(db.DateTime, nullable=True)
+
     # Type-specific identifier (added 2026-04-30): Invoice #, PO #, Tax
     # ID (EIN/SSN), Policy #, etc. Pre-populated from Veryfi's
     # invoice_number / purchase_order_number / tax_id fields when

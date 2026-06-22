@@ -57,6 +57,9 @@ class AIProvider:
     def pick_match(self, payload):
         raise NotImplementedError
 
+    def extract_travel(self, payload, image_url=None):
+        raise NotImplementedError
+
 
 class _NeutralProvider(AIProvider):
     """Fail-open stand-in when no real provider is configured/reachable."""
@@ -85,6 +88,10 @@ class _NeutralProvider(AIProvider):
         return {"best_doc_id": None, "confidence": 0.0,
                 "reasoning": "AI matching unavailable (no provider/key)",
                 "_provider": "none"}
+
+    def extract_travel(self, payload, image_url=None):
+        return {"is_travel": False, "kind": None, "confirmation_no": None,
+                "confidence": 0.0, "_provider": "none"}
 
 
 # Forced-output schemas (Claude tool-use) — see spec §3/§4.
@@ -170,6 +177,42 @@ _MATCH_TOOL = {
             "reasoning": {"type": "string", "description": "Short, internal."},
         },
         "required": ["best_doc_id", "confidence"],
+    },
+}
+_TRAVEL_TOOL = {
+    "name": "extract_travel",
+    "description": "Extract structured travel-reservation details from a hotel, "
+                   "flight/airline, or car-rental document.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "is_travel": {"type": "boolean",
+                "description": "True only if this is a hotel, flight/airline, or "
+                               "car-rental reservation/receipt/itinerary."},
+            "kind": {"type": ["string", "null"], "enum": ["flight", "hotel", "car_rental", None],
+                "description": "The travel type, or null if not travel."},
+            "confirmation_no": {"type": ["string", "null"],
+                "description": "Booking/reservation/confirmation number exactly as printed."},
+            "traveler_name": {"type": ["string", "null"],
+                "description": "Guest/passenger name on the reservation, if shown."},
+            "airline": {"type": ["string", "null"]},
+            "flight_no": {"type": ["string", "null"], "description": "e.g. 'UA1234'."},
+            "depart_at": {"type": ["string", "null"], "description": "ISO 8601 local departure datetime, or null."},
+            "arrive_at": {"type": ["string", "null"], "description": "ISO 8601 local arrival datetime, or null."},
+            "depart_airport": {"type": ["string", "null"], "description": "IATA code, e.g. LAX."},
+            "arrive_airport": {"type": ["string", "null"], "description": "IATA code."},
+            "hotel_name": {"type": ["string", "null"]},
+            "hotel_address": {"type": ["string", "null"]},
+            "check_in": {"type": ["string", "null"], "description": "YYYY-MM-DD."},
+            "check_out": {"type": ["string", "null"], "description": "YYYY-MM-DD."},
+            "room_type": {"type": ["string", "null"]},
+            "rental_co": {"type": ["string", "null"]},
+            "pickup_at": {"type": ["string", "null"], "description": "ISO 8601, or null."},
+            "return_at": {"type": ["string", "null"], "description": "ISO 8601, or null."},
+            "pickup_location": {"type": ["string", "null"]},
+            "confidence": {"type": "number", "description": "0.0–1.0 overall confidence."},
+        },
+        "required": ["is_travel", "kind", "confidence"],
     },
 }
 
@@ -271,6 +314,28 @@ class ClaudeProvider(AIProvider):
         out["_model"] = _CLAUDE_MODEL
         return out
 
+    def extract_travel(self, payload, image_url=None):
+        system = (
+            "You extract structured TRAVEL RESERVATION details from a document — a hotel "
+            "folio/booking, an airline/flight itinerary, or a car-rental agreement. "
+            + ("An IMAGE of the document is attached — read it directly. "
+               if image_url else
+               "Use the OCR text/fields provided in DOCUMENT. ")
+            + "Return the confirmation/booking number EXACTLY as printed, the "
+            "traveler/guest name if shown, and the kind-specific fields (flight: airline, "
+            "flight number, depart/arrive datetimes in ISO 8601 and IATA airport codes; "
+            "hotel: name, address, check-in/out as YYYY-MM-DD, room type; car: company, "
+            "pickup/return datetimes and pickup location). Set is_travel=false and "
+            "kind=null when this is NOT a hotel/flight/car reservation. Reason ONLY from "
+            "the document — never invent a confirmation number or dates. Be honest with "
+            "confidence (low when the source is ambiguous)."
+        )
+        out = self._call(system, payload, _TRAVEL_TOOL, image_url=image_url)
+        out["_provider"] = "claude"
+        out["_model"] = _CLAUDE_MODEL
+        out["_vision"] = bool(image_url)
+        return out
+
 
 def get_provider(task):
     """Provider for a task ('categorize'|'anomaly'), honoring AI_ROUTE_*. Falls
@@ -295,10 +360,12 @@ def status():
         "route_anomaly": _route("anomaly"),
         "route_clean": _route("clean"),
         "route_match": _route("match"),
+        "route_travel": _route("travel"),
         "categorize_available": get_provider("categorize").name,
         "anomaly_available": get_provider("anomaly").name,
         "clean_available": get_provider("clean").name,
         "match_available": get_provider("match").name,
+        "travel_available": get_provider("travel").name,
     }
 
 
@@ -343,3 +410,14 @@ def pick_match(payload):
     except Exception as e:
         log.warning("[ai_layer] pick_match failed (%s): %s", getattr(p, "name", "?"), e)
         return _NeutralProvider().pick_match(payload)
+
+
+def extract_travel(payload, image_url=None):
+    """Fail-open travel-reservation extractor. payload: {document:{...}}; image_url
+    optional (vision). Returns {is_travel, kind, confirmation_no, ...fields, confidence}."""
+    p = get_provider("travel")
+    try:
+        return p.extract_travel(payload, image_url=image_url)
+    except Exception as e:
+        log.warning("[ai_layer] extract_travel failed (%s): %s", getattr(p, "name", "?"), e)
+        return _NeutralProvider().extract_travel(payload)

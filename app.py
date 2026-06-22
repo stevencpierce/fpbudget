@@ -9086,6 +9086,244 @@ def _ai_clean_transaction(txn, known=None, force=False):
     return result
 
 
+_TRAVEL_VENDOR_HINTS = (
+    'airline', 'airways', 'air lines', 'jetblue', 'delta', 'united', 'american air',
+    'southwest', 'alaska air', 'spirit', 'frontier', 'lufthansa', 'british a', 'klm',
+    'air canada', 'aer lingus', 'emirates',
+    'hotel', 'inn', 'motel', 'suites', 'resort', 'lodging', 'marriott', 'hilton',
+    'hyatt', 'sheraton', 'westin', 'airbnb', 'expedia', 'booking.com', 'hampton',
+    'courtyard', 'residence inn', 'holiday inn', 'ritz', 'four seasons',
+    'enterprise rent', 'hertz', 'avis', 'budget rent', 'national car', 'alamo',
+    'rental car', 'car rental', 'zipcar',
+)
+
+
+def _looks_like_travel(upload):
+    """Heuristic gate for auto travel-extraction: is this doc plausibly a hotel,
+    flight, or car-rental reservation? Category first, then vendor keywords."""
+    if upload is None:
+        return False
+    cat = ((upload.category or '') + ' ' + (upload.veryfi_category or '')).lower()
+    if any(k in cat for k in ('hotel', 'airline', 'flight', 'travel', 'car_rental',
+                              'car rental', 'lodging', 'airfare')):
+        return True
+    v = (upload.vendor or '').lower()
+    return bool(v) and any(h in v for h in _TRAVEL_VENDOR_HINTS)
+
+
+def _ai_extract_travel(upload, force=False):
+    """Advisory travel-reservation extraction for ONE DocUpload. Reads the doc
+    (OCR text + image when available) via ai_layer.extract_travel and stores the
+    structured result in upload.travel_json — a SUGGESTION the user later applies
+    to a person + travel day. Stamps travel_extracted_at. Caller commits.
+    Fail-open: never raises. (User 2026-06-22.)"""
+    if upload is None:
+        return None
+    if getattr(upload, 'travel_extracted_at', None) is not None and not force:
+        try:
+            return json.loads(upload.travel_json) if upload.travel_json else None
+        except Exception:
+            return None
+    import ai_layer, time as _t, json as _j
+    pid = upload.project_id
+    vd = {}
+    if upload.veryfi_data:
+        try:
+            vd = upload.veryfi_data if isinstance(upload.veryfi_data, dict) else _j.loads(upload.veryfi_data)
+        except Exception:
+            vd = {}
+    document = {
+        "vendor": (upload.vendor or '').strip(),
+        "amount": float(upload.amount) if upload.amount is not None else None,
+        "date": upload.doc_date.isoformat() if upload.doc_date else None,
+        "doc_number": upload.doc_number or None,
+        "veryfi_category": upload.veryfi_category or vd.get("category"),
+        "doc_type": upload.category,
+        "ocr_text": (vd.get("ocr_text") or vd.get("text") or '')[:6000],
+        "line_items": [li.get("description") for li in (vd.get("line_items") or [])
+                       if isinstance(li, dict) and li.get("description")][:40],
+    }
+    payload = {"document": document}
+    image_url = None
+    try:
+        if (upload.content_type or '').lower().startswith('image/'):
+            image_url = _doc_image_temp_link(upload)
+    except Exception:
+        image_url = None
+    t0 = _t.time()
+    res = ai_layer.extract_travel(payload, image_url=image_url)
+    latency = int((_t.time() - t0) * 1000)
+    _ai_log_event(pid, upload.id, 'travel', res.get('_provider'), res.get('_model'),
+                  payload, res, latency)
+    keep = {k: v for k, v in (res or {}).items() if not str(k).startswith('_')}
+    upload.travel_json = _j.dumps(keep)
+    upload.travel_extracted_at = datetime.utcnow()
+    return keep
+
+
+@app.route("/docs/upload/<int:uid>/extract-travel", methods=["POST"])
+@login_required
+def docs_extract_travel(uid):
+    """Manual 'Extract travel' for any doc — on-demand counterpart to the auto
+    pass. Returns the extracted travel suggestion."""
+    upload = DocUpload.query.get_or_404(uid)
+    _require_project_role(upload.project_id, 'editor')
+    res = _ai_extract_travel(upload, force=True)
+    db.session.commit()
+    return jsonify({"ok": True, "travel": res or {}})
+
+
+@app.route("/projects/<int:pid>/travel/people", methods=["GET"])
+@login_required
+def travel_people(pid):
+    """Assignable travel people for the doc-detail Travel panel picker: every
+    crew-assigned (labor line, instance) on the project's current Working (else
+    Estimated) budget, plus that budget id so Apply targets the right schedule."""
+    _require_project_role(pid, 'viewer')
+    from actuals import get_current_working_budget, get_current_estimated_budget
+    b = get_current_working_budget(pid) or get_current_estimated_budget(pid)
+    if not b:
+        return jsonify({"ok": True, "bid": None, "people": []})
+    all_lines = BudgetLine.query.filter_by(budget_id=b.id).all()
+    line_by_id = {ln.id: ln for ln in all_lines}
+    cas = CrewAssignment.query.filter(
+        CrewAssignment.budget_line_id.in_([ln.id for ln in all_lines if ln.is_labor])).all()
+    ca_by_key = {(ca.budget_line_id, ca.instance or 1): ca for ca in cas}
+    people = []
+    for (lid, inst), ca in ca_by_key.items():
+        ln = line_by_id.get(lid)
+        if not ln:
+            continue
+        role, person = _resolve_person_for_cell(ln, inst, ca_by_key)
+        if not person:
+            continue
+        people.append({"line_id": lid, "instance": inst, "person": person,
+                       "role": role or '', "crew_member_id": getattr(ca, 'crew_member_id', None)})
+    people.sort(key=lambda p: (p["person"] or '').lower())
+    return jsonify({"ok": True, "bid": b.id, "people": people})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/travel/apply-doc", methods=["POST"])
+@login_required
+def travel_apply_doc(pid, bid):
+    """Apply an extracted travel suggestion to a person + travel day: find/create
+    the person's travel ScheduleDay for the date, flip the kind flag, upsert the
+    TravelDetail (confirmation #, flight/hotel fields), and stamp the doc's
+    crew_member_id. One-click confirm from the doc-detail Travel panel. (User
+    2026-06-22.)"""
+    _require_project_role(pid, 'editor')
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    uid      = data.get("doc_upload_id")
+    line_id  = int(data.get("line_id"))
+    instance = int(data.get("instance") or 1)
+    date_s   = (data.get("date") or "").strip()
+    kind     = (data.get("kind") or "").strip()
+    if kind not in ('flight', 'hotel', 'car_rental'):
+        return jsonify({"error": "Invalid kind"}), 400
+    from datetime import datetime as _dt
+    try:
+        date_obj = _dt.strptime(date_s[:10], "%Y-%m-%d").date()
+    except Exception:
+        return jsonify({"error": "Invalid date"}), 400
+
+    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    from sqlalchemy import or_ as _or_apply
+    sd = ScheduleDay.query.filter(
+        ScheduleDay.budget_id == bid, ScheduleDay.budget_line_id == line_id,
+        ScheduleDay.crew_instance == instance, ScheduleDay.date == date_obj,
+        _or_apply(ScheduleDay.schedule_mode == sched_mode, ScheduleDay.schedule_mode == None),
+    ).first()
+    if not sd:
+        sd = ScheduleDay(budget_id=bid, budget_line_id=line_id, crew_instance=instance,
+                         date=date_obj, schedule_mode=sched_mode, day_type='travel')
+        db.session.add(sd)
+        db.session.flush()
+
+    import json as _j2
+    try:
+        flags = _j2.loads(sd.cell_flags) if sd.cell_flags else {}
+    except (ValueError, TypeError):
+        flags = {}
+    flags[kind] = True
+    sd.cell_flags = _j2.dumps(flags)
+
+    td = TravelDetail.query.filter_by(schedule_day_id=sd.id, kind=kind).first()
+    if not td:
+        td = TravelDetail(schedule_day_id=sd.id, kind=kind)
+        db.session.add(td)
+
+    def _s(k):
+        v = data.get(k)
+        v = v.strip() if isinstance(v, str) else v
+        return v or None
+    def _pdt(s):
+        if not s:
+            return None
+        try:
+            return _dt.fromisoformat(s)
+        except Exception:
+            try:
+                return _dt.strptime(s[:16], "%Y-%m-%dT%H:%M")
+            except Exception:
+                return None
+    def _pd(s):
+        if not s:
+            return None
+        try:
+            return _dt.strptime(s[:10], "%Y-%m-%d").date()
+        except Exception:
+            return None
+
+    if _s('confirmation_no'):
+        td.confirmation_no = _s('confirmation_no')
+    if _s('notes'):
+        td.notes = _s('notes')
+    if kind == 'flight':
+        for f in ('airline', 'flight_no', 'depart_airport', 'arrive_airport'):
+            if _s(f):
+                setattr(td, f, _s(f))
+        if data.get('depart_at'):
+            td.depart_at = _pdt(data.get('depart_at'))
+        if data.get('arrive_at'):
+            td.arrive_at = _pdt(data.get('arrive_at'))
+    elif kind == 'hotel':
+        for f in ('hotel_name', 'hotel_address', 'room_type'):
+            if _s(f):
+                setattr(td, f, _s(f))
+        if data.get('check_in'):
+            td.check_in = _pd(data.get('check_in'))
+        if data.get('check_out'):
+            td.check_out = _pd(data.get('check_out'))
+    elif kind == 'car_rental':
+        for f in ('rental_co', 'pickup_location'):
+            if _s(f):
+                setattr(td, f, _s(f))
+        if data.get('pickup_at'):
+            td.pickup_at = _pdt(data.get('pickup_at'))
+        if data.get('return_at'):
+            td.return_at = _pdt(data.get('return_at'))
+
+    # Stamp the doc with the crew member so it shows on that person.
+    if uid:
+        up = DocUpload.query.filter_by(id=uid, project_id=pid).first()
+        ca = CrewAssignment.query.filter_by(budget_line_id=line_id, instance=instance).first()
+        if up is not None and ca is not None and getattr(ca, 'crew_member_id', None):
+            up.crew_member_id = ca.crew_member_id
+
+    db.session.commit()
+    try:
+        sync_schedule_driven_lines(bid, db.session)
+    except Exception as _se:
+        logging.warning(f"[travel_apply_doc] sync failed: {_se}")
+    try:
+        _ws_emit_tab_refresh(bid, 'travel')
+    except Exception:
+        pass
+    return jsonify({"ok": True, "schedule_day_id": sd.id, "travel_detail_id": td.id,
+                    "kind": kind})
+
+
 @app.route("/projects/<int:pid>/actuals/ai-cleanup", methods=["POST"])
 @login_required
 def actuals_ai_cleanup(pid):
@@ -23409,6 +23647,9 @@ def _web_worker_essential_columns():
                 "CREATE INDEX IF NOT EXISTS ix_vendor_alias_raw ON vendor_alias (raw_canonical)",
                 # 2026-06-18 — AI data-cleanup watermark on docs.
                 "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS ai_cleaned_at TIMESTAMP",
+                # 2026-06-22 — AI travel-reservation extraction on hotel/flight/car docs.
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS travel_json TEXT",
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS travel_extracted_at TIMESTAMP",
                 # 2026-06-18 — AI vendor-cleanup watermark on charges (CSV/QBO).
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS ai_cleaned_at TIMESTAMP",
                 # 2026-06-18 — AI matching watermark + match source tag.
@@ -24079,6 +24320,18 @@ def docs_upload_post(pid):
         logging.warning(f"[docs/upload] ai cleanup failed for upload #{upload.id}: {_cle}")
         db.session.rollback()
 
+    # Travel-doc intelligence: if this looks like a hotel/flight/car reservation,
+    # auto-extract the confirmation # + travel details (suggestion only — the user
+    # applies it to a person + travel day in the doc-detail Travel panel). Advisory
+    # and fail-open. (User 2026-06-22.)
+    try:
+        if _looks_like_travel(upload):
+            _ai_extract_travel(upload)
+            db.session.commit()
+    except Exception as _tle:
+        logging.warning(f"[docs/upload] travel extract failed for upload #{upload.id}: {_tle}")
+        db.session.rollback()
+
     # ── Auto-create a Transaction row for every doc upload (2026-04-30) ─
     # Each receipt / invoice / etc. that lands in Docs becomes an
     # immediate Actuals candidate: a Transaction with source='doc_upload'
@@ -24331,6 +24584,8 @@ def docs_upload_status(uid):
         "location_id":        upload.location_id,
         "is_duplicate": upload.is_duplicate,
         "filed_dropbox_path": upload.filed_dropbox_path,
+        "travel": (json.loads(upload.travel_json) if upload.travel_json else None),
+        "travel_extracted": bool(upload.travel_extracted_at),
     })
 
 

@@ -3183,6 +3183,30 @@
               </select>
               <div id="docDetailCodingStatus" style="font-size:10.5px;color:var(--text-muted);margin-top:3px"></div>
             </div>
+            {# ✈️ Travel intelligence (2026-06-22): auto-extracted hotel/flight/car
+               reservation details, with one-click assign to a person + travel day
+               that writes into the Travel tab. #}
+            <div id="docDetailTravelBlock" class="field" style="margin-bottom:.6rem;display:none;border:1px solid #2a3a55;border-radius:8px;padding:10px;background:#10192b">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+                <label style="font-size:11px;color:#8fb4ff;text-transform:uppercase;letter-spacing:.5px;margin:0">✈️ Travel details</label>
+                <button type="button" id="docDetailTravelExtractBtn" onclick="docDetailExtractTravel()"
+                        style="background:none;border:1px solid #2a3a55;color:#8fb4ff;border-radius:5px;font-size:10.5px;padding:2px 8px;cursor:pointer">Re-extract</button>
+              </div>
+              <div id="docDetailTravelFields" style="font-size:12px"></div>
+              <div style="display:grid;grid-template-columns:1fr;gap:6px;margin-top:8px">
+                <div>
+                  <label style="font-size:10.5px;color:var(--text-muted)">Assign to person</label>
+                  <select id="docDetailTravelPerson" style="width:100%;font-size:12px"><option value="">— pick person —</option></select>
+                </div>
+                <div>
+                  <label style="font-size:10.5px;color:var(--text-muted)">Travel day</label>
+                  <input type="date" id="docDetailTravelDate" style="width:100%;font-size:12px">
+                </div>
+              </div>
+              <button type="button" id="docDetailTravelApplyBtn" onclick="docDetailApplyTravel()"
+                      style="width:100%;margin-top:8px;padding:7px;border-radius:6px;background:#1a2f4d;border:1px solid #2f5184;color:#bcd4ff;font-size:12.5px;cursor:pointer">Apply to Travel tab</button>
+              <div id="docDetailTravelStatus" style="font-size:10.5px;color:var(--text-muted);margin-top:5px"></div>
+            </div>
             <div id="docDetailPoActions" class="field" style="margin-bottom:.6rem;display:none">
               <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Purchase Order</label>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -5645,6 +5669,152 @@
     else if (e.key === 'Escape')    { closeDocDetail(); }
   });
 
+  // ── ✈️ Travel intelligence in the doc-detail modal (2026-06-22) ──────────
+  let _ddTravel = { uid: null, data: null, people: [], bid: null };
+
+  function _ddTravelCollect() {
+    // Pull whatever travel inputs are currently rendered into _ddTravel.data.
+    const g = id => { const el = document.getElementById(id); return el ? (el.value || '').trim() : undefined; };
+    const d = Object.assign({}, _ddTravel.data || {});
+    const k = g('ddTrvKind'); if (k !== undefined) d.kind = k;
+    const conf = g('ddTrvConf'); if (conf !== undefined) d.confirmation_no = conf;
+    if (g('ddTrvAirline')  !== undefined) d.airline        = g('ddTrvAirline');
+    if (g('ddTrvFlightNo') !== undefined) d.flight_no      = g('ddTrvFlightNo');
+    if (g('ddTrvDepAir')   !== undefined) d.depart_airport = g('ddTrvDepAir');
+    if (g('ddTrvArrAir')   !== undefined) d.arrive_airport = g('ddTrvArrAir');
+    if (g('ddTrvHotel')    !== undefined) d.hotel_name     = g('ddTrvHotel');
+    if (g('ddTrvCheckIn')  !== undefined) d.check_in       = g('ddTrvCheckIn');
+    if (g('ddTrvCheckOut') !== undefined) d.check_out      = g('ddTrvCheckOut');
+    if (g('ddTrvRoom')     !== undefined) d.room_type      = g('ddTrvRoom');
+    if (g('ddTrvRental')   !== undefined) d.rental_co      = g('ddTrvRental');
+    if (g('ddTrvPickup')   !== undefined) d.pickup_location = g('ddTrvPickup');
+    _ddTravel.data = d;
+    return d;
+  }
+
+  function _ddTravelRenderFields() {
+    const t = _ddTravel.data || {};
+    const f = document.getElementById('docDetailTravelFields');
+    if (!f) return;
+    const kind = t.kind || 'flight';
+    const row = (id, label, val) =>
+      `<div style="margin-bottom:5px"><label style="font-size:10px;color:var(--text-muted)">${label}</label>` +
+      `<input id="${id}" value="${_esc(val || '')}" style="width:100%;font-size:12px"></div>`;
+    let html = '';
+    if (!t.confirmation_no && !t.kind) {
+      html += '<div style="color:var(--text-muted);font-size:11px;margin-bottom:6px">No travel details yet — click <b>Re-extract</b> to read this document.</div>';
+    }
+    html += `<div style="margin-bottom:5px"><label style="font-size:10px;color:var(--text-muted)">Type</label>` +
+      `<select id="ddTrvKind" style="width:100%;font-size:12px">` +
+      `<option value="flight"${kind==='flight'?' selected':''}>✈️ Flight</option>` +
+      `<option value="hotel"${kind==='hotel'?' selected':''}>🏨 Hotel</option>` +
+      `<option value="car_rental"${kind==='car_rental'?' selected':''}>🚗 Car rental</option></select></div>`;
+    html += row('ddTrvConf', 'Confirmation #', t.confirmation_no);
+    if (kind === 'flight') {
+      html += row('ddTrvAirline','Airline',t.airline) + row('ddTrvFlightNo','Flight #',t.flight_no) +
+              row('ddTrvDepAir','From (IATA)',t.depart_airport) + row('ddTrvArrAir','To (IATA)',t.arrive_airport);
+    } else if (kind === 'hotel') {
+      html += row('ddTrvHotel','Hotel',t.hotel_name) + row('ddTrvCheckIn','Check-in (YYYY-MM-DD)',t.check_in) +
+              row('ddTrvCheckOut','Check-out (YYYY-MM-DD)',t.check_out) + row('ddTrvRoom','Room type',t.room_type);
+    } else if (kind === 'car_rental') {
+      html += row('ddTrvRental','Rental company',t.rental_co) + row('ddTrvPickup','Pickup location',t.pickup_location);
+    }
+    f.innerHTML = html;
+    const ks = document.getElementById('ddTrvKind');
+    if (ks) ks.onchange = () => { _ddTravelCollect(); _ddTravelRenderFields(); };
+  }
+
+  async function _docDetailLoadTravel(uid) {
+    const block = document.getElementById('docDetailTravelBlock');
+    if (!block) return;
+    _ddTravel = { uid, data: null, people: [], bid: null };
+    document.getElementById('docDetailTravelStatus').textContent = '';
+    let d = {};
+    try { d = await (await fetch(`/docs/upload/${uid}/status`, {credentials:'same-origin'})).json(); } catch (e) {}
+    const t = d.travel;
+    const cat = (document.getElementById('docDetailCategory').value || '').toLowerCase();
+    const vendor = (document.getElementById('docDetailVendor').value || '').toLowerCase();
+    const looksTravel = /hotel|air|flight|travel|lodging|car ?rental|rental/.test(cat + ' ' + vendor);
+    if (!(t && t.is_travel) && !looksTravel) { block.style.display = 'none'; return; }
+    block.style.display = 'block';
+    _ddTravel.data = (t && t.is_travel) ? t : {};
+    _ddTravelRenderFields();
+    // Person roster + the budget the schedule lives on.
+    try {
+      const pr = await (await fetch(`/projects/${PROJ_ID}/travel/people`, {credentials:'same-origin'})).json();
+      _ddTravel.people = pr.people || []; _ddTravel.bid = pr.bid;
+      const sel = document.getElementById('docDetailTravelPerson');
+      sel.innerHTML = '<option value="">— pick person —</option>' +
+        _ddTravel.people.map((p,i) => `<option value="${i}">${_esc(p.person)}${p.role?(' — '+_esc(p.role)):''}</option>`).join('');
+      if (t && t.traveler_name) {
+        const nm = t.traveler_name.toLowerCase();
+        const idx = _ddTravel.people.findIndex(p => {
+          const pn = (p.person||'').toLowerCase();
+          return pn && (pn.includes(nm) || nm.includes(pn));
+        });
+        if (idx >= 0) sel.value = String(idx);
+      }
+      if (!_ddTravel.bid) document.getElementById('docDetailTravelStatus').textContent =
+        'No Working/Estimated budget found to attach travel to.';
+    } catch (e) {}
+    // Prefill the travel day from check-in / departure / doc date.
+    const di = document.getElementById('docDetailTravelDate');
+    const pre = (t && (t.check_in || (t.depart_at || '').slice(0,10))) ||
+                document.getElementById('docDetailDocDate').value || '';
+    di.value = (pre || '').slice(0,10);
+  }
+
+  window.docDetailExtractTravel = async function () {
+    const uid = _ddTravel.uid; if (!uid) return;
+    const btn = document.getElementById('docDetailTravelExtractBtn');
+    const st = document.getElementById('docDetailTravelStatus');
+    if (btn) { btn.disabled = true; btn.textContent = 'Reading…'; }
+    if (st) st.textContent = 'Reading the document…';
+    try {
+      const r = await fetch(`/docs/upload/${uid}/extract-travel`, {method:'POST', credentials:'same-origin'});
+      const d = await r.json();
+      if (r.ok && d.travel) {
+        _ddTravel.data = d.travel.is_travel ? d.travel : (d.travel || {});
+        _ddTravelRenderFields();
+        if (st) st.textContent = d.travel.is_travel ? 'Extracted ✓ — review and Apply.' : 'No travel details found in this document.';
+      } else { if (st) st.textContent = 'Extract failed.'; }
+    } catch (e) { if (st) st.textContent = 'Extract error: ' + e.message; }
+    finally { if (btn) { btn.disabled = false; btn.textContent = 'Re-extract'; } }
+  };
+
+  window.docDetailApplyTravel = async function () {
+    const uid = _ddTravel.uid; if (!uid) return;
+    const st = document.getElementById('docDetailTravelStatus');
+    const pidx = document.getElementById('docDetailTravelPerson').value;
+    const date = document.getElementById('docDetailTravelDate').value;
+    if (pidx === '' || !_ddTravel.people[pidx]) { if (st) st.textContent = 'Pick a person first.'; return; }
+    if (!date) { if (st) st.textContent = 'Pick a travel day.'; return; }
+    if (!_ddTravel.bid) { if (st) st.textContent = 'No budget to attach travel to.'; return; }
+    const person = _ddTravel.people[pidx];
+    const t = _ddTravelCollect();
+    const payload = Object.assign({
+      doc_upload_id: uid, line_id: person.line_id, instance: person.instance,
+      date, kind: t.kind || 'flight',
+    }, t);
+    const btn = document.getElementById('docDetailTravelApplyBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Applying…'; }
+    try {
+      const r = await fetch(`/projects/${PROJ_ID}/budget/${_ddTravel.bid}/travel/apply-doc`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        credentials:'same-origin', body: JSON.stringify(payload)});
+      const d = await r.json();
+      if (r.ok && d.ok) {
+        if (st) st.textContent = `✓ Added to ${_esc(person.person)}'s travel (${d.kind}).`;
+        // Reflect the crew link in the person picker above.
+        if (person.crew_member_id) {
+          const cs = document.getElementById('docDetailCrewId');
+          if (cs) cs.value = String(person.crew_member_id);
+        }
+      } else { if (st) st.textContent = 'Apply failed: ' + (d.error || r.status); }
+    } catch (e) { if (st) st.textContent = 'Apply error: ' + e.message; }
+    finally { if (btn) { btn.disabled = false; btn.textContent = 'Apply to Travel tab'; } }
+  };
+
   window.openDocDetail = async function (uid, row) {
     // Tolerate the legacy (null, docId) call order used by a few inline
     // links (by-dept detail rows, dynamically-rendered doc lists).
@@ -5732,6 +5902,7 @@
     if (typeof docDetailNewCrewHide === 'function') docDetailNewCrewHide();   // reset inline creator
     document.getElementById('docDetailLocationId').value = row?.dataset?.locationId || '';
     _docDetailApplyTypeUI(row?.dataset?.sortType || '');
+    try { _docDetailLoadTravel(uid); } catch (e) {}
     // Re-apply when the user changes the type dropdown so labels /
     // field visibility track the selection live.
     document.getElementById('docDetailCategory').onchange = (e) =>
