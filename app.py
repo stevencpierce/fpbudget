@@ -8167,6 +8167,18 @@ def _sync_claim_state(txn):
                     s.not_project_expense = False
 
 
+def _clear_ai_code_suggestion(txn):
+    """Clear a transaction's AI code suggestion after it's been coded/dismissed so
+    it stops surfacing in the doc popup chip, the row ✨ chip, and the Dashboard
+    'Codes to confirm' queue. Does NOT commit. (User 2026-06-22.)"""
+    if txn is None:
+        return
+    txn.ai_suggested_code = None
+    txn.ai_suggested_code_name = None
+    txn.ai_code_confidence = None
+    txn.ai_code_reason = None
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-line", methods=["POST"])
 @login_required
 def actuals_set_line(pid, tid):
@@ -8225,6 +8237,9 @@ def actuals_set_line(pid, tid):
         # Cross-project claim: now that this row owns a budget line,
         # propagate to any sibling rows in other projects.
         _sync_claim_state(txn)
+        # Coding it manually clears any AI code suggestion so it stops showing
+        # in the popup / row chip / 'Codes to confirm' queue. (User 2026-06-22.)
+        _clear_ai_code_suggestion(txn)
         db.session.commit()
         try:
             _label = (txn.vendor or txn.note or f'Txn #{txn.id}')[:80]
@@ -26121,10 +26136,16 @@ def docs_upload_coding(uid):
     deny = _docs_check_row_access(upload)
     if deny:
         return deny
-    txn = (Transaction.query.filter_by(doc_upload_id=uid)
-           .order_by(Transaction.id).first())
-    if not txn:
+    _txns = (Transaction.query.filter_by(doc_upload_id=uid)
+             .order_by(Transaction.id).all())
+    if not _txns:
         return jsonify({"txn_id": None})
+    # Prefer the electronic charge (it carries the AI code suggestion), else the
+    # doc's own ledger row. (User 2026-06-22 — surface the suggestion in the popup.)
+    txn = next((t for t in _txns if t.source in ('qbo_sync', 'csv_import', 'reconciled')
+                and t.ai_suggested_code), None) \
+        or next((t for t in _txns if t.source in ('qbo_sync', 'csv_import', 'reconciled')), None) \
+        or _txns[0]
     cur = ''
     if txn.budget_line_id:
         bl = BudgetLine.query.get(txn.budget_line_id)

@@ -8387,8 +8387,12 @@
           // (populated, user just used it) picker's optgroup; clear → empty.
           if (value.startsWith('section:')) row.dataset.acctCode = value.slice(8);
           else row.dataset.acctCode = '';
-          // Coded now → the smart-suggestion chip is spent; remove it.
-          if (isCoded) { const _sb = row.querySelector('.actuals-suggest-btn'); if (_sb) _sb.remove(); }
+          // Coded now → the suggestion is spent; remove BOTH the old heuristic
+          // chip AND the ✨ AI chip in place so it doesn't linger in the list
+          // after coding (incl. from the popup picker). (User 2026-06-22.)
+          if (isCoded) {
+            row.querySelectorAll('.actuals-suggest-btn, .actuals-ai-suggest-btn').forEach(b => b.remove());
+          }
         }
         _actualsRecountStats();
         // Re-apply the active filter so a freshly-coded row auto-leaves a
