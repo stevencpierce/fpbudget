@@ -43,7 +43,7 @@ FP_COA_SECTIONS = [
     (6100,  "Licensing"),
     (6200,  "Distribution"),
     (6300,  "Marketing & EPK"),
-    (6400,  "Web Build & Software Development"),
+    (6400,  "Software & Digital Tools"),
     (6500,  "Administrative"),
     (6600,  "Residuals"),
     (6700,  "Miscellaneous"),
@@ -89,7 +89,7 @@ COA_LEGACY_MAPPING = {
     12000: 6100,   # Licensing
     12500: 4800,   # Composition & Mastering → Music & Composition
     13000: 6200,   # Distribution
-    13200: 6400,   # Software & Office Supplies → Web Build & Software Development
+    13200: 6400,   # Software & Office Supplies → Software & Digital Tools
     14000: 6000,   # Insurance
     15000: 6500,   # Administrative
     16000: 6300,   # Marketing → Marketing & EPK (merge with old 17000)
@@ -2005,12 +2005,12 @@ FP_CATALOG_SEED = [
     (6300, "Marketing & EPK", "Still Photos (license)", None, False,  300, 1, 1, 0, None, None, 0.00, "expense", "flat"),
     (6300, "Marketing & EPK", "EPK Package",            None, False, 2000, 1, 1, 0, None, None, 0.00, "expense", "flat"),
 
-    # ── 6400 Web Build & Software Development ────────────────────────────────
-    (6400, "Web Build & Software Development", "Production Software", None, False, 500, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
-    (6400, "Web Build & Software Development", "Cloud Storage",       None, False, 100, 1, 1, 0, None, None, 0.00, "expense",  "month"),
-    (6400, "Web Build & Software Development", "Office Supplies",     None, False, 200, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
-    (6400, "Web Build & Software Development", "Printer Ink / Paper", None, False, 100, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
-    (6400, "Web Build & Software Development", "Phone & Internet",    None, False, 150, 1, 1, 0, None, None, 0.00, "expense",  "month"),
+    # ── 6400 Software & Digital Tools ────────────────────────────────
+    (6400, "Software & Digital Tools", "Production Software", None, False, 500, 1, 1, 0, None, None, 0.00, "expense",  "flat"),
+    (6400, "Software & Digital Tools", "Cloud Storage",       None, False, 100, 1, 1, 0, None, None, 0.00, "expense",  "month"),
+    (6400, "Software & Digital Tools", "Office Supplies",     None, False, 200, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (6400, "Software & Digital Tools", "Printer Ink / Paper", None, False, 100, 1, 1, 0, None, None, 0.00, "purchase", "flat"),
+    (6400, "Software & Digital Tools", "Phone & Internet",    None, False, 150, 1, 1, 0, None, None, 0.00, "expense",  "month"),
 
     # ── 6500 Administrative ──────────────────────────────────────────────────
     (6500, "Administrative", "Accounting / Bookkeeping", None, False, 500, 1, 1, 0, None, None, 0.00, "expense", "flat"),
@@ -2158,9 +2158,9 @@ QE_CATEGORIES_FROZEN = [
     (4800, "Music & Composition", "Music Supervisor"),
     # 6200 Distribution
     (6200, "Distribution", "Delivery to Network"),
-    # 6400 Web Build & Software Development
-    (6400, "Web Build & Software Development", "Software Subscriptions"),
-    (6400, "Web Build & Software Development", "Office Supplies"),
+    # 6400 Software & Digital Tools
+    (6400, "Software & Digital Tools", "Software Subscriptions"),
+    (6400, "Software & Digital Tools", "Office Supplies"),
     # 6000 Insurance
     (6000, "Insurance", "Production Insurance"),
     (6000, "Insurance", "Errors & Omissions"),

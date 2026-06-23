@@ -54,7 +54,7 @@ DEFAULT_QBO_MAPPINGS = {
     "legal & professional fees":    (6500, "Administrative"),
     "legal":                        (6500, "Administrative"),
     "accounting":                   (6500, "Administrative"),
-    "office supplies & software":   (6400, "Web Build & Software Development"),
+    "office supplies & software":   (6400, "Software & Digital Tools"),
     "office supplies":              (6500, "Administrative"),
     "advertising":                  (6300, "Marketing & EPK"),
     "marketing":                    (6300, "Marketing & EPK"),
