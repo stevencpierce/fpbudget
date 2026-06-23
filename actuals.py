@@ -262,6 +262,89 @@ def scan_double_coded(project_id):
     return out
 
 
+def scan_duplicate_receipts(project_id):
+    """Find RECEIPT documents that duplicate the same spend — e.g. a receipt
+    'asking to be filed' when another receipt for that exact charge is already
+    matched + coded. Complements scan_double_coded (which only fires when ≥2
+    TRANSACTIONS are coded, so it misses a fresh dup sitting next to one
+    already-matched receipt). Clusters receipt/invoice DocUploads by
+    sign+abs(amount)|date|canon_vendor; a cluster with ≥2 docs means the same
+    spend has multiple receipts. Read-only. (User 2026-06-22.)
+
+    Returns [{key, amount, vendor, date, keep_doc_id,
+              docs:[{id, filename, matched, coded, charge_tid}]}], duplicates first."""
+    docs = (DocUpload.query
+            .filter(DocUpload.project_id == project_id,
+                    DocUpload.category.in_(('receipt', 'invoice')),
+                    DocUpload.status != 'deleted',
+                    DocUpload.status != 'duplicate',
+                    DocUpload.is_duplicate == False,            # noqa: E712
+                    DocUpload.amount.isnot(None))
+            .all())
+    if not docs:
+        return []
+
+    # Which docs are matched to an electronic charge, and which are coded.
+    charge_by_doc, docrow_by_doc = {}, {}
+    for t in (Transaction.query
+              .filter(Transaction.project_id == project_id,
+                      Transaction.doc_upload_id.isnot(None)).all()):
+        if t.source in ('qbo_sync', 'csv_import', 'reconciled'):
+            charge_by_doc[t.doc_upload_id] = t
+        elif t.source == 'doc_upload':
+            docrow_by_doc[t.doc_upload_id] = t
+
+    def _coded(doc_id):
+        c = charge_by_doc.get(doc_id)
+        if c and (c.account_code is not None or c.budget_line_id is not None):
+            return True
+        r = docrow_by_doc.get(doc_id)
+        return bool(r and (r.account_code is not None or r.budget_line_id is not None))
+
+    clusters = {}
+    for d in docs:
+        try:
+            amt = float(d.amount)
+        except (TypeError, ValueError):
+            continue
+        if amt == 0:
+            continue
+        date = (d.doc_date.isoformat() if d.doc_date else '')[:10]
+        sign = '+' if amt > 0 else '-'
+        key = "%s%.2f|%s|%s" % (sign, abs(amt), date, canon_vendor(d.vendor))
+        clusters.setdefault(key, []).append(d)
+
+    out = []
+    for key, members in clusters.items():
+        if len(members) < 2:
+            continue
+        rows = [{
+            "id": d.id,
+            "filename": d.filed_filename or d.original_filename or f"Doc #{d.id}",
+            "matched": d.id in charge_by_doc,
+            "coded": _coded(d.id),
+            "charge_tid": (charge_by_doc[d.id].id if d.id in charge_by_doc else None),
+        } for d in members]
+        # Keeper = a matched receipt, else a coded one, else the oldest doc id.
+        keeper = next((r for r in rows if r["matched"]), None) \
+            or next((r for r in rows if r["coded"]), None) \
+            or min(rows, key=lambda r: r["id"])
+        # Duplicates listed first (the ones the user should remove).
+        rows.sort(key=lambda r: (r["id"] == keeper["id"], r["id"]))
+        amt0 = abs(float(members[0].amount))
+        out.append({
+            "key": key, "amount": round(amt0, 2),
+            "vendor": members[0].vendor or '',
+            "date": (members[0].doc_date.isoformat() if members[0].doc_date else '')[:10],
+            "keep_doc_id": keeper["id"], "docs": rows,
+        })
+    # Surface clusters where one side is already settled (matched/coded) first —
+    # those are the highest-confidence "you already have this" duplicates.
+    out.sort(key=lambda c: (not any(d["matched"] or d["coded"] for d in c["docs"]),
+                            -c["amount"]))
+    return out
+
+
 # ── Working → Actual cloning ──────────────────────────────────────────
 
 def get_current_actual_budget(project_id):

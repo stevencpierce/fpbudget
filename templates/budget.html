@@ -8415,8 +8415,9 @@
     // the flat list got too long to scroll — group by kind, collapse, and cap the
     // height so each kind is one compact header until expanded.)
     const _DASH_GROUP_META = {
-      double_coded:    { icon: '⧉',  label: 'Duplicate charges',   order: 1 },
-      code_suggestion: { icon: '✨', label: 'Codes to confirm',     order: 2 },
+      double_coded:     { icon: '⧉',  label: 'Duplicate charges',   order: 1 },
+      duplicate_receipt:{ icon: '🧾', label: 'Duplicate receipts',  order: 1.5 },
+      code_suggestion:  { icon: '✨', label: 'Codes to confirm',     order: 2 },
       budget_mismatch: { icon: '📊', label: 'Budget mismatches',   order: 3 },
       data_issue:      { icon: '⚠',  label: 'Check extracted data', order: 4 },
       people_line:     { icon: '👤', label: 'Assign to person',     order: 5 },
@@ -8507,6 +8508,27 @@
       } else if (it.type === 'people_line') {
         const p = it.payload || {};
         actions += `<button type="button" class="btn btn-xs btn-primary" onclick="dashResolve(${it.id},'apply_people_line',this)" title="Code this charge to ${_dashEsc(p.line_label||'their line')} and attach ${_dashEsc(p.crew_name||'the person')}">Apply → ${_dashEsc(p.line_label || 'line')}</button>`;
+      } else if (it.type === 'duplicate_receipt') {
+        const p = it.payload || {};
+        const docs = p.docs || [];
+        actions += '<div style="font-size:.7rem;color:var(--text-muted);margin:2px 0 5px">Same spend has more than one receipt — keep one, delete the rest.</div>';
+        actions += docs.map(d => {
+          const isKeep = d.id === p.keep_doc_id;
+          const tone = isKeep
+            ? { bd: '#2a6a48', bg: 'rgba(116,198,157,.10)', tag: '#74c69d',
+                label: d.matched ? 'KEEP · matched' : (d.coded ? 'KEEP · coded' : 'KEEP') }
+            : { bd: '#7a5a2a', bg: 'rgba(224,200,96,.08)', tag: '#e0c060', label: 'duplicate' };
+          return `<div style="border:1px solid ${tone.bd};background:${tone.bg};border-radius:6px;padding:6px 8px;margin-bottom:5px">
+             <div style="display:flex;gap:6px;align-items:center;font-size:.72rem">
+               <span style="flex:none;font-weight:700;color:${tone.tag};font-size:.62rem;text-transform:uppercase;letter-spacing:.04em">${tone.label}</span>
+               <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_dashEsc(d.filename)}</span>
+             </div>
+             <div style="display:flex;gap:6px;margin-top:5px;justify-content:flex-end">
+               <button type="button" class="btn btn-xs btn-ghost" onclick="dashViewDoc(${d.id})" title="Open this receipt">View</button>
+               ${isKeep ? '' : `<button type="button" class="btn btn-xs" style="border-color:#7a3a3a;color:#e08080" onclick="dashDeleteDupDoc(${d.id}, ${it.id}, this)" title="Move this duplicate receipt to Trash">🗑 Delete</button>`}
+             </div>
+           </div>`;
+        }).join('');
       } else if (it.type === 'code_suggestion') {
         const p = it.payload || {};
         window._dashCodeMap[p.tid] = { code: p.code, name: p.name || '' };
@@ -8568,6 +8590,26 @@
     window.dashDismissCode = async function (tid, btn) {
       try { await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/dismiss-code`, { method: 'POST' }); } catch (e) {}
       _dashRemoveCard('code-' + tid);
+    };
+    // Phase: delete a duplicate receipt straight from the queue (trashes the doc,
+    // resolves the flag). (User 2026-06-22.)
+    window.dashDeleteDupDoc = async function (docId, fid, btn) {
+      if (!confirm('Move this duplicate receipt to Trash? You can restore it from Docs → Trash.')) return;
+      if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
+      try {
+        const r = await fetch(`/docs/upload/${docId}/delete`, { method: 'POST', credentials: 'same-origin' });
+        if (!r.ok) {
+          if (btn) { btn.disabled = false; btn.textContent = '🗑 Delete'; }
+          if (typeof _actualsToast === 'function') _actualsToast('Delete failed.', 'yellow');
+          return;
+        }
+        if (typeof _actualsToast === 'function') _actualsToast('Duplicate receipt trashed ✓', 'green');
+        try { await fetch(`/projects/${PROJ_ID}/anomalies/${fid}/dismiss`, { method: 'POST' }); } catch (e) {}
+        _dashRemoveCard(fid);
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.textContent = '🗑 Delete'; }
+        if (typeof _actualsToast === 'function') _actualsToast('Delete error: ' + e.message, 'yellow');
+      }
     };
     // Open the underlying document (image + editable vendor/amount/date) or charge
     // so the user can SEE what a flag refers to and fix it. (User 2026-06-18.)

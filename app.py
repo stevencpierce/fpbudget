@@ -9699,6 +9699,39 @@ def _run_double_coded_scan(pid):
     return len(clusters), flags
 
 
+def _run_duplicate_receipt_scan(pid):
+    """Flag receipts that duplicate the same spend (when one is already
+    matched/coded, the others are dupes). Catches the case scan_double_coded
+    misses — a fresh receipt next to a single already-filed one. Does NOT commit.
+    Returns flag count. (User 2026-06-22.)"""
+    from actuals import scan_duplicate_receipts
+    flags = 0
+    for c in scan_duplicate_receipts(pid):
+        dups = [d for d in c["docs"] if d["id"] != c["keep_doc_id"]]
+        if not dups:
+            continue
+        doc_ids = sorted(d["id"] for d in c["docs"])
+        dedup = "dup_receipt:" + "-".join(str(i) for i in doc_ids)
+        keeper = next((d for d in c["docs"] if d["id"] == c["keep_doc_id"]), None)
+        settled = bool(keeper and (keeper["matched"] or keeper["coded"]))
+        title = f'Duplicate receipt · ${c["amount"]:,.2f}'
+        expl = (f'{len(c["docs"])} receipts for {c["vendor"] or "this vendor"} on '
+                f'{c["date"] or "the same date"} (${c["amount"]:,.2f}) — '
+                + ('one is already matched/coded, so the rest are duplicates. '
+                   if settled else 'likely the same receipt scanned more than once. ')
+                + 'Keep one and delete the rest.')
+        f = _flag_anomaly(pid, 'duplicate_receipt',
+                          severity=('high' if settled else 'medium'),
+                          title=title, explanation=expl, doc_upload_id=dups[0]["id"],
+                          payload={"amount": c["amount"], "vendor": c["vendor"],
+                                   "date": c["date"], "keep_doc_id": c["keep_doc_id"],
+                                   "docs": c["docs"]},
+                          dedup_key=dedup)
+        if f is not None:
+            flags += 1
+    return flags
+
+
 def _run_budget_mismatch_scan(pid):
     """Flag where money doesn't match the plan: (a) POs billed over their committed
     cap, and (b) non-labor budget lines whose actual spend significantly exceeds
@@ -9869,6 +9902,7 @@ def actuals_scan_anomalies(pid):
     ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'editor')
     clusters, flags = _run_double_coded_scan(pid)
+    dup_receipt_flags = _run_duplicate_receipt_scan(pid)
     budget_flags = _run_budget_mismatch_scan(pid)
     people_flags = _run_people_line_scan(pid)
     try:
@@ -9876,8 +9910,9 @@ def actuals_scan_anomalies(pid):
     except Exception:
         db.session.rollback()
     return jsonify({"ok": True, "clusters": clusters, "flags": flags,
+                    "dup_receipt_flags": dup_receipt_flags,
                     "budget_flags": budget_flags, "people_flags": people_flags,
-                    "total_flags": flags + budget_flags + people_flags})
+                    "total_flags": flags + dup_receipt_flags + budget_flags + people_flags})
 
 
 def _run_all_scans(pid):
@@ -9888,10 +9923,11 @@ def _run_all_scans(pid):
     total = 0
     try:
         _c, f1 = _run_double_coded_scan(pid)
+        f4 = _run_duplicate_receipt_scan(pid)
         f2 = _run_budget_mismatch_scan(pid)
         f3 = _run_people_line_scan(pid)
         db.session.commit()
-        total = (f1 or 0) + (f2 or 0) + (f3 or 0)
+        total = (f1 or 0) + (f4 or 0) + (f2 or 0) + (f3 or 0)
     except Exception:
         db.session.rollback()
         logging.warning("[_run_all_scans] failed for pid=%s", pid, exc_info=True)
