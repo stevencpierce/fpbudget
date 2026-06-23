@@ -3314,7 +3314,15 @@
         </div>
         <div style="display:flex;align-items:center;gap:8px;
                     padding:12px 18px;border-top:1px solid var(--border)">
-          <span id="docDupApplySummary" class="muted" style="font-size:12px;margin-right:auto"></span>
+          {# Prev/Next walk the Docs-Review duplicate queue. If you made a
+             keep/duplicate decision, paging SAVES it and drops the group; if you
+             touched nothing, it just moves on (stays in the queue). (User 2026-06-22.) #}
+          <button type="button" id="docDupPrevBtn" class="btn btn-sm" onclick="docDupNav(-1)"
+                  title="Previous duplicate group (saves your decision if you made one)">← Prev</button>
+          <button type="button" id="docDupNextBtn" class="btn btn-sm" onclick="docDupNav(1)"
+                  title="Next duplicate group (saves your decision if you made one)">Next →</button>
+          <span id="docDupNavPos" class="muted" style="font-size:11.5px"></span>
+          <span id="docDupApplySummary" class="muted" style="font-size:12px;margin-left:8px;margin-right:auto"></span>
           <button type="button" class="btn btn-sm" onclick="closeDupCompare()">Cancel</button>
           <button type="button" id="docDupApplyBtn" class="btn btn-sm btn-primary"
                   onclick="docDupApplyGroup()">Apply decisions</button>
@@ -4199,6 +4207,73 @@
       if (apply) { apply.disabled = false; apply.style.opacity = ''; apply.style.cursor = 'pointer'; }
     }
   }
+
+  // ── Compare-queue prev/next over the Docs-Review duplicate groups ──────────
+  // (User 2026-06-22.) Page through duplicate groups without leaving the modal.
+  // If a keep/duplicate decision was made, paging SAVES it + drops the group;
+  // if nothing was touched, paging just moves on and the group stays in queue.
+  let _docDupNav = { queue: [], curKey: null, idx: -1 };
+  let _docDupOpenSig = '';
+  function _docGroupKey(uid) {
+    const r = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
+    if (!r) return null;
+    return r.dataset.fileHash || ('dof:' + (r.dataset.duplicateOf || uid));
+  }
+  function _docDupQueue() {
+    const rows = Array.from(document.querySelectorAll('#docsHistory .doc-row'))
+      .filter(r => r.dataset.isDuplicate === '1' && (r.dataset.status || '') !== 'duplicate');
+    const seen = new Set(), out = [];
+    rows.forEach(r => {
+      const key = r.dataset.fileHash || ('dof:' + (r.dataset.duplicateOf || r.dataset.uploadId));
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({ uid: parseInt(r.dataset.uploadId), key });
+    });
+    return out;
+  }
+  function _docDupUpdateNavButtons() {
+    const q = _docDupNav.queue;
+    let idx = q.findIndex(g => g.key === _docDupNav.curKey);
+    if (idx === -1) idx = _docDupNav.idx;
+    const prev = document.getElementById('docDupPrevBtn');
+    const nxt  = document.getElementById('docDupNextBtn');
+    const pos  = document.getElementById('docDupNavPos');
+    const set = (b, dis) => { if (!b) return; b.disabled = dis; b.style.opacity = dis ? '.4' : ''; b.style.cursor = dis ? 'not-allowed' : 'pointer'; };
+    if (!q.length || idx === -1) { set(prev, true); set(nxt, true); if (pos) pos.textContent = ''; return; }
+    if (pos) pos.textContent = (idx + 1) + ' / ' + q.length;
+    set(prev, idx <= 0);
+    set(nxt, idx >= q.length - 1);
+  }
+  // Capture the queue + position when the compare modal opens for `uid`.
+  window._docDupCaptureNav = function (uid) {
+    _docDupNav.queue = _docDupQueue();
+    _docDupNav.curKey = _docGroupKey(uid);
+    _docDupNav.idx = _docDupNav.queue.findIndex(g => g.key === _docDupNav.curKey);
+    _docDupOpenSig = JSON.stringify(_docDupGroupState || {});
+    _docDupUpdateNavButtons();
+  };
+  window.docDupNav = async function (delta) {
+    const q = _docDupNav.queue;
+    let idx = q.findIndex(g => g.key === _docDupNav.curKey);
+    if (idx === -1) idx = _docDupNav.idx;
+    const neighbor = (idx >= 0) ? (q[idx + delta] || null) : null;
+    // Intervention = the user actually changed a keep/duplicate choice.
+    const changed = JSON.stringify(_docDupGroupState || {}) !== _docDupOpenSig;
+    if (changed) {
+      const applyBtn = document.getElementById('docDupApplyBtn');
+      if (applyBtn && !applyBtn.disabled) {
+        await docDupApplyGroup();   // resolves the current group (+ removes it + closes)
+      }
+    }
+    // Move to the neighbor group (it wasn't the one we just resolved). If there's
+    // no neighbor, close — and if we just saved, say so.
+    if (neighbor) {
+      docsOpenDupGroup(neighbor.uid);
+    } else {
+      if (typeof closeDupCompare === 'function') closeDupCompare();
+      if (changed && typeof _actualsToast === 'function') _actualsToast('Saved — no more groups this way.', 'green');
+    }
+  };
   // Public entry — the row's "⇆ Compare" button calls this.
   window.docsOpenDupGroup = function(uid) {
     // Hoist the overlay to <body> so it shows even when opened from a tab
@@ -4307,6 +4382,27 @@
     if (sumEl) { sumEl.textContent = members.length + ' receipts for the same spend — compare, then keep the right one.'; sumEl.style.color = 'var(--text-muted)'; }
     document.getElementById('docDupCompareOverlay').style.display = 'flex';
   };
+
+  // Wrap the two compare openers so prev/next captures the queue + position on
+  // every open (after each sets up its keep/duplicate state). Re-pointing the
+  // legacy alias too. (User 2026-06-22.)
+  (function () {
+    const _origOpenDupGroup = window.docsOpenDupGroup;
+    window.docsOpenDupGroup = function (uid) {
+      const r = _origOpenDupGroup.apply(this, arguments);
+      try { window._docDupCaptureNav(uid); } catch (e) {}
+      return r;
+    };
+    window.docsOpenDupCompare = window.docsOpenDupGroup;
+    const _origOpenCompareSet = window.docsOpenCompareSet;
+    if (_origOpenCompareSet) {
+      window.docsOpenCompareSet = function (docIds) {
+        const r = _origOpenCompareSet.apply(this, arguments);
+        try { window._docDupCaptureNav((docIds || [])[0]); } catch (e) {}
+        return r;
+      };
+    }
+  })();
 
   // Resolve a SINGLE-member review group (keep | confirm) via the single-doc
   // endpoint — used when the compare modal has only one copy left to act on.
