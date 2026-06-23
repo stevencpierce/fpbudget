@@ -9999,7 +9999,7 @@ def project_anomalies(pid):
         code_txns = []
     for t in code_txns:
         conf = float(t.ai_code_confidence) if t.ai_code_confidence is not None else None
-        nm = (t.ai_suggested_name or '').strip()
+        nm = (t.ai_suggested_code_name or '').strip()
         amt = float(t.amount) if t.amount is not None else None
         items.append({
             "id": f"code-{t.id}", "type": "code_suggestion", "severity": "low",
@@ -10178,7 +10178,7 @@ def actuals_dismiss_code(pid, tid):
     _require_project_role(pid, 'editor')
     t = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
     t.ai_suggested_code = None
-    t.ai_suggested_name = None
+    t.ai_suggested_code_name = None
     t.ai_code_confidence = None
     db.session.commit()
     return jsonify({"ok": True})
