@@ -7246,6 +7246,7 @@
            clones these in lazily via _actualsFillPicker. 2026-05-29. #}
         <select id="actualsLineOptsTpl" style="display:none" aria-hidden="true" tabindex="-1">
           <option value="">— pick budget line —</option>
+          <option value="not_project" style="color:#e0a060">🚫 Not a project expense</option>
           <option value="__clear__" style="color:#e08080">✕ Clear assignment</option>
           {% for grp in actuals_pick_groups %}
           <optgroup label="{{ grp.code }}  {{ grp.name }}">
@@ -8221,6 +8222,10 @@
           const code = value.slice(8);
           url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`;
           body = JSON.stringify({ account_code: code });
+        } else if (value === 'not_project') {
+          // Mark not-a-project-expense right from the picker (User 2026-06-22).
+          url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`;
+          body = JSON.stringify({ account_code: 'not_project' });
         } else {
           // Specific budget line.
           url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-line`;
@@ -8243,6 +8248,8 @@
           _actualsToast('Actual budget started — Working was cloned for live tracking.');
         } else if (value === '__clear__') {
           _actualsToast('Cleared.', 'yellow');
+        } else if (value === 'not_project') {
+          _actualsToast('Marked “not a project expense.”', 'yellow');
         } else if (value.startsWith('section:')) {
           _actualsToast('Coded to section. Pick a specific line for per-line tracking.', 'green');
         }
@@ -8251,8 +8258,9 @@
         // attribute here — no whole-row repaint.
         const row = document.querySelector(`.actuals-txn-row[data-tid="${tid}"]`);
         if (row) {
-          const isCoded = value !== '__clear__';
+          const isCoded = value !== '__clear__' && value !== 'not_project';
           row.dataset.coded = isCoded ? '1' : '0';
+          if (value === 'not_project') row.dataset.notProject = '1';
           // Keep the section-filter's source of truth current (2026-06-04):
           // section coding → we know the code; line coding → code unknown
           // client-side, drop the attr so the filter falls back to the
@@ -8270,7 +8278,10 @@
         if (!window._actualsInReview) {
           actualsApplyFilter(_actualsActiveFilter);
         }
-        // After a clear, force the dropdown back to the placeholder.
+        // After a clear or not-project, force the dropdown back to the placeholder.
+        if (value === 'not_project') {
+          selectEl.value = '';
+        }
         if (value === '__clear__') {
           selectEl.value = '';
           // Hide the Clear option until the row is reassigned again.
