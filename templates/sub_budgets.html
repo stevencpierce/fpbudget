@@ -81,12 +81,12 @@
 {% if return_budget %}
 <div class="tabs-row">
   <div class="tabs">
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=topsheet">Top Sheet</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=topsheet">Dashboard</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=working">Budget</a>
     <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=return_budget.id) }}">Schedule</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=travel">Travel</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=catering">Catering</a>
-    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=contacts">Contacts</a>
+    <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=contacts">People</a>
     <a class="tab-btn tab-link" href="{{ url_for('budget_view', pid=project.id, bid=return_budget.id) }}?tab=locations">Locations</a>
     <a class="tab-btn tab-link" href="{{ url_for('po_list_page', pid=project.id) }}?return_bid={{ return_budget.id }}">POs</a>
     <span class="tab-btn active">Sub-Budgets</span>
