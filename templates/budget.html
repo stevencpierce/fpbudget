@@ -5265,6 +5265,12 @@
   // which row(s) get patched on save ('docs' = Docs tab, 'actuals' =
   // Actuals tab). Set in openDocDetail. (User 2026-05-30.)
   let _docDetailContext = 'docs';
+  // The ordered nav sequence + current index, CAPTURED when the modal is opened
+  // from a list (not recomputed every click) — so a save that re-renders/re-files
+  // the list can't lose our place or dead-end the prev/next buttons. (User
+  // 2026-06-22 — prev was tripping out and graying both buttons.)
+  let _docNavSeq = [];   // [{uid, row}] in the on-screen order at open time
+  let _docNavIdx = -1;
   // Doc categories that are NOT spend events — switching to one of these
   // deletes the linked Actuals transaction server-side, so the row must
   // drop out of the Actuals list on save. Mirrors app.py _NON_LEDGER_CATS.
@@ -5623,9 +5629,13 @@
       .filter(r => r.style.display !== 'none')
       .map(r => ({ uid: parseInt(r.dataset.uploadId), row: r }));
   }
+  // (Re)capture the ordered nav sequence from the current on-screen list and
+  // locate the given uid in it. Called when the user opens a doc from a list.
+  function _docCaptureNavSeq(uid) {
+    _docNavSeq = _docNavList();
+    _docNavIdx = _docNavSeq.findIndex(x => x.uid === uid);
+  }
   function _docDetailUpdateNav() {
-    const list = _docNavList();
-    const idx  = list.findIndex(x => x.uid === _docDetailUid);
     const pos  = document.getElementById('docDetailNavPos');
     const prev = document.getElementById('docDetailPrevBtn');
     const nxt  = document.getElementById('docDetailNextBtn');
@@ -5635,41 +5645,39 @@
       b.style.opacity = disabled ? '.4' : '';
       b.style.cursor  = disabled ? 'not-allowed' : 'pointer';
     };
-    if (idx === -1) {
-      if (pos) pos.textContent = '—';
+    const n = _docNavSeq.length;
+    if (_docNavIdx === -1 || n === 0) {
+      if (pos) pos.textContent = n ? '—' : '';
+      // Not part of a list (e.g. opened from the Action Center) → no paging.
       setBtn(prev, true); setBtn(nxt, true);
       return;
     }
-    if (pos) pos.textContent = (idx + 1) + ' / ' + list.length;
-    setBtn(prev, idx <= 0);
-    setBtn(nxt, idx >= list.length - 1);
+    if (pos) pos.textContent = (_docNavIdx + 1) + ' / ' + n;
+    setBtn(prev, _docNavIdx <= 0);
+    setBtn(nxt, _docNavIdx >= n - 1);
   }
   window.docDetailNav = async function (delta) {
-    // Resolve the target from the CURRENT on-screen order — which reflects the
-    // active filter + sort + exactly where you are — and do it BEFORE saving,
-    // because a save can re-file/hide the current row and lose our place.
-    // (Honors the user's filter/sort instead of jumping alphabetically.
-    //  User 2026-06-22.)
-    const list = _docNavList();
-    let target = null;
-    if (list.length) {
-      const idx = list.findIndex(x => x.uid === _docDetailUid);
-      if (idx !== -1) target = list[idx + delta] || null;   // null = at an end
-    }
-    // Auto-save the current doc's edits before paging away — for BOTH prev AND
-    // next. Previously the early-return at a boundary / not-found row skipped
-    // the save, so 'previous' lost changes. (User 2026-05-30 + 2026-06-22.)
+    // Step through the sequence captured at open time — stable across saves that
+    // re-render/re-file the list, so prev/next always know where we are and the
+    // buttons never dead-end. (User 2026-06-22.)
+    if (!_docNavSeq.length || _docNavIdx < 0) { _docDetailUpdateNav(); return; }
+    const nextIdx = _docNavIdx + delta;
+    const target = _docNavSeq[nextIdx] || null;   // null = at an end
+    // Auto-save current edits before paging away — for BOTH prev AND next.
     if (_docDetailDirty()) {
       const pos = document.getElementById('docDetailNavPos');
       if (pos) pos.textContent = 'Saving…';
       try { await _docDetailCommit(); } catch (e) { /* keep paging */ }
     }
-    // At an end, or the current row isn't in the visible list → stay put (don't
-    // jump to a random/alphabetical item); just restore the counter.
-    if (!target) { _docDetailUpdateNav(); return; }
-    // In the Actuals tab the row is a transaction row (no doc dataset), so
-    // pass null → openDocDetail fetches canonical metadata from the server.
-    openDocDetail(target.uid, _docDetailContext === 'actuals' ? null : target.row);
+    if (!target) { _docDetailUpdateNav(); return; }   // boundary — stay, restore counter
+    _docNavIdx = nextIdx;
+    // Re-resolve the live row by uid (a save may have replaced the element);
+    // fall back to the captured one. Actuals passes null → server fetch.
+    let liveRow = null;
+    if (_docDetailContext !== 'actuals') {
+      liveRow = document.querySelector('.doc-row[data-upload-id="' + target.uid + '"]') || target.row;
+    }
+    openDocDetail(target.uid, liveRow, true);   // internalNav=true → keep the sequence
   };
   // Keyboard: ←/→ page through, Esc closes — but never while typing in a
   // field (so caret movement / text entry isn't hijacked).
@@ -5844,7 +5852,7 @@
     finally { if (btn) { btn.disabled = false; btn.textContent = 'Apply to Travel tab'; } }
   };
 
-  window.openDocDetail = async function (uid, row) {
+  window.openDocDetail = async function (uid, row, internalNav) {
     // Tolerate the legacy (null, docId) call order used by a few inline
     // links (by-dept detail rows, dynamically-rendered doc lists).
     if ((uid == null) && (typeof row === 'number')) { uid = row; row = null; }
@@ -5858,6 +5866,10 @@
     // Decide which list we're paging/patching against from the active tab.
     const _actPanel = document.getElementById('tab-actuals');
     _docDetailContext = (_actPanel && _actPanel.classList.contains('active')) ? 'actuals' : 'docs';
+    // Capture the nav sequence ONCE per user-initiated open. Internal prev/next
+    // calls (internalNav=true) keep the captured sequence so the list re-render
+    // on save can't lose our place. (User 2026-06-22.)
+    if (!internalNav) _docCaptureNavSeq(uid);
     _docDetailUpdateNav();   // refresh prev/next position + button states
     // Hoist the modal out of the Docs tab panel on first open so the
     // user can open it from any tab (Actuals, etc.) — without this,
