@@ -9880,6 +9880,46 @@ def actuals_scan_anomalies(pid):
                     "total_flags": flags + budget_flags + people_flags})
 
 
+def _run_all_scans(pid):
+    """Run the full heuristic scan suite (double-coded + budget mismatch +
+    people→line) and commit. Fail-open: never raises. Returns total flags.
+    Shared by the manual button and the auto-run-after-ingestion triggers.
+    (Phase 3 automation, 2026-06-22.)"""
+    total = 0
+    try:
+        _c, f1 = _run_double_coded_scan(pid)
+        f2 = _run_budget_mismatch_scan(pid)
+        f3 = _run_people_line_scan(pid)
+        db.session.commit()
+        total = (f1 or 0) + (f2 or 0) + (f3 or 0)
+    except Exception:
+        db.session.rollback()
+        logging.warning("[_run_all_scans] failed for pid=%s", pid, exc_info=True)
+    return total
+
+
+def _bg_run_all_scans(pid):
+    """Fire-and-forget the scan suite in a background thread so ingestion
+    (CSV import / QBO sync) returns immediately while the review queue refreshes
+    on its own. (Phase 3 automation, 2026-06-22.)"""
+    import threading
+    def _worker():
+        with app.app_context():
+            try:
+                _run_all_scans(pid)
+            except Exception:
+                logging.warning("[_bg_run_all_scans] failed pid=%s", pid, exc_info=True)
+            finally:
+                try:
+                    db.session.remove()
+                except Exception:
+                    pass
+    try:
+        threading.Thread(target=_worker, daemon=True).start()
+    except Exception:
+        logging.warning("[_bg_run_all_scans] could not start thread pid=%s", pid, exc_info=True)
+
+
 def _anomaly_to_dict(f):
     import json as _j
     try:
@@ -9906,6 +9946,38 @@ def project_anomalies(pid):
     flags = (AnomalyFlag.query.filter_by(project_id=pid, resolved=False)
              .order_by(AnomalyFlag.created_at.desc()).all())
     items = [_anomaly_to_dict(f) for f in flags]
+
+    # Phase 2: surface uncoded charges that already have an AI code suggestion as
+    # "Codes to confirm" queue items (one-click Accept). Synthesized live here
+    # (not persisted as flags) so they vanish the moment the charge is coded.
+    # (2026-06-22.)
+    try:
+        code_txns = (Transaction.query
+                     .filter(Transaction.project_id == pid,
+                             Transaction.budget_line_id.is_(None),
+                             Transaction.account_code.is_(None),
+                             Transaction.not_project_expense == False,   # noqa: E712
+                             Transaction.ai_suggested_code.isnot(None))
+                     .order_by(Transaction.id.desc()).limit(30).all())
+    except Exception:
+        code_txns = []
+    for t in code_txns:
+        conf = float(t.ai_code_confidence) if t.ai_code_confidence is not None else None
+        nm = (t.ai_suggested_name or '').strip()
+        amt = float(t.amount) if t.amount is not None else None
+        items.append({
+            "id": f"code-{t.id}", "type": "code_suggestion", "severity": "low",
+            "title": f"Code {t.vendor or 'charge'} → {nm or t.ai_suggested_code}",
+            "explanation": (f"${abs(amt):,.2f} · " if amt is not None else "")
+                           + (t.vendor or '—')
+                           + f" — AI suggests {t.ai_suggested_code}"
+                           + (f" {nm}" if nm else "")
+                           + (f" ({round(conf * 100)}%)" if conf is not None else ""),
+            "confidence": conf, "transaction_id": t.id, "doc_upload_id": None,
+            "payload": {"tid": t.id, "code": t.ai_suggested_code, "name": nm,
+                        "vendor": t.vendor, "amount": amt},
+        })
+
     rank = {'high': 0, 'medium': 1, 'low': 2}
     items.sort(key=lambda it: rank.get(it['severity'], 3))
     by_type = {}
@@ -10059,6 +10131,21 @@ def anomaly_ask_ai(pid, fid):
     except Exception:
         db.session.rollback()
     return jsonify({"ok": True, "verdict": verdict})
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/dismiss-code", methods=["POST"])
+@login_required
+def actuals_dismiss_code(pid, tid):
+    """Dismiss an AI code SUGGESTION (from the 'Codes to confirm' queue) without
+    coding the charge — clears the ai_suggested_* fields so it stops surfacing.
+    (Phase 2, 2026-06-22.)"""
+    _require_project_role(pid, 'editor')
+    t = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    t.ai_suggested_code = None
+    t.ai_suggested_name = None
+    t.ai_code_confidence = None
+    db.session.commit()
+    return jsonify({"ok": True})
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-coa", methods=["POST"])
@@ -11728,6 +11815,8 @@ def actuals_sync_now(pid):
                 note=f'QBO sync{_range}: +{_added} new, {_updated} updated, '
                      f'{_skipped} skipped, {_claimed} cross-project')
         except Exception: pass
+        # Phase 3: auto-refresh the review queue after ingestion (background).
+        _bg_run_all_scans(pid)
         return jsonify({"ok": True, **result})
     except Exception as e:
         logging.exception(f"[actuals] sync_now failed: {e}")
@@ -27056,6 +27145,8 @@ def actuals_import_bank_csv(pid):
             db.session.rollback()
             report["errors"].append(str(e))
             return jsonify(report), 500
+    # Phase 3: auto-refresh the review queue after ingestion (background).
+    _bg_run_all_scans(pid)
     return jsonify(report)
 
 
