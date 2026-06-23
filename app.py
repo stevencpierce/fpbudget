@@ -26080,10 +26080,20 @@ def docs_upload_coding(uid):
         cur = str((bl.source_line_id or bl.id) if bl else txn.budget_line_id)
     elif txn.account_code:
         cur = 'section:%s' % txn.account_code
-    try:
-        sug = _actuals_vendor_suggestions(upload.project_id).get(txn.id)
-    except Exception:
-        sug = None
+    # Prefer the AI code suggestion (the ✨ purple chip) when the charge is
+    # uncoded — it wasn't surfaced in the popup before, only the retired
+    # heuristic vendor→line guess was. (User 2026-06-22.)
+    sug = None
+    if not (txn.budget_line_id or txn.account_code) and txn.ai_suggested_code:
+        sug = {"code": txn.ai_suggested_code,
+               "label": (txn.ai_suggested_code_name or str(txn.ai_suggested_code)),
+               "line_id": "section:%s" % txn.ai_suggested_code,
+               "confidence": (float(txn.ai_code_confidence) if txn.ai_code_confidence is not None else None)}
+    if sug is None:
+        try:
+            sug = _actuals_vendor_suggestions(upload.project_id).get(txn.id)
+        except Exception:
+            sug = None
     return jsonify({
         "txn_id":      txn.id,
         "current":     cur,
