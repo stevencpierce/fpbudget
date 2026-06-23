@@ -624,7 +624,7 @@
     <h3 style="margin:0;font-size:1.05rem">📊 Dashboard</h3>
     <span style="flex:1"></span>
     <button type="button" class="btn btn-sm" onclick="dashCleanup(this)"
-            title="Run AI cleanup over your documents: normalize vendor names and flag bad extractions. Auto-applies high-confidence fixes; lower-confidence ones land below for your review.">✨ Clean up data</button>
+            title="Run AI cleanup over receipts AND charges: normalize vendor names and flag bad extractions. Auto-applies high-confidence fixes; lower-confidence ones land in the review queue below.">✨ Clean up</button>
     <button type="button" class="btn btn-sm" onclick="dashScanDupes(this)"
             title="Scan for issues: the same spend coded twice (double-counted), plus budget mismatches — POs billed over their cap and lines over plan.">🔍 Scan for issues</button>
   </div>
@@ -6654,16 +6654,28 @@
         transaction auto-clones the Working budget into a separate Actual budget.
       </p>
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button type="button" id="actualsFindMatchBtn" class="btn btn-sm btn-primary"
-              onclick="openMatchReview()"
-              title="Find receipt matches with adjustable amount / date / vendor criteria, review candidates, confirm or change">
-        🎯 Find matches
-      </button>
-      <button type="button" id="actualsAiMatchBtn" class="btn btn-sm"
+    {# Phase 1 consolidation (2026-06-22): toolbar grouped into Data (ingestion) ·
+       AI review (the engine) · Tools. Matching collapsed to one primary
+       "🔗 Match receipts" (AI); manual picker demoted to Tools as "Match manually";
+       cleanup unified to "✨ Clean up" (receipts + charges). #}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <!-- Data / ingestion -->
+      <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-import-panel')"
+              title="Import bank/card transactions from a CSV file">⬆ Import CSV</button>
+      <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-sync-panel')"
+              title="Pull transactions from QuickBooks Online">↻ Sync QBO</button>
+      <span style="width:1px;height:24px;background:var(--border);margin:0 2px;align-self:center"></span>
+
+      <!-- AI review (the engine) -->
+      <button type="button" id="actualsAiMatchBtn" class="btn btn-sm btn-primary"
               onclick="actualsAiMatch(this)"
-              title="Let AI match unmatched charges to the right receipt. It proposes matches that appear as ⚡ Suggested — you click Confirm (or Not a match) on each.">
-        🤖 AI match
+              title="Match unmatched charges to their receipts. AI proposes matches that appear as ⚡ Suggested — you Confirm (or Not a match) on each, then they open in the review.">
+        🔗 Match receipts
+      </button>
+      <button type="button" id="actualsReviewBtn" class="btn btn-sm btn-primary"
+              onclick="actualsReviewMatches()" style="display:none"
+              title="Review and confirm the suggested receipt↔charge matches">
+        🔎 Review matches <span id="actualsReviewCount" style="font-weight:700"></span>
       </button>
       <button type="button" id="actualsSuggestCodesBtn" class="btn btn-sm"
               onclick="actualsSuggestCodes(this)"
@@ -6672,28 +6684,29 @@
       </button>
       <button type="button" id="actualsCleanupBtn" class="btn btn-sm"
               onclick="actualsCleanup(this)"
-              title="Tidy the vendor names on CSV/QBO charges that have no receipt (e.g. 'SQ *BLUE BOTTLE' → 'Blue Bottle'). High-confidence fixes apply automatically; the rest land in the Dashboard review queue.">
-        ✨ Clean up vendors
+              title="Tidy vendor names on receipts AND charges (e.g. 'SQ *BLUE BOTTLE' → 'Blue Bottle'). High-confidence fixes apply automatically; the rest land in the Dashboard review queue.">
+        ✨ Clean up
       </button>
-      <button type="button" id="actualsReviewBtn" class="btn btn-sm btn-primary"
-              onclick="actualsReviewMatches()" style="display:none"
-              title="Review and confirm the auto-suggested receipt↔charge matches">
-        🔎 Review matches <span id="actualsReviewCount" style="font-weight:700"></span>
+      <button type="button" id="actualsReconcileBtn" class="btn btn-sm" onclick="openReconcile()"
+              title="Find duplicates: spend with duplicate receipts, duplicate/phantom charges, or the same spend coded twice — review and resolve in one place.">
+        🔍 Find duplicates
       </button>
-      <button type="button" class="btn btn-sm" onclick="actualsUndoLastMatch()"
+      <span style="width:1px;height:24px;background:var(--border);margin:0 2px;align-self:center"></span>
+
+      <!-- Tools -->
+      <button type="button" id="actualsFindMatchBtn" class="btn btn-sm btn-ghost"
+              onclick="openMatchReview()"
+              title="Manually find a receipt match with adjustable amount / date / vendor criteria">
+        🎯 Match manually
+      </button>
+      <button type="button" class="btn btn-sm btn-ghost" onclick="actualsUndoLastMatch()"
               title="Undo the most recent confirmed match — unlinks it and frees the receipt">
         ↩ Undo last match
       </button>
-      <button type="button" id="actualsReconcileBtn" class="btn btn-sm btn-primary" onclick="openReconcile()"
-              title="Reconcile: review every spend with duplicate receipts, duplicate/phantom charges, or unmatched pairs — all in one place">
-        🧹 Reconcile
-      </button>
-      <button type="button" id="actualsReprocessBtn" class="btn btn-sm" onclick="actualsReprocessReceipts()"
+      <button type="button" id="actualsReprocessBtn" class="btn btn-sm btn-ghost" onclick="actualsReprocessReceipts()"
               title="Re-run OCR on every receipt not yet matched to a charge — refreshes vendor/amount/date, converts foreign currency to USD, then re-matches. Uses Veryfi credits. Resumable.">
         🔁 Reprocess receipts <span id="actualsReprocessProg" style="font-weight:700"></span>
       </button>
-      <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-sync-panel')">↻ Sync QBO</button>
-      <button type="button" class="btn btn-sm" onclick="toggleActualsPanel('actuals-import-panel')">⬆ Import CSV</button>
       <button type="button" class="btn btn-sm btn-ghost" onclick="toggleActualsPanel('actuals-settings-panel')">⚙ Settings</button>
     </div>
   </div>
@@ -8600,7 +8613,10 @@
     }
     // Dashboard "Clean up data" — sweeps BOTH receipts (Docs) and charges
     // (Actuals: CSV/QBO/manual with no receipt) so the whole project converges.
-    window.dashCleanup = async function (btn) {
+    // Unified cleanup (Phase 1 consolidation 2026-06-22): ONE action that cleans
+    // BOTH receipts and charges, wherever it's triggered. Dashboard + Actuals
+    // buttons both call this so they no longer do different things.
+    window.aiCleanupAll = async function (btn, reloadAfter) {
       const _o = btn ? btn.textContent : '';
       if (btn) { btn.disabled = true; btn.textContent = '✨ Cleaning…'; }
       try {
@@ -8612,23 +8628,13 @@
         if (typeof _actualsToast === 'function') _actualsToast(total
           ? `Cleaned ${applied} vendor name(s) across receipts + charges; ${flagged} flagged for review.`
           : 'Nothing left to clean.', 'green');
-        dashLoadAnomalies();
+        if (typeof dashLoadAnomalies === 'function') dashLoadAnomalies();
+        if (reloadAfter && (applied || flagged)) setTimeout(() => window.location.reload(), 1100);
       } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Cleanup failed: ' + e.message, 'yellow'); }
-      if (btn) { btn.disabled = false; btn.textContent = _o || '✨ Clean up data'; }
+      if (btn) { btn.disabled = false; btn.textContent = _o || '✨ Clean up'; }
     };
-    // Actuals-tab button — clean ONLY the charges (CSV/QBO) side.
-    window.actualsCleanup = async function (btn) {
-      const _o = btn ? btn.textContent : '';
-      if (btn) { btn.disabled = true; btn.textContent = '✨ Cleaning…'; }
-      try {
-        const res = await _loopCleanup(`/projects/${PROJ_ID}/actuals/ai-cleanup`, (n) => { if (btn) btn.textContent = `✨ ${n} cleaned…`; });
-        if (typeof _actualsToast === 'function') _actualsToast(res.processed
-          ? `Cleaned ${res.applied} charge vendor name(s); ${res.flagged} flagged for review. Reloading…`
-          : 'No charges needed cleaning.', 'green');
-        if (res.applied || res.flagged) setTimeout(() => window.location.reload(), 1100);
-      } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Cleanup failed: ' + e.message, 'yellow'); }
-      if (btn) { btn.disabled = false; btn.textContent = _o || '✨ Clean up vendors'; }
-    };
+    window.dashCleanup    = function (btn) { return aiCleanupAll(btn, false); };
+    window.actualsCleanup = function (btn) { return aiCleanupAll(btn, true); };
     // 🤖 AI match — loop the match pass over unmatched charges, then reload so the
     // ⚡ Suggested-match banners (Confirm / Not a match) appear. (User 2026-06-18.)
     window.actualsAiMatch = async function (btn) {
