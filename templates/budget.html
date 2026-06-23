@@ -3183,30 +3183,39 @@
               </select>
               <div id="docDetailCodingStatus" style="font-size:10.5px;color:var(--text-muted);margin-top:3px"></div>
             </div>
-            {# ✈️ Travel intelligence (2026-06-22): auto-extracted hotel/flight/car
-               reservation details, with one-click assign to a person + travel day
-               that writes into the Travel tab. #}
-            <div id="docDetailTravelBlock" class="field" style="margin-bottom:.6rem;display:none;border:1px solid #2a3a55;border-radius:8px;padding:10px;background:#10192b">
-              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
-                <label style="font-size:11px;color:#8fb4ff;text-transform:uppercase;letter-spacing:.5px;margin:0">✈️ Travel details</label>
-                <button type="button" id="docDetailTravelExtractBtn" onclick="docDetailExtractTravel()"
-                        style="background:none;border:1px solid #2a3a55;color:#8fb4ff;border-radius:5px;font-size:10.5px;padding:2px 8px;cursor:pointer">Re-extract</button>
-              </div>
-              <div id="docDetailTravelFields" style="font-size:12px"></div>
-              <div style="display:grid;grid-template-columns:1fr;gap:6px;margin-top:8px">
-                <div>
-                  <label style="font-size:10.5px;color:var(--text-muted)">Assign to person</label>
-                  <select id="docDetailTravelPerson" style="width:100%;font-size:12px"><option value="">— pick person —</option></select>
+            {# ✈️ Travel intelligence (2026-06-22): a PERSISTENT collapsible panel on
+               every doc. Auto-opens when the doc looks like a flight/hotel/car;
+               otherwise stays collapsed and the user expands it and clicks Pull.
+               (User 2026-06-22.) #}
+            <style>#docDetailTravelBlock>summary::-webkit-details-marker{display:none}
+              #docDetailTravelBlock>summary::marker{content:''}</style>
+            <details id="docDetailTravelBlock" class="field" style="margin-bottom:.6rem;border:1px solid #2a3a55;border-radius:8px;background:#10192b">
+              <summary style="cursor:pointer;list-style:none;padding:8px 10px;display:flex;align-items:center;gap:8px;font-size:11px;color:#8fb4ff;text-transform:uppercase;letter-spacing:.5px">
+                <span>✈️ Travel details</span>
+                <span id="docDetailTravelHint" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted);font-size:10.5px"></span>
+                <span style="margin-left:auto;color:var(--text-muted);font-size:.78rem">▾</span>
+              </summary>
+              <div style="padding:0 10px 10px">
+                <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+                  <button type="button" id="docDetailTravelExtractBtn" onclick="docDetailExtractTravel()"
+                          style="background:none;border:1px solid #2a3a55;color:#8fb4ff;border-radius:5px;font-size:10.5px;padding:3px 10px;cursor:pointer">⤓ Pull from document</button>
                 </div>
-                <div>
-                  <label style="font-size:10.5px;color:var(--text-muted)">Travel day</label>
-                  <input type="date" id="docDetailTravelDate" style="width:100%;font-size:12px">
+                <div id="docDetailTravelFields" style="font-size:12px"></div>
+                <div style="display:grid;grid-template-columns:1fr;gap:6px;margin-top:8px">
+                  <div>
+                    <label style="font-size:10.5px;color:var(--text-muted)">Assign to person</label>
+                    <select id="docDetailTravelPerson" style="width:100%;font-size:12px"><option value="">— pick person —</option></select>
+                  </div>
+                  <div>
+                    <label style="font-size:10.5px;color:var(--text-muted)">Travel day</label>
+                    <input type="date" id="docDetailTravelDate" style="width:100%;font-size:12px">
+                  </div>
                 </div>
+                <button type="button" id="docDetailTravelApplyBtn" onclick="docDetailApplyTravel()"
+                        style="width:100%;margin-top:8px;padding:7px;border-radius:6px;background:#1a2f4d;border:1px solid #2f5184;color:#bcd4ff;font-size:12.5px;cursor:pointer">Apply to Travel tab</button>
+                <div id="docDetailTravelStatus" style="font-size:10.5px;color:var(--text-muted);margin-top:5px"></div>
               </div>
-              <button type="button" id="docDetailTravelApplyBtn" onclick="docDetailApplyTravel()"
-                      style="width:100%;margin-top:8px;padding:7px;border-radius:6px;background:#1a2f4d;border:1px solid #2f5184;color:#bcd4ff;font-size:12.5px;cursor:pointer">Apply to Travel tab</button>
-              <div id="docDetailTravelStatus" style="font-size:10.5px;color:var(--text-muted);margin-top:5px"></div>
-            </div>
+            </details>
             <div id="docDetailPoActions" class="field" style="margin-bottom:.6rem;display:none">
               <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Purchase Order</label>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -5735,13 +5744,23 @@
     const cat = (document.getElementById('docDetailCategory').value || '').toLowerCase();
     const vendor = (document.getElementById('docDetailVendor').value || '').toLowerCase();
     const looksTravel = /hotel|air|flight|travel|lodging|car ?rental|rental/.test(cat + ' ' + vendor);
-    if (!(t && t.is_travel) && !looksTravel) { block.style.display = 'none'; return; }
-    block.style.display = 'block';
+    const suspected = (t && t.is_travel) || looksTravel;
+    // The panel is ALWAYS present now — auto-open when we suspect travel, otherwise
+    // collapsed so the user can expand it and Pull on demand. (User 2026-06-22.)
+    block.open = !!suspected;
+    const hint = document.getElementById('docDetailTravelHint');
+    if (hint) hint.textContent = (t && t.is_travel)
+      ? '· extracted ✓'
+      : (suspected ? '· looks like travel — Pull to read' : '· not detected — expand to Pull');
     _ddTravel.data = (t && t.is_travel) ? t : {};
     _ddTravelRenderFields();
-    // Person roster + the budget the schedule lives on.
+    // Person roster + the budget the schedule lives on (cached per page load —
+    // the panel now loads on every doc open, so don't refetch each time).
     try {
-      const pr = await (await fetch(`/projects/${PROJ_ID}/travel/people`, {credentials:'same-origin'})).json();
+      if (!window._ddRosterCache) {
+        window._ddRosterCache = await (await fetch(`/projects/${PROJ_ID}/travel/people`, {credentials:'same-origin'})).json();
+      }
+      const pr = window._ddRosterCache;
       _ddTravel.people = pr.people || []; _ddTravel.bid = pr.bid;
       const sel = document.getElementById('docDetailTravelPerson');
       sel.innerHTML = '<option value="">— pick person —</option>' +
@@ -5776,10 +5795,12 @@
       if (r.ok && d.travel) {
         _ddTravel.data = d.travel.is_travel ? d.travel : (d.travel || {});
         _ddTravelRenderFields();
+        const hint = document.getElementById('docDetailTravelHint');
+        if (hint) hint.textContent = d.travel.is_travel ? '· extracted ✓' : '· no travel details found';
         if (st) st.textContent = d.travel.is_travel ? 'Extracted ✓ — review and Apply.' : 'No travel details found in this document.';
       } else { if (st) st.textContent = 'Extract failed.'; }
     } catch (e) { if (st) st.textContent = 'Extract error: ' + e.message; }
-    finally { if (btn) { btn.disabled = false; btn.textContent = 'Re-extract'; } }
+    finally { if (btn) { btn.disabled = false; btn.textContent = '⤓ Pull from document'; } }
   };
 
   window.docDetailApplyTravel = async function () {
