@@ -5861,6 +5861,15 @@
       document.body.appendChild(overlay);
     }
     overlay.style.display = 'flex';
+    // Clear transient state from the previously-viewed doc (covers prev/next nav,
+    // which reuses the open overlay): stale re-OCR conversion note + button text.
+    // (User 2026-06-22.)
+    const _reocrSt0 = document.getElementById('docDetailReocrStatus');
+    if (_reocrSt0) { _reocrSt0.textContent = ''; _reocrSt0.style.color = 'var(--text-muted)'; }
+    const _delBtn0 = document.getElementById('docDetailDeleteBtn');
+    if (_delBtn0) { _delBtn0.disabled = false; _delBtn0.textContent = '🗑 Delete document'; }
+    const _reocrBtn0 = document.getElementById('docDetailReocrBtn');
+    if (_reocrBtn0) { _reocrBtn0.disabled = false; _reocrBtn0.textContent = '🔄 Re-run OCR'; }
     // When called from a tab that doesn't have the Docs row dataset
     // (e.g. Actuals tab), `row` is null and the field-prepopulate
     // below would leave everything blank. Fetch the canonical
@@ -6128,6 +6137,15 @@
     if (ev && ev.target && ev.target.id !== 'docDetailOverlay') return;
     document.getElementById('docDetailOverlay').style.display = 'none';
     _docDetailUid = null;
+    // Reset transient state so a stale message/button doesn't carry into the
+    // next doc the user opens. (User 2026-06-22: the re-OCR conversion note and
+    // the 'Deleting…' button persisted until a page refresh.)
+    const _reocrSt = document.getElementById('docDetailReocrStatus');
+    if (_reocrSt) { _reocrSt.textContent = ''; _reocrSt.style.color = 'var(--text-muted)'; }
+    const _delBtn = document.getElementById('docDetailDeleteBtn');
+    if (_delBtn) { _delBtn.disabled = false; _delBtn.textContent = '🗑 Delete document'; }
+    const _reocrBtn = document.getElementById('docDetailReocrBtn');
+    if (_reocrBtn) { _reocrBtn.disabled = false; _reocrBtn.textContent = '🔄 Re-run OCR'; }
   };
 
   // ── Create a new person / vendor from inside the doc popup ───────────
