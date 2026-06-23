@@ -5645,20 +5645,28 @@
     setBtn(nxt, idx >= list.length - 1);
   }
   window.docDetailNav = async function (delta) {
+    // Resolve the target from the CURRENT on-screen order — which reflects the
+    // active filter + sort + exactly where you are — and do it BEFORE saving,
+    // because a save can re-file/hide the current row and lose our place.
+    // (Honors the user's filter/sort instead of jumping alphabetically.
+    //  User 2026-06-22.)
     const list = _docNavList();
-    if (!list.length) return;
-    let idx = list.findIndex(x => x.uid === _docDetailUid);
-    if (idx === -1) idx = 0;
-    const target = list[idx + delta];
-    if (!target) return;                       // at an end — no-op
-    // Auto-save the current doc's edits before paging away, in BOTH tabs
-    // (user 2026-05-30: "if you click prev/next it should save"). Only
-    // when something actually changed, so a pure browse stays instant.
+    let target = null;
+    if (list.length) {
+      const idx = list.findIndex(x => x.uid === _docDetailUid);
+      if (idx !== -1) target = list[idx + delta] || null;   // null = at an end
+    }
+    // Auto-save the current doc's edits before paging away — for BOTH prev AND
+    // next. Previously the early-return at a boundary / not-found row skipped
+    // the save, so 'previous' lost changes. (User 2026-05-30 + 2026-06-22.)
     if (_docDetailDirty()) {
       const pos = document.getElementById('docDetailNavPos');
       if (pos) pos.textContent = 'Saving…';
       try { await _docDetailCommit(); } catch (e) { /* keep paging */ }
     }
+    // At an end, or the current row isn't in the visible list → stay put (don't
+    // jump to a random/alphabetical item); just restore the counter.
+    if (!target) { _docDetailUpdateNav(); return; }
     // In the Actuals tab the row is a transaction row (no doc dataset), so
     // pass null → openDocDetail fetches canonical metadata from the server.
     openDocDetail(target.uid, _docDetailContext === 'actuals' ? null : target.row);
