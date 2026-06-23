@@ -89,6 +89,20 @@
   </div>
 </div>
 
+{# ── Audience view switcher (screen only) — pick what this call sheet shows.
+   Internal = full; the rest hide contacts/sections per audience. Preview each
+   before sending. (User 2026-06-22.) #}
+<div class="cs-screen-header" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 2px">
+  <span style="font-size:.72rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">View:</span>
+  {% set _csd = selected_date.strftime('%Y-%m-%d') if selected_date else '' %}
+  {% for vk, vlabel in [('internal','🔒 Internal (full)'), ('crew','👷 Crew'), ('client','🤝 Client'), ('talent','🎭 Talent/Cast'), ('union','🏛 Union')] %}
+  <a class="btn btn-xs {% if cs_view == vk %}btn-primary{% else %}btn-ghost{% endif %}"
+     href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id, date_str=_csd) }}?view={{ vk }}"
+     title="{{ vlabel }} view">{{ vlabel }}</a>
+  {% endfor %}
+  <span style="font-size:.68rem;color:var(--text-muted);margin-left:6px">Contacts only show on Internal (crew phones also on Crew).</span>
+</div>
+
 {# ── Date navigation controls (hidden on print) ─────────────────────────────── #}
 <div class="cs-date-nav cs-screen-header">
   {% if all_scheduled_dates %}
@@ -184,6 +198,7 @@
     </div>
 
     {# ── General crew call bar ─────────────────────────────────────────────── #}
+    {% if csv.logistics %}
     <div class="callsheet-crew-call-bar">
       <div class="callsheet-call-label">GENERAL CREW CALL</div>
       <span class="cs-editable callsheet-call-time" id="cs-crew-call"
@@ -205,7 +220,7 @@
                 <th class="cs-screen-only" style="width:1.5rem"></th>
                 <th>Role</th>
                 <th>Name</th>
-                <th>Contact</th>
+                {% if csv.kp_contact %}<th>Contact</th>{% endif %}
                 <th class="cs-screen-only" style="width:2rem"></th>
               </tr>
             </thead>
@@ -360,6 +375,7 @@
       </div>
 
     </div>{# /callsheet-two-col #}
+    {% endif %}{# /csv.logistics #}
 
     {# ── Cast / Talent section (always shown — populates when cast data exists) #}
     <div class="callsheet-section callsheet-section-talent">
@@ -371,7 +387,7 @@
             <th>Role</th>
             <th>Name</th>
             <th>Day Type</th>
-            <th>Contact</th>
+            {% if csv.talent_contact %}<th>Contact</th>{% endif %}
           </tr>
         </thead>
         <tbody>
@@ -380,11 +396,11 @@
             <td>{{ r.role }}</td>
             <td>{{ r.name }}</td>
             <td><span class="callsheet-day-type-badge callsheet-dt-{{ r.day_type }}">{{ r.day_type | upper }}</span></td>
-            <td class="callsheet-contact-cell">
+            {% if csv.talent_contact %}<td class="callsheet-contact-cell">
               {% if r.phone %}<div class="callsheet-contact-item">{{ r.phone }}</div>{% endif %}
               {% if r.email %}<div class="callsheet-contact-item callsheet-email">{{ r.email }}</div>{% endif %}
               {% if not r.phone and not r.email %}—{% endif %}
-            </td>
+            </td>{% endif %}
           </tr>
           {% endfor %}
         </tbody>
@@ -395,6 +411,7 @@
     </div>
 
     {# ── Background / Extras ────────────────────────────────────────────────── #}
+    {% if csv.background %}
     <div class="callsheet-section">
       <div class="callsheet-section-title">Background / Extras</div>
       <table class="callsheet-table" id="extras-table">
@@ -417,6 +434,7 @@
         <button class="btn btn-xs btn-ghost" onclick="addExtrasRow()">+ Row</button>
       </div>
     </div>
+    {% endif %}
 
     {# ── Above the Line section ───────────────────────────────────────────── #}
     {% if atl_rows %}
@@ -428,7 +446,7 @@
             <th>Role</th>
             <th>Name</th>
             <th>Day Type</th>
-            <th>Contact</th>
+            {% if csv.crew_contact %}<th>Contact</th>{% endif %}
           </tr>
         </thead>
         <tbody>
@@ -437,11 +455,11 @@
             <td>{{ r.role }}</td>
             <td>{{ r.name }}</td>
             <td><span class="callsheet-day-type-badge callsheet-dt-{{ r.day_type }}">{{ r.day_type | upper }}</span></td>
-            <td class="callsheet-contact-cell">
+            {% if csv.crew_contact %}<td class="callsheet-contact-cell">
               {% if r.phone %}<div class="callsheet-contact-item">{{ r.phone }}</div>{% endif %}
               {% if r.email %}<div class="callsheet-contact-item callsheet-email">{{ r.email }}</div>{% endif %}
               {% if not r.phone and not r.email %}—{% endif %}
-            </td>
+            </td>{% endif %}
           </tr>
           {% endfor %}
         </tbody>
@@ -450,6 +468,7 @@
     {% endif %}
 
     {# ── Clients (shown on page 1 if any are flagged show_on_callsheet) ─────── #}
+    {% if csv.clients %}
     <div class="callsheet-section callsheet-section-clients">
       <div class="callsheet-section-title">Clients</div>
       {% if project_clients_cs %}
@@ -480,8 +499,10 @@
       </div>
       {% endif %}
     </div>
+    {% endif %}
 
     {# ── Department Notes ─────────────────────────────────────────────────────── #}
+    {% if csv.dept_notes %}
     <div class="callsheet-section">
       <div class="callsheet-section-title">Department Notes</div>
       <div id="dept-notes-container" class="cs-dept-notes-container">
@@ -491,6 +512,7 @@
         <button class="btn btn-xs btn-ghost" onclick="addDeptNote()">+ Add Department</button>
       </div>
     </div>
+    {% endif %}
 
     {# ── Today's Schedule: text area (shot list integration planned for future) ─ #}
     <div class="callsheet-section">
@@ -535,6 +557,7 @@ Example:
   {# ╔══════════════════════════════════════════════════════════════════════════
      PAGE 2
      ══════════════════════════════════════════════════════════════════════════╗ #}
+  {% if csv.full_crew_list %}
   <div class="callsheet-page callsheet-page-2">
 
     {# ── Page 2 header ────────────────────────────────────────────────────── #}
@@ -680,7 +703,7 @@ Example:
     </div>
 
     {# ── Representation & Support Contacts ──────────────────────────────────────── #}
-    {% if rep_contacts %}
+    {% if rep_contacts and csv.reps %}
     <div class="callsheet-section cs-callsheet-rep">
       <div class="callsheet-section-title">Representation &amp; Support</div>
       <table class="callsheet-table">
@@ -821,6 +844,7 @@ Example:
     </div>
 
   </div>{# /callsheet-page-2 #}
+  {% endif %}{# /csv.full_crew_list #}
 
 </div>{# /callsheet-wrapper #}
 
@@ -873,6 +897,8 @@ Example:
 const CS_SAVE_URL   = "{{ url_for('callsheet_save', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
 const CS_DIST_URL   = "{{ url_for('callsheet_distribution', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
 const CS_SEND_URL   = "{{ url_for('callsheet_prepare_send', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
+const CS_VIEW       = {{ cs_view | tojson }};
+const CSV           = {{ csv | tojson }};
 const CS_DATA       = {{ cs_data | tojson }};
 const KEY_CONTACTS_FALLBACK = {{ key_contacts | tojson }};
 const CONFIRM_STATUS = {{ confirm_status | tojson }}; // {name_lower: {status,viewed_at,confirmed_at}}
@@ -1060,7 +1086,7 @@ function renderKpTable() {
       tr.className = 'kp-spacer-row';
       tr.innerHTML = `
         <td class="cs-drag-handle cs-screen-only kp-drag-handle" draggable="true">⠿</td>
-        <td colspan="3" class="kp-spacer-cell"></td>
+        <td colspan="${CSV.kp_contact ? 3 : 2}" class="kp-spacer-cell"></td>
         <td class="kp-actions cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="removeKpRow(${i})" title="Remove">✕</button></td>`;
     } else {
       const contactOpts = AVAILABLE_CONTACTS.map(c =>
@@ -1083,11 +1109,11 @@ function renderKpTable() {
         <td><span class="cs-editable kp-name-cell" contenteditable="true"
                   onblur="kpFieldBlur(${i}, 'name', this)"
                   onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.name)}</span></td>
-        <td class="callsheet-contact-cell">
+        ${CSV.kp_contact ? `<td class="callsheet-contact-cell">
           <span class="cs-editable kp-phone-cell" contenteditable="true"
                 onblur="kpFieldBlur(${i}, 'phone', this)"
                 onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${escHtml(row.phone)}</span>
-        </td>
+        </td>` : ''}
         <td class="kp-actions cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="removeKpRow(${i})" title="Remove">✕</button></td>`;
     }
     tbody.appendChild(tr);

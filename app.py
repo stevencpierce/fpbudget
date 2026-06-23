@@ -19859,9 +19859,36 @@ def callsheet_view(pid, bid, date_str=None):
                 "confirmed_at": rcp.confirmed_at.strftime("%-I:%M %p") if rcp.confirmed_at else None,
             }
 
+    # ── Audience views (User 2026-06-22) ───────────────────────────────────
+    # Internal = full (default, unchanged). The restricted views hide
+    # contact/section data per the confirmed matrix; everything fails SAFE —
+    # an unknown view hides contacts. Crew/talent personal contact info only
+    # ever appears on Internal (and crew phones on Crew).
+    cs_view = (request.args.get('view') or 'internal').strip().lower()
+    if cs_view not in ('internal', 'crew', 'client', 'talent', 'union'):
+        cs_view = 'internal'
+    _v = cs_view
+    csv_flags = {
+        'view':            _v,
+        'is_full':         _v == 'internal',
+        'logistics':       _v != 'union',                                  # union: bare lists only
+        'crew_contact':    _v in ('internal', 'crew'),                     # phones/emails on crew rows
+        'talent_contact':  _v == 'internal',
+        'clients':         _v in ('internal', 'client'),
+        'reps':            _v == 'internal',
+        'background':      _v in ('internal', 'crew'),                     # extras list (production-facing)
+        'dept_notes':      _v in ('internal', 'crew'),
+        'key_personnel':   _v != 'union',                                  # union: no KP block
+        'kp_contact':      _v in ('internal', 'crew'),                     # client/talent: KP names only
+        'full_crew_list':  _v in ('internal', 'crew', 'client', 'union'),  # talent: no full crew list
+        'talent_list':     True,                                           # all views show cast (names ≥)
+        'crew_phone_in_list': _v == 'crew',                               # crew view adds phone to the crew list
+    }
     return render_template("callsheet.html",
         project=project,
         budget=budget,
+        cs_view=cs_view,
+        csv=csv_flags,
         all_budgets=all_budgets,
         parent_names=parent_names,
         selected_date=selected_date,
