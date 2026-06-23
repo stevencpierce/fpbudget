@@ -18914,7 +18914,7 @@ def callsheet_view_public(token):
             break
     personal_call = personal_call or cs_portal_data.get('general_crew_call', '') or ''
 
-    tz_name = (project.timezone if project and project.timezone else 'America/New_York')
+    tz_name = (getattr(project, "timezone", None) or "America/New_York")
     return render_template(
         "callsheet_confirm.html",
         rec=rec,
@@ -18969,7 +18969,7 @@ def callsheet_confirm_public(token):
             personal_call = t
             break
     personal_call = personal_call or cs_portal_data.get('general_crew_call', '') or ''
-    tz_name = (project.timezone if project and project.timezone else 'America/New_York')
+    tz_name = (getattr(project, "timezone", None) or "America/New_York")
     return render_template(
         "callsheet_confirm.html",
         rec=rec,
