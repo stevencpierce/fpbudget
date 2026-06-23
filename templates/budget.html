@@ -6696,8 +6696,8 @@
         ✨ Clean up
       </button>
       <button type="button" id="actualsReconcileBtn" class="btn btn-sm" onclick="openReconcile()"
-              title="Find duplicates: spend with duplicate receipts, duplicate/phantom charges, or the same spend coded twice — review and resolve in one place.">
-        🔍 Find duplicates
+              title="Reconcile: review every spend that has duplicate receipts, duplicate/phantom ledger rows, or the same spend coded twice — keep one and clean up the rest, all in one place.">
+        🧹 Reconcile
       </button>
       <span style="width:1px;height:24px;background:var(--border);margin:0 2px;align-self:center"></span>
 
@@ -12104,6 +12104,75 @@
           + (window._rcDirty ? ' — close to refresh the totals.' : '.') + '</div>';
       }
     }
+    // Recount visible (non-pending) reconcile cards.
+    function _rcRefreshCount() {
+      const remaining = document.querySelectorAll('#rc-body .mr-card[data-rc]:not([data-rc-pending])').length;
+      const cnt = document.getElementById('rc-count');
+      if (cnt) cnt.textContent = remaining ? (remaining + ' spend' + (remaining !== 1 ? 's' : '') + ' to reconcile') : '';
+    }
+    // 20-second undo toast for reconcile actions. (User 2026-06-22.)
+    function _rcUndoToast(msg, onUndo, secs) {
+      secs = secs || 20;
+      const t = document.createElement('div');
+      t.style.cssText = `position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+        background:#1a3a2a;color:#cfe9d8;border:1px solid #2a5a3a;border-radius:8px;
+        padding:10px 16px;font-size:.85rem;z-index:9999;box-shadow:0 6px 24px rgba(0,0,0,.5);
+        display:flex;align-items:center;gap:14px;max-width:560px`;
+      const span = document.createElement('span'); span.textContent = msg;
+      const left = document.createElement('span');
+      left.style.cssText = 'color:#8fcfa8;font-variant-numeric:tabular-nums;flex:none';
+      const undo = document.createElement('button');
+      undo.textContent = 'Undo';
+      undo.style.cssText = `background:none;border:1px solid #2a5a3a;color:#9fe0b6;border-radius:5px;
+        padding:3px 12px;font-size:.8rem;cursor:pointer;flex:none`;
+      let remaining = secs, done = false;
+      const fin = () => { if (!t._iv) return; clearInterval(t._iv); t._iv = null; t.remove(); };
+      undo.onclick = () => { if (done) return; done = true; fin(); try { onUndo(); } catch (e) {} };
+      left.textContent = remaining + 's';
+      t._iv = setInterval(() => { remaining--; left.textContent = remaining + 's'; if (remaining <= 0) fin(); }, 1000);
+      t.appendChild(span); t.appendChild(left); t.appendChild(undo);
+      document.body.appendChild(t);
+      return { dismiss: fin };
+    }
+    // Collapse a reconcile card immediately, commit the (destructive) action only
+    // after a 20s undo window — so an accidental click is freely reversible and
+    // there's no confirm() dialog. (User 2026-06-22.)
+    function _rcDeferAndUndo(card, label, doAction) {
+      if (!card) return;
+      card.dataset.rcPending = '1';
+      const h = card.offsetHeight;
+      card.style.transition = 'max-height .3s ease, opacity .25s, margin .3s, padding .3s';
+      card.style.overflow = 'hidden';
+      card.style.maxHeight = h + 'px';
+      requestAnimationFrame(() => {
+        card.style.maxHeight = '0'; card.style.opacity = '0';
+        card.style.marginTop = '0'; card.style.marginBottom = '0';
+        card.style.paddingTop = '0'; card.style.paddingBottom = '0';
+      });
+      _rcRefreshCount();
+      let committed = false, cancelled = false;
+      const timer = setTimeout(async () => {
+        if (cancelled) return;
+        committed = true;
+        try { await doAction(); _rcCardDone(card, true); }
+        catch (e) {
+          delete card.dataset.rcPending;
+          card.style.maxHeight = ''; card.style.opacity = ''; card.style.margin = ''; card.style.padding = '';
+          _rcRefreshCount();
+          if (typeof _actualsToast === 'function') _actualsToast('Action failed: ' + e.message, 'red');
+        }
+      }, 20000);
+      _rcUndoToast(label + ' — done.', () => {
+        if (committed) return;
+        cancelled = true; clearTimeout(timer);
+        delete card.dataset.rcPending;
+        card.style.maxHeight = ''; card.style.opacity = '';
+        card.style.marginTop = ''; card.style.marginBottom = '';
+        card.style.paddingTop = ''; card.style.paddingBottom = '';
+        _rcRefreshCount();
+        if (typeof _actualsToast === 'function') _actualsToast('Undone — nothing was changed.', 'yellow');
+      });
+    }
     window.openReconcile = async function () {
       const m = window._rcBuild(); m.style.display = '';
       const body = document.getElementById('rc-body');
@@ -12195,7 +12264,7 @@
           ${linkAction ? ('<div style="margin-bottom:8px">' + linkAction + '</div>') : ''}
           <div id="rc-ai-${ci}" style="margin-bottom:6px"></div>
           ${c.receipts.length ? `<div class="rc-lane"><h4>📎 Receipt${c.receipts.length > 1 ? 's (' + c.receipts.length + ')' : ''}</h4>${recRows}${recAction ? ('<div style="margin-top:5px">' + recAction + '</div>') : ''}</div>` : ''}
-          ${c.charges.length ? `<div class="rc-lane"><h4>🏦 Ledger rows (${c.charges.length})</h4>${chRows}${chAction ? ('<div style="margin-top:5px">' + chAction + '</div>') : ''}</div>` : ''}
+          ${c.charges.length ? `<div class="rc-lane"><h4 title="Each line in your Actuals ledger for this spend — a bank/card charge or a receipt's own auto-created entry. Duplicates here double-count the money; keep one and remove the rest. This only cleans up the ledger entries — it does NOT change any budget-line coding.">🏦 Charges in the ledger (${c.charges.length}) <span style="font-weight:400;color:var(--text-muted);font-size:.82em">ⓘ</span></h4>${chRows}${chAction ? ('<div style="margin-top:5px">' + chAction + '</div>') : ''}</div>` : ''}
         </div>`;
       }).join('');
     };
@@ -12248,14 +12317,12 @@
       const cluster = (window._rcData.clusters || [])[ci] || {receipts: []};
       const confirmIds = cluster.receipts.filter(r => r.doc_id !== keepId).map(r => r.doc_id);
       if (!confirmIds.length) { _actualsToast('Nothing to merge.', 'yellow'); return; }
-      if (!confirm(`Merge ${confirmIds.length} duplicate receipt${confirmIds.length > 1 ? 's' : ''} into the kept one? The extras move to /_DUPLICATES/ and any charge they back is re-pointed to the kept receipt.`)) return;
-      try {
+      // No confirm() — collapse now, commit after a 20s undo window. (User 2026-06-22.)
+      _rcDeferAndUndo(card, `Merged ${confirmIds.length} duplicate receipt${confirmIds.length > 1 ? 's' : ''}`, async () => {
         const r = await fetch(`/docs/${PROJ_ID}/duplicates/resolve-batch`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keep:[keepId], confirm:confirmIds, force:true, link_mode:'transfer'})});
         const j = await r.json().catch(() => ({}));
-        if (!r.ok) { _actualsToast('Merge failed: ' + (j.error || r.status), 'red'); return; }
-        _actualsToast(`Merged ${j.confirmed != null ? j.confirmed : confirmIds.length} duplicate receipt(s) ✓`, 'green');
-        _rcCardDone(card, true);
-      } catch (e) { _actualsToast('Error: ' + e.message, 'red'); }
+        if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+      });
     };
     window.rcRemoveCharges = async function (ci) {
       const card = document.querySelector('.mr-card[data-rc="' + ci + '"]');
@@ -12264,16 +12331,17 @@
       const keepTid = keep ? parseInt(keep.value) : null;
       const toDelete = cluster.charges.filter(x => x.tid !== keepTid && x.deletable);
       if (!toDelete.length) { _actualsToast('Nothing removable here — the others are receipt-linked (match/unmatch them).', 'yellow'); return; }
-      if (!confirm(`Remove ${toDelete.length} duplicate/phantom charge${toDelete.length > 1 ? 's' : ''} (keeping the selected one)? Logged in Activity.`)) return;
-      let ok = 0, fail = 0;
-      for (const x of toDelete) {
-        try {
-          const resp = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${x.tid}/delete-duplicate`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
-          if (resp.ok) ok++; else fail++;
-        } catch (e) { fail++; }
-      }
-      _actualsToast(`Removed ${ok}${fail ? (' · ' + fail + ' failed') : ''}.`, fail ? 'yellow' : 'green');
-      if (ok) _rcCardDone(card, true); else if (card && fail) { /* leave card so user can retry */ }
+      // No confirm() — collapse now, commit after a 20s undo window. (User 2026-06-22.)
+      _rcDeferAndUndo(card, `Removed ${toDelete.length} duplicate ledger row${toDelete.length > 1 ? 's' : ''}`, async () => {
+        let ok = 0, fail = 0;
+        for (const x of toDelete) {
+          try {
+            const resp = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${x.tid}/delete-duplicate`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
+            if (resp.ok) ok++; else fail++;
+          } catch (e) { fail++; }
+        }
+        if (!ok && fail) throw new Error(fail + ' failed');
+      });
     };
     // 🔗 Link them — attach the receipt to the charge (same spend) + mark matched.
     window.rcLinkThem = async function (ci, tid, docId) {
