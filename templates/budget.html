@@ -5619,8 +5619,12 @@
       return Array.from(document.querySelectorAll('#actuals-sections .actuals-txn-row, #actuals-txn-list .actuals-txn-row'))
         .filter(r => r.style.display !== 'none')
         .map(r => {
+          // A doc id can come from the badge (charge rows linked to a receipt) OR
+          // the row itself (doc-source / 'receipt to place' rows whose badge is
+          // absent). Without the row fallback, opening a receipt to file it left
+          // it out of the nav list → prev/next dead-ended. (User 2026-06-22.)
           const b = r.querySelector('.actuals-doc-badge');
-          const id = b && parseInt(b.dataset.docId);
+          const id = (b && parseInt(b.dataset.docId)) || (r.dataset.docId ? parseInt(r.dataset.docId) : 0);
           return id ? { uid: id, row: r } : null;
         })
         .filter(Boolean);
