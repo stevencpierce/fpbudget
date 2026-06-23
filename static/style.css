@@ -4562,3 +4562,15 @@ tr.sync-omitted .col-days::after {
   color: var(--red);
   border: 1px solid color-mix(in srgb, var(--red) 35%, transparent);
 }
+
+/* Call-sheet per-person call time (User 2026-06-22): when there's no individual
+   override, show the general crew call as a bracketed, muted placeholder so every
+   person's effective call time is visible; an actual individual override shows in
+   bold so it stands out. */
+.cs-crew-call-cell:empty::before {
+  content: attr(data-general);
+  color: var(--text-muted);
+  font-style: italic;
+  opacity: .65;
+}
+.cs-crew-call-cell:not(:empty) { font-weight: 600; }

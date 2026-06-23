@@ -19668,10 +19668,11 @@ def callsheet_view(pid, bid, date_str=None):
     # them by role-name match against _ATL_ROLE_LABELS. Talent is its own
     # section (COA_CODE_TALENT=2100). Everything else labor-like is BG crew.
     def _row_is_atl(r):
-        if r['account_code'] != COA_CODE_PROD_STAFF:
-            return False
-        role = (r.get('role') or '').strip().lower()
-        return any(tok in role for tok in _ATL_ROLE_LABELS)
+        # ATL ("Above the Line") section removed per user 2026-06-22 — it's not
+        # wanted on call sheets. Directors/producers/etc. now flow into their
+        # normal department in the crew list instead of a separate ATL block.
+        # (Future: a "department head" checkbox on the People tab.)
+        return False
     atl_rows     = [r for r in crew_rows if _row_is_atl(r)]
     talent_rows  = [r for r in crew_rows if r['account_code'] == COA_CODE_TALENT]
     crew_rows_bg = [r for r in crew_rows
@@ -19833,6 +19834,30 @@ def callsheet_view(pid, bid, date_str=None):
                     BudgetLine.id.in_(next_line_ids)
                 ).order_by(BudgetLine.account_code, BudgetLine.sort_order).all()
 
+    # Advance schedule shows the PEOPLE working the next day (names), not roles.
+    # (User 2026-06-22.) Resolve each next-day cell to its assigned crew name.
+    next_day_people = []
+    if next_day_date:
+        try:
+            _nd_lines = {ln.id: ln for ln in BudgetLine.query.filter(
+                BudgetLine.id.in_(next_line_ids)).all()} if next_line_ids else {}
+            _nd_cas = CrewAssignment.query.filter(
+                CrewAssignment.budget_line_id.in_(next_line_ids)).all() if next_line_ids else []
+            _nd_ca_by_key = {(ca.budget_line_id, ca.instance or 1): ca for ca in _nd_cas}
+            _seen_nd = set()
+            for d in next_lines:
+                ln = _nd_lines.get(d.budget_line_id)
+                if not ln:
+                    continue
+                role, person = _resolve_person_for_cell(ln, d.crew_instance, _nd_ca_by_key)
+                nm = (person or '').strip()
+                if nm and nm not in ('—', '-') and nm.lower() not in _seen_nd:
+                    _seen_nd.add(nm.lower())
+                    next_day_people.append({"name": nm, "role": role or ''})
+            next_day_people.sort(key=lambda p: p['name'].lower())
+        except Exception:
+            next_day_people = []
+
     current_working_bid = next(
         (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'working' and b.version_status == 'current'), None
     ) or next(
@@ -19915,6 +19940,7 @@ def callsheet_view(pid, bid, date_str=None):
         cs_data=cs_data,
         available_contacts=available_contacts,
         next_day_date=next_day_date,
+        next_day_people=next_day_people,
         next_day_lines_preview=next_day_lines_preview,
         project_clients_cs=project_clients_cs,
         project_unions_cs=project_unions_cs,

@@ -538,7 +538,13 @@ Example:
         <span style="font-weight:400;font-size:.78rem;color:var(--text-muted);margin-left:.5rem">Next shoot day: {{ next_day_date.strftime('%a, %b %d') }}</span>
         {% endif %}
       </div>
-      {% if next_day_lines_preview %}
+      {% if next_day_people %}
+      <div class="cs-advance-lines">
+        {% for p in next_day_people %}
+        <div class="cs-advance-line">{{ p.name }}{% if p.role %} <span style="color:var(--text-muted);font-weight:400">— {{ p.role }}</span>{% endif %}</div>
+        {% endfor %}
+      </div>
+      {% elif next_day_lines_preview %}
       <div class="cs-advance-lines">
         {% for ln in next_day_lines_preview %}
         <div class="cs-advance-line">{{ ln.description or ln.account_name }}</div>
@@ -621,8 +627,9 @@ Example:
                 <td class="callsheet-time-cell cs-editable cs-crew-call-cell cs-dept-call"
                     contenteditable="true"
                     data-crew-key="{{ crew_key }}"
+                    data-general="[{{ cs_data.get('general_crew_call', 'TBD') }}]"
                     data-is-override="false"
-                    title="Click to set call time"
+                    title="Click to set an individual call time (blank = general crew call)"
                     onblur="crewCallBlur(this)"
                     oninput="this.dataset.isOverride='true'">{{ cs_data.get('crew_call_times', {}).get(crew_key, '') or '' }}</td>
               </tr>
