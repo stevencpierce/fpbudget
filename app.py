@@ -28357,6 +28357,7 @@ def _unhandled_exception(e):
     import uuid as _uuid
     import traceback as _tb
     ref = _uuid.uuid4().hex[:8].upper()
+    _trace = _tb.format_exc()
     try:
         _path = request.path
         _method = request.method
@@ -28366,8 +28367,21 @@ def _unhandled_exception(e):
         _method = '?'
         _user_id = None
     logging.error(
-        f"[ERR-{ref}] {_method} {_path} user={_user_id}\n{_tb.format_exc()}"
+        f"[ERR-{ref}] {_method} {_path} user={_user_id}\n{_trace}"
     )
+    # Show the traceback inline to super-admins only — so production errors are
+    # debuggable without server-log access. Everyone else gets the generic page.
+    _admin_trace = ''
+    try:
+        from flask_login import current_user as _cu
+        if getattr(_cu, 'is_authenticated', False) and getattr(_cu, 'role', None) == 'super_admin':
+            import html as _html
+            _admin_trace = ('<hr><p style="color:#888;font-size:.85em">super-admin debug:</p>'
+                            '<pre style="white-space:pre-wrap;font-size:12px;background:#f8f8f8;'
+                            'padding:12px;border-radius:6px;overflow:auto">'
+                            + _html.escape(_trace) + '</pre>')
+    except Exception:
+        pass
     body = (
         '<!doctype html><html><head>'
         '<title>Internal error</title>'
@@ -28381,6 +28395,7 @@ def _unhandled_exception(e):
         'so we can find the exact traceback:</p>'
         f'<p><code>ERR-{ref}</code></p>'
         '<p><a href="/">Back to dashboard</a></p>'
+        + _admin_trace +
         '</body></html>'
     )
     return body, 500
