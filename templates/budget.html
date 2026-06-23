@@ -552,6 +552,7 @@
 <div class="tabs-row">
   <div class="tabs">
     {% if not dept_filter %}<button class="tab-btn {% if not sections %}{% else %}active{% endif %}" data-tab="topsheet">Dashboard</button>{% endif %}
+    {% if not dept_filter %}<button class="tab-btn" data-tab="topsheet-detail">Top Sheet</button>{% endif %}
     <button class="tab-btn {% if dept_filter or not sections %}active{% elif not sections %}active{% endif %}" data-tab="working">Budget</button>
     <a class="tab-btn tab-link" href="{{ url_for('gantt_view', pid=project.id, bid=budget.id) }}">Schedule</a>
     <button class="tab-btn" data-tab="travel">Travel</button>
@@ -665,6 +666,10 @@
   <div id="dash-action-center" style="margin-bottom:16px">
     <div style="font-size:.7rem;color:var(--text-muted)">Loading review queue…</div>
   </div>
+</div>{# /Dashboard pane — widgets + Action Center only (User 2026-06-22) #}
+
+{# ═══ TOP SHEET (the budget rollup table, split out of the Dashboard) ═════ #}
+<div class="tab-panel" id="tab-topsheet-detail">
 
   <div class="topsheet-controls">
     <span class="muted" style="font-size:.8rem">Variance basis:</span>
@@ -15191,7 +15196,7 @@ window.addEventListener('DOMContentLoaded', () => {
 // Tabs that show the floating totals bar at the bottom of the window.
 // Top Sheet + Budget both surface the same totals (they're the canonical
 // numeric summary), so we keep the bar pinned across both.
-const _FLOAT_BAR_TABS = new Set(['working', 'topsheet']);
+const _FLOAT_BAR_TABS = new Set(['working', 'topsheet-detail']);
 document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
