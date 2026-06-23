@@ -19755,9 +19755,17 @@ def callsheet_view(pid, bid, date_str=None):
                 })
 
     # Clients for this project (shown on call sheet if show_on_callsheet)
-    project_clients_cs = ProjectClient.query.filter_by(
+    # Plain dicts (not ORM objects) — the template both renders these AND
+    # tojson's them for the distribution list, and a ProjectClient isn't JSON
+    # serializable, which 500'd the whole call sheet for any project that had a
+    # client. (Bug fix 2026-06-22.)
+    project_clients_cs = [{
+        "name": c.name, "title": getattr(c, 'title', None),
+        "company": getattr(c, 'company', None),
+        "phone": getattr(c, 'phone', None), "email": getattr(c, 'email', None),
+    } for c in ProjectClient.query.filter_by(
         project_id=pid, show_on_callsheet=True
-    ).order_by(ProjectClient.sort_order).all()
+    ).order_by(ProjectClient.sort_order).all()]
 
     # Unions for this project (for call sheet Page 2)
     project_unions_cs = ProjectUnion.query.filter_by(
