@@ -4848,6 +4848,9 @@
 
   function _docsRowMatchesTab(row) {
     const tab = _docsActiveTab;
+    // Confirmed duplicates live ONLY in the Duplicates tab — never in 'all' or a
+    // category group (user 2026-06-22: a marked dup kept showing in Invoices).
+    if ((row.dataset.status || '').toLowerCase() === 'duplicate') return tab === 'duplicate';
     if (tab === 'all') return true;
     const st  = (row.dataset.status || '').toLowerCase();
     const dup = row.dataset.isDuplicate === '1';
