@@ -8559,8 +8559,21 @@ def actuals_line_transactions(pid, lid):
             .join(Budget, Budget.id == BudgetLine.budget_id)
             .filter(BudgetLine.id == lid, Budget.project_id == pid)
             .first_or_404())
+    # Charges are coded to whichever budget's line id (Working vs Actual), so
+    # resolve sibling lines across this project that represent the SAME line
+    # (same section + description). Lets the panel open from any budget view.
+    _sib_q = (BudgetLine.query
+              .join(Budget, Budget.id == BudgetLine.budget_id)
+              .filter(Budget.project_id == pid,
+                      BudgetLine.account_code == line.account_code))
+    if line.description:
+        _sib_q = _sib_q.filter(BudgetLine.description == line.description)
+    else:
+        _sib_q = _sib_q.filter(BudgetLine.id == line.id)
+    _sib_ids = [l.id for l in _sib_q.all()] or [line.id]
     txns = (Transaction.query
-            .filter_by(project_id=pid, budget_line_id=lid)
+            .filter(Transaction.project_id == pid,
+                    Transaction.budget_line_id.in_(_sib_ids))
             .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
             .all())
     out = []

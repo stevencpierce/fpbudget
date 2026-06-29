@@ -17275,6 +17275,8 @@ function renderCalcDetail(d) {
   <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
   <button type="button" onclick="openLineMoveModal()">Move to…</button>
   <button type="button" id="line-menu-change-group-btn" onclick="openChangeGroupModal()" style="display:none">Change Group…</button>
+  <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
+  <button type="button" onclick="reconcileMenuLine()">⚖ Reconcile actuals…</button>
 </div>
 
 <!-- ── Change Group Modal (section 2000 role_group picker) ─────────────────── -->
@@ -21506,6 +21508,14 @@ setTimeout(function() {
     }
   };
 
+  // Open the per-line Reconcile panel (tiles + merge/unlink/uncode) for the
+  // line the context menu is targeting. (User 2026-06-26.)
+  window.reconcileMenuLine = function() {
+    _menu.classList.add('hidden');
+    if (!_menuLineId) return;
+    if (typeof window.openReconcileLine === 'function') window.openReconcileLine(_menuLineId);
+  };
+
   window.openLineMoveModal = function() {
     _menu.classList.add('hidden');
     if (!_menuLineId || !_menuCode) return;
@@ -23464,5 +23474,209 @@ setTimeout(function() {
 })();
 </script>
 {% endif %}
+
+{# ════════════════════════════════════════════════════════════════════════
+   PER-LINE RECONCILE PANEL (User 2026-06-26)
+   Opens for a single budget line and shows every transaction coded to it as
+   large thumbnail tiles, with controls to merge duplicates, unmatch a receipt
+   back to the queue, or uncode a row entirely. Wired to the existing
+   /merge, /unmatch and /set-coa endpoints. Opened via
+   window.openReconcileLine(actualLineId).
+   ════════════════════════════════════════════════════════════════════════ #}
+<style>
+  #reconcileModal{position:fixed;inset:0;z-index:10050;display:none}
+  #reconcileModal.open{display:block}
+  .recon-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.55)}
+  .recon-panel{position:absolute;top:3vh;left:50%;transform:translateX(-50%);
+    width:min(1100px,94vw);max-height:94vh;display:flex;flex-direction:column;
+    background:var(--bg-card,#1b1d22);border:1px solid var(--border,#33363d);
+    border-radius:12px;box-shadow:0 16px 48px rgba(0,0,0,.5);overflow:hidden}
+  .recon-head{display:flex;align-items:center;justify-content:space-between;
+    gap:12px;padding:14px 18px;border-bottom:1px solid var(--border,#33363d)}
+  .recon-head .rt{font-size:1.05rem;font-weight:700}
+  .recon-head .rs{font-size:.8rem;color:var(--text-muted,#9aa0aa)}
+  .recon-x{background:none;border:none;color:var(--text-muted,#9aa0aa);font-size:1.3rem;cursor:pointer;line-height:1}
+  .recon-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    padding:10px 18px;border-bottom:1px solid var(--border,#33363d);font-size:.82rem}
+  .recon-toolbar .ri{color:var(--text-muted,#9aa0aa)}
+  .recon-btn{border:1px solid var(--border,#444);background:var(--bg-input,#23262c);
+    color:var(--text,#e6e8eb);border-radius:7px;padding:6px 12px;font-size:.8rem;cursor:pointer}
+  .recon-btn:disabled{opacity:.4;cursor:not-allowed}
+  .recon-btn.primary{background:#7c3aed;border-color:#7c3aed;color:#fff}
+  .recon-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
+    gap:14px;padding:18px;overflow:auto}
+  .recon-tile{position:relative;border:2px solid var(--border,#33363d);border-radius:10px;
+    background:var(--bg-2,#23262c);overflow:hidden;display:flex;flex-direction:column;transition:border-color .12s,opacity .2s}
+  .recon-tile.sel{border-color:#7c3aed;box-shadow:0 0 0 2px rgba(124,58,237,.35)}
+  .recon-thumb{height:140px;background:#0e0f12;display:flex;align-items:center;justify-content:center;
+    cursor:pointer;overflow:hidden;position:relative}
+  .recon-thumb img{width:100%;height:100%;object-fit:cover}
+  .recon-thumb .ph{font-size:2.4rem;opacity:.6;text-align:center}
+  .recon-thumb .ph small{display:block;font-size:.6rem;letter-spacing:.05em;margin-top:4px;opacity:.7}
+  .recon-chk{position:absolute;top:8px;left:8px;width:20px;height:20px;z-index:2;cursor:pointer}
+  .recon-srcbadge{position:absolute;top:8px;right:8px;font-size:.62rem;padding:2px 7px;border-radius:9px;
+    font-weight:700;background:rgba(0,0,0,.6);color:#fff}
+  .recon-body{padding:9px 11px;display:flex;flex-direction:column;gap:3px;flex:1}
+  .recon-vend{font-weight:600;font-size:.84rem;line-height:1.15}
+  .recon-amt{font-weight:700;font-size:.95rem}
+  .recon-meta{font-size:.7rem;color:var(--text-muted,#9aa0aa)}
+  .recon-acts{display:flex;gap:6px;flex-wrap:wrap;padding:8px 11px;border-top:1px solid var(--border,#33363d)}
+  .recon-acts button{flex:1;min-width:0;font-size:.7rem;padding:5px 4px;border-radius:6px;cursor:pointer;
+    border:1px solid var(--border,#444);background:var(--bg-input,#1b1d22);color:var(--text,#e6e8eb);white-space:nowrap}
+  .recon-acts button:hover{border-color:#7c3aed}
+  .recon-empty{padding:40px;text-align:center;color:var(--text-muted,#9aa0aa)}
+  .recon-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:10060;
+    background:#16a34a;color:#fff;padding:10px 18px;border-radius:8px;font-size:.85rem;box-shadow:0 6px 20px rgba(0,0,0,.4);display:none}
+</style>
+<div id="reconcileModal" aria-hidden="true">
+  <div class="recon-backdrop" onclick="closeReconcile()"></div>
+  <div class="recon-panel" role="dialog" aria-modal="true">
+    <div class="recon-head">
+      <div>
+        <div class="rt"><span id="recon-line-name">Reconcile line</span></div>
+        <div class="rs"><span id="recon-line-sub"></span></div>
+      </div>
+      <button class="recon-x" onclick="closeReconcile()" title="Close">✕</button>
+    </div>
+    <div class="recon-toolbar">
+      <span class="ri" id="recon-selinfo">Tick two tiles to merge duplicates · click a thumbnail to open the doc</span>
+      <span style="flex:1"></span>
+      <span id="recon-merge-zone"></span>
+    </div>
+    <div id="recon-tiles" class="recon-tiles"></div>
+  </div>
+</div>
+<div class="recon-toast" id="recon-toast"></div>
+<script>
+(function(){
+  const PIDr = {{ project.id }};
+  let _reconLine = null, _reconTxns = [], _reconSel = new Set(), _reconBusy = false;
+
+  function rToast(msg, color){
+    const t = document.getElementById('recon-toast');
+    if(!t) return; t.textContent = msg; t.style.background = color || '#16a34a';
+    t.style.display='block'; clearTimeout(t._h); t._h = setTimeout(()=>{t.style.display='none';}, 3200);
+  }
+  const esc = s => String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  const money = v => (v==null?'':'$'+Number(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
+  const SRC_LABEL = {reconciled:'QBO ✓', qbo_sync:'QBO', csv_import:'CSV', doc_upload:'Receipt', manual_entry:'Manual'};
+
+  window.openReconcileLine = async function(lid){
+    if(!lid) return;
+    const modal = document.getElementById('reconcileModal');
+    modal.classList.add('open'); modal.setAttribute('aria-hidden','false');
+    document.getElementById('recon-tiles').innerHTML = '<div class="recon-empty">Loading…</div>';
+    document.getElementById('recon-line-name').textContent = 'Reconcile line';
+    document.getElementById('recon-line-sub').textContent = '';
+    _reconSel.clear();
+    try {
+      const r = await fetch('/projects/'+PIDr+'/actuals/line/'+lid+'/transactions.json', {credentials:'same-origin'});
+      const j = await r.json();
+      if(!j.ok) throw new Error(j.error||'load failed');
+      _reconLine = j.line; _reconTxns = j.transactions || [];
+      renderRecon();
+    } catch(e){
+      document.getElementById('recon-tiles').innerHTML = '<div class="recon-empty">Could not load: '+esc(e.message)+'</div>';
+    }
+  };
+  window.closeReconcile = function(){
+    const m = document.getElementById('reconcileModal');
+    m.classList.remove('open'); m.setAttribute('aria-hidden','true');
+  };
+
+  function renderRecon(){
+    const L = _reconLine || {};
+    document.getElementById('recon-line-name').textContent = (L.name||'Line');
+    const total = _reconTxns.reduce((a,t)=>a+(t.is_expense===false?-(t.amount||0):(t.amount||0)),0);
+    document.getElementById('recon-line-sub').textContent =
+      (L.section_name||'')+' · code '+(L.code||'')+' · '+_reconTxns.length+' item'+(_reconTxns.length!==1?'s':'')+' · '+money(total);
+    const host = document.getElementById('recon-tiles');
+    if(!_reconTxns.length){ host.innerHTML = '<div class="recon-empty">Nothing is coded to this line.</div>'; updateMergeZone(); return; }
+    host.innerHTML = _reconTxns.map(function(t){
+      var thumb;
+      if(t.doc_upload_id && t.has_image){
+        thumb = '<img loading="lazy" src="/docs/upload/'+t.doc_upload_id+'/raw" onerror="this.parentNode.innerHTML=&quot;<div class=\\&quot;ph\\&quot;>📄</div>&quot;">';
+      } else if(t.doc_upload_id){
+        thumb = '<div class="ph">📄<small>'+esc((t.doc_category||'doc').toUpperCase())+'</small></div>';
+      } else {
+        thumb = '<div class="ph">🏦<small>NO RECEIPT</small></div>';
+      }
+      var openable = t.doc_upload_id ? 'onclick="window.open(\'/docs/upload/'+t.doc_upload_id+'/raw\',\'_blank\')"' : '';
+      var hasReceipt = !!t.doc_upload_id && t.source!=='doc_upload';
+      return '<div class="recon-tile" data-tid="'+t.id+'">'
+        + '<div class="recon-thumb" '+openable+'>'
+        +   '<input type="checkbox" class="recon-chk" data-tid="'+t.id+'" onclick="event.stopPropagation();reconToggle('+t.id+',this.checked)">'
+        +   '<span class="recon-srcbadge">'+esc(SRC_LABEL[t.source]||t.source||'')+'</span>'+thumb
+        + '</div>'
+        + '<div class="recon-body">'
+        +   '<div class="recon-vend">'+esc(t.vendor||'(no vendor)')+'</div>'
+        +   '<div class="recon-amt">'+(t.is_expense===false?'<span style="color:#22c55e">+</span>':'')+money(t.amount)+'</div>'
+        +   '<div class="recon-meta">'+esc(t.date||'')+(t.qbo_txn_id?' · QBO #'+esc(t.qbo_txn_id):'')+'</div>'
+        +   (t.doc_filename?'<div class="recon-meta" title="'+esc(t.doc_filename)+'">📎 '+esc(t.doc_filename.slice(0,34))+'</div>':'')
+        + '</div>'
+        + '<div class="recon-acts">'
+        +   (hasReceipt?'<button onclick="reconUnmatch('+t.id+')" title="Detach the receipt and send it back to the matching queue. The charge stays.">↩ Unmatch</button>':'')
+        +   '<button onclick="reconUncode('+t.id+')" title="Remove this from the line entirely (back to Needs coding).">⤺ Uncode</button>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+    updateMergeZone();
+  }
+
+  window.reconToggle = function(tid, on){
+    if(on){ _reconSel.add(tid); if(_reconSel.size>2){ var first=[..._reconSel][0]; _reconSel.delete(first); } }
+    else _reconSel.delete(tid);
+    document.querySelectorAll('#recon-tiles .recon-tile').forEach(function(el){
+      var id=+el.dataset.tid; el.classList.toggle('sel', _reconSel.has(id));
+      var cb=el.querySelector('.recon-chk'); if(cb) cb.checked=_reconSel.has(id);
+    });
+    updateMergeZone();
+  };
+
+  function updateMergeZone(){
+    var z = document.getElementById('recon-merge-zone');
+    var info = document.getElementById('recon-selinfo');
+    if(_reconSel.size===2){
+      var arr=[..._reconSel];
+      info.textContent = 'Merge keeps the QBO/coded row and attaches the other’s receipt, then removes the duplicate.';
+      z.innerHTML = '<button class="recon-btn primary" onclick="reconMerge('+arr[0]+','+arr[1]+')">⛓ Merge these 2</button>';
+    } else {
+      info.textContent = 'Tick two tiles to merge duplicates · click a thumbnail to open the doc';
+      z.innerHTML = '';
+    }
+  }
+
+  async function reconPost(url, body){
+    if(_reconBusy) return null; _reconBusy = true;
+    try{
+      var r = await fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+      var j = await r.json().catch(function(){return {};});
+      if(!r.ok || j.error){ rToast(j.error||('Failed ('+r.status+')'),'#b91c1c'); return null; }
+      return j;
+    } finally { _reconBusy = false; }
+  }
+
+  window.reconMerge = async function(a,b){
+    var j = await reconPost('/projects/'+PIDr+'/actuals/transaction/merge', {tids:[a,b]});
+    if(!j) return;
+    _reconSel.clear(); rToast('Merged — receipt attached, duplicate removed.');
+    await window.openReconcileLine(_reconLine.id);
+  };
+  window.reconUnmatch = async function(tid){
+    var j = await reconPost('/projects/'+PIDr+'/actuals/transaction/'+tid+'/unmatch', {});
+    if(!j) return;
+    rToast('Receipt unmatched — back in the queue.');
+    await window.openReconcileLine(_reconLine.id);
+  };
+  window.reconUncode = async function(tid){
+    var j = await reconPost('/projects/'+PIDr+'/actuals/transaction/'+tid+'/set-coa', {account_code:''});
+    if(!j) return;
+    rToast('Uncoded — moved to Needs coding.');
+    await window.openReconcileLine(_reconLine.id);
+  };
+
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape' && document.getElementById('reconcileModal').classList.contains('open')) closeReconcile(); });
+})();
+</script>
 
 {% endblock %}
