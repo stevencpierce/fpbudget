@@ -9225,6 +9225,71 @@ def _looks_like_travel(upload):
     return bool(v) and any(h in v for h in _TRAVEL_VENDOR_HINTS)
 
 
+def _travel_assignable_people(pid):
+    """The crew people a travel doc can be assigned to: every crew-assigned cell
+    (labor line, instance) on the project's current Working (else Estimated)
+    budget. Returns (people_list, budget_id). Shared by the picker endpoint and
+    the auto traveler→person matcher. (User 2026-06-26.)"""
+    from actuals import get_current_working_budget, get_current_estimated_budget
+    b = get_current_working_budget(pid) or get_current_estimated_budget(pid)
+    if not b:
+        return [], None
+    all_lines = BudgetLine.query.filter_by(budget_id=b.id).all()
+    line_by_id = {ln.id: ln for ln in all_lines}
+    cas = CrewAssignment.query.filter(
+        CrewAssignment.budget_line_id.in_([ln.id for ln in all_lines if ln.is_labor])).all()
+    ca_by_key = {(ca.budget_line_id, ca.instance or 1): ca for ca in cas}
+    people = []
+    for (lid, inst), ca in ca_by_key.items():
+        ln = line_by_id.get(lid)
+        if not ln:
+            continue
+        role, person = _resolve_person_for_cell(ln, inst, ca_by_key)
+        if not person:
+            continue
+        people.append({"line_id": lid, "instance": inst, "person": person,
+                       "role": role or '', "crew_member_id": getattr(ca, 'crew_member_id', None)})
+    people.sort(key=lambda p: (p["person"] or '').lower())
+    return people, b.id
+
+
+def _norm_name_tokens(s):
+    import re as _re
+    return set(t for t in _re.sub(r'[^a-z ]', ' ', (s or '').lower()).split() if len(t) > 1)
+
+
+def _match_traveler_to_person(pid, traveler_name):
+    """Fuzzy-match an extracted traveler/guest name to one of the project's
+    assignable crew. Returns the matched person dict (+ match_score, bid) or None.
+    Token-overlap based, so 'ROE/ELIZABETH', 'Elizabeth J Roe' and 'Elizabeth Roe'
+    all match the crew member 'Elizabeth Roe'. (User 2026-06-26.)"""
+    tnorm = _norm_name_tokens(traveler_name)
+    if not tnorm:
+        return None
+    people, bid = _travel_assignable_people(pid)
+    best, best_score = None, 0.0
+    for p in people:
+        pnorm = _norm_name_tokens(p.get('person'))
+        if not pnorm:
+            continue
+        inter = tnorm & pnorm
+        if not inter:
+            continue
+        score = len(inter) / max(1, len(tnorm | pnorm))
+        # Full containment of either name (e.g. "Elizabeth Roe" ⊆ "Elizabeth Joy
+        # Roe") is a strong signal even when middle names differ.
+        if inter == tnorm or inter == pnorm:
+            score = max(score, 0.9)
+        if score > best_score:
+            best, best_score = p, score
+    if best is not None:
+        bnorm = _norm_name_tokens(best.get('person'))
+        strong = (tnorm & bnorm == tnorm) or (tnorm & bnorm == bnorm) or len(tnorm & bnorm) >= 2
+        if strong and best_score >= 0.45:
+            return {**best, "match_score": round(best_score, 2), "bid": bid}
+    return None
+
+
 def _ai_extract_travel(upload, force=False):
     """Advisory travel-reservation extraction for ONE DocUpload. Reads the doc
     (OCR text + image when available) via ai_layer.extract_travel and stores the
@@ -9270,6 +9335,19 @@ def _ai_extract_travel(upload, force=False):
     _ai_log_event(pid, upload.id, 'travel', res.get('_provider'), res.get('_model'),
                   payload, res, latency)
     keep = {k: v for k, v in (res or {}).items() if not str(k).startswith('_')}
+    # Auto-match the traveler/guest name to an assigned crew person so the Travel
+    # panel can pre-select them, and link the doc to that person's packet if it
+    # isn't already assigned. (User 2026-06-26 — "look through the assigned
+    # people for a match and assign it to that person".)
+    try:
+        match = _match_traveler_to_person(pid, keep.get('traveler_name'))
+        if match:
+            keep['matched_person'] = match
+            _cmid = match.get('crew_member_id')
+            if _cmid and not getattr(upload, 'crew_member_id', None):
+                upload.crew_member_id = _cmid
+    except Exception as _tme:
+        logging.warning("[travel] traveler→person match failed for #%s: %s", upload.id, _tme)
     upload.travel_json = _j.dumps(keep)
     upload.travel_extracted_at = datetime.utcnow()
     return keep
@@ -9294,27 +9372,8 @@ def travel_people(pid):
     crew-assigned (labor line, instance) on the project's current Working (else
     Estimated) budget, plus that budget id so Apply targets the right schedule."""
     _require_project_role(pid, 'viewer')
-    from actuals import get_current_working_budget, get_current_estimated_budget
-    b = get_current_working_budget(pid) or get_current_estimated_budget(pid)
-    if not b:
-        return jsonify({"ok": True, "bid": None, "people": []})
-    all_lines = BudgetLine.query.filter_by(budget_id=b.id).all()
-    line_by_id = {ln.id: ln for ln in all_lines}
-    cas = CrewAssignment.query.filter(
-        CrewAssignment.budget_line_id.in_([ln.id for ln in all_lines if ln.is_labor])).all()
-    ca_by_key = {(ca.budget_line_id, ca.instance or 1): ca for ca in cas}
-    people = []
-    for (lid, inst), ca in ca_by_key.items():
-        ln = line_by_id.get(lid)
-        if not ln:
-            continue
-        role, person = _resolve_person_for_cell(ln, inst, ca_by_key)
-        if not person:
-            continue
-        people.append({"line_id": lid, "instance": inst, "person": person,
-                       "role": role or '', "crew_member_id": getattr(ca, 'crew_member_id', None)})
-    people.sort(key=lambda p: (p["person"] or '').lower())
-    return jsonify({"ok": True, "bid": b.id, "people": people})
+    people, bid = _travel_assignable_people(pid)
+    return jsonify({"ok": True, "bid": bid, "people": people})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/travel/apply-doc", methods=["POST"])

@@ -5889,13 +5889,31 @@
       const sel = document.getElementById('docDetailTravelPerson');
       sel.innerHTML = '<option value="">— pick person —</option>' +
         _ddTravel.people.map((p,i) => `<option value="${i}">${_esc(p.person)}${p.role?(' — '+_esc(p.role)):''}</option>`).join('');
-      if (t && t.traveler_name) {
+      // Pre-select the traveler. Prefer the server's robust traveler→person
+      // match (handles "ROE/ELIZABETH", middle names, etc.); fall back to a
+      // token overlap on the name. (User 2026-06-26.)
+      let _pidx = -1;
+      const _mp = t && t.matched_person;
+      if (_mp && _mp.line_id != null) {
+        _pidx = _ddTravel.people.findIndex(p =>
+          p.line_id === _mp.line_id && (p.instance||1) === (_mp.instance||1));
+      }
+      if (_pidx < 0 && t && t.traveler_name) {
         const nm = t.traveler_name.toLowerCase();
-        const idx = _ddTravel.people.findIndex(p => {
+        const toks = nm.split(/[^a-z]+/).filter(x => x.length > 1);
+        _pidx = _ddTravel.people.findIndex(p => {
           const pn = (p.person||'').toLowerCase();
-          return pn && (pn.includes(nm) || nm.includes(pn));
+          if (!pn) return false;
+          if (pn.includes(nm) || nm.includes(pn)) return true;
+          const pt = pn.split(/[^a-z]+/).filter(x => x.length > 1);
+          const shared = toks.filter(x => pt.includes(x)).length;
+          return shared >= 2 || (shared >= 1 && (toks.every(x=>pt.includes(x)) || pt.every(x=>toks.includes(x))));
         });
-        if (idx >= 0) sel.value = String(idx);
+      }
+      if (_pidx >= 0) {
+        sel.value = String(_pidx);
+        const _stp = document.getElementById('docDetailTravelStatus');
+        if (_stp) _stp.textContent = '✓ Auto-matched to ' + (_ddTravel.people[_pidx].person || 'a crew member') + ' — pick the day and Apply.';
       }
       if (!_ddTravel.bid) document.getElementById('docDetailTravelStatus').textContent =
         'No Working/Estimated budget found to attach travel to.';
@@ -5922,6 +5940,14 @@
         const hint = document.getElementById('docDetailTravelHint');
         if (hint) hint.textContent = d.travel.is_travel ? '· extracted ✓' : '· no travel details found';
         if (st) st.textContent = d.travel.is_travel ? 'Extracted ✓ — review and Apply.' : 'No travel details found in this document.';
+        // Auto-select the matched traveler (server resolved it during extract).
+        const _mp = d.travel && d.travel.matched_person;
+        const _sel = document.getElementById('docDetailTravelPerson');
+        if (_mp && _mp.line_id != null && _sel && _ddTravel.people) {
+          const _i = _ddTravel.people.findIndex(p => p.line_id === _mp.line_id && (p.instance||1) === (_mp.instance||1));
+          if (_i >= 0) { _sel.value = String(_i);
+            if (st) st.textContent = '✓ Auto-matched to ' + (_ddTravel.people[_i].person||'a crew member') + ' — pick the day and Apply.'; }
+        }
       } else { if (st) st.textContent = 'Extract failed.'; }
     } catch (e) { if (st) st.textContent = 'Extract error: ' + e.message; }
     finally { if (btn) { btn.disabled = false; btn.textContent = '⤓ Pull from document'; } }
