@@ -8548,6 +8548,50 @@ def admin_cross_project_claim_backfill():
     })
 
 
+@app.route("/projects/<int:pid>/actuals/line/<int:lid>/transactions.json", methods=["GET"])
+@login_required
+def actuals_line_transactions(pid, lid):
+    """Every transaction coded to a single budget line, for the per-line
+    Reconcile panel (large thumbnail tiles + merge / unlink / unmatch / uncode).
+    (User 2026-06-26 — "see a single budget line and all things coded to it".)"""
+    ProjectSheet.query.get_or_404(pid)
+    line = (BudgetLine.query
+            .join(Budget, Budget.id == BudgetLine.budget_id)
+            .filter(BudgetLine.id == lid, Budget.project_id == pid)
+            .first_or_404())
+    txns = (Transaction.query
+            .filter_by(project_id=pid, budget_line_id=lid)
+            .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
+            .all())
+    out = []
+    for t in txns:
+        doc = DocUpload.query.get(t.doc_upload_id) if t.doc_upload_id else None
+        _dt = t.txn_date
+        out.append({
+            "id": t.id,
+            "vendor": t.vendor,
+            "amount": float(t.amount) if t.amount is not None else None,
+            "date": (_dt.isoformat() if hasattr(_dt, 'isoformat') else _dt),
+            "source": t.source,
+            "match_status": t.match_status,
+            "is_expense": bool(t.is_expense),
+            "doc_upload_id": t.doc_upload_id,
+            "has_image": bool(doc and doc.content_type and doc.content_type.startswith('image/')),
+            "doc_category": (doc.category if doc else None),
+            "doc_filename": (doc.filed_filename or doc.original_filename) if doc else None,
+            "qbo_txn_id": t.qbo_txn_id,
+            "account_code": t.account_code,
+            "note": t.note,
+        })
+    return jsonify({
+        "ok": True,
+        "line": {"id": line.id, "code": line.account_code,
+                 "name": (line.description or line.account_name or ''),
+                 "section_name": (_section_name(line.account_code) or line.account_name or '')},
+        "transactions": out,
+    })
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/merge", methods=["POST"])
 @login_required
 def actuals_merge_transactions(pid):
