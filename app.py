@@ -13705,7 +13705,23 @@ def budget_settings(pid, bid):
     if "name" in data:
         budget.name = data["name"].strip() or budget.name
     if "company_fee_pct" in data:
-        budget.company_fee_pct = float(data["company_fee_pct"]) / 100
+        # Defensive: in flat mode the pct field can arrive blank — don't 500.
+        try:
+            budget.company_fee_pct = float(data["company_fee_pct"]) / 100
+        except (TypeError, ValueError):
+            pass
+    if "company_fee_mode" in data:
+        # 'pct' (fee = pct × eligible subtotal) or 'flat' (fixed dollar fee).
+        # Was never persisted, so picking "flat" silently reverted to percent
+        # on reload. (User 2026-06-26.)
+        m = (data.get("company_fee_mode") or 'pct').strip().lower()
+        budget.company_fee_mode = m if m in ('pct', 'flat') else 'pct'
+    if "company_fee_flat" in data:
+        v = data.get("company_fee_flat")
+        try:
+            budget.company_fee_flat = float(v) if v not in (None, '', 'null') else 0
+        except (TypeError, ValueError):
+            budget.company_fee_flat = 0
     if "company_fee_dispersed" in data:
         budget.company_fee_dispersed = bool(data["company_fee_dispersed"])
     if "target_budget" in data:

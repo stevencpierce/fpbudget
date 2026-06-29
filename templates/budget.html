@@ -13598,7 +13598,7 @@
         <div class="field">
           <label>Workers' Comp <span class="muted" style="font-weight:400;font-size:.8rem">(% of labor wages → Insurance)</span></label>
           <div style="display:flex;align-items:center;gap:.5rem">
-            <input type="number" id="set-workers-comp" value="{{ ((budget.workers_comp_pct or 0.03) | float * 100) | round(2) }}" min="0" max="100" step="0.1" style="width:90px">
+            <input type="number" id="set-workers-comp" value="{{ (((budget.workers_comp_pct if budget.workers_comp_pct is not none else 0.03) | float) * 100) | round(2) }}" min="0" max="100" step="0.1" style="width:90px">
             <span class="muted">%</span>
             <span class="muted" id="workers-comp-display" style="font-size:.85rem">= {{ top_sheet.workers_comp_amount | currency }}</span>
           </div>
@@ -13606,7 +13606,7 @@
         <div class="field">
           <label>Payroll Service Fee <span class="muted" style="font-weight:400;font-size:.8rem">(% of labor wages → Administrative)</span></label>
           <div style="display:flex;align-items:center;gap:.5rem">
-            <input type="number" id="set-payroll-fee" value="{{ ((budget.payroll_fee_pct or 0.0175) | float * 100) | round(2) }}" min="0" max="100" step="0.1" style="width:90px">
+            <input type="number" id="set-payroll-fee" value="{{ (((budget.payroll_fee_pct if budget.payroll_fee_pct is not none else 0.0175) | float) * 100) | round(2) }}" min="0" max="100" step="0.1" style="width:90px">
             <span class="muted">%</span>
             <span class="muted" id="payroll-fee-display" style="font-size:.85rem">= {{ top_sheet.payroll_fee_amount | currency }}</span>
           </div>
