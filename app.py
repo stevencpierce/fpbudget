@@ -10245,9 +10245,14 @@ def actuals_set_coa(pid, tid):
         txn.account_code      = code
         txn.account_code_name = name_raw[:100]
         txn.not_project_expense = False
-        # Drag-drop sets the COA section but no specific line. budget_
-        # line_id stays NULL — the user picks a sub-line via the
-        # dropdown, which triggers Working→Actual auto-clone.
+        # Drag-drop sets the COA section but no specific line. Clear any
+        # existing budget_line_id so the row actually MOVES to the new
+        # section — otherwise a txn dragged off a specific line keeps that
+        # stale line_id and stays stuck under it in the Actual budget (the
+        # per-line cell keys on budget_line_id). (User 2026-06-26 —
+        # "Consulting Engineer items never move".) The user then picks a
+        # sub-line via the dropdown, which triggers Working→Actual auto-clone.
+        txn.budget_line_id = None
         # Auto-add a placeholder line under this section if none exists
         # (per user 2026-05-01: a section coded from Actuals should
         # appear on the Budget view, not vanish silently).
