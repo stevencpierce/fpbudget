@@ -2480,7 +2480,7 @@
 </div>
 
 <!-- ═══ DOCS ══════════════════════════════════════════════════════════════ -->
-<div class="tab-panel" id="tab-docs">
+<div class="tab-panel" id="tab-docs"{% if active_tab != 'docs' %} data-needs-load="docs"{% endif %}>
   <div style="max-width:680px;margin:0 auto;padding:24px 16px 80px;">
 
     <!-- Drop zone -->
@@ -2753,7 +2753,7 @@
            Tax Forms together, etc. — so the list is scannable. The server
            builds doc_groups in display order; each group has a sticky-ish
            header div followed by its rows. #}
-        {% for grp in (doc_groups or [{'key':'all','label':'','rows':doc_uploads}]) %}
+        {% for grp in ((doc_groups or [{'key':'all','label':'','rows':doc_uploads}]) if active_tab == 'docs' else []) %}
           {% if grp.label and (doc_groups|length > 1) %}
           <div class="doc-group-header" data-group="{{ grp.key }}"
                style="display:flex;align-items:center;gap:8px;
@@ -6674,7 +6674,7 @@
    formerly hosted on the standalone Actualizer site. Slice 1 (this
    commit): structure + click-to-code + Sync button. Slice 2 adds
    drag-drop and modals. #}
-<div class="tab-panel" id="tab-actuals">
+<div class="tab-panel" id="tab-actuals"{% if active_tab != 'actuals' %} data-needs-load="actuals"{% endif %}>
   {# ── Three-bucket columns per Actuals row (user 2026-06-02) ──
      Each transaction shows three cells — 🏦 Transaction · 📎 Document ·
      🏷 Budget line — each either FILLED (solid + color-coded) or EMPTY
@@ -7409,7 +7409,7 @@
                   title="Wipe all AI suggestions so you can re-run 'Suggest codes' from scratch (testing).">↻ Clear &amp; re-run</button>
         </div>
         <div id="actuals-txn-list">
-        {% for t in actuals_transactions %}
+        {% for t in (actuals_transactions if active_tab == 'actuals' else []) %}
           {% set _doc = docs_by_id.get(t.doc_upload_id) if t.doc_upload_id else None %}
           {% set _coded = (t.budget_line_id is not none) or (t.account_code is not none) %}
           {% set _has_doc = (t.doc_upload_id is not none) or (t.source == 'doc_upload') %}
@@ -15202,6 +15202,15 @@ window.addEventListener('DOMContentLoaded', () => {
 const _FLOAT_BAR_TABS = new Set(['working', 'topsheet-detail']);
 document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
   btn.addEventListener('click', () => {
+    // Heavy panes (Docs/Actuals) aren't rendered on a light page load. Opening
+    // one does a full reload with ?tab so the server emits just that pane's rows.
+    const _tp = document.getElementById('tab-' + btn.dataset.tab);
+    if (_tp && _tp.dataset.needsLoad) {
+      const u = new URL(window.location);
+      u.searchParams.set('tab', _tp.dataset.needsLoad);
+      window.location.href = u.toString();
+      return;
+    }
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');

@@ -6849,7 +6849,14 @@ def budget_view(pid, bid):
     # Latest non-approved status (for an "awaiting"/"declined" badge when nothing approved yet)
     estimate_latest = estimate_share_history[0] if estimate_share_history else None
 
+    # Perf: the Docs (~1,200 rows) and Actuals (~1,300 rows) panes render to
+    # ~16MB of inline HTML. Only emit those heavy row-loops when their tab is
+    # actually requested (?tab=docs / ?tab=actuals); otherwise the panes lazy-
+    # load via a full reload when opened. Keeps the common Budget/Dashboard
+    # load light so budget entry stays fast. (User 2026-06-26 — "extremely slow".)
+    active_tab = (request.args.get('tab') or '').strip().lower()
     return render_template("budget.html",
+        active_tab=active_tab,
         project=project,
         budget=budget,
         estimate_approval=estimate_approval,
