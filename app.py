@@ -24064,6 +24064,12 @@ def _web_worker_essential_columns():
                 # 2026-06-22 — AI travel-reservation extraction on hotel/flight/car docs.
                 "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS travel_json TEXT",
                 "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS travel_extracted_at TIMESTAMP",
+                # 2026-07 — receipt detail for tax-credit reporting (subtotal/tax/tip + merchant address/phone).
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS subtotal NUMERIC(12,2)",
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS tax NUMERIC(10,2)",
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS tip NUMERIC(10,2)",
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS merchant_address VARCHAR(300)",
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS merchant_phone VARCHAR(40)",
                 # 2026-06-18 — AI vendor-cleanup watermark on charges (CSV/QBO).
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS ai_cleaned_at TIMESTAMP",
                 # 2026-06-18 — AI matching watermark + match source tag.
@@ -24634,6 +24640,21 @@ def docs_upload_post(pid):
     from fp_analyzer import extract_card_last4 as _extract_card4
     card_last4 = _extract_card4(vr) if vr else None
 
+    # Receipt detail for tax-credit reporting — Veryfi already returns subtotal /
+    # tax / tip and the merchant address/phone; break them out so tip can be
+    # excluded and name+address shown on submissions. (User 2026-07.)
+    def _vmoney(x):
+        try:
+            return round(float(x), 2) if x not in (None, '', 'null') else None
+        except (TypeError, ValueError):
+            return None
+    _v_ven   = (vr.get("vendor") or {}) if vr else {}
+    r_subtotal = _vmoney(vr.get("subtotal")) if vr else None
+    r_tax      = _vmoney(vr.get("tax")) if vr else None
+    r_tip      = _vmoney(vr.get("tip")) if vr else None
+    r_maddr    = (str(_v_ven.get("address"))[:300] if isinstance(_v_ven, dict) and _v_ven.get("address") else None)
+    r_mphone   = (str(_v_ven.get("phone_number"))[:40] if isinstance(_v_ven, dict) and _v_ven.get("phone_number") else None)
+
     # Foreign-currency receipts → convert to USD by the receipt's date so the
     # ledger + matching use USD. Original foreign figure is kept; if conversion
     # isn't possible (unsupported currency / no date / fetch fail) we keep the
@@ -24692,6 +24713,8 @@ def docs_upload_post(pid):
         doc_date=doc_date,
         doc_number=doc_number,
         card_last4=card_last4,
+        subtotal=r_subtotal, tax=r_tax, tip=r_tip,
+        merchant_address=r_maddr, merchant_phone=r_mphone,
         # confidence column is 0-100; Analyzer returns 0-1
         confidence=round(float(result.get("confidence") or 0) * 100, 2),
         category=result.get("doc_type"),
@@ -26320,6 +26343,41 @@ def docs_upload_coding(uid):
     })
 
 
+def _doc_receipt_detail(upload):
+    """Receipt detail for the modal + reporting: subtotal / tax / tip + merchant
+    address / phone. Prefers the stored column (user-edited or captured at
+    upload); falls back to parsing veryfi_data so EXISTING docs show it too.
+    (User 2026-07 — tax-credit reporting.)"""
+    vd = {}
+    if getattr(upload, 'veryfi_data', None):
+        try:
+            vd = upload.veryfi_data if isinstance(upload.veryfi_data, dict) else json.loads(upload.veryfi_data)
+        except Exception:
+            vd = {}
+    ven = (vd.get("vendor") or {}) if isinstance(vd, dict) else {}
+    def _m(col, key):
+        v = getattr(upload, col, None)
+        if v is not None:
+            try:
+                return round(float(v), 2)
+            except (TypeError, ValueError):
+                return None
+        raw = vd.get(key)
+        try:
+            return round(float(raw), 2) if raw not in (None, '', 'null') else None
+        except (TypeError, ValueError):
+            return None
+    addr = getattr(upload, 'merchant_address', None) or (ven.get("address") if isinstance(ven, dict) else None)
+    phone = getattr(upload, 'merchant_phone', None) or (ven.get("phone_number") if isinstance(ven, dict) else None)
+    return {
+        "subtotal": _m('subtotal', 'subtotal'),
+        "tax":      _m('tax', 'tax'),
+        "tip":      _m('tip', 'tip'),
+        "merchant_address": (str(addr)[:300] if addr else None),
+        "merchant_phone":   (str(phone)[:40] if phone else None),
+    }
+
+
 def _doc_parent_txn(uid):
     """The transaction that represents a document as a whole — the electronic
     charge if the receipt is matched to one, else the doc's own ledger row.
@@ -26393,6 +26451,7 @@ def docs_upload_line_items(uid):
         "veryfi_items": veryfi_items,
         "existing": existing,
         "is_itemized": bool(existing),
+        "receipt_detail": _doc_receipt_detail(upload),
     })
 
 
@@ -28088,6 +28147,24 @@ def docs_upload_update(uid):
         # land as "1234"). Blank clears.
         c4 = re.sub(r"\D", "", str(data.get("card_last4") or ""))
         upload.card_last4 = c4[-4:] if c4 else None
+    # Receipt detail (tax-credit reporting): subtotal / tax / tip + merchant
+    # address / phone. Empty clears. (User 2026-07.)
+    for _fld in ('subtotal', 'tax', 'tip'):
+        if _fld in data:
+            _v = data.get(_fld)
+            if _v in (None, "", "null"):
+                setattr(upload, _fld, None)
+            else:
+                try:
+                    setattr(upload, _fld, round(float(_v), 2))
+                except (TypeError, ValueError):
+                    return jsonify({"error": f"{_fld} must be a number"}), 400
+    if "merchant_address" in data:
+        _ma = (data.get("merchant_address") or "").strip()
+        upload.merchant_address = _ma[:300] if _ma else None
+    if "merchant_phone" in data:
+        _mp = (data.get("merchant_phone") or "").strip()
+        upload.merchant_phone = _mp[:40] if _mp else None
     # Crew / location linkage. Empty / null clears.
     if "crew_member_id" in data:
         cm = data.get("crew_member_id")

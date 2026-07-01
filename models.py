@@ -956,6 +956,16 @@ class DocUpload(db.Model):
     # Actuals so a user can group every charge on one card/account.
     card_last4 = db.Column(db.String(8), nullable=True)
 
+    # ── Receipt detail for tax-credit reporting (added 2026-07) ────────
+    # Some tax-credit programs disallow tip and require the merchant name +
+    # address on itemized receipts. Pre-populated from Veryfi (subtotal / tax /
+    # tip / vendor.address / vendor.phone_number); user-editable in the modal.
+    subtotal          = db.Column(db.Numeric(12, 2), nullable=True)
+    tax               = db.Column(db.Numeric(10, 2), nullable=True)
+    tip               = db.Column(db.Numeric(10, 2), nullable=True)
+    merchant_address  = db.Column(db.String(300), nullable=True)
+    merchant_phone    = db.Column(db.String(40), nullable=True)
+
     # ── People / location linkage (added 2026-04-30) ───────────────────
     # Some doc types back relationships, not spend events:
     #   tax_form / contract / release / payroll →  a CrewMember (or

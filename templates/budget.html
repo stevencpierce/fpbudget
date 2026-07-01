@@ -3109,6 +3109,19 @@
               <input type="text" id="docDetailCard4" inputmode="numeric" maxlength="4"
                      placeholder="e.g. 1234" style="width:100%">
             </div>
+            {# 🧾 Receipt detail for tax-credit reporting (2026-07): subtotal / tax /
+               tip broken out (some credits disallow tip) + merchant address (itemized
+               receipts must show name + address). Prefilled from OCR, editable. #}
+            <details id="docDetailReceiptDetail" class="field" style="margin-bottom:.6rem;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
+              <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">🧾 Receipt detail <span style="font-weight:400;text-transform:none">(subtotal · tax · tip · address)</span></summary>
+              <div style="display:flex;gap:8px;margin-top:8px">
+                <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Subtotal</label><input type="text" id="docDetailSubtotal" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
+                <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tax</label><input type="text" id="docDetailTax" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
+                <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tip</label><input type="text" id="docDetailTip" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
+              </div>
+              <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant address</label><input type="text" id="docDetailMerchAddr" placeholder="street, city, state" style="width:100%"></div>
+              <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant phone</label><input type="text" id="docDetailMerchPhone" placeholder="—" style="width:100%"></div>
+            </details>
             {# Crew member picker — shown for tax_form / contract /
                release / payroll. Populated from the project's crew. #}
             <div class="field" id="docDetailCrewField" style="margin-bottom:.6rem;display:none">
@@ -6308,6 +6321,12 @@
       const r = await fetch('/docs/upload/' + uid + '/line-items', { credentials:'same-origin' });
       if (!r.ok) return;
       const d = await r.json();
+      // Receipt detail (subtotal/tax/tip/address) — populate regardless of whether
+      // the doc has a transaction to itemize.
+      const rd = d.receipt_detail || {};
+      const _sv = (id, v) => { const el = document.getElementById(id); if (el) el.value = (v != null ? v : ''); };
+      _sv('docDetailSubtotal', rd.subtotal); _sv('docDetailTax', rd.tax); _sv('docDetailTip', rd.tip);
+      _sv('docDetailMerchAddr', rd.merchant_address); _sv('docDetailMerchPhone', rd.merchant_phone);
       if (!d.ok || d.parent_txn_id == null) return;      // no transaction to itemize
       block.style.display = '';
       _itemDocTotal = d.doc_total; window._itemVeryfi = d.veryfi_items || [];
@@ -6726,6 +6745,11 @@
       note:     document.getElementById('docDetailNote').value,
       doc_number: document.getElementById('docDetailDocNum').value,
       card_last4: document.getElementById('docDetailCard4').value,
+      subtotal: _parseMoney(document.getElementById('docDetailSubtotal').value),
+      tax:      _parseMoney(document.getElementById('docDetailTax').value),
+      tip:      _parseMoney(document.getElementById('docDetailTip').value),
+      merchant_address: document.getElementById('docDetailMerchAddr').value,
+      merchant_phone:   document.getElementById('docDetailMerchPhone').value,
       crew_member_id: document.getElementById('docDetailCrewId').value || null,
       location_id:    document.getElementById('docDetailLocationId').value || null,
     };
