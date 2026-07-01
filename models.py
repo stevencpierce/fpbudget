@@ -440,6 +440,21 @@ class CrewAssignment(db.Model):
     __table_args__  = (db.UniqueConstraint("budget_line_id", "instance", name="uq_crew_assign_inst"),)
 
 
+class ProjectCrewMember(db.Model):
+    """Per-PROJECT overrides for a person (added 2026-07). Someone is a Camera Op
+    on one show and a Gaffer on the next, and their union/employment status can
+    differ per project — so those live here, keyed to (project, crew_member).
+    Identity + persistent paperwork (ID, W-9, tax forms) stay GLOBAL on
+    CrewMember. Falls back to the CrewMember global default when absent."""
+    __tablename__ = "project_crew_member"
+    id              = db.Column(db.Integer, primary_key=True)
+    project_id      = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False, index=True)
+    crew_member_id  = db.Column(db.Integer, db.ForeignKey("crew_member.id"), nullable=False, index=True)
+    employment_type = db.Column(db.String(20), nullable=True)   # loan_out | employee | vendor
+    union_status    = db.Column(db.String(20), nullable=True)   # union | non_union
+    __table_args__  = (db.UniqueConstraint("project_id", "crew_member_id", name="uq_project_crew_member"),)
+
+
 class ScheduleDay(db.Model):
     __tablename__ = "schedule_day"
     id              = db.Column(db.Integer, primary_key=True)

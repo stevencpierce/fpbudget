@@ -24030,7 +24030,8 @@ setTimeout(function() {
 
     // ── SIDE: personal info + classification + representation ──
     let s = '<div class="pp-sec"><h4>Details</h4>';
-    s += '<div class="pp-field"><label>Employment type</label><select id="ppEmp" onchange="_ppSaveField(\'employment_type\',this.value)"><option value="">—</option>'
+    s += '<div style="font-size:.68rem;color:var(--text-muted);margin-bottom:8px">Employment &amp; union are <b>per project</b>; email/phone/company travel with the person.</div>';
+    s += '<div class="pp-field"><label>Employment type <span style="text-transform:none;color:var(--text-muted)">· this project</span></label><select id="ppEmp" onchange="_ppSaveField(\'employment_type\',this.value)"><option value="">—</option>'
       + ['loan_out:Loan-out','employee:Employee','vendor:Vendor'].map(o=>{const[v,l]=o.split(':');return '<option value="'+v+'"'+(id.employment_type===v?' selected':'')+'>'+l+'</option>';}).join('')+'</select></div>';
     s += '<div class="pp-field"><label>Union status</label><select id="ppUnion" onchange="_ppSaveField(\'union_status\',this.value)"><option value="">—</option>'
       + ['union:Union','non_union:Non-Union'].map(o=>{const[v,l]=o.split(':');return '<option value="'+v+'"'+(id.union_status===v?' selected':'')+'>'+l+'</option>';}).join('')+'</select></div>';

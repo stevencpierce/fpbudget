@@ -103,7 +103,7 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     BudgetDirectContact, CompanySettings, DocUpload, CatalogItem,
                     TravelDetail, CateringBill, ActivityLog,
                     SubBudget, SubBudgetLine, EstimateShare, FxRate,
-                    TransactionDupDismissal)
+                    TransactionDupDismissal, ProjectCrewMember)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -24059,6 +24059,16 @@ def _web_worker_essential_columns():
                      CONSTRAINT uq_vendor_alias UNIQUE (project_id, raw_canonical)
                    )""",
                 "CREATE INDEX IF NOT EXISTS ix_vendor_alias_raw ON vendor_alias (raw_canonical)",
+                # 2026-07 — per-project person overrides (employment type / union status).
+                """CREATE TABLE IF NOT EXISTS project_crew_member (
+                     id              SERIAL PRIMARY KEY,
+                     project_id      INTEGER NOT NULL,
+                     crew_member_id  INTEGER NOT NULL,
+                     employment_type VARCHAR(20),
+                     union_status    VARCHAR(20),
+                     CONSTRAINT uq_project_crew_member UNIQUE (project_id, crew_member_id)
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_project_crew_member ON project_crew_member (project_id, crew_member_id)",
                 # 2026-06-18 — AI data-cleanup watermark on docs.
                 "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS ai_cleaned_at TIMESTAMP",
                 # 2026-06-22 — AI travel-reservation extraction on hotel/flight/car docs.
@@ -26369,6 +26379,7 @@ def person_profile(pid, cmid):
     _require_project_role(pid, 'viewer')
     ProjectSheet.query.get_or_404(pid)
     cm = CrewMember.query.get_or_404(cmid)
+    _pcm = ProjectCrewMember.query.filter_by(project_id=pid, crew_member_id=cmid).first()
     from actuals import get_current_working_budget, get_current_estimated_budget
     b = get_current_working_budget(pid) or get_current_estimated_budget(pid)
 
@@ -26481,8 +26492,11 @@ def person_profile(pid, cmid):
         "identity": {
             "id": cm.id, "name": cm.name, "email": cm.email, "phone": cm.phone,
             "company": cm.company, "department": cm.department,
-            "employment_type": getattr(cm, 'employment_type', None),
-            "union_status": getattr(cm, 'union_status', None),
+            # Per-project override wins; falls back to the person's global default.
+            "employment_type": (_pcm.employment_type if _pcm and _pcm.employment_type
+                                else getattr(cm, 'employment_type', None)),
+            "union_status": (_pcm.union_status if _pcm and _pcm.union_status
+                             else getattr(cm, 'union_status', None)),
             "is_vendor": bool(cm.is_vendor),
         },
         "deal": deal,
@@ -26549,12 +26563,20 @@ def person_update(pid, cmid):
     _require_project_role(pid, 'editor')
     cm = CrewMember.query.get_or_404(cmid)
     data = request.get_json(force=True) or {}
-    if "employment_type" in data:
-        v = (data.get("employment_type") or "").strip().lower()
-        cm.employment_type = v[:20] if v in ('loan_out', 'employee', 'vendor') else None
-    if "union_status" in data:
-        v = (data.get("union_status") or "").strip().lower()
-        cm.union_status = v[:20] if v in ('union', 'non_union') else None
+    # Employment type + union status are PER-PROJECT (someone's a different role /
+    # union status on each show) → stored on ProjectCrewMember. (User 2026-07.)
+    if "employment_type" in data or "union_status" in data:
+        pcm = ProjectCrewMember.query.filter_by(project_id=pid, crew_member_id=cmid).first()
+        if pcm is None:
+            pcm = ProjectCrewMember(project_id=pid, crew_member_id=cmid)
+            db.session.add(pcm)
+        if "employment_type" in data:
+            v = (data.get("employment_type") or "").strip().lower()
+            pcm.employment_type = v[:20] if v in ('loan_out', 'employee', 'vendor') else None
+        if "union_status" in data:
+            v = (data.get("union_status") or "").strip().lower()
+            pcm.union_status = v[:20] if v in ('union', 'non_union') else None
+    # Contact info is GLOBAL identity → stays on the crew record.
     for _f in ('email', 'phone', 'company'):
         if _f in data:
             v = (data.get(_f) or "").strip()
