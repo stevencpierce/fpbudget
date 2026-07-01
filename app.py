@@ -26492,11 +26492,10 @@ def person_profile(pid, cmid):
         "identity": {
             "id": cm.id, "name": cm.name, "email": cm.email, "phone": cm.phone,
             "company": cm.company, "department": cm.department,
-            # Per-project override wins; falls back to the person's global default.
-            "employment_type": (_pcm.employment_type if _pcm and _pcm.employment_type
-                                else getattr(cm, 'employment_type', None)),
-            "union_status": (_pcm.union_status if _pcm and _pcm.union_status
-                             else getattr(cm, 'union_status', None)),
+            # Employment + union are PER-PROJECT only (the deprecated global
+            # CrewMember columns are no longer read, to avoid cross-project leaks).
+            "employment_type": (_pcm.employment_type if _pcm else None),
+            "union_status": (_pcm.union_status if _pcm else None),
             "is_vendor": bool(cm.is_vendor),
         },
         "deal": deal,
