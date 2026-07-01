@@ -24114,6 +24114,11 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS loan_out_vendor_id INTEGER REFERENCES crew_member(id)",
                 "ALTER TABLE crew_member "
                 "  ADD COLUMN IF NOT EXISTS required_docs TEXT",
+                # 2026-07 — Wrapbook-style employment classification per person.
+                "ALTER TABLE crew_member "
+                "  ADD COLUMN IF NOT EXISTS employment_type VARCHAR(20)",
+                "ALTER TABLE crew_member "
+                "  ADD COLUMN IF NOT EXISTS union_status VARCHAR(20)",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The
@@ -26341,6 +26346,169 @@ def docs_upload_coding(uid):
         "suggestion":  sug,
         "not_project": bool(getattr(txn, 'not_project_expense', False)),
     })
+
+
+def _line_budget_total(ln):
+    """Approximate budgeted total for a line — labor: rate×days×qty; else the
+    estimated total. Used for the person-profile deal headline + mismatch check."""
+    try:
+        if ln.is_labor:
+            return round(float(ln.rate or 0) * float(ln.days or 0) * float(ln.quantity or 1), 2)
+        return round(float(ln.estimated_total or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+@app.route("/projects/<int:pid>/person/<int:cmid>/profile", methods=["GET"])
+@login_required
+def person_profile(pid, cmid):
+    """Wrapbook-style person profile: identity + deal (role/rate/kit/dates from
+    their budget-line assignments) + documents (grouped, with a completeness
+    checklist) + payments (transactions) + budget-vs-actual mismatch per line.
+    (User 2026-07 — person-centric People tab.)"""
+    _require_project_role(pid, 'viewer')
+    ProjectSheet.query.get_or_404(pid)
+    cm = CrewMember.query.get_or_404(cmid)
+    from actuals import get_current_working_budget, get_current_estimated_budget
+    b = get_current_working_budget(pid) or get_current_estimated_budget(pid)
+
+    deal = []
+    line_ids = []
+    if b:
+        lines = BudgetLine.query.filter_by(budget_id=b.id).all()
+        line_by_id = {ln.id: ln for ln in lines}
+        kits_by_parent = {}
+        for ln in lines:
+            if ln.line_tag == 'kit_fee' and ln.parent_line_id:
+                kits_by_parent.setdefault(ln.parent_line_id, []).append(ln)
+        # This person's lines: via CrewAssignment OR line-level assigned_crew_id.
+        assigned = {}
+        for ca in CrewAssignment.query.filter(
+                CrewAssignment.crew_member_id == cmid,
+                CrewAssignment.budget_line_id.in_(list(line_by_id.keys()) or [0])).all():
+            assigned[ca.budget_line_id] = ca
+        for ln in lines:
+            if ln.is_labor and ln.assigned_crew_id == cmid and ln.id not in assigned:
+                assigned[ln.id] = None
+        for lid, ca in assigned.items():
+            ln = line_by_id.get(lid)
+            if not ln:
+                continue
+            line_ids.append(ln.id)
+            rate = float((ca.rate_override if (ca and ca.rate_override is not None) else ln.rate) or 0)
+            days = float(ln.days or 0)
+            kits = kits_by_parent.get(ln.id, [])
+            kit_total = round(sum(float(k.estimated_total or 0) for k in kits), 2)
+            budgeted = _line_budget_total(ln)
+            actual = float(db.session.query(func.sum(_signed_amount()))
+                           .filter(Transaction.project_id == pid,
+                                   Transaction.budget_line_id == ln.id,
+                                   Transaction.not_project_expense == False).scalar() or 0)
+            actual = round(actual, 2)
+            # Mismatch: actuals materially diverge from what's budgeted on the line.
+            _tol = max(50.0, abs(budgeted) * 0.05)
+            mismatch = None
+            if budgeted and abs(actual - budgeted) > _tol and actual != 0:
+                mismatch = {"budgeted": budgeted, "actual": actual,
+                            "delta": round(actual - budgeted, 2),
+                            "over": actual > budgeted}
+            deal.append({
+                "line_id": ln.id, "role": (ln.description or ln.account_name or ''),
+                "account_code": ln.account_code, "account_name": ln.account_name,
+                "rate": rate, "rate_type": ln.rate_type, "days": days,
+                "fringe_type": (ca.fringe_override if (ca and ca.fringe_override) else ln.fringe_type),
+                "kit_fees": [{"description": k.description or 'Kit fee',
+                              "total": float(k.estimated_total or 0)} for k in kits],
+                "kit_total": kit_total,
+                "budgeted": budgeted, "actual": actual, "mismatch": mismatch,
+            })
+
+    # Documents on this person + completeness checklist.
+    docs = (DocUpload.query.filter_by(project_id=pid, crew_member_id=cmid)
+            .filter(DocUpload.status != 'deleted')
+            .order_by(DocUpload.uploaded_at.desc()).all())
+    doc_out = [{
+        "id": d.id, "category": d.category, "vendor": d.vendor,
+        "amount": float(d.amount) if d.amount is not None else None,
+        "doc_date": d.doc_date.isoformat() if d.doc_date else None,
+        "filename": d.filed_filename or d.original_filename,
+        "status": d.status, "has_image": bool(d.content_type and d.content_type.startswith('image/')),
+    } for d in docs]
+    _cats = {(d.category or '').lower() for d in docs}
+    _has = lambda *ks: any(k in _cats for k in ks)
+    completeness = {
+        "contract":  _has('contract', 'release', 'legal'),
+        "tax_form":  _has('tax_form'),
+        "photo_id":  _has('id', 'photo_id', 'employee_vendor_doc'),
+        "invoice":   _has('invoice'),
+    }
+
+    # Payments: transactions on this person's docs OR their assignment lines.
+    _doc_ids = [d.id for d in docs]
+    pay_q = Transaction.query.filter(Transaction.project_id == pid)
+    conds = []
+    if _doc_ids:
+        conds.append(Transaction.doc_upload_id.in_(_doc_ids))
+    if line_ids:
+        conds.append(Transaction.budget_line_id.in_(line_ids))
+    payments = []
+    if conds:
+        from sqlalchemy import or_ as _or_pay
+        for t in (pay_q.filter(_or_pay(*conds))
+                  .filter(Transaction.not_project_expense == False,
+                          Transaction.source != 'invoice_split')
+                  .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc()).all()):
+            payments.append({
+                "id": t.id, "amount": float(t.amount) if t.amount is not None else None,
+                "date": t.txn_date, "vendor": t.vendor, "source": t.source,
+                "match_status": t.match_status, "doc_upload_id": t.doc_upload_id,
+                "is_expense": bool(t.is_expense),
+            })
+    total_paid = round(sum((p["amount"] or 0) for p in payments if p["is_expense"]), 2)
+
+    reps = [{"name": s.name, "role_type": s.role_type, "email": s.email,
+             "phone": s.phone, "company": s.company}
+            for s in (cm.support_contacts or []) if getattr(s, 'active', True)]
+
+    return jsonify({
+        "ok": True,
+        "identity": {
+            "id": cm.id, "name": cm.name, "email": cm.email, "phone": cm.phone,
+            "company": cm.company, "department": cm.department,
+            "employment_type": getattr(cm, 'employment_type', None),
+            "union_status": getattr(cm, 'union_status', None),
+            "is_vendor": bool(cm.is_vendor),
+        },
+        "deal": deal,
+        "documents": doc_out,
+        "completeness": completeness,
+        "payments": payments,
+        "total_paid": total_paid,
+        "representation": reps,
+        "has_mismatch": any(d.get("mismatch") for d in deal),
+    })
+
+
+@app.route("/projects/<int:pid>/person/<int:cmid>/update", methods=["POST"])
+@login_required
+def person_update(pid, cmid):
+    """Update Wrapbook-style person fields from the profile panel (employment
+    type + union status; also email/phone/company). (User 2026-07.)"""
+    _require_project_role(pid, 'editor')
+    cm = CrewMember.query.get_or_404(cmid)
+    data = request.get_json(force=True) or {}
+    if "employment_type" in data:
+        v = (data.get("employment_type") or "").strip().lower()
+        cm.employment_type = v[:20] if v in ('loan_out', 'employee', 'vendor') else None
+    if "union_status" in data:
+        v = (data.get("union_status") or "").strip().lower()
+        cm.union_status = v[:20] if v in ('union', 'non_union') else None
+    for _f in ('email', 'phone', 'company'):
+        if _f in data:
+            v = (data.get(_f) or "").strip()
+            setattr(cm, _f, v[:200] if v else None)
+    db.session.commit()
+    return jsonify({"ok": True})
 
 
 def _doc_receipt_detail(upload):

@@ -414,6 +414,11 @@ class CrewMember(db.Model):
     loan_out_vendor_id  = db.Column(db.Integer, db.ForeignKey("crew_member.id"), nullable=True)
     # Per-vendor required-doc checklist (comma-separated keys), like Location.
     required_docs       = db.Column(db.Text, nullable=True)
+    # ── Wrapbook-style employment classification (added 2026-07) ────────
+    # Shown as the person's subtitle ("Loan Out · Non-Union") and used by the
+    # person-profile panel + budget-mismatch checks. Free-ish text kept short.
+    employment_type     = db.Column(db.String(20), nullable=True)   # loan_out | employee | vendor
+    union_status        = db.Column(db.String(20), nullable=True)   # union | non_union
     support_contacts    = db.relationship("SupportContact", backref="crew_member",
                                           lazy=True, cascade="all, delete-orphan",
                                           foreign_keys="SupportContact.crew_member_id")
