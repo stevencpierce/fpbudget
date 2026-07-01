@@ -3208,10 +3208,10 @@
               <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">
                 🧾 Itemize into budget lines <span id="docItemizeCount" style="color:#5fd0a0"></span>
               </summary>
-              <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Split this document across multiple budget lines. Each row codes to its own line; the rows should add up to the document total.</div>
+              <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Split this document across multiple budget lines. Each row codes to its own line and should add up to the document total. <b style="color:#e0a13a">This replaces the single-line coding above</b> — it's one or the other. Clear all rows to go back to coding the whole doc to one line.</div>
               <div id="docItemizeRows"></div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
-                <button type="button" onclick="_itemAddRow('','', '')" style="padding:5px 10px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;font-size:12px;cursor:pointer">+ Add line</button>
+                <button type="button" onclick="_itemAddRow('','', '');window._docItemizeDirty=true" style="padding:5px 10px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;font-size:12px;cursor:pointer">+ Add line</button>
                 <button type="button" id="docItemizePullBtn" onclick="docItemizePull()" style="padding:5px 10px;border-radius:6px;background:#10231a;border:1px solid #1f5140;color:#5fd0a0;font-size:12px;cursor:pointer">⤓ Pull items from OCR</button>
                 <span style="flex:1"></span>
                 <span id="docItemizeTotal" style="font-size:12px;color:var(--text-muted)"></span>
@@ -6282,10 +6282,10 @@
     row.className = 'ditem-row';
     row.style.cssText = 'display:flex;gap:6px;margin-bottom:5px;align-items:center';
     row.innerHTML =
-      '<input class="ditem-desc" placeholder="description" value="' + _esc(desc || '') + '" style="flex:1.5;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px">' +
-      '<input class="ditem-amt" type="number" step="0.01" placeholder="0.00" value="' + (amount != null && amount !== '' ? amount : '') + '" oninput="_itemUpdateTotal()" style="width:88px;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px;text-align:right">' +
-      '<select class="ditem-line actuals-line-picker" onfocus="_actualsFillPicker(this)" style="flex:1.3;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px"><option value="">— budget line —</option></select>' +
-      '<button type="button" title="Remove line" onclick="this.closest(\'.ditem-row\').remove();_itemUpdateTotal()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px">✕</button>';
+      '<input class="ditem-desc" placeholder="description" value="' + _esc(desc || '') + '" oninput="window._docItemizeDirty=true" style="flex:1.5;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px">' +
+      '<input class="ditem-amt" type="number" step="0.01" placeholder="0.00" value="' + (amount != null && amount !== '' ? amount : '') + '" oninput="_itemUpdateTotal();window._docItemizeDirty=true" style="width:88px;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px;text-align:right">' +
+      '<select class="ditem-line actuals-line-picker" onfocus="_actualsFillPicker(this)" onchange="window._docItemizeDirty=true" style="flex:1.3;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px"><option value="">— budget line —</option></select>' +
+      '<button type="button" title="Remove line" onclick="this.closest(\'.ditem-row\').remove();_itemUpdateTotal();window._docItemizeDirty=true" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px">✕</button>';
     host.appendChild(row);
     if (lineId) { const sel = row.querySelector('.ditem-line'); sel.dataset.current = String(lineId); if (typeof window._actualsFillPicker === 'function') window._actualsFillPicker(sel); }
     _itemUpdateTotal();
@@ -6308,6 +6308,7 @@
     if (!items.length) { document.getElementById('docItemizeStatus').textContent = 'No OCR line items found on this document.'; return; }
     document.getElementById('docItemizeRows').innerHTML = '';
     items.forEach(it => _itemAddRow(it.description, it.amount, ''));
+    window._docItemizeDirty = true;
   };
   window.docItemizeLoad = async function (uid) {
     _itemUid = uid; _itemDocTotal = null; window._itemVeryfi = [];
@@ -6339,7 +6340,22 @@
       } else {
         _itemUpdateTotal();
       }
+      _itemSetOverride(d.existing ? d.existing.length : 0);
+      window._docItemizeDirty = false;
     } catch (e) {}
+  };
+  // When a doc is itemized, the whole-document (single line) coding is OVERRIDDEN
+  // by the line items — reflect that on the picker so it's not ambiguous. (User 2026-07.)
+  window._itemSetOverride = function (n) {
+    const picker = document.getElementById('docDetailLinePicker');
+    const status = document.getElementById('docDetailCodingStatus');
+    if (n > 0) {
+      if (picker) { picker.disabled = true; picker.style.opacity = '.5'; picker.title = 'Overridden by itemization'; }
+      if (status) { status.innerHTML = '⛔ <b>Itemized into ' + n + ' line' + (n !== 1 ? 's' : '') + '</b> — whole-document coding is overridden. Clear the itemization below to code as one line.'; status.style.color = '#e0a13a'; }
+    } else {
+      if (picker) { picker.disabled = false; picker.style.opacity = ''; picker.title = ''; }
+      if (status) { status.style.color = ''; }
+    }
   };
   window.docItemizeSave = async function () {
     if (!_itemUid) return;
@@ -6360,9 +6376,11 @@
       });
       const d = await r.json();
       if (r.ok && d.ok) {
-        if (st) st.textContent = d.cleared ? 'Itemization cleared.' : ('✓ Saved ' + d.children + ' line' + (d.children!==1?'s':'') + ' — they now roll into their budget lines.');
+        if (st) { st.textContent = d.cleared ? 'Itemization cleared — code it as one line above if you like.' : ('✓ Saved ' + d.children + ' line' + (d.children!==1?'s':'') + ' — they roll into their budget lines (single-line coding overridden).'); st.style.color = ''; }
         const cnt = document.getElementById('docItemizeCount');
         if (cnt) cnt.textContent = d.children ? ('· ' + d.children + ' lines') : '';
+        _itemSetOverride(d.children || 0);
+        window._docItemizeDirty = false;
       } else { if (st) st.textContent = 'Save failed: ' + (d.error || r.status); }
     } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
     finally { if (btn) { btn.disabled = false; btn.textContent = 'Save itemization'; } }
@@ -6417,7 +6435,15 @@
   }
 
   window.closeDocDetail = function (ev) {
-    if (ev && ev.target && ev.target.id !== 'docDetailOverlay') return;
+    if (ev && ev.target && ev.target.id !== 'docDetailOverlay') return;   // click inside the panel
+    // Backdrop click: don't silently discard unsaved itemized lines. (User 2026-07.)
+    if (ev && ev.target && ev.target.id === 'docDetailOverlay' && window._docItemizeDirty) {
+      const st = document.getElementById('docItemizeStatus');
+      if (st) { st.textContent = 'You have unsaved itemized lines — Save, or use the Close/Cancel button to discard.'; st.style.color = '#e0a13a'; }
+      const blk = document.getElementById('docDetailItemizeBlock'); if (blk) blk.open = true;
+      return;
+    }
+    window._docItemizeDirty = false;
     document.getElementById('docDetailOverlay').style.display = 'none';
     _docDetailUid = null;
     // Reset transient state so a stale message/button doesn't carry into the
