@@ -3038,8 +3038,9 @@
               <p class="muted" style="padding:1rem">Loading preview…</p>
             </div>
           </div>
-          <!-- Right: editable metadata (narrower than before) -->
-          <div style="width:300px;padding:14px 16px;border-left:1px solid var(--border);overflow-y:auto;flex-shrink:0;">
+          <!-- Right: editable metadata — QuickBooks-style form column, widened so the
+               receipt-detail row + itemize grid have room to breathe. 2026-07. -->
+          <div style="width:min(480px,44vw);padding:14px 18px;border-left:1px solid var(--border);overflow-y:auto;flex-shrink:0;">
             <div id="docDetailVerify" style="font-size:11px;padding:6px 9px;border-radius:6px;margin-bottom:12px;display:none;"></div>
             <div class="field" style="margin-bottom:.6rem">
               <label id="docDetailVendorLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Vendor</label>
@@ -3209,6 +3210,12 @@
                 🧾 Itemize into budget lines <span id="docItemizeCount" style="color:#5fd0a0"></span>
               </summary>
               <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Peel off parts of this document to other budget lines. Whatever you don't itemize stays on the <b>main line</b> (the budget-line picker above). The main line's amount updates automatically as you add sublines.</div>
+              <div id="docItemizeHdr" style="display:none;gap:6px;align-items:center;margin-bottom:4px;font-size:9.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)">
+                <span style="flex:1.5;min-width:0">Description</span>
+                <span style="width:88px;text-align:right">Amount</span>
+                <span style="flex:1.3;min-width:0">Budget line</span>
+                <span style="width:18px"></span>
+              </div>
               <div id="docItemizeRows"></div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
                 <button type="button" onclick="_itemAddRow('','', '');window._docItemizeDirty=true" style="padding:5px 10px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;font-size:12px;cursor:pointer">+ Add line</button>
@@ -6291,6 +6298,8 @@
     _itemUpdateTotal();
   };
   window._itemUpdateTotal = function () {
+    const _n = document.querySelectorAll('#docItemizeRows .ditem-row').length;
+    const _hdr = document.getElementById('docItemizeHdr'); if (_hdr) _hdr.style.display = _n ? 'flex' : 'none';
     let sub = 0;
     document.querySelectorAll('#docItemizeRows .ditem-amt').forEach(i => { sub += parseFloat(i.value || 0) || 0; });
     sub = Math.round(sub * 100) / 100;
