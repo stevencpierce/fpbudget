@@ -26495,6 +26495,52 @@ def person_profile(pid, cmid):
     })
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/mismatches", methods=["GET"])
+@login_required
+def budget_mismatches(pid, bid):
+    """Lines on this budget where an assigned person's ACTUALS exceed the
+    budgeted amount → drives the ⚠ over-budget badge on the budget line.
+    (User 2026-07.) Computes in bulk (one txn-sum query + sibling map)."""
+    _require_project_role(pid, 'viewer')
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    proj_lines = (BudgetLine.query.join(Budget, Budget.id == BudgetLine.budget_id)
+                  .filter(Budget.project_id == pid).all())
+    # sibling groups (same section+role across Working/Actual budgets)
+    sib = {}
+    for ln in proj_lines:
+        sib.setdefault((ln.account_code, ln.description or ''), []).append(ln.id)
+    rows = (db.session.query(Transaction.budget_line_id, func.sum(_signed_amount()))
+            .filter(Transaction.project_id == pid,
+                    Transaction.not_project_expense == False,
+                    Transaction.budget_line_id.isnot(None))
+            .group_by(Transaction.budget_line_id).all())
+    actual_by_line = {r[0]: float(r[1] or 0) for r in rows}
+    out = []
+    for ln in proj_lines:
+        if ln.budget_id != bid or not ln.is_labor:
+            continue
+        assigned = [ca for ca in (ln.crew_assignments or []) if ca.crew_member_id]
+        cmid = person = None
+        if assigned:
+            cmid = assigned[0].crew_member_id
+            person = (assigned[0].crew_member.name if assigned[0].crew_member else assigned[0].name_override)
+        elif ln.assigned_crew_id:
+            cmid = ln.assigned_crew_id
+            _cm = CrewMember.query.get(cmid)
+            person = _cm.name if _cm else None
+        if not cmid:
+            continue                      # only person-assigned lines
+        budgeted = _line_budget_total(ln)
+        actual = round(sum(actual_by_line.get(x, 0) for x in sib.get((ln.account_code, ln.description or ''), [ln.id])), 2)
+        _tol = max(50.0, abs(budgeted) * 0.05)
+        if budgeted and actual > budgeted + _tol:
+            out.append({"line_id": ln.id, "role": (ln.description or ln.account_name),
+                        "person": person, "crew_member_id": cmid,
+                        "budgeted": budgeted, "actual": actual,
+                        "delta": round(actual - budgeted, 2)})
+    return jsonify({"ok": True, "mismatches": out})
+
+
 @app.route("/projects/<int:pid>/person/<int:cmid>/update", methods=["POST"])
 @login_required
 def person_update(pid, cmid):

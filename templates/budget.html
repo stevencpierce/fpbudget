@@ -24037,4 +24037,38 @@ setTimeout(function() {
 })();
 </script>
 
+{# ⚠ Over-budget mismatch badge on budget lines where an assigned person's
+   actuals exceed the budgeted amount (User 2026-07). Click → their profile. #}
+<script>
+(function(){
+  const PIDm = {{ project.id }}, BIDm = {{ budget.id }};
+  const fmt = v => '$' + Number(v||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
+  async function loadMismatches(){
+    try{
+      const d = await fetch('/projects/'+PIDm+'/budget/'+BIDm+'/mismatches',{credentials:'same-origin'}).then(r=>r.json());
+      if(!d || !d.ok) return;
+      (d.mismatches||[]).forEach(m=>{
+        const row = document.querySelector('.line-row[data-id="'+m.line_id+'"]');
+        if(!row) return;
+        const cell = row.querySelector('.col-desc') || row.querySelector('td');
+        if(!cell || cell.querySelector('.line-mismatch-badge')) return;
+        const b = document.createElement('span');
+        b.className = 'line-mismatch-badge';
+        b.textContent = '⚠';
+        b.title = 'Over budget: actual '+fmt(m.actual)+' vs budget '+fmt(m.budgeted)
+                + (m.person?(' — '+m.person):'') + ' (Δ '+fmt(m.delta)+'). Click for detail.';
+        b.style.cssText = 'cursor:pointer;color:#e0a13a;margin-left:6px;font-size:.85rem;font-weight:700';
+        b.addEventListener('click', function(e){
+          e.stopPropagation();
+          if(m.crew_member_id && typeof window.openPersonProfile==='function') window.openPersonProfile(m.crew_member_id);
+        });
+        cell.appendChild(b);
+      });
+    }catch(e){}
+  }
+  if(document.readyState !== 'loading') setTimeout(loadMismatches, 700);
+  else document.addEventListener('DOMContentLoaded', ()=>setTimeout(loadMismatches, 700));
+})();
+</script>
+
 {% endblock %}
