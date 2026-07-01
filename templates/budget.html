@@ -3195,7 +3195,7 @@
               <div id="docDetailSuggest" style="margin:2px 0 5px;display:none"></div>
               <select id="docDetailLinePicker" class="actuals-line-picker"
                       data-tid="" data-current="" data-populated="0"
-                      onfocus="_actualsFillPicker(this)" onchange="actualsSetLine(this)"
+                      onfocus="_actualsFillPicker(this)" onchange="actualsSetLine(this);if(window._itemUpdateTotal)_itemUpdateTotal()"
                       style="width:100%;font-size:12.5px;padding:5px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:6px">
                 <option value="">— pick budget line —</option>
               </select>
@@ -3208,7 +3208,7 @@
               <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">
                 🧾 Itemize into budget lines <span id="docItemizeCount" style="color:#5fd0a0"></span>
               </summary>
-              <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Split this document across multiple budget lines. Each row codes to its own line and should add up to the document total. <b style="color:#e0a13a">This replaces the single-line coding above</b> — it's one or the other. Clear all rows to go back to coding the whole doc to one line.</div>
+              <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Peel off parts of this document to other budget lines. Whatever you don't itemize stays on the <b>main line</b> (the budget-line picker above). The main line's amount updates automatically as you add sublines.</div>
               <div id="docItemizeRows"></div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
                 <button type="button" onclick="_itemAddRow('','', '');window._docItemizeDirty=true" style="padding:5px 10px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;font-size:12px;cursor:pointer">+ Add line</button>
@@ -6291,17 +6291,27 @@
     _itemUpdateTotal();
   };
   window._itemUpdateTotal = function () {
-    let sum = 0;
-    document.querySelectorAll('#docItemizeRows .ditem-amt').forEach(i => { sum += parseFloat(i.value || 0) || 0; });
+    let sub = 0;
+    document.querySelectorAll('#docItemizeRows .ditem-amt').forEach(i => { sub += parseFloat(i.value || 0) || 0; });
+    sub = Math.round(sub * 100) / 100;
     const el = document.getElementById('docItemizeTotal'); if (!el) return;
     const tot = _itemDocTotal;
     const fmt = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    // Main-line label (the whole-doc coding picker above).
+    let mainLabel = 'main line';
+    const mp = document.getElementById('docDetailLinePicker');
+    if (mp && mp.value && mp.selectedIndex >= 0 && mp.options[mp.selectedIndex]) {
+      const t = (mp.options[mp.selectedIndex].text || '').trim();
+      if (t && t !== '— pick budget line —') mainLabel = t.length > 30 ? t.slice(0,30)+'…' : t;
+    }
     if (tot != null) {
-      const diff = Math.round((sum - tot) * 100) / 100;
-      const ok = Math.abs(diff) < 0.02;
-      el.innerHTML = 'Items: <b>' + fmt(sum) + '</b> / doc ' + fmt(tot) +
-        (ok ? ' <span style="color:#5fd0a0">✓</span>' : ' <span style="color:#e0a13a">(' + (diff>0?'+':'') + fmt(diff).replace('$','$') + ')</span>');
-    } else { el.innerHTML = 'Items: <b>' + fmt(sum) + '</b>'; }
+      const remainder = Math.round((tot - sub) * 100) / 100;
+      const over = remainder < -0.01;
+      el.innerHTML = 'Sublines <b>' + fmt(sub) + '</b> · ' +
+        (over
+          ? '<span style="color:#e0a13a">⚠ ' + fmt(-remainder) + ' over the doc total</span>'
+          : '→ <b style="color:#5fd0a0">' + fmt(remainder) + '</b> to ' + (mp && mp.value ? '<b>'+mainLabel+'</b>' : '<span style="color:#e0a13a">main line (pick one above)</span>'));
+    } else { el.innerHTML = 'Sublines: <b>' + fmt(sub) + '</b>'; }
   };
   window.docItemizePull = function () {
     const items = window._itemVeryfi || [];
@@ -6333,9 +6343,14 @@
       _itemDocTotal = d.doc_total; window._itemVeryfi = d.veryfi_items || [];
       const pullBtn = document.getElementById('docItemizePullBtn');
       if (pullBtn) pullBtn.style.display = (window._itemVeryfi.length ? '' : 'none');
+      // Reflect the saved main line on the picker (the remainder child's line).
+      if (d.main_line_id) {
+        const mp = document.getElementById('docDetailLinePicker');
+        if (mp) { mp.dataset.current = String(d.main_line_id); if (window._actualsFillPicker) window._actualsFillPicker(mp); mp.value = String(d.main_line_id); }
+      }
       if (d.existing && d.existing.length) {
         block.open = true;
-        cnt.textContent = '· ' + d.existing.length + ' lines';
+        cnt.textContent = '· ' + d.existing.length + ' subline' + (d.existing.length!==1?'s':'');
         d.existing.forEach(x => _itemAddRow(x.description, x.amount, x.budget_line_id));
       } else {
         _itemUpdateTotal();
@@ -6347,15 +6362,14 @@
   // When a doc is itemized, the whole-document (single line) coding is OVERRIDDEN
   // by the line items — reflect that on the picker so it's not ambiguous. (User 2026-07.)
   window._itemSetOverride = function (n) {
-    const picker = document.getElementById('docDetailLinePicker');
+    // n = number of sublines (peel-offs). The picker stays enabled as the MAIN
+    // line; when split, it just receives the remainder. (User 2026-07.)
+    const label = document.querySelector('#docDetailCodingBlock label');
     const status = document.getElementById('docDetailCodingStatus');
-    if (n > 0) {
-      if (picker) { picker.disabled = true; picker.style.opacity = '.5'; picker.title = 'Overridden by itemization'; }
-      if (status) { status.innerHTML = '⛔ <b>Itemized into ' + n + ' line' + (n !== 1 ? 's' : '') + '</b> — whole-document coding is overridden. Clear the itemization below to code as one line.'; status.style.color = '#e0a13a'; }
-    } else {
-      if (picker) { picker.disabled = false; picker.style.opacity = ''; picker.title = ''; }
-      if (status) { status.style.color = ''; }
-    }
+    if (label) label.textContent = n > 0 ? 'Main budget line (gets the remainder)' : 'Budget line (Actuals)';
+    if (n > 0 && status) { status.innerHTML = '↳ plus ' + n + ' subline' + (n !== 1 ? 's' : '') + ' peeled off to other lines (below).'; status.style.color = 'var(--text-muted)'; }
+    else if (status) { status.style.color = ''; }
+    _itemUpdateTotal();
   };
   window.docItemizeSave = async function () {
     if (!_itemUid) return;
@@ -6368,18 +6382,26 @@
       const desc = (r.querySelector('.ditem-desc')||{}).value || '';
       if (amt) rows.push({ amount: amt, budget_line_id: line, description: desc });
     });
+    const mainLine = (document.getElementById('docDetailLinePicker')||{}).value || '';
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     try {
       const r = await fetch('/docs/upload/' + _itemUid + '/itemize', {
         method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ rows })
+        body: JSON.stringify({ rows, main_line_id: mainLine })
       });
       const d = await r.json();
       if (r.ok && d.ok) {
-        if (st) { st.textContent = d.cleared ? 'Itemization cleared — code it as one line above if you like.' : ('✓ Saved ' + d.children + ' line' + (d.children!==1?'s':'') + ' — they roll into their budget lines (single-line coding overridden).'); st.style.color = ''; }
+        if (st) {
+          const money = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+          if (d.cleared) st.textContent = 'Itemization cleared.';
+          else if (d.over) st.textContent = '⚠ Saved, but sublines are '+money(-d.remainder)+' over the doc total — check the amounts.';
+          else st.textContent = '✓ Saved — '+money(d.sublines_total)+' peeled off, '+money(d.main_line_amount)+' stays on the main line.';
+          st.style.color = d.over ? '#e0a13a' : '';
+        }
+        const nsub = rows.filter(x=>x.amount).length;
         const cnt = document.getElementById('docItemizeCount');
-        if (cnt) cnt.textContent = d.children ? ('· ' + d.children + ' lines') : '';
-        _itemSetOverride(d.children || 0);
+        if (cnt) cnt.textContent = nsub ? ('· '+nsub+' subline'+(nsub!==1?'s':'')) : '';
+        _itemSetOverride(nsub);
         window._docItemizeDirty = false;
       } else { if (st) st.textContent = 'Save failed: ' + (d.error || r.status); }
     } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
@@ -23974,7 +23996,7 @@ setTimeout(function() {
       h += '<span class="pp-badge '+(comp[k]?'ok':'no')+'">'+(comp[k]?'✓ ':'○ ')+lbl+'</span>';
     });
     h += '</div>';
-    h += '<button class="pp-btn" onclick="_ppUpload()">⤒ Upload document</button>';
+    h += '<button class="pp-btn" onclick="_ppUpload()">⤒ Upload document</button> <span style="font-size:.72rem;color:var(--text-muted)">or drag files anywhere onto this panel</span>';
     docs.forEach(dc=>{
       h += '<div class="pp-doc" onclick="closePersonPanel();window.openDocDetail('+dc.id+',null)">'
         + '<span class="cat">'+esc(dc.category||'doc')+'</span>'
@@ -24028,27 +24050,46 @@ setTimeout(function() {
     }catch(e){ if(st) st.textContent='Save failed'; }
   };
 
+  async function _ppUploadFiles(files){
+    if(!_pp || !files || !files.length || _ppBusy) return;
+    _ppBusy=true;
+    const st=document.getElementById('ppSaveStatus');
+    let done=0;
+    try{
+      for(const f of files){
+        if(st){ st.textContent='Uploading '+(done+1)+'/'+files.length+'… '+(f.name||''); st.style.color='var(--text-muted)'; }
+        const fd = new FormData(); fd.append('file', f);
+        const r = await fetch('/projects/'+PIDp+'/docs/upload',{method:'POST',credentials:'same-origin',body:fd});
+        const j = await r.json().catch(()=>({}));
+        const uid = j.id || j.uid || j.upload_id || (j.upload&&j.upload.id);
+        if(uid) await fetch('/docs/upload/'+uid+'/update',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({crew_member_id:_pp._cmid})});
+        done++;
+      }
+    } finally { _ppBusy=false; }
+    window.openPersonProfile(_pp._cmid);   // refresh
+  }
   window._ppUpload = function(){
     if(!_pp) return;
     const inp = document.getElementById('ppUploadInput');
-    inp.onchange = async () => {
-      const files = [...inp.files]; inp.value='';
-      if(!files.length) return;
-      if(_ppBusy) return; _ppBusy=true;
-      const st=document.getElementById('ppSaveStatus');
-      try{
-        for(const f of files){
-          const fd = new FormData(); fd.append('file', f);
-          const r = await fetch('/projects/'+PIDp+'/docs/upload',{method:'POST',credentials:'same-origin',body:fd});
-          const j = await r.json().catch(()=>({}));
-          const uid = j.id || j.uid || j.upload_id || (j.upload&&j.upload.id);
-          if(uid) await fetch('/docs/upload/'+uid+'/update',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({crew_member_id:_pp._cmid})});
-        }
-      } finally { _ppBusy=false; }
-      window.openPersonProfile(_pp._cmid);   // refresh
-    };
+    inp.onchange = () => { const files=[...inp.files]; inp.value=''; _ppUploadFiles(files); };
     inp.click();
   };
+  // Drag-and-drop upload onto the whole drawer → files attach to this person.
+  (function(){
+    const panel = document.getElementById('personPanel');
+    const drawer = panel && panel.querySelector('.pp-drawer');
+    if(!drawer) return;
+    let _dragDepth=0;
+    const showDrop = on => { drawer.style.outline = on ? '3px dashed #7c3aed' : ''; drawer.style.outlineOffset = on?'-6px':''; };
+    drawer.addEventListener('dragenter', e=>{ if(e.dataTransfer && [...e.dataTransfer.types].includes('Files')){ e.preventDefault(); _dragDepth++; showDrop(true);} });
+    drawer.addEventListener('dragover', e=>{ if(e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
+    drawer.addEventListener('dragleave', e=>{ _dragDepth--; if(_dragDepth<=0){ _dragDepth=0; showDrop(false);} });
+    drawer.addEventListener('drop', e=>{
+      if(!(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length)) return;
+      e.preventDefault(); _dragDepth=0; showDrop(false);
+      _ppUploadFiles([...e.dataTransfer.files]);
+    });
+  })();
 
   // Entry point: click a person's NAME in the People tab.
   document.addEventListener('click', function(e){

@@ -26648,8 +26648,11 @@ def docs_upload_line_items(uid):
         desc = (li.get("description") or li.get("text") or '').strip()
         if desc or amt:
             veryfi_items.append({"description": desc[:200], "amount": amt})
-    # Existing itemization: child invoice_split rows on this doc's parent.
+    # Existing itemization: child invoice_split rows on this doc's parent. The
+    # 'Remainder → main line' child is NOT a subline — it feeds the main-line
+    # picker instead. (User 2026-07 remainder model.)
     existing = []
+    main_line_id = None
     if parent is not None:
         kids = (Transaction.query
                 .filter_by(project_id=upload.project_id, parent_transaction_id=parent.id,
@@ -26657,19 +26660,29 @@ def docs_upload_line_items(uid):
                 .order_by(Transaction.id).all())
         for k in kids:
             bl = BudgetLine.query.get(k.budget_line_id) if k.budget_line_id else None
+            _lid = (str(bl.source_line_id or bl.id) if bl else None)
+            if (k.note or '') == 'Remainder → main line':
+                main_line_id = _lid
+                continue
             existing.append({
                 "id": k.id,
                 "description": k.note or '',
                 "amount": float(k.amount) if k.amount is not None else None,
-                "budget_line_id": (str(bl.source_line_id or bl.id) if bl else None),
+                "budget_line_id": _lid,
                 "line_label": (f"{bl.account_code} · {bl.description or bl.account_name}" if bl else ''),
             })
+        # Not split but parent is coded → that's the main line.
+        if main_line_id is None and not existing and parent.budget_line_id:
+            _pbl = BudgetLine.query.get(parent.budget_line_id)
+            if _pbl:
+                main_line_id = str(_pbl.source_line_id or _pbl.id)
     return jsonify({
         "ok": True,
         "parent_txn_id": (parent.id if parent else None),
         "doc_total": total,
         "veryfi_items": veryfi_items,
         "existing": existing,
+        "main_line_id": main_line_id,
         "is_itemized": bool(existing),
         "receipt_detail": _doc_receipt_detail(upload),
     })
@@ -26690,24 +26703,28 @@ def docs_upload_itemize(uid):
         return jsonify({"error": "No transaction exists for this document yet."}), 400
     data = request.get_json(force=True) or {}
     rows = data.get("rows") or []
+    main_line_raw = data.get("main_line_id")
     if not isinstance(rows, list):
         return jsonify({"error": "rows must be a list"}), 400
 
     from actuals import link_transaction_to_line, unlink_transaction
+
+    def _as_int(v):
+        try:
+            return int(v) if v not in (None, '', 0, '0') else None
+        except (TypeError, ValueError):
+            return None
+    mlid = _as_int(main_line_raw)
+    doc_total = abs(float(parent.amount)) if parent.amount is not None else 0.0
+
     # Remove any previous itemization for this parent (replace-on-save).
-    old = Transaction.query.filter_by(project_id=pid, parent_transaction_id=parent.id,
-                                      source='invoice_split').all()
-    for k in old:
+    for k in Transaction.query.filter_by(project_id=pid, parent_transaction_id=parent.id,
+                                         source='invoice_split').all():
         db.session.delete(k)
     db.session.flush()
 
-    if not rows:
-        # Cleared the itemization → parent goes back to being coded normally.
-        db.session.commit()
-        return jsonify({"ok": True, "cleared": True, "children": 0})
-
-    created = []
-    total = 0.0
+    # Parse sublines (portions peeled off to OTHER budget lines).
+    sublines = []
     for r in rows:
         try:
             amt = round(float(r.get("amount")), 2)
@@ -26715,36 +26732,57 @@ def docs_upload_itemize(uid):
             return jsonify({"error": "each row needs a numeric amount"}), 400
         if amt == 0:
             continue
-        line_raw = r.get("budget_line_id")
-        child = Transaction(
-            project_id=pid, source='invoice_split',
-            parent_transaction_id=parent.id, doc_upload_id=upload.id,
-            amount=amt, vendor=parent.vendor, txn_date=parent.txn_date,
-            is_expense=bool(getattr(parent, 'is_expense', True)),
-            note=(r.get("description") or '')[:300], match_status='confirmed',
-        )
-        db.session.add(child)
-        db.session.flush()          # get child.id for coding
-        if line_raw not in (None, '', 0, '0'):
+        sublines.append((amt, _as_int(r.get("budget_line_id")), (r.get("description") or '')[:300]))
+
+    def _mk_child(amt, line_id, note):
+        c = Transaction(project_id=pid, source='invoice_split', parent_transaction_id=parent.id,
+                        doc_upload_id=upload.id, amount=amt, vendor=parent.vendor,
+                        txn_date=parent.txn_date, is_expense=bool(getattr(parent, 'is_expense', True)),
+                        note=note[:300], match_status='confirmed')
+        db.session.add(c); db.session.flush()
+        if line_id:
             try:
-                link_transaction_to_line(child.id, int(line_raw), user_id=current_user.id)
+                link_transaction_to_line(c.id, line_id, user_id=current_user.id)
             except Exception as _le:
                 logging.warning("[itemize] link child→line failed: %s", _le)
-        total += amt
-        created.append(child.id)
+        return c.id
 
-    # Un-code the parent so it becomes a non-counting container — the coded
-    # children are what roll into the Actual budget (no double-count).
+    if not sublines:
+        # No split → the whole document codes to the main line (or clears).
+        if mlid:
+            try:
+                link_transaction_to_line(parent.id, mlid, user_id=current_user.id)
+            except Exception:
+                pass
+            db.session.commit()
+            return jsonify({"ok": True, "children": 0, "main_line_amount": round(doc_total, 2),
+                            "remainder": round(doc_total, 2)})
+        try:
+            unlink_transaction(parent.id)
+        except Exception:
+            parent.account_code = parent.account_code_name = parent.budget_line_id = None
+        db.session.commit()
+        return jsonify({"ok": True, "cleared": True, "children": 0})
+
+    # Split present → parent becomes a container; children carry the coding.
+    created = [_mk_child(a, l, n) for (a, l, n) in sublines]
+    sub_total = round(sum(a for a, _, _ in sublines), 2)
+    # Remainder auto-bills to the main line (QuickBooks 'rest goes here').
+    remainder = round(doc_total - sub_total, 2)
+    main_amt = 0.0
+    if mlid and remainder > 0.01:
+        created.append(_mk_child(remainder, mlid, 'Remainder → main line'))
+        main_amt = remainder
+
     try:
         unlink_transaction(parent.id)
     except Exception:
-        parent.account_code = None
-        parent.account_code_name = None
-        parent.budget_line_id = None
+        parent.account_code = parent.account_code_name = parent.budget_line_id = None
     db.session.commit()
     return jsonify({"ok": True, "children": len(created), "child_ids": created,
-                    "items_total": round(total, 2),
-                    "doc_total": (abs(float(parent.amount)) if parent.amount is not None else None)})
+                    "sublines_total": sub_total, "main_line_amount": round(main_amt, 2),
+                    "remainder": remainder, "doc_total": round(doc_total, 2),
+                    "over": remainder < -0.01})
 
 
 @app.route("/docs/upload/<int:uid>/meta", methods=["GET"])
