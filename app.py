@@ -26320,6 +26320,154 @@ def docs_upload_coding(uid):
     })
 
 
+def _doc_parent_txn(uid):
+    """The transaction that represents a document as a whole — the electronic
+    charge if the receipt is matched to one, else the doc's own ledger row.
+    This is the row that gets itemized into per-line child splits."""
+    _txns = (Transaction.query.filter_by(doc_upload_id=uid)
+             .order_by(Transaction.id).all())
+    if not _txns:
+        return None
+    return (next((t for t in _txns if t.source in ('qbo_sync', 'csv_import', 'reconciled')), None)
+            or _txns[0])
+
+
+@app.route("/docs/upload/<int:uid>/line-items", methods=["GET"])
+@login_required
+def docs_upload_line_items(uid):
+    """Data for the QuickBooks-style 'Itemize into budget lines' grid on the
+    doc-detail modal: the doc total, the Veryfi-extracted line items (suggested
+    rows), and any existing itemization (child invoice_split transactions).
+    (User 2026-07 — multi-line-item coding for invoices AND receipts.)"""
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+    parent = _doc_parent_txn(uid)
+    total = None
+    if parent is not None and parent.amount is not None:
+        total = abs(float(parent.amount))
+    elif upload.amount is not None:
+        total = abs(float(upload.amount))
+    # Veryfi line items → suggested grid rows (description + amount).
+    vd = {}
+    if upload.veryfi_data:
+        try:
+            vd = upload.veryfi_data if isinstance(upload.veryfi_data, dict) else json.loads(upload.veryfi_data)
+        except Exception:
+            vd = {}
+    veryfi_items = []
+    for li in (vd.get("line_items") or []):
+        if not isinstance(li, dict):
+            continue
+        amt = li.get("total")
+        if amt is None:
+            amt = li.get("price")
+        try:
+            amt = round(abs(float(amt)), 2) if amt is not None else None
+        except (TypeError, ValueError):
+            amt = None
+        desc = (li.get("description") or li.get("text") or '').strip()
+        if desc or amt:
+            veryfi_items.append({"description": desc[:200], "amount": amt})
+    # Existing itemization: child invoice_split rows on this doc's parent.
+    existing = []
+    if parent is not None:
+        kids = (Transaction.query
+                .filter_by(project_id=upload.project_id, parent_transaction_id=parent.id,
+                           source='invoice_split')
+                .order_by(Transaction.id).all())
+        for k in kids:
+            bl = BudgetLine.query.get(k.budget_line_id) if k.budget_line_id else None
+            existing.append({
+                "id": k.id,
+                "description": k.note or '',
+                "amount": float(k.amount) if k.amount is not None else None,
+                "budget_line_id": (str(bl.source_line_id or bl.id) if bl else None),
+                "line_label": (f"{bl.account_code} · {bl.description or bl.account_name}" if bl else ''),
+            })
+    return jsonify({
+        "ok": True,
+        "parent_txn_id": (parent.id if parent else None),
+        "doc_total": total,
+        "veryfi_items": veryfi_items,
+        "existing": existing,
+        "is_itemized": bool(existing),
+    })
+
+
+@app.route("/docs/upload/<int:uid>/itemize", methods=["POST"])
+@login_required
+def docs_upload_itemize(uid):
+    """Save a document's line-item split: replace the child invoice_split rows on
+    its parent transaction, each coded to its own budget line, and un-code the
+    parent so the Actual rollup counts the line items (not the parent total).
+    Body: { rows: [{amount, budget_line_id, description}] }. (User 2026-07.)"""
+    upload = DocUpload.query.get_or_404(uid)
+    _require_project_role(upload.project_id, 'editor')
+    pid = upload.project_id
+    parent = _doc_parent_txn(uid)
+    if parent is None:
+        return jsonify({"error": "No transaction exists for this document yet."}), 400
+    data = request.get_json(force=True) or {}
+    rows = data.get("rows") or []
+    if not isinstance(rows, list):
+        return jsonify({"error": "rows must be a list"}), 400
+
+    from actuals import link_transaction_to_line, unlink_transaction
+    # Remove any previous itemization for this parent (replace-on-save).
+    old = Transaction.query.filter_by(project_id=pid, parent_transaction_id=parent.id,
+                                      source='invoice_split').all()
+    for k in old:
+        db.session.delete(k)
+    db.session.flush()
+
+    if not rows:
+        # Cleared the itemization → parent goes back to being coded normally.
+        db.session.commit()
+        return jsonify({"ok": True, "cleared": True, "children": 0})
+
+    created = []
+    total = 0.0
+    for r in rows:
+        try:
+            amt = round(float(r.get("amount")), 2)
+        except (TypeError, ValueError):
+            return jsonify({"error": "each row needs a numeric amount"}), 400
+        if amt == 0:
+            continue
+        line_raw = r.get("budget_line_id")
+        child = Transaction(
+            project_id=pid, source='invoice_split',
+            parent_transaction_id=parent.id, doc_upload_id=upload.id,
+            amount=amt, vendor=parent.vendor, txn_date=parent.txn_date,
+            is_expense=bool(getattr(parent, 'is_expense', True)),
+            note=(r.get("description") or '')[:300], match_status='confirmed',
+        )
+        db.session.add(child)
+        db.session.flush()          # get child.id for coding
+        if line_raw not in (None, '', 0, '0'):
+            try:
+                link_transaction_to_line(child.id, int(line_raw), user_id=current_user.id)
+            except Exception as _le:
+                logging.warning("[itemize] link child→line failed: %s", _le)
+        total += amt
+        created.append(child.id)
+
+    # Un-code the parent so it becomes a non-counting container — the coded
+    # children are what roll into the Actual budget (no double-count).
+    try:
+        unlink_transaction(parent.id)
+    except Exception:
+        parent.account_code = None
+        parent.account_code_name = None
+        parent.budget_line_id = None
+    db.session.commit()
+    return jsonify({"ok": True, "children": len(created), "child_ids": created,
+                    "items_total": round(total, 2),
+                    "doc_total": (abs(float(parent.amount)) if parent.amount is not None else None)})
+
+
 @app.route("/docs/upload/<int:uid>/meta", methods=["GET"])
 @login_required
 def docs_upload_meta(uid):

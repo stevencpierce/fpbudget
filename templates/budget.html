@@ -3188,6 +3188,26 @@
               </select>
               <div id="docDetailCodingStatus" style="font-size:10.5px;color:var(--text-muted);margin-top:3px"></div>
             </div>
+            {# 🧾 Itemize into budget lines (2026-07): split one invoice/receipt into
+               several line items, each coded to its OWN budget line — QuickBooks-style.
+               Prefilled from the OCR'd line items; children roll up, parent is a container. #}
+            <details id="docDetailItemizeBlock" class="field" style="margin-bottom:.6rem;display:none;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
+              <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">
+                🧾 Itemize into budget lines <span id="docItemizeCount" style="color:#5fd0a0"></span>
+              </summary>
+              <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Split this document across multiple budget lines. Each row codes to its own line; the rows should add up to the document total.</div>
+              <div id="docItemizeRows"></div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+                <button type="button" onclick="_itemAddRow('','', '')" style="padding:5px 10px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;font-size:12px;cursor:pointer">+ Add line</button>
+                <button type="button" id="docItemizePullBtn" onclick="docItemizePull()" style="padding:5px 10px;border-radius:6px;background:#10231a;border:1px solid #1f5140;color:#5fd0a0;font-size:12px;cursor:pointer">⤓ Pull items from OCR</button>
+                <span style="flex:1"></span>
+                <span id="docItemizeTotal" style="font-size:12px;color:var(--text-muted)"></span>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+                <button type="button" id="docItemizeSaveBtn" onclick="docItemizeSave()" style="padding:6px 14px;border-radius:6px;background:#1f7a4d;border:none;color:#fff;font-size:12px;cursor:pointer;font-weight:600">Save itemization</button>
+                <span id="docItemizeStatus" style="font-size:11px;color:var(--text-muted)"></span>
+              </div>
+            </details>
             {# ✈️ Travel intelligence (2026-06-22): a PERSISTENT collapsible panel on
                every doc. Auto-opens when the doc looks like a flight/hotel/car;
                otherwise stays collapsed and the user expands it and clicks Pull.
@@ -6237,6 +6257,96 @@
     document.getElementById('docDetailMeta').textContent =
       'Upload ID #' + uid;
     _docDetailLoadCoding(uid);
+    docItemizeLoad(uid);
+  };
+
+  // ── Itemize into budget lines (QuickBooks-style line-item split) ──────────
+  let _itemUid = null, _itemDocTotal = null;
+  window._itemAddRow = function (desc, amount, lineId) {
+    const host = document.getElementById('docItemizeRows');
+    if (!host) return;
+    const row = document.createElement('div');
+    row.className = 'ditem-row';
+    row.style.cssText = 'display:flex;gap:6px;margin-bottom:5px;align-items:center';
+    row.innerHTML =
+      '<input class="ditem-desc" placeholder="description" value="' + _esc(desc || '') + '" style="flex:1.5;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px">' +
+      '<input class="ditem-amt" type="number" step="0.01" placeholder="0.00" value="' + (amount != null && amount !== '' ? amount : '') + '" oninput="_itemUpdateTotal()" style="width:88px;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px;text-align:right">' +
+      '<select class="ditem-line actuals-line-picker" onfocus="_actualsFillPicker(this)" style="flex:1.3;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px"><option value="">— budget line —</option></select>' +
+      '<button type="button" title="Remove line" onclick="this.closest(\'.ditem-row\').remove();_itemUpdateTotal()" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px">✕</button>';
+    host.appendChild(row);
+    if (lineId) { const sel = row.querySelector('.ditem-line'); sel.dataset.current = String(lineId); if (typeof window._actualsFillPicker === 'function') window._actualsFillPicker(sel); }
+    _itemUpdateTotal();
+  };
+  window._itemUpdateTotal = function () {
+    let sum = 0;
+    document.querySelectorAll('#docItemizeRows .ditem-amt').forEach(i => { sum += parseFloat(i.value || 0) || 0; });
+    const el = document.getElementById('docItemizeTotal'); if (!el) return;
+    const tot = _itemDocTotal;
+    const fmt = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    if (tot != null) {
+      const diff = Math.round((sum - tot) * 100) / 100;
+      const ok = Math.abs(diff) < 0.02;
+      el.innerHTML = 'Items: <b>' + fmt(sum) + '</b> / doc ' + fmt(tot) +
+        (ok ? ' <span style="color:#5fd0a0">✓</span>' : ' <span style="color:#e0a13a">(' + (diff>0?'+':'') + fmt(diff).replace('$','$') + ')</span>');
+    } else { el.innerHTML = 'Items: <b>' + fmt(sum) + '</b>'; }
+  };
+  window.docItemizePull = function () {
+    const items = window._itemVeryfi || [];
+    if (!items.length) { document.getElementById('docItemizeStatus').textContent = 'No OCR line items found on this document.'; return; }
+    document.getElementById('docItemizeRows').innerHTML = '';
+    items.forEach(it => _itemAddRow(it.description, it.amount, ''));
+  };
+  window.docItemizeLoad = async function (uid) {
+    _itemUid = uid; _itemDocTotal = null; window._itemVeryfi = [];
+    const block = document.getElementById('docDetailItemizeBlock');
+    const rows = document.getElementById('docItemizeRows');
+    const st = document.getElementById('docItemizeStatus');
+    const cnt = document.getElementById('docItemizeCount');
+    if (!block || !rows) return;
+    block.style.display = 'none'; rows.innerHTML = ''; if (st) st.textContent = ''; if (cnt) cnt.textContent = '';
+    try {
+      const r = await fetch('/docs/upload/' + uid + '/line-items', { credentials:'same-origin' });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.ok || d.parent_txn_id == null) return;      // no transaction to itemize
+      block.style.display = '';
+      _itemDocTotal = d.doc_total; window._itemVeryfi = d.veryfi_items || [];
+      const pullBtn = document.getElementById('docItemizePullBtn');
+      if (pullBtn) pullBtn.style.display = (window._itemVeryfi.length ? '' : 'none');
+      if (d.existing && d.existing.length) {
+        block.open = true;
+        cnt.textContent = '· ' + d.existing.length + ' lines';
+        d.existing.forEach(x => _itemAddRow(x.description, x.amount, x.budget_line_id));
+      } else {
+        _itemUpdateTotal();
+      }
+    } catch (e) {}
+  };
+  window.docItemizeSave = async function () {
+    if (!_itemUid) return;
+    const st = document.getElementById('docItemizeStatus');
+    const btn = document.getElementById('docItemizeSaveBtn');
+    const rows = [];
+    document.querySelectorAll('#docItemizeRows .ditem-row').forEach(r => {
+      const amt = parseFloat((r.querySelector('.ditem-amt')||{}).value || 0);
+      const line = (r.querySelector('.ditem-line')||{}).value || '';
+      const desc = (r.querySelector('.ditem-desc')||{}).value || '';
+      if (amt) rows.push({ amount: amt, budget_line_id: line, description: desc });
+    });
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    try {
+      const r = await fetch('/docs/upload/' + _itemUid + '/itemize', {
+        method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ rows })
+      });
+      const d = await r.json();
+      if (r.ok && d.ok) {
+        if (st) st.textContent = d.cleared ? 'Itemization cleared.' : ('✓ Saved ' + d.children + ' line' + (d.children!==1?'s':'') + ' — they now roll into their budget lines.');
+        const cnt = document.getElementById('docItemizeCount');
+        if (cnt) cnt.textContent = d.children ? ('· ' + d.children + ' lines') : '';
+      } else { if (st) st.textContent = 'Save failed: ' + (d.error || r.status); }
+    } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
+    finally { if (btn) { btn.disabled = false; btn.textContent = 'Save itemization'; } }
   };
 
   // Load the budget-line coding context for the open doc and wire the
