@@ -26400,18 +26400,24 @@ def person_profile(pid, cmid):
             kits = kits_by_parent.get(ln.id, [])
             kit_total = round(sum(float(k.estimated_total or 0) for k in kits), 2)
             budgeted = _line_budget_total(ln)
-            actual = float(db.session.query(func.sum(_signed_amount()))
+            # Actuals may be coded to a SIBLING line (Working vs Actual budget), so
+            # sum across every line in the project with the same section+role.
+            _sib = (BudgetLine.query.join(Budget, Budget.id == BudgetLine.budget_id)
+                    .filter(Budget.project_id == pid,
+                            BudgetLine.account_code == ln.account_code))
+            _sib = _sib.filter(BudgetLine.description == ln.description) if ln.description \
+                else _sib.filter(BudgetLine.id == ln.id)
+            _sib_ids = [x.id for x in _sib.all()] or [ln.id]
+            actual = round(float(db.session.query(func.sum(_signed_amount()))
                            .filter(Transaction.project_id == pid,
-                                   Transaction.budget_line_id == ln.id,
-                                   Transaction.not_project_expense == False).scalar() or 0)
-            actual = round(actual, 2)
-            # Mismatch: actuals materially diverge from what's budgeted on the line.
+                                   Transaction.budget_line_id.in_(_sib_ids),
+                                   Transaction.not_project_expense == False).scalar() or 0), 2)
+            # Mismatch = the person's actuals OVER the budgeted amount for the line.
             _tol = max(50.0, abs(budgeted) * 0.05)
             mismatch = None
-            if budgeted and abs(actual - budgeted) > _tol and actual != 0:
+            if budgeted and actual > budgeted + _tol:
                 mismatch = {"budgeted": budgeted, "actual": actual,
-                            "delta": round(actual - budgeted, 2),
-                            "over": actual > budgeted}
+                            "delta": round(actual - budgeted, 2), "over": True}
             deal.append({
                 "line_id": ln.id, "role": (ln.description or ln.account_name or ''),
                 "account_code": ln.account_code, "account_name": ln.account_name,

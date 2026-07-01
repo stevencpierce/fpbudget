@@ -23839,4 +23839,202 @@ setTimeout(function() {
 })();
 </script>
 
+{# ════════════════════════════════════════════════════════════════════════
+   PERSON PROFILE PANEL (Wrapbook-style) — User 2026-07
+   Click a person in the People tab → a right-side drawer with their deal
+   (role/rate/kit/dates), documents (+completeness), payments, and a
+   budget-vs-actual mismatch flag. Opened via window.openPersonProfile(cmid).
+   ════════════════════════════════════════════════════════════════════════ #}
+<style>
+  #personPanel{position:fixed;inset:0;z-index:10055;display:none}
+  #personPanel.open{display:block}
+  .pp-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5)}
+  .pp-drawer{position:absolute;top:0;right:0;height:100%;width:min(960px,96vw);
+    background:var(--bg-card,#1b1d22);border-left:1px solid var(--border,#33363d);
+    box-shadow:-12px 0 40px rgba(0,0,0,.45);display:flex;flex-direction:column;overflow:hidden}
+  .pp-head{display:flex;align-items:center;gap:14px;padding:16px 20px;border-bottom:1px solid var(--border,#33363d)}
+  .pp-avatar{width:52px;height:52px;border-radius:50%;background:#2563eb;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.1rem;flex-shrink:0}
+  .pp-name{font-size:1.25rem;font-weight:800;line-height:1.1}
+  .pp-sub{font-size:.8rem;color:var(--text-muted,#9aa0aa);margin-top:2px}
+  .pp-x{margin-left:auto;background:none;border:none;color:var(--text-muted,#9aa0aa);font-size:1.4rem;cursor:pointer}
+  .pp-body{flex:1;overflow:auto;display:flex;gap:0}
+  .pp-main{flex:1.7;min-width:0;padding:18px 20px;border-right:1px solid var(--border,#33363d)}
+  .pp-side{flex:1;min-width:0;padding:18px 20px;background:var(--bg-2,#17181c)}
+  .pp-sec{margin-bottom:20px}
+  .pp-sec h4{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted,#9aa0aa);margin:0 0 8px;font-weight:700}
+  .pp-deal{border:1px solid var(--border,#33363d);border-radius:9px;padding:11px 13px;margin-bottom:10px}
+  .pp-deal .r{display:flex;justify-content:space-between;gap:10px;font-size:.82rem;margin:2px 0}
+  .pp-deal .role{font-weight:700;font-size:.95rem;margin-bottom:5px}
+  .pp-mis{display:inline-flex;align-items:center;gap:5px;background:rgba(185,28,28,.14);border:1px solid #b91c1c;color:#f0a3a3;border-radius:7px;padding:3px 9px;font-size:.72rem;font-weight:600;margin-top:6px}
+  .pp-badges{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}
+  .pp-badge{font-size:.7rem;padding:3px 9px;border-radius:9px;font-weight:600}
+  .pp-badge.ok{background:rgba(34,197,94,.15);color:#4ade80}
+  .pp-badge.no{background:rgba(120,120,120,.15);color:var(--text-muted,#9aa0aa)}
+  .pp-doc,.pp-pay{display:flex;align-items:center;gap:9px;padding:7px 4px;border-bottom:1px solid var(--border,#2a2c31);font-size:.82rem;cursor:pointer}
+  .pp-doc:hover,.pp-pay:hover{background:rgba(124,58,237,.07)}
+  .pp-doc .cat{font-size:.64rem;padding:1px 7px;border-radius:8px;background:var(--bg-input,#23262c);color:var(--text-muted,#9aa0aa);text-transform:uppercase}
+  .pp-field{margin-bottom:10px}
+  .pp-field label{display:block;font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted,#9aa0aa);margin-bottom:3px}
+  .pp-field input,.pp-field select{width:100%;font-size:.82rem;padding:5px 7px;background:var(--bg-input,#23262c);color:var(--text,#e6e8eb);border:1px solid var(--border,#33363d);border-radius:6px}
+  .pp-btn{border:1px solid var(--border,#444);background:var(--bg-input,#23262c);color:var(--text,#e6e8eb);border-radius:7px;padding:6px 12px;font-size:.78rem;cursor:pointer}
+  .pp-btn.primary{background:#7c3aed;border-color:#7c3aed;color:#fff}
+  #tab-contacts .cs-field[data-field="name"] .cs-val{cursor:pointer}
+  #tab-contacts .cs-field[data-field="name"] .cs-val:hover{color:#5b8af9;text-decoration:underline}
+</style>
+<div id="personPanel" aria-hidden="true">
+  <div class="pp-backdrop" onclick="closePersonPanel()"></div>
+  <div class="pp-drawer" role="dialog" aria-modal="true">
+    <div class="pp-head">
+      <div class="pp-avatar" id="ppAvatar">–</div>
+      <div><div class="pp-name" id="ppName">Person</div><div class="pp-sub" id="ppSub"></div></div>
+      <button class="pp-x" onclick="closePersonPanel()" title="Close">✕</button>
+    </div>
+    <div class="pp-body">
+      <div class="pp-main" id="ppMain"><div style="color:var(--text-muted);padding:30px">Loading…</div></div>
+      <div class="pp-side" id="ppSide"></div>
+    </div>
+  </div>
+  <input type="file" id="ppUploadInput" multiple accept="image/*,.pdf,.heic,.heif" style="display:none">
+</div>
+<script>
+(function(){
+  const PIDp = {{ project.id }};
+  let _pp = null, _ppBusy = false;
+  const esc = s => String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  const money = v => (v==null?'—':'$'+Number(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
+  const RT = {day_10:'10hr day',day_8:'8hr day',day_12:'12hr day',flat_day:'flat/day',flat_project:'flat',hourly:'hr',custom:'custom'};
+
+  window.openPersonProfile = async function(cmid){
+    if(!cmid) return;
+    const m = document.getElementById('personPanel');
+    m.classList.add('open'); m.setAttribute('aria-hidden','false');
+    document.getElementById('ppMain').innerHTML = '<div style="color:var(--text-muted);padding:30px">Loading…</div>';
+    document.getElementById('ppSide').innerHTML = '';
+    try {
+      const d = await fetch('/projects/'+PIDp+'/person/'+cmid+'/profile',{credentials:'same-origin'}).then(r=>r.json());
+      if(!d.ok) throw new Error(d.error||'load failed');
+      _pp = d; _pp._cmid = cmid; renderPP();
+    } catch(e){ document.getElementById('ppMain').innerHTML = '<div style="color:#e0a13a;padding:30px">Could not load: '+esc(e.message)+'</div>'; }
+  };
+  window.closePersonPanel = function(){ const m=document.getElementById('personPanel'); m.classList.remove('open'); m.setAttribute('aria-hidden','true'); };
+
+  function renderPP(){
+    const id = _pp.identity||{}, deal=_pp.deal||[], docs=_pp.documents||[], comp=_pp.completeness||{}, pays=_pp.payments||[], reps=_pp.representation||[];
+    const initials = (id.name||'?').split(/\s+/).map(x=>x[0]).join('').slice(0,2).toUpperCase();
+    document.getElementById('ppAvatar').textContent = initials;
+    document.getElementById('ppName').textContent = id.name||'Person';
+    const et = {loan_out:'Loan-out',employee:'Employee',vendor:'Vendor'}[id.employment_type]||'';
+    const us = {union:'Union',non_union:'Non-Union'}[id.union_status]||'';
+    document.getElementById('ppSub').textContent = [et,us].filter(Boolean).join(' · ') || (deal[0]?deal[0].role:'');
+
+    // ── MAIN: Deal + Documents + Payments ──
+    let h = '';
+    h += '<div class="pp-sec"><h4>Deal &amp; pay</h4>';
+    if(!deal.length){ h+='<div style="color:var(--text-muted);font-size:.82rem">Not assigned to a budget line on the current budget.</div>'; }
+    deal.forEach(x=>{
+      h += '<div class="pp-deal"><div class="role">'+esc(x.role)+' <span style="font-weight:400;color:var(--text-muted);font-size:.75rem">· '+esc(x.account_code)+' '+esc(x.account_name)+'</span></div>'
+        + '<div class="r"><span>Rate</span><b>'+money(x.rate)+' <span style="font-weight:400;color:var(--text-muted)">'+(RT[x.rate_type]||esc(x.rate_type||''))+'</span></b></div>'
+        + '<div class="r"><span>Days</span><span>'+(x.days||0)+'</span></div>'
+        + (x.kit_total?'<div class="r"><span>Kit fee</span><span>'+money(x.kit_total)+'</span></div>':'')
+        + '<div class="r"><span>Budgeted</span><b>'+money(x.budgeted)+'</b></div>'
+        + '<div class="r"><span>Actual paid</span><b>'+money(x.actual)+'</b></div>'
+        + (x.mismatch?'<div class="pp-mis">⚠ Over budget by '+money(x.mismatch.delta)+' (budget '+money(x.mismatch.budgeted)+', actual '+money(x.mismatch.actual)+')</div>':'')
+        + '</div>';
+    });
+    h += '</div>';
+
+    h += '<div class="pp-sec"><h4>Documents</h4><div class="pp-badges">';
+    [['contract','Contract'],['tax_form','Tax form'],['photo_id','ID'],['invoice','Invoice']].forEach(([k,lbl])=>{
+      h += '<span class="pp-badge '+(comp[k]?'ok':'no')+'">'+(comp[k]?'✓ ':'○ ')+lbl+'</span>';
+    });
+    h += '</div>';
+    h += '<button class="pp-btn" onclick="_ppUpload()">⤒ Upload document</button>';
+    docs.forEach(dc=>{
+      h += '<div class="pp-doc" onclick="closePersonPanel();window.openDocDetail('+dc.id+',null)">'
+        + '<span class="cat">'+esc(dc.category||'doc')+'</span>'
+        + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(dc.vendor||dc.filename||('Doc #'+dc.id))+'</span>'
+        + '<span style="color:var(--text-muted)">'+(dc.doc_date||'')+'</span>'
+        + '<b>'+(dc.amount!=null?money(dc.amount):'')+'</b></div>';
+    });
+    if(!docs.length) h += '<div style="color:var(--text-muted);font-size:.8rem;margin-top:8px">No documents yet.</div>';
+    h += '</div>';
+
+    h += '<div class="pp-sec"><h4>Payments &amp; invoices <span style="font-weight:400;text-transform:none;color:var(--text-muted)">· total '+money(_pp.total_paid)+'</span></h4>';
+    pays.forEach(p=>{
+      h += '<div class="pp-pay"'+(p.doc_upload_id?' onclick="closePersonPanel();window.openDocDetail('+p.doc_upload_id+',null)"':'')+'>'
+        + '<span style="color:var(--text-muted)">'+(p.date||'')+'</span>'
+        + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(p.vendor||'')+'</span>'
+        + '<span class="cat" style="font-size:.62rem;padding:1px 6px;border-radius:8px;background:var(--bg-input);color:var(--text-muted)">'+esc(p.source||'')+'</span>'
+        + '<b>'+money(p.amount)+'</b></div>';
+    });
+    if(!pays.length) h += '<div style="color:var(--text-muted);font-size:.8rem;margin-top:8px">No payments recorded.</div>';
+    h += '</div>';
+    document.getElementById('ppMain').innerHTML = h;
+
+    // ── SIDE: personal info + classification + representation ──
+    let s = '<div class="pp-sec"><h4>Details</h4>';
+    s += '<div class="pp-field"><label>Employment type</label><select id="ppEmp" onchange="_ppSaveField(\'employment_type\',this.value)"><option value="">—</option>'
+      + ['loan_out:Loan-out','employee:Employee','vendor:Vendor'].map(o=>{const[v,l]=o.split(':');return '<option value="'+v+'"'+(id.employment_type===v?' selected':'')+'>'+l+'</option>';}).join('')+'</select></div>';
+    s += '<div class="pp-field"><label>Union status</label><select id="ppUnion" onchange="_ppSaveField(\'union_status\',this.value)"><option value="">—</option>'
+      + ['union:Union','non_union:Non-Union'].map(o=>{const[v,l]=o.split(':');return '<option value="'+v+'"'+(id.union_status===v?' selected':'')+'>'+l+'</option>';}).join('')+'</select></div>';
+    s += '<div class="pp-field"><label>Email</label><input id="ppEmail" value="'+esc(id.email||'')+'" onblur="_ppSaveField(\'email\',this.value)"></div>';
+    s += '<div class="pp-field"><label>Phone</label><input id="ppPhone" value="'+esc(id.phone||'')+'" onblur="_ppSaveField(\'phone\',this.value)"></div>';
+    s += '<div class="pp-field"><label>Company / loan-out</label><input id="ppCompany" value="'+esc(id.company||'')+'" onblur="_ppSaveField(\'company\',this.value)"></div>';
+    s += '<div id="ppSaveStatus" style="font-size:.7rem;color:#4ade80;height:12px"></div></div>';
+    if(reps.length){
+      s += '<div class="pp-sec"><h4>Representation</h4>';
+      reps.forEach(r=>{ s += '<div style="font-size:.82rem;margin-bottom:6px"><b>'+esc(r.name)+'</b> <span style="color:var(--text-muted)">'+esc(r.role_type||'')+'</span>'+(r.email?'<br><span style="color:var(--text-muted);font-size:.75rem">'+esc(r.email)+'</span>':'')+'</div>'; });
+      s += '</div>';
+    }
+    document.getElementById('ppSide').innerHTML = s;
+  }
+
+  window._ppSaveField = async function(field, value){
+    if(!_pp) return;
+    const st = document.getElementById('ppSaveStatus'); if(st) st.textContent='Saving…';
+    try{
+      await fetch('/projects/'+PIDp+'/person/'+_pp._cmid+'/update',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({[field]:value})});
+      if(_pp.identity) _pp.identity[field]=value;
+      const et={loan_out:'Loan-out',employee:'Employee',vendor:'Vendor'}[_pp.identity.employment_type]||'';
+      const us={union:'Union',non_union:'Non-Union'}[_pp.identity.union_status]||'';
+      document.getElementById('ppSub').textContent=[et,us].filter(Boolean).join(' · ')||'';
+      if(st){ st.textContent='Saved ✓'; setTimeout(()=>st.textContent='',1500); }
+    }catch(e){ if(st) st.textContent='Save failed'; }
+  };
+
+  window._ppUpload = function(){
+    if(!_pp) return;
+    const inp = document.getElementById('ppUploadInput');
+    inp.onchange = async () => {
+      const files = [...inp.files]; inp.value='';
+      if(!files.length) return;
+      if(_ppBusy) return; _ppBusy=true;
+      const st=document.getElementById('ppSaveStatus');
+      try{
+        for(const f of files){
+          const fd = new FormData(); fd.append('file', f);
+          const r = await fetch('/projects/'+PIDp+'/docs/upload',{method:'POST',credentials:'same-origin',body:fd});
+          const j = await r.json().catch(()=>({}));
+          const uid = j.id || j.uid || j.upload_id || (j.upload&&j.upload.id);
+          if(uid) await fetch('/docs/upload/'+uid+'/update',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({crew_member_id:_pp._cmid})});
+        }
+      } finally { _ppBusy=false; }
+      window.openPersonProfile(_pp._cmid);   // refresh
+    };
+    inp.click();
+  };
+
+  // Entry point: click a person's NAME in the People tab.
+  document.addEventListener('click', function(e){
+    const nameCell = e.target.closest('#tab-contacts .cs-field[data-field="name"]');
+    if(!nameCell) return;
+    if(e.target.closest('.cs-docs-toggle') || e.target.closest('.cs-omit-badge')) return; // don't hijack existing controls
+    const docsEl = nameCell.querySelector('.cs-docs[data-crew-member-id]');
+    const cmid = docsEl && docsEl.dataset.crewMemberId;
+    if(cmid){ e.preventDefault(); window.openPersonProfile(cmid); }
+  });
+  document.addEventListener('keydown', function(e){ if(e.key==='Escape' && document.getElementById('personPanel').classList.contains('open')) closePersonPanel(); });
+})();
+</script>
+
 {% endblock %}
