@@ -18,7 +18,7 @@ from datetime import datetime
 from sqlalchemy.orm import attributes
 
 from models import (db, Budget, BudgetLine, Transaction, ProjectSheet, DocUpload,
-                    MatchRejection)
+                    MatchRejection, CrewAssignment)
 
 log = logging.getLogger(__name__)
 
@@ -359,14 +359,18 @@ def get_current_actual_budget(project_id):
 
 
 def get_current_working_budget(project_id):
-    """Return the project's current Working budget. Working budgets are
-    distinguished from Estimated by having a parent_budget_id set
-    (their Estimated peer); is_actual=False for both Working and
-    Estimated. Returns the most recent current Working, or None."""
+    """Return the project's current Working budget, or None.
+
+    AUDIT FIX (2026-07, CRITICAL-2): the old filter was `parent_budget_id IS
+    NOT NULL` with no budget_mode check — but a v2+ ESTIMATED also carries
+    parent_budget_id (pointing at its predecessor, app.py budget_new), so this
+    could return an Estimated as the "Working" and actuals would clone/code
+    against the wrong budget. budget_mode is the reliable discriminator
+    ('working' from create_working_from_estimated / this module's clone)."""
     return (Budget.query
             .filter_by(project_id=project_id, is_actual=False,
                        version_status='current')
-            .filter(Budget.parent_budget_id.isnot(None))
+            .filter(Budget.budget_mode.in_(('working', 'actual')))
             .order_by(Budget.version_number.desc().nullslast(),
                       Budget.id.desc())
             .first())
@@ -374,12 +378,18 @@ def get_current_working_budget(project_id):
 
 def get_current_estimated_budget(project_id):
     """Return the project's current Estimated budget, or None.
-    Estimated = is_actual=False, parent_budget_id IS NULL (top of chain)."""
+
+    AUDIT FIX (2026-07, CRITICAL-3): the old filter required
+    parent_budget_id IS NULL, but budget_new stamps parent_budget_id on every
+    v2+ Estimated — so any project past v1 returned None here and the
+    auto-actualization path seeded from nothing/stale v1. Resolve by
+    budget_mode like the rest of app.py does."""
     return (Budget.query
             .filter_by(project_id=project_id, is_actual=False,
-                       version_status='current',
-                       parent_budget_id=None)
-            .order_by(Budget.id.desc())
+                       version_status='current')
+            .filter(~Budget.budget_mode.in_(('working', 'actual')))
+            .order_by(Budget.version_number.desc().nullslast(),
+                      Budget.id.desc())
             .first())
 
 
@@ -399,8 +409,12 @@ def clone_estimated_to_working(estimated_budget):
         raise ValueError("clone_estimated_to_working: estimated_budget is None")
     if estimated_budget.is_actual:
         raise ValueError("clone_estimated_to_working: source must be Estimated, not Actual")
-    if estimated_budget.parent_budget_id is not None:
-        raise ValueError("clone_estimated_to_working: source already has a parent (is itself a Working/Actual)")
+    # AUDIT FIX (2026-07): v2+ Estimated budgets legitimately carry
+    # parent_budget_id (→ their predecessor Estimated), so the old
+    # "parent must be NULL" guard broke auto-actualization on any project
+    # past v1. Discriminate by budget_mode instead.
+    if (estimated_budget.budget_mode or '') in ('working', 'actual'):
+        raise ValueError("clone_estimated_to_working: source is a Working/Actual budget, not an Estimated")
 
     # Reuse a current Working if one already exists.
     existing = get_current_working_budget(estimated_budget.project_id)
@@ -427,9 +441,12 @@ def clone_estimated_to_working(estimated_budget):
 
     line_map = {}
     src_lines = sorted(estimated_budget.lines, key=lambda l: (l.sort_order or 0, l.id))
+    # AUDIT FIX (2026-07, MEDIUM-9): skip working_total/manual_actual so this
+    # auto-clone starts with the same clean Working baseline as the UI path
+    # (_copy_budget_lines) — the two engines previously diverged.
     line_skip = {'id', 'budget_id', 'parent_line_id', 'source_line_id',
                  'orphan_from_working', 'crew_assignments', 'schedule_days',
-                 'assigned_crew'}
+                 'assigned_crew', 'working_total', 'manual_actual'}
     for src in src_lines:
         new_line = BudgetLine()
         for col in BudgetLine.__table__.columns:
@@ -452,10 +469,42 @@ def clone_estimated_to_working(estimated_budget):
             if not new_child.parent_line_id:
                 new_child.parent_line_id = line_map[src.parent_line_id].id
 
+    # AUDIT FIX (2026-07, CRITICAL-1): this clone previously copied LINES ONLY —
+    # no ScheduleDay/ProductionDay/TravelDetail and no CrewAssignments. The next
+    # sync_schedule_driven_lines on the new Working found zero schedule rows and
+    # silently zeroed every meal/per-diem/hotel/flight figure, and all people
+    # assignments vanished. Copy crew here and reuse the UI path's schedule
+    # copier (late import — app imports this module at load).
+    id_map = {old_id: nl.id for old_id, nl in line_map.items()}
+    try:
+        src_line_ids = list(id_map.keys())
+        if src_line_ids:
+            for ca in CrewAssignment.query.filter(
+                    CrewAssignment.budget_line_id.in_(src_line_ids)).all():
+                db.session.add(CrewAssignment(
+                    budget_line_id=id_map[ca.budget_line_id],
+                    instance=ca.instance or 1,
+                    crew_member_id=ca.crew_member_id,
+                    name_override=ca.name_override,
+                    rate_override=ca.rate_override,
+                    fringe_override=ca.fringe_override,
+                    agent_override=ca.agent_override,
+                    omit_flags=ca.omit_flags,
+                    role_number=ca.role_number,
+                ))
+    except Exception:
+        log.exception("[actuals] crew-assignment copy on working-clone failed")
+    try:
+        from app import _copy_schedule_days
+        _copy_schedule_days(estimated_budget.id, new_budget.id, id_map,
+                            dest_mode='working')
+    except Exception:
+        log.exception("[actuals] schedule copy on working-clone failed")
+
     log.info(
         f"[actuals] Initialized Working budget #{new_budget.id} from "
-        f"Estimated #{estimated_budget.id} ({len(line_map)} lines) for "
-        f"project #{estimated_budget.project_id}"
+        f"Estimated #{estimated_budget.id} ({len(line_map)} lines, crew + "
+        f"schedule copied) for project #{estimated_budget.project_id}"
     )
     return new_budget
 

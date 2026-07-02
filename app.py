@@ -4605,7 +4605,11 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
     db.session.flush()
     b._dup_line_map = {}   # transient: old_line_id → new_line_id, for project-copy txn remap
     if source:
-        line_id_map = _copy_budget_lines(source.id, b.id)
+        # link_source: a WORKING copied from an Estimated records the explicit
+        # clone link (source_line_id) so cross-budget resolution never falls
+        # back to positional matching. (Audit HIGH-4, 2026-07.)
+        line_id_map = _copy_budget_lines(source.id, b.id,
+                                         link_source=(new_mode == 'working'))
         b._dup_line_map = dict(line_id_map)
         db.session.flush()
         _copy_schedule_days(source.id, b.id, line_id_map, dest_mode=new_mode)
@@ -20227,12 +20231,20 @@ def _supersede_current(project_id, budget_type, exclude_id=None):
             b.version_status = 'superseded'
 
 
-def _copy_budget_lines(source_id, dest_id):
+def _copy_budget_lines(source_id, dest_id, link_source=False):
     """Copy all BudgetLine rows from source budget to dest budget.
     Returns {old_line_id: new_line_id} mapping for use by _copy_schedule_days.
 
     Parent rows (parent_line_id=None) are processed first so that child rows
     (kit fees, etc.) can have their parent_line_id remapped correctly.
+
+    link_source (AUDIT FIX 2026-07, HIGH-4): when True, each copied line gets
+    source_line_id = its source line's id — the explicit Working→Estimated
+    clone link. This was never set on UI-created Working budgets, so every
+    cross-budget resolver silently fell back to positional/description
+    matching (the exact fragility source_line_id exists to fix). Passed True
+    only when creating a WORKING from an Estimated; new Estimated versions
+    keep source_line_id NULL (unchanged semantics).
     """
     src_lines = BudgetLine.query.filter_by(budget_id=source_id).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
@@ -20279,6 +20291,8 @@ def _copy_budget_lines(source_id, dest_id):
             assigned_crew_id=ln.assigned_crew_id,
             # Parent-child relationship (remapped to new IDs)
             parent_line_id=line_id_map.get(ln.parent_line_id) if ln.parent_line_id else None,
+            # Explicit clone link (Working → its Estimated source line).
+            source_line_id=(ln.id if link_source else None),
             # ── 2026-05-26: previously missing — caused new-version totals
             # to diverge from source. sync_omit is the critical one: when
             # a source line has manual override on (per-diem qty hand-
