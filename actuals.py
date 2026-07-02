@@ -708,32 +708,12 @@ def ensure_section_in_working_budget(project_id, account_code, account_name):
     db.session.flush()  # get placeholder.id
     placeholder_actual_id = None
 
-    # Mirror into Actual if it exists, with source_line_id pointing
-    # at the new Working line. Without this back-pointer, the actuals
-    # rollup query (which joins on source_line_id) couldn't surface
-    # transactions linked to this line.
-    actual = get_current_actual_budget(project_id)
-    if actual:
-        actual_line = BudgetLine(
-            budget_id          = actual.id,
-            account_code       = code_int,
-            account_name       = (account_name or '')[:100],
-            description        = '(Auto-added — no estimate)',
-            is_labor           = False,
-            quantity           = 1,
-            days               = 1,
-            rate               = 0,
-            fringe_type        = 'N',
-            agent_pct          = 0,
-            rate_type          = 'flat_day',
-            estimated_total    = 0,
-            working_total      = 0,
-            sort_order         = 99999,
-            source_line_id     = placeholder.id,
-        )
-        db.session.add(actual_line)
-        db.session.flush()
-        placeholder_actual_id = actual_line.id
+    # PHASE 1 (money-path migration 2026-07): transactions now code DIRECTLY
+    # to Working lines, so we no longer mirror this placeholder onto the Actual
+    # clone. Working + Estimated mirroring above is unchanged. (Legacy Actual
+    # budgets keep their existing peer lines; a placeholder created now just
+    # won't have an Actual peer — direct-coded txns don't need one.)
+    #   placeholder_actual_id stays None; the return contract is unchanged.
 
     return {'created': True,
             'working_line_id': placeholder.id,
@@ -770,16 +750,28 @@ def working_to_actual_line(working_line_id, actual_budget_id=None):
 def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     """Atomic: link a Transaction to a budget line.
 
-    The user picks a line from the Working budget. If no Actual budget
-    exists yet for this project, we clone Working → Actual first, then
-    translate the picked Working line to its Actual equivalent and
-    write `transaction.budget_line_id`.
+    PHASE 1 money-path migration (2026-07, owner decision): transactions now
+    code DIRECTLY to the current WORKING budget's line — the separate "Actual"
+    clone is no longer written on this path. We still auto-init Working from
+    Estimated (clone_estimated_to_working) when the user actualizes off an
+    Estimated line, and still translate an Estimated pick to its Working peer,
+    but we do NOT clone Working→Actual or materialize an Actual peer line here.
+
+    Backward compat: if the PICKED line turns out to be on an ACTUAL budget
+    (re-coding from the legacy Actual view / stale UI state), we translate it
+    back to its Working peer (via source_line_id, falling back to
+    account_code+description match on the current Working) before writing, so
+    the stored budget_line_id is always a WORKING id. If no Working peer can be
+    found we keep pointing at the actual line (never lose the coding) and log.
 
     Returns dict: {
       'transaction_id': int,
-      'budget_line_id': int (the Actual line),
-      'actual_budget_id': int,
-      'actual_was_just_created': bool,   # tells UI whether to flash "Actual budget started" toast
+      'budget_line_id': int (the WORKING line the txn now points at),
+      'actual_budget_id': int (the budget id of the line written — now the
+                               Working budget's id; kept for return-shape
+                               compat with callers/UI),
+      'actual_was_just_created': bool,   # always False now (no Actual cloned)
+      'working_was_just_created': bool,
     }
 
     Raises ValueError on bad inputs.
@@ -810,20 +802,53 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     working_was_just_made = False
 
     if line_budget and line_budget.is_actual:
-        # Already on Actual — straight passthrough.
-        actual_line = working_line
+        # PHASE 1: the pick is on a legacy ACTUAL budget (re-coding from the
+        # Actual view / stale UI). Translate it back to its Working peer so we
+        # store a WORKING id — never an Actual id — going forward.
+        target_line = None
+        if working_line.source_line_id:
+            _peer = BudgetLine.query.get(working_line.source_line_id)
+            # source_line_id on an Actual line points at its Working peer.
+            if _peer and _peer.budget_id:
+                _peer_budget = Budget.query.get(_peer.budget_id)
+                if _peer_budget and not _peer_budget.is_actual \
+                        and _peer_budget.project_id == project_id:
+                    target_line = _peer
+        if target_line is None:
+            # Fall back to matching the current Working budget by
+            # account_code + description (structural drift / missing back-ptr).
+            working_budget = get_current_working_budget(project_id)
+            if working_budget:
+                _match = (BudgetLine.query
+                          .filter_by(budget_id=working_budget.id,
+                                     account_code=working_line.account_code)
+                          .filter(BudgetLine.description == working_line.description)
+                          .first())
+                if not _match:
+                    _match = (BudgetLine.query
+                              .filter_by(budget_id=working_budget.id,
+                                         account_code=working_line.account_code)
+                              .first())
+                if _match:
+                    target_line = _match
+        if target_line is not None:
+            working_line = target_line
+        else:
+            # No Working peer found — keep the coding on the actual line rather
+            # than dropping it, but warn so it can be remapped in Phase 2.
+            log.warning(
+                "[actuals/phase1] txn %s picked ACTUAL line %s with no Working "
+                "peer (source_line_id=%s); coding to the Actual line as a "
+                "fallback to avoid data loss",
+                txn.id, working_line.id, working_line.source_line_id)
     else:
-        # Picked from Working or Estimated. Make sure we have BOTH a
-        # Working (the source-of-truth for the actuals clone) AND an
-        # Actual (where transactions land).
+        # Picked from Working or Estimated. Ensure a current Working budget
+        # exists (auto-init from Estimated if the user actualized straight off
+        # an Estimated line — per user 2026-04-30) and, if the pick was on
+        # Estimated, translate it to its Working peer. We do NOT clone/write an
+        # Actual budget anymore (Phase 1): the txn codes directly to Working.
         working_budget = get_current_working_budget(project_id)
         if not working_budget:
-            # User actualized off Estimated without first creating a
-            # Working budget. Auto-init Working from Estimated so the
-            # chain Estimated → Working → Actual is preserved. Per
-            # user 2026-04-30: "if somebody gets your estimated to
-            # actual, we should go ahead and create + initialize a
-            # working budget for them at that point."
             estimated = get_current_estimated_budget(project_id)
             # Fall back to the picked line's own budget if neither
             # working nor estimated exists in canonical form.
@@ -834,28 +859,23 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
                 )
             working_budget = clone_estimated_to_working(source)
             working_was_just_made = True
-            # If the user's picked line was on Estimated, translate to
-            # the equivalent Working line we just created (so its
-            # source_line_id chain is right when we clone to Actual).
-            if line_budget and not line_budget.is_actual and line_budget.parent_budget_id is None:
-                _peer = (BudgetLine.query
-                         .filter_by(budget_id=working_budget.id,
-                                    source_line_id=working_line.id)
-                         .first())
-                if _peer:
-                    working_line = _peer
 
-        actual = get_current_actual_budget(project_id)
-        actual_was_just_made = actual is None
-        if actual_was_just_made:
-            actual = clone_working_to_actual(working_budget)
-        actual_line = working_to_actual_line(working_line.id, actual.id)
-        if not actual_line:
-            actual_line = _materialize_missing_actual_line(working_line, actual.id)
+        # If the user's picked line lives on the Estimated budget (not the
+        # Working budget), translate to its Working peer so we store a Working
+        # id. This covers both the just-cloned case and the case where a
+        # Working budget already existed but the user picked an Estimated line.
+        if line_budget and not line_budget.is_actual \
+                and line_budget.id != working_budget.id:
+            _peer = (BudgetLine.query
+                     .filter_by(budget_id=working_budget.id,
+                                source_line_id=working_line.id)
+                     .first())
+            if _peer:
+                working_line = _peer
 
-    txn.budget_line_id    = actual_line.id
-    txn.account_code      = actual_line.account_code
-    txn.account_code_name = actual_line.account_name
+    txn.budget_line_id    = working_line.id
+    txn.account_code      = working_line.account_code
+    txn.account_code_name = working_line.account_name
     txn.match_status      = 'confirmed'
     txn.updated_at        = datetime.utcnow()
     if user_id:
@@ -867,13 +887,16 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     txn.ai_suggested_code_name = None
     txn.ai_code_confidence = None
     txn.ai_code_reason = None
-    record_vendor_category(project_id, txn.vendor, actual_line.account_code)
+    record_vendor_category(project_id, txn.vendor, working_line.account_code)
     db.session.commit()
 
     return {
         'transaction_id':           txn.id,
-        'budget_line_id':           actual_line.id,
-        'actual_budget_id':         actual_line.budget_id,
+        'budget_line_id':           working_line.id,
+        # 'actual_budget_id' kept for return-shape compat — now the budget id
+        # of the line the txn points at (the Working budget, or the legacy
+        # Actual budget in the no-peer fallback case).
+        'actual_budget_id':         working_line.budget_id,
         'actual_was_just_created':  actual_was_just_made,
         'working_was_just_created': working_was_just_made,
     }

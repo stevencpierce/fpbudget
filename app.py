@@ -5866,6 +5866,38 @@ def budget_view(pid, bid):
         None
     )
 
+    # ── PHASE 1 money-path migration (2026-07): DIRECT-coded actuals ─────
+    # Transactions coded after the migration point straight at a WORKING
+    # budget line (no Actual clone). Fold those sums into `actual_by_line_id`
+    # (keyed by Working line id, same as the legacy component) so the Working
+    # view's per-section Actual total and the cross-budget resolver see them.
+    # A txn appears in exactly ONE component (its budget_line_id is on exactly
+    # one budget), so keys never overlap between legacy and direct — but we ADD
+    # into the dict to be safe. Also captured separately (direct_by_wid) so the
+    # Actual-column maps below can be merged without re-querying.
+    direct_by_wid = {}   # {working_line_id: summed direct-coded actual}
+    if current_working_bid:
+        try:
+            from sqlalchemy import func as _dfunc
+            for _wlid, _amt in (
+                db.session.query(BudgetLine.id, _dfunc.sum(_signed_amount()))  # credits contribute 0 (CR-3 revert)
+                .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
+                .filter(BudgetLine.budget_id == current_working_bid,
+                        Transaction.not_project_expense == False,
+                        _exclude_estimate_linked_txns_clause())
+                .group_by(BudgetLine.id)
+                .all()
+            ):
+                _f = float(_amt or 0)
+                direct_by_wid[_wlid] = _f
+                actual_by_line_id[_wlid] = actual_by_line_id.get(_wlid, 0.0) + _f
+            if direct_by_wid:
+                # Direct-coded spend means "actuals exist" even with no Actual
+                # clone — the Working/Estimated Actual column is gated on this.
+                has_actual_budget = True
+        except Exception as _de:
+            logging.warning(f"[actuals/direct] per-line computation failed: {_de}")
+
     working_line_totals = {}
     working_line_totals_by_desc = {}   # {(account_code, lower desc): total} — sort-order-collision-proof fallback
     working_line_results = {}  # {working_line.id: full _wres dict}
@@ -6400,6 +6432,35 @@ def budget_view(pid, bid):
                     actual_line_totals_by_desc[_dkey] = actual_line_totals_by_desc.get(_dkey, 0.0) + _amt
         except Exception as _ate:
             logging.warning(f"[budget_view] actual rollup failed: {_ate}")
+
+    # ── PHASE 1: merge DIRECT-coded actuals into the Actual-column maps ──────
+    # Direct-coded txns point at CURRENT WORKING lines (no Actual peer), so the
+    # legacy rollup above (which keys off Actual lines) misses them. Add each
+    # Working line's direct sum (from direct_by_wid) under the SAME keys the
+    # Working/Estimated views' Actual column reads — (account_code, sort_order),
+    # (account_code, normalized description), and by-lid — so direct spend shows
+    # identically to legacy. ADD into existing keys so a line with BOTH legacy
+    # (via its Actual peer) and direct sums isn't clobbered. by-lid is keyed by
+    # the Working line id here; in the Working view ln.id IS the Working id, and
+    # xb_act (below) reads by-lid via aid=_wid_to_aid — for direct-only lines
+    # there's no Actual peer so aid is None and xb_act won't collide.
+    if direct_by_wid:
+        try:
+            _wlines = BudgetLine.query.filter(
+                BudgetLine.id.in_(list(direct_by_wid.keys()))).all()
+            for _wl in _wlines:
+                _amt = direct_by_wid.get(_wl.id, 0.0)
+                if not _amt:
+                    continue
+                _key = (_wl.account_code, _wl.sort_order)
+                actual_line_totals[_key] = actual_line_totals.get(_key, 0.0) + _amt
+                _dkey = (_wl.account_code, (_wl.description or '').strip().lower())
+                actual_line_totals_by_desc[_dkey] = (
+                    actual_line_totals_by_desc.get(_dkey, 0.0) + _amt)
+                actual_line_totals_by_lid[_wl.id] = (
+                    actual_line_totals_by_lid.get(_wl.id, 0.0) + _amt)
+        except Exception as _dme:
+            logging.warning(f"[budget_view] direct actual merge failed: {_dme}")
 
     # ── Cross-budget per-line resolution via the source_line_id clone chain ──
     # The Estimated/Working/Actual comparison columns used to match a line to
@@ -26539,6 +26600,31 @@ def docs_upload_raw(uid):
     return resp_out
 
 
+def _picker_value_for_line(bl):
+    """Translate a BudgetLine into the id the line-picker keys its options by
+    (always a WORKING line id).
+
+    The picker's options are Working lines. A transaction's budget_line_id may
+    point at:
+      • a WORKING line (Phase 1 direct-coding, and going forward) → use its own id
+      • a legacy ACTUAL line (source_line_id → its Working peer) → use source_line_id
+
+    TRAP (commit f6c66b4): WORKING lines ALSO carry source_line_id now (pointing
+    at their ESTIMATED source). So `bl.source_line_id or bl.id` is WRONG for a
+    Working line — it would return the Estimated id. Discriminate on the line's
+    budget: only follow source_line_id when the line is on an Actual budget.
+    Returns an int, or None if bl is falsy."""
+    if not bl:
+        return None
+    try:
+        _b = getattr(bl, 'budget', None)
+        if _b is not None and getattr(_b, 'is_actual', False) and bl.source_line_id:
+            return bl.source_line_id
+    except Exception:
+        pass
+    return bl.id
+
+
 @app.route("/docs/upload/<int:uid>/coding", methods=["GET"])
 @login_required
 def docs_upload_coding(uid):
@@ -26566,7 +26652,7 @@ def docs_upload_coding(uid):
         bl = BudgetLine.query.get(txn.budget_line_id)
         # Picker values are WORKING line ids; an Actual line points back via
         # source_line_id, a Working line is its own id.
-        cur = str((bl.source_line_id or bl.id) if bl else txn.budget_line_id)
+        cur = str(_picker_value_for_line(bl) if bl else txn.budget_line_id)
     elif txn.account_code:
         cur = 'section:%s' % txn.account_code
     # Prefer the AI code suggestion (the ✨ purple chip) when the charge is
@@ -27561,7 +27647,7 @@ def docs_upload_line_items(uid):
                 .order_by(Transaction.id).all())
         for k in kids:
             bl = BudgetLine.query.get(k.budget_line_id) if k.budget_line_id else None
-            _lid = (str(bl.source_line_id or bl.id) if bl else None)
+            _lid = (str(_picker_value_for_line(bl)) if bl else None)
             if (k.note or '') == 'Remainder → main line':
                 # Section-coded remainder has no line id — return 'section:N'.
                 main_line_id = _lid or (f"section:{k.account_code}" if k.account_code else None)
@@ -27580,7 +27666,7 @@ def docs_upload_line_items(uid):
             if parent.budget_line_id:
                 _pbl = BudgetLine.query.get(parent.budget_line_id)
                 if _pbl:
-                    main_line_id = str(_pbl.source_line_id or _pbl.id)
+                    main_line_id = str(_picker_value_for_line(_pbl))
             elif parent.account_code:
                 main_line_id = f"section:{parent.account_code}"
     return jsonify({
