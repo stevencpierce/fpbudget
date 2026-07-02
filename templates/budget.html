@@ -2035,6 +2035,45 @@
           <td class="col-act"></td>
         </tr>
         {% endif %}
+        {# ── Sister-budget ORPHAN rows (User 2026-07.) ──────────────────────
+           Lines that exist in ONLY the sister version (Estimated OR Working)
+           are surfaced here as dimmed, read-only "$0 / not in this version"
+           reference rows so the two versions read line-for-line. They are NOT
+           BudgetLines in THIS budget — no inputs, no drag targets — and they
+           are deliberately EXCLUDED from ns.sec_subtotal / sec_working totals
+           (they're $0 in this view by definition; display only). Guarded by
+           `sister_orphans` so budgets without a sister render byte-identical
+           to before. Same 15-column <td> shape as the Workers' Comp auto-row
+           above so the grid stays aligned. #}
+        {% if sister_orphans %}
+        {% for _orph in sister_orphans.get(sec.code, []) %}
+        <tr class="line-row sister-orphan-line" style="background:var(--bg-2,#f7f7f9);opacity:.6;font-style:italic"
+            title="This line exists in the {{ _orph.sister_label }} version only. It isn't in this budget, so it's shown at $0 here for cross-version comparison. Add it in this version to include it.">
+          <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
+            <span class="line-number">{{ sec.code }}-↔</span>
+            {{ _orph.description }}
+            <span style="margin-left:.4rem;font-size:.7rem;font-style:normal;padding:1px 6px;border-radius:8px;background:var(--bg-3,#e8e8ee);color:var(--text-muted);white-space:nowrap">↔ only in {{ _orph.sister_label }}</span>
+          </td>
+          <td class="col-pc col-labor-only"></td>
+          <td class="col-qty"></td>
+          <td class="col-days"></td>
+          <td class="col-num"></td>
+          <td class="col-rt"></td>
+          <td class="col-num muted" style="font-size:.85rem">$0.00</td>
+          <td class="col-num"></td>
+          <td class="col-fr"></td>
+          <td class="col-num"></td>
+          <td class="col-num muted" style="font-size:.85rem" title="$0 in this version">
+            $0.00
+            <span class="muted" style="display:block;font-size:.7rem;font-style:italic">({{ _orph.total | currency }} in {{ _orph.sister_label }})</span>
+          </td>
+          <td class="col-num col-working"></td>
+          <td class="col-num col-actual"></td>
+          <td class="col-num col-variance"></td>
+          <td class="col-act"></td>
+        </tr>
+        {% endfor %}
+        {% endif %}
       </tbody>
       {% set sec_working = namespace(total=0) %}
       {% for ln in sec.lines %}

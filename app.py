@@ -6449,6 +6449,98 @@ def budget_view(pid, bid):
     except Exception as _xbe:
         logging.warning(f"[budget_view] source_line_id cross-budget resolve failed: {_xbe}")
 
+    # ── Sister-budget ORPHAN lines — cross-version visibility ────────────────
+    # Owner ask (User 2026-07.): "a Working budget might add a line for a rental
+    # car that was not estimated. You should be able to see that line in both
+    # versions but it's indicated as zero in the estimated." I.e. a line that
+    # exists in ONLY one of the Estimated/Working pair should still be VISIBLE
+    # in the sister view — rendered as a dimmed, non-editable "$0 / not in this
+    # version" reference row so the two versions read line-for-line.
+    #
+    # sister_orphans = sister-budget lines that have NO counterpart among THIS
+    # budget's lines, grouped by section code (keyed the same way `sections` is
+    # keyed → _section_for_code(account_code), so the template can look them up
+    # per section). Pairing mirrors the cross-budget resolver above:
+    #   (a) source_line_id link in EITHER direction (new Working budgets since
+    #       f6c66b4 carry source_line_id → their Estimated source; older ones
+    #       may not), then
+    #   (b) (account_code, normalized description) fallback — the same key the
+    #       template's comparison columns fall back to.
+    # Zero-total noise (a $0 line with an empty description) is skipped so we
+    # don't clutter the sister view with placeholder rows. Totals reuse the
+    # already-computed cross-view dicts (est_total_by_eid / working_line_results)
+    # and fall back to _line_budget_total — the same single-line helper the top
+    # sheet / person profile use. Fail-open: any error → {} so this display-only
+    # feature can never 500 the budget page.
+    sister_orphans = {}
+    sister_label = None
+    try:
+        # Only the Estimated↔Working pair participates. The Actual budget has
+        # its own mirror machinery (ensure_actual_mirrors) and isn't a "sister"
+        # in the version-pair sense, so skip it entirely.
+        if not budget.is_actual:
+            _is_working_fam = _budget_type(budget.budget_mode) == 'working'
+            if _is_working_fam:
+                _sister_bid = current_estimated_bid   # Working view → show Estimated-only lines
+                sister_label = 'Estimated'
+            else:
+                _sister_bid = current_working_bid      # Estimated view → show Working-only lines
+                sister_label = 'Working'
+            # Need a real, DIFFERENT sister budget to compare against.
+            if _sister_bid and _sister_bid != bid:
+                _sister_lines = BudgetLine.query.filter_by(budget_id=_sister_bid).all()
+                # Index THIS budget's lines for O(1) pairing lookups.
+                _this_ids = {ln.id for ln in lines}
+                _this_src_ids = {ln.source_line_id for ln in lines
+                                 if ln.source_line_id is not None}
+                _this_desc_keys = {(ln.account_code, (ln.description or '').strip().lower())
+                                   for ln in lines}
+                # Which cross-view total dict applies to the sister's lines.
+                #   sister == Estimated → est_total_by_eid  (keyed by est line id)
+                #   sister == Working   → working_line_results[id]['est_total']
+                _sister_is_est = (sister_label == 'Estimated')
+                for _sl in _sister_lines:
+                    # (a) source_line_id link either way:
+                    #     - sister line points AT one of our lines, or
+                    #     - one of our lines points AT this sister line.
+                    _paired = (
+                        (_sl.source_line_id is not None and _sl.source_line_id in _this_ids)
+                        or (_sl.id in _this_src_ids)
+                    )
+                    # (b) (account_code, normalized description) fallback.
+                    if not _paired:
+                        _dk = (_sl.account_code, (_sl.description or '').strip().lower())
+                        if _dk in _this_desc_keys:
+                            _paired = True
+                    if _paired:
+                        continue
+                    # Compute the sister line's total: prefer the live cross-view
+                    # rollup already computed above, else the single-line helper.
+                    if _sister_is_est:
+                        _tot = est_total_by_eid.get(_sl.id)
+                    else:
+                        _wr = working_line_results.get(_sl.id)
+                        _tot = _wr.get('est_total') if _wr else None
+                    if _tot is None:
+                        _tot = _line_budget_total(_sl)
+                    _tot = round(float(_tot or 0), 2)
+                    _desc = (_sl.description or '').strip()
+                    # Skip zero-total noise (placeholder rows with no name).
+                    if _tot == 0 and not _desc:
+                        continue
+                    _seccode = _section_for_code(_sl.account_code)
+                    sister_orphans.setdefault(_seccode, []).append({
+                        'description': _desc or '(unnamed line)',
+                        'total': _tot,
+                        'is_labor': bool(_sl.is_labor),
+                        'account_code': _sl.account_code,
+                        'sister_label': sister_label,
+                    })
+    except Exception as _soe:
+        logging.warning(f"[budget_view] sister_orphans resolve failed: {_soe}")
+        sister_orphans = {}
+        sister_label = None
+
     # Build version groups: list of {version_number, estimated, working, is_current}
     # sorted descending so newest version is first.
     # Skip is_actual budgets — they share budget_mode='working'/'actual' with
@@ -6936,6 +7028,8 @@ def budget_view(pid, bid):
         actual_line_totals_by_desc=actual_line_totals_by_desc,
         working_line_totals_by_desc=working_line_totals_by_desc,
         xb_est=xb_est, xb_work=xb_work, xb_act=xb_act,
+        sister_orphans=sister_orphans,
+        sister_label=sister_label,
         manual_by_section=manual_by_section,
         project_locations=project_locations,
         loc_day_map=loc_day_map,
