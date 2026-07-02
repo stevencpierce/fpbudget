@@ -452,6 +452,12 @@ class ProjectCrewMember(db.Model):
     crew_member_id  = db.Column(db.Integer, db.ForeignKey("crew_member.id"), nullable=False, index=True)
     employment_type = db.Column(db.String(20), nullable=True)   # loan_out | employee | vendor
     union_status    = db.Column(db.String(20), nullable=True)   # union | non_union
+    # ── Per-project loan-out vendor (User 2026-07.) ────────────────────────
+    # Someone is a loan-out for "You Choose LLC" on this show but a W-2 employee
+    # on the next — so the vendor link is PER-PROJECT here, pointing at a real
+    # CrewMember (is_vendor=True) record. The GLOBAL CrewMember.loan_out_vendor_id
+    # stays as legacy/global metadata (display-only fallback), untouched.
+    loan_out_vendor_id = db.Column(db.Integer, db.ForeignKey("crew_member.id"), nullable=True)
     __table_args__  = (db.UniqueConstraint("project_id", "crew_member_id", name="uq_project_crew_member"),)
 
 

@@ -24129,9 +24129,7 @@ setTimeout(function() {
     const initials = (id.name||'?').split(/\s+/).map(x=>x[0]).join('').slice(0,2).toUpperCase();
     document.getElementById('ppAvatar').textContent = initials;
     document.getElementById('ppName').textContent = id.name||'Person';
-    const et = {loan_out:'Loan-out',employee:'Employee',vendor:'Vendor'}[id.employment_type]||'';
-    const us = {union:'Union',non_union:'Non-Union'}[id.union_status]||'';
-    document.getElementById('ppSub').textContent = [et,us].filter(Boolean).join(' · ') || (deal[0]?deal[0].role:'');
+    document.getElementById('ppSub').textContent = _ppSubText(id) || (deal[0]?deal[0].role:'');
 
     // ── MAIN: Deal + Documents + Payments ──
     let h = '';
@@ -24197,7 +24195,16 @@ setTimeout(function() {
       + ['union:Union','non_union:Non-Union'].map(o=>{const[v,l]=o.split(':');return '<option value="'+v+'"'+(id.union_status===v?' selected':'')+'>'+l+'</option>';}).join('')+'</select></div>';
     s += '<div class="pp-field"><label>Email</label><input id="ppEmail" value="'+esc(id.email||'')+'" onblur="_ppSaveField(\'email\',this.value)"></div>';
     s += '<div class="pp-field"><label>Phone</label><input id="ppPhone" value="'+esc(id.phone||'')+'" onblur="_ppSaveField(\'phone\',this.value)"></div>';
-    s += '<div class="pp-field"><label>Company / loan-out</label><input id="ppCompany" value="'+esc(id.company||'')+'" onblur="_ppSaveField(\'company\',this.value)"></div>';
+    // Loan-out vendor · this project (User 2026-07.). A real-vendor dropdown that
+    // replaces the old free-text "company/loan-out" field. Render synchronously
+    // with just the current value + '—' + '➕ New vendor…'; the full vendor list
+    // is patched in when the (lazy, cached) fetch lands — so the side panel never
+    // waits on the network to paint. onchange handled by _ppVendorChange.
+    s += '<div class="pp-field"><label>Loan-out vendor <span style="text-transform:none;color:var(--text-muted)">· this project</span></label>'
+      + '<select id="ppLoanVendor" onchange="_ppVendorChange(this)">'
+      + _ppVendorOptions(id.loan_out_vendor_id, id.loan_out_vendor_name)
+      + '</select></div>';
+    s += '<div class="pp-field"><label>Company <span style="text-transform:none;color:var(--text-muted)">· note</span></label><input id="ppCompany" value="'+esc(id.company||'')+'" onblur="_ppSaveField(\'company\',this.value)"></div>';
     s += '<div id="ppSaveStatus" style="font-size:.7rem;color:#4ade80;height:12px"></div></div>';
     if(reps.length){
       s += '<div class="pp-sec"><h4>Representation</h4>';
@@ -24205,7 +24212,108 @@ setTimeout(function() {
       s += '</div>';
     }
     document.getElementById('ppSide').innerHTML = s;
+    _ppLoadVendors();   // async → patches the full vendor <option> list into #ppLoanVendor
   }
+
+  // ── Header subtitle (User 2026-07.) ──────────────────────────────────────
+  // Maps employment_type + union_status to the drawer subtitle. When the person
+  // is a loan-out AND a vendor is linked, show 'Loan-out — <vendor> · <union>'.
+  function _ppSubText(id){
+    id = id || {};
+    const et = {loan_out:'Loan-out',employee:'Employee',vendor:'Vendor'}[id.employment_type]||'';
+    const us = {union:'Union',non_union:'Non-Union'}[id.union_status]||'';
+    let lead = et;
+    if(id.employment_type==='loan_out' && id.loan_out_vendor_name)
+      lead = 'Loan-out — '+id.loan_out_vendor_name;
+    return [lead,us].filter(Boolean).join(' · ');
+  }
+
+  // ── Loan-out vendor dropdown (User 2026-07.) ─────────────────────────────
+  // Build the <select> option markup: '—', then every cached vendor (or, until
+  // the fetch lands, just the currently-linked one so the value is preserved),
+  // then '➕ New vendor…'. selId/selName = the person's current per-project link.
+  function _ppVendorOptions(selId, selName){
+    selId = (selId!=null ? String(selId) : '');
+    let o = '<option value=""'+(selId?'':' selected')+'>—</option>';
+    const cache = window._ppVendorsCache;
+    if(Array.isArray(cache) && cache.length){
+      cache.forEach(v=>{ const vid=String(v.id);
+        o += '<option value="'+vid+'"'+(vid===selId?' selected':'')+'>'+esc(v.name)+'</option>'; });
+      // Linked vendor missing from the list (inactive / not is_vendor) → keep it.
+      if(selId && !cache.some(v=>String(v.id)===selId))
+        o += '<option value="'+esc(selId)+'" selected>'+esc(selName||('Vendor #'+selId))+'</option>';
+    } else if(selId){
+      // Pre-fetch: preserve the current selection so the value isn't lost.
+      o += '<option value="'+esc(selId)+'" selected>'+esc(selName||('Vendor #'+selId))+'</option>';
+    }
+    o += '<option value="__new__">➕ New vendor…</option>';
+    return o;
+  }
+  // Lazily fetch + cache the vendor list, then patch the full option set into the
+  // live #ppLoanVendor without losing its current value. pid derived from PIDp.
+  async function _ppLoadVendors(){
+    const sel = document.getElementById('ppLoanVendor');
+    if(!sel) return;
+    if(!Array.isArray(window._ppVendorsCache)){
+      try{
+        const d = await fetch('/projects/'+PIDp+'/vendors.json',{credentials:'same-origin'}).then(r=>r.json());
+        window._ppVendorsCache = (d && d.ok && Array.isArray(d.vendors)) ? d.vendors : [];
+      }catch(e){ window._ppVendorsCache = []; }
+    }
+    const s2 = document.getElementById('ppLoanVendor');   // may have re-rendered
+    if(!s2) return;
+    const cur = (_pp && _pp.identity) ? _pp.identity.loan_out_vendor_id : null;
+    const curName = (_pp && _pp.identity) ? _pp.identity.loan_out_vendor_name : null;
+    s2.innerHTML = _ppVendorOptions(cur, curName);
+  }
+  // Dropdown onchange: '__new__' → prompt + create-and-link; '' → clear; id → link.
+  window._ppVendorChange = async function(sel){
+    if(!_pp || !sel) return;
+    const st = document.getElementById('ppSaveStatus');
+    if(sel.value === '__new__'){
+      const nm = (prompt('New vendor name') || '').trim();
+      if(!nm){ // revert to previous selection
+        sel.value = (_pp.identity && _pp.identity.loan_out_vendor_id!=null)
+          ? String(_pp.identity.loan_out_vendor_id) : '';
+        return;
+      }
+      if(st) st.textContent='Saving…';
+      try{
+        const r = await fetch('/projects/'+PIDp+'/person/'+_pp._cmid+'/update',
+          {method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+           body:JSON.stringify({new_vendor_name:nm})});
+        const j = await r.json();
+        const nv = j && j.loan_out_vendor;
+        if(!nv) throw new Error('create failed');
+        // Insert into the cache + a live <option>, then select it.
+        if(!Array.isArray(window._ppVendorsCache)) window._ppVendorsCache = [];
+        window._ppVendorsCache.push({id:nv.id, name:nv.name});
+        window._ppVendorsCache.sort((a,b)=>(a.name||'').toLowerCase().localeCompare((b.name||'').toLowerCase()));
+        if(_pp.identity){ _pp.identity.loan_out_vendor_id=nv.id; _pp.identity.loan_out_vendor_name=nv.name; }
+        sel.innerHTML = _ppVendorOptions(nv.id, nv.name);
+        document.getElementById('ppSub').textContent = _ppSubText(_pp.identity)||'';
+        if(st){ st.textContent='Saved ✓'; setTimeout(()=>st.textContent='',1500); }
+      }catch(e){ if(st) st.textContent='Save failed';
+        sel.value = (_pp.identity && _pp.identity.loan_out_vendor_id!=null)
+          ? String(_pp.identity.loan_out_vendor_id) : ''; }
+      return;
+    }
+    // Normal id or '' (clear) → same endpoint _ppSaveField uses.
+    const v = sel.value || '';
+    if(st) st.textContent='Saving…';
+    try{
+      await fetch('/projects/'+PIDp+'/person/'+_pp._cmid+'/update',
+        {method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({loan_out_vendor_id:v})});
+      if(_pp.identity){
+        _pp.identity.loan_out_vendor_id = v ? parseInt(v,10) : null;
+        const hit = (window._ppVendorsCache||[]).find(x=>String(x.id)===v);
+        _pp.identity.loan_out_vendor_name = v ? (hit ? hit.name : _pp.identity.loan_out_vendor_name) : null;
+      }
+      document.getElementById('ppSub').textContent = _ppSubText(_pp.identity)||'';
+      if(st){ st.textContent='Saved ✓'; setTimeout(()=>st.textContent='',1500); }
+    }catch(e){ if(st) st.textContent='Save failed'; }
+  };
 
   // ── Timecards slice 1 (User 2026-07.) ────────────────────────────────────
   // Fetch this person's timecards + expected (missing) schedule weeks, then
@@ -24284,9 +24392,7 @@ setTimeout(function() {
     try{
       await fetch('/projects/'+PIDp+'/person/'+_pp._cmid+'/update',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({[field]:value})});
       if(_pp.identity) _pp.identity[field]=value;
-      const et={loan_out:'Loan-out',employee:'Employee',vendor:'Vendor'}[_pp.identity.employment_type]||'';
-      const us={union:'Union',non_union:'Non-Union'}[_pp.identity.union_status]||'';
-      document.getElementById('ppSub').textContent=[et,us].filter(Boolean).join(' · ')||'';
+      document.getElementById('ppSub').textContent=_ppSubText(_pp.identity)||'';
       if(st){ st.textContent='Saved ✓'; setTimeout(()=>st.textContent='',1500); }
     }catch(e){ if(st) st.textContent='Save failed'; }
   };

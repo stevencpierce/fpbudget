@@ -24247,6 +24247,10 @@ def _web_worker_essential_columns():
                      CONSTRAINT uq_project_crew_member UNIQUE (project_id, crew_member_id)
                    )""",
                 "CREATE INDEX IF NOT EXISTS ix_project_crew_member ON project_crew_member (project_id, crew_member_id)",
+                # 2026-07 — per-project loan-out vendor link (User 2026-07.). Points at
+                # a real CrewMember (is_vendor) so the person drawer shows a vendor
+                # dropdown instead of free text; the global column stays as fallback.
+                "ALTER TABLE project_crew_member ADD COLUMN IF NOT EXISTS loan_out_vendor_id INTEGER REFERENCES crew_member(id)",
                 # 2026-07 — Timecards slice 1. Per-(project, person, payroll-week)
                 # timecard, auto-generated from the schedule. days_json holds the
                 # per-day {date, day_type, mult, ot_amount} entries; rate captured
@@ -26885,6 +26889,20 @@ def _timecard_dict(tc):
     }
 
 
+@app.route("/projects/<int:pid>/vendors.json", methods=["GET"])
+@login_required
+def project_vendors_json(pid):
+    """All vendor CrewMember records for the loan-out dropdown on the person
+    drawer. Every is_vendor person (active, sorted by name) → the drawer picks
+    which one this person loans out through, per project. (User 2026-07.)"""
+    _require_project_role(pid, 'viewer')
+    vs = (CrewMember.query
+          .filter(CrewMember.is_vendor == True,                     # noqa: E712
+                  CrewMember.active != False)                       # noqa: E712  (NULL active = active)
+          .order_by(func.lower(CrewMember.name)).all())
+    return jsonify({"ok": True, "vendors": [{"id": v.id, "name": v.name} for v in vs]})
+
+
 @app.route("/projects/<int:pid>/person/<int:cmid>/profile", methods=["GET"])
 @login_required
 def person_profile(pid, cmid):
@@ -27003,6 +27021,16 @@ def person_profile(pid, cmid):
              "phone": s.phone, "company": s.company}
             for s in (cm.support_contacts or []) if getattr(s, 'active', True)]
 
+    # Loan-out vendor (User 2026-07.): resolve PER-PROJECT first (the new model);
+    # fall back to the GLOBAL cm.loan_out_vendor_id for display only so existing
+    # data still shows. Name resolved via one CrewMember.get.
+    _lov_id = (_pcm.loan_out_vendor_id if (_pcm and _pcm.loan_out_vendor_id) else None) \
+        or cm.loan_out_vendor_id
+    _lov_name = None
+    if _lov_id:
+        _lov = CrewMember.query.get(_lov_id)
+        _lov_name = _lov.name if _lov else None
+
     # Timecards slice 1 (User 2026-07.): count of schedule weeks still missing a
     # timecard. Advisory / fail-open — 0 when the helper errors, when the person
     # has no schedule, or (implicitly) for non-employees who have no work days.
@@ -27027,6 +27055,9 @@ def person_profile(pid, cmid):
             "employment_type": (_pcm.employment_type if _pcm else None),
             "union_status": (_pcm.union_status if _pcm else None),
             "is_vendor": bool(cm.is_vendor),
+            # Loan-out vendor: per-project link (falls back to global for display).
+            "loan_out_vendor_id": _lov_id,
+            "loan_out_vendor_name": _lov_name,
         },
         "deal": deal,
         "documents": doc_out,
@@ -27386,13 +27417,51 @@ def person_update(pid, cmid):
         if "union_status" in data:
             v = (data.get("union_status") or "").strip().lower()
             pcm.union_status = v[:20] if v in ('union', 'non_union') else None
+    # Loan-out vendor (User 2026-07.): PER-PROJECT — someone's a loan-out here but
+    # a W-2 employee next time. '' / null clears; an int links a real vendor
+    # CrewMember (auto-marking it is_vendor if it isn't, rather than rejecting);
+    # new_vendor_name creates a fresh vendor and links it, echoing it back so the
+    # UI can insert the new <option>. Both live on the ProjectCrewMember row.
+    _new_vendor = None
+    if "loan_out_vendor_id" in data or "new_vendor_name" in data:
+        pcm = ProjectCrewMember.query.filter_by(project_id=pid, crew_member_id=cmid).first()
+        if pcm is None:
+            pcm = ProjectCrewMember(project_id=pid, crew_member_id=cmid)
+            db.session.add(pcm)
+        _nv = (data.get("new_vendor_name") or "").strip()
+        if _nv:
+            # Create the vendor record, then link it per-project.
+            vend = CrewMember(name=_nv[:200], is_vendor=True, active=True)
+            db.session.add(vend)
+            db.session.flush()            # need vend.id for the link + response
+            pcm.loan_out_vendor_id = vend.id
+            _new_vendor = {"id": vend.id, "name": vend.name}
+        elif "loan_out_vendor_id" in data:
+            raw = data.get("loan_out_vendor_id")
+            if raw in (None, "", "0"):
+                pcm.loan_out_vendor_id = None
+            else:
+                try:
+                    vid = int(raw)
+                except (TypeError, ValueError):
+                    vid = None
+                vend = CrewMember.query.get(vid) if vid else None
+                if vend is None:
+                    return jsonify({"ok": False, "error": "vendor not found"}), 400
+                # Not marked a vendor yet? Promote it instead of rejecting.
+                if not vend.is_vendor:
+                    vend.is_vendor = True
+                pcm.loan_out_vendor_id = vend.id
     # Contact info is GLOBAL identity → stays on the crew record.
     for _f in ('email', 'phone', 'company'):
         if _f in data:
             v = (data.get(_f) or "").strip()
             setattr(cm, _f, v[:200] if v else None)
     db.session.commit()
-    return jsonify({"ok": True})
+    _resp = {"ok": True}
+    if _new_vendor is not None:
+        _resp["loan_out_vendor"] = _new_vendor
+    return jsonify(_resp)
 
 
 def _doc_receipt_detail(upload):
