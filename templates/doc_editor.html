@@ -17,8 +17,8 @@
 {% block content %}
 {# PID / UID are available to the inline JS via these server-baked constants. #}
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
-  <a id="edBackLink" href="/projects/{{ project.id }}/budget"
-     style="font-size:13px;padding:5px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;text-decoration:none">← Back to project</a>
+  <a id="edBackLink" href="/projects/{{ project.id }}/budget?tab=docs"
+     style="font-size:13px;padding:5px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;text-decoration:none">← Back to docs</a>
   <h1 id="edDocTitle" style="margin:0;font-size:1.05rem;line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
     {{ upload.filed_filename or upload.original_filename or 'Document' }}
   </h1>
@@ -67,22 +67,26 @@
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.6rem">
       <div class="field" style="margin:0">
         <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Type</label>
-        {# SAME option list as budget.html's docDetailCategory. #}
+        {# SAME option list as budget.html's docDetailCategory. Pre-select the
+           saved category server-side (with the same quote→estimate / sow→
+           contract taxonomy aliases the modal applies) so the type — and the
+           detail-section heading derived from it — is correct on load. (User 2026-07.) #}
+        {% set _ed_cat = ({'quote':'estimate','sow':'contract'}).get(upload.category, upload.category) or '' %}
         <select id="edCategory" style="width:100%">
-          <option value="">— unspecified —</option>
-          <option value="receipt">Receipt</option>
-          <option value="invoice">Invoice</option>
-          <option value="estimate">Estimate / Quote</option>
-          <option value="purchase_order">Purchase Order (PO)</option>
-          <option value="contract">Contract / SOW</option>
-          <option value="insurance">Insurance / COI</option>
-          <option value="tax_form">Tax Form (W-9, W-8, 1099)</option>
-          <option value="payroll">Payroll</option>
-          <option value="timecard">Timecard</option>
-          <option value="legal">Legal</option>
-          <option value="release">Release (Talent / Location)</option>
-          <option value="employee_vendor_doc">Employee/Vendor Doc (DTR, ID, W-9…)</option>
-          <option value="misc">Miscellaneous</option>
+          <option value="" {{ 'selected' if _ed_cat == '' else '' }}>— unspecified —</option>
+          <option value="receipt" {{ 'selected' if _ed_cat == 'receipt' else '' }}>Receipt</option>
+          <option value="invoice" {{ 'selected' if _ed_cat == 'invoice' else '' }}>Invoice</option>
+          <option value="estimate" {{ 'selected' if _ed_cat == 'estimate' else '' }}>Estimate / Quote</option>
+          <option value="purchase_order" {{ 'selected' if _ed_cat == 'purchase_order' else '' }}>Purchase Order (PO)</option>
+          <option value="contract" {{ 'selected' if _ed_cat == 'contract' else '' }}>Contract / SOW</option>
+          <option value="insurance" {{ 'selected' if _ed_cat == 'insurance' else '' }}>Insurance / COI</option>
+          <option value="tax_form" {{ 'selected' if _ed_cat == 'tax_form' else '' }}>Tax Form (W-9, W-8, 1099)</option>
+          <option value="payroll" {{ 'selected' if _ed_cat == 'payroll' else '' }}>Payroll</option>
+          <option value="timecard" {{ 'selected' if _ed_cat == 'timecard' else '' }}>Timecard</option>
+          <option value="legal" {{ 'selected' if _ed_cat == 'legal' else '' }}>Legal</option>
+          <option value="release" {{ 'selected' if _ed_cat == 'release' else '' }}>Release (Talent / Location)</option>
+          <option value="employee_vendor_doc" {{ 'selected' if _ed_cat == 'employee_vendor_doc' else '' }}>Employee/Vendor Doc (DTR, ID, W-9…)</option>
+          <option value="misc" {{ 'selected' if _ed_cat == 'misc' else '' }}>Miscellaneous</option>
         </select>
       </div>
       <div class="field" style="margin:0">
@@ -106,12 +110,17 @@
 
     {# 🧾 Receipt detail (subtotal · tax · tip · address). Prefilled from
        /line-items on load (same as the modal). #}
+    {# Heading tracks the doc type — an invoice isn't a "receipt". Rendered
+       server-side from upload.category, and updated client-side when the Doc
+       Type select changes (see the edCategory wiring below). (User 2026-07 —
+       "'receipt details' is confusing because this is an invoice.") #}
+    {% set _ed_detail_label = 'Invoice detail' if _ed_cat == 'invoice' else ('Receipt detail' if _ed_cat == 'receipt' else 'Document detail') %}
     <details id="edReceiptDetail" class="field" open style="margin-bottom:.6rem;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
-      <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">🧾 Receipt detail <span style="font-weight:400;text-transform:none">(subtotal · tax · tip · address)</span></summary>
+      <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">🧾 <span id="edReceiptDetailLabel">{{ _ed_detail_label }}</span> <span style="font-weight:400;text-transform:none">(subtotal · tax · tip · address)</span></summary>
       <div style="display:flex;gap:8px;margin-top:8px">
         <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Subtotal</label><input type="text" id="edSubtotal" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
         <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tax</label><input type="text" id="edTax" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
-        <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tip</label><input type="text" id="edTip" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
+        <div class="field" id="edTipWrap" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tip</label><input type="text" id="edTip" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
       </div>
       <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant address</label><input type="text" id="edMerchAddr" placeholder="street, city, state" style="width:100%"></div>
       <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant phone</label><input type="text" id="edMerchPhone" placeholder="—" style="width:100%"></div>
@@ -119,6 +128,7 @@
 
     <div style="display:flex;gap:10px;align-items:center;margin:4px 0 14px">
       <button type="button" id="edSaveBtn" class="btn btn-primary" style="padding:7px 18px">Save</button>
+      <button type="button" id="edSaveCloseBtn" class="btn" style="padding:7px 18px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff">Save &amp; close</button>
       <span id="edSaveStatus" style="font-size:12px;color:var(--text-muted)"></span>
     </div>
 
@@ -207,16 +217,22 @@
     return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
-  // ── Back link: prefer same-origin referrer so "Back" returns to wherever the
-  // user opened the editor from (Docs tab / Actuals tab). Falls back to budget. ─
-  (function wireBack() {
-    try {
-      var ref = document.referrer;
-      if (ref && new URL(ref).origin === location.origin) {
-        $('edBackLink').href = ref;
-      }
-    } catch (e) { /* keep the budget fallback */ }
-  })();
+  // ── Back / close destination: the docs list, with ?tab=docs so the budget
+  // page restores the exact list state (filter/sort/scroll) the user left.
+  // (User 2026-07 — "when I close this window out or click save, it should take
+  // me back to exactly where I was in the list before with the same filtering.")
+  var BACK_URL = '/projects/' + PID + '/budget?tab=docs';
+  $('edBackLink').href = BACK_URL;
+  function goBack() { location.href = BACK_URL; }
+  // Escape = plain back navigation (no save), matching the popup's Esc-closes.
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      var t = e.target;
+      // Don't hijack Escape while the user is mid-edit in a field.
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) { t.blur(); return; }
+      goBack();
+    }
+  });
 
   // ── Fill a <select> from the shared options template (lazy clone). ──────────
   function fillPicker(sel) {
@@ -337,18 +353,31 @@
     };
     btn.disabled = true; btn.textContent = 'Saving…';
     if (st) { st.textContent = ''; st.style.color = 'var(--text-muted)'; }
-    fetch('/docs/upload/' + UID + '/update', {
+    // Return the promise so "Save & close" can await a successful save before
+    // navigating back. Resolves to true on success, false otherwise. (User 2026-07.)
+    return fetch('/docs/upload/' + UID + '/update', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
       .then(function (res) {
-        if (res.ok) { if (st) { st.textContent = '✓ Saved'; st.style.color = '#5fd0a0'; } }
-        else { if (st) { st.textContent = 'Save failed: ' + (res.d.error || res.status); st.style.color = '#e0a13a'; } }
+        if (res.ok) { if (st) { st.textContent = '✓ Saved'; st.style.color = '#5fd0a0'; } return true; }
+        if (st) { st.textContent = 'Save failed: ' + (res.d.error || res.status); st.style.color = '#e0a13a'; }
+        return false;
       })
-      .catch(function (e) { if (st) { st.textContent = 'Error: ' + e.message; st.style.color = '#e0a13a'; } })
+      .catch(function (e) { if (st) { st.textContent = 'Error: ' + e.message; st.style.color = '#e0a13a'; } return false; })
       .finally(function () { btn.disabled = false; btn.textContent = 'Save'; });
+  }
+
+  // Save, then (only on success) return to the docs list. (User 2026-07.)
+  function saveAndClose() {
+    var cbtn = $('edSaveCloseBtn');
+    if (cbtn) { cbtn.disabled = true; cbtn.textContent = 'Saving…'; }
+    Promise.resolve(saveDoc()).then(function (ok) {
+      if (ok) { goBack(); return; }
+      if (cbtn) { cbtn.disabled = false; cbtn.textContent = 'Save & close'; }
+    });
   }
 
   // ══ CODING (budget-line picker) ════════════════════════════════════════════
@@ -580,7 +609,23 @@
   })();
 
   // ── wire events + kick off loads ──────────────────────────────────────────
+  // Detail-section heading + Tip visibility track the Doc Type select, live.
+  // Invoice → "Invoice detail" & hide Tip (a receipt concept); receipt →
+  // "Receipt detail"; anything else → "Document detail". (User 2026-07.)
+  function edApplyCategoryUI() {
+    var cat = ($('edCategory').value || '').toLowerCase();
+    var lbl = $('edReceiptDetailLabel');
+    if (lbl) lbl.textContent = cat === 'invoice' ? 'Invoice detail'
+      : cat === 'receipt' ? 'Receipt detail'
+      : 'Document detail';
+    var tipWrap = $('edTipWrap');
+    if (tipWrap) tipWrap.style.display = (cat === 'invoice') ? 'none' : '';
+  }
+  if ($('edCategory')) $('edCategory').addEventListener('change', edApplyCategoryUI);
+  edApplyCategoryUI();
+
   $('edSaveBtn').addEventListener('click', saveDoc);
+  if ($('edSaveCloseBtn')) $('edSaveCloseBtn').addEventListener('click', saveAndClose);
   $('edLinePicker').addEventListener('focus', function () { fillPicker(this); });
   $('edLinePicker').addEventListener('change', function () { edSetLine(this); edUpdateTotal(); });
   $('edItemAddBtn').addEventListener('click', function () { itemAddRow('', '', ''); });

@@ -2999,6 +2999,13 @@
                     onclick="openAddToPoFromDoc(this)"
                     style="background:#1a2540;border:1px solid #2d4070;color:#5b8af9;padding:3px 8px;border-radius:5px;font-size:11px;cursor:pointer;white-space:nowrap;">📎→</button>
             {% endif %}
+            {# Quick-view: keep the old in-page popup for users who don't want
+               to leave the list (the row itself now opens the full editor).
+               (User 2026-07.) #}
+            <button class="doc-quickview-btn" data-uid="{{ u.id }}"
+                    title="Quick view — open the popup preview without leaving the list"
+                    onclick="event.stopPropagation();if(this.closest('.doc-row').dataset.dupPending==='1'&&typeof docsOpenDupGroup==='function'){docsOpenDupGroup({{ u.id }});}else{openDocDetail({{ u.id }}, this.closest('.doc-row'));}"
+                    style="background:none;border:1px solid var(--border);color:var(--text-muted);cursor:pointer;padding:3px 8px;border-radius:5px;font-size:13px;line-height:1;">▤</button>
             <button class="doc-delete-btn" title="Delete this document"
                     style="background:none;border:none;color:#ef4444;cursor:pointer;padding:4px 8px;font-size:14px;">✕</button>
           </div>
@@ -3161,11 +3168,11 @@
                tip broken out (some credits disallow tip) + merchant address (itemized
                receipts must show name + address). Prefilled from OCR, editable. #}
             <details id="docDetailReceiptDetail" class="field" style="margin-bottom:.6rem;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
-              <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">🧾 Receipt detail <span style="font-weight:400;text-transform:none">(subtotal · tax · tip · address)</span></summary>
+              <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">🧾 <span id="docDetailReceiptDetailLabel">Receipt detail</span> <span style="font-weight:400;text-transform:none">(subtotal · tax · tip · address)</span></summary>
               <div style="display:flex;gap:8px;margin-top:8px">
                 <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Subtotal</label><input type="text" id="docDetailSubtotal" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
                 <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tax</label><input type="text" id="docDetailTax" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
-                <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tip</label><input type="text" id="docDetailTip" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
+                <div class="field" id="docDetailTipWrap" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tip</label><input type="text" id="docDetailTip" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
               </div>
               <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant address</label><input type="text" id="docDetailMerchAddr" placeholder="street, city, state" style="width:100%"></div>
               <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant phone</label><input type="text" id="docDetailMerchPhone" placeholder="—" style="width:100%"></div>
@@ -5062,10 +5069,54 @@
   });
   // Landing tab: Needs Review when it exists, else All. Mirrors the
   // server-side "review tab only rendered when count>0" rule.
+  //
+  // BUT if the user just came back from the standalone doc editor (or closed
+  // it), restore the exact list view they left — subtab, search text, sort,
+  // and scroll position — from sessionStorage. (User 2026-07 — "take me back
+  // to exactly where I was in the list before with the same filtering.") The
+  // state is only honored when we're actually on the docs tab, is fresh
+  // (<10 min), then consumed (removed) so a later plain visit lands normally.
   (function _docsInitTab(){
     if (typeof _docsRefreshDupCounts === 'function') _docsRefreshDupCounts();
-    const hasReview = !!document.querySelector('.docs-subtab[data-tab="review"]');
-    _docsSelectTab(hasReview ? 'review' : 'all');
+    let restored = false;
+    try {
+      const onDocsTab = new URLSearchParams(location.search).get('tab') === 'docs';
+      const raw = sessionStorage.getItem('fpDocsListState');
+      if (onDocsTab && raw) {
+        const s = JSON.parse(raw);
+        if (s && s.ts && (Date.now() - s.ts) < 600000) {   // 10 minutes
+          restored = true;
+          // 1) Subtab — only if the button still exists (review tab may be gone).
+          if (s.tab && document.querySelector('.docs-subtab[data-tab="' + s.tab + '"]')) {
+            _docsSelectTab(s.tab);
+          } else {
+            const hasReview = !!document.querySelector('.docs-subtab[data-tab="review"]');
+            _docsSelectTab(hasReview ? 'review' : 'all');
+          }
+          // 2) Search text — set the input and run the same filter path.
+          const searchEl = document.getElementById('docs-search');
+          if (searchEl) { searchEl.value = s.search || ''; }
+          if (typeof _docsOnSearch === 'function') _docsOnSearch(s.search || '');
+          // 3) Sort — restore column + direction, then re-run the client sort.
+          const sortBy  = document.getElementById('docs-sort-by');
+          const sortDir = document.getElementById('docs-sort-dir');
+          if (s.sort && sortBy && sortDir) {
+            if (s.sort.by)  sortBy.value = s.sort.by;
+            if (s.sort.dir) sortDir.dataset.dir = s.sort.dir;
+            sortBy.dispatchEvent(new Event('change'));   // updates label + sorts
+          }
+          // 4) Scroll — after layout settles.
+          const y = s.scroll || 0;
+          setTimeout(() => { try { window.scrollTo(0, y); } catch (e) {} }, 60);
+        }
+      }
+      // Consume the key so a normal (non-return) visit lands on the default tab.
+      if (raw) sessionStorage.removeItem('fpDocsListState');
+    } catch (e) { restored = false; }
+    if (!restored) {
+      const hasReview = !!document.querySelector('.docs-subtab[data-tab="review"]');
+      _docsSelectTab(hasReview ? 'review' : 'all');
+    }
   })();
 
   // ── Bulk-select ────────────────────────────────────────────────────
@@ -5583,6 +5634,19 @@
       const isPoCandidate = ['estimate', 'quote', 'purchase_order'].includes((type || '').toLowerCase());
       poActions.style.display = isPoCandidate ? '' : 'none';
     }
+    // Detail-section heading tracks the doc type — an invoice isn't a
+    // "receipt". (User 2026-07 — "'receipt details' is confusing because this
+    // is an invoice.") Also hide the Tip field for invoices: tipping is a
+    // receipt concept, not an invoice one.
+    const _t = (type || '').toLowerCase();
+    const rdLabel = document.getElementById('docDetailReceiptDetailLabel');
+    if (rdLabel) {
+      rdLabel.textContent = _t === 'invoice' ? 'Invoice detail'
+        : _t === 'receipt' ? 'Receipt detail'
+        : 'Document detail';
+    }
+    const tipWrap = document.getElementById('docDetailTipWrap');
+    if (tipWrap) tipWrap.style.display = (_t === 'invoice') ? 'none' : '';
     _docDetailHighlightMissing(spec);
   }
   // Amount field helpers: display with thousand-separators (95,541.47)
@@ -6917,6 +6981,25 @@
          + '<div style="color:var(--text-muted);font-size:11px">' + p[0] + '</div>';
   }
 
+  // Stash the exact docs-list view state (subtab, search, sort, scroll) so
+  // that when the standalone editor sends the user back to ?tab=docs we can
+  // drop them right where they were. (User 2026-07 — "take me back to exactly
+  // where I was in the list.") Fail-open: any DOM gap just stores blanks.
+  function _docsStashListState() {
+    try {
+      const sortBy  = document.getElementById('docs-sort-by');
+      const sortDir = document.getElementById('docs-sort-dir');
+      const search  = document.getElementById('docs-search');
+      sessionStorage.setItem('fpDocsListState', JSON.stringify({
+        tab:    (typeof _docsActiveTab !== 'undefined' ? _docsActiveTab : 'all'),
+        search: search ? search.value : '',
+        sort:   { by: sortBy ? sortBy.value : '', dir: (sortDir ? sortDir.dataset.dir : '') || 'desc' },
+        scroll: window.scrollY || 0,
+        ts:     Date.now(),
+      }));
+    } catch (e) { /* sessionStorage unavailable — skip, editor still opens */ }
+  }
+
   // Click-to-open binding: the row is the click target unless the user
   // clicked one of the inline buttons (delete, retry) or the editable
   // filename span (which has its own contenteditable handler).
@@ -6927,6 +7010,9 @@
     if (e.target.closest('.doc-dup-confirm-btn')) return;
     if (e.target.closest('.doc-dup-compare-btn')) return;
     if (e.target.closest('.editable-filename')) return;
+    // The small "quick view" icon keeps the old popup for users who prefer
+    // it; let its own onclick handle it and stop here. (User 2026-07.)
+    if (e.target.closest('.doc-quickview-btn')) return;
     const row = e.target.closest('.doc-row');
     if (!row) return;
     const uid = parseInt(row.dataset.uploadId);
@@ -6939,7 +7025,15 @@
       docsOpenDupGroup(uid);
       return;
     }
-    openDocDetail(uid, row);
+    // PRIMARY interface is now the standalone editor, not the popup. (User
+    // 2026-07 — "this should be our primary interface not a secondary click.")
+    // Stash list state first so Save/close returns here with the same filter,
+    // sort and scroll position. PROJ_ID is baked in globally; fall back to the
+    // path if it's ever missing.
+    _docsStashListState();
+    let pid = (typeof PROJ_ID !== 'undefined' && PROJ_ID) ? PROJ_ID : null;
+    if (!pid) { const m = location.pathname.match(/\/projects\/(\d+)/); pid = m ? m[1] : ''; }
+    location.href = '/projects/' + pid + '/docs/' + uid + '/editor';
   });
 })();
 </script>
