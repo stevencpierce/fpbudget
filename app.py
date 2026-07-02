@@ -6659,8 +6659,13 @@ def budget_view(pid, bid):
     # one department at a time. Uncoded rows surface in a leading
     # "Needs coding" bucket. Reuses actuals_transactions — no extra query.
     _code_buckets = {}   # section_code (or None) -> {"items": [...], "total": float}
+    # Itemized containers (parents with invoice_split children) stay out of the
+    # register + 'Needs coding' — their sublines carry the coding. (2026-07.)
+    _split_parents = _split_parent_id_set(pid)
     for t in actuals_transactions:
         if t.not_project_expense:
+            continue
+        if t.id in _split_parents:
             continue
         sec = None
         if t.account_code is not None:
@@ -6857,6 +6862,7 @@ def budget_view(pid, bid):
     active_tab = (request.args.get('tab') or '').strip().lower()
     return render_template("budget.html",
         active_tab=active_tab,
+        split_parent_ids=_split_parents,
         project=project,
         budget=budget,
         estimate_approval=estimate_approval,
@@ -8174,6 +8180,28 @@ def _sync_claim_state(txn):
                     s.not_project_expense = False
 
 
+def _txn_is_split_parent(txn):
+    """True when this transaction has invoice_split children — it's an itemized
+    document CONTAINER whose coding lives on the sublines. Coding the container
+    again would double-count the document. (Review fix 2026-07.)"""
+    if txn is None:
+        return False
+    return db.session.query(Transaction.id).filter_by(
+        parent_transaction_id=txn.id, source='invoice_split').first() is not None
+
+
+def _split_parent_id_set(pid):
+    """Ids of all itemized-container transactions on a project (parents that
+    have invoice_split children). Used to keep containers out of 'Needs coding'
+    surfaces + AI code-suggestion passes. (Review fix 2026-07.)"""
+    rows = (db.session.query(Transaction.parent_transaction_id)
+            .filter(Transaction.project_id == pid,
+                    Transaction.source == 'invoice_split',
+                    Transaction.parent_transaction_id.isnot(None))
+            .distinct().all())
+    return {r[0] for r in rows}
+
+
 def _clear_ai_code_suggestion(txn):
     """Clear a transaction's AI code suggestion after it's been coded/dismissed so
     it stops surfacing in the doc popup chip, the row ✨ chip, and the Dashboard
@@ -8195,6 +8223,13 @@ def actuals_set_line(pid, tid):
     txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
     data = request.get_json(force=True) or {}
     raw  = data.get("budget_line_id")
+
+    # Itemized container: its coding lives on the sublines — re-coding it would
+    # double-count the document. (Review fix 2026-07.)
+    if raw and _txn_is_split_parent(txn):
+        return jsonify({"error": "This document is itemized into line items — the "
+                                 "sublines carry the coding. Open the doc and clear "
+                                 "the itemization to code it as one line."}), 409
 
     # Empty string / None / 0 = clear the link.
     if not raw:
@@ -9562,6 +9597,14 @@ def actuals_ai_suggest_codes(pid):
                  Transaction.vendor.isnot(None),
                  db.or_(Transaction.claimed_by_project_id.is_(None),
                         Transaction.claimed_by_project_id == pid)))
+    # Skip itemized containers (their sublines carry the coding) and the
+    # sublines' own source. (Review fix 2026-07.)
+    _split_parents_q = (db.session.query(Transaction.parent_transaction_id)
+                        .filter(Transaction.project_id == pid,
+                                Transaction.source == 'invoice_split',
+                                Transaction.parent_transaction_id.isnot(None)))
+    q = q.filter(Transaction.source != 'invoice_split',
+                 ~Transaction.id.in_(_split_parents_q))
     if not force:
         q = q.filter(Transaction.ai_suggested_code.is_(None))
     total_remaining = q.count()
@@ -10126,13 +10169,16 @@ def project_anomalies(pid):
     # (not persisted as flags) so they vanish the moment the charge is coded.
     # (2026-06-22.)
     try:
+        _split_parents = _split_parent_id_set(pid)
         code_txns = (Transaction.query
                      .filter(Transaction.project_id == pid,
                              Transaction.budget_line_id.is_(None),
                              Transaction.account_code.is_(None),
                              Transaction.not_project_expense == False,   # noqa: E712
+                             Transaction.source != 'invoice_split',
                              Transaction.ai_suggested_code.isnot(None))
                      .order_by(Transaction.id.desc()).limit(30).all())
+        code_txns = [t for t in code_txns if t.id not in _split_parents]
     except Exception:
         code_txns = []
     for t in code_txns:
@@ -10334,6 +10380,12 @@ def actuals_set_coa(pid, tid):
     data = request.get_json(force=True) or {}
     code_raw = data.get("account_code")
     name_raw = (data.get("account_code_name") or "").strip()
+    # Itemized container: sublines carry the coding — block re-coding (incl.
+    # not_project) so the doc can't double-count. Clearing stays allowed.
+    if code_raw and _txn_is_split_parent(txn):
+        return jsonify({"error": "This document is itemized into line items — the "
+                                 "sublines carry the coding. Open the doc and clear "
+                                 "the itemization to code it as one line."}), 409
     _coa_before = {'account_code': txn.account_code,
                    'account_code_name': txn.account_code_name,
                    'not_project_expense': bool(txn.not_project_expense)}
@@ -10710,7 +10762,8 @@ def actuals_scan_dup_transactions(pid):
     import re as _re_dup
     from collections import defaultdict as _dd_dup
     txns = (Transaction.query.filter_by(project_id=pid)
-            .filter(Transaction.not_project_expense == False).all())   # noqa: E712
+            .filter(Transaction.not_project_expense == False,   # noqa: E712
+                    Transaction.source != 'invoice_split').all())   # itemized sublines aren't dups (2026-07)
     dismissed = {d.dup_key for d in TransactionDupDismissal.query.filter_by(project_id=pid).all()}
     # Receipts already carried by an electronic charge — a doc_upload row whose
     # receipt is in here is a redundant PHANTOM (the charge is the real ledger
@@ -10880,7 +10933,8 @@ def actuals_reconcile_scan(pid):
     import re as _re_r
     from collections import defaultdict as _dd_r
     txns = (Transaction.query.filter_by(project_id=pid)
-            .filter(Transaction.not_project_expense == False).all())   # noqa: E712
+            .filter(Transaction.not_project_expense == False,   # noqa: E712
+                    Transaction.source != 'invoice_split').all())   # itemized sublines aren't dups (2026-07)
     docs = (DocUpload.query.filter_by(project_id=pid)
             .filter(DocUpload.category.in_(('receipt', 'invoice')))
             .filter(DocUpload.status != 'deleted').all())
@@ -11403,6 +11457,7 @@ def actuals_docs_list_for_picker(pid):
         out.append({
             "id":             d.id,
             "label":          d.filed_filename or d.original_filename or f"Upload #{d.id}",
+            "crew_member_id": d.crew_member_id,
             "vendor":         d.vendor,
             "amount":         float(d.amount) if d.amount is not None else None,
             "doc_date":       d.doc_date.isoformat() if d.doc_date else None,
@@ -26683,20 +26738,26 @@ def docs_upload_line_items(uid):
             bl = BudgetLine.query.get(k.budget_line_id) if k.budget_line_id else None
             _lid = (str(bl.source_line_id or bl.id) if bl else None)
             if (k.note or '') == 'Remainder → main line':
-                main_line_id = _lid
+                # Section-coded remainder has no line id — return 'section:N'.
+                main_line_id = _lid or (f"section:{k.account_code}" if k.account_code else None)
                 continue
             existing.append({
                 "id": k.id,
                 "description": k.note or '',
                 "amount": float(k.amount) if k.amount is not None else None,
-                "budget_line_id": _lid,
-                "line_label": (f"{bl.account_code} · {bl.description or bl.account_name}" if bl else ''),
+                # Section-coded subline → 'section:N' so the picker rehydrates.
+                "budget_line_id": _lid or (f"section:{k.account_code}" if k.account_code else None),
+                "line_label": (f"{bl.account_code} · {bl.description or bl.account_name}" if bl
+                               else (f"{k.account_code} · {k.account_code_name or ''}" if k.account_code else '')),
             })
         # Not split but parent is coded → that's the main line.
-        if main_line_id is None and not existing and parent.budget_line_id:
-            _pbl = BudgetLine.query.get(parent.budget_line_id)
-            if _pbl:
-                main_line_id = str(_pbl.source_line_id or _pbl.id)
+        if main_line_id is None and not existing:
+            if parent.budget_line_id:
+                _pbl = BudgetLine.query.get(parent.budget_line_id)
+                if _pbl:
+                    main_line_id = str(_pbl.source_line_id or _pbl.id)
+            elif parent.account_code:
+                main_line_id = f"section:{parent.account_code}"
     return jsonify({
         "ok": True,
         "parent_txn_id": (parent.id if parent else None),
@@ -26730,12 +26791,48 @@ def docs_upload_itemize(uid):
 
     from actuals import link_transaction_to_line, unlink_transaction
 
-    def _as_int(v):
+    def _parse_target(v):
+        """Picker value → ('line', id) | ('section', code) | None. The pickers
+        legitimately offer 'section:<code>' (📂 All <section>) values — those
+        previously fell through int() and silently DROPPED the coding/remainder.
+        (Review fix 2026-07.)"""
+        if v in (None, '', 0, '0'):
+            return None
+        s = str(v)
+        if s.startswith('section:'):
+            try:
+                return ('section', int(s.split(':', 1)[1]))
+            except (TypeError, ValueError):
+                return None
         try:
-            return int(v) if v not in (None, '', 0, '0') else None
+            return ('line', int(s))
         except (TypeError, ValueError):
             return None
-    mlid = _as_int(main_line_raw)
+
+    def _code_to_section(t, code):
+        t.account_code = code
+        t.account_code_name = (dict(FP_COA_SECTIONS).get(code, '') or '')[:100]
+        t.budget_line_id = None
+        t.not_project_expense = False
+        try:
+            from actuals import ensure_section_in_working_budget
+            ensure_section_in_working_budget(pid, code, t.account_code_name)
+        except Exception:
+            pass
+
+    def _apply_target(t, target):
+        if t is None or not target:
+            return
+        kind, val = target
+        if kind == 'line':
+            try:
+                link_transaction_to_line(t.id, val, user_id=current_user.id)
+            except Exception as _le:
+                logging.warning("[itemize] link→line failed: %s", _le)
+        else:
+            _code_to_section(t, val)
+
+    mtarget = _parse_target(main_line_raw)
     doc_total = abs(float(parent.amount)) if parent.amount is not None else 0.0
 
     # Remove any previous itemization for this parent (replace-on-save).
@@ -26753,28 +26850,22 @@ def docs_upload_itemize(uid):
             return jsonify({"error": "each row needs a numeric amount"}), 400
         if amt == 0:
             continue
-        sublines.append((amt, _as_int(r.get("budget_line_id")), (r.get("description") or '')[:300]))
+        sublines.append((amt, _parse_target(r.get("budget_line_id")), (r.get("description") or '')[:300]))
 
-    def _mk_child(amt, line_id, note):
+    def _mk_child(amt, target, note):
         c = Transaction(project_id=pid, source='invoice_split', parent_transaction_id=parent.id,
                         doc_upload_id=upload.id, amount=amt, vendor=parent.vendor,
                         txn_date=parent.txn_date, is_expense=bool(getattr(parent, 'is_expense', True)),
                         note=note[:300], match_status='confirmed')
         db.session.add(c); db.session.flush()
-        if line_id:
-            try:
-                link_transaction_to_line(c.id, line_id, user_id=current_user.id)
-            except Exception as _le:
-                logging.warning("[itemize] link child→line failed: %s", _le)
+        _apply_target(c, target)
         return c.id
 
     if not sublines:
         # No split → the whole document codes to the main line (or clears).
-        if mlid:
-            try:
-                link_transaction_to_line(parent.id, mlid, user_id=current_user.id)
-            except Exception:
-                pass
+        if mtarget:
+            _apply_target(parent, mtarget)
+            _clear_ai_code_suggestion(parent)
             db.session.commit()
             return jsonify({"ok": True, "children": 0, "main_line_amount": round(doc_total, 2),
                             "remainder": round(doc_total, 2)})
@@ -26791,14 +26882,15 @@ def docs_upload_itemize(uid):
     # Remainder auto-bills to the main line (QuickBooks 'rest goes here').
     remainder = round(doc_total - sub_total, 2)
     main_amt = 0.0
-    if mlid and remainder > 0.01:
-        created.append(_mk_child(remainder, mlid, 'Remainder → main line'))
+    if mtarget and remainder > 0.01:
+        created.append(_mk_child(remainder, mtarget, 'Remainder → main line'))
         main_amt = remainder
 
     try:
         unlink_transaction(parent.id)
     except Exception:
         parent.account_code = parent.account_code_name = parent.budget_line_id = None
+    _clear_ai_code_suggestion(parent)
     db.session.commit()
     return jsonify({"ok": True, "children": len(created), "child_ids": created,
                     "sublines_total": sub_total, "main_line_amount": round(main_amt, 2),

@@ -173,6 +173,9 @@ def scan_double_coded(project_id):
     rows = (Transaction.query
             .filter(Transaction.project_id == project_id,
                     Transaction.not_project_expense == False,   # noqa: E712
+                    # Itemized sublines share vendor/date (and often amounts)
+                    # by design — not duplicates. (Review fix 2026-07.)
+                    Transaction.source != 'invoice_split',
                     Transaction.amount.isnot(None))
             .all())
 

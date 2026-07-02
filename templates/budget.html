@@ -6392,6 +6392,12 @@
       if (amt) rows.push({ amount: amt, budget_line_id: line, description: desc });
     });
     const mainLine = (document.getElementById('docDetailLinePicker')||{}).value || '';
+    // Guard: no sublines AND no main line would silently UN-code the doc — make
+    // the user pick something instead of losing coding on a stray click. (2026-07.)
+    if (!rows.length && !mainLine) {
+      if (st) { st.textContent = 'Nothing to save — add sublines or pick a main budget line above.'; st.style.color = '#e0a13a'; }
+      return;
+    }
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
     try {
       const r = await fetch('/docs/upload/' + _itemUid + '/itemize', {
@@ -7182,8 +7188,12 @@
      work for THIS project, so they're excluded from every rollup
      count below. Compute the actionable subset once. #}
   {% set _t_actionable = [] %}
+  {% set _split_parents = split_parent_ids or [] %}
   {% for _t in actuals_transactions %}
-    {% if not (_t.claimed_by_project_id and _t.claimed_by_project_id != project.id) %}
+    {# Itemized containers are excluded — their sublines carry the coding, so
+       counting the uncoded parent inflated 'Needs coding'. (2026-07.) #}
+    {% if not (_t.claimed_by_project_id and _t.claimed_by_project_id != project.id)
+          and _t.id not in _split_parents %}
       {% set _ = _t_actionable.append(_t) %}
     {% endif %}
   {% endfor %}
@@ -18659,7 +18669,7 @@ window._packetOpenDoc = function(uid){
   const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
   if (typeof openDocDetail === 'function') openDocDetail(parseInt(uid), row || null);
 };
-window._buildPacketView = function(){
+window._buildPacketView = async function(){
   const blocks = Array.from(document.querySelectorAll('.cs-docs[data-crew-member-id]'));
   if (!blocks.length) return;
   const REQ = [
@@ -18671,23 +18681,45 @@ window._buildPacketView = function(){
   // badges. Photo-ID sub-types satisfy the ID badge; W-9/W-4 satisfy Tax.
   const idSub  = /(driver|licen|\bdl\b|passport|photo id|state \/ photo id|\bid\b)/i;
   const taxSub = /(w-?9|w-?4)/i;
+  // The Docs pane lazy-renders (perf 2026-06-26), so .doc-row elements only
+  // exist on ?tab=docs — everywhere else, fetch the doc list instead so the
+  // People-tab badges don't falsely show 'Needs …'. (Review fix 2026-07.)
+  let byCid = null;
+  if (!document.querySelector('#docsHistory .doc-row')) {
+    try {
+      if (!window._packetDocsCache) {
+        const r = await fetch('/projects/' + PROJ_ID + '/actuals/docs.json', {credentials:'same-origin'});
+        window._packetDocsCache = ((await r.json()) || {}).docs || [];
+      }
+      byCid = {};
+      window._packetDocsCache.forEach(d => {
+        if (d.crew_member_id) (byCid[d.crew_member_id] = byCid[d.crew_member_id] || []).push(
+          {uid: String(d.id), type: d.category || '', vendor: d.vendor || '', fname: d.label || ''});
+      });
+    } catch (e) { byCid = null; }
+  }
   blocks.forEach(block => {
     const cid  = block.dataset.crewMemberId;
-    const rows = Array.from(document.querySelectorAll(
-        '#docsHistory .doc-row[data-crew-member-id="' + cid + '"]'))
-      .filter(r => (r.dataset.status || '') !== 'duplicate');
+    let docs;
+    if (byCid) {
+      docs = byCid[cid] || [];
+    } else {
+      docs = Array.from(document.querySelectorAll(
+          '#docsHistory .doc-row[data-crew-member-id="' + cid + '"]'))
+        .filter(r => (r.dataset.status || '') !== 'duplicate')
+        .map(r => ({
+          uid: r.dataset.uploadId,
+          type: (r.dataset.sortType || ''),
+          vendor: (r.dataset.sortVendor || ''),   // = sub-type for EVDs
+          fname: (r.querySelector('.doc-filename')?.textContent || '').replace(/^📎\s*/, '').trim()
+        }));
+    }
     const present = {id:false, tax:false, contract:false};
-    const docs = [];
-    rows.forEach(r => {
-      const type   = (r.dataset.sortType || '');
-      const vendor = (r.dataset.sortVendor || '');   // = sub-type for EVDs
-      const fname  = (r.querySelector('.doc-filename')?.textContent || '')
-                       .replace(/^📎\s*/, '').trim();
-      docs.push({uid: r.dataset.uploadId, type, vendor, fname});
-      if (type === 'tax_form')      present.tax = true;
-      else if (type === 'contract') present.contract = true;
-      else if (type === 'employee_vendor_doc') {
-        const hay = vendor + ' ' + fname;
+    docs.forEach(d => {
+      if (d.type === 'tax_form')      present.tax = true;
+      else if (d.type === 'contract') present.contract = true;
+      else if (d.type === 'employee_vendor_doc') {
+        const hay = d.vendor + ' ' + d.fname;
         if (idSub.test(hay))  present.id  = true;
         if (taxSub.test(hay)) present.tax = true;   // a W-9/W-4 filed as a support doc
       }
