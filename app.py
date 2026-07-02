@@ -26563,6 +26563,127 @@ def person_profile(pid, cmid):
     })
 
 
+@app.route("/projects/<int:pid>/people/summary", methods=["GET"])
+@login_required
+def people_summary(pid):
+    """Wrapbook-style People-tab summary: per person, total Paid $, budgeted
+    (deal) $, an over-budget flag, and employment/union chips. Powers the small
+    "Paid $X of $Y" decoration + chips under each name on the People list.
+    (User 2026-07 — Wrapbook-style People columns.)
+
+    Computed in BULK — build lookup maps first, no per-person queries in a loop
+    (the People list can be dozens of names). Mirrors person_profile's helpers
+    and tolerances so a person's numbers agree between the list and the panel."""
+    _require_project_role(pid, 'viewer')
+    ProjectSheet.query.get_or_404(pid)
+    from actuals import get_current_working_budget, get_current_estimated_budget
+    b = get_current_working_budget(pid) or get_current_estimated_budget(pid)
+
+    # --- Build the person set + per-person line/doc maps in bulk. ---
+    # A person appears here if they are (a) assigned to a line via CrewAssignment,
+    # (b) named as a line-level assigned_crew_id, or (c) attached to any doc on
+    # the project. Same three sources person_profile pulls from, unioned.
+    lines_by_person = {}     # cmid -> [budget_line_id, ...] (their labor lines)
+    line_by_id = {}
+    if b:
+        lines = BudgetLine.query.filter_by(budget_id=b.id).all()
+        line_by_id = {ln.id: ln for ln in lines}
+        _lids = list(line_by_id.keys()) or [0]
+        # (a) CrewAssignment rows on this budget's lines.
+        for ca in CrewAssignment.query.filter(
+                CrewAssignment.budget_line_id.in_(_lids),
+                CrewAssignment.crew_member_id.isnot(None)).all():
+            lines_by_person.setdefault(ca.crew_member_id, set()).add(ca.budget_line_id)
+        # (b) line-level assigned_crew_id on labor lines (person_profile only
+        # counts these when the line has no CrewAssignment, but for the person
+        # SET + budgeted total a set-union is harmless — dedupe via the set).
+        for ln in lines:
+            if ln.is_labor and ln.assigned_crew_id:
+                lines_by_person.setdefault(ln.assigned_crew_id, set()).add(ln.id)
+    lines_by_person = {k: list(v) for k, v in lines_by_person.items()}
+
+    # (c) Docs per person on the project (non-deleted). One query → group in Py.
+    docs = (DocUpload.query.filter_by(project_id=pid)
+            .filter(DocUpload.status != 'deleted').all())
+    docs_by_person = {}
+    for d in docs:
+        if d.crew_member_id:
+            docs_by_person.setdefault(d.crew_member_id, []).append(d.id)
+
+    # Union of all three sources → the people we report on.
+    cmids = set(lines_by_person.keys()) | set(docs_by_person.keys())
+    if not cmids:
+        return jsonify({"ok": True, "people": {}})
+
+    # --- Bulk-load ProjectCrewMember rows for the project (one query). ---
+    pcm_by_cmid = {}
+    for pcm in ProjectCrewMember.query.filter_by(project_id=pid).all():
+        pcm_by_cmid[pcm.crew_member_id] = pcm
+
+    # --- Paid $ in bulk: two txn queries (by doc, by line), then aggregate in
+    # Python so each transaction is counted ONCE even if it matches both. We key
+    # on Transaction.id to dedupe, mapping every matched txn to the person(s) it
+    # belongs to via its doc or its line. ---
+    all_doc_ids = [did for ids in docs_by_person.values() for did in ids]
+    all_line_ids = [lid for ids in lines_by_person.values() for lid in ids]
+    # person <- doc_id and person <- line_id reverse maps (a doc/line could in
+    # principle map to one person; build reverse lookups for aggregation).
+    person_by_doc = {}
+    for cm, ids in docs_by_person.items():
+        for did in ids:
+            person_by_doc.setdefault(did, set()).add(cm)
+    person_by_line = {}
+    for cm, ids in lines_by_person.items():
+        for lid in ids:
+            person_by_line.setdefault(lid, set()).add(cm)
+
+    # txn_id -> (signed_amount, set(cmids)) so we count each txn once per person.
+    txn_people = {}
+    _base = (Transaction.query
+             .filter(Transaction.project_id == pid,
+                     Transaction.not_project_expense == False,
+                     Transaction.source != 'invoice_split'))
+    if all_doc_ids:
+        for t in _base.filter(Transaction.doc_upload_id.in_(all_doc_ids)).all():
+            _amt, _who = txn_people.setdefault(t.id, [t, set()])
+            _who |= person_by_doc.get(t.doc_upload_id, set())
+    if all_line_ids:
+        for t in _base.filter(Transaction.budget_line_id.in_(all_line_ids)).all():
+            _amt, _who = txn_people.setdefault(t.id, [t, set()])
+            _who |= person_by_line.get(t.budget_line_id, set())
+
+    # Sum each txn's SIGNED amount (credits subtract — matches _signed_amount /
+    # person_profile) into every person it belongs to. Sign via is_expense the
+    # same way _signed_amount does (expenses positive, credits negative).
+    paid_by_person = {}
+    for _t, _who in txn_people.values():
+        _sa = float(_t.amount or 0)
+        if not bool(_t.is_expense):
+            _sa = -_sa                     # credit → subtracts (CR-3, matches _signed_amount)
+        for cm in _who:
+            paid_by_person[cm] = paid_by_person.get(cm, 0.0) + _sa
+
+    # --- Assemble per-person output. ---
+    people = {}
+    for cmid in cmids:
+        _their_lines = lines_by_person.get(cmid, [])
+        budgeted = round(sum(_line_budget_total(line_by_id[lid])
+                             for lid in _their_lines if lid in line_by_id), 2)
+        paid = round(paid_by_person.get(cmid, 0.0), 2)
+        _tol = max(50.0, abs(budgeted) * 0.05)          # same tolerance as person_profile
+        over = bool(budgeted > 0 and paid > budgeted + _tol)
+        pcm = pcm_by_cmid.get(cmid)
+        people[str(cmid)] = {
+            "paid": paid,
+            "budgeted": budgeted,
+            "over": over,
+            "employment_type": (pcm.employment_type if pcm else None),
+            "union_status": (pcm.union_status if pcm else None),
+            "doc_count": len(docs_by_person.get(cmid, [])),
+        }
+    return jsonify({"ok": True, "people": people})
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/mismatches", methods=["GET"])
 @login_required
 def budget_mismatches(pid, bid):

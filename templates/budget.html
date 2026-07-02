@@ -6834,6 +6834,7 @@
     // Keep the People-tab packet completeness in lockstep (crew link / type
     // changes can complete or break a packet). (User 2026-06-01.)
     if (typeof _buildPacketView === 'function') _buildPacketView();
+    if (typeof _buildPeopleSummary === 'function') _buildPeopleSummary().catch(()=>{});
     if (typeof _buildLocationDocs === 'function') _buildLocationDocs();
     if (typeof _buildVendorView === 'function') _buildVendorView();
     return d;
@@ -18768,6 +18769,56 @@ window._buildPacketView = async function(){
   });
 };
 
+// Wrapbook-style People-tab summary: a small "Paid $X of $Y" line + an over-
+// budget ⚠ + employment/union chips, appended under each name. Separate from
+// _buildPacketView (which owns the doc-completeness badges) so the two decorate
+// the same .cs-docs block without stepping on each other. (User 2026-07.)
+window._buildPeopleSummary = async function(){
+  const blocks = Array.from(document.querySelectorAll('.cs-docs[data-crew-member-id]'));
+  if (!blocks.length) return;
+  // PROJ_ID / PID are NOT in scope in this script block — derive pid from the
+  // URL (this exact bug was already fixed once in _buildPacketView). (User 2026-07.)
+  const _pidM = window.location.pathname.match(/\/projects\/(\d+)\//);
+  if (!_pidM) return;
+  const pid = _pidM[1];
+  try {
+    if (!window._peopleSummaryCache) {
+      const r = await fetch('/projects/' + pid + '/people/summary', {credentials:'same-origin'});
+      window._peopleSummaryCache = ((await r.json()) || {}).people || {};
+    }
+  } catch (e) { return; }   // fail-open: no decoration rather than a broken row
+  const people = window._peopleSummaryCache || {};
+  // Local escape fallback so this block stays self-contained (matches _pesc).
+  const _esc = (typeof _pesc === 'function') ? _pesc
+    : (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+        c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const _money = (n) => '$' + Number(n || 0).toLocaleString(undefined, {maximumFractionDigits: 0});
+  const _EMP = {loan_out:'Loan-out', employee:'Employee', vendor:'Vendor'};
+  const _UNI = {union:'Union', non_union:'Non-Union'};
+  blocks.forEach(block => {
+    const cid = block.dataset.crewMemberId;
+    const info = people[cid];
+    if (!info) return;                                  // skip silently when no entry
+    if (block.dataset.summaryDone === '1') return;      // guard against double-append
+    block.dataset.summaryDone = '1';
+    // Screen-only (cs-screen-only) so print / PDF export stays clean.
+    const div = document.createElement('div');
+    div.className = 'cs-screen-only cs-people-summary';
+    div.style.cssText = 'font-size:.66rem;color:var(--text-muted);margin-top:3px';
+    let html = 'Paid ' + _esc(_money(info.paid)) + ' of ' + _esc(_money(info.budgeted));
+    if (info.over) {
+      html += ' <span style="color:#e0a13a;font-weight:600">⚠ over</span>';
+    }
+    // Employment / union chip (e.g. "Loan-out · Non-Union"); omit missing halves.
+    const chip = [ _EMP[info.employment_type], _UNI[info.union_status] ].filter(Boolean);
+    if (chip.length) {
+      html += ' <span style="color:var(--text-muted)">' + _esc(chip.join(' · ')) + '</span>';
+    }
+    div.innerHTML = html;
+    block.appendChild(div);
+  });
+};
+
 // Attached documents per LOCATION (location releases, COIs, permits), shown on
 // each location card. Same client-side approach as the People packet, keyed on
 // data-location-id. No required-doc badges yet (checklist TBD). (User 2026-06-01.)
@@ -18911,6 +18962,7 @@ document.addEventListener('DOMContentLoaded', () => {
     contactsTabBtn.addEventListener('click', () => setTimeout(() => {
       validateContactSheetEmails();
       if (typeof _buildPacketView === 'function') _buildPacketView();
+      if (typeof _buildPeopleSummary === 'function') _buildPeopleSummary().catch(()=>{});
       if (typeof _buildVendorView === 'function') _buildVendorView();
     }, 50));
   }
@@ -18923,6 +18975,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Also run immediately in case contacts/locations tab is default
   validateContactSheetEmails();
   try { if (typeof _buildPacketView === 'function') _buildPacketView(); } catch (e) {}
+  try { if (typeof _buildPeopleSummary === 'function') _buildPeopleSummary().catch(()=>{}); } catch (e) {}
   try { if (typeof _buildLocationDocs === 'function') _buildLocationDocs(); } catch (e) {}
   try { if (typeof _buildVendorView === 'function') _buildVendorView(); } catch (e) {}
 });
