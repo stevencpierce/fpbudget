@@ -3183,6 +3183,7 @@
                 <option value="insurance">Insurance / COI</option>
                 <option value="tax_form">Tax Form (W-9, W-8, 1099)</option>
                 <option value="payroll">Payroll</option>
+                <option value="timecard">Timecard</option>
                 <option value="legal">Legal</option>
                 <option value="release">Release (Talent / Location)</option>
                 <option value="employee_vendor_doc">Employee/Vendor Doc (DTR, ID, W-9…)</option>
@@ -24035,6 +24036,17 @@ setTimeout(function() {
   .pp-btn.primary{background:#7c3aed;border-color:#7c3aed;color:#fff}
   #tab-contacts .cs-field[data-field="name"] .cs-val{cursor:pointer}
   #tab-contacts .cs-field[data-field="name"] .cs-val:hover{color:#5b8af9;text-decoration:underline}
+  /* Timecards slice 1 (User 2026-07.) */
+  .pp-tc{display:flex;align-items:center;gap:9px;padding:7px 4px;border-bottom:1px solid var(--border,#2a2c31);font-size:.82rem;cursor:pointer}
+  .pp-tc:hover{background:rgba(124,58,237,.07)}
+  .pp-tc .chip{font-size:.62rem;padding:1px 7px;border-radius:8px;text-transform:uppercase;font-weight:600}
+  .pp-tc .chip.draft{background:var(--bg-input,#23262c);color:var(--text-muted,#9aa0aa)}
+  .pp-tc .chip.submitted{background:rgba(59,130,246,.15);color:#60a5fa}
+  .pp-tc .chip.approved{background:rgba(34,197,94,.15);color:#4ade80}
+  .pp-tc-need{display:flex;align-items:center;gap:9px;padding:7px 4px;border-bottom:1px solid var(--border,#2a2c31);font-size:.8rem}
+  .pp-tc-badge{display:inline-flex;align-items:center;gap:5px;background:rgba(217,119,6,.14);border:1px solid #b45309;color:#fbbf24;border-radius:7px;padding:2px 9px;font-size:.72rem;font-weight:600}
+  .pp-tc-gen{border:1px solid #b45309;background:rgba(217,119,6,.10);color:#fbbf24;border-radius:6px;padding:3px 9px;font-size:.72rem;cursor:pointer;margin-left:auto}
+  .pp-tc-gen:hover{background:rgba(217,119,6,.22)}
 </style>
 <div id="personPanel" aria-hidden="true">
   <div class="pp-backdrop" onclick="closePersonPanel()"></div>
@@ -24114,17 +24126,28 @@ setTimeout(function() {
     if(!docs.length) h += '<div style="color:var(--text-muted);font-size:.8rem;margin-top:8px">No documents yet.</div>';
     h += '</div>';
 
-    h += '<div class="pp-sec"><h4>Payments &amp; invoices <span style="font-weight:400;text-transform:none;color:var(--text-muted)">· total '+money(_pp.total_paid)+'</span></h4>';
+    // Timecards slice 1 (User 2026-07.): timecards + invoices are BOTH
+    // first-class. Which one this person is EXPECTED to submit depends on
+    // their per-project employment_type: 'employee' → timecard first, THEN the
+    // payments/invoices list; anyone else → invoices first, timecards after
+    // (still shown, so loan-outs who happen to have timecards see them).
+    // The timecards block is an empty container patched after an async fetch.
+    const isEmployee = (id.employment_type === 'employee');
+    const tcBlock = '<div class="pp-sec"><h4>Timecards</h4><div id="ppTcBox">'
+      + '<div style="color:var(--text-muted);font-size:.8rem">Loading…</div></div></div>';
+    let payBlock = '<div class="pp-sec"><h4>Timecards &amp; invoices <span style="font-weight:400;text-transform:none;color:var(--text-muted)">· payments total '+money(_pp.total_paid)+'</span></h4>';
     pays.forEach(p=>{
-      h += '<div class="pp-pay"'+(p.doc_upload_id?' onclick="closePersonPanel();window.openDocDetail('+p.doc_upload_id+',null)"':'')+'>'
+      payBlock += '<div class="pp-pay"'+(p.doc_upload_id?' onclick="closePersonPanel();window.openDocDetail('+p.doc_upload_id+',null)"':'')+'>'
         + '<span style="color:var(--text-muted)">'+(p.date||'')+'</span>'
         + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(p.vendor||'')+'</span>'
         + '<span class="cat" style="font-size:.62rem;padding:1px 6px;border-radius:8px;background:var(--bg-input);color:var(--text-muted)">'+esc(p.source||'')+'</span>'
         + '<b>'+money(p.amount)+'</b></div>';
     });
-    if(!pays.length) h += '<div style="color:var(--text-muted);font-size:.8rem;margin-top:8px">No payments recorded.</div>';
-    h += '</div>';
+    if(!pays.length) payBlock += '<div style="color:var(--text-muted);font-size:.8rem;margin-top:8px">No payments recorded.</div>';
+    payBlock += '</div>';
+    h += isEmployee ? (tcBlock + payBlock) : (payBlock + tcBlock);
     document.getElementById('ppMain').innerHTML = h;
+    _ppLoadTimecards();   // async fetch → patches #ppTcBox
 
     // ── SIDE: personal info + classification + representation ──
     let s = '<div class="pp-sec"><h4>Details</h4>';
@@ -24144,6 +24167,77 @@ setTimeout(function() {
     }
     document.getElementById('ppSide').innerHTML = s;
   }
+
+  // ── Timecards slice 1 (User 2026-07.) ────────────────────────────────────
+  // Fetch this person's timecards + expected (missing) schedule weeks, then
+  // render into the #ppTcBox placeholder. Fail-quiet: a fetch error just shows
+  // a muted note — timecards are advisory, never block the drawer.
+  async function _ppLoadTimecards(){
+    if(!_pp) return;
+    const box = document.getElementById('ppTcBox');
+    if(!box) return;
+    try{
+      const d = await fetch('/projects/'+PIDp+'/person/'+_pp._cmid+'/timecards',{credentials:'same-origin'}).then(r=>r.json());
+      if(!d.ok) throw new Error(d.error||'load failed');
+      _ppRenderTimecards(d);
+    }catch(e){ box.innerHTML = '<div style="color:var(--text-muted);font-size:.78rem">Could not load timecards.</div>'; }
+  }
+  const _TCST = {draft:'Draft',submitted:'Submitted',approved:'Approved'};
+  function _ppRenderTimecards(d){
+    const box = document.getElementById('ppTcBox');
+    if(!box) return;
+    const cards = d.timecards||[], expected = d.expected||[];
+    let x = '';
+    // Existing timecards — click shows a per-day breakdown from days_json.
+    cards.forEach(t=>{
+      const st = (t.status||'draft');
+      x += '<div class="pp-tc" onclick="_ppShowTimecard('+t.id+')" title="Click for day breakdown">'
+        + '<span style="flex:1;min-width:0">wk ending '+esc(t.week_ending)+' · '+(t.days_count||0)+' day'+((t.days_count===1)?'':'s')+'</span>'
+        + '<b>'+money(t.gross)+'</b>'
+        + '<span class="chip '+st+'">'+(_TCST[st]||st)+'</span></div>';
+    });
+    // Expected weeks with no timecard yet — amber "needs timecard" + Generate.
+    expected.forEach(w=>{
+      x += '<div class="pp-tc-need">'
+        + '<span class="pp-tc-badge">⚠ Needs timecard (wk of '+esc(w.week_ending)+')</span>'
+        + '<span style="color:var(--text-muted);font-size:.72rem">'+(w.days_count||0)+' day'+((w.days_count===1)?'':'s')+'</span>'
+        + '<button class="pp-tc-gen" onclick="_ppGenTimecard(\''+esc(w.week_ending)+'\')">Generate</button></div>';
+    });
+    if(!cards.length && !expected.length)
+      x = '<div style="color:var(--text-muted);font-size:.8rem">No timecards or scheduled weeks.</div>';
+    box.innerHTML = x;
+    // Stash the loaded cards so _ppShowTimecard can read their days_json.
+    _pp._timecards = cards;
+  }
+  window._ppGenTimecard = async function(weekEnding){
+    if(!_pp || _ppBusy) return;
+    _ppBusy = true;
+    const box = document.getElementById('ppTcBox');
+    if(box) box.style.opacity = '.5';
+    try{
+      await fetch('/projects/'+PIDp+'/person/'+_pp._cmid+'/timecards/generate',
+        {method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({week_ending:weekEnding})});
+    }catch(e){ /* fail-quiet */ }
+    finally{ _ppBusy = false; if(box) box.style.opacity = ''; }
+    _ppLoadTimecards();   // re-fetch + re-render the block
+  };
+  window._ppShowTimecard = function(tid){
+    const t = (_pp && _pp._timecards || []).find(c=>c.id===tid);
+    if(!t){ return; }
+    // Slice 1: no grid editor yet — just alert the day breakdown. We only have
+    // day_count/gross client-side here, so re-fetch the full card for its days.
+    fetch('/projects/'+PIDp+'/timecards/'+tid+'/update',
+      {method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'})
+      .then(r=>r.json()).then(d=>{
+        if(!d.ok || !d.timecard){ alert('Timecard #'+tid); return; }
+        const tc = d.timecard;
+        const lines = (tc.days||[]).map(x=>'  '+x.date+'  '+(x.day_type||'work')+'  ×'+x.mult
+          + (x.ot_amount?('  +$'+x.ot_amount+' OT'):'')).join('\n');
+        alert('Timecard — wk ending '+tc.week_ending+' ('+(tc.status||'draft')+')\n'
+          + 'Rate: '+money(tc.rate)+'/day\n\n'+(lines||'  (no days)')+'\n\nGross: '+money(tc.gross));
+      }).catch(()=>alert('Timecard #'+tid));
+  };
 
   window._ppSaveField = async function(field, value){
     if(!_pp) return;

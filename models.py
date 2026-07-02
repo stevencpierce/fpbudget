@@ -473,6 +473,40 @@ class ScheduleDay(db.Model):
     schedule_mode   = db.Column(db.String(20), default="estimated", nullable=False)  # estimated | working
 
 
+class Timecard(db.Model):
+    """Per-(project, person, payroll-week) timecard — Wrapbook mirror (added
+    2026-07, Timecards slice 1). Which people are EXPECTED to submit a timecard
+    (vs an invoice) is decided by their per-project ProjectCrewMember.
+    employment_type: 'employee' → timecard, 'loan_out'/'vendor' → invoice.
+    Timecards AUTO-GENERATE from the schedule: the app already knows each
+    person's work days via ScheduleDay, so a draft is prefilled from that week's
+    days. Wrapbook runs the actual payroll; this table is the planning mirror.
+
+    days_json is a JSON list of per-day entries
+    [{"date","day_type","mult","ot_amount"}] where `mult` is the pay multiplier
+    from budget_calc.DAY_TYPE_MULTIPLIERS and `ot_amount` is FLAT DOLLARS of OT
+    for that day (kept simple this slice — no hours×rate math). `rate` is the
+    per-day rate captured at generate time (CrewAssignment.rate_override else the
+    line's rate) so gross recomputes deterministically:
+        gross = Σ (rate × mult + ot_amount).
+    """
+    __tablename__ = "timecard"
+    id              = db.Column(db.Integer, primary_key=True)
+    project_id      = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False, index=True)
+    crew_member_id  = db.Column(db.Integer, db.ForeignKey("crew_member.id"), nullable=False, index=True)
+    week_ending     = db.Column(db.Date, nullable=False)
+    days_json       = db.Column(db.Text, nullable=True)   # JSON [{date, day_type, mult, ot_amount}]
+    status          = db.Column(db.String(20), default="draft", nullable=False)  # draft | submitted | approved
+    # Per-day rate captured at generate time so gross recomputes deterministically.
+    rate            = db.Column(db.Numeric(12, 2), nullable=True)
+    gross           = db.Column(db.Numeric(12, 2), nullable=True)
+    note            = db.Column(db.String(300), nullable=True)
+    created_at      = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at      = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__  = (db.UniqueConstraint("project_id", "crew_member_id", "week_ending",
+                                           name="uq_timecard_proj_crew_week"),)
+
+
 class ProductionDay(db.Model):
     """Per-production-day flags: meals. Separate rows per schedule_mode (estimated/working)."""
     __tablename__ = "production_day"

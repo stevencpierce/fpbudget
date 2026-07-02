@@ -103,7 +103,7 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     BudgetDirectContact, CompanySettings, DocUpload, CatalogItem,
                     TravelDetail, CateringBill, ActivityLog,
                     SubBudget, SubBudgetLine, EstimateShare, FxRate,
-                    TransactionDupDismissal, ProjectCrewMember)
+                    TransactionDupDismissal, ProjectCrewMember, Timecard)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -6719,6 +6719,7 @@ def budget_view(pid, bid):
         ('insurance',      'Insurance / COIs'),
         ('tax_form',       'Tax Forms'),
         ('payroll',        'Payroll'),
+        ('timecard',       'Timecards'),   # 2026-07 — Timecards slice 1
         ('legal',          'Legal'),
         ('release',        'Releases'),
         ('employee_vendor_doc', 'Employee/Vendor Docs'),
@@ -24138,6 +24139,25 @@ def _web_worker_essential_columns():
                      CONSTRAINT uq_project_crew_member UNIQUE (project_id, crew_member_id)
                    )""",
                 "CREATE INDEX IF NOT EXISTS ix_project_crew_member ON project_crew_member (project_id, crew_member_id)",
+                # 2026-07 — Timecards slice 1. Per-(project, person, payroll-week)
+                # timecard, auto-generated from the schedule. days_json holds the
+                # per-day {date, day_type, mult, ot_amount} entries; rate captured
+                # at generate time so gross = Σ(rate×mult + ot_amount) recomputes.
+                """CREATE TABLE IF NOT EXISTS timecard (
+                     id              SERIAL PRIMARY KEY,
+                     project_id      INTEGER NOT NULL,
+                     crew_member_id  INTEGER NOT NULL,
+                     week_ending     DATE NOT NULL,
+                     days_json       TEXT,
+                     status          VARCHAR(20) NOT NULL DEFAULT 'draft',
+                     rate            NUMERIC(12,2),
+                     gross           NUMERIC(12,2),
+                     note            VARCHAR(300),
+                     created_at      TIMESTAMP,
+                     updated_at      TIMESTAMP,
+                     CONSTRAINT uq_timecard_proj_crew_week UNIQUE (project_id, crew_member_id, week_ending)
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_timecard_proj_crew ON timecard (project_id, crew_member_id)",
                 # 2026-06-18 — AI data-cleanup watermark on docs.
                 "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS ai_cleaned_at TIMESTAMP",
                 # 2026-06-22 — AI travel-reservation extraction on hotel/flight/car docs.
@@ -26470,6 +26490,288 @@ def _line_budget_total(ln):
         return 0.0
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Timecards slice 1 (User 2026-07.)
+# Timecards + invoices are BOTH first-class. Which one a person is EXPECTED to
+# submit is decided by their per-project employment_type (ProjectCrewMember):
+# 'employee' → timecard; 'loan_out'/'vendor' → invoice. Wrapbook runs payroll;
+# FPBudget mirrors it. Timecards AUTO-GENERATE from the schedule — the app
+# already knows each person's work days via ScheduleDay.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _person_schedule_weeks(pid, cmid):
+    """Group a person's WORK schedule days on the project's current
+    working-else-estimated budget into payroll weeks.
+
+    ScheduleDay→person linkage in this codebase is twofold and we honour BOTH
+    defensively (data has whichever is populated):
+      • primary: ScheduleDay.(budget_line_id, crew_instance) → CrewAssignment
+        .(budget_line_id, instance) → crew_member_id  (the usual path)
+      • direct:  ScheduleDay.crew_member_id == cmid  (set on some rows)
+
+    WORK days = day_type not in the zero/near-zero "not really working" set
+    ('off','hold') — matching the day_type vocabulary in
+    budget_calc.DAY_TYPE_MULTIPLIERS (work/travel/travel_half/travel_unpaid/
+    hold/half/off/kill_fee/custom).
+
+    Weeks are keyed by week_ending = the payroll week-end date. payroll_week_start
+    is a day-of-week int (0=Mon..6=Sun; default 6=Sunday when unset) marking the
+    week's START; the week ENDS 6 days later. Same week math as the OT calc /
+    per-diem rollup elsewhere in this file.
+
+    Returns {week_ending(date): [ {date(str), day_type(str)}, ... ]} sorted by day.
+    Fail-open: returns {} on any error (advisory feature).
+    """
+    try:
+        from actuals import get_current_working_budget, get_current_estimated_budget
+        b = get_current_working_budget(pid) or get_current_estimated_budget(pid)
+        if not b:
+            return {}
+        sched_mode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
+
+        # Which (budget_line_id, instance) pairs belong to this person, via their
+        # CrewAssignment rows on lines in THIS budget.
+        line_ids = [lid for (lid,) in
+                    BudgetLine.query.with_entities(BudgetLine.id).filter_by(budget_id=b.id).all()]
+        person_pairs = set()   # {(budget_line_id, instance)}
+        if line_ids:
+            for ca in CrewAssignment.query.filter(
+                    CrewAssignment.crew_member_id == cmid,
+                    CrewAssignment.budget_line_id.in_(line_ids)).all():
+                person_pairs.add((ca.budget_line_id, ca.instance or 1))
+            # Line-level assigned_crew_id → instance 1 fallback (labor line w/o CA).
+            for ln in BudgetLine.query.filter(
+                    BudgetLine.budget_id == b.id,
+                    BudgetLine.assigned_crew_id == cmid).all():
+                person_pairs.add((ln.id, 1))
+
+        # Gather this person's schedule days: rows matching a person_pair OR a
+        # direct crew_member_id hit. One query over the budget's schedule days.
+        rows = ScheduleDay.query.filter_by(
+            budget_id=b.id, schedule_mode=sched_mode).all()
+        mine = []
+        for d in rows:
+            hit_direct = (d.crew_member_id == cmid)
+            hit_pair = ((d.budget_line_id, d.crew_instance or 1) in person_pairs)
+            if hit_direct or hit_pair:
+                mine.append(d)
+
+        # Payroll week math: week START day-of-week (0=Mon..6=Sun; default Sun).
+        profile = b.payroll_profile
+        pw_start = (b.payroll_week_start if b.payroll_week_start is not None
+                    else (profile.payroll_week_start if profile else 6))
+        pw_start = int(pw_start)
+
+        def _week_ending(dt):
+            # week-start date containing dt, then +6 days = week end.
+            days_back = (dt.weekday() - pw_start) % 7
+            return dt - timedelta(days=days_back) + timedelta(days=6)
+
+        SKIP = {'off', 'hold'}   # not-really-working days excluded from timecards
+        weeks = {}
+        for d in mine:
+            if (d.day_type or 'work') in SKIP:
+                continue
+            we = _week_ending(d.date)
+            weeks.setdefault(we, {})   # inner dict keyed by date → dedup same day
+            weeks[we][d.date] = (d.day_type or 'work')
+        out = {}
+        for we, day_map in weeks.items():
+            out[we] = [{"date": dt.isoformat(), "day_type": dt_type}
+                       for dt, dt_type in sorted(day_map.items())]
+        return out
+    except Exception:
+        return {}
+
+
+def _timecard_person_rate(pid, cmid):
+    """Per-day rate for this person on the current budget: their
+    CrewAssignment.rate_override if set, else the line's rate. First assignment
+    wins (people are usually one role per project). Returns float or 0.0."""
+    try:
+        from actuals import get_current_working_budget, get_current_estimated_budget
+        b = get_current_working_budget(pid) or get_current_estimated_budget(pid)
+        if not b:
+            return 0.0
+        line_ids = [lid for (lid,) in
+                    BudgetLine.query.with_entities(BudgetLine.id).filter_by(budget_id=b.id).all()]
+        if line_ids:
+            ca = CrewAssignment.query.filter(
+                CrewAssignment.crew_member_id == cmid,
+                CrewAssignment.budget_line_id.in_(line_ids)).first()
+            if ca is not None:
+                if ca.rate_override is not None:
+                    return float(ca.rate_override or 0)
+                ln = BudgetLine.query.get(ca.budget_line_id)
+                if ln is not None:
+                    return float(ln.rate or 0)
+        ln = BudgetLine.query.filter(
+            BudgetLine.budget_id == b.id,
+            BudgetLine.assigned_crew_id == cmid).first()
+        return float(ln.rate or 0) if ln else 0.0
+    except Exception:
+        return 0.0
+
+
+def _timecard_gross(rate, days):
+    """gross = Σ (rate × mult + ot_amount) over the days_json list."""
+    total = 0.0
+    for d in (days or []):
+        try:
+            total += float(rate or 0) * float(d.get('mult') or 0) + float(d.get('ot_amount') or 0)
+        except (TypeError, ValueError):
+            continue
+    return round(total, 2)
+
+
+@app.route("/projects/<int:pid>/person/<int:cmid>/timecards", methods=["GET"])
+@login_required
+def person_timecards(pid, cmid):
+    """List a person's timecards + the schedule weeks still MISSING one.
+    expected = schedule weeks with no Timecard row yet. (User 2026-07.)"""
+    _require_project_role(pid, 'viewer')
+    ProjectSheet.query.get_or_404(pid)
+    CrewMember.query.get_or_404(cmid)
+
+    existing = (Timecard.query.filter_by(project_id=pid, crew_member_id=cmid)
+                .order_by(Timecard.week_ending.desc()).all())
+    have_weeks = {t.week_ending for t in existing}
+
+    sched = _person_schedule_weeks(pid, cmid)   # {week_ending(date): [days]}
+    expected = []
+    for we in sorted(sched.keys(), reverse=True):
+        if we in have_weeks:
+            continue
+        expected.append({"week_ending": we.isoformat(),
+                         "days": sched[we],
+                         "days_count": len(sched[we])})
+
+    def _count_days(t):
+        try:
+            return len(json.loads(t.days_json) or [])
+        except (TypeError, ValueError):
+            return 0
+
+    timecards = [{
+        "id": t.id, "week_ending": t.week_ending.isoformat(),
+        "status": t.status or 'draft',
+        "gross": float(t.gross) if t.gross is not None else None,
+        "days_count": _count_days(t),
+    } for t in existing]
+
+    return jsonify({"ok": True, "expected": expected, "timecards": timecards})
+
+
+@app.route("/projects/<int:pid>/person/<int:cmid>/timecards/generate", methods=["POST"])
+@login_required
+def person_timecard_generate(pid, cmid):
+    """Create (or return the existing) draft Timecard for one payroll week,
+    prefilled from that week's schedule days. (User 2026-07.)"""
+    _require_project_role(pid, 'editor')
+    ProjectSheet.query.get_or_404(pid)
+    CrewMember.query.get_or_404(cmid)
+    data = request.get_json(silent=True) or {}
+    we_raw = (data.get('week_ending') or '').strip()
+    if not we_raw:
+        return jsonify({"ok": False, "error": "week_ending required"}), 400
+    try:
+        we = datetime.strptime(we_raw, "%Y-%m-%d").date()
+    except ValueError:
+        return jsonify({"ok": False, "error": "bad week_ending (want YYYY-MM-DD)"}), 400
+
+    # Idempotent: if one already exists for this (project, person, week), return it.
+    existing = Timecard.query.filter_by(
+        project_id=pid, crew_member_id=cmid, week_ending=we).first()
+    if existing is not None:
+        return jsonify({"ok": True, "timecard": _timecard_dict(existing), "created": False})
+
+    sched = _person_schedule_weeks(pid, cmid)
+    week_days = sched.get(we) or []
+    rate = _timecard_person_rate(pid, cmid)
+    days_json = [{
+        "date": d["date"], "day_type": d["day_type"],
+        "mult": float(DAY_TYPE_MULTIPLIERS.get(d["day_type"], 1.0)),
+        "ot_amount": 0.0,
+    } for d in week_days]
+    gross = _timecard_gross(rate, days_json)
+
+    tc = Timecard(project_id=pid, crew_member_id=cmid, week_ending=we,
+                  days_json=json.dumps(days_json), status='draft',
+                  rate=rate, gross=gross)
+    db.session.add(tc)
+    try:
+        db.session.commit()
+    except Exception:
+        # Race: someone generated the same week concurrently — return theirs.
+        db.session.rollback()
+        existing = Timecard.query.filter_by(
+            project_id=pid, crew_member_id=cmid, week_ending=we).first()
+        if existing is not None:
+            return jsonify({"ok": True, "timecard": _timecard_dict(existing), "created": False})
+        raise
+    return jsonify({"ok": True, "timecard": _timecard_dict(tc), "created": True})
+
+
+@app.route("/projects/<int:pid>/timecards/<int:tid>/update", methods=["POST"])
+@login_required
+def timecard_update(pid, tid):
+    """Update a timecard's days_json / status / note. When days_json is provided,
+    gross is recomputed from the STORED rate × Σmult + Σot_amount. (User 2026-07.)"""
+    _require_project_role(pid, 'editor')
+    tc = Timecard.query.filter_by(id=tid, project_id=pid).first_or_404()
+    data = request.get_json(silent=True) or {}
+
+    if 'status' in data:
+        st = (data.get('status') or '').strip()
+        if st not in ('draft', 'submitted', 'approved'):
+            return jsonify({"ok": False, "error": "bad status"}), 400
+        tc.status = st
+    if 'note' in data:
+        tc.note = (data.get('note') or '')[:300]
+    if 'days_json' in data:
+        days = data.get('days_json')
+        if isinstance(days, str):
+            try:
+                days = json.loads(days)
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "days_json not valid JSON"}), 400
+        if not isinstance(days, list):
+            return jsonify({"ok": False, "error": "days_json must be a list"}), 400
+        # Normalize each entry; recompute gross from the stored per-day rate.
+        clean = []
+        for d in days:
+            if not isinstance(d, dict):
+                continue
+            clean.append({
+                "date": d.get('date'),
+                "day_type": d.get('day_type') or 'work',
+                "mult": float(d.get('mult') or 0),
+                "ot_amount": float(d.get('ot_amount') or 0),
+            })
+        tc.days_json = json.dumps(clean)
+        tc.gross = _timecard_gross(tc.rate, clean)
+
+    db.session.commit()
+    return jsonify({"ok": True, "timecard": _timecard_dict(tc)})
+
+
+def _timecard_dict(tc):
+    """Serialize a Timecard for the JSON endpoints."""
+    try:
+        days = json.loads(tc.days_json) if tc.days_json else []
+    except (TypeError, ValueError):
+        days = []
+    return {
+        "id": tc.id, "project_id": tc.project_id, "crew_member_id": tc.crew_member_id,
+        "week_ending": tc.week_ending.isoformat() if tc.week_ending else None,
+        "status": tc.status or 'draft',
+        "rate": float(tc.rate) if tc.rate is not None else None,
+        "gross": float(tc.gross) if tc.gross is not None else None,
+        "note": tc.note or '',
+        "days": days, "days_count": len(days),
+    }
+
+
 @app.route("/projects/<int:pid>/person/<int:cmid>/profile", methods=["GET"])
 @login_required
 def person_profile(pid, cmid):
@@ -26588,8 +26890,22 @@ def person_profile(pid, cmid):
              "phone": s.phone, "company": s.company}
             for s in (cm.support_contacts or []) if getattr(s, 'active', True)]
 
+    # Timecards slice 1 (User 2026-07.): count of schedule weeks still missing a
+    # timecard. Advisory / fail-open — 0 when the helper errors, when the person
+    # has no schedule, or (implicitly) for non-employees who have no work days.
+    expected_timecards = 0
+    try:
+        _tc_weeks = _person_schedule_weeks(pid, cmid)
+        if _tc_weeks:
+            _have = {t.week_ending for t in
+                     Timecard.query.filter_by(project_id=pid, crew_member_id=cmid).all()}
+            expected_timecards = sum(1 for we in _tc_weeks if we not in _have)
+    except Exception:
+        expected_timecards = 0
+
     return jsonify({
         "ok": True,
+        "expected_timecards": expected_timecards,
         "identity": {
             "id": cm.id, "name": cm.name, "email": cm.email, "phone": cm.phone,
             "company": cm.company, "department": cm.department,
