@@ -18688,7 +18688,9 @@ window._buildPacketView = async function(){
   if (!document.querySelector('#docsHistory .doc-row')) {
     try {
       if (!window._packetDocsCache) {
-        const r = await fetch('/projects/' + PROJ_ID + '/actuals/docs.json', {credentials:'same-origin'});
+        // PROJ_ID isn't in scope in this script block — derive pid from the URL.
+        const _pidM = window.location.pathname.match(/\/projects\/(\d+)\//);
+        const r = await fetch('/projects/' + (_pidM ? _pidM[1] : '') + '/actuals/docs.json', {credentials:'same-origin'});
         window._packetDocsCache = ((await r.json()) || {}).docs || [];
       }
       byCid = {};
