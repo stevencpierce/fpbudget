@@ -3023,6 +3023,14 @@
                title="Download the original uploaded file from the durable source archive">
               📎 Source
             </a>
+            {# Jump to the fast, dedicated full-page editor (User 2026-07) — the
+               modal lives inside this ~6.5MB page, so the standalone screen is
+               far snappier for heavy edits. href wired in openDocDetail. #}
+            <a id="docDetailFullEditor" href="#"
+               style="font-size:11px;padding:4px 10px;border-radius:6px;background:#241a40;color:#b79dff;border:1px solid #40306f;text-decoration:none;"
+               title="Open this document in the fast full-page editor">
+              ⧉ Full editor
+            </a>
             <a id="docDetailDropboxLink" href="#" target="_blank"
                style="font-size:11px;padding:4px 10px;border-radius:6px;background:#1a2540;color:#5b8af9;border:1px solid #2d4070;text-decoration:none;">
               Open in Dropbox ↗
@@ -6055,6 +6063,9 @@
       document.body.appendChild(overlay);
     }
     overlay.style.display = 'flex';
+    // Point the ⧉ Full editor link at the standalone editor for THIS doc.
+    // PROJ_ID is in scope in this script block. (User 2026-07.)
+    { const _fe = document.getElementById('docDetailFullEditor'); if (_fe) _fe.href = '/projects/' + PROJ_ID + '/docs/' + uid + '/editor'; }
     // Clear transient state from the previously-viewed doc (covers prev/next nav,
     // which reuses the open overlay): stale re-OCR conversion note + button text.
     // (User 2026-06-22.)

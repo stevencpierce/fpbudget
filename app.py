@@ -5286,6 +5286,57 @@ def budget_audit_json(pid, bid):
     })
 
 
+# ── Budget-line picker options (shared) ──────────────────────────────────
+# Builds the section-grouped budget-line options used by the Actuals
+# dropdown (actualsLineOptsTpl in budget.html) AND by the standalone
+# doc-editor page (edLinePicker in doc_editor.html). Returns a tuple of
+# (pick_budget, groups). Each group is {code, name, lines}. Extracted from
+# budget_view's inline block verbatim so both render IDENTICAL options.
+# (User 2026-07 — standalone doc editor.)
+def _line_picker_groups(pid):
+    # Prefer the project's current Working budget (has parent_budget_id);
+    # fall back to the current Estimated if no Working exists yet — same
+    # order as the old inline block.
+    pick_budget = (Budget.query
+                   .filter_by(project_id=pid, version_status='current',
+                              is_actual=False)
+                   .filter(Budget.parent_budget_id.isnot(None))
+                   .order_by(Budget.id.desc())
+                   .first())
+    if not pick_budget:
+        pick_budget = (Budget.query
+                       .filter_by(project_id=pid,
+                                  version_status='current',
+                                  is_actual=False)
+                       .order_by(Budget.id.desc())
+                       .first())
+    # Group its lines by COA section for the optgroup dropdown.
+    groups = []
+    if pick_budget:
+        # Group the picker's options by MAJOR COA SECTION (e.g. "4000 ·
+        # Production"), not by each line's own account_code — each <optgroup>
+        # is a real section header with its lines beneath it. (User 2026-06-03.)
+        _by_section = {}
+        for ln in sorted(pick_budget.lines,
+                         key=lambda l: (l.account_code or 0, l.sort_order or 0, l.id)):
+            try:
+                sec_code = _section_for_code(int(ln.account_code)) if ln.account_code is not None else None
+            except (TypeError, ValueError):
+                sec_code = None
+            _by_section.setdefault(sec_code, []).append(ln)
+        section_order = {code: i for i, (code, _) in enumerate(FP_COA_SECTIONS)}
+        sorted_keys = sorted(
+            _by_section.keys(),
+            key=lambda c: (section_order.get(c, 9999), c or 0),
+        )
+        groups = [
+            {"code": k, "name": (_section_name(k) if k is not None else 'Other'),
+             "lines": _by_section[k]}
+            for k in sorted_keys
+        ]
+    return pick_budget, groups
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>")
 @login_required
 def budget_view(pid, bid):
@@ -6579,46 +6630,9 @@ def budget_view(pid, bid):
     # dropdown is consistent regardless of whether the user is on the
     # Estimated or Working URL when they switch to Actuals.
     # Falls back to Estimated if no Working exists yet.
-    actuals_pick_budget = (Budget.query
-                            .filter_by(project_id=pid, version_status='current',
-                                       is_actual=False)
-                            .filter(Budget.parent_budget_id.isnot(None))
-                            .order_by(Budget.id.desc())
-                            .first())
-    if not actuals_pick_budget:
-        actuals_pick_budget = (Budget.query
-                                .filter_by(project_id=pid,
-                                           version_status='current',
-                                           is_actual=False)
-                                .order_by(Budget.id.desc())
-                                .first())
-    # Group its lines by COA section for the optgroup dropdown.
-    actuals_pick_groups = []
-    if actuals_pick_budget:
-        # Group the picker's options by MAJOR COA SECTION (e.g. "4000 ·
-        # Production"), not by each line's own account_code. The old key was
-        # (account_code, account_name) which is unique per line, so the dropdown
-        # rendered hundreds of one-line <optgroup>s with no real section
-        # structure — "everything runs together". Now each <optgroup> is a real
-        # section header with its lines beneath it. (User 2026-06-03.)
-        _by_section = {}
-        for ln in sorted(actuals_pick_budget.lines,
-                          key=lambda l: (l.account_code or 0, l.sort_order or 0, l.id)):
-            try:
-                sec_code = _section_for_code(int(ln.account_code)) if ln.account_code is not None else None
-            except (TypeError, ValueError):
-                sec_code = None
-            _by_section.setdefault(sec_code, []).append(ln)
-        section_order = {code: i for i, (code, _) in enumerate(FP_COA_SECTIONS)}
-        sorted_keys = sorted(
-            _by_section.keys(),
-            key=lambda c: (section_order.get(c, 9999), c or 0),
-        )
-        actuals_pick_groups = [
-            {"code": k, "name": (_section_name(k) if k is not None else 'Other'),
-             "lines": _by_section[k]}
-            for k in sorted_keys
-        ]
+    # Refactored into _line_picker_groups() so the standalone doc-editor
+    # page can render the IDENTICAL picker options. (User 2026-07.)
+    actuals_pick_budget, actuals_pick_groups = _line_picker_groups(pid)
 
     # Per-line crew + PO badges for the Actuals "Chart of Accounts" sidebar
     # (per user 2026-05-29: "is there a way to see in the chart of accounts
@@ -25094,6 +25108,38 @@ def docs_upload_status(uid):
         "travel": (json.loads(upload.travel_json) if upload.travel_json else None),
         "travel_extracted": bool(upload.travel_extracted_at),
     })
+
+
+@app.route("/projects/<int:pid>/docs/<int:uid>/editor", methods=["GET"])
+@login_required
+def doc_editor_page(pid, uid):
+    """Standalone, lightweight QuickBooks-style document editor.
+
+    The in-page doc-detail modal lives inside the ~6.5MB budget page, so every
+    interaction there is slow. This dedicated screen is LEAN: big preview on the
+    left, editable form + itemization grid on the right, all driven by the SAME
+    existing doc endpoints (/docs/upload/<uid>/status|raw|update|coding|
+    line-items|itemize). We only build the picker-option context here — nothing
+    else server-side. (User 2026-07.)
+    """
+    _require_project_role(pid, 'viewer')
+    upload = DocUpload.query.get_or_404(uid)
+    if upload.project_id != pid:
+        abort(404)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        # _docs_check_row_access returns a JSON 403 tuple; for a page we abort.
+        abort(403)
+    project = ProjectSheet.query.get_or_404(pid)
+    # Same section-grouped budget-line options the Actuals picker uses, so the
+    # standalone editor's line/section coding is identical. (User 2026-07.)
+    _pick_budget, pick_groups = _line_picker_groups(pid)
+    return render_template(
+        "doc_editor.html",
+        project=project,
+        upload=upload,
+        actuals_pick_groups=pick_groups,
+    )
 
 
 def _purge_old_trash(days=30):
