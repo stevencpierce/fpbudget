@@ -26602,6 +26602,26 @@ def people_summary(pid):
                 lines_by_person.setdefault(ln.assigned_crew_id, set()).add(ln.id)
     lines_by_person = {k: list(v) for k, v in lines_by_person.items()}
 
+    # Paid $ must also see txns coded to SIBLING lines — actuals live on the
+    # Actual budget's line ids, not the Working ids above (same resolution as
+    # budget_mismatches). budgeted still sums ONLY the working lines.
+    # (Review follow-up 2026-07: over-flags were never firing without this.)
+    paylines_by_person = {k: set(v) for k, v in lines_by_person.items()}
+    if lines_by_person:
+        _proj_lines = (BudgetLine.query.join(Budget, Budget.id == BudgetLine.budget_id)
+                       .filter(Budget.project_id == pid).all())
+        _sib = {}
+        for _pl in _proj_lines:
+            _sib.setdefault((_pl.account_code, _pl.description or ''), set()).add(_pl.id)
+        for _cm, _lids in paylines_by_person.items():
+            _extra = set()
+            for _lid in _lids:
+                _ln = line_by_id.get(_lid)
+                if _ln is not None:
+                    _extra |= _sib.get((_ln.account_code, _ln.description or ''), set())
+            _lids |= _extra
+    paylines_by_person = {k: list(v) for k, v in paylines_by_person.items()}
+
     # (c) Docs per person on the project (non-deleted). One query → group in Py.
     docs = (DocUpload.query.filter_by(project_id=pid)
             .filter(DocUpload.status != 'deleted').all())
@@ -26625,7 +26645,7 @@ def people_summary(pid):
     # on Transaction.id to dedupe, mapping every matched txn to the person(s) it
     # belongs to via its doc or its line. ---
     all_doc_ids = [did for ids in docs_by_person.values() for did in ids]
-    all_line_ids = [lid for ids in lines_by_person.values() for lid in ids]
+    all_line_ids = [lid for ids in paylines_by_person.values() for lid in ids]
     # person <- doc_id and person <- line_id reverse maps (a doc/line could in
     # principle map to one person; build reverse lookups for aggregation).
     person_by_doc = {}
@@ -26633,7 +26653,7 @@ def people_summary(pid):
         for did in ids:
             person_by_doc.setdefault(did, set()).add(cm)
     person_by_line = {}
-    for cm, ids in lines_by_person.items():
+    for cm, ids in paylines_by_person.items():   # sibling-expanded (paid side)
         for lid in ids:
             person_by_line.setdefault(lid, set()).add(cm)
 
