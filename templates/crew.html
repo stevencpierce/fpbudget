@@ -41,8 +41,12 @@
   <tbody>
     {% for m in members %}
     {% set agent = agent_map.get(m.id) %}
-    <tr data-name="{{ m.name | lower }}" data-dept="{{ (m.department or '') | lower }}" data-company="{{ (m.company or '') | lower }}">
-      <td><strong>{{ m.name }}</strong></td>
+    {# data-crew-id added 2026-07 so a delegated click on the name cell can
+       resolve the crew id → open the global profile drawer. The row itself
+       carried no usable id before (the id lived only inside the Edit button's
+       onclick string), so this is the minimal attribute needed. #}
+    <tr data-crew-id="{{ m.id }}" data-name="{{ m.name | lower }}" data-dept="{{ (m.department or '') | lower }}" data-company="{{ (m.company or '') | lower }}">
+      <td><strong class="crew-name-open" title="Open profile">{{ m.name }}</strong></td>
       <td>{{ m.department or '—' }}</td>
       <td>{{ m.company or '—' }}</td>
       <td class="col-num">{{ m.default_rate | currency if m.default_rate else '—' }}</td>
@@ -222,7 +226,62 @@
 }
 .agent-role-badge.agent { background: rgba(245,158,11,.12); color: #fcd34d; border-color: rgba(245,158,11,.3); }
 .agent-role-badge.manager { background: rgba(16,185,129,.12); color: #6ee7b7; border-color: rgba(16,185,129,.3); }
+.crew-name-open { cursor: pointer; }
+.crew-name-open:hover { text-decoration: underline; text-decoration-color: var(--accent, #7c3aed); }
 </style>
+
+{# ══════════════════════════════════════════════════════════════════════════
+   GLOBAL person profile drawer (crew DB / Wrapbook "master" view).
+   Standalone equivalent of budget.html's project-scoped #personPanel, but
+   cross-project + read-only (identity + paperwork are GLOBAL; roles/rates/
+   union are per-project → shown as one "engagement" card per project).
+   Class prefix cpp- (not pp-) to avoid any collision. Opened via
+   window.openCrewProfile(cid). (User 2026-07 — global person profile.)
+   ═══════════════════════════════════════════════════════════════════════ #}
+<style>
+  #crewProfilePanel{position:fixed;inset:0;z-index:10055;display:none}
+  #crewProfilePanel.open{display:block}
+  .cpp-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5)}
+  .cpp-drawer{position:absolute;top:0;right:0;height:100%;width:min(880px,96vw);
+    background:var(--bg,#1a1b1f);border-left:1px solid var(--border,#33363d);
+    box-shadow:-8px 0 32px rgba(0,0,0,.4);display:flex;flex-direction:column}
+  .cpp-head{display:flex;align-items:center;gap:14px;padding:16px 20px;border-bottom:1px solid var(--border,#33363d)}
+  .cpp-avatar{width:52px;height:52px;border-radius:50%;background:#2563eb;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.1rem;flex-shrink:0}
+  .cpp-name{font-size:1.25rem;font-weight:800;line-height:1.1}
+  .cpp-sub{font-size:.8rem;color:var(--text-muted,#9aa0aa);margin-top:2px}
+  .cpp-edit{margin-left:auto;border:1px solid var(--border,#444);background:var(--bg-input,#23262c);color:var(--text,#e6e8eb);border-radius:7px;padding:6px 12px;font-size:.78rem;cursor:pointer}
+  .cpp-x{background:none;border:none;color:var(--text-muted,#9aa0aa);font-size:1.4rem;cursor:pointer;padding:0 4px}
+  .cpp-body{flex:1;overflow:auto;padding:18px 20px}
+  .cpp-sec{margin-bottom:22px}
+  .cpp-sec h4{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted,#9aa0aa);margin:0 0 8px;font-weight:700}
+  .cpp-eng{border:1px solid var(--border,#33363d);border-radius:9px;padding:11px 13px;margin-bottom:10px}
+  .cpp-eng .proj{font-weight:700;font-size:.95rem;margin-bottom:4px}
+  .cpp-eng .roles{font-size:.82rem;color:var(--text-muted,#9aa0aa);margin-bottom:6px}
+  .cpp-eng .r{display:flex;justify-content:space-between;gap:10px;font-size:.82rem;margin:2px 0}
+  .cpp-chip{display:inline-block;font-size:.66rem;padding:2px 8px;border-radius:9px;font-weight:600;background:var(--bg-input,#23262c);color:var(--text-muted,#9aa0aa);margin-right:5px}
+  .cpp-badges{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
+  .cpp-badge{font-size:.7rem;padding:3px 9px;border-radius:9px;font-weight:600}
+  .cpp-badge.ok{background:rgba(34,197,94,.15);color:#4ade80}
+  .cpp-badge.no{background:rgba(120,120,120,.15);color:var(--text-muted,#9aa0aa)}
+  .cpp-doc{display:flex;align-items:center;gap:9px;padding:7px 4px;border-bottom:1px solid var(--border,#2a2c31);font-size:.82rem;cursor:pointer}
+  .cpp-doc:hover{background:rgba(124,58,237,.07)}
+  .cpp-doc .cat{font-size:.64rem;padding:1px 7px;border-radius:8px;background:var(--bg-input,#23262c);color:var(--text-muted,#9aa0aa);text-transform:uppercase;flex-shrink:0}
+  .cpp-doc .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cpp-doc .ptag{font-size:.66rem;color:var(--text-muted,#9aa0aa);background:var(--bg-2,#17181c);border-radius:7px;padding:1px 7px;flex-shrink:0}
+  .cpp-grp{font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted,#9aa0aa);margin:10px 0 2px;font-weight:700}
+</style>
+<div id="crewProfilePanel" aria-hidden="true">
+  <div class="cpp-backdrop" onclick="closeCrewProfile()"></div>
+  <div class="cpp-drawer" role="dialog" aria-modal="true">
+    <div class="cpp-head">
+      <div class="cpp-avatar" id="cppAvatar">–</div>
+      <div><div class="cpp-name" id="cppName">Person</div><div class="cpp-sub" id="cppSub"></div></div>
+      <button class="cpp-edit" id="cppEdit" style="display:none">✎ Edit master info</button>
+      <button class="cpp-x" onclick="closeCrewProfile()" title="Close">✕</button>
+    </div>
+    <div class="cpp-body" id="cppBody"><div style="color:var(--text-muted);padding:30px">Loading…</div></div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -387,5 +446,122 @@ function setSelectVal(sel, val) {
 function _esc(s) {
   return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   GLOBAL person profile drawer (Crew DB). Standalone — does NOT import from
+   budget.html. Read-only cross-project master view: identity + paperwork are
+   global; roles/rates/union are per-project engagement cards. All fetches
+   same-origin + fail-open. (User 2026-07.)
+   ═══════════════════════════════════════════════════════════════════════ */
+(function(){
+  const esc = s => String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  const money0 = v => (v==null?'—':'$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0}));
+  const ET = {loan_out:'Loan-out',employee:'Employee',vendor:'Vendor'};
+  const US = {union:'Union',non_union:'Non-Union'};
+  // Persistent paperwork categories float to the top of the doc list. Anything
+  // else (receipts/invoices/etc.) follows after. (User 2026-07.)
+  const PERSIST_CATS = ['tax_form','employee_vendor_doc','contract','release','legal','insurance'];
+
+  window.openCrewProfile = async function(cid){
+    if(!cid) return;
+    const m = document.getElementById('crewProfilePanel');
+    m.classList.add('open'); m.setAttribute('aria-hidden','false');
+    document.getElementById('cppBody').innerHTML = '<div style="color:var(--text-muted);padding:30px">Loading…</div>';
+    document.getElementById('cppEdit').style.display = 'none';
+    try {
+      const d = await fetch('/crew/'+cid+'/profile.json',{credentials:'same-origin'}).then(r=>r.json());
+      if(!d || !d.ok) throw new Error((d&&d.error)||'load failed');
+      renderCrewProfile(d, cid);
+    } catch(e){
+      // Fail-open: show a soft error in the panel body, never a dead drawer.
+      document.getElementById('cppBody').innerHTML = '<div style="color:#e0a13a;padding:30px">Could not load: '+esc(e && e.message)+'</div>';
+    }
+  };
+  window.closeCrewProfile = function(){
+    const m=document.getElementById('crewProfilePanel');
+    m.classList.remove('open'); m.setAttribute('aria-hidden','true');
+  };
+
+  function renderCrewProfile(d, cid){
+    const id = d.identity||{}, eng = d.engagements||[], docs = d.documents||[], comp = d.completeness||{};
+    // ── Header: avatar initials, name, company · department subtitle. ──
+    const initials = (id.name||'?').split(/\s+/).map(x=>x[0]).filter(Boolean).join('').slice(0,2).toUpperCase() || '?';
+    document.getElementById('cppAvatar').textContent = initials;
+    document.getElementById('cppName').textContent = id.name||'Person';
+    document.getElementById('cppSub').textContent = [id.company, id.department].filter(Boolean).join(' · ');
+    // Edit button → reuse the EXISTING crew edit modal if present (guarded).
+    const editBtn = document.getElementById('cppEdit');
+    if(typeof openCrewEditModal === 'function'){
+      editBtn.style.display = ''; editBtn.onclick = () => openCrewEditModal(cid, id.name||'');
+    } else if(typeof openEditCrew === 'function'){
+      // Fallback to this template's actual edit entry point (openEditCrew).
+      const row = document.querySelector('tr[data-crew-id="'+cid+'"] button.btn-outline');
+      editBtn.style.display = ''; editBtn.onclick = () => { if(row) row.click(); };
+    } else {
+      editBtn.style.display = 'none';
+    }
+
+    let h = '';
+    // ── Engagements ──
+    h += '<div class="cpp-sec"><h4>Engagements</h4>';
+    if(!eng.length){
+      h += '<div style="color:var(--text-muted);font-size:.82rem">No project engagements yet.</div>';
+    }
+    eng.forEach(x=>{
+      const chips = [ET[x.employment_type], US[x.union_status]].filter(Boolean)
+                      .map(t=>'<span class="cpp-chip">'+esc(t)+'</span>').join('');
+      h += '<div class="cpp-eng"><div class="proj">'+esc(x.project_name||('Project '+x.project_id))+'</div>'
+        + (x.roles && x.roles.length ? '<div class="roles">'+esc(x.roles.join(', '))+'</div>' : '')
+        + '<div class="r"><span>Budgeted</span><b>'+money0(x.budgeted)+'</b></div>'
+        + (chips ? '<div style="margin-top:6px">'+chips+'</div>' : '')
+        + '<div class="r" style="margin-top:4px"><span style="color:var(--text-muted)">'+(x.doc_count||0)+' doc'+((x.doc_count===1)?'':'s')+'</span></div>'
+        + '</div>';
+    });
+    h += '</div>';
+
+    // ── Documents: completeness badges + grouped list (paperwork first). ──
+    h += '<div class="cpp-sec"><h4>Documents</h4><div class="cpp-badges">';
+    [['contract','Contract'],['tax_form','Tax form'],['photo_id','ID'],['invoice','Invoice']].forEach(([k,lbl])=>{
+      h += '<span class="cpp-badge '+(comp[k]?'ok':'no')+'">'+(comp[k]?'✓ ':'○ ')+esc(lbl)+'</span>';
+    });
+    h += '</div>';
+    if(!docs.length){
+      h += '<div style="color:var(--text-muted);font-size:.82rem">No documents on file.</div>';
+    } else {
+      const persist = docs.filter(x=>PERSIST_CATS.includes((x.category||'').toLowerCase()));
+      const other   = docs.filter(x=>!PERSIST_CATS.includes((x.category||'').toLowerCase()));
+      const rowHtml = x => '<div class="cpp-doc" onclick="window.open(\'/docs/upload/'+x.id+'/raw\',\'_blank\')">'
+        + '<span class="cat">'+esc(x.category||'doc')+'</span>'
+        + '<span class="nm">'+esc(x.filename||x.vendor||'document')+'</span>'
+        + (x.doc_date?'<span style="color:var(--text-muted);flex-shrink:0">'+esc(x.doc_date)+'</span>':'')
+        + (x.amount!=null?'<span style="flex-shrink:0">'+money0(x.amount)+'</span>':'')
+        + (x.project_name?'<span class="ptag">'+esc(x.project_name)+'</span>':'')
+        + '</div>';
+      if(persist.length){ h += '<div class="cpp-grp">Persistent paperwork</div>' + persist.map(rowHtml).join(''); }
+      if(other.length){ h += '<div class="cpp-grp">'+(persist.length?'Other documents':'Documents')+'</div>' + other.map(rowHtml).join(''); }
+    }
+    h += '</div>';
+
+    document.getElementById('cppBody').innerHTML = h;
+  }
+
+  // Escape key closes the drawer (only when open).
+  document.addEventListener('keydown', function(e){
+    if(e.key === 'Escape'){
+      const m = document.getElementById('crewProfilePanel');
+      if(m && m.classList.contains('open')) window.closeCrewProfile();
+    }
+  });
+
+  // Entry point: click a crew member's NAME → open the global profile. The row
+  // carries data-crew-id; don't hijack the Edit/delete buttons in the last cell.
+  document.addEventListener('click', function(e){
+    const nameEl = e.target.closest('.crew-name-open');
+    if(!nameEl) return;
+    const row = nameEl.closest('tr[data-crew-id]');
+    const cid = row && row.getAttribute('data-crew-id');
+    if(cid){ e.preventDefault(); window.openCrewProfile(cid); }
+  });
+})();
 </script>
 {% endblock %}

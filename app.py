@@ -26563,6 +26563,146 @@ def person_profile(pid, cmid):
     })
 
 
+@app.route("/crew/<int:cid>/profile.json", methods=["GET"])
+@login_required
+def crew_profile_json(cid):
+    """GLOBAL (cross-project) person profile — the Wrapbook-style "master" view
+    for the Crew DB page. Persistent identity + paperwork (ID, W-9, tax forms)
+    live with the person GLOBALLY; roles/rates/union status are per-project and
+    surfaced here as one "engagement" card per project the person touches.
+
+    Same access guard as /crew (crew is a global directory → plain
+    @login_required, no per-project role check). Mirrors person_profile's
+    document/completeness shapes so the two panels agree. Computed in BULK: a
+    couple of cross-project queries build lookup maps, then a small per-project
+    loop (a person is usually on <10 shows) fills engagement rows — NO per-doc
+    or per-line N+1. (User 2026-07 — global person profile on Crew DB.)"""
+    cm = CrewMember.query.get_or_404(cid)
+    from actuals import get_current_working_budget, get_current_estimated_budget
+
+    # ── identity (global CrewMember columns only) ───────────────────────────
+    identity = {
+        "id": cm.id, "name": cm.name, "email": cm.email, "phone": cm.phone,
+        "company": cm.company, "department": cm.department,
+        "is_vendor": bool(cm.is_vendor), "active": bool(cm.active),
+        "default_rate": (float(cm.default_rate) if cm.default_rate is not None else None),
+        "default_rate_type": cm.default_rate_type,
+    }
+
+    # ── documents: ALL non-deleted docs for this person across ALL projects ──
+    # One query, newest-first by uploaded_at. Project names resolved via a bulk
+    # ProjectSheet map (no per-doc lookup).
+    docs = (DocUpload.query.filter_by(crew_member_id=cid)
+            .filter(DocUpload.status != 'deleted')
+            .order_by(DocUpload.uploaded_at.desc().nullslast(), DocUpload.id.desc()).all())
+    _proj_ids = {d.project_id for d in docs if d.project_id}
+    proj_name_by_id = {}
+    if _proj_ids:
+        for ps in ProjectSheet.query.filter(ProjectSheet.id.in_(list(_proj_ids))).all():
+            proj_name_by_id[ps.id] = ps.name
+    documents = [{
+        "id": d.id, "project_id": d.project_id,
+        "project_name": proj_name_by_id.get(d.project_id),
+        "category": d.category, "vendor": d.vendor,
+        "amount": (float(d.amount) if d.amount is not None else None),
+        "doc_date": d.doc_date.isoformat() if d.doc_date else None,
+        "filename": d.filed_filename or d.original_filename,
+        "status": d.status,
+    } for d in docs]
+
+    # ── completeness: same keys/logic as person_profile (global doc set) ────
+    # 'employee_vendor_doc' counts toward photo_id (matches person_profile).
+    _cats = {(d.category or '').lower() for d in docs}
+    _has = lambda *ks: any(k in _cats for k in ks)
+    completeness = {
+        "contract":  _has('contract', 'release', 'legal'),
+        "tax_form":  _has('tax_form'),
+        "photo_id":  _has('id', 'photo_id', 'employee_vendor_doc'),
+        "invoice":   _has('invoice'),
+    }
+
+    # ── engagements: one card per project where the person has assignments OR
+    # docs. Discover the project set via three cross-project queries (all bulk),
+    # then loop per project (usually <10) to sum budgeted over their labor lines
+    # on that project's current working-else-estimated budget. ──────────────
+    projects = dict(proj_name_by_id)  # start with projects that have docs
+    doc_count_by_proj = {}
+    for d in docs:
+        if d.project_id:
+            doc_count_by_proj[d.project_id] = doc_count_by_proj.get(d.project_id, 0) + 1
+
+    # (a) CrewAssignment on ANY of their budget lines → project via Budget.
+    for pid_, pname in (db.session.query(ProjectSheet.id, ProjectSheet.name)
+                        .join(Budget, Budget.project_id == ProjectSheet.id)
+                        .join(BudgetLine, BudgetLine.budget_id == Budget.id)
+                        .join(CrewAssignment, CrewAssignment.budget_line_id == BudgetLine.id)
+                        .filter(CrewAssignment.crew_member_id == cid)
+                        .distinct().all()):
+        projects.setdefault(pid_, pname)
+    # (b) line-level assigned_crew_id.
+    for pid_, pname in (db.session.query(ProjectSheet.id, ProjectSheet.name)
+                        .join(Budget, Budget.project_id == ProjectSheet.id)
+                        .join(BudgetLine, BudgetLine.budget_id == Budget.id)
+                        .filter(BudgetLine.assigned_crew_id == cid)
+                        .distinct().all()):
+        projects.setdefault(pid_, pname)
+
+    # Per-project union/employment from ProjectCrewMember (one bulk query).
+    pcm_by_proj = {}
+    for pcm in ProjectCrewMember.query.filter_by(crew_member_id=cid).all():
+        pcm_by_proj[pcm.project_id] = pcm
+
+    engagements = []
+    for pid_ in sorted(projects.keys()):
+        roles, budgeted = [], 0.0
+        try:
+            b = get_current_working_budget(pid_) or get_current_estimated_budget(pid_)
+            if b:
+                lines = BudgetLine.query.filter_by(budget_id=b.id).all()
+                line_by_id = {ln.id: ln for ln in lines}
+                # This person's labor lines on THIS project (CrewAssignment OR
+                # line-level assigned_crew_id) — set-union dedupes.
+                their_lids = set()
+                if line_by_id:
+                    for ca in CrewAssignment.query.filter(
+                            CrewAssignment.crew_member_id == cid,
+                            CrewAssignment.budget_line_id.in_(list(line_by_id.keys()))).all():
+                        their_lids.add(ca.budget_line_id)
+                for ln in lines:
+                    if ln.is_labor and ln.assigned_crew_id == cid:
+                        their_lids.add(ln.id)
+                _seen_roles = set()
+                for lid in their_lids:
+                    ln = line_by_id.get(lid)
+                    if not ln:
+                        continue
+                    budgeted += _line_budget_total(ln)
+                    _r = (ln.description or ln.account_name or '').strip()
+                    if _r and _r not in _seen_roles:
+                        _seen_roles.add(_r); roles.append(_r)
+        except Exception:
+            # Fail-open: a bad budget on one project must not sink the panel.
+            pass
+        pcm = pcm_by_proj.get(pid_)
+        engagements.append({
+            "project_id": pid_,
+            "project_name": projects.get(pid_),
+            "roles": roles,
+            "budgeted": round(budgeted, 2),
+            "employment_type": (pcm.employment_type if pcm else None),
+            "union_status": (pcm.union_status if pcm else None),
+            "doc_count": doc_count_by_proj.get(pid_, 0),
+        })
+
+    return jsonify({
+        "ok": True,
+        "identity": identity,
+        "documents": documents,
+        "completeness": completeness,
+        "engagements": engagements,
+    })
+
+
 @app.route("/projects/<int:pid>/people/summary", methods=["GET"])
 @login_required
 def people_summary(pid):
