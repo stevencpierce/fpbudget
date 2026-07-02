@@ -26547,8 +26547,13 @@ def _person_schedule_weeks(pid, cmid):
 
         # Gather this person's schedule days: rows matching a person_pair OR a
         # direct crew_member_id hit. One query over the budget's schedule days.
-        rows = ScheduleDay.query.filter_by(
-            budget_id=b.id, schedule_mode=sched_mode).all()
+        # NB: legacy rows have schedule_mode = NULL — OR it in like the travel
+        # apply-doc query does, else timecards see an empty schedule. (2026-07.)
+        from sqlalchemy import or_ as _or_tc
+        rows = ScheduleDay.query.filter(
+            ScheduleDay.budget_id == b.id,
+            _or_tc(ScheduleDay.schedule_mode == sched_mode,
+                   ScheduleDay.schedule_mode == None)).all()   # noqa: E711
         mine = []
         for d in rows:
             hit_direct = (d.crew_member_id == cmid)
