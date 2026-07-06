@@ -13156,7 +13156,10 @@
       </thead>
       <tbody>
         {% set ns2 = namespace(prev_dept=None) %}
-        {% for row in ns.crew_rows | sort(attribute='dept') %}
+        {# Alphabetical: departments A→Z, then people A→Z within each dept.
+           sort() is stable, so sort by name first then by dept gives that.
+           (User 2026-07.) #}
+        {% for row in ns.crew_rows | sort(attribute='name') | sort(attribute='dept') %}
           {% if row.dept != ns2.prev_dept %}
           <tr class="cs-dept-row"><td colspan="8">{{ row.dept }}</td></tr>
           {% set ns2.prev_dept = row.dept %}
@@ -13179,6 +13182,13 @@
             <td class="contact-role">{{ row.role }}{% if row.instance > 1 %} <span class="contact-instance">#{{ row.instance }}</span>{% endif %}</td>
             <td class="cs-field {% if row.omit.get('name') %}cs-omit{% endif %}" data-field="name">
               <span class="cs-val">{{ row.name }}</span>
+              {# Mirror tag (User 2026-07.): loan-outs/vendors show their linked
+                 vendor ON THE SAME LINE — "— Loan-out: <vendor>". Muted +
+                 screen-only so the printed/exported sheet stays clean. #}
+              {% set _pv = person_vendor.get(row.crew_member_id) if (person_vendor and row.crew_member_id) else None %}
+              {% if _pv and _pv.employment_type in ('loan_out', 'vendor') and _pv.loan_out_vendor_name %}
+              <span class="cs-screen-only muted" style="font-size:.72rem;margin-left:4px">— Loan-out: {{ _pv.loan_out_vendor_name }}</span>
+              {% endif %}
               {% if row.omit.get('name') %}<span class="cs-omit-badge">OMIT</span>{% endif %}
               {# Document-packet completeness + doc access, folded into the
                  contact sheet (screen-only; the printed/exported sheet stays
@@ -13232,34 +13242,44 @@
   </div>
 
   {# ── VENDORS & LOAN-OUTS ─────────────────────────────────────────────
-     Vendors are person-like entities; people who work through a loan-out
-     company nest under it. Completeness badges per the vendor's own required
-     docs; doc lists built client-side (data-crew-member-id). (User 2026-06-01.) #}
-  {% set _vendors = (crew_members or []) | selectattr('is_vendor') | list %}
-  {% if _vendors %}
+     Rendered from vendor_groups (built server-side, alphabetical): a vendor
+     appears if ANYTHING in this project references it — a per-project
+     ProjectCrewMember.loan_out_vendor_id link, a global-fallback link, or the
+     vendor's own doc/assignment. People nest beneath (alphabetical) and are
+     clickable → openPersonProfile(cmid), the SAME drawer as an individual.
+     Completeness badges per the vendor's own required docs; doc lists built
+     client-side (data-crew-member-id). (User 2026-07.) #}
+  {% if vendor_groups %}
   <div class="contact-sheet-section">
     <div class="contact-sheet-section-header">
       <span class="contact-sheet-section-icon">🏢</span> Vendors &amp; Loan-Outs
     </div>
     <div style="display:flex;flex-direction:column;gap:6px;padding:4px 0">
-      {% for v in _vendors %}
-      <div class="vendor-card" data-crew-member-id="{{ v.id }}" data-required="{{ v.required_docs or '' }}"
+      {% for g in vendor_groups %}
+      {% set _vname = g.vendor_name or (cm_name_by_id.get(g.vendor_id) if cm_name_by_id else '') or ('Vendor #' ~ g.vendor_id) %}
+      {% set _vcm = (crew_members or []) | selectattr('id', 'equalto', g.vendor_id) | list | first %}
+      <div class="vendor-card" data-crew-member-id="{{ g.vendor_id }}" data-required="{{ (_vcm.required_docs if _vcm else '') or '' }}"
            style="border:1px solid var(--border);border-radius:8px;background:var(--bg-card);padding:9px 12px">
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <span style="font-weight:600">{{ v.name }}</span>
-          {% if v.company %}<span class="muted" style="font-size:.72rem">{{ v.company }}</span>{% endif %}
+          <span class="cs-field" data-field="name" data-crew-member-id="{{ g.vendor_id }}" style="font-weight:600;cursor:pointer"
+                onclick="window.openPersonProfile({{ g.vendor_id }})">
+            <span class="cs-val">{{ _vname }}</span>
+          </span>
           <span class="vendor-badges" style="font-size:.66rem;display:flex;gap:9px;flex-wrap:wrap"></span>
           <a href="#" class="vendor-docs-toggle" style="display:none;margin-left:auto;font-size:.66rem;color:#5b8af9;text-decoration:none"></a>
-          <button class="btn btn-xs btn-ghost cs-screen-only" onclick="openCrewEditModal({{ v.id }}, '{{ v.name|replace("'","\\'") }}')" title="Edit vendor">✎</button>
+          <button class="btn btn-xs btn-ghost cs-screen-only" onclick="openCrewEditModal({{ g.vendor_id }}, '{{ _vname|replace("'","\\'") }}')" title="Edit vendor">✎</button>
         </div>
         <div class="vendor-docs-list" style="display:none;margin-top:5px"></div>
-        {% set _children = (crew_members or []) | selectattr('loan_out_vendor_id', 'equalto', v.id) | list %}
-        {% if _children %}
+        {% if g.people %}
         <div style="margin-top:6px;border-top:1px dashed var(--border);padding-top:5px">
           <div class="muted" style="font-size:.62rem;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px">Loan-outs</div>
-          {% for c in _children %}
-          <div class="vendor-loanout" data-crew-member-id="{{ c.id }}" style="display:flex;align-items:center;gap:8px;padding:2px 0 2px 12px;font-size:.76rem">
-            <span>↳ {{ c.name }}</span>
+          {% for cid in g.people %}
+          {% set _cname = (cm_name_by_id.get(cid) if cm_name_by_id else '') or ('Person #' ~ cid) %}
+          <div class="vendor-loanout" data-crew-member-id="{{ cid }}" style="display:flex;align-items:center;gap:8px;padding:2px 0 2px 12px;font-size:.76rem">
+            <span class="cs-field" data-field="name" data-crew-member-id="{{ cid }}" style="cursor:pointer"
+                  onclick="window.openPersonProfile({{ cid }})">
+              <span class="cs-val">↳ {{ _cname }}</span>
+            </span>
             <span class="vendor-loanout-docs muted" style="font-size:.64rem"></span>
           </div>
           {% endfor %}
@@ -13277,9 +13297,8 @@
      doc popup. Otherwise their packet would be invisible. (User 2026-06-01.) #}
   {% set _shown_ids = [] %}
   {% for r in ns.crew_rows %}{% if r.crew_member_id %}{% set _ = _shown_ids.append(r.crew_member_id) %}{% endif %}{% endfor %}
-  {% for v in _vendors %}{% set _ = _shown_ids.append(v.id) %}{% endfor %}
+  {% for g in (vendor_groups or []) %}{% set _ = _shown_ids.append(g.vendor_id) %}{% for cid in g.people %}{% set _ = _shown_ids.append(cid) %}{% endfor %}{% endfor %}
   {% for dc in (direct_contacts or []) %}{% if dc.crew_member_id %}{% set _ = _shown_ids.append(dc.crew_member_id) %}{% endif %}{% endfor %}
-  {% for c in (crew_members or []) if c.loan_out_vendor_id %}{% set _ = _shown_ids.append(c.id) %}{% endfor %}
   {% set _doc_crew_ids = (doc_uploads or []) | selectattr('crew_member_id') | map(attribute='crew_member_id') | list %}
   {% set _others = (crew_members or []) | rejectattr('is_vendor') | selectattr('id', 'in', _doc_crew_ids) | rejectattr('id', 'in', _shown_ids) | list %}
   {% if _others %}

@@ -5691,6 +5691,78 @@ def budget_view(pid, bid):
         crew_members = [c for c in all_crew_members if c.id in _cm_ids]
     else:
         crew_members = []
+
+    # ── People-tab per-project maps (User 2026-07.) ────────────────────────
+    # The People tab's "Vendors & Loan-Outs" grouping historically read the
+    # GLOBAL CrewMember.loan_out_vendor_id, so the NEW per-project links
+    # (ProjectCrewMember.loan_out_vendor_id) were invisible and vendors with no
+    # docs/assignments never appeared. Build three maps in ONE pass, fail-open:
+    #   person_vendor  {cmid: {employment_type, union_status,
+    #                          loan_out_vendor_id, loan_out_vendor_name}}
+    #   vendor_groups  [{vendor_id, vendor_name, people:[cmid,...]}] alphabetical
+    #   cm_name_by_id  {cmid: name}  (template needs names for nested people)
+    person_vendor = {}
+    vendor_groups = []
+    cm_name_by_id = {}
+    try:
+        _cm_by_id = {c.id: c for c in all_crew_members}
+        for c in all_crew_members:
+            cm_name_by_id[c.id] = c.name
+        # (a) per-project overrides for THIS project, one query.
+        pcm_by_cmid = {}
+        for _pcm in ProjectCrewMember.query.filter_by(project_id=pid).all():
+            pcm_by_cmid[_pcm.crew_member_id] = _pcm
+        # (b) people surfaced on the People tab = crew_members (assigned/vendors)
+        #     ∪ anyone with a DocUpload.crew_member_id on this project.
+        _surfaced = set(c.id for c in crew_members)
+        for (cmid,) in (db.session.query(DocUpload.crew_member_id)
+                        .filter(DocUpload.project_id == pid,
+                                DocUpload.crew_member_id.isnot(None)).distinct()):
+            if cmid:
+                _surfaced.add(cmid)
+        # (c) build person_vendor + collect which vendors are referenced.
+        _vendor_people = {}   # {vendor_id: set(cmid)}
+        for cmid in _surfaced:
+            _cm = _cm_by_id.get(cmid)
+            if _cm is None:
+                continue
+            _pcm = pcm_by_cmid.get(cmid)
+            # Per-project link wins; fall back to the global cm field for display.
+            _lov_id = (_pcm.loan_out_vendor_id if (_pcm and _pcm.loan_out_vendor_id)
+                       else None) or getattr(_cm, 'loan_out_vendor_id', None)
+            _lov_name = None
+            if _lov_id:
+                _v = _cm_by_id.get(_lov_id) or CrewMember.query.get(_lov_id)
+                _lov_name = _v.name if _v else None
+                if _lov_name:
+                    cm_name_by_id.setdefault(_lov_id, _lov_name)
+            person_vendor[cmid] = {
+                "employment_type": (_pcm.employment_type if _pcm else None),
+                "union_status":    (_pcm.union_status if _pcm else None),
+                "loan_out_vendor_id":   _lov_id,
+                "loan_out_vendor_name": _lov_name,
+            }
+            if _lov_id:
+                _vendor_people.setdefault(_lov_id, set()).add(cmid)
+        # (d) a vendor also appears if it IS a surfaced vendor (has its own
+        #     docs/assignments on the project), even with zero loan-outs.
+        for c in crew_members:
+            if getattr(c, 'is_vendor', False):
+                _vendor_people.setdefault(c.id, set())
+        # (e) alphabetical vendor groups; people inside sorted by name.
+        for _vid, _cmids in _vendor_people.items():
+            _vname = cm_name_by_id.get(_vid)
+            if not _vname:
+                _v = _cm_by_id.get(_vid) or CrewMember.query.get(_vid)
+                _vname = _v.name if _v else ("Vendor #%d" % _vid)
+                cm_name_by_id[_vid] = _vname
+            _people = sorted(_cmids, key=lambda i: (cm_name_by_id.get(i) or '').lower())
+            vendor_groups.append({"vendor_id": _vid, "vendor_name": _vname,
+                                  "people": _people})
+        vendor_groups.sort(key=lambda g: (g["vendor_name"] or '').lower())
+    except Exception:
+        person_vendor, vendor_groups, cm_name_by_id = {}, [], {}
+
     all_templates = BudgetTemplate.query.order_by(BudgetTemplate.name).all()
 
     # Per-line actuals for Compare tab
@@ -7070,6 +7142,9 @@ def budget_view(pid, bid):
         fringes=fringes,
         crew_members=crew_members,
         all_crew_members=all_crew_members,
+        person_vendor=person_vendor,
+        vendor_groups=vendor_groups,
+        cm_name_by_id=cm_name_by_id,
         actuals_by_code=actuals_by_code_full,
         coa_sections=FP_COA_SECTIONS,
         all_templates=all_templates,
@@ -27548,6 +27623,53 @@ def person_update(pid, cmid):
     if _new_vendor is not None:
         _resp["loan_out_vendor"] = _new_vendor
     return jsonify(_resp)
+
+
+@app.route("/vendors/audit", methods=["GET"])
+@login_required
+def vendors_audit():
+    """READ-ONLY ghost-vendor audit (User 2026-07.): is_vendor CrewMember rows
+    that NOTHING references — no per-project loan-out link, no global loan-out
+    back-ref, no linked document, no crew assignment, no assigned budget line.
+    These are safe-to-delete candidates surfaced to the owner. No deletes here."""
+    try:
+        vendors = (CrewMember.query
+                   .filter(CrewMember.is_vendor == True)                 # noqa: E712
+                   .order_by(func.lower(CrewMember.name)).all())
+        # Pre-collect every id referenced anywhere, so the audit is one pass.
+        referenced = set()
+        for (vid,) in (db.session.query(ProjectCrewMember.loan_out_vendor_id)
+                       .filter(ProjectCrewMember.loan_out_vendor_id.isnot(None))
+                       .distinct()):
+            if vid:
+                referenced.add(vid)
+        for (vid,) in (db.session.query(CrewMember.loan_out_vendor_id)
+                       .filter(CrewMember.loan_out_vendor_id.isnot(None))
+                       .distinct()):
+            if vid:
+                referenced.add(vid)
+        for (cid,) in (db.session.query(DocUpload.crew_member_id)
+                       .filter(DocUpload.crew_member_id.isnot(None)).distinct()):
+            if cid:
+                referenced.add(cid)
+        for (cid,) in (db.session.query(CrewAssignment.crew_member_id)
+                       .filter(CrewAssignment.crew_member_id.isnot(None)).distinct()):
+            if cid:
+                referenced.add(cid)
+        for (cid,) in (db.session.query(BudgetLine.assigned_crew_id)
+                       .filter(BudgetLine.assigned_crew_id.isnot(None)).distinct()):
+            if cid:
+                referenced.add(cid)
+        ghosts = [{"id": v.id, "name": v.name}
+                  for v in vendors if v.id not in referenced]
+        return jsonify({
+            "ok": True,
+            "ghosts": ghosts,
+            "counts": {"vendors_total": len(vendors), "ghosts": len(ghosts)},
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e),
+                        "ghosts": [], "counts": {"vendors_total": 0, "ghosts": 0}}), 200
 
 
 def _doc_receipt_detail(upload):
