@@ -577,20 +577,15 @@
     {% endif %}
     {% if peer_working_bid %}
     <a href="{{ url_for('budget_view', pid=project.id, bid=peer_working_bid) }}"
-       class="mode-seg-btn {% if not is_actual_view and budget.budget_mode in ('working','actual') %}active mode-working{% endif %}">Working</a>
+       class="mode-seg-btn {% if not is_actual_view and budget.budget_mode in ('working','actual') %}active mode-working{% endif %}"
+       title="Working budget — live spend, with each line's transactions expandable inline">Working</a>
     {% else %}
     <span class="mode-seg-btn mode-seg-inactive" title="No Working budget for this version — initialize one from the version picker">Working</span>
     {% endif %}
-    {% if peer_actual_bid %}
-    <a href="{{ url_for('budget_view', pid=project.id, bid=peer_actual_bid) }}"
-       class="mode-seg-btn {% if is_actual_view %}active mode-actual{% endif %}"
-       title="Actual budget — live spend, with each line's transactions expandable inline">Actual</a>
-    {% else %}
-    <a href="{{ url_for('actuals_init_actual_budget', pid=project.id) }}"
-       class="mode-seg-btn mode-seg-inactive"
-       title="No Actual budget yet — click to initialize from Working"
-       onclick="return confirm('Initialize Actual budget from Working? This clones the current Working budget into a peer Actual for live tracking.')">Actual</a>
-    {% endif %}
+    {# Actual segment removed (Migration P3, User 2026-07): actuals now live on
+       Working. Archived Actual budgets remain reachable read-only by direct URL
+       for audit. The actuals_init_actual_budget route stays defined but is no
+       longer referenced. #}
   </div>
 </div>
 
@@ -1609,7 +1604,16 @@
               </strong>
             {% elif has_actual_budget %}
               {% if _actual > 0 %}
-                <strong style="color:var(--green)">{{ _actual | currency }}</strong>
+                {# P3 (User 2026-07): actuals now live on Working. When a line
+                   has spend, the Actual cell becomes a ▸ expander that lazily
+                   loads this line's transactions into a detail subrow below.
+                   Screen-only affordance — the number stays for print/export. #}
+                <span class="work-actual-expand cs-screen-only" data-line-id="{{ ln.id }}"
+                      style="cursor:pointer;display:inline-flex;align-items:center;gap:3px"
+                      title="Show the transactions coded to this line">
+                  <span class="work-actual-chev" style="display:inline-block;width:9px;color:var(--green);font-size:.72rem">▸</span>
+                  <strong style="color:var(--green)">{{ _actual | currency }}</strong>
+                </span>
               {% else %}
                 <span class="muted" style="font-size:.75rem">—</span>
               {% endif %}
@@ -1835,6 +1839,21 @@
                     title="Delete line">✕</button>
           </td>
         </tr>
+        {# P3 (User 2026-07): Working-view per-line transaction detail. Empty
+           shell populated lazily by JS on first ▸ click (fetches
+           /actuals/line/<id>/transactions.json). cs-screen-only keeps it out
+           of print / server-side export — the Actual column number carries the
+           spend there. Display-only: does NOT touch ns.sec_* accumulators. #}
+        {% if is_working_view and not is_actual_view and has_actual_budget and _actual > 0 %}
+        <tr class="work-actual-detail cs-screen-only" data-for-line="{{ ln.id }}" style="display:none">
+          <td colspan="14" style="padding:6px 12px 12px 32px;background:rgba(34,197,94,.04);border-left:3px solid var(--green)">
+            <div class="work-actual-detail-body" data-loaded="0" data-line-id="{{ ln.id }}"
+                 style="font-size:.78rem;color:var(--text-muted)">
+              <span class="work-actual-loading">Loading transactions…</span>
+            </div>
+          </td>
+        </tr>
+        {% endif %}
         {# Per-person travel/per-diem mirror rows (per user 2026-05-05).
            Read-only references showing this person's slice of each
            Travel section aggregate. Source of truth stays in the
@@ -2073,6 +2092,50 @@
           <td class="col-act"></td>
         </tr>
         {% endfor %}
+        {% endif %}
+        {# P3 (User 2026-07): Working-view section-only spend row. When
+           transactions are coded to this SECTION but no specific line
+           (actual_section_only_by_code), surface them as a dimmed, expandable
+           reference row so the dollars aren't invisible. Populated lazily by JS
+           (fetches /actuals/section/<code>/transactions.json). Display-only:
+           does NOT feed ns.sec_* accumulators (the number here is a separate
+           project-scoped rollup). cs-screen-only keeps it out of print/export.
+           Same 15-<td> shape as the sister-orphan row above for grid alignment. #}
+        {% if is_working_view and not is_actual_view and has_actual_budget %}
+        {% set _sec_only_amt = (actual_section_only_by_code.get(sec.code, 0) or 0) | float %}
+        {% if _sec_only_amt %}
+        <tr class="line-row work-section-only-row cs-screen-only" data-section-code="{{ sec.code }}"
+            style="background:rgba(168,85,247,.06);cursor:pointer"
+            title="Transactions coded to this section without a specific line. Click to expand; open a transaction's doc or ✕ uncode it to remove the section coding.">
+          <td class="col-desc" style="color:var(--text-muted)">
+            <span class="work-section-only-chev" style="display:inline-block;width:10px;color:#c084fc;font-size:.72rem">▸</span>
+            <span style="color:#c084fc;font-weight:600">📂 Section-coded spend</span>
+            <span class="muted" style="margin-left:.4rem;font-size:.72rem;font-style:italic">— no specific line</span>
+          </td>
+          <td class="col-pc col-labor-only"></td>
+          <td class="col-qty"></td>
+          <td class="col-days"></td>
+          <td class="col-num"></td>
+          <td class="col-rt"></td>
+          <td class="col-num"></td>
+          <td class="col-num"></td>
+          <td class="col-fr"></td>
+          <td class="col-num"></td>
+          <td class="col-num"></td>
+          <td class="col-num col-working"></td>
+          <td class="col-num col-actual" style="font-weight:600;color:#c084fc">{{ _sec_only_amt | currency }}</td>
+          <td class="col-num col-variance"></td>
+          <td class="col-act"></td>
+        </tr>
+        <tr class="work-section-only-detail cs-screen-only" data-for-section="{{ sec.code }}" style="display:none">
+          <td colspan="14" style="padding:6px 12px 12px 32px;background:rgba(168,85,247,.05);border-left:3px solid #a855f7">
+            <div class="work-section-only-body" data-loaded="0" data-section-code="{{ sec.code }}"
+                 style="font-size:.78rem;color:var(--text-muted)">
+              <span class="work-section-only-loading">Loading transactions…</span>
+            </div>
+          </td>
+        </tr>
+        {% endif %}
         {% endif %}
       </tbody>
       {% set sec_working = namespace(total=0) %}
@@ -15503,6 +15566,205 @@ window.saveInlinePo = async function() {
       header.style.outline = '';
       _assignDragged({ code: block.dataset.section });
     });
+  });
+})();
+
+// ── Working view: per-line + section-only transaction detail (Phase 3) ──────
+// (Migration P3, User 2026-07 — "bring in the actuals functions to the working
+// budget.") The Working view already shows the Actual column; this adds the
+// Actual view's interactive detail: click the ▸ in a line's Actual cell to
+// lazily load that line's transactions, or the 📂 Section-coded row to load a
+// section's line-less spend. Each subrow: date · vendor · amount · 📎 doc ·
+// ✕ uncode. Display-only — never touches section totals. Skipped in Actual view
+// (that view has its own inline machinery, actualBudgetIIFE above).
+(function workingActualsDetailIIFE() {
+  if (_IS_ACTUAL_VIEW) return;
+  const _lineCache = {};      // { lineId: txns[] }  — fetch once per expand
+  const _sectionCache = {};   // { code: txns[] }
+
+  function _esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function _fmtMoney(n) {
+    if (n == null || isNaN(n)) return '—';
+    const neg = n < 0;
+    return (neg ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US',
+      { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  // Render the subrow table for a set of transactions into a body container.
+  // scope = 'line' | 'section' — controls which uncode endpoint runs.
+  function _renderSubrows(body, txns, scope) {
+    if (!txns.length) {
+      body.innerHTML = '<span style="font-style:italic">No transactions.</span>';
+      return;
+    }
+    let html = '<table style="width:100%;font-size:.78rem;border-collapse:collapse"><tbody>';
+    txns.forEach(t => {
+      const amtNeg = (t.amount != null && t.amount < 0);
+      let docCell;
+      if (t.doc_upload_id) {
+        // Prefer the standalone doc editor page; fall back to the in-page
+        // doc detail overlay if openDocDetail is the only thing available.
+        const fname = _esc((t.doc_filename || 'receipt').slice(0, 40));
+        docCell = '<a href="/projects/' + PROJ_ID + '/docs/' + t.doc_upload_id + '/editor" '
+          + 'class="wad-doc-link" data-uid="' + t.doc_upload_id + '" '
+          + 'style="color:#5b8af9;text-decoration:none">📎 ' + fname + '</a>';
+      } else {
+        docCell = '<span class="muted" style="font-style:italic;font-size:.72rem">no receipt</span>';
+      }
+      html += '<tr class="wad-subrow" data-tid="' + t.id + '" data-scope="' + scope + '" '
+        + 'style="border-top:1px solid var(--border)">'
+        + '<td style="padding:5px 6px;color:var(--text-muted);font-variant-numeric:tabular-nums;width:90px">'
+        + _esc(t.date || '—') + '</td>'
+        + '<td style="padding:5px 6px;width:38%">' + _esc(t.vendor || '—') + '</td>'
+        + '<td style="padding:5px 6px;width:32%">' + docCell + '</td>'
+        + '<td style="padding:5px 6px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;'
+        + 'color:' + (amtNeg ? '#fb7185' : 'var(--text)') + '">'
+        + (t.amount != null ? _fmtMoney(t.amount) : '—') + '</td>'
+        + '<td style="padding:5px 6px;text-align:right;width:70px">'
+        + '<button type="button" class="wad-uncode-btn" title="Uncode — remove this charge from '
+        + (scope === 'line' ? 'this line' : 'this section') + '" '
+        + 'style="background:none;border:none;color:#e08080;cursor:pointer;font-size:.75rem;padding:2px 4px">✕ uncode</button>'
+        + '</td></tr>';
+    });
+    html += '</tbody></table>';
+    body.innerHTML = html;
+  }
+
+  async function _loadLine(body) {
+    const lid = body.dataset.lineId;
+    if (_lineCache[lid]) { _renderSubrows(body, _lineCache[lid], 'line'); return; }
+    try {
+      const r = await fetch('/projects/' + PROJ_ID + '/actuals/line/' + lid + '/transactions.json');
+      const d = await r.json();
+      if (!r.ok || !d.ok) { body.innerHTML = '<span style="color:#fb7185">Could not load ('
+        + _esc((d && d.error) || r.status) + ').</span>'; return; }
+      _lineCache[lid] = d.transactions || [];
+      body.dataset.loaded = '1';
+      _renderSubrows(body, _lineCache[lid], 'line');
+    } catch (e) {
+      body.innerHTML = '<span style="color:#fb7185">Load failed: ' + _esc(e.message) + '</span>';
+    }
+  }
+
+  async function _loadSection(body) {
+    const code = body.dataset.sectionCode;
+    if (_sectionCache[code]) { _renderSubrows(body, _sectionCache[code], 'section'); return; }
+    try {
+      const r = await fetch('/projects/' + PROJ_ID + '/actuals/section/' + code + '/transactions.json');
+      const d = await r.json();
+      if (!r.ok || !d.ok) { body.innerHTML = '<span style="color:#fb7185">Could not load ('
+        + _esc((d && d.error) || r.status) + ').</span>'; return; }
+      _sectionCache[code] = d.transactions || [];
+      body.dataset.loaded = '1';
+      _renderSubrows(body, _sectionCache[code], 'section');
+    } catch (e) {
+      body.innerHTML = '<span style="color:#fb7185">Load failed: ' + _esc(e.message) + '</span>';
+    }
+  }
+
+  // Expand / collapse a line's Actual-cell ▸ affordance.
+  document.querySelectorAll('.work-actual-expand').forEach(exp => {
+    exp.addEventListener('click', e => {
+      e.stopPropagation();
+      const lid = exp.dataset.lineId;
+      const detail = document.querySelector('.work-actual-detail[data-for-line="' + lid + '"]');
+      if (!detail) return;
+      const open = detail.style.display !== 'none' && detail.style.display !== '';
+      detail.style.display = open ? 'none' : '';
+      const chev = exp.querySelector('.work-actual-chev');
+      if (chev) chev.textContent = open ? '▸' : '▾';
+      if (!open) {
+        const body = detail.querySelector('.work-actual-detail-body');
+        if (body && body.dataset.loaded !== '1') _loadLine(body);
+      }
+    });
+  });
+
+  // Expand / collapse a section-only spend row.
+  document.querySelectorAll('.work-section-only-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const code = row.dataset.sectionCode;
+      const detail = document.querySelector('.work-section-only-detail[data-for-section="' + code + '"]');
+      if (!detail) return;
+      const open = detail.style.display !== 'none' && detail.style.display !== '';
+      detail.style.display = open ? 'none' : '';
+      const chev = row.querySelector('.work-section-only-chev');
+      if (chev) chev.textContent = open ? '▸' : '▾';
+      if (!open) {
+        const body = detail.querySelector('.work-section-only-body');
+        if (body && body.dataset.loaded !== '1') _loadSection(body);
+      }
+    });
+  });
+
+  // Doc link → open the in-page doc detail overlay when available (snappier than
+  // a full page nav), else let the href to the editor page fall through.
+  document.addEventListener('click', e => {
+    const link = e.target.closest && e.target.closest('.wad-doc-link');
+    if (!link) return;
+    if (typeof openDocDetail === 'function') {
+      e.preventDefault();
+      openDocDetail(parseInt(link.dataset.uid), null);
+    }
+    // else: default anchor navigation to /docs/<uid>/editor
+  });
+
+  // ✕ uncode → clear the line link (/set-line null) or section coding
+  // (/set-coa empty). On success remove the subrow, drop it from cache, and
+  // recompute the visible group count/heading. The Actual cell number itself
+  // reflects the DB on next page load — we don't mutate section totals here.
+  document.addEventListener('click', async e => {
+    const btn = e.target.closest && e.target.closest('.wad-uncode-btn');
+    if (!btn) return;
+    e.stopPropagation();
+    const sub = btn.closest('.wad-subrow');
+    if (!sub) return;
+    const tid = parseInt(sub.dataset.tid);
+    const scope = sub.dataset.scope;
+    if (!confirm('Uncode this charge? It will be removed from '
+      + (scope === 'line' ? 'this budget line' : 'this section') + '.')) return;
+    btn.disabled = true;
+    btn.textContent = '…';
+    let url, body;
+    if (scope === 'line') {
+      url  = '/projects/' + PROJ_ID + '/actuals/transaction/' + tid + '/set-line';
+      body = JSON.stringify({ budget_line_id: null });
+    } else {
+      // Section-only uncode = clear the account_code via set-coa (empty clears).
+      url  = '/projects/' + PROJ_ID + '/actuals/transaction/' + tid + '/set-coa';
+      body = JSON.stringify({ account_code: '' });
+    }
+    try {
+      const r = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body,
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) { alert('Could not uncode: ' + ((d && d.error) || r.status));
+        btn.disabled = false; btn.textContent = '✕ uncode'; return; }
+      // Drop from cache so a re-expand refetches fresh.
+      const detail = sub.closest('.work-actual-detail, .work-section-only-detail');
+      const bodyEl = detail && detail.querySelector('.work-actual-detail-body, .work-section-only-body');
+      if (bodyEl) {
+        if (scope === 'line') delete _lineCache[bodyEl.dataset.lineId];
+        else delete _sectionCache[bodyEl.dataset.sectionCode];
+      }
+      const table = sub.closest('table');
+      sub.remove();
+      // If the group is now empty, note it inline.
+      if (table && !table.querySelector('.wad-subrow')) {
+        const container = table.parentElement;
+        if (container) container.innerHTML =
+          '<span style="font-style:italic">All transactions uncoded. Reload to refresh totals.</span>';
+      }
+      if (typeof _actualsToast === 'function') _actualsToast('Uncoded.', 'yellow');
+    } catch (err) {
+      alert('Uncode failed: ' + err.message);
+      btn.disabled = false; btn.textContent = '✕ uncode';
+    }
   });
 })();
 

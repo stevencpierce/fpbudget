@@ -5462,14 +5462,16 @@ def budget_view(pid, bid):
         app.logger.warning(f"[budget_view] unbudgeted self-heal failed: {_heal_e}")
         db.session.rollback()
 
-    # Standing rule: the Actual budget always mirrors Working's line structure.
-    # When viewing the Actual budget, additively create a mirror for any Working
-    # line lacking one (so a line just added in Working appears here and an
-    # actualized expense can be dragged onto it). Runs BEFORE the lines query so
-    # new mirrors render this load. Additive only; cheap no-op when in sync.
-    # (User 2026-06-02.)
+    # Standing rule (pre-P3): the Actual budget always mirrors Working's line
+    # structure. (Migration P3, User 2026-07) — this is now a NO-OP: P1 stopped
+    # creating Actual budgets and P2 archived every existing one, so there is
+    # nothing to mirror into. Any budget still flagged is_actual is an ARCHIVED
+    # (version_status != 'current') budget kept read-only for audit; mirroring
+    # fresh Working lines into it would be wrong. Guarded on version_status so
+    # the mirror only runs for a (nonexistent) *current* Actual — effectively
+    # never — rather than deleting the call outright, keeping intent auditable.
     _this_budget = next((b for b in all_budgets if b.id == bid), None)
-    if _this_budget and _this_budget.is_actual:
+    if _this_budget and _this_budget.is_actual and _this_budget.version_status == 'current':
         try:
             from actuals import ensure_actual_mirrors
             _wbid = next((b.id for b in all_budgets
@@ -8885,6 +8887,57 @@ def actuals_line_transactions(pid, lid):
         "line": {"id": line.id, "code": line.account_code,
                  "name": (line.description or line.account_name or ''),
                  "section_name": (_section_name(line.account_code) or line.account_name or '')},
+        "transactions": out,
+    })
+
+
+@app.route("/projects/<int:pid>/actuals/section/<int:code>/transactions.json", methods=["GET"])
+@login_required
+def actuals_section_transactions(pid, code):
+    """Every transaction coded to a COA SECTION but no specific budget line
+    (account_code set, budget_line_id NULL). Backs the Working view's
+    '📂 Section-coded spend' expandable row. Mirrors the per-line endpoint's
+    response shape. Filtered to match the actual_section_only_by_code rollup:
+    project-scoped, not_project_expense == False, and itemized-container
+    parents (source='invoice_split' children point back at them) excluded so a
+    split doc doesn't surface its uncoded parent here. (Migration P3, User
+    2026-07 — bring the Actual view's section-only detail into Working.)"""
+    ProjectSheet.query.get_or_404(pid)
+    _split_parents = _split_parent_id_set(pid)
+    txns = (Transaction.query
+            .filter(Transaction.project_id == pid,
+                    Transaction.account_code == code,
+                    Transaction.budget_line_id.is_(None),
+                    Transaction.not_project_expense == False,   # noqa: E712
+                    Transaction.source != 'invoice_split')
+            .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
+            .all())
+    out = []
+    for t in txns:
+        if t.id in _split_parents:
+            continue   # itemized container — its sublines carry the coding
+        doc = DocUpload.query.get(t.doc_upload_id) if t.doc_upload_id else None
+        _dt = t.txn_date
+        out.append({
+            "id": t.id,
+            "vendor": t.vendor,
+            "amount": float(t.amount) if t.amount is not None else None,
+            "date": (_dt.isoformat() if hasattr(_dt, 'isoformat') else _dt),
+            "source": t.source,
+            "match_status": t.match_status,
+            "is_expense": bool(t.is_expense),
+            "doc_upload_id": t.doc_upload_id,
+            "has_image": bool(doc and doc.content_type and doc.content_type.startswith('image/')),
+            "doc_category": (doc.category if doc else None),
+            "doc_filename": (doc.filed_filename or doc.original_filename) if doc else None,
+            "qbo_txn_id": t.qbo_txn_id,
+            "account_code": t.account_code,
+            "note": t.note,
+        })
+    return jsonify({
+        "ok": True,
+        "section": {"code": code,
+                    "name": (_section_name(code) or dict(FP_COA_SECTIONS).get(code, ''))},
         "transactions": out,
     })
 
