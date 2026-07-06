@@ -24842,6 +24842,529 @@ def docs_project(pid):
     return render_template("docs_upload.html", project=project, uploads=uploads, budget=budget)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Docs Inbox — status-first triage inbox (QBO-style) for 1,000+ docs/project.
+# (User 2026-07.) Backend only: bulk inbox.json, thumbnails, batch actions,
+# and the placeholder page route. Frontend agent builds docs_inbox.html.
+#
+# Design principles (owner-approved): states-not-folders; the match decision is
+# surfaced per-row (Match / Add / Review); duplicates never hard-block; every
+# action is reversible. This layer NEVER invents matching/not-project logic — it
+# reuses actuals.confirm_match and the mark-not-project write path verbatim.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Canonical doc-category vocabulary — the analyzer's DOCUMENT_TYPES keys. Used to
+# validate set_category batch requests + to build the facet list.
+try:
+    from fp_analyzer import DOCUMENT_TYPES as _INBOX_DOC_TYPES
+    _INBOX_CATEGORIES = set(_INBOX_DOC_TYPES.keys())
+except Exception:  # fail-open — never let an import break the module
+    _INBOX_CATEGORIES = {
+        'receipt', 'invoice', 'estimate', 'contract', 'purchase_order',
+        'insurance', 'tax_form', 'payroll', 'legal', 'release',
+        'employee_vendor_doc', 'misc',
+    }
+
+# Static generic placeholder for PDFs / non-image docs and any thumb failure.
+# One inline SVG string, served as image/svg+xml. 📄 glyph on a neutral card.
+_DOC_THUMB_PLACEHOLDER_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" '
+    'viewBox="0 0 240 240" role="img" aria-label="Document">'
+    '<rect width="240" height="240" rx="10" fill="#f1f3f5"/>'
+    '<rect x="72" y="52" width="96" height="128" rx="6" fill="#ffffff" '
+    'stroke="#ced4da" stroke-width="2"/>'
+    '<path d="M144 52v28h28" fill="none" stroke="#ced4da" stroke-width="2"/>'
+    '<text x="120" y="140" font-size="56" text-anchor="middle" '
+    'dominant-baseline="middle">\U0001F4C4</text>'
+    '</svg>'
+)
+
+_INBOX_IMAGE_EXTS = ('.jpg', '.jpeg', '.png', '.gif', '.webp')
+
+
+def _docs_placeholder_thumb_response():
+    """A 200 SVG placeholder response for the thumbnail endpoint. Cached briefly
+    on the client. Used for PDFs/non-images and as the fail-open fallback."""
+    from flask import make_response
+    resp = make_response(_DOC_THUMB_PLACEHOLDER_SVG)
+    resp.headers["Content-Type"]  = "image/svg+xml"
+    resp.headers["Cache-Control"] = "private, max-age=86400"
+    return resp
+
+
+def _docs_fetch_bytes(upload):
+    """Locate + return the raw bytes for a DocUpload, mirroring the source
+    priority of /docs/upload/<uid>/raw: filed Dropbox copy → durable source
+    archive → legacy R2. Returns (content_bytes | None, filename). Fail-open:
+    swallows every error and returns (None, fname) so callers can fall back to
+    a placeholder rather than 500. (User 2026-07 — Docs Inbox thumbs.)"""
+    fname = upload.filed_filename or upload.original_filename or f"upload_{upload.id}"
+    content = None
+    # 1) Filed Dropbox copy (normalized + raw path, like raw route).
+    if upload.filed_dropbox_path:
+        try:
+            _ops_prefix_str = (_DBX_OPS_ROOT or "").rstrip("/") if _DBX_NAMESPACE_ID else ""
+            raw_path  = upload.filed_dropbox_path
+            norm_path = raw_path
+            if _ops_prefix_str and norm_path.startswith(_ops_prefix_str + "/"):
+                norm_path = norm_path[len(_ops_prefix_str):]
+            dbx = _dbx_client()
+            for path_try in (norm_path, raw_path) if norm_path != raw_path else (norm_path,):
+                try:
+                    md, resp = dbx.files_download(path_try)
+                    content = resp.content
+                    break
+                except Exception:
+                    continue
+        except Exception:
+            content = None
+    # 2) Durable source archive.
+    if content is None and upload.source_archive_path:
+        try:
+            dbx = _dbx_client()
+            md, resp = dbx.files_download(upload.source_archive_path)
+            content = resp.content
+        except Exception:
+            content = None
+    # 3) Legacy R2.
+    if content is None and upload.r2_key:
+        try:
+            bytes_, err = _r2_download(upload.r2_key)
+            if not err:
+                content = bytes_
+        except Exception:
+            content = None
+    return content, fname
+
+
+@app.route("/docs/upload/<int:uid>/thumb", methods=["GET"])
+@login_required
+def docs_upload_thumb(uid):
+    """Small thumbnail for the Docs Inbox thumbnail rows.
+
+    • Image files → fetch bytes, resize to max 240px wide JPEG (quality 70),
+      served with a 1-day private cache.
+    • PDFs / everything else → generic SVG placeholder (no PDF rasterization —
+      no poppler on the host).
+    • Any error whatsoever → SVG placeholder, never a 500. (User 2026-07.)
+    """
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+
+    # Decide image-vs-not from the filename extension. build_name() sometimes
+    # appends '.pdf' to phone photos, so we ALSO sniff the bytes below before
+    # trusting the ext — but if the ext already says non-image, short-circuit
+    # to the placeholder without a Dropbox round-trip.
+    fname_guess = (upload.filed_filename or upload.original_filename or '')
+    ext = (os.path.splitext(fname_guess)[1] or '').lower()
+    ct  = (upload.content_type or '')
+    looks_image = ext in _INBOX_IMAGE_EXTS or ext in ('.heic', '.heif') \
+        or (ct.startswith('image/'))
+    if not looks_image:
+        # Not an image (PDF, doc, or unknown) → placeholder, no fetch.
+        return _docs_placeholder_thumb_response()
+
+    try:
+        content, _fname = _docs_fetch_bytes(upload)
+        if not content:
+            return _docs_placeholder_thumb_response()
+
+        # Sniff the real bytes — an image extension can lie (e.g. a .png that is
+        # actually a PDF). Only proceed for genuine raster types PIL can open.
+        head = content[:16]
+        is_pdf = head[:4] == b'%PDF'
+        if is_pdf:
+            return _docs_placeholder_thumb_response()
+
+        import io as _io_thumb
+        # HEIC needs the pillow-heif opener registered (iPhone receipts).
+        if ext in ('.heic', '.heif') or (head[4:8] == b'ftyp' and head[8:12] in (
+                b'heic', b'heix', b'hevc', b'mif1', b'heif')):
+            try:
+                import pillow_heif  # noqa: F401 — registers the opener
+            except Exception:
+                pass
+        from PIL import Image  # guarded: import inside the function
+        img = Image.open(_io_thumb.BytesIO(content))
+        img = img.convert("RGB")
+        # Resize to max 240px wide, preserving aspect ratio.
+        max_w = 240
+        if img.width > max_w:
+            new_h = max(1, int(img.height * (max_w / float(img.width))))
+            img = img.resize((max_w, new_h), Image.LANCZOS)
+        out = _io_thumb.BytesIO()
+        img.save(out, format="JPEG", quality=70)
+        from flask import make_response
+        resp = make_response(out.getvalue())
+        resp.headers["Content-Type"]  = "image/jpeg"
+        resp.headers["Cache-Control"] = "private, max-age=86400"
+        return resp
+    except Exception as e:
+        logging.warning(f"[docs/thumb] fell back to placeholder for upload {uid}: {e}")
+        return _docs_placeholder_thumb_response()
+
+
+def _inbox_coded_state(txn, split_parent_ids):
+    """Classify a transaction's coding for the inbox row.
+
+    Returns one of: 'excluded' | 'split' | 'line' | 'section' | 'none'.
+      • not_project_expense           → 'excluded'
+      • is an itemized split-parent   → 'split'  (coded VIA its children)
+      • budget_line_id set            → 'line'
+      • account_code set              → 'section'
+      • otherwise                     → 'none'
+    """
+    if txn is None:
+        return 'none'
+    if getattr(txn, 'not_project_expense', False):
+        return 'excluded'
+    if txn.id in split_parent_ids:
+        return 'split'
+    if txn.budget_line_id:
+        return 'line'
+    if txn.account_code:
+        return 'section'
+    return 'none'
+
+
+@app.route("/projects/<int:pid>/docs/inbox.json", methods=["GET"])
+@login_required
+def docs_inbox_json(pid):
+    """ONE bulk payload for the whole-project Docs Inbox. No per-doc N+1: every
+    lookup (transactions, crew names, split-parents, budget lines) is a single
+    batched query keyed into a dict. (User 2026-07.)
+
+    Row scoping mirrors actuals/docs.json: super_admin/admin see all; a project
+    member sees the project's docs; anyone else is 403 (via _docs_check_row_access
+    semantics, applied project-wide here). Non-'deleted' docs only, newest first.
+    """
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+
+    # ── Bulk load docs (defer the heavy OCR JSON blob) ──────────────────
+    from sqlalchemy.orm import defer as _defer_inbox
+    docs = (DocUpload.query
+            .filter(DocUpload.project_id == pid,
+                    DocUpload.status != 'deleted')
+            .options(_defer_inbox(DocUpload.veryfi_data))
+            .order_by(DocUpload.uploaded_at.desc().nullslast(),
+                      DocUpload.id.desc())
+            .all())
+
+    # ── Bulk map: doc_upload_id → its transactions ──────────────────────
+    doc_ids = [d.id for d in docs]
+    txns_by_doc = {}
+    all_txns = []
+    if doc_ids:
+        for t in (Transaction.query
+                  .filter(Transaction.project_id == pid,
+                          Transaction.doc_upload_id.in_(doc_ids))
+                  .all()):
+            txns_by_doc.setdefault(t.doc_upload_id, []).append(t)
+            all_txns.append(t)
+
+    # ── Bulk map: crew_member_id → name ─────────────────────────────────
+    crew_ids = {d.crew_member_id for d in docs if d.crew_member_id}
+    crew_names = {}
+    if crew_ids:
+        for cm in CrewMember.query.filter(CrewMember.id.in_(crew_ids)).all():
+            crew_names[cm.id] = cm.name
+
+    # ── Split-parent ids (itemized containers coded via children) ───────
+    split_parent_ids = _split_parent_id_set(pid)
+
+    # ── Bulk map: budget_line_id → description/name (for coded_label) ────
+    line_ids = {t.budget_line_id for t in all_txns if t.budget_line_id}
+    line_labels = {}
+    if line_ids:
+        for bl in BudgetLine.query.filter(BudgetLine.id.in_(line_ids)).all():
+            line_labels[bl.id] = (bl.description or bl.account_name
+                                  or (str(bl.account_code) if bl.account_code else None))
+
+    def _pick_doc_txn(txn_list):
+        """Choose the transaction that represents the doc as a whole — the
+        electronic charge if the receipt is matched to one, else the doc's own
+        ledger row. Same precedence as _doc_parent_txn (no extra query)."""
+        if not txn_list:
+            return None
+        return (next((t for t in txn_list
+                      if t.source in ('qbo_sync', 'csv_import', 'reconciled')), None)
+                or sorted(txn_list, key=lambda t: t.id)[0])
+
+    def _dup_pending(d):
+        # Pending-review duplicate: flagged is_duplicate but not yet resolved to
+        # the 'duplicate' terminal state. (Model note, DocUpload.duplicate_of_id.)
+        return bool(d.is_duplicate) and d.status != 'duplicate'
+
+    rows = []
+    counts = {'needs_review': 0, 'needs_match': 0, 'needs_coding': 0,
+              'done': 0, 'excluded': 0, 'all': 0}
+    cat_counts = {}
+    person_counts = {}
+    date_min = None
+    date_max = None
+
+    for d in docs:
+        txn = _pick_doc_txn(txns_by_doc.get(d.id))
+        coded = _inbox_coded_state(txn, split_parent_ids)
+        dup_pending = _dup_pending(d)
+        filed = bool(d.filed_dropbox_path)
+
+        # ── Transaction sub-object ──────────────────────────────────────
+        txn_obj = None
+        if txn is not None:
+            coded_label = None
+            if coded == 'line' and txn.budget_line_id:
+                coded_label = line_labels.get(txn.budget_line_id)
+            elif coded == 'section':
+                coded_label = txn.account_code_name or (
+                    str(txn.account_code) if txn.account_code else None)
+            elif coded == 'split':
+                coded_label = 'Itemized into budget lines'
+            suggested_charge = None
+            if txn.match_status == 'suggested':
+                _lbl_parts = []
+                if txn.txn_date:
+                    _lbl_parts.append(str(txn.txn_date))
+                if txn.vendor:
+                    _lbl_parts.append(txn.vendor)
+                try:
+                    _amt = float(txn.amount) if txn.amount is not None else None
+                except (TypeError, ValueError):
+                    _amt = None
+                if _amt is not None:
+                    _lbl_parts.append(f"${_amt:,.2f}")
+                suggested_charge = {
+                    "id":         txn.id,
+                    "label":      " · ".join(_lbl_parts) if _lbl_parts else f"Txn #{txn.id}",
+                    "confidence": (float(txn.match_confidence)
+                                   if txn.match_confidence is not None else None),
+                }
+            txn_obj = {
+                "id":               txn.id,
+                "match_status":     txn.match_status,
+                "match_confidence": (float(txn.match_confidence)
+                                     if txn.match_confidence is not None else None),
+                "coded":            coded,
+                "coded_label":      coded_label,
+                "suggested_charge": suggested_charge,
+            }
+
+        # ── Primary state (exactly one) ─────────────────────────────────
+        if coded == 'excluded':
+            state = 'excluded'
+        elif d.status == 'review' or dup_pending:
+            state = 'needs_review'
+        elif txn is not None and txn.match_status == 'suggested':
+            state = 'needs_match'
+        elif txn is not None and coded == 'none':
+            state = 'needs_coding'
+        else:
+            # coded (line/section/split) or filed with nothing pending.
+            state = 'done'
+        counts[state] += 1
+        counts['all'] += 1
+
+        # ── Facets ──────────────────────────────────────────────────────
+        cat = d.category or None
+        if cat:
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+        pname = crew_names.get(d.crew_member_id) if d.crew_member_id else None
+        if pname:
+            person_counts[pname] = person_counts.get(pname, 0) + 1
+        if d.doc_date:
+            iso = d.doc_date.isoformat()
+            if date_min is None or iso < date_min:
+                date_min = iso
+            if date_max is None or iso > date_max:
+                date_max = iso
+
+        _fname = d.filed_filename or d.original_filename or f"Upload #{d.id}"
+        _ext = (os.path.splitext(_fname)[1] or '').lower()
+        rows.append({
+            "id":             d.id,
+            "filename":       _fname,
+            "category":       d.category,
+            "vendor":         d.vendor,
+            "amount":         float(d.amount) if d.amount is not None else None,
+            "doc_date":       d.doc_date.isoformat() if d.doc_date else None,
+            "uploaded_at":    d.uploaded_at.isoformat() if d.uploaded_at else None,
+            "crew_member_id": d.crew_member_id,
+            "person_name":    pname,
+            "filed":          filed,
+            "dup_pending":    dup_pending,
+            "thumb_url":      f"/docs/upload/{d.id}/thumb",
+            "is_pdf":         _ext == '.pdf',
+            "txn":            txn_obj,
+            "state":          state,
+        })
+
+    facets = {
+        "categories": [{"value": k, "count": v}
+                       for k, v in sorted(cat_counts.items())],
+        "people":     [{"name": k, "count": v}
+                       for k, v in sorted(person_counts.items())],
+        "doc_date_min": date_min,
+        "doc_date_max": date_max,
+    }
+    return jsonify({
+        "ok":           True,
+        "docs":         rows,
+        "counts":       counts,
+        "facets":       facets,
+        "generated_at": datetime.utcnow().isoformat(),
+    })
+
+
+@app.route("/projects/<int:pid>/docs/batch", methods=["POST"])
+@login_required
+def docs_inbox_batch(pid):
+    """Bulk inbox actions. Body: {action, ids:[docupload ids], ...}.
+
+    Supported actions:
+      • 'confirm_match'  — for each doc, find its charge txn in 'suggested'
+        state and run actuals.confirm_match (the SAME flow the single
+        confirm-match endpoint uses — no reimplementation of matching).
+      • 'set_category' + {category} — validate against the analyzer category
+        vocabulary; set DocUpload.category.
+      • 'not_project' — mark each doc's representative txn not_project_expense
+        via the SAME write path as /mark-not-project.
+
+    Per-item try/except: one failure never aborts the batch.
+    Returns {ok, done, skipped:[{id, reason}]}. (User 2026-07.)
+    """
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+
+    body   = request.get_json(silent=True) or {}
+    action = (body.get('action') or '').strip()
+    ids    = body.get('ids') or []
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "ids (non-empty list) required"}), 400
+    try:
+        ids = [int(x) for x in ids]
+    except (TypeError, ValueError):
+        return jsonify({"error": "ids must be integers"}), 400
+
+    if action not in ('confirm_match', 'set_category', 'not_project'):
+        return jsonify({"error": f"unknown action '{action}'"}), 400
+
+    # Validate set_category up front — a bad category is a whole-request error,
+    # not a per-item skip.
+    new_category = None
+    if action == 'set_category':
+        new_category = (body.get('category') or '').strip()
+        if new_category not in _INBOX_CATEGORIES:
+            return jsonify({"error": f"invalid category '{new_category}'"}), 400
+
+    # Load the docs in one query, scoped to the project.
+    docs = {d.id: d for d in DocUpload.query
+            .filter(DocUpload.project_id == pid,
+                    DocUpload.id.in_(ids)).all()}
+
+    done = 0
+    skipped = []
+
+    def _doc_txn_for(uid):
+        """Representative charge txn for a doc (electronic charge preferred)."""
+        return _doc_parent_txn(uid)
+
+    from actuals import confirm_match as _confirm_match
+
+    for did in ids:
+        d = docs.get(did)
+        if d is None:
+            skipped.append({"id": did, "reason": "not found in project"})
+            continue
+        try:
+            if action == 'confirm_match':
+                # Find the doc's charge txn in 'suggested' state and confirm it
+                # via the shared helper. We look across ALL txns on the doc for a
+                # suggested one (the charge, not the doc_upload sister row).
+                sug = (Transaction.query
+                       .filter(Transaction.project_id == pid,
+                               Transaction.doc_upload_id == did,
+                               Transaction.match_status == 'suggested')
+                       .order_by(Transaction.id).first())
+                if sug is None:
+                    skipped.append({"id": did, "reason": "no suggested match to confirm"})
+                    continue
+                _confirm_match(sug.id)
+                try:
+                    _label = (sug.vendor or f'Txn #{sug.id}')[:80]
+                    _log_activity(
+                        action='update', entity_type='transaction_match',
+                        entity_id=sug.id, entity_label=_label, project_id=pid,
+                        after={'match_status': 'confirmed', 'doc_upload_id': did},
+                        note=f'Inbox bulk-confirmed match: {_label}')
+                except Exception:
+                    pass
+                done += 1
+
+            elif action == 'set_category':
+                _before = d.category
+                d.category = new_category
+                db.session.commit()
+                try:
+                    _log_activity(
+                        action='update', entity_type='doc_upload',
+                        entity_id=d.id,
+                        entity_label=(d.filed_filename or d.original_filename or f'Doc #{d.id}')[:80],
+                        project_id=pid, before={'category': _before},
+                        after={'category': new_category},
+                        note=f'Inbox set category → {new_category}')
+                except Exception:
+                    pass
+                done += 1
+
+            elif action == 'not_project':
+                txn = _doc_txn_for(did)
+                if txn is None:
+                    skipped.append({"id": did, "reason": "no transaction to exclude"})
+                    continue
+                # Same write path as /mark-not-project.
+                txn.not_project_expense = True
+                txn.budget_line_id      = None
+                txn.account_code        = None
+                txn.account_code_name   = None
+                txn.match_status        = 'unmatched'
+                txn.updated_at          = datetime.utcnow()
+                _sync_claim_state(txn)
+                db.session.commit()
+                try:
+                    _amt = float(txn.amount or 0)
+                    _log_activity(
+                        action='update', entity_type='transaction',
+                        entity_id=txn.id,
+                        entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
+                        project_id=pid,
+                        after={'not_project_expense': True, 'account_code': None,
+                               'budget_line_id': None},
+                        note=f'Inbox marked ${_amt:,.2f} as not a project expense')
+                except Exception:
+                    pass
+                done += 1
+        except Exception as e:
+            db.session.rollback()
+            logging.warning(f"[docs/batch] {action} failed for doc {did}: {e}")
+            skipped.append({"id": did, "reason": str(e)})
+
+    return jsonify({"ok": True, "done": done, "skipped": skipped})
+
+
+@app.route("/projects/<int:pid>/docs", methods=["GET"])
+@login_required
+def docs_inbox_page(pid):
+    """Render the Docs Inbox page. Backend serves the shell; the frontend agent
+    builds docs_inbox.html against inbox.json + the batch/thumb endpoints.
+    (User 2026-07.)"""
+    project = ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    return render_template("docs_inbox.html", project=project)
+
+
 @app.route("/upload", methods=["GET"])
 @login_required
 def mobile_upload():

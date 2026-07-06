@@ -43,6 +43,11 @@ gevent-websocket
 # env vars set on the Render web service.
 veryfi
 pillow-heif
+# Pillow — explicit pin (previously present only transitively via pillow-heif).
+# Used by the Docs Inbox thumbnail endpoint (/docs/upload/<id>/thumb) to resize
+# image receipts to small JPEG previews, plus the existing HEIC→JPEG conversion
+# in /docs/upload/<id>/raw. (User 2026-07.)
+pillow
 
 # QBO sync (qbo_sync.py) — REST API client for QuickBooks Online.
 # We hit /v3/company/<realmId>/query and /cdc directly, no Intuit
