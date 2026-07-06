@@ -383,22 +383,19 @@
     cb.addEventListener('click', function (e) { e.stopPropagation(); toggleSelect(doc.id, cb.checked); });
     row.appendChild(cb);
 
-    // thumbnail
-    if (doc.is_pdf) {
-      var pdf = document.createElement('div');
-      pdf.className = 'inbx-thumb inbx-thumb-pdf';
-      pdf.textContent = '📄';
-      row.appendChild(pdf);
-    } else {
-      var img = document.createElement('img');
-      img.className = 'inbx-thumb'; img.loading = 'lazy'; img.alt = '';
-      img.src = doc.thumb_url || ('/docs/upload/' + doc.id + '/thumb');
-      img.addEventListener('error', function () {
-        img.replaceWith(Object.assign(document.createElement('div'),
-          { className: 'inbx-thumb inbx-thumb-pdf', textContent: '📄' }));
-      });
-      row.appendChild(img);
-    }
+    // thumbnail — ALWAYS an <img>: the /thumb endpoint renders PDF first pages
+    // via pypdfium2 now (a395078), so is_pdf no longer means "no preview". It
+    // fails open server-side to an SVG placeholder, and we keep a client-side
+    // 📄 fallback for network errors. (Review fix 2026-07 — the repository was
+    // all placeholder icons because the Analyzer files everything as PDF.)
+    var img = document.createElement('img');
+    img.className = 'inbx-thumb'; img.loading = 'lazy'; img.alt = '';
+    img.src = doc.thumb_url || ('/docs/upload/' + doc.id + '/thumb');
+    img.addEventListener('error', function () {
+      img.replaceWith(Object.assign(document.createElement('div'),
+        { className: 'inbx-thumb inbx-thumb-pdf', textContent: '📄' }));
+    });
+    row.appendChild(img);
 
     // main text
     var main = document.createElement('div');
