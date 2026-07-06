@@ -29759,6 +29759,395 @@ def repair_clone_links(pid):
     return jsonify(report)
 
 
+# ── PHASE 2: actuals-on-Working migration ──────────────────────────────────
+# Phase 1 (commit 2cc78c0) made NEW transaction coding point directly at
+# Working-budget lines. This one-time migration remaps ALL remaining LEGACY
+# references (txns/sub-budget/location/suggested/crew/schedule) that still
+# point at "Actual"-clone lines back to their Working peers, materializes any
+# orphan Actual line that carries spend into the Working budget so no coding is
+# ever lost, then archives the Actual budgets. Safety-first: dry-run by default,
+# per-section totals asserted IDENTICAL pre/post, all-or-nothing transaction.
+
+# Field list copied when materializing an orphan Actual line onto Working.
+# Mirrors clone_estimated_to_working's line_skip set: everything EXCEPT the
+# structural/id columns is carried over (account_code, account_name,
+# description, is_labor, sort_order, rate, days, estimated_total, etc.).
+_MIGRATE_LINE_SKIP = {'id', 'budget_id', 'parent_line_id', 'source_line_id',
+                      'orphan_from_working', 'crew_assignments', 'schedule_days',
+                      'assigned_crew', 'working_total', 'manual_actual'}
+
+
+def _migrate_actuals_pick_working(all_b, pid):
+    """Resolve the project's CURRENT Working budget (never an Actual)."""
+    return (next((b for b in all_b
+                  if _budget_type(b.budget_mode) == 'working'
+                  and not b.is_actual and b.version_status == 'current'), None)
+            or next((b for b in all_b
+                     if _budget_type(b.budget_mode) == 'working'
+                     and not b.is_actual and b.version_status != 'archived'), None))
+
+
+@app.route("/projects/<int:pid>/migrate-actuals", methods=["POST", "GET"])
+@login_required
+def migrate_actuals(pid):
+    """PHASE 2 one-time migration: remap every legacy reference off the Actual
+    clone lines onto Working lines, then archive the Actual budgets.
+
+    Gated to super_admin / admin only. DRY-RUN BY DEFAULT — mutations happen
+    ONLY when `dry` is explicitly false/0 (?dry=0 on GET, or {"dry": false} in
+    the POST body). Any other value (missing, "1", true, garbage) → dry.
+
+    On a live run the whole thing is a single all-or-nothing transaction: we
+    remap, recompute the per-section actuals rollup, and ASSERT it is identical
+    (per code, 2dp) to the pre-migration snapshot. If ANY code differs we
+    rollback and return {ok:false, aborted:true} — nothing is committed unless
+    the totals match exactly. Archiving (never deleting — audit trail) and the
+    ActivityLog entry happen only after the assert passes.
+    """
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+
+    # DRY DEFAULT: mutate ONLY when dry is EXPLICITLY false/0. Everything else
+    # (absent, "1", "true", anything) stays dry.
+    body = request.get_json(silent=True) or {}
+    _raw = request.args.get('dry', body.get('dry', True))
+    if isinstance(_raw, str):
+        dry = _raw.strip().lower() not in ('0', 'false', 'no', 'off')
+    else:
+        dry = not (_raw is False or _raw == 0)
+
+    ProjectSheet.query.get_or_404(pid)
+    all_b = Budget.query.filter_by(project_id=pid).all()
+
+    working = _migrate_actuals_pick_working(all_b, pid)
+    actual_budgets = [b for b in all_b if b.is_actual]
+    if not working:
+        return jsonify({"ok": False, "dry": dry, "project": pid,
+                        "error": "no current Working budget to migrate onto"}), 400
+
+    # ── 1. PRE-SNAPSHOT ────────────────────────────────────────────────────
+    before = _actuals_by_section_code(pid)
+    before_total = round(sum(before.values()), 2)
+
+    actual_line_ids = [l.id for b in actual_budgets
+                       for l in BudgetLine.query.filter_by(budget_id=b.id).all()]
+    actual_line_ids_set = set(actual_line_ids)
+
+    def _count_on_actual(model, col='budget_line_id'):
+        if not actual_line_ids:
+            return 0
+        return (db.session.query(model)
+                .filter(getattr(model, col).in_(actual_line_ids)).count())
+
+    pre_counts = {
+        "txns_on_actual_lines":      (Transaction.query
+                                      .filter(Transaction.project_id == pid,
+                                              Transaction.budget_line_id.in_(actual_line_ids)).count()
+                                      if actual_line_ids else 0),
+        "suggested_on_actual_lines": (Transaction.query
+                                      .filter(Transaction.project_id == pid,
+                                              Transaction.suggested_budget_line_id.in_(actual_line_ids)).count()
+                                      if actual_line_ids else 0),
+        "subbudget_on_actual_lines": _count_on_actual(SubBudgetLine),
+        "location_on_actual_lines":  _count_on_actual(Location),
+        "crew_on_actual_lines":      _count_on_actual(CrewAssignment),
+        "schedule_line_on_actual":   _count_on_actual(ScheduleDay),
+        "schedule_budget_on_actual": (ScheduleDay.query
+                                      .filter(ScheduleDay.budget_id.in_([b.id for b in actual_budgets])).count()
+                                      if actual_budgets else 0),
+    }
+
+    # ── 2. BUILD actual_line → working_line MAP ────────────────────────────
+    # Index working lines for the materialize/validate steps.
+    working_line_ids = {l.id for l in BudgetLine.query.filter_by(budget_id=working.id).all()}
+    # Non-actual budget ids in THIS project (for source_line_id validation).
+    non_actual_bids = {b.id for b in all_b if not b.is_actual}
+
+    counts = {
+        "txns_remapped": 0, "txns_kept_unmappable": 0, "suggested_remapped": 0,
+        "suggested_nulled": 0, "subbudget": 0, "locations": 0,
+        "crew_mirrors_deleted": 0, "crew_values_promoted": 0,
+        "schedule_rows_deleted": 0, "schedule_budget_rows_deleted": 0,
+        "orphan_lines_materialized": 0, "actual_budgets_archived": 0,
+    }
+    unmappable = []   # actual line ids we could not map (reported, never NULLed)
+
+    def _has_deps(alid):
+        """Does this actual line have ANY dependent ref that must be preserved?"""
+        return bool(
+            Transaction.query.filter(Transaction.budget_line_id == alid).first() or
+            Transaction.query.filter(Transaction.suggested_budget_line_id == alid).first() or
+            SubBudgetLine.query.filter(SubBudgetLine.budget_line_id == alid).first() or
+            Location.query.filter(Location.budget_line_id == alid).first()
+        )
+
+    line_map = {}          # actual_line_id -> working_line_id
+    for b in actual_budgets:
+        for aline in BudgetLine.query.filter_by(budget_id=b.id).all():
+            target = None
+            # (a) source_line_id → a real line on a NON-actual budget of this project.
+            if aline.source_line_id:
+                peer = BudgetLine.query.get(aline.source_line_id)
+                if peer and peer.budget_id in non_actual_bids:
+                    target = peer
+            if target is not None:
+                line_map[aline.id] = target.id
+                continue
+            # (b) orphan / dangling. Materialize onto CURRENT Working ONLY if it
+            #     has dependents; otherwise skip (nothing references it).
+            if not _has_deps(aline.id):
+                continue
+            if dry:
+                # Represent a would-be materialized line with a sentinel so the
+                # remap counters below still count the dependent refs.
+                line_map[aline.id] = ('NEW', aline.id)
+                counts["orphan_lines_materialized"] += 1
+            else:
+                new_line = BudgetLine()
+                for col in BudgetLine.__table__.columns:
+                    if col.name in _MIGRATE_LINE_SKIP:
+                        continue
+                    setattr(new_line, col.name, getattr(aline, col.name))
+                new_line.budget_id           = working.id
+                new_line.source_line_id      = None
+                new_line.parent_line_id      = None
+                new_line.orphan_from_working = True
+                db.session.add(new_line)
+                db.session.flush()
+                line_map[aline.id] = new_line.id
+                counts["orphan_lines_materialized"] += 1
+
+    def _resolve(mapped):
+        """Translate a line_map value (int id or ('NEW', src) sentinel) to a
+        real working line id, or None in dry mode for a not-yet-created line."""
+        if isinstance(mapped, tuple):
+            return None   # dry-run sentinel: line would be created live
+        return mapped
+
+    # ── 3. REMAP ───────────────────────────────────────────────────────────
+    # 3a. Transaction.budget_line_id (canonical coding). Mirror account_code /
+    #     account_code_name from the mapped Working line (as link_transaction_to_line does).
+    for aline_id in list(line_map.keys()):
+        mapped = line_map[aline_id]
+        target_id = _resolve(mapped)
+        txns = (Transaction.query
+                .filter(Transaction.project_id == pid,
+                        Transaction.budget_line_id == aline_id).all())
+        for txn in txns:
+            counts["txns_remapped"] += 1
+            if not dry and target_id is not None:
+                wline = BudgetLine.query.get(target_id)
+                txn.budget_line_id    = target_id
+                txn.account_code      = wline.account_code
+                txn.account_code_name = wline.account_name
+                txn.updated_at        = datetime.utcnow()
+
+    # Any txn still pointing at an actual line with NO mapping = unmappable.
+    # By construction (orphans with deps get materialized) this should be 0.
+    # Never NULL it — keep it where it is and REPORT.
+    for aline_id in actual_line_ids:
+        if aline_id in line_map:
+            continue
+        stragglers = (Transaction.query
+                      .filter(Transaction.project_id == pid,
+                              Transaction.budget_line_id == aline_id).count())
+        if stragglers:
+            counts["txns_kept_unmappable"] += stragglers
+            unmappable.append({"actual_line_id": aline_id, "txns": stragglers})
+
+    # 3b. Transaction.suggested_budget_line_id → mapped working id (advisory:
+    #     NULL if the actual line has no mapping — a suggestion is disposable).
+    for aline_id in actual_line_ids:
+        mapped = line_map.get(aline_id)
+        target_id = _resolve(mapped) if mapped is not None else None
+        sugg = (Transaction.query
+                .filter(Transaction.project_id == pid,
+                        Transaction.suggested_budget_line_id == aline_id).all())
+        for txn in sugg:
+            if mapped is not None:
+                counts["suggested_remapped"] += 1
+                if not dry and target_id is not None:
+                    txn.suggested_budget_line_id = target_id
+            else:
+                counts["suggested_nulled"] += 1
+                if not dry:
+                    txn.suggested_budget_line_id = None
+
+    # 3c. SubBudgetLine.budget_line_id / Location.budget_line_id → mapped id.
+    #     Skip rows whose actual line had no mapping (no target to move to).
+    for aline_id in actual_line_ids:
+        mapped = line_map.get(aline_id)
+        if mapped is None:
+            continue
+        target_id = _resolve(mapped)
+        for sbl in SubBudgetLine.query.filter_by(budget_line_id=aline_id).all():
+            counts["subbudget"] += 1
+            if not dry and target_id is not None:
+                sbl.budget_line_id = target_id
+        for loc in Location.query.filter_by(budget_line_id=aline_id).all():
+            counts["locations"] += 1
+            if not dry and target_id is not None:
+                loc.budget_line_id = target_id
+
+    # 3d. CrewAssignment rows ON actual lines are WRITE-THROUGH MIRRORS: the
+    #     canonical rows live on the Working peer (see assign_crew, app.py ~18538
+    #     — Working is the canonical owner; Actual clones are mirrored copies).
+    #     DELETE the mirrors, but first PROMOTE any override value the mirror
+    #     carries that its Working peer's matching assignment lacks, so a
+    #     rate_override / fringe_override / name_override / agent_override typed
+    #     on the Actual view is never lost.
+    _PROMOTE_FIELDS = ('rate_override', 'fringe_override', 'name_override',
+                       'agent_override', 'omit_flags', 'role_number')
+    for aline_id in actual_line_ids:
+        mapped = line_map.get(aline_id)
+        target_id = _resolve(mapped) if mapped is not None else None
+        for ca in CrewAssignment.query.filter_by(budget_line_id=aline_id).all():
+            counts["crew_mirrors_deleted"] += 1
+            if target_id is not None:
+                peer = (CrewAssignment.query
+                        .filter_by(budget_line_id=target_id, instance=ca.instance).first())
+                if peer is not None:
+                    for f in _PROMOTE_FIELDS:
+                        mv = getattr(ca, f)
+                        if mv not in (None, '') and getattr(peer, f) in (None, ''):
+                            counts["crew_values_promoted"] += 1
+                            if not dry:
+                                setattr(peer, f, mv)
+            if not dry:
+                db.session.delete(ca)
+
+    # 3e. ScheduleDay rows attached to an Actual BUDGET (budget_id on an Actual)
+    #     were never user-visible (the UI keys schedule off working/estimated
+    #     modes). Verify count, then delete. Also drop any line-level schedule
+    #     rows pointing at actual lines (defensive — normally none).
+    _actual_bids = [b.id for b in actual_budgets]
+    if _actual_bids:
+        from models import TravelDetail as _TD_mig
+        # Budget-level schedule rows.
+        _bsd_ids = [r[0] for r in db.session.query(ScheduleDay.id)
+                    .filter(ScheduleDay.budget_id.in_(_actual_bids)).all()]
+        counts["schedule_budget_rows_deleted"] = len(_bsd_ids)
+        # Line-level schedule rows on actual lines.
+        _lsd_ids = ([r[0] for r in db.session.query(ScheduleDay.id)
+                     .filter(ScheduleDay.budget_line_id.in_(actual_line_ids)).all()]
+                    if actual_line_ids else [])
+        counts["schedule_rows_deleted"] = len(_lsd_ids)
+        if not dry:
+            _all_sd = list(set(_bsd_ids) | set(_lsd_ids))
+            if _all_sd:
+                _TD_mig.query.filter(_TD_mig.schedule_day_id.in_(_all_sd))\
+                    .delete(synchronize_session=False)
+                ScheduleDay.query.filter(ScheduleDay.id.in_(_all_sd))\
+                    .delete(synchronize_session=False)
+
+    # ── 4. POST-ASSERT: per-section totals IDENTICAL (2dp) ─────────────────
+    diffs = []
+    codes_compared = 0
+    if dry:
+        # Nothing mutated — the rollup is unchanged by definition, but we still
+        # report the snapshot so the operator sees what will be preserved.
+        after = dict(before)
+    else:
+        db.session.flush()
+        after = _actuals_by_section_code(pid)
+    all_codes = set(before) | set(after)
+    for code in all_codes:
+        codes_compared += 1
+        bv = round(before.get(code, 0.0), 2)
+        av = round(after.get(code, 0.0), 2)
+        if bv != av:
+            diffs.append({"code": code, "before": bv, "after": av})
+    identical = not diffs
+    after_total = round(sum(after.values()), 2)
+
+    if not dry and not identical:
+        # ABORT — all-or-nothing. Nothing is committed.
+        db.session.rollback()
+        return jsonify({
+            "ok": False, "dry": False, "aborted": True, "project": pid,
+            "error": "per-section actuals totals changed — migration rolled back",
+            "counts": counts,
+            "totals_check": {"codes_compared": codes_compared,
+                             "identical": False, "diffs": diffs},
+            "before_total": before_total, "after_total": after_total,
+        }), 500
+
+    # ── 5. ARCHIVE (live only, after assert passes) ────────────────────────
+    if not dry:
+        for b in actual_budgets:
+            if b.version_status != 'archived':
+                b.version_status = 'archived'
+                b.updated_at = datetime.utcnow()
+                counts["actual_budgets_archived"] += 1
+        db.session.commit()
+        try:
+            _log_activity(
+                action='update', entity_type='budget_migration',
+                entity_id=working.id,
+                entity_label=f"Phase 2 actuals→Working migration (project {pid})",
+                budget_id=working.id, project_id=pid,
+                note=(f"Remapped {counts['txns_remapped']} txns, "
+                      f"{counts['subbudget']} sub-budget, {counts['locations']} location refs; "
+                      f"materialized {counts['orphan_lines_materialized']} orphan lines; "
+                      f"deleted {counts['crew_mirrors_deleted']} crew mirrors "
+                      f"({counts['crew_values_promoted']} values promoted), "
+                      f"{counts['schedule_rows_deleted'] + counts['schedule_budget_rows_deleted']} schedule rows; "
+                      f"archived {counts['actual_budgets_archived']} Actual budgets."),
+                after={'counts': counts})
+        except Exception:
+            pass
+    else:
+        counts["actual_budgets_archived"] = len(
+            [b for b in actual_budgets if b.version_status != 'archived'])
+
+    return jsonify({
+        "ok": True, "dry": dry, "project": pid,
+        "pre_counts": pre_counts,
+        "counts": counts,
+        "totals_check": {"codes_compared": codes_compared,
+                         "identical": identical, "diffs": diffs},
+        "unmappable": unmappable,
+        "before_total": before_total, "after_total": after_total,
+    })
+
+
+@app.route("/projects/migrate-actuals/scan", methods=["GET"])
+@login_required
+def migrate_actuals_scan():
+    """Blast-radius scan (read-only, admin): every project that still has any
+    Actual budget, with its Actual-budget count and how many transactions are
+    still coded to Actual-clone lines. Lets us see scope before running
+    /projects/<pid>/migrate-actuals anywhere."""
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+
+    rows = []
+    actual_budgets = Budget.query.filter_by(is_actual=True).all()
+    by_project = {}
+    for b in actual_budgets:
+        by_project.setdefault(b.project_id, []).append(b)
+
+    for pid, bs in by_project.items():
+        proj = ProjectSheet.query.get(pid)
+        line_ids = [l.id for b in bs
+                    for l in BudgetLine.query.filter_by(budget_id=b.id).all()]
+        txns = (Transaction.query
+                .filter(Transaction.project_id == pid,
+                        Transaction.budget_line_id.in_(line_ids)).count()
+                if line_ids else 0)
+        rows.append({
+            "pid": pid,
+            "name": proj.name if proj else None,
+            "actual_budgets": len(bs),
+            "actual_budgets_current": len([b for b in bs
+                                           if b.version_status == 'current']),
+            "txns_on_actual_lines": txns,
+        })
+    rows.sort(key=lambda r: (-r["txns_on_actual_lines"], r["pid"]))
+    return jsonify({"ok": True, "projects": rows,
+                    "total_projects": len(rows)})
+
+
 @app.route("/docs/<int:pid>/reconcile-filing", methods=["POST"])
 @login_required
 def docs_reconcile_filing(pid):
