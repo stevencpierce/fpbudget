@@ -221,7 +221,12 @@
   // page restores the exact list state (filter/sort/scroll) the user left.
   // (User 2026-07 — "when I close this window out or click save, it should take
   // me back to exactly where I was in the list before with the same filtering.")
-  var BACK_URL = '/projects/' + PID + '/budget?tab=docs';
+  // When we arrive from the Docs Inbox (?from=inbox), Back returns to the inbox
+  // list (which restores its own fpInboxState); otherwise the budget docs tab.
+  var _fromInbox = (new URLSearchParams(location.search).get('from') === 'inbox');
+  var BACK_URL = _fromInbox
+    ? ('/projects/' + PID + '/docs')
+    : ('/projects/' + PID + '/budget?tab=docs');
   $('edBackLink').href = BACK_URL;
   function goBack() { location.href = BACK_URL; }
   // Escape = plain back navigation (no save), matching the popup's Esc-closes.

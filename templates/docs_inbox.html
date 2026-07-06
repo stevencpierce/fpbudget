@@ -1,1 +1,690 @@
-<h1>Docs Inbox</h1><div id="inboxRoot" data-pid="{{ project.id }}"></div>
+{% extends "base.html" %}
+{% block title %}Documents — FPBudget{% endblock %}
+
+{# ═══════════════════════════════════════════════════════════════════════════
+   DOCS INBOX (User 2026-07). A fast, keyboard-friendly triage inbox for ALL
+   project documents — modeled on QuickBooks' Receipts review + Dext's inbox.
+   "Online repository for all documents — easily filable, readable, navigatable."
+
+   SELF-CONTAINED: all JS below is inline; no external libs. Talks only to the
+   already-deployed batch/inbox endpoints. Renders 1,000+ rows in chunks of 100
+   via an IntersectionObserver sentinel so we never build 1,252 DOM rows at once.
+   State (chip/search/facets/scroll) round-trips through sessionStorage key
+   'fpInboxState' so opening the editor and clicking Back lands you right here.
+   ══════════════════════════════════════════════════════════════════════════ #}
+
+{% block content %}
+<style>
+  /* Scoped to the inbox. Uses the shared dark-theme CSS variables. */
+  #inbxHead { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+  #inbxHead h1 { margin:0; font-size:1.15rem; line-height:1.2; }
+  .inbx-link { font-size:13px; padding:5px 12px; border-radius:6px; background:#1a2540;
+               border:1px solid #2d4070; color:#8fb4ff; text-decoration:none; white-space:nowrap; }
+  .inbx-search { flex:1; min-width:200px; max-width:420px; font-size:13px; padding:8px 12px;
+                 background:var(--bg-input); color:var(--text); border:1px solid var(--border); border-radius:8px; }
+  #inbxChips { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  .inbx-chip { display:inline-flex; align-items:center; gap:7px; padding:9px 15px; border-radius:999px;
+               background:var(--bg-card); border:1px solid var(--border); color:var(--text);
+               cursor:pointer; font-size:13.5px; font-weight:500; user-select:none; transition:border-color .1s,background .1s; }
+  .inbx-chip:hover { border-color:var(--text-muted); }
+  .inbx-chip .cnt { font-size:12px; color:var(--text-muted); background:var(--bg-input);
+                    padding:1px 8px; border-radius:999px; min-width:20px; text-align:center; }
+  .inbx-chip.active { background:#16233f; border-color:#3d5da8; color:#cfe0ff; }
+  .inbx-chip.active .cnt { color:#cfe0ff; background:#24365e; }
+  #inbxFacets { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;
+                padding:10px 12px; background:var(--bg-card); border:1px solid var(--border); border-radius:9px; }
+  #inbxFacets label { font-size:10.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.4px; margin-right:4px; }
+  .inbx-fld { font-size:12.5px; padding:5px 8px; background:var(--bg-input); color:var(--text);
+              border:1px solid var(--border); border-radius:6px; }
+  .inbx-fld.amt { width:78px; }
+  .inbx-facet-grp { display:flex; align-items:center; gap:4px; }
+  #inbxCountLine { font-size:12px; color:var(--text-muted); margin-bottom:8px; }
+  #inbxList { display:flex; flex-direction:column; gap:6px; }
+  .inbx-row { display:flex; align-items:center; gap:12px; padding:9px 12px; background:var(--bg-card);
+              border:1px solid var(--border); border-radius:9px; cursor:pointer; transition:border-color .1s,background .1s; }
+  .inbx-row:hover { border-color:var(--text-muted); }
+  .inbx-row.cursored { border-color:#3d5da8; box-shadow:0 0 0 1px #3d5da8 inset; }
+  .inbx-row.flash-ok { border-color:#1f6f4a; background:#10231a; }
+  .inbx-cb { width:16px; height:16px; cursor:pointer; flex:0 0 auto; accent-color:var(--accent); }
+  .inbx-thumb { width:56px; height:56px; flex:0 0 auto; border-radius:6px; background:#0a0d12;
+                border:1px solid var(--border); object-fit:cover; display:block; }
+  .inbx-thumb-pdf { display:flex; align-items:center; justify-content:center; font-size:24px; color:#8fb4ff; }
+  .inbx-main { flex:1; min-width:0; }
+  .inbx-fn { font-size:13.5px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .inbx-meta { font-size:11.5px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
+  .inbx-zone { flex:0 0 auto; display:flex; align-items:center; gap:8px; max-width:280px; }
+  .inbx-sugg { font-size:11.5px; color:var(--text-muted); max-width:170px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .inbx-btn-match { font-size:12px; padding:5px 11px; border-radius:6px; background:#10231a;
+                    border:1px solid #1f6f4a; color:#5fd0a0; cursor:pointer; white-space:nowrap; }
+  .inbx-btn-match:hover { background:#143024; }
+  .inbx-tag { font-size:11px; padding:3px 9px; border-radius:999px; white-space:nowrap; }
+  .inbx-tag.review { background:#2a1618; border:1px solid #6f2f34; color:#e88; }
+  .inbx-tag.coding { background:#2a2416; border:1px solid #6f5a2f; color:#e0b84a; }
+  .inbx-tag.done   { color:var(--text-muted); }
+  .inbx-tag.excl   { color:var(--text-muted); }
+  .inbx-cat { flex:0 0 auto; font-size:10.5px; padding:3px 9px; border-radius:6px; background:var(--bg-input);
+              border:1px solid var(--border); color:var(--text-muted); text-transform:capitalize; white-space:nowrap; }
+  .inbx-arrow { flex:0 0 auto; color:var(--text-muted); font-size:15px; }
+  #inbxSentinel { height:1px; }
+  #inbxEmpty { padding:40px 12px; text-align:center; color:var(--text-muted); font-size:14px; display:none; }
+  /* Sticky bulk bar */
+  #inbxBulk { position:fixed; left:0; right:0; bottom:0; z-index:50; display:none;
+              align-items:center; gap:10px; flex-wrap:wrap; padding:12px 18px;
+              background:var(--bg-card); border-top:1px solid #3d5da8; box-shadow:0 -4px 16px rgba(0,0,0,.4); }
+  #inbxBulk .sel { font-size:13px; font-weight:600; color:var(--text); }
+  .inbx-bulk-btn { font-size:12.5px; padding:7px 13px; border-radius:6px; cursor:pointer; white-space:nowrap;
+                   background:#1a2540; border:1px solid #2d4070; color:#8fb4ff; }
+  .inbx-bulk-btn:hover { background:#213052; }
+  .inbx-bulk-btn.danger { background:#2a1618; border-color:#6f2f34; color:#e88; }
+  .inbx-bulk-btn.go { background:#10231a; border-color:#1f6f4a; color:#5fd0a0; }
+  .inbx-bulk-wrap { position:relative; }
+  #inbxTypeMenu { display:none; position:absolute; bottom:100%; left:0; margin-bottom:6px; min-width:210px;
+                  max-height:340px; overflow:auto; background:var(--bg-card); border:1px solid var(--border);
+                  border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.5); padding:5px; }
+  #inbxTypeMenu button { display:block; width:100%; text-align:left; font-size:12.5px; padding:6px 10px;
+                         background:none; border:none; color:var(--text); cursor:pointer; border-radius:5px; }
+  #inbxTypeMenu button:hover { background:var(--bg-input); }
+  /* Toast */
+  #inbxToast { position:fixed; bottom:74px; left:50%; transform:translateX(-50%); z-index:60;
+               background:#1a1d27; border:1px solid var(--border); color:var(--text); font-size:13px;
+               padding:9px 16px; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,.5); display:none; }
+  #inbxToast.err { border-color:#6f2f34; color:#e88; }
+  #inbxToast.ok  { border-color:#1f6f4a; color:#5fd0a0; }
+  .inbx-kbd { font-size:11px; color:var(--text-muted); border:1px solid var(--border);
+              border-radius:4px; padding:1px 5px; background:var(--bg-input); }
+  #inbxHint { position:relative; }
+  #inbxHintBox { display:none; position:absolute; top:100%; right:0; margin-top:6px; z-index:40; width:250px;
+                 background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:10px 12px;
+                 box-shadow:0 6px 20px rgba(0,0,0,.5); font-size:12px; color:var(--text); line-height:1.9; }
+  #inbxHint:hover #inbxHintBox { display:block; }
+</style>
+
+<div id="inbxHead">
+  <a class="inbx-link" href="/projects/{{ project.id }}/budget">← {{ project.name }}</a>
+  <h1>📥 Documents</h1>
+  <input type="search" id="inbxSearch" class="inbx-search" autocomplete="off"
+         placeholder="🔍 Search vendor, filename, person, amount…">
+  <a class="inbx-link" href="/projects/{{ project.id }}/budget?tab=docs">⤒ Upload</a>
+  <span id="inbxHint" style="cursor:default">
+    <span class="inbx-link" style="cursor:help">? Keys</span>
+    <span id="inbxHintBox">
+      <span class="inbx-kbd">j</span>/<span class="inbx-kbd">k</span> move &nbsp;·&nbsp;
+      <span class="inbx-kbd">x</span> select<br>
+      <span class="inbx-kbd">Enter</span> open &nbsp;·&nbsp;
+      <span class="inbx-kbd">m</span> confirm match<br>
+      <span class="inbx-kbd">/</span> search &nbsp;·&nbsp;
+      <span class="inbx-kbd">Esc</span> clear selection
+    </span>
+  </span>
+</div>
+
+<div id="inbxChips"></div>
+
+<div id="inbxFacets">
+  <div class="inbx-facet-grp"><label>Type</label>
+    <select id="inbxFacetCat" class="inbx-fld"><option value="">All types</option></select></div>
+  <div class="inbx-facet-grp"><label>Person</label>
+    <select id="inbxFacetPerson" class="inbx-fld"><option value="">Anyone</option></select></div>
+  <div class="inbx-facet-grp"><label>Date</label>
+    <input type="date" id="inbxFacetDateMin" class="inbx-fld">
+    <span style="color:var(--text-muted)">–</span>
+    <input type="date" id="inbxFacetDateMax" class="inbx-fld"></div>
+  <div class="inbx-facet-grp"><label>Amount</label>
+    <input type="number" step="0.01" id="inbxFacetAmtMin" class="inbx-fld amt" placeholder="min">
+    <span style="color:var(--text-muted)">–</span>
+    <input type="number" step="0.01" id="inbxFacetAmtMax" class="inbx-fld amt" placeholder="max"></div>
+  <button type="button" id="inbxFacetClear" class="inbx-fld" style="cursor:pointer;color:var(--text-muted)">✕ Reset</button>
+</div>
+
+<div id="inbxCountLine"></div>
+<div id="inbxList"></div>
+<div id="inbxEmpty">No documents match these filters.</div>
+<div id="inbxSentinel"></div>
+
+<div id="inbxBulk">
+  <span class="sel"><span id="inbxSelCount">0</span> selected</span>
+  <span style="color:var(--text-muted)">·</span>
+  <button type="button" class="inbx-bulk-btn go" id="inbxBulkMatch">✓ Confirm matches</button>
+  <div class="inbx-bulk-wrap">
+    <button type="button" class="inbx-bulk-btn" id="inbxBulkType">🏷 Set type ▾</button>
+    <div id="inbxTypeMenu"></div>
+  </div>
+  <button type="button" class="inbx-bulk-btn danger" id="inbxBulkNotProject">🚫 Not project</button>
+  <span style="flex:1"></span>
+  <button type="button" class="inbx-bulk-btn" id="inbxBulkClear">✕ Clear</button>
+</div>
+
+<div id="inbxToast"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  'use strict';
+
+  // ── PID from the path: /projects/<pid>/docs ────────────────────────────────
+  var PID = (function () {
+    var m = location.pathname.match(/\/projects\/(\d+)\//);
+    return m ? m[1] : '';
+  })();
+
+  var CATS = [
+    ['receipt','Receipt'], ['invoice','Invoice'], ['estimate','Estimate / Quote'],
+    ['purchase_order','Purchase Order'], ['contract','Contract / SOW'], ['insurance','Insurance / COI'],
+    ['tax_form','Tax Form'], ['payroll','Payroll'], ['timecard','Timecard'], ['legal','Legal'],
+    ['release','Release'], ['employee_vendor_doc','Employee/Vendor Doc'], ['misc','Miscellaneous']
+  ];
+  var CAT_LABEL = {}; CATS.forEach(function (c) { CAT_LABEL[c[0]] = c[1]; });
+
+  var CHIP_DEFS = [
+    ['needs_review',  '⚠ Needs review'],
+    ['needs_match',   '🔗 Match'],
+    ['needs_coding',  '🏷 Needs coding'],
+    ['done',          '✓ Done'],
+    ['excluded',      '🚫 Excluded'],
+    ['all',           'All']
+  ];
+
+  var CHUNK = 100;
+
+  // ── tiny helpers ───────────────────────────────────────────────────────────
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function money(v) {
+    if (v == null || v === '') return '';
+    var n = Number(v);
+    if (!isFinite(n)) return '';
+    return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  var _toastT = null;
+  function toast(msg, kind) {
+    var el = $('inbxToast'); if (!el) return;
+    el.textContent = msg;
+    el.className = kind || '';
+    el.style.display = 'block';
+    if (_toastT) clearTimeout(_toastT);
+    _toastT = setTimeout(function () { el.style.display = 'none'; }, 3200);
+  }
+
+  // ── state ──────────────────────────────────────────────────────────────────
+  var ALL = [];           // all docs from inbox.json
+  var COUNTS = {};        // counts{}
+  var FACETS = {};        // facets{}
+  var filtered = [];      // current filtered list
+  var rendered = 0;       // rows appended so far
+  var selected = {};      // id -> true
+  var cursorId = null;    // keyboard-highlighted row id
+  var io = null;          // IntersectionObserver
+  var UI = { state: 'all', search: '' };
+
+  // ── fetch inbox.json ───────────────────────────────────────────────────────
+  function loadInbox(afterFn) {
+    fetch('/projects/' + PID + '/docs/inbox.json', { credentials: 'same-origin' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || !d.ok) { toast('Could not load documents.', 'err'); return; }
+        ALL = d.docs || [];
+        COUNTS = d.counts || {};
+        FACETS = d.facets || {};
+        buildChips();
+        buildFacetOptions();
+        if (afterFn) afterFn();
+        applyFilters();
+      })
+      .catch(function () { toast('Network error loading documents.', 'err'); });
+  }
+
+  // ── chips ──────────────────────────────────────────────────────────────────
+  function buildChips() {
+    var host = $('inbxChips'); host.innerHTML = '';
+    CHIP_DEFS.forEach(function (def) {
+      var key = def[0], label = def[1];
+      var n = COUNTS[key] || 0;
+      var chip = document.createElement('div');
+      chip.className = 'inbx-chip' + (UI.state === key ? ' active' : '');
+      chip.dataset.state = key;
+      chip.innerHTML = esc(label) + ' <span class="cnt">' + n + '</span>';
+      chip.addEventListener('click', function () {
+        UI.state = key;
+        buildChips();
+        applyFilters();
+      });
+      host.appendChild(chip);
+    });
+  }
+
+  // Default chip: first non-zero action state, else 'all'.
+  function defaultState() {
+    var order = ['needs_review', 'needs_match', 'needs_coding'];
+    for (var i = 0; i < order.length; i++) {
+      if ((COUNTS[order[i]] || 0) > 0) return order[i];
+    }
+    return 'all';
+  }
+
+  // ── facet dropdowns ────────────────────────────────────────────────────────
+  function buildFacetOptions() {
+    var catSel = $('inbxFacetCat');
+    var curCat = catSel.value;
+    catSel.innerHTML = '<option value="">All types</option>';
+    (FACETS.categories || []).forEach(function (c) {
+      var o = document.createElement('option');
+      o.value = c.value;
+      o.textContent = (CAT_LABEL[c.value] || c.value || 'Uncategorized') + ' (' + c.count + ')';
+      catSel.appendChild(o);
+    });
+    catSel.value = curCat;
+
+    var pSel = $('inbxFacetPerson');
+    var curP = pSel.value;
+    pSel.innerHTML = '<option value="">Anyone</option>';
+    (FACETS.people || []).forEach(function (p) {
+      var o = document.createElement('option');
+      o.value = p.name;
+      o.textContent = p.name + ' (' + p.count + ')';
+      pSel.appendChild(o);
+    });
+    pSel.value = curP;
+
+    // Bound the date inputs.
+    var dMin = $('inbxFacetDateMin'), dMax = $('inbxFacetDateMax');
+    if (FACETS.doc_date_min) { dMin.min = FACETS.doc_date_min; dMax.min = FACETS.doc_date_min; }
+    if (FACETS.doc_date_max) { dMin.max = FACETS.doc_date_max; dMax.max = FACETS.doc_date_max; }
+
+    // Bulk "set type" menu.
+    var menu = $('inbxTypeMenu'); menu.innerHTML = '';
+    CATS.forEach(function (c) {
+      var b = document.createElement('button');
+      b.type = 'button'; b.textContent = c[1]; b.dataset.cat = c[0];
+      b.addEventListener('click', function () { menu.style.display = 'none'; bulkSetType(c[0]); });
+      menu.appendChild(b);
+    });
+  }
+
+  // ── filtering ──────────────────────────────────────────────────────────────
+  function matchesSearch(doc, q) {
+    if (!q) return true;
+    var hay = [doc.filename, doc.vendor, doc.person_name,
+               (doc.amount != null ? String(doc.amount) : ''),
+               money(doc.amount)].join(' ').toLowerCase();
+    return hay.indexOf(q) !== -1;
+  }
+
+  function applyFilters() {
+    var q = ($('inbxSearch').value || '').trim().toLowerCase();
+    UI.search = $('inbxSearch').value || '';
+    var cat = $('inbxFacetCat').value;
+    var person = $('inbxFacetPerson').value;
+    var dMin = $('inbxFacetDateMin').value;
+    var dMax = $('inbxFacetDateMax').value;
+    var aMinV = $('inbxFacetAmtMin').value, aMaxV = $('inbxFacetAmtMax').value;
+    var aMin = aMinV !== '' ? parseFloat(aMinV) : null;
+    var aMax = aMaxV !== '' ? parseFloat(aMaxV) : null;
+
+    filtered = ALL.filter(function (doc) {
+      if (UI.state !== 'all' && doc.state !== UI.state) return false;
+      if (!matchesSearch(doc, q)) return false;
+      if (cat && (doc.category || '') !== cat) return false;
+      if (person && (doc.person_name || '') !== person) return false;
+      if (dMin && (!doc.doc_date || doc.doc_date < dMin)) return false;
+      if (dMax && (!doc.doc_date || doc.doc_date > dMax)) return false;
+      if (aMin != null && !(doc.amount != null && Number(doc.amount) >= aMin)) return false;
+      if (aMax != null && !(doc.amount != null && Number(doc.amount) <= aMax)) return false;
+      return true;
+    });
+
+    // Reset the incremental render.
+    var list = $('inbxList'); list.innerHTML = '';
+    rendered = 0;
+    cursorId = null;
+    $('inbxEmpty').style.display = filtered.length ? 'none' : 'block';
+    $('inbxCountLine').textContent = filtered.length
+      ? ('Showing ' + filtered.length.toLocaleString('en-US') + ' document' + (filtered.length !== 1 ? 's' : ''))
+      : '';
+    renderChunk();
+    setupObserver();
+  }
+
+  // ── chunked (virtualized-ish) rendering ────────────────────────────────────
+  function renderChunk() {
+    var list = $('inbxList');
+    var end = Math.min(rendered + CHUNK, filtered.length);
+    var frag = document.createDocumentFragment();
+    for (var i = rendered; i < end; i++) frag.appendChild(buildRow(filtered[i]));
+    list.appendChild(frag);
+    rendered = end;
+  }
+
+  function setupObserver() {
+    if (io) io.disconnect();
+    if (rendered >= filtered.length) return;
+    io = new IntersectionObserver(function (entries) {
+      if (entries[0] && entries[0].isIntersecting) {
+        renderChunk();
+        if (rendered >= filtered.length && io) io.disconnect();
+      }
+    }, { rootMargin: '600px' });
+    io.observe($('inbxSentinel'));
+  }
+
+  // ── one row = one flex <div> ───────────────────────────────────────────────
+  function buildRow(doc) {
+    var row = document.createElement('div');
+    row.className = 'inbx-row';
+    row.dataset.id = doc.id;
+
+    // checkbox
+    var cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.className = 'inbx-cb'; cb.checked = !!selected[doc.id];
+    cb.addEventListener('click', function (e) { e.stopPropagation(); toggleSelect(doc.id, cb.checked); });
+    row.appendChild(cb);
+
+    // thumbnail
+    if (doc.is_pdf) {
+      var pdf = document.createElement('div');
+      pdf.className = 'inbx-thumb inbx-thumb-pdf';
+      pdf.textContent = '📄';
+      row.appendChild(pdf);
+    } else {
+      var img = document.createElement('img');
+      img.className = 'inbx-thumb'; img.loading = 'lazy'; img.alt = '';
+      img.src = doc.thumb_url || ('/docs/upload/' + doc.id + '/thumb');
+      img.addEventListener('error', function () {
+        img.replaceWith(Object.assign(document.createElement('div'),
+          { className: 'inbx-thumb inbx-thumb-pdf', textContent: '📄' }));
+      });
+      row.appendChild(img);
+    }
+
+    // main text
+    var main = document.createElement('div');
+    main.className = 'inbx-main';
+    var metaBits = [];
+    if (doc.vendor) metaBits.push(esc(doc.vendor));
+    if (doc.amount != null && doc.amount !== '') metaBits.push(money(doc.amount));
+    if (doc.doc_date) metaBits.push(esc(doc.doc_date));
+    if (doc.person_name) metaBits.push(esc(doc.person_name));
+    main.innerHTML =
+      '<div class="inbx-fn">' + esc(doc.filename || 'Untitled') + '</div>' +
+      '<div class="inbx-meta">' + (metaBits.join(' · ') || '—') + '</div>';
+    row.appendChild(main);
+
+    // state-specific zone
+    var zone = document.createElement('div');
+    zone.className = 'inbx-zone';
+    fillZone(zone, doc);
+    row.appendChild(zone);
+
+    // category chip
+    var cat = document.createElement('div');
+    cat.className = 'inbx-cat';
+    cat.textContent = doc.category ? (CAT_LABEL[doc.category] || doc.category).toLowerCase() : '—';
+    row.appendChild(cat);
+
+    // arrow
+    var arr = document.createElement('div');
+    arr.className = 'inbx-arrow'; arr.textContent = '→';
+    row.appendChild(arr);
+
+    // row click → open editor (unless a control was clicked)
+    row.addEventListener('click', function (e) {
+      if (e.target.closest('.inbx-cb') || e.target.closest('button')) return;
+      openDoc(doc.id);
+    });
+
+    if (doc.id === cursorId) row.classList.add('cursored');
+    return row;
+  }
+
+  function fillZone(zone, doc) {
+    zone.innerHTML = '';
+    if (doc.state === 'needs_match') {
+      var sc = doc.txn && doc.txn.suggested_charge;
+      if (sc && sc.label) {
+        var lab = document.createElement('span');
+        lab.className = 'inbx-sugg';
+        lab.textContent = sc.label;
+        zone.appendChild(lab);
+      }
+      var btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'inbx-btn-match'; btn.textContent = '✓ Match';
+      btn.addEventListener('click', function (e) { e.stopPropagation(); confirmMatch(doc.id); });
+      zone.appendChild(btn);
+    } else if (doc.state === 'needs_coding') {
+      var t = document.createElement('span');
+      t.className = 'inbx-tag coding'; t.textContent = 'Needs coding';
+      zone.appendChild(t);
+    } else if (doc.state === 'needs_review') {
+      var r = document.createElement('span');
+      r.className = 'inbx-tag review';
+      r.textContent = doc.dup_pending ? 'Possible duplicate' : 'Review';
+      zone.appendChild(r);
+    } else if (doc.state === 'excluded') {
+      var x = document.createElement('span');
+      x.className = 'inbx-tag excl'; x.textContent = '🚫 Not project';
+      zone.appendChild(x);
+    } else { // done
+      var d = document.createElement('span');
+      d.className = 'inbx-tag done';
+      d.textContent = (doc.txn && doc.txn.coded_label) ? doc.txn.coded_label : 'Filed';
+      zone.appendChild(d);
+    }
+  }
+
+  function rowEl(id) { return $('inbxList').querySelector('.inbx-row[data-id="' + id + '"]'); }
+
+  // ── selection + bulk bar ───────────────────────────────────────────────────
+  function toggleSelect(id, on) {
+    if (on) selected[id] = true; else delete selected[id];
+    refreshBulkBar();
+  }
+  function clearSelection() {
+    selected = {};
+    $('inbxList').querySelectorAll('.inbx-cb').forEach(function (cb) { cb.checked = false; });
+    refreshBulkBar();
+  }
+  function selectedIds() { return Object.keys(selected).map(Number); }
+  function refreshBulkBar() {
+    var ids = selectedIds();
+    var bar = $('inbxBulk');
+    $('inbxSelCount').textContent = ids.length;
+    bar.style.display = ids.length ? 'flex' : 'none';
+  }
+
+  // ── actions (batch endpoint) ───────────────────────────────────────────────
+  function postBatch(action, ids, category) {
+    var body = { action: action, ids: ids };
+    if (category) body.category = category;
+    return fetch('/projects/' + PID + '/docs/batch', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; });
+    });
+  }
+
+  // Single-row confirm match: flip to done + flash, no full reload.
+  function confirmMatch(id) {
+    postBatch('confirm_match', [id]).then(function (res) {
+      if (res.ok && res.d && res.d.ok) {
+        var doc = ALL.filter(function (x) { return x.id === id; })[0];
+        if (doc) {
+          doc.state = 'done';
+          if (doc.txn && !doc.txn.coded_label) doc.txn.coded_label = 'Matched';
+        }
+        var el = rowEl(id);
+        if (el) {
+          el.classList.add('flash-ok');
+          var zone = el.querySelector('.inbx-zone');
+          if (zone && doc) fillZone(zone, doc);
+          setTimeout(function () { if (el) el.classList.remove('flash-ok'); }, 900);
+        }
+        // Keep counts fresh-ish so chips stay honest.
+        bumpCount('needs_match', -1); bumpCount('done', 1); buildChips();
+      } else {
+        toast('Could not confirm match.', 'err');
+      }
+    }).catch(function () { toast('Network error confirming match.', 'err'); });
+  }
+
+  function bumpCount(key, delta) { COUNTS[key] = Math.max(0, (COUNTS[key] || 0) + delta); }
+
+  function bulkAction(action, category, label) {
+    var ids = selectedIds();
+    if (!ids.length) return;
+    postBatch(action, ids, category).then(function (res) {
+      if (!res.ok || !res.d) { toast('Bulk action failed.', 'err'); return; }
+      var d = res.d;
+      var skipped = (d.skipped || []).length;
+      toast((d.done || 0) + ' done' + (skipped ? (', ' + skipped + ' skipped') : '') + (label ? (' · ' + label) : ''), 'ok');
+      clearSelection();
+      // Re-fetch (575ms) so states/counts/facets are authoritative.
+      loadInbox();
+    }).catch(function () { toast('Network error on bulk action.', 'err'); });
+  }
+
+  function bulkSetType(cat) { bulkAction('set_category', cat, 'Type → ' + (CAT_LABEL[cat] || cat)); }
+
+  // ── open editor with state stashed ─────────────────────────────────────────
+  function stashState() {
+    try {
+      sessionStorage.setItem('fpInboxState', JSON.stringify({
+        state: UI.state,
+        search: $('inbxSearch').value || '',
+        facets: {
+          cat: $('inbxFacetCat').value, person: $('inbxFacetPerson').value,
+          dMin: $('inbxFacetDateMin').value, dMax: $('inbxFacetDateMax').value,
+          aMin: $('inbxFacetAmtMin').value, aMax: $('inbxFacetAmtMax').value
+        },
+        scroll: window.scrollY || 0,
+        ts: Date.now()
+      }));
+    } catch (e) { /* sessionStorage unavailable — editor still opens */ }
+  }
+  function openDoc(id) {
+    stashState();
+    location.href = '/projects/' + PID + '/docs/' + id + '/editor?from=inbox';
+  }
+
+  function restoreState() {
+    var applied = false;
+    try {
+      var raw = sessionStorage.getItem('fpInboxState');
+      if (raw) {
+        var s = JSON.parse(raw);
+        if (s && s.ts && (Date.now() - s.ts) < 600000) {   // 10 min
+          applied = true;
+          if (s.state) UI.state = s.state;
+          $('inbxSearch').value = s.search || '';
+          var f = s.facets || {};
+          $('inbxFacetCat').value = f.cat || '';
+          $('inbxFacetPerson').value = f.person || '';
+          $('inbxFacetDateMin').value = f.dMin || '';
+          $('inbxFacetDateMax').value = f.dMax || '';
+          $('inbxFacetAmtMin').value = f.aMin || '';
+          $('inbxFacetAmtMax').value = f.aMax || '';
+          var y = s.scroll || 0;
+          setTimeout(function () { try { window.scrollTo(0, y); } catch (e) {} }, 80);
+        }
+      }
+      if (raw) sessionStorage.removeItem('fpInboxState');
+    } catch (e) { applied = false; }
+    if (!applied) UI.state = defaultState();
+  }
+
+  // ── keyboard nav ───────────────────────────────────────────────────────────
+  function cursorDoc() { return filtered.filter(function (x) { return x.id === cursorId; })[0]; }
+  function setCursor(id) {
+    var prev = cursorId != null ? rowEl(cursorId) : null;
+    if (prev) prev.classList.remove('cursored');
+    cursorId = id;
+    var el = id != null ? rowEl(id) : null;
+    if (el) {
+      el.classList.add('cursored');
+      el.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  function moveCursor(delta) {
+    if (!filtered.length) return;
+    var idx = -1;
+    for (var i = 0; i < filtered.length; i++) { if (filtered[i].id === cursorId) { idx = i; break; } }
+    var next = idx < 0 ? (delta > 0 ? 0 : filtered.length - 1) : idx + delta;
+    next = Math.max(0, Math.min(next, filtered.length - 1));
+    // Make sure the target row is rendered.
+    while (next >= rendered && rendered < filtered.length) renderChunk();
+    setCursor(filtered[next].id);
+  }
+
+  document.addEventListener('keydown', function (e) {
+    var t = e.target;
+    var typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT');
+    if (e.key === '/') {
+      if (typing) return;
+      e.preventDefault(); $('inbxSearch').focus(); return;
+    }
+    if (typing) {
+      if (e.key === 'Escape') { t.blur(); }
+      return;
+    }
+    if (e.key === 'j') { e.preventDefault(); moveCursor(1); }
+    else if (e.key === 'k') { e.preventDefault(); moveCursor(-1); }
+    else if (e.key === 'x') {
+      e.preventDefault();
+      if (cursorId == null) return;
+      var on = !selected[cursorId];
+      toggleSelect(cursorId, on);
+      var cb = rowEl(cursorId) && rowEl(cursorId).querySelector('.inbx-cb');
+      if (cb) cb.checked = on;
+    }
+    else if (e.key === 'Enter') {
+      if (cursorId != null) { e.preventDefault(); openDoc(cursorId); }
+    }
+    else if (e.key === 'm') {
+      var d = cursorDoc();
+      if (d && d.state === 'needs_match') { e.preventDefault(); confirmMatch(d.id); }
+    }
+    else if (e.key === 'Escape') { clearSelection(); }
+  });
+
+  // ── wire controls ──────────────────────────────────────────────────────────
+  var _searchT = null;
+  $('inbxSearch').addEventListener('input', function () {
+    if (_searchT) clearTimeout(_searchT);
+    _searchT = setTimeout(applyFilters, 120);
+  });
+  ['inbxFacetCat', 'inbxFacetPerson', 'inbxFacetDateMin', 'inbxFacetDateMax',
+   'inbxFacetAmtMin', 'inbxFacetAmtMax'].forEach(function (id) {
+    $(id).addEventListener('change', applyFilters);
+    $(id).addEventListener('input', function () {
+      if (_searchT) clearTimeout(_searchT);
+      _searchT = setTimeout(applyFilters, 150);
+    });
+  });
+  $('inbxFacetClear').addEventListener('click', function () {
+    ['inbxFacetCat', 'inbxFacetPerson', 'inbxFacetDateMin', 'inbxFacetDateMax',
+     'inbxFacetAmtMin', 'inbxFacetAmtMax'].forEach(function (id) { $(id).value = ''; });
+    applyFilters();
+  });
+
+  $('inbxBulkMatch').addEventListener('click', function () { bulkAction('confirm_match', null, 'Matched'); });
+  $('inbxBulkNotProject').addEventListener('click', function () { bulkAction('not_project', null, 'Not project'); });
+  $('inbxBulkClear').addEventListener('click', clearSelection);
+  $('inbxBulkType').addEventListener('click', function (e) {
+    e.stopPropagation();
+    var m = $('inbxTypeMenu');
+    m.style.display = (m.style.display === 'block') ? 'none' : 'block';
+  });
+  document.addEventListener('click', function (e) {
+    if (!e.target.closest('.inbx-bulk-wrap')) $('inbxTypeMenu').style.display = 'none';
+  });
+
+  // ── go ─────────────────────────────────────────────────────────────────────
+  loadInbox(restoreState);
+})();
+</script>
+{% endblock %}

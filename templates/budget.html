@@ -2690,13 +2690,17 @@
 
     {# Vendor / filename / note search — mirrors the Actuals-tab vendor
        search the user relies on. Filters within the active subtab. #}
-    <div style="margin-bottom:10px">
+    <div style="margin-bottom:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <input type="search" id="docs-search" autocomplete="off"
              placeholder="🔍 Search vendor, filename, or note…"
              oninput="_docsOnSearch(this.value)"
-             style="width:100%;max-width:440px;font-size:13px;padding:7px 11px;
+             style="flex:1;min-width:220px;max-width:440px;font-size:13px;padding:7px 11px;
                     background:var(--bg-input);color:var(--text);
                     border:1px solid var(--border);border-radius:7px">
+      <a href="/projects/{{ project.id }}/docs"
+         title="Fast keyboard-friendly triage inbox for all documents"
+         style="font-size:12px;padding:6px 11px;border-radius:6px;background:#1a2540;
+                border:1px solid #2d4070;color:#8fb4ff;text-decoration:none;white-space:nowrap">📥 Inbox view</a>
     </div>
 
     {# Sort toolbar: client-side reorder by column. Each row below carries
