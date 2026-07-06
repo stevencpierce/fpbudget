@@ -28880,13 +28880,10 @@ def docs_upload_itemize(uid):
     mtarget = _parse_target(main_line_raw)
     doc_total = abs(float(parent.amount)) if parent.amount is not None else 0.0
 
-    # Remove any previous itemization for this parent (replace-on-save).
-    for k in Transaction.query.filter_by(project_id=pid, parent_transaction_id=parent.id,
-                                         source='invoice_split').all():
-        db.session.delete(k)
-    db.session.flush()
-
-    # Parse sublines (portions peeled off to OTHER budget lines).
+    # Parse + VALIDATE sublines BEFORE mutating anything (guard added 2026-07:
+    # a bad OCR pull once saved 9 × the full doc total as children — ~$9.6k of
+    # phantom coded spend on a $1,203 invoice. Sublines exceeding the document
+    # total are always an error; reject with a clear message).
     sublines = []
     for r in rows:
         try:
@@ -28896,6 +28893,39 @@ def docs_upload_itemize(uid):
         if amt == 0:
             continue
         sublines.append((amt, _parse_target(r.get("budget_line_id")), (r.get("description") or '')[:300]))
+    _sub_total_check = round(sum(a for a, _, _ in sublines), 2)
+    if doc_total > 0 and _sub_total_check > doc_total + 0.01:
+        return jsonify({"error": f"Sublines total ${_sub_total_check:,.2f} exceeds the "
+                                 f"document total ${doc_total:,.2f} — fix the amounts "
+                                 f"before saving."}), 400
+
+    # Remove any previous itemization for this parent (replace-on-save).
+    for k in Transaction.query.filter_by(project_id=pid, parent_transaction_id=parent.id,
+                                         source='invoice_split').all():
+        db.session.delete(k)
+    db.session.flush()
+
+    def _uncode_doc_siblings(keep_id):
+        """Un-code EVERY other transaction attached to this doc (excl. the
+        split children, which are flushed after this runs). One document = one
+        spend event: after itemization/coding, exactly ONE representative may
+        carry coding. Fix 2026-07: a doc had TWO rows (doc_upload twin + the
+        parent) — itemize un-coded the parent but the twin kept its WRONG line,
+        so the miscoded amount never moved (user report, txn 1088/doc 1156)."""
+        try:
+            sibs = (Transaction.query
+                    .filter(Transaction.doc_upload_id == upload.id,
+                            Transaction.source != 'invoice_split',
+                            Transaction.id != (keep_id or -1)).all())
+            for s in sibs:
+                if s.budget_line_id or s.account_code:
+                    try:
+                        unlink_transaction(s.id)
+                    except Exception:
+                        s.budget_line_id = None
+                        s.account_code = s.account_code_name = None
+        except Exception as _use:
+            logging.warning("[itemize] sibling uncode failed: %s", _use)
 
     def _mk_child(amt, target, note):
         c = Transaction(project_id=pid, source='invoice_split', parent_transaction_id=parent.id,
@@ -28911,6 +28941,7 @@ def docs_upload_itemize(uid):
         if mtarget:
             _apply_target(parent, mtarget)
             _clear_ai_code_suggestion(parent)
+            _uncode_doc_siblings(parent.id)   # coding is singular per doc (2026-07)
             db.session.commit()
             return jsonify({"ok": True, "children": 0, "main_line_amount": round(doc_total, 2),
                             "remainder": round(doc_total, 2)})
@@ -28918,6 +28949,7 @@ def docs_upload_itemize(uid):
             unlink_transaction(parent.id)
         except Exception:
             parent.account_code = parent.account_code_name = parent.budget_line_id = None
+        _uncode_doc_siblings(None)   # clear = clear EVERY doc txn's coding (2026-07)
         db.session.commit()
         return jsonify({"ok": True, "cleared": True, "children": 0})
 
@@ -28935,6 +28967,7 @@ def docs_upload_itemize(uid):
         unlink_transaction(parent.id)
     except Exception:
         parent.account_code = parent.account_code_name = parent.budget_line_id = None
+    _uncode_doc_siblings(None)   # children carry ALL coding now — no stragglers (2026-07)
     _clear_ai_code_suggestion(parent)
     db.session.commit()
     return jsonify({"ok": True, "children": len(created), "child_ids": created,
