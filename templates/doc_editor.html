@@ -393,7 +393,11 @@
     var value = selectEl.value;
     var st = $('edCodingStatus');
     if (!value) return;
-    selectEl.disabled = true;
+    // OPTIMISTIC: never disable the select while saving — locking it made the
+    // pick feel like it took the whole server round-trip (user 2026-07: "takes
+    // 3-4 seconds to actually select"). The chosen value shows instantly;
+    // on failure we revert to the previous value and show the error.
+    var prevValue = selectEl.dataset.current || '';
     var url, body;
     if (value === '__clear__') {
       url = '/projects/' + PID + '/actuals/transaction/' + tid + '/set-line';
@@ -408,27 +412,32 @@
       url = '/projects/' + PID + '/actuals/transaction/' + tid + '/set-line';
       body = JSON.stringify({ budget_line_id: value });
     }
-    if (st) { st.textContent = 'Coding…'; st.style.color = 'var(--text-muted)'; }
+    if (st) { st.textContent = 'Saving…'; st.style.color = 'var(--text-muted)'; }
     fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: body })
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
       .then(function (res) {
         if (!res.ok) {
           // 409 = itemized container can't be recoded directly; show its message.
+          // Revert the optimistic pick so the UI matches the server.
+          selectEl.value = prevValue;
           if (st) { st.textContent = (res.d.error || ('Could not save: ' + res.status)); st.style.color = '#e0a13a'; }
           return;
         }
+        selectEl.dataset.current = (value === '__clear__' || value === 'not_project') ? '' : value;
         if (st) {
           var sel = selectEl.options[selectEl.selectedIndex];
-          st.textContent = (value === '__clear__') ? 'Cleared.'
-            : (value === 'not_project') ? 'Marked “not a project expense.”'
-            : ('Currently: ' + (sel ? sel.text.trim() : value));
-          st.style.color = 'var(--text-muted)';
+          st.textContent = (value === '__clear__') ? '✓ Cleared.'
+            : (value === 'not_project') ? '✓ Marked “not a project expense.”'
+            : ('✓ Saved — ' + (sel ? sel.text.trim() : value));
+          st.style.color = '#5fd0a0';
         }
         if (value === '__clear__' || value === 'not_project') selectEl.value = '';
         edUpdateTotal();
       })
-      .catch(function (e) { if (st) { st.textContent = 'Save failed: ' + e.message; st.style.color = '#e0a13a'; } })
-      .finally(function () { selectEl.disabled = false; });
+      .catch(function (e) {
+        selectEl.value = prevValue;   // network failure → revert optimistic pick
+        if (st) { st.textContent = 'Save failed: ' + e.message; st.style.color = '#e0a13a'; }
+      });
   }
 
   function loadCoding() {
@@ -483,8 +492,12 @@
     var amtEl = row.querySelector('.editem-amt');
     amtEl.addEventListener('input', edUpdateTotal);
     var sel = row.querySelector('.editem-line');
-    sel.addEventListener('focus', function () { fillPicker(sel); });
-    if (lineId) { sel.dataset.current = String(lineId); fillPicker(sel); }
+    // Populate at CREATION, not lazily on focus — mutating 300+ options while
+    // the native dropdown is opening stalled/cancelled the first pick (user
+    // 2026-07: "dropdowns take 3-4 seconds to actually select"). The template
+    // innerHTML copy is cheap and rows are few. (Review fix 2026-07.)
+    if (lineId) sel.dataset.current = String(lineId);
+    fillPicker(sel);
     row.querySelector('.editem-rm').addEventListener('click', function () {
       row.remove(); edUpdateTotal();
     });
