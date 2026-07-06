@@ -15673,11 +15673,18 @@ window.saveInlinePo = async function() {
       } else {
         docCell = '<span class="muted" style="font-style:italic;font-size:.72rem">no receipt</span>';
       }
+      // '(split)' tag — this row is one PORTION of a document itemized across
+      // multiple budget lines (source='invoice_split'). User 2026-07: "any
+      // invoice that is a split — put split next to it, maybe in parentheses."
+      const splitTag = (t.source === 'invoice_split')
+        ? ' <span class="muted" style="font-size:.7rem;color:#c084fc" '
+          + 'title="Part of a document itemized across multiple budget lines — open the doc to see the full split">(split)</span>'
+        : '';
       html += '<tr class="wad-subrow" data-tid="' + t.id + '" data-scope="' + scope + '" '
         + 'style="border-top:1px solid var(--border)">'
         + '<td style="padding:5px 6px;color:var(--text-muted);font-variant-numeric:tabular-nums;width:90px">'
         + _esc(t.date || '—') + '</td>'
-        + '<td style="padding:5px 6px;width:38%">' + _esc(t.vendor || '—') + '</td>'
+        + '<td style="padding:5px 6px;width:38%">' + _esc(t.vendor || '—') + splitTag + '</td>'
         + '<td style="padding:5px 6px;width:32%">' + docCell + '</td>'
         + '<td style="padding:5px 6px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;'
         + 'color:' + (amtNeg ? '#fb7185' : 'var(--text)') + '">'
