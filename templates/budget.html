@@ -1600,7 +1600,7 @@
             {% if _actual is none %}{% set _actual = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
           {% endif %}
           {% set _actual = (_actual or 0) | float %}
-          <td class="col-num col-actual line-actual">
+          <td class="col-num col-actual line-actual" data-acell-line="{{ ln.id }}">
             {% if is_actual_view %}
               {# Actual view: the Actual column IS the rollup of charges
                  linked to this line. Per user 2026-05-08, the Actual
@@ -1683,10 +1683,20 @@
             {% if _actual_e is none %}{% set _actual_e = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
           {% endif %}
           {% set _actual_e = (_actual_e or 0) | float %}
-          <td class="col-num col-actual">
+          <td class="col-num col-actual line-actual" data-acell-line="{{ ln.id }}">
             {% if has_actual_budget %}
-              {% if _actual_e > 0 %}
-                <strong style="color:var(--green)">{{ _actual_e | currency }}</strong>
+              {% if _actual_e != 0 %}
+                {# Estimated view gets the SAME ▸ expander as Working (user
+                   2026-07: "there's only one actual — if you move it in one of
+                   the budgets, it moves in all of them"). The transactions.json
+                   endpoint resolves sibling lines by code+description, so the
+                   estimated line id works. Refund nets show amber ↩. #}
+                <span class="work-actual-expand cs-screen-only" data-line-id="{{ ln.id }}"
+                      style="cursor:pointer;display:inline-flex;align-items:center;gap:3px"
+                      title="Show the transactions coded to this line">
+                  <span class="work-actual-chev" style="display:inline-block;width:9px;color:{% if _actual_e < 0 %}#e0a13a{% else %}var(--green){% endif %};font-size:.72rem">▸</span>
+                  <strong style="color:{% if _actual_e < 0 %}#e0a13a{% else %}var(--green){% endif %}">{% if _actual_e < 0 %}↩ {% endif %}{{ _actual_e | currency }}</strong>
+                </span>
               {% else %}
                 <span class="muted" style="font-size:.75rem">—</span>
               {% endif %}
@@ -1868,7 +1878,14 @@
            /actuals/line/<id>/transactions.json). cs-screen-only keeps it out
            of print / server-side export — the Actual column number carries the
            spend there. Display-only: does NOT touch ns.sec_* accumulators. #}
-        {% if is_working_view and not is_actual_view and has_actual_budget and _actual > 0 and not actuals_frozen %}
+        {# Detail shell renders for BOTH Working and Estimated views (user
+           2026-07: one shared actuals reality). _adet picks the view's own
+           per-line value; `!= 0` so refund-net lines are expandable too. #}
+        {% set _adet = none %}
+        {% if not is_actual_view and has_actual_budget and not actuals_frozen %}
+          {% if is_working_view %}{% set _adet = _actual %}{% else %}{% set _adet = _actual_e %}{% endif %}
+        {% endif %}
+        {% if _adet is not none and _adet != 0 %}
         <tr class="work-actual-detail cs-screen-only" data-for-line="{{ ln.id }}" style="display:none">
           <td colspan="14" style="padding:6px 12px 12px 32px;background:rgba(34,197,94,.04);border-left:3px solid var(--green)">
             <div class="work-actual-detail-body" data-loaded="0" data-line-id="{{ ln.id }}"
@@ -2129,7 +2146,9 @@
            Working view — actual_section_only_by_code is project-scoped/live, so
            it would show current section-coded spend, not this version's frozen
            history. #}
-        {% if is_working_view and not is_actual_view and has_actual_budget and not actuals_frozen %}
+        {# Section-coded spend rows render in BOTH Estimated and Working views —
+           one shared actuals reality (user 2026-07). #}
+        {% if not is_actual_view and has_actual_budget and not actuals_frozen %}
         {% set _sec_only_amt = (actual_section_only_by_code.get(sec.code, 0) or 0) | float %}
         {% if _sec_only_amt %}
         <tr class="line-row work-section-only-row cs-screen-only" data-section-code="{{ sec.code }}"
@@ -15462,7 +15481,10 @@ window.saveInlinePo = async function() {
       const id = row.dataset.id;
       const detail = document.querySelector(`.actual-line-detail[data-for-line="${id}"]`);
       if (!detail) return;
-      const open = detail.style.display !== 'none' && detail.style.display !== '';
+      // '' means VISIBLE (we open by clearing the inline display:none), so
+      // "open" is simply anything-but-'none'. The old `&& !== ''` clause made
+      // every click re-open — the arrow never collapsed. (User 2026-07.)
+      const open = detail.style.display !== 'none';
       detail.style.display = open ? 'none' : '';
       const chev = row.querySelector('.actual-line-chev');
       if (chev) chev.textContent = open ? '▸' : '▾';
@@ -15474,7 +15496,10 @@ window.saveInlinePo = async function() {
       const code = row.dataset.sectionCode;
       const detail = document.querySelector(`.actual-section-only-detail[data-for-section="${code}"]`);
       if (!detail) return;
-      const open = detail.style.display !== 'none' && detail.style.display !== '';
+      // '' means VISIBLE (we open by clearing the inline display:none), so
+      // "open" is simply anything-but-'none'. The old `&& !== ''` clause made
+      // every click re-open — the arrow never collapsed. (User 2026-07.)
+      const open = detail.style.display !== 'none';
       detail.style.display = open ? 'none' : '';
       const chev = row.querySelector('.actual-section-only-chev');
       if (chev) chev.textContent = open ? '▸' : '▾';
@@ -15699,14 +15724,19 @@ window.saveInlinePo = async function() {
     }
   }
 
-  // Expand / collapse a line's Actual-cell ▸ affordance.
-  document.querySelectorAll('.work-actual-expand').forEach(exp => {
+  // Expand / collapse a line's Actual-cell ▸ affordance. Extracted into
+  // _bindExpand so cells rebuilt by refreshActualCells() re-bind. (2026-07.)
+  function _bindExpand(exp) {
+    if (!exp) return;
     exp.addEventListener('click', e => {
       e.stopPropagation();
       const lid = exp.dataset.lineId;
       const detail = document.querySelector('.work-actual-detail[data-for-line="' + lid + '"]');
       if (!detail) return;
-      const open = detail.style.display !== 'none' && detail.style.display !== '';
+      // '' means VISIBLE (we open by clearing the inline display:none), so
+      // "open" is simply anything-but-'none'. The old `&& !== ''` clause made
+      // every click re-open — the arrow never collapsed. (User 2026-07.)
+      const open = detail.style.display !== 'none';
       detail.style.display = open ? 'none' : '';
       const chev = exp.querySelector('.work-actual-chev');
       if (chev) chev.textContent = open ? '▸' : '▾';
@@ -15715,7 +15745,8 @@ window.saveInlinePo = async function() {
         if (body && body.dataset.loaded !== '1') _loadLine(body);
       }
     });
-  });
+  }
+  document.querySelectorAll('.work-actual-expand').forEach(_bindExpand);
 
   // Expand / collapse a section-only spend row.
   document.querySelectorAll('.work-section-only-row').forEach(row => {
@@ -15723,7 +15754,10 @@ window.saveInlinePo = async function() {
       const code = row.dataset.sectionCode;
       const detail = document.querySelector('.work-section-only-detail[data-for-section="' + code + '"]');
       if (!detail) return;
-      const open = detail.style.display !== 'none' && detail.style.display !== '';
+      // '' means VISIBLE (we open by clearing the inline display:none), so
+      // "open" is simply anything-but-'none'. The old `&& !== ''` clause made
+      // every click re-open — the arrow never collapsed. (User 2026-07.)
+      const open = detail.style.display !== 'none';
       detail.style.display = open ? 'none' : '';
       const chev = row.querySelector('.work-section-only-chev');
       if (chev) chev.textContent = open ? '▸' : '▾';
@@ -15791,14 +15825,90 @@ window.saveInlinePo = async function() {
       if (table && !table.querySelector('.wad-subrow')) {
         const container = table.parentElement;
         if (container) container.innerHTML =
-          '<span style="font-style:italic">All transactions uncoded. Reload to refresh totals.</span>';
+          '<span style="font-style:italic">All transactions uncoded.</span>';
       }
       if (typeof _actualsToast === 'function') _actualsToast('Uncoded.', 'yellow');
+      refreshActualCells();   // live cell update — no reload needed (2026-07)
     } catch (err) {
       alert('Uncode failed: ' + err.message);
       btn.disabled = false; btn.textContent = '✕ uncode';
     }
   });
+
+  // ── LIVE REFRESH (User 2026-07: "can a line automatically move if I recode
+  // it without refreshing?") ────────────────────────────────────────────────
+  // Rebuilds every Actual cell from a single batched totals call. Triggered:
+  // after an uncode above, and whenever the tab regains focus/visibility
+  // (throttled) — so recoding a doc in the standalone editor, the inbox, or
+  // another tab shows up here the moment you come back. Section-only rows
+  // update their amount in place. Fail-quiet.
+  let _lastRefresh = 0;
+  const _money = n => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US',
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  async function refreshActualCells() {
+    // NEVER on a frozen (superseded) version — the ❄ snapshots are immutable
+    // history; live totals would overwrite them with moved spend. (2026-07.)
+    {% if actuals_frozen %}return;{% endif %}
+    const cells = document.querySelectorAll('td[data-acell-line]');
+    if (!cells.length) return;
+    const ids = [...cells].map(c => parseInt(c.dataset.acellLine, 10)).filter(Boolean);
+    let d;
+    try {
+      const r = await fetch('/projects/' + PROJ_ID + '/actuals/line-totals.json', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+      d = await r.json();
+    } catch (e) { return; }
+    if (!d || !d.ok) return;
+    cells.forEach(cell => {
+      const lid = cell.dataset.acellLine;
+      const v = d.lines[lid];
+      if (v === undefined) return;
+      const cur = cell.querySelector('.work-actual-expand strong, strong, .muted');
+      const curTxt = cur ? cur.textContent.trim() : '';
+      const nowTxt = v !== 0 ? ((v < 0 ? '↩ ' : '') + _money(v)) : '—';
+      if (curTxt.replace(/[▸▾\s]/g, '') === nowTxt.replace(/\s/g, '')) return;  // unchanged
+      const col = v < 0 ? '#e0a13a' : 'var(--green)';
+      if (v !== 0) {
+        cell.innerHTML =
+          '<span class="work-actual-expand cs-screen-only" data-line-id="' + lid + '"' +
+          ' style="cursor:pointer;display:inline-flex;align-items:center;gap:3px"' +
+          ' title="Show the transactions coded to this line">' +
+          '<span class="work-actual-chev" style="display:inline-block;width:9px;color:' + col + ';font-size:.72rem">▸</span>' +
+          '<strong style="color:' + col + '">' + (v < 0 ? '↩ ' : '') + _money(v) + '</strong></span>';
+        _bindExpand(cell.querySelector('.work-actual-expand'));
+      } else {
+        cell.innerHTML = '<span class="muted" style="font-size:.75rem">—</span>';
+      }
+      delete _lineCache[lid];
+      // Collapse + reset any open detail for this line (its contents moved).
+      const det = document.querySelector('.work-actual-detail[data-for-line="' + lid + '"]');
+      if (det) { det.style.display = 'none';
+        const b = det.querySelector('.work-actual-detail-body');
+        if (b) { b.dataset.loaded = '0'; b.innerHTML = '<span class="work-actual-loading">Loading transactions…</span>'; } }
+      cell.style.transition = 'background .8s'; cell.style.background = 'rgba(34,197,94,.18)';
+      setTimeout(() => { cell.style.background = ''; }, 900);
+    });
+    // Section-only rows: update amounts in place (rows for NEW section-only
+    // spend appear on next full load — acceptable).
+    document.querySelectorAll('.work-section-only-row').forEach(row => {
+      const code = row.dataset.sectionCode;
+      const v = d.sections[code];
+      const amtEl = row.querySelector('.work-sec-only-amt, .col-actual strong, strong');
+      if (amtEl && v !== undefined) amtEl.textContent = _money(v || 0);
+      delete _sectionCache[code];
+      if (!v) row.style.display = 'none';
+    });
+    _lastRefresh = Date.now();
+  }
+  window.refreshActualCells = refreshActualCells;   // other IIFEs / surfaces may call
+  function _throttledRefresh() {
+    if (Date.now() - _lastRefresh > 8000) refreshActualCells();
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') _throttledRefresh();
+  });
+  window.addEventListener('focus', _throttledRefresh);
 })();
 
 var RATE_TYPE_LABELS = {

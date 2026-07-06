@@ -9222,6 +9222,69 @@ def actuals_line_transactions(pid, lid):
     })
 
 
+@app.route("/projects/<int:pid>/actuals/line-totals.json", methods=["POST"])
+@login_required
+def actuals_line_totals_batch(pid):
+    """Live per-line actual totals for the budget page's Actual cells.
+
+    Body {ids:[line ids from EITHER the Estimated or Working view]} → for each
+    id, resolve the project-wide SIBLING set (same account_code + description —
+    the same resolution the per-line transactions.json uses, so cell and
+    detail always agree) and return the signed txn sum. Also returns per-code
+    SECTION-ONLY totals (line-less coded spend). Powers refresh-without-reload
+    after recoding (user 2026-07: "can a line automatically move if I recode it
+    without refreshing?"). Read-only, fail-open."""
+    _require_project_role(pid, 'viewer')
+    try:
+        ids = [int(x) for x in ((request.get_json(silent=True) or {}).get('ids') or [])][:2000]
+    except Exception:
+        ids = []
+    out_lines, sections = {}, {}
+    try:
+        req_lines = (BudgetLine.query.filter(BudgetLine.id.in_(ids)).all()
+                     if ids else [])
+        # Sibling resolution in bulk: one pass over the project's lines.
+        proj_lines = (BudgetLine.query
+                      .join(Budget, Budget.id == BudgetLine.budget_id)
+                      .filter(Budget.project_id == pid).all())
+        sib_by_key = {}
+        for pl in proj_lines:
+            sib_by_key.setdefault(
+                (pl.account_code, (pl.description or '').strip().lower()),
+                set()).add(pl.id)
+        # One signed-sum query over ALL sibling ids, distributed after.
+        all_sib_ids = set()
+        key_by_req = {}
+        for rl in req_lines:
+            k = (rl.account_code, (rl.description or '').strip().lower())
+            key_by_req[rl.id] = k
+            all_sib_ids |= sib_by_key.get(k, {rl.id})
+        sums_by_lid = {}
+        if all_sib_ids:
+            for lid, amt in (db.session.query(
+                        Transaction.budget_line_id, func.sum(_signed_amount()))
+                    .filter(Transaction.project_id == pid,
+                            Transaction.budget_line_id.in_(list(all_sib_ids)),
+                            Transaction.not_project_expense == False)  # noqa: E712
+                    .group_by(Transaction.budget_line_id).all()):
+                sums_by_lid[lid] = float(amt or 0)
+        for rl in req_lines:
+            sibs = sib_by_key.get(key_by_req[rl.id], {rl.id})
+            out_lines[str(rl.id)] = round(sum(sums_by_lid.get(s, 0.0) for s in sibs), 2)
+        # Section-only totals (line-less coded spend), keyed by account code.
+        for code, amt in (db.session.query(
+                    Transaction.account_code, func.sum(_signed_amount()))
+                .filter(Transaction.project_id == pid,
+                        Transaction.budget_line_id.is_(None),
+                        Transaction.account_code.isnot(None),
+                        Transaction.not_project_expense == False)  # noqa: E712
+                .group_by(Transaction.account_code).all()):
+            sections[str(code)] = round(float(amt or 0), 2)
+    except Exception as _lte:
+        logging.warning(f"[actuals/line-totals] failed: {_lte}")
+    return jsonify({"ok": True, "lines": out_lines, "sections": sections})
+
+
 @app.route("/projects/<int:pid>/actuals/section/<int:code>/transactions.json", methods=["GET"])
 @login_required
 def actuals_section_transactions(pid, code):
