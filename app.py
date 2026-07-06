@@ -29925,22 +29925,39 @@ def migrate_actuals(pid):
         return mapped
 
     # ── 3. REMAP ───────────────────────────────────────────────────────────
-    # 3a. Transaction.budget_line_id (canonical coding). Mirror account_code /
-    #     account_code_name from the mapped Working line (as link_transaction_to_line does).
+    # 3a. Transaction.budget_line_id (canonical coding).
+    #
+    # ACCOUNT-CODE PINNING (fix after the first Cliburn live run ABORTED —
+    # 9 section codes drifted both ways, grand total unchanged): the original
+    # version mirrored account_code from the mapped Working line, but
+    # (a) a txn whose account_code was deliberately set DIFFERENT from its
+    #     line's code got overwritten → its spend jumped sections, and
+    # (b) a NULL-code txn whose Actual line's code had DRIFTED from its
+    #     Working peer's code shifted sections via the rollup's coalesce.
+    # THE MIGRATION MUST NOT MOVE A SINGLE FIGURE. So: pin each txn's
+    # EFFECTIVE HISTORICAL code — leave account_code untouched when set;
+    # when NULL, stamp it with the OLD (actual) line's code before moving the
+    # line link. Totals are then identical by construction, and the pinned
+    # code preserves exactly what the user saw pre-migration. (2026-07.)
+    aline_by_id = {l.id: l for l in (
+        BudgetLine.query.filter(BudgetLine.id.in_(actual_line_ids)).all()
+        if actual_line_ids else [])}
     for aline_id in list(line_map.keys()):
         mapped = line_map[aline_id]
         target_id = _resolve(mapped)
+        old_line = aline_by_id.get(aline_id)
         txns = (Transaction.query
                 .filter(Transaction.project_id == pid,
                         Transaction.budget_line_id == aline_id).all())
         for txn in txns:
             counts["txns_remapped"] += 1
             if not dry and target_id is not None:
-                wline = BudgetLine.query.get(target_id)
-                txn.budget_line_id    = target_id
-                txn.account_code      = wline.account_code
-                txn.account_code_name = wline.account_name
-                txn.updated_at        = datetime.utcnow()
+                if txn.account_code is None and old_line is not None:
+                    # Pin the effective section the rollup used pre-migration.
+                    txn.account_code      = old_line.account_code
+                    txn.account_code_name = old_line.account_name
+                txn.budget_line_id = target_id
+                txn.updated_at     = datetime.utcnow()
 
     # Any txn still pointing at an actual line with NO mapping = unmappable.
     # By construction (orphans with deps get materialized) this should be 0.
