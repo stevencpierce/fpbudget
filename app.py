@@ -4495,7 +4495,26 @@ def project_budget_redirect(pid):
     # docs_only project role → go straight to docs
     if _user_project_role(pid) == 'docs_only':
         return redirect(url_for("docs_project", pid=pid))
-    latest = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
+    # Land on the CURRENT WORKING budget by preference, then the current
+    # Estimated, then anything non-archived/non-actual — never an archived
+    # Actual clone (post-migration those hold no txns and render $0 actuals,
+    # which is exactly where 'newest created_at' was landing). (User 2026-07.)
+    latest = (Budget.query.filter_by(project_id=pid, is_actual=False,
+                                     version_status='current')
+              .filter(Budget.budget_mode.in_(('working', 'actual')))
+              .order_by(Budget.version_number.desc().nullslast(), Budget.id.desc())
+              .first())
+    if not latest:
+        latest = (Budget.query.filter_by(project_id=pid, is_actual=False,
+                                         version_status='current')
+                  .order_by(Budget.version_number.desc().nullslast(), Budget.id.desc())
+                  .first())
+    if not latest:
+        latest = (Budget.query.filter_by(project_id=pid, is_actual=False)
+                  .filter(Budget.version_status != 'archived')
+                  .order_by(Budget.created_at.desc()).first())
+    if not latest:
+        latest = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
     if latest:
         return redirect(url_for("budget_view", pid=pid, bid=latest.id))
     all_templates = BudgetTemplate.query.order_by(BudgetTemplate.name).all()
