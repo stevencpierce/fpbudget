@@ -5639,11 +5639,21 @@ def budget_view(pid, bid):
     # historical figures visible for this render.
     _entry_version_status = budget.version_status
 
-    # Auto-promote: viewing a version makes it the active one
+    # Auto-promote: viewing a version makes it the active one — EXCEPT for
+    # superseded WORKING-family budgets (P4, 2026-07): those were deliberately
+    # superseded by a newer Working version, their coded txns were remapped to
+    # the new version, and their per-line actuals are FROZEN. Merely viewing
+    # one must never re-activate it (found live-testing duplication: a page
+    # view of v1 silently demoted v2, which would have pointed all new coding
+    # back at v1's abandoned lines). Reactivating an old Working should be an
+    # explicit action, not a side effect of looking at it.
     if budget.version_status != 'current':
-        _supersede_current(pid, _budget_type(budget.budget_mode), exclude_id=bid)
-        budget.version_status = 'current'
-        db.session.commit()
+        _wf_promote_block = (_budget_type(budget.budget_mode) == 'working'
+                             and not budget.is_actual)
+        if not _wf_promote_block:
+            _supersede_current(pid, _budget_type(budget.budget_mode), exclude_id=bid)
+            budget.version_status = 'current'
+            db.session.commit()
 
     # Catch-up: reconcile schedule-driven auto lines (meals, flights, hotel,
     # mileage, per diem) every time budget view loads. Ensures any flags/meals
@@ -14771,11 +14781,21 @@ def _compute_gantt_section_totals(labor_lines, days, fringe_cfgs, profile, pw_st
 def gantt_view(pid, bid):
     project = ProjectSheet.query.get_or_404(pid)
     budget  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
-    # Auto-promote: viewing a version makes it the active one
+    # Auto-promote: viewing a version makes it the active one — EXCEPT for
+    # superseded WORKING-family budgets (P4, 2026-07): those were deliberately
+    # superseded by a newer Working version, their coded txns were remapped to
+    # the new version, and their per-line actuals are FROZEN. Merely viewing
+    # one must never re-activate it (found live-testing duplication: a page
+    # view of v1 silently demoted v2, which would have pointed all new coding
+    # back at v1's abandoned lines). Reactivating an old Working should be an
+    # explicit action, not a side effect of looking at it.
     if budget.version_status != 'current':
-        _supersede_current(pid, _budget_type(budget.budget_mode), exclude_id=bid)
-        budget.version_status = 'current'
-        db.session.commit()
+        _wf_promote_block = (_budget_type(budget.budget_mode) == 'working'
+                             and not budget.is_actual)
+        if not _wf_promote_block:
+            _supersede_current(pid, _budget_type(budget.budget_mode), exclude_id=bid)
+            budget.version_status = 'current'
+            db.session.commit()
 
     # All labor lines, ordered to match the Working Budget tab exactly.
     # Group by section, then cluster each section by sub-group so the Gantt
