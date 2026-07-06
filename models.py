@@ -378,6 +378,16 @@ class BudgetLine(db.Model):
     orphan_from_working = db.Column(db.Boolean, default=False, nullable=False,
                                     server_default='0')
 
+    # ── Frozen per-line actual (Phase 4, 2026-07) ──────────────────────
+    # The per-line actual total FROZEN at the moment this line's budget was
+    # superseded by a newer Working version (create_working_from_estimated).
+    # After the remap, coded transactions move to the NEW Working's lines, so
+    # a live rollup on the OLD (superseded) Working line would go to $0. This
+    # column preserves an immutable "this version showed these figures" record
+    # so superseded Working budgets keep their per-line actuals history.
+    # NULL = never frozen (current budgets, Estimated versions).
+    actual_snapshot = db.Column(db.Numeric(14, 2), nullable=True)
+
 
 class FringeConfig(db.Model):
     __tablename__ = "fringe_config"

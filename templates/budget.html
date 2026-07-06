@@ -9,6 +9,11 @@
 {% set working_exists = (budget.budget_mode in ('working', 'actual')) or has_working_budget %}
 {# True only when THIS budget IS the working/actual budget — enables frozen-est + variance columns #}
 {% set is_working_view = budget.budget_mode in ('working', 'actual') %}
+{# PHASE 4 (2026-07): viewing a SUPERSEDED Working budget whose per-line actuals
+   were frozen (actual_snapshot) at supersede time. The Actual column then shows
+   the frozen figures and the P3 ▸ live-fetch expanders are suppressed (the
+   transactions have since moved to the newer Working). Default False. #}
+{% set actuals_frozen = actuals_frozen | default(false) %}
 {# Fee multiplier: when dispersed, each line total is shown fee-inclusive #}
 {% set _fee_m = (1 + budget.company_fee_pct | float) if budget.company_fee_dispersed else 1.0 %}
 
@@ -1059,7 +1064,7 @@
           <th class="col-num{% if not ns.has_agent_or_disc %} col-empty{% endif %}">{% if ns.has_agent_or_disc %}{{ 'Agent%' if ns.has_labor else 'Disc%' }}{% endif %}</th>
           <th class="col-num {% if is_working_view %}frozen-est-header{% endif %} var-col-header" data-budget="estimated">Estimated</th>
           <th class="col-num col-working var-col-header" data-budget="working">Working</th>
-          <th class="col-num col-actual var-col-header" data-budget="actual" title="{% if is_actual_view %}Actual planned (top) + cumulative transaction spend (bottom){% else %}Sum of linked transaction amounts{% endif %}">{% if is_actual_view %}Actual{% elif has_actual_budget %}Actual{% endif %}</th>
+          <th class="col-num col-actual var-col-header" data-budget="actual" title="{% if actuals_frozen %}Per-line actuals frozen when this version was superseded — the live transactions have since moved to the newer Working version{% elif is_actual_view %}Actual planned (top) + cumulative transaction spend (bottom){% else %}Sum of linked transaction amounts{% endif %}">{% if is_actual_view %}Actual{% elif has_actual_budget %}Actual{% endif %}{% if actuals_frozen %}<span style="display:block;font-weight:400;font-size:.62rem;color:#c084fc;text-transform:none;letter-spacing:0;line-height:1.1;margin-top:1px" title="These figures were frozen when a newer Working version was created.">❄ frozen at supersede</span>{% endif %}</th>
           <th class="col-num col-variance" title="{% if has_actual_budget %}Working − Actual{% else %}Estimated − Working{% endif %}">{% if has_actual_budget or is_working_view %}Variance{% endif %}</th>
           <th class="col-act"></th>
         </tr>
@@ -1586,7 +1591,12 @@
           {% if is_actual_view %}
             {% set _actual = actual_line_totals_by_lid.get(ln.id, 0) %}
           {% else %}
-            {% set _actual = actual_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
+            {# Post-migration (P2, 2026-07) every txn points DIRECTLY at this
+               working line, so by-lid is the exact per-line value — prefer it.
+               The desc/sort_order maps stay only as legacy fallbacks (they
+               collide for same-named lines; see comment above). #}
+            {% set _actual = actual_line_totals_by_lid.get(ln.id, none) %}
+            {% if _actual is none %}{% set _actual = actual_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}{% endif %}
             {% if _actual is none %}{% set _actual = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
           {% endif %}
           {% set _actual = (_actual or 0) | float %}
@@ -1602,17 +1612,31 @@
               <strong style="color:{% if _actual > 0 %}var(--green){% else %}var(--text-muted){% endif %}">
                 {{ _actual | currency }}
               </strong>
+            {% elif actuals_frozen %}
+              {# P4 (User 2026-07): superseded Working — actuals were FROZEN at
+                 supersede time. Show the immutable snapshot as a plain figure;
+                 NO ▸ expander (the live txns have moved to the newer Working).
+                 NB `!= 0`: a negative net (refund/credit) must SHOW, not hide
+                 as '—' — hiding it made the variance look wrong (2026-07). #}
+              {% if _actual != 0 %}
+                <strong style="color:#c084fc" title="Frozen when a newer Working version was created">❄ {{ _actual | currency }}</strong>
+              {% else %}
+                <span class="muted" style="font-size:.75rem">—</span>
+              {% endif %}
             {% elif has_actual_budget %}
-              {% if _actual > 0 %}
+              {% if _actual != 0 %}
                 {# P3 (User 2026-07): actuals now live on Working. When a line
                    has spend, the Actual cell becomes a ▸ expander that lazily
                    loads this line's transactions into a detail subrow below.
-                   Screen-only affordance — the number stays for print/export. #}
+                   Screen-only affordance — the number stays for print/export.
+                   Negative net (refund/credit) shows in amber with ↩ — hiding
+                   it as '—' made the cell disagree with the variance (the
+                   Expendables case, review fix 2026-07). #}
                 <span class="work-actual-expand cs-screen-only" data-line-id="{{ ln.id }}"
                       style="cursor:pointer;display:inline-flex;align-items:center;gap:3px"
                       title="Show the transactions coded to this line">
-                  <span class="work-actual-chev" style="display:inline-block;width:9px;color:var(--green);font-size:.72rem">▸</span>
-                  <strong style="color:var(--green)">{{ _actual | currency }}</strong>
+                  <span class="work-actual-chev" style="display:inline-block;width:9px;color:{% if _actual < 0 %}#e0a13a{% else %}var(--green){% endif %};font-size:.72rem">▸</span>
+                  <strong style="color:{% if _actual < 0 %}#e0a13a{% else %}var(--green){% endif %}"{% if _actual < 0 %} title="Net credit/refund on this line"{% endif %}>{% if _actual < 0 %}↩ {% endif %}{{ _actual | currency }}</strong>
                 </span>
               {% else %}
                 <span class="muted" style="font-size:.75rem">—</span>
@@ -1844,7 +1868,7 @@
            /actuals/line/<id>/transactions.json). cs-screen-only keeps it out
            of print / server-side export — the Actual column number carries the
            spend there. Display-only: does NOT touch ns.sec_* accumulators. #}
-        {% if is_working_view and not is_actual_view and has_actual_budget and _actual > 0 %}
+        {% if is_working_view and not is_actual_view and has_actual_budget and _actual > 0 and not actuals_frozen %}
         <tr class="work-actual-detail cs-screen-only" data-for-line="{{ ln.id }}" style="display:none">
           <td colspan="14" style="padding:6px 12px 12px 32px;background:rgba(34,197,94,.04);border-left:3px solid var(--green)">
             <div class="work-actual-detail-body" data-loaded="0" data-line-id="{{ ln.id }}"
@@ -2101,7 +2125,11 @@
            does NOT feed ns.sec_* accumulators (the number here is a separate
            project-scoped rollup). cs-screen-only keeps it out of print/export.
            Same 15-<td> shape as the sister-orphan row above for grid alignment. #}
-        {% if is_working_view and not is_actual_view and has_actual_budget %}
+        {# P4: suppress the section-coded-spend expander on a FROZEN (superseded)
+           Working view — actual_section_only_by_code is project-scoped/live, so
+           it would show current section-coded spend, not this version's frozen
+           history. #}
+        {% if is_working_view and not is_actual_view and has_actual_budget and not actuals_frozen %}
         {% set _sec_only_amt = (actual_section_only_by_code.get(sec.code, 0) or 0) | float %}
         {% if _sec_only_amt %}
         <tr class="line-row work-section-only-row cs-screen-only" data-section-code="{{ sec.code }}"
@@ -15579,6 +15607,11 @@ window.saveInlinePo = async function() {
 // (that view has its own inline machinery, actualBudgetIIFE above).
 (function workingActualsDetailIIFE() {
   if (_IS_ACTUAL_VIEW) return;
+  // PROJ_ID is NOT in scope in this script block (the recurring scope trap —
+  // bit the packet badges and the inbox stash too). Derive pid from the URL.
+  // (Review fix 2026-07: expanders showed 'Load failed: PROJ_ID is not defined'.)
+  const _pidM = window.location.pathname.match(/\/projects\/(\d+)\//);
+  const PROJ_ID = _pidM ? _pidM[1] : '';
   const _lineCache = {};      // { lineId: txns[] }  — fetch once per expand
   const _sectionCache = {};   // { code: txns[] }
 

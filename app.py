@@ -4605,11 +4605,23 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
     db.session.flush()
     b._dup_line_map = {}   # transient: old_line_id → new_line_id, for project-copy txn remap
     if source:
-        # link_source: a WORKING copied from an Estimated records the explicit
-        # clone link (source_line_id) so cross-budget resolution never falls
-        # back to positional matching. (Audit HIGH-4, 2026-07.)
+        # link_source: record the explicit clone link (source_line_id →
+        # source line) on EVERY copied line so cross-budget resolution never
+        # falls back to positional matching. (Audit HIGH-4, 2026-07.)
+        #
+        # PHASE 4 (2026-07): also link NEW ESTIMATED versions (previously only
+        # 'working'). est_v(N+1) lines now carry source_line_id → their est_vN
+        # source, completing the version chain
+        #     old_working → est_vN ← est_v(N+1) ← new_working
+        # so create_working_from_estimated can chain-remap coded transactions
+        # from the old Working's lines onto the new Working's lines. The STEP-0
+        # source_line_id reader audit confirmed no reader misinterprets a
+        # source_line_id set on an Estimated line (all cross-budget resolvers
+        # discriminate on the line's budget / is_actual, or key off the current
+        # Working budget's lines only). Estimated source_line_id is inert for
+        # every existing reader; it exists purely to feed the P4 remap chain.
         line_id_map = _copy_budget_lines(source.id, b.id,
-                                         link_source=(new_mode == 'working'))
+                                         link_source=(new_mode in ('working', 'estimated')))
         b._dup_line_map = dict(line_id_map)
         db.session.flush()
         _copy_schedule_days(source.id, b.id, line_id_map, dest_mode=new_mode)
@@ -4696,10 +4708,52 @@ def budget_new(pid):
     return redirect(url_for("budget_view", pid=pid, bid=b.id))
 
 
+def _actual_by_working_line(bid):
+    """Return {working_line_id: signed actual total} for every line on Working
+    budget `bid`, using the SAME query family as budget_view's `direct_by_wid`
+    (signed txn sums grouped by budget_line_id, not_project_expense excluded,
+    estimate-linked docs excluded). This is exactly what the Working view's
+    per-line Actual column shows, so freezing it preserves what the user saw.
+    """
+    out = {}
+    try:
+        for _lid, _amt in (
+            db.session.query(BudgetLine.id, func.sum(_signed_amount()))
+            .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
+            .filter(BudgetLine.budget_id == bid,
+                    Transaction.not_project_expense == False,
+                    _exclude_estimate_linked_txns_clause())
+            .group_by(BudgetLine.id)
+            .all()
+        ):
+            out[_lid] = float(_amt or 0)
+    except Exception as _e:
+        logging.warning(f"[create-working/freeze] per-line actual query failed: {_e}")
+    return out
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/create-working", methods=["POST"])
 @login_required
 def create_working_from_estimated(pid, bid):
-    """Create a Working budget paired to this Estimated budget (shares its version_number)."""
+    """Create a Working budget paired to this Estimated budget (shares its
+    version_number).
+
+    PHASE 4 (2026-07) — actuals-on-Working migration, final step. Since P1-P3,
+    coded transactions point directly at CURRENT Working-budget lines. Creating
+    a NEW Working supersedes the old one; without intervention the old Working's
+    lines keep the coded txns and the new version's per-line actuals go dark.
+
+    Owner-approved design:
+      1. FREEZE per-line actuals onto the OLD (superseded) Working's lines
+         (actual_snapshot) so old versions keep an immutable per-line history.
+      2. REMAP every coded txn from the old Working's lines onto the matching
+         NEW Working line (chain via source_line_id → est → est → working; then
+         (code, desc); then code-only single-candidate; else materialize the
+         line so a coded txn's line-level home is never lost) — with P2's
+         ACCOUNT-CODE PINNING so not one figure moves.
+      3. ASSERT the project's per-section actuals rollup is byte-identical
+         before/after; any drift → rollback + abort (old version untouched).
+    """
     project = ProjectSheet.query.get_or_404(pid)
     source  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     if _budget_type(source.budget_mode) != 'estimated':
@@ -4707,14 +4761,39 @@ def create_working_from_estimated(pid, bid):
         return redirect(url_for("budget_view", pid=pid, bid=bid))
     try:
         vnum = source.version_number or 1
-        # Guard: a Working budget for this version already exists
+        # Guard: a Working budget for THIS estimated version already exists.
+        # P4: dropped 'actual' from the check — Actual budgets are archived/gone
+        # after P1-P3, so an archived/legacy Actual must NOT block creation.
+        # This is now a purely-Working same-version duplicate guard: you can't
+        # create est_v{vnum}'s Working if est_v{vnum} already has one.
         existing_w = Budget.query.filter_by(project_id=pid, version_number=vnum).filter(
-            Budget.budget_mode.in_(('working', 'actual')),
+            Budget.budget_mode == 'working',
+            Budget.is_actual == False,
             Budget.version_status != 'archived'
         ).first()
         if existing_w:
             flash(f"A Working budget for v{vnum} already exists. Archive it first to create a new one.", "error")
             return redirect(url_for("budget_view", pid=pid, bid=bid))
+
+        # ── Resolve the OLD current Working being superseded (if any) ──────────
+        # This is the Working whose lines currently hold the coded transactions.
+        # None → this is the FIRST Working for the project; skip freeze + remap.
+        old_working = (Budget.query
+                       .filter(Budget.project_id == pid,
+                               Budget.is_actual == False,
+                               Budget.budget_mode == 'working',
+                               Budget.version_status == 'current')
+                       .first()
+                       or Budget.query
+                       .filter(Budget.project_id == pid,
+                               Budget.is_actual == False,
+                               Budget.budget_mode == 'working',
+                               Budget.version_status != 'archived')
+                       .first())
+
+        # PRE-SNAPSHOT the per-section actuals rollup for the all-or-nothing
+        # assert (captured BEFORE any mutation).
+        before = _actuals_by_section_code(pid)
 
         _supersede_current(pid, 'working')
         db.session.flush()
@@ -4725,14 +4804,189 @@ def create_working_from_estimated(pid, bid):
                                        parent_bid=bid, version_number=vnum)
         if not source.working_initialized_at:
             source.working_initialized_at = datetime.utcnow()
+        db.session.flush()
+
+        remap_summary = ""
+        if old_working and old_working.id != w.id:
+            n_remapped = _remap_working_actuals(pid, old_working, w)
+            remap_summary = (f" — {n_remapped} transaction"
+                             f"{'s' if n_remapped != 1 else ''} carried to the new "
+                             f"version; per-line actuals frozen on "
+                             f"v{old_working.version_number or '?'}.")
+
+            # ── ALL-OR-NOTHING ASSERT: per-section actuals unchanged (2dp) ────
+            db.session.flush()
+            after = _actuals_by_section_code(pid)
+            diffs = []
+            for code in (set(before) | set(after)):
+                if round(before.get(code, 0.0), 2) != round(after.get(code, 0.0), 2):
+                    diffs.append((code, round(before.get(code, 0.0), 2),
+                                  round(after.get(code, 0.0), 2)))
+            if diffs:
+                db.session.rollback()
+                logging.error("[create-working] actuals rollup drifted, aborting: %s", diffs)
+                flash("Could not create the new Working version — the per-section "
+                      "actuals totals would have changed during the transaction "
+                      "remap, so the operation was rolled back. Your existing "
+                      "version is untouched. (Support has been notified.)", "error")
+                return redirect(url_for("budget_view", pid=pid, bid=bid))
+
         db.session.commit()
-        flash(f"Created Working budget: {w_name}", "success")
+        flash(f"Created Working budget: {w_name}{remap_summary}", "success")
         return redirect(url_for("budget_view", pid=pid, bid=w.id))
     except Exception as e:
         db.session.rollback()
         logging.exception("create_working_from_estimated failed")
         flash(f"Could not create Working budget — database error: {e}", "error")
         return redirect(url_for("budget_view", pid=pid, bid=bid))
+
+
+# Columns to skip when materializing an unmappable old-Working line onto the new
+# Working (mirror of _MIGRATE_LINE_SKIP; identity/link/relationship/frozen cols).
+_P4_LINE_SKIP = {'id', 'budget_id', 'parent_line_id', 'source_line_id',
+                 'orphan_from_working', 'crew_assignments', 'schedule_days',
+                 'working_total', 'manual_actual', 'actual_snapshot'}
+
+
+def _remap_working_actuals(pid, old_working, new_working):
+    """PHASE 4 core: FREEZE the old Working's per-line actuals, then REMAP every
+    coded transaction (and advisory suggestion) from the old Working's lines
+    onto the matching new Working line. Returns the count of remapped txns.
+
+    Mutates the session but does NOT commit — the caller runs the all-or-nothing
+    per-section assert and commits/rolls back. Reuses the P2 migrate patterns:
+    line mapping via source_line_id chain → (code, desc) → code-only single
+    candidate → materialize; account-code PINNING on txn remap.
+    """
+    old_lines = BudgetLine.query.filter_by(budget_id=old_working.id).all()
+    new_lines = BudgetLine.query.filter_by(budget_id=new_working.id).all()
+
+    # ── 1. FREEZE: per-line actual totals onto the OLD Working lines ──────────
+    # Same query family as budget_view.direct_by_wid so the frozen figures equal
+    # what the Working view's per-line Actual column showed pre-supersede.
+    old_actuals = _actual_by_working_line(old_working.id)
+    for ol in old_lines:
+        ol.actual_snapshot = old_actuals.get(ol.id, 0.0)
+
+    # ── 2. BUILD old_line → new_line MAP ─────────────────────────────────────
+    # Index new Working lines for matching.
+    new_by_srcid = {}          # new line's source_line_id (→ est line) : new line
+    new_by_desckey = {}        # (account_code, norm desc) : [new lines]
+    new_by_code = {}           # account_code : [new lines]
+    for nl in new_lines:
+        if nl.source_line_id is not None:
+            new_by_srcid.setdefault(nl.source_line_id, nl)
+        _dk = (nl.account_code, (nl.description or '').strip().lower())
+        new_by_desckey.setdefault(_dk, []).append(nl)
+        new_by_code.setdefault(nl.account_code, []).append(nl)
+
+    # Pre-resolve the est-version chain in ONE query set (avoid O(n²) per-line
+    # gets): for every est line the new Working points at, load ITS source (the
+    # prior est version's line). Then new_by_chained_est[est_vN_id] = new line
+    # whose est source chains back to est_vN. Present only for est versions
+    # created after the P4 estimated-chain deploy.
+    new_by_chained_est = {}
+    _est_next_ids = [nl.source_line_id for nl in new_lines
+                     if nl.source_line_id is not None]
+    if _est_next_ids:
+        _est_next_src = dict(
+            db.session.query(BudgetLine.id, BudgetLine.source_line_id)
+            .filter(BudgetLine.id.in_(_est_next_ids)).all())
+        for nl in new_lines:
+            if nl.source_line_id is None:
+                continue
+            _est_vn = _est_next_src.get(nl.source_line_id)  # est_v(N+1).source → est_vN
+            if _est_vn is not None:
+                new_by_chained_est.setdefault(_est_vn, nl)
+
+    def _map_one(ol):
+        """Resolve old Working line `ol` → a new Working line id, materializing
+        onto the new Working when no confident match exists. Never returns None
+        for a line that has coded txns (materialize is the floor)."""
+        # (a) CHAIN: old_working.source_line_id → est_vN line;
+        #     new_working.source_line_id → est_v(N+1) line;
+        #     est_v(N+1).source_line_id → est_vN line (P4 estimated-chain link,
+        #     present only for est versions created AFTER this deploy). So the
+        #     new line whose est source chains back to the same est_vN line as
+        #     `ol` is the match. We resolve it in two hops:
+        #       ol.source_line_id == est_vN_line_id
+        #       new line's est source (nl.source_line_id) chains to est_vN via
+        #       est_v(N+1).source_line_id.
+        if ol.source_line_id is not None:
+            est_vn_id = ol.source_line_id
+            # Direct: a new line pointing straight at the same est_vN line
+            # (happens when the estimated version was NOT re-created between the
+            # two workings — both point at the same estimated line).
+            direct = new_by_srcid.get(est_vn_id)
+            if direct is not None:
+                return direct.id
+            # Chained: new line → est_v(N+1) line → (its source) est_vN line.
+            chained = new_by_chained_est.get(est_vn_id)
+            if chained is not None:
+                return chained.id
+        # (b) (account_code, normalized description) exact match — single cand.
+        _dk = (ol.account_code, (ol.description or '').strip().lower())
+        cands = new_by_desckey.get(_dk, [])
+        if len(cands) == 1:
+            return cands[0].id
+        # (c) account_code-only, single candidate on the new Working.
+        code_cands = new_by_code.get(ol.account_code, [])
+        if len(code_cands) == 1:
+            return code_cands[0].id
+        # (d) MATERIALIZE onto the new Working (orphan_from_working=True) —
+        #     same as P2. Copy the field values so the line reads correctly.
+        nl = BudgetLine()
+        for col in BudgetLine.__table__.columns:
+            if col.name in _P4_LINE_SKIP:
+                continue
+            setattr(nl, col.name, getattr(ol, col.name))
+        nl.budget_id           = new_working.id
+        nl.source_line_id      = None
+        nl.parent_line_id      = None
+        nl.orphan_from_working = True
+        db.session.add(nl)
+        db.session.flush()
+        # Register so a second old line matching the same key reuses it.
+        new_lines.append(nl)
+        _dk2 = (nl.account_code, (nl.description or '').strip().lower())
+        new_by_desckey.setdefault(_dk2, []).append(nl)
+        new_by_code.setdefault(nl.account_code, []).append(nl)
+        return nl.id
+
+    line_map = {}
+    for ol in old_lines:
+        line_map[ol.id] = _map_one(ol)
+
+    old_by_id = {ol.id: ol for ol in old_lines}
+
+    # ── 3. REMAP transactions with ACCOUNT-CODE PINNING (P2 pattern) ─────────
+    # Leave account_code untouched when set; when NULL, stamp the OLD line's
+    # code (the effective section the rollup used pre-remap) BEFORE moving the
+    # line link — so the per-section rollup is identical by construction.
+    n_remapped = 0
+    for old_lid, new_lid in line_map.items():
+        old_line = old_by_id.get(old_lid)
+        for txn in (Transaction.query
+                    .filter(Transaction.project_id == pid,
+                            Transaction.budget_line_id == old_lid).all()):
+            if txn.account_code is None and old_line is not None:
+                txn.account_code      = old_line.account_code
+                txn.account_code_name = old_line.account_name
+            txn.budget_line_id = new_lid
+            txn.updated_at     = datetime.utcnow()
+            n_remapped += 1
+        # Advisory suggestion → mapped line (NULL only if unmappable, which
+        # can't happen here since _map_one always yields an id).
+        for txn in (Transaction.query
+                    .filter(Transaction.project_id == pid,
+                            Transaction.suggested_budget_line_id == old_lid).all()):
+            txn.suggested_budget_line_id = new_lid
+
+    # SubBudgetLine + Location refs on old-Working lines: LEAVE them. Sub-budgets
+    # pin to versions by design (per the P4 spec); moving them would break the
+    # version-scoped sub-budget history.
+
+    return n_remapped
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/archive", methods=["POST"])
@@ -5357,6 +5611,15 @@ def budget_view(pid, bid):
     if not budget.start_date:
         _sync_budget_dates_from_schedule(bid)
         db.session.commit()
+    # PHASE 4 (2026-07): capture the status BEFORE auto-promote. Viewing a
+    # superseded Working (its coded txns already remapped to a newer Working)
+    # must show the FROZEN per-line actuals, not a live rollup. Auto-promote
+    # below flips version_status to 'current', so we snapshot the entry status
+    # here and let the frozen-actuals block downstream gate on it. Combined with
+    # the presence of actual_snapshot data on the budget's lines, this keeps the
+    # historical figures visible for this render.
+    _entry_version_status = budget.version_status
+
     # Auto-promote: viewing a version makes it the active one
     if budget.version_status != 'current':
         _supersede_current(pid, _budget_type(budget.budget_mode), exclude_id=bid)
@@ -6536,6 +6799,41 @@ def budget_view(pid, bid):
         except Exception as _dme:
             logging.warning(f"[budget_view] direct actual merge failed: {_dme}")
 
+    # ── PHASE 4 (2026-07): FROZEN per-line actuals on superseded Working ──────
+    # When viewing a WORKING-family budget that is NOT the current version, its
+    # coded transactions were remapped onto a newer Working (see
+    # create_working_from_estimated). A LIVE rollup would show $0 (or worse,
+    # spend that has since moved). Instead, read the immutable actual_snapshot
+    # frozen on THIS budget's own lines at supersede time, and gate off the P3
+    # ▸ expanders (a live fetch would surface the moved txns).
+    actuals_frozen = False
+    try:
+        _viewing_working_fam = (_budget_type(budget.budget_mode) == 'working'
+                                and not budget.is_actual)
+        # Gate on the ENTRY status (auto-promote already flipped budget to
+        # 'current' above) AND require the budget's own lines to actually carry
+        # frozen snapshots — freeze only ever ran when this budget was
+        # superseded by a newer Working, so its presence proves the history.
+        if _viewing_working_fam and _entry_version_status != 'current':
+            _snap_rows = [(ln, ln.actual_snapshot) for ln in lines
+                          if getattr(ln, 'actual_snapshot', None) is not None]
+            if _snap_rows:
+                actuals_frozen = True
+                has_actual_budget = True   # frozen figures still populate the col
+                for _ln, _snap in _snap_rows:
+                    _f = float(_snap or 0)
+                    # Override every key the Working/Estimated Actual column and
+                    # the per-line resolver read, so the frozen figure wins over
+                    # any (now-misleading) live rollup.
+                    actual_line_totals_by_lid[_ln.id] = _f
+                    _key = (_ln.account_code, _ln.sort_order)
+                    actual_line_totals[_key] = _f
+                    _dkey = (_ln.account_code, (_ln.description or '').strip().lower())
+                    actual_line_totals_by_desc[_dkey] = _f
+                    actual_by_line_id[_ln.id] = _f
+    except Exception as _fe:
+        logging.warning(f"[budget_view] frozen-actuals override failed: {_fe}")
+
     # ── Cross-budget per-line resolution via the source_line_id clone chain ──
     # The Estimated/Working/Actual comparison columns used to match a line to
     # its counterpart in the other budgets by (account_code, sort_order)
@@ -6660,8 +6958,11 @@ def budget_view(pid, bid):
                         _tot = _line_budget_total(_sl)
                     _tot = round(float(_tot or 0), 2)
                     _desc = (_sl.description or '').strip()
-                    # Skip zero-total noise (placeholder rows with no name).
-                    if _tot == 0 and not _desc:
+                    # Skip ALL zero-value orphans — a '$0.00 (… $0.00 in
+                    # Estimated)' row is pure clutter (user 2026-07, the
+                    # Robotic Operator rows). The point of orphan rows is
+                    # showing MONEY that exists in only one version.
+                    if _tot == 0:
                         continue
                     _seccode = _section_for_code(_sl.account_code)
                     sister_orphans.setdefault(_seccode, []).append({
@@ -7204,6 +7505,7 @@ def budget_view(pid, bid):
         actual_to_working=actual_to_working,
         has_actual_budget=has_actual_budget,
         actual_budget_meta=actual_budget_meta,
+        actuals_frozen=actuals_frozen,
     )
 
 
@@ -20522,12 +20824,19 @@ def _copy_budget_lines(source_id, dest_id, link_source=False):
     (kit fees, etc.) can have their parent_line_id remapped correctly.
 
     link_source (AUDIT FIX 2026-07, HIGH-4): when True, each copied line gets
-    source_line_id = its source line's id — the explicit Working→Estimated
-    clone link. This was never set on UI-created Working budgets, so every
-    cross-budget resolver silently fell back to positional/description
-    matching (the exact fragility source_line_id exists to fix). Passed True
-    only when creating a WORKING from an Estimated; new Estimated versions
-    keep source_line_id NULL (unchanged semantics).
+    source_line_id = its source line's id — the explicit clone link. This was
+    never set on UI-created Working budgets, so every cross-budget resolver
+    silently fell back to positional/description matching (the exact fragility
+    source_line_id exists to fix).
+
+    PHASE 4 (2026-07): now passed True for BOTH new Working budgets (link →
+    their Estimated source line) AND new Estimated versions (link → the prior
+    Estimated version's line). The estimated-side link completes the version
+    chain old_working→est_vN←est_v(N+1)←new_working that
+    create_working_from_estimated walks to remap coded transactions. A
+    source_line_id set on an Estimated line is inert for every reader (audited
+    STEP-0): resolvers either discriminate on the line's budget/is_actual or
+    key off the current Working budget's lines exclusively.
     """
     src_lines = BudgetLine.query.filter_by(budget_id=source_id).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
@@ -24745,6 +25054,11 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS source_line_id INTEGER REFERENCES budget_line(id)",
                 "ALTER TABLE budget_line "
                 "  ADD COLUMN IF NOT EXISTS orphan_from_working BOOLEAN DEFAULT FALSE",
+                # Phase 4 (2026-07): per-line actual frozen at supersede time so
+                # old Working versions keep an immutable per-line actuals history
+                # after their coded txns are remapped to the new Working.
+                "ALTER TABLE budget_line "
+                "  ADD COLUMN IF NOT EXISTS actual_snapshot NUMERIC(14,2)",
                 "CREATE INDEX IF NOT EXISTS ix_budget_actual "
                 "  ON budget (project_id, is_actual, version_status)",
                 "CREATE INDEX IF NOT EXISTS ix_budget_line_source "
