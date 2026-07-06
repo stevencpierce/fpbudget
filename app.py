@@ -24944,26 +24944,29 @@ def docs_upload_thumb(uid):
 
     • Image files → fetch bytes, resize to max 240px wide JPEG (quality 70),
       served with a 1-day private cache.
-    • PDFs / everything else → generic SVG placeholder (no PDF rasterization —
-      no poppler on the host).
-    • Any error whatsoever → SVG placeholder, never a 500. (User 2026-07.)
+    • PDFs → first page rendered via pypdfium2 (pure-pip wheel, no poppler /
+      system deps) then the same resize path. The Analyzer files nearly every
+      doc as PDF, so without this the whole repository showed placeholders.
+      (Review fix 2026-07 — verified live: 100/100 rows were 📄.)
+    • Anything else / any error → SVG placeholder, never a 500. (User 2026-07.)
     """
     upload = DocUpload.query.get_or_404(uid)
     deny = _docs_check_row_access(upload)
     if deny:
         return deny
 
-    # Decide image-vs-not from the filename extension. build_name() sometimes
-    # appends '.pdf' to phone photos, so we ALSO sniff the bytes below before
-    # trusting the ext — but if the ext already says non-image, short-circuit
-    # to the placeholder without a Dropbox round-trip.
+    # Decide type from the filename extension. build_name() sometimes appends
+    # '.pdf' to phone photos, so we ALSO sniff the bytes below before trusting
+    # the ext — but if the ext says neither image nor PDF, short-circuit to the
+    # placeholder without a Dropbox round-trip.
     fname_guess = (upload.filed_filename or upload.original_filename or '')
     ext = (os.path.splitext(fname_guess)[1] or '').lower()
     ct  = (upload.content_type or '')
     looks_image = ext in _INBOX_IMAGE_EXTS or ext in ('.heic', '.heif') \
         or (ct.startswith('image/'))
-    if not looks_image:
-        # Not an image (PDF, doc, or unknown) → placeholder, no fetch.
+    looks_pdf = (ext == '.pdf') or ('pdf' in ct)
+    if not looks_image and not looks_pdf:
+        # Not an image or PDF (docx, unknown) → placeholder, no fetch.
         return _docs_placeholder_thumb_response()
 
     try:
@@ -24972,11 +24975,27 @@ def docs_upload_thumb(uid):
             return _docs_placeholder_thumb_response()
 
         # Sniff the real bytes — an image extension can lie (e.g. a .png that is
-        # actually a PDF). Only proceed for genuine raster types PIL can open.
+        # actually a PDF) and vice versa.
         head = content[:16]
         is_pdf = head[:4] == b'%PDF'
+        img = None
         if is_pdf:
-            return _docs_placeholder_thumb_response()
+            # First page → PIL image via pypdfium2. Guarded import: if the wheel
+            # is missing, fall back to the placeholder (fail-open).
+            try:
+                import pypdfium2 as _pdfium
+                _pdf = _pdfium.PdfDocument(content)
+                try:
+                    _page = _pdf[0]
+                    # Scale so the render lands near 240px wide (page width is
+                    # in points, 72/inch) — cheaper than rendering full-res.
+                    _scale = 240.0 / max(1.0, _page.get_size()[0])
+                    img = _page.render(scale=max(0.2, _scale)).to_pil()
+                finally:
+                    _pdf.close()
+            except Exception as _pe:
+                logging.warning(f"[docs/thumb] pdf render failed for {uid}: {_pe}")
+                return _docs_placeholder_thumb_response()
 
         import io as _io_thumb
         # HEIC needs the pillow-heif opener registered (iPhone receipts).
@@ -24987,7 +25006,8 @@ def docs_upload_thumb(uid):
             except Exception:
                 pass
         from PIL import Image  # guarded: import inside the function
-        img = Image.open(_io_thumb.BytesIO(content))
+        if img is None:
+            img = Image.open(_io_thumb.BytesIO(content))
         img = img.convert("RGB")
         # Resize to max 240px wide, preserving aspect ratio.
         max_w = 240

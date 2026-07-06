@@ -48,6 +48,10 @@ pillow-heif
 # image receipts to small JPEG previews, plus the existing HEIC→JPEG conversion
 # in /docs/upload/<id>/raw. (User 2026-07.)
 pillow
+# pypdfium2 — pure-pip PDF rasterizer (bundled PDFium, no poppler/system deps).
+# Renders page 1 for Docs Inbox thumbnails — the Analyzer files nearly all docs
+# as PDF, so without this the repository shows only placeholder icons. (User 2026-07.)
+pypdfium2
 
 # QBO sync (qbo_sync.py) — REST API client for QuickBooks Online.
 # We hit /v3/company/<realmId>/query and /cdc directly, no Intuit
