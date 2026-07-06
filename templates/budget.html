@@ -15845,7 +15845,7 @@ window.saveInlinePo = async function() {
   let _lastRefresh = 0;
   const _money = n => (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US',
     { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  async function refreshActualCells() {
+  async function refreshActualCells(quiet) {
     // NEVER on a frozen (superseded) version — the ❄ snapshots are immutable
     // history; live totals would overwrite them with moved spend. (2026-07.)
     {% if actuals_frozen %}return;{% endif %}
@@ -15882,12 +15882,31 @@ window.saveInlinePo = async function() {
       }
       delete _lineCache[lid];
       // Collapse + reset any open detail for this line (its contents moved).
-      const det = document.querySelector('.work-actual-detail[data-for-line="' + lid + '"]');
+      // If the server didn't render a shell (value was 0/missing at render
+      // time — e.g. the Estimated view), CREATE one so the ▸ works. (2026-07.)
+      let det = document.querySelector('.work-actual-detail[data-for-line="' + lid + '"]');
+      if (!det && v !== 0) {
+        const tr = cell.closest('tr');
+        if (tr) {
+          det = document.createElement('tr');
+          det.className = 'work-actual-detail cs-screen-only';
+          det.setAttribute('data-for-line', lid);
+          det.style.display = 'none';
+          det.innerHTML = '<td colspan="14" style="padding:6px 12px 12px 32px;' +
+            'background:rgba(34,197,94,.04);border-left:3px solid var(--green)">' +
+            '<div class="work-actual-detail-body" data-loaded="0" data-line-id="' + lid + '"' +
+            ' style="font-size:.78rem;color:var(--text-muted)">' +
+            '<span class="work-actual-loading">Loading transactions…</span></div></td>';
+          tr.after(det);
+        }
+      }
       if (det) { det.style.display = 'none';
         const b = det.querySelector('.work-actual-detail-body');
         if (b) { b.dataset.loaded = '0'; b.innerHTML = '<span class="work-actual-loading">Loading transactions…</span>'; } }
-      cell.style.transition = 'background .8s'; cell.style.background = 'rgba(34,197,94,.18)';
-      setTimeout(() => { cell.style.background = ''; }, 900);
+      if (!quiet) {   // no flash storm on the initial on-load populate
+        cell.style.transition = 'background .8s'; cell.style.background = 'rgba(34,197,94,.18)';
+        setTimeout(() => { cell.style.background = ''; }, 900);
+      }
     });
     // Section-only rows: update amounts in place (rows for NEW section-only
     // spend appear on next full load — acceptable).
@@ -15909,6 +15928,10 @@ window.saveInlinePo = async function() {
     if (document.visibilityState === 'visible') _throttledRefresh();
   });
   window.addEventListener('focus', _throttledRefresh);
+  // Populate ON LOAD too: the server-rendered maps can miss sibling-keyed
+  // values in the Estimated view; the batch endpoint is the single source of
+  // truth (sibling-aware), so every view self-corrects within ~1s. (2026-07.)
+  setTimeout(() => refreshActualCells(true), 400);
 })();
 
 var RATE_TYPE_LABELS = {
