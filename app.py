@@ -26450,6 +26450,228 @@ def docs_repair_extensions():
     })
 
 
+def _split_integrity_doc_total(upload, parent):
+    """doc_total for a document: abs(parent txn amount), else upload.amount.
+    Mirrors the itemize endpoints' notion of the document's ceiling."""
+    if parent is not None and parent.amount is not None:
+        return abs(float(parent.amount))
+    if upload.amount is not None:
+        return abs(float(upload.amount))
+    return 0.0
+
+
+def _split_integrity_veryfi_items(upload):
+    """Veryfi line items → [{description, amount}] — identical extraction to
+    docs_upload_line_items so the healer's positional re-pair pairs the SAME
+    rows the UI would have offered."""
+    vd = {}
+    if upload.veryfi_data:
+        try:
+            vd = upload.veryfi_data if isinstance(upload.veryfi_data, dict) else json.loads(upload.veryfi_data)
+        except Exception:
+            vd = {}
+    items = []
+    for li in (vd.get("line_items") or []):
+        if not isinstance(li, dict):
+            continue
+        amt = li.get("total")
+        if amt is None:
+            amt = li.get("price")
+        try:
+            amt = round(abs(float(amt)), 2) if amt is not None else None
+        except (TypeError, ValueError):
+            amt = None
+        desc = (li.get("description") or li.get("text") or '').strip()
+        if desc or amt:
+            items.append({"description": desc[:200], "amount": amt})
+    return items
+
+
+def _split_integrity_child_target(k):
+    """Reconstruct a child's line-picker value the way docs_upload_line_items
+    rehydrates it: WORKING line id, else 'section:<code>', else None."""
+    if k.budget_line_id:
+        bl = BudgetLine.query.get(k.budget_line_id)
+        if bl:
+            return str(_picker_value_for_line(bl))
+    if k.account_code:
+        return f"section:{k.account_code}"
+    return None
+
+
+@app.route("/docs/split-integrity", methods=["GET", "POST"])
+@login_required
+def docs_split_integrity():
+    """One-time repair crawler for PHANTOM itemization splits (2026-07).
+
+    Old itemization saves (before the over-total guard + doc-wide sweep) left
+    two rot patterns behind:
+      • BROKEN — a bad OCR pull filled EVERY child row with the FULL doc total
+        (doc 739: 9 children × $4,121.54 = ~$37k of phantom coded spend on one
+        $4,121.54 invoice), and/or stale children lingered under a doc's PREVIOUS
+        parent after a parent-flip. The server-enforced invariant is: a doc's
+        children may never sum to MORE than the doc total. So
+        sum(children) > doc_total + 0.01 is DEFINITIVELY broken.
+      • SUSPECT (report-only, never auto-touched) — a single child equal to the
+        whole doc total with no description: might be a legit single-line split,
+        might be a phantom; left for the owner to eyeball.
+
+    SCAN (all projects, or ?pid=): every DocUpload with ANY invoice_split
+    children (matched doc-wide: doc_upload_id == doc.id OR parent_transaction_id
+    IN the doc's non-split txn ids — same net the itemize sweep casts).
+
+    HEAL (live, ?dry=0, BROKEN docs only, each inside try/except):
+      (a) POSITIONAL RE-PAIR — if the doc has veryfi_items, their count equals
+          the number of NON-remainder children, and their amounts fit under the
+          doc total: rebuild the itemization pairing item i's amount+description
+          with child i's own budget line (children ordered by id = original pull
+          order). Preserves a remainder child's target as the main line.
+      (b) CLEAR + FLAG — otherwise delete ALL the doc's children, un-code the
+          parent + siblings, and report the doc so the owner can redo it by hand.
+
+    Both heal paths route through _itemize_apply — the SAME code the live
+    /itemize save uses — so healed docs are byte-for-byte what a correct manual
+    save would have produced.
+
+    Query params:
+      ?dry=1 (default) — classify + report only, no writes.
+      ?dry=0           — perform the heals (mutations ONLY here).
+      ?pid=<id>        — scope to a single project.
+    """
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden"}), 403
+
+    dry = (request.values.get("dry", "1").strip().lower() not in ("0", "false", "no"))
+    pid = request.values.get("pid", type=int)
+
+    from sqlalchemy import or_ as _or_si
+
+    # Every DocUpload that owns at least one invoice_split child, scoped to
+    # ?pid= if given. We collect distinct doc_upload_ids off the children so a
+    # child stranded under a flipped parent (doc_upload_id still set) is caught.
+    kq = Transaction.query.filter(Transaction.source == 'invoice_split',
+                                  Transaction.doc_upload_id.isnot(None))
+    if pid:
+        kq = kq.filter(Transaction.project_id == pid)
+    doc_ids = sorted({k.doc_upload_id for k in kq.all()})
+
+    scanned = 0
+    broken = 0
+    suspects = []
+    healed = []
+    cleared = []
+    errors = []
+    phantom_removed_total = 0.0
+
+    for did in doc_ids:
+        try:
+            upload = DocUpload.query.get(did)
+            if upload is None:
+                continue
+            if pid and upload.project_id != pid:
+                continue
+            parent = _doc_parent_txn(did)
+            # Doc-wide child match: by doc_upload_id OR under any of the doc's
+            # NON-split txn ids (mirrors the itemize replace-on-save sweep).
+            sib_ids = [t.id for t in Transaction.query
+                       .filter(Transaction.doc_upload_id == did,
+                               Transaction.source != 'invoice_split').all()]
+            cq = Transaction.query.filter(
+                Transaction.source == 'invoice_split',
+                _or_si(Transaction.doc_upload_id == did,
+                       Transaction.parent_transaction_id.in_(sib_ids) if sib_ids
+                       else Transaction.doc_upload_id == did))
+            kids = cq.order_by(Transaction.id).all()
+            if not kids:
+                continue
+            scanned += 1
+
+            doc_total = _split_integrity_doc_total(upload, parent)
+            kid_sum = round(sum(float(k.amount) for k in kids if k.amount is not None), 2)
+            fname = upload.filed_filename or upload.original_filename or f'Upload #{upload.id}'
+
+            is_broken = kid_sum > doc_total + 0.01
+
+            # SUSPECT (report-only): a lone child == full doc total, no desc,
+            # not the remainder feed. Never auto-touched.
+            if (not is_broken and len(kids) == 1
+                    and abs(float(kids[0].amount or 0) - doc_total) <= 0.01
+                    and not (kids[0].note or '').strip()
+                    and (kids[0].note or '') != 'Remainder → main line'):
+                suspects.append({"id": upload.id, "filename": fname,
+                                 "child_amt": round(float(kids[0].amount or 0), 2)})
+                continue
+
+            if not is_broken:
+                continue
+            broken += 1
+
+            # --- Classify the heal path (needed for BOTH dry + live) ---
+            non_rem = [k for k in kids if (k.note or '') != 'Remainder → main line']
+            rem_kids = [k for k in kids if (k.note or '') == 'Remainder → main line']
+            items = _split_integrity_veryfi_items(upload)
+            item_sum = round(sum((it["amount"] or 0.0) for it in items), 2)
+            can_repair = bool(items) and len(items) == len(non_rem) and \
+                (doc_total <= 0 or item_sum <= doc_total + 0.01)
+
+            # main_line_raw for the rebuild: preserve an existing remainder
+            # child's target; else '' (healed docs get no synthetic main line).
+            main_raw = _split_integrity_child_target(rem_kids[0]) if rem_kids else ''
+
+            if can_repair:
+                rows = [{"amount": items[i]["amount"] or 0.0,
+                         "description": items[i]["description"],
+                         "budget_line_id": _split_integrity_child_target(non_rem[i])}
+                        for i in range(len(non_rem))]
+                new_sum = round(sum((r["amount"] or 0.0) for r in rows), 2)
+                # remainder that _itemize_apply would auto-append to main line
+                if main_raw and (doc_total - new_sum) > 0.01:
+                    new_sum = round(new_sum + (doc_total - new_sum), 2)
+                phantom_removed_total += round(kid_sum - min(new_sum, doc_total), 2)
+                entry = {"id": upload.id, "filename": fname,
+                         "children": len(rows), "new_sum": new_sum}
+                if dry:
+                    healed.append(entry)
+                else:
+                    result, status = _itemize_apply(upload, parent, rows, main_raw)
+                    if status:
+                        errors.append({"id": upload.id, "err": result.get("error", "apply rejected")})
+                    else:
+                        entry["children"] = result.get("children", len(rows))
+                        healed.append(entry)
+            else:
+                # CLEAR + FLAG — reuse the itemize clear path (rows=[], main '').
+                reason = ("no veryfi items to re-pair from" if not items else
+                          f"{len(items)} items != {len(non_rem)} non-remainder children"
+                          if len(items) != len(non_rem) else
+                          f"items sum ${item_sum:,.2f} exceeds doc total ${doc_total:,.2f}")
+                phantom_removed_total += round(kid_sum - min(0.0, doc_total), 2)
+                entry = {"id": upload.id, "filename": fname, "reason": reason}
+                if dry:
+                    cleared.append(entry)
+                else:
+                    result, status = _itemize_apply(upload, parent, [], '')
+                    if status:
+                        errors.append({"id": upload.id, "err": result.get("error", "clear rejected")})
+                    else:
+                        cleared.append(entry)
+        except Exception as e:
+            db.session.rollback()
+            errors.append({"id": did, "err": f"{type(e).__name__}: {e}"})
+
+    return jsonify({
+        "ok": True,
+        "dry": dry,
+        "scanned_docs_with_children": scanned,
+        "broken": broken,
+        "suspects": suspects,
+        "healed": healed,
+        "cleared": cleared,
+        "errors": errors,
+        "phantom_removed_total": round(phantom_removed_total, 2),
+    })
+
+
 @app.route("/docs/upload/<int:uid>/status")
 @login_required
 def docs_upload_status(uid):
@@ -28912,25 +29134,24 @@ def docs_upload_line_items(uid):
     })
 
 
-@app.route("/docs/upload/<int:uid>/itemize", methods=["POST"])
-@login_required
-def docs_upload_itemize(uid):
-    """Save a document's line-item split: replace the child invoice_split rows on
-    its parent transaction, each coded to its own budget line, and un-code the
-    parent so the Actual rollup counts the line items (not the parent total).
-    Body: { rows: [{amount, budget_line_id, description}] }. (User 2026-07.)"""
-    upload = DocUpload.query.get_or_404(uid)
-    _require_project_role(upload.project_id, 'editor')
-    pid = upload.project_id
-    parent = _doc_parent_txn(uid)
-    if parent is None:
-        return jsonify({"error": "No transaction exists for this document yet."}), 400
-    data = request.get_json(force=True) or {}
-    rows = data.get("rows") or []
-    main_line_raw = data.get("main_line_id")
-    if not isinstance(rows, list):
-        return jsonify({"error": "rows must be a list"}), 400
+def _itemize_apply(upload, parent, rows, main_line_raw):
+    """CORE of the itemization save — shared by the /itemize route AND the
+    /docs/split-integrity healer so the two can never diverge (2026-07).
 
+    Replaces a document's child invoice_split rows (each coded to its own
+    budget line), un-codes the parent + doc siblings, and auto-bills any
+    remainder to the main line. Commits on success.
+
+    Args:
+      upload         — the DocUpload.
+      parent         — its representative txn (_doc_parent_txn); must be non-None.
+      rows           — list of {amount, budget_line_id, description} dicts.
+      main_line_raw  — picker value for the remainder / whole-doc coding.
+
+    Returns (result_dict, status): status is None on success (HTTP 200), or an
+    int HTTP error code when the payload is rejected (nothing is mutated then).
+    The caller (route) jsonifies; the healer inspects the dict directly."""
+    pid = upload.project_id
     from actuals import link_transaction_to_line, unlink_transaction
 
     def _parse_target(v):
@@ -28986,15 +29207,15 @@ def docs_upload_itemize(uid):
         try:
             amt = round(float(r.get("amount")), 2)
         except (TypeError, ValueError):
-            return jsonify({"error": "each row needs a numeric amount"}), 400
+            return {"error": "each row needs a numeric amount"}, 400
         if amt == 0:
             continue
         sublines.append((amt, _parse_target(r.get("budget_line_id")), (r.get("description") or '')[:300]))
     _sub_total_check = round(sum(a for a, _, _ in sublines), 2)
     if doc_total > 0 and _sub_total_check > doc_total + 0.01:
-        return jsonify({"error": f"Sublines total ${_sub_total_check:,.2f} exceeds the "
-                                 f"document total ${doc_total:,.2f} — fix the amounts "
-                                 f"before saving."}), 400
+        return {"error": f"Sublines total ${_sub_total_check:,.2f} exceeds the "
+                         f"document total ${doc_total:,.2f} — fix the amounts "
+                         f"before saving."}, 400
 
     # Remove any previous itemization for this DOCUMENT (replace-on-save).
     # FIX 2026-07 (Consulting Engineer case, txn 4259): matching only
@@ -29050,15 +29271,15 @@ def docs_upload_itemize(uid):
             _clear_ai_code_suggestion(parent)
             _uncode_doc_siblings(parent.id)   # coding is singular per doc (2026-07)
             db.session.commit()
-            return jsonify({"ok": True, "children": 0, "main_line_amount": round(doc_total, 2),
-                            "remainder": round(doc_total, 2)})
+            return {"ok": True, "children": 0, "main_line_amount": round(doc_total, 2),
+                    "remainder": round(doc_total, 2)}, None
         try:
             unlink_transaction(parent.id)
         except Exception:
             parent.account_code = parent.account_code_name = parent.budget_line_id = None
         _uncode_doc_siblings(None)   # clear = clear EVERY doc txn's coding (2026-07)
         db.session.commit()
-        return jsonify({"ok": True, "cleared": True, "children": 0})
+        return {"ok": True, "cleared": True, "children": 0}, None
 
     # Split present → parent becomes a container; children carry the coding.
     created = [_mk_child(a, l, n) for (a, l, n) in sublines]
@@ -29077,10 +29298,36 @@ def docs_upload_itemize(uid):
     _uncode_doc_siblings(None)   # children carry ALL coding now — no stragglers (2026-07)
     _clear_ai_code_suggestion(parent)
     db.session.commit()
-    return jsonify({"ok": True, "children": len(created), "child_ids": created,
-                    "sublines_total": sub_total, "main_line_amount": round(main_amt, 2),
-                    "remainder": remainder, "doc_total": round(doc_total, 2),
-                    "over": remainder < -0.01})
+    return {"ok": True, "children": len(created), "child_ids": created,
+            "sublines_total": sub_total, "main_line_amount": round(main_amt, 2),
+            "remainder": remainder, "doc_total": round(doc_total, 2),
+            "over": remainder < -0.01}, None
+
+
+@app.route("/docs/upload/<int:uid>/itemize", methods=["POST"])
+@login_required
+def docs_upload_itemize(uid):
+    """Save a document's line-item split: replace the child invoice_split rows on
+    its parent transaction, each coded to its own budget line, and un-code the
+    parent so the Actual rollup counts the line items (not the parent total).
+    Body: { rows: [{amount, budget_line_id, description}] }. (User 2026-07.)
+
+    Thin wrapper — all logic lives in _itemize_apply() so the split-integrity
+    healer shares the exact same replace-on-save behavior (2026-07)."""
+    upload = DocUpload.query.get_or_404(uid)
+    _require_project_role(upload.project_id, 'editor')
+    parent = _doc_parent_txn(upload.id)
+    if parent is None:
+        return jsonify({"error": "No transaction exists for this document yet."}), 400
+    data = request.get_json(force=True) or {}
+    rows = data.get("rows") or []
+    main_line_raw = data.get("main_line_id")
+    if not isinstance(rows, list):
+        return jsonify({"error": "rows must be a list"}), 400
+    result, status = _itemize_apply(upload, parent, rows, main_line_raw)
+    if status:
+        return jsonify(result), status
+    return jsonify(result)
 
 
 @app.route("/docs/upload/<int:uid>/meta", methods=["GET"])
