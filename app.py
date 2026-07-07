@@ -8945,6 +8945,9 @@ def _clear_ai_code_suggestion(txn):
     txn.ai_suggested_code_name = None
     txn.ai_code_confidence = None
     txn.ai_code_reason = None
+    # Deterministic person/PO suggestions also stash the exact line here
+    # (2026-07); clear it so a coded/dismissed row stops re-surfacing.
+    txn.suggested_budget_line_id = None
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-line", methods=["POST"])
@@ -9719,6 +9722,169 @@ def _ai_log_event(pid, doc_id, feature, provider, model, req, resp, latency):
         pass
 
 
+# ── Deterministic person / PO → budget-line joins (2026-07) ──────────────────
+# BEFORE any AI guess: invoices carry the vendor's NAME. If that person is
+# assigned to a budget line, or the vendor matches a PurchaseOrder, that's not a
+# guess — it's a known fact. Run cheap, pure-read joins first and only fall
+# through to the AI when they miss. (Owner ask 2026-07.)
+def _det_person_lines(pid, working_budget_id, crew_member_id):
+    """Budget lines the given person is assigned to on the CURRENT WORKING
+    budget, via CrewAssignment (any instance) OR BudgetLine.assigned_crew_id.
+    Returns a list of (BudgetLine) — labor lines sorted first, then by budgeted
+    total desc. Pure read."""
+    if not (working_budget_id and crew_member_id):
+        return []
+    line_ids = set()
+    # CrewAssignment path (expanded rows) — scoped to this budget's lines.
+    for (lid,) in (db.session.query(CrewAssignment.budget_line_id)
+                   .join(BudgetLine, BudgetLine.id == CrewAssignment.budget_line_id)
+                   .filter(BudgetLine.budget_id == working_budget_id,
+                           CrewAssignment.crew_member_id == crew_member_id)
+                   .distinct().all()):
+        if lid:
+            line_ids.add(lid)
+    # Line-level assigned_crew_id path (labor line assigned directly).
+    for (lid,) in (db.session.query(BudgetLine.id)
+                   .filter(BudgetLine.budget_id == working_budget_id,
+                           BudgetLine.assigned_crew_id == crew_member_id)
+                   .all()):
+        if lid:
+            line_ids.add(lid)
+    if not line_ids:
+        return []
+    lines = BudgetLine.query.filter(BudgetLine.id.in_(line_ids)).all()
+    lines.sort(key=lambda l: (0 if l.is_labor else 1, -float(_line_budget_total(l) or 0)))
+    return lines
+
+
+def _det_line_payload(line, reason, confidence, label=None):
+    """Shape one deterministic candidate into the suggestion dict."""
+    return {
+        "budget_line_id": line.id,
+        "account_code":   line.account_code,
+        "label":          (label or line.description or line.account_name
+                           or str(line.account_code) or '')[:100],
+        "reason":         reason,
+        "confidence":     round(float(confidence), 3),
+    }
+
+
+# Fuzzy gate for the vendor-name→person and vendor→PO joins. 0.70 is the score
+# _vendor_similarity assigns a shared-brand "prefix" match (first 4 chars equal)
+# — it catches the owner's "Gateway Studios" ↔ "Gateway Camera Rentals" case
+# while an unrelated vendor still scores 0.0. The EXPLICIT crew_member_id path
+# (a) is not fuzzy and is unaffected. (2026-07.)
+_DET_FUZZY_MIN = 0.70
+
+
+def _deterministic_line_suggestion(pid, vendor, crew_member_id=None):
+    """Deterministic (non-AI) budget-line suggestion for an uncoded charge.
+
+    Priority — highest-confidence candidate wins:
+      (a) person       — the doc is explicitly tied to a crew member
+          (crew_member_id): their assignment line(s) on the CURRENT WORKING
+          budget. Exactly one → conf .95. Multiple → the primary labor line
+          (labor first, then largest budgeted) → conf .8.
+      (b) person_name  — no crew_member_id: fuzzy-match `vendor` against the
+          names of crew who HAVE assignments on the working budget
+          (_vendor_similarity ≥ _DET_FUZZY_MIN). Best hit → that person's line
+          as in (a), conf = similarity × the (a) confidence.
+      (c) po           — fuzzy-match `vendor` against the project's
+          PurchaseOrders' vendor_name (≥ _DET_FUZZY_MIN); best PO whose po_id
+          sits on a single working-budget line → conf .9 × similarity; label
+          names the PO.
+
+    Fuzzy gate = _DET_FUZZY_MIN (0.7): _vendor_similarity floors a shared-brand
+    "prefix" match at 0.7 ("Gateway Studios" ↔ "Gateway Camera Rentals" = 0.70),
+    which is exactly the owner's motivating example — a stricter .8 would miss it
+    — while an unrelated vendor scores 0.0.
+
+    Returns None or {budget_line_id, account_code, label, reason, confidence}.
+    Pure reads, fail-open (None on any error)."""
+    try:
+        from actuals import get_current_working_budget, _vendor_similarity
+        wb = get_current_working_budget(pid)
+        if not wb:
+            return None
+        candidates = []
+
+        # (a) explicit person → their line(s)
+        if crew_member_id:
+            lines = _det_person_lines(pid, wb.id, crew_member_id)
+            if len(lines) == 1:
+                candidates.append(_det_line_payload(lines[0], 'person', 0.95))
+            elif len(lines) > 1:
+                candidates.append(_det_line_payload(lines[0], 'person', 0.8))
+
+        # (b) vendor name ≈ a project crew member's name → their line(s)
+        v = (vendor or '').strip()
+        if not crew_member_id and v:
+            # People with assignments on THIS working budget (the only ones whose
+            # name→line join is meaningful for this project).
+            assigned_ids = set()
+            for (cid,) in (db.session.query(CrewAssignment.crew_member_id)
+                           .join(BudgetLine, BudgetLine.id == CrewAssignment.budget_line_id)
+                           .filter(BudgetLine.budget_id == wb.id,
+                                   CrewAssignment.crew_member_id.isnot(None))
+                           .distinct().all()):
+                if cid:
+                    assigned_ids.add(cid)
+            for (cid,) in (db.session.query(BudgetLine.assigned_crew_id)
+                           .filter(BudgetLine.budget_id == wb.id,
+                                   BudgetLine.assigned_crew_id.isnot(None))
+                           .distinct().all()):
+                if cid:
+                    assigned_ids.add(cid)
+            best_cm, best_sim = None, 0.0
+            if assigned_ids:
+                for cm in CrewMember.query.filter(CrewMember.id.in_(assigned_ids)).all():
+                    sim = _vendor_similarity(v, cm.name or '')
+                    if sim > best_sim:
+                        best_cm, best_sim = cm, sim
+            if best_cm is not None and best_sim >= _DET_FUZZY_MIN:
+                lines = _det_person_lines(pid, wb.id, best_cm.id)
+                if lines:
+                    base_conf = 0.95 if len(lines) == 1 else 0.8
+                    candidates.append(_det_line_payload(
+                        lines[0], 'person_name', best_sim * base_conf,
+                        label=lines[0].description or lines[0].account_name))
+
+        # (c) vendor name ≈ a PurchaseOrder vendor → the PO's working-budget line
+        if v:
+            from models import PurchaseOrder
+            best_po, best_po_sim = None, 0.0
+            for po in (PurchaseOrder.query
+                       .filter(PurchaseOrder.project_id == pid,
+                               PurchaseOrder.archived == False)  # noqa: E712
+                       .all()):
+                sim = _vendor_similarity(v, po.vendor_name or '')
+                if sim > best_po_sim:
+                    best_po, best_po_sim = po, sim
+            if best_po is not None and best_po_sim >= _DET_FUZZY_MIN:
+                po_lines = (BudgetLine.query
+                            .filter(BudgetLine.budget_id == wb.id,
+                                    BudgetLine.po_id == best_po.id)
+                            .all())
+                if len(po_lines) == 1:
+                    ln = po_lines[0]
+                    lbl = f"{ln.description or ln.account_name or ln.account_code} · {best_po.po_number}"
+                    candidates.append(_det_line_payload(
+                        ln, 'po', 0.9 * best_po_sim, label=lbl))
+
+        if not candidates:
+            return None
+        return max(candidates, key=lambda c: c['confidence'])
+    except Exception as _e:
+        logging.warning(f"[det-suggest] failed (pid={pid}, vendor={vendor!r}): {_e}")
+        return None
+
+
+# Reason → emoji/label prefix carried on the stored suggestion NAME so every
+# existing consumer (popup chip, row chip, inbox) can show WHY without a new
+# DB column. The muted reason text (person/PO name) rides in ai_code_reason.
+_DET_REASON_PREFIX = {'person': '👤 ', 'person_name': '👤 ', 'po': '📄 '}
+
+
 def _ai_suggest_code_for_txn(txn, taxonomy=None, past=None, force=False):
     """Advisory COA suggestion for ONE uncoded charge. Memory-first (a learned
     vendor mapping wins, no model call), else ai_layer.categorize(). Writes
@@ -9734,6 +9900,39 @@ def _ai_suggest_code_for_txn(txn, taxonomy=None, past=None, force=False):
     pid = txn.project_id
     vendor = txn.vendor or ''
     doc_id = getattr(txn, 'doc_upload_id', None)
+
+    # 0) Deterministic FIRST pass (owner ask 2026-07): the vendor name on an
+    #    invoice/PO is a KNOWN fact, not a guess. If the doc is tied to a crew
+    #    member with a budget-line assignment, or the vendor matches an assigned
+    #    person's name or a PurchaseOrder, use THAT line — no model call. Written
+    #    into the same ai_suggested_* fields so every consumer lights up
+    #    unchanged, plus suggested_budget_line_id so the exact line is carried.
+    det_cmid = None
+    if doc_id:
+        _doc0 = db.session.get(DocUpload, doc_id)
+        if _doc0 is not None:
+            det_cmid = getattr(_doc0, 'crew_member_id', None)
+    det = _deterministic_line_suggestion(pid, vendor, crew_member_id=det_cmid)
+    if det is not None:
+        code = det['account_code']
+        base_name = (FP_COA_NAMES.get(code, '') or det['label'] or '')
+        prefix = _DET_REASON_PREFIX.get(det['reason'], '')
+        txn.ai_suggested_code = code
+        txn.ai_suggested_code_name = (prefix + base_name)[:100]
+        txn.ai_code_confidence = det['confidence']
+        txn.suggested_budget_line_id = det['budget_line_id']
+        if det['reason'] == 'po':
+            _reason_txt = f"Vendor matches purchase order · {det['label']}"
+        else:
+            _reason_txt = f"Assigned person · {det['label']}"
+        txn.ai_code_reason = _reason_txt[:300]
+        _ai_log_event(pid, doc_id, 'categorize', 'deterministic', det['reason'],
+                      {"vendor": vendor, "crew_member_id": det_cmid},
+                      {"budget_line_id": det['budget_line_id'],
+                       "account_code": code, "reason": det['reason']}, 0)
+        return {"code": code, "name": txn.ai_suggested_code_name,
+                "confidence": det['confidence'], "source": "deterministic",
+                "reason": det['reason'], "budget_line_id": det['budget_line_id']}
 
     # 1) Memory-first: a confirmed vendor mapping short-circuits the LLM.
     cv = canon_vendor(vendor)
@@ -10491,7 +10690,10 @@ def actuals_clear_suggestions(pid):
          .update({Transaction.ai_suggested_code: None,
                   Transaction.ai_suggested_code_name: None,
                   Transaction.ai_code_confidence: None,
-                  Transaction.ai_code_reason: None},
+                  Transaction.ai_code_reason: None,
+                  # Also drop the deterministic person/PO line pointer so the
+                  # inbox "✓ Code" chip clears with the rest. (2026-07.)
+                  Transaction.suggested_budget_line_id: None},
                  synchronize_session=False))
     db.session.commit()
     return jsonify({"ok": True, "cleared": n})
@@ -11283,6 +11485,7 @@ def actuals_set_coa(pid, tid):
     txn.ai_suggested_code_name = None
     txn.ai_code_confidence = None
     txn.ai_code_reason = None
+    txn.suggested_budget_line_id = None
     txn.updated_at = datetime.utcnow()
     _sync_claim_state(txn)
     # Reinforce the learned vendor→category mapping when a real section was set
@@ -25715,8 +25918,12 @@ def docs_inbox_json(pid):
     # ── Split-parent ids (itemized containers coded via children) ───────
     split_parent_ids = _split_parent_id_set(pid)
 
-    # ── Bulk map: budget_line_id → description/name (for coded_label) ────
+    # ── Bulk map: budget_line_id → description/name (for coded_label AND the
+    #    deterministic suggested-line chip). Includes suggested_budget_line_id so
+    #    the needs_coding chip can name the line without an N+1. (2026-07.) ──
     line_ids = {t.budget_line_id for t in all_txns if t.budget_line_id}
+    line_ids |= {t.suggested_budget_line_id for t in all_txns
+                 if getattr(t, 'suggested_budget_line_id', None)}
     line_labels = {}
     if line_ids:
         for bl in BudgetLine.query.filter(BudgetLine.id.in_(line_ids)).all():
@@ -25782,6 +25989,46 @@ def docs_inbox_json(pid):
                     "confidence": (float(txn.match_confidence)
                                    if txn.match_confidence is not None else None),
                 }
+            # Deterministic person/PO line suggestion (owner ask 2026-07): when a
+            # charge is still uncoded but carries a stored suggested budget line
+            # (written by the deterministic first pass in _ai_suggest_code_for_txn),
+            # surface it so the row can offer a one-click "✓ Code". The muted
+            # reason ("👤 Hiram Becker" / "📄 PO-2026-L-001") rides in ai_code_reason.
+            suggested_line = None
+            if coded == 'none' and not txn.not_project_expense:
+                _slid = getattr(txn, 'suggested_budget_line_id', None)
+                _sreason = txn.ai_code_reason or None
+                _sreason_tag = txn.ai_suggested_code_name or None
+                _sconf = (float(txn.ai_code_confidence)
+                          if txn.ai_code_confidence is not None else None)
+                if not _slid:
+                    # No stored suggestion yet (doc predates the deterministic
+                    # pass, or was never run through it) → compute live. Pure
+                    # reads, fail-open. Doesn't persist; just powers the chip.
+                    _det = _deterministic_line_suggestion(
+                        pid, txn.vendor, crew_member_id=d.crew_member_id)
+                    if _det:
+                        _slid = _det['budget_line_id']
+                        _pfx = _DET_REASON_PREFIX.get(_det['reason'], '')
+                        _sreason_tag = (_pfx + (_det['label'] or ''))[:100]
+                        _sreason = (('Vendor matches purchase order · '
+                                     if _det['reason'] == 'po'
+                                     else 'Assigned person · ') + _det['label'])[:300]
+                        _sconf = _det['confidence']
+                        if _slid not in line_labels:
+                            _bl = BudgetLine.query.get(_slid)
+                            if _bl is not None:
+                                line_labels[_slid] = (_bl.description or _bl.account_name
+                                                      or (str(_bl.account_code)
+                                                          if _bl.account_code else None))
+                if _slid:
+                    suggested_line = {
+                        "line_id":    _slid,
+                        "label":      line_labels.get(_slid) or _sreason_tag or str(_slid),
+                        "reason":     _sreason,
+                        "reason_tag": _sreason_tag,
+                        "confidence": _sconf,
+                    }
             txn_obj = {
                 "id":               txn.id,
                 "match_status":     txn.match_status,
@@ -25790,6 +26037,7 @@ def docs_inbox_json(pid):
                 "coded":            coded,
                 "coded_label":      coded_label,
                 "suggested_charge": suggested_charge,
+                "suggested_line":   suggested_line,
             }
 
         # ── Primary state (exactly one) ─────────────────────────────────
@@ -28206,9 +28454,21 @@ def docs_upload_coding(uid):
     # heuristic vendor→line guess was. (User 2026-06-22.)
     sug = None
     if not (txn.budget_line_id or txn.account_code) and txn.ai_suggested_code:
+        # Deterministic person/PO suggestions carry the EXACT budget line
+        # (suggested_budget_line_id) — return its picker value so one click
+        # codes that line, not just the section. AI/memory suggestions have no
+        # line → fall back to section-only coding as before. (2026-07.)
+        _sug_line_id = "section:%s" % txn.ai_suggested_code
+        if txn.suggested_budget_line_id:
+            _sbl = BudgetLine.query.get(txn.suggested_budget_line_id)
+            if _sbl is not None:
+                _pv = _picker_value_for_line(_sbl)
+                if _pv is not None:
+                    _sug_line_id = str(_pv)
         sug = {"code": txn.ai_suggested_code,
                "label": (txn.ai_suggested_code_name or str(txn.ai_suggested_code)),
-               "line_id": "section:%s" % txn.ai_suggested_code,
+               "line_id": _sug_line_id,
+               "reason": (txn.ai_code_reason or None),
                "confidence": (float(txn.ai_code_confidence) if txn.ai_code_confidence is not None else None)}
     if sug is None:
         try:

@@ -469,9 +469,25 @@
       btn.addEventListener('click', function (e) { e.stopPropagation(); confirmMatch(doc.id); });
       zone.appendChild(btn);
     } else if (doc.state === 'needs_coding') {
-      var t = document.createElement('span');
-      t.className = 'inbx-tag coding'; t.textContent = 'Needs coding';
-      zone.appendChild(t);
+      // Deterministic person/PO line suggestion → one-click "✓ Code".
+      var sl = doc.txn && doc.txn.suggested_line;
+      if (sl && sl.line_id) {
+        var slab = document.createElement('span');
+        slab.className = 'inbx-sugg';
+        // Muted "why" — the reason tag ("👤 Hiram Becker" / "📄 PO-2026-L-001")
+        // if present, else the target line label.
+        slab.textContent = sl.reason_tag || sl.label || '';
+        if (sl.label) slab.title = sl.label + (sl.reason ? (' — ' + sl.reason) : '');
+        zone.appendChild(slab);
+        var cbtn = document.createElement('button');
+        cbtn.type = 'button'; cbtn.className = 'inbx-btn-match'; cbtn.textContent = '✓ Code';
+        cbtn.addEventListener('click', function (e) { e.stopPropagation(); codeLine(doc.id); });
+        zone.appendChild(cbtn);
+      } else {
+        var t = document.createElement('span');
+        t.className = 'inbx-tag coding'; t.textContent = 'Needs coding';
+        zone.appendChild(t);
+      }
     } else if (doc.state === 'needs_review') {
       var r = document.createElement('span');
       r.className = 'inbx-tag review';
@@ -544,6 +560,37 @@
         toast('Could not confirm match.', 'err');
       }
     }).catch(function () { toast('Network error confirming match.', 'err'); });
+  }
+
+  // Single-row deterministic "✓ Code": POST the suggested budget line to the
+  // set-line endpoint (same path the Actuals register uses), then flip to done
+  // with the green flash — no full reload. (Owner ask 2026-07.)
+  function codeLine(id) {
+    var doc = ALL.filter(function (x) { return x.id === id; })[0];
+    var sl = doc && doc.txn && doc.txn.suggested_line;
+    if (!doc || !sl || !sl.line_id || !doc.txn.id) { toast('No suggestion to apply.', 'err'); return; }
+    fetch('/projects/' + PID + '/actuals/transaction/' + doc.txn.id + '/set-line', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ budget_line_id: sl.line_id })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, d: d }; });
+    }).then(function (res) {
+      if (res.ok && res.d && res.d.ok) {
+        doc.state = 'done';
+        if (doc.txn) { doc.txn.coded = 'line'; doc.txn.coded_label = sl.label || 'Coded'; doc.txn.suggested_line = null; }
+        var el = rowEl(id);
+        if (el) {
+          el.classList.add('flash-ok');
+          var zone = el.querySelector('.inbx-zone');
+          if (zone) fillZone(zone, doc);
+          setTimeout(function () { if (el) el.classList.remove('flash-ok'); }, 900);
+        }
+        bumpCount('needs_coding', -1); bumpCount('done', 1); buildChips();
+      } else {
+        toast((res.d && res.d.error) || 'Could not code this document.', 'err');
+      }
+    }).catch(function () { toast('Network error coding document.', 'err'); });
   }
 
   function bumpCount(key, delta) { COUNTS[key] = Math.max(0, (COUNTS[key] || 0) + delta); }
@@ -670,6 +717,8 @@
     else if (e.key === 'm') {
       var d = cursorDoc();
       if (d && d.state === 'needs_match') { e.preventDefault(); confirmMatch(d.id); }
+      else if (d && d.state === 'needs_coding' && d.txn && d.txn.suggested_line
+               && d.txn.suggested_line.line_id) { e.preventDefault(); codeLine(d.id); }
     }
     else if (e.key === 'Escape') { clearSelection(); }
   });
