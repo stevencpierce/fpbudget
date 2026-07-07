@@ -8033,12 +8033,149 @@ def line_duplicate(pid, bid, lid):
         return jsonify({"error": str(e)}), 400
 
 
+def _resolve_sister_budget(edited_budget):
+    """Resolve the version-pair sister of `edited_budget`:
+      - edited is Working-family  → the project's CURRENT Estimated budget
+      - edited is Estimated       → the project's CURRENT Working budget
+    Returns the sister Budget or None. Never returns an archived or is_actual
+    budget, and never the edited budget itself. Mirrors the current-version
+    resolution used in budget_view (prefer version_status='current', fall back
+    to any non-archived of the right type)."""
+    if edited_budget is None or edited_budget.is_actual:
+        return None
+    all_b = Budget.query.filter_by(project_id=edited_budget.project_id).all()
+    if _budget_type(edited_budget.budget_mode) == 'working':
+        want = 'estimated'
+    else:
+        want = 'working'
+
+    def _is_type(b):
+        return (_budget_type(b.budget_mode) == want and not b.is_actual)
+
+    sister = next(
+        (b for b in all_b if _is_type(b) and b.version_status == 'current'), None
+    ) or next(
+        (b for b in all_b if _is_type(b) and b.version_status != 'archived'), None
+    )
+    if sister is None or sister.id == edited_budget.id or sister.is_actual \
+            or sister.version_status == 'archived':
+        return None
+    return sister
+
+
+def _sister_line_for(ln, sister_lines, sister_src_ids, sister_desc_index):
+    """Find `ln`'s counterpart among `sister_lines` using the SAME pairing
+    precedence as budget_view's sister_orphans block:
+      (a) source_line_id link in EITHER direction, then
+      (b) (account_code, normalized description) fallback.
+    `sister_src_ids` maps sister_line.source_line_id → sister_line (for the
+    case where a sister line points AT `ln`). `sister_desc_index` maps
+    (account_code, normalized description) → sister_line. Returns the matched
+    sister BudgetLine or None."""
+    # (a1) ln points AT a sister line.
+    if ln.source_line_id is not None:
+        for _sl in sister_lines:
+            if _sl.id == ln.source_line_id:
+                return _sl
+    # (a2) a sister line points AT ln.
+    _sl = sister_src_ids.get(ln.id)
+    if _sl is not None:
+        return _sl
+    # (b) (account_code, normalized description) fallback.
+    _dk = (ln.account_code, (ln.description or '').strip().lower())
+    return sister_desc_index.get(_dk)
+
+
+def _mirror_line_move(edited_budget):
+    """Mirror the CURRENT layout (section membership + relative ordering) of
+    `edited_budget`'s lines onto its version-pair sister budget, so a drag /
+    section-move in one version is reflected in the other (owner ask 2026-07).
+
+    Algorithm — run AFTER the edited budget's reorder/section-move has been
+    committed, so we read the final on-disk state:
+      1. Resolve the sister budget (skip if none / same / archived / is_actual).
+      2. For each edited line, find its sister via the standard pairing
+         (_sister_line_for). Lines with no sister are left untouched.
+      3. For each PAIRED sister line: copy the edited line's account_code +
+         account_name (this reproduces a cross-section move) and assign it a
+         sequentially-increasing sort_order that follows the edited budget's
+         full line order. Sister-only lines (orphans — no counterpart on the
+         edited side) keep their existing sort_order so they stay roughly in
+         place; no lines are created or deleted.
+
+    Fail-open: any error is logged and swallowed — a mirror failure must never
+    break the user's drag. Does NOT trigger the estimated-edit 409 guard (that
+    guard lives in upsert_line and only fires for user-initiated edits; this is
+    a system write that touches sort_order/account_code directly)."""
+    try:
+        sister = _resolve_sister_budget(edited_budget)
+        if sister is None:
+            return
+
+        edited_lines = (BudgetLine.query
+                        .filter_by(budget_id=edited_budget.id)
+                        .order_by(BudgetLine.sort_order, BudgetLine.id).all())
+        sister_lines = BudgetLine.query.filter_by(budget_id=sister.id).all()
+        if not sister_lines:
+            return
+
+        # Build pairing indexes over the sister budget's lines.
+        #  - sister_src_ids: sister lines that point AT an edited line
+        #    (edited_line.id → sister_line)
+        #  - sister_desc_index: (account_code, normalized description) → sister
+        sister_src_ids = {}
+        for _sl in sister_lines:
+            if _sl.source_line_id is not None:
+                sister_src_ids.setdefault(_sl.source_line_id, _sl)
+        sister_desc_index = {}
+        for _sl in sister_lines:
+            _dk = (_sl.account_code, (_sl.description or '').strip().lower())
+            # First writer wins so pairing is stable / deterministic.
+            sister_desc_index.setdefault(_dk, _sl)
+
+        # Walk the edited budget's full order; for each edited line that HAS a
+        # sister, mirror account_code/name and hand the sister the next
+        # sort_order in sequence. Only reseat sisters we actually pair — leave
+        # sister-only orphans alone.
+        _coa = dict(FP_COA_SECTIONS)
+        matched_sister_ids = set()
+        seq = 0
+        for eln in edited_lines:
+            sl = _sister_line_for(eln, sister_lines, sister_src_ids, sister_desc_index)
+            if sl is None or sl.id in matched_sister_ids:
+                continue
+            matched_sister_ids.add(sl.id)
+            # Mirror section membership (cross-section move changes these).
+            if sl.account_code != eln.account_code:
+                sl.account_code = eln.account_code
+                sl.account_name = _coa.get(eln.account_code) or eln.account_name
+                # role_group is section-specific; clear it so the sister
+                # doesn't carry a stale sub-group label into the new section.
+                sl.role_group = eln.role_group
+            else:
+                # Same section — keep the edited side's sub-group label so
+                # grouped clusters stay aligned across versions.
+                sl.role_group = eln.role_group
+            sl.sort_order = seq
+            seq += 1
+
+        db.session.commit()
+        _touch_budget(sister.id)
+        db.session.commit()
+    except Exception as _mle:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        logging.warning(f"[_mirror_line_move] mirror failed (fail-open): {_mle}")
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/reorder", methods=["POST"])
 @login_required
 def line_reorder(pid, bid):
     """Move a line to a new position. Within-section by default; pass
     target_section_code to move across sections (per user 2026-05-04)."""
-    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     data    = request.get_json(force=True) or {}
     line_id = int(data.get("line_id") or 0)
     after_id = data.get("after_id")   # None → first in section; int → move after this line
@@ -8140,6 +8277,11 @@ def line_reorder(pid, bid):
     db.session.commit()
     _touch_budget(bid)
     db.session.commit()
+
+    # Mirror the resulting layout (section membership + relative order) onto
+    # the version-pair sister budget so Estimated↔Working stay aligned
+    # (owner ask 2026-07). Fail-open — never breaks the drag.
+    _mirror_line_move(budget)
     return jsonify({"ok": True})
 
 
@@ -8150,7 +8292,7 @@ def line_set_group(pid, bid, lid):
     lands at the bottom of that group cluster. Used by the "Change Group…"
     option in the line row context menu — lets users move rows into groups
     that currently have no members (and therefore no visible drop target)."""
-    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     data  = request.get_json(force=True) or {}
     group = (data.get("role_group") or "").strip() or None
 
@@ -8182,6 +8324,10 @@ def line_set_group(pid, bid, lid):
     db.session.commit()
     _touch_budget(bid)
     db.session.commit()
+
+    # Mirror the resulting layout onto the version-pair sister budget so
+    # Estimated↔Working stay aligned (owner ask 2026-07). Fail-open.
+    _mirror_line_move(budget)
     return jsonify({"ok": True})
 
 
