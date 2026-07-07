@@ -228,7 +228,12 @@
     ? ('/projects/' + PID + '/docs')
     : ('/projects/' + PID + '/budget?tab=docs');
   $('edBackLink').href = BACK_URL;
-  function goBack() { location.href = BACK_URL; }
+  function goBack() {
+    // Unsaved itemization rows must never vanish silently (2026-07).
+    if (typeof _itemDirty !== 'undefined' && _itemDirty &&
+        !confirm('You have UNSAVED itemization changes — leave without saving them?')) return;
+    location.href = BACK_URL;
+  }
   // Escape = plain back navigation (no save), matching the popup's Esc-closes.
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
@@ -477,6 +482,13 @@
 
   // ══ ITEMIZE grid ═══════════════════════════════════════════════════════════
   var _itemDocTotal = null, _itemVeryfi = [];
+  // Unsaved-changes guard (2026-07: a re-itemization was lost — the failure
+  // status is easy to miss and nothing stopped navigation with unsaved rows).
+  var _itemDirty = false;
+  function _markItemDirty() { _itemDirty = true; }
+  window.addEventListener('beforeunload', function (e) {
+    if (_itemDirty) { e.preventDefault(); e.returnValue = ''; }
+  });
 
   function itemAddRow(desc, amount, lineId) {
     var host = $('edItemizeRows'); if (!host) return;
@@ -490,7 +502,8 @@
       '<button type="button" class="editem-rm" title="Remove line" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px">✕</button>';
     host.appendChild(row);
     var amtEl = row.querySelector('.editem-amt');
-    amtEl.addEventListener('input', edUpdateTotal);
+    amtEl.addEventListener('input', function () { _markItemDirty(); edUpdateTotal(); });
+    row.querySelector('.editem-desc').addEventListener('input', _markItemDirty);
     var sel = row.querySelector('.editem-line');
     // Populate at CREATION, not lazily on focus — mutating 300+ options while
     // the native dropdown is opening stalled/cancelled the first pick (user
@@ -498,8 +511,9 @@
     // innerHTML copy is cheap and rows are few. (Review fix 2026-07.)
     if (lineId) sel.dataset.current = String(lineId);
     fillPicker(sel);
+    sel.addEventListener('change', _markItemDirty);
     row.querySelector('.editem-rm').addEventListener('click', function () {
-      row.remove(); edUpdateTotal();
+      row.remove(); _markItemDirty(); edUpdateTotal();
     });
     edUpdateTotal();
   }
@@ -540,6 +554,7 @@
     if (!_itemVeryfi.length) { $('edItemizeStatus').textContent = 'No OCR line items found on this document.'; return; }
     $('edItemizeRows').innerHTML = '';
     _itemVeryfi.forEach(function (it) { itemAddRow(it.description, it.amount, ''); });
+    _markItemDirty();   // pulled rows are unsaved until Save (2026-07)
   }
 
   function loadItemize() {
@@ -611,11 +626,20 @@
           var cnt = $('edItemizeCount');
           if (cnt) cnt.textContent = nsub ? ('· ' + nsub + ' subline' + (nsub !== 1 ? 's' : '')) : '';
           itemSetOverride(nsub);
+          _itemDirty = false;   // persisted — safe to navigate
         } else {
-          if (st) { st.textContent = 'Save failed: ' + (d.error || res.status); st.style.color = '#e0a13a'; }
+          // LOUD failure — the small status line was missed once and a whole
+          // re-itemization was lost (user 2026-07). Keep the rows; alert too.
+          var msg = 'Itemization NOT saved: ' + (d.error || ('server error ' + res.status));
+          if (st) { st.textContent = msg; st.style.color = '#fb7185'; }
+          alert(msg + '\n\nYour rows are still here — fix the issue and press Save again.');
         }
       })
-      .catch(function (e) { if (st) { st.textContent = 'Error: ' + e.message; st.style.color = '#e0a13a'; } })
+      .catch(function (e) {
+        var msg = 'Itemization NOT saved (network): ' + e.message;
+        if (st) { st.textContent = msg; st.style.color = '#fb7185'; }
+        alert(msg + '\n\nYour rows are still here — check your connection and press Save again.');
+      })
       .finally(function () { if (btn) { btn.disabled = false; btn.textContent = 'Save itemization'; } });
   }
 
