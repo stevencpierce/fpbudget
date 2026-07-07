@@ -28866,9 +28866,15 @@ def docs_upload_line_items(uid):
     existing = []
     main_line_id = None
     if parent is not None:
+        # Match the itemize replace-on-save sweep: children by parent OR by doc
+        # (a parent flip between saves left stale children invisible here while
+        # they still polluted totals — the Consulting Engineer case, 2026-07).
+        from sqlalchemy import or_ as _or_li
         kids = (Transaction.query
-                .filter_by(project_id=upload.project_id, parent_transaction_id=parent.id,
-                           source='invoice_split')
+                .filter(Transaction.project_id == upload.project_id,
+                        Transaction.source == 'invoice_split',
+                        _or_li(Transaction.parent_transaction_id == parent.id,
+                               Transaction.doc_upload_id == upload.id))
                 .order_by(Transaction.id).all())
         for k in kids:
             bl = BudgetLine.query.get(k.budget_line_id) if k.budget_line_id else None
@@ -28990,9 +28996,19 @@ def docs_upload_itemize(uid):
                                  f"document total ${doc_total:,.2f} — fix the amounts "
                                  f"before saving."}), 400
 
-    # Remove any previous itemization for this parent (replace-on-save).
-    for k in Transaction.query.filter_by(project_id=pid, parent_transaction_id=parent.id,
-                                         source='invoice_split').all():
+    # Remove any previous itemization for this DOCUMENT (replace-on-save).
+    # FIX 2026-07 (Consulting Engineer case, txn 4259): matching only
+    # parent_transaction_id == parent.id left STALE children behind whenever
+    # the doc's representative parent had FLIPPED between saves (doc twin
+    # uncoded/matched etc.) — an old full-amount child stayed coded forever
+    # and no re-save could remove it, so 'nothing changes with the totals'.
+    # Sweep by doc_upload_id OR parent id: one doc = one itemization, period.
+    from sqlalchemy import or_ as _or_itm
+    for k in (Transaction.query
+              .filter(Transaction.project_id == pid,
+                      Transaction.source == 'invoice_split',
+                      _or_itm(Transaction.parent_transaction_id == parent.id,
+                              Transaction.doc_upload_id == upload.id)).all()):
         db.session.delete(k)
     db.session.flush()
 
