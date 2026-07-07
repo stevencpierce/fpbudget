@@ -567,7 +567,16 @@
     <a class="tab-btn tab-link" href="{{ url_for('po_list_page', pid=project.id) }}?return_bid={{ budget.id }}">POs</a>
     <a class="tab-btn tab-link" href="{{ url_for('sub_budgets_page', pid=project.id) }}?return_bid={{ budget.id }}">Sub-Budgets</a>
     <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
-    <button class="tab-btn" data-tab="docs">Docs</button>
+    {# Docs tab now navigates to the new Docs Inbox (QuickBooks/Concur-style)
+       instead of switching the in-page pane. Styled identically to the other
+       <a class="tab-btn tab-link"> tabs (Schedule, POs, Sub-Budgets). The old
+       in-page ?tab=docs pane is preserved for deep-links, editor back-links,
+       state restore and packet flows via the hidden button below — do NOT
+       remove it: querySelector('[data-tab="docs"]') is relied on by the URL
+       tab restore (16128), the Dashboard "Docs" card (654) and the docs
+       lazy-verify wiring (5456). #}
+    <a class="tab-btn tab-link" href="/projects/{{ project.id }}/docs">Docs</a>
+    <button class="tab-btn" data-tab="docs" style="display:none" aria-hidden="true" tabindex="-1"></button>
     <button class="tab-btn" data-tab="actuals">Actuals</button>
     <button class="tab-btn" data-tab="activity">Activity</button>
     <button class="tab-btn" data-tab="import-tools">Tools</button>
@@ -2631,6 +2640,33 @@
 <!-- ═══ DOCS ══════════════════════════════════════════════════════════════ -->
 <div class="tab-panel" id="tab-docs"{% if active_tab != 'docs' %} data-needs-load="docs"{% endif %}>
   <div style="max-width:680px;margin:0 auto;padding:24px 16px 80px;">
+
+    {# Classic-list note (User 2026-07): the Docs Inbox is now the primary docs
+       surface. This pane still backs deep-links / editor back-links / packet
+       flows, but nudge anyone who lands here toward the new inbox. Dismissal is
+       remembered in localStorage so it doesn't nag on every visit. #}
+    <div id="docsClassicNote" style="display:none;align-items:center;gap:10px;margin-bottom:16px;padding:10px 14px;background:rgba(91,138,249,.12);border:1px solid #5b8af9;border-radius:8px;font-size:13px;color:var(--text);">
+      <span style="flex:1">This is the classic list — the new
+        <a href="/projects/{{ project.id }}/docs" style="color:#8fb4ff;font-weight:600;text-decoration:none">📥 Docs Inbox</a>
+        is now the main view.</span>
+      <a href="/projects/{{ project.id }}/docs" style="font-size:12px;padding:5px 11px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;text-decoration:none;white-space:nowrap">Open inbox →</a>
+      <button type="button" onclick="try{localStorage.setItem('fpDocsClassicNoteDismissed','1')}catch(e){}; this.closest('#docsClassicNote').style.display='none'"
+              title="Dismiss" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:16px;line-height:1;padding:2px 4px">×</button>
+    </div>
+    <script>
+      // Show the classic-list note unless the user dismissed it before.
+      (function(){
+        try {
+          if (localStorage.getItem('fpDocsClassicNoteDismissed') !== '1') {
+            var _n = document.getElementById('docsClassicNote');
+            if (_n) _n.style.display = 'flex';
+          }
+        } catch(e) {
+          var _n2 = document.getElementById('docsClassicNote');
+          if (_n2) _n2.style.display = 'flex';
+        }
+      })();
+    </script>
 
     <!-- Drop zone -->
     <div id="docsDropZone" style="border:2px dashed var(--border);border-radius:12px;padding:36px 20px;text-align:center;cursor:pointer;background:var(--bg-card);position:relative;transition:border-color .2s;">

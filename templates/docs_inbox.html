@@ -104,7 +104,12 @@
   <h1>📥 Documents</h1>
   <input type="search" id="inbxSearch" class="inbx-search" autocomplete="off"
          placeholder="🔍 Search vendor, filename, person, amount…">
-  <a class="inbx-link" href="/projects/{{ project.id }}/budget?tab=docs">⤒ Upload</a>
+  {# Upload right here in the inbox — opens a file picker (multi). The whole
+     page is also a drag-drop target (see #inbxDropOverlay + upload JS). #}
+  <button type="button" class="inbx-link" id="inbxUploadBtn" style="cursor:pointer">⤒ Upload</button>
+  <input type="file" id="inbxFileInput" multiple accept="image/*,application/pdf,.heic,.heif" style="display:none">
+  {# Nothing is lost: the classic list (old ?tab=docs pane) is still reachable. #}
+  <a class="inbx-link" href="/projects/{{ project.id }}/budget?tab=docs">📄 Classic list</a>
   <span id="inbxHint" style="cursor:default">
     <span class="inbx-link" style="cursor:help">? Keys</span>
     <span id="inbxHintBox">
@@ -155,6 +160,18 @@
 </div>
 
 <div id="inbxToast"></div>
+
+{# Full-page drag-drop overlay — shown only while files are dragged over. #}
+<div id="inbxDropOverlay" style="display:none;position:fixed;inset:0;z-index:80;
+     background:rgba(10,13,18,.82);backdrop-filter:blur(2px);
+     align-items:center;justify-content:center;pointer-events:none;">
+  <div style="border:3px dashed #3d5da8;border-radius:16px;padding:44px 60px;text-align:center;
+       background:var(--bg-card);box-shadow:0 8px 40px rgba(0,0,0,.5);">
+    <div style="font-size:40px;margin-bottom:10px;">📥</div>
+    <div style="font-size:18px;font-weight:600;color:#cfe0ff;">Drop files to upload</div>
+    <div style="font-size:12.5px;color:var(--text-muted);margin-top:6px;">PDF, JPG, PNG, HEIC</div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -678,6 +695,138 @@
   });
   document.addEventListener('click', function (e) {
     if (!e.target.closest('.inbx-bulk-wrap')) $('inbxTypeMenu').style.display = 'none';
+  });
+
+  // ── upload (picker + full-page drag-drop) ──────────────────────────────────
+  // Files POST to the SAME endpoint the classic Docs tab uses:
+  //   POST /docs/<pid>/upload   FormData field "file"  (no CSRF header — the
+  //   classic flow at budget.html docsUploadOne() sends only the file). Response
+  //   codes mirror the classic handler: 201 filed/ok, 202 review, 200 duplicate
+  //   / review_dup, 4xx/5xx error {error}. We upload sequentially (simple, and
+  //   kind to Render's 512 MB worker), fail-open per file, then re-fetch
+  //   inbox.json so the new docs appear with their computed states.
+  var UPLOAD_URL = '/docs/' + PID + '/upload';
+  var MAX_BATCH  = 50;
+  var _uploading = false;
+
+  // Pin a message in the shared toast element without the 3.2s auto-hide, so
+  // batch progress stays visible for the whole run.
+  function toastPin(msg, kind) {
+    var el = $('inbxToast'); if (!el) return;
+    if (_toastT) { clearTimeout(_toastT); _toastT = null; }
+    el.textContent = msg;
+    el.className = kind || '';
+    el.style.display = 'block';
+  }
+
+  function shortName(n) {
+    n = String(n || 'file');
+    return n.length > 34 ? n.slice(0, 31) + '…' : n;
+  }
+
+  function uploadOne(file) {
+    var fd = new FormData();
+    fd.append('file', file);   // same field name as the classic tab
+    return fetch(UPLOAD_URL, { method: 'POST', body: fd, credentials: 'same-origin' })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          return { status: r.status, body: d || {} };
+        });
+      });
+  }
+
+  function uploadFiles(fileList) {
+    if (_uploading) { toast('Upload already in progress…', ''); return; }
+    var files = Array.prototype.slice.call(fileList || []).filter(function (f) {
+      return f && f.name;   // drop directory phantoms / empty entries
+    });
+    if (!files.length) return;
+    if (files.length > MAX_BATCH) {
+      toast('Too many files — upload up to ' + MAX_BATCH + ' at a time (got ' + files.length + ').', 'err');
+      files = files.slice(0, MAX_BATCH);
+    }
+
+    _uploading = true;
+    var total = files.length, ok = 0, failed = 0;
+
+    // Sequential chain, fail-open per file.
+    var chain = Promise.resolve();
+    files.forEach(function (file, i) {
+      chain = chain.then(function () {
+        toastPin('Uploading ' + shortName(file.name) + '… (' + (i + 1) + '/' + total + ')', '');
+        return uploadOne(file).then(function (res) {
+          var s = res.status;
+          if (s >= 200 && s < 300) {
+            ok += 1;
+            toastPin('✓ ' + shortName(file.name) + ' uploaded (' + (i + 1) + '/' + total + ')', 'ok');
+          } else {
+            failed += 1;
+            var msg = (res.body && res.body.error) ? res.body.error : ('HTTP ' + s);
+            toastPin('✕ ' + shortName(file.name) + ' failed — ' + msg, 'err');
+          }
+        }).catch(function () {
+          failed += 1;
+          toastPin('✕ ' + shortName(file.name) + ' failed — network error', 'err');
+        });
+      });
+    });
+
+    chain.then(function () {
+      _uploading = false;
+      var summary = failed
+        ? (ok + ' uploaded, ' + failed + ' failed.')
+        : (ok + ' file' + (ok === 1 ? '' : 's') + ' uploaded.');
+      // Re-fetch so the new docs appear with their states, then flash summary.
+      loadInbox(function () {
+        toast(summary, failed ? 'err' : 'ok');
+      });
+    });
+  }
+
+  // Trigger the picker from the header button.
+  var _fileInput = $('inbxFileInput');
+  $('inbxUploadBtn').addEventListener('click', function () {
+    if (_fileInput) _fileInput.click();
+  });
+  if (_fileInput) {
+    _fileInput.addEventListener('change', function () {
+      uploadFiles(this.files);
+      this.value = '';   // allow re-picking the same file
+    });
+  }
+
+  // Full-page drag-drop. A depth counter avoids the overlay flicker that
+  // dragenter/dragleave produce as the cursor crosses child elements.
+  var _dragDepth = 0;
+  function showOverlay(on) {
+    var ov = $('inbxDropOverlay'); if (ov) ov.style.display = on ? 'flex' : 'none';
+  }
+  function hasFiles(e) {
+    var dt = e.dataTransfer; if (!dt) return false;
+    if (dt.types) {
+      for (var i = 0; i < dt.types.length; i++) { if (dt.types[i] === 'Files') return true; }
+      return false;
+    }
+    return true;
+  }
+  window.addEventListener('dragenter', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); _dragDepth += 1; showOverlay(true);
+  });
+  window.addEventListener('dragover', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+  });
+  window.addEventListener('dragleave', function (e) {
+    if (!hasFiles(e)) return;
+    _dragDepth = Math.max(0, _dragDepth - 1);
+    if (_dragDepth === 0) showOverlay(false);
+  });
+  window.addEventListener('drop', function (e) {
+    _dragDepth = 0; showOverlay(false);
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    uploadFiles(e.dataTransfer.files);
   });
 
   // ── go ─────────────────────────────────────────────────────────────────────
