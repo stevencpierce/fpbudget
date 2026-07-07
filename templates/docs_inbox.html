@@ -582,6 +582,15 @@
   }
   function openDoc(id) {
     stashState();
+    // Hand the editor the FILTERED, ORDERED id list so its ‹ Prev / Next ›
+    // walks exactly what the user was looking at — same chip, facets, search.
+    // (User 2026-07: "next and previous that saves items and obeys the filter".)
+    try {
+      sessionStorage.setItem('fpInboxNav', JSON.stringify({
+        ids: (filtered || []).map(function (d) { return d.id; }).slice(0, 3000),
+        ts: Date.now()
+      }));
+    } catch (e) { /* nav is a nicety — editor still opens */ }
     location.href = '/projects/' + PID + '/docs/' + id + '/editor?from=inbox';
   }
 

@@ -126,10 +126,18 @@
       <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant phone</label><input type="text" id="edMerchPhone" placeholder="—" style="width:100%"></div>
     </details>
 
-    <div style="display:flex;gap:10px;align-items:center;margin:4px 0 14px">
+    <div style="display:flex;gap:10px;align-items:center;margin:4px 0 14px;flex-wrap:wrap">
       <button type="button" id="edSaveBtn" class="btn btn-primary" style="padding:7px 18px">Save</button>
       <button type="button" id="edSaveCloseBtn" class="btn" style="padding:7px 18px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff">Save &amp; close</button>
       <span id="edSaveStatus" style="font-size:12px;color:var(--text-muted)"></span>
+      {# ‹ Prev / Next › across the INBOX'S FILTERED list (fpInboxNav) — saves
+         the doc (and any dirty itemization) before advancing. Hidden unless we
+         arrived from the inbox with a nav list. (User 2026-07.) #}
+      <span id="edNavWrap" style="display:none;margin-left:auto;align-items:center;gap:6px">
+        <button type="button" id="edPrevBtn" class="btn" style="padding:7px 12px;background:var(--bg-input);border:1px solid var(--border);color:var(--text)">‹ Save + Prev</button>
+        <span id="edNavPos" style="font-size:11.5px;color:var(--text-muted);white-space:nowrap"></span>
+        <button type="button" id="edNextBtn" class="btn" style="padding:7px 12px;background:#10231a;border:1px solid #1f6f4a;color:#5fd0a0">Save + Next ›</button>
+      </span>
     </div>
 
     {# ── Budget-line coding ── #}
@@ -233,6 +241,73 @@
     if (typeof _itemDirty !== 'undefined' && _itemDirty &&
         !confirm('You have UNSAVED itemization changes — leave without saving them?')) return;
     location.href = BACK_URL;
+  }
+
+  // ── ‹ Prev / Next › across the inbox's FILTERED list (User 2026-07:
+  // "next and previous that saves items as well and obeys the filter").
+  // fpInboxNav is stashed by the inbox on row-open: the ordered ids of exactly
+  // what the user's chip/facets/search were showing. Saving happens BEFORE the
+  // move — doc fields always, itemization only when dirty — and a failed save
+  // keeps you on the page (the loud alerts already fire).
+  var _nav = null;
+  try {
+    if (_fromInbox) {
+      var _rawNav = sessionStorage.getItem('fpInboxNav');
+      if (_rawNav) {
+        var _n = JSON.parse(_rawNav);
+        if (_n && _n.ids && (Date.now() - (_n.ts || 0)) < 1800000) {
+          var _idx = _n.ids.indexOf(UID);
+          if (_idx !== -1) _nav = { ids: _n.ids, idx: _idx };
+        }
+      }
+    }
+  } catch (e) { _nav = null; }
+  function _navGo(dir) {
+    if (!_nav) return;
+    var target = _nav.ids[_nav.idx + dir];
+    if (target === undefined) return;
+    var pBtn = $('edPrevBtn'), nBtn = $('edNextBtn');
+    if (pBtn) pBtn.disabled = true;
+    if (nBtn) { nBtn.disabled = true; nBtn.textContent = 'Saving…'; }
+    var chain = Promise.resolve(true);
+    // Itemization first (it may re-code the doc), then the metadata save.
+    if (typeof _itemDirty !== 'undefined' && _itemDirty) {
+      chain = chain.then(function () { return itemizeSave(); })
+                   .then(function () { return !_itemDirty; });   // success clears the flag
+    }
+    chain.then(function (okSoFar) {
+      if (okSoFar === false) return false;
+      return saveDoc();   // resolves true/false
+    }).then(function (ok) {
+      if (ok === false) {
+        if (pBtn) pBtn.disabled = false;
+        if (nBtn) { nBtn.disabled = false; nBtn.textContent = 'Save + Next ›'; }
+        return;   // save failed — alerts already shown; stay put
+      }
+      location.href = '/projects/' + PID + '/docs/' + target + '/editor?from=inbox';
+    }).catch(function () {
+      if (pBtn) pBtn.disabled = false;
+      if (nBtn) { nBtn.disabled = false; nBtn.textContent = 'Save + Next ›'; }
+    });
+  }
+  if (_nav) {
+    var _wrap = $('edNavWrap');
+    if (_wrap) {
+      _wrap.style.display = 'inline-flex';
+      var _pos = $('edNavPos');
+      if (_pos) _pos.textContent = (_nav.idx + 1) + ' of ' + _nav.ids.length;
+      if (_nav.idx === 0) $('edPrevBtn').disabled = true;
+      if (_nav.idx === _nav.ids.length - 1) $('edNextBtn').disabled = true;
+      $('edPrevBtn').addEventListener('click', function () { _navGo(-1); });
+      $('edNextBtn').addEventListener('click', function () { _navGo(1); });
+      // ←/→ keys navigate too, unless the user is typing in a field.
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        var t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+        _navGo(e.key === 'ArrowRight' ? 1 : -1);
+      });
+    }
   }
   // Escape = plain back navigation (no save), matching the popup's Esc-closes.
   document.addEventListener('keydown', function (e) {
@@ -607,7 +682,7 @@
       return;
     }
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
-    fetch('/docs/upload/' + UID + '/itemize', {
+    return fetch('/docs/upload/' + UID + '/itemize', {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rows: rows, main_line_id: mainLine }),
     })
