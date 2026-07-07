@@ -102,5 +102,40 @@
     src="https://maps.googleapis.com/maps/api/js?key={{ GOOGLE_MAPS_API_KEY }}&libraries=places&callback=_initGooglePlaces">
   </script>
   {% endif %}
+  <script>
+  /* Stale-tab watch (User 2026-07): long-lived tabs running pre-deploy JS have
+     caused three separate "the fix doesn't work" reports. Compare this page's
+     build against /readyz when the tab regains focus (throttled 5 min) and
+     show an un-missable refresh banner on mismatch. */
+  (function staleTabWatch() {
+    var PAGE_COMMIT = '{{ APP_COMMIT }}';
+    if (!PAGE_COMMIT || PAGE_COMMIT === 'unknown') return;
+    var last = 0, shown = false;
+    function check() {
+      if (shown || Date.now() - last < 300000) return;
+      last = Date.now();
+      fetch('/readyz', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d && d.commit && d.commit !== PAGE_COMMIT) {
+            shown = true;
+            var b = document.createElement('div');
+            b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;' +
+              'background:#7c3aed;color:#fff;padding:10px 16px;text-align:center;' +
+              'font-size:14px;font-weight:600;box-shadow:0 2px 12px rgba(0,0,0,.4)';
+            b.innerHTML = '⬆ A new version of FPBudget was deployed — this tab is running old code. ' +
+              '<a href="#" onclick="location.reload(true);return false" ' +
+              'style="color:#fff;text-decoration:underline">Refresh now</a>';
+            document.body.appendChild(b);
+          }
+        }).catch(function () { /* fail-quiet */ });
+    }
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') check();
+    });
+    window.addEventListener('focus', check);
+    setTimeout(check, 15000);
+  })();
+  </script>
 </body>
 </html>

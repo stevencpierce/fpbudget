@@ -721,7 +721,12 @@ GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 
 @app.context_processor
 def inject_globals():
-    return {"GOOGLE_MAPS_API_KEY": GOOGLE_MAPS_API_KEY}
+    # APP_COMMIT: the build this page was rendered by. base.html compares it
+    # against /readyz on focus and shows a "refresh for the new version" banner
+    # when they diverge — long-lived tabs running stale JS have caused three
+    # separate "the fix doesn't work" reports. (User 2026-07.)
+    return {"GOOGLE_MAPS_API_KEY": GOOGLE_MAPS_API_KEY,
+            "APP_COMMIT": (os.getenv('RENDER_GIT_COMMIT') or '')[:12] or 'unknown'}
 
 
 def _fmt_local(dt, tz_name=None):
@@ -26331,21 +26336,28 @@ def docs_upload_retry_filing(uid):
     if not project or not project.dropbox_folder:
         return jsonify({"error": "Project has no Dropbox folder configured"}), 400
 
-    # Re-fetch bytes from R2
-    data, err = _r2_download(upload.r2_key)
-    if err or data is None:
-        return jsonify({"error": err or "R2 fetch failed"}), 500
+    # Re-fetch bytes: Dropbox filed copy → durable source archive → legacy R2.
+    # (Was _r2_download only, but R2 uploads were removed — that path is a dead
+    # store, so retry-filing always failed. _docs_fetch_bytes resolves the
+    # bytes from whichever store still has them.)
+    data, _fname = _docs_fetch_bytes(upload)
+    if data is None:
+        return jsonify({"error": "Could not locate source bytes for this upload"}), 500
 
     try:
         import re as _re
         from datetime import datetime as _dt
+        from fp_analyzer import _safe_filename as _ana_safe_filename
         uploader = User.query.get(upload.uploader_id)
         _raw_user = (getattr(uploader, 'name', None)
                      or (uploader.email or '').split('@')[0]
                      or 'unknown') if uploader else 'unknown'
         _safe_user = _re.sub(r"[^\w\- ]", "", _raw_user) or "unknown"
         _proj_root = f"/{project.dropbox_folder}" if _DBX_NAMESPACE_ID else f"{_DBX_OPS_ROOT}/{project.dropbox_folder}"
-        dbx_filing_path = f"{_proj_root}/01_ADMIN/PROCESSED DOCUMENTS/{_safe_user}/{upload.original_filename}"
+        # Sanitize the filename into a single path segment — a '/' or '\' in the
+        # original filename must not create surprise subfolders.
+        _safe_name = _ana_safe_filename(upload.original_filename)
+        dbx_filing_path = f"{_proj_root}/01_ADMIN/PROCESSED DOCUMENTS/{_safe_user}/{_safe_name}"
         _dbx = _dbx_client()
         from dropbox.files import WriteMode as _WM
         _dbx.files_upload(data, dbx_filing_path, autorename=True, mode=_WM('add'))
@@ -26357,6 +26369,85 @@ def docs_upload_retry_filing(uid):
     except Exception as e:
         logging.exception("Retry filing failed")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/docs/repair-extensions", methods=["GET", "POST"])
+@login_required
+def docs_repair_extensions():
+    """Repair legacy DocUpload rows whose FILED file was named '.pdf' but whose
+    bytes are actually a JPEG/PNG (the old build_name() hard-coded '.pdf' on
+    every filed doc). The SOURCE ARCHIVE extension is ground truth — the
+    pristine-archive flow always wrote true extensions.
+
+    Scans rows where filed_dropbox_path ends '.pdf' AND source_archive_path
+    ends '.jpg'/'.jpeg'/'.png'. In live mode (?dry=0) each filed file is moved
+    to the same path with the corrected extension (autorename=True to survive
+    collisions), and filed_dropbox_path / filed_filename / content_type are
+    updated. Dry-run is the DEFAULT — mutations happen only on explicit ?dry=0.
+
+    Query params:
+      ?dry=1   (default) — report candidates only, no mutations.
+      ?dry=0             — perform the renames.
+      ?pid=<id>          — scope to a single project.
+    """
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden"}), 403
+
+    dry = (request.values.get("dry", "1").strip().lower() not in ("0", "false", "no"))
+    pid = request.values.get("pid", type=int)
+
+    _IMG_EXTS = ('.jpg', '.jpeg', '.png')
+    _CT_BY_EXT = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png'}
+
+    q = DocUpload.query.filter(
+        DocUpload.filed_dropbox_path.isnot(None),
+        DocUpload.source_archive_path.isnot(None),
+    )
+    if pid:
+        q = q.filter(DocUpload.project_id == pid)
+
+    candidates = []
+    for u in q.all():
+        filed = (u.filed_dropbox_path or '')
+        arch_ext = os.path.splitext(u.source_archive_path or '')[1].lower()
+        if filed.lower().endswith('.pdf') and arch_ext in _IMG_EXTS:
+            candidates.append((u, arch_ext))
+
+    renamed = 0
+    errors = []
+    sample = []
+    dbx = None
+
+    for u, arch_ext in candidates:
+        old_path = u.filed_dropbox_path
+        # Swap the trailing '.pdf' for the true archive extension.
+        new_path = old_path[:-4] + arch_ext
+        if len(sample) < 10:
+            sample.append({"id": u.id, "from": old_path, "to": new_path})
+        if dry:
+            continue
+        try:
+            if dbx is None:
+                dbx = _dbx_client()
+            meta = dbx.files_move_v2(old_path, new_path, autorename=True)
+            actual = meta.metadata.path_display
+            u.filed_dropbox_path = actual
+            u.filed_filename = os.path.basename(actual)
+            u.content_type = _CT_BY_EXT.get(arch_ext, 'application/octet-stream')
+            db.session.commit()
+            renamed += 1
+        except Exception as e:
+            db.session.rollback()
+            errors.append({"id": u.id, "err": f"{type(e).__name__}: {e}"})
+
+    return jsonify({
+        "ok": True,
+        "dry": dry,
+        "candidates": len(candidates),
+        "renamed": renamed,
+        "errors": errors,
+        "sample": sample,
+    })
 
 
 @app.route("/docs/upload/<int:uid>/status")
@@ -29157,7 +29248,13 @@ def _doc_intended_path(upload):
         "purchase_order_number": upload.doc_number or None,
         "tax_id":                upload.doc_number or None,
     }
-    fname = build_name(vr, doc_type)
+    # True extension: the source archive carries the real format (JPEG phone
+    # photos stay .jpg, not a mislabeled .pdf). Fall back to the filed name's
+    # extension, then '.pdf'.
+    _true_ext = (os.path.splitext(upload.source_archive_path or '')[1]
+                 or os.path.splitext(upload.filed_filename or '')[1]
+                 or '.pdf').lower()
+    fname = build_name(vr, doc_type, ext=_true_ext)
     ops  = _ops_prefix()
     base = f"{ops}/{proj_name}/{type_folder}" if ops else f"/{proj_name}/{type_folder}"
     up = upload.uploader

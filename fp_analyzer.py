@@ -128,6 +128,31 @@ def safe(text):
     return text or "Unknown"
 
 
+def _safe_filename(name):
+    """Sanitize an arbitrary original filename into a single safe path segment,
+    PRESERVING its extension. Strips path separators and reserved chars so a
+    '/' or '\\' in a filename can't create surprise Dropbox subfolders.
+    e.g. 'a/b<c>.JPG' → 'abc.JPG'  (stem sanitized via safe(), ext kept)."""
+    stem, ext = os.path.splitext(str(name or ""))
+    safe_stem = safe(stem)                       # 'Unknown' if empty
+    safe_ext  = re.sub(r'[<>:"/\\|?*&\s]', '', ext)   # keep the dot + letters
+    return f"{safe_stem}{safe_ext}"
+
+
+def _item_true_ext(item):
+    """The TRUE extension of the bytes archived for this item, so the filed
+    copy is named with the real format (JPEG stays .jpg, not .pdf).
+
+    Priority: the extension actually staged (staged_ext — for HEIC this is the
+    transcoded '.jpg', which matches the bytes we file) → the staged path's
+    extension → the original filename's extension → '.pdf' fallback."""
+    ext = (item.get("staged_ext")
+           or os.path.splitext(item.get("staged_path") or "")[1]
+           or os.path.splitext(item.get("original_filename") or "")[1]
+           or ".pdf")
+    return ext.lower()
+
+
 def extract_card_last4(vr):
     """Pull the last 4 digits of the card / bank account from a Veryfi
     response. Veryfi exposes payment data a few ways depending on the doc:
@@ -153,7 +178,17 @@ def extract_card_last4(vr):
     return None
 
 
-def build_name(vr, doc_type, order=None):
+def build_name(vr, doc_type, order=None, ext=".pdf"):
+    """Build the filed document's basename.
+
+    `ext` is the TRUE file extension of the archived bytes (e.g. '.jpg' for a
+    phone-photo receipt, '.png', '.pdf'). It is normalized to lowercase with a
+    leading dot. Historically this hard-coded '.pdf' on EVERY filed doc, which
+    mislabeled every JPEG/PNG phone photo — the file then wouldn't open in
+    Dropbox/Finder. Callers MUST pass the real extension (derivable from the
+    item's staged_ext / the source archive path). '.pdf' is only a last-resort
+    default for callers that genuinely cannot know the format.
+    """
     order = order or ORDER_BY_TYPE.get(doc_type, DEFAULT_ORDER)
     date_val = safe(TOKEN_FIELDS["date"](vr))
     rest = "_".join(
@@ -161,8 +196,11 @@ def build_name(vr, doc_type, order=None):
         for tok in order if tok not in ("None", "date")
     ) or "untitled"
     prefix = DOC_PREFIXES.get(doc_type, "DOC")
-    # Date-first so Finder sorts chronologically: 2025-06-18_RECEIPT_Vendor_42.50.pdf
-    return f"{date_val}_{prefix}_{rest}.pdf"
+    ext = (ext or ".pdf").lower()
+    if not ext.startswith("."):
+        ext = "." + ext
+    # Date-first so Finder sorts chronologically: 2025-06-18_RECEIPT_Vendor_42.50.jpg
+    return f"{date_val}_{prefix}_{rest}{ext}"
 
 
 def to_ocr_bytes(file_storage):
@@ -612,6 +650,7 @@ def prepare_files(file_storages, batch_token=None, project_name=""):
             "original_filename": fs.filename,
             "staged_path":       None,   # Dropbox path during OCR
             "staged_ext":        None,   # extension actually staged (may differ from original for HEIC)
+            "original_source_path": None, # sibling archive of untouched original bytes (HEIC-transcode case)
             "pdf_path":          None,   # legacy; kept for compatibility, always None now
             "original_path":     None,   # legacy; kept for compatibility, always None now
             "file_hash":         None,
@@ -634,11 +673,14 @@ def prepare_files(file_storages, batch_token=None, project_name=""):
             # Hash the ORIGINAL (not the transcoded HEIC→JPEG) so cross-
             # session dedupe sees the user's actual file.
             item["file_hash"] = hashlib.sha256(original_bytes).hexdigest()
-            # Free the original buffer eagerly — we don't need it again.
-            # ocr_bytes is what gets uploaded; for non-HEIC they're the same
-            # object, so only drop original_bytes when it's a distinct copy.
-            if ocr_bytes is not original_bytes:
-                del original_bytes
+            # A transcode happened iff the OCR bytes differ from the original
+            # (the HEIC branch). In that case we must ALSO preserve the
+            # untouched ORIGINAL bytes as a sibling in the source archive
+            # (owner policy: unaltered source files are always kept). Hold on
+            # to them until after the JPEG is staged, then upload the sibling.
+            _transcoded = ocr_bytes is not original_bytes
+            if not _transcoded:
+                del original_bytes  # same object; nothing extra to preserve
 
             if dbx is None:
                 dbx = get_dropbox_client()
@@ -650,6 +692,27 @@ def prepare_files(file_storages, batch_token=None, project_name=""):
 
             item["staged_path"] = staged
             item["staged_ext"]  = ocr_ext
+
+            # Preserve the ORIGINAL (e.g. HEIC) bytes alongside the staged
+            # JPEG — same basename, original extension. Fail-open: a failure
+            # here logs and continues; it must never block the upload. The
+            # JPEG (staged_path) remains what Veryfi OCRs and what reads use.
+            if _transcoded:
+                try:
+                    orig_ext = os.path.splitext(fs.filename)[1].lower() or ext
+                    orig_dest = _staged_path(batch_token, item["id"], orig_ext,
+                                             original_filename=fs.filename,
+                                             project_name=project_name)
+                    orig_staged = _stage_to_dropbox(dbx, original_bytes, orig_dest)
+                    item["original_source_path"] = orig_staged
+                    log.info(f"Preserved original {fs.filename} → {orig_staged}")
+                except Exception as _oe:
+                    log.warning(
+                        f"Could not preserve original bytes for {fs.filename}: {_oe}"
+                    )
+                finally:
+                    del original_bytes
+
             items.append(item)
             log.info(f"Staged {fs.filename} → {staged}")
         except Exception as e:
@@ -988,7 +1051,7 @@ def handle_duplicates_auto(batch_token, project_name, user_name):
             result["duplicate"] = True
             dup_dest = (
                 f"{ops}/{project_name}/01_ADMIN/PROCESSED DOCUMENTS"
-                f"/Duplicate/{item['original_filename']}"
+                f"/Duplicate/{_safe_filename(item['original_filename'])}"
             )
             ok, path, err = _file_item(item, dup_dest, dup_dest, dbx)
             result["success"]   = ok
@@ -1028,7 +1091,7 @@ def mark_known_dupes(batch_token, known_hashes, project_name, user_name):
         result["duplicate"] = True
         dup_dest = (
             f"{ops}/{project_name}/01_ADMIN/PROCESSED DOCUMENTS"
-            f"/Duplicate/{item['original_filename']}"
+            f"/Duplicate/{_safe_filename(item['original_filename'])}"
         )
         ok, path, err = _file_item(item, dup_dest, dup_dest, dbx)
         result["success"]   = ok
@@ -1073,7 +1136,7 @@ def auto_file_high_confidence(batch_token, project_name, user_name):
 
         doc_type = item["suggested_type"] or "receipt"
         folder   = DOCUMENT_TYPES.get(doc_type, "01_ADMIN/RECEIPTS FOLDER")
-        new_name = build_name(item["vr"], doc_type)
+        new_name = build_name(item["vr"], doc_type, ext=_item_true_ext(item))
         base     = f"{ops}/{project_name}/{folder}"
 
         # Option B filing — every doc under user; vendor docs get
@@ -1162,7 +1225,7 @@ def file_confirmed(batch_token, confirmations, project_name, user_name):
 
         doc_type  = confirmations.get(item["id"], item["suggested_type"]) or "receipt"
         folder    = DOCUMENT_TYPES.get(doc_type, "01_ADMIN/RECEIPTS FOLDER")
-        new_name  = build_name(item["vr"], doc_type)
+        new_name  = build_name(item["vr"], doc_type, ext=_item_true_ext(item))
         base      = f"{ops}/{project_name}/{folder}"
 
         # Option B filing per user 2026-04-29: every doc lives under
@@ -1360,7 +1423,7 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
         "filed_path":        None,
         "staged_path":       item.get("staged_path"),  # _UPLOADS_PENDING/.../<id>.<ext>
         "confidence":        confidence,
-        "new_filename":      build_name(item.get("vr") or {}, doc_type or "receipt") if doc_type else None,
+        "new_filename":      build_name(item.get("vr") or {}, doc_type or "receipt", ext=_item_true_ext(item)) if doc_type else None,
         "original_filename": filename,
         "duplicate":         False,
         "error":             None,
