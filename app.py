@@ -12867,6 +12867,17 @@ def actuals_link_existing_doc(pid, tid):
     txn.match_status = 'confirmed'
     txn.updated_at   = datetime.utcnow()
     db.session.commit()
+    # Absorb the receipt's own placeholder row (source='doc_upload') exactly
+    # like the suggested-match Confirm path does — otherwise it lingers in
+    # "Receipts to place" even though the doc now rides on this charge.
+    # (User 2026-07-08: handwritten tip → $2 amount mismatch → manual link
+    # left the placeholder behind.)
+    if txn.source != 'doc_upload':
+        try:
+            from actuals import confirm_match
+            confirm_match(txn.id)
+        except Exception as _e:
+            logging.warning(f"[link-doc] sister absorb failed txn {txn.id}: {_e}")
     try:
         _label = (txn.vendor or f'Txn #{txn.id}')[:80]
         _amt = float(txn.amount or 0)
@@ -27129,6 +27140,57 @@ def _split_integrity_child_target(k):
     if k.account_code:
         return f"section:{k.account_code}"
     return None
+
+
+@app.route("/projects/<int:pid>/actuals/absorb-linked-receipts", methods=["GET", "POST"])
+@login_required
+def actuals_absorb_linked_receipts(pid):
+    """Repair sweep (2026-07-08): absorb doc-born placeholder rows whose doc
+    ALREADY rides on a charge. The manual /link-doc path historically set
+    charge.doc_upload_id without merging the receipt's own placeholder txn the
+    way the suggested-match Confirm path (actuals.confirm_match) does — so the
+    receipt kept showing under "Receipts to place" after being linked.
+    /link-doc now absorbs on the spot; this crawls the legacy leftovers.
+
+    ?dry=1 (default) reports; ?dry=0 runs confirm_match per pair (which merges
+    coding/card/note off the placeholder before deleting it).
+    """
+    if getattr(current_user, 'role', None) != 'super_admin':
+        return jsonify({"error": "Forbidden"}), 403
+    dry = (request.values.get("dry", "1").strip().lower() not in ("0", "false", "no"))
+    ProjectSheet.query.get_or_404(pid)
+    from actuals import confirm_match
+    pairs, healed, skipped, errors = [], [], [], []
+    charges = (Transaction.query
+               .filter(Transaction.project_id == pid,
+                       Transaction.doc_upload_id.isnot(None),
+                       Transaction.source.notin_(('doc_upload', 'invoice_split')))
+               .all())
+    for t in charges:
+        sister = (Transaction.query
+                  .filter_by(doc_upload_id=t.doc_upload_id, source='doc_upload')
+                  .first())
+        if not sister or sister.id == t.id:
+            continue
+        entry = {"charge_id": t.id, "placeholder_id": sister.id,
+                 "vendor": t.vendor, "doc_upload_id": t.doc_upload_id,
+                 "charge_amount": float(t.amount) if t.amount is not None else None,
+                 "placeholder_amount": float(sister.amount) if sister.amount is not None else None,
+                 "match_status": t.match_status}
+        pairs.append(entry)
+        if dry:
+            continue
+        if t.match_status not in ('suggested', 'confirmed'):
+            skipped.append(entry)     # ambiguous state — leave for a human
+            continue
+        try:
+            confirm_match(t.id)
+            healed.append(t.id)
+        except Exception as e:
+            db.session.rollback()
+            errors.append({"charge_id": t.id, "error": f"{type(e).__name__}: {e}"})
+    return jsonify({"ok": True, "dry": dry, "pairs": pairs,
+                    "healed": healed, "skipped": skipped, "errors": errors})
 
 
 @app.route("/projects/<int:pid>/docs/reset-person-invoices", methods=["GET", "POST"])
