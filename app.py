@@ -9450,6 +9450,7 @@ def actuals_line_ledger(pid, lid):
     tids = [t.id for t in txns]
     flagged_tids = set()
     if tids:
+        from models import AnomalyFlag
         for (ftid,) in (db.session.query(AnomalyFlag.transaction_id)
                         .filter(AnomalyFlag.transaction_id.in_(tids),
                                 AnomalyFlag.resolved == False)  # noqa: E712
