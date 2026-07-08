@@ -21564,8 +21564,11 @@ def callsheet_view(pid, bid, date_str=None):
             meal_counts['first_meal'] = _day_headcount
         if prod_day.second_meal:
             meal_counts['second_meal'] = _day_headcount
-    # Craft services: always counts if anyone is scheduled
-    if _day_headcount:
+    # Craft services: only when THIS production day has it flagged. (Was
+    # unconditional whenever anyone was scheduled — user 2026-07-08: "Craft
+    # services is always turning on yes even if there are no craft services
+    # on that day.")
+    if _day_headcount and prod_day and getattr(prod_day, 'craft_services', False):
         meal_counts['craft_services'] = _day_headcount
     # Working meals: per-person cell flag count for this day
     def _parse_flags(cf):
