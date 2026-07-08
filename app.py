@@ -4521,7 +4521,20 @@ def project_budget_redirect(pid):
     if not latest:
         latest = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).first()
     if latest:
-        return redirect(url_for("budget_view", pid=pid, bid=latest.id))
+        # Preserve ?tab= (and ?goto=) through the redirect so the shared
+        # project-tab strip on standalone pages (docs inbox / doc editor)
+        # can deep-link straight to a budget-page pane. Without this the
+        # redirect to budget_view drops the query string and lands on the
+        # default tab. (User 2026-07 — tab strip on standalone pages.)
+        _dest = url_for("budget_view", pid=pid, bid=latest.id)
+        _passthrough = {k: v for k, v in (
+            ('tab', request.args.get('tab')),
+            ('goto', request.args.get('goto')),
+        ) if v}
+        if _passthrough:
+            from urllib.parse import urlencode as _urlencode
+            _dest = f"{_dest}?{_urlencode(_passthrough)}"
+        return redirect(_dest)
     all_templates = BudgetTemplate.query.order_by(BudgetTemplate.name).all()
     return render_template("budget_new.html", project=project, all_templates=all_templates)
 
@@ -28399,7 +28412,14 @@ def docs_upload_raw(uid):
     from urllib.parse import quote as _q
     resp_out = make_response(content)
     resp_out.headers["Content-Type"]        = ct
-    resp_out.headers["Content-Disposition"] = f"inline; filename=\"{_q(fname)}\""
+    # ?download=1 → force the browser to SAVE the file (attachment) with its
+    # proper filed filename, so the user can hand off the document. Without
+    # it we keep the historic inline disposition so previews/embeds still work.
+    _want_download = request.args.get('download') in ('1', 'true', 'yes')
+    if _want_download:
+        resp_out.headers["Content-Disposition"] = _content_disposition_attachment(fname)
+    else:
+        resp_out.headers["Content-Disposition"] = f"inline; filename=\"{_q(fname)}\""
     resp_out.headers["Cache-Control"]       = "private, max-age=300"
     return resp_out
 

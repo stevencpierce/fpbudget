@@ -68,6 +68,12 @@
   .inbx-cat { flex:0 0 auto; font-size:10.5px; padding:3px 9px; border-radius:6px; background:var(--bg-input);
               border:1px solid var(--border); color:var(--text-muted); text-transform:capitalize; white-space:nowrap; }
   .inbx-arrow { flex:0 0 auto; color:var(--text-muted); font-size:15px; }
+  /* Compact per-row download icon-button — hands off the raw file with its
+     proper filed name. stopPropagation keeps the row-click from firing. */
+  .inbx-dl { flex:0 0 auto; font-size:14px; line-height:1; padding:4px 7px; border-radius:6px;
+             background:var(--bg-input); border:1px solid var(--border); color:var(--text-muted);
+             text-decoration:none; cursor:pointer; }
+  .inbx-dl:hover { border-color:var(--text-muted); color:var(--text); }
   #inbxSentinel { height:1px; }
   #inbxEmpty { padding:40px 12px; text-align:center; color:var(--text-muted); font-size:14px; display:none; }
   /* Sticky bulk bar */
@@ -101,6 +107,11 @@
                  box-shadow:0 6px 20px rgba(0,0,0,.5); font-size:12px; color:var(--text); line-height:1.9; }
   #inbxHint:hover #inbxHintBox { display:block; }
 </style>
+
+{# Shared project tab strip — keep the SAME nav chrome as the budget page so
+   the user can jump anywhere. 'docs' is marked active here. #}
+{% set active_tab = 'docs' %}
+{% include "_project_tabs.html" with context %}
 
 <div id="inbxHead">
   <a class="inbx-link" href="/projects/{{ project.id }}/budget">← {{ project.name }}</a>
@@ -451,6 +462,15 @@
     cat.className = 'inbx-cat';
     cat.textContent = doc.category ? (CAT_LABEL[doc.category] || doc.category).toLowerCase() : '—';
     row.appendChild(cat);
+
+    // compact download icon-button — hand off the file with its proper name.
+    // stopPropagation so clicking it never opens the editor (row click).
+    var dl = document.createElement('a');
+    dl.className = 'inbx-dl'; dl.href = '/docs/upload/' + doc.id + '/raw?download=1';
+    dl.setAttribute('download', ''); dl.title = 'Download this document';
+    dl.textContent = '⬇';
+    dl.addEventListener('click', function (e) { e.stopPropagation(); });
+    row.appendChild(dl);
 
     // arrow
     var arr = document.createElement('div');

@@ -15,6 +15,9 @@
    cloned into each <select> on demand. Keep this page LEAN. ══════════════════ #}
 
 {% block content %}
+{# Shared project tab strip so this standalone editor keeps the SAME nav chrome
+   as the budget page — user can jump anywhere without a different interface. #}
+{% include "_project_tabs.html" with context %}
 {# PID / UID are available to the inline JS via these server-baked constants. #}
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
   <a id="edBackLink" href="/projects/{{ project.id }}/budget?tab=docs"
@@ -22,6 +25,10 @@
   <h1 id="edDocTitle" style="margin:0;font-size:1.05rem;line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
     {{ upload.filed_filename or upload.original_filename or 'Document' }}
   </h1>
+  {# Force-download the raw file with its proper filed name so the user can
+     hand off the document. ?download=1 → attachment disposition (app.py). #}
+  <a id="edDownloadLink" href="/docs/upload/{{ upload.id }}/raw?download=1" download
+     style="font-size:12px;padding:5px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;text-decoration:none">⬇ Download</a>
   <a id="edDropboxLink" href="#" target="_blank"
      style="font-size:12px;padding:5px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#5b8af9;text-decoration:none">Open in Dropbox ↗</a>
 </div>

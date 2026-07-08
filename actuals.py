@@ -888,6 +888,40 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     txn.ai_code_confidence = None
     txn.ai_code_reason = None
     record_vendor_category(project_id, txn.vendor, working_line.account_code)
+
+    # ── ONE-WAY line→person auto-assign (User 2026-07) ────────────────────
+    # If this txn carries a document that has NO person yet, and the line we
+    # just coded it to has an unambiguous assigned person, stamp that person
+    # onto the doc. This is DELIBERATELY one-directional: coding an invoice to
+    # a person's budget line files it under that person, but we NEVER infer a
+    # line from a doc's person (one person can occupy many lines) and NEVER
+    # overwrite a person already on the doc. Fail-open — a hiccup here must not
+    # block the coding that just committed above.
+    try:
+        if txn.doc_upload_id:
+            doc = DocUpload.query.get(txn.doc_upload_id)
+            if doc is not None and not doc.crew_member_id:
+                person_id = working_line.assigned_crew_id
+                if not person_id:
+                    # No direct assignee — accept it only if the line has
+                    # EXACTLY ONE crew-assignment member (unambiguous).
+                    members = [ca.crew_member_id for ca in
+                               CrewAssignment.query.filter_by(
+                                   budget_line_id=working_line.id).all()
+                               if ca.crew_member_id]
+                    uniq = set(members)
+                    if len(uniq) == 1:
+                        person_id = next(iter(uniq))
+                if person_id:
+                    doc.crew_member_id = person_id
+                    log.info(
+                        "[actuals/auto-assign] doc #%s → crew_member %s via "
+                        "line %s (txn %s); one-way line→person",
+                        doc.id, person_id, working_line.id, txn.id)
+    except Exception:
+        log.info("[actuals/auto-assign] skipped (fail-open) for txn %s",
+                 getattr(txn, 'id', None), exc_info=True)
+
     db.session.commit()
 
     return {

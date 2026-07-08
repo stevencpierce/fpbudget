@@ -1,0 +1,49 @@
+{# ═══════════════════════════════════════════════════════════════════════════
+   SHARED project tab strip for STANDALONE pages (docs inbox, doc editor).
+
+   The budget page (budget.html) carries a rich tab strip with in-page
+   pane-switching JS. Standalone pages (which don't load the ~6.5MB budget
+   bundle) still want the SAME navigation chrome so the user can jump anywhere
+   without a different interface. (User 2026-07.)
+
+   This is a LIGHTWEIGHT, STATIC version: plain <a> links, NO tab-switching JS.
+   It reuses the global .tabs / .tab-btn / .tab-link classes from style.css so
+   it visually matches budget.html's strip exactly.
+
+   Each tab deep-links to /projects/<pid>/budget?tab=<key>. The budget page's
+   URL-tab restore (budget.html ~16161) reads ?tab= and activates the matching
+   in-page pane; project_budget_redirect() now preserves ?tab= through the
+   redirect so these links land on the right pane. The <key> values are the
+   exact data-tab keys budget.html uses:
+       Dashboard=topsheet · Top Sheet=topsheet-detail · Budget=working ·
+       Travel=travel · Catering=catering · People=contacts ·
+       Locations=locations · Actuals=actuals · Activity=activity ·
+       Tools=import-tools · Settings=settings
+   Schedule/POs/Sub-Budgets/Call Sheets are their own routes on budget.html;
+   here they land on the budget page (?tab=working) — one click from their pane.
+
+   `active_tab` may be passed by the including page (e.g. 'docs') to highlight
+   the current tab. Docs points at the standalone inbox, not the budget page.
+   ═══════════════════════════════════════════════════════════════════════════ #}
+{% set _pid = project.id %}
+{% set _at = active_tab | default('') %}
+<div class="tabs-row" style="margin-bottom:.6rem">
+  <div class="tabs">
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=topsheet">Dashboard</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=topsheet-detail">Top Sheet</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=working">Budget</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=working">Schedule</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=travel">Travel</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=catering">Catering</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=contacts">People</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=locations">Locations</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=working">POs</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=working">Sub-Budgets</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=working">Call Sheets</a>
+    <a class="tab-btn tab-link {% if _at == 'docs' %}active{% endif %}" href="/projects/{{ _pid }}/docs">Docs</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=actuals">Actuals</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=activity">Activity</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=import-tools">Tools</a>
+    <a class="tab-btn tab-link" href="/projects/{{ _pid }}/budget?tab=settings">⚙ Settings</a>
+  </div>
+</div>
