@@ -1129,6 +1129,54 @@
         </tr>
           {% endif %}
         {% endif %}
+        {# P3 (User 2026-07): Working-view section-only spend row. When
+           transactions are coded to this SECTION but no specific line
+           (actual_section_only_by_code), surface them as a dimmed, expandable
+           reference row so the dollars aren't invisible. Rendered at the TOP of
+           the section, directly under the heading (user 2026-07-08). Populated
+           lazily by JS (fetches /actuals/section/<code>/transactions.json).
+           Display-only: does NOT feed ns.sec_* accumulators (the number here is
+           a separate project-scoped rollup). cs-screen-only keeps it out of
+           print/export. Same 15-<td> shape as line rows for grid alignment. #}
+        {# P4: suppressed on a FROZEN (superseded) Working view —
+           actual_section_only_by_code is project-scoped/live, so it would show
+           current section-coded spend, not this version's frozen history. #}
+        {% if not is_actual_view and has_actual_budget and not actuals_frozen %}
+        {% set _sec_only_amt = (actual_section_only_by_code.get(sec.code, 0) or 0) | float %}
+        {% if _sec_only_amt %}
+        <tr class="line-row work-section-only-row cs-screen-only" data-section-code="{{ sec.code }}"
+            style="background:rgba(168,85,247,.06);cursor:pointer"
+            title="Transactions coded to this section without a specific line. Click to expand; open a transaction's doc or ✕ uncode it to remove the section coding.">
+          <td class="col-desc" style="color:var(--text-muted)">
+            <span class="work-section-only-chev" style="display:inline-block;width:10px;color:#c084fc;font-size:.72rem">▸</span>
+            <span style="color:#c084fc;font-weight:600">📂 Section-coded spend</span>
+            <span class="muted" style="margin-left:.4rem;font-size:.72rem;font-style:italic">— no specific line</span>
+          </td>
+          <td class="col-pc col-labor-only"></td>
+          <td class="col-qty"></td>
+          <td class="col-days"></td>
+          <td class="col-num"></td>
+          <td class="col-rt"></td>
+          <td class="col-num"></td>
+          <td class="col-num"></td>
+          <td class="col-fr"></td>
+          <td class="col-num"></td>
+          <td class="col-num"></td>
+          <td class="col-num col-working"></td>
+          <td class="col-num col-actual" style="font-weight:600;color:#c084fc">{{ _sec_only_amt | currency }}</td>
+          <td class="col-num col-variance"></td>
+          <td class="col-act"></td>
+        </tr>
+        <tr class="work-section-only-detail cs-screen-only" data-for-section="{{ sec.code }}" style="display:none">
+          <td colspan="14" style="padding:6px 12px 12px 32px;background:rgba(168,85,247,.05);border-left:3px solid #a855f7">
+            <div class="work-section-only-body" data-loaded="0" data-section-code="{{ sec.code }}"
+                 style="font-size:.78rem;color:var(--text-muted)">
+              <span class="work-section-only-loading">Loading transactions…</span>
+            </div>
+          </td>
+        </tr>
+        {% endif %}
+        {% endif %}
         {% for ln in sec.lines %}
         {# Spacer / sub-header structural rows (per user 2026-05-04).
            line_tag='spacer' renders a thin blank divider row. line_tag=
@@ -2142,56 +2190,6 @@
           <td class="col-act"></td>
         </tr>
         {% endfor %}
-        {% endif %}
-        {# P3 (User 2026-07): Working-view section-only spend row. When
-           transactions are coded to this SECTION but no specific line
-           (actual_section_only_by_code), surface them as a dimmed, expandable
-           reference row so the dollars aren't invisible. Populated lazily by JS
-           (fetches /actuals/section/<code>/transactions.json). Display-only:
-           does NOT feed ns.sec_* accumulators (the number here is a separate
-           project-scoped rollup). cs-screen-only keeps it out of print/export.
-           Same 15-<td> shape as the sister-orphan row above for grid alignment. #}
-        {# P4: suppress the section-coded-spend expander on a FROZEN (superseded)
-           Working view — actual_section_only_by_code is project-scoped/live, so
-           it would show current section-coded spend, not this version's frozen
-           history. #}
-        {# Section-coded spend rows render in BOTH Estimated and Working views —
-           one shared actuals reality (user 2026-07). #}
-        {% if not is_actual_view and has_actual_budget and not actuals_frozen %}
-        {% set _sec_only_amt = (actual_section_only_by_code.get(sec.code, 0) or 0) | float %}
-        {% if _sec_only_amt %}
-        <tr class="line-row work-section-only-row cs-screen-only" data-section-code="{{ sec.code }}"
-            style="background:rgba(168,85,247,.06);cursor:pointer"
-            title="Transactions coded to this section without a specific line. Click to expand; open a transaction's doc or ✕ uncode it to remove the section coding.">
-          <td class="col-desc" style="color:var(--text-muted)">
-            <span class="work-section-only-chev" style="display:inline-block;width:10px;color:#c084fc;font-size:.72rem">▸</span>
-            <span style="color:#c084fc;font-weight:600">📂 Section-coded spend</span>
-            <span class="muted" style="margin-left:.4rem;font-size:.72rem;font-style:italic">— no specific line</span>
-          </td>
-          <td class="col-pc col-labor-only"></td>
-          <td class="col-qty"></td>
-          <td class="col-days"></td>
-          <td class="col-num"></td>
-          <td class="col-rt"></td>
-          <td class="col-num"></td>
-          <td class="col-num"></td>
-          <td class="col-fr"></td>
-          <td class="col-num"></td>
-          <td class="col-num"></td>
-          <td class="col-num col-working"></td>
-          <td class="col-num col-actual" style="font-weight:600;color:#c084fc">{{ _sec_only_amt | currency }}</td>
-          <td class="col-num col-variance"></td>
-          <td class="col-act"></td>
-        </tr>
-        <tr class="work-section-only-detail cs-screen-only" data-for-section="{{ sec.code }}" style="display:none">
-          <td colspan="14" style="padding:6px 12px 12px 32px;background:rgba(168,85,247,.05);border-left:3px solid #a855f7">
-            <div class="work-section-only-body" data-loaded="0" data-section-code="{{ sec.code }}"
-                 style="font-size:.78rem;color:var(--text-muted)">
-              <span class="work-section-only-loading">Loading transactions…</span>
-            </div>
-          </td>
-        </tr>
-        {% endif %}
         {% endif %}
       </tbody>
       {% set sec_working = namespace(total=0) %}
@@ -15971,6 +15969,10 @@ window.saveInlinePo = async function() {
     if (document.visibilityState === 'visible') _throttledRefresh();
   });
   window.addEventListener('focus', _throttledRefresh);
+  // Periodic quiet refresh: a budget window left visible in ANOTHER window
+  // never fires focus/visibilitychange, so coding done elsewhere (doc editor,
+  // inbox) looked stale until a manual reload. (2026-07-08.)
+  setInterval(() => { if (!document.hidden) refreshActualCells(true); }, 120000);
   // Populate ON LOAD too: the server-rendered maps can miss sibling-keyed
   // values in the Estimated view; the batch endpoint is the single source of
   // truth (sibling-aware), so every view self-corrects within ~1s. (2026-07.)
