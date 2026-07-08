@@ -1,5 +1,19 @@
 {% extends "base.html" %}
+{# recipient_mode: when True this page is the tokenized recipient / preview view.
+   It renders the SAME full sheet but suppresses all internal editing chrome and
+   prepends a personal layer (call time, travel, confirm bar). Always define it
+   so every {% if recipient_mode %} branch is safe for both callers. #}
+{% set recipient_mode  = recipient_mode  | default(false) %}
+{% set preview_mode    = preview_mode    | default(false) %}
+{% set rec             = rec             | default(none) %}
+{% set token           = token           | default(none) %}
+{% set already_confirmed = already_confirmed | default(false) %}
+{% set confirmed_local = confirmed_local | default(none) %}
+{% set personal_call   = personal_call   | default('') %}
+{% set personal_travel = personal_travel | default([]) %}
+{% set date_display    = date_display    | default('') %}
 {% block title %}Call Sheet — {{ project.name }} | {{ selected_date.strftime('%b %d, %Y') }}{% endblock %}
+{% block body_class %}{% if recipient_mode %}recipient-mode{% endif %}{% endblock %}
 
 {% block content %}
 {% set MODE_META = {
@@ -9,7 +23,96 @@
 } %}
 {% set cur_mode = MODE_META.get(budget.budget_mode, MODE_META['estimated']) %}
 
+{# ══════════════════════════════════════════════════════════════════════════
+   RECIPIENT PERSONAL LAYER — shown only on the tokenized / preview view, above
+   the sheet: PREVIEW banner, sticky confirm bar (your call + confirm button),
+   and the "Your details" travel card with BIG confirmation numbers. Ported from
+   the retired callsheet_confirm.html. (User 2026-07-08.)
+   ══════════════════════════════════════════════════════════════════════════ #}
+{% if recipient_mode %}
+  {% if preview_mode %}
+  <div class="cs-recip-preview-banner">
+    👁 PREVIEW — not sent · This is what {{ rec.name }} will receive
+  </div>
+  {% endif %}
+
+  <div class="cs-recip-bar">
+    <div class="cs-recip-bar-inner">
+      <div class="cs-recip-logo">Framework Productions</div>
+      <div class="cs-recip-info">
+        <div class="cs-recip-name">{{ rec.name }}</div>
+        <div class="cs-recip-sub">{{ project.name }} · {{ date_display }}</div>
+      </div>
+      {% if personal_call %}
+      <div class="cs-recip-call-pill">
+        <div class="cs-recip-pill-lbl">Your Call</div>
+        <div class="cs-recip-pill-time">{{ personal_call }}</div>
+      </div>
+      {% endif %}
+      {% if preview_mode %}
+        <div class="cs-recip-confirmed-pill cs-recip-confirmed-preview">Preview</div>
+      {% elif already_confirmed %}
+        <div class="cs-recip-confirmed-pill">
+          ✓ Confirmed{% if confirmed_local %} {{ confirmed_local }}{% endif %}
+        </div>
+      {% else %}
+        <form method="POST" action="/callsheet/confirm/{{ token }}" style="display:contents">
+          <button type="submit" class="cs-recip-btn-confirm">✓ Confirm My Call</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if personal_travel %}
+  <div class="cs-recip-outer">
+    <div class="yd-card">
+      <div class="yd-hdr">📋 Your details — {{ rec.name }}</div>
+      <div class="yd-body">
+        {% for t in personal_travel %}
+        <div class="yd-item">
+          {% if t.kind == 'flight' %}
+          <div class="yd-line1"><span class="yd-kind-icon">✈️</span>
+            {{ t.airline or 'Flight' }}{% if t.flight_no %} {{ t.flight_no }}{% endif %}</div>
+          <div class="yd-detail">
+            {% if t.depart_airport or t.arrive_airport %}{{ t.depart_airport or '?' }} → {{ t.arrive_airport or '?' }}{% endif %}
+            {% if t.depart_at %} · Depart {{ t.depart_at }}{% endif %}{% if t.arrive_at %} · Arrive {{ t.arrive_at }}{% endif %}
+          </div>
+          {% elif t.kind == 'hotel' %}
+          <div class="yd-line1"><span class="yd-kind-icon">🏨</span>{{ t.hotel_name or 'Hotel' }}</div>
+          <div class="yd-detail">
+            {% if t.hotel_address %}{{ t.hotel_address }}<br>{% endif %}
+            {% if t.check_in or t.check_out %}Check-in {{ t.check_in or '?' }} · Check-out {{ t.check_out or '?' }}{% endif %}
+            {% if t.room_type %} · {{ t.room_type }}{% endif %}
+          </div>
+          {% elif t.kind == 'car_rental' %}
+          <div class="yd-line1"><span class="yd-kind-icon">🚗</span>{{ t.rental_co or 'Car rental' }}</div>
+          <div class="yd-detail">
+            {% if t.pickup_location %}Pickup: {{ t.pickup_location }}{% endif %}
+            {% if t.pickup_at %} · {{ t.pickup_at }}{% endif %}{% if t.return_at %} · Return {{ t.return_at }}{% endif %}
+          </div>
+          {% elif t.kind == 'mileage' %}
+          <div class="yd-line1"><span class="yd-kind-icon">🚙</span>Mileage</div>
+          <div class="yd-detail">{% if t.route %}{{ t.route }}{% endif %}{% if t.miles %} · {{ t.miles }} mi{% endif %}</div>
+          {% else %}
+          <div class="yd-line1"><span class="yd-kind-icon">📍</span>{{ t.kind | capitalize }}</div>
+          {% endif %}
+          {% if t.notes %}<div class="yd-notes">{{ t.notes }}</div>{% endif %}
+          {% if t.confirmation_no %}
+          <div class="yd-conf-wrap">
+            <span class="yd-conf-lbl">Confirmation</span>
+            <span class="yd-conf-no">{{ t.confirmation_no }}</span>
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+{% endif %}
+
 {# ── Page header (hidden on print) ─────────────────────────────────────────── #}
+{% if not recipient_mode %}
 <div class="page-header budget-header cs-screen-header">
   <div class="budget-header-left">
     <div class="breadcrumb">
@@ -149,6 +252,7 @@
     <button class="cs-aud-pill" data-audience="union" onclick="setAudience('union')">Union</button>
   </div>
 </div>
+{% endif %}{# /not recipient_mode — internal editing chrome #}
 
 {# ═══════════════════════════════════════════════════════════════════════════════
    CALL SHEET DOCUMENT
@@ -900,6 +1004,7 @@ Example:
 </div>{# /callsheet-wrapper #}
 
 {# ── Distribution panel (screen only) ─────────────────────────────────────── #}
+{% if not recipient_mode %}
 <div class="cs-distribution-panel cs-screen-only" id="cs-dist-panel">
   <div class="cs-dist-header">
     <h3>Distribution</h3>
@@ -941,10 +1046,14 @@ Example:
     </div>
   </div>
 </div>
+{% endif %}{# /not recipient_mode — distribution panel #}
 
 {# ─── JavaScript ──────────────────────────────────────────────────────────── #}
 <script>
 // ── Constants ─────────────────────────────────────────────────────────────────
+// RECIPIENT_MODE: tokenized recipient / preview render. Suppresses all editing
+// behaviour; only the read-only render + hidden/override application runs.
+const RECIPIENT_MODE = {{ recipient_mode | tojson }};
 const CS_SAVE_URL   = "{{ url_for('callsheet_save', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
 const CS_DIST_URL   = "{{ url_for('callsheet_distribution', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
 const CS_SEND_URL   = "{{ url_for('callsheet_prepare_send', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
@@ -1081,21 +1190,25 @@ function normalizeCrewCallStr(raw) {
 }
 
 // ── Bind contenteditable auto-save ────────────────────────────────────────────
-document.querySelectorAll('.cs-editable[contenteditable]').forEach(el => {
-  el.addEventListener('input', scheduleAutoSave);
-  el.addEventListener('blur', () => {
-    // Normalize time format for time cells
-    if (el.classList.contains('callsheet-time-cell') || el.classList.contains('callsheet-call-time')) {
-      const normalized = normalizeTimeStr(el.textContent.trim());
-      if (normalized !== el.textContent.trim()) el.textContent = normalized;
-    }
-    clearTimeout(_saveTimer);
-    doAutoSave();
+// Editing bindings are internal-only. In recipient mode the sheet is read-only.
+if (!RECIPIENT_MODE) {
+  document.querySelectorAll('.cs-editable[contenteditable]').forEach(el => {
+    el.addEventListener('input', scheduleAutoSave);
+    el.addEventListener('blur', () => {
+      // Normalize time format for time cells
+      if (el.classList.contains('callsheet-time-cell') || el.classList.contains('callsheet-call-time')) {
+        const normalized = normalizeTimeStr(el.textContent.trim());
+        if (normalized !== el.textContent.trim()) el.textContent = normalized;
+      }
+      clearTimeout(_saveTimer);
+      doAutoSave();
+    });
   });
-});
-document.getElementById('cs-schedule-notes').addEventListener('input', scheduleAutoSave);
-const _advEl = document.getElementById('cs-advance-schedule');
-if (_advEl) _advEl.addEventListener('input', scheduleAutoSave);
+  const _snEl = document.getElementById('cs-schedule-notes');
+  if (_snEl) _snEl.addEventListener('input', scheduleAutoSave);
+  const _advEl = document.getElementById('cs-advance-schedule');
+  if (_advEl) _advEl.addEventListener('input', scheduleAutoSave);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HIDE / SHOW ELEMENTS (per-day overrides in CS_HIDDEN)
@@ -1119,7 +1232,7 @@ function applyHiddenState() {
                      : 'Hide this from this call sheet';
   });
 }
-document.addEventListener('click', function(ev) {
+if (!RECIPIENT_MODE) document.addEventListener('click', function(ev) {
   const t = ev.target.closest ? ev.target.closest('.cs-hide-toggle[data-cs-key]') : null;
   if (!t) return;
   ev.preventDefault();
@@ -1144,7 +1257,7 @@ function applyTextOverrides() {
     }
   });
 }
-document.querySelectorAll('[data-cs-text]').forEach(el => {
+if (!RECIPIENT_MODE) document.querySelectorAll('[data-cs-text]').forEach(el => {
   el.addEventListener('input', scheduleAutoSave);
   el.addEventListener('blur', () => {
     const key = el.getAttribute('data-cs-text');
@@ -2399,18 +2512,78 @@ function csSendCallSheet() {
   .catch(() => { statusEl.textContent = 'Send failed.'; btn.disabled = false; });
 }
 
+// ── Recipient-mode read-only pass ─────────────────────────────────────────────
+// After the JS-rendered sections populate, strip everything editable so the
+// recipient sees a clean, non-interactive full call sheet. Empty starter rows
+// (Hospitals/Extras/KP render one blank row to fill in) are removed so they
+// don't show as empty fields. Hidden/text-override application already ran.
+// (User 2026-07-08.)
+function csRecipientReadonlyPass() {
+  // 1) Neutralize every editable field: no editing, no borders, no handlers.
+  document.querySelectorAll('.callsheet-wrapper [contenteditable]').forEach(el => {
+    el.removeAttribute('contenteditable');
+    el.removeAttribute('onblur');
+    el.removeAttribute('onkeydown');
+    el.removeAttribute('oninput');
+  });
+  // 2) Drop JS-rendered rows that are entirely empty (blank starter rows).
+  //    Key Personnel / Extras rows.
+  document.querySelectorAll('#kp-tbody tr, #extras-tbody tr').forEach(tr => {
+    const txt = tr.textContent.replace(/[⠿✕—\s]/g, '').trim();
+    if (!txt) tr.remove();
+  });
+  //    Hospital rows with no name/address/phone.
+  document.querySelectorAll('#hospital-container .cs-hospital-row').forEach(row => {
+    const txt = row.textContent.replace(/[✕\s]/g, '').trim();
+    if (!txt) row.remove();
+  });
+  //    Department-note rows whose textarea is empty.
+  document.querySelectorAll('#dept-notes-container .cs-dept-note-row').forEach(row => {
+    const ta = row.querySelector('textarea');
+    if (!ta || !ta.value.trim()) row.remove();
+  });
+  //    Useful-contact rows that are blank.
+  document.querySelectorAll('#uc-tbody tr').forEach(tr => {
+    const txt = tr.textContent.replace(/[⠿✕—\s]/g, '').trim();
+    if (!txt) tr.remove();
+  });
+  //    Empty textareas left in place (schedule notes / advance) — make readonly.
+  document.querySelectorAll('.callsheet-wrapper textarea').forEach(ta => {
+    ta.setAttribute('readonly', 'readonly');
+  });
+  // 3) Highlight the recipient's own crew row so they can find themselves.
+  const myName = ({{ (rec.name if rec else '') | tojson }} || '').trim().toLowerCase();
+  if (myName) {
+    document.querySelectorAll('.callsheet-wrapper tr.cs-crew-member-row').forEach(tr => {
+      const nameCell = tr.querySelector('.cs-dept-name');
+      if (nameCell && nameCell.textContent.trim().toLowerCase().startsWith(myName)) {
+        tr.classList.add('cs-recip-me');
+      }
+    });
+  }
+}
+
 // ── Initialize ────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  // Content-building renders run in BOTH modes (they populate JS-only sections).
   initKeyPersonnel();
   initHospitals();
-  initLocationDragDrop();
   initExtras();
   initDeptNotes();
   initCrewCallTimes();
   initUsefulContacts();
   applyTextOverrides();
   applyHiddenState();
-  initDeptDnD();
+
+  if (RECIPIENT_MODE) {
+    // Hide empty standard dept boxes exactly like the internal view does, then
+    // strip all editing affordances. No drag/drop, no distribution wiring.
+    csRefreshDeptBoxes();
+    csRecipientReadonlyPass();
+  } else {
+    initLocationDragDrop();
+    initDeptDnD();
+  }
 });
 </script>
 

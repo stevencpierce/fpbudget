@@ -21088,11 +21088,27 @@ def _personal_travel_for(budget, selected_date, sched_mode, crew_member, rec_nam
     return out
 
 
+def _recipient_view_for_type(rec_type):
+    """Map a recipient type → the audience view the recipient sheet renders.
+    Crew (and anything unrecognized) get the full Crew view; client-type
+    recipients get the Client view; talent get the Talent view. (User
+    2026-07-08.)"""
+    t = (rec_type or 'crew').strip().lower()
+    if t == 'client':
+        return 'client'
+    if t == 'talent':
+        return 'talent'
+    return 'crew'
+
+
 def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
     """Shared context builder for the tokenized recipient view AND the
     login-gated preview. Given a send + recipient identity, returns the kwargs
-    dict for callsheet_confirm.html (minus rec/token/confirm state, which the
-    caller supplies). (User 2026-07-08.)"""
+    dict for callsheet.html rendered in recipient_mode — the FULL sheet (crew,
+    meals, locations, weather, notes, etc.) via _callsheet_full_context, plus
+    the personal layer (this person's call time + travel/confirmations) and the
+    forced audience view. Callers add rec/token/confirm state. (User
+    2026-07-08.)"""
     date_display = send.date.strftime("%A, %B %-d, %Y") if send else ""
     budget = Budget.query.get(send.budget_id) if send else None
     project = ProjectSheet.query.get(budget.project_id) if budget else None
@@ -21130,15 +21146,42 @@ def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
             budget, send.date, sched_mode_p, crew_member, rec_name)
 
     tz_name = (getattr(project, "timezone", None) or "America/New_York")
-    return {
+
+    ctx = {
         "date_display": date_display,
         "project_name": project.name if project else "",
+        # cs_data/cs_locations retained for backward-compat but the FULL context
+        # below overrides cs_data with the same underlying record.
         "cs_data": cs_portal_data,
         "cs_locations": cs_locations,
         "personal_call": personal_call,
         "personal_travel": personal_travel,
         "tz_name": tz_name,
     }
+
+    # ── Build the FULL sheet context so recipients see the complete call sheet
+    # (crew grid, meals, weather, notes, locations, quote…) — identical to the
+    # internal print view. (User 2026-07-08.)
+    if send and budget and project:
+        _pid, _bid = budget.project_id, budget.id
+        date_rows = db.session.query(ScheduleDay.date).filter(
+            ScheduleDay.budget_id == _bid,
+            ScheduleDay.schedule_mode == sched_mode_p,
+            ScheduleDay.day_type != 'off',
+        ).distinct().order_by(ScheduleDay.date).all()
+        all_scheduled_dates = [r[0] for r in date_rows]
+        full = _callsheet_full_context(
+            _pid, _bid, project, budget, send.date, sched_mode_p,
+            all_scheduled_dates)
+        ctx.update(full)  # full context wins on shared keys (cs_data, project…)
+
+    # Forced audience view per recipient type (recipients never get the internal
+    # editing switcher).
+    cs_view, csv_flags = _callsheet_audience_flags(
+        _recipient_view_for_type(rec_type))
+    ctx["cs_view"] = cs_view
+    ctx["csv"] = csv_flags
+    return ctx
 
 
 @app.route("/callsheet/view/<token>")
@@ -21155,7 +21198,8 @@ def callsheet_view_public(token):
     ctx = _build_callsheet_recipient_context(
         send, rec.name, rec.email, rec.recipient_type)
     return render_template(
-        "callsheet_confirm.html",
+        "callsheet.html",
+        recipient_mode=True,
         rec=rec,
         send=send,
         already_confirmed=already_confirmed,
@@ -21181,7 +21225,8 @@ def callsheet_confirm_public(token):
     ctx = _build_callsheet_recipient_context(
         send, rec.name, rec.email, rec.recipient_type)
     return render_template(
-        "callsheet_confirm.html",
+        "callsheet.html",
+        recipient_mode=True,
         rec=rec,
         send=send,
         already_confirmed=True,
@@ -21240,7 +21285,8 @@ def callsheet_preview_as(pid, bid, date_str):
     ctx = _build_callsheet_recipient_context(
         fake_send, rec_name, rec_email, rec_type)
     return render_template(
-        "callsheet_confirm.html",
+        "callsheet.html",
+        recipient_mode=True,
         rec=fake_rec,
         send=fake_send,
         already_confirmed=False,
@@ -21767,44 +21813,20 @@ def callsheet_contacts_api(pid, bid):
     return jsonify(contacts)
 
 
-@app.route("/projects/<int:pid>/budget/<int:bid>/callsheet")
-@app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/<date_str>")
-@login_required
-def callsheet_view(pid, bid, date_str=None):
-    project = ProjectSheet.query.get_or_404(pid)
-    budget  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+def _callsheet_full_context(pid, bid, project, budget, selected_date,
+                            sched_mode, all_scheduled_dates):
+    """Assemble the FULL call-sheet content context (the template kwargs that
+    describe the sheet itself: crew grid, locations, meals, weather, notes,
+    travel, cs_data + hidden/text/dept overrides, confirm status, on-day sets).
 
-    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    Single source of truth shared by the internal editing view (callsheet_view)
+    AND the tokenized recipient view / preview so recipients see the identical
+    sheet. Request-scoped bits that are NOT sheet content — the audience-view
+    flags (cs_view/csv), date navigation, distribution/send history — stay in
+    the individual routes and are merged on top. (User 2026-07-08.)
 
-    # All scheduled (non-off) dates for this budget/mode
-    date_rows = db.session.query(ScheduleDay.date).filter(
-        ScheduleDay.budget_id == bid,
-        ScheduleDay.schedule_mode == sched_mode,
-        ScheduleDay.day_type != 'off',
-    ).distinct().order_by(ScheduleDay.date).all()
-    all_scheduled_dates = [r[0] for r in date_rows]
-
-    # Resolve selected date — remember last viewed per budget
-    _session_key = f"cs_last_date_{bid}"
-    if date_str:
-        try:
-            selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-        except ValueError:
-            selected_date = all_scheduled_dates[0] if all_scheduled_dates else date.today()
-        from flask import session as _session
-        _session[_session_key] = selected_date.strftime("%Y-%m-%d")
-    else:
-        from flask import session as _session
-        _saved = _session.get(_session_key)
-        if _saved and all_scheduled_dates:
-            try:
-                _candidate = datetime.strptime(_saved, "%Y-%m-%d").date()
-                selected_date = _candidate if _candidate in all_scheduled_dates else all_scheduled_dates[0]
-            except ValueError:
-                selected_date = all_scheduled_dates[0]
-        else:
-            selected_date = all_scheduled_dates[0] if all_scheduled_dates else date.today()
-
+    Returns a dict of template kwargs. Byte-for-byte the same logic that used to
+    live inline in callsheet_view; moved, not rewritten."""
     # Determine day type for the selected date and compute shoot-day number
     # Only "work" days count toward the shoot day number; travel/hold/half get their own label
     _day_types_today = db.session.query(ScheduleDay.day_type).filter(
@@ -22261,31 +22283,6 @@ def callsheet_view(pid, bid, date_str=None):
                 "confirmed_at": rcp.confirmed_at.strftime("%-I:%M %p") if rcp.confirmed_at else None,
             }
 
-    # ── Audience views (User 2026-06-22) ───────────────────────────────────
-    # Internal = full (default, unchanged). The restricted views hide
-    # contact/section data per the confirmed matrix; everything fails SAFE —
-    # an unknown view hides contacts. Crew/talent personal contact info only
-    # ever appears on Internal (and crew phones on Crew).
-    cs_view = (request.args.get('view') or 'internal').strip().lower()
-    if cs_view not in ('internal', 'crew', 'client', 'talent', 'union'):
-        cs_view = 'internal'
-    _v = cs_view
-    csv_flags = {
-        'view':            _v,
-        'is_full':         _v == 'internal',
-        'logistics':       _v != 'union',                                  # union: bare lists only
-        'crew_contact':    _v in ('internal', 'crew'),                     # phones/emails on crew rows
-        'talent_contact':  _v == 'internal',
-        'clients':         _v in ('internal', 'client'),
-        'reps':            _v == 'internal',
-        'background':      _v in ('internal', 'crew'),                     # extras list (production-facing)
-        'dept_notes':      _v in ('internal', 'crew'),
-        'key_personnel':   _v != 'union',                                  # union: no KP block
-        'kp_contact':      _v in ('internal', 'crew'),                     # client/talent: KP names only
-        'full_crew_list':  _v in ('internal', 'crew', 'client', 'union'),  # talent: no full crew list
-        'talent_list':     True,                                           # all views show cast (names ≥)
-        'crew_phone_in_list': _v == 'crew',                               # crew view adds phone to the crew list
-    }
     # ── On-day set for send-modal pre-checking (User 2026-07-08) ─────────────
     # People actually scheduled this day = everyone in crew_rows (crew + talent,
     # resolved from today's non-off ScheduleDays exactly as above). Clients and
@@ -22296,11 +22293,9 @@ def callsheet_view(pid, bid, date_str=None):
     on_day_emails = sorted({(r['email'] or '').strip().lower()
                             for r in crew_rows if r.get('email')})
 
-    return render_template("callsheet.html",
+    return dict(
         project=project,
         budget=budget,
-        cs_view=cs_view,
-        csv=csv_flags,
         all_budgets=all_budgets,
         parent_names=parent_names,
         selected_date=selected_date,
@@ -22338,6 +22333,86 @@ def callsheet_view(pid, bid, date_str=None):
         meal_counts=meal_counts,
         on_day_names=on_day_names,
         on_day_emails=on_day_emails,
+    )
+
+
+def _callsheet_audience_flags(view):
+    """Build the audience-view flag dict (csv) for a given view name.
+    Internal = full; restricted views hide contact/section data per the
+    confirmed matrix. Everything fails SAFE — an unknown view hides contacts.
+    Shared by the internal editing view and the tokenized recipient view (the
+    recipient view forces the view per recipient type)."""
+    _v = (view or 'internal').strip().lower()
+    if _v not in ('internal', 'crew', 'client', 'talent', 'union'):
+        _v = 'internal'
+    return _v, {
+        'view':            _v,
+        'is_full':         _v == 'internal',
+        'logistics':       _v != 'union',                                  # union: bare lists only
+        'crew_contact':    _v in ('internal', 'crew'),                     # phones/emails on crew rows
+        'talent_contact':  _v == 'internal',
+        'clients':         _v in ('internal', 'client'),
+        'reps':            _v == 'internal',
+        'background':      _v in ('internal', 'crew'),                     # extras list (production-facing)
+        'dept_notes':      _v in ('internal', 'crew'),
+        'key_personnel':   _v != 'union',                                  # union: no KP block
+        'kp_contact':      _v in ('internal', 'crew'),                     # client/talent: KP names only
+        'full_crew_list':  _v in ('internal', 'crew', 'client', 'union'),  # talent: no full crew list
+        'talent_list':     True,                                           # all views show cast (names ≥)
+        'crew_phone_in_list': _v == 'crew',                               # crew view adds phone to the crew list
+    }
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/callsheet")
+@app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/<date_str>")
+@login_required
+def callsheet_view(pid, bid, date_str=None):
+    project = ProjectSheet.query.get_or_404(pid)
+    budget  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+
+    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+
+    # All scheduled (non-off) dates for this budget/mode
+    date_rows = db.session.query(ScheduleDay.date).filter(
+        ScheduleDay.budget_id == bid,
+        ScheduleDay.schedule_mode == sched_mode,
+        ScheduleDay.day_type != 'off',
+    ).distinct().order_by(ScheduleDay.date).all()
+    all_scheduled_dates = [r[0] for r in date_rows]
+
+    # Resolve selected date — remember last viewed per budget
+    _session_key = f"cs_last_date_{bid}"
+    if date_str:
+        try:
+            selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            selected_date = all_scheduled_dates[0] if all_scheduled_dates else date.today()
+        from flask import session as _session
+        _session[_session_key] = selected_date.strftime("%Y-%m-%d")
+    else:
+        from flask import session as _session
+        _saved = _session.get(_session_key)
+        if _saved and all_scheduled_dates:
+            try:
+                _candidate = datetime.strptime(_saved, "%Y-%m-%d").date()
+                selected_date = _candidate if _candidate in all_scheduled_dates else all_scheduled_dates[0]
+            except ValueError:
+                selected_date = all_scheduled_dates[0]
+        else:
+            selected_date = all_scheduled_dates[0] if all_scheduled_dates else date.today()
+
+    ctx = _callsheet_full_context(
+        pid, bid, project, budget, selected_date, sched_mode, all_scheduled_dates)
+
+    # Audience view — request-scoped (internal editing view switcher).
+    cs_view, csv_flags = _callsheet_audience_flags(request.args.get('view'))
+
+    return render_template(
+        "callsheet.html",
+        recipient_mode=False,
+        cs_view=cs_view,
+        csv=csv_flags,
+        **ctx,
     )
 
 

@@ -3687,6 +3687,137 @@ a.tab-link:hover { background: var(--bg-3); }
   }
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   RECIPIENT MODE — the tokenized recipient view + login-gated preview render
+   callsheet.html with <body class="recipient-mode">. Same full sheet, but ALL
+   internal editing chrome is suppressed on screen (mirroring the @media print
+   discipline) and a personal layer is prepended. (User 2026-07-08.)
+   ════════════════════════════════════════════════════════════════════════════ */
+body.recipient-mode .navbar,
+body.recipient-mode nav,
+body.recipient-mode footer,
+body.recipient-mode .flash-container,
+body.recipient-mode .cs-screen-header,
+body.recipient-mode .cs-screen-only,
+body.recipient-mode .cs-edit-banner,
+body.recipient-mode .cs-audience-bar,
+body.recipient-mode .cs-distribution-panel,
+body.recipient-mode .cs-row-toolbar,
+body.recipient-mode .kp-actions,
+body.recipient-mode .kp-select-wrap,
+body.recipient-mode .kp-drag-handle,
+body.recipient-mode .cs-drag-handle,
+body.recipient-mode .cs-drag-hint,
+body.recipient-mode .cs-hide-toggle,
+body.recipient-mode .cs-dept-reset,
+body.recipient-mode .cs-dept-del,
+body.recipient-mode .cs-dept-empty-hint,
+body.recipient-mode .cs-future-badge,
+body.recipient-mode .page-header,
+body.recipient-mode .tabs,
+body.recipient-mode .tabs-row,
+body.recipient-mode .cs-date-nav,
+body.recipient-mode .mode-switcher-seg {
+  display: none !important;
+}
+/* Hidden-in-this-callsheet elements: fully omitted, just like print/PDF. */
+body.recipient-mode .cs-hidden-el { display: none !important; }
+/* Neutralize any leftover editable styling (contenteditable is stripped in JS,
+   but belt-and-suspenders for borders/backgrounds). */
+body.recipient-mode [contenteditable],
+body.recipient-mode .cs-editable {
+  border: none !important;
+  outline: none !important;
+  background: transparent !important;
+  cursor: default !important;
+}
+/* The KP table hides its screen-only first/last action columns. */
+body.recipient-mode .kp-table th:first-child,
+body.recipient-mode .kp-table th:last-child,
+body.recipient-mode .kp-table td:first-child,
+body.recipient-mode .kp-table td:last-child { display: none !important; }
+/* Center the sheet and give the page room (no app main padding fight). */
+body.recipient-mode .main-content { padding: 0 !important; }
+body.recipient-mode .callsheet-wrapper { margin: 0 auto; }
+/* Recipient's own crew row — subtle tint so they can find themselves. */
+body.recipient-mode tr.cs-recip-me { background: rgba(37, 99, 235, .18) !important; }
+
+/* ── Personal layer (banner / confirm bar / your-details card) ─────────────── */
+.cs-recip-preview-banner {
+  background: #4a2500; border-bottom: 1px solid #d97706; color: #fbbf24;
+  padding: 8px 20px; text-align: center; font-size: .82rem; font-weight: 600;
+  letter-spacing: .03em;
+}
+.cs-recip-bar {
+  background: #1a1d27; border-bottom: 1px solid #2a2d3a;
+  padding: 14px 20px; position: sticky; top: 0; z-index: 100;
+}
+.cs-recip-bar-inner {
+  max-width: 900px; margin: 0 auto;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.cs-recip-logo { font-size: .7rem; letter-spacing: .15em; text-transform: uppercase; color: #6b7280; flex-shrink: 0; }
+.cs-recip-info { flex: 1; min-width: 0; }
+.cs-recip-name { font-weight: 600; font-size: .95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e8e9ec; }
+.cs-recip-sub { font-size: .78rem; color: #9ca3af; margin-top: 2px; }
+.cs-recip-call-pill {
+  background: #0c1a3a; border: 1px solid #1d4ed8; border-radius: 8px;
+  padding: 6px 14px; text-align: center; flex-shrink: 0;
+}
+.cs-recip-pill-lbl { font-size: .6rem; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; }
+.cs-recip-pill-time { font-size: 1.15rem; font-weight: 700; color: #60a5fa; line-height: 1.1; }
+.cs-recip-btn-confirm {
+  background: #2563eb; color: #fff; border: none; border-radius: 8px;
+  padding: 9px 20px; font-size: .88rem; font-weight: 600; cursor: pointer;
+  transition: background .15s; flex-shrink: 0; white-space: nowrap;
+}
+.cs-recip-btn-confirm:hover { background: #1d4ed8; }
+.cs-recip-confirmed-pill {
+  display: flex; align-items: center; gap: 6px;
+  background: #052e16; border: 1px solid #16a34a; color: #4ade80;
+  border-radius: 8px; padding: 8px 16px; font-size: .82rem; font-weight: 600;
+  flex-shrink: 0;
+}
+.cs-recip-confirmed-preview { background: #12151e; border-color: #374151; color: #9ca3af; }
+.cs-recip-outer { max-width: 900px; margin: 18px auto 0; padding: 0 16px; }
+
+/* Your-details travel card (ported from callsheet_confirm.html). */
+.recipient-mode .yd-card, .cs-recip-outer .yd-card {
+  background: #10231a; border: 1px solid #16a34a; border-radius: 12px;
+  padding: 0; margin-bottom: 18px; overflow: hidden;
+}
+.yd-hdr {
+  font-size: .82rem; font-weight: 800; letter-spacing: .04em;
+  color: #4ade80; background: #0c1a12; padding: 11px 18px;
+  border-bottom: 1px solid #16532f;
+}
+.yd-body { padding: 6px 18px 14px; }
+.yd-item { padding: 12px 0; border-bottom: 1px solid #16532f; }
+.yd-item:last-child { border-bottom: none; }
+.yd-line1 { font-size: .95rem; font-weight: 600; color: #e8e9ec; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.yd-kind-icon { font-size: 1.1rem; }
+.yd-detail { font-size: .83rem; color: #9ca3af; margin-top: 3px; line-height: 1.5; }
+.yd-notes { font-size: .82rem; color: #cbd5e1; margin-top: 5px; font-style: italic; }
+.yd-conf-wrap { margin-top: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.yd-conf-lbl { font-size: .64rem; text-transform: uppercase; letter-spacing: .1em; color: #6b7280; }
+.yd-conf-no {
+  font-family: "SF Mono", "Courier New", monospace; font-size: 1.35rem;
+  font-weight: 800; letter-spacing: .06em; color: #052e16;
+  background: #4ade80; border-radius: 7px; padding: 5px 14px;
+  user-select: all;
+}
+
+/* ── Recipient mobile (~390px) — sheet is desktop-oriented; keep it usable. ── */
+@media (max-width: 640px) {
+  body.recipient-mode .cs-recip-bar { padding: 10px 12px; }
+  body.recipient-mode .cs-recip-bar-inner { gap: 8px; }
+  body.recipient-mode .cs-recip-outer { padding: 0 10px; }
+  body.recipient-mode .callsheet-wrapper,
+  body.recipient-mode .callsheet-page { padding-left: 8px; padding-right: 8px; }
+  body.recipient-mode .callsheet-two-col { display: block; }
+  body.recipient-mode .callsheet-two-col .callsheet-col { width: 100%; }
+}
+
 /* ── Call Sheet Editing UI ──────────────────────────────────────────────────── */
 
 .cs-screen-only { /* shown on screen, hidden in print via @media print */ }
