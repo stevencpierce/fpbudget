@@ -10075,6 +10075,26 @@ def _deterministic_line_suggestion(pid, vendor, crew_member_id=None):
                     lbl = f"{ln.description or ln.account_name or ln.account_code} · {best_po.po_number}"
                     candidates.append(_det_line_payload(
                         ln, 'po', 0.9 * best_po_sim, label=lbl))
+                elif len(po_lines) > 1:
+                    # Multi-line PO (owner test 2026-07-08: Front Row = 2 lines,
+                    # Gateway GSPS = 4 — the single-line gate skipped BOTH his
+                    # motivating examples). Mirror the multi-line person rule:
+                    # suggest the PRIMARY line (largest budgeted) at reduced
+                    # confidence; the label carries the PO + line count so the
+                    # user knows there are siblings to consider (or itemize).
+                    def _bl_total(l):
+                        for v_ in (l.working_total, l.estimated_total):
+                            if v_ is not None:
+                                try:
+                                    return float(v_)
+                                except (TypeError, ValueError):
+                                    pass
+                        return 0.0
+                    ln = max(po_lines, key=_bl_total)
+                    lbl = (f"{ln.description or ln.account_name or ln.account_code}"
+                           f" · {best_po.po_number} ({len(po_lines)} lines)")
+                    candidates.append(_det_line_payload(
+                        ln, 'po', 0.75 * best_po_sim, label=lbl))
 
         if not candidates:
             return None
