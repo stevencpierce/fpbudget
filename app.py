@@ -31037,6 +31037,407 @@ def repair_clone_links(pid):
     return jsonify(report)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# LINE-IDENTITY REPAIR SUITE  (owner report 2026-07: Cliburn 2000-08)
+# ══════════════════════════════════════════════════════════════════════════
+# THE BUG: the rendered line NUMBER ("2000-08") is POSITIONAL — section code +
+# the counter of the row in render order. Estimated and Working orderings drift
+# historically, so the SAME number can label DIFFERENT lines across versions.
+# On top of that, the PO/crew cross-budget write-through (line_assign_po /
+# assign_crew) falls back to (account_code, sort_order) matching when a line has
+# no source_line_id link. Cliburn's Working budget (bid 311) predates the
+# source_line_id backfill, so writes from the Estimated view landed on the
+# WRONG Working line (Brenton's crew+PO stamped onto the Line Producer's line).
+#
+# Three ADMIN routes address this, all dry-by-default, ?pid= scoped:
+#   1. /budget/repair-line-links   — BACKFILL Working→Estimated source_line_id
+#      (unique-match only) so the write-through uses explicit links, killing the
+#      positional fallback's future corruption.
+#   2. /budget/sync-line-order     — one-time order re-sync so the SAME number
+#      labels the SAME line on both sides.
+#   3. /budget/crew-po-mismatch-report — read-only; flags working lines whose
+#      crew/PO looks like it was misdirected by a positional write.
+#
+# Same safety pattern as repair_clone_links / migrate_actuals: admin-only,
+# per-project isolation (one project's failure never aborts another), no
+# account_code mutations except where explicitly noted (order route touches
+# sort_order only).
+
+def _repair_pick_current(all_b, kind):
+    """Resolve a project's CURRENT non-actual budget of `kind`
+    ('estimated'|'working'), preferring version_status='current', falling back
+    to any non-archived. Mirrors repair_clone_links._pick / _resolve_sister_budget."""
+    return (next((b for b in all_b if _budget_type(b.budget_mode) == kind
+                  and not b.is_actual and b.version_status == 'current'), None)
+            or next((b for b in all_b if _budget_type(b.budget_mode) == kind
+                     and not b.is_actual and b.version_status != 'archived'), None))
+
+
+def _repair_norm_key(ln):
+    """The (account_code, normalized-description) pairing key — identical to
+    _sister_line_for's fallback and repair_clone_links._norm."""
+    return (ln.account_code, (ln.description or '').strip().lower())
+
+
+def _repair_dry_flag():
+    """Shared dry-run resolver: mutate ONLY when dry is EXPLICITLY false/0.
+    Everything else (absent, '1', 'true', garbage) stays dry — same convention
+    as migrate_actuals."""
+    body = request.get_json(silent=True) or {}
+    _raw = request.args.get('dry', body.get('dry', True))
+    if isinstance(_raw, str):
+        return _raw.strip().lower() not in ('0', 'false', 'no', 'off')
+    return not (_raw is False or _raw == 0)
+
+
+def _repair_scope_projects():
+    """Projects in scope: a single project if ?pid= (or JSON pid) is given,
+    else every ProjectSheet. Returns a list of project ids."""
+    body = request.get_json(silent=True) or {}
+    raw = request.args.get('pid', body.get('pid'))
+    if raw not in (None, '', 'all'):
+        try:
+            return [int(raw)]
+        except (TypeError, ValueError):
+            return []
+    return [p.id for p in ProjectSheet.query.order_by(ProjectSheet.id).all()]
+
+
+def _repair_position_labels(budget):
+    """Return {line_id: 'SECTION-NN'} for every NON-header/spacer line on
+    `budget`, computed EXACTLY like the budget template's line_counter:
+      • group lines by their rendered section (_section_for_code),
+      • order each section with _order_lines_with_children (the same helper the
+        page uses — clusters children under parents + role_group clustering),
+      • number non-header/non-spacer rows sequentially from 1 within the section.
+    Also returns {line_id: rendered_index} so callers can slice "first N".
+    """
+    lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+    by_section = {}
+    for ln in lines:
+        by_section.setdefault(_section_for_code(ln.account_code), []).append(ln)
+    labels, order_idx, section_order = {}, {}, {}
+    for sec_code in sorted(by_section):
+        ordered = _order_lines_with_children(by_section[sec_code])
+        counter = 0
+        for pos, ln in enumerate(ordered):
+            order_idx[ln.id] = pos
+            if getattr(ln, 'line_tag', None) in ('header', 'spacer'):
+                continue
+            counter += 1
+            labels[ln.id] = f"{sec_code}-{counter:02d}"
+            section_order.setdefault(sec_code, []).append(ln.id)
+    return labels, order_idx, section_order
+
+
+def _repair_crew_names(line):
+    """Human-readable crew for a line: the assigned_crew name plus any
+    CrewAssignment member names (deduped, order-stable)."""
+    names = []
+    if getattr(line, 'assigned_crew', None) and line.assigned_crew.name:
+        names.append(line.assigned_crew.name)
+    for ca in CrewAssignment.query.filter_by(budget_line_id=line.id).order_by(
+            CrewAssignment.instance).all():
+        nm = (ca.crew_member.name if ca.crew_member else None) or ca.name_override
+        if nm:
+            names.append(nm)
+    seen, out = set(), []
+    for nm in names:
+        if nm not in seen:
+            seen.add(nm)
+            out.append(nm)
+    return out
+
+
+def _repair_po_number(line):
+    """PO number string for a line's po_id, or None."""
+    if not getattr(line, 'po_id', None):
+        return None
+    from models import PurchaseOrder
+    po = PurchaseOrder.query.get(line.po_id)
+    return po.po_number if po else None
+
+
+@app.route("/budget/repair-line-links", methods=["GET", "POST"])
+@login_required
+def repair_line_links():
+    """BACKFILL Working→Estimated source_line_id for CURRENT working budgets
+    whose lines lack it. Pairing is by (account_code, normalized description);
+    a link is written ONLY when the match is UNIQUE on BOTH sides — exactly one
+    working line and one estimated line share that key. Ambiguous keys are
+    REPORTED, never guessed (that is the whole point — a bad guess re-corrupts).
+
+    This makes the PO/crew write-through resolve via explicit source_line_id
+    links instead of the positional (account_code, sort_order) fallback, which
+    is what mis-stamped Brenton's crew+PO onto the Line Producer line.
+
+    Admin only. DRY-RUN BY DEFAULT — writes only when ?dry=0 (or {"dry":false}).
+    ?pid= scopes to one project; absent = every project. Per-project isolation:
+    one project's error is recorded and skipped, never aborting the batch.
+    """
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    dry = _repair_dry_flag()
+    out = {"ok": True, "dry": dry, "projects": []}
+    for pid in _repair_scope_projects():
+        rec = {"pid": pid, "linked": 0, "ambiguous": [], "already_linked": 0}
+        try:
+            all_b = Budget.query.filter_by(project_id=pid).all()
+            est = _repair_pick_current(all_b, 'estimated')
+            wrk = _repair_pick_current(all_b, 'working')
+            if not (est and wrk):
+                rec["skipped"] = "missing current estimated or working budget"
+                out["projects"].append(rec)
+                continue
+            est_lines = BudgetLine.query.filter_by(budget_id=est.id).all()
+            wrk_lines = BudgetLine.query.filter_by(budget_id=wrk.id).all()
+            # Group both sides by pairing key.
+            est_by_key, wrk_by_key = {}, {}
+            for el in est_lines:
+                est_by_key.setdefault(_repair_norm_key(el), []).append(el)
+            for wl in wrk_lines:
+                wrk_by_key.setdefault(_repair_norm_key(wl), []).append(wl)
+            for key, wls in wrk_by_key.items():
+                els = est_by_key.get(key, [])
+                # UNIQUE on both sides required. Otherwise: report, never guess.
+                if len(wls) == 1 and len(els) == 1:
+                    wl, el = wls[0], els[0]
+                    if wl.source_line_id == el.id:
+                        rec["already_linked"] += 1
+                        continue
+                    rec["linked"] += 1
+                    if not dry:
+                        wl.source_line_id = el.id
+                elif els:
+                    # Ambiguous key with candidates on both sides — the risky
+                    # case. (A working key with NO estimated match is just an
+                    # unpaired working line, not ambiguity — skip silently.)
+                    rec["ambiguous"].append({
+                        "desc": key[1] or "(unnamed)",
+                        "code": key[0],
+                        "working_ids": [w.id for w in wls],
+                        "estimated_ids": [e.id for e in els],
+                    })
+            if not dry:
+                db.session.commit()
+        except Exception as _e:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            rec["error"] = str(_e)
+        out["projects"].append(rec)
+    return jsonify(out)
+
+
+@app.route("/budget/sync-line-order", methods=["GET", "POST"])
+@login_required
+def sync_line_order():
+    """ONE-TIME order re-sync between the CURRENT Estimated and CURRENT Working
+    of a project so the SAME rendered number labels the SAME line on both sides.
+
+    Param `source` is REQUIRED ('working'|'estimated'): the OTHER budget's PAIRED
+    lines are resequenced to follow the source's order (same algorithm as
+    _mirror_line_move — paired lines get sequential sort_order in the source's
+    order; sister-only orphans keep their existing sort_order). ORDERING ONLY —
+    NO account_code changes (unlike _mirror_line_move, this never moves a line
+    across sections; a drifted number is a sort_order problem, not a section one).
+
+    DRY (default) returns a human-readable BEFORE/AFTER preview: per section, the
+    first ~15 rendered positions on BOTH sides (position label + desc) pre- and
+    post-sync, so the owner can choose direction per project before committing.
+
+    Admin only. Writes only when ?dry=0. ?pid= scopes (required in practice —
+    direction is a per-project judgment; absent = every project, same source).
+    """
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    body = request.get_json(silent=True) or {}
+    source = (request.args.get('source', body.get('source')) or '').strip().lower()
+    if source not in ('working', 'estimated'):
+        return jsonify({"error": "source is required — 'working' or 'estimated'"}), 400
+    dry = _repair_dry_flag()
+    target_kind = 'estimated' if source == 'working' else 'working'
+    PREVIEW_ROWS = 15
+    out = {"ok": True, "dry": dry, "source": source, "target": target_kind,
+           "projects": []}
+
+    for pid in _repair_scope_projects():
+        rec = {"pid": pid, "resequenced": 0, "sections": []}
+        try:
+            all_b = Budget.query.filter_by(project_id=pid).all()
+            src_b = _repair_pick_current(all_b, source)
+            tgt_b = _repair_pick_current(all_b, target_kind)
+            if not (src_b and tgt_b):
+                rec["skipped"] = "missing current estimated or working budget"
+                out["projects"].append(rec)
+                continue
+
+            src_lines = (BudgetLine.query.filter_by(budget_id=src_b.id)
+                         .order_by(BudgetLine.sort_order, BudgetLine.id).all())
+            tgt_lines = BudgetLine.query.filter_by(budget_id=tgt_b.id).all()
+
+            # BEFORE snapshot of position labels (both sides).
+            src_labels_b, _, src_secorder_b = _repair_position_labels(src_b)
+            tgt_labels_b, _, tgt_secorder_b = _repair_position_labels(tgt_b)
+            desc_of = {ln.id: (ln.description or '').strip() or '(unnamed)'
+                       for ln in src_lines + tgt_lines}
+
+            # Pairing indexes over the TARGET (reused from _mirror_line_move).
+            tgt_src_ids = {}
+            for _tl in tgt_lines:
+                if _tl.source_line_id is not None:
+                    tgt_src_ids.setdefault(_tl.source_line_id, _tl)
+            tgt_desc_index = {}
+            for _tl in tgt_lines:
+                tgt_desc_index.setdefault(_repair_norm_key(_tl), _tl)
+
+            # Compute the NEW target sort_order: paired target lines follow the
+            # source's full order sequentially; orphans keep their sort_order.
+            new_sort = {}
+            matched = set()
+            seq = 0
+            for sl in src_lines:
+                tl = _sister_line_for(sl, tgt_lines, tgt_src_ids, tgt_desc_index)
+                if tl is None or tl.id in matched:
+                    continue
+                matched.add(tl.id)
+                new_sort[tl.id] = seq
+                seq += 1
+            # Orphan target lines: keep existing sort_order (shifted past the
+            # paired block so paired rows lead, matching _mirror_line_move's
+            # "leave orphans alone" but without them jumping ahead of paired).
+            for tl in sorted(tgt_lines, key=lambda x: (x.sort_order or 0, x.id)):
+                if tl.id not in new_sort:
+                    new_sort[tl.id] = seq
+                    seq += 1
+
+            changed = sum(1 for tl in tgt_lines
+                          if (tl.sort_order or 0) != new_sort[tl.id])
+            rec["resequenced"] = changed
+
+            if dry:
+                # AFTER preview: apply new_sort IN MEMORY (no commit) and
+                # recompute labels, then roll back so nothing persists.
+                for tl in tgt_lines:
+                    tl.sort_order = new_sort[tl.id]
+                tgt_labels_a, _, tgt_secorder_a = _repair_position_labels(tgt_b)
+                db.session.rollback()
+
+                def _rows(labels, secorder, sec):
+                    return [{"pos": labels[lid], "desc": desc_of.get(lid, '')}
+                            for lid in secorder.get(sec, [])[:PREVIEW_ROWS]]
+
+                all_secs = sorted(set(src_secorder_b) | set(tgt_secorder_b))
+                for sec in all_secs:
+                    rec["sections"].append({
+                        "section": sec,
+                        "source_order": _rows(src_labels_b, src_secorder_b, sec),
+                        "target_before": _rows(tgt_labels_b, tgt_secorder_b, sec),
+                        "target_after": _rows(tgt_labels_a, tgt_secorder_a, sec),
+                    })
+            else:
+                for tl in tgt_lines:
+                    tl.sort_order = new_sort[tl.id]
+                db.session.commit()
+                _touch_budget(tgt_b.id)
+                db.session.commit()
+        except Exception as _e:
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            rec["error"] = str(_e)
+        out["projects"].append(rec)
+    return jsonify(out)
+
+
+@app.route("/budget/crew-po-mismatch-report", methods=["GET", "POST"])
+@login_required
+def crew_po_mismatch_report():
+    """READ-ONLY report. For each CURRENT working line, compare its crew/PO
+    against (a) its DESCRIPTION-paired estimated peer and (b) the line the
+    POSITIONAL (account_code, sort_order) fallback WOULD have matched. Flag a
+    working line as a suspect when BOTH hold:
+      (i)  its crew/PO DIFFERS from its desc-paired estimated peer, AND
+      (ii) the positionally-paired estimated line DOES carry that same crew/PO.
+    That is the exact signature of a misdirected positional write — Brenton's
+    crew+PO written from the Technical Producer's Estimated line landing on the
+    Line Producer's Working line because they shared (account_code, sort_order).
+
+    NO MUTATIONS. The owner reviews and fixes by hand (moving crew/PO is a
+    judgment call). Admin only. ?pid= scopes; absent = every project.
+    """
+    if current_user.role not in ('super_admin', 'admin'):
+        return jsonify({"error": "Forbidden — admin only"}), 403
+    out = {"ok": True, "projects": []}
+    for pid in _repair_scope_projects():
+        rec = {"pid": pid, "suspects": []}
+        try:
+            all_b = Budget.query.filter_by(project_id=pid).all()
+            est = _repair_pick_current(all_b, 'estimated')
+            wrk = _repair_pick_current(all_b, 'working')
+            if not (est and wrk):
+                rec["skipped"] = "missing current estimated or working budget"
+                out["projects"].append(rec)
+                continue
+            est_lines = BudgetLine.query.filter_by(budget_id=est.id).all()
+            wrk_lines = BudgetLine.query.filter_by(budget_id=wrk.id).all()
+            wrk_labels, _, _ = _repair_position_labels(wrk)
+
+            # DESCRIPTION pairing: (account_code, normalized desc) → est line.
+            est_desc_index = {}
+            for el in est_lines:
+                est_desc_index.setdefault(_repair_norm_key(el), el)
+            # source_line_id links (either direction) take precedence — mirror
+            # _sister_line_for so we compare against the TRUE peer.
+            est_src_ids = {}
+            for el in est_lines:
+                if el.source_line_id is not None:
+                    est_src_ids.setdefault(el.source_line_id, el)
+            # POSITIONAL pairing: (account_code, sort_order) → est line — the
+            # exact key line_assign_po / assign_crew fall back to.
+            est_pos_index = {}
+            for el in est_lines:
+                est_pos_index.setdefault((el.account_code, el.sort_order), el)
+
+            for wl in wrk_lines:
+                desc_peer = _sister_line_for(wl, est_lines, est_src_ids, est_desc_index)
+                pos_peer = est_pos_index.get((wl.account_code, wl.sort_order))
+                if pos_peer is None or (desc_peer is not None
+                                        and pos_peer.id == desc_peer.id):
+                    continue  # no positional drift → nothing to flag
+                wl_crew = set(_repair_crew_names(wl))
+                wl_po = _repair_po_number(wl)
+                peer_crew = set(_repair_crew_names(desc_peer)) if desc_peer else set()
+                peer_po = _repair_po_number(desc_peer) if desc_peer else None
+                pos_crew = set(_repair_crew_names(pos_peer))
+                pos_po = _repair_po_number(pos_peer)
+
+                # (i) differs from desc-paired peer AND (ii) matches the
+                # positional peer — for crew OR po independently.
+                crew_sig = bool(wl_crew) and wl_crew != peer_crew and wl_crew == pos_crew
+                po_sig = bool(wl_po) and wl_po != peer_po and wl_po == pos_po
+                if crew_sig or po_sig:
+                    rec["suspects"].append({
+                        "working_line_id": wl.id,
+                        "desc": (wl.description or '').strip() or '(unnamed)',
+                        "code": wl.account_code,
+                        "position_label": wrk_labels.get(wl.id),
+                        "crew_names": sorted(wl_crew),
+                        "po_number": wl_po,
+                        "likely_intended_line_id":
+                            (desc_peer.id if desc_peer else None),
+                        "likely_intended_desc":
+                            ((desc_peer.description or '').strip() or '(unnamed)'
+                             if desc_peer else None),
+                    })
+        except Exception as _e:
+            rec["error"] = str(_e)
+        out["projects"].append(rec)
+    return jsonify(out)
+
+
 # ── PHASE 2: actuals-on-Working migration ──────────────────────────────────
 # Phase 1 (commit 2cc78c0) made NEW transaction coding point directly at
 # Working-budget lines. This one-time migration remaps ALL remaining LEGACY
