@@ -31,6 +31,8 @@
      style="font-size:12px;padding:5px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;text-decoration:none">⬇ Download</a>
   <a id="edDropboxLink" href="#" target="_blank"
      style="font-size:12px;padding:5px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#5b8af9;text-decoration:none">Open in Dropbox ↗</a>
+  <button type="button" id="edDeleteBtn" title="Move this document to Trash (restorable from Docs Trash)"
+          style="font-size:12px;padding:5px 12px;border-radius:6px;background:#2a1618;border:1px solid #6f2f34;color:#e88;cursor:pointer">🗑 Delete</button>
 </div>
 
 <div style="display:flex;gap:16px;align-items:stretch;min-height:70vh">
@@ -324,6 +326,47 @@
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) { t.blur(); return; }
       goBack();
     }
+  });
+
+  // ── 🗑 Delete → soft-delete to the Docs Trash (User 2026-07-08: "no way to
+  // delete documents from the full doc editor"). Server semantics
+  // (docs_upload_delete): restorable from Docs Trash, Dropbox copies →
+  // /_TRASH/, matched bank charges are UNLINKED, never deleted. After the
+  // delete, continue to the next doc in the inbox's filtered list when there
+  // is one (prev as fallback), else back to the list; the stashed nav ids are
+  // pruned so 'N of M' stays honest.
+  var _delBtn = $('edDeleteBtn');
+  if (_delBtn) _delBtn.addEventListener('click', function () {
+    if (!confirm('Move this document to Trash?\n\nIt can be restored from the Docs Trash. A matched bank charge is unlinked, not deleted.')) return;
+    _delBtn.disabled = true; _delBtn.textContent = 'Deleting…';
+    fetch('/docs/upload/' + UID + '/delete', { method: 'POST', credentials: 'same-origin' })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok || (res.d && res.d.error)) throw new Error((res.d && res.d.error) || 'delete failed');
+        var target = null;
+        if (_nav) {
+          target = (_nav.ids[_nav.idx + 1] !== undefined) ? _nav.ids[_nav.idx + 1]
+                 : ((_nav.ids[_nav.idx - 1] !== undefined) ? _nav.ids[_nav.idx - 1] : null);
+          try {
+            var rawN = sessionStorage.getItem('fpInboxNav');
+            if (rawN) {
+              var nv = JSON.parse(rawN);
+              nv.ids = (nv.ids || []).filter(function (i) { return i !== UID; });
+              sessionStorage.setItem('fpInboxNav', JSON.stringify(nv));
+            }
+          } catch (e2) {}
+        }
+        // Doc is gone — clear the unsaved-itemization guard so navigation
+        // isn't blocked by a beforeunload prompt about a deleted doc.
+        try { _itemDirty = false; } catch (e3) {}
+        location.href = (target != null)
+          ? '/projects/' + PID + '/docs/' + target + '/editor?from=inbox'
+          : BACK_URL;
+      })
+      .catch(function (e) {
+        alert('Could not delete: ' + e.message);
+        _delBtn.disabled = false; _delBtn.textContent = '🗑 Delete';
+      });
   });
 
   // ── Fill a <select> from the shared options template (lazy clone). ──────────
