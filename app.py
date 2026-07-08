@@ -103,7 +103,8 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     BudgetDirectContact, CompanySettings, DocUpload, CatalogItem,
                     TravelDetail, CateringBill, ActivityLog,
                     SubBudget, SubBudgetLine, EstimateShare, FxRate,
-                    TransactionDupDismissal, ProjectCrewMember, Timecard)
+                    TransactionDupDismissal, ProjectCrewMember, Timecard,
+                    ProjectClientContact)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -2644,12 +2645,26 @@ def _unique_project_slug(project_name, client_name=None, exclude_id=None):
     return base  # give up — extremely unlikely
 
 
-def _send_email(to, subject, body, attachment_bytes=None, attachment_filename=None):
-    """Send email — silently no-ops if mail not configured."""
+def _send_email(to, subject, body, attachment_bytes=None, attachment_filename=None,
+                reply_to=None, sender_name=None):
+    """Send email — silently no-ops if mail not configured.
+
+    'Send as me' support (2026-07-08): pass sender_name to override the From
+    display name (the From ADDRESS stays the configured MAIL_DEFAULT_SENDER so
+    SPF/DKIM still pass) and reply_to so replies go to the human. We never swap
+    the envelope address to the user's own — that would fail authentication and
+    tank deliverability."""
     if not app.config.get('MAIL_USERNAME'):
         return False
     try:
-        msg = MailMessage(subject, recipients=[to], body=body)
+        sender = None
+        if sender_name:
+            default_addr = (app.config.get('MAIL_DEFAULT_SENDER')
+                            or app.config.get('MAIL_USERNAME'))
+            # Flask-Mail accepts a (display_name, address) tuple for sender.
+            sender = (sender_name, default_addr)
+        msg = MailMessage(subject, recipients=[to], body=body,
+                          sender=sender, reply_to=reply_to)
         if attachment_bytes and attachment_filename:
             msg.attach(attachment_filename, 'application/pdf', attachment_bytes)
         mail.send(msg)
@@ -6696,6 +6711,28 @@ def budget_view(pid, bid):
     project_unions  = ProjectUnion.query.filter_by(project_id=pid).order_by(ProjectUnion.sort_order).all()
     project_clients = ProjectClient.query.filter_by(project_id=pid).order_by(ProjectClient.sort_order).all()
     direct_contacts = BudgetDirectContact.query.filter_by(budget_id=bid).order_by(BudgetDirectContact.sort_order).all()
+    # Client-contact recipients (estimate sends). Lazily backfill from any past
+    # EstimateShare recipient not yet a contact so the group self-populates.
+    try:
+        _cc_existing = {(c.email or '').lower()
+                        for c in ProjectClientContact.query.filter_by(project_id=pid).all()}
+        _cc_changed = False
+        for _sh in (EstimateShare.query
+                    .filter(EstimateShare.project_id == pid,
+                            EstimateShare.client_email.isnot(None))
+                    .order_by(EstimateShare.created_at.asc()).all()):
+            _em = (_sh.client_email or '').strip()
+            if _em and _em.lower() not in _cc_existing:
+                _upsert_client_contact(pid, _em, _sh.client_name, source='estimate_send')
+                _cc_existing.add(_em.lower())
+                _cc_changed = True
+        if _cc_changed:
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logging.warning("client-contact backfill on budget_view failed", exc_info=True)
+    client_contacts = (ProjectClientContact.query.filter_by(project_id=pid)
+                       .order_by(ProjectClientContact.created_at.asc()).all())
     # Location days booked for this budget
     location_days = LocationDay.query.filter_by(budget_id=bid).all()
     loc_day_map = {}
@@ -7715,6 +7752,7 @@ def budget_view(pid, bid):
         parent_names=parent_names,
         project_unions=project_unions,
         project_clients=project_clients,
+        client_contacts=client_contacts,
         direct_contacts=direct_contacts,
         company_settings=company_settings,
         dept_filter=dept_filter,
@@ -14448,10 +14486,47 @@ def estimate_share_create(pid, bid):
     project = ProjectSheet.query.get_or_404(pid)
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     body = request.get_json(silent=True) or {}
-    client_name = (body.get('client_name') or '').strip()[:200] or None
-    client_email = (body.get('client_email') or '').strip()[:200] or None
     detail_mode = bool(body.get('detail_mode'))
-    do_email = bool(body.get('send_email')) and bool(client_email)
+
+    # ── Resolve recipients ────────────────────────────────────────────────
+    # New shape: recipients=[{name,email}, …]. Legacy shape: single
+    # client_name/client_email (still honored when recipients absent).
+    raw_recipients = body.get('recipients')
+    recipients = []
+    seen_emails = set()
+    if isinstance(raw_recipients, list) and raw_recipients:
+        for r in raw_recipients:
+            if not isinstance(r, dict):
+                continue
+            em = (r.get('email') or '').strip()[:200]
+            nm = (r.get('name') or '').strip()[:200] or None
+            key = em.lower()
+            if not em or key in seen_emails:
+                continue
+            seen_emails.add(key)
+            recipients.append({"name": nm, "email": em})
+    else:
+        # Legacy single-recipient path.
+        lc_name = (body.get('client_name') or '').strip()[:200] or None
+        lc_email = (body.get('client_email') or '').strip()[:200] or None
+        if lc_email:
+            recipients.append({"name": lc_name, "email": lc_email})
+            seen_emails.add(lc_email.lower())
+        elif lc_name:
+            # Name only, no email — still record a share (link-only send).
+            recipients.append({"name": lc_name, "email": None})
+
+    if not recipients:
+        # No recipients at all → create a single unaddressed share (copy-link).
+        recipients.append({"name": None, "email": None})
+
+    # send_email gate: legacy 'send_email' flag OR presence of the new
+    # email_body/email_subject fields. If any recipient has an email and mail
+    # is configured, we attempt to send.
+    do_email = bool(body.get('send_email', True))
+    send_as_me = bool(body.get('send_as_me'))
+    email_subject_in = (body.get('email_subject') or '').strip()
+    email_body_in = (body.get('email_body') or '')
 
     try:
         snap, grand = _build_estimate_snapshot(project, budget, detail_mode)
@@ -14461,63 +14536,285 @@ def estimate_share_create(pid, bid):
 
     import json as _json
     from datetime import timedelta as _td
-    token = secrets.token_urlsafe(32)
-    share = EstimateShare(
-        project_id=pid, budget_id=bid, token=token,
-        client_name=client_name, client_email=client_email,
-        detail_mode=detail_mode, version_label=snap.get("version_label"),
-        snapshot_json=_json.dumps(snap), grand_total=grand,
-        status='sent', created_by_user_id=current_user.id,
-        sent_at=datetime.utcnow(),
-        expires_at=datetime.utcnow() + _td(days=90))
-    db.session.add(share)
+    snapshot_str = _json.dumps(snap)
+    version_label = snap.get("version_label")
+
+    # "Send as me" — display name + Reply-To of the sending user (envelope
+    # From address stays the configured sender for deliverability).
+    sender_name = None
+    reply_to = None
+    if send_as_me:
+        sender_name = (current_user.name or current_user.email)
+        reply_to = current_user.email
+    # Signature line: the sender's name when sending as me, else company/prepared-by.
+    signature = (sender_name if send_as_me else None) or \
+                (snap.get('company', {}) or {}).get('name') or (budget.prepared_by or '')
+
+    mail_configured = bool(app.config.get('MAIL_USERNAME'))
+
+    def _default_body(name_val, link_val):
+        who = name_val or "there"
+        return (f"Hi {who},\n\n"
+                f"Please review the estimate for {project.name} "
+                f"({version_label}). You can view and approve it here:\n\n"
+                f"{link_val}\n\n"
+                f"Estimated total: ${grand:,.2f}\n\n"
+                f"Thank you,\n"
+                f"{signature}")
+
+    def _render_body(name_val, link_val):
+        """Substitute placeholders in the user-authored body; ensure link present."""
+        if not email_body_in.strip():
+            return _default_body(name_val, link_val)
+        txt = (email_body_in
+               .replace('{link}', link_val)
+               .replace('{total}', f"${grand:,.2f}")
+               .replace('{version}', version_label or '')
+               .replace('{name}', name_val or 'there'))
+        if link_val not in txt:
+            txt = txt.rstrip() + "\n\n" + link_val
+        return txt
+
+    subj_default = f"{project.name} — Estimate for your review"
+
+    def _render_subject(name_val, link_val):
+        if not email_subject_in:
+            return subj_default
+        return (email_subject_in
+                .replace('{link}', link_val)
+                .replace('{total}', f"${grand:,.2f}")
+                .replace('{version}', version_label or '')
+                .replace('{name}', name_val or 'there'))
+
+    results = []
+    now = datetime.utcnow()
+    expires = now + _td(days=90)
+    for rec in recipients:
+        token = secrets.token_urlsafe(32)
+        share = EstimateShare(
+            project_id=pid, budget_id=bid, token=token,
+            client_name=rec['name'], client_email=rec['email'],
+            detail_mode=detail_mode, version_label=version_label,
+            snapshot_json=snapshot_str, grand_total=grand,
+            status='sent', created_by_user_id=current_user.id,
+            sent_at=now, expires_at=expires)
+        db.session.add(share)
+        db.session.flush()  # assign share.id + keep token unique per row
+
+        link = url_for('estimate_portal', token=token, _external=True)
+        emailed = False
+        email_error = None
+        if rec['email'] and do_email:
+            if not mail_configured:
+                email_error = ("Email isn't configured on the server "
+                               "(MAIL_USERNAME unset) — use the copyable link instead.")
+            else:
+                subj = _render_subject(rec['name'], link)
+                bodytxt = _render_body(rec['name'], link)
+                emailed = _send_email(rec['email'], subj, bodytxt,
+                                      reply_to=reply_to, sender_name=sender_name)
+                if emailed:
+                    share.emailed = True
+                else:
+                    email_error = "Email send failed — use the copyable link instead."
+        results.append({
+            "share_id": share.id, "token": token, "link": link,
+            "email": rec['email'], "name": rec['name'],
+            "emailed": emailed, "email_error": email_error,
+        })
+
+        # Fail-open contact upsert (dedupe case-insensitively per project).
+        if rec['email']:
+            try:
+                _upsert_client_contact(pid, rec['email'], rec['name'],
+                                       source='estimate_send')
+            except Exception:
+                logging.warning("client-contact upsert failed for %s", rec['email'],
+                                exc_info=True)
+
     db.session.commit()
 
-    link = url_for('estimate_portal', token=token, _external=True)
-
-    emailed = False
-    email_error = None
-    if do_email:
-        if not app.config.get('MAIL_USERNAME'):
-            email_error = "Email isn't configured on the server (MAIL_USERNAME unset) — use the copyable link instead."
-        else:
-            who = client_name or "there"
-            subj = f"{project.name} — Estimate for your review"
-            bodytxt = (f"Hi {who},\n\n"
-                       f"Please review the estimate for {project.name} "
-                       f"({snap.get('version_label')}). You can view and approve it here:\n\n"
-                       f"{link}\n\n"
-                       f"Estimated total: ${grand:,.2f}\n\n"
-                       f"Thank you,\n"
-                       f"{snap['company'].get('name') or (budget.prepared_by or '')}")
-            emailed = _send_email(client_email, subj, bodytxt)
-            if emailed:
-                share.emailed = True
-                db.session.commit()
-            else:
-                email_error = "Email send failed — use the copyable link instead."
-
-    # Notify the project's Super/Admin audience that an estimate went out.
+    # Notify the project's Super/Admin audience once, listing all recipients.
     try:
         _budget_link = url_for('budget_view', pid=pid, bid=bid, _external=True)
         _who = current_user.name or current_user.email
+        _recip_lines = []
+        for r in results:
+            if not r['email'] and not r['name']:
+                continue
+            label = (r['name'] or '—') + (f" <{r['email']}>" if r['email'] else "")
+            _state = ('emailed' if r['emailed']
+                      else ('link only' if not r['email'] else 'link shared manually'))
+            _recip_lines.append(f"  • {label} — {_state}")
+        _recip_block = "\n".join(_recip_lines) or "  • (link only, no recipients)"
         _notify_project_event(
             pid,
-            f"Estimate sent — {project.name} ({snap.get('version_label')})",
+            f"Estimate sent — {project.name} ({version_label})",
             (f"{_who} sent an estimate to the client for {project.name}.\n\n"
-             f"Version: {snap.get('version_label')}\n"
-             f"Client: {client_name or '—'}"
-             + (f" <{client_email}>" if client_email else "") + "\n"
-             f"Estimated total: ${grand:,.2f}\n"
-             f"Emailed to client: {'yes' if emailed else 'no (link shared manually)'}\n\n"
+             f"Version: {version_label}\n"
+             f"Recipients:\n{_recip_block}\n"
+             f"Estimated total: ${grand:,.2f}\n\n"
              f"Open the budget: {_budget_link}"))
     except Exception:
         logging.warning("estimate-sent notify failed", exc_info=True)
 
-    return jsonify({"ok": True, "share_id": share.id, "token": token, "link": link,
-                    "emailed": emailed, "email_error": email_error,
-                    "version_label": snap.get("version_label"),
-                    "grand_total": grand})
+    first = results[0]
+    return jsonify({
+        "ok": True,
+        "shares": results,
+        "version_label": version_label,
+        "grand_total": grand,
+        # Back-compat: top-level fields mirror the FIRST share so existing JS
+        # that reads link/token/emailed/email_error keeps working.
+        "share_id": first["share_id"], "token": first["token"],
+        "link": first["link"], "emailed": first["emailed"],
+        "email_error": first["email_error"],
+    })
+
+
+def _upsert_client_contact(pid, email, name=None, phone=None, company=None, source='manual'):
+    """Idempotent client-contact upsert, deduped case-insensitively by
+    (project_id, email). Creates with the given source; on an existing row we
+    fill in a blank name but never downgrade source or clobber existing data.
+    Returns the ProjectClientContact row (committed by the caller)."""
+    email = (email or '').strip()
+    if not email:
+        return None
+    existing = (ProjectClientContact.query
+                .filter(ProjectClientContact.project_id == pid,
+                        db.func.lower(ProjectClientContact.email) == email.lower())
+                .first())
+    if existing:
+        if name and not (existing.name or '').strip():
+            existing.name = name[:200]
+        if phone and not (existing.phone or '').strip():
+            existing.phone = phone[:50]
+        if company and not (existing.company or '').strip():
+            existing.company = company[:200]
+        return existing
+    row = ProjectClientContact(
+        project_id=pid, email=email[:200],
+        name=(name or None) and name[:200],
+        phone=(phone or None) and phone[:50],
+        company=(company or None) and company[:200],
+        source=source, created_at=datetime.utcnow())
+    db.session.add(row)
+    return row
+
+
+def _can_access_project(pid, edit=False):
+    """True if current_user may view (edit=False) or mutate (edit=True) project
+    pid. Admins/super always pass; others need a ProjectAccess row (and an
+    editor-ish role for edit). Returns bool."""
+    if current_user.role in ('super_admin', 'admin'):
+        return True
+    access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+    if not access:
+        return False
+    if edit:
+        return access.role in ('owner', 'collaborator', 'editor')
+    return True
+
+
+@app.route("/projects/<int:pid>/estimate/recipients", methods=["GET"])
+@login_required
+def estimate_recipients(pid):
+    """Feeds the estimate-send popup's recipient picker: the project's client
+    contacts + distinct past EstimateShare recipients not already contacts.
+    Side effect (lazy backfill): any past-share email that isn't yet a contact
+    is upserted as source='estimate_send' so the People tab self-populates the
+    first time this loads. (User 2026-07-08.)"""
+    if not _can_access_project(pid):
+        return jsonify({"error": "Forbidden"}), 403
+
+    # Lazy backfill from historical sends → client contacts.
+    try:
+        past_shares = (EstimateShare.query
+                       .filter(EstimateShare.project_id == pid,
+                               EstimateShare.client_email.isnot(None))
+                       .order_by(EstimateShare.created_at.asc()).all())
+        existing_emails = {
+            (c.email or '').lower()
+            for c in ProjectClientContact.query.filter_by(project_id=pid).all()
+        }
+        changed = False
+        for s in past_shares:
+            em = (s.client_email or '').strip()
+            if em and em.lower() not in existing_emails:
+                _upsert_client_contact(pid, em, s.client_name, source='estimate_send')
+                existing_emails.add(em.lower())
+                changed = True
+        if changed:
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
+        logging.warning("estimate recipients backfill failed", exc_info=True)
+
+    contacts = (ProjectClientContact.query
+                .filter_by(project_id=pid)
+                .order_by(ProjectClientContact.created_at.asc())
+                .all())
+    contact_emails = {(c.email or '').lower() for c in contacts}
+    contacts_out = [{
+        "id": c.id, "name": c.name, "email": c.email,
+        "phone": c.phone, "company": c.company, "source": c.source,
+    } for c in contacts]
+
+    # Distinct past recipients not already contacts (should be empty after the
+    # backfill above, but kept for robustness / mail-unconfigured cases).
+    past_map = {}
+    try:
+        for s in (EstimateShare.query
+                  .filter(EstimateShare.project_id == pid,
+                          EstimateShare.client_email.isnot(None))
+                  .order_by(EstimateShare.created_at.desc()).all()):
+            em = (s.client_email or '').strip()
+            key = em.lower()
+            if not em or key in contact_emails or key in past_map:
+                continue
+            past_map[key] = {
+                "name": s.client_name, "email": em,
+                "last_sent": (s.created_at.isoformat() + 'Z') if s.created_at else None,
+            }
+    except Exception:
+        logging.warning("past recipient lookup failed", exc_info=True)
+
+    return jsonify({"contacts": contacts_out, "past": list(past_map.values())})
+
+
+@app.route("/projects/<int:pid>/client-contacts", methods=["POST"])
+@login_required
+def client_contact_create(pid):
+    """Manually add a client contact on the People tab (source='manual')."""
+    if not _can_access_project(pid, edit=True):
+        return jsonify({"error": "Forbidden"}), 403
+    ProjectSheet.query.get_or_404(pid)
+    body = request.get_json(silent=True) or {}
+    email = (body.get('email') or '').strip()
+    if not email:
+        return jsonify({"error": "Email is required"}), 400
+    name = (body.get('name') or '').strip() or None
+    phone = (body.get('phone') or '').strip() or None
+    company = (body.get('company') or '').strip() or None
+    row = _upsert_client_contact(pid, email, name, phone=phone, company=company,
+                                 source='manual')
+    db.session.commit()
+    return jsonify({"ok": True, "contact": {
+        "id": row.id, "name": row.name, "email": row.email,
+        "phone": row.phone, "company": row.company, "source": row.source,
+    }})
+
+
+@app.route("/projects/<int:pid>/client-contacts/<int:cid>/delete", methods=["POST"])
+@login_required
+def client_contact_delete(pid, cid):
+    """Remove a client contact from the People tab."""
+    if not _can_access_project(pid, edit=True):
+        return jsonify({"error": "Forbidden"}), 403
+    row = ProjectClientContact.query.filter_by(id=cid, project_id=pid).first_or_404()
+    db.session.delete(row)
+    db.session.commit()
+    return jsonify({"ok": True, "deleted": cid})
 
 
 @app.route("/projects/<int:pid>/notify-preview", methods=["GET"])
@@ -25393,6 +25690,22 @@ def _web_worker_essential_columns():
                 "CREATE INDEX IF NOT EXISTS ix_estimate_share_project ON estimate_share (project_id)",
                 "CREATE INDEX IF NOT EXISTS ix_estimate_share_budget ON estimate_share (budget_id)",
                 "CREATE INDEX IF NOT EXISTS ix_estimate_share_created ON estimate_share (created_at)",
+                # Per-project client contacts (2026-07-08). Auto-populated from
+                # estimate sends (source='estimate_send') + manually addable on
+                # the People tab. Deduped case-insensitively by (project_id,
+                # email). Brand-new table → create per-worker like estimate_share.
+                """CREATE TABLE IF NOT EXISTS project_client_contact (
+                     id         SERIAL PRIMARY KEY,
+                     project_id INTEGER NOT NULL REFERENCES project_sheet(id),
+                     name       VARCHAR(200),
+                     email      VARCHAR(200) NOT NULL,
+                     phone      VARCHAR(50),
+                     company    VARCHAR(200),
+                     source     VARCHAR(20) DEFAULT 'manual' NOT NULL,
+                     created_at TIMESTAMP
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_project_client_contact_project_id ON project_client_contact (project_id)",
+                "CREATE INDEX IF NOT EXISTS ix_project_client_contact_email ON project_client_contact (email)",
                 # Production day flag on ProductionDay (set from Schedule)
                 "ALTER TABLE production_day ADD COLUMN IF NOT EXISTS is_production_day BOOLEAN DEFAULT FALSE NOT NULL",
                 # Craft Services per-day flag (2026-05-06). Promoted from

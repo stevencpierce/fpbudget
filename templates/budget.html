@@ -187,39 +187,48 @@
     <!-- Send-as-Estimate modal: create a client-facing review/approval link
          for THIS budget, optionally emailed. (User 2026-06-03.) -->
     <div id="estshare-overlay" class="export-opts-overlay hidden" onclick="closeEstimateShare(event)">
-      <div class="export-opts-card" onclick="event.stopPropagation()" style="max-width:560px">
+      <div class="export-opts-card" onclick="event.stopPropagation()" style="max-width:620px">
         <div class="export-opts-head">
           <div>
             <h3 class="export-opts-title">Send as Estimate</h3>
-            <p class="export-opts-sub">Creates a secure link a client can open to review &amp; approve. No login needed for them.</p>
+            <p class="export-opts-sub">Creates a secure link each client can open to review &amp; approve. No login needed for them.</p>
           </div>
           <button type="button" class="export-opts-close" onclick="closeEstimateShare()" aria-label="Close">×</button>
         </div>
         <div style="padding:4px 18px 8px">
           <div id="estshare-form">
-            <label class="f" style="display:block;font-weight:600;margin:10px 0 4px;font-size:13px">Client name</label>
-            <input type="text" id="estshare-name" placeholder="e.g. Jane Smith" style="width:100%;padding:10px;border:1px solid #cfd6df;border-radius:8px;font-size:15px;background:#fff;color:#1c2430">
-            <label class="f" style="display:block;font-weight:600;margin:12px 0 4px;font-size:13px">Client email <span style="color:#6b7785;font-weight:400">(optional — needed to email)</span></label>
-            <input type="text" id="estshare-email" placeholder="client@example.com" style="width:100%;padding:10px;border:1px solid #cfd6df;border-radius:8px;font-size:15px;background:#fff;color:#1c2430">
-            <label class="f" style="display:block;font-weight:600;margin:14px 0 4px;font-size:13px">What the client sees</label>
+            <label class="f" style="display:block;font-weight:600;margin:10px 0 4px;font-size:13px">Recipients</label>
+            <div id="estshare-recips" style="border:1px solid #cfd6df;border-radius:8px;background:#fff;max-height:170px;overflow:auto;padding:4px 2px">
+              <div id="estshare-recips-empty" style="padding:10px 12px;color:#6b7785;font-size:13px">Loading recipients…</div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <input type="text" id="estshare-add-name" placeholder="New recipient name" style="flex:1;padding:8px;border:1px solid #cfd6df;border-radius:8px;font-size:14px;background:#fff;color:#1c2430">
+              <input type="text" id="estshare-add-email" placeholder="email@example.com" style="flex:1.3;padding:8px;border:1px solid #cfd6df;border-radius:8px;font-size:14px;background:#fff;color:#1c2430">
+              <button type="button" class="btn btn-sm" onclick="estshareAddRecipient()">+ Add</button>
+            </div>
+
+            <label class="f" style="display:block;font-weight:600;margin:16px 0 4px;font-size:13px">Email subject</label>
+            <input type="text" id="estshare-subject" style="width:100%;padding:10px;border:1px solid #cfd6df;border-radius:8px;font-size:14px;background:#fff;color:#1c2430">
+            <label class="f" style="display:block;font-weight:600;margin:12px 0 4px;font-size:13px">Email message</label>
+            <textarea id="estshare-body" rows="7" style="width:100%;padding:10px;border:1px solid #cfd6df;border-radius:8px;font-size:14px;background:#fff;color:#1c2430;resize:vertical;font-family:inherit"></textarea>
+            <p style="margin:4px 0 0;color:#6b7785;font-size:12px">Placeholders substitute per recipient: <code>{link}</code> · <code>{total}</code> · <code>{version}</code> · <code>{name}</code>. If you leave out <code>{link}</code>, we'll append it at the end.</p>
+
+            <label class="f" style="display:block;font-weight:600;margin:16px 0 4px;font-size:13px">What the client sees</label>
             <label style="display:block;font-size:14px;margin:4px 0"><input type="radio" name="estshare-detail" value="0" checked> Summary (section totals)</label>
             <label style="display:block;font-size:14px;margin:4px 0"><input type="radio" name="estshare-detail" value="1"> Full line-by-line detail</label>
-            <label style="display:block;font-size:14px;margin:14px 0 4px"><input type="checkbox" id="estshare-email-toggle"> Also email this link to the client now</label>
+
+            <label style="display:block;font-size:14px;margin:14px 0 4px"><input type="checkbox" id="estshare-sendas" checked> Send as me — replies go to <b>{{ current_user.email }}</b></label>
+            <label style="display:block;font-size:14px;margin:4px 0"><input type="checkbox" id="estshare-email-toggle" checked> Email the link to checked recipients now</label>
             <div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">
               <button type="button" class="btn btn-sm" onclick="closeEstimateShare()">Cancel</button>
-              <button type="button" class="btn btn-sm btn-primary" id="estshare-go" onclick="submitEstimateShare()">Create link</button>
+              <button type="button" class="btn btn-sm btn-primary" id="estshare-go" onclick="submitEstimateShare()">Send estimate</button>
             </div>
           </div>
           <div id="estshare-result" style="display:none">
             <div id="estshare-msg" style="font-size:14px;margin:8px 0 12px"></div>
-            <label class="f" style="display:block;font-weight:600;margin:6px 0 4px;font-size:13px">Shareable link</label>
-            <div style="display:flex;gap:8px">
-              <input type="text" id="estshare-link" readonly style="flex:1;padding:10px;border:1px solid #cfd6df;border-radius:8px;font-size:13px;background:#fff;color:#1c2430">
-              <button type="button" class="btn btn-sm btn-primary" onclick="copyEstimateLink()">Copy</button>
-            </div>
+            <div id="estshare-result-list" style="display:flex;flex-direction:column;gap:8px"></div>
             <div style="display:flex;gap:10px;margin-top:16px;justify-content:flex-end">
-              <button type="button" class="btn btn-sm" onclick="closeEstimateShare()">Done</button>
-              <a id="estshare-open" href="#" target="_blank" class="btn btn-sm btn-outline">Open portal ↗</a>
+              <button type="button" class="btn btn-sm btn-primary" onclick="closeEstimateShare()">Done</button>
             </div>
           </div>
         </div>
@@ -227,41 +236,147 @@
     </div>
 
     <script>
-      function openEstimateShare(e){ if(e) e.preventDefault();
-        document.getElementById('estshare-form').style.display='block';
-        document.getElementById('estshare-result').style.display='none';
-        var go=document.getElementById('estshare-go'); go.disabled=false; go.textContent='Create link';
-        document.getElementById('estshare-overlay').classList.remove('hidden');
-      }
-      function closeEstimateShare(e){ if(e && e.target && e.target.id!=='estshare-overlay') return;
-        document.getElementById('estshare-overlay').classList.add('hidden');
-      }
-      async function submitEstimateShare(){
-        var btn=document.getElementById('estshare-go'); btn.disabled=true; btn.textContent='Creating…';
-        var detail=(document.querySelector('input[name="estshare-detail"]:checked')||{}).value==='1';
-        var payload={ client_name:document.getElementById('estshare-name').value,
-          client_email:document.getElementById('estshare-email').value,
-          detail_mode:detail, send_email:document.getElementById('estshare-email-toggle').checked };
-        try{
-          var r=await fetch('{{ url_for("estimate_share_create", pid=project.id, bid=budget.id) }}',{
-            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
-          var j=await r.json();
-          if(!r.ok || !j.ok){ alert((j&&j.error)||'Could not create the estimate link.'); btn.disabled=false; btn.textContent='Create link'; return; }
-          document.getElementById('estshare-link').value=j.link;
-          document.getElementById('estshare-open').href=j.link;
-          var tot=(typeof j.grand_total==='number')?('$'+j.grand_total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'';
-          var msg='Link created for <b>'+(j.version_label||'this budget')+'</b>'+(tot?(' · '+tot):'')+'.';
-          if(j.emailed) msg+=' <span style="color:#2a5a3a">Emailed to the client.</span>';
-          else if(j.email_error) msg+=' <span style="color:#9a3030">'+j.email_error+'</span>';
-          document.getElementById('estshare-msg').innerHTML=msg;
-          document.getElementById('estshare-form').style.display='none';
-          document.getElementById('estshare-result').style.display='block';
-        }catch(err){ alert('Network error creating the link.'); }
-        btn.disabled=false; btn.textContent='Create link';
-      }
-      function copyEstimateLink(){ var i=document.getElementById('estshare-link'); i.select();
-        try{ navigator.clipboard.writeText(i.value); }catch(e){ try{document.execCommand('copy');}catch(_){} }
-      }
+      (function(){
+        // Default email body (mirrors the server default; {link}/{total} shown).
+        var EST_DEFAULT_BODY =
+          "Hi {name},\n\n" +
+          "Please review the estimate for {{ project.name|e }} ({version}). " +
+          "You can view and approve it here:\n\n" +
+          "{link}\n\n" +
+          "Estimated total: {total}\n\n" +
+          "Thank you,\n" +
+          "{{ (current_user.name or current_user.email)|e }}";
+        var EST_DEFAULT_SUBJECT = "{{ project.name|e }} — Estimate for your review";
+        var _estLoaded = false;
+
+        function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+        function estPid(){
+          // Derive pid from the URL — do NOT assume a global PROJ_ID exists.
+          var m = location.pathname.match(/\/projects\/(\d+)\//);
+          return m ? m[1] : '{{ project.id }}';
+        }
+
+        window.openEstimateShare = function(e){ if(e) e.preventDefault();
+          document.getElementById('estshare-form').style.display='block';
+          document.getElementById('estshare-result').style.display='none';
+          var go=document.getElementById('estshare-go'); go.disabled=false; go.textContent='Send estimate';
+          document.getElementById('estshare-subject').value = EST_DEFAULT_SUBJECT;
+          document.getElementById('estshare-body').value = EST_DEFAULT_BODY;
+          document.getElementById('estshare-overlay').classList.remove('hidden');
+          loadRecipients();
+        };
+        window.closeEstimateShare = function(e){ if(e && e.target && e.target.id!=='estshare-overlay') return;
+          document.getElementById('estshare-overlay').classList.add('hidden');
+        };
+
+        function recipRow(name, email, checked, sentBefore){
+          var id = 'estrec-' + Math.random().toString(36).slice(2,9);
+          var label = esc(name || email);
+          var sub = email && name ? '<span style="color:#6b7785;font-size:12px"> · '+esc(email)+'</span>' : '';
+          var badge = sentBefore ? '<span style="color:#5b8af9;font-size:11px;font-weight:600"> · sent before</span>' : '';
+          return '<label style="display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:14px;cursor:pointer">'+
+                 '<input type="checkbox" class="estshare-recip-cb" '+(checked?'checked':'')+
+                 ' data-name="'+esc(name||'')+'" data-email="'+esc(email||'')+'">'+
+                 '<span>'+label+sub+badge+'</span></label>';
+        }
+
+        function loadRecipients(){
+          var box = document.getElementById('estshare-recips');
+          box.innerHTML = '<div id="estshare-recips-empty" style="padding:10px 12px;color:#6b7785;font-size:13px">Loading recipients…</div>';
+          fetch('/projects/'+estPid()+'/estimate/recipients')
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+              var html = '';
+              (d.contacts||[]).forEach(function(c){
+                var before = c.source === 'estimate_send';
+                html += recipRow(c.name, c.email, before, before);
+              });
+              (d.past||[]).forEach(function(p){ html += recipRow(p.name, p.email, true, true); });
+              box.innerHTML = html || '<div style="padding:10px 12px;color:#6b7785;font-size:13px">No saved recipients yet — add one below.</div>';
+              _estLoaded = true;
+            })
+            .catch(function(){
+              box.innerHTML = '<div style="padding:10px 12px;color:#9a3030;font-size:13px">Could not load recipients — add them below.</div>';
+            });
+        }
+
+        window.estshareAddRecipient = function(){
+          var ni = document.getElementById('estshare-add-name');
+          var ei = document.getElementById('estshare-add-email');
+          var email = (ei.value||'').trim();
+          if(!email){ alert('Enter an email to add a recipient.'); return; }
+          var name = (ni.value||'').trim();
+          // Dedupe against existing rows.
+          var dup = Array.prototype.some.call(document.querySelectorAll('.estshare-recip-cb'), function(cb){
+            return (cb.getAttribute('data-email')||'').toLowerCase() === email.toLowerCase();
+          });
+          if(dup){ alert('That email is already in the list.'); ni.value=''; ei.value=''; return; }
+          var box = document.getElementById('estshare-recips');
+          var empty = document.getElementById('estshare-recips-empty');
+          if(empty) empty.remove();
+          box.insertAdjacentHTML('beforeend', recipRow(name, email, true, false));
+          ni.value=''; ei.value='';
+        };
+
+        window.submitEstimateShare = async function(){
+          var btn=document.getElementById('estshare-go'); btn.disabled=true; btn.textContent='Sending…';
+          var detail=(document.querySelector('input[name="estshare-detail"]:checked')||{}).value==='1';
+          var recipients = [];
+          document.querySelectorAll('.estshare-recip-cb').forEach(function(cb){
+            if(cb.checked){ recipients.push({ name: cb.getAttribute('data-name')||'', email: cb.getAttribute('data-email')||'' }); }
+          });
+          if(recipients.length === 0){
+            if(!confirm('No recipients checked. Create a copyable link only?')){ btn.disabled=false; btn.textContent='Send estimate'; return; }
+          }
+          var payload={
+            recipients: recipients,
+            detail_mode: detail,
+            send_email: document.getElementById('estshare-email-toggle').checked,
+            send_as_me: document.getElementById('estshare-sendas').checked,
+            email_subject: document.getElementById('estshare-subject').value,
+            email_body: document.getElementById('estshare-body').value
+          };
+          try{
+            var r=await fetch('{{ url_for("estimate_share_create", pid=project.id, bid=budget.id) }}',{
+              method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+            var j=await r.json();
+            if(!r.ok || !j.ok){ alert((j&&j.error)||'Could not create the estimate link.'); btn.disabled=false; btn.textContent='Send estimate'; return; }
+            var tot=(typeof j.grand_total==='number')?('$'+j.grand_total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'';
+            document.getElementById('estshare-msg').innerHTML =
+              'Estimate <b>'+esc(j.version_label||'this budget')+'</b>'+(tot?(' · '+tot):'')+' sent to '+((j.shares||[]).length)+' recipient(s).';
+            var list = document.getElementById('estshare-result-list');
+            list.innerHTML = '';
+            (j.shares||[]).forEach(function(s){
+              var who = esc(s.name || s.email || 'Link');
+              var status = s.emailed
+                ? '<span style="color:#2a5a3a;font-weight:600">✓ emailed</span>'
+                : (s.email
+                    ? '<span style="color:#9a3030;font-weight:600">⚠ '+esc(s.email_error||'not emailed')+'</span>'
+                    : '<span style="color:#6b7785">link only</span>');
+              var row = '<div style="border:1px solid #cfd6df;border-radius:8px;padding:8px 10px;background:#fff;color:#1c2430">'+
+                '<div style="display:flex;justify-content:space-between;gap:8px;font-size:13px;margin-bottom:5px"><b>'+who+'</b>'+status+'</div>'+
+                '<div style="display:flex;gap:6px">'+
+                  '<input type="text" readonly value="'+esc(s.link)+'" style="flex:1;padding:7px;border:1px solid #cfd6df;border-radius:6px;font-size:12px;background:#fff;color:#1c2430">'+
+                  '<button type="button" class="btn btn-sm" onclick="estshareCopy(this)">Copy</button>'+
+                  '<a href="'+esc(s.link)+'" target="_blank" class="btn btn-sm btn-outline">Open ↗</a>'+
+                '</div></div>';
+              list.insertAdjacentHTML('beforeend', row);
+            });
+            document.getElementById('estshare-form').style.display='none';
+            document.getElementById('estshare-result').style.display='block';
+          }catch(err){ alert('Network error creating the link.'); }
+          btn.disabled=false; btn.textContent='Send estimate';
+        };
+
+        window.estshareCopy = function(btn){
+          var i = btn.parentElement.querySelector('input'); i.select();
+          try{ navigator.clipboard.writeText(i.value); }catch(e){ try{document.execCommand('copy');}catch(_){} }
+          var t=btn.textContent; btn.textContent='Copied'; setTimeout(function(){ btn.textContent=t; }, 1200);
+        };
+        // Back-compat shim for any old caller.
+        window.copyEstimateLink = function(){ var i=document.getElementById('estshare-link'); if(i){ i.select();
+          try{ navigator.clipboard.writeText(i.value); }catch(e){ try{document.execCommand('copy');}catch(_){} } } };
+      })();
 
       // ── Manage sent estimates ───────────────────────────────────────────
       function openEstimateManager(e){ if(e) e.preventDefault();
@@ -13688,6 +13803,44 @@
     </div>
   </div>
 
+  {# ── CLIENT CONTACTS (ESTIMATE RECIPIENTS) SECTION ──────────────────────
+     People we've sent estimates to. Auto-populated on estimate send + past
+     sends (source chip 'estimate'), plus manual adds. Feeds the send popup's
+     recipient checklist so a prior recipient is one click to re-send.
+     (User 2026-07-08.) #}
+  <style>
+    .cc-source-chip{display:inline-block;font-size:.62rem;font-weight:600;text-transform:uppercase;
+      letter-spacing:.3px;padding:2px 7px;border-radius:10px;line-height:1.2}
+    .cc-source-estimate_send{background:rgba(91,138,249,.16);color:#5b8af9}
+    .cc-source-manual{background:rgba(120,130,145,.16);color:#8a94a3}
+  </style>
+  <div class="contact-sheet-section">
+    <div class="contact-sheet-section-header" style="display:flex;align-items:center;justify-content:space-between">
+      <span><span class="contact-sheet-section-icon">🤝</span> Clients</span>
+      <button class="btn btn-xs btn-ghost cs-screen-only" onclick="showAddClientContact()">+ Add client</button>
+    </div>
+    <div id="client-contacts-list">
+      <table class="contact-table" id="cc-table" {% if not client_contacts %}style="display:none"{% endif %}>
+        <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Company</th><th>Source</th><th class="cs-screen-only"></th></tr></thead>
+        <tbody id="cc-tbody">
+          {% for cc in client_contacts %}
+          <tr data-cc-id="{{ cc.id }}">
+            <td>{{ cc.name or '—' }}</td>
+            <td>{% if cc.email %}<a href="mailto:{{ cc.email }}" class="contact-link">{{ cc.email }}</a>{% else %}—{% endif %}</td>
+            <td>{{ cc.phone or '—' }}</td>
+            <td>{{ cc.company or '—' }}</td>
+            <td><span class="cc-source-chip cc-source-{{ cc.source }}">{{ 'estimate' if cc.source == 'estimate_send' else 'manual' }}</span></td>
+            <td class="cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="deleteClientContact({{ cc.id }}, this)" title="Remove">✕</button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="contact-sheet-empty" id="cc-empty" {% if client_contacts %}style="display:none"{% endif %}>
+        <p>No client contacts yet. They'll be added automatically when you send an estimate, or add one manually.</p>
+      </div>
+    </div>
+  </div>
+
   {# ── REPRESENTATION SECTION ── #}
   <div class="contact-sheet-section">
     <div class="contact-sheet-section-header" style="display:flex;align-items:center;justify-content:space-between">
@@ -20382,6 +20535,49 @@ function deleteClient(cid, btn) {
   if (!confirm('Remove this client?')) return;
   fetch("{{ url_for('project_client_delete', pid=project.id, cid=0) }}".replace('/0', '/' + cid), {method:'POST'})
     .then(r => r.json()).then(d => { if (d.ok) btn.closest('tr').remove(); });
+}
+
+// ── Client contacts (estimate recipients) group ────────────────────────────
+function _ccEscape(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function showAddClientContact() {
+  var name = (prompt('Client name (optional):') || '').trim();
+  var email = (prompt('Client email:') || '').trim();
+  if (!email) { if (email === '') return; alert('Email is required.'); return; }
+  var phone = (prompt('Phone (optional):') || '').trim();
+  var company = (prompt('Company (optional):') || '').trim();
+  fetch("{{ url_for('client_contact_create', pid=project.id) }}",
+    {method:'POST', headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({name:name, email:email, phone:phone, company:company})})
+    .then(r => r.json()).then(d => {
+      if (!d.ok) { alert(d.error || 'Could not add client.'); return; }
+      var c = d.contact;
+      var tbody = document.getElementById('cc-tbody');
+      if (document.querySelector('#cc-tbody tr[data-cc-id="'+c.id+'"]')) return;
+      var tr = document.createElement('tr');
+      tr.setAttribute('data-cc-id', c.id);
+      tr.innerHTML =
+        '<td>'+ _ccEscape(c.name) +'</td>'+
+        '<td>'+ (c.email ? '<a href="mailto:'+ _ccEscape(c.email) +'" class="contact-link">'+ _ccEscape(c.email) +'</a>' : '—') +'</td>'+
+        '<td>'+ (_ccEscape(c.phone) || '—') +'</td>'+
+        '<td>'+ (_ccEscape(c.company) || '—') +'</td>'+
+        '<td><span class="cc-source-chip cc-source-'+ c.source +'">'+ (c.source === 'estimate_send' ? 'estimate' : 'manual') +'</span></td>'+
+        '<td class="cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="deleteClientContact('+ c.id +', this)" title="Remove">✕</button></td>';
+      tbody.appendChild(tr);
+      var tbl = document.getElementById('cc-table'), empt = document.getElementById('cc-empty');
+      if (tbl) tbl.style.display = ''; if (empt) empt.style.display = 'none';
+    }).catch(function(){ alert('Network error adding client.'); });
+}
+function deleteClientContact(cid, btn) {
+  if (!confirm('Remove this client contact?')) return;
+  fetch("{{ url_for('client_contact_delete', pid=project.id, cid=0) }}".replace(/\/0$/, '/' + cid), {method:'POST'})
+    .then(r => r.json()).then(d => {
+      if (!d.ok) { alert('Could not remove.'); return; }
+      var tr = btn.closest('tr'); if (tr) tr.remove();
+      if (!document.querySelector('#cc-tbody tr')) {
+        var tbl = document.getElementById('cc-table'), empt = document.getElementById('cc-empty');
+        if (tbl) tbl.style.display = 'none'; if (empt) empt.style.display = '';
+      }
+    });
 }
 
 // ── Support Contact Modal ──────────────────────────────────────────────────

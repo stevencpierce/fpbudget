@@ -1419,3 +1419,24 @@ class VendorAlias(db.Model):
     __table_args__ = (
         db.UniqueConstraint('project_id', 'raw_canonical', name='uq_vendor_alias'),
     )
+
+
+class ProjectClientContact(db.Model):
+    """A client-side contact for a project (the people we send estimates to).
+    Auto-populated when an estimate is sent (source='estimate_send') and
+    manually addable on the People tab (source='manual'). Deduped
+    case-insensitively by (project_id, email). Surfaced as the '🤝 Clients'
+    group on the People tab and prefilled into the estimate-send popup so a
+    prior recipient can be re-sent a new version with one checkbox.
+    (User 2026-07-08.)"""
+    __tablename__ = "project_client_contact"
+    id          = db.Column(db.Integer, primary_key=True)
+    project_id  = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False, index=True)
+    name        = db.Column(db.String(200), nullable=True)
+    email       = db.Column(db.String(200), nullable=False, index=True)
+    phone       = db.Column(db.String(50), nullable=True)
+    company     = db.Column(db.String(200), nullable=True)
+    source      = db.Column(db.String(20), default='manual', nullable=False)  # 'estimate_send' | 'manual'
+    created_at  = db.Column(db.DateTime, default=datetime.utcnow)
+
+    project = db.relationship("ProjectSheet", foreign_keys=[project_id])
