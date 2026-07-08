@@ -72,6 +72,31 @@ os.environ.setdefault('AWS_S3_DISABLE_DEFAULT_CHECKSUMS',  'true')
 
 from flask_mail import Mail, Message as MailMessage
 from datetime import date, datetime, timedelta
+
+# ── Safe calendar-date parsing ────────────────────────────────────────────────
+# strptime("%Y-%m-%d") happily accepts absurd years — "0202-07-14" parses to
+# date(202, 7, 14) without error. When such a value reached a budget's start
+# date (a stray keystroke in an <input type="date"> whose year spinner accepts
+# 1–4 digits), every ScheduleDay and call sheet derived from it rendered
+# "July 14, 202". Reject years outside a sane production window so an invalid
+# year can never be stored — and therefore never propagate into the call
+# sheets — again. (User 2026-07-08.)
+MIN_VALID_YEAR = 2000
+MAX_VALID_YEAR = 2100
+
+def parse_ymd_safe(s):
+    """Parse a 'YYYY-MM-DD' string to a date. Returns None when the value is
+    empty, malformed, or carries an out-of-range year. Never raises."""
+    if not s:
+        return None
+    try:
+        d = datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    if not (MIN_VALID_YEAR <= d.year <= MAX_VALID_YEAR):
+        return None
+    return d
+
 from flask import (Flask, render_template, redirect, url_for, request,
                    flash, jsonify, Response, abort, session)
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
@@ -3998,15 +4023,10 @@ def project_new():
     # Optional start/end dates from the modal
     start_date_str = request.form.get("start_date", "").strip()
     end_date_str   = request.form.get("end_date", "").strip()
-    start_date = None
-    end_date   = None
-    try:
-        if start_date_str:
-            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-        if end_date_str:
-            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-    except ValueError:
-        pass
+    # Reject out-of-range years here too, so a bad start date can't seed the
+    # whole schedule at project-creation time. (User 2026-07-08.)
+    start_date = parse_ymd_safe(start_date_str)
+    end_date   = parse_ymd_safe(end_date_str)
     p = ProjectSheet(name=name, client_name=client_name)
     db.session.add(p)
     db.session.flush()
@@ -15784,15 +15804,23 @@ def budget_settings(pid, bid):
     if "target_budget" in data:
         budget.target_budget = float(data["target_budget"]) if data["target_budget"] else None
     if "start_date" in data:
-        try:
-            budget.start_date = datetime.strptime(data["start_date"], "%Y-%m-%d").date() if data["start_date"] else None
-        except ValueError:
-            pass
+        if data["start_date"]:
+            _sd = parse_ymd_safe(data["start_date"])
+            if _sd is None:
+                return jsonify({"error": "Start date has an invalid or out-of-range "
+                                         f"year (must be {MIN_VALID_YEAR}-{MAX_VALID_YEAR})."}), 400
+            budget.start_date = _sd
+        else:
+            budget.start_date = None
     if "end_date" in data:
-        try:
-            budget.end_date = datetime.strptime(data["end_date"], "%Y-%m-%d").date() if data["end_date"] else None
-        except ValueError:
-            pass
+        if data["end_date"]:
+            _ed = parse_ymd_safe(data["end_date"])
+            if _ed is None:
+                return jsonify({"error": "End date has an invalid or out-of-range "
+                                         f"year (must be {MIN_VALID_YEAR}-{MAX_VALID_YEAR})."}), 400
+            budget.end_date = _ed
+        else:
+            budget.end_date = None
     if "notes" in data:
         budget.notes = data["notes"] or None
     if "payroll_profile_id" in data:
@@ -16352,10 +16380,9 @@ def set_gantt_day(pid, bid):
     if not line_id or not date_str:
         return jsonify({"error": "line_id and date required"}), 400
 
-    try:
-        d = datetime.strptime(date_str, "%Y-%m-%d").date()
-    except ValueError:
-        return jsonify({"error": "invalid date"}), 400
+    d = parse_ymd_safe(date_str)
+    if d is None:
+        return jsonify({"error": f"invalid date (year must be {MIN_VALID_YEAR}-{MAX_VALID_YEAR})"}), 400
 
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
 
@@ -16838,9 +16865,8 @@ def expand_gantt(pid, bid):
     direction = data.get("direction", "after")  # before | after
     anchor    = data.get("anchor")              # YYYY-MM-DD
     count     = int(data.get("count", 7))
-    try:
-        anchor_date = datetime.strptime(anchor, "%Y-%m-%d").date()
-    except Exception:
+    anchor_date = parse_ymd_safe(anchor)
+    if anchor_date is None:
         return jsonify({"error": "invalid anchor"}), 400
 
     new_dates = []

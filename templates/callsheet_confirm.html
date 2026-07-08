@@ -87,6 +87,7 @@
       border-bottom: 1px solid #2a2d3a;
     }
     .cs-section-body { padding: 14px 18px; }
+    .cs-schedule-text { white-space: pre-wrap; line-height: 1.5; font-size: .88rem; color: #d1d5db; }
 
     /* ── Locations ── */
     .loc-row { padding: 6px 0; border-bottom: 1px solid #1c1f2c; font-size: .86rem; }
@@ -218,6 +219,33 @@
 {% set cct          = cs_data.get('crew_call_times', {}) %}
 {% set dn           = cs_data.get('dept_notes', []) %}
 
+{# Sent/preview call sheets now carry the shooting + advance schedule and honor
+   the per-day section hide flags (the 👁 toggles on the internal sheet), so
+   "Meals Scheduled" is selectively hideable. (User 2026-07-08.) #}
+{% set hidden_map   = cs_data.get('hidden', {}) %}
+{% set sched_notes  = cs_data.get('schedule_notes','') %}
+{% set adv_sched    = cs_data.get('advance_schedule','') %}
+{% set meals_hidden = hidden_map.get('section:meals') %}
+{% set shoot_hidden = hidden_map.get('section:shooting_schedule') %}
+{% set adv_hidden   = hidden_map.get('section:advance_schedule') %}
+
+{# Macro: schedule sections shown on every recipient type. Jinja macros do not
+   see template-level {% set %} vars, so the values are passed in explicitly. #}
+{% macro schedule_sections(sched_notes, adv_sched, shoot_hidden, adv_hidden) %}
+  {% if sched_notes and not shoot_hidden %}
+  <div class="cs-section">
+    <div class="cs-section-hdr">Today's Shooting Schedule</div>
+    <div class="cs-section-body"><div class="cs-schedule-text">{{ sched_notes }}</div></div>
+  </div>
+  {% endif %}
+  {% if adv_sched and not adv_hidden %}
+  <div class="cs-section">
+    <div class="cs-section-hdr">Advance Schedule</div>
+    <div class="cs-section-body"><div class="cs-schedule-text">{{ adv_sched }}</div></div>
+  </div>
+  {% endif %}
+{% endmacro %}
+
 {# ── Helper: roles to show for talent ── #}
 {% set TALENT_ROLES = ['hair', 'makeup', 'hmu', 'h&m', 'h & m', 'wardrobe', 'styling', 'stylist',
                        '1st ad', '2nd ad', 'assistant director', 'first ad', 'second ad',
@@ -321,8 +349,9 @@
     </div>
     {% endif %}
 
-    {# Meals #}
-    {% if meal1 or meal2 or bkfst %}
+    {# Meals — selectively hideable via the 👁 "Meals Scheduled" toggle on the
+       internal sheet (section:meals). #}
+    {% if (meal1 or meal2 or bkfst) and not meals_hidden %}
     <div class="cs-section">
       <div class="cs-section-hdr">Meals</div>
       <div class="cs-section-body">
@@ -334,6 +363,9 @@
       </div>
     </div>
     {% endif %}
+
+    {# Shooting + advance schedule (all recipient types). #}
+    {{ schedule_sections(sched_notes, adv_sched, shoot_hidden, adv_hidden) }}
 
     {# Key contacts — H&MU, Wardrobe, AD, Producer only #}
     {% set filtered_kp = [] %}
@@ -410,8 +442,9 @@
     </div>
     {% endif %}
 
-    {# Meals #}
-    {% if meal1 or meal2 or bkfst %}
+    {# Meals — selectively hideable via the 👁 "Meals Scheduled" toggle on the
+       internal sheet (section:meals). #}
+    {% if (meal1 or meal2 or bkfst) and not meals_hidden %}
     <div class="cs-section">
       <div class="cs-section-hdr">Meals</div>
       <div class="cs-section-body">
@@ -423,6 +456,9 @@
       </div>
     </div>
     {% endif %}
+
+    {# Shooting + advance schedule (all recipient types). #}
+    {{ schedule_sections(sched_notes, adv_sched, shoot_hidden, adv_hidden) }}
 
     {# Key contacts — show role & name only, NO phone/email #}
     {% set clean_kp = [] %}
@@ -534,8 +570,9 @@
     </div>
     {% endif %}
 
-    {# Meals #}
-    {% if meal1 or meal2 or bkfst %}
+    {# Meals — selectively hideable via the 👁 "Meals Scheduled" toggle on the
+       internal sheet (section:meals). #}
+    {% if (meal1 or meal2 or bkfst) and not meals_hidden %}
     <div class="cs-section">
       <div class="cs-section-hdr">Meals</div>
       <div class="cs-section-body">
@@ -547,6 +584,9 @@
       </div>
     </div>
     {% endif %}
+
+    {# Shooting + advance schedule (all recipient types). #}
+    {{ schedule_sections(sched_notes, adv_sched, shoot_hidden, adv_hidden) }}
 
     {# Key contacts — full with phone #}
     {% set clean_kp = [] %}
