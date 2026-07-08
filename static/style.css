@@ -3448,6 +3448,8 @@ a.tab-link:hover { background: var(--bg-3); }
 
 /* ── Print media query ─────────────────────────────────────────────────────── */
 @media print {
+  /* Hidden-in-this-callsheet elements are fully omitted from print/PDF. */
+  .cs-hidden-el { display: none !important; }
   /* Hide all screen-only chrome */
   .cs-screen-header,
   .cs-screen-only,
@@ -3650,6 +3652,31 @@ a.tab-link:hover { background: var(--bg-3); }
 /* ── Call Sheet Editing UI ──────────────────────────────────────────────────── */
 
 .cs-screen-only { /* shown on screen, hidden in print via @media print */ }
+
+/* ── Hide / show elements (per-day overrides) ─────────────────────────────── */
+/* Hidden element in the internal editing view: dimmed + dashed so it can still
+   be found and un-hidden. Fully removed in print/PDF/public (rule below). */
+.cs-hidden-el {
+  opacity: .35;
+  outline: 1px dashed var(--text-muted, #888);
+  outline-offset: 2px;
+}
+/* The 👁 toggle: subtle until you hover its container. */
+.cs-hide-toggle {
+  cursor: pointer;
+  font-size: .8rem;
+  opacity: 0;
+  margin-right: .3rem;
+  transition: opacity .12s;
+  user-select: none;
+  vertical-align: baseline;
+}
+.cs-hideable:hover > .cs-hide-toggle,
+.cs-hideable:hover .cs-hide-toggle,
+.callsheet-section-title:hover .cs-hide-toggle,
+tr:hover .cs-hide-toggle,
+.cs-hide-toggle:hover { opacity: .75; }
+.cs-hide-toggle:hover { opacity: 1 !important; }
 
 .cs-edit-banner {
   display: flex;

@@ -20867,24 +20867,123 @@ def callsheet_prepare_send(pid, bid, date_str):
                     "recipients": recipient_results})
 
 
-@app.route("/callsheet/view/<token>")
-def callsheet_view_public(token):
-    """Public link: mark as viewed, show confirm page."""
-    rec = CallSheetRecipient.query.filter_by(confirm_token=token).first_or_404()
-    if not rec.viewed_at:
-        rec.viewed_at = datetime.utcnow()
-        if rec.status == "sent":
-            rec.status = "viewed"
-        db.session.commit()
-    send = CallSheetSend.query.get(rec.send_id)
-    already_confirmed = rec.confirmed_at is not None
+def _resolve_recipient_crew_member(name, email):
+    """Resolve a call-sheet recipient (identified only by name/email — the
+    CallSheetRecipient row carries no crew_member_id) to a CrewMember.
+    Order: case-insensitive email → CrewMember, else case-insensitive name.
+    Returns the CrewMember or None. (User 2026-07-08.)"""
+    if email:
+        _e = email.strip().lower()
+        if _e:
+            cm = CrewMember.query.filter(
+                db.func.lower(CrewMember.email) == _e).first()
+            if cm:
+                return cm
+    if name:
+        _n = name.strip().lower()
+        if _n and _n not in ('—', '-'):
+            return CrewMember.query.filter(
+                db.func.lower(CrewMember.name) == _n).first()
+    return None
+
+
+def _personal_travel_for(budget, selected_date, sched_mode, crew_member, rec_name):
+    """Return this recipient's personal travel items for the day — flights,
+    hotels (whose check_in..check_out span the date), car rentals — as view
+    dicts INCLUDING the confirmation number. Only the recipient's own travel;
+    nothing about anyone else. (User 2026-07-08.)
+
+    Linkage matches callsheet_view: TravelDetail → schedule_day_id, so we find
+    the recipient's ScheduleDay rows on this budget/mode, plus (for hotels
+    spanning multiple days) any of the recipient's ScheduleDays whose hotel
+    check_in..check_out range covers selected_date.
+    """
+    if not budget:
+        return []
+    # Find the crew member's schedule days on this budget/mode. If we resolved a
+    # CrewMember, match via their assignments' budget lines; else fall back to
+    # name_override on assignments.
+    line_ids_all = [ln.id for ln in BudgetLine.query.filter_by(
+        budget_id=budget.id, is_labor=True).all()]
+    if not line_ids_all:
+        return []
+    cas = CrewAssignment.query.filter(
+        CrewAssignment.budget_line_id.in_(line_ids_all)).all()
+    my_keys = set()  # (budget_line_id, instance)
+    for ca in cas:
+        matched = False
+        if crew_member and ca.crew_member_id == crew_member.id:
+            matched = True
+        elif (not ca.crew_member_id) and ca.name_override and rec_name and \
+                ca.name_override.strip().lower() == rec_name.strip().lower():
+            matched = True
+        if matched:
+            my_keys.add((ca.budget_line_id, ca.instance or 1))
+    if not my_keys:
+        return []
+    my_line_ids = list({k[0] for k in my_keys})
+    # ALL of the recipient's schedule days (used to gather their travel rows),
+    # scoped to their assignment keys.
+    all_my_days = ScheduleDay.query.filter(
+        ScheduleDay.budget_id == budget.id,
+        ScheduleDay.schedule_mode == sched_mode,
+        ScheduleDay.budget_line_id.in_(my_line_ids),
+        ScheduleDay.day_type != 'off',
+    ).all()
+    all_my_days = [d for d in all_my_days
+                   if (d.budget_line_id, d.crew_instance or 1) in my_keys]
+    # The recipient's schedule days on THIS date (primary travel — flights, cars,
+    # and same-day hotels — matches callsheet_view's day linkage exactly).
+    today_sd_ids = {d.id for d in all_my_days if d.date == selected_date}
+    all_sd_ids   = [d.id for d in all_my_days]
+    if not all_sd_ids:
+        return []
+    tds = TravelDetail.query.filter(
+        TravelDetail.schedule_day_id.in_(all_sd_ids)).all()
+
+    def _tm(x): return x.strftime('%-I:%M %p') if x else None
+    def _dd(x): return x.strftime('%b %-d') if x else None
+    out = []
+    for td in tds:
+        # Include a travel row when it's linked to a schedule day ON this date,
+        # OR (hotels) when its check_in..check_out range spans this date — so a
+        # hotel booked against the arrival day still shows on the shoot day.
+        on_today = td.schedule_day_id in today_sd_ids
+        spans = (td.kind == 'hotel' and td.check_in and td.check_out
+                 and td.check_in <= selected_date <= td.check_out)
+        if not (on_today or spans):
+            continue
+        v = {"id": td.id, "kind": td.kind,
+             "confirmation_no": td.confirmation_no, "notes": td.notes}
+        if td.kind == 'flight':
+            v.update(airline=td.airline, flight_no=td.flight_no,
+                     depart_airport=td.depart_airport, arrive_airport=td.arrive_airport,
+                     depart_at=_tm(td.depart_at), arrive_at=_tm(td.arrive_at))
+        elif td.kind == 'hotel':
+            v.update(hotel_name=td.hotel_name, hotel_address=td.hotel_address,
+                     check_in=_dd(td.check_in), check_out=_dd(td.check_out),
+                     room_type=td.room_type)
+        elif td.kind == 'car_rental':
+            v.update(rental_co=td.rental_co, pickup_location=td.pickup_location,
+                     pickup_at=_tm(td.pickup_at), return_at=_tm(td.return_at))
+        elif td.kind == 'mileage':
+            v.update(miles=(str(td.miles) if td.miles is not None else None),
+                     route=td.route)
+        out.append(v)
+    return out
+
+
+def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
+    """Shared context builder for the tokenized recipient view AND the
+    login-gated preview. Given a send + recipient identity, returns the kwargs
+    dict for callsheet_confirm.html (minus rec/token/confirm state, which the
+    caller supplies). (User 2026-07-08.)"""
     date_display = send.date.strftime("%A, %B %-d, %Y") if send else ""
     budget = Budget.query.get(send.budget_id) if send else None
     project = ProjectSheet.query.get(budget.project_id) if budget else None
-    project_name = project.name if project else ""
-    # Fetch call sheet data to show on portal
     cs_portal_data = {}
     cs_locations = []
+    sched_mode_p = 'estimated'
     if send and budget:
         sched_mode_p = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
         cs_rec = CallSheetData.query.filter_by(
@@ -20899,31 +20998,57 @@ def callsheet_view_public(token):
             budget_id=send.budget_id, date=send.date).all()]
         cs_locations = Location.query.filter(Location.id.in_(loc_day_ids)).all() if loc_day_ids else []
 
-    # Find this recipient's individual call time
     cct = cs_portal_data.get('crew_call_times') or {}
     personal_call = ''
-    name_lower = rec.name.lower()
+    name_lower = (rec_name or '').lower()
     for key, t in cct.items():
         if key.split('||')[-1].strip().lower() == name_lower:
             personal_call = t
             break
     personal_call = personal_call or cs_portal_data.get('general_crew_call', '') or ''
 
+    # Resolve recipient → crew member → personal travel (with confirmations).
+    crew_member = _resolve_recipient_crew_member(rec_name, rec_email)
+    personal_travel = []
+    if send and budget:
+        personal_travel = _personal_travel_for(
+            budget, send.date, sched_mode_p, crew_member, rec_name)
+
     tz_name = (getattr(project, "timezone", None) or "America/New_York")
+    return {
+        "date_display": date_display,
+        "project_name": project.name if project else "",
+        "cs_data": cs_portal_data,
+        "cs_locations": cs_locations,
+        "personal_call": personal_call,
+        "personal_travel": personal_travel,
+        "tz_name": tz_name,
+    }
+
+
+@app.route("/callsheet/view/<token>")
+def callsheet_view_public(token):
+    """Public link: mark as viewed, show confirm page."""
+    rec = CallSheetRecipient.query.filter_by(confirm_token=token).first_or_404()
+    if not rec.viewed_at:
+        rec.viewed_at = datetime.utcnow()
+        if rec.status == "sent":
+            rec.status = "viewed"
+        db.session.commit()
+    send = CallSheetSend.query.get(rec.send_id)
+    already_confirmed = rec.confirmed_at is not None
+    ctx = _build_callsheet_recipient_context(
+        send, rec.name, rec.email, rec.recipient_type)
     return render_template(
         "callsheet_confirm.html",
         rec=rec,
         send=send,
         already_confirmed=already_confirmed,
-        date_display=date_display,
-        project_name=project_name,
         token=token,
-        cs_data=cs_portal_data,
-        cs_locations=cs_locations,
-        personal_call=personal_call,
-        confirmed_local=_fmt_local(rec.confirmed_at, tz_name),
-        viewed_local=_fmt_local(rec.viewed_at, tz_name),
-        tz_name=tz_name,
+        preview_mode=False,
+        confirmed_local=_fmt_local(rec.confirmed_at, ctx["tz_name"]),
+        viewed_local=_fmt_local(rec.viewed_at, ctx["tz_name"]),
+        **ctx,
     )
 
 
@@ -20938,47 +21063,77 @@ def callsheet_confirm_public(token):
             rec.viewed_at = rec.confirmed_at
         db.session.commit()
     send = CallSheetSend.query.get(rec.send_id)
-    date_display = send.date.strftime("%A, %B %-d, %Y") if send else ""
-    budget = Budget.query.get(send.budget_id) if send else None
-    project = ProjectSheet.query.get(budget.project_id) if budget else None
-    cs_portal_data = {}
-    cs_locations = []
-    if send and budget:
-        sched_mode_p = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
-        cs_rec = CallSheetData.query.filter_by(
-            budget_id=send.budget_id, date=send.date, schedule_mode=sched_mode_p).first()
-        if cs_rec and cs_rec.data_json:
-            try:
-                cs_portal_data = json.loads(cs_rec.data_json)
-            except Exception:
-                pass
-        from models import LocationDay, Location
-        loc_day_ids = [ld.location_id for ld in LocationDay.query.filter_by(
-            budget_id=send.budget_id, date=send.date).all()]
-        cs_locations = Location.query.filter(Location.id.in_(loc_day_ids)).all() if loc_day_ids else []
-    cct = cs_portal_data.get('crew_call_times') or {}
-    personal_call = ''
-    name_lower = rec.name.lower()
-    for key, t in cct.items():
-        if key.split('||')[-1].strip().lower() == name_lower:
-            personal_call = t
-            break
-    personal_call = personal_call or cs_portal_data.get('general_crew_call', '') or ''
-    tz_name = (getattr(project, "timezone", None) or "America/New_York")
+    ctx = _build_callsheet_recipient_context(
+        send, rec.name, rec.email, rec.recipient_type)
     return render_template(
         "callsheet_confirm.html",
         rec=rec,
         send=send,
         already_confirmed=True,
-        date_display=date_display,
-        project_name=project.name if project else "",
         token=token,
-        cs_data=cs_portal_data,
-        cs_locations=cs_locations,
-        personal_call=personal_call,
-        confirmed_local=_fmt_local(rec.confirmed_at, tz_name),
-        viewed_local=_fmt_local(rec.viewed_at, tz_name),
-        tz_name=tz_name,
+        preview_mode=False,
+        confirmed_local=_fmt_local(rec.confirmed_at, ctx["tz_name"]),
+        viewed_local=_fmt_local(rec.viewed_at, ctx["tz_name"]),
+        **ctx,
+    )
+
+
+# ── Call-sheet preview (login-gated, no send) ─────────────────────────────────
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/<date_str>/preview")
+@login_required
+def callsheet_preview_as(pid, bid, date_str):
+    """Render the tokenized recipient view for a given person WITHOUT creating a
+    send — so an admin can see exactly what a recipient receives (incl. their
+    personal travel/confirmations block). ?as=<crew_member_id or email>.
+    (User 2026-07-08.)"""
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    try:
+        selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return "Invalid date", 400
+    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+
+    as_val = (request.args.get('as') or '').strip()
+    rec_name, rec_email, rec_type = '', '', 'crew'
+    cm = None
+    if as_val.isdigit():
+        cm = CrewMember.query.get(int(as_val))
+    if cm is None and '@' in as_val:
+        cm = CrewMember.query.filter(
+            db.func.lower(CrewMember.email) == as_val.lower()).first()
+    if cm is None and as_val:
+        cm = CrewMember.query.filter(
+            db.func.lower(CrewMember.name) == as_val.lower()).first()
+    if cm is not None:
+        rec_name, rec_email = cm.name, (cm.email or '')
+    elif '@' in as_val:
+        rec_email = as_val
+        rec_name = as_val
+    else:
+        rec_name = as_val or 'Recipient'
+
+    # Build a transient (unsaved) send + recipient so the shared context builder
+    # and template work unchanged. Never committed.
+    fake_send = CallSheetSend(
+        budget_id=bid, date=selected_date, schedule_mode=sched_mode,
+        version_label='PREVIEW')
+    fake_rec = CallSheetRecipient(
+        recipient_type=rec_type, name=rec_name, email=rec_email or None,
+        status='pending')
+
+    ctx = _build_callsheet_recipient_context(
+        fake_send, rec_name, rec_email, rec_type)
+    return render_template(
+        "callsheet_confirm.html",
+        rec=fake_rec,
+        send=fake_send,
+        already_confirmed=False,
+        token=None,
+        preview_mode=True,
+        confirmed_local=None,
+        viewed_local=None,
+        **ctx,
     )
 
 
@@ -21429,9 +21584,46 @@ def callsheet_save(pid, bid, date_str):
 @app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/contacts")
 @login_required
 def callsheet_contacts_api(pid, bid):
-    """Return all crew members for this budget for Key Personnel dropdowns."""
-    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    """Return all crew members for this budget for Key Personnel dropdowns.
+
+    When ?date=YYYY-MM-DD is passed, each contact is also flagged on_day=True
+    when that person has a non-off ScheduleDay for this budget+date+mode
+    (resolved crew→assignment→schedule day the same way callsheet_view does).
+    Non-crew recipients (clients/unions/reps) are on_day=False here — the send
+    modal pre-checks them only if flagged to receive the sheet. (User 2026-07-08.)
+    """
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     lines = BudgetLine.query.filter_by(budget_id=bid, is_labor=True).all()
+
+    # Build the on-day crew_member_id + name set for the requested date.
+    on_day_cm_ids  = set()
+    on_day_names   = set()
+    date_str = (request.args.get('date') or '').strip()
+    if date_str:
+        try:
+            _d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            _d = None
+        if _d is not None:
+            sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+            _days = ScheduleDay.query.filter(
+                ScheduleDay.budget_id == bid,
+                ScheduleDay.schedule_mode == sched_mode,
+                ScheduleDay.date == _d,
+                ScheduleDay.day_type != 'off',
+            ).all()
+            _line_ids = list({d.budget_line_id for d in _days if d.budget_line_id})
+            _by_line_inst = {(d.budget_line_id, d.crew_instance or 1) for d in _days}
+            if _line_ids:
+                for _ca in CrewAssignment.query.filter(
+                        CrewAssignment.budget_line_id.in_(_line_ids)).all():
+                    if (_ca.budget_line_id, _ca.instance or 1) not in _by_line_inst:
+                        continue
+                    if _ca.crew_member_id:
+                        on_day_cm_ids.add(_ca.crew_member_id)
+                    elif _ca.name_override:
+                        on_day_names.add(_ca.name_override.strip().lower())
+
     contacts = []
     seen_ids = set()
     for ln in lines:
@@ -21445,6 +21637,7 @@ def callsheet_contacts_api(pid, bid):
                         "role": ln.description or ln.account_name,
                         "phone": cm.phone or "",
                         "email": cm.email or "",
+                        "on_day": cm.id in on_day_cm_ids,
                     })
                     seen_ids.add(cm.id)
             elif ca.name_override and not ca.crew_member_id:
@@ -21454,6 +21647,7 @@ def callsheet_contacts_api(pid, bid):
                     "role": ln.description or ln.account_name,
                     "phone": "",
                     "email": "",
+                    "on_day": ca.name_override.strip().lower() in on_day_names,
                 })
     return jsonify(contacts)
 
@@ -21599,7 +21793,7 @@ def callsheet_view(pid, bid, date_str=None):
     def _cs_td_view(td):
         def _tm(x): return x.strftime('%-I:%M %p') if x else None
         def _dd(x): return x.strftime('%b %-d') if x else None
-        v = {"kind": td.kind, "confirmation_no": td.confirmation_no, "notes": td.notes}
+        v = {"id": td.id, "kind": td.kind, "confirmation_no": td.confirmation_no, "notes": td.notes}
         if td.kind == 'flight':
             v.update(airline=td.airline, flight_no=td.flight_no,
                      depart_airport=td.depart_airport, arrive_airport=td.arrive_airport,
@@ -21641,6 +21835,9 @@ def callsheet_view(pid, bid, date_str=None):
                     'phone': phone or '',
                     'email': email or '',
                     'account_code': ln.account_code,
+                    'budget_line_id': ln.id,
+                    'instance': inst,
+                    'crew_member_id': a.crew_member_id,
                     'travel': _cs_travel_for(sd),
                 })
         else:
@@ -21657,6 +21854,9 @@ def callsheet_view(pid, bid, date_str=None):
                     'phone': '',
                     'email': '',
                     'account_code': ln.account_code,
+                    'budget_line_id': ln.id,
+                    'instance': inst,
+                    'crew_member_id': None,
                     'travel': _cs_travel_for(sd),
                 })
 
@@ -21907,6 +22107,16 @@ def callsheet_view(pid, bid, date_str=None):
         'talent_list':     True,                                           # all views show cast (names ≥)
         'crew_phone_in_list': _v == 'crew',                               # crew view adds phone to the crew list
     }
+    # ── On-day set for send-modal pre-checking (User 2026-07-08) ─────────────
+    # People actually scheduled this day = everyone in crew_rows (crew + talent,
+    # resolved from today's non-off ScheduleDays exactly as above). Clients and
+    # other non-crew recipients are NOT on-day (they get pre-checked only if
+    # separately flagged to receive the sheet — handled below).
+    on_day_names  = sorted({(r['name'] or '').strip().lower()
+                            for r in crew_rows if r.get('name') and r['name'] not in ('—', '-')})
+    on_day_emails = sorted({(r['email'] or '').strip().lower()
+                            for r in crew_rows if r.get('email')})
+
     return render_template("callsheet.html",
         project=project,
         budget=budget,
@@ -21946,6 +22156,8 @@ def callsheet_view(pid, bid, date_str=None):
         crew_p2_all=crew_p2_all,
         confirm_status=confirm_status,
         meal_counts=meal_counts,
+        on_day_names=on_day_names,
+        on_day_emails=on_day_emails,
     )
 
 

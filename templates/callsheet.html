@@ -167,11 +167,17 @@
         <div class="callsheet-header-sub">{{ budget.name }} <span class="callsheet-mode-pill">{{ cur_mode.short }}</span></div>
       </div>
       <div class="callsheet-header-center">
-        <div class="callsheet-project-title">{{ project.name }}</div>
-        <div class="callsheet-header-label">CALL SHEET</div>
+        <div class="callsheet-project-title cs-editable" contenteditable="true"
+             data-cs-text="header_project_title" data-cs-default="{{ project.name }}"
+             title="Click to edit the project title">{{ project.name }}</div>
+        <div class="callsheet-header-label cs-editable" contenteditable="true"
+             data-cs-text="header_label" data-cs-default="CALL SHEET"
+             title="Click to edit">CALL SHEET</div>
       </div>
       <div class="callsheet-header-right-block">
-        <div class="callsheet-date-display">{{ selected_date.strftime('%A, %B %d, %Y') }}</div>
+        <div class="callsheet-date-display cs-editable" contenteditable="true"
+             data-cs-text="header_date" data-cs-default="{{ selected_date.strftime('%A, %B %d, %Y') }}"
+             title="Click to edit the displayed date">{{ selected_date.strftime('%A, %B %d, %Y') }}</div>
         {% if shooting_day_num %}
         <div class="callsheet-day-num">Shoot Day {{ shooting_day_num }} of {{ total_shoot_days }}</div>
         {% elif primary_day_type and primary_day_type != 'work' %}
@@ -212,8 +218,8 @@
 
       {# Left: Key Personnel (JS-driven) #}
       <div class="callsheet-col callsheet-col-left">
-        <div class="callsheet-section">
-          <div class="callsheet-section-title">Key Personnel</div>
+        <div class="callsheet-section cs-hideable" data-cs-key="section:key_personnel">
+          <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:key_personnel" title="Hide / show Key Personnel">👁</span>Key Personnel</div>
           <table class="callsheet-table callsheet-key-contact-table" id="kp-table">
             <thead>
               <tr>
@@ -237,8 +243,9 @@
 
       {# Right: Locations today (drag-and-drop) #}
       <div class="callsheet-col callsheet-col-right">
-        <div class="callsheet-section">
+        <div class="callsheet-section cs-hideable" data-cs-key="section:locations">
           <div class="callsheet-section-title">
+            <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:locations" title="Hide / show Locations">👁</span>
             Locations Today
             <span class="cs-drag-hint cs-screen-only" style="font-size:.7rem;font-weight:400;color:var(--text-muted);margin-left:.5rem">drag ⠿ to reorder</span>
           </div>
@@ -247,23 +254,24 @@
             {% for ld in location_days_today %}
               {% set loc = locations_by_id.get(ld.location_id) %}
               {% if loc %}
-              <div class="cs-loc-item" data-ld-id="{{ ld.id }}" draggable="true">
+              <div class="cs-loc-item cs-hideable" data-ld-id="{{ ld.id }}" data-cs-key="location:{{ loc.id }}" draggable="true">
                 <span class="cs-drag-handle cs-screen-only" title="Drag to reorder">⠿</span>
+                <span class="cs-hide-toggle cs-screen-only" data-cs-key="location:{{ loc.id }}" title="Hide / show this location">👁</span>
                 <div class="callsheet-location-card">
                   <div class="callsheet-location-header">
-                    <span class="callsheet-location-name">{{ loc.name }}</span>
+                    <span class="callsheet-location-name cs-editable" contenteditable="true"
+                          data-cs-text="location_name:{{ loc.id }}" data-cs-default="{{ loc.name }}"
+                          title="Click to edit location name">{{ loc.name }}</span>
                     <span class="callsheet-day-type-badge callsheet-dt-{{ ld.day_type }}">{{ ld.day_type | upper }}</span>
                     {% if loc.location_type %}<span class="callsheet-location-type">{{ loc.location_type }}</span>{% endif %}
                   </div>
-                  {% if loc.address %}
                   <div class="callsheet-location-address">
-                    {% if loc.map_url %}
-                    <a href="{{ loc.map_url }}" target="_blank" class="callsheet-map-link">{{ loc.address }}</a>
-                    {% else %}
-                    {{ loc.address }}
-                    {% endif %}
+                    <span class="cs-editable" contenteditable="true"
+                          data-cs-text="location_addr:{{ loc.id }}" data-cs-default="{{ loc.address or '' }}"
+                          data-placeholder="Click to add address"
+                          title="Click to edit address">{{ loc.address or '' }}</span>
+                    {% if loc.map_url %}<a href="{{ loc.map_url }}" target="_blank" class="callsheet-map-link cs-screen-only" style="margin-left:.4rem;font-size:.72rem">🗺 Map</a>{% endif %}
                   </div>
-                  {% endif %}
                   {% if loc.contact_name or loc.contact_phone %}
                   <div class="callsheet-location-contact">
                     <span class="callsheet-contact-label">Main:</span>
@@ -307,20 +315,20 @@
             </thead>
             <tbody>
               {% if prod_day and prod_day.courtesy_breakfast %}
-              <tr><td class="callsheet-time-cell cs-editable" id="cs-courtesy-breakfast-time" contenteditable="true" data-field="courtesy_breakfast_time" title="Edit time">{{ cs_data.get('courtesy_breakfast_time', 'TBD') }}</td><td>Courtesy Breakfast</td><td>{% if meal_counts.get('courtesy_breakfast') %}{{ meal_counts.courtesy_breakfast }} ppl{% endif %}</td></tr>
+              <tr class="cs-hideable" data-cs-key="meal:courtesy_breakfast"><td class="callsheet-time-cell cs-editable" id="cs-courtesy-breakfast-time" contenteditable="true" data-field="courtesy_breakfast_time" title="Edit time">{{ cs_data.get('courtesy_breakfast_time', 'TBD') }}</td><td><span class="cs-hide-toggle cs-screen-only" data-cs-key="meal:courtesy_breakfast" title="Hide / show">👁</span>Courtesy Breakfast</td><td>{% if meal_counts.get('courtesy_breakfast') %}{{ meal_counts.courtesy_breakfast }} ppl{% endif %}</td></tr>
               {% endif %}
-              <tr>
+              <tr class="cs-hideable" data-cs-key="meal:general_crew_call">
                 <td class="callsheet-time-cell cs-editable" id="cs-general-crew-call-kt" contenteditable="true" data-field="general_crew_call_kt" title="Edit time — also updates the main crew call header">{{ cs_data.get('general_crew_call', 'TBD') }}</td>
-                <td>General Crew Call</td>
+                <td><span class="cs-hide-toggle cs-screen-only" data-cs-key="meal:general_crew_call" title="Hide / show">👁</span>General Crew Call</td>
                 <td></td>
               </tr>
               {% if prod_day and prod_day.first_meal %}
-              <tr><td class="callsheet-time-cell cs-editable" id="cs-first-meal-time" contenteditable="true" data-field="first_meal_time" title="Edit time">{{ cs_data.get('first_meal_time', 'TBD') }}</td><td>First Meal</td><td>{% if meal_counts.get('first_meal') %}{{ meal_counts.first_meal }} ppl{% endif %}</td></tr>
+              <tr class="cs-hideable" data-cs-key="meal:first_meal"><td class="callsheet-time-cell cs-editable" id="cs-first-meal-time" contenteditable="true" data-field="first_meal_time" title="Edit time">{{ cs_data.get('first_meal_time', 'TBD') }}</td><td><span class="cs-hide-toggle cs-screen-only" data-cs-key="meal:first_meal" title="Hide / show">👁</span>First Meal</td><td>{% if meal_counts.get('first_meal') %}{{ meal_counts.first_meal }} ppl{% endif %}</td></tr>
               {% endif %}
               {% if prod_day and prod_day.second_meal %}
-              <tr><td class="callsheet-time-cell cs-editable" id="cs-second-meal-time" contenteditable="true" data-field="second_meal_time" title="Edit time">{{ cs_data.get('second_meal_time', 'TBD') }}</td><td>Second Meal</td><td>{% if meal_counts.get('second_meal') %}{{ meal_counts.second_meal }} ppl{% endif %}</td></tr>
+              <tr class="cs-hideable" data-cs-key="meal:second_meal"><td class="callsheet-time-cell cs-editable" id="cs-second-meal-time" contenteditable="true" data-field="second_meal_time" title="Edit time">{{ cs_data.get('second_meal_time', 'TBD') }}</td><td><span class="cs-hide-toggle cs-screen-only" data-cs-key="meal:second_meal" title="Hide / show">👁</span>Second Meal</td><td>{% if meal_counts.get('second_meal') %}{{ meal_counts.second_meal }} ppl{% endif %}</td></tr>
               {% endif %}
-              <tr><td class="callsheet-time-cell cs-editable" id="cs-estimated-wrap" contenteditable="true" data-field="estimated_wrap_time" title="Edit time">{{ cs_data.get('estimated_wrap_time', 'TBD') }}</td><td>Estimated Wrap</td><td></td></tr>
+              <tr class="cs-hideable" data-cs-key="meal:estimated_wrap"><td class="callsheet-time-cell cs-editable" id="cs-estimated-wrap" contenteditable="true" data-field="estimated_wrap_time" title="Edit time">{{ cs_data.get('estimated_wrap_time', 'TBD') }}</td><td><span class="cs-hide-toggle cs-screen-only" data-cs-key="meal:estimated_wrap" title="Hide / show">👁</span>Estimated Wrap</td><td></td></tr>
               <tr class="callsheet-times-divider"><td colspan="3"></td></tr>
               <tr>
                 <td class="callsheet-time-cell cs-editable" id="cs-sunrise" contenteditable="true" data-field="sunrise" title="Click to edit">{{ cs_data.get('sunrise', '—') }}</td>
@@ -342,7 +350,9 @@
         <div class="callsheet-section">
 
           {# Weather #}
+          <div class="cs-hideable" data-cs-key="section:weather">
           <div class="callsheet-section-title">
+            <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:weather" title="Hide / show Weather">👁</span>
             Weather
             <button class="btn btn-xs btn-ghost cs-screen-only" onclick="autoFillFromLocation()" title="Auto-fill weather from shoot location" style="margin-left:.4rem;font-size:.7rem">⟳ Auto-fill</button>
           </div>
@@ -355,21 +365,27 @@
             <span class="cs-field-placeholder cs-screen-only">Check day-of forecast</span>
             {% endif %}
           </div>
+          </div>
 
           {# Nearest Hospital(s) #}
+          <div class="cs-hideable" data-cs-key="section:hospital">
           <div class="callsheet-section-title" style="margin-top:.85rem">
+            <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:hospital" title="Hide / show Hospital">👁</span>
             Nearest Hospital
           </div>
           <div id="hospital-container"></div>
           <div class="cs-row-toolbar cs-screen-only" style="margin-top:.25rem">
             <button class="btn btn-xs btn-ghost" onclick="addHospitalRow()">+ Hospital</button>
           </div>
+          </div>
 
           {# Notes #}
-          <div class="callsheet-section-title" style="margin-top:.85rem">Emergency / Notes</div>
+          <div class="cs-hideable" data-cs-key="section:notes">
+          <div class="callsheet-section-title" style="margin-top:.85rem"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:notes" title="Hide / show Notes">👁</span>Emergency / Notes</div>
           <div class="cs-editable cs-notes-area" id="cs-emergency-notes" contenteditable="true"
                data-field="emergency_notes"
                title="Click to edit">{{ cs_data.get('emergency_notes', '') or '' }}</div>
+          </div>
 
         </div>
       </div>
@@ -378,8 +394,8 @@
     {% endif %}{# /csv.logistics #}
 
     {# ── Cast / Talent section (always shown — populates when cast data exists) #}
-    <div class="callsheet-section callsheet-section-talent">
-      <div class="callsheet-section-title">Cast / Talent</div>
+    <div class="callsheet-section callsheet-section-talent cs-hideable" data-cs-key="section:talent">
+      <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:talent" title="Hide / show Cast / Talent">👁</span>Cast / Talent</div>
       {% if talent_rows %}
       <table class="callsheet-table">
         <thead>
@@ -412,8 +428,8 @@
 
     {# ── Background / Extras ────────────────────────────────────────────────── #}
     {% if csv.background %}
-    <div class="callsheet-section">
-      <div class="callsheet-section-title">Background / Extras</div>
+    <div class="callsheet-section cs-hideable" data-cs-key="section:extras">
+      <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:extras" title="Hide / show Background / Extras">👁</span>Background / Extras</div>
       <table class="callsheet-table" id="extras-table">
         <thead>
           <tr>
@@ -469,8 +485,8 @@
 
     {# ── Clients (shown on page 1 if any are flagged show_on_callsheet) ─────── #}
     {% if csv.clients %}
-    <div class="callsheet-section callsheet-section-clients">
-      <div class="callsheet-section-title">Clients</div>
+    <div class="callsheet-section callsheet-section-clients cs-hideable" data-cs-key="section:clients">
+      <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:clients" title="Hide / show Clients">👁</span>Clients</div>
       {% if project_clients_cs %}
       <table class="callsheet-table">
         <thead>
@@ -503,8 +519,8 @@
 
     {# ── Department Notes ─────────────────────────────────────────────────────── #}
     {% if csv.dept_notes %}
-    <div class="callsheet-section">
-      <div class="callsheet-section-title">Department Notes</div>
+    <div class="callsheet-section cs-hideable" data-cs-key="section:dept_notes">
+      <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:dept_notes" title="Hide / show Department Notes">👁</span>Department Notes</div>
       <div id="dept-notes-container" class="cs-dept-notes-container">
         {# Populated by JS from crew department list + saved notes #}
       </div>
@@ -515,8 +531,9 @@
     {% endif %}
 
     {# ── Today's Schedule: text area (shot list integration planned for future) ─ #}
-    <div class="callsheet-section">
+    <div class="callsheet-section cs-hideable" data-cs-key="section:shooting_schedule">
       <div class="callsheet-section-title">
+        <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:shooting_schedule" title="Hide / show Shooting Schedule">👁</span>
         Today's Shooting Schedule
         <span class="cs-future-badge cs-screen-only" title="Will connect to shot list / scene breakdown system in a future update">◌</span>
         <span class="cs-screen-only" style="font-size:.7rem;font-weight:400;color:var(--text-muted);margin-left:.5rem">Manual notes for now — shot list integration planned</span>
@@ -531,8 +548,9 @@ Example:
     </div>
 
     {# ── Advance Schedule ──────────────────────────────────────────────────────── #}
-    <div class="callsheet-section">
+    <div class="callsheet-section cs-hideable" data-cs-key="section:advance_schedule">
       <div class="callsheet-section-title">
+        <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:advance_schedule" title="Hide / show Advance Schedule">👁</span>
         Advance Schedule
         {% if next_day_date %}
         <span style="font-weight:400;font-size:.78rem;color:var(--text-muted);margin-left:.5rem">Next shoot day: {{ next_day_date.strftime('%a, %b %d') }}</span>
@@ -619,10 +637,11 @@ Example:
             <tbody>
               {% for r in dept_rows %}
               {% set crew_key = r.p2_section ~ '||' ~ r.role ~ '||' ~ r.name %}
+              {% set row_key = 'crew_row:' ~ (r.budget_line_id | string) ~ ':' ~ (r.instance | string) %}
               {% set cs = confirm_status.get(r.name.lower(), {}) %}
               {% set cs_status = cs.get('status', '') %}
-              <tr class="cs-crew-member-row{% if cs_status == 'confirmed' %} cs-row-confirmed{% elif cs_status == 'viewed' %} cs-row-viewed{% endif %}">
-                <td class="cs-dept-role">{{ r.role }}</td>
+              <tr class="cs-crew-member-row cs-hideable{% if cs_status == 'confirmed' %} cs-row-confirmed{% elif cs_status == 'viewed' %} cs-row-viewed{% endif %}" data-cs-key="{{ row_key }}">
+                <td class="cs-dept-role"><span class="cs-hide-toggle cs-screen-only" data-cs-key="{{ row_key }}" title="Hide / show this person on this call sheet">👁</span>{{ r.role }}</td>
                 <td class="cs-dept-name">{{ r.name }}{% if cs_status == 'confirmed' %}<span class="cs-conf-badge cs-conf-confirmed cs-screen-only" title="Confirmed {{ cs.get('confirmed_at','') }}">✓ Confirmed</span>{% elif cs_status == 'viewed' %}<span class="cs-conf-badge cs-conf-viewed cs-screen-only" title="Viewed {{ cs.get('viewed_at','') }}">Viewed</span>{% elif cs_status in ('sent',) %}<span class="cs-conf-badge cs-conf-sent cs-screen-only">Sent</span>{% endif %}</td>
                 <td class="callsheet-time-cell cs-editable cs-crew-call-cell cs-dept-call"
                     contenteditable="true"
@@ -634,17 +653,20 @@ Example:
                     oninput="this.dataset.isOverride='true'">{{ cs_data.get('crew_call_times', {}).get(crew_key, '') or '' }}</td>
               </tr>
               {% if r.travel %}
-              <tr class="cs-crew-travel-row">
+              {% for t in r.travel %}
+              <tr class="cs-crew-travel-row cs-hideable" data-cs-key="travel_line:{{ t.id }}">
                 <td colspan="3" style="padding:1px 8px 5px 8px;border-top:none">
-                  {% for t in r.travel %}
-                  <div style="font-size:.72rem;color:#3a4453;line-height:1.45;white-space:normal">
-                    {% if t.kind == 'flight' %}✈️ {{ t.airline or 'Flight' }}{% if t.flight_no %} {{ t.flight_no }}{% endif %}{% if t.depart_airport or t.arrive_airport %} · {{ t.depart_airport or '?' }}→{{ t.arrive_airport or '?' }}{% endif %}{% if t.depart_at %} · {{ t.depart_at }}{% if t.arrive_at %}–{{ t.arrive_at }}{% endif %}{% endif %}{% if t.confirmation_no %} · <span style="font-weight:700;color:#1c2430">Conf {{ t.confirmation_no }}</span>{% endif %}
-                    {% elif t.kind == 'hotel' %}🏨 {{ t.hotel_name or 'Hotel' }}{% if t.check_in or t.check_out %} · {{ t.check_in or '?' }}–{{ t.check_out or '?' }}{% endif %}{% if t.room_type %} · {{ t.room_type }}{% endif %}{% if t.confirmation_no %} · <span style="font-weight:700;color:#1c2430">Conf {{ t.confirmation_no }}</span>{% endif %}
-                    {% elif t.kind == 'car_rental' %}🚗 {{ t.rental_co or 'Car rental' }}{% if t.pickup_location %} · {{ t.pickup_location }}{% endif %}{% if t.pickup_at %} · {{ t.pickup_at }}{% if t.return_at %}–{{ t.return_at }}{% endif %}{% endif %}{% if t.confirmation_no %} · <span style="font-weight:700;color:#1c2430">Conf {{ t.confirmation_no }}</span>{% endif %}{% endif %}
-                  </div>
-                  {% endfor %}
+                  <span class="cs-hide-toggle cs-screen-only" data-cs-key="travel_line:{{ t.id }}" title="Hide / show on this call sheet">👁</span>
+                  {# Confirmation numbers intentionally NOT rendered here — they
+                     go only to the individual person's tokenized copy. (2026-07-08) #}
+                  <span style="font-size:.72rem;color:#3a4453;line-height:1.45;white-space:normal">
+                    {% if t.kind == 'flight' %}✈️ {{ t.airline or 'Flight' }}{% if t.flight_no %} {{ t.flight_no }}{% endif %}{% if t.depart_airport or t.arrive_airport %} · {{ t.depart_airport or '?' }}→{{ t.arrive_airport or '?' }}{% endif %}{% if t.depart_at %} · {{ t.depart_at }}{% if t.arrive_at %}–{{ t.arrive_at }}{% endif %}{% endif %}
+                    {% elif t.kind == 'hotel' %}🏨 {{ t.hotel_name or 'Hotel' }}{% if t.check_in or t.check_out %} · {{ t.check_in or '?' }}–{{ t.check_out or '?' }}{% endif %}{% if t.room_type %} · {{ t.room_type }}{% endif %}
+                    {% elif t.kind == 'car_rental' %}🚗 {{ t.rental_co or 'Car rental' }}{% if t.pickup_location %} · {{ t.pickup_location }}{% endif %}{% if t.pickup_at %} · {{ t.pickup_at }}{% if t.return_at %}–{{ t.return_at }}{% endif %}{% endif %}{% endif %}
+                  </span>
                 </td>
               </tr>
+              {% endfor %}
               {% endif %}
               {% endfor %}
             </tbody>
@@ -685,9 +707,9 @@ Example:
     </div>
 
     {# ── Useful Contacts ──────────────────────────────────────────────────────── #}
-    <div class="callsheet-section">
+    <div class="callsheet-section cs-hideable" data-cs-key="section:useful_contacts">
       <div class="callsheet-section-title" style="display:flex;align-items:center;justify-content:space-between">
-        <span>Useful Contacts</span>
+        <span><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:useful_contacts" title="Hide / show Useful Contacts">👁</span>Useful Contacts</span>
         <div class="cs-screen-only" style="display:flex;gap:.4rem;align-items:center">
           <span class="muted" style="font-size:.72rem">Select from contact sheet or enter manually</span>
         </div>
@@ -711,8 +733,8 @@ Example:
 
     {# ── Representation & Support Contacts ──────────────────────────────────────── #}
     {% if rep_contacts and csv.reps %}
-    <div class="callsheet-section cs-callsheet-rep">
-      <div class="callsheet-section-title">Representation &amp; Support</div>
+    <div class="callsheet-section cs-callsheet-rep cs-hideable" data-cs-key="section:reps">
+      <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:reps" title="Hide / show Representation">👁</span>Representation &amp; Support</div>
       <table class="callsheet-table">
         <thead>
           <tr>
@@ -746,8 +768,8 @@ Example:
 
     {# ── Union Contacts ──────────────────────────────────────────────────────────── #}
     {% if project_unions_cs %}
-    <div class="callsheet-section cs-callsheet-unions">
-      <div class="callsheet-section-title">Union Contacts</div>
+    <div class="callsheet-section cs-callsheet-unions cs-hideable" data-cs-key="section:unions">
+      <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:unions" title="Hide / show Union Contacts">👁</span>Union Contacts</div>
       <table class="callsheet-table">
         <thead>
           <tr><th>Union</th><th>Contact</th><th>Phone</th><th>Email</th></tr>
@@ -769,8 +791,8 @@ Example:
     {# ── Meal Counts ───────────────────────────────────────────────────────── #}
     <div class="callsheet-two-col">
       <div class="callsheet-col callsheet-col-left">
-        <div class="callsheet-section">
-          <div class="callsheet-section-title">Meals Scheduled</div>
+        <div class="callsheet-section cs-hideable" data-cs-key="section:meals">
+          <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:meals" title="Hide / show Meals Scheduled">👁</span>Meals Scheduled</div>
           <table class="callsheet-table">
             <thead>
               <tr><th>Meal</th><th>Scheduled</th><th>Count</th></tr>
@@ -792,8 +814,8 @@ Example:
                 <td>{% set _c = meal_counts.get('second_meal', 0) %}{% if _c %}{{ _c }}{% else %}—{% endif %}</td>
               </tr>
               {% if meal_counts.get('craft_services', 0) %}
-              <tr>
-                <td>Craft Services</td>
+              <tr class="cs-hideable" data-cs-key="meal:craft_services">
+                <td><span class="cs-hide-toggle cs-screen-only" data-cs-key="meal:craft_services" title="Hide / show">👁</span>Craft Services</td>
                 <td><span class="callsheet-meal-yes">Yes</span></td>
                 <td>{{ meal_counts.get('craft_services') }}</td>
               </tr>
@@ -807,8 +829,8 @@ Example:
       </div>
 
       <div class="callsheet-col callsheet-col-right">
-        <div class="callsheet-section">
-          <div class="callsheet-section-title">Additional Notes</div>
+        <div class="callsheet-section cs-hideable" data-cs-key="section:additional_notes">
+          <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:additional_notes" title="Hide / show Additional Notes">👁</span>Additional Notes</div>
           <div class="cs-editable cs-remarks-area" id="cs-additional-notes" contenteditable="true"
                data-field="additional_notes"
                title="Click to edit">{{ cs_data.get('additional_notes', '') or '' }}</div>
@@ -817,9 +839,9 @@ Example:
     </div>
 
     {# ── Quote of the Day ────────────────────────────────────────────────────── #}
-    <div class="callsheet-section cs-quote-section">
+    <div class="callsheet-section cs-quote-section cs-hideable" data-cs-key="section:quote">
       <div class="callsheet-section-title" style="display:flex;align-items:center;justify-content:space-between">
-        <span>Quote of the Day</span>
+        <span><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:quote" title="Hide / show Quote of the Day">👁</span>Quote of the Day</span>
         <div class="cs-screen-only" style="display:flex;align-items:center;gap:.4rem">
           <select id="cs-quote-type" class="cs-quote-type-select">
             <option value="random">Random</option>
@@ -879,7 +901,7 @@ Example:
       </div>
       <div style="margin-bottom:10px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-          <span style="font-size:.78rem;color:var(--text-muted)">Select recipients — confirmed shown in green, viewed in yellow:</span>
+          <span style="font-size:.78rem;color:var(--text-muted)">People on this day are pre-checked · confirmed = green, viewed = yellow · 👁 Preview shows what each receives:</span>
           <div style="display:flex;gap:6px">
             <button class="btn btn-xs btn-ghost" onclick="csSelectAll(true)" style="font-size:.72rem">All</button>
             <button class="btn btn-xs btn-ghost" onclick="csSelectAll(false)" style="font-size:.72rem">None</button>
@@ -904,12 +926,15 @@ Example:
 const CS_SAVE_URL   = "{{ url_for('callsheet_save', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
 const CS_DIST_URL   = "{{ url_for('callsheet_distribution', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
 const CS_SEND_URL   = "{{ url_for('callsheet_prepare_send', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
+const CS_PREVIEW_URL = "{{ url_for('callsheet_preview_as', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
 const CS_VIEW       = {{ cs_view | tojson }};
 const CSV           = {{ csv | tojson }};
 const CS_DATA       = {{ cs_data | tojson }};
 const KEY_CONTACTS_FALLBACK = {{ key_contacts | tojson }};
 const CONFIRM_STATUS = {{ confirm_status | tojson }}; // {name_lower: {status,viewed_at,confirmed_at}}
 const AVAILABLE_CONTACTS    = {{ available_contacts | tojson }};
+const ON_DAY_NAMES  = new Set(({{ on_day_names | tojson }}) || []);   // lowercased
+const ON_DAY_EMAILS = new Set(({{ on_day_emails | tojson }}) || []);  // lowercased
 const SHOOT_DATE    = "{{ selected_date.strftime('%Y-%m-%d') }}";
 const SHOOT_LOCATIONS = {{ locations_today | map(attribute='address') | select | list | tojson }};
 
@@ -939,8 +964,16 @@ function doAutoSave() {
 }
 
 // ── Data collection ────────────────────────────────────────────────────────────
+// Namespaced override maps. These round-trip through the whole-payload save:
+// the collect fn merges CS_HIDDEN / CS_TEXT_OVERRIDES back into the payload so
+// they persist alongside everything else. (User 2026-07-08.)
+let CS_HIDDEN         = Object.assign({}, (CS_DATA.hidden || {}));
+let CS_TEXT_OVERRIDES = Object.assign({}, (CS_DATA.text_overrides || {}));
+
 function collectCallSheetData() {
   return {
+    hidden:                  CS_HIDDEN,
+    text_overrides:          CS_TEXT_OVERRIDES,
     general_crew_call:       getText('cs-crew-call'),
     weather:                 getText('cs-weather'),
     sunrise:                 getText('cs-sunrise'),
@@ -1029,6 +1062,66 @@ document.querySelectorAll('.cs-editable[contenteditable]').forEach(el => {
 document.getElementById('cs-schedule-notes').addEventListener('input', scheduleAutoSave);
 const _advEl = document.getElementById('cs-advance-schedule');
 if (_advEl) _advEl.addEventListener('input', scheduleAutoSave);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HIDE / SHOW ELEMENTS (per-day overrides in CS_HIDDEN)
+// Every .cs-hideable element carries data-cs-key. Hidden elements render at 35%
+// opacity + dashed outline in the internal editing view (so they can be found
+// and un-hidden) and are FULLY OMITTED in print/PDF/public via the .cs-hidden-el
+// print rule. The 👁 toggles are cs-screen-only so they never print.
+// (User 2026-07-08.)
+// ═══════════════════════════════════════════════════════════════════════════════
+function applyHiddenState() {
+  document.querySelectorAll('.cs-hideable[data-cs-key]').forEach(el => {
+    const key = el.getAttribute('data-cs-key');
+    const hidden = !!CS_HIDDEN[key];
+    el.classList.toggle('cs-hidden-el', hidden);
+  });
+  document.querySelectorAll('.cs-hide-toggle[data-cs-key]').forEach(t => {
+    const key = t.getAttribute('data-cs-key');
+    const hidden = !!CS_HIDDEN[key];
+    t.textContent = hidden ? '🚫' : '👁';
+    t.title = hidden ? 'Hidden — click to show on this call sheet'
+                     : 'Hide this from this call sheet';
+  });
+}
+document.addEventListener('click', function(ev) {
+  const t = ev.target.closest ? ev.target.closest('.cs-hide-toggle[data-cs-key]') : null;
+  if (!t) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  const key = t.getAttribute('data-cs-key');
+  if (CS_HIDDEN[key]) { delete CS_HIDDEN[key]; }
+  else { CS_HIDDEN[key] = true; }
+  applyHiddenState();
+  clearTimeout(_saveTimer);
+  doAutoSave();
+});
+
+// ── Free-form text overrides (new editable spots outside data-field) ──────────
+// Any element with data-cs-text="<key>" is contenteditable; its edited text is
+// stored in CS_TEXT_OVERRIDES[key] and round-trips via the save payload. On
+// load, saved overrides replace the default text. (User 2026-07-08.)
+function applyTextOverrides() {
+  document.querySelectorAll('[data-cs-text]').forEach(el => {
+    const key = el.getAttribute('data-cs-text');
+    if (CS_TEXT_OVERRIDES[key] != null && CS_TEXT_OVERRIDES[key] !== '') {
+      el.textContent = CS_TEXT_OVERRIDES[key];
+    }
+  });
+}
+document.querySelectorAll('[data-cs-text]').forEach(el => {
+  el.addEventListener('input', scheduleAutoSave);
+  el.addEventListener('blur', () => {
+    const key = el.getAttribute('data-cs-text');
+    const def = el.getAttribute('data-cs-default') || '';
+    const val = el.textContent.trim();
+    if (val === def || val === '') { delete CS_TEXT_OVERRIDES[key]; }
+    else { CS_TEXT_OVERRIDES[key] = val; }
+    clearTimeout(_saveTimer);
+    doAutoSave();
+  });
+});
 
 // ── Sync Key Times "General Crew Call" row ↔ main header ──────────────────────
 (function() {
@@ -1887,35 +1980,57 @@ function csDistLoadHistory() {
     .catch(() => {});
 }
 
+// Is this recipient actually scheduled on this day? (crew/talent resolved
+// server-side into ON_DAY_NAMES / ON_DAY_EMAILS.) Non-crew types (client/union)
+// are on-day only when explicitly flagged to receive the sheet. (User 2026-07-08.)
+function csIsOnDay(name, email, type, flaggedReceive) {
+  if (type === 'client' || type === 'union') return !!flaggedReceive;
+  const e = (email || '').toLowerCase().trim();
+  const n = (name  || '').toLowerCase().trim();
+  if (e && ON_DAY_EMAILS.has(e)) return true;
+  if (n && ON_DAY_NAMES.has(n))  return true;
+  return false;
+}
+
 function csDistBuildRecipientList() {
   const people = [];
   const seen = new Set();
-  function addPerson(name, email, type, phone) {
+  function addPerson(name, email, type, phone, on_day, cmId) {
     const key = (email || name || '').toLowerCase().trim();
     if (!key || seen.has(key)) return;
     seen.add(key);
-    people.push({ name: name||'', email: email||'', phone: phone||'', type: type||'crew' });
+    people.push({ name: name||'', email: email||'', phone: phone||'',
+                  type: type||'crew', on_day: !!on_day, cmId: cmId || '' });
   }
   // All crew assigned to budget lines (primary source)
   (AVAILABLE_CONTACTS || []).forEach(c => {
-    if (c && c.name) addPerson(c.name, c.email || '', c.type || 'crew', c.phone || '');
+    if (c && c.name) addPerson(c.name, c.email || '', c.type || 'crew', c.phone || '',
+                               csIsOnDay(c.name, c.email, 'crew'), c.id || '');
   });
   // Key contacts from call sheet
   (CS_DATA.key_personnel || KEY_CONTACTS_FALLBACK || []).forEach(p => {
-    if (p && p.name) addPerson(p.name, p.email || '', 'crew', p.phone || '');
+    if (p && p.name) addPerson(p.name, p.email || '', 'crew', p.phone || '',
+                               csIsOnDay(p.name, p.email, 'crew'));
   });
   // Crew call times (may have additional people)
   (CS_DATA.crew_call_times || []).forEach(c => {
-    if (c && c.name) addPerson(c.name, c.email || '', 'crew', c.phone || '');
+    if (c && c.name) addPerson(c.name, c.email || '', 'crew', c.phone || '',
+                               csIsOnDay(c.name, c.email, 'crew'));
   });
-  // Project clients marked for call sheet
+  // Project clients marked for call sheet (receives_callsheet honored server-side
+  // via show_on_callsheet; treat listed clients as flagged to receive)
   ({{ project_clients_cs | tojson }}).forEach(c => {
-    if (c && c.name) addPerson(c.name, c.email || '', 'client', c.phone || '');
+    if (c && c.name) addPerson(c.name, c.email || '', 'client', c.phone || '',
+                               csIsOnDay(c.name, c.email, 'client', true));
   });
   // Reps who want call sheet notifications
   ({{ rep_contacts | tojson }}).forEach(r => {
-    if (r && r.rep_name && r.notify_callsheet) addPerson(r.rep_name, r.rep_email || '', 'crew', r.rep_phone || '');
+    if (r && r.rep_name && r.notify_callsheet) addPerson(r.rep_name, r.rep_email || '', 'crew', r.rep_phone || '',
+                               csIsOnDay(r.rep_name, r.rep_email, 'crew'));
   });
+
+  // On-day people first, then the rest.
+  people.sort((a, b) => (b.on_day - a.on_day) || (a.name||'').localeCompare(b.name||''));
 
   const el = document.getElementById('cs-dist-recipient-list');
   if (!people.length) {
@@ -1936,22 +2051,43 @@ function csDistBuildRecipientList() {
     return '';
   }
 
-  el.innerHTML = people.map((p, i) => `
-    <label style="display:flex;align-items:center;gap:8px;font-size:.82rem;padding:4px 0;cursor:pointer;border-bottom:1px solid var(--border);flex-wrap:wrap">
-      <input type="checkbox" class="cs-dist-recip-cb" data-idx="${i}"
-             data-name="${(p.name||'').replace(/"/g,'&quot;')}"
-             data-email="${(p.email||'').replace(/"/g,'&quot;')}"
-             data-phone="${(p.phone||'').replace(/"/g,'&quot;')}"
-             data-type="${p.type||'crew'}"
-             ${(p.email || p.phone) ? 'checked' : 'disabled'}>
-      <span>${p.name}${statusBadge(p.name)}</span>
+  const notOnDayTag = `<span style="background:#1c1f2c;color:#9ca3af;border:1px solid var(--border);border-radius:3px;font-size:.62rem;padding:1px 5px;margin-left:4px">not on this day</span>`;
+  const onDayTag    = `<span style="background:#052e16;color:#4ade80;border:1px solid #16a34a;border-radius:3px;font-size:.62rem;padding:1px 5px;margin-left:4px">on this day</span>`;
+
+  el.innerHTML = people.map((p, i) => {
+    const hasContact = !!(p.email || p.phone);
+    // Pre-check ONLY people who are on this day AND have a contact method.
+    const checked = (p.on_day && hasContact) ? 'checked' : '';
+    const disabled = hasContact ? '' : 'disabled';
+    const previewAs = (p.cmId ? String(p.cmId) : (p.email || p.name));
+    return `
+    <div style="display:flex;align-items:center;gap:8px;font-size:.82rem;padding:4px 0;border-bottom:1px solid var(--border);flex-wrap:wrap${p.on_day ? '' : ';opacity:.72'}">
+      <label style="display:flex;align-items:center;gap:8px;flex:1;min-width:160px;cursor:pointer">
+        <input type="checkbox" class="cs-dist-recip-cb" data-idx="${i}"
+               data-name="${(p.name||'').replace(/"/g,'&quot;')}"
+               data-email="${(p.email||'').replace(/"/g,'&quot;')}"
+               data-phone="${(p.phone||'').replace(/"/g,'&quot;')}"
+               data-type="${p.type||'crew'}"
+               data-on-day="${p.on_day ? '1' : '0'}"
+               ${checked} ${disabled}>
+        <span>${p.name}${p.on_day ? onDayTag : notOnDayTag}${statusBadge(p.name)}</span>
+      </label>
       <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
         ${p.email ? `<span style="color:var(--text-muted);font-size:.73rem">✉ ${p.email}</span>` : ''}
         ${p.phone ? `<span style="color:var(--text-muted);font-size:.73rem">📱 ${p.phone}</span>` : ''}
         ${!p.email && !p.phone ? '<span style="color:var(--text-muted);font-size:.72rem">(no contact info)</span>' : ''}
+        <button type="button" class="btn btn-xs btn-ghost" style="font-size:.68rem;padding:1px 6px"
+                onclick="csPreviewRecipient('${(previewAs||'').replace(/'/g,"\\'")}')"
+                title="Preview what this person receives — does not send">👁 Preview</button>
       </span>
-    </label>
-  `).join('');
+    </div>`;
+  }).join('');
+}
+
+// Open the login-gated preview for one recipient (no send). (User 2026-07-08.)
+function csPreviewRecipient(asVal) {
+  const url = CS_PREVIEW_URL + '?as=' + encodeURIComponent(asVal || '');
+  window.open(url, '_blank', 'noopener');
 }
 
 function csSelectAll(checked) {
@@ -2032,6 +2168,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initDeptNotes();
   initCrewCallTimes();
   initUsefulContacts();
+  applyTextOverrides();
+  applyHiddenState();
 });
 </script>
 

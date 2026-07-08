@@ -131,6 +131,32 @@
     /* ── Notes ── */
     .notes-text { font-size: .86rem; line-height: 1.65; color: #d1d5db; white-space: pre-wrap; }
 
+    /* ── Personal "Your details" travel card ── */
+    .yd-card {
+      background: #10231a; border: 1px solid #16a34a; border-radius: 12px;
+      padding: 0; margin-bottom: 18px; overflow: hidden;
+    }
+    .yd-hdr {
+      font-size: .82rem; font-weight: 800; letter-spacing: .04em;
+      color: #4ade80; background: #0c1a12; padding: 11px 18px;
+      border-bottom: 1px solid #16532f;
+    }
+    .yd-body { padding: 6px 18px 14px; }
+    .yd-item { padding: 12px 0; border-bottom: 1px solid #16532f; }
+    .yd-item:last-child { border-bottom: none; }
+    .yd-line1 { font-size: .95rem; font-weight: 600; color: #e8e9ec; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .yd-kind-icon { font-size: 1.1rem; }
+    .yd-detail { font-size: .83rem; color: #9ca3af; margin-top: 3px; line-height: 1.5; }
+    .yd-notes { font-size: .82rem; color: #cbd5e1; margin-top: 5px; font-style: italic; }
+    .yd-conf-wrap { margin-top: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .yd-conf-lbl { font-size: .64rem; text-transform: uppercase; letter-spacing: .1em; color: #6b7280; }
+    .yd-conf-no {
+      font-family: "SF Mono", "Courier New", monospace; font-size: 1.35rem;
+      font-weight: 800; letter-spacing: .06em; color: #052e16;
+      background: #4ade80; border-radius: 7px; padding: 5px 14px;
+      user-select: all;
+    }
+
     /* ── Footer ── */
     .cs-footer { text-align: center; font-size: .72rem; color: #374151; margin-top: 32px; padding-bottom: 16px; }
     .cs-footer a { color: #374151; text-decoration: none; }
@@ -139,6 +165,14 @@
 <body>
 
 {% set rtype = rec.recipient_type | lower if rec.recipient_type else 'crew' %}
+
+{% if preview_mode %}
+<div style="background:#4a2500;border-bottom:1px solid #d97706;color:#fbbf24;
+            padding:8px 20px;text-align:center;font-size:.82rem;font-weight:600;
+            letter-spacing:.03em">
+  👁 PREVIEW — not sent · This is what {{ rec.name }} will receive
+</div>
+{% endif %}
 
 {# ── Sticky confirm bar ── #}
 <div class="confirm-bar">
@@ -154,7 +188,11 @@
       <div class="pill-time">{{ personal_call }}</div>
     </div>
     {% endif %}
-    {% if already_confirmed %}
+    {% if preview_mode %}
+      <div class="confirmed-pill" style="background:#12151e;border-color:#374151;color:#9ca3af">
+        Preview
+      </div>
+    {% elif already_confirmed %}
       <div class="confirmed-pill">
         ✓ Confirmed{% if confirmed_local %} {{ confirmed_local }}{% endif %}
       </div>
@@ -187,6 +225,56 @@
                        'production coordinator', 'coordinator'] %}
 
 <div class="cs-body">
+
+  {# ════════════════════════════════════════════════════════
+     PERSONAL DETAILS — this recipient's travel + confirmations.
+     Shown at the very top for ALL recipient types. Only this
+     person's items; never anyone else's. (User 2026-07-08.)
+  ════════════════════════════════════════════════════════ #}
+  {% if personal_travel %}
+  <div class="yd-card">
+    <div class="yd-hdr">📋 Your details — {{ rec.name }}</div>
+    <div class="yd-body">
+      {% for t in personal_travel %}
+      <div class="yd-item">
+        {% if t.kind == 'flight' %}
+        <div class="yd-line1"><span class="yd-kind-icon">✈️</span>
+          {{ t.airline or 'Flight' }}{% if t.flight_no %} {{ t.flight_no }}{% endif %}</div>
+        <div class="yd-detail">
+          {% if t.depart_airport or t.arrive_airport %}{{ t.depart_airport or '?' }} → {{ t.arrive_airport or '?' }}{% endif %}
+          {% if t.depart_at %} · Depart {{ t.depart_at }}{% endif %}{% if t.arrive_at %} · Arrive {{ t.arrive_at }}{% endif %}
+        </div>
+        {% elif t.kind == 'hotel' %}
+        <div class="yd-line1"><span class="yd-kind-icon">🏨</span>{{ t.hotel_name or 'Hotel' }}</div>
+        <div class="yd-detail">
+          {% if t.hotel_address %}{{ t.hotel_address }}<br>{% endif %}
+          {% if t.check_in or t.check_out %}Check-in {{ t.check_in or '?' }} · Check-out {{ t.check_out or '?' }}{% endif %}
+          {% if t.room_type %} · {{ t.room_type }}{% endif %}
+        </div>
+        {% elif t.kind == 'car_rental' %}
+        <div class="yd-line1"><span class="yd-kind-icon">🚗</span>{{ t.rental_co or 'Car rental' }}</div>
+        <div class="yd-detail">
+          {% if t.pickup_location %}Pickup: {{ t.pickup_location }}{% endif %}
+          {% if t.pickup_at %} · {{ t.pickup_at }}{% endif %}{% if t.return_at %} · Return {{ t.return_at }}{% endif %}
+        </div>
+        {% elif t.kind == 'mileage' %}
+        <div class="yd-line1"><span class="yd-kind-icon">🚙</span>Mileage</div>
+        <div class="yd-detail">{% if t.route %}{{ t.route }}{% endif %}{% if t.miles %} · {{ t.miles }} mi{% endif %}</div>
+        {% else %}
+        <div class="yd-line1"><span class="yd-kind-icon">📍</span>{{ t.kind | capitalize }}</div>
+        {% endif %}
+        {% if t.notes %}<div class="yd-notes">{{ t.notes }}</div>{% endif %}
+        {% if t.confirmation_no %}
+        <div class="yd-conf-wrap">
+          <span class="yd-conf-lbl">Confirmation</span>
+          <span class="yd-conf-no">{{ t.confirmation_no }}</span>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 
   {# ════════════════════════════════════════════════════════
      TALENT VIEW  — stripped down, talent-focused
