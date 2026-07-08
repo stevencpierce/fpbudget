@@ -1046,8 +1046,13 @@ function normalizeCrewCallStr(raw) {
   const s = (raw || '').trim();
   if (!s || s.toUpperCase() === 'TBD') return 'TBD';
   const normalized = normalizeTimeStr(s);
-  // If normalizeTimeStr couldn't parse it, fall back to TBD
-  return normalized === s ? 'TBD' : normalized;
+  // Accept only a value that parsed into a canonical "H:MM AM/PM" time.
+  // BUG (user 2026-07-08): the old check was `normalized === s ? 'TBD' : …`,
+  // which assumed "output unchanged" meant "couldn't parse". But an input that
+  // is ALREADY canonical — e.g. typing "7:00 AM" — round-trips to itself, so it
+  // was wrongly wiped back to TBD and the crew call time "wouldn't save".
+  // Check the shape of the result instead of comparing to the input.
+  return /^\d{1,2}:\d{2} (AM|PM)$/.test(normalized) ? normalized : 'TBD';
 }
 
 // ── Bind contenteditable auto-save ────────────────────────────────────────────
