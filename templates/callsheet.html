@@ -2016,11 +2016,11 @@ function csDistBuildRecipientList() {
     if (p && p.name) addPerson(p.name, p.email || '', 'crew', p.phone || '',
                                csIsOnDay(p.name, p.email, 'crew'));
   });
-  // Crew call times (may have additional people)
-  (CS_DATA.crew_call_times || []).forEach(c => {
-    if (c && c.name) addPerson(c.name, c.email || '', 'crew', c.phone || '',
-                               csIsOnDay(c.name, c.email, 'crew'));
-  });
+  // NOTE: CS_DATA.crew_call_times is a {crew_key: "8:00 AM"} DICT of per-crew
+  // time overrides — it never contains people. A prior block iterated it as an
+  // array of persons; on any sheet with saved call times the dict is truthy,
+  // `|| []` never applies, and .forEach threw — killing the ENTIRE recipient
+  // list ("no one on the list", user 2026-07-08). Removed.
   // Project clients marked for call sheet (receives_callsheet honored server-side
   // via show_on_callsheet; treat listed clients as flagged to receive)
   ({{ project_clients_cs | tojson }}).forEach(c => {
