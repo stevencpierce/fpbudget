@@ -27111,6 +27111,144 @@ def _split_integrity_child_target(k):
     return None
 
 
+@app.route("/projects/<int:pid>/docs/reset-person-invoices", methods=["GET", "POST"])
+@login_required
+def docs_reset_person_invoices(pid):
+    """TEST-RESET (owner request 2026-07-08): return every PERSON-ATTACHED
+    INVOICE in a project to fresh-upload state so the OCR→auto-matching
+    pipeline can be re-tested end-to-end. The file + OCR (veryfi_data) stay
+    intact; only match/coding/person state is cleared.
+
+    Per doc (category='invoice', crew_member_id set):
+      1. DELETE its invoice_split children (doc-wide net: doc_upload_id OR
+         parent_transaction_id in the doc's non-split txn ids).
+      2. UNMATCH any electronic charge holding the doc (unmatch_receipt —
+         restores the doc-born row where confirming had absorbed it).
+      3. CLEAR coding + review + match + AI/deterministic-suggestion state on
+         every txn that was tied to the doc (incl. the unlinked charges).
+      4. CLEAR doc.crew_member_id — person re-detection is part of the test.
+
+    ?dry=1 (default): report + snapshot only. ?dry=0: mutate (per-doc commits,
+    each inside try/except so one bad doc can't poison the batch).
+    The full BEFORE snapshot is returned in BOTH modes — the caller must save
+    it; it is the manual restore path.
+    """
+    if getattr(current_user, 'role', None) != 'super_admin':
+        return jsonify({"error": "Forbidden"}), 403
+    dry = (request.values.get("dry", "1").strip().lower() not in ("0", "false", "no"))
+    ProjectSheet.query.get_or_404(pid)
+
+    from sqlalchemy import or_ as _or_rpi
+    from actuals import unlink_transaction, unmatch_receipt
+
+    docs = (DocUpload.query
+            .filter(DocUpload.project_id == pid,
+                    DocUpload.category == 'invoice',
+                    DocUpload.crew_member_id.isnot(None))
+            .order_by(DocUpload.id.asc())
+            .all())
+
+    def _txn_snap(t):
+        return {
+            "id": t.id, "source": t.source, "vendor": t.vendor,
+            "amount": float(t.amount) if t.amount is not None else None,
+            "txn_date": t.txn_date, "note": t.note,
+            "doc_upload_id": t.doc_upload_id,
+            "parent_transaction_id": t.parent_transaction_id,
+            "budget_line_id": t.budget_line_id,
+            "account_code": t.account_code,
+            "account_code_name": t.account_code_name,
+            "match_status": t.match_status,
+            "match_confidence": (float(t.match_confidence)
+                                 if t.match_confidence is not None else None),
+            "suggested_budget_line_id": t.suggested_budget_line_id,
+            "suggested_account_code": t.suggested_account_code,
+            "ai_suggested_code": t.ai_suggested_code,
+            "ai_suggested_code_name": t.ai_suggested_code_name,
+            "reviewed_at": (t.reviewed_at.isoformat() if t.reviewed_at else None),
+            "reviewed_by": t.reviewed_by,
+        }
+
+    snapshot, reset_ids, errors = [], [], []
+    for doc in docs:
+        own = Transaction.query.filter_by(doc_upload_id=doc.id).all()
+        own_ids = [t.id for t in own if t.source != 'invoice_split']
+        kid_filters = [Transaction.doc_upload_id == doc.id]
+        if own_ids:
+            kid_filters.append(Transaction.parent_transaction_id.in_(own_ids))
+        kids = (Transaction.query
+                .filter(Transaction.source == 'invoice_split',
+                        _or_rpi(*kid_filters))
+                .all())
+        snapshot.append({
+            "doc": {"id": doc.id,
+                    "filename": doc.filed_filename or doc.original_filename,
+                    "vendor": doc.vendor,
+                    "amount": float(doc.amount) if doc.amount is not None else None,
+                    "crew_member_id": doc.crew_member_id,
+                    "status": doc.status},
+            "txns": [_txn_snap(t) for t in own if t.source != 'invoice_split'],
+            "split_children": [_txn_snap(t) for t in kids],
+        })
+        if dry:
+            continue
+        try:
+            kid_ids = {k.id for k in kids}
+            for k in kids:
+                db.session.delete(k)
+            db.session.commit()
+            charge_ids = []
+            for t in own:
+                if t.id in kid_ids:
+                    continue
+                if t.source not in ('doc_upload', 'invoice_split'):
+                    unmatch_receipt(t.id)          # commits; clears doc link
+                    charge_ids.append(t.id)
+            # Everything that still points at the doc (doc-born row, possibly
+            # freshly restored by unmatch_receipt) + the unlinked charges.
+            sweep = Transaction.query.filter_by(doc_upload_id=doc.id).all()
+            if charge_ids:
+                sweep += Transaction.query.filter(Transaction.id.in_(charge_ids)).all()
+            for t in sweep:
+                if t.budget_line_id or t.account_code:
+                    unlink_transaction(t.id)       # commits
+                    t = Transaction.query.get(t.id)
+                    if t is None:
+                        continue
+                t.suggested_budget_line_id = None
+                t.suggested_account_code = None
+                t.ai_suggested_code = None
+                t.ai_suggested_code_name = None
+                t.ai_code_confidence = None
+                t.ai_code_reason = None
+                t.match_status = 'unmatched'
+                t.match_confidence = None
+                t.reviewed_at = None
+                t.reviewed_by = None
+                t.updated_at = datetime.utcnow()
+            doc.crew_member_id = None
+            db.session.commit()
+            reset_ids.append(doc.id)
+        except Exception as e:
+            db.session.rollback()
+            logging.exception(f"[reset-person-invoices] doc {doc.id}: {e}")
+            errors.append({"doc_id": doc.id, "error": f"{type(e).__name__}: {e}"})
+
+    if not dry and reset_ids:
+        try:
+            _log_activity(action='update', entity_type='doc_upload', entity_id=0,
+                          entity_label=f'Test-reset {len(reset_ids)} person invoices',
+                          project_id=pid,
+                          note='Fresh-upload matching test: uncoded, unmatched, '
+                               'splits removed, person cleared')
+        except Exception:
+            pass
+
+    return jsonify({"ok": True, "dry": dry, "candidates": len(docs),
+                    "reset": reset_ids, "errors": errors,
+                    "snapshot": snapshot})
+
+
 @app.route("/docs/split-integrity", methods=["GET", "POST"])
 @login_required
 def docs_split_integrity():
