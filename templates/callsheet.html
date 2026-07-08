@@ -254,16 +254,20 @@
             {% for ld in location_days_today %}
               {% set loc = locations_by_id.get(ld.location_id) %}
               {% if loc %}
+              {% set _lt = location_type_meta(loc.location_type) %}
+              {% set _dt = day_type_meta(ld.day_type) %}
               <div class="cs-loc-item cs-hideable" data-ld-id="{{ ld.id }}" data-cs-key="location:{{ loc.id }}" draggable="true">
                 <span class="cs-drag-handle cs-screen-only" title="Drag to reorder">⠿</span>
                 <span class="cs-hide-toggle cs-screen-only" data-cs-key="location:{{ loc.id }}" title="Hide / show this location">👁</span>
                 <div class="callsheet-location-card">
+                  {% if loc.location_type %}
+                  <div class="callsheet-location-typeline"><span class="callsheet-location-type-icon">{{ _lt.icon }}</span> {{ _lt.label }}</div>
+                  {% endif %}
                   <div class="callsheet-location-header">
                     <span class="callsheet-location-name cs-editable" contenteditable="true"
                           data-cs-text="location_name:{{ loc.id }}" data-cs-default="{{ loc.name }}"
                           title="Click to edit location name">{{ loc.name }}</span>
-                    <span class="callsheet-day-type-badge callsheet-dt-{{ ld.day_type }}">{{ ld.day_type | upper }}</span>
-                    {% if loc.location_type %}<span class="callsheet-location-type">{{ loc.location_type }}</span>{% endif %}
+                    {% if _dt.chip %}<span class="callsheet-day-type-badge callsheet-dt-{{ ld.day_type }}" title="{{ _dt.label }}">{{ _dt.chip }}</span>{% endif %}
                   </div>
                   <div class="callsheet-location-address">
                     <span class="cs-editable" contenteditable="true"

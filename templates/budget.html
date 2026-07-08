@@ -13280,7 +13280,8 @@
     {% for loc in project_locations %}
     <div class="location-card" data-id="{{ loc.id }}">
       <div class="location-card-header">
-        <span class="location-type-badge {{ 'loc-' + (loc.location_type or 'other') }}">{{ loc.location_type or 'location' }}</span>
+        {% set _lt = location_type_meta(loc.location_type) %}
+        <span class="location-type-badge {{ 'loc-' + (loc.location_type or 'other') }}" title="{{ _lt.label }}">{{ _lt.icon }} {{ _lt.label }}</span>
         <div class="location-card-actions">
           <button class="btn btn-xs btn-ghost" onclick="editLocation({{ loc.id }})">✎</button>
           <button class="btn btn-xs btn-ghost" onclick="deleteLocation({{ loc.id }})">✕</button>
@@ -13665,7 +13666,8 @@
             {% endif %}
           </td>
           <td {% if loc.dayof_name %}rowspan="2"{% endif %}>
-            <span class="location-type-badge loc-{{ loc.location_type or 'other' }}">{{ loc.location_type or 'loc' }}</span>
+            {% set _lt = location_type_meta(loc.location_type) %}
+            <span class="location-type-badge loc-{{ loc.location_type or 'other' }}" title="{{ _lt.label }}">{{ _lt.icon }} {{ _lt.label }}</span>
           </td>
           <td class="cs-field {% if mo.get('name') %}cs-omit{% endif %}" data-field="name">
             <span class="cs-val">{{ loc.contact_name }}</span>
@@ -13690,7 +13692,8 @@
             oncontextmenu="csRowRightClick(event, this)">
           {% if not loc.contact_name %}
           <td class="contact-name">{{ loc.name }}</td>
-          <td><span class="location-type-badge loc-{{ loc.location_type or 'other' }}">{{ loc.location_type or 'loc' }}</span></td>
+          {% set _lt2 = location_type_meta(loc.location_type) %}
+          <td><span class="location-type-badge loc-{{ loc.location_type or 'other' }}" title="{{ _lt2.label }}">{{ _lt2.icon }} {{ _lt2.label }}</span></td>
           {% endif %}
           <td class="cs-field {% if do.get('name') %}cs-omit{% endif %}" data-field="name">
             <span class="cs-val">{{ loc.dayof_name }}</span>
@@ -14718,14 +14721,9 @@
           <label>Type</label>
           <select id="loc-type">
             <option value="">— select —</option>
-            <option value="stage">Stage</option>
-            <option value="office">Office / Production Office</option>
-            <option value="exterior">Exterior Location</option>
-            <option value="holding">Holding / Basecamp</option>
-            <option value="parking">Parking</option>
-            <option value="vendor">Vendor / Supplier</option>
-            <option value="delivery">Delivery / Drop-Off</option>
-            <option value="other">Other</option>
+            {% for _v in LOCATION_TYPE_PICKER %}
+            <option value="{{ _v }}">{{ LOCATION_TYPES[_v].icon }} {{ LOCATION_TYPES[_v].label }}</option>
+            {% endfor %}
           </select>
         </div>
       </div>
@@ -19509,12 +19507,24 @@ function filterLocLibrary(q) {
   renderLocLibrary(filtered);
 }
 
+// Canonical location-type vocab, mirrored from app.py LOCATION_TYPES so
+// client-rendered lists show the same icon + label as server-rendered ones.
+window.LOCATION_TYPE_META = {{ LOCATION_TYPES | tojson }};
+function locTypeLabel(v) {
+  const m = window.LOCATION_TYPE_META[(v || '').trim()];
+  return m ? m.label : (v || 'Location');
+}
+function locTypeIcon(v) {
+  const m = window.LOCATION_TYPE_META[(v || '').trim()];
+  return m ? m.icon : '📍';
+}
+
 function renderLocLibrary(items) {
   const list = document.getElementById('loc-lib-list');
   if (!items.length) { list.innerHTML = '<p class="muted" style="font-size:.85rem">No library locations found.</p>'; return; }
   list.innerHTML = items.map(l => `
     <div class="loc-lib-item ${l.already_in_project ? 'loc-lib-item-used' : ''}">
-      <div class="loc-lib-item-name">${l.name} <span class="location-type-badge loc-${l.location_type||'other'}" style="font-size:.65rem">${l.location_type||'location'}</span></div>
+      <div class="loc-lib-item-name">${l.name} <span class="location-type-badge loc-${l.location_type||'other'}" style="font-size:.65rem" title="${locTypeLabel(l.location_type)}">${locTypeIcon(l.location_type)} ${locTypeLabel(l.location_type)}</span></div>
       ${l.address ? `<div class="muted" style="font-size:.78rem">${l.address}</div>` : ''}
       ${l.already_in_project ? '<div class="muted" style="font-size:.75rem;color:var(--green)">✓ Already in project</div>' : `<button class="btn btn-sm btn-primary" onclick="importLibLoc(${JSON.stringify(l).replace(/"/g,'&quot;')})">Add to Project</button>`}
     </div>
@@ -20166,7 +20176,7 @@ function _renderLocPicker(query) {
       items.map(l => {
         const takenByOther = l.assigned_to_line_id && String(l.assigned_to_line_id) !== document.getElementById('al-line-id').value;
         const taken = takenByOther ? ' <span style="color:var(--text-muted);font-size:.7rem">(assigned to another line)</span>' : '';
-        const sub = [l.facility_name, l.location_type].filter(Boolean).join(' · ');
+        const sub = [l.facility_name, (l.location_type ? locTypeLabel(l.location_type) : '')].filter(Boolean).join(' · ');
         return `<div class="al-item" data-id="${l.id}"
                      style="padding:7px 10px;cursor:pointer;border-radius:4px;
                             background:rgba(0,0,0,.15);display:flex;align-items:center;

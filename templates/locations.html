@@ -17,7 +17,8 @@
   {% for loc in locations %}
   <div class="location-card" data-id="{{ loc.id }}">
     <div class="location-card-header">
-      <span class="location-type-badge {{ 'loc-' + (loc.location_type or 'other') }}">{{ loc.location_type or 'location' }}</span>
+      {% set _lt = location_type_meta(loc.location_type) %}
+      <span class="location-type-badge {{ 'loc-' + (loc.location_type or 'other') }}" title="{{ _lt.label }}">{{ _lt.icon }} {{ _lt.label }}</span>
       <div class="location-card-actions">
         <button class="btn btn-xs btn-ghost" onclick="editLoc({{ loc.id }}, {{ {
           'id': loc.id,
@@ -108,14 +109,9 @@
         <label>Type</label>
         <select id="ldb-type">
           <option value="">— select —</option>
-          <option value="stage">Stage</option>
-          <option value="office">Office / Production Office</option>
-          <option value="exterior">Exterior Location</option>
-          <option value="holding">Holding / Basecamp</option>
-          <option value="parking">Parking</option>
-          <option value="vendor">Vendor / Supplier</option>
-          <option value="delivery">Delivery / Drop-Off</option>
-          <option value="other">Other</option>
+          {% for _v in LOCATION_TYPE_PICKER %}
+          <option value="{{ _v }}">{{ LOCATION_TYPES[_v].icon }} {{ LOCATION_TYPES[_v].label }}</option>
+          {% endfor %}
         </select>
       </div>
     </div>

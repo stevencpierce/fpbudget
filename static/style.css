@@ -2634,11 +2634,37 @@ a.tab-link:hover { background: var(--bg-3); }
   transition: background .12s;
 }
 .gantt-loc-cell:hover { background: rgba(255,255,255,.05); }
-.loc-day-use    { background: rgba(46,204,113,.35); }
-.loc-day-scout  { background: rgba(52,152,219,.3); }
-.loc-day-hold   { background: rgba(241,196,15,.25); }
-.loc-day-strike { background: rgba(231,76,60,.25); }
-.loc-day-label  { font-size: .65rem; font-weight: 700; color: #fff; }
+.loc-day-use     { background: rgba(46,204,113,.35); }   /* Shoot / Use */
+.loc-day-prep    { background: rgba(155,89,182,.30); }   /* Prep */
+.loc-day-scout   { background: rgba(52,152,219,.30); }   /* Scout */
+.loc-day-hold    { background: rgba(241,196,15,.25); }   /* Hold */
+.loc-day-load_in { background: rgba(26,188,156,.30); }   /* Load-in */
+.loc-day-load_out{ background: rgba(230,126,34,.30); }   /* Load-out */
+.loc-day-strike  { background: rgba(231,76,60,.25); }    /* Strike */
+.loc-day-pickup  { background: rgba(52,73,94,.40); }     /* Pick-up */
+.loc-day-dropoff { background: rgba(127,140,141,.35); }  /* Drop-off */
+.loc-day-travel  { background: rgba(41,128,185,.35); }   /* Travel */
+.loc-day-label  { font-size: .52rem; line-height: 1; font-weight: 700; color: #fff;
+                  letter-spacing: -.02em; display: inline-block; max-width: 42px;
+                  overflow: hidden; white-space: nowrap; }
+
+/* ── Schedule locations legend/key ─────────────────────────────────────── */
+.loc-legend {
+  display: flex; flex-wrap: wrap; gap: .5rem 1.1rem; align-items: center;
+  margin: .35rem 0 .55rem; padding: .45rem .6rem;
+  background: var(--bg-2); border: 1px solid var(--border); border-radius: 6px;
+  font-size: .72rem;
+}
+.loc-legend-group { display: flex; flex-wrap: wrap; gap: .3rem .55rem; align-items: center; }
+.loc-legend-title { font-weight: 700; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em; font-size: .64rem; margin-right: .15rem; }
+.loc-legend-chip {
+  display: inline-flex; align-items: center; gap: .25rem;
+  padding: .08rem .38rem; border-radius: 4px; font-weight: 700;
+  font-size: .62rem; color: #fff; white-space: nowrap;
+}
+.loc-legend-item { display: inline-flex; align-items: center; gap: .2rem;
+  color: var(--text); white-space: nowrap; }
 
 /* Crew assignment in budget lines */
 .assigned-crew-name {
@@ -3280,8 +3306,20 @@ a.tab-link:hover { background: var(--bg-3); }
 .callsheet-dt-half    { background: rgba(230,126,34,.18);  color: #e67e22; }
 .callsheet-dt-kill_fee { background: rgba(231,76,60,.18); color: #e74c3c; }
 .callsheet-dt-use     { background: rgba(46,204,113,.18); color: #2ecc71; }
+.callsheet-dt-prep    { background: rgba(155,89,182,.18); color: #9b59b6; }
 .callsheet-dt-scout   { background: rgba(52,152,219,.18); color: #3498db; }
+.callsheet-dt-load_in { background: rgba(26,188,156,.18); color: #1abc9c; }
+.callsheet-dt-load_out{ background: rgba(230,126,34,.18); color: #e67e22; }
 .callsheet-dt-strike  { background: rgba(231,76,60,.18);  color: #e74c3c; }
+.callsheet-dt-pickup  { background: rgba(52,73,94,.22);   color: #7f8fa4; }
+.callsheet-dt-dropoff { background: rgba(127,140,141,.20); color: #95a5a6; }
+
+/* Location-type line above the location name on the call sheet */
+.callsheet-location-typeline {
+  font-size: .68rem; font-weight: 700; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .04em; margin-bottom: .1rem;
+}
+.callsheet-location-type-icon { font-size: .8rem; }
 
 /* ── Location cards ────────────────────────────────────────────────────────── */
 .callsheet-location-card {

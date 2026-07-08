@@ -720,6 +720,80 @@ if not ADMIN_PASSWORD:
     ADMIN_PASSWORD = "changeme123"
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 
+# ── Location & location-day vocabularies (single source of truth) ──────────────
+# Both Location.location_type and LocationDay.day_type are free-string columns.
+# We NEVER migrate the stored values; every UI renders a label from these maps.
+# Legacy values (stage/office/exterior/holding/parking/vendor/other/delivery and
+# day_type use/scout/hold/strike) must resolve to a label here — see the
+# `_LEGACY_*` aliasing below and the LOCATION_TYPE_ORDER/DAY_TYPE resolvers.
+
+# value -> {label, icon, order}. `order` drives call-sheet grouping.
+LOCATION_TYPES = {
+    "shoot":             {"label": "Shooting Location",        "icon": "🎬", "order": 1},
+    "venue":             {"label": "Venue / Stage",            "icon": "🏟", "order": 2},
+    "basecamp":          {"label": "Basecamp / Trucks",        "icon": "⛺", "order": 3},
+    "parking":           {"label": "Parking",                  "icon": "🅿️", "order": 4},
+    "production_office": {"label": "Production Office",         "icon": "🗂", "order": 5},
+    "holding":           {"label": "Talent Holding / Green Room", "icon": "🎭", "order": 6},
+    "catering":          {"label": "Catering / Meals",         "icon": "🍽", "order": 7},
+    "hotel":             {"label": "Hotel / Lodging",          "icon": "🏨", "order": 8},
+    "hospital":          {"label": "Nearest Hospital",         "icon": "🏥", "order": 9},
+    "vendor":            {"label": "Vendor / Rental House",    "icon": "🏪", "order": 10},
+    "pickup":            {"label": "Pick-up Point",            "icon": "🚚", "order": 11},
+    "dropoff":           {"label": "Drop-off Point",           "icon": "📦", "order": 12},
+    "staging":           {"label": "Staging / Load-in Area",   "icon": "🚧", "order": 13},
+    # Legacy values kept valid (not shown in the picker, but resolve to a label):
+    "office":            {"label": "Production Office",         "icon": "🗂", "order": 5,  "legacy": True},
+    "stage":             {"label": "Venue / Stage",            "icon": "🏟", "order": 2,  "legacy": True},
+    "exterior":          {"label": "Shooting Location (Exterior)", "icon": "🎬", "order": 1, "legacy": True},
+    "delivery":          {"label": "Drop-off Point",           "icon": "📦", "order": 12, "legacy": True},
+    "other":             {"label": "Other",                    "icon": "📍", "order": 99, "legacy": True},
+}
+# Values offered in the create/edit picker (canonical set, in display order).
+LOCATION_TYPE_PICKER = [
+    "shoot", "venue", "basecamp", "parking", "production_office", "holding",
+    "catering", "hotel", "hospital", "vendor", "pickup", "dropoff", "staging",
+    "other",
+]
+
+# value -> {label, chip, order}. `chip` is the short badge label.
+DAY_TYPES = {
+    "use":      {"label": "Shoot / Use", "chip": "SHOOT",    "order": 1},
+    "prep":     {"label": "Prep",        "chip": "PREP",     "order": 2},
+    "scout":    {"label": "Scout",       "chip": "SCOUT",    "order": 3},
+    "hold":     {"label": "Hold",        "chip": "HOLD",     "order": 4},
+    "load_in":  {"label": "Load-in",     "chip": "LOAD-IN",  "order": 5},
+    "load_out": {"label": "Load-out",    "chip": "LOAD-OUT", "order": 6},
+    "strike":   {"label": "Strike",      "chip": "STRIKE",   "order": 7},
+    "pickup":   {"label": "Pick-up",     "chip": "PICKUP",   "order": 8},
+    "dropoff":  {"label": "Drop-off",    "chip": "DROPOFF",  "order": 9},
+    "travel":   {"label": "Travel",      "chip": "TRAVEL",   "order": 10},
+}
+# Values offered in the location-day picker, in display order.
+DAY_TYPE_PICKER = list(DAY_TYPES.keys())
+
+
+def location_type_meta(value):
+    """Resolve a Location.location_type string to {value,label,icon,order}.
+    Unknown/blank values fall back to a generic 'Location' at the end."""
+    v = (value or "").strip()
+    meta = LOCATION_TYPES.get(v)
+    if meta:
+        return {"value": v, "label": meta["label"], "icon": meta["icon"], "order": meta["order"]}
+    return {"value": v, "label": (v or "Location"), "icon": "📍", "order": 98}
+
+
+def day_type_meta(value):
+    """Resolve a LocationDay.day_type string to {value,label,chip,order}.
+    Unknown values fall back to the upper-cased raw value (never blank gibberish)."""
+    v = (value or "").strip()
+    meta = DAY_TYPES.get(v)
+    if meta:
+        return {"value": v, "label": meta["label"], "chip": meta["chip"], "order": meta["order"]}
+    return {"value": v, "label": (v.replace("_", " ").title() if v else ""),
+            "chip": (v.upper() if v else ""), "order": 98}
+
+
 @app.context_processor
 def inject_globals():
     # APP_COMMIT: the build this page was rendered by. base.html compares it
@@ -727,7 +801,14 @@ def inject_globals():
     # when they diverge — long-lived tabs running stale JS have caused three
     # separate "the fix doesn't work" reports. (User 2026-07.)
     return {"GOOGLE_MAPS_API_KEY": GOOGLE_MAPS_API_KEY,
-            "APP_COMMIT": (os.getenv('RENDER_GIT_COMMIT') or '')[:12] or 'unknown'}
+            "APP_COMMIT": (os.getenv('RENDER_GIT_COMMIT') or '')[:12] or 'unknown',
+            # Location / location-day vocabularies + resolvers for every template.
+            "LOCATION_TYPES": LOCATION_TYPES,
+            "LOCATION_TYPE_PICKER": LOCATION_TYPE_PICKER,
+            "DAY_TYPES": DAY_TYPES,
+            "DAY_TYPE_PICKER": DAY_TYPE_PICKER,
+            "location_type_meta": location_type_meta,
+            "day_type_meta": day_type_meta}
 
 
 def _fmt_local(dt, tz_name=None):
@@ -2771,10 +2852,17 @@ def _render_callsheet_pdf_html(send_obj, project_name, date_display, cs_data, cr
             return ''
         return f'<tr><td class="lbl">{esc(label)}</td><td>{esc(str(val))}</td></tr>'
 
-    # Build location blocks
+    # Build location blocks (grouped/sorted by canonical location-type order)
     loc_html = ''
-    for loc in (locations_today or []):
-        loc_html += f'<div class="loc-block"><strong>{esc(loc.name or "")}</strong>'
+    _sorted_locs = sorted(
+        (locations_today or []),
+        key=lambda l: location_type_meta(getattr(l, 'location_type', None))['order'])
+    for loc in _sorted_locs:
+        _lt = location_type_meta(getattr(loc, 'location_type', None))
+        loc_html += '<div class="loc-block">'
+        if getattr(loc, 'location_type', None):
+            loc_html += f'<div class="loc-type">{_lt["icon"]} {esc(_lt["label"])}</div>'
+        loc_html += f'<strong>{esc(loc.name or "")}</strong>'
         if getattr(loc, 'facility_name', None):
             loc_html += f' — {esc(loc.facility_name)}'
         if getattr(loc, 'address', None):
@@ -21926,6 +22014,14 @@ def callsheet_view(pid, bid, date_str=None):
         ordered = [ld_by_id[lid] for lid in saved_loc_order if lid in ld_by_id]
         remaining = [ld for ld in location_days_today if ld.id not in set(saved_loc_order)]
         location_days_today = ordered + remaining
+
+    # Group by LOCATION_TYPES order for the call sheet (stable — keeps any saved
+    # manual order as the tiebreaker within a type). Unknown/blank types sort last.
+    location_days_today = sorted(
+        location_days_today,
+        key=lambda ld: location_type_meta(
+            getattr(locations_by_id.get(ld.location_id), 'location_type', None)
+        )['order'])
 
     # Available contacts for Key Personnel dropdowns (all crew on this budget)
     _labor_lines = BudgetLine.query.filter_by(budget_id=bid, is_labor=True).all()

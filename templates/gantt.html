@@ -516,8 +516,9 @@
     {% for loc in gantt_locations %}
     <tr class="gantt-location-row" data-loc-id="{{ loc.id }}">
       <td class="gantt-row-label">
-        <span class="gantt-line-code">{{ loc.location_type or 'LOC' }}</span>
-        <span class="gantt-line-desc">{{ loc.name }}</span>
+        {% set _lt = location_type_meta(loc.location_type) %}
+        <span class="gantt-line-code" title="{{ _lt.label }}">{{ _lt.icon }}</span>
+        <span class="gantt-line-desc" title="{{ _lt.label }}">{{ loc.name }}</span>
         {% if loc.daily_rate and loc.billing_type != 'info_only' %}
         <span class="location-rate-badge">${{ loc.daily_rate | round(0) | int }}/day</span>
         {% endif %}
@@ -525,12 +526,13 @@
       {% for d in date_range %}
       {% set is_week_start = d.isoformat() in week_boundary_dates %}
       {% set loc_day_type = gantt_loc_day_map.get((loc.id, d.isoformat()), '') %}
+      {% set _dt = day_type_meta(loc_day_type) %}
       <td class="gantt-loc-cell {{ 'week-start-col' if is_week_start else '' }} {{ 'loc-day-' + loc_day_type if loc_day_type else '' }}"
           data-loc="{{ loc.id }}" data-date="{{ d.isoformat() }}"
           onclick="toggleLocDay(this)"
-          title="{{ loc.name }} — {{ d.strftime('%a %-m/%-d') }}">
-        {% if loc_day_type %}
-        <span class="loc-day-label">{{ loc_day_type[0]|upper }}</span>
+          title="{{ loc.name }} — {{ d.strftime('%a %-m/%-d') }}{% if _dt.label %} · {{ _dt.label }}{% endif %}">
+        {% if _dt.chip %}
+        <span class="loc-day-label" title="{{ _dt.label }}">{{ _dt.chip }}</span>
         {% endif %}
       </td>
       {% endfor %}
@@ -540,6 +542,27 @@
   </tbody>
 </table>
 </div>
+
+{% if gantt_locations %}
+<!-- ── Locations key/legend ── (day-type chips + location-type icons) -->
+<details class="loc-legend-details" open>
+  <summary style="cursor:pointer;font-size:.72rem;color:var(--text-muted);font-weight:600;margin:.3rem 0">📍 Locations key</summary>
+  <div class="loc-legend">
+    <div class="loc-legend-group">
+      <span class="loc-legend-title">Day types</span>
+      {% for _v in DAY_TYPE_PICKER %}
+      <span class="loc-legend-chip loc-day-{{ _v }}" title="{{ DAY_TYPES[_v].label }}">{{ DAY_TYPES[_v].chip }}</span>
+      {% endfor %}
+    </div>
+    <div class="loc-legend-group">
+      <span class="loc-legend-title">Location types</span>
+      {% for _v in LOCATION_TYPE_PICKER %}
+      <span class="loc-legend-item" title="{{ LOCATION_TYPES[_v].label }}">{{ LOCATION_TYPES[_v].icon }} {{ LOCATION_TYPES[_v].label }}</span>
+      {% endfor %}
+    </div>
+  </div>
+</details>
+{% endif %}
 
 <!-- Day type picker (right-click context menu — subcategory selection) -->
 <div id="day-picker" class="day-picker hidden">
@@ -760,8 +783,12 @@ window.purgeAllScheduleFlags = async function () {
 initGantt({{ project.id }}, {{ budget.id }}, {{ budget.payroll_profile_id or 'null' }});
 </script>
 <script>
-const LOC_DAY_TYPES = ['use', 'scout', 'hold', 'strike'];
-const LOC_DAY_LABELS = {use:'Use', scout:'Scout', hold:'Hold', strike:'Strike'};
+// Canonical location-day vocab, mirrored from app.py DAY_TYPES.
+const LOC_DAY_META   = {{ DAY_TYPES | tojson }};
+const LOC_DAY_TYPES  = {{ DAY_TYPE_PICKER | tojson }};  // cycle order
+const LOC_DAY_LABELS = Object.fromEntries(Object.entries(LOC_DAY_META).map(([k,v]) => [k, v.label]));
+function locDayChip(v) { const m = LOC_DAY_META[v]; return m ? m.chip : (v ? v.toUpperCase() : ''); }
+function locDayLabel(v){ const m = LOC_DAY_META[v]; return m ? m.label : (v || ''); }
 
 // ── Realtime Collaboration (Gantt) ──────────────────────────────────────────
 (function() {
@@ -946,19 +973,23 @@ const LOC_DAY_LABELS = {use:'Use', scout:'Scout', hold:'Hold', strike:'Strike'};
 async function toggleLocDay(cell) {
   const locId  = cell.dataset.loc;
   const date   = cell.dataset.date;
-  const current = cell.classList.contains('loc-day-use') ? 'use'
-                : cell.classList.contains('loc-day-scout') ? 'scout'
-                : cell.classList.contains('loc-day-hold') ? 'hold'
-                : cell.classList.contains('loc-day-strike') ? 'strike' : '';
-  // Cycle: '' → use → scout → hold → strike → ''
-  const cycle = ['', 'use', 'scout', 'hold', 'strike', ''];
-  const nextType = cycle[cycle.indexOf(current) + 1] ?? '';
+  // Current type = whichever loc-day-<t> class is present ('' if none).
+  let current = '';
+  for (const t of LOC_DAY_TYPES) {
+    if (cell.classList.contains('loc-day-' + t)) { current = t; break; }
+  }
+  // Cycle: '' → <full vocab in order> → ''
+  const cycle = ['', ...LOC_DAY_TYPES, ''];
+  const idx = cycle.indexOf(current);
+  const nextType = cycle[(idx === -1 ? 0 : idx) + 1] ?? '';
 
   LOC_DAY_TYPES.forEach(t => cell.classList.remove('loc-day-' + t));
   cell.innerHTML = '';
+  cell.title = (cell.title || '').split(' · ')[0];
   if (nextType) {
     cell.classList.add('loc-day-' + nextType);
-    cell.innerHTML = `<span class="loc-day-label">${nextType[0].toUpperCase()}</span>`;
+    cell.innerHTML = `<span class="loc-day-label" title="${locDayLabel(nextType)}">${locDayChip(nextType)}</span>`;
+    cell.title = cell.title + ' · ' + locDayLabel(nextType);
   }
 
   await fetch(`/projects/{{ project.id }}/budget/{{ budget.id }}/location-day`, {
