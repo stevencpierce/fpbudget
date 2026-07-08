@@ -9389,6 +9389,197 @@ def actuals_line_transactions(pid, lid):
     })
 
 
+def _ledger_resolve_line(pid, lid):
+    """Resolve a budget-line id (from EITHER the Estimated or Working view) to
+    the canonical line + the full project-wide SIBLING id set representing the
+    SAME line — the exact same (account_code + description) resolution the
+    per-line transactions.json endpoint uses. Also returns the WORKING sister
+    line (for the line's forecast total) when one exists.
+
+    Returns (line, sib_ids, working_line) or (None, None, None) if not found.
+    """
+    line = (BudgetLine.query
+            .join(Budget, Budget.id == BudgetLine.budget_id)
+            .filter(BudgetLine.id == lid, Budget.project_id == pid)
+            .first())
+    if line is None:
+        return None, None, None
+    _sib_q = (BudgetLine.query
+              .join(Budget, Budget.id == BudgetLine.budget_id)
+              .filter(Budget.project_id == pid,
+                      BudgetLine.account_code == line.account_code))
+    if line.description:
+        _sib_q = _sib_q.filter(BudgetLine.description == line.description)
+    else:
+        _sib_q = _sib_q.filter(BudgetLine.id == line.id)
+    sib_rows = _sib_q.all() or [line]
+    sib_ids = [l.id for l in sib_rows] or [line.id]
+    # Prefer the Working (budget_mode working/actual) sister for the forecast
+    # total — its working_total is the evolving Working forecast.
+    working_line = None
+    for l in sib_rows:
+        b = Budget.query.get(l.budget_id)
+        if b and (b.budget_mode or '') in ('working', 'actual'):
+            working_line = l
+            break
+    return line, sib_ids, working_line
+
+
+@app.route("/projects/<int:pid>/actuals/line/<int:lid>/ledger.json", methods=["GET"])
+@login_required
+def actuals_line_ledger(pid, lid):
+    """Line Ledger side panel data: the budget line's forecast total, coded
+    spend total, and a CHRONOLOGICAL (oldest-first) list of every transaction
+    coded to the line — with doc/thumbnail, split state, PO, review state, and
+    anomaly-flag state per row. Sibling-aware (resolves an Estimated-view line
+    to its Working sister so the panel opens from any view). Read-only."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    line, sib_ids, working_line = _ledger_resolve_line(pid, lid)
+    if line is None:
+        abort(404)
+
+    txns = (Transaction.query
+            .filter(Transaction.project_id == pid,
+                    Transaction.budget_line_id.in_(sib_ids))
+            .order_by(Transaction.txn_date.asc().nullsfirst(),
+                      Transaction.id.asc())
+            .all())
+
+    # Unresolved anomaly flags referencing any of these transactions.
+    tids = [t.id for t in txns]
+    flagged_tids = set()
+    if tids:
+        for (ftid,) in (db.session.query(AnomalyFlag.transaction_id)
+                        .filter(AnomalyFlag.transaction_id.in_(tids),
+                                AnomalyFlag.resolved == False)  # noqa: E712
+                        .distinct().all()):
+            if ftid is not None:
+                flagged_tids.add(ftid)
+
+    # Resolve parent docs for split children whose own doc_upload_id is null.
+    parent_ids = {t.parent_transaction_id for t in txns
+                  if t.parent_transaction_id and not t.doc_upload_id}
+    parent_docs = {}   # parent_txn_id -> doc_upload_id
+    if parent_ids:
+        for (p_id, p_doc) in (db.session.query(
+                    Transaction.id, Transaction.doc_upload_id)
+                .filter(Transaction.id.in_(parent_ids)).all()):
+            parent_docs[p_id] = p_doc
+
+    out = []
+    coded_total = 0.0
+    for t in txns:
+        # Effective doc: own doc, else (for a split child) its parent's doc.
+        eff_doc_id = t.doc_upload_id
+        if eff_doc_id is None and t.parent_transaction_id:
+            eff_doc_id = parent_docs.get(t.parent_transaction_id)
+        doc = DocUpload.query.get(eff_doc_id) if eff_doc_id else None
+        _dt = t.txn_date
+        amt = float(t.amount) if t.amount is not None else None
+        # Coded total mirrors the section rollup: expense amounts count, credits 0.
+        if t.is_expense and amt is not None:
+            coded_total += amt
+        out.append({
+            "id": t.id,
+            "date": (_dt.isoformat() if hasattr(_dt, 'isoformat') else _dt),
+            "vendor": t.vendor,
+            "amount": amt,
+            "note": t.note,
+            "source": t.source,
+            "is_split": (t.source == 'invoice_split'),
+            "doc": ({"id": doc.id,
+                     "filename": (doc.filed_filename or doc.original_filename
+                                  or f'Upload #{doc.id}'),
+                     "has_thumb": True} if doc else None),
+            "po_number": None,
+            "reviewed": bool(t.reviewed_at),
+            "reviewed_at": (t.reviewed_at.isoformat() if t.reviewed_at else None),
+            "reviewed_by": t.reviewed_by,
+            "flagged": (t.id in flagged_tids),
+            "matched": (eff_doc_id is not None),
+        })
+
+    # Forecast total: the Working sister's working_total (the evolving forecast),
+    # falling back to the resolved line's own working_total / estimated_total.
+    _bl = working_line or line
+    budget_total = None
+    for _cand in (getattr(_bl, 'working_total', None),
+                  getattr(_bl, 'estimated_total', None)):
+        if _cand is not None:
+            budget_total = float(_cand)
+            break
+
+    return jsonify({
+        "ok": True,
+        "line": {
+            "id": line.id,
+            "account_code": line.account_code,
+            "description": (line.description or line.account_name or ''),
+            "budget_total": budget_total,
+            "coded_total": round(coded_total, 2),
+            "txn_count": len(out),
+        },
+        "section": {
+            "code": line.account_code,
+            "name": (_section_name(line.account_code) or line.account_name or ''),
+        },
+        "txns": out,
+    })
+
+
+@app.route("/projects/<int:pid>/actuals/txn/<int:tid>/review", methods=["POST"])
+@login_required
+def actuals_txn_review(pid, tid):
+    """Toggle a transaction's Line-Ledger reviewed state. Body {reviewed: bool}.
+    Sets/clears reviewed_at (utcnow) + reviewed_by (current user). Advisory —
+    does not touch totals or matching."""
+    _require_project_role(pid, 'viewer')
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    data = request.get_json(silent=True) or {}
+    want = bool(data.get("reviewed"))
+    if want:
+        who = (current_user.name or (current_user.email.split('@')[0]
+               if current_user.email else 'user'))
+        txn.reviewed_at = datetime.utcnow()
+        txn.reviewed_by = who
+    else:
+        txn.reviewed_at = None
+        txn.reviewed_by = None
+    db.session.commit()
+    return jsonify({
+        "ok": True,
+        "reviewed": bool(txn.reviewed_at),
+        "reviewed_at": (txn.reviewed_at.isoformat() if txn.reviewed_at else None),
+        "reviewed_by": txn.reviewed_by,
+    })
+
+
+@app.route("/projects/<int:pid>/actuals/line/<int:lid>/review-all", methods=["POST"])
+@login_required
+def actuals_line_review_all(pid, lid):
+    """Mark every currently-unreviewed transaction on this (sibling-resolved)
+    line as reviewed. Returns the count newly marked."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    line, sib_ids, _wl = _ledger_resolve_line(pid, lid)
+    if line is None:
+        abort(404)
+    who = (current_user.name or (current_user.email.split('@')[0]
+           if current_user.email else 'user'))
+    now = datetime.utcnow()
+    rows = (Transaction.query
+            .filter(Transaction.project_id == pid,
+                    Transaction.budget_line_id.in_(sib_ids),
+                    Transaction.reviewed_at.is_(None))
+            .all())
+    for t in rows:
+        t.reviewed_at = now
+        t.reviewed_by = who
+    db.session.commit()
+    return jsonify({"ok": True, "count": len(rows)})
+
+
 @app.route("/projects/<int:pid>/actuals/line-totals.json", methods=["POST"])
 @login_required
 def actuals_line_totals_batch(pid):
@@ -24947,6 +25138,9 @@ def _web_worker_essential_columns():
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claimed_by_project_id INTEGER REFERENCES project_sheet(id)",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_claimed_by ON transaction (claimed_by_project_id)",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_qbo_txn_id ON transaction (qbo_txn_id, qbo_txn_type)",
+                # Line Ledger per-transaction review state (2026-07).
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(120)",
                 # Client estimate portal (2026-06-03). preDeploy create_all is
                 # unreliable for brand-new tables (same reason travel_detail /
                 # catering_bill are healed here), so create it per-worker too.

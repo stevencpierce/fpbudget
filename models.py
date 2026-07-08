@@ -167,6 +167,15 @@ class Transaction(db.Model):
     ai_match_checked_at    = db.Column(db.DateTime, nullable=True)
     match_source           = db.Column(db.String(12), nullable=True)  # heuristic | ai | manual
 
+    # ── Line-ledger review (2026-07) ───────────────────────────────────
+    # Per-transaction "reviewed" state for the Line Ledger side panel:
+    # the user ticks a charge as checked-off against its budget line.
+    # Purely advisory — does NOT affect totals or matching. Nullable so
+    # legacy rows are unreviewed by default. Self-heal DDL adds these on
+    # every worker boot.
+    reviewed_at         = db.Column(db.DateTime, nullable=True)
+    reviewed_by         = db.Column(db.String(120), nullable=True)
+
     # ── Provenance ──────────────────────────────────────────────────────
     created_via_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
