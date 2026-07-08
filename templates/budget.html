@@ -14752,8 +14752,55 @@
       <span class="float-bar-label">{% if is_actual_view %}Actual Spend{% else %}Grand Total{% endif %}</span>
       <span class="float-bar-value" id="float-grand">{{ (top_sheet.grand_total_actual if is_actual_view else top_sheet.grand_total_estimated) | currency }}</span>
     </div>
+    {# Running Actual + Variance, revealed on demand (user 2026-07-08: "now
+       that we've gotten rid of our actual tab... reveal the actual on the
+       bottom next to the grand total and the variance... hide it or reveal it
+       selectively, like a little eye button"). Hidden by default; the 👁
+       toggle persists per-browser in localStorage. Suppressed on frozen
+       (superseded) versions — the live rollup isn't that version's history. #}
+    {% if not is_actual_view and not actuals_frozen %}
+    <div class="float-bar-item fb-actual-item fb-hidden">
+      <span class="float-bar-label" style="color:#c084fc">Actual Spend</span>
+      <span class="float-bar-value" id="float-actual" style="color:#c084fc">{{ top_sheet.grand_total_actual | currency }}</span>
+    </div>
+    <div class="float-bar-item fb-actual-item fb-hidden">
+      <span class="float-bar-label">Variance</span>
+      <span class="float-bar-value" id="float-variance"
+            style="color:{{ '#5fd0a0' if (top_sheet.grand_variance or 0) >= 0 else '#fb7185' }}">{{ top_sheet.grand_variance | currency }}</span>
+    </div>
+    <button type="button" id="float-actual-eye"
+            title="Show / hide running actual spend + variance"
+            style="background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-muted);cursor:pointer;font-size:.95rem;padding:3px 9px;margin-left:2px;line-height:1.2">👁</button>
+    {% endif %}
   </div>
 </div>
+<style>.fb-hidden { display:none !important; }</style>
+{% if not is_actual_view and not actuals_frozen %}
+<script>
+(function floatBarActualEye() {
+  var KEY = 'fpbudget.floatbar.showActual';
+  var eye = document.getElementById('float-actual-eye');
+  if (!eye) return;
+  window._FB_GRAND = Number('{{ top_sheet.grand_total_estimated or 0 }}');
+  function apply(on) {
+    document.querySelectorAll('.fb-actual-item').forEach(function (el) {
+      el.classList.toggle('fb-hidden', !on);
+    });
+    eye.style.color = on ? '#c084fc' : 'var(--text-muted)';
+    eye.style.borderColor = on ? '#c084fc' : 'var(--border)';
+    eye.title = (on ? 'Hide' : 'Show') + ' running actual spend + variance';
+  }
+  var on = false;
+  try { on = localStorage.getItem(KEY) === '1'; } catch (_) {}
+  apply(on);
+  eye.addEventListener('click', function () {
+    on = !on;
+    try { localStorage.setItem(KEY, on ? '1' : '0'); } catch (_) {}
+    apply(on);
+  });
+})();
+</script>
+{% endif %}
 
 {# ── Budget Gut Check (super_admin only) ─────────────────────────────────
    Read-only diagnostic: re-runs the canonical calc engine, cross-checks each
@@ -16115,6 +16162,24 @@ window.saveInlinePo = async function() {
       delete _sectionCache[code];
       if (!v) row.style.display = 'none';
     });
+    // Float bar: keep the revealed Actual Spend + Variance current (the 👁
+    // items next to Grand Total). Sum = every line cell + section-only spend —
+    // same source the cells themselves use. (User 2026-07-08.)
+    try {
+      const fa = document.getElementById('float-actual');
+      const fv = document.getElementById('float-variance');
+      if (fa && d.lines) {
+        let tot = 0;
+        Object.values(d.lines).forEach(v => { tot += (v || 0); });
+        Object.values(d.sections || {}).forEach(v => { tot += (v || 0); });
+        fa.textContent = _money(tot);
+        if (fv && window._FB_GRAND != null && !isNaN(window._FB_GRAND)) {
+          const varr = window._FB_GRAND - tot;
+          fv.textContent = _money(varr);
+          fv.style.color = varr >= 0 ? '#5fd0a0' : '#fb7185';
+        }
+      }
+    } catch (_) {}
     _lastRefresh = Date.now();
   }
   window.refreshActualCells = refreshActualCells;   // other IIFEs / surfaces may call
