@@ -15724,8 +15724,9 @@ window.saveInlinePo = async function() {
         ? ' <span class="muted" style="font-size:.7rem;color:#c084fc" '
           + 'title="Part of a document itemized across multiple budget lines — open the doc to see the full split">(split)</span>'
         : '';
-      html += '<tr class="wad-subrow" data-tid="' + t.id + '" data-scope="' + scope + '" '
-        + 'style="border-top:1px solid var(--border)">'
+      html += '<tr class="wad-subrow" draggable="true" data-tid="' + t.id + '" data-scope="' + scope + '" '
+        + 'title="Drag onto another line or section heading to reassign — click to multi-select" '
+        + 'style="border-top:1px solid var(--border);cursor:grab">'
         + '<td style="padding:5px 6px;color:var(--text-muted);font-variant-numeric:tabular-nums;width:90px">'
         + _esc(t.date || '—') + '</td>'
         + '<td style="padding:5px 6px;width:38%">' + _esc(t.vendor || '—') + splitTag + '</td>'
@@ -15892,6 +15893,142 @@ window.saveInlinePo = async function() {
     } catch (err) {
       alert('Uncode failed: ' + err.message);
       btn.disabled = false; btn.textContent = '✕ uncode';
+    }
+  });
+
+  // ── DRAG-TO-REASSIGN (User 2026-07-08: "I lost the ability to drag expenses
+  // ... to other rows — can we get that back.") Port of the old Actual-view
+  // machinery: click subrows to multi-select, then drag any one onto a line
+  // row (→ /set-line; server translates an Estimated pick to its Working
+  // sister) or a section header / 📂 row (→ /set-coa). Delegated dragstart
+  // because subrows render dynamically per expand. After a move we refresh
+  // cells in place (refreshActualCells) instead of reloading the page.
+  const _selTids = new Set();
+  let _draggingTids = null;
+  const _allSubrows = () => document.querySelectorAll('.wad-subrow');
+  function _paintSel() {
+    _allSubrows().forEach(r => {
+      const on = _selTids.has(parseInt(r.dataset.tid));
+      r.style.background    = on ? 'rgba(91,138,249,.20)' : '';
+      r.style.outline       = on ? '2px solid #5b8af9' : '';
+      r.style.outlineOffset = on ? '-2px' : '';
+    });
+    const hint = document.getElementById('wad-sel-hint');
+    if (hint) {
+      if (_selTids.size) { hint.style.display = ''; hint.querySelector('span').textContent =
+        _selTids.size + ' selected — drag any one onto a line or section heading'; }
+      else hint.style.display = 'none';
+    }
+  }
+  if (!document.getElementById('wad-sel-hint')) {
+    const h = document.createElement('div');
+    h.id = 'wad-sel-hint';
+    h.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:9999;'
+      + 'display:none;background:#15203a;border:1px solid #5b8af9;color:#cfe0ff;padding:6px 14px;'
+      + 'border-radius:18px;font-size:.78rem;box-shadow:0 2px 12px rgba(0,0,0,.45)';
+    h.innerHTML = '<span></span> · <a href="#" id="wad-sel-clear" style="color:#9bbcff;text-decoration:none">clear</a>';
+    document.body.appendChild(h);
+    h.querySelector('#wad-sel-clear').addEventListener('click', ev => { ev.preventDefault(); _selTids.clear(); _paintSel(); });
+  }
+  // Click a subrow (not its inner controls) toggles selection.
+  document.addEventListener('click', e => {
+    const sub = e.target.closest && e.target.closest('.wad-subrow');
+    if (!sub) return;
+    if (e.target.closest('a, button, input, select, textarea')) return;
+    const tid = parseInt(sub.dataset.tid);
+    if (_selTids.has(tid)) _selTids.delete(tid); else _selTids.add(tid);
+    _paintSel();
+  });
+  document.addEventListener('dragstart', e => {
+    const sub = e.target.closest && e.target.closest('.wad-subrow');
+    if (!sub) return;
+    const tid = parseInt(sub.dataset.tid);
+    _draggingTids = (_selTids.has(tid) && _selTids.size) ? Array.from(_selTids) : [tid];
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', 'txn:' + _draggingTids.join(','));
+    _draggingTids.forEach(t => { const r = document.querySelector('.wad-subrow[data-tid="' + t + '"]'); if (r) r.style.opacity = '.45'; });
+  });
+  document.addEventListener('dragend', () => {
+    if (!_draggingTids) return;
+    _allSubrows().forEach(r => { r.style.opacity = ''; });
+    _draggingTids = null; _paintSel();
+  });
+  async function _assignDragged(tids, opts) {
+    if (!tids.length) return;
+    const lineId = opts.lineId, code = opts.code;
+    try {
+      let r;
+      if (tids.length === 1) {
+        const url = (lineId != null)
+          ? '/projects/' + PROJ_ID + '/actuals/transaction/' + tids[0] + '/set-line'
+          : '/projects/' + PROJ_ID + '/actuals/transaction/' + tids[0] + '/set-coa';
+        const body = (lineId != null) ? { budget_line_id: lineId } : { account_code: code };
+        r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin', body: JSON.stringify(body) });
+      } else {
+        const body = (lineId != null)
+          ? { transaction_ids: tids, budget_line_id: lineId }
+          : { transaction_ids: tids, account_code: code };
+        r = await fetch('/projects/' + PROJ_ID + '/actuals/transactions/set-line-bulk', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin', body: JSON.stringify(body) });
+      }
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.error) { alert('Reassign failed: ' + (j.error || r.status)); return; }
+      _selTids.clear(); _paintSel();
+      if (typeof _actualsToast === 'function') _actualsToast('Moved ' + tids.length + ' charge' + (tids.length > 1 ? 's' : '') + '.', 'green');
+      // In-place update: changed cells rebuild, their caches + detail shells
+      // reset (source AND target lines both change totals). No page reload.
+      refreshActualCells();
+    } catch (err) { alert('Reassign failed: ' + err.message); }
+  }
+  // Drop targets: real budget-line rows (have data-id, no structural tag),
+  // section headers, and the 📂 section-coded rows.
+  function _isLineTarget(row) {
+    return row && row.dataset.id && !row.dataset.tag
+      && !row.classList.contains('work-section-only-row')
+      && !row.classList.contains('sister-orphan-line')
+      && !row.classList.contains('auto-calc-line');
+  }
+  document.addEventListener('dragover', e => {
+    if (!_draggingTids) return;
+    const row = e.target.closest && e.target.closest('tr.line-row');
+    if (_isLineTarget(row) || (row && row.classList.contains('work-section-only-row'))) {
+      e.preventDefault();
+      row.style.outline = '2px solid ' + (row.classList.contains('work-section-only-row') ? '#a855f7' : '#22c55e');
+      row.style.outlineOffset = '-2px';
+      return;
+    }
+    const header = e.target.closest && e.target.closest('.section-header');
+    if (header) { e.preventDefault(); header.style.outline = '2px solid #a855f7'; }
+  });
+  document.addEventListener('dragleave', e => {
+    const row = e.target.closest && e.target.closest('tr.line-row');
+    if (row) { row.style.outline = ''; row.style.outlineOffset = ''; }
+    const header = e.target.closest && e.target.closest('.section-header');
+    if (header) header.style.outline = '';
+  });
+  document.addEventListener('drop', e => {
+    if (!_draggingTids) return;
+    const tids = Array.from(_draggingTids);   // capture before dragend clears
+    const row = e.target.closest && e.target.closest('tr.line-row');
+    if (row) { row.style.outline = ''; row.style.outlineOffset = ''; }
+    if (row && row.classList.contains('work-section-only-row')) {
+      e.preventDefault(); e.stopPropagation();
+      _assignDragged(tids, { code: row.dataset.sectionCode });
+      return;
+    }
+    if (_isLineTarget(row)) {
+      e.preventDefault(); e.stopPropagation();
+      _assignDragged(tids, { lineId: parseInt(row.dataset.id) });
+      return;
+    }
+    const header = e.target.closest && e.target.closest('.section-header');
+    if (header) {
+      e.preventDefault(); e.stopPropagation();
+      header.style.outline = '';
+      const block = header.closest('.section-block');
+      if (block && block.dataset.section) _assignDragged(tids, { code: block.dataset.section });
     }
   });
 
