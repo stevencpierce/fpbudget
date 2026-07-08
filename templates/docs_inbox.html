@@ -106,6 +106,13 @@
                  background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:10px 12px;
                  box-shadow:0 6px 20px rgba(0,0,0,.5); font-size:12px; color:var(--text); line-height:1.9; }
   #inbxHint:hover #inbxHintBox { display:block; }
+  #inbxDropZone { display:flex; align-items:center; justify-content:center; gap:10px;
+                  margin:12px 0 2px; padding:14px 16px; border:2px dashed var(--border);
+                  border-radius:10px; color:var(--text-muted); font-size:13.5px;
+                  cursor:pointer; user-select:none; transition:border-color .12s,background .12s,color .12s; }
+  #inbxDropZone:hover { border-color:#3d5da8; background:#131b2e; color:#cfe0ff; }
+  #inbxDropZone .dz-types { font-size:11.5px; color:var(--text-muted);
+                            border:1px solid var(--border); border-radius:6px; padding:2px 8px; }
 </style>
 
 {# Shared project tab strip — keep the SAME nav chrome as the budget page so
@@ -113,8 +120,9 @@
 {% set active_tab = 'docs' %}
 {% include "_project_tabs.html" with context %}
 
+{# Back link removed 2026-07-08 (user): the shared tab strip above already
+   navigates anywhere in the project — the extra ← button read as odd. #}
 <div id="inbxHead">
-  <a class="inbx-link" href="/projects/{{ project.id }}/budget">← {{ project.name }}</a>
   <h1>📥 Documents</h1>
   <input type="search" id="inbxSearch" class="inbx-search" autocomplete="off"
          placeholder="🔍 Search vendor, filename, person, amount…">
@@ -135,6 +143,16 @@
       <span class="inbx-kbd">Esc</span> clear selection
     </span>
   </span>
+</div>
+
+{# Persistent visible dropzone (user 2026-07-08: "we lost our upload area
+   where I used to drag documents in — I preferred it"). The whole page is
+   still a drop target (#inbxDropOverlay); this strip is the always-visible
+   affordance, and clicking it opens the same multi-file picker. #}
+<div id="inbxDropZone" title="Click to choose files — or drag them anywhere on this page">
+  <span style="font-size:22px;line-height:1">📥</span>
+  <span><strong>Drag documents here</strong> or click to upload</span>
+  <span class="dz-types">PDF · JPG · PNG · HEIC</span>
 </div>
 
 <div id="inbxChips"></div>
@@ -877,6 +895,12 @@
   // Trigger the picker from the header button.
   var _fileInput = $('inbxFileInput');
   $('inbxUploadBtn').addEventListener('click', function () {
+    if (_fileInput) _fileInput.click();
+  });
+  // The visible dropzone strip is the same picker; drops on it are handled by
+  // the window-level drop listener like everywhere else on the page.
+  var _dz = $('inbxDropZone');
+  if (_dz) _dz.addEventListener('click', function () {
     if (_fileInput) _fileInput.click();
   });
   if (_fileInput) {
