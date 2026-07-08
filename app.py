@@ -3663,6 +3663,194 @@ def dashboard():
                            all_templates=all_templates)
 
 
+# ── Company Health — cross-project departmental rollup ─────────────────────────
+# Owner ask: "Roll up all my projects in one view for a company admin... a per
+# departmental cost and variance — how much we spend, how much we make, areas we
+# can improve, areas we constantly underbid." Super-admin/admin only.
+#
+# estimated / working section totals come from calc_top_sheet (the SAME math the
+# per-project Top Sheet + budget_view use, so bid_total includes the production
+# fee exactly as the client-facing bid does). Actual spend per section reuses
+# _actuals_by_section_code(pid) — one signed-sum query per project that coalesces
+# line-coded (via BudgetLine.account_code) and section-only (Transaction.
+# account_code) txns and excludes not_project_expense. Split PARENTS are uncoded
+# by invariant so a plain coded sum does not double-count them.
+
+def _company_health_gate():
+    return (current_user.is_authenticated
+            and current_user.role in ('super_admin', 'admin'))
+
+
+def _project_est_working_by_section(project_id):
+    """Return (estimated_by_code, working_by_code) dicts for one project.
+
+    Each maps COA section-start code → that section's grand-total-eligible
+    estimated dollars. Uses calc_top_sheet so the per-section numbers (and,
+    summed, the bid) match the on-screen Top Sheet exactly — production fee
+    included via the top sheet's dispersed/flat/pct logic. `bid_total` is
+    read from grand_total_estimated so it is the client-facing figure.
+
+    Returns a dict:
+      {
+        'estimated': {code: dollars, ...},   # from current Estimated budget
+        'working':   {code: dollars, ...},   # from current Working budget
+        'bid_total': float,                  # Estimated grand total (fee incl.)
+        'working_total': float,              # Working grand total (fee incl.)
+      }
+    """
+    from actuals import get_current_working_budget, get_current_estimated_budget
+    out = {'estimated': {}, 'working': {},
+           'bid_total': 0.0, 'working_total': 0.0}
+    fringe_cfgs = get_fringe_configs(db.session, project_id)
+
+    def _rollup(b):
+        if not b:
+            return {}, 0.0
+        b_lines = BudgetLine.query.filter_by(budget_id=b.id).all()
+        prof = b.payroll_profile
+        pw = b.payroll_week_start if b.payroll_week_start is not None else (
+            prof.payroll_week_start if prof else 6)
+        try:
+            ts = calc_top_sheet(b, b_lines, fringe_cfgs, {}, prof, pw)
+        except Exception as _e:
+            logging.warning(f"[company_health] top sheet failed pid={project_id} "
+                            f"bid={b.id}: {_e}")
+            return {}, 0.0
+        by_code = {}
+        for row in ts.get('rows', []):
+            by_code[int(row['code'])] = by_code.get(int(row['code']), 0.0) + float(row.get('estimated', 0) or 0)
+        return by_code, float(ts.get('grand_total_estimated', 0) or 0)
+
+    est_b = get_current_estimated_budget(project_id)
+    wrk_b = get_current_working_budget(project_id)
+    out['estimated'], out['bid_total'] = _rollup(est_b)
+    out['working'], out['working_total'] = _rollup(wrk_b)
+    return out
+
+
+@app.route("/company/health.json")
+@login_required
+def company_health_json():
+    if not _company_health_gate():
+        abort(403)
+
+    # Full selectable project list (every project the admin can see).
+    all_projects = ProjectSheet.query.order_by(ProjectSheet.name).all()
+    project_list = [{
+        "id":       p.id,
+        "name":     p.name,
+        "status":   getattr(p, 'status', 'active') or 'active',
+        "archived": (getattr(p, 'status', 'active') or 'active') == 'archived',
+    } for p in all_projects]
+
+    # Resolve which pids to include. Empty/missing = all non-archived.
+    pids_raw = (request.args.get('pids') or '').strip()
+    valid_ids = {p.id for p in all_projects}
+    if pids_raw:
+        try:
+            requested = [int(x) for x in pids_raw.split(',') if x.strip()]
+        except ValueError:
+            requested = []
+        included = [i for i in requested if i in valid_ids]
+    else:
+        included = [p.id for p in all_projects
+                    if (getattr(p, 'status', 'active') or 'active') != 'archived']
+    included_set = set(included)
+    name_by_id = {p.id: p.name for p in all_projects}
+
+    # Per-section accumulators keyed by COA section-start code.
+    sec_est   = {}   # estimated (bid) $
+    sec_wrk   = {}   # working $
+    sec_act   = {}   # actual coded spend $
+    sec_over  = {}   # count of projects where section actual > estimated
+    sec_denom = {}   # count of projects where section is non-zero either side
+    sec_pp    = {}   # code -> list of {pid,name,estimated,actual,variance}
+
+    tot_bid = tot_working = tot_actual = 0.0
+
+    for pid in included:
+        roll = _project_est_working_by_section(pid)
+        actual_by_code = _actuals_by_section_code(pid)   # {code: signed $}
+        # Fold raw actual account codes into their COA section start.
+        act_by_section = {}
+        for code, amt in actual_by_code.items():
+            if code is None:
+                continue
+            sec = _section_for_code(int(code))
+            act_by_section[sec] = act_by_section.get(sec, 0.0) + float(amt or 0)
+
+        tot_bid     += roll['bid_total']
+        tot_working += roll['working_total']
+        tot_actual  += sum(act_by_section.values())
+
+        # Union of every section touched by this project on any axis.
+        touched = set(roll['estimated']) | set(roll['working']) | set(act_by_section)
+        for sec in touched:
+            est = float(roll['estimated'].get(sec, 0.0))
+            wrk = float(roll['working'].get(sec, 0.0))
+            act = float(act_by_section.get(sec, 0.0))
+            sec_est[sec] = sec_est.get(sec, 0.0) + est
+            sec_wrk[sec] = sec_wrk.get(sec, 0.0) + wrk
+            sec_act[sec] = sec_act.get(sec, 0.0) + act
+            if est > 0 or act > 0:
+                sec_denom[sec] = sec_denom.get(sec, 0) + 1
+                if act > est:
+                    sec_over[sec] = sec_over.get(sec, 0) + 1
+            if abs(est) > 0.005 or abs(act) > 0.005:
+                sec_pp.setdefault(sec, []).append({
+                    "pid":       pid,
+                    "name":      name_by_id.get(pid, str(pid)),
+                    "estimated": round(est, 2),
+                    "actual":    round(act, 2),
+                    "variance":  round(est - act, 2),
+                })
+
+    # Build sorted section rows.
+    all_codes = sorted(set(sec_est) | set(sec_wrk) | set(sec_act))
+    sections = []
+    for code in all_codes:
+        est = round(sec_est.get(code, 0.0), 2)
+        wrk = round(sec_wrk.get(code, 0.0), 2)
+        act = round(sec_act.get(code, 0.0), 2)
+        variance = round(est - act, 2)
+        variance_pct = round((variance / est) * 100.0, 1) if est else None
+        pp = sorted(sec_pp.get(code, []), key=lambda r: r["variance"])  # worst first
+        sections.append({
+            "code":          code,
+            "name":          _section_name(code),
+            "estimated":     est,
+            "working":       wrk,
+            "actual":        act,
+            "variance":      variance,
+            "variance_pct":  variance_pct,
+            "projects_over": sec_over.get(code, 0),
+            "projects_total": sec_denom.get(code, 0),
+            "per_project":   pp,
+        })
+
+    margin = round(tot_bid - tot_actual, 2)
+    return jsonify({
+        "ok":       True,
+        "projects": project_list,
+        "included": included,
+        "totals": {
+            "bid":     round(tot_bid, 2),
+            "working": round(tot_working, 2),
+            "actual":  round(tot_actual, 2),
+            "margin":  margin,
+        },
+        "sections": sections,
+    })
+
+
+@app.route("/company/health")
+@login_required
+def company_health():
+    if not _company_health_gate():
+        abort(403)
+    return render_template("company_health.html")
+
+
 @app.route("/projects/new", methods=["POST"])
 @login_required
 def project_new():

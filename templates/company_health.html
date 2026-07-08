@@ -1,0 +1,439 @@
+{% extends "base.html" %}
+{% block title %}Company Health · FPBudget{% endblock %}
+
+{% block content %}
+<style>
+  .ch-wrap { max-width: 1400px; margin: 0 auto; padding: 0 .5rem; }
+  .ch-head { display: flex; align-items: center; justify-content: space-between;
+             flex-wrap: wrap; gap: 1rem; margin: .5rem 0 1rem; }
+  .ch-head h1 { font-size: 1.5rem; margin: 0; }
+  .ch-btn { background: var(--bg-input); color: var(--text); border: 1px solid var(--border);
+            border-radius: 6px; padding: .45rem .8rem; font-size: .82rem; cursor: pointer; }
+  .ch-btn:hover { border-color: var(--text-muted); }
+  .ch-btn.small { padding: .25rem .55rem; font-size: .75rem; }
+
+  /* Project selector */
+  .ch-selector { border: 1px solid var(--border); border-radius: 8px;
+                 background: var(--bg-card); margin-bottom: 1rem; }
+  .ch-selector summary { cursor: pointer; padding: .6rem .9rem; font-size: .85rem;
+                         color: var(--text); user-select: none; list-style: none; }
+  .ch-selector summary::-webkit-details-marker { display: none; }
+  .ch-selector summary::before { content: '▸'; margin-right: .5rem; color: var(--text-muted); }
+  .ch-selector[open] summary::before { content: '▾'; }
+  .ch-sel-body { padding: .4rem .9rem 1rem; border-top: 1px solid var(--border); }
+  .ch-sel-actions { display: flex; gap: .5rem; margin: .5rem 0 .8rem; }
+  .ch-proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+                  gap: .35rem .9rem; }
+  .ch-proj { display: flex; align-items: center; gap: .5rem; font-size: .82rem;
+             color: var(--text); cursor: pointer; padding: .15rem 0; }
+  .ch-proj input { accent-color: var(--accent); }
+  .ch-proj .tag { font-size: .68rem; color: var(--text-muted); border: 1px solid var(--border);
+                  border-radius: 4px; padding: 0 .3rem; }
+
+  /* Summary cards */
+  .ch-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+              gap: .8rem; margin-bottom: 1.2rem; }
+  .ch-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+             padding: .9rem 1rem; }
+  .ch-card .lbl { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
+                  color: var(--text-muted); margin-bottom: .35rem; }
+  .ch-card .val { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ch-card .sub { font-size: .78rem; color: var(--text-muted); margin-top: .2rem;
+                  font-variant-numeric: tabular-nums; }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+
+  /* Table */
+  .ch-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px;
+                   background: var(--bg-card); }
+  table.ch { width: 100%; border-collapse: collapse; font-size: .84rem; }
+  table.ch th, table.ch td { padding: .5rem .7rem; text-align: right;
+                             font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table.ch th { position: sticky; top: 0; background: var(--bg-3); color: var(--text-muted);
+                font-size: .72rem; text-transform: uppercase; letter-spacing: .03em;
+                cursor: pointer; user-select: none; z-index: 1; }
+  table.ch th.left, table.ch td.left { text-align: left; }
+  table.ch th .arrow { color: var(--accent); font-size: .7rem; }
+  table.ch tbody tr.sec-row { border-top: 1px solid var(--border); cursor: pointer; }
+  table.ch tbody tr.sec-row:hover { background: var(--bg-hover); }
+  table.ch tfoot td { border-top: 2px solid var(--border); font-weight: 600;
+                      background: var(--bg-3); }
+  .code-cell { color: var(--text-muted); font-size: .78rem; }
+  .dept-cell { color: var(--text); }
+  .fire { margin-left: .35rem; }
+  .chip { display: inline-block; font-size: .68rem; border-radius: 10px; padding: .05rem .45rem;
+          border: 1px solid var(--border); color: var(--text-muted); }
+  .chip.hot { background: rgba(231,76,60,.16); border-color: rgba(231,76,60,.4); color: var(--red); }
+  .exp-btn { color: var(--text-muted); font-size: .75rem; margin-right: .35rem; display: inline-block;
+             width: .9em; }
+  /* drill-in */
+  tr.drill td { background: var(--bg-2); padding: 0; }
+  .drill-inner { padding: .5rem .9rem .8rem 2rem; }
+  table.drill { width: auto; min-width: 60%; border-collapse: collapse; font-size: .8rem; }
+  table.drill th, table.drill td { padding: .3rem .7rem; text-align: right;
+                                   font-variant-numeric: tabular-nums; }
+  table.drill th.left, table.drill td.left { text-align: left; }
+  table.drill th { color: var(--text-muted); font-size: .7rem; text-transform: uppercase; }
+  .ch-status { color: var(--text-muted); font-size: .85rem; padding: 2rem; text-align: center; }
+  .barcell { position: relative; }
+  .barcell .bar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent);
+                  opacity: .5; border-radius: 2px; }
+</style>
+
+<div class="ch-wrap">
+  <div class="ch-head">
+    <h1>📊 Company Health</h1>
+    <button class="ch-btn small" id="ch-refresh" type="button">↻ Refresh</button>
+  </div>
+
+  <details class="ch-selector" id="ch-selector">
+    <summary id="ch-sel-summary">Projects included</summary>
+    <div class="ch-sel-body">
+      <div class="ch-sel-actions">
+        <button class="ch-btn small" id="ch-all" type="button">All</button>
+        <button class="ch-btn small" id="ch-none" type="button">None</button>
+      </div>
+      <div class="ch-proj-grid" id="ch-proj-grid"></div>
+    </div>
+  </details>
+
+  <div class="ch-cards">
+    <div class="ch-card"><div class="lbl">Total Bid</div><div class="val" id="c-bid">—</div></div>
+    <div class="ch-card"><div class="lbl">Total Actual Spend</div><div class="val" id="c-actual">—</div></div>
+    <div class="ch-card"><div class="lbl">Margin</div><div class="val" id="c-margin">—</div><div class="sub" id="c-margin-pct"></div></div>
+    <div class="ch-card"><div class="lbl">Projects Included</div><div class="val" id="c-count">—</div></div>
+  </div>
+
+  <div class="ch-table-wrap">
+    <table class="ch" id="ch-table">
+      <thead>
+        <tr>
+          <th class="left" data-sort="code">Code</th>
+          <th class="left" data-sort="name">Department</th>
+          <th data-sort="estimated">Estimated</th>
+          <th data-sort="working">Working</th>
+          <th data-sort="actual">Actual</th>
+          <th data-sort="variance">Variance $</th>
+          <th data-sort="variance_pct">Var %</th>
+          <th class="left" data-sort="projects_over">Over In</th>
+        </tr>
+      </thead>
+      <tbody id="ch-body">
+        <tr><td colspan="8" class="ch-status">Loading…</td></tr>
+      </tbody>
+      <tfoot id="ch-foot"></tfoot>
+    </table>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var LS_KEY = 'fpbudget.companyHealth.pids';
+  var state = { data: null, sortKey: 'actual', sortDir: -1, expanded: {} };
+
+  function fmt(n) {
+    var v = Number(n || 0);
+    var s = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    return (v < 0 ? '-$' : '$') + s;
+  }
+  function fmtPct(n) {
+    if (n === null || n === undefined) return '—';
+    return Number(n).toFixed(1) + '%';
+  }
+  function cls(v) { return v > 0 ? 'pos' : (v < 0 ? 'neg' : ''); }
+
+  // ── selection persistence ────────────────────────────────────────────
+  function loadStoredPids() {
+    try {
+      var raw = localStorage.getItem(LS_KEY);
+      if (!raw) return null;
+      var arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr.map(Number) : null;
+    } catch (e) { return null; }
+  }
+  function storePids(pids) {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(pids)); } catch (e) {}
+  }
+  function selectedPids() {
+    var out = [];
+    document.querySelectorAll('#ch-proj-grid input[type=checkbox]').forEach(function (cb) {
+      if (cb.checked) out.push(Number(cb.value));
+    });
+    return out;
+  }
+
+  // Default: all projects EXCEPT ones whose name contains 'test'.
+  function defaultPids(projects) {
+    return projects.filter(function (p) {
+      return p.name.toLowerCase().indexOf('test') === -1
+             && !p.archived;
+    }).map(function (p) { return p.id; });
+  }
+
+  function renderSelector(projects, includedSet) {
+    var grid = document.getElementById('ch-proj-grid');
+    grid.innerHTML = '';
+    projects.forEach(function (p) {
+      var lbl = document.createElement('label');
+      lbl.className = 'ch-proj';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = p.id;
+      cb.checked = includedSet.has(p.id);
+      cb.addEventListener('change', onSelectionChange);
+      lbl.appendChild(cb);
+      var span = document.createElement('span');
+      span.textContent = p.name;
+      lbl.appendChild(span);
+      if (p.archived) {
+        var tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = 'archived';
+        lbl.appendChild(tag);
+      }
+      grid.appendChild(lbl);
+    });
+    updateSummary();
+  }
+
+  function updateSummary() {
+    var n = selectedPids().length;
+    var total = document.querySelectorAll('#ch-proj-grid input[type=checkbox]').length;
+    document.getElementById('ch-sel-summary').textContent =
+      'Projects included — ' + n + ' of ' + total;
+  }
+
+  function onSelectionChange() {
+    var pids = selectedPids();
+    storePids(pids);
+    updateSummary();
+    fetchData(pids);
+  }
+
+  // ── fetch + render ───────────────────────────────────────────────────
+  function fetchData(pids) {
+    var body = document.getElementById('ch-body');
+    body.innerHTML = '<tr><td colspan="8" class="ch-status">Loading…</td></tr>';
+    var url = '/company/health.json';
+    if (pids && pids.length) url += '?pids=' + pids.join(',');
+    fetch(url, { credentials: 'same-origin' })
+      .then(function (r) {
+        if (r.status === 403) throw new Error('Not authorized');
+        return r.json();
+      })
+      .then(function (d) {
+        if (!d.ok) throw new Error('Bad response');
+        state.data = d;
+        renderCards(d);
+        renderTable();
+      })
+      .catch(function (e) {
+        body.innerHTML = '<tr><td colspan="8" class="ch-status">' +
+          (e.message || 'Error loading data') + '</td></tr>';
+      });
+  }
+
+  function renderCards(d) {
+    var t = d.totals;
+    document.getElementById('c-bid').textContent = fmt(t.bid);
+    document.getElementById('c-actual').textContent = fmt(t.actual);
+    var m = document.getElementById('c-margin');
+    m.textContent = fmt(t.margin);
+    m.className = 'val ' + cls(t.margin);
+    var pct = t.bid ? (t.margin / t.bid * 100) : 0;
+    document.getElementById('c-margin-pct').textContent =
+      t.bid ? (pct >= 0 ? '+' : '') + pct.toFixed(1) + '% of bid' : '';
+    document.getElementById('c-count').textContent = d.included.length;
+  }
+
+  function sortedSections() {
+    var rows = (state.data.sections || []).slice();
+    var k = state.sortKey, dir = state.sortDir;
+    rows.sort(function (a, b) {
+      var av = a[k], bv = b[k];
+      if (k === 'name') { av = (av || '').toLowerCase(); bv = (bv || '').toLowerCase(); }
+      if (av === null || av === undefined) av = -Infinity;
+      if (bv === null || bv === undefined) bv = -Infinity;
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+    return rows;
+  }
+
+  function renderTable() {
+    var sections = sortedSections();
+    // biggest-spend ranking (top 3 by actual) → 🔥, and bar width.
+    var byActual = sections.slice().sort(function (a, b) { return b.actual - a.actual; });
+    var top3 = {};
+    byActual.slice(0, 3).forEach(function (s, i) { top3[s.code] = i + 1; });
+    var maxActual = byActual.length ? byActual[0].actual : 0;
+
+    var body = document.getElementById('ch-body');
+    body.innerHTML = '';
+    if (!sections.length) {
+      body.innerHTML = '<tr><td colspan="8" class="ch-status">No data for the selected projects.</td></tr>';
+    }
+    sections.forEach(function (s) {
+      var tr = document.createElement('tr');
+      tr.className = 'sec-row';
+      tr.setAttribute('data-code', s.code);
+
+      var isExpanded = !!state.expanded[s.code];
+      var overN = s.projects_over, overM = s.projects_total;
+      var overHot = overM > 0 && (overN / overM) >= 0.5 && overN > 0;
+      var chip = overM > 0
+        ? '<span class="chip' + (overHot ? ' hot' : '') + '">over in ' + overN + '/' + overM + '</span>'
+        : '';
+      var fire = top3[s.code] ? '<span class="fire">🔥</span>' : '';
+      var barW = maxActual > 0 ? Math.round((s.actual / maxActual) * 100) : 0;
+
+      tr.innerHTML =
+        '<td class="left code-cell"><span class="exp-btn">' + (isExpanded ? '▾' : '▸') + '</span>' + s.code + '</td>' +
+        '<td class="left dept-cell">' + escapeHtml(s.name) + fire + '</td>' +
+        '<td>' + fmt(s.estimated) + '</td>' +
+        '<td>' + fmt(s.working) + '</td>' +
+        '<td class="barcell">' + fmt(s.actual) +
+          '<span class="bar" style="width:' + barW + '%"></span></td>' +
+        '<td class="' + cls(s.variance) + '">' + fmt(s.variance) + '</td>' +
+        '<td class="' + cls(s.variance) + '">' + fmtPct(s.variance_pct) + '</td>' +
+        '<td class="left">' + chip + '</td>';
+      tr.addEventListener('click', function () { toggleDrill(s.code); });
+      body.appendChild(tr);
+
+      if (isExpanded) body.appendChild(drillRow(s));
+    });
+    renderFoot();
+    renderSortArrows();
+  }
+
+  function drillRow(s) {
+    var tr = document.createElement('tr');
+    tr.className = 'drill';
+    var pp = (s.per_project || []);
+    var inner = '<div class="drill-inner"><table class="drill">' +
+      '<thead><tr><th class="left">Project</th><th>Estimated</th><th>Actual</th><th>Variance</th></tr></thead><tbody>';
+    if (!pp.length) {
+      inner += '<tr><td colspan="4" class="left" style="color:var(--text-muted)">No spend or bid in this department.</td></tr>';
+    }
+    pp.forEach(function (r) {
+      inner += '<tr><td class="left">' + escapeHtml(r.name) + '</td>' +
+        '<td>' + fmt(r.estimated) + '</td>' +
+        '<td>' + fmt(r.actual) + '</td>' +
+        '<td class="' + cls(r.variance) + '">' + fmt(r.variance) + '</td></tr>';
+    });
+    inner += '</tbody></table></div>';
+    var td = document.createElement('td');
+    td.colSpan = 8;
+    td.innerHTML = inner;
+    tr.appendChild(td);
+    return tr;
+  }
+
+  function toggleDrill(code) {
+    state.expanded[code] = !state.expanded[code];
+    renderTable();
+  }
+
+  function renderFoot() {
+    var sections = state.data.sections || [];
+    var sumEst = 0, sumWrk = 0, sumAct = 0;
+    sections.forEach(function (s) { sumEst += s.estimated; sumWrk += s.working; sumAct += s.actual; });
+    var variance = sumEst - sumAct;
+    var vpct = sumEst ? (variance / sumEst * 100) : null;
+    var foot = document.getElementById('ch-foot');
+    foot.innerHTML =
+      '<tr>' +
+      '<td class="left"></td>' +
+      '<td class="left">All departments</td>' +
+      '<td>' + fmt(sumEst) + '</td>' +
+      '<td>' + fmt(sumWrk) + '</td>' +
+      '<td>' + fmt(sumAct) + '</td>' +
+      '<td class="' + cls(variance) + '">' + fmt(variance) + '</td>' +
+      '<td class="' + cls(variance) + '">' + fmtPct(vpct === null ? null : Number(vpct.toFixed(1))) + '</td>' +
+      '<td></td>' +
+      '</tr>';
+  }
+
+  function renderSortArrows() {
+    document.querySelectorAll('#ch-table thead th').forEach(function (th) {
+      var k = th.getAttribute('data-sort');
+      var base = th.textContent.replace(/[▲▼]\s*$/, '').trim();
+      if (k === state.sortKey) {
+        th.innerHTML = base + ' <span class="arrow">' + (state.sortDir === 1 ? '▲' : '▼') + '</span>';
+      } else {
+        th.textContent = base;
+      }
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // ── wiring ───────────────────────────────────────────────────────────
+  document.querySelectorAll('#ch-table thead th').forEach(function (th) {
+    th.addEventListener('click', function () {
+      var k = th.getAttribute('data-sort');
+      if (!k) return;
+      if (state.sortKey === k) { state.sortDir *= -1; }
+      else { state.sortKey = k; state.sortDir = (k === 'name' || k === 'code') ? 1 : -1; }
+      renderTable();
+    });
+  });
+  document.getElementById('ch-refresh').addEventListener('click', function () {
+    fetchData(selectedPids());
+  });
+  document.getElementById('ch-all').addEventListener('click', function () {
+    document.querySelectorAll('#ch-proj-grid input[type=checkbox]').forEach(function (cb) { cb.checked = true; });
+    onSelectionChange();
+  });
+  document.getElementById('ch-none').addEventListener('click', function () {
+    document.querySelectorAll('#ch-proj-grid input[type=checkbox]').forEach(function (cb) { cb.checked = false; });
+    onSelectionChange();
+  });
+
+  // ── boot: fetch project list first (no pids → all non-archived), then
+  //    apply stored/default selection and re-fetch scoped. ──────────────
+  fetch('/company/health.json', { credentials: 'same-origin' })
+    .then(function (r) {
+      if (r.status === 403) throw new Error('Not authorized');
+      return r.json();
+    })
+    .then(function (d) {
+      if (!d.ok) throw new Error('Bad response');
+      var projects = d.projects || [];
+      var stored = loadStoredPids();
+      // Only keep stored ids that still exist.
+      var validIds = {};
+      projects.forEach(function (p) { validIds[p.id] = true; });
+      var initial;
+      if (stored) {
+        initial = stored.filter(function (id) { return validIds[id]; });
+      } else {
+        initial = defaultPids(projects);
+      }
+      var includedSet = new Set(initial);
+      renderSelector(projects, includedSet);
+      state.data = d;
+      // If the initial selection differs from what the server returned
+      // (server default = all non-archived), fetch the scoped view.
+      var serverIncluded = (d.included || []).slice().sort().join(',');
+      var wantIncluded = initial.slice().sort().join(',');
+      if (serverIncluded === wantIncluded) {
+        renderCards(d);
+        renderTable();
+      } else {
+        fetchData(initial);
+      }
+    })
+    .catch(function (e) {
+      document.getElementById('ch-body').innerHTML =
+        '<tr><td colspan="8" class="ch-status">' + (e.message || 'Error') + '</td></tr>';
+    });
+})();
+</script>
+{% endblock %}
