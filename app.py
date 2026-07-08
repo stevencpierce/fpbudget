@@ -25947,7 +25947,7 @@ def docs_inbox_json(pid):
 
     rows = []
     counts = {'needs_review': 0, 'needs_match': 0, 'needs_coding': 0,
-              'done': 0, 'excluded': 0, 'all': 0}
+              'done': 0, 'excluded': 0, 'duplicate': 0, 'all': 0}
     cat_counts = {}
     person_counts = {}
     date_min = None
@@ -26041,7 +26041,16 @@ def docs_inbox_json(pid):
             }
 
         # ── Primary state (exactly one) ─────────────────────────────────
-        if coded == 'excluded':
+        # CONFIRMED duplicates come first and are BURIED (user 2026-07: "this
+        # says confirmed duplicate… I want to remove it from this list —
+        # duplicates should be there and available, but sort of buried").
+        # They get their own chip, are EXCLUDED from 'all', and therefore
+        # never appear in the default views or the prev/next nav list.
+        # (dup_pending — an UNconfirmed possible dup — still surfaces as
+        # needs_review; that's an action item, not an archive.)
+        if d.is_duplicate or d.status == 'duplicate':
+            state = 'duplicate'
+        elif coded == 'excluded':
             state = 'excluded'
         elif d.status == 'review' or dup_pending:
             state = 'needs_review'
@@ -26053,7 +26062,8 @@ def docs_inbox_json(pid):
             # coded (line/section/split) or filed with nothing pending.
             state = 'done'
         counts[state] += 1
-        counts['all'] += 1
+        if state != 'duplicate':
+            counts['all'] += 1
 
         # ── Facets ──────────────────────────────────────────────────────
         cat = d.category or None

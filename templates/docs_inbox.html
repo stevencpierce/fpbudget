@@ -31,6 +31,9 @@
                     padding:1px 8px; border-radius:999px; min-width:20px; text-align:center; }
   .inbx-chip.active { background:#16233f; border-color:#3d5da8; color:#cfe0ff; }
   .inbx-chip.active .cnt { color:#cfe0ff; background:#24365e; }
+  /* Confirmed-duplicates chip: buried — muted, smaller, pushed to the far right. */
+  .inbx-chip.dup-chip { opacity:.55; margin-left:auto; font-size:12px; padding:7px 12px; }
+  .inbx-chip.dup-chip:hover, .inbx-chip.dup-chip.active { opacity:1; }
   #inbxFacets { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;
                 padding:10px 12px; background:var(--bg-card); border:1px solid var(--border); border-radius:9px; }
   #inbxFacets label { font-size:10.5px; color:var(--text-muted); text-transform:uppercase; letter-spacing:.4px; margin-right:4px; }
@@ -199,7 +202,10 @@
     ['needs_coding',  '🏷 Needs coding'],
     ['done',          '✓ Done'],
     ['excluded',      '🚫 Excluded'],
-    ['all',           'All']
+    ['all',           'All'],
+    // Confirmed duplicates: kept AVAILABLE but BURIED (user 2026-07) — their
+    // own muted chip at the end, EXCLUDED from 'All' and from prev/next nav.
+    ['duplicate',     '🔁 Duplicates']
   ];
 
   var CHUNK = 100;
@@ -261,8 +267,12 @@
     CHIP_DEFS.forEach(function (def) {
       var key = def[0], label = def[1];
       var n = COUNTS[key] || 0;
+      // Duplicates chip: hidden entirely at zero; muted + pushed right
+      // otherwise — buried, not in your face. (User 2026-07.)
+      if (key === 'duplicate' && !n) return;
       var chip = document.createElement('div');
-      chip.className = 'inbx-chip' + (UI.state === key ? ' active' : '');
+      chip.className = 'inbx-chip' + (UI.state === key ? ' active' : '')
+        + (key === 'duplicate' ? ' dup-chip' : '');
       chip.dataset.state = key;
       chip.innerHTML = esc(label) + ' <span class="cnt">' + n + '</span>';
       chip.addEventListener('click', function () {
@@ -343,7 +353,10 @@
     var aMax = aMaxV !== '' ? parseFloat(aMaxV) : null;
 
     filtered = ALL.filter(function (doc) {
-      if (UI.state !== 'all' && doc.state !== UI.state) return false;
+      // 'All' deliberately EXCLUDES confirmed duplicates — they're archive,
+      // not action items; view them via the 🔁 Duplicates chip. (User 2026-07.)
+      if (UI.state === 'all') { if (doc.state === 'duplicate') return false; }
+      else if (doc.state !== UI.state) return false;
       if (!matchesSearch(doc, q)) return false;
       if (cat && (doc.category || '') !== cat) return false;
       if (person && (doc.person_name || '') !== person) return false;
