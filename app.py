@@ -148,6 +148,11 @@ _PROD_STAFF_SUBGROUPS = [
     ("1st AC",                     "Camera"),
     ("2nd AC",                     "Camera"),
     ("DIT",                        "Camera"),
+    ("Digital Imaging",            "Camera"),
+    ("Media Manager",              "Camera"),
+    ("Media Management",           "Camera"),
+    ("Data Manager",               "Camera"),
+    ("Data Management",            "Camera"),
     ("Steadicam",                  "Camera"),
     ("Data Wrangler",              "Camera"),
     ("Video Engineer",             "Camera"),
@@ -165,6 +170,11 @@ _PROD_STAFF_SUBGROUPS = [
     ("Sound Mixer",                "Sound"),
     ("Boom Operator",              "Sound"),
     ("Utility Sound",              "Sound"),
+    ("Boom",                       "Sound"),
+    ("A2",                         "Sound"),
+    ("Audio Assistant",            "Sound"),
+    ("Audio Engineer",             "Sound"),
+    ("Audio",                      "Sound"),
     ("Production Designer",        "Art"),
     ("Art Director",               "Art"),
     ("Set Dresser",                "Art"),
@@ -188,6 +198,16 @@ _PROD_STAFF_SUBGROUPS = [
     ("Graphics and Playback",      "Control Room"),
     ("Switcher Operator",          "Control Room"),
     ("EPK",                        "EPK / BTS"),
+    ("BTS",                        "EPK / BTS"),
+    ("Behind the Scenes",          "EPK / BTS"),
+    # ── Generic fallbacks (substring, first-match-wins) ──────────────────────
+    # These are intentionally LAST so specific roles above (Art Director,
+    # Technical Director, Director of Photography, Line Producer, Supervising
+    # Producer, Technical Producer, …) win before the broad catch-alls here.
+    # Catches "Director - Documentary", "Producer - Documentary",
+    # "Producer - Interviewer", etc. (User 2026-07-08.)
+    ("Director",                   "Direction / AD"),
+    ("Producer",                   "Production"),
     ("Craft Services",             "Craft Services"),
 ]
 
@@ -2874,7 +2894,13 @@ def _render_callsheet_pdf_html(send_obj, project_name, date_display, cs_data, cr
             loc_html += '</span>'
         loc_html += '</div>'
 
-    # Build crew call time rows grouped by section
+    # Build crew call time rows grouped by section. Per-day department renames
+    # (dept_renames) relabel a group header here too, so the emailed PDF matches
+    # what the editor sees. Per-person dept_overrides move rows in the on-screen
+    # / browser-print grid; this lightweight PDF groups off the crew_call_times
+    # key's baked-in section, so it honors renames but not per-person moves.
+    # (User 2026-07-08.)
+    dept_renames_pdf = cs_data.get('dept_renames') or {}
     section_order = []
     section_rows = {}
     for key, t in cct.items():
@@ -2882,6 +2908,7 @@ def _render_callsheet_pdf_html(send_obj, project_name, date_display, cs_data, cr
         sec   = parts[0] if len(parts) > 0 else ''
         role  = parts[1] if len(parts) > 1 else ''
         name  = parts[2] if len(parts) > 2 else ''
+        sec   = dept_renames_pdf.get(sec, sec)
         if sec not in section_rows:
             section_order.append(sec)
             section_rows[sec] = []
@@ -21997,15 +22024,71 @@ def callsheet_view(pid, bid, date_str=None):
     crew_p2_all = []
     for r in crew_rows:
         sect = _p2_section_for_row(r)
-        sort_key = _P2_SECTION_SORT.get(sect, 99)
-        crew_p2_all.append({**r, 'p2_section': sect, 'p2_sort': sort_key})
-
-    crew_p2_all.sort(key=lambda x: (x['p2_sort'], x['role'], x['name']))
+        crew_key = f"{r['budget_line_id']}:{r['instance']}"
+        # p2_section_default is frozen to the pre-override group. The
+        # crew_call_times key ("sec||role||name") is built from THIS so that
+        # dragging a person to another department never orphans their saved
+        # individual call time. p2_section is the (possibly overridden) group
+        # used for display/grouping. (User 2026-07-08.)
+        crew_p2_all.append({**r, 'p2_section': sect,
+                            'p2_section_default': sect, 'p2_crew_key': crew_key})
 
     # ── Load saved call sheet day data ─────────────────────────────────────
     cs_rec = CallSheetData.query.filter_by(
         budget_id=bid, date=selected_date, schedule_mode=sched_mode).first()
     cs_data = json.loads(cs_rec.data_json) if cs_rec and cs_rec.data_json else {}
+
+    # ── Apply per-day department overrides / renames / custom depts ─────────
+    # These are DISPLAY truth for page-2 grouping and are honored across ALL
+    # views (screen, print, browser PDF, preview). Overrides win over the
+    # server-side default guess; renames relabel a group's header; custom depts
+    # are user-created empty buckets people can be dragged into.
+    #   dept_overrides: {crew_key: dept_name}   crew_key = "<line_id>:<instance>"
+    #   dept_renames:   {original_name: new_name}
+    #   custom_depts:   [names…]                sort after standard groups
+    # (User 2026-07-08.)
+    dept_overrides = cs_data.get('dept_overrides', {}) or {}
+    dept_renames   = cs_data.get('dept_renames', {}) or {}
+    custom_depts   = cs_data.get('custom_depts', []) or []
+
+    def _apply_dept_rename(name):
+        return dept_renames.get(name, name)
+
+    _custom_sort_base = 94  # custom depts slot just before Control Room(95)/CS(97)
+    for idx, r in enumerate(crew_p2_all):
+        # 1) per-person override wins over the default section
+        ov = dept_overrides.get(r['p2_crew_key'])
+        if ov:
+            r['p2_section'] = ov
+        # 2) header rename (applied to whatever section the row now sits in)
+        r['p2_section'] = _apply_dept_rename(r['p2_section'])
+
+    # Build a stable sort key per (possibly renamed / custom) section.
+    _renamed_custom = [_apply_dept_rename(c) for c in custom_depts]
+    def _p2_sort_for_section(sect):
+        # Standard sections keep their canonical order (renames don't move a
+        # group — we resolve the sort key from the ORIGINAL name when possible).
+        if sect in _P2_SECTION_SORT:
+            return _P2_SECTION_SORT[sect]
+        # A renamed standard header: find its original name's sort weight.
+        for _orig, _new in dept_renames.items():
+            if _new == sect and _orig in _P2_SECTION_SORT:
+                return _P2_SECTION_SORT[_orig]
+        # Custom depts sort together, just before Control Room, preserving
+        # their creation order.
+        if sect in _renamed_custom:
+            return _custom_sort_base + (_renamed_custom.index(sect) * 0.01)
+        return 99
+    for r in crew_p2_all:
+        r['p2_sort'] = _p2_sort_for_section(r['p2_section'])
+
+    crew_p2_all.sort(key=lambda x: (x['p2_sort'], x['role'], x['name']))
+
+    # Custom (and renamed-custom) departments that currently have zero rows must
+    # still render as empty drop targets on the internal view. Collect the list
+    # of section names present so the template can append missing custom groups.
+    _sections_present = {r['p2_section'] for r in crew_p2_all}
+    p2_custom_empty = [c for c in _renamed_custom if c not in _sections_present]
 
     # Apply saved location ordering for this day
     saved_loc_order = cs_data.get('location_order', [])
@@ -22250,6 +22333,7 @@ def callsheet_view(pid, bid, date_str=None):
         project_unions_cs=project_unions_cs,
         rep_contacts=rep_contacts,
         crew_p2_all=crew_p2_all,
+        p2_custom_empty=p2_custom_empty,
         confirm_status=confirm_status,
         meal_counts=meal_counts,
         on_day_names=on_day_names,

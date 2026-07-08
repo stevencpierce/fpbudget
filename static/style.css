@@ -4213,36 +4213,57 @@ tr:hover .cs-rep-btn { opacity: 1; }
 .cs-dept-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: .55rem;
+  gap: .6rem;
   align-items: flex-start;
 }
 .cs-dept-box {
-  flex: 0 0 calc(33.333% - .37rem);
-  min-width: 200px;
+  /* 2 columns (was 3) — bigger text beats squished columns. (User 2026-07-08) */
+  flex: 0 0 calc(50% - .3rem);
+  min-width: 260px;
   border: 1px solid var(--border-color);
   border-radius: 4px;
   overflow: hidden;
   page-break-inside: avoid;
   break-inside: avoid;
 }
+.cs-dept-box.cs-dept-dragover {
+  outline: 2px dashed var(--accent, #4f8cff);
+  outline-offset: -2px;
+}
 .cs-dept-box-header {
   background: var(--text-primary, #1a1a2e);
   color: #fff;
-  font-size: .72rem;
-  font-weight: 700;
-  letter-spacing: .06em;
-  padding: .28rem .55rem;
+  font-size: .82rem;
+  font-weight: 800;
+  letter-spacing: .05em;
+  padding: .4rem .6rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .4rem;
 }
+.cs-dept-header-label { outline: none; flex: 1 1 auto; min-width: 1ch; }
+.cs-dept-header-label:focus { background: rgba(255,255,255,.15); border-radius: 3px; }
+.cs-dept-del {
+  cursor: pointer; color: #fca5a5; font-weight: 700; font-size: .8rem;
+  padding: 0 .2rem; display: none;
+}
+.cs-dept-del:hover { color: #fff; }
 .cs-dept-box-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: .8rem;
+  font-size: .86rem;
 }
 .cs-dept-box-table tr { border-bottom: 1px solid var(--border-color); }
 .cs-dept-box-table tr:last-child { border-bottom: none; }
-.cs-dept-box-table td { padding: .22rem .42rem; line-height: 1.35; }
-.cs-dept-role { color: var(--text-muted); font-size: .72rem; width: 36%; }
-.cs-dept-name { font-weight: 500; font-size: .8rem; width: 40%; }
+.cs-dept-box-table td { padding: .34rem .5rem; line-height: 1.45; }
+.cs-dept-role { color: var(--text-muted); font-size: .82rem; width: 40%; }
+.cs-dept-name { font-weight: 500; font-size: .86rem; width: 38%; }
+.cs-crew-member-row[draggable="true"] { cursor: grab; }
+.cs-crew-member-row.cs-row-dragging { opacity: .45; }
+.cs-drag-handle { cursor: grab; color: var(--text-muted); margin-right: .25rem; font-size: .78rem; }
+.cs-dept-reset { cursor: pointer; color: var(--text-muted); margin-right: .2rem; display: none; }
+.cs-dept-reset:hover { color: var(--accent, #4f8cff); }
 /* Confirmation status badges on crew rows */
 .cs-conf-badge {
   display: inline-block; font-size: .64rem; font-weight: 600;
@@ -4256,22 +4277,28 @@ tr:hover .cs-rep-btn { opacity: 1; }
 tr.cs-row-confirmed { background: #071a0f; }
 tr.cs-row-viewed    { background: #1a1200; }
 .cs-dept-call {
-  font-size: .75rem;
+  font-size: .82rem;
   font-weight: 600;
   color: var(--text-primary);
-  width: 20%;
+  width: 22%;
   text-align: right;
   white-space: nowrap;
 }
 @media (max-width: 700px) {
-  .cs-dept-box { flex: 0 0 calc(50% - .28rem); }
+  .cs-dept-box { flex: 0 0 100%; }
 }
 @media print {
-  .cs-dept-grid { display: flex; flex-wrap: wrap; gap: .3rem; }
-  .cs-dept-box { flex: 0 0 calc(33% - .2rem); font-size: 8pt; }
-  .cs-dept-box-header { font-size: 7.5pt; padding: .12rem .35rem; }
-  .cs-dept-box-table { font-size: 7.5pt; }
-  .cs-dept-box-table td { padding: .1rem .28rem; }
+  /* Keep it readable but print-sane: 2 columns, ~9.5–10pt. Bumped
+     proportionally with the on-screen readability increase. (User 2026-07-08) */
+  .cs-dept-grid { display: flex; flex-wrap: wrap; gap: .25rem; }
+  .cs-dept-box { flex: 0 0 calc(50% - .16rem); font-size: 9.5pt; }
+  .cs-dept-box-header { font-size: 9pt; padding: .16rem .4rem; }
+  .cs-dept-box-table { font-size: 9.5pt; }
+  .cs-dept-box-table td { padding: .14rem .34rem; }
+  .cs-dept-role { font-size: 9pt; }
+  .cs-dept-name { font-size: 9.5pt; }
+  .cs-dept-call { font-size: 9pt; }
+  .cs-dept-header-label:focus { background: none; }
 }
 
 /* ── Working Budget Search ─────────────────────────────────────────────────── */

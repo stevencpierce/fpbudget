@@ -622,7 +622,9 @@ Example:
         </div>
       </div>
       {% if crew_p2_all %}
-      {# Build department groups #}
+      {# Build department groups (server already applied overrides/renames to
+         r.p2_section, in sorted order). Empty custom depts get appended so they
+         still render as drop targets on the internal view. #}
       {% set ns_dept = namespace(groups={}, order=[]) %}
       {% for r in crew_p2_all %}
         {% if r.p2_section not in ns_dept.groups %}
@@ -631,21 +633,33 @@ Example:
         {% endif %}
         {% set _ = ns_dept.groups[r.p2_section].append(r) %}
       {% endfor %}
+      {% for c in (p2_custom_empty or []) %}
+        {% if c not in ns_dept.groups %}
+          {% set _ = ns_dept.order.append(c) %}
+          {% set _ = ns_dept.groups.update({c: []}) %}
+        {% endif %}
+      {% endfor %}
+      <div class="cs-drag-hint cs-screen-only" style="font-size:.7rem;color:var(--text-muted);margin:.15rem 0 .4rem">Drag ⠿ a crew row into another department — saved per call sheet. Click a header to rename.</div>
 
       <div class="cs-dept-grid" id="crew-call-tbody">
         {% for dept_name in ns_dept.order %}
         {% set dept_rows = ns_dept.groups[dept_name] %}
-        <div class="cs-dept-box">
-          <div class="cs-dept-box-header">{{ dept_name | upper }}</div>
+        {% set is_custom = dept_name in (p2_custom_empty or []) %}
+        <div class="cs-dept-box" data-dept-name="{{ dept_name }}"{% if is_custom %} data-dept-custom="1"{% endif %}>
+          <div class="cs-dept-box-header" data-dept-orig="{{ dept_name }}">
+            <span class="cs-dept-header-label" contenteditable="true" data-cs-screen-editable="1" title="Click to rename this department (this call sheet only)">{{ dept_name | upper }}</span>
+            {% if is_custom %}<span class="cs-dept-del cs-screen-only" title="Delete this custom department (only when empty)">✕</span>{% endif %}
+          </div>
           <table class="cs-dept-box-table">
             <tbody>
               {% for r in dept_rows %}
-              {% set crew_key = r.p2_section ~ '||' ~ r.role ~ '||' ~ r.name %}
+              {% set crew_key = r.p2_section_default ~ '||' ~ r.role ~ '||' ~ r.name %}
               {% set row_key = 'crew_row:' ~ (r.budget_line_id | string) ~ ':' ~ (r.instance | string) %}
+              {% set dept_key = (r.budget_line_id | string) ~ ':' ~ (r.instance | string) %}
               {% set cs = confirm_status.get(r.name.lower(), {}) %}
               {% set cs_status = cs.get('status', '') %}
-              <tr class="cs-crew-member-row cs-hideable{% if cs_status == 'confirmed' %} cs-row-confirmed{% elif cs_status == 'viewed' %} cs-row-viewed{% endif %}" data-cs-key="{{ row_key }}">
-                <td class="cs-dept-role"><span class="cs-hide-toggle cs-screen-only" data-cs-key="{{ row_key }}" title="Hide / show this person on this call sheet">👁</span>{{ r.role }}</td>
+              <tr class="cs-crew-member-row cs-hideable{% if cs_status == 'confirmed' %} cs-row-confirmed{% elif cs_status == 'viewed' %} cs-row-viewed{% endif %}" data-cs-key="{{ row_key }}" data-crew-key="{{ dept_key }}" data-dept-default="{{ r.p2_section_default }}" draggable="true">
+                <td class="cs-dept-role"><span class="cs-drag-handle cs-screen-only" title="Drag to another department">⠿</span><span class="cs-hide-toggle cs-screen-only" data-cs-key="{{ row_key }}" title="Hide / show this person on this call sheet">👁</span><span class="cs-dept-reset cs-screen-only" title="Reset to default department">↩</span>{{ r.role }}</td>
                 <td class="cs-dept-name">{{ r.name }}{% if cs_status == 'confirmed' %}<span class="cs-conf-badge cs-conf-confirmed cs-screen-only" title="Confirmed {{ cs.get('confirmed_at','') }}">✓ Confirmed</span>{% elif cs_status == 'viewed' %}<span class="cs-conf-badge cs-conf-viewed cs-screen-only" title="Viewed {{ cs.get('viewed_at','') }}">Viewed</span>{% elif cs_status in ('sent',) %}<span class="cs-conf-badge cs-conf-sent cs-screen-only">Sent</span>{% endif %}</td>
                 <td class="callsheet-time-cell cs-editable cs-crew-call-cell cs-dept-call"
                     contenteditable="true"
@@ -673,10 +687,14 @@ Example:
               {% endfor %}
               {% endif %}
               {% endfor %}
+              <tr class="cs-dept-empty-hint cs-screen-only"><td colspan="3" style="color:var(--text-muted);font-size:.7rem;font-style:italic;padding:.3rem .5rem">Drop crew here</td></tr>
             </tbody>
           </table>
         </div>
         {% endfor %}
+      </div>
+      <div class="cs-screen-only" style="margin-top:.5rem">
+        <button class="btn btn-xs btn-ghost" id="cs-add-dept-btn" onclick="csAddDept()" title="Add a custom department (this call sheet only)">+ Add department</button>
       </div>
 
       {# Flat list view (hidden by default, toggled by button) #}
@@ -687,7 +705,7 @@ Example:
           </thead>
           <tbody>
             {% for r in crew_p2_all %}
-            {% set crew_key = r.p2_section ~ '||' ~ r.role ~ '||' ~ r.name %}
+            {% set crew_key = r.p2_section_default ~ '||' ~ r.role ~ '||' ~ r.name %}
             {% set cs = confirm_status.get(r.name.lower(), {}) %}
             {% set cs_status = cs.get('status', '') %}
             <tr class="{% if cs_status == 'confirmed' %}cs-row-confirmed{% elif cs_status == 'viewed' %}cs-row-viewed{% endif %}">
@@ -973,11 +991,23 @@ function doAutoSave() {
 // they persist alongside everything else. (User 2026-07-08.)
 let CS_HIDDEN         = Object.assign({}, (CS_DATA.hidden || {}));
 let CS_TEXT_OVERRIDES = Object.assign({}, (CS_DATA.text_overrides || {}));
+// Page-2 department drag/rename/custom overrides (per call sheet day).
+//   CS_DEPT_OVERRIDES: {crew_key: dept_name}  crew_key = "<line_id>:<instance>"
+//   CS_DEPT_RENAMES:   {original_name: new_name}
+//   CS_CUSTOM_DEPTS:   [names…]
+// All round-trip through the whole-payload save exactly like CS_HIDDEN.
+// (User 2026-07-08.)
+let CS_DEPT_OVERRIDES = Object.assign({}, (CS_DATA.dept_overrides || {}));
+let CS_DEPT_RENAMES   = Object.assign({}, (CS_DATA.dept_renames || {}));
+let CS_CUSTOM_DEPTS   = Array.isArray(CS_DATA.custom_depts) ? CS_DATA.custom_depts.slice() : [];
 
 function collectCallSheetData() {
   return {
     hidden:                  CS_HIDDEN,
     text_overrides:          CS_TEXT_OVERRIDES,
+    dept_overrides:          CS_DEPT_OVERRIDES,
+    dept_renames:            CS_DEPT_RENAMES,
+    custom_depts:            CS_CUSTOM_DEPTS,
     general_crew_call:       getText('cs-crew-call'),
     weather:                 getText('cs-weather'),
     sunrise:                 getText('cs-sunrise'),
@@ -1741,6 +1771,212 @@ function toggleCrewView() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// PAGE-2 DEPARTMENT DRAG-AND-DROP + RENAME + CUSTOM DEPARTMENTS
+// Persist PER CALL SHEET (this date) in data_json. Does NOT change the budget.
+//   CS_DEPT_OVERRIDES[crew_key] = dept_name   (crew_key = "<line_id>:<instance>")
+//   CS_DEPT_RENAMES[original]   = new_name
+//   CS_CUSTOM_DEPTS = [names…]
+// All affordances are cs-screen-only so they never reach print/PDF/public.
+// (User 2026-07-08.)
+// ═══════════════════════════════════════════════════════════════════════════════
+let _csDragRow = null;
+
+function _csDeptGrid() { return document.getElementById('crew-call-tbody'); }
+
+// Refresh the "empty" hint + custom-delete affordance for every box, and hide
+// standard boxes that ended up with zero real rows (custom boxes stay so they
+// remain drop targets).
+function csRefreshDeptBoxes() {
+  const grid = _csDeptGrid();
+  if (!grid) return;
+  grid.querySelectorAll('.cs-dept-box').forEach(box => {
+    const rows = box.querySelectorAll('tr.cs-crew-member-row');
+    const isCustom = box.getAttribute('data-dept-custom') === '1';
+    const emptyHint = box.querySelector('.cs-dept-empty-hint');
+    if (emptyHint) emptyHint.style.display = rows.length ? 'none' : '';
+    if (!isCustom) {
+      // Hide an emptied standard box (no drop-truth to show).
+      box.style.display = rows.length ? '' : 'none';
+    }
+    const del = box.querySelector('.cs-dept-del');
+    if (del) del.style.display = rows.length ? 'none' : '';
+    // Show a per-row reset ↩ only when that row is overridden.
+    box.querySelectorAll('tr.cs-crew-member-row').forEach(tr => {
+      const ck = tr.getAttribute('data-crew-key');
+      const rst = tr.querySelector('.cs-dept-reset');
+      if (rst) rst.style.display = (ck && CS_DEPT_OVERRIDES[ck]) ? '' : 'none';
+    });
+  });
+}
+
+function _csDeptNameForBox(box) {
+  // Current (possibly renamed) header text drives the override value so that a
+  // rename + move stay consistent; fall back to the data-dept-name attribute.
+  return box.getAttribute('data-dept-name') || '';
+}
+
+function csMoveRowToBox(row, box) {
+  if (!row || !box) return;
+  const tbody = box.querySelector('tbody');
+  if (!tbody) return;
+  // Move the crew row (and any immediately-following travel rows) into the box,
+  // before the empty-hint row.
+  const emptyHint = box.querySelector('.cs-dept-empty-hint');
+  const toMove = [row];
+  let sib = row.nextElementSibling;
+  while (sib && sib.classList.contains('cs-crew-travel-row')) {
+    toMove.push(sib);
+    sib = sib.nextElementSibling;
+  }
+  toMove.forEach(el => tbody.insertBefore(el, emptyHint || null));
+
+  const ck = row.getAttribute('data-crew-key');
+  const dflt = row.getAttribute('data-dept-default') || '';
+  const target = _csDeptNameForBox(box);
+  if (ck) {
+    if (target && target !== dflt) CS_DEPT_OVERRIDES[ck] = target;
+    else delete CS_DEPT_OVERRIDES[ck];   // back to its default group
+  }
+  csRefreshDeptBoxes();
+  clearTimeout(_saveTimer); doAutoSave();
+}
+
+function csResetRow(row) {
+  if (!row) return;
+  const ck = row.getAttribute('data-crew-key');
+  const dflt = row.getAttribute('data-dept-default') || '';
+  if (ck) delete CS_DEPT_OVERRIDES[ck];
+  const grid = _csDeptGrid();
+  if (grid && dflt) {
+    // Find the box whose data-dept-name (or renamed default) matches the default.
+    let target = null;
+    grid.querySelectorAll('.cs-dept-box').forEach(box => {
+      const nm = box.getAttribute('data-dept-name');
+      if (!target && (nm === dflt || CS_DEPT_RENAMES[dflt] === nm)) target = box;
+    });
+    if (target) { csMoveRowToBox(row, target); return; }
+  }
+  csRefreshDeptBoxes();
+  clearTimeout(_saveTimer); doAutoSave();
+}
+
+function csRenameDept(box, headerLabel) {
+  const orig = box.querySelector('.cs-dept-box-header').getAttribute('data-dept-orig') || '';
+  const newName = headerLabel.textContent.trim();
+  if (!newName) { headerLabel.textContent = (box.getAttribute('data-dept-name') || orig).toUpperCase(); return; }
+  // Store rename keyed by ORIGINAL name; if unchanged, drop it.
+  if (newName.toUpperCase() === orig.toUpperCase()) { delete CS_DEPT_RENAMES[orig]; }
+  else { CS_DEPT_RENAMES[orig] = newName; }
+  // Reflect the new label as this box's current dept-name so future drops record it.
+  box.setAttribute('data-dept-name', newName);
+  // Any rows currently in this box that carry an override should record the new name.
+  box.querySelectorAll('tr.cs-crew-member-row').forEach(tr => {
+    const ck = tr.getAttribute('data-crew-key');
+    if (ck && CS_DEPT_OVERRIDES[ck]) CS_DEPT_OVERRIDES[ck] = newName;
+  });
+  // If this is a custom dept, keep CS_CUSTOM_DEPTS label in sync.
+  if (box.getAttribute('data-dept-custom') === '1') {
+    const oi = CS_CUSTOM_DEPTS.indexOf(orig);
+    if (oi >= 0) CS_CUSTOM_DEPTS[oi] = newName;
+    box.querySelector('.cs-dept-box-header').setAttribute('data-dept-orig', newName);
+  }
+  headerLabel.textContent = newName.toUpperCase();
+  clearTimeout(_saveTimer); doAutoSave();
+}
+
+function csAddDept() {
+  const grid = _csDeptGrid();
+  if (!grid) return;
+  let base = 'New Department', name = base, n = 2;
+  const existing = new Set();
+  grid.querySelectorAll('.cs-dept-box').forEach(b => existing.add((b.getAttribute('data-dept-name') || '').toLowerCase()));
+  while (existing.has(name.toLowerCase())) { name = base + ' ' + (n++); }
+  CS_CUSTOM_DEPTS.push(name);
+
+  const box = document.createElement('div');
+  box.className = 'cs-dept-box';
+  box.setAttribute('data-dept-name', name);
+  box.setAttribute('data-dept-custom', '1');
+  box.innerHTML =
+    '<div class="cs-dept-box-header" data-dept-orig="' + _csEsc(name) + '">' +
+      '<span class="cs-dept-header-label" contenteditable="true" data-cs-screen-editable="1" title="Click to rename this department (this call sheet only)">' + _csEsc(name.toUpperCase()) + '</span>' +
+      '<span class="cs-dept-del cs-screen-only" title="Delete this custom department (only when empty)">✕</span>' +
+    '</div>' +
+    '<table class="cs-dept-box-table"><tbody>' +
+      '<tr class="cs-dept-empty-hint cs-screen-only"><td colspan="3" style="color:var(--text-muted);font-size:.7rem;font-style:italic;padding:.3rem .5rem">Drop crew here</td></tr>' +
+    '</tbody></table>';
+  grid.appendChild(box);
+  _csBindDeptBox(box);
+  csRefreshDeptBoxes();
+  clearTimeout(_saveTimer); doAutoSave();
+}
+
+function csDeleteDept(box) {
+  if (!box) return;
+  if (box.querySelectorAll('tr.cs-crew-member-row').length) return; // only when empty
+  const name = box.getAttribute('data-dept-name') || '';
+  const orig = box.querySelector('.cs-dept-box-header').getAttribute('data-dept-orig') || name;
+  let i = CS_CUSTOM_DEPTS.indexOf(name);
+  if (i < 0) i = CS_CUSTOM_DEPTS.indexOf(orig);
+  if (i >= 0) CS_CUSTOM_DEPTS.splice(i, 1);
+  delete CS_DEPT_RENAMES[orig];
+  box.remove();
+  clearTimeout(_saveTimer); doAutoSave();
+}
+
+function _csEsc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+function _csBindDeptBox(box) {
+  box.addEventListener('dragover', ev => { ev.preventDefault(); box.classList.add('cs-dept-dragover'); });
+  box.addEventListener('dragleave', () => box.classList.remove('cs-dept-dragover'));
+  box.addEventListener('drop', ev => {
+    ev.preventDefault();
+    box.classList.remove('cs-dept-dragover');
+    if (_csDragRow) csMoveRowToBox(_csDragRow, box);
+  });
+  const label = box.querySelector('.cs-dept-header-label');
+  if (label) {
+    label.addEventListener('blur', () => csRenameDept(box, label));
+    label.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); label.blur(); } });
+  }
+  const del = box.querySelector('.cs-dept-del');
+  if (del) del.addEventListener('click', ev => { ev.stopPropagation(); csDeleteDept(box); });
+}
+
+function initDeptDnD() {
+  const grid = _csDeptGrid();
+  if (!grid) return;
+  grid.querySelectorAll('.cs-dept-box').forEach(_csBindDeptBox);
+  // Row drag start/end + reset click (delegated on the grid).
+  grid.addEventListener('dragstart', ev => {
+    // Don't start a row drag when the user is dragging to select text inside
+    // the editable call-time cell or the header rename field.
+    if (ev.target.closest && ev.target.closest('[contenteditable="true"]')) {
+      ev.preventDefault();
+      return;
+    }
+    const row = ev.target.closest ? ev.target.closest('tr.cs-crew-member-row') : null;
+    if (!row) return;
+    _csDragRow = row;
+    row.classList.add('cs-row-dragging');
+    if (ev.dataTransfer) { ev.dataTransfer.effectAllowed = 'move'; try { ev.dataTransfer.setData('text/plain', row.getAttribute('data-crew-key') || ''); } catch (e) {} }
+  });
+  grid.addEventListener('dragend', () => {
+    if (_csDragRow) _csDragRow.classList.remove('cs-row-dragging');
+    _csDragRow = null;
+    grid.querySelectorAll('.cs-dept-dragover').forEach(b => b.classList.remove('cs-dept-dragover'));
+  });
+  grid.addEventListener('click', ev => {
+    const rst = ev.target.closest ? ev.target.closest('.cs-dept-reset') : null;
+    if (!rst) return;
+    ev.preventDefault(); ev.stopPropagation();
+    const row = rst.closest('tr.cs-crew-member-row');
+    csResetRow(row);
+  });
+  csRefreshDeptBoxes();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // USEFUL CONTACTS (independently selectable, not mirror of KP)
 // ═══════════════════════════════════════════════════════════════════════════════
 let UC_ROWS = [];
@@ -2174,6 +2410,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initUsefulContacts();
   applyTextOverrides();
   applyHiddenState();
+  initDeptDnD();
 });
 </script>
 
