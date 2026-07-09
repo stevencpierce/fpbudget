@@ -4,7 +4,20 @@
    prepends a personal layer (call time, travel, confirm bar). Always define it
    so every {% if recipient_mode %} branch is safe for both callers. #}
 {% set recipient_mode  = recipient_mode  | default(false) %}
+{# pdf_mode: True only when weasyprint renders this template server-side for the
+   emailed / archived PDF. No JS runs in weasyprint, so pdf_mode implies:
+     • server-side render of the JS-only sections (Key Personnel, Hospitals,
+       Extras, Dept Notes, Useful Contacts) — see the {% if pdf_mode %} branches,
+     • server-side application of text_overrides + hidden (the JS gap fix),
+     • all <script> blocks skipped. pdf_mode is always a recipient_mode render. #}
+{% set pdf_mode        = pdf_mode        | default(false) %}
 {% set preview_mode    = preview_mode    | default(false) %}
+{# Server-side text-override resolver: mirrors applyTextOverrides() in JS so the
+   PDF (no JS) shows edited text, not defaults. Used at every data-cs-text spot. #}
+{% set _cs_txt = (cs_data.get('text_overrides') if cs_data else {}) or {} %}
+{% macro cstext(key, default) -%}
+{{ _cs_txt.get(key) if (_cs_txt.get(key) not in (none, '')) else default }}
+{%- endmacro %}
 {% set rec             = rec             | default(none) %}
 {% set token           = token           | default(none) %}
 {% set already_confirmed = already_confirmed | default(false) %}
@@ -16,6 +29,26 @@
 {% block body_class %}{% if recipient_mode %}recipient-mode{% endif %}{% endblock %}
 
 {% block content %}
+{% if pdf_mode %}
+{# ── PDF-only style layer ────────────────────────────────────────────────────
+   weasyprint runs no JS, so the two client-side layers must be baked in as CSS:
+   (1) per-day HIDDEN elements — the owner explicitly hid these; a naive render
+       would leak them back. applyHiddenState() adds .cs-hidden-el in JS; here we
+       emit an attribute-selector rule per hidden data-cs-key instead (weasyprint
+       supports attribute selectors). (2) Force white bg / black text on the page
+       shell in case any un-scoped dark-theme variable leaks past @media print. #}
+<style>
+  /* Belt-and-suspenders palette lock for weasyprint (the @media print block
+     already flips most of this; these cover the page shell + wrapper). */
+  html, body { background:#fff !important; color:#111 !important; }
+  body.recipient-mode .main-content,
+  .callsheet-wrapper, .callsheet-page { background:#fff !important; }
+  /* Each element the owner hid on THIS call sheet is dropped from the PDF. */
+  {% for _k, _v in (cs_data.get('hidden') or {}).items() %}{% if _v %}[data-cs-key="{{ _k }}"] { display:none !important; }
+  {% endif %}{% endfor %}
+  @page { size: letter portrait; margin: .4in; }
+</style>
+{% endif %}
 {% set MODE_META = {
   'estimated': {'label':'ESTIMATED', 'short':'Est',  'cls':'mode-estimated'},
   'working':   {'label':'WORKING',   'short':'Work', 'cls':'mode-working'},
@@ -28,8 +61,10 @@
    the sheet: PREVIEW banner, sticky confirm bar (your call + confirm button),
    and the "Your details" travel card with BIG confirmation numbers. Ported from
    the retired callsheet_confirm.html. (User 2026-07-08.)
-   ══════════════════════════════════════════════════════════════════════════ #}
-{% if recipient_mode %}
+   Suppressed in pdf_mode: a printed/emailed PDF has no clickable confirm button,
+   and the emailed PDF is one-per-audience-type (not per person), so it carries
+   no individual's personal travel card. (User 2026-07-09.) #}
+{% if recipient_mode and not pdf_mode %}
   {% if preview_mode %}
   <div class="cs-recip-preview-banner">
     👁 PREVIEW — not sent · This is what {{ rec.name }} will receive
@@ -277,15 +312,15 @@
       <div class="callsheet-header-center">
         <div class="callsheet-project-title cs-editable" contenteditable="true"
              data-cs-text="header_project_title" data-cs-default="{{ project.name }}"
-             title="Click to edit the project title">{{ project.name }}</div>
+             title="Click to edit the project title">{{ cstext('header_project_title', project.name) }}</div>
         <div class="callsheet-header-label cs-editable" contenteditable="true"
              data-cs-text="header_label" data-cs-default="CALL SHEET"
-             title="Click to edit">CALL SHEET</div>
+             title="Click to edit">{{ cstext('header_label', 'CALL SHEET') }}</div>
       </div>
       <div class="callsheet-header-right-block">
         <div class="callsheet-date-display cs-editable" contenteditable="true"
              data-cs-text="header_date" data-cs-default="{{ selected_date.strftime('%A, %B %d, %Y') }}"
-             title="Click to edit the displayed date">{{ selected_date.strftime('%A, %B %d, %Y') }}</div>
+             title="Click to edit the displayed date">{{ cstext('header_date', selected_date.strftime('%A, %B %d, %Y')) }}</div>
         {% if shooting_day_num %}
         <div class="callsheet-day-num">Shoot Day {{ shooting_day_num }} of {{ total_shoot_days }}</div>
         {% elif primary_day_type and primary_day_type != 'work' %}
@@ -339,7 +374,21 @@
               </tr>
             </thead>
             <tbody id="kp-tbody">
-              {# Populated by JS #}
+              {# Populated by JS on screen. In pdf_mode (no JS) render server-side
+                 from cs_data.key_personnel so the emailed PDF isn't empty. #}
+              {% if pdf_mode %}
+                {% for p in (cs_data.get('key_personnel') or []) %}
+                  {% if p.get('is_spacer') %}
+                  <tr class="kp-spacer-row"><td colspan="{{ 3 if csv.kp_contact else 2 }}" class="kp-spacer-cell"></td></tr>
+                  {% elif p.get('role') or p.get('name') or p.get('phone') %}
+                  <tr class="kp-row">
+                    <td>{{ p.get('role', '') }}</td>
+                    <td>{{ p.get('name', '') }}</td>
+                    {% if csv.kp_contact %}<td class="callsheet-contact-cell">{{ p.get('phone', '') }}</td>{% endif %}
+                  </tr>
+                  {% endif %}
+                {% endfor %}
+              {% endif %}
             </tbody>
           </table>
           <div class="cs-row-toolbar cs-screen-only">
@@ -374,14 +423,14 @@
                   <div class="callsheet-location-header">
                     <span class="callsheet-location-name cs-editable" contenteditable="true"
                           data-cs-text="location_name:{{ loc.id }}" data-cs-default="{{ loc.name }}"
-                          title="Click to edit location name">{{ loc.name }}</span>
+                          title="Click to edit location name">{{ cstext('location_name:' ~ loc.id, loc.name) }}</span>
                     {% if _dt.chip %}<span class="callsheet-day-type-badge callsheet-dt-{{ ld.day_type }}" title="{{ _dt.label }}">{{ _dt.chip }}</span>{% endif %}
                   </div>
                   <div class="callsheet-location-address">
                     <span class="cs-editable" contenteditable="true"
                           data-cs-text="location_addr:{{ loc.id }}" data-cs-default="{{ loc.address or '' }}"
                           data-placeholder="Click to add address"
-                          title="Click to edit address">{{ loc.address or '' }}</span>
+                          title="Click to edit address">{{ cstext('location_addr:' ~ loc.id, loc.address or '') }}</span>
                     {% if loc.map_url %}<a href="{{ loc.map_url }}" target="_blank" class="callsheet-map-link cs-screen-only" style="margin-left:.4rem;font-size:.72rem">🗺 Map</a>{% endif %}
                   </div>
                   {% if loc.contact_name or loc.contact_phone %}
@@ -485,7 +534,19 @@
             <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:hospital" title="Hide / show Hospital">👁</span>
             Nearest Hospital
           </div>
-          <div id="hospital-container"></div>
+          <div id="hospital-container">
+            {% if pdf_mode %}
+              {% for h in (cs_data.get('hospitals') or []) %}
+                {% if h.get('name') or h.get('address') or h.get('phone') %}
+                <div class="cs-hospital-row">
+                  <span class="cs-hospital-name">{{ h.get('name', '') }}</span>
+                  <span class="cs-hospital-addr">{{ h.get('address', '') }}</span>
+                  <span class="cs-hospital-phone">{{ h.get('phone', '') }}</span>
+                </div>
+                {% endif %}
+              {% endfor %}
+            {% endif %}
+          </div>
           <div class="cs-row-toolbar cs-screen-only" style="margin-top:.25rem">
             <button class="btn btn-xs btn-ghost" onclick="addHospitalRow()">+ Hospital</button>
           </div>
@@ -555,7 +616,20 @@
           </tr>
         </thead>
         <tbody id="extras-tbody">
-          {# Populated by JS #}
+          {# Populated by JS on screen; server-side in pdf_mode. #}
+          {% if pdf_mode %}
+            {% for e in (cs_data.get('extras') or []) %}
+              {% if e.get('type') or e.get('qty') or e.get('call_time') or e.get('location') or e.get('notes') %}
+              <tr>
+                <td>{{ e.get('type', '') }}</td>
+                <td>{{ e.get('qty', '') }}</td>
+                <td>{{ e.get('call_time', '') }}</td>
+                <td>{{ e.get('location', '') }}</td>
+                <td>{{ e.get('notes', '') }}</td>
+              </tr>
+              {% endif %}
+            {% endfor %}
+          {% endif %}
         </tbody>
       </table>
       <div class="cs-row-toolbar cs-screen-only">
@@ -634,7 +708,31 @@
     <div class="callsheet-section cs-hideable" data-cs-key="section:dept_notes">
       <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:dept_notes" title="Hide / show Department Notes">👁</span>Department Notes</div>
       <div id="dept-notes-container" class="cs-dept-notes-container">
-        {# Populated by JS from crew department list + saved notes #}
+        {# Populated by JS from crew department list + saved notes on screen.
+           In pdf_mode render only departments that actually carry a note, in the
+           saved order (empty note boxes add nothing to a printed sheet). #}
+        {% if pdf_mode %}
+          {% set _dn = cs_data.get('dept_notes') or {} %}
+          {% set _order = cs_data.get('dept_note_order') or [] %}
+          {% set _seen = [] %}
+          {% for dept in _order %}
+            {% if _dn.get(dept) %}
+            {% set _ = _seen.append(dept) %}
+            <div class="cs-dept-note-row">
+              <div class="cs-dept-note-label">{{ dept }}</div>
+              <div class="cs-dept-note-text">{{ _dn.get(dept) }}</div>
+            </div>
+            {% endif %}
+          {% endfor %}
+          {% for dept, note in _dn.items() %}
+            {% if note and dept not in _seen %}
+            <div class="cs-dept-note-row">
+              <div class="cs-dept-note-label">{{ dept }}</div>
+              <div class="cs-dept-note-text">{{ note }}</div>
+            </div>
+            {% endif %}
+          {% endfor %}
+        {% endif %}
       </div>
       <div class="cs-row-toolbar cs-screen-only">
         <button class="btn btn-xs btn-ghost" onclick="addDeptNote()">+ Add Department</button>
@@ -854,7 +952,20 @@ Example:
             <th class="cs-screen-only" style="width:2rem"></th>
           </tr>
         </thead>
-        <tbody id="uc-tbody"></tbody>
+        <tbody id="uc-tbody">
+          {# Populated by JS on screen; server-side in pdf_mode. #}
+          {% if pdf_mode %}
+            {% for u in (cs_data.get('useful_contacts') or []) %}
+              {% if u.get('role') or u.get('name') or u.get('phone') %}
+              <tr class="uc-row">
+                <td>{{ u.get('role', '') }}</td>
+                <td>{{ u.get('name', '') }}</td>
+                <td class="callsheet-contact-cell">{{ u.get('phone', '') }}</td>
+              </tr>
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+        </tbody>
       </table>
       <div class="cs-row-toolbar cs-screen-only">
         <button class="btn btn-xs btn-ghost" onclick="addUcRow()">+ Add Contact</button>
@@ -1079,6 +1190,10 @@ Example:
 {% endif %}{# /not recipient_mode — distribution panel #}
 
 {# ─── JavaScript ──────────────────────────────────────────────────────────── #}
+{# Skipped entirely in pdf_mode: weasyprint runs no JS, and the JS-only sections
+   it would populate are already rendered server-side above. Shipping the block
+   is dead weight (and pulls url_for's for editing routes the PDF never calls). #}
+{% if not pdf_mode %}
 <script>
 // ── Constants ─────────────────────────────────────────────────────────────────
 // RECIPIENT_MODE: tokenized recipient / preview render. Suppresses all editing
@@ -2722,5 +2837,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 </script>
+{% endif %}{# /not pdf_mode — main script block #}
 
 {% endblock %}

@@ -21227,8 +21227,84 @@ def project_client_delete(pid, cid):
 
 # ── Call Sheet Distribution (foundation) ──────────────────────────────────
 
+# Cache the on-disk stylesheet once — the emailed/archived PDF is the REAL sheet
+# rendered through callsheet.html, and weasyprint has no HTTP path back to this
+# worker to fetch /static/style.css. So we read it from disk and hand it to
+# weasyprint directly (INLINE, not a network <link> fetch). (User 2026-07-09.)
+_CALLSHEET_CSS_CACHE = None
+
+def _callsheet_stylesheet_css():
+    """Return a weasyprint.CSS built from static/style.css, or None if weasyprint
+    is unavailable / the file can't be read. Cached after first successful load."""
+    global _CALLSHEET_CSS_CACHE
+    if _CALLSHEET_CSS_CACHE is not None:
+        return _CALLSHEET_CSS_CACHE
+    try:
+        import weasyprint
+        css_path = os.path.join(app.static_folder or 'static', 'style.css')
+        with open(css_path, 'r', encoding='utf-8') as fh:
+            _CALLSHEET_CSS_CACHE = weasyprint.CSS(string=fh.read())
+    except Exception as e:
+        logging.warning(f"[CALLSHEET PDF] stylesheet load failed: {e}")
+        _CALLSHEET_CSS_CACHE = None
+    return _CALLSHEET_CSS_CACHE
+
+
+def _render_callsheet_real_pdf(pid, bid, project, budget, selected_date, sched_mode,
+                               all_scheduled_dates, view='crew'):
+    """Render the REAL call sheet (templates/callsheet.html) to PDF bytes for the
+    given audience `view` (crew/talent/client/union/internal).
+
+    This is the layout the owner sees on the site — same template, same CSS —
+    rather than the bespoke summary in _render_callsheet_pdf_html. It renders in
+    pdf_mode + recipient_mode so:
+      • the JS-only sections (Key Personnel, Hospitals, Extras, Dept Notes,
+        Useful Contacts) are rendered SERVER-SIDE (no JS runs in weasyprint),
+      • per-day `hidden` + `text_overrides` are applied SERVER-SIDE (the JS gap),
+      • all <script>/editing chrome is dropped.
+    The stylesheet is inlined (see _callsheet_stylesheet_css) so weasyprint never
+    has to fetch anything over the network. Returns bytes, or None on any failure
+    (caller falls back to the legacy renderer). (User 2026-07-09.)"""
+    try:
+        import weasyprint
+    except Exception as e:
+        logging.warning(f"[CALLSHEET PDF] weasyprint unavailable: {e}")
+        return None
+    try:
+        ctx = _callsheet_full_context(
+            pid, bid, project, budget, selected_date, sched_mode,
+            all_scheduled_dates)
+        cs_view, csv_flags = _callsheet_audience_flags(view)
+        html_str = render_template(
+            "callsheet.html",
+            recipient_mode=True,   # read-only render (suppresses editing chrome)
+            pdf_mode=True,         # server-side JS-section render + no <script>
+            preview_mode=False,
+            rec=None, send=None, token=None,
+            already_confirmed=False,
+            confirmed_local=None, viewed_local=None,
+            personal_call='', personal_travel=[],
+            date_display=selected_date.strftime("%A, %B %-d, %Y"),
+            cs_view=cs_view,
+            csv=csv_flags,
+            **ctx,
+        )
+        css = _callsheet_stylesheet_css()
+        stylesheets = [css] if css is not None else None
+        # base_url lets weasyprint resolve any remaining relative refs from disk;
+        # the stylesheet itself is passed inline above so this is only a fallback.
+        pdf_bytes = weasyprint.HTML(
+            string=html_str, base_url=app.static_folder or 'static'
+        ).write_pdf(stylesheets=stylesheets)
+        return pdf_bytes
+    except Exception as e:
+        logging.warning(f"[CALLSHEET PDF] real-template render failed "
+                        f"(view={view}): {type(e).__name__}: {e}")
+        return None
+
+
 def _build_callsheet_pdf_bytes(pid, bid, project, budget, selected_date, sched_mode,
-                               send_obj):
+                               send_obj, view='crew'):
     """Build a COMPLETE call-sheet PDF (bytes) + suggested filename for one day.
 
     Reuses _callsheet_full_context so the crew grid, meals, and locations are
@@ -21270,16 +21346,28 @@ def _build_callsheet_pdf_bytes(pid, bid, project, budget, selected_date, sched_m
         })
 
     date_display = selected_date.strftime("%A, %B %-d, %Y")
-    pdf_bytes = _generate_callsheet_pdf(
-        send_obj=send_obj,
-        project_name=project.name,
-        date_display=date_display,
-        cs_data=cs_data_dict,
-        crew_rows=[],
-        locations_today=ctx.get('locations_today') or [],
-        crew_grid=crew_grid,
-        meal_counts=ctx.get('meal_counts') or {},
-    )
+
+    # PRIMARY: render the REAL sheet (callsheet.html) for the requested audience
+    # view — this is the on-site layout the owner asked for. FALLBACK: if that
+    # render fails or is suspiciously tiny (<5KB → something went wrong), drop to
+    # the legacy bespoke summary so a send never loses its attachment.
+    pdf_bytes = _render_callsheet_real_pdf(
+        pid, bid, project, budget, selected_date, sched_mode,
+        all_scheduled_dates, view=view)
+    if not pdf_bytes or len(pdf_bytes) < 5120:
+        if pdf_bytes:
+            logging.warning("[CALLSHEET PDF] real render suspiciously small "
+                            f"({len(pdf_bytes)} bytes) — falling back to legacy.")
+        pdf_bytes = _generate_callsheet_pdf(
+            send_obj=send_obj,
+            project_name=project.name,
+            date_display=date_display,
+            cs_data=cs_data_dict,
+            crew_rows=[],
+            locations_today=ctx.get('locations_today') or [],
+            crew_grid=crew_grid,
+            meal_counts=ctx.get('meal_counts') or {},
+        )
     version_label = (getattr(send_obj, 'version_label', '') or 'v1')
     filename = (f"CallSheet_{project.name.replace(' ', '_')}_"
                 f"{selected_date.isoformat()}_{version_label}.pdf")
@@ -21414,20 +21502,40 @@ def callsheet_prepare_send(pid, bid, date_str):
         budget_id=bid, date=selected_date).all()]
     pdf_locations = Location.query.filter(Location.id.in_(loc_day_ids)).all() if loc_day_ids else []
 
-    # Generate the COMPLETE PDF (real crew grid + meals + locations) via the
-    # shared builder — one artifact shared across all recipients for this send.
-    pdf_bytes, pdf_filename = _build_callsheet_pdf_bytes(
-        pid, bid, project, budget, selected_date, sched_mode, send)
+    # Generate ONE PDF PER DISTINCT AUDIENCE VIEW among the checked recipients
+    # (crew/talent/client/union → their redacted view of the REAL sheet). Each
+    # recipient's email attaches the PDF matching their type. Per-TYPE (not per-
+    # recipient): the personal travel card still lives on each person's web link,
+    # and per-recipient renders would be dozens of weasyprint passes. Cache keyed
+    # by audience view so we render each view at most once. (User 2026-07-09.)
+    _pdf_by_view = {}      # view -> (bytes, filename)
+    pdf_renderer = 'none'  # reported in the response for observability
+    def _pdf_for_view(_view):
+        if _view not in _pdf_by_view:
+            _b, _f = _build_callsheet_pdf_bytes(
+                pid, bid, project, budget, selected_date, sched_mode, send,
+                view=_view)
+            _pdf_by_view[_view] = (_b, _f)
+        return _pdf_by_view[_view]
 
-    # Persist the exact artifact + Dropbox mirror on the send row so every
-    # version (even a single-recipient send) is retrievable later. Both are
-    # fail-open: a null pdf_data (weasyprint missing) or a failed archive must
-    # NOT block the send. (User 2026-07-09.)
-    if pdf_bytes:
-        send.pdf_data = pdf_bytes
-        send.pdf_filename = pdf_filename
+    # Pre-build every view that will actually be sent, plus the 'crew' view for
+    # the archived/downloadable artifact (the fullest recipient-facing copy).
+    _needed_views = {_recipient_view_for_type(r.recipient_type or 'crew')
+                     for r, _e, _p in created_recs}
+    _needed_views.add('crew')
+    for _v in _needed_views:
+        _pdf_for_view(_v)
+
+    # Persist the 'crew' view as the exact artifact + Dropbox mirror on the send
+    # row so every version is retrievable later. Both are fail-open: a null
+    # pdf_data (weasyprint missing) or a failed archive must NOT block the send.
+    crew_pdf_bytes, crew_pdf_filename = _pdf_by_view.get('crew', (None, None))
+    if crew_pdf_bytes:
+        pdf_renderer = ('real' if len(crew_pdf_bytes) >= 5120 else 'legacy')
+        send.pdf_data = crew_pdf_bytes
+        send.pdf_filename = crew_pdf_filename
         send.dropbox_path = _archive_callsheet_to_dropbox(
-            project, selected_date, version_label, pdf_bytes)
+            project, selected_date, version_label, crew_pdf_bytes)
         db.session.commit()
 
     # Build first location summary for SMS
@@ -21508,12 +21616,19 @@ def callsheet_prepare_send(pid, bid, date_str):
                 f"Please confirm receipt by clicking the link above.\n\n"
                 f"— Framework Productions · contact@thefp.tv\n"
             )
+        # Attach the PDF for THIS recipient's audience view (crew/talent/client/
+        # union). Falls back to the crew-view artifact if a view failed to build.
+        _rec_pdf_bytes, _rec_pdf_filename = _pdf_for_view(
+            _recipient_view_for_type(rtype))
+        if not _rec_pdf_bytes:
+            _rec_pdf_bytes, _rec_pdf_filename = crew_pdf_bytes, crew_pdf_filename
+
         email_ok = None
         sms_ok   = None
         if email:
             email_ok = _send_email(email, subject, body,
-                                   attachment_bytes=pdf_bytes,
-                                   attachment_filename=pdf_filename)
+                                   attachment_bytes=_rec_pdf_bytes,
+                                   attachment_filename=_rec_pdf_filename)
             if email_ok:
                 rec.status = "sent"
                 sent_email += 1
@@ -21553,6 +21668,9 @@ def callsheet_prepare_send(pid, bid, date_str):
     return jsonify({"ok": True, "send_id": send.id,
                     "sent_email": sent_email, "sent_sms": sent_sms,
                     "total": len(created_recs),
+                    # which renderer produced the archived artifact: 'real' (the
+                    # on-site sheet via callsheet.html) or 'legacy' (fallback).
+                    "pdf_renderer": pdf_renderer,
                     "recipients": recipient_results})
 
 
@@ -21604,8 +21722,10 @@ def callsheet_current_pdf(pid, bid, date_str):
     # Lightweight stand-in for a send row so the renderer has a version label.
     _stub = CallSheetSend(budget_id=bid, date=selected_date,
                           schedule_mode=sched_mode, version_label='current')
+    # Internal download = the admin's full copy (view='internal' shows everything:
+    # all contacts, reps, background, full crew list — no audience redaction).
     pdf_bytes, fname = _build_callsheet_pdf_bytes(
-        pid, bid, project, budget, selected_date, sched_mode, _stub)
+        pid, bid, project, budget, selected_date, sched_mode, _stub, view='internal')
     if not pdf_bytes:
         return jsonify({"error": "PDF unavailable (PDF rendering not configured)"}), 503
     return Response(
