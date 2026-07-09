@@ -13842,7 +13842,7 @@
             <td>{{ cc.phone or '—' }}</td>
             <td>{{ cc.company or '—' }}</td>
             <td><span class="cc-source-chip cc-source-{{ cc.source }}">{{ 'estimate' if cc.source == 'estimate_send' else 'manual' }}</span></td>
-            <td class="cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="deleteClientContact({{ cc.id }}, this)" title="Remove">✕</button></td>
+            <td class="cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="editClientContact({{ cc.id }}, this)" title="Edit">✎</button><button class="btn btn-xs btn-ghost" onclick="deleteClientContact({{ cc.id }}, this)" title="Remove">✕</button></td>
           </tr>
           {% endfor %}
         </tbody>
@@ -20558,6 +20558,77 @@ function deleteClient(cid, btn) {
 
 // ── Client contacts (estimate recipients) group ────────────────────────────
 function _ccEscape(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function _ccAttr(s){ return _ccEscape(s).replace(/"/g,'&quot;'); }
+// Render a contact object into the tr's display cells (name/email/phone/company/source/actions).
+function _ccRenderRow(tr, c) {
+  tr.setAttribute('data-cc-id', c.id);
+  tr.innerHTML =
+    '<td>'+ (_ccEscape(c.name) || '—') +'</td>'+
+    '<td>'+ (c.email ? '<a href="mailto:'+ _ccAttr(c.email) +'" class="contact-link">'+ _ccEscape(c.email) +'</a>' : '—') +'</td>'+
+    '<td>'+ (_ccEscape(c.phone) || '—') +'</td>'+
+    '<td>'+ (_ccEscape(c.company) || '—') +'</td>'+
+    '<td><span class="cc-source-chip cc-source-'+ c.source +'">'+ (c.source === 'estimate_send' ? 'estimate' : 'manual') +'</span></td>'+
+    '<td class="cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="editClientContact('+ c.id +', this)" title="Edit">✎</button><button class="btn btn-xs btn-ghost" onclick="deleteClientContact('+ c.id +', this)" title="Remove">✕</button></td>';
+}
+// Read the current display values off a row (used to seed the inline editor).
+function _ccReadRow(tr) {
+  var tds = tr.children;
+  var emailA = tds[1] ? tds[1].querySelector('a') : null;
+  var val = function(td){ var t = td ? (td.textContent || '').trim() : ''; return t === '—' ? '' : t; };
+  var chip = tr.querySelector('.cc-source-chip');
+  var source = (chip && /estimate/i.test(chip.textContent || '')) ? 'estimate_send' : 'manual';
+  return {
+    id: tr.getAttribute('data-cc-id'),
+    name: val(tds[0]),
+    email: emailA ? (emailA.textContent || '').trim() : val(tds[1]),
+    phone: val(tds[2]),
+    company: val(tds[3]),
+    source: source,
+  };
+}
+// Swap a display row into inline edit inputs with Save/Cancel.
+function editClientContact(cid, btn) {
+  var tr = btn.closest('tr'); if (!tr) return;
+  var c = _ccReadRow(tr);
+  var inp = function(field, ph, val){
+    return '<input type="text" class="cc-edit-inp" data-field="'+ field +'" placeholder="'+ ph +'" value="'+ _ccAttr(val) +'" '+
+           'style="width:100%;box-sizing:border-box;font-size:.82rem;padding:2px 5px">';
+  };
+  tr.innerHTML =
+    '<td>'+ inp('name', 'Name', c.name) +'</td>'+
+    '<td>'+ inp('email', 'Email', c.email) +'</td>'+
+    '<td>'+ inp('phone', 'Phone', c.phone) +'</td>'+
+    '<td>'+ inp('company', 'Company', c.company) +'</td>'+
+    '<td><span class="cc-source-chip cc-source-'+ c.source +'">'+ (c.source === 'estimate_send' ? 'estimate' : 'manual') +'</span></td>'+
+    '<td class="cs-screen-only" style="white-space:nowrap">'+
+      '<button class="btn btn-xs btn-primary" onclick="saveClientContact('+ cid +', this)" title="Save">Save</button>'+
+      '<button class="btn btn-xs btn-ghost" onclick="cancelEditClientContact('+ cid +', this)" title="Cancel">Cancel</button>'+
+    '</td>';
+  var first = tr.querySelector('.cc-edit-inp'); if (first) first.focus();
+}
+function cancelEditClientContact(cid, btn) {
+  var tr = btn.closest('tr'); if (!tr) return;
+  var chip = tr.querySelector('.cc-source-chip');
+  var source = (chip && /estimate/i.test(chip.textContent || '')) ? 'estimate_send' : 'manual';
+  // Values are still sitting in the inputs — read them back for the display row.
+  var get = function(f){ var el = tr.querySelector('.cc-edit-inp[data-field="'+ f +'"]'); return el ? el.value.trim() : ''; };
+  _ccRenderRow(tr, {id: cid, name: get('name'), email: get('email'),
+    phone: get('phone'), company: get('company'), source: source});
+}
+function saveClientContact(cid, btn) {
+  var tr = btn.closest('tr'); if (!tr) return;
+  var get = function(f){ var el = tr.querySelector('.cc-edit-inp[data-field="'+ f +'"]'); return el ? el.value.trim() : ''; };
+  var email = get('email');
+  if (!email) { alert('Email is required.'); return; }
+  var payload = {name:get('name'), email:email, phone:get('phone'), company:get('company')};
+  fetch("{{ url_for('client_contact_update', pid=project.id, cid=0) }}".replace(/\/0\//, '/' + cid + '/'),
+    {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
+    .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
+    .then(function(res){
+      if (!res.ok || !res.d.ok) { alert(res.d.error || 'Could not save client.'); return; }
+      _ccRenderRow(tr, res.d.contact);
+    }).catch(function(){ alert('Network error saving client.'); });
+}
 function showAddClientContact() {
   var name = (prompt('Client name (optional):') || '').trim();
   var email = (prompt('Client email:') || '').trim();
@@ -20573,14 +20644,7 @@ function showAddClientContact() {
       var tbody = document.getElementById('cc-tbody');
       if (document.querySelector('#cc-tbody tr[data-cc-id="'+c.id+'"]')) return;
       var tr = document.createElement('tr');
-      tr.setAttribute('data-cc-id', c.id);
-      tr.innerHTML =
-        '<td>'+ _ccEscape(c.name) +'</td>'+
-        '<td>'+ (c.email ? '<a href="mailto:'+ _ccEscape(c.email) +'" class="contact-link">'+ _ccEscape(c.email) +'</a>' : '—') +'</td>'+
-        '<td>'+ (_ccEscape(c.phone) || '—') +'</td>'+
-        '<td>'+ (_ccEscape(c.company) || '—') +'</td>'+
-        '<td><span class="cc-source-chip cc-source-'+ c.source +'">'+ (c.source === 'estimate_send' ? 'estimate' : 'manual') +'</span></td>'+
-        '<td class="cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="deleteClientContact('+ c.id +', this)" title="Remove">✕</button></td>';
+      _ccRenderRow(tr, c);
       tbody.appendChild(tr);
       var tbl = document.getElementById('cc-table'), empt = document.getElementById('cc-empty');
       if (tbl) tbl.style.display = ''; if (empt) empt.style.display = 'none';

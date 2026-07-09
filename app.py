@@ -14969,6 +14969,51 @@ def client_contact_create(pid):
     }})
 
 
+@app.route("/projects/<int:pid>/client-contacts/<int:cid>/update", methods=["POST"])
+@login_required
+def client_contact_update(pid, cid):
+    """Edit a client contact on the People tab. Body {name?, email?, phone?,
+    company?} — only provided fields are updated. Email must stay non-empty and,
+    when changed, must not collide case-insensitively with another contact in
+    the project (409). Returns the updated row as JSON."""
+    if not _can_access_project(pid, edit=True):
+        return jsonify({"error": "Forbidden"}), 403
+    row = ProjectClientContact.query.filter_by(id=cid, project_id=pid).first_or_404()
+    body = request.get_json(silent=True) or {}
+
+    if 'email' in body:
+        email = (body.get('email') or '').strip()
+        if not email:
+            return jsonify({"error": "Email is required"}), 400
+        if email.lower() != (row.email or '').lower():
+            clash = (ProjectClientContact.query
+                     .filter(ProjectClientContact.project_id == pid,
+                             ProjectClientContact.id != cid,
+                             db.func.lower(ProjectClientContact.email) == email.lower())
+                     .first())
+            if clash:
+                return jsonify({"error": "Another client already uses that email."}), 409
+        row.email = email[:200]
+    if 'name' in body:
+        row.name = ((body.get('name') or '').strip() or None)
+        if row.name:
+            row.name = row.name[:200]
+    if 'phone' in body:
+        row.phone = ((body.get('phone') or '').strip() or None)
+        if row.phone:
+            row.phone = row.phone[:50]
+    if 'company' in body:
+        row.company = ((body.get('company') or '').strip() or None)
+        if row.company:
+            row.company = row.company[:200]
+
+    db.session.commit()
+    return jsonify({"ok": True, "contact": {
+        "id": row.id, "name": row.name, "email": row.email,
+        "phone": row.phone, "company": row.company, "source": row.source,
+    }})
+
+
 @app.route("/projects/<int:pid>/client-contacts/<int:cid>/delete", methods=["POST"])
 @login_required
 def client_contact_delete(pid, cid):
