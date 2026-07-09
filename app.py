@@ -27562,6 +27562,78 @@ def analyzer_portal():
     return render_template("analyzer_portal.html", projects=projects)
 
 
+@app.route("/api/analyze", methods=["POST"])
+def api_analyze():
+    """Analysis-only API for the local Finder companion (user 2026-07).
+
+    Backs local_tools/fp_file_it.py: the local script POSTs a file here,
+    gets back the OCR analysis + naming-convention filename, and does the
+    filing itself on the LOCAL filesystem (PROCESSED DOCUMENTS /
+    SOURCE DOCUMENTS folders next to the original). Nothing touches
+    Dropbox, no DocUpload row, no Transaction — this is deliberately
+    side-effect-free so it's safe for personal / non-FPBudget documents.
+
+    Auth: HTTP Basic with an active FPBudget account (session cookies
+    don't apply — callers are scripts, not browsers).
+    """
+    auth = request.authorization
+    user = None
+    if auth and auth.username and auth.password:
+        u = User.query.filter(func.lower(User.email) == auth.username.strip().lower()).first()
+        if u and u.is_active and u.check_password(auth.password):
+            user = u
+    if user is None:
+        return (jsonify({"error": "Authentication required"}), 401,
+                {"WWW-Authenticate": 'Basic realm="FPBudget Analyzer"'})
+
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "No file provided"}), 400
+    data = f.read()
+    if not data:
+        return jsonify({"error": "Empty file"}), 400
+
+    from fp_analyzer import analyze_bytes, extract_card_last4 as _extract_card4
+    import base64 as _b64
+
+    result = analyze_bytes(data, f.filename)
+    logging.info(f"[api/analyze] {user.email}: {f.filename} → "
+                 f"{result.get('doc_type')} @ {result.get('confidence')} "
+                 f"({result.get('status')})")
+    if result["status"] != "ok":
+        return jsonify({"status": "error",
+                        "error": result.get("error") or "Analyzer error"}), 502
+
+    vr = result.get("vr") or {}
+    v = vr.get("vendor") or {}
+    try:
+        amount = float(vr.get("total")) if vr.get("total") is not None else None
+    except (TypeError, ValueError):
+        amount = None
+    resp = {
+        "status":       "ok",
+        "doc_type":     result.get("doc_type"),
+        "confidence":   result.get("confidence"),
+        "needs_review": result.get("needs_review"),
+        "new_filename": result.get("new_filename"),
+        "vendor":       v.get("name") or v.get("raw_name"),
+        "amount":       amount,
+        "doc_date":     (vr.get("date") or "")[:10] or None,
+        "doc_number":   (vr.get("invoice_number")
+                         or vr.get("purchase_order_number") or None),
+        "card_last4":   _extract_card4(vr) if vr else None,
+        "currency":     vr.get("currency_code"),
+        # Set only when the analyzer transcoded the bytes (HEIC→JPEG):
+        # the local script writes these as the processed copy; otherwise
+        # it just copies the original under the new name.
+        "converted_b64": (_b64.b64encode(result["ocr_bytes"]).decode("ascii")
+                          if result.get("converted") and result.get("ocr_bytes")
+                          else None),
+        "converted_ext": result.get("ocr_ext") if result.get("converted") else None,
+    }
+    return jsonify(resp), 200
+
+
 @app.route("/docs/<int:pid>/upload", methods=["POST"])
 @login_required
 def docs_upload_post(pid):

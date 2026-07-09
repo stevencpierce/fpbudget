@@ -1299,6 +1299,126 @@ class _InMemoryFileStorage:
         self._buf.seek(0)
 
 
+def analyze_bytes(file_bytes: bytes, filename: str) -> dict:
+    """OCR + classify ONE file with NO Dropbox involvement (user 2026-07).
+
+    Backs the /api/analyze endpoint used by the local Finder companion
+    (local_tools/fp_file_it.py): the caller does its own filing on the
+    local filesystem, so this returns analysis + the naming-convention
+    filename and nothing is written anywhere. Same classify→route→extract
+    logic as _call_veryfi, but via the SDK's file-path endpoints instead
+    of Dropbox temp links (there is no staged copy to link to).
+
+    Returns:
+        {
+          "status":       "ok" | "error",
+          "doc_type":     str | None,
+          "confidence":   float,           # 0.0–1.0
+          "needs_review": bool,
+          "new_filename": str | None,      # per naming convention, true ext
+          "vr":           dict,            # raw Veryfi response
+          "converted":    bool,            # True iff ocr bytes differ from
+                                           # input (HEIC→JPEG transcode)
+          "ocr_ext":      str,             # ext of the processed bytes
+          "ocr_bytes":    bytes | None,    # only set when converted
+          "error":        str | None,
+        }
+    """
+    import tempfile
+
+    def _err(msg, **extra):
+        out = {"status": "error", "doc_type": None, "confidence": 0.0,
+               "needs_review": False, "new_filename": None, "vr": {},
+               "converted": False, "ocr_ext": None, "ocr_bytes": None,
+               "error": msg}
+        out.update(extra)
+        return out
+
+    fs = _InMemoryFileStorage(file_bytes, filename)
+    try:
+        ocr_bytes, ocr_ext, original_bytes = to_ocr_bytes(fs)
+    except Exception as e:
+        return _err(f"Unsupported or corrupt file: {e}")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=ocr_ext, delete=False)
+    try:
+        tmp.write(ocr_bytes)
+        tmp.close()
+        vc = get_veryfi_client()
+
+        # Step 1: classify (gatekeeper). FAIL-OPEN like _call_veryfi — any
+        # hiccup routes 'financial', which is the pre-classify behavior.
+        cls_value, cls_score = None, 0.0
+        try:
+            cres = vc.classify_document(file_path=tmp.name)
+            _dt = (cres or {}).get("document_type") or {}
+            cls_value = ((_dt.get("value") or "").lower() or None)
+            cls_score = float(_dt.get("score") or 0)
+        except Exception as _ce:
+            log.warning(f"[classify/bytes] failed for {filename}: {_ce}")
+
+        category_override, route = None, 'financial'
+        if (cls_value and cls_score >= _CLASSIFY_MIN_SCORE
+                and cls_value in _CLASSIFY_ROUTE):
+            category_override, route = _CLASSIFY_ROUTE[cls_value]
+
+        # Step 2: extract with the model that fits the route.
+        vr, w9_ok = None, False
+        if route == 'w9':
+            try:
+                vr = _normalize_w9(vc.process_w9_document(file_path=tmp.name))
+                w9_ok = True
+            except Exception as _we:
+                log.warning(f"[w9/bytes] extract failed for {filename}, "
+                            f"falling back to documents: {_we}")
+                vr = None
+        if vr is None:
+            vr = vc.process_document(
+                file_path=tmp.name,
+                delete_after_processing=True,
+            )
+
+        # Step 3: non-financial docs — drop fabricated vendor/total.
+        suppress_financial = (route == 'other') or (route == 'w9' and not w9_ok)
+        if suppress_financial:
+            for _k in ('total', 'invoice_number', 'purchase_order_number'):
+                if _k in vr:
+                    vr[_k] = None
+            vr['vendor'] = {}
+            vr['payment'] = {}
+
+        suggested, confidence, needs_review = assess_confidence(vr)
+        if category_override and route != 'financial':
+            suggested    = category_override
+            confidence   = max(confidence, cls_score)
+            needs_review = True   # always confirm non-spend docs
+        log.info(f"Analyzed(bytes) {filename}: classify={cls_value}"
+                 f"@{cls_score:.2f} route={route} → type={suggested}, "
+                 f"confidence={confidence}, needs_review={needs_review}")
+        converted = ocr_bytes != original_bytes
+        return {
+            "status":       "ok",
+            "doc_type":     suggested,
+            "confidence":   float(confidence or 0.0),
+            "needs_review": bool(needs_review),
+            "new_filename": (build_name(vr, suggested, ext=ocr_ext)
+                             if suggested else None),
+            "vr":           vr or {},
+            "converted":    converted,
+            "ocr_ext":      ocr_ext,
+            "ocr_bytes":    ocr_bytes if converted else None,
+            "error":        None,
+        }
+    except Exception as e:
+        log.error(f"analyze_bytes failed for {filename}: {e}", exc_info=True)
+        return _err(f"Veryfi error: {e}")
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
 def analyze_and_file_single(file_bytes: bytes, filename: str,
                             project_name: str, user_name: str) -> dict:
     """Run the Analyzer pipeline on ONE file, synchronously. Returns:
