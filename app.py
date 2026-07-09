@@ -17616,7 +17616,7 @@ def travel_detail_save(pid, bid):
         db.session.delete(td)
         db.session.commit()
         try:
-            sync_schedule_driven_lines(bid)
+            sync_schedule_driven_lines(bid, db.session)
             db.session.commit()
         except Exception:
             db.session.rollback()
