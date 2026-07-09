@@ -2822,7 +2822,9 @@ function csDistLoadHistory() {
       const el = document.getElementById('cs-dist-history');
       if (!sends.length) { el.innerHTML = '<p style="font-size:.78rem;color:var(--text-muted)">No sends yet.</p>'; return; }
       const rows = sends.map(s => {
-        const dt = s.sent_at ? new Date(s.sent_at).toLocaleString() : '—';
+        // Server-formatted in the budget's timezone (Settings picker) — the
+        // old browser-local parse of a naive UTC string showed wrong times.
+        const dt = s.sent_at_local || (s.sent_at ? new Date(s.sent_at).toLocaleString() : '—');
         const confirmed = s.recipients.filter(r => r.status === 'confirmed').length;
         const viewed    = s.recipients.filter(r => r.status === 'viewed' || r.status === 'confirmed').length;
         const total     = s.recipients.length;

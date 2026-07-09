@@ -21741,13 +21741,29 @@ def callsheet_distribution(pid, bid, date_str):
     sms_configured = bool(os.getenv('TWILIO_ACCOUNT_SID', '')
                           and os.getenv('TWILIO_AUTH_TOKEN', '')
                           and os.getenv('TWILIO_FROM_NUMBER', ''))
+    # All display times in the BUDGET's timezone (Settings picker) — raw
+    # isoformat strings were being rendered browser-local / raw UTC before.
+    _tz = getattr(budget, "timezone", None) or "America/New_York"
+
+    def _loc_dt(dt):
+        if not dt:
+            return None
+        try:
+            from zoneinfo import ZoneInfo
+            local = dt.replace(tzinfo=ZoneInfo('UTC')).astimezone(ZoneInfo(_tz))
+            return local.strftime('%b %-d, %-I:%M %p')
+        except Exception:
+            return dt.strftime('%b %-d, %-I:%M %p')
+
     return jsonify({
         "mail_configured": mail_configured,
         "sms_configured": sms_configured,
+        "timezone": _tz,
         "sends": [{
             "id": s.id,
             "version_label": s.version_label or "",
             "sent_at": s.sent_at.isoformat() if s.sent_at else None,
+            "sent_at_local": _loc_dt(s.sent_at),
             "sent_by": s.sent_by or "",
             "notes": s.notes or "",
             "pdf_url": url_for('callsheet_send_pdf', pid=pid, bid=bid, send_id=s.id),
@@ -21757,7 +21773,9 @@ def callsheet_distribution(pid, bid, date_str):
                 "id": r.id, "name": r.name, "email": r.email or "",
                 "type": r.recipient_type, "status": r.status,
                 "viewed_at": r.viewed_at.isoformat() if r.viewed_at else None,
+                "viewed_at_local": _loc_dt(r.viewed_at),
                 "confirmed_at": r.confirmed_at.isoformat() if r.confirmed_at else None,
+                "confirmed_at_local": _loc_dt(r.confirmed_at),
             } for r in s.recipients],
         } for s in sends],
     })
@@ -22230,7 +22248,12 @@ def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
         personal_travel = _personal_travel_for(
             budget, send.date, sched_mode_p, crew_member, rec_name)
 
-    tz_name = (getattr(project, "timezone", None) or "America/New_York")
+    # Timezone lives on BUDGET (the Settings-tab picker) — the old
+    # project-attr lookup always fell through to New York. (User 2026-07-09:
+    # "viewed 5:02 PM… definitely wasn't — match the project settings.")
+    tz_name = (getattr(budget, "timezone", None)
+               or getattr(project, "timezone", None)
+               or "America/New_York")
 
     ctx = {
         "date_display": date_display,
@@ -23418,12 +23441,15 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         budget_id=bid, date=selected_date, schedule_mode=sched_mode
     ).order_by(CallSheetSend.sent_at.desc()).first()
     if latest_send:
+        # Format in the BUDGET's timezone (Settings-tab picker) — these were
+        # raw UTC before ("viewed 5:02 PM" that never happened, 2026-07-09).
+        _cs_tz = getattr(budget, "timezone", None) or "America/New_York"
         for rcp in latest_send.recipients:
             key = rcp.name.strip().lower()
             confirm_status[key] = {
                 "status":       rcp.status,
-                "viewed_at":    rcp.viewed_at.strftime("%-I:%M %p")  if rcp.viewed_at    else None,
-                "confirmed_at": rcp.confirmed_at.strftime("%-I:%M %p") if rcp.confirmed_at else None,
+                "viewed_at":    _fmt_local(rcp.viewed_at, _cs_tz)    if rcp.viewed_at    else None,
+                "confirmed_at": _fmt_local(rcp.confirmed_at, _cs_tz) if rcp.confirmed_at else None,
             }
 
     # ── On-day set for send-modal pre-checking (User 2026-07-08) ─────────────
