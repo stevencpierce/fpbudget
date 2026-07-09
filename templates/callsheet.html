@@ -85,18 +85,17 @@
   body.pdf-mode .callsheet-page-break { display:none !important; }
   /* Logo strip — white band between the dark header and the crew-call bar. The
      imgs are data: URIs (no network fetch). Each item is sized by HEIGHT (h% of
-     the strip) so mixed aspect ratios align on a baseline; the three slots space
-     left/center/right. Edit handles are .cs-screen-only → already dropped. Detail
-     theming lives in the shared :is(body.light-preview, body.pdf-mode) block in
-     static/style.css; these re-assert the flex layout for weasyprint. (2026-07-09.) */
+     the strip) so mixed aspect ratios align on a baseline; logos are ONE
+     centered, auto-WRAPPING flow (flex-wrap — verified honored by weasyprint 68.1,
+     so 10+ logos flow onto extra rows without server-side chunking). Edit handles
+     are .cs-screen-only → already dropped. Detail theming lives in the shared
+     :is(body.light-preview, body.pdf-mode) block in static/style.css; these
+     re-assert the flex layout for weasyprint. (2026-07-09; flow rewrite.) */
   body.pdf-mode .cs-logo-strip { display:none !important; }
-  body.pdf-mode .cs-logo-strip.has-logos { display:flex !important; align-items:center; gap:1rem;
+  body.pdf-mode .cs-logo-strip.has-logos { display:flex !important; flex-wrap:wrap;
+    align-items:center; justify-content:center; gap:.6rem 1rem;
     background:#fff !important; border-top:1px solid #d5d9e0 !important;
     border-bottom:1px solid #d5d9e0 !important; padding:.45rem 1.25rem; min-height:2.6rem; }
-  body.pdf-mode .cs-logo-slot { display:flex !important; align-items:center; gap:1rem; min-height:2rem; }
-  body.pdf-mode .cs-logo-slot-left   { flex:1 1 0; justify-content:flex-start; }
-  body.pdf-mode .cs-logo-slot-center { flex:1 1 0; justify-content:center; }
-  body.pdf-mode .cs-logo-slot-right  { flex:1 1 0; justify-content:flex-end; }
   body.pdf-mode .cs-logo-item  { position:relative !important; display:flex; align-items:center; }
   body.pdf-mode .cs-logo-item img { width:auto !important;
     height:calc(var(--cs-logo-h, 70) / 100 * 4.5rem) !important; max-height:4.5rem; }
@@ -453,34 +452,33 @@
 
     {# ── Logo strip ─────────────────────────────────────────────────────────
        A dedicated WHITE band between the dark header and the crew-call bar.
-       Structured layout: three slots (left / center / right); each placed logo
-       carries {logo_id, slot, order, h} where h is a percent of strip height
-       (40-100) so mixed aspect ratios align on a common baseline and automatic
-       gap spacing separates them. Renders only when it has logos (or, internally,
-       when the Logos panel adds .cs-strip-hint as a drop-target hint).
-       Editing controls (drag between/within slots, resize, remove) are
-       cs-screen-only + only outside recipient_mode. (User 2026-07-09.) #}
+       FLOW layout: ONE ordered list of logos, auto-spaced + centered as a group
+       (flex, gap, justify-content:center) and auto-WRAPPED onto extra rows when
+       they don't fit (flex-wrap) — supports 10+ logos gracefully. Each placed logo
+       carries {logo_id, order, h} where h is a percent of strip height (40-100) so
+       mixed aspect ratios align on a common baseline. Renders only when it has
+       logos (or, internally, when the Logos panel adds .cs-strip-hint as a
+       drop-target hint). weasyprint 68.1 honors flex-wrap, so the PDF uses the
+       SAME layout — no server-side row chunking. Editing controls (drag to
+       reorder at cursor, resize, remove) are cs-screen-only + only outside
+       recipient_mode. (User 2026-07-09; flow rewrite 2026-07-09.) #}
     {# cs-logos-editable must be ON THE STRIP: the affordance CSS
-       (.cs-logos-editable .cs-logo-item:hover → resize/remove handles,
-       slot outlines) targets descendants, and the strip is a SIBLING of the
-       header the class used to live on — so drag feedback + resize handles
-       never rendered ("can't move the logos", user 2026-07-09). #}
+       (.cs-logos-editable .cs-logo-item:hover → resize/remove handles) targets
+       descendants, and the strip is a SIBLING of the header the class used to live
+       on — so drag feedback + resize handles never rendered ("can't move the
+       logos", user 2026-07-09). #}
     <div class="cs-logo-strip{% if _cs_logos %} has-logos{% endif %}{% if not recipient_mode %} cs-logos-editable{% endif %}" id="cs-logo-strip"
          {% if not recipient_mode %}data-cs-logo-editable="1"{% endif %}>
-      {% for _slot in ['left', 'center', 'right'] %}
-      <div class="cs-logo-slot cs-logo-slot-{{ _slot }}" data-slot="{{ _slot }}">
-        {% for lg in _cs_logos if lg.slot == _slot %}
-        <div class="cs-logo-item" data-logo-id="{{ lg.logo_id }}" data-slot="{{ lg.slot }}"
-             data-order="{{ lg.order }}" data-h="{{ lg.h }}"
-             style="--cs-logo-h:{{ lg.h }}"
-             {% if not recipient_mode %}draggable="true"{% endif %}>
-          <img src="{{ lg.src }}" alt="{{ lg.name }}" draggable="false">
-          {% if not recipient_mode %}
-          <button type="button" class="cs-logo-remove cs-screen-only" title="Remove from sheet">✕</button>
-          <span class="cs-logo-resize cs-screen-only" title="Drag up / down to resize"></span>
-          {% endif %}
-        </div>
-        {% endfor %}
+      {% for lg in _cs_logos %}
+      <div class="cs-logo-item" data-logo-id="{{ lg.logo_id }}"
+           data-order="{{ lg.order }}" data-h="{{ lg.h }}"
+           style="--cs-logo-h:{{ lg.h }}"
+           {% if not recipient_mode %}draggable="true"{% endif %}>
+        <img src="{{ lg.src }}" alt="{{ lg.name }}" draggable="false">
+        {% if not recipient_mode %}
+        <button type="button" class="cs-logo-remove cs-screen-only" title="Remove from sheet">✕</button>
+        <span class="cs-logo-resize cs-screen-only" title="Drag up / down to resize"></span>
+        {% endif %}
       </div>
       {% endfor %}
       {% if not recipient_mode %}
@@ -1433,7 +1431,7 @@
     <button type="button" class="btn btn-xs btn-ghost" onclick="csLogosClosePanel()" title="Close">✕</button>
   </div>
   <div class="cs-logos-panel-body">
-    <p class="cs-logos-hint">Add a logo to place it on the header band, then drag it left/right and drag its corner to resize.</p>
+    <p class="cs-logos-hint">Add a logo to place it on the header band. Logos auto-space and wrap onto new rows; drag one between two others to reorder, and drag its corner to resize.</p>
     <div id="cs-logos-library" class="cs-logos-library"></div>
     <div class="cs-logos-upload">
       <label class="btn btn-sm btn-ghost" style="cursor:pointer">
@@ -1538,36 +1536,33 @@ let CS_MANUAL_RECIPIENTS = Array.isArray(CS_DATA.manual_recipients)
       name: (m.name || '').trim(), email: (m.email || '').trim(), phone: (m.phone || '').trim() }))
   : [];
 
-// Per-call-sheet logo arrangement (STRIP shape): [{logo_id, slot, order, h}] —
-// slot ∈ {left,center,right}, order = position within the slot, h = height percent
-// of the strip (40-100). Array round-trips through the whole-payload save exactly
-// like the maps above (collected below, initialized from CS_DATA.logos). Only
-// present when the sheet has its own arrangement; absence (null) lets the server
-// fall back to the project default. Back-compat: legacy {logo_id,x,w} entries are
-// mapped on read (x<33→left, <66→center, else right; w→h clamped 40-100). This is
-// the SAME mapping as app.py _logo_placement_shape. (User 2026-07-09.)
+// Per-call-sheet logo arrangement (FLOW shape): [{logo_id, order, h}] — ONE
+// ordered list, auto-spaced + auto-wrapped on render (no left/center/right slots).
+// order = flow position (renumbered 0..n after any change); h = height percent of
+// the strip (40-100). Array round-trips through the whole-payload save exactly like
+// the maps above (collected below, initialized from CS_DATA.logos). Only present
+// when the sheet has its own arrangement; absence (null) lets the server fall back
+// to the project default. Back-compat — mapped on read (SAME logic as app.py
+// _logo_placement_shape): v1 slotted {slot,order,h} flattens to a flow order (slot
+// rank left<center<right, then in-slot order); v0 freeform {x,w} → order=x, h=w.
+// order here is a SORT KEY only; csLogoNormalizeOrders() renumbers 0..n.
+// (User 2026-07-09; flow rewrite 2026-07-09.)
 function csLogoMapShape(p) {
   const lid = +p.logo_id;
   if (!lid) return null;
-  if ('slot' in p || 'h' in p) {
-    let slot = String(p.slot || 'left').toLowerCase();
-    if (['left','center','right'].indexOf(slot) < 0) slot = 'left';
-    return {
-      logo_id: lid,
-      slot: slot,
-      order: (+p.order) | 0,
-      h: Math.max(40, Math.min(100, +p.h || 70)),
-    };
+  const h = Math.max(40, Math.min(100, +(p.h != null ? p.h : p.w) || 70));
+  let order;
+  if ('slot' in p) {
+    // v1 slotted → flatten to a single flow order.
+    const rank = { left: 0, center: 1, right: 2 };
+    const r = rank[String(p.slot || 'left').toLowerCase()] || 0;
+    order = r * 1e6 + (+p.order || 0);
+  } else if ('order' in p || 'h' in p) {
+    order = +p.order || 0;                 // v2 flow shape
+  } else {
+    order = Math.max(0, Math.min(100, +p.x || 0));  // v0 freeform {x,w}
   }
-  // Legacy {x,w} → {slot,order,h}
-  const x = Math.max(0, Math.min(100, +p.x || 0));
-  const slot = x < 33 ? 'left' : (x < 66 ? 'center' : 'right');
-  return {
-    logo_id: lid,
-    slot: slot,
-    order: x | 0,
-    h: Math.max(40, Math.min(100, +p.w || 70)),
-  };
+  return { logo_id: lid, order: order, h: h };
 }
 let CS_LOGOS = Array.isArray(CS_DATA.logos)
   ? CS_DATA.logos.map(csLogoMapShape).filter(Boolean)
@@ -3536,14 +3531,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ── Call-sheet logo strip ────────────────────────────────────────────────────────
 // A dedicated WHITE strip between the dark header and the crew-call bar. Add
-// project logos to this sheet; drag them BETWEEN slots (left/center/right) and
-// WITHIN a slot to reorder; drag the corner handle up/down to resize by HEIGHT
-// (h = percent of strip height, 40-100). CS_LOGOS (STRIP shape) is the single
-// source of truth; the DOM strip is re-rendered from it. Every mutation writes
-// CS_LOGOS then scheduleAutoSave() (existing save flow → 'logos' key round-trips
-// via collectCallSheetData). Screen-only; the server renders the identical strip
-// for the PDF. (User 2026-07-09.)
-const CS_LOGO_SLOTS = ['left', 'center', 'right'];
+// project logos to this sheet; drag one BETWEEN two others to reorder it at the
+// cursor position (no left/center/right snapping — logos are ONE auto-spaced,
+// centered, auto-wrapping row); drag the corner handle up/down to resize by HEIGHT
+// (h = percent of strip height, 40-100). CS_LOGOS (FLOW shape) is the single source
+// of truth; the DOM strip is re-rendered from it. Every mutation writes CS_LOGOS
+// then scheduleAutoSave() (existing save flow → 'logos' key round-trips via
+// collectCallSheetData). Screen-only; the server renders the identical flex-wrap
+// strip for the PDF. (User 2026-07-09; flow rewrite 2026-07-09.)
 let CS_LOGO_LIBRARY = [];   // [{id,name,url,width,height}]
 
 function csLogoRawUrl(id) { return CS_LOGO_RAW_BASE + '/' + id + '/raw'; }
@@ -3560,52 +3555,36 @@ function csLogosEnsureArray() {
 
 function csLogosReadFromDom() {
   const out = [];
-  document.querySelectorAll('#cs-logo-strip .cs-logo-slot').forEach(slotEl => {
-    const slot = slotEl.getAttribute('data-slot') || 'left';
-    slotEl.querySelectorAll('.cs-logo-item').forEach((el, i) => {
-      out.push({
-        logo_id: +el.getAttribute('data-logo-id'),
-        slot: slot,
-        order: i,
-        h: Math.max(40, Math.min(100, parseFloat(el.getAttribute('data-h')) || 70)),
-      });
+  document.querySelectorAll('#cs-logo-strip .cs-logo-item').forEach((el, i) => {
+    out.push({
+      logo_id: +el.getAttribute('data-logo-id'),
+      order: i,
+      h: Math.max(40, Math.min(100, parseFloat(el.getAttribute('data-h')) || 70)),
     });
   });
   return out;
 }
 
-// Renumber order 0..n within each slot (call after any structural change).
+// Renumber order 0..n in flow order (call after any structural change).
 function csLogoNormalizeOrders() {
-  const counter = {};
-  // Sort so slot grouping + order are stable before renumber.
-  const rank = { left: 0, center: 1, right: 2 };
-  CS_LOGOS.sort((a, b) => (rank[a.slot] - rank[b.slot]) || (a.order - b.order));
-  CS_LOGOS.forEach(p => {
-    const n = counter[p.slot] || 0;
-    p.order = n;
-    counter[p.slot] = n + 1;
-  });
+  CS_LOGOS.sort((a, b) => a.order - b.order);
+  CS_LOGOS.forEach((p, i) => { p.order = i; });
 }
 
-// Rebuild the strip DOM from CS_LOGOS.
+// Rebuild the strip DOM from CS_LOGOS (single flow list, insertion order).
 function csLogosRender() {
   const strip = document.getElementById('cs-logo-strip');
   if (!strip) return;
   const arr = Array.isArray(CS_LOGOS) ? CS_LOGOS : csLogosReadFromDom();
   strip.classList.toggle('has-logos', arr.length > 0);
-  // Clear each slot (keep the slot containers + empty hint).
-  CS_LOGO_SLOTS.forEach(slot => {
-    const slotEl = strip.querySelector('.cs-logo-slot[data-slot="' + slot + '"]');
-    if (slotEl) slotEl.innerHTML = '';
-  });
-  const rank = { left: 0, center: 1, right: 2 };
-  arr.slice().sort((a, b) => (rank[a.slot] - rank[b.slot]) || (a.order - b.order)).forEach(p => {
-    const slotEl = strip.querySelector('.cs-logo-slot[data-slot="' + (p.slot || 'left') + '"]');
-    if (!slotEl) return;
+  // Clear placed items but keep the empty-hint span.
+  strip.querySelectorAll('.cs-logo-item').forEach(el => el.remove());
+  const hint = strip.querySelector('.cs-logo-strip-empty-hint');
+  arr.slice().sort((a, b) => a.order - b.order).forEach(p => {
     const item = document.createElement('div');
     item.className = 'cs-logo-item';
     item.setAttribute('data-logo-id', p.logo_id);
-    item.setAttribute('data-slot', p.slot || 'left');
+    item.setAttribute('data-order', p.order);
     item.setAttribute('data-h', p.h);
     item.style.setProperty('--cs-logo-h', p.h);
     item.setAttribute('draggable', 'true');
@@ -3624,16 +3603,18 @@ function csLogosRender() {
     rz.className = 'cs-logo-resize cs-screen-only'; rz.title = 'Drag up / down to resize';
     item.appendChild(rz);
     csLogoWireItem(item, rz);
-    slotEl.appendChild(item);
+    // Insert before the empty hint so it always stays last in the flex flow.
+    if (hint) strip.insertBefore(item, hint);
+    else strip.appendChild(item);
   });
 }
 
-// HTML5 drag between/within slots + pointer-drag height resize on the handle.
+// HTML5 drag to reorder at the cursor + pointer-drag height resize on the handle.
 let _csDragLogoId = null;
 function csLogoWireItem(item, resizeHandle) {
   const idOf = () => +item.getAttribute('data-logo-id');
 
-  // ── Drag to move (between + within slots) ──
+  // ── Drag to reorder (drops land at the cursor position, see strip handlers) ──
   item.addEventListener('dragstart', (e) => {
     _csDragLogoId = idOf();
     item.classList.add('cs-logo-dragging');
@@ -3643,8 +3624,10 @@ function csLogoWireItem(item, resizeHandle) {
   item.addEventListener('dragend', () => {
     item.classList.remove('cs-logo-dragging');
     _csDragLogoId = null;
-    document.querySelectorAll('#cs-logo-strip .cs-slot-dragover')
-      .forEach(el => el.classList.remove('cs-slot-dragover'));
+    const strip = document.getElementById('cs-logo-strip');
+    if (strip) strip.classList.remove('cs-strip-dragover');
+    document.querySelectorAll('#cs-logo-strip .cs-logo-insert-before, #cs-logo-strip .cs-logo-insert-after')
+      .forEach(el => el.classList.remove('cs-logo-insert-before', 'cs-logo-insert-after'));
   });
 
   // ── Resize by height (pointer drag on the corner handle) ──
@@ -3679,49 +3662,77 @@ function csLogoWireItem(item, resizeHandle) {
   resizeHandle.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
 }
 
-// Wire each slot as a drop target (drop between/within slots reorders + re-slots).
-function csLogoWireSlotDropTargets() {
+// Wire the whole strip as ONE drop target: dropping between two logos reorders the
+// dragged logo to that flow position (no slot snapping). A live insert indicator
+// (before/after the nearest item) shows where it will land, across wrapped rows.
+function csLogoWireStripDropTarget() {
   const strip = document.getElementById('cs-logo-strip');
   if (!strip || strip.getAttribute('data-cs-logo-editable') !== '1') return;
-  strip.querySelectorAll('.cs-logo-slot').forEach(slotEl => {
-    slotEl.addEventListener('dragover', (e) => {
-      if (_csDragLogoId == null) return;
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-      slotEl.classList.add('cs-slot-dragover');
-    });
-    slotEl.addEventListener('dragleave', () => slotEl.classList.remove('cs-slot-dragover'));
-    slotEl.addEventListener('drop', (e) => {
-      e.preventDefault();
-      slotEl.classList.remove('cs-slot-dragover');
-      if (_csDragLogoId == null) return;
-      csLogoMoveToSlot(_csDragLogoId, slotEl.getAttribute('data-slot'), csLogoDropIndex(slotEl, e.clientX));
-    });
+  strip.addEventListener('dragover', (e) => {
+    if (_csDragLogoId == null) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    strip.classList.add('cs-strip-dragover');
+    csLogoShowInsertIndicator(strip, e.clientX, e.clientY);
+  });
+  strip.addEventListener('dragleave', (e) => {
+    // Only clear when the pointer truly leaves the strip (not a child hop).
+    if (e.target === strip && !strip.contains(e.relatedTarget)) {
+      strip.classList.remove('cs-strip-dragover');
+      csLogoClearInsertIndicator(strip);
+    }
+  });
+  strip.addEventListener('drop', (e) => {
+    e.preventDefault();
+    strip.classList.remove('cs-strip-dragover');
+    csLogoClearInsertIndicator(strip);
+    if (_csDragLogoId == null) return;
+    csLogoReorderTo(_csDragLogoId, csLogoDropIndex(strip, e.clientX, e.clientY));
   });
 }
 
-// Index within the target slot at which to insert, based on cursor X vs siblings.
-function csLogoDropIndex(slotEl, clientX) {
-  const items = [...slotEl.querySelectorAll('.cs-logo-item:not(.cs-logo-dragging)')];
+// Flow index at which to insert, from cursor position vs. the other items. Uses
+// the item whose center is nearest the cursor and picks the side (row-aware: same
+// row compares X, otherwise Y decides above/below).
+function csLogoDropIndex(strip, clientX, clientY) {
+  const items = [...strip.querySelectorAll('.cs-logo-item:not(.cs-logo-dragging)')];
+  if (!items.length) return 0;
   for (let i = 0; i < items.length; i++) {
     const r = items[i].getBoundingClientRect();
-    if (clientX < r.left + r.width / 2) return i;
+    // On a row above the cursor → this item comes before the drop point.
+    if (clientY < r.top) return i;
+    if (clientY <= r.bottom) {
+      // Same row: compare X against the item's horizontal center.
+      if (clientX < r.left + r.width / 2) return i;
+    }
   }
   return items.length;
 }
 
-function csLogoMoveToSlot(logoId, slot, index) {
+// Draw the insert indicator next to the item at the computed drop index.
+function csLogoShowInsertIndicator(strip, clientX, clientY) {
+  csLogoClearInsertIndicator(strip);
+  const items = [...strip.querySelectorAll('.cs-logo-item:not(.cs-logo-dragging)')];
+  if (!items.length) return;
+  const idx = csLogoDropIndex(strip, clientX, clientY);
+  if (idx >= items.length) items[items.length - 1].classList.add('cs-logo-insert-after');
+  else items[idx].classList.add('cs-logo-insert-before');
+}
+function csLogoClearInsertIndicator(strip) {
+  strip.querySelectorAll('.cs-logo-insert-before, .cs-logo-insert-after')
+    .forEach(el => el.classList.remove('cs-logo-insert-before', 'cs-logo-insert-after'));
+}
+
+// Move a logo to flow position `index`, then renumber + re-render + save.
+function csLogoReorderTo(logoId, index) {
   csLogosEnsureArray();
-  if (CS_LOGO_SLOTS.indexOf(slot) < 0) slot = 'left';
   const rec = CS_LOGOS.find(p => p.logo_id === logoId);
   if (!rec) return;
-  // Pull it out, then re-insert into the target slot at `index` by ordering.
-  rec.slot = slot;
-  // Give it a fractional order so the stable sort lands it at `index`.
-  const inSlot = CS_LOGOS.filter(p => p.slot === slot && p.logo_id !== logoId)
+  // Fractional order lands it between neighbours; normalize renumbers 0..n after.
+  const others = CS_LOGOS.filter(p => p.logo_id !== logoId)
     .sort((a, b) => a.order - b.order);
-  const before = inSlot[index - 1];
-  const after = inSlot[index];
+  const before = others[index - 1];
+  const after = others[index];
   if (!before && !after)       rec.order = 0;
   else if (!before)            rec.order = after.order - 0.5;
   else if (!after)             rec.order = before.order + 0.5;
@@ -3746,10 +3757,9 @@ function csLogoCommitFromDom(logoId) {
 function csLogoAddToSheet(logoId) {
   csLogosEnsureArray();
   if (CS_LOGOS.some(p => p.logo_id === logoId)) return;   // already placed
-  // New logos land in the center slot at the end, at a comfortable default height.
-  const maxOrder = CS_LOGOS.filter(p => p.slot === 'center')
-    .reduce((m, p) => Math.max(m, p.order), -1);
-  CS_LOGOS.push({ logo_id: logoId, slot: 'center', order: maxOrder + 1, h: 70 });
+  // New logos append to the end of the flow at a comfortable default height.
+  const maxOrder = CS_LOGOS.reduce((m, p) => Math.max(m, p.order), -1);
+  CS_LOGOS.push({ logo_id: logoId, order: maxOrder + 1, h: 70 });
   csLogoNormalizeOrders();
   csLogosRender();
   csLogosRenderLibrary();
@@ -3876,11 +3886,11 @@ function csLogosSetDefault() {
 
 function csLogosInit() {
   // Re-render the strip from CS_LOGOS (also re-wires drag/resize on server-
-  // rendered items), wire slot drop targets, and load the library so the panel is
-  // ready. CS_LOGOS may be null (inheriting the project default) — csLogosRender()
-  // reads the server-rendered items in that case and keeps them.
+  // rendered items), wire the strip drop target (reorder at cursor), and load the
+  // library so the panel is ready. CS_LOGOS may be null (inheriting the project
+  // default) — csLogosRender() reads the server-rendered items in that case.
   csLogosRender();
-  csLogoWireSlotDropTargets();
+  csLogoWireStripDropTarget();
   csLogosLoadLibrary();
 }
 </script>

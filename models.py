@@ -850,7 +850,7 @@ class ProjectLogo(db.Model):
 
     The bytes live in `data` (LargeBinary → BYTEA) — deliberately NOT Dropbox,
     to avoid serve latency + coupling. Each per-call-sheet arrangement stores
-    only {logo_id, x, w} references (in CallSheetData.data_json['logos'] /
+    only {logo_id, order, h} references (in CallSheetData.data_json['logos'] /
     ProjectSheet.logos_default), so one uploaded logo is placed on many sheets
     without duplicating bytes. width/height are the intrinsic pixel dimensions
     parsed at upload when cheap (Pillow for raster; null for SVG / on failure)."""

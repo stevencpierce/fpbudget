@@ -3127,8 +3127,10 @@ a.tab-link:hover { background: var(--bg-3); }
    side, with data: URIs) in the PDF. (User 2026-07-09.) */
 .cs-logo-strip {
   display: none;               /* only shown when it has logos (JS/Jinja add .has-logos) */
+  flex-wrap: wrap;             /* 10+ logos flow onto extra rows automatically */
   align-items: center;
-  gap: 1rem;
+  justify-content: center;     /* auto-space the flow as a centered group */
+  gap: .6rem 1rem;             /* row-gap column-gap */
   background: #fff;
   color: #16181d;
   border-top: 1px solid #d5d9e0;
@@ -3139,20 +3141,12 @@ a.tab-link:hover { background: var(--bg-3); }
 .cs-logo-strip.has-logos { display: flex; }
 /* PAGINATION NOTE: the strip adds height between the header and the day-sheet
    body. Kept deliberately lean (padding + min-height above) so a modest sheet
-   still fits page 1. If a real sheet tips the day sheet onto page 2, trim these
-   further before touching the day-sheet layout. (User 2026-07-09.) */
+   still fits page 1. Extra logo ROWS grow it — if a real sheet tips the day sheet
+   onto page 2, trim padding/min-height/gap before touching the day-sheet layout.
+   (User 2026-07-09.) */
 /* Internal edit mode keeps the strip visible even when empty, as a drop-target
    hint, whenever the Logos panel is open. */
 .cs-logo-strip.cs-logos-editable.cs-strip-hint { display: flex; }
-.cs-logo-slot {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  min-height: 2rem;
-}
-.cs-logo-slot-left   { flex: 1 1 0; justify-content: flex-start; }
-.cs-logo-slot-center { flex: 1 1 0; justify-content: center; }
-.cs-logo-slot-right  { flex: 1 1 0; justify-content: flex-end; }
 .cs-logo-item {
   position: relative;
   display: flex;
@@ -3170,19 +3164,28 @@ a.tab-link:hover { background: var(--bg-3); }
   display: block;
 }
 /* Editing affordances — only inside .cs-logos-editable (internal, not recipient). */
-.cs-logos-editable .cs-logo-slot {
-  border: 1px dashed transparent;
-  border-radius: 5px;
-  padding: .15rem .3rem;
-  transition: border-color .12s, background .12s;
-}
-.cs-logos-editable .cs-logo-slot.cs-slot-dragover {
-  border-color: rgba(139,170,248,.9);
-  background: rgba(79,126,248,.10);
+.cs-logos-editable.cs-logo-strip.cs-strip-dragover {
+  background: rgba(79,126,248,.06);
 }
 .cs-logos-editable .cs-logo-item { cursor: grab; }
 .cs-logos-editable .cs-logo-item:hover { outline: 1px dashed rgba(139,170,248,.8); outline-offset: 2px; }
 .cs-logos-editable .cs-logo-item.cs-logo-dragging { opacity: .45; }
+/* Insert-position indicator while dragging to reorder: a vertical bar on the side
+   of the nearest item where the dragged logo will land. */
+.cs-logos-editable .cs-logo-item.cs-logo-insert-before,
+.cs-logos-editable .cs-logo-item.cs-logo-insert-after { position: relative; }
+.cs-logos-editable .cs-logo-item.cs-logo-insert-before::before,
+.cs-logos-editable .cs-logo-item.cs-logo-insert-after::after {
+  content: '';
+  position: absolute;
+  top: -4px; bottom: -4px;
+  width: 3px;
+  border-radius: 2px;
+  background: #4f7ef8;
+  z-index: 3;
+}
+.cs-logos-editable .cs-logo-item.cs-logo-insert-before::before { left: -.55rem; }
+.cs-logos-editable .cs-logo-item.cs-logo-insert-after::after   { right: -.55rem; }
 .cs-logo-remove {
   position: absolute;
   top: -8px; right: -8px;
