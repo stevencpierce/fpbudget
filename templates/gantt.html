@@ -529,7 +529,7 @@
       {% set _dt = day_type_meta(loc_day_type) %}
       <td class="gantt-loc-cell {{ 'week-start-col' if is_week_start else '' }} {{ 'loc-day-' + loc_day_type if loc_day_type else '' }}"
           data-loc="{{ loc.id }}" data-date="{{ d.isoformat() }}"
-          onclick="toggleLocDay(this)"
+          onclick="toggleLocDay(this)" oncontextmenu="showLocDayPicker(event, this)"
           title="{{ loc.name }} — {{ d.strftime('%a %-m/%-d') }}{% if _dt.label %} · {{ _dt.label }}{% endif %}">
         {% if _dt.chip %}
         <span class="loc-day-label" title="{{ _dt.label }}">{{ _dt.chip }}</span>
@@ -606,6 +606,19 @@
     <button class="flag-toggle-btn" data-flag="hotel">🏨 Hotel</button>
     <button class="flag-toggle-btn" data-flag="car_rental">🔑 Car Rental</button>
   </div>
+</div>
+
+<!-- Location day picker (right-click context menu on .gantt-loc-cell) -->
+<div id="loc-day-picker" class="day-picker hidden">
+  <div class="day-picker-section-label">Location Day</div>
+  {% for _v in DAY_TYPE_PICKER %}
+  <button class="day-pick-btn loc-day-{{ _v }}" data-type="{{ _v }}">
+    <span class="loc-day-label" title="{{ DAY_TYPES[_v].label }}">{{ DAY_TYPES[_v].chip }}</span>
+    {{ DAY_TYPES[_v].label }}
+  </button>
+  {% endfor %}
+  <div class="day-picker-divider"></div>
+  <button class="day-pick-btn" data-type="">✕ Clear</button>
 </div>
 
 <!-- Crew picker popover -->
@@ -970,18 +983,11 @@ function locDayLabel(v){ const m = LOC_DAY_META[v]; return m ? m.label : (v || '
   setInterval(livePatch, 6000);
 })();
 
-async function toggleLocDay(cell) {
-  const locId  = cell.dataset.loc;
-  const date   = cell.dataset.date;
-  // Current type = whichever loc-day-<t> class is present ('' if none).
-  let current = '';
-  for (const t of LOC_DAY_TYPES) {
-    if (cell.classList.contains('loc-day-' + t)) { current = t; break; }
-  }
-  // Cycle: '' → <full vocab in order> → ''
-  const cycle = ['', ...LOC_DAY_TYPES, ''];
-  const idx = cycle.indexOf(current);
-  const nextType = cycle[(idx === -1 ? 0 : idx) + 1] ?? '';
+// Shared DOM update + persistence for a location-day cell. Used by both the
+// left-click cycle (toggleLocDay) and the right-click picker (showLocDayPicker).
+async function applyLocDay(cell, nextType) {
+  const locId = cell.dataset.loc;
+  const date  = cell.dataset.date;
 
   LOC_DAY_TYPES.forEach(t => cell.classList.remove('loc-day-' + t));
   cell.innerHTML = '';
@@ -998,5 +1004,86 @@ async function toggleLocDay(cell) {
     body: JSON.stringify({ location_id: parseInt(locId), date, day_type: nextType }),
   });
 }
+
+async function toggleLocDay(cell) {
+  // Current type = whichever loc-day-<t> class is present ('' if none).
+  let current = '';
+  for (const t of LOC_DAY_TYPES) {
+    if (cell.classList.contains('loc-day-' + t)) { current = t; break; }
+  }
+  // Cycle: '' → <full vocab in order> → ''
+  const cycle = ['', ...LOC_DAY_TYPES, ''];
+  const idx = cycle.indexOf(current);
+  const nextType = cycle[(idx === -1 ? 0 : idx) + 1] ?? '';
+  await applyLocDay(cell, nextType);
+}
+
+// ── Location-day right-click picker ──────────────────────────────────────────
+// Mirrors the crew #day-picker: position:fixed menu shown at the cursor,
+// closed on outside-click / Escape / scroll, one reused element.
+function showLocDayPicker(e, cell) {
+  e.preventDefault();
+  const picker = document.getElementById('loc-day-picker');
+  if (!picker) return;
+  picker._targetCell = cell;
+
+  // Highlight the current type so the user sees existing state.
+  let curType = '';
+  for (const t of LOC_DAY_TYPES) {
+    if (cell.classList.contains('loc-day-' + t)) { curType = t; break; }
+  }
+  picker.querySelectorAll('.day-pick-btn').forEach(btn => {
+    btn.classList.toggle('flag-active', btn.dataset.type === curType);
+  });
+
+  // Show off-screen so the browser can reflow and we can read true dimensions.
+  picker.style.visibility = 'hidden';
+  picker.style.left = '0px';
+  picker.style.top  = '0px';
+  picker.classList.remove('hidden');
+
+  requestAnimationFrame(() => {
+    const pw   = picker.offsetWidth;
+    const ph   = picker.offsetHeight;
+    const maxL = window.innerWidth  - pw - 12;
+    const maxT = window.innerHeight - ph - 12;
+    picker.style.left = Math.max(4, Math.min(e.clientX + 4, maxL)) + 'px';
+    picker.style.top  = Math.max(4, Math.min(e.clientY + 4, maxT)) + 'px';
+    picker.style.visibility = '';
+  });
+}
+
+function closeLocDayPicker() {
+  const picker = document.getElementById('loc-day-picker');
+  if (picker) { picker.classList.add('hidden'); picker._targetCell = null; }
+}
+
+(function() {
+  const picker = document.getElementById('loc-day-picker');
+  if (!picker) return;
+
+  // Button click → apply type (or clear) to the remembered cell.
+  picker.querySelectorAll('.day-pick-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cell = picker._targetCell;
+      closeLocDayPicker();
+      if (cell) applyLocDay(cell, btn.dataset.type || '');
+    });
+  });
+
+  // Close on outside-click (mirror crew picker).
+  document.addEventListener('mousedown', e => {
+    if (picker.classList.contains('hidden')) return;
+    if (!e.target.closest('#loc-day-picker') && !e.target.closest('.gantt-loc-cell')) {
+      closeLocDayPicker();
+    }
+  });
+  // Close on Escape.
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeLocDayPicker();
+  });
+  // Close on scroll (position:fixed menu would otherwise detach from the cell).
+  window.addEventListener('scroll', closeLocDayPicker, true);
+})();
 </script>
 {% endblock %}
