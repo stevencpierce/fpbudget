@@ -212,22 +212,26 @@
     {% set cur_idx = all_scheduled_dates.index(selected_date) if selected_date in all_scheduled_dates else -1 %}
     {% set prev_date = all_scheduled_dates[cur_idx - 1] if cur_idx > 0 else None %}
     {% set next_date = all_scheduled_dates[cur_idx + 1] if cur_idx >= 0 and cur_idx < all_scheduled_dates|length - 1 else None %}
+    {# URL dates use isoformat() — it zero-pads the year (0202-07-14) where
+       strftime('%Y') does NOT. Unpadded years produced unparseable
+       /callsheet/202-07-15 URLs whose parse-failure fallback re-parked the
+       page on day 1 forever. (User 2026-07-09, CLIBURN 25.) #}
     {% if prev_date %}
-    <a href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id, date_str=prev_date.strftime('%Y-%m-%d')) }}" class="btn btn-sm btn-outline cs-date-nav-btn">← Prev Day</a>
+    <a href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id, date_str=prev_date.isoformat()) }}" class="btn btn-sm btn-outline cs-date-nav-btn">← Prev Day</a>
     {% else %}
     <button class="btn btn-sm btn-outline cs-date-nav-btn" disabled>← Prev Day</button>
     {% endif %}
     <form method="get" action="" id="cs-date-jump-form" class="cs-date-jump-form">
       <select name="date_select" id="cs-date-select" onchange="jumpToDate(this)">
         {% for d in all_scheduled_dates %}
-        <option value="{{ d.strftime('%Y-%m-%d') }}" {% if d == selected_date %}selected{% endif %}>
+        <option value="{{ d.isoformat() }}" {% if d == selected_date %}selected{% endif %}>
           Day {{ loop.index }} — {{ d.strftime('%a, %b %d, %Y') }}
         </option>
         {% endfor %}
       </select>
     </form>
     {% if next_date %}
-    <a href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id, date_str=next_date.strftime('%Y-%m-%d')) }}" class="btn btn-sm btn-outline cs-date-nav-btn">Next Day →</a>
+    <a href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id, date_str=next_date.isoformat()) }}" class="btn btn-sm btn-outline cs-date-nav-btn">Next Day →</a>
     {% else %}
     <button class="btn btn-sm btn-outline cs-date-nav-btn" disabled>Next Day →</button>
     {% endif %}

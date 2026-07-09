@@ -16381,6 +16381,16 @@ def gantt_view(pid, bid):
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/gantt/day", methods=["POST"])
 @login_required
+def _reject_insane_year(d):
+    """Schedule dates outside 1990–2100 are always typing artifacts — the HTML
+    date input commits mid-keystroke ('2026' → year 202 → saved as 0202-07-14),
+    which then corrupts nav/rollups. Return an error string or None. 2026-07-09."""
+    if d and (d.year < 1990 or d.year > 2100):
+        return (f"Date year {d.year} looks like a typo (did you mean "
+                f"2{str(d.year)[-2:]}0…?) — finish typing the year and retry.")
+    return None
+
+
 def set_gantt_day(pid, bid):
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     data   = request.get_json(force=True)
@@ -16405,6 +16415,9 @@ def set_gantt_day(pid, bid):
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
         return jsonify({"error": "invalid date"}), 400
+    _yr_err = _reject_insane_year(d)
+    if _yr_err:
+        return jsonify({"error": _yr_err}), 400
 
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
 
@@ -16562,6 +16575,8 @@ def set_gantt_days_batch(pid, bid):
         try:
             d = datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError:
+            continue
+        if _reject_insane_year(d):
             continue
         day_type = spec.get("day_type", "work")
         try:
@@ -20200,6 +20215,9 @@ def set_location_day(pid, bid):
     note    = data.get("note")
     from datetime import date as _date
     d = _date.fromisoformat(date_s)
+    _yr_err = _reject_insane_year(d)
+    if _yr_err:
+        return jsonify({"error": _yr_err}), 400
     existing = LocationDay.query.filter_by(budget_id=bid, location_id=loc_id, date=d).first()
     if not day_type:
         if existing:
@@ -22652,21 +22670,25 @@ def callsheet_view(pid, bid, date_str=None):
     ).distinct().order_by(ScheduleDay.date).all()
     all_scheduled_dates = [r[0] for r in date_rows]
 
-    # Resolve selected date — remember last viewed per budget
+    # Resolve selected date — remember last viewed per budget.
+    # fromisoformat (not strptime %Y-%m-%d): it parses zero-padded odd years
+    # ("0202-07-14") the same way isoformat() emits them, so nav URLs round-
+    # trip even on corrupt-year rows instead of falling back to day 1 forever
+    # (the "parked on July 14" bug, user 2026-07-09).
     _session_key = f"cs_last_date_{bid}"
     if date_str:
         try:
-            selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            selected_date = date.fromisoformat(date_str)
         except ValueError:
             selected_date = all_scheduled_dates[0] if all_scheduled_dates else date.today()
         from flask import session as _session
-        _session[_session_key] = selected_date.strftime("%Y-%m-%d")
+        _session[_session_key] = selected_date.isoformat()
     else:
         from flask import session as _session
         _saved = _session.get(_session_key)
         if _saved and all_scheduled_dates:
             try:
-                _candidate = datetime.strptime(_saved, "%Y-%m-%d").date()
+                _candidate = date.fromisoformat(_saved)
                 selected_date = _candidate if _candidate in all_scheduled_dates else all_scheduled_dates[0]
             except ValueError:
                 selected_date = all_scheduled_dates[0]
@@ -28390,6 +28412,71 @@ def _split_integrity_child_target(k):
     if k.account_code:
         return f"section:{k.account_code}"
     return None
+
+
+@app.route("/admin/repair-date-years", methods=["GET", "POST"])
+@login_required
+def admin_repair_date_years(pid=None):
+    """Repair typing-artifact YEARS in schedule-adjacent dates (2026-07-09).
+
+    The HTML date input commits mid-keystroke ('2026' → 0202), which stored
+    ScheduleDay/LocationDay/etc rows in year 202 and wedged the call-sheet
+    date nav. Scans every date column that feeds schedules/call sheets for
+    years < 1990 and (with ?dry=0) rewrites the year to ?year= (default 2026),
+    keeping month/day.
+
+    ?dry=1 (default) reports; ?dry=0 mutates. ?year=2026 target. super_admin.
+    """
+    if getattr(current_user, 'role', None) != 'super_admin':
+        return jsonify({"error": "Forbidden"}), 403
+    dry = (request.values.get("dry", "1").strip().lower() not in ("0", "false", "no"))
+    try:
+        target_year = int(request.values.get("year", "2026"))
+    except ValueError:
+        return jsonify({"error": "year must be an integer"}), 400
+    if target_year < 1990 or target_year > 2100:
+        return jsonify({"error": "target year out of range"}), 400
+
+    from models import LocationDay, TravelDetail
+    findings, fixed = [], 0
+
+    def _scan(model, col_name, label_cols=()):
+        nonlocal fixed
+        col = getattr(model, col_name)
+        rows = model.query.filter(col < date(1990, 1, 1)).all()
+        for r in rows:
+            old = getattr(r, col_name)
+            if old is None:
+                continue
+            new = old.replace(year=target_year)
+            findings.append({
+                "table": model.__tablename__, "id": r.id, "column": col_name,
+                "old": old.isoformat(), "new": new.isoformat(),
+                **{lc: getattr(r, lc, None) for lc in label_cols},
+            })
+            if not dry:
+                setattr(r, col_name, new)
+                fixed += 1
+
+    _scan(ScheduleDay,   "date", ("budget_id",))
+    _scan(LocationDay,   "date", ("budget_id", "location_id"))
+    _scan(ProductionDay, "date", ("budget_id",))
+    _scan(CallSheetData, "date", ("budget_id",))
+    _scan(CallSheetSend, "date", ("budget_id",))
+    _scan(TravelDetail,  "check_in")
+    _scan(TravelDetail,  "check_out")
+
+    if not dry and fixed:
+        db.session.commit()
+        try:
+            _log_activity(action='update', entity_type='schedule_day', entity_id=0,
+                          entity_label=f'Repaired {fixed} corrupt-year dates → {target_year}',
+                          note='Typing-artifact years (<1990) rewritten; see server log')
+        except Exception:
+            pass
+    return jsonify({"ok": True, "dry": dry, "target_year": target_year,
+                    "found": len(findings), "fixed": fixed,
+                    "findings": findings[:200]})
 
 
 @app.route("/projects/<int:pid>/actuals/absorb-linked-receipts", methods=["GET", "POST"])
