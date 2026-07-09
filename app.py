@@ -15903,12 +15903,16 @@ def budget_settings(pid, bid):
         budget.target_budget = float(data["target_budget"]) if data["target_budget"] else None
     if "start_date" in data:
         try:
-            budget.start_date = datetime.strptime(data["start_date"], "%Y-%m-%d").date() if data["start_date"] else None
+            _sd = datetime.strptime(data["start_date"], "%Y-%m-%d").date() if data["start_date"] else None
+            if _sd is None or not _reject_insane_year(_sd):
+                budget.start_date = _sd
         except ValueError:
             pass
     if "end_date" in data:
         try:
-            budget.end_date = datetime.strptime(data["end_date"], "%Y-%m-%d").date() if data["end_date"] else None
+            _ed = datetime.strptime(data["end_date"], "%Y-%m-%d").date() if data["end_date"] else None
+            if _ed is None or not _reject_insane_year(_ed):
+                budget.end_date = _ed
         except ValueError:
             pass
     if "notes" in data:
@@ -23056,11 +23060,18 @@ def _touch_budget(bid):
 
 
 def _sync_budget_dates_from_schedule(bid):
-    """Set budget.start_date / end_date from min/max of ScheduleDay dates."""
+    """Set budget.start_date / end_date from min/max of ScheduleDay dates.
+
+    Ignores typing-artifact years (<1990) so one corrupt ScheduleDay can't
+    drag the whole schedule window to year 0202 — which is exactly how
+    CLIBURN 25's gantt got parked on 07/0202 (user 2026-07-09)."""
     try:
-        row = db.session.query(
-            func.min(ScheduleDay.date), func.max(ScheduleDay.date)
-        ).filter(ScheduleDay.budget_id == bid).first()
+        row = (db.session.query(
+                func.min(ScheduleDay.date), func.max(ScheduleDay.date))
+               .filter(ScheduleDay.budget_id == bid,
+                       ScheduleDay.date >= date(1990, 1, 1),
+                       ScheduleDay.date <= date(2100, 12, 31))
+               .first())
         if row and row[0]:
             budget = Budget.query.get(bid)
             if budget:
@@ -28793,6 +28804,15 @@ def admin_repair_date_years(pid=None):
     _scan(CallSheetSend, "date", ("budget_id",))
     _scan(TravelDetail,  "check_in")
     _scan(TravelDetail,  "check_out")
+    # Round 2 (2026-07-09): the gantt window defaults to Budget.start_date,
+    # which the schedule auto-derive had stamped from the then-corrupt
+    # ScheduleDays — the view stayed parked on 07/0202 after the day rows
+    # were healed. Scan the derived/settings-entered date fields too.
+    from models import PurchaseOrder
+    _scan(Budget,        "start_date", ("project_id", "name"))
+    _scan(Budget,        "end_date",   ("project_id", "name"))
+    _scan(DocUpload,     "doc_date",   ("project_id",))
+    _scan(PurchaseOrder, "issued_date", ("project_id",))
 
     if not dry and fixed:
         db.session.commit()
