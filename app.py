@@ -2839,8 +2839,15 @@ def _send_sms(to_phone, body):
         return False
 
 
-def _generate_callsheet_pdf(send_obj, project_name, date_display, cs_data, crew_rows, locations_today):
-    """Generate a PDF of the call sheet using weasyprint. Returns bytes or None."""
+def _generate_callsheet_pdf(send_obj, project_name, date_display, cs_data, crew_rows, locations_today,
+                            crew_grid=None, meal_counts=None):
+    """Generate a PDF of the call sheet using weasyprint. Returns bytes or None.
+
+    crew_grid (optional) is the REAL assembled crew — a list of dicts with
+    keys section/role/name/call (see _build_callsheet_pdf_bytes). When present
+    it drives the crew grid so the archived PDF is a complete call sheet, not a
+    stub built from whatever happened to be saved in cs_data['crew_call_times'].
+    meal_counts is the {meal_key: headcount} map from _callsheet_full_context."""
     try:
         import weasyprint
         html_str = _render_callsheet_pdf_html(
@@ -2850,6 +2857,8 @@ def _generate_callsheet_pdf(send_obj, project_name, date_display, cs_data, crew_
             cs_data=cs_data,
             crew_rows=crew_rows,
             locations_today=locations_today,
+            crew_grid=crew_grid,
+            meal_counts=meal_counts,
         )
         pdf_bytes = weasyprint.HTML(string=html_str, base_url=None).write_pdf()
         return pdf_bytes
@@ -2858,7 +2867,8 @@ def _generate_callsheet_pdf(send_obj, project_name, date_display, cs_data, crew_
         return None
 
 
-def _render_callsheet_pdf_html(send_obj, project_name, date_display, cs_data, crew_rows, locations_today):
+def _render_callsheet_pdf_html(send_obj, project_name, date_display, cs_data, crew_rows, locations_today,
+                               crew_grid=None, meal_counts=None):
     """Render a lightweight HTML string suitable for PDF conversion."""
     import html as _html
     esc = _html.escape
@@ -2903,22 +2913,59 @@ def _render_callsheet_pdf_html(send_obj, project_name, date_display, cs_data, cr
     dept_renames_pdf = cs_data.get('dept_renames') or {}
     section_order = []
     section_rows = {}
-    for key, t in cct.items():
-        parts = key.split('||', 2)
-        sec   = parts[0] if len(parts) > 0 else ''
-        role  = parts[1] if len(parts) > 1 else ''
-        name  = parts[2] if len(parts) > 2 else ''
-        sec   = dept_renames_pdf.get(sec, sec)
-        if sec not in section_rows:
-            section_order.append(sec)
-            section_rows[sec] = []
-        section_rows[sec].append((role, name, t))
+    if crew_grid:
+        # Preferred path: the REAL assembled crew from _callsheet_full_context
+        # (crew_p2_all), already grouped by the possibly-overridden/renamed
+        # p2_section and sorted. Each entry: {section, role, name, call}. This
+        # is what makes the archived/downloaded PDF a complete call sheet rather
+        # than a stub that only shows people who happen to have a saved
+        # individual call time in cs_data['crew_call_times']. (User 2026-07-09.)
+        for g in crew_grid:
+            sec  = g.get('section') or ''
+            role = g.get('role') or ''
+            name = g.get('name') or ''
+            t    = g.get('call') or ''
+            if sec not in section_rows:
+                section_order.append(sec)
+                section_rows[sec] = []
+            section_rows[sec].append((role, name, t))
+    else:
+        for key, t in cct.items():
+            parts = key.split('||', 2)
+            sec   = parts[0] if len(parts) > 0 else ''
+            role  = parts[1] if len(parts) > 1 else ''
+            name  = parts[2] if len(parts) > 2 else ''
+            sec   = dept_renames_pdf.get(sec, sec)
+            if sec not in section_rows:
+                section_order.append(sec)
+                section_rows[sec] = []
+            section_rows[sec].append((role, name, t))
 
     crew_html = ''
     for sec in section_order:
         crew_html += f'<tr class="sec-hdr"><td colspan="3">{esc(sec)}</td></tr>'
         for role, name, t in section_rows[sec]:
             crew_html += f'<tr><td>{esc(role)}</td><td>{esc(name)}</td><td class="time">{esc(t)}</td></tr>'
+
+    # Meals table (headcount per meal) from _callsheet_full_context meal_counts.
+    _MEAL_LABELS = {
+        'courtesy_breakfast': 'Courtesy Breakfast', 'first_meal': 'First Meal',
+        'second_meal': 'Second Meal', 'craft_services': 'Craft Services',
+        'working_meal': 'Working Meal',
+    }
+    _MEAL_TIME_KEYS = {
+        'courtesy_breakfast': 'courtesy_breakfast_time', 'first_meal': 'first_meal_time',
+        'second_meal': 'second_meal_time',
+    }
+    meals_html = ''
+    for mk, mlabel in _MEAL_LABELS.items():
+        cnt = (meal_counts or {}).get(mk)
+        if not cnt:
+            continue
+        mtime = cs_data.get(_MEAL_TIME_KEYS.get(mk, ''), '') if _MEAL_TIME_KEYS.get(mk) else ''
+        meals_html += (f'<tr><td>{esc(mlabel)}</td>'
+                       f'<td class="time">{esc(mtime or "")}</td>'
+                       f'<td class="time">{esc(str(cnt))} ppl</td></tr>')
 
     # Key personnel
     kp_html = ''
@@ -2962,6 +3009,8 @@ def _render_callsheet_pdf_html(send_obj, project_name, date_display, cs_data, cr
 {"<h2>General</h2><table class='info-table'>" + "".join(filter(None, [row('General Crew Call', cs_data.get('general_crew_call','')), row('Est. Wrap', cs_data.get('estimated_wrap_time','')), row('Weather', cs_data.get('weather','')), row('Sunrise', cs_data.get('sunrise','')), row('Sunset', cs_data.get('sunset','')), row('Courtesy Breakfast', cs_data.get('courtesy_breakfast_time','')), row('First Meal', cs_data.get('first_meal_time','')), row('Second Meal', cs_data.get('second_meal_time',''))])) + "</table>" if any([cs_data.get('general_crew_call'), cs_data.get('estimated_wrap_time'), cs_data.get('first_meal_time'), cs_data.get('second_meal_time')]) else ''}
 
 {'<h2>Locations</h2>' + loc_html if loc_html else ''}
+
+{'<h2>Meals</h2><table><tr><td class="lbl">Meal</td><td>Time</td><td>Count</td></tr>' + meals_html + '</table>' if meals_html else ''}
 
 {'<h2>Key Contacts</h2><table><tr><td class="lbl">Role</td><td>Name</td><td>Phone</td></tr>' + kp_html + '</table>' if kp_html else ''}
 
@@ -20817,6 +20866,97 @@ def project_client_delete(pid, cid):
 
 # ── Call Sheet Distribution (foundation) ──────────────────────────────────
 
+def _build_callsheet_pdf_bytes(pid, bid, project, budget, selected_date, sched_mode,
+                               send_obj):
+    """Build a COMPLETE call-sheet PDF (bytes) + suggested filename for one day.
+
+    Reuses _callsheet_full_context so the crew grid, meals, and locations are
+    the real assembled sheet (crew_rows is no longer empty). Shared by the
+    prepare-send flow and the download/regenerate route so a legacy send with
+    no stored pdf_data can still be reconstructed. Returns (pdf_bytes_or_None,
+    filename). weasyprint is optional — pdf_bytes may be None. (User 2026-07-09.)"""
+    # All scheduled (non-off) dates for this budget/mode — needed by full ctx.
+    _date_rows = db.session.query(ScheduleDay.date).filter(
+        ScheduleDay.budget_id == bid,
+        ScheduleDay.schedule_mode == sched_mode,
+        ScheduleDay.day_type != 'off',
+    ).distinct().order_by(ScheduleDay.date).all()
+    all_scheduled_dates = [r[0] for r in _date_rows]
+
+    ctx = _callsheet_full_context(
+        pid, bid, project, budget, selected_date, sched_mode, all_scheduled_dates)
+    cs_data_dict = ctx.get('cs_data') or {}
+
+    # Resolve each person's individual call time from the saved crew_call_times
+    # (keyed "sec||role||name"), else fall back to the general crew call.
+    cct = cs_data_dict.get('crew_call_times') or {}
+    general_call = cs_data_dict.get('general_crew_call', '') or ''
+    _by_name = {}
+    for key, t in cct.items():
+        nm = key.split('||')[-1].strip().lower()
+        if nm and t:
+            _by_name.setdefault(nm, t)
+
+    crew_grid = []
+    for r in ctx.get('crew_p2_all', []):
+        nm = (r.get('name') or '').strip()
+        call = _by_name.get(nm.lower(), '') or general_call or ''
+        crew_grid.append({
+            'section': r.get('p2_section') or r.get('section_name') or '',
+            'role':    r.get('role') or '',
+            'name':    nm or '—',
+            'call':    call,
+        })
+
+    date_display = selected_date.strftime("%A, %B %-d, %Y")
+    pdf_bytes = _generate_callsheet_pdf(
+        send_obj=send_obj,
+        project_name=project.name,
+        date_display=date_display,
+        cs_data=cs_data_dict,
+        crew_rows=[],
+        locations_today=ctx.get('locations_today') or [],
+        crew_grid=crew_grid,
+        meal_counts=ctx.get('meal_counts') or {},
+    )
+    version_label = (getattr(send_obj, 'version_label', '') or 'v1')
+    filename = (f"CallSheet_{project.name.replace(' ', '_')}_"
+                f"{selected_date.isoformat()}_{version_label}.pdf")
+    return pdf_bytes, filename
+
+
+def _archive_callsheet_to_dropbox(project, selected_date, version_label, pdf_bytes):
+    """Mirror a sent call-sheet PDF into the project's Dropbox admin folder at
+    01_ADMIN/CALL SHEETS/CallSheet_<YYYY-MM-DD>_<version>.pdf. The date is in the
+    filename (owner: "with the date"). Returns the dropbox path or None.
+
+    FAIL-OPEN: any error is swallowed with a warning — archiving must NEVER
+    block or fail the send. (User 2026-07-09.)"""
+    if not pdf_bytes or not getattr(project, 'dropbox_folder', None):
+        return None
+    try:
+        dbx = _dbx_client()
+    except Exception as e:
+        logging.warning(f"[CALLSHEET ARCHIVE] Dropbox client unavailable: {e}")
+        return None
+    try:
+        proj_root = (f"/{project.dropbox_folder.strip('/')}" if _DBX_NAMESPACE_ID
+                     else f"{_DBX_OPS_ROOT}/{project.dropbox_folder.strip('/')}")
+        _ver = re.sub(r"[^\w\-]+", "_", (version_label or 'v1')).strip('_') or 'v1'
+        fname = f"CallSheet_{selected_date.isoformat()}_{_ver}.pdf"
+        dbx_path = f"{proj_root}/01_ADMIN/CALL SHEETS/{fname}"
+        from dropbox.files import WriteMode as _WM
+        # overwrite: re-sending the same version replaces the prior artifact for
+        # that version; different version labels get distinct filenames.
+        dbx.files_upload(pdf_bytes, dbx_path, autorename=False, mode=_WM('overwrite'))
+        logging.info(f"[CALLSHEET ARCHIVE] uploaded → {dbx_path}")
+        return dbx_path
+    except Exception as e:
+        logging.warning(f"[CALLSHEET ARCHIVE] upload failed (non-fatal): "
+                        f"{type(e).__name__}: {e}")
+        return None
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/<date_str>/distribution")
 @login_required
 def callsheet_distribution(pid, bid, date_str):
@@ -20845,6 +20985,9 @@ def callsheet_distribution(pid, bid, date_str):
             "sent_at": s.sent_at.isoformat() if s.sent_at else None,
             "sent_by": s.sent_by or "",
             "notes": s.notes or "",
+            "pdf_url": url_for('callsheet_send_pdf', pid=pid, bid=bid, send_id=s.id),
+            "has_pdf": bool(s.pdf_data),
+            "archived": bool(s.dropbox_path),
             "recipients": [{
                 "id": r.id, "name": r.name, "email": r.email or "",
                 "type": r.recipient_type, "status": r.status,
@@ -20904,22 +21047,27 @@ def callsheet_prepare_send(pid, bid, date_str):
         budget_id=bid, date=selected_date, schedule_mode=sched_mode).first()
     cs_data_dict = json.loads(cs_rec.data_json) if cs_rec and cs_rec.data_json else {}
 
-    # Build locations list for PDF
+    # Build locations list for the SMS summary (first location line).
     from models import LocationDay, Location
     loc_day_ids = [ld.location_id for ld in LocationDay.query.filter_by(
         budget_id=bid, date=selected_date).all()]
     pdf_locations = Location.query.filter(Location.id.in_(loc_day_ids)).all() if loc_day_ids else []
 
-    # Generate PDF (shared across all recipients for this send)
-    pdf_bytes = _generate_callsheet_pdf(
-        send_obj=send,
-        project_name=project.name,
-        date_display=date_display,
-        cs_data=cs_data_dict,
-        crew_rows=[],
-        locations_today=pdf_locations,
-    )
-    pdf_filename = f"CallSheet_{project.name.replace(' ','_')}_{selected_date.isoformat()}_{version_label}.pdf"
+    # Generate the COMPLETE PDF (real crew grid + meals + locations) via the
+    # shared builder — one artifact shared across all recipients for this send.
+    pdf_bytes, pdf_filename = _build_callsheet_pdf_bytes(
+        pid, bid, project, budget, selected_date, sched_mode, send)
+
+    # Persist the exact artifact + Dropbox mirror on the send row so every
+    # version (even a single-recipient send) is retrievable later. Both are
+    # fail-open: a null pdf_data (weasyprint missing) or a failed archive must
+    # NOT block the send. (User 2026-07-09.)
+    if pdf_bytes:
+        send.pdf_data = pdf_bytes
+        send.pdf_filename = pdf_filename
+        send.dropbox_path = _archive_callsheet_to_dropbox(
+            project, selected_date, version_label, pdf_bytes)
+        db.session.commit()
 
     # Build first location summary for SMS
     first_loc = pdf_locations[0] if pdf_locations else None
@@ -21045,6 +21193,65 @@ def callsheet_prepare_send(pid, bid, date_str):
                     "sent_email": sent_email, "sent_sms": sent_sms,
                     "total": len(created_recs),
                     "recipients": recipient_results})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/send/<int:send_id>/pdf")
+@login_required
+def callsheet_send_pdf(pid, bid, send_id):
+    """Download the archived PDF for one sent call-sheet version. Serves the
+    exact bytes stored at send time; for legacy sends with no stored pdf_data
+    it regenerates from _callsheet_full_context. Project-gated like the
+    neighboring callsheet routes. (User 2026-07-09.)"""
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    project = ProjectSheet.query.get_or_404(pid)
+    send = CallSheetSend.query.filter_by(id=send_id, budget_id=bid).first_or_404()
+
+    pdf_bytes = send.pdf_data
+    fname = send.pdf_filename
+    if not pdf_bytes:
+        # Legacy send (pre-archive) — reconstruct from the current sheet state.
+        sched_mode = send.schedule_mode or (
+            'working' if budget.budget_mode in ('working', 'actual') else 'estimated')
+        pdf_bytes, fname = _build_callsheet_pdf_bytes(
+            pid, bid, project, budget, send.date, sched_mode, send)
+    if not pdf_bytes:
+        return jsonify({"error": "PDF unavailable (PDF rendering not configured)"}), 503
+    if not fname:
+        _ver = send.version_label or 'v1'
+        fname = (f"CallSheet_{project.name.replace(' ', '_')}_"
+                 f"{send.date.isoformat()}_{_ver}.pdf")
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": _content_disposition_attachment(fname)},
+    )
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/<date_str>/pdf")
+@login_required
+def callsheet_current_pdf(pid, bid, date_str):
+    """Download the CURRENT (unsent) call sheet for a day as a PDF, regenerated
+    live from _callsheet_full_context. Lets the internal view grab a PDF without
+    logging a send. (User 2026-07-09.)"""
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    project = ProjectSheet.query.get_or_404(pid)
+    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    try:
+        selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return jsonify({"error": "invalid date"}), 400
+    # Lightweight stand-in for a send row so the renderer has a version label.
+    _stub = CallSheetSend(budget_id=bid, date=selected_date,
+                          schedule_mode=sched_mode, version_label='current')
+    pdf_bytes, fname = _build_callsheet_pdf_bytes(
+        pid, bid, project, budget, selected_date, sched_mode, _stub)
+    if not pdf_bytes:
+        return jsonify({"error": "PDF unavailable (PDF rendering not configured)"}), 503
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": _content_disposition_attachment(fname)},
+    )
 
 
 def _resolve_recipient_crew_member(name, email):
@@ -26193,6 +26400,13 @@ def _web_worker_essential_columns():
                 # Line Ledger per-transaction review state (2026-07).
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP",
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS reviewed_by VARCHAR(120)",
+                # Sent call-sheet archive (2026-07-09). Every send stores the exact
+                # PDF that went out (pdf_data) so any version is downloadable later,
+                # its filename, and the Dropbox admin-folder mirror path.
+                # __tablename__ is 'callsheet_send'. Postgres LargeBinary → BYTEA.
+                "ALTER TABLE callsheet_send ADD COLUMN IF NOT EXISTS pdf_data BYTEA",
+                "ALTER TABLE callsheet_send ADD COLUMN IF NOT EXISTS pdf_filename VARCHAR(300)",
+                "ALTER TABLE callsheet_send ADD COLUMN IF NOT EXISTS dropbox_path VARCHAR(500)",
                 # Client estimate portal (2026-06-03). preDeploy create_all is
                 # unreliable for brand-new tables (same reason travel_detail /
                 # catering_bill are healed here), so create it per-worker too.

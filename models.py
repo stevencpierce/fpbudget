@@ -887,6 +887,14 @@ class CallSheetSend(db.Model):
     sent_at       = db.Column(db.DateTime, nullable=True)
     sent_by       = db.Column(db.String(200), nullable=True)
     notes         = db.Column(db.Text, nullable=True)
+    # Archived artifact — the exact PDF that was emailed for THIS send, so any
+    # version (even one sent to a single person) is downloadable/retrievable
+    # later even if regeneration would differ. dropbox_path records where the
+    # same PDF was mirrored into the project's admin folder (fail-open — may be
+    # null if Dropbox was unavailable at send time). (User 2026-07-09.)
+    pdf_data      = db.Column(db.LargeBinary, nullable=True)
+    pdf_filename  = db.Column(db.String(300), nullable=True)
+    dropbox_path  = db.Column(db.String(500), nullable=True)
     recipients    = db.relationship("CallSheetRecipient", backref="send",
                                     lazy=True, cascade="all, delete-orphan")
 
