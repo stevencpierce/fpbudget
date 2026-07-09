@@ -18,6 +18,28 @@
 {% macro cstext(key, default) -%}
 {{ _cs_txt.get(key) if (_cs_txt.get(key) not in (none, '')) else default }}
 {%- endmacro %}
+{# ── PDF-safe icon macro ──────────────────────────────────────────────────────
+   The Render Linux container has NO emoji font, so weasyprint drops/garbles the
+   colour emojis (🎬🏨✈️🚐🚕📍☎ …) on the travel line and elsewhere — the owner
+   sees blanks or a stray glyph. On SCREEN we keep the real emoji; in pdf_mode we
+   emit a tiny styled text badge built from plain Latin letters that EVERY
+   sans-serif font (DejaVu / Liberation, whatever fontconfig maps) has, so the
+   PDF never depends on an emoji font being installed.
+   UPGRADE PATH: drop static/fonts/NotoEmoji-Regular.ttf in and the pdf-only
+   @font-face below (see the pdf_mode <style>) registers it; if you'd rather have
+   real monochrome emoji, add a `.pdf-ico { display:none }` + un-hide the emoji —
+   but the badges are deliberately the default so a missing font can never break
+   the sheet. (User 2026-07-09.) #}
+{% set _PDF_ICO = {
+  'flight':'FLT', 'hotel':'HTL', 'car_rental':'CAR', 'car_service':'VAN',
+  'rideshare':'RIDE', 'mileage':'MI', 'phone':'TEL', 'pin':'LOC',
+  'clapper':'SET', 'talent':'CAST', 'stadium':'VEN', 'map':'MAP',
+  'hospital':'MED', 'store':'SHOP', 'truck':'TRK', 'parking':'PKG',
+  'contacts':'INFO'
+} %}
+{% macro pdf_ico(kind, emoji) -%}
+{%- if pdf_mode -%}<span class="pdf-ico pdf-ico-{{ kind }}">{{ _PDF_ICO.get(kind, '•') }}</span>{%- else -%}{{ emoji }}{%- endif -%}
+{%- endmacro %}
 {% set rec             = rec             | default(none) %}
 {% set token           = token           | default(none) %}
 {% set already_confirmed = already_confirmed | default(false) %}
@@ -68,6 +90,37 @@
   /* Each element the owner hid on THIS call sheet is dropped from the PDF. */
   {% for _k, _v in (cs_data.get('hidden') or {}).items() %}{% if _v %}[data-cs-key="{{ _k }}"] { display:none !important; }
   {% endif %}{% endfor %}
+  /* ── PDF-safe travel icons ────────────────────────────────────────────────
+     weasyprint on the Render Linux box has NO emoji font, so the emoji icons on
+     the travel line render blank / garbled (owner: "text looks incomplete", a
+     stray ÷). pdf_ico() swaps each emoji for a short Latin badge (built from
+     plain letters every sans-serif font has); these style them as a small
+     pill. (User 2026-07-09.) */
+  .pdf-ico {
+    display:inline-block; font-size:.58rem; font-weight:700; line-height:1;
+    letter-spacing:.02em; padding:1.5px 4px; border-radius:3px;
+    background:#eef1f6; color:#3a4453; border:1px solid #d5d9e0;
+    vertical-align:.06em; margin-right:1px;
+    font-family:'DejaVu Sans','Liberation Sans',Arial,sans-serif;
+  }
+  .pdf-ico-flight     { background:#e6f0fb; color:#1e4d8c; border-color:#c3ddf6; }
+  .pdf-ico-hotel      { background:#f3ecfb; color:#5b2a91; border-color:#e0cef4; }
+  .pdf-ico-car_rental,
+  .pdf-ico-car_service{ background:#eaf6ec; color:#256b2f; border-color:#cfe9d3; }
+  .pdf-ico-rideshare  { background:#fef3e2; color:#b45309; border-color:#f7dcae; }
+  .pdf-ico-phone      { background:#eef1f6; color:#3a4453; border-color:#d5d9e0; }
+  /* UPGRADE PATH — drop static/fonts/NotoEmoji-Regular.ttf in and this @font-face
+     registers a monochrome-emoji font weasyprint CAN embed on Linux. It's harmless
+     if the file is absent (weasyprint just skips an unresolvable url()). To switch
+     from badges to real emoji, remove the pdf_mode branch in the pdf_ico() macro
+     (top of this template) so the raw emoji renders and this font paints it.
+     The url() is resolved against the stylesheet base_url / this page's base_url
+     (app.static_folder), so the absolute file path is not required. */
+  @font-face {
+    font-family: 'FP Emoji';
+    src: url('fonts/NotoEmoji-Regular.ttf') format('truetype');
+    font-weight: normal; font-style: normal;
+  }
   @page { size: letter portrait; margin: .45in; }
 </style>
 {% endif %}
@@ -909,11 +962,15 @@ Example:
       <div class="cs-dept-grid" id="crew-call-tbody">
         {% for dept_name in ns_dept.order %}
         {% set dept_rows = ns_dept.groups[dept_name] %}
-        {% set is_custom = dept_name in (p2_custom_empty or []) %}
+        {# A box is "custom" if its (renamed) name is one of the custom depts —
+           whether or not crew were dragged into it — so it always gets its ✕.
+           (User 2026-07-09.) #}
+        {% set is_custom = dept_name in (p2_custom_all or p2_custom_empty or []) %}
         <div class="cs-dept-box" data-dept-name="{{ dept_name }}"{% if is_custom %} data-dept-custom="1"{% endif %}>
           <div class="cs-dept-box-header" data-dept-orig="{{ dept_name }}">
             <span class="cs-dept-header-label" contenteditable="true" data-cs-screen-editable="1" title="Click to rename this department (this call sheet only)">{{ dept_name | upper }}</span>
-            {% if is_custom %}<span class="cs-dept-del cs-screen-only" title="Delete this custom department (only when empty)">✕</span>{% endif %}
+            <span class="cs-dept-rename-reset cs-screen-only" title="Undo this department rename" style="display:none">↩</span>
+            {% if is_custom %}<span class="cs-dept-del cs-screen-only" title="Delete this custom department — its crew fall back to their default department">✕</span>{% endif %}
           </div>
           <table class="cs-dept-box-table">
             <tbody>
@@ -943,10 +1000,10 @@ Example:
                   {# Confirmation numbers intentionally NOT rendered here — they
                      go only to the individual person's tokenized copy. (2026-07-08) #}
                   <span style="font-size:.72rem;color:#3a4453;line-height:1.45;white-space:normal">
-                    {% if t.kind == 'flight' %}✈️ {{ t.airline or 'Flight' }}{% if t.flight_no %} {{ t.flight_no }}{% endif %}{% if t.depart_airport or t.arrive_airport %} · {{ t.depart_airport or '?' }}→{{ t.arrive_airport or '?' }}{% endif %}{% if t.depart_at %} · {{ t.depart_at }}{% if t.arrive_at %}–{{ t.arrive_at }}{% endif %}{% endif %}
-                    {% elif t.kind == 'hotel' %}🏨 {{ t.hotel_name or 'Hotel' }}{% if t.check_in or t.check_out %} · {{ t.check_in or '?' }}–{{ t.check_out or '?' }}{% endif %}{% if t.room_type %} · {{ t.room_type }}{% endif %}
-                    {% elif t.kind == 'car_rental' %}🚗 {{ t.rental_co or 'Car rental' }}{% if t.pickup_location %} · {{ t.pickup_location }}{% endif %}{% if t.pickup_at %} · {{ t.pickup_at }}{% if t.return_at %}–{{ t.return_at }}{% endif %}{% endif %}
-                    {% elif t.kind == 'car_service' %}{% if t.self_report %}🚕 Rideshare — self-book · {{ t.notes or 'Take an Uber to set. Keep your receipt and email it to production.' }}{% else %}🚐 {{ t.rental_co or 'Car service' }}{% if t.pickup_at %} · pickup {{ t.pickup_at }}{% endif %}{% if t.pickup_location %} {{ t.pickup_location }}{% endif %}{% if t.dropoff_location %} → {{ t.dropoff_location }}{% if t.return_at %} {{ t.return_at }}{% endif %}{% elif t.return_at %} → {{ t.return_at }}{% endif %}{% if t.contact_phone %} · ☎ {{ t.contact_phone }}{% endif %}{% endif %}{% endif %}
+                    {% if t.kind == 'flight' %}{{ pdf_ico('flight','✈️') }} {{ t.airline or 'Flight' }}{% if t.flight_no %} {{ t.flight_no }}{% endif %}{% if t.depart_airport or t.arrive_airport %} · {{ t.depart_airport or '?' }}{% if pdf_mode %} to {% else %}→{% endif %}{{ t.arrive_airport or '?' }}{% endif %}{% if t.depart_at %} · {{ t.depart_at }}{% if t.arrive_at %}–{{ t.arrive_at }}{% endif %}{% endif %}
+                    {% elif t.kind == 'hotel' %}{{ pdf_ico('hotel','🏨') }} {{ t.hotel_name or 'Hotel' }}{% if t.check_in or t.check_out %} · {{ t.check_in or '?' }}–{{ t.check_out or '?' }}{% endif %}{% if t.room_type %} · {{ t.room_type }}{% endif %}
+                    {% elif t.kind == 'car_rental' %}{{ pdf_ico('car_rental','🚗') }} {{ t.rental_co or 'Car rental' }}{% if t.pickup_location %} · {{ t.pickup_location }}{% endif %}{% if t.pickup_at %} · {{ t.pickup_at }}{% if t.return_at %}–{{ t.return_at }}{% endif %}{% endif %}
+                    {% elif t.kind == 'car_service' %}{% if t.self_report %}{{ pdf_ico('rideshare','🚕') }} Rideshare — self-book · {{ t.notes or 'Take an Uber to set. Keep your receipt and email it to production.' }}{% else %}{{ pdf_ico('car_service','🚐') }} {{ t.rental_co or 'Car service' }}{% if t.pickup_at %} · pickup {{ t.pickup_at }}{% endif %}{% if t.pickup_location %} {{ t.pickup_location }}{% endif %}{% if t.dropoff_location %} {% if pdf_mode %}to{% else %}→{% endif %} {{ t.dropoff_location }}{% if t.return_at %} {{ t.return_at }}{% endif %}{% elif t.return_at %} {% if pdf_mode %}to{% else %}→{% endif %} {{ t.return_at }}{% endif %}{% if t.contact_phone %} · {{ pdf_ico('phone','☎') }} {{ t.contact_phone }}{% endif %}{% endif %}{% endif %}
                   </span>
                 </td>
               </tr>
@@ -1237,6 +1294,22 @@ Example:
           </div>
         </div>
         <div id="cs-dist-recipient-list" style="margin-top:4px;max-height:260px;overflow-y:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--border);border-radius:6px;padding:4px 8px"></div>
+        {# ── Add a manual recipient (someone not on any budget line) ──────────
+           Appends a checked 'manual' entry to the list above; persists on this
+           sheet so it reappears next time. (User 2026-07-09.) #}
+        <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <input type="text" id="cs-manual-name"  placeholder="Name"
+                 style="flex:1;min-width:110px;padding:4px 8px;font-size:.8rem">
+          <input type="email" id="cs-manual-email" placeholder="Email"
+                 style="flex:1.3;min-width:150px;padding:4px 8px;font-size:.8rem"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();csAddManualRecipient();}">
+          <input type="text" id="cs-manual-phone" placeholder="Phone (optional)"
+                 style="flex:1;min-width:120px;padding:4px 8px;font-size:.8rem"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();csAddManualRecipient();}">
+          <button class="btn btn-xs btn-ghost" onclick="csAddManualRecipient()"
+                  title="Add a recipient by email — tracked independently">+ Add recipient</button>
+        </div>
+        <span id="cs-manual-status" style="font-size:.72rem;color:var(--text-muted)"></span>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn btn-sm btn-primary" id="cs-dist-send-btn" onclick="csSendCallSheet()">
@@ -1353,6 +1426,17 @@ let CS_CUSTOM_DEPTS   = Array.isArray(CS_DATA.custom_depts) ? CS_DATA.custom_dep
 // save like the maps above and is read live by the ✉ Message panel below.
 let CS_AUDIENCE_MESSAGES = (CS_DATA.audience_messages && typeof CS_DATA.audience_messages === 'object')
   ? JSON.parse(JSON.stringify(CS_DATA.audience_messages)) : {};
+// Manually-entered call-sheet recipients (people not on any budget line): the
+// owner can add an email to send THIS sheet to somebody and track them like any
+// crew recipient. Shape: [{name, email, phone}]. Round-trips through the whole-
+// payload save so they reappear next time the Distribution panel opens; each is
+// removable via a ✕ in the recipient list. On send they POST with type:'manual'
+// (→ crew view + crew PDF server-side) and get their own CallSheetRecipient row,
+// token, and viewed/confirmed tracking. (User 2026-07-09.)
+let CS_MANUAL_RECIPIENTS = Array.isArray(CS_DATA.manual_recipients)
+  ? CS_DATA.manual_recipients.filter(m => m && (m.email || m.name)).map(m => ({
+      name: (m.name || '').trim(), email: (m.email || '').trim(), phone: (m.phone || '').trim() }))
+  : [];
 
 // Per-call-sheet logo arrangement: [{logo_id, x, w}] — x = left offset (percent
 // of the header band width, 0-100), w = width (percent, 5-40). Array order =
@@ -1375,6 +1459,7 @@ function collectCallSheetData() {
     dept_overrides:          CS_DEPT_OVERRIDES,
     dept_renames:            CS_DEPT_RENAMES,
     custom_depts:            CS_CUSTOM_DEPTS,
+    manual_recipients:       CS_MANUAL_RECIPIENTS,
     general_crew_call:       getText('cs-crew-call'),
     weather:                 getText('cs-weather'),
     sunrise:                 getText('cs-sunrise'),
@@ -2196,8 +2281,22 @@ function csRefreshDeptBoxes() {
       // Hide an emptied standard box (no drop-truth to show).
       box.style.display = rows.length ? '' : 'none';
     }
+    // The ✕ delete lives on custom depts ONLY, and is now shown whether or not
+    // the box has crew (deleting a non-empty custom dept sends its people back to
+    // their default department). Previously it was hidden the moment anyone was
+    // dragged in — so the owner "couldn't delete it". (User 2026-07-09.)
     const del = box.querySelector('.cs-dept-del');
-    if (del) del.style.display = rows.length ? 'none' : '';
+    if (del) del.style.display = isCustom ? '' : 'none';
+    // Show the header rename-reset ↩ only on a STANDARD box that carries a rename
+    // (custom depts store their label in CS_CUSTOM_DEPTS, not CS_DEPT_RENAMES, so
+    // they use the ✕ delete instead). (User 2026-07-09.)
+    const rnReset = box.querySelector('.cs-dept-rename-reset');
+    if (rnReset) {
+      const hdr = box.querySelector('.cs-dept-box-header');
+      const orig = hdr ? (hdr.getAttribute('data-dept-orig') || '') : '';
+      const renamed = !isCustom && orig && CS_DEPT_RENAMES[orig] != null;
+      rnReset.style.display = renamed ? '' : 'none';
+    }
     // Show a per-row reset ↩ only when that row is overridden.
     box.querySelectorAll('tr.cs-crew-member-row').forEach(tr => {
       const ck = tr.getAttribute('data-crew-key');
@@ -2239,6 +2338,36 @@ function csMoveRowToBox(row, box) {
   clearTimeout(_saveTimer); doAutoSave();
 }
 
+// Locate (or, if it was emptied away, recreate) the STANDARD box for a default
+// department name so a reset/delete can always send a row home. Returns the box
+// element or null. (User 2026-07-09.)
+function _csEnsureStandardBox(dflt) {
+  const grid = _csDeptGrid();
+  if (!grid || !dflt) return null;
+  const wanted = CS_DEPT_RENAMES[dflt] || dflt;
+  let target = null;
+  grid.querySelectorAll('.cs-dept-box').forEach(box => {
+    const nm = box.getAttribute('data-dept-name');
+    if (!target && (nm === dflt || nm === wanted)) target = box;
+  });
+  if (target) return target;
+  // The default box no longer exists (its only members had been moved out and it
+  // was hidden/removed). Rebuild a standard drop box so the row has a home.
+  const box = document.createElement('div');
+  box.className = 'cs-dept-box';
+  box.setAttribute('data-dept-name', wanted);
+  box.innerHTML =
+    '<div class="cs-dept-box-header" data-dept-orig="' + _csEsc(dflt) + '">' +
+      '<span class="cs-dept-header-label" contenteditable="true" data-cs-screen-editable="1" title="Click to rename this department (this call sheet only)">' + _csEsc(wanted.toUpperCase()) + '</span>' +
+    '</div>' +
+    '<table class="cs-dept-box-table"><tbody>' +
+      '<tr class="cs-dept-empty-hint cs-screen-only"><td colspan="3" style="color:var(--text-muted);font-size:.7rem;font-style:italic;padding:.3rem .5rem">Drop crew here</td></tr>' +
+    '</tbody></table>';
+  grid.appendChild(box);
+  _csBindDeptBox(box);
+  return box;
+}
+
 function csResetRow(row) {
   if (!row) return;
   const ck = row.getAttribute('data-crew-key');
@@ -2246,12 +2375,7 @@ function csResetRow(row) {
   if (ck) delete CS_DEPT_OVERRIDES[ck];
   const grid = _csDeptGrid();
   if (grid && dflt) {
-    // Find the box whose data-dept-name (or renamed default) matches the default.
-    let target = null;
-    grid.querySelectorAll('.cs-dept-box').forEach(box => {
-      const nm = box.getAttribute('data-dept-name');
-      if (!target && (nm === dflt || CS_DEPT_RENAMES[dflt] === nm)) target = box;
-    });
+    const target = _csEnsureStandardBox(dflt);
     if (target) { csMoveRowToBox(row, target); return; }
   }
   csRefreshDeptBoxes();
@@ -2279,6 +2403,29 @@ function csRenameDept(box, headerLabel) {
     box.querySelector('.cs-dept-box-header').setAttribute('data-dept-orig', newName);
   }
   headerLabel.textContent = newName.toUpperCase();
+  csRefreshDeptBoxes();   // reveal/hide the rename-reset ↩ for this box
+  clearTimeout(_saveTimer); doAutoSave();
+}
+
+// Undo a STANDARD department rename: clear CS_DEPT_RENAMES[orig], relabel the
+// header back to the original, and rewrite any override values that pointed at
+// the renamed label. (User 2026-07-09.)
+function csResetRename(box) {
+  if (!box || box.getAttribute('data-dept-custom') === '1') return;
+  const hdr = box.querySelector('.cs-dept-box-header');
+  const orig = hdr ? (hdr.getAttribute('data-dept-orig') || '') : '';
+  if (!orig || CS_DEPT_RENAMES[orig] == null) return;
+  const oldLabel = CS_DEPT_RENAMES[orig];
+  delete CS_DEPT_RENAMES[orig];
+  box.setAttribute('data-dept-name', orig);
+  const label = box.querySelector('.cs-dept-header-label');
+  if (label) label.textContent = orig.toUpperCase();
+  // Rows overridden into this box under the renamed label now record the orig.
+  box.querySelectorAll('tr.cs-crew-member-row').forEach(tr => {
+    const ck = tr.getAttribute('data-crew-key');
+    if (ck && CS_DEPT_OVERRIDES[ck] === oldLabel) CS_DEPT_OVERRIDES[ck] = orig;
+  });
+  csRefreshDeptBoxes();
   clearTimeout(_saveTimer); doAutoSave();
 }
 
@@ -2298,7 +2445,7 @@ function csAddDept() {
   box.innerHTML =
     '<div class="cs-dept-box-header" data-dept-orig="' + _csEsc(name) + '">' +
       '<span class="cs-dept-header-label" contenteditable="true" data-cs-screen-editable="1" title="Click to rename this department (this call sheet only)">' + _csEsc(name.toUpperCase()) + '</span>' +
-      '<span class="cs-dept-del cs-screen-only" title="Delete this custom department (only when empty)">✕</span>' +
+      '<span class="cs-dept-del cs-screen-only" title="Delete this custom department — its crew fall back to their default department">✕</span>' +
     '</div>' +
     '<table class="cs-dept-box-table"><tbody>' +
       '<tr class="cs-dept-empty-hint cs-screen-only"><td colspan="3" style="color:var(--text-muted);font-size:.7rem;font-style:italic;padding:.3rem .5rem">Drop crew here</td></tr>' +
@@ -2311,14 +2458,28 @@ function csAddDept() {
 
 function csDeleteDept(box) {
   if (!box) return;
-  if (box.querySelectorAll('tr.cs-crew-member-row').length) return; // only when empty
   const name = box.getAttribute('data-dept-name') || '';
   const orig = box.querySelector('.cs-dept-box-header').getAttribute('data-dept-orig') || name;
+  // People currently sitting in this custom dept (each got here via a dept
+  // override). Deleting the dept must send them back to their DEFAULT department
+  // — i.e. clear each row's override and move it home. Confirm first if occupied.
+  const rows = Array.prototype.slice.call(box.querySelectorAll('tr.cs-crew-member-row'));
+  if (rows.length) {
+    if (!confirm('Delete "' + (name || 'this department') + '"? Its ' + rows.length +
+                 ' crew member' + (rows.length === 1 ? '' : 's') +
+                 ' will move back to their default department.')) return;
+    // csResetRow clears the override and relocates the row to its default box.
+    // Iterate over a static copy since csResetRow mutates the DOM.
+    rows.forEach(r => csResetRow(r));
+  }
+  // Drop the custom dept from the saved list (by current name or original) and
+  // clear any rename recorded for it.
   let i = CS_CUSTOM_DEPTS.indexOf(name);
   if (i < 0) i = CS_CUSTOM_DEPTS.indexOf(orig);
   if (i >= 0) CS_CUSTOM_DEPTS.splice(i, 1);
   delete CS_DEPT_RENAMES[orig];
   box.remove();
+  csRefreshDeptBoxes();
   clearTimeout(_saveTimer); doAutoSave();
 }
 
@@ -2339,6 +2500,8 @@ function _csBindDeptBox(box) {
   }
   const del = box.querySelector('.cs-dept-del');
   if (del) del.addEventListener('click', ev => { ev.stopPropagation(); csDeleteDept(box); });
+  const rnReset = box.querySelector('.cs-dept-rename-reset');
+  if (rnReset) rnReset.addEventListener('click', ev => { ev.stopPropagation(); csResetRename(box); });
 }
 
 function initDeptDnD() {
@@ -2711,12 +2874,13 @@ function csIsOnDay(name, email, type, flaggedReceive) {
 function csDistBuildRecipientList() {
   const people = [];
   const seen = new Set();
-  function addPerson(name, email, type, phone, on_day, cmId) {
+  function addPerson(name, email, type, phone, on_day, cmId, manualIdx) {
     const key = (email || name || '').toLowerCase().trim();
     if (!key || seen.has(key)) return;
     seen.add(key);
     people.push({ name: name||'', email: email||'', phone: phone||'',
-                  type: type||'crew', on_day: !!on_day, cmId: cmId || '' });
+                  type: type||'crew', on_day: !!on_day, cmId: cmId || '',
+                  manualIdx: (manualIdx == null ? -1 : manualIdx) });
   }
   // All crew assigned to budget lines (primary source)
   (AVAILABLE_CONTACTS || []).forEach(c => {
@@ -2744,6 +2908,12 @@ function csDistBuildRecipientList() {
     if (r && r.rep_name && r.notify_callsheet) addPerson(r.rep_name, r.rep_email || '', 'crew', r.rep_phone || '',
                                csIsOnDay(r.rep_name, r.rep_email, 'crew'));
   });
+  // Manually-added recipients (owner-entered emails). Always treated as "on this
+  // day" so they pre-check, and carry a manualIdx so the row shows a ✕ remove.
+  CS_MANUAL_RECIPIENTS.forEach((m, idx) => {
+    if (m && (m.email || m.name)) addPerson(m.name || m.email, m.email || '', 'manual',
+                               m.phone || '', true, '', idx);
+  });
 
   // On-day people first, then the rest.
   people.sort((a, b) => (b.on_day - a.on_day) || (a.name||'').localeCompare(b.name||''));
@@ -2769,12 +2939,14 @@ function csDistBuildRecipientList() {
 
   const notOnDayTag = `<span style="background:#1c1f2c;color:#9ca3af;border:1px solid var(--border);border-radius:3px;font-size:.62rem;padding:1px 5px;margin-left:4px">not on this day</span>`;
   const onDayTag    = `<span style="background:#052e16;color:#4ade80;border:1px solid #16a34a;border-radius:3px;font-size:.62rem;padding:1px 5px;margin-left:4px">on this day</span>`;
+  const manualTag   = `<span style="background:#1c1f2c;color:#9ca3af;border:1px solid var(--border);border-radius:3px;font-size:.62rem;padding:1px 5px;margin-left:4px">manual</span>`;
 
   el.innerHTML = people.map((p, i) => {
     const hasContact = !!(p.email || p.phone);
     // Pre-check ONLY people who are on this day AND have a contact method.
     const checked = (p.on_day && hasContact) ? 'checked' : '';
     const disabled = hasContact ? '' : 'disabled';
+    const isManual = p.manualIdx >= 0;
     const previewAs = (p.cmId ? String(p.cmId) : (p.email || p.name));
     return `
     <div style="display:flex;align-items:center;gap:8px;font-size:.82rem;padding:4px 0;border-bottom:1px solid var(--border);flex-wrap:wrap${p.on_day ? '' : ';opacity:.72'}">
@@ -2786,7 +2958,7 @@ function csDistBuildRecipientList() {
                data-type="${p.type||'crew'}"
                data-on-day="${p.on_day ? '1' : '0'}"
                ${checked} ${disabled}>
-        <span>${p.name}${p.on_day ? onDayTag : notOnDayTag}${statusBadge(p.name)}</span>
+        <span>${p.name}${isManual ? manualTag : (p.on_day ? onDayTag : notOnDayTag)}${statusBadge(p.name)}</span>
       </label>
       <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
         ${p.email ? `<span style="color:var(--text-muted);font-size:.73rem">✉ ${p.email}</span>` : ''}
@@ -2795,9 +2967,42 @@ function csDistBuildRecipientList() {
         <button type="button" class="btn btn-xs btn-ghost" style="font-size:.68rem;padding:1px 6px"
                 onclick="csPreviewRecipient('${(previewAs||'').replace(/'/g,"\\'")}')"
                 title="Preview what this person receives — does not send">👁 Preview</button>
+        ${isManual ? `<span onclick="csRemoveManualRecipient(${p.manualIdx})" title="Remove this manual recipient" style="cursor:pointer;color:#f87171;font-weight:700;font-size:.9rem;padding:0 3px">✕</span>` : ''}
       </span>
     </div>`;
   }).join('');
+}
+
+// Add an owner-entered recipient by email. Appends to CS_MANUAL_RECIPIENTS,
+// persists (auto-save), and rebuilds the list so it shows checked. (2026-07-09)
+function csAddManualRecipient() {
+  const nameEl  = document.getElementById('cs-manual-name');
+  const emailEl = document.getElementById('cs-manual-email');
+  const phoneEl = document.getElementById('cs-manual-phone');
+  const statusEl = document.getElementById('cs-manual-status');
+  const name  = (nameEl.value  || '').trim();
+  const email = (emailEl.value || '').trim();
+  const phone = (phoneEl.value || '').trim();
+  if (!email && !phone) { statusEl.textContent = 'Enter an email (or phone) to add a recipient.'; return; }
+  if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { statusEl.textContent = 'That email doesn’t look valid.'; return; }
+  // Dedupe against existing manual entries by email (or name when no email).
+  const key = (email || name).toLowerCase();
+  if (CS_MANUAL_RECIPIENTS.some(m => (m.email || m.name || '').toLowerCase() === key)) {
+    statusEl.textContent = 'That recipient is already on the list.'; return;
+  }
+  CS_MANUAL_RECIPIENTS.push({ name: name || email, email, phone });
+  nameEl.value = ''; emailEl.value = ''; phoneEl.value = '';
+  statusEl.textContent = 'Added — tracked independently.';
+  clearTimeout(_saveTimer); doAutoSave();
+  csDistBuildRecipientList();
+}
+
+// Remove a manual recipient by its index in CS_MANUAL_RECIPIENTS. (2026-07-09)
+function csRemoveManualRecipient(idx) {
+  if (idx == null || idx < 0 || idx >= CS_MANUAL_RECIPIENTS.length) return;
+  CS_MANUAL_RECIPIENTS.splice(idx, 1);
+  clearTimeout(_saveTimer); doAutoSave();
+  csDistBuildRecipientList();
 }
 
 // Open the login-gated preview for one recipient (no send). (User 2026-07-08.)

@@ -4613,9 +4613,20 @@ tr:hover .cs-rep-btn { opacity: 1; }
 .cs-dept-header-label:focus { background: rgba(255,255,255,.15); border-radius: 3px; }
 .cs-dept-del {
   cursor: pointer; color: #fca5a5; font-weight: 700; font-size: .8rem;
-  padding: 0 .2rem; display: none;
+  padding: 0 .2rem; display: none; opacity: .55; transition: opacity .12s;
 }
-.cs-dept-del:hover { color: #fff; }
+.cs-dept-del:hover { color: #fff; opacity: 1; }
+/* Both header affordances read faint until you hover the department box, so the
+   header text stays clean but the controls are discoverable. JS toggles their
+   base display (custom depts always get the ✕; a renamed standard dept gets the
+   ↩); the box-hover rule below just bumps opacity. (User 2026-07-09.) */
+.cs-dept-box:hover .cs-dept-del,
+.cs-dept-box:hover .cs-dept-rename-reset { opacity: 1; }
+.cs-dept-rename-reset {
+  cursor: pointer; color: #fff; font-weight: 700; font-size: .8rem;
+  padding: 0 .15rem; opacity: .55; transition: opacity .12s;
+}
+.cs-dept-rename-reset:hover { color: var(--accent, #4f8cff); opacity: 1; }
 .cs-dept-box-table {
   width: 100%;
   border-collapse: collapse;

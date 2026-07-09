@@ -23249,6 +23249,11 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
     # of section names present so the template can append missing custom groups.
     _sections_present = {r['p2_section'] for r in crew_p2_all}
     p2_custom_empty = [c for c in _renamed_custom if c not in _sections_present]
+    # The FULL set of custom dept names (renamed) — a custom dept that has crew
+    # dragged into it is "present" (so not in p2_custom_empty) yet must STILL be
+    # deletable, so the template needs the complete list to mark every custom box
+    # as custom + render its ✕. (User 2026-07-09.)
+    p2_custom_all = list(_renamed_custom)
 
     # Apply saved location ordering for this day
     saved_loc_order = cs_data.get('location_order', [])
@@ -23467,6 +23472,7 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         rep_contacts=rep_contacts,
         crew_p2_all=crew_p2_all,
         p2_custom_empty=p2_custom_empty,
+        p2_custom_all=p2_custom_all,
         confirm_status=confirm_status,
         meal_counts=meal_counts,
         on_day_names=on_day_names,
