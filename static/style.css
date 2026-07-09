@@ -3111,8 +3111,10 @@ a.tab-link:hover { background: var(--bg-3); }
   background: #1a1d27;
   color: #e2e6f0;
   padding: .9rem 1.25rem;
-  border-bottom: 3px solid var(--accent, #4f7ef8);
-  position: relative;   /* anchor for the absolutely-positioned logo layer */
+  /* Was a 3px blue accent — read as a stray blue stripe once the white logo
+     strip moved directly below (user 2026-07-09). Neutral hairline now. */
+  border-bottom: 1px solid #2a2f3d;
+  position: relative;
 }
 
 /* ── Call-sheet logo strip ──────────────────────────────────────────────────
@@ -3141,7 +3143,7 @@ a.tab-link:hover { background: var(--bg-3); }
    further before touching the day-sheet layout. (User 2026-07-09.) */
 /* Internal edit mode keeps the strip visible even when empty, as a drop-target
    hint, whenever the Logos panel is open. */
-.cs-logos-editable .cs-logo-strip.cs-strip-hint { display: flex; }
+.cs-logo-strip.cs-logos-editable.cs-strip-hint { display: flex; }
 .cs-logo-slot {
   display: flex;
   align-items: center;
@@ -3747,7 +3749,7 @@ a.tab-link:hover { background: var(--bg-3); }
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-:is(body.light-preview, body.pdf-mode) .callsheet-header-main { border-bottom: 3px solid #1d4ed8 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-header-main { border-bottom: 1px solid #d5d9e0 !important; }
 /* Logo strip (white band between header + crew call) — colour tokens live in the
    shared "Logo strip" section further down; nothing header-band-specific here now
    that logos no longer overlay the dark band. */

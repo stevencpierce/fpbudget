@@ -461,7 +461,12 @@
        when the Logos panel adds .cs-strip-hint as a drop-target hint).
        Editing controls (drag between/within slots, resize, remove) are
        cs-screen-only + only outside recipient_mode. (User 2026-07-09.) #}
-    <div class="cs-logo-strip{% if _cs_logos %} has-logos{% endif %}" id="cs-logo-strip"
+    {# cs-logos-editable must be ON THE STRIP: the affordance CSS
+       (.cs-logos-editable .cs-logo-item:hover → resize/remove handles,
+       slot outlines) targets descendants, and the strip is a SIBLING of the
+       header the class used to live on — so drag feedback + resize handles
+       never rendered ("can't move the logos", user 2026-07-09). #}
+    <div class="cs-logo-strip{% if _cs_logos %} has-logos{% endif %}{% if not recipient_mode %} cs-logos-editable{% endif %}" id="cs-logo-strip"
          {% if not recipient_mode %}data-cs-logo-editable="1"{% endif %}>
       {% for _slot in ['left', 'center', 'right'] %}
       <div class="cs-logo-slot cs-logo-slot-{{ _slot }}" data-slot="{{ _slot }}">
