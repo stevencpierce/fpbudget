@@ -24643,6 +24643,138 @@ def rate_type_label_filter(v):
     return _RATE_TYPE_LABELS.get(v, v or '—')
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CALL-SHEET RICH-TEXT SANITIZER + SCHEDULE NORMALIZER
+# ══════════════════════════════════════════════════════════════════════════════
+# The Today's-Shooting-Schedule and Advance-Schedule sections are rich, multi-
+# column contenteditable grids. Cells persist as HTML in cs_data under the NEW
+# keys today_schedule_rich / advance_schedule_rich (shape {cols:n, cells:[html…]}).
+# Their HTML is stored verbatim by the whole-payload save, so it MUST be
+# sanitized before it is ever rendered — the client sanitizes before collect,
+# and this server-side allowlist is the belt-and-suspenders pass used by the
+# weasyprint / pdf_mode render (which drops raw stored HTML into the grid via
+# the |cs_richtext filter). NEVER render a stored cell with |safe without this.
+# Allowlist: b/strong/i/em/u/br/div/p/span, inline styles limited to
+# text-align / font-weight / font-style / text-decoration. Everything else is
+# stripped; script/style/handler attrs never survive. (User 2026-07-09.)
+import html as _html_mod
+from html.parser import HTMLParser as _HTMLParser
+
+_CS_RICH_ALLOWED_TAGS = {'b', 'strong', 'i', 'em', 'u', 'br', 'div', 'p', 'span'}
+_CS_RICH_VOID = {'br'}
+_CS_RICH_STYLE_VALUES = {
+    'text-align':      {'left', 'right', 'center', 'justify'},
+    'font-weight':     {'bold', 'normal', '700', '400'},
+    'font-style':      {'italic', 'normal'},
+    'text-decoration': {'underline', 'none', 'line-through'},
+}
+
+
+def _cs_rich_filter_style(style):
+    """Keep only the allowed inline style declarations."""
+    out = []
+    for decl in (style or '').split(';'):
+        if ':' not in decl:
+            continue
+        prop, val = decl.split(':', 1)
+        prop = prop.strip().lower()
+        val = val.strip().lower()
+        if prop in _CS_RICH_STYLE_VALUES and val in _CS_RICH_STYLE_VALUES[prop]:
+            out.append(f"{prop}:{val}")
+    return ';'.join(out)
+
+
+class _CSRichSanitizer(_HTMLParser):
+    """Allowlist HTML sanitizer for call-sheet rich schedule cells. Strips any
+    tag/attribute not on the allowlist; escapes text; closes dangling tags."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out = []
+        self._stack = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag not in _CS_RICH_ALLOWED_TAGS:
+            return
+        style = ''
+        for k, v in attrs:
+            if (k or '').lower() == 'style':
+                style = _cs_rich_filter_style(v)
+        attr_str = f' style="{_html_mod.escape(style, quote=True)}"' if style else ''
+        self.out.append(f'<{tag}{attr_str}>')
+        if tag not in _CS_RICH_VOID:
+            self._stack.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in _CS_RICH_ALLOWED_TAGS and tag in _CS_RICH_VOID:
+            self.out.append(f'<{tag}>')
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag not in _CS_RICH_ALLOWED_TAGS or tag in _CS_RICH_VOID:
+            return
+        if tag in self._stack:
+            while self._stack:
+                t = self._stack.pop()
+                self.out.append(f'</{t}>')
+                if t == tag:
+                    break
+
+    def handle_data(self, data):
+        self.out.append(_html_mod.escape(data, quote=False))
+
+    def close(self):
+        super().close()
+        while self._stack:
+            self.out.append(f'</{self._stack.pop()}>')
+
+
+def cs_sanitize_richtext(raw):
+    """Return an allowlist-sanitized HTML string safe to render with |safe."""
+    if not raw:
+        return ''
+    p = _CSRichSanitizer()
+    p.feed(str(raw))
+    p.close()
+    return ''.join(p.out)
+
+
+@app.template_filter("cs_richtext")
+def cs_richtext_filter(v):
+    """Jinja filter: sanitize a stored call-sheet rich cell to safe Markup."""
+    from markupsafe import Markup
+    return Markup(cs_sanitize_richtext(v))
+
+
+@app.template_global("cs_schedule")
+def cs_normalize_schedule(cs_data, rich_key, legacy_key):
+    """Resolve a rich schedule section to a normalized {cols, cells} dict for
+    server-side (pdf_mode) rendering. Reads the NEW rich_key first; falls back
+    to the LEGACY plain-text key (which becomes a single cell, newlines→<br>).
+    Cells are returned already sanitized. cols is clamped 1-6 and reconciled
+    with the actual cell count. (User 2026-07-09.)"""
+    rich = (cs_data or {}).get(rich_key)
+    if isinstance(rich, dict):
+        cells = rich.get('cells')
+        if isinstance(cells, list) and cells:
+            cols = rich.get('cols')
+            try:
+                cols = int(cols)
+            except (TypeError, ValueError):
+                cols = len(cells)
+            cols = max(1, min(6, cols))
+            cells = [cs_sanitize_richtext(c) for c in cells[:cols]]
+            while len(cells) < cols:
+                cells.append('')
+            return {'cols': cols, 'cells': cells}
+    # Legacy fallback: single plain-text blob → one cell.
+    legacy = (cs_data or {}).get(legacy_key) or ''
+    cell = _html_mod.escape(str(legacy), quote=False).replace('\n', '<br>')
+    return {'cols': 1, 'cells': [cell]}
+
+
 # ── Admin routes ──────────────────────────────────────────────────────────────
 
 @app.route("/admin", methods=["GET"])

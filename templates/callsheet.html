@@ -48,7 +48,11 @@
 {% set personal_travel = personal_travel | default([]) %}
 {% set date_display    = date_display    | default('') %}
 {% block title %}Call Sheet — {{ project.name }} | {{ selected_date.strftime('%b %d, %Y') }}{% endblock %}
-{% block body_class %}{% if recipient_mode %}recipient-mode{% endif %}{% if pdf_mode %} pdf-mode{% endif %}{% endblock %}
+{# light-preview is ALWAYS on: the call sheet is unconditionally the designed
+   light theme regardless of the app's dark/light mode (user 2026-07-09: "always
+   make the call sheet white no matter what"). recipient/pdf modes already
+   effectively light; this makes the internal editing view white too. #}
+{% block body_class %}light-preview{% if recipient_mode %} recipient-mode{% endif %}{% if pdf_mode %} pdf-mode{% endif %}{% endblock %}
 
 {% block content %}
 {% if pdf_mode %}
@@ -383,15 +387,10 @@
    "two view rows of buttons, one of which doesn't work"). It toggled a few
    hardcoded sections in JS and had drifted from the real server-side
    audience matrix — the ?view= link row above is the single, authoritative
-   switcher (it renders each view exactly as recipients/PDFs get it). #}
-<div class="cs-audience-bar cs-screen-only">
-  {# Light preview: flips the on-screen sheet into the DESIGNED LIGHT theme (the
-     exact look recipients / the PDF get) without leaving edit mode. Toggles
-     body.light-preview; the designed-light rules are class-scoped so they apply
-     live. Persists in localStorage. (User 2026-07-09.) #}
-  <button class="cs-light-toggle" id="cs-light-toggle" onclick="csToggleLightPreview()"
-          title="Preview the sheet the way it will be sent / printed">☀ Light preview</button>
-</div>
+   switcher (it renders each view exactly as recipients/PDFs get it).
+   The ☀ Light-preview toggle was also removed (user 2026-07-09: "always make
+   the call sheet white no matter what") — the sheet is now unconditionally the
+   designed light theme (body.light-preview forced server-side). #}
 {% endif %}{# /not recipient_mode — internal editing chrome #}
 
 {# ═══════════════════════════════════════════════════════════════════════════════
@@ -894,21 +893,49 @@
     </div>
     {% endif %}
 
-    {# ── Today's Schedule: text area (shot list integration planned for future) ─ #}
-    <div class="callsheet-section cs-hideable" data-cs-key="section:shooting_schedule">
+    {# ── Today's Schedule: rich multi-column editor (1-6 cols, B/I/U + align).
+       Data lives under cs_data.today_schedule_rich {cols, cells:[html…]};
+       legacy plain-text cs_data.schedule_notes is the fallback (migrated into
+       cell 1 on first save). On screen the grid + chrome are built by JS
+       (csRichSchedule); in pdf_mode it's rendered server-side (sanitized).
+       (User 2026-07-09.) #}
+    <div class="callsheet-section cs-hideable cs-rich-sched" data-cs-key="section:shooting_schedule"
+         data-rich-id="today" data-rich-key="today_schedule_rich" data-legacy-key="schedule_notes">
       <div class="callsheet-section-title">
         <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:shooting_schedule" title="Hide / show Shooting Schedule">👁</span>
         Today's Shooting Schedule
         <span class="cs-future-badge cs-screen-only" title="Will connect to shot list / scene breakdown system in a future update">◌</span>
-        <span class="cs-screen-only" style="font-size:.7rem;font-weight:400;color:var(--text-muted);margin-left:.5rem">Manual notes for now — shot list integration planned</span>
       </div>
-      <textarea id="cs-schedule-notes" class="cs-schedule-notes"
-                placeholder="Enter today's shooting schedule, scene breakdown, or production notes here…
-Example:
-7:00 AM  General crew call — Stage A
-7:30 AM  Camera ready
-8:00 AM  First shot — INT. OFFICE - Scene 14A
-...">{{ cs_data.get('schedule_notes', '') }}</textarea>
+      {# Column control + formatting toolbar (screen-only chrome). #}
+      <div class="cs-rich-toolbar cs-screen-only" data-rich-for="today">
+        <span class="cs-rich-cols-label">Columns:</span>
+        <span class="cs-rich-cols" role="group" aria-label="Column count">
+          {% for n in range(1, 7) %}
+          <button type="button" class="cs-rich-col-btn" data-cols="{{ n }}" title="{{ n }} column{{ 's' if n > 1 else '' }}">{{ n }}</button>
+          {% endfor %}
+        </span>
+        <span class="cs-rich-fmt" role="group" aria-label="Text formatting">
+          <button type="button" class="cs-rich-fmt-btn" data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+          <button type="button" class="cs-rich-fmt-btn" data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+          <button type="button" class="cs-rich-fmt-btn" data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
+          <span class="cs-rich-fmt-sep"></span>
+          <button type="button" class="cs-rich-fmt-btn" data-cmd="justifyLeft" title="Align left">⯇</button>
+          <button type="button" class="cs-rich-fmt-btn" data-cmd="justifyCenter" title="Center">≡</button>
+          <button type="button" class="cs-rich-fmt-btn" data-cmd="justifyRight" title="Align right">⯈</button>
+          <button type="button" class="cs-rich-fmt-btn" data-cmd="justifyFull" title="Justify">☰</button>
+        </span>
+      </div>
+      {% if pdf_mode %}
+        {% set _sched = cs_schedule(cs_data, 'today_schedule_rich', 'schedule_notes') %}
+        <div class="cs-rich-grid" style="grid-template-columns:repeat({{ _sched.cols }}, 1fr)">
+          {% for cell in _sched.cells %}
+          <div class="cs-rich-cell">{{ cell | cs_richtext }}</div>
+          {% endfor %}
+        </div>
+      {% else %}
+        {# Screen: JS (csRichSchedule) builds the grid from cs_data. #}
+        <div class="cs-rich-grid" id="cs-rich-grid-today" data-rich-id="today"></div>
+      {% endif %}
     </div>
 
     {# ── Advance Schedule ──────────────────────────────────────────────────────── #}
@@ -933,8 +960,39 @@ Example:
         {% endfor %}
       </div>
       {% endif %}
-      <textarea id="cs-advance-schedule" class="cs-schedule-notes cs-advance-notes"
-                placeholder="Enter advance schedule / next day notes…">{{ cs_data.get('advance_schedule', '') }}</textarea>
+      {# Rich multi-column advance notes — same model as Today's schedule.
+         cs_data.advance_schedule_rich {cols, cells}; legacy plain-text
+         cs_data.advance_schedule is the migration fallback. (User 2026-07-09.) #}
+      <div class="cs-rich-sched" data-rich-id="advance" data-rich-key="advance_schedule_rich" data-legacy-key="advance_schedule">
+        <div class="cs-rich-toolbar cs-screen-only" data-rich-for="advance">
+          <span class="cs-rich-cols-label">Columns:</span>
+          <span class="cs-rich-cols" role="group" aria-label="Column count">
+            {% for n in range(1, 7) %}
+            <button type="button" class="cs-rich-col-btn" data-cols="{{ n }}" title="{{ n }} column{{ 's' if n > 1 else '' }}">{{ n }}</button>
+            {% endfor %}
+          </span>
+          <span class="cs-rich-fmt" role="group" aria-label="Text formatting">
+            <button type="button" class="cs-rich-fmt-btn" data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+            <button type="button" class="cs-rich-fmt-btn" data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+            <button type="button" class="cs-rich-fmt-btn" data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
+            <span class="cs-rich-fmt-sep"></span>
+            <button type="button" class="cs-rich-fmt-btn" data-cmd="justifyLeft" title="Align left">⯇</button>
+            <button type="button" class="cs-rich-fmt-btn" data-cmd="justifyCenter" title="Center">≡</button>
+            <button type="button" class="cs-rich-fmt-btn" data-cmd="justifyRight" title="Align right">⯈</button>
+            <button type="button" class="cs-rich-fmt-btn" data-cmd="justifyFull" title="Justify">☰</button>
+          </span>
+        </div>
+        {% if pdf_mode %}
+          {% set _adv = cs_schedule(cs_data, 'advance_schedule_rich', 'advance_schedule') %}
+          <div class="cs-rich-grid" style="grid-template-columns:repeat({{ _adv.cols }}, 1fr)">
+            {% for cell in _adv.cells %}
+            <div class="cs-rich-cell">{{ cell | cs_richtext }}</div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="cs-rich-grid" id="cs-rich-grid-advance" data-rich-id="advance"></div>
+        {% endif %}
+      </div>
     </div>
 
   </div>{# /callsheet-page-1 #}
@@ -1529,8 +1587,13 @@ function collectCallSheetData() {
     sunset:                  getText('cs-sunset'),
     emergency_notes:         getText('cs-emergency-notes'),
     additional_notes:        getText('cs-additional-notes'),
-    schedule_notes:          (document.getElementById('cs-schedule-notes') || {}).value || '',
-    advance_schedule:        (document.getElementById('cs-advance-schedule') || {}).value || '',
+    // Rich schedule sections (multi-column, formatted). Legacy plain-text keys
+    // are still written (from cell 1, tags stripped) so any old read path / PDF
+    // fallback stays populated. (User 2026-07-09.)
+    today_schedule_rich:     csRichCollect('today'),
+    advance_schedule_rich:   csRichCollect('advance'),
+    schedule_notes:          csRichLegacyText('today'),
+    advance_schedule:        csRichLegacyText('advance'),
     callsheet_version:       getText('cs-callsheet-version'),
     script_version:          getText('cs-script-version'),
     schedule_version:        getText('cs-schedule-version'),
@@ -1641,11 +1704,11 @@ if (!RECIPIENT_MODE) {
       doAutoSave();
     });
   });
-  const _snEl = document.getElementById('cs-schedule-notes');
-  if (_snEl) _snEl.addEventListener('input', scheduleAutoSave);
-  const _advEl = document.getElementById('cs-advance-schedule');
-  if (_advEl) _advEl.addEventListener('input', scheduleAutoSave);
 }
+// Rich schedule sections build their grid on BOTH internal and recipient screen
+// renders (cells render read-only in recipient mode); csRichScheduleInit no-ops
+// edit listeners when RECIPIENT_MODE. pdf_mode never reaches here (no <script>).
+csRichScheduleInit();
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HIDE / SHOW ELEMENTS (per-day overrides in CS_HIDDEN)
@@ -2825,49 +2888,205 @@ function warnInvalidEmail(el, val) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // AUDIENCE SELECTOR
 // ═══════════════════════════════════════════════════════════════════════════════
-// ── Light preview toggle ──────────────────────────────────────────────────────
-// Flips the on-screen sheet into the DESIGNED LIGHT theme (body.light-preview) so
-// the owner sees the exact look recipients / the PDF get — WITHOUT leaving edit
-// mode (contenteditable, hide toggles, logo drag all still work; this is purely a
-// style flip, not recipient_mode). State persists in localStorage. Browser PRINT
-// also routes through this class: onbeforeprint adds it, onafterprint restores the
-// pre-print state, so the single class-scoped designed-light rule set drives print
-// too. (User 2026-07-09.)
-const CS_LIGHT_PREVIEW_KEY = 'fpbudget_cs_light_preview';
-function csSetLightPreview(on, persist) {
-  document.body.classList.toggle('light-preview', !!on);
-  const btn = document.getElementById('cs-light-toggle');
-  if (btn) {
-    btn.classList.toggle('active', !!on);
-    btn.textContent = on ? '🌙 Editing view' : '☀ Light preview';
-  }
-  if (persist) {
-    try { localStorage.setItem(CS_LIGHT_PREVIEW_KEY, on ? '1' : '0'); } catch (_) {}
-  }
+// ═══════════════════════════════════════════════════════════════════════════════
+// RICH SCHEDULE SECTIONS (Today's Shooting Schedule + Advance Schedule)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Each section is a 1-6 column grid of contenteditable cells with a B/I/U +
+// align toolbar. Data model per section: {cols:n, cells:[html…]} stored under
+// today_schedule_rich / advance_schedule_rich. Legacy plain-text keys
+// (schedule_notes / advance_schedule) are the migration fallback: on first
+// load, if no rich data exists, the legacy text seeds cell 1 (newlines→<br>).
+//
+// Formatting uses document.execCommand ('bold','italic','underline','justify*')
+// — deprecated but universally supported in contenteditable and the pragmatic
+// choice here. Cells are sanitized client-side (csRichSanitizeHtml) before every
+// collect, and again server-side (cs_sanitize_richtext) on the pdf render, so a
+// stored cell is safe on both paths. (User 2026-07-09.)
+const CS_RICH_ALLOWED_TAGS = new Set(['B','STRONG','I','EM','U','BR','DIV','P','SPAN']);
+const CS_RICH_STYLE_VALUES = {
+  'text-align':      new Set(['left','right','center','justify']),
+  'font-weight':     new Set(['bold','normal','700','400']),
+  'font-style':      new Set(['italic','normal']),
+  'text-decoration': new Set(['underline','none','line-through']),
+};
+// In-memory column count per section (grid rebuilds preserve cell content).
+const CS_RICH_STATE = { today: { cols: 1 }, advance: { cols: 1 } };
+
+// Sanitize an HTML fragment to the allowlist (tags + a few inline style props).
+function csRichSanitizeHtml(html) {
+  const tpl = document.createElement('div');
+  tpl.innerHTML = html || '';
+  (function walk(node) {
+    const kids = Array.from(node.childNodes);
+    for (const child of kids) {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        // Always sanitize the subtree FIRST so that when a disallowed element is
+        // unwrapped, its promoted children have already been cleaned (a bare
+        // <img onerror> nested in an unknown tag can't survive). (User 2026-07-09.)
+        walk(child);
+        if (!CS_RICH_ALLOWED_TAGS.has(child.tagName)) {
+          // Unwrap disallowed element: keep its (already-sanitized) children.
+          while (child.firstChild) node.insertBefore(child.firstChild, child);
+          node.removeChild(child);
+          continue;
+        }
+        // Strip every attribute except a filtered inline style.
+        const keepStyle = [];
+        const styleAttr = child.getAttribute('style') || '';
+        styleAttr.split(';').forEach(decl => {
+          const i = decl.indexOf(':');
+          if (i < 0) return;
+          const prop = decl.slice(0, i).trim().toLowerCase();
+          const val = decl.slice(i + 1).trim().toLowerCase();
+          if (CS_RICH_STYLE_VALUES[prop] && CS_RICH_STYLE_VALUES[prop].has(val)) {
+            keepStyle.push(prop + ':' + val);
+          }
+        });
+        Array.from(child.attributes).forEach(a => child.removeAttribute(a.name));
+        if (keepStyle.length) child.setAttribute('style', keepStyle.join(';'));
+      } else if (child.nodeType === Node.COMMENT_NODE) {
+        node.removeChild(child);
+      }
+    }
+  })(tpl);
+  return tpl.innerHTML;
 }
-function csToggleLightPreview() {
-  csSetLightPreview(!document.body.classList.contains('light-preview'), true);
+
+// Strip tags to plain text (for the legacy-key mirror + column-merge).
+function csRichToText(html) {
+  const d = document.createElement('div');
+  d.innerHTML = (html || '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/(div|p)>/gi, '\n');
+  return (d.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
 }
-(function csInitLightPreview() {
-  let on = false;
-  try { on = localStorage.getItem(CS_LIGHT_PREVIEW_KEY) === '1'; } catch (_) {}
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => csSetLightPreview(on, false));
+
+// Read a section's grid → {cols, cells:[sanitized html…]}.
+function csRichCollect(id) {
+  const grid = document.getElementById('cs-rich-grid-' + id);
+  if (!grid) {
+    // Not on this render (e.g. recipient JS-suppressed): echo stored data.
+    const stored = (CS_DATA[id === 'today' ? 'today_schedule_rich' : 'advance_schedule_rich']);
+    if (stored && Array.isArray(stored.cells)) return stored;
+    return { cols: (CS_RICH_STATE[id] || {}).cols || 1, cells: [''] };
+  }
+  const cells = Array.from(grid.querySelectorAll('.cs-rich-cell'))
+    .map(c => csRichSanitizeHtml(c.innerHTML));
+  const cols = Math.max(1, Math.min(6, cells.length || 1));
+  return { cols, cells };
+}
+
+// Legacy plain-text mirror: cell 1 as plain text (keeps old read paths alive).
+function csRichLegacyText(id) {
+  const data = csRichCollect(id);
+  return csRichToText((data.cells && data.cells[0]) || '');
+}
+
+// Build one contenteditable cell.
+function csRichMakeCell(id, html) {
+  const cell = document.createElement('div');
+  cell.className = 'cs-rich-cell';
+  cell.setAttribute('contenteditable', RECIPIENT_MODE ? 'false' : 'true');
+  cell.innerHTML = csRichSanitizeHtml(html || '');
+  if (!RECIPIENT_MODE) {
+    cell.addEventListener('input', scheduleAutoSave);
+    cell.addEventListener('focus', () => csRichSetActive(id, cell));
+    cell.addEventListener('blur', () => {
+      // Re-sanitize on blur so pasted junk never lingers in the DOM.
+      const clean = csRichSanitizeHtml(cell.innerHTML);
+      if (clean !== cell.innerHTML) cell.innerHTML = clean;
+      clearTimeout(_saveTimer);
+      doAutoSave();
+    });
+  }
+  return cell;
+}
+
+let _csRichActive = { today: null, advance: null };
+function csRichSetActive(id, cell) { _csRichActive[id] = cell; }
+
+// (Re)render a section's grid at `cols`, preserving existing cell content.
+// Growing appends empty cells; shrinking MERGES trailing cell content into the
+// last surviving cell (so nothing is silently lost). (User 2026-07-09.)
+function csRichRender(id, cols, existingCells) {
+  const grid = document.getElementById('cs-rich-grid-' + id);
+  if (!grid) return;
+  cols = Math.max(1, Math.min(6, cols | 0));
+  let cells = existingCells;
+  if (!Array.isArray(cells)) {
+    cells = Array.from(grid.querySelectorAll('.cs-rich-cell')).map(c => c.innerHTML);
+  }
+  if (cells.length > cols) {
+    // Merge trailing cells into the last surviving one.
+    const head = cells.slice(0, cols - 1);
+    const merged = cells.slice(cols - 1).filter(h => csRichToText(h)).join('<br>');
+    cells = head.concat([merged]);
   } else {
-    csSetLightPreview(on, false);
+    while (cells.length < cols) cells.push('');
   }
-  // Print routes through the same class scope so the printed sheet is the designed
-  // light theme regardless of the toggle. Restore the prior state afterward.
-  let _prePrintLight = null;
-  window.addEventListener('beforeprint', () => {
-    _prePrintLight = document.body.classList.contains('light-preview');
-    document.body.classList.add('light-preview');
+  grid.innerHTML = '';
+  grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+  cells.forEach(h => grid.appendChild(csRichMakeCell(id, h)));
+  CS_RICH_STATE[id].cols = cols;
+  // Reflect active column button.
+  const bar = document.querySelector('.cs-rich-toolbar[data-rich-for="' + id + '"]');
+  if (bar) bar.querySelectorAll('.cs-rich-col-btn').forEach(b => {
+    b.classList.toggle('active', (+b.getAttribute('data-cols')) === cols);
   });
-  window.addEventListener('afterprint', () => {
-    if (_prePrintLight === false) document.body.classList.remove('light-preview');
-    _prePrintLight = null;
+}
+
+// Initial build: read stored rich data, else migrate legacy plain text → cell 1.
+function csRichScheduleInit() {
+  [['today', 'today_schedule_rich', 'schedule_notes'],
+   ['advance', 'advance_schedule_rich', 'advance_schedule']].forEach(([id, richKey, legacyKey]) => {
+    const grid = document.getElementById('cs-rich-grid-' + id);
+    if (!grid) return;
+    let cols = 1, cells = null;
+    const rich = CS_DATA[richKey];
+    if (rich && Array.isArray(rich.cells) && rich.cells.length) {
+      cols = Math.max(1, Math.min(6, (+rich.cols) || rich.cells.length));
+      cells = rich.cells.slice();
+    } else {
+      const legacy = CS_DATA[legacyKey] || '';
+      cols = 1;
+      cells = [escHtml(legacy).replace(/\n/g, '<br>')];
+    }
+    csRichRender(id, cols, cells);
   });
-})();
+
+  // Column buttons.
+  document.querySelectorAll('.cs-rich-col-btn').forEach(btn => {
+    btn.addEventListener('click', ev => {
+      ev.preventDefault();
+      const bar = btn.closest('.cs-rich-toolbar');
+      const id = bar ? bar.getAttribute('data-rich-for') : null;
+      if (!id) return;
+      csRichRender(id, +btn.getAttribute('data-cols'), null);
+      scheduleAutoSave();
+    });
+  });
+
+  // Formatting buttons (execCommand on the active cell's selection).
+  document.querySelectorAll('.cs-rich-fmt-btn').forEach(btn => {
+    // mousedown (not click) so the cell keeps focus/selection.
+    btn.addEventListener('mousedown', ev => {
+      ev.preventDefault();
+      const bar = btn.closest('.cs-rich-toolbar');
+      const id = bar ? bar.getAttribute('data-rich-for') : null;
+      const active = id ? _csRichActive[id] : null;
+      if (active) active.focus();
+      try { document.execCommand(btn.getAttribute('data-cmd'), false, null); } catch (_) {}
+      scheduleAutoSave();
+    });
+  });
+}
+
+// ── Light preview ──────────────────────────────────────────────────────────────
+// The call-sheet page is now ALWAYS the designed LIGHT theme (body.light-preview
+// is forced server-side in the body_class block for every callsheet render). The
+// old ☀ toggle + its localStorage state + the before/afterprint class swap were
+// removed 2026-07-09 — the class is unconditionally present, so print already
+// routes through the single class-scoped designed-light rule set. Do NOT
+// reintroduce a toggle; if the sheet must ever go dark again, remove the forced
+// class in the body_class block instead.
 
 // setAudience() + the 'View As:' pill bar were removed 2026-07-09 — the
 // client-side section toggling had drifted from the server-side audience

@@ -3735,6 +3735,118 @@ a.tab-link:hover { background: var(--bg-3); }
     color: #16181d !important;
     font-size: 9.5pt;
   }
+/* ══════════════════════════════════════════════════════════════════════════
+   ALWAYS-WHITE CHROME (internal editing view only).
+   The call-sheet page is unconditionally the designed light theme, INCLUDING
+   the internal editing chrome (view links, date nav, edit banner, version
+   dropdown, distribution + logos panels, message tabs, rich toolbars). That
+   chrome was designed on dark and uses the dark theme tokens, so on white it
+   would read washed-out. These rules give it intentional light styling. Scoped
+   to :not(.recipient-mode):not(.pdf-mode) — those paths hide the chrome anyway
+   and must not be touched. The dark app navbar (base.html, OUTSIDE
+   .main-content) is untouched. (User 2026-07-09: "always make the call sheet
+   white no matter what".)
+   ════════════════════════════════════════════════════════════════════════ */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .main-content {
+    background: #fff;
+  }
+/* Chrome bars: light band, hairline border, dark text. */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-screen-header,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .tabs-row,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-date-nav,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-edit-banner {
+    background: #f4f6f9 !important;
+    border-color: #d5d9e0 !important;
+    color: #1f2733 !important;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .page-header,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-screen-header h1,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .breadcrumb,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .breadcrumb a,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-edit-hint,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-save-status {
+    color: #1f2733 !important;
+  }
+/* Tabs. */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .tab-btn,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .tab-link {
+    color: #5a6472 !important;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .tab-btn:hover,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .tab-link:hover {
+    color: #1d4ed8 !important;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .tab-btn.active {
+    color: #16181d !important;
+    border-bottom-color: #1d4ed8 !important;
+  }
+/* Buttons + selects in the chrome (outlined/ghost variants on white). */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-screen-header .btn-outline,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-date-nav .btn,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-screen-header .btn-ghost,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .mode-seg-btn,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .version-picker-btn,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-date-jump-form select {
+    background: #fff !important;
+    border-color: #cfd5df !important;
+    color: #1f2733 !important;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-screen-header .btn-outline:hover,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-date-nav .btn:hover,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .mode-seg-btn:hover,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .version-picker-btn:hover {
+    border-color: #1d4ed8 !important;
+    color: #1d4ed8 !important;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .mode-seg-btn.active {
+    background: #1d4ed8 !important;
+    border-color: #1d4ed8 !important;
+    color: #fff !important;
+  }
+/* View-switcher pills (btn-ghost / btn-primary). */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-screen-header .btn-primary {
+    background: #1d4ed8 !important;
+    border-color: #1d4ed8 !important;
+    color: #fff !important;
+  }
+/* Version dropdown menu + distribution/logos/message panels. */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .dropdown-menu,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .version-menu,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-distribution-panel,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-logos-panel {
+    background: #fff !important;
+    border-color: #d5d9e0 !important;
+    color: #1f2733 !important;
+    box-shadow: 0 6px 24px rgba(20, 24, 40, .12) !important;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-msg-block {
+    border-color: #d5d9e0 !important;
+    color: #1f2733 !important;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .version-item-name,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .version-item-link {
+    color: #16181d !important;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .version-item:hover {
+    background: #f0f3f8 !important;
+  }
+/* Message tabs / inputs inside panels. */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-msg-tab {
+    color: #5a6472 !important;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-msg-tab.active {
+    color: #16181d !important;
+    border-color: #1d4ed8 !important;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-msg-block input,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-msg-block textarea,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-distribution-panel input,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-distribution-panel textarea,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-distribution-panel select {
+    background: #fff !important;
+    border-color: #cfd5df !important;
+    color: #16181d !important;
+  }
 :is(body.light-preview, body.pdf-mode) .callsheet-wrapper {
     max-width: 100%;
     margin: 0;
@@ -3892,6 +4004,14 @@ a.tab-link:hover { background: var(--bg-3); }
     border: 1px solid #d5d9e0 !important;
     color: #5a6472 !important;
   }
+/* Rich schedule grid: shrink cell min-height for PDF so an empty/short grid does
+   NOT reintroduce the page-1 blank-space bug (same discipline as .cs-schedule-notes
+   above — height follows content). The empty-cell placeholder is suppressed in
+   PDF (no interaction). weasyprint renders the CSS grid + inline b/i/u/text-align
+   fine (verified 68.1). (User 2026-07-09.) */
+body.pdf-mode .cs-rich-cell { min-height: 1.2rem !important; }
+body.pdf-mode .cs-rich-cell:empty::before { content: none !important; }
+body.pdf-mode .cs-rich-cell:empty { display: none !important; }
 /* ── Misc text tokens ───────────────────────────────────────────────────── */
 :is(body.light-preview, body.pdf-mode) .callsheet-info-label { color: #16181d !important; }
 :is(body.light-preview, body.pdf-mode) .callsheet-email-cell,
@@ -4286,7 +4406,7 @@ tr:hover .cs-hide-toggle,
   box-shadow: 0 0 0 2px rgba(79,126,248,.2);
 }
 
-/* Schedule notes textarea */
+/* Schedule notes textarea (legacy — retained for any fallback markup). */
 .cs-schedule-notes {
   width: 100%;
   min-height: 12rem;
@@ -4306,6 +4426,81 @@ tr:hover .cs-hide-toggle,
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(79,126,248,.2);
   outline: none;
+}
+
+/* ── Rich schedule sections (Today's Shooting + Advance) ───────────────────────
+   1-6 column grid of contenteditable cells with a column control + B/I/U/align
+   toolbar. Screen chrome uses the light-restyled tokens (the sheet is always the
+   designed light theme); the grid itself is styled the same on screen + PDF via
+   the shared light-theme block below. (User 2026-07-09.) */
+.cs-rich-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin: .35rem 0 .3rem;
+  padding: .3rem .4rem;
+  background: #f4f6f9;
+  border: 1px solid #d5d9e0;
+  border-radius: 5px;
+}
+.cs-rich-cols-label { font-size: .72rem; color: #5a6472; font-weight: 600; }
+.cs-rich-cols, .cs-rich-fmt { display: inline-flex; align-items: center; gap: 2px; }
+.cs-rich-fmt { margin-left: .35rem; }
+.cs-rich-fmt-sep {
+  width: 1px; height: 1.1rem; background: #d5d9e0; margin: 0 .25rem;
+}
+.cs-rich-col-btn,
+.cs-rich-fmt-btn {
+  min-width: 1.7rem;
+  height: 1.7rem;
+  padding: 0 .35rem;
+  border: 1px solid #cfd5df;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f2733;
+  font-size: .82rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.cs-rich-col-btn:hover,
+.cs-rich-fmt-btn:hover { border-color: #1d4ed8; color: #1d4ed8; }
+.cs-rich-col-btn.active {
+  background: #1d4ed8; border-color: #1d4ed8; color: #fff; font-weight: 700;
+}
+.cs-rich-fmt-btn:active { background: #e6ecf7; }
+
+/* The grid + cells: light styling shared by screen and PDF (weasyprint renders
+   CSS grid fine — verified 68.1). Hairline separators via cell borders. */
+.cs-rich-grid {
+  display: grid;
+  gap: 0;
+  margin: .2rem 0 .4rem;
+  border: 1px solid #d5d9e0;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #fff;
+}
+.cs-rich-cell {
+  min-height: 3.5rem;
+  padding: .45rem .55rem;
+  font-size: .82rem;
+  line-height: 1.5;
+  color: #16181d;
+  border-left: 1px solid #e4e7ec;
+  outline: none;
+  overflow-wrap: anywhere;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.cs-rich-cell:first-child { border-left: none; }
+.cs-rich-cell[contenteditable="true"]:hover { background: rgba(29,78,216,.03); }
+.cs-rich-cell[contenteditable="true"]:focus { background: rgba(29,78,216,.06); }
+.cs-rich-cell:empty::before {
+  content: 'Type here…';
+  color: #9aa2b1;
+  pointer-events: none;
 }
 
 /* Row toolbar (Add Row / Spacer buttons) */
