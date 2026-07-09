@@ -9,3 +9,4 @@ instance/
 .DS_Store
 *.log
 cliburn25_person_invoice_snapshot_*.json
+allure-results/
