@@ -540,8 +540,55 @@
     {% endfor %}
     {% endif %}
   </tbody>
+  {# ── Floating bottom date header ──────────────────────────────────────────
+     Mirrors the top <thead> date row so the dates stay visible while working
+     on lower rows. tfoot th sticks to the BOTTOM of .gantt-scroll-wrap the same
+     way thead th sticks to its top (see .gantt-foot-date rules below). Same
+     column classes as the top header so it aligns column-for-column. Display-
+     only — no click handlers. Hidden in print via the @media print rule below. #}
+  <tfoot class="gantt-foot">
+    <tr>
+      <th class="gantt-row-label gantt-foot-label">Line / Crew</th>
+      {% for d in date_range %}
+      {% set is_week_start = d.isoformat() in week_boundary_dates %}
+      <th class="gantt-date-col gantt-foot-date {{ 'weekend' if d.weekday() >= 5 else '' }} {{ 'week-start-col' if is_week_start else '' }}"
+          data-date="{{ d.isoformat() }}">
+        <div class="gantt-date-head">
+          {% if is_week_start %}
+          <span class="week-label">Wk</span>
+          {% endif %}
+          <span class="gantt-dow">{{ d.strftime('%a') }}</span>
+          <span class="gantt-day">{{ d.strftime('%-m/%-d') }}</span>
+        </div>
+      </th>
+      {% endfor %}
+    </tr>
+  </tfoot>
 </table>
 </div>
+
+<style>
+/* Floating bottom date header — sticks to the bottom of .gantt-scroll-wrap,
+   mirroring .gantt-table thead th (position:sticky; top:0). Body rows scroll
+   under it. Background + z-index match the top header so content doesn't show
+   through. */
+.gantt-table tfoot.gantt-foot th {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  background: var(--bg-2);
+}
+/* Bottom-left corner sits above both the sticky footer row and the sticky
+   left label column (like the top-left corner does). */
+.gantt-table tfoot.gantt-foot th.gantt-foot-label {
+  left: 0;
+  z-index: 11;
+}
+@media print {
+  /* Don't duplicate the date header on paper — the top thead already prints. */
+  .gantt-table tfoot.gantt-foot { display: none !important; }
+}
+</style>
 
 {% if gantt_locations %}
 <!-- ── Locations key/legend ── (day-type chips + location-type icons) -->
@@ -619,6 +666,9 @@
   {% endfor %}
   <div class="day-picker-divider"></div>
   <button class="day-pick-btn" data-type="">✕ Clear</button>
+  <div class="day-picker-divider"></div>
+  <button class="day-pick-btn" data-type="__loc_copy__">📋 Copy</button>
+  <button class="day-pick-btn" data-type="__loc_paste__">📋 Paste</button>
 </div>
 
 <!-- Crew picker popover -->
@@ -802,6 +852,22 @@ const LOC_DAY_TYPES  = {{ DAY_TYPE_PICKER | tojson }};  // cycle order
 const LOC_DAY_LABELS = Object.fromEntries(Object.entries(LOC_DAY_META).map(([k,v]) => [k, v.label]));
 function locDayChip(v) { const m = LOC_DAY_META[v]; return m ? m.chip : (v ? v.toUpperCase() : ''); }
 function locDayLabel(v){ const m = LOC_DAY_META[v]; return m ? m.label : (v || ''); }
+
+// ── Location day-type copy/paste ─────────────────────────────────────────────
+// Locations get a simple single-cell copy → paste, mirroring the crew cells'
+// right-click Copy/Paste. (The crew grid's rectangle copy + Paste Special live
+// in gantt.js and depend on its selection model, which isn't reachable from
+// here, so location copy/paste is single-cell only.) _locClipboard holds the
+// last-copied day_type string ('' meaning "clear"); null = nothing copied yet.
+let _locClipboard = null;
+
+// Read a location cell's current day_type from its loc-day-<t> class ('' = none).
+function locCellType(cell) {
+  for (const t of LOC_DAY_TYPES) {
+    if (cell.classList.contains('loc-day-' + t)) return t;
+  }
+  return '';
+}
 
 // ── Realtime Collaboration (Gantt) ──────────────────────────────────────────
 (function() {
@@ -1063,11 +1129,29 @@ function closeLocDayPicker() {
   if (!picker) return;
 
   // Button click → apply type (or clear) to the remembered cell.
+  // The two sentinel actions (__loc_copy__ / __loc_paste__) are handled
+  // separately from the real day-type buttons: copy stashes the target
+  // cell's current type in _locClipboard, paste applies the stashed type
+  // via the shared applyLocDay() (which also POSTs the change).
   picker.querySelectorAll('.day-pick-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const cell = picker._targetCell;
+      const action = btn.dataset.type;
       closeLocDayPicker();
-      if (cell) applyLocDay(cell, btn.dataset.type || '');
+      if (!cell) return;
+      if (action === '__loc_copy__') {
+        _locClipboard = locCellType(cell);
+        return;
+      }
+      if (action === '__loc_paste__') {
+        if (_locClipboard === null) {
+          alert('Nothing copied yet. Right-click a location cell → Copy first.');
+          return;
+        }
+        applyLocDay(cell, _locClipboard);
+        return;
+      }
+      applyLocDay(cell, action || '');
     });
   });
 
