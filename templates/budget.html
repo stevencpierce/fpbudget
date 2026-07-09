@@ -23502,7 +23502,14 @@ setTimeout(function() {
         ? `<span style="font-size:11px;color:${spanned?'var(--text-muted)':'#8fa9d6'};margin-left:6px" title="Confirmation #">#${_esc(detail.confirmation_no)}</span>`
         : '';
       const spanTag = (spanned)
-        ? `<span style="font-size:10px;color:var(--text-muted);margin-left:5px;font-style:italic" title="Hotel reservation spans this day (edit on ${_esc(detail.anchor_day || '')})">${detail.checkout_day ? 'check-out day' : 'mid-stay'}</span>`
+        ? `<span style="font-size:10px;color:var(--text-muted);margin-left:5px;font-style:italic" title="Hotel reservation spans this day (edit on ${_esc(detail.anchor_day || '')})">mid-stay</span>`
+        : '';
+      // Checkout morning: informational note only — the hotel slot itself is
+      // FREE so a new reservation with a new confirmation can check in the
+      // same day. (User 2026-07-09: "a checkout day should just be released.")
+      const checkoutNote = (kind === 'hotel' && r.hotel_checkout)
+        ? `<span style="font-size:10px;color:var(--text-muted);margin-left:6px;font-style:italic"
+                 title="Checking out of ${_esc(r.hotel_checkout.hotel_name || 'hotel')} this morning — reservation lives on ${_esc(r.hotel_checkout.anchor_day || '')}">◀ check-out${r.hotel_checkout.confirmation_no ? ' #' + _esc(r.hotel_checkout.confirmation_no) : ''}</span>`
         : '';
       const activeStyle = isOn
         ? (spanned
@@ -23511,7 +23518,7 @@ setTimeout(function() {
         : 'background:transparent;color:var(--text-muted);border:1px solid var(--border)';
       return `<label style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;${activeStyle}" title="${label}">
                 <input type="checkbox" ${isOn?'checked':''} onclick="${handler}" style="margin:0;width:14px;height:14px">
-                ${label}${detailDot}${confBadge}${spanTag}${detailBtn}
+                ${label}${detailDot}${confBadge}${spanTag}${checkoutNote}${detailBtn}
               </label>`;
     };
     const pdSelect = (r) => `

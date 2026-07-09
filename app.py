@@ -17167,7 +17167,8 @@ def travel_grid(pid, bid):
     # Build a per-(line, instance, date) index of hotel TDs so a person mid-stay
     # sees the same confirmation on each day, not just the anchor cell.
     from datetime import timedelta as _td_span
-    hotel_spans = {}  # (line_id, instance, date_iso) → list[(td, anchor_iso)]
+    hotel_spans = {}      # (line_id, instance, date_iso) → list[(td, anchor_iso)]
+    hotel_checkouts = {}  # (line_id, instance, checkout_iso) → list[{name, conf, anchor}]
     for _sd_id, _kinds in details_by_sd.items():
         _htd = _kinds.get('hotel')
         if not _htd or not _htd.check_in or not _htd.check_out:
@@ -17180,11 +17181,23 @@ def travel_grid(pid, bid):
         _k_line = _anchor_sd.budget_line_id
         _k_inst = _anchor_sd.crew_instance or 1
         _anchor_iso = _anchor_sd.date.isoformat()
+        # Spans cover the NIGHTS only [check_in, check_out). The checkout day
+        # must NOT occupy the hotel slot — the person may check into a NEW
+        # hotel that same day with a new confirmation (user 2026-07-09:
+        # "a checkout day should just be released"). The checkout morning
+        # still gets a small informational note via hotel_checkouts below.
         _d = _htd.check_in
-        while _d <= _htd.check_out:  # inclusive of checkout for display
+        while _d < _htd.check_out:
             hotel_spans.setdefault((_k_line, _k_inst, _d.isoformat()), []).append(
                 (_htd, _anchor_iso))
             _d = _d + _td_span(days=1)
+        if _htd.check_out > _htd.check_in:   # zero-night rows have no checkout
+            hotel_checkouts.setdefault(
+                (_k_line, _k_inst, _htd.check_out.isoformat()), []).append({
+                    "hotel_name": _htd.hotel_name,
+                    "confirmation_no": _htd.confirmation_no,
+                    "anchor_day": _anchor_iso,
+                })
 
     import json as _json_t
     rows = []
@@ -17269,13 +17282,15 @@ def travel_grid(pid, bid):
                 (line.id, sd.crew_instance or 1, sd.date.isoformat()))
             if _spans_here:
                 _span_td, _span_anchor = _spans_here[0]
-                _is_checkout = (_span_td.check_out is not None
-                                and sd.date == _span_td.check_out)
                 _hotel_detail = _td_dict(_span_td, spanned=True,
-                                         anchor_day=_span_anchor,
-                                         checkout_day=_is_checkout)
+                                         anchor_day=_span_anchor)
+        # Checkout morning: informational only — the hotel slot stays FREE so
+        # a new reservation (new confirmation) can check in the same day.
+        _checkout_notes = hotel_checkouts.get(
+            (line.id, sd.crew_instance or 1, sd.date.isoformat())) or []
 
         rows.append({
+            "hotel_checkout": (_checkout_notes[0] if _checkout_notes else None),
             "schedule_day_id": sd.id,
             "line_id":         line.id,
             "instance":        sd.crew_instance or 1,
