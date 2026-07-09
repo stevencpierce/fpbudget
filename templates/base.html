@@ -27,6 +27,7 @@
       <a href="{{ url_for('admin_panel') }}">Admin</a>
       {% endif %}
       {% if current_user.is_authenticated %}
+      <a href="{{ url_for('analyzer_portal') }}" title="Drop any document — it's analyzed and filed automatically">🗂 Analyzer</a>
       <a href="{{ url_for('mobile_upload') }}" title="Mobile-friendly receipt upload">📷 Upload</a>
       <a href="{{ url_for('profile') }}">My Profile</a>
       {% endif %}

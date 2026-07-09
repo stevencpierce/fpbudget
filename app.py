@@ -3012,7 +3012,7 @@ _FORCE_PW_ALLOWED = {"profile", "logout", "login", "static",
                      "callsheet_view_public", "callsheet_confirm_public",
                      "docs_dashboard", "docs_project", "docs_upload_post",
                      "docs_upload_status",
-                     "mobile_upload"}
+                     "mobile_upload", "analyzer_portal"}
 
 _DOCS_ONLY_ALLOWED = _FORCE_PW_ALLOWED | {"docs_upload_delete"}
 
@@ -27543,6 +27543,23 @@ def docs_inbox_page(pid):
 def mobile_upload():
     projects = _docs_accessible_projects(current_user)
     return render_template("mobile_upload.html", projects=projects)
+
+
+@app.route("/analyzer", methods=["GET"])
+@login_required
+def analyzer_portal():
+    """Standalone Document Analyzer portal (user 2026-07).
+
+    Revives the old external FP Document Analyzer drop-portal as a page
+    inside the app: log in, drop any document anywhere on the page, and
+    it's OCR'd + auto-filed via the same pipeline as /docs uploads —
+    processed copy to 01_ADMIN/PROCESSED DOCUMENTS/<TYPE>/, untouched
+    original archived next to it in _SOURCE_ARCHIVE/. Desktop-first
+    counterpart to the phone-first /upload page; both POST to
+    /docs/<pid>/upload.
+    """
+    projects = _docs_accessible_projects(current_user)
+    return render_template("analyzer_portal.html", projects=projects)
 
 
 @app.route("/docs/<int:pid>/upload", methods=["POST"])

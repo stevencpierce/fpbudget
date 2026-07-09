@@ -73,6 +73,7 @@
     {% if not current_user.is_docs_only %}
       <a href="{{ url_for('index') }}" class="btn-sm">← Dashboard</a>
     {% endif %}
+    <a href="{{ url_for('analyzer_portal') }}" class="btn-sm" title="Drop-anywhere document analyzer portal">🗂 Analyzer</a>
     <a href="{{ url_for('mobile_upload') }}" class="btn-sm" title="Phone-friendly upload page">📷 Mobile Upload</a>
     <a href="{{ url_for('logout') }}" class="btn-sm">Sign out</a>
   </div>

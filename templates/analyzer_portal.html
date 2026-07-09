@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0d0f14">
+  <link rel="icon" type="image/png" sizes="192x192" href="{{ url_for('static', filename='upload-icon-192.png') }}">
+  <title>FP Document Analyzer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: #0d0f14; min-height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #e8e9ec;
+      min-height: 100vh;
+    }
+
+    .topbar {
+      background: #161920; border-bottom: 1px solid #2a2d36;
+      padding: 12px 20px;
+      display: flex; align-items: center; gap: 14px;
+      position: sticky; top: 0; z-index: 10;
+    }
+    .topbar-logo { font-size: 16px; font-weight: 700; white-space: nowrap; }
+    .topbar-logo span { color: #5b8af9; }
+    .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+    .btn-sm {
+      background: #1e2230; color: #b0b8c8; border: 1px solid #2a2d36;
+      padding: 6px 12px; border-radius: 6px; font-size: 12px;
+      text-decoration: none; white-space: nowrap;
+    }
+    .btn-sm:hover { background: #242838; }
+
+    .wrap { max-width: 860px; margin: 0 auto; padding: 26px 18px 80px; }
+
+    .page-title { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+    .page-sub   { font-size: 13px; color: #6b7280; margin-bottom: 20px; line-height: 1.5; }
+
+    .field-label {
+      font-size: 11px; font-weight: 600; color: #6b7280;
+      text-transform: uppercase; letter-spacing: .5px;
+      margin-bottom: 6px;
+    }
+    .project-select {
+      width: 100%; max-width: 420px; padding: 12px;
+      background: #161920; color: #e8e9ec;
+      border: 1px solid #2a2d36; border-radius: 10px;
+      font-size: 15px;
+      appearance: none; -webkit-appearance: none;
+      background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path fill='%236b7280' d='M6 8L0 0h12z'/></svg>");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+      padding-right: 36px;
+    }
+    .no-projects {
+      background: #2a1414; color: #ef4444; border: 1px solid #4a2020;
+      padding: 14px; border-radius: 10px; font-size: 14px;
+    }
+
+    /* ── The drop zone ── */
+    .drop-zone {
+      margin-top: 20px;
+      border: 2px dashed #2a2d36; border-radius: 16px;
+      padding: 56px 24px; text-align: center;
+      cursor: pointer; transition: border-color .2s, background .2s;
+      background: #111318;
+      position: relative;
+    }
+    .drop-zone:hover { border-color: #3a4258; }
+    .drop-zone.drag-over { border-color: #5b8af9; background: #131824; }
+    .drop-zone input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%;
+    }
+    .drop-icon { font-size: 42px; margin-bottom: 10px; }
+    .drop-primary { font-size: 17px; font-weight: 600; color: #d0d5e0; }
+    .drop-secondary { font-size: 13px; color: #6b7280; margin-top: 6px; }
+    .drop-secondary span { color: #5b8af9; }
+
+    /* Whole-window drag overlay */
+    .drag-overlay {
+      display: none;
+      position: fixed; inset: 0; z-index: 100;
+      background: rgba(13, 15, 20, .88);
+      border: 3px dashed #5b8af9; border-radius: 18px;
+      margin: 12px;
+      align-items: center; justify-content: center;
+      pointer-events: none;
+      font-size: 22px; font-weight: 700; color: #7fa6ff;
+    }
+    .drag-overlay.visible { display: flex; }
+
+    /* ── Summary chips ── */
+    .summary { margin-top: 22px; display: none; gap: 10px; flex-wrap: wrap; }
+    .summary.visible { display: flex; }
+    .chip {
+      font-size: 12px; font-weight: 600; padding: 6px 12px;
+      border-radius: 999px; border: 1px solid #2a2d36; background: #161920;
+      color: #b0b8c8;
+    }
+    .chip.filed  { color: #22c55e; border-color: #1a4228; }
+    .chip.review { color: #fbbf24; border-color: #4a3a10; }
+    .chip.failed { color: #ef4444; border-color: #4a2020; }
+
+    /* ── Results ── */
+    .results { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .card {
+      background: #161920; border: 1px solid #2a2d36; border-radius: 12px;
+      padding: 14px 16px;
+      display: flex; gap: 14px; align-items: flex-start;
+    }
+    .card-icon {
+      width: 42px; height: 42px; border-radius: 8px; flex-shrink: 0;
+      background: #1e2230; display: flex; align-items: center; justify-content: center;
+      font-size: 20px; overflow: hidden;
+    }
+    .card-icon img { width: 100%; height: 100%; object-fit: cover; }
+    .card-body { flex: 1; min-width: 0; }
+    .card-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card-meta { font-size: 12px; color: #6b7280; margin-top: 2px; }
+    .card-status { font-size: 13px; margin-top: 6px; font-weight: 500; }
+    .card-status.analyzing { color: #f59e0b; }
+    .card-status.filed     { color: #22c55e; }
+    .card-status.review    { color: #fbbf24; }
+    .card-status.dup       { color: #a78bfa; }
+    .card-status.error     { color: #ef4444; }
+    .card-path {
+      font-size: 11.5px; color: #8b93a5; margin-top: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      word-break: break-all;
+      background: #111318; border: 1px solid #22252e;
+      padding: 6px 8px; border-radius: 6px;
+    }
+    .card-path b { color: #c8cede; font-weight: 600; }
+    .card-actions { margin-top: 8px; display: flex; gap: 8px; }
+    .card-btn {
+      background: #1e2230; color: #b0b8c8; border: 1px solid #2a2d36;
+      padding: 5px 12px; border-radius: 6px; font-size: 12px;
+      cursor: pointer; text-decoration: none; display: inline-block;
+    }
+    .card-btn:hover { background: #242838; }
+
+    .spinner {
+      display: inline-block; width: 12px; height: 12px;
+      border: 2px solid #f59e0b44; border-top-color: #f59e0b;
+      border-radius: 50%; margin-right: 6px; vertical-align: -2px;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .footer-note {
+      margin-top: 34px;
+      font-size: 12px; color: #4b5263; line-height: 1.7;
+    }
+    .footer-note code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px; color: #6b7280;
+      background: #161920; padding: 1px 5px; border-radius: 4px;
+    }
+
+    @media (max-width: 640px) {
+      .drop-zone { padding: 36px 16px; }
+      .page-title { font-size: 19px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="drag-overlay" id="dragOverlay">Drop to analyze &amp; file</div>
+
+<div class="topbar">
+  <div class="topbar-logo">FP <span>Document Analyzer</span></div>
+  <div class="topbar-right">
+    <a href="{{ url_for('docs_dashboard') }}" class="btn-sm" title="Full docs dashboard">🗂 Docs</a>
+    <a href="{{ url_for('mobile_upload') }}" class="btn-sm" title="Phone-friendly upload page">📷 Mobile</a>
+    <a href="{{ url_for('logout') }}" class="btn-sm">Sign out</a>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div class="page-title">Drop a document. It files itself.</div>
+  <div class="page-sub">
+    Every file is OCR'd, renamed, and filed to the project's
+    <b>PROCESSED&nbsp;DOCUMENTS</b> folder in Dropbox — the untouched original is archived
+    right next to it in <b>_SOURCE_ARCHIVE</b> for reference.
+  </div>
+
+  {% if not projects %}
+    <div class="no-projects">
+      You don't have access to any projects yet. Ask an admin to grant you access.
+    </div>
+  {% else %}
+    <div class="field-label">File into project</div>
+    <select id="projectSelect" class="project-select">
+      {% for p in projects %}
+        <option value="{{ p.id }}">{{ p.name }}</option>
+      {% endfor %}
+    </select>
+
+    <div class="drop-zone" id="dropZone">
+      <input type="file" id="dropInput" multiple accept="image/*,application/pdf,.heic,.heif">
+      <div class="drop-icon">📄</div>
+      <div class="drop-primary">Drop documents anywhere on this page</div>
+      <div class="drop-secondary">or <span>click to browse</span> · PDF, JPG, PNG, HEIC · multiple files OK</div>
+    </div>
+
+    <div class="summary" id="summary">
+      <div class="chip filed"  id="chipFiled">0 filed</div>
+      <div class="chip review" id="chipReview">0 need review</div>
+      <div class="chip failed" id="chipFailed">0 failed</div>
+    </div>
+
+    <div class="results" id="results"></div>
+
+    <div class="footer-note">
+      Processed copy → <code>01_ADMIN/PROCESSED DOCUMENTS/&lt;TYPE&gt;/</code> ·
+      Original source → <code>01_ADMIN/PROCESSED DOCUMENTS/_SOURCE_ARCHIVE/</code><br>
+      Docs the analyzer isn't ≥90% sure about land in the review queue on the
+      <a href="{{ url_for('docs_dashboard') }}" style="color:#6b7280">Docs page</a> instead of being mis-filed.
+    </div>
+  {% endif %}
+
+</div>
+
+<script>
+const LAST_PROJECT_KEY = "fpbudget.analyzer.last_project";
+const sel = document.getElementById('projectSelect');
+if (sel) {
+  try {
+    const last = localStorage.getItem(LAST_PROJECT_KEY);
+    if (last && [...sel.options].some(o => o.value === last)) sel.value = last;
+  } catch (e) { /* private mode etc. */ }
+  sel.addEventListener('change', () => {
+    try { localStorage.setItem(LAST_PROJECT_KEY, sel.value); } catch (e) {}
+  });
+}
+
+// items: { file, pid, status, el, ... }  status: queued|analyzing|filed|review|dup|error
+const items = [];
+let pumping = false;
+
+function fileIcon(file) {
+  if (file.type && file.type.startsWith('image/')) return '🖼️';
+  if (file.type === 'application/pdf') return '📄';
+  return '📎';
+}
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+// Show the path from 01_ADMIN onward — the ops-root prefix is noise here.
+function shortPath(p) {
+  if (!p) return '';
+  const i = p.indexOf('01_ADMIN');
+  return i >= 0 ? p.slice(i) : p;
+}
+
+function updateSummary() {
+  const filed  = items.filter(i => i.status === 'filed' || i.status === 'dup').length;
+  const review = items.filter(i => i.status === 'review').length;
+  const failed = items.filter(i => i.status === 'error').length;
+  document.getElementById('chipFiled').textContent  = filed  + ' filed';
+  document.getElementById('chipReview').textContent = review + ' need review';
+  document.getElementById('chipFailed').textContent = failed + ' failed';
+  document.getElementById('summary').classList.toggle('visible', items.length > 0);
+}
+
+function makeCard(item) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <div class="card-icon">${fileIcon(item.file)}</div>
+    <div class="card-body">
+      <div class="card-name"></div>
+      <div class="card-meta">${formatSize(item.file.size)}</div>
+      <div class="card-status analyzing"><span class="spinner"></span>Queued…</div>
+    </div>`;
+  card.querySelector('.card-name').textContent = item.file.name;
+  item.el = card;
+  // Image thumbnail
+  if (item.file.type && item.file.type.startsWith('image/')) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.src = e.target.result;
+      const icon = card.querySelector('.card-icon');
+      icon.textContent = '';
+      icon.appendChild(img);
+    };
+    reader.readAsDataURL(item.file);
+  }
+  document.getElementById('results').prepend(card);
+}
+
+function setStatus(item, cls, html) {
+  const st = item.el.querySelector('.card-status');
+  st.className = 'card-status ' + cls;
+  st.innerHTML = html;
+}
+function addPath(item, label, path) {
+  const div = document.createElement('div');
+  div.className = 'card-path';
+  const b = document.createElement('b');
+  b.textContent = label + ' ';
+  div.appendChild(b);
+  div.appendChild(document.createTextNode(shortPath(path)));
+  item.el.querySelector('.card-body').appendChild(div);
+}
+function addActions(item, buttons) {
+  const old = item.el.querySelector('.card-actions');
+  if (old) old.remove();
+  const div = document.createElement('div');
+  div.className = 'card-actions';
+  buttons.forEach(btn => div.appendChild(btn));
+  item.el.querySelector('.card-body').appendChild(div);
+}
+
+function addFiles(files) {
+  const pid = sel ? sel.value : null;
+  if (!pid) { alert('Pick a project first.'); return; }
+  for (const f of files) {
+    const item = { file: f, pid, status: 'queued', el: null };
+    items.push(item);
+    makeCard(item);
+  }
+  updateSummary();
+  pump();
+}
+
+// Sequential pump — one analysis at a time keeps server memory flat and
+// makes per-file progress obvious. Veryfi OCR takes ~5-20s per doc.
+async function pump() {
+  if (pumping) return;
+  pumping = true;
+  try {
+    for (;;) {
+      const item = items.find(i => i.status === 'queued');
+      if (!item) break;
+      await analyzeOne(item);
+      updateSummary();
+    }
+  } finally {
+    pumping = false;
+  }
+}
+
+async function analyzeOne(item) {
+  item.status = 'analyzing';
+  setStatus(item, 'analyzing', '<span class="spinner"></span>Analyzing… (OCR + filing)');
+
+  const fd = new FormData();
+  fd.append('file', item.file);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+  let resp, data = {};
+  try {
+    resp = await fetch(`/docs/${item.pid}/upload`, {
+      method: 'POST', body: fd, signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    try { data = await resp.json(); } catch (e) { /* empty body */ }
+  } catch (e) {
+    clearTimeout(timeoutId);
+    return fail(item, e.name === 'AbortError' ? 'Timed out after 120s' : (e.message || 'Network error'));
+  }
+
+  const conf = data.confidence != null ? Math.round(data.confidence * 100) + '%' : '';
+  const meta = [data.doc_type, conf && conf + ' confidence', data.vendor,
+                data.amount != null ? '$' + Number(data.amount).toLocaleString('en-US', {minimumFractionDigits: 2}) : null]
+               .filter(Boolean).join(' · ');
+
+  if (resp.status === 201 && (data.status === 'ok' || data.status === 'review_dup')) {
+    if (data.status === 'review_dup') {
+      item.status = 'dup';
+      setStatus(item, 'dup', '⚠ Filed — flagged as possible duplicate' + (meta ? ' · ' + meta : ''));
+    } else {
+      item.status = 'filed';
+      setStatus(item, 'filed', '✓ Filed' + (meta ? ' · ' + meta : ''));
+    }
+    if (data.new_filename && data.new_filename !== item.file.name) {
+      item.el.querySelector('.card-meta').textContent =
+        formatSize(item.file.size) + ' · renamed to ' + data.new_filename;
+    }
+    if (data.filed_path) addPath(item, 'Filed →', data.filed_path);
+  } else if (resp.status === 202 || data.status === 'review') {
+    item.status = 'review';
+    setStatus(item, 'review', '⚠ Needs review — confidence too low to auto-file' + (conf ? ' (' + conf + ')' : ''));
+    const link = document.createElement('a');
+    link.className = 'card-btn';
+    link.href = `/docs/${item.pid}/`;
+    link.textContent = 'Open review queue →';
+    addActions(item, [link]);
+  } else if (data.status === 'duplicate') {
+    item.status = 'dup';
+    setStatus(item, 'dup', '⚠ Already uploaded — byte-identical file exists');
+  } else {
+    return fail(item, (data && data.error) || `Server error (HTTP ${resp.status})`);
+  }
+}
+
+function fail(item, msg) {
+  item.status = 'error';
+  setStatus(item, 'error', '✕ ' + msg);
+  const retry = document.createElement('button');
+  retry.className = 'card-btn';
+  retry.textContent = 'Retry';
+  retry.onclick = () => {
+    item.status = 'queued';
+    setStatus(item, 'analyzing', '<span class="spinner"></span>Queued…');
+    const acts = item.el.querySelector('.card-actions');
+    if (acts) acts.remove();
+    updateSummary();
+    pump();
+  };
+  addActions(item, [retry]);
+}
+
+// Drop-zone (click + drop on the card itself)
+const dropZone  = document.getElementById('dropZone');
+const dropInput = document.getElementById('dropInput');
+if (dropZone) {
+  dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault(); dropZone.classList.remove('drag-over');
+    addFiles(Array.from(e.dataTransfer.files));
+  });
+  dropInput.addEventListener('change', () => {
+    addFiles(Array.from(dropInput.files)); dropInput.value = '';
+  });
+
+  // Whole-window drop: dragging a file anywhere over the page lights up
+  // the overlay; dropping anywhere files it. dragenter/dragleave fire on
+  // every child node, so track depth to know when we've really left.
+  const overlay = document.getElementById('dragOverlay');
+  let dragDepth = 0;
+  window.addEventListener('dragenter', e => {
+    if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+    dragDepth++;
+    overlay.classList.add('visible');
+  });
+  window.addEventListener('dragleave', () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) overlay.classList.remove('visible');
+  });
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => {
+    e.preventDefault();
+    dragDepth = 0;
+    overlay.classList.remove('visible');
+    dropZone.classList.remove('drag-over');
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+      addFiles(Array.from(e.dataTransfer.files));
+    }
+  });
+
+  // Paste support: ⌘V a screenshot straight onto the page.
+  window.addEventListener('paste', e => {
+    const files = [...(e.clipboardData ? e.clipboardData.items : [])]
+      .filter(it => it.kind === 'file')
+      .map(it => it.getAsFile())
+      .filter(Boolean);
+    if (files.length) addFiles(files);
+  });
+}
+
+// Warn before closing mid-analysis.
+window.addEventListener('beforeunload', e => {
+  if (items.some(i => i.status === 'queued' || i.status === 'analyzing')) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+</script>
+</body>
+</html>

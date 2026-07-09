@@ -178,6 +178,7 @@
   <div class="topbar-logo">FP <span>Budget</span></div>
   <div class="topbar-crumb">/ {{ project.name }}</div>
   <div class="topbar-right">
+    <a href="{{ url_for('analyzer_portal') }}" class="btn-sm" title="Drop-anywhere document analyzer portal">🗂 Analyzer</a>
     <a href="{{ url_for('mobile_upload') }}" class="btn-sm" title="Phone-friendly upload page">📷 Mobile Upload</a>
     <a href="{{ url_for('logout') }}" class="btn-sm">Sign out</a>
   </div>
