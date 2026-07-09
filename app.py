@@ -11088,7 +11088,7 @@ def travel_apply_doc(pid, bid):
     instance = int(data.get("instance") or 1)
     date_s   = (data.get("date") or "").strip()
     kind     = (data.get("kind") or "").strip()
-    if kind not in ('flight', 'hotel', 'car_rental'):
+    if kind not in ('flight', 'hotel', 'car_rental', 'car_service'):
         return jsonify({"error": "Invalid kind"}), 400
     from datetime import datetime as _dt
     try:
@@ -11179,6 +11179,14 @@ def travel_apply_doc(pid, bid):
             return jsonify({"error": "Check-out date is before check-in date."}), 400
     elif kind == 'car_rental':
         for f in ('rental_co', 'pickup_location'):
+            if _s(f):
+                setattr(td, f, _s(f))
+        if data.get('pickup_at'):
+            td.pickup_at = _pdt(data.get('pickup_at'))
+        if data.get('return_at'):
+            td.return_at = _pdt(data.get('return_at'))
+    elif kind == 'car_service':
+        for f in ('rental_co', 'pickup_location', 'dropoff_location', 'contact_phone'):
             if _s(f):
                 setattr(td, f, _s(f))
         if data.get('pickup_at'):
@@ -17155,49 +17163,51 @@ def travel_grid(pid, bid):
     # Bulk-load TravelDetail rows by schedule_day_id so we can attach the
     # detail in one pass — avoids per-cell DB lookups on render.
     sd_ids = [sd.id for sd in sched_days]
-    details_by_sd = {}  # sd_id → {kind: TravelDetail}
+    details_by_sd = {}  # sd_id → {kind: [TravelDetail, ...]}  (multi-entry per kind)
     _sd_by_id = {sd.id: sd for sd in sched_days}
     if sd_ids:
         for td in TravelDetail.query.filter(TravelDetail.schedule_day_id.in_(sd_ids)).all():
-            details_by_sd.setdefault(td.schedule_day_id, {})[td.kind] = td
+            details_by_sd.setdefault(td.schedule_day_id, {}).setdefault(td.kind, []).append(td)
 
     # Hotel reservations span multiple days: one TravelDetail row (keyed to the
     # anchor day) should surface on EVERY day of the stay [check_in, check_out]
     # (checkout INCLUSIVE for display — the last day is tagged 'check-out day').
     # Build a per-(line, instance, date) index of hotel TDs so a person mid-stay
     # sees the same confirmation on each day, not just the anchor cell.
-    from datetime import timedelta as _td_span
+    from datetime import timedelta as _td_span, datetime as _dt_max_mod, date as _date_min_mod
+    _dt_max = _dt_max_mod.max        # sort sentinel: undated entries sort last
+    _date_min = _date_min_mod.min    # sort sentinel for hotels missing check-in
     hotel_spans = {}      # (line_id, instance, date_iso) → list[(td, anchor_iso)]
     hotel_checkouts = {}  # (line_id, instance, checkout_iso) → list[{name, conf, anchor}]
     for _sd_id, _kinds in details_by_sd.items():
-        _htd = _kinds.get('hotel')
-        if not _htd or not _htd.check_in or not _htd.check_out:
-            continue
-        if _htd.check_out < _htd.check_in:
-            continue
         _anchor_sd = _sd_by_id.get(_sd_id)
         if _anchor_sd is None:
             continue
         _k_line = _anchor_sd.budget_line_id
         _k_inst = _anchor_sd.crew_instance or 1
         _anchor_iso = _anchor_sd.date.isoformat()
-        # Spans cover the NIGHTS only [check_in, check_out). The checkout day
-        # must NOT occupy the hotel slot — the person may check into a NEW
-        # hotel that same day with a new confirmation (user 2026-07-09:
-        # "a checkout day should just be released"). The checkout morning
-        # still gets a small informational note via hotel_checkouts below.
-        _d = _htd.check_in
-        while _d < _htd.check_out:
-            hotel_spans.setdefault((_k_line, _k_inst, _d.isoformat()), []).append(
-                (_htd, _anchor_iso))
-            _d = _d + _td_span(days=1)
-        if _htd.check_out > _htd.check_in:   # zero-night rows have no checkout
-            hotel_checkouts.setdefault(
-                (_k_line, _k_inst, _htd.check_out.isoformat()), []).append({
-                    "hotel_name": _htd.hotel_name,
-                    "confirmation_no": _htd.confirmation_no,
-                    "anchor_day": _anchor_iso,
-                })
+        for _htd in _kinds.get('hotel', []):
+            if not _htd.check_in or not _htd.check_out:
+                continue
+            if _htd.check_out < _htd.check_in:
+                continue
+            # Spans cover the NIGHTS only [check_in, check_out). The checkout day
+            # must NOT occupy the hotel slot — the person may check into a NEW
+            # hotel that same day with a new confirmation (user 2026-07-09:
+            # "a checkout day should just be released"). The checkout morning
+            # still gets a small informational note via hotel_checkouts below.
+            _d = _htd.check_in
+            while _d < _htd.check_out:
+                hotel_spans.setdefault((_k_line, _k_inst, _d.isoformat()), []).append(
+                    (_htd, _anchor_iso))
+                _d = _d + _td_span(days=1)
+            if _htd.check_out > _htd.check_in:   # zero-night rows have no checkout
+                hotel_checkouts.setdefault(
+                    (_k_line, _k_inst, _htd.check_out.isoformat()), []).append({
+                        "hotel_name": _htd.hotel_name,
+                        "confirmation_no": _htd.confirmation_no,
+                        "anchor_day": _anchor_iso,
+                    })
 
     import json as _json_t
     rows = []
@@ -17255,12 +17265,15 @@ def travel_grid(pid, bid):
                 "check_in":        td.check_in.isoformat() if td.check_in else None,
                 "check_out":       td.check_out.isoformat() if td.check_out else None,
                 "room_type":       td.room_type,
-                "rental_co":       td.rental_co,
-                "pickup_at":       td.pickup_at.isoformat() if td.pickup_at else None,
-                "return_at":       td.return_at.isoformat() if td.return_at else None,
-                "pickup_location": td.pickup_location,
-                "miles":           float(td.miles) if td.miles is not None else None,
-                "route":           td.route,
+                "rental_co":        td.rental_co,
+                "pickup_at":        td.pickup_at.isoformat() if td.pickup_at else None,
+                "return_at":        td.return_at.isoformat() if td.return_at else None,
+                "pickup_location":  td.pickup_location,
+                "dropoff_location": td.dropoff_location,
+                "contact_phone":    td.contact_phone,
+                "self_report":      bool(td.self_report),
+                "miles":            float(td.miles) if td.miles is not None else None,
+                "route":            td.route,
             }
             if spanned:
                 # This day is mid-stay (not the anchor cell the reservation is
@@ -17271,29 +17284,51 @@ def travel_grid(pid, bid):
                 d["checkout_day"] = checkout_day
             return d
 
-        # Resolve the hotel detail for THIS day. A day inside a reservation's
-        # nightly range that isn't the anchor gets a spanned copy of the
-        # reservation (same confirmation/info, marked spanned) so the
-        # confirmation is visible on every night, not just the anchor day.
-        # A fully BLANK own-day hotel row (no name/conf/dates — e.g. a
-        # cleared-out entry) must not shadow the span (user 2026-07-09:
-        # mid-stay showed for James but not Steven — Steven's day held an
-        # empty leftover row that blocked the spanned copy).
-        _own_hotel = details.get('hotel')
-        if _own_hotel is not None and not any((
-                _own_hotel.hotel_name, _own_hotel.confirmation_no,
-                _own_hotel.hotel_address, _own_hotel.room_type, _own_hotel.notes,
-                (_own_hotel.check_in and _own_hotel.check_out
-                 and _own_hotel.check_out > _own_hotel.check_in))):
-            _own_hotel = None
-        _hotel_detail = _td_dict(_own_hotel)
-        if _hotel_detail is None:
+        # Resolve the hotel entries for THIS day. Multiple own-day reservations
+        # are all kept (multi-entry). A day inside a reservation's nightly range
+        # that isn't the anchor gets a spanned copy of the reservation (same
+        # confirmation/info, marked spanned) so the confirmation is visible on
+        # every night, not just the anchor day. Fully BLANK own-day hotel rows
+        # (no name/conf/dates — e.g. a cleared-out entry) are filtered out so
+        # they don't shadow the span (user 2026-07-09).
+        _own_hotels = [
+            h for h in details.get('hotel', [])
+            if any((h.hotel_name, h.confirmation_no, h.hotel_address,
+                    h.room_type, h.notes,
+                    (h.check_in and h.check_out and h.check_out > h.check_in)))
+        ]
+        _hotel_list = [_td_dict(h) for h in _own_hotels]
+        if not _hotel_list:
             _spans_here = hotel_spans.get(
                 (line.id, sd.crew_instance or 1, sd.date.isoformat()))
             if _spans_here:
-                _span_td, _span_anchor = _spans_here[0]
-                _hotel_detail = _td_dict(_span_td, spanned=True,
-                                         anchor_day=_span_anchor)
+                for _span_td, _span_anchor in _spans_here:
+                    _hotel_list.append(_td_dict(_span_td, spanned=True,
+                                                anchor_day=_span_anchor))
+        # Sort helper: order entries within a kind so the UI renders them in a
+        # sensible reading order (hotels by check-in, flights by departure,
+        # car service by pickup, otherwise by id).
+        def _sort_list(kind_name, tds):
+            if kind_name == 'hotel':
+                key = lambda x: (x.check_in or _date_min, x.id)
+            elif kind_name == 'flight':
+                key = lambda x: (x.depart_at or _dt_max, x.id)
+            elif kind_name in ('car_service', 'car_rental'):
+                key = lambda x: (x.pickup_at or _dt_max, x.id)
+            else:
+                key = lambda x: x.id
+            return sorted(tds, key=key)
+
+        _flight_tds  = _sort_list('flight',      details.get('flight', []))
+        _car_tds     = _sort_list('car_rental',  details.get('car_rental', []))
+        _svc_tds     = _sort_list('car_service', details.get('car_service', []))
+        _mile_tds    = _sort_list('mileage',     details.get('mileage', []))
+
+        _flight_list = [_td_dict(t) for t in _flight_tds]
+        _car_list    = [_td_dict(t) for t in _car_tds]
+        _svc_list    = [_td_dict(t) for t in _svc_tds]
+        _mile_list   = [_td_dict(t) for t in _mile_tds]
+
         # Checkout morning: informational only — the hotel slot stays FREE so
         # a new reservation (new confirmation) can check in the same day.
         _checkout_notes = hotel_checkouts.get(
@@ -17309,17 +17344,29 @@ def travel_grid(pid, bid):
             "role":            role,
             "person":          person,
             "flags": {
-                "flight":     bool(flags.get('flight')),
-                "hotel":      bool(flags.get('hotel')),
-                "car_rental": bool(flags.get('car_rental')),
-                "mileage":    bool(flags.get('mileage')),
-                "per_diem":   pd_mode,  # '' | 'full' | 'breakfast' | 'lunch' | 'dinner'
+                "flight":      bool(flags.get('flight')),
+                "hotel":       bool(flags.get('hotel')),
+                "car_rental":  bool(flags.get('car_rental')),
+                "car_service": bool(flags.get('car_service')),
+                "mileage":     bool(flags.get('mileage')),
+                "per_diem":    pd_mode,  # '' | 'full' | 'breakfast' | 'lunch' | 'dinner'
             },
+            # details_list = ORDERED list of every entry per kind (multi-entry).
+            "details_list": {
+                "flight":      _flight_list,
+                "hotel":       _hotel_list,
+                "car_rental":  _car_list,
+                "car_service": _svc_list,
+                "mileage":     _mile_list,
+            },
+            # detail = first entry per kind, kept for backward-compat during the
+            # transition to the list-based UI.
             "detail": {
-                "flight":     _td_dict(details.get('flight')),
-                "hotel":      _hotel_detail,
-                "car_rental": _td_dict(details.get('car_rental')),
-                "mileage":    _td_dict(details.get('mileage')),
+                "flight":      (_flight_list[0] if _flight_list else None),
+                "hotel":       (_hotel_list[0]  if _hotel_list  else None),
+                "car_rental":  (_car_list[0]    if _car_list    else None),
+                "car_service": (_svc_list[0]    if _svc_list    else None),
+                "mileage":     (_mile_list[0]   if _mile_list   else None),
             },
         })
 
@@ -17368,7 +17415,7 @@ def travel_toggle_flag(pid, bid):
     # per_diem_mode: '' | 'full' | 'breakfast' | 'lunch' | 'dinner'
     pd_mode  = (data.get("per_diem_mode") or "").strip()
 
-    valid_flags = {'flight', 'hotel', 'car_rental', 'mileage', 'per_diem'}
+    valid_flags = {'flight', 'hotel', 'car_rental', 'car_service', 'mileage', 'per_diem'}
     if flag not in valid_flags:
         return jsonify({"error": f"Unknown flag {flag}"}), 400
 
@@ -17578,24 +17625,41 @@ def _sync_hotel_range_flags(td, old_check_in=None, old_check_out=None):
 @app.route("/projects/<int:pid>/budget/<int:bid>/travel/detail", methods=["POST"])
 @login_required
 def travel_detail_save(pid, bid):
-    """Upsert a TravelDetail row for a (schedule_day_id, kind). Each
-    travel kind (flight/hotel/car_rental/mileage) on a given cell can
-    have one detail record carrying confirmation #, flight #, dates,
-    etc. — these wire into the call sheet email so the crew's inbox
-    has the latest reservation info."""
+    """Create / update / delete a TravelDetail row for a (schedule_day, kind).
+
+    MULTI-ENTRY (2026-07-09): a person can have several entries of the same kind
+    on one day (two flights, a morning + evening car service). Rows are addressed
+    by id, NOT upserted by (schedule_day_id, kind):
+      • td_id present            → update THAT row.
+      • td_id absent             → CREATE a new row (never silently overwrite).
+      • {delete:true, td_id}     → delete that row.
+      • {delete:true} (no td_id) → back-compat: delete the row iff exactly one
+        exists for this (schedule_day_id, kind); else 400 asking for td_id.
+
+    Kinds: flight | hotel | car_rental | car_service | mileage. car_service reuses
+    rental_co/pickup_at/return_at(=dropoff time)/pickup_location and adds
+    dropoff_location + contact_phone; self_report flags a "take an Uber, keep
+    your receipt" rideshare line (no booking, no confirmation required)."""
     _require_project_role(pid, 'editor')
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     data = request.get_json(force=True) or {}
     sd_id = int(data.get("schedule_day_id"))
     kind  = (data.get("kind") or "").strip()
-    if kind not in ('flight', 'hotel', 'car_rental', 'mileage'):
+    if kind not in ('flight', 'hotel', 'car_rental', 'car_service', 'mileage'):
         return jsonify({"error": "Invalid kind"}), 400
 
     sd = ScheduleDay.query.filter_by(id=sd_id, budget_id=bid).first()
     if not sd:
         return jsonify({"error": "ScheduleDay not found"}), 404
 
-    td = TravelDetail.query.filter_by(schedule_day_id=sd_id, kind=kind).first()
+    # Resolve the target row by id (multi-entry). A blank td_id means "new row".
+    _td_id = data.get("td_id")
+    td = None
+    if _td_id not in (None, '', 0, '0'):
+        td = TravelDetail.query.filter_by(id=int(_td_id), schedule_day_id=sd_id,
+                                          kind=kind).first()
+        if not td:
+            return jsonify({"error": "Travel entry not found"}), 404
 
     # True DELETE (2026-07-09): body {delete: true} removes the row entirely —
     # previously blank "neutralized" rows lingered and shadowed reservation
@@ -17603,8 +17667,15 @@ def travel_detail_save(pid, bid):
     # zero-night range so covered nights un-flag (unless another reservation
     # still covers them), then the row is removed.
     if data.get("delete"):
-        if not td:
-            return jsonify({"ok": True, "deleted": False})
+        if td is None:
+            # Back-compat: delete-without-td_id only when exactly one row exists.
+            _matches = TravelDetail.query.filter_by(
+                schedule_day_id=sd_id, kind=kind).all()
+            if len(_matches) == 0:
+                return jsonify({"ok": True, "deleted": False})
+            if len(_matches) > 1:
+                return jsonify({"error": "Multiple entries — specify td_id to delete."}), 400
+            td = _matches[0]
         sync_summary = None
         if kind == 'hotel' and td.check_in and td.check_out:
             _oci, _oco = td.check_in, td.check_out
@@ -17622,7 +17693,7 @@ def travel_detail_save(pid, bid):
             db.session.rollback()
         return jsonify({"ok": True, "deleted": True, "hotel_sync": sync_summary})
 
-    if not td:
+    if td is None:
         td = TravelDetail(schedule_day_id=sd_id, kind=kind)
         db.session.add(td)
 
@@ -17670,6 +17741,17 @@ def travel_detail_save(pid, bid):
             if f in data: setattr(td, f, (data.get(f) or '').strip() or None)
         if "pickup_at" in data: td.pickup_at = _parse_dt(data.get("pickup_at"))
         if "return_at" in data: td.return_at = _parse_dt(data.get("return_at"))
+    elif kind == 'car_service':
+        for f in ('rental_co', 'pickup_location', 'dropoff_location', 'contact_phone'):
+            if f in data: setattr(td, f, (data.get(f) or '').strip() or None)
+        if "pickup_at" in data: td.pickup_at = _parse_dt(data.get("pickup_at"))
+        if "return_at" in data: td.return_at = _parse_dt(data.get("return_at"))
+        if "self_report" in data:
+            td.self_report = bool(data.get("self_report"))
+            # Self-report rideshare: prefill the standard instruction if the
+            # user didn't supply their own note. Never demand a confirmation #.
+            if td.self_report and not (td.notes or '').strip():
+                td.notes = "Take an Uber/Lyft — keep your receipt and email it to production."
     elif kind == 'mileage':
         if "route" in data: td.route = (data.get("route") or '').strip() or None
         if "miles" in data:
@@ -21834,11 +21916,27 @@ def _personal_travel_for(budget, selected_date, sched_mode, crew_member, rec_nam
         elif td.kind == 'car_rental':
             v.update(rental_co=td.rental_co, pickup_location=td.pickup_location,
                      pickup_at=_tm(td.pickup_at), return_at=_tm(td.return_at))
+        elif td.kind == 'car_service':
+            v.update(rental_co=td.rental_co, pickup_location=td.pickup_location,
+                     dropoff_location=td.dropoff_location, contact_phone=td.contact_phone,
+                     pickup_at=_tm(td.pickup_at), return_at=_tm(td.return_at),
+                     self_report=bool(td.self_report))
         elif td.kind == 'mileage':
             v.update(miles=(str(td.miles) if td.miles is not None else None),
                      route=td.route)
-        out.append(v)
-    return out
+        # Sort key: prefer an explicit time, else the hotel check-in (as a
+        # datetime), else sort last. Uniform datetime type avoids date/datetime
+        # comparison errors.
+        _srt_dt = td.depart_at or td.pickup_at
+        if _srt_dt is None and td.check_in is not None:
+            _srt_dt = datetime.combine(td.check_in, datetime.min.time())
+        if _srt_dt is None:
+            _srt_dt = datetime.max
+        out.append(((_srt_dt, td.id), v))
+    # Multi-entry: order by time then id so two flights / car services on one
+    # day read in sequence. Strip the private sort key before returning.
+    out.sort(key=lambda pair: pair[0])
+    return [v for _k, v in out]
 
 
 def _recipient_view_for_type(rec_type):
@@ -22735,12 +22833,25 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         elif td.kind == 'car_rental':
             v.update(rental_co=td.rental_co, pickup_location=td.pickup_location,
                      pickup_at=_tm(td.pickup_at), return_at=_tm(td.return_at))
+        elif td.kind == 'car_service':
+            v.update(rental_co=td.rental_co, pickup_location=td.pickup_location,
+                     dropoff_location=td.dropoff_location, contact_phone=td.contact_phone,
+                     pickup_at=_tm(td.pickup_at), return_at=_tm(td.return_at),
+                     self_report=bool(td.self_report))
         return v
 
     def _cs_travel_for(sd):
         if not sd:
             return []
-        return [_cs_td_view(t) for t in _travel_by_sd.get(sd.id, [])]
+        # Multi-entry: sort each person's travel lines by kind then time so two
+        # flights / two car services on one day render in reading order.
+        from datetime import datetime as _dt_srt
+        _kind_ord = {'flight': 0, 'car_service': 1, 'car_rental': 2,
+                     'hotel': 3, 'mileage': 4}
+        def _key(t):
+            _t = (t.depart_at or t.pickup_at or _dt_srt.max)
+            return (_kind_ord.get(t.kind, 9), _t, t.id)
+        return [_cs_td_view(t) for t in sorted(_travel_by_sd.get(sd.id, []), key=_key)]
 
     crew_rows = []  # {section_code, section_name, role, name, day_type, phone, email}
     for ln in lines_today:
@@ -27023,9 +27134,16 @@ def _web_worker_essential_columns():
                      pickup_location VARCHAR(200),
                      miles           NUMERIC(8,2),
                      route           VARCHAR(300),
-                     updated_at      TIMESTAMP,
-                     CONSTRAINT uq_travel_detail UNIQUE (schedule_day_id, kind)
+                     updated_at      TIMESTAMP
                    )""",
+                # Multi-entry per (schedule_day, kind) — a person can have two
+                # flights or several car services on one day. The old
+                # one-row-per-kind uniqueness must be dropped. (User 2026-07-09.)
+                "ALTER TABLE travel_detail DROP CONSTRAINT IF EXISTS uq_travel_detail",
+                # Car-service + self-report rideshare columns (2026-07-09).
+                "ALTER TABLE travel_detail ADD COLUMN IF NOT EXISTS dropoff_location VARCHAR(300)",
+                "ALTER TABLE travel_detail ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(50)",
+                "ALTER TABLE travel_detail ADD COLUMN IF NOT EXISTS self_report BOOLEAN DEFAULT FALSE",
                 """CREATE TABLE IF NOT EXISTS catering_bill (
                      id           SERIAL PRIMARY KEY,
                      budget_id    INTEGER NOT NULL REFERENCES budget(id),

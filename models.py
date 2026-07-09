@@ -575,7 +575,7 @@ class TravelDetail(db.Model):
     id              = db.Column(db.Integer, primary_key=True)
     schedule_day_id = db.Column(db.Integer, db.ForeignKey("schedule_day.id"), nullable=False)
     kind            = db.Column(db.String(20), nullable=False)
-    # flight | hotel | car_rental | mileage
+    # flight | hotel | car_rental | car_service | mileage
     confirmation_no = db.Column(db.String(100), nullable=True)
     notes           = db.Column(db.Text,        nullable=True)
     # Flight-specific
@@ -591,17 +591,27 @@ class TravelDetail(db.Model):
     check_in        = db.Column(db.Date,        nullable=True)
     check_out       = db.Column(db.Date,        nullable=True)
     room_type       = db.Column(db.String(100), nullable=True)
-    # Car-rental-specific
+    # Car-rental-specific (also reused by car_service: rental_co=company,
+    # pickup_at=pickup time, return_at=dropoff time, pickup_location).
     rental_co       = db.Column(db.String(100), nullable=True)
     pickup_at       = db.Column(db.DateTime,    nullable=True)
     return_at       = db.Column(db.DateTime,    nullable=True)
     pickup_location = db.Column(db.String(200), nullable=True)
+    # Car-service-specific (chauffeur / black-car pickups): a dropoff address
+    # (distinct from the pickup) and a driver/dispatch contact phone. The
+    # self_report flag marks a "take an Uber/Lyft, keep your receipt" line —
+    # no booked car, no confirmation required. (User 2026-07-09.)
+    dropoff_location = db.Column(db.String(300), nullable=True)
+    contact_phone    = db.Column(db.String(50),  nullable=True)
+    self_report      = db.Column(db.Boolean, default=False)
     # Mileage-specific
     miles           = db.Column(db.Numeric(8, 2), nullable=True)
     route           = db.Column(db.String(300), nullable=True)
     updated_at      = db.Column(db.DateTime,    default=datetime.utcnow,
                                 onupdate=datetime.utcnow)
-    __table_args__  = (db.UniqueConstraint("schedule_day_id", "kind", name="uq_travel_detail"),)
+    # NOTE: no (schedule_day_id, kind) uniqueness — a person can have MULTIPLE
+    # entries of the same kind on one day (two flights, several car services).
+    # Rows are addressed by id; see travel_detail_save. (User 2026-07-09.)
 
 
 class CateringBill(db.Model):

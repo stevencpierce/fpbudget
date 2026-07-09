@@ -494,6 +494,7 @@
         {% if flags.get('flight') %}<span class="flag-dot flag-flight" title="Flight"></span>{% endif %}
         {% if flags.get('mileage') %}<span class="flag-dot flag-mileage" title="Mileage"></span>{% endif %}
         {% if flags.get('car_rental') %}<span class="flag-dot flag-car-rental" title="Car Rental"></span>{% endif %}
+        {% if flags.get('car_service') %}<span class="flag-dot flag-car-service" title="Car Service"></span>{% endif %}
         {% if flags.get('hotel') %}
           <span class="flag-dot flag-hotel-l" title="Hotel"></span>
           <span class="flag-dot flag-hotel-r" title="Hotel"></span>
@@ -652,6 +653,7 @@
     <button class="flag-toggle-btn" data-flag="mileage">🚗 Mileage</button>
     <button class="flag-toggle-btn" data-flag="hotel">🏨 Hotel</button>
     <button class="flag-toggle-btn" data-flag="car_rental">🔑 Car Rental</button>
+    <button class="flag-toggle-btn" data-flag="car_service">🚐 Car Service</button>
   </div>
 </div>
 
@@ -942,6 +944,7 @@ function locCellType(cell) {
     if (flags.flight)       html += `<span class="flag-dot flag-flight" title="Flight"></span>`;
     if (flags.mileage)      html += `<span class="flag-dot flag-mileage" title="Mileage"></span>`;
     if (flags.car_rental)   html += `<span class="flag-dot flag-car-rental" title="Car Rental"></span>`;
+    if (flags.car_service)  html += `<span class="flag-dot flag-car-service" title="Car Service"></span>`;
     if (flags.hotel) {
       html += `<span class="flag-dot flag-hotel-l" title="Hotel"></span>`;
       html += `<span class="flag-dot flag-hotel-r" title="Hotel"></span>`;

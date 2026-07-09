@@ -187,10 +187,16 @@ _TRAVEL_TOOL = {
         "type": "object",
         "properties": {
             "is_travel": {"type": "boolean",
-                "description": "True only if this is a hotel, flight/airline, or "
-                               "car-rental reservation/receipt/itinerary."},
-            "kind": {"type": ["string", "null"], "enum": ["flight", "hotel", "car_rental", None],
-                "description": "The travel type, or null if not travel."},
+                "description": "True only if this is a hotel, flight/airline, "
+                               "car-rental, or car-service/black-car reservation/"
+                               "receipt/itinerary."},
+            "kind": {"type": ["string", "null"],
+                "enum": ["flight", "hotel", "car_rental", "car_service", None],
+                "description": "The travel type, or null if not travel. Use "
+                               "car_service for a chauffeur/black-car/sedan/limo "
+                               "pickup booking (a driver picks the traveler up); "
+                               "use car_rental only for a rental-counter agreement "
+                               "(Hertz/Avis/Enterprise — the traveler drives)."},
             "confirmation_no": {"type": ["string", "null"],
                 "description": "Booking/reservation/confirmation number exactly as printed."},
             "traveler_name": {"type": ["string", "null"],
@@ -206,10 +212,16 @@ _TRAVEL_TOOL = {
             "check_in": {"type": ["string", "null"], "description": "YYYY-MM-DD."},
             "check_out": {"type": ["string", "null"], "description": "YYYY-MM-DD."},
             "room_type": {"type": ["string", "null"]},
-            "rental_co": {"type": ["string", "null"]},
+            "rental_co": {"type": ["string", "null"],
+                "description": "Rental or car-service company name."},
             "pickup_at": {"type": ["string", "null"], "description": "ISO 8601, or null."},
-            "return_at": {"type": ["string", "null"], "description": "ISO 8601, or null."},
+            "return_at": {"type": ["string", "null"],
+                "description": "ISO 8601 return/drop-off datetime, or null."},
             "pickup_location": {"type": ["string", "null"]},
+            "dropoff_location": {"type": ["string", "null"],
+                "description": "Car-service drop-off address, if distinct from pickup."},
+            "contact_phone": {"type": ["string", "null"],
+                "description": "Driver / dispatch contact phone, if shown (car service)."},
             "confidence": {"type": "number", "description": "0.0–1.0 overall confidence."},
         },
         "required": ["is_travel", "kind", "confidence"],
@@ -324,8 +336,12 @@ class ClaudeProvider(AIProvider):
             + "Return the confirmation/booking number EXACTLY as printed, the "
             "traveler/guest name if shown, and the kind-specific fields (flight: airline, "
             "flight number, depart/arrive datetimes in ISO 8601 and IATA airport codes; "
-            "hotel: name, address, check-in/out as YYYY-MM-DD, room type; car: company, "
-            "pickup/return datetimes and pickup location). Set is_travel=false and "
+            "hotel: name, address, check-in/out as YYYY-MM-DD, room type; car rental: "
+            "company, pickup/return datetimes and pickup location; car service / black "
+            "car / chauffeur: company, pickup datetime + location, drop-off location, "
+            "and driver/dispatch contact phone). A chauffeur/black-car/sedan/limo booking "
+            "where a DRIVER picks the traveler up is kind=car_service; a rental-counter "
+            "agreement (Hertz/Avis/Enterprise) is kind=car_rental. Set is_travel=false and "
             "kind=null when this is NOT a hotel/flight/car reservation. Reason ONLY from "
             "the document — never invent a confirmation number or dates. Be honest with "
             "confidence (low when the source is ambiguous)."

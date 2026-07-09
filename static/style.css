@@ -1420,6 +1420,13 @@ body.col-resizing * { cursor: col-resize !important; }
   left: 10px;
   background: #8e44ad;
 }
+/* Car service (chauffeur / black car): top-left, teal — distinct from the
+   purple rental dot so they read apart at a glance. */
+.flag-car-service {
+  top: 2px;
+  left: 18px;
+  background: #14b8a6;
+}
 /* Hotel: bottom-left + bottom-right, yellow — connect adjacent days */
 .flag-hotel-l {
   bottom: 2px;

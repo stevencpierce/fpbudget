@@ -6245,6 +6245,8 @@
     if (g('ddTrvRoom')     !== undefined) d.room_type      = g('ddTrvRoom');
     if (g('ddTrvRental')   !== undefined) d.rental_co      = g('ddTrvRental');
     if (g('ddTrvPickup')   !== undefined) d.pickup_location = g('ddTrvPickup');
+    if (g('ddTrvDropoff')  !== undefined) d.dropoff_location = g('ddTrvDropoff');
+    if (g('ddTrvPhone')    !== undefined) d.contact_phone   = g('ddTrvPhone');
     _ddTravel.data = d;
     return d;
   }
@@ -6265,7 +6267,8 @@
       `<select id="ddTrvKind" style="width:100%;font-size:12px">` +
       `<option value="flight"${kind==='flight'?' selected':''}>✈️ Flight</option>` +
       `<option value="hotel"${kind==='hotel'?' selected':''}>🏨 Hotel</option>` +
-      `<option value="car_rental"${kind==='car_rental'?' selected':''}>🚗 Car rental</option></select></div>`;
+      `<option value="car_rental"${kind==='car_rental'?' selected':''}>🚗 Car rental</option>` +
+      `<option value="car_service"${kind==='car_service'?' selected':''}>🚐 Car service</option></select></div>`;
     html += row('ddTrvConf', 'Confirmation #', t.confirmation_no);
     if (kind === 'flight') {
       html += row('ddTrvAirline','Airline',t.airline) + row('ddTrvFlightNo','Flight #',t.flight_no) +
@@ -6275,6 +6278,9 @@
               row('ddTrvCheckOut','Check-out (YYYY-MM-DD)',t.check_out) + row('ddTrvRoom','Room type',t.room_type);
     } else if (kind === 'car_rental') {
       html += row('ddTrvRental','Rental company',t.rental_co) + row('ddTrvPickup','Pickup location',t.pickup_location);
+    } else if (kind === 'car_service') {
+      html += row('ddTrvRental','Company',t.rental_co) + row('ddTrvPickup','Pickup location',t.pickup_location) +
+              row('ddTrvDropoff','Drop-off location',t.dropoff_location) + row('ddTrvPhone','Contact phone',t.contact_phone);
     }
     f.innerHTML = html;
     const ks = document.getElementById('ddTrvKind');
@@ -23412,12 +23418,13 @@ setTimeout(function() {
     const rates = _travelData.rates || {};
 
     // Running totals (computed on ALL rows, displayed in the top summary bar).
-    let flightCount=0, hotelCount=0, carCount=0, mileageMiles=0;
+    let flightCount=0, hotelCount=0, carCount=0, svcCount=0, mileageMiles=0;
     const pdCounts = {full:0, breakfast:0, lunch:0, dinner:0};
     rows.forEach(r => {
       if (r.flags.flight) flightCount++;
       if (r.flags.hotel)  hotelCount++;
-      if (r.flags.car_rental) carCount++;
+      if (r.flags.car_rental)  carCount++;
+      if (r.flags.car_service) svcCount++;
       if (r.detail.mileage && r.detail.mileage.miles) mileageMiles += parseFloat(r.detail.mileage.miles);
       if (r.flags.per_diem) pdCounts[r.flags.per_diem] = (pdCounts[r.flags.per_diem]||0) + 1;
     });
@@ -23473,53 +23480,112 @@ setTimeout(function() {
         ${opts.map(([v,l]) => `<option value="${v}" ${r.day_type===v?'selected':''}>${l}</option>`).join('')}
       </select>`;
     };
+    // Flag pill — just the checkbox that flips the cell flag on/off. The
+    // per-entry reservation lines render below in entriesBlock().
     const cb = (r, flag, isOn, kind, label) => {
       const handler = `travelToggleFlag(${r.line_id}, ${r.instance}, '${r.date}', '${flag}')`;
-      const detailHandler = kind ? `event.stopPropagation(); openTravelDetail(${r.schedule_day_id}, '${kind}')` : '';
-      const detail = kind ? r.detail[kind] : null;
-      const hasDetail = !!detail;
-      // A hotel that spans multiple days shows on each mid-stay day as a
-      // "spanned" copy (same confirmation, muted). The anchor day carries the
-      // editable row; spanned days route their edit to the anchor.
-      const spanned = !!(detail && detail.spanned);
-      // "Edit details" button — was a tiny pencil glyph that was hard
-      // to spot. Now a proper labelled button so users actually find it.
-      const detailBtn = (kind && isOn)
-        ? `<button onclick="${detailHandler}"
-                   style="background:#1a2540;border:1px solid #2d4070;color:#5b8af9;
-                          cursor:pointer;padding:3px 9px;font-size:12px;border-radius:5px;
-                          font-weight:500;margin-left:6px"
-                   title="Open reservation details (confirmation #s, flight times, etc.)">
-             ${hasDetail ? 'Edit details' : '+ Add details'}
-           </button>`
-        : '';
-      const detailDot = hasDetail
-        ? '<span style="color:#22c55e;font-size:11px;margin-left:4px" title="Details on file">●</span>'
-        : '';
-      // Confirmation number visible inline (esp. for hotels spanning the stay)
-      // so a person mid-stay sees the same conf # on every day.
-      const confBadge = (detail && detail.confirmation_no)
-        ? `<span style="font-size:11px;color:${spanned?'var(--text-muted)':'#8fa9d6'};margin-left:6px" title="Confirmation #">#${_esc(detail.confirmation_no)}</span>`
-        : '';
-      const spanTag = (spanned)
-        ? `<span style="font-size:10px;color:var(--text-muted);margin-left:5px;font-style:italic" title="Hotel reservation spans this day (edit on ${_esc(detail.anchor_day || '')})">mid-stay</span>`
-        : '';
-      // Checkout morning: informational note only — the hotel slot itself is
-      // FREE so a new reservation with a new confirmation can check in the
-      // same day. (User 2026-07-09: "a checkout day should just be released.")
-      const checkoutNote = (kind === 'hotel' && r.hotel_checkout)
-        ? `<span style="font-size:10px;color:var(--text-muted);margin-left:6px;font-style:italic"
-                 title="Checking out of ${_esc(r.hotel_checkout.hotel_name || 'hotel')} this morning — reservation lives on ${_esc(r.hotel_checkout.anchor_day || '')}">◀ check-out${r.hotel_checkout.confirmation_no ? ' #' + _esc(r.hotel_checkout.confirmation_no) : ''}</span>`
+      const list = kind ? ((r.details_list && r.details_list[kind]) || []) : [];
+      const nEntries = list.length;
+      const countBadge = (isOn && nEntries > 1)
+        ? `<span style="font-size:10px;color:#8fa9d6;margin-left:4px" title="${nEntries} entries">×${nEntries}</span>`
         : '';
       const activeStyle = isOn
-        ? (spanned
-            ? 'background:#141c30;color:#7f93b8;border:1px solid #24314f'
-            : 'background:#1a2540;color:#5b8af9;border:1px solid #2d4070')
+        ? 'background:#1a2540;color:#5b8af9;border:1px solid #2d4070'
         : 'background:transparent;color:var(--text-muted);border:1px solid var(--border)';
       return `<label style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;${activeStyle}" title="${label}">
                 <input type="checkbox" ${isOn?'checked':''} onclick="${handler}" style="margin:0;width:14px;height:14px">
-                ${label}${detailDot}${confBadge}${spanTag}${checkoutNote}${detailBtn}
+                ${label}${countBadge}
               </label>`;
+    };
+
+    // Icon + short kind label for entry rows.
+    const kindMeta = {
+      flight:      {icon:'✈️',  label:'Flight'},
+      hotel:       {icon:'🏨',  label:'Hotel'},
+      car_rental:  {icon:'🚗',  label:'Car rental'},
+      car_service: {icon:'🚐',  label:'Car service'},
+      mileage:     {icon:'🚙',  label:'Mileage'},
+    };
+
+    // One-line summary of a single travel entry (used in the entries list).
+    const entrySummary = (kind, d) => {
+      if (kind === 'flight') {
+        let s = `${_esc(d.airline || 'Flight')}${d.flight_no ? ' ' + _esc(d.flight_no) : ''}`;
+        if (d.depart_airport || d.arrive_airport) s += ` · ${_esc(d.depart_airport || '?')}→${_esc(d.arrive_airport || '?')}`;
+        if (d.depart_at) s += ` · ${_esc((d.depart_at || '').slice(11,16))}`;
+        return s;
+      }
+      if (kind === 'hotel') {
+        let s = `${_esc(d.hotel_name || 'Hotel')}`;
+        if (d.check_in || d.check_out) s += ` · ${_esc(d.check_in || '?')}–${_esc(d.check_out || '?')}`;
+        return s;
+      }
+      if (kind === 'car_rental') {
+        let s = `${_esc(d.rental_co || 'Car rental')}`;
+        if (d.pickup_location) s += ` · ${_esc(d.pickup_location)}`;
+        return s;
+      }
+      if (kind === 'car_service') {
+        if (d.self_report) return `🚕 Rideshare (self-book) — keep your receipt`;
+        let s = `${_esc(d.rental_co || 'Car service')}`;
+        const t = (d.pickup_at || '').slice(11,16);
+        if (d.pickup_location) s += ` · pickup ${t ? t + ' ' : ''}${_esc(d.pickup_location)}`;
+        else if (t) s += ` · pickup ${t}`;
+        if (d.dropoff_location) s += ` → ${_esc(d.dropoff_location)}`;
+        if (d.contact_phone) s += ` · ☎ ${_esc(d.contact_phone)}`;
+        return s;
+      }
+      if (kind === 'mileage') {
+        let s = 'Mileage';
+        if (d.route) s += ` · ${_esc(d.route)}`;
+        if (d.miles) s += ` · ${_esc(d.miles)} mi`;
+        return s;
+      }
+      return kind;
+    };
+
+    // The stacked list of entries for one kind on one person-day, with per-entry
+    // Edit / Delete and an "+ Add another" button. Only shown when the flag is on.
+    const entriesBlock = (r, kind, isOn) => {
+      if (!isOn) return '';
+      const meta = kindMeta[kind] || {icon:'📍', label:kind};
+      const list = (r.details_list && r.details_list[kind]) || [];
+      let lines = '';
+      list.forEach(d => {
+        const spanned = !!d.spanned;
+        const editSd  = spanned && d.anchor_day
+          ? `openTravelDetailByAnchor(${r.line_id}, ${r.instance}, '${_esc(d.anchor_day)}', '${kind}', ${d.id})`
+          : `openTravelDetail(${r.schedule_day_id}, '${kind}', ${d.id})`;
+        const conf = d.confirmation_no
+          ? `<span style="font-size:11px;color:${spanned?'var(--text-muted)':'#8fa9d6'};margin-left:6px" title="Confirmation #">#${_esc(d.confirmation_no)}</span>` : '';
+        const spanTag = spanned
+          ? `<span style="font-size:10px;color:var(--text-muted);margin-left:5px;font-style:italic" title="Reservation spans this day (edit on ${_esc(d.anchor_day || '')})">mid-stay</span>` : '';
+        const delBtn = spanned ? '' :
+          `<button onclick="event.stopPropagation(); deleteTravelDetail(${r.schedule_day_id}, '${kind}', ${d.id})"
+                   style="background:transparent;border:1px solid #4a2530;color:#c77;cursor:pointer;padding:2px 7px;font-size:11px;border-radius:5px;margin-left:4px" title="Delete this entry">✕</button>`;
+        lines += `
+          <div style="display:flex;align-items:center;gap:4px;padding:3px 0;flex-wrap:wrap">
+            <span style="font-size:12px">${meta.icon}</span>
+            <span style="font-size:12.5px;color:${spanned?'var(--text-muted)':'var(--text)'}">${entrySummary(kind, d)}</span>
+            ${conf}${spanTag}
+            <button onclick="event.stopPropagation(); ${editSd}"
+                    style="background:#1a2540;border:1px solid #2d4070;color:#5b8af9;cursor:pointer;padding:2px 9px;font-size:11px;border-radius:5px;margin-left:auto" title="Edit this entry">Edit</button>
+            ${delBtn}
+          </div>`;
+      });
+      // Checkout morning note (hotels only) — informational, slot stays free.
+      let checkoutNote = '';
+      if (kind === 'hotel' && r.hotel_checkout) {
+        checkoutNote = `<div style="font-size:10.5px;color:var(--text-muted);font-style:italic;padding:2px 0"
+             title="Checking out of ${_esc(r.hotel_checkout.hotel_name || 'hotel')} this morning">◀ check-out${r.hotel_checkout.confirmation_no ? ' #' + _esc(r.hotel_checkout.confirmation_no) : ''}</div>`;
+      }
+      const addBtn = `<button onclick="event.stopPropagation(); openTravelDetail(${r.schedule_day_id}, '${kind}', null)"
+                    style="background:transparent;border:1px dashed #2d4070;color:#5b8af9;cursor:pointer;padding:3px 10px;font-size:11.5px;border-radius:5px;margin-top:3px" title="Add another ${meta.label.toLowerCase()}">+ Add another ${meta.label.toLowerCase()}</button>`;
+      return `<div style="width:100%;margin-top:5px;padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg-2)">
+                <div style="font-size:10.5px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.4px;font-weight:600;margin-bottom:2px">${meta.icon} ${meta.label}</div>
+                ${lines || '<div style="font-size:11.5px;color:var(--text-muted);font-style:italic;padding:2px 0">No details yet.</div>'}
+                ${checkoutNote}${addBtn}
+              </div>`;
     };
     const pdSelect = (r) => `
       <select onchange="travelSetPerDiem(${r.line_id}, ${r.instance}, '${r.date}', this.value)"
@@ -23542,7 +23608,7 @@ setTimeout(function() {
     let html = '';
     dates.forEach(date => {
       const dayRows = byDate[date];
-      const flagged = dayRows.filter(r => r.flags.flight || r.flags.hotel || r.flags.car_rental || r.flags.mileage || r.flags.per_diem).length;
+      const flagged = dayRows.filter(r => r.flags.flight || r.flags.hotel || r.flags.car_rental || r.flags.car_service || r.flags.mileage || r.flags.per_diem).length;
       html += `
         <div class="travel-day-card" style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
           <div class="travel-day-header"
@@ -23566,12 +23632,20 @@ setTimeout(function() {
               <div class="muted" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px">${_esc(r.role)}</div>
             </div>
             <div>${daySelect(r)}</div>
-            <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;align-items:center">
-              ${cb(r, 'flight',     r.flags.flight,     'flight',     'Flight')}
-              ${cb(r, 'hotel',      r.flags.hotel,      'hotel',      'Hotel')}
-              ${cb(r, 'car_rental', r.flags.car_rental, 'car_rental', 'Car Rental')}
-              ${cb(r, 'mileage',    r.flags.mileage,    'mileage',    'Mileage')}
-              ${pdSelect(r)}
+            <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;align-items:flex-start">
+              <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;align-items:center;width:100%">
+                ${cb(r, 'flight',      r.flags.flight,      'flight',      'Flight')}
+                ${cb(r, 'hotel',       r.flags.hotel,       'hotel',       'Hotel')}
+                ${cb(r, 'car_rental',  r.flags.car_rental,  'car_rental',  'Car Rental')}
+                ${cb(r, 'car_service', r.flags.car_service, 'car_service', 'Car Service')}
+                ${cb(r, 'mileage',     r.flags.mileage,     'mileage',     'Mileage')}
+                ${pdSelect(r)}
+              </div>
+              ${entriesBlock(r, 'flight',      r.flags.flight)}
+              ${entriesBlock(r, 'hotel',       r.flags.hotel)}
+              ${entriesBlock(r, 'car_rental',  r.flags.car_rental)}
+              ${entriesBlock(r, 'car_service', r.flags.car_service)}
+              ${entriesBlock(r, 'mileage',     r.flags.mileage)}
             </div>
           </div>
         `;
@@ -23595,6 +23669,7 @@ setTimeout(function() {
       <span><strong>${flightCount}</strong> flights ~ <strong>${_fmt(flightTotal)}</strong></span>
       <span><strong>${hotelCount}</strong> hotel nights ~ <strong>${_fmt(hotelTotal)}</strong></span>
       <span><strong>${carCount}</strong> car rentals</span>
+      <span><strong>${svcCount}</strong> car services</span>
       <span><strong>${mileageMiles.toFixed(0)}</strong> miles</span>
       <span><strong>${pdCounts.full + pdCounts.breakfast + pdCounts.lunch + pdCounts.dinner}</strong> per-diem days ~ <strong>${_fmt(pdTotal)}</strong></span>
       <span class="muted" style="font-size:.78rem;margin-left:auto">Source of truth: budget auto-lines</span>
@@ -23653,27 +23728,35 @@ setTimeout(function() {
   };
 
   // ── Travel detail modal (flight/hotel/car/mileage entry) ───────────────
-  window.openTravelDetail = function(sd_id, kind) {
+  // Open the editor for a specific entry (td_id). td_id=null → new blank entry.
+  // Multi-entry: entries are looked up in row.details_list[kind] by id.
+  window.openTravelDetail = function(sd_id, kind, td_id) {
+    if (td_id === undefined) td_id = null;
     // Find the row in cached data so we can pre-fill the form.
     let row = _travelData?.rows?.find(r => r.schedule_day_id === sd_id);
-    let detail = row?.detail?.[kind] || {};
+    const _pick = (rw) => {
+      const list = (rw && rw.details_list && rw.details_list[kind]) || [];
+      if (td_id != null) return list.find(d => d.id === td_id) || {};
+      return {};  // new blank entry
+    };
+    let detail = _pick(row);
     // A hotel reservation spans multiple days but lives on ONE anchor cell.
-    // If the user clicks "Edit details" on a spanned (mid-stay) day, redirect
-    // the edit to the anchor day so we update the single source-of-truth row
+    // If the user clicks "Edit" on a spanned (mid-stay) entry, redirect the
+    // edit to the anchor day so we update the single source-of-truth row
     // instead of creating a duplicate reservation on this day.
-    if (kind === 'hotel' && detail && detail.spanned && detail.anchor_day) {
+    if (detail && detail.spanned && detail.anchor_day) {
       const anchor = _travelData?.rows?.find(
         r => r.line_id === row.line_id && r.instance === row.instance
              && r.date === detail.anchor_day);
       if (anchor) {
         row = anchor;
         sd_id = anchor.schedule_day_id;
-        detail = anchor.detail?.[kind] || {};
+        detail = _pick(anchor);
       }
     }
-    _detailContext = { sd_id, kind, detail };
+    _detailContext = { sd_id, kind, td_id: (detail && detail.id) || td_id || null, detail };
 
-    const titleMap = {flight:'Flight', hotel:'Hotel', car_rental:'Car Rental', mileage:'Mileage'};
+    const titleMap = {flight:'Flight', hotel:'Hotel', car_rental:'Car Rental', car_service:'Car Service', mileage:'Mileage'};
     document.getElementById('travel-detail-title').textContent =
       `${titleMap[kind]} — ${row?.person || ''} ${row?.date || ''}`;
 
@@ -23723,6 +23806,30 @@ setTimeout(function() {
               fld('Return', 'return_at', 'datetime-local', (detail.return_at||'').slice(0,16)))
       + fld('Confirmation #', 'confirmation_no','text', detail.confirmation_no)
       + txt('Notes',          'notes', detail.notes);
+    } else if (kind === 'car_service') {
+      // Self-report rideshare toggle: when checked, company/conf/phone become
+      // optional and the notes carry the "take an Uber, keep your receipt"
+      // instruction that must land on the person's call sheet.
+      const selfOn = !!detail.self_report;
+      const selfBox =
+        `<label style="display:flex;align-items:center;gap:9px;margin-bottom:14px;padding:10px 12px;border:1px solid var(--border);border-radius:7px;background:var(--bg-2);cursor:pointer;font-size:13.5px">
+           <input type="checkbox" data-fld="self_report" id="trvSelfReport" ${selfOn?'checked':''}
+                  onchange="_trvToggleSelfReport(this.checked)" style="width:16px;height:16px;margin:0">
+           <span>🚕 <strong>Self-report (rideshare)</strong> — traveler books their own Uber/Lyft and expenses it. No confirmation needed.</span>
+         </label>`;
+      body =
+        selfBox
+      + `<div id="trvCarSvcFields">`
+      +   fld('Company', 'rental_co', 'text', detail.rental_co)
+      +   grid2(fld('Pickup', 'pickup_at', 'datetime-local', (detail.pickup_at||'').slice(0,16)),
+                fld('Drop-off', 'return_at', 'datetime-local', (detail.return_at||'').slice(0,16)))
+      +   fld('Pickup location',  'pickup_location',  'text', detail.pickup_location)
+      +   fld('Drop-off location','dropoff_location', 'text', detail.dropoff_location)
+      +   fld('Contact phone',    'contact_phone',    'text', detail.contact_phone)
+      +   fld('Confirmation #',   'confirmation_no',  'text', detail.confirmation_no)
+      + `</div>`
+      + txt('Instructions / notes', 'notes',
+            detail.notes || (selfOn ? 'Take an Uber/Lyft — keep your receipt and email it to production.' : ''));
     } else if (kind === 'mileage') {
       body =
         grid12(fld('Miles', 'miles', 'number', detail.miles, 'step="0.1" min="0"'),
@@ -23739,11 +23846,43 @@ setTimeout(function() {
     _detailContext = null;
   };
 
+  // Edit a spanned (mid-stay) entry by routing to its anchor day's row.
+  window.openTravelDetailByAnchor = function(line_id, instance, anchor_date, kind, td_id) {
+    const anchor = _travelData?.rows?.find(
+      r => r.line_id === line_id && r.instance === instance && r.date === anchor_date);
+    if (anchor) openTravelDetail(anchor.schedule_day_id, kind, td_id);
+  };
+
+  // Self-report rideshare toggle inside the car_service editor: grey out the
+  // booking fields and prefill the instruction note when turned on.
+  window._trvToggleSelfReport = function(on) {
+    const box = document.getElementById('trvCarSvcFields');
+    if (box) box.style.opacity = on ? '0.45' : '1';
+    const notes = document.querySelector('#travel-detail-body [data-fld="notes"]');
+    if (on && notes && !notes.value.trim()) {
+      notes.value = 'Take an Uber/Lyft — keep your receipt and email it to production.';
+    }
+  };
+
+  // Delete a single travel entry (multi-entry aware — addressed by td_id).
+  window.deleteTravelDetail = async function(sd_id, kind, td_id) {
+    if (!confirm('Delete this travel entry?')) return;
+    const r = await fetch(TRAVEL_DETAIL_URL, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({schedule_day_id: sd_id, kind, td_id, delete: true}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { alert('Delete failed: ' + (d.error || r.status)); return; }
+    await loadTravelGrid();
+  };
+
   document.getElementById('travel-detail-save-btn')?.addEventListener('click', async () => {
     if (!_detailContext) return;
+    // td_id present → update that row; absent → create a new entry.
     const payload = { schedule_day_id: _detailContext.sd_id, kind: _detailContext.kind };
+    if (_detailContext.td_id != null) payload.td_id = _detailContext.td_id;
     document.querySelectorAll('#travel-detail-body [data-fld]').forEach(el => {
-      payload[el.dataset.fld] = el.value;
+      payload[el.dataset.fld] = (el.type === 'checkbox') ? el.checked : el.value;
     });
     const btn = document.getElementById('travel-detail-save-btn');
     btn.disabled = true; btn.textContent = 'Saving…';

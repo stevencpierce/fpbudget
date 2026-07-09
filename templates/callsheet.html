@@ -125,6 +125,20 @@
             {% if t.pickup_location %}Pickup: {{ t.pickup_location }}{% endif %}
             {% if t.pickup_at %} · {{ t.pickup_at }}{% endif %}{% if t.return_at %} · Return {{ t.return_at }}{% endif %}
           </div>
+          {% elif t.kind == 'car_service' %}
+            {% if t.self_report %}
+            <div class="yd-line1"><span class="yd-kind-icon">🚕</span>Rideshare — self-book</div>
+            <div class="yd-detail" style="font-weight:600;color:#b45309">
+              {{ t.notes or 'Take an Uber to set. Keep your receipt and email it to production.' }}
+            </div>
+            {% else %}
+            <div class="yd-line1"><span class="yd-kind-icon">🚐</span>{{ t.rental_co or 'Car service' }}</div>
+            <div class="yd-detail">
+              {% if t.pickup_at %}Pickup {{ t.pickup_at }}{% endif %}{% if t.pickup_location %} · {{ t.pickup_location }}{% endif %}
+              {% if t.dropoff_location %}<br>Drop-off: {{ t.dropoff_location }}{% if t.return_at %} · {{ t.return_at }}{% endif %}{% elif t.return_at %} · Drop-off {{ t.return_at }}{% endif %}
+              {% if t.contact_phone %}<br>☎ {{ t.contact_phone }}{% endif %}
+            </div>
+            {% endif %}
           {% elif t.kind == 'mileage' %}
           <div class="yd-line1"><span class="yd-kind-icon">🚙</span>Mileage</div>
           <div class="yd-detail">{% if t.route %}{{ t.route }}{% endif %}{% if t.miles %} · {{ t.miles }} mi{% endif %}</div>
@@ -886,7 +900,8 @@ Example:
                   <span style="font-size:.72rem;color:#3a4453;line-height:1.45;white-space:normal">
                     {% if t.kind == 'flight' %}✈️ {{ t.airline or 'Flight' }}{% if t.flight_no %} {{ t.flight_no }}{% endif %}{% if t.depart_airport or t.arrive_airport %} · {{ t.depart_airport or '?' }}→{{ t.arrive_airport or '?' }}{% endif %}{% if t.depart_at %} · {{ t.depart_at }}{% if t.arrive_at %}–{{ t.arrive_at }}{% endif %}{% endif %}
                     {% elif t.kind == 'hotel' %}🏨 {{ t.hotel_name or 'Hotel' }}{% if t.check_in or t.check_out %} · {{ t.check_in or '?' }}–{{ t.check_out or '?' }}{% endif %}{% if t.room_type %} · {{ t.room_type }}{% endif %}
-                    {% elif t.kind == 'car_rental' %}🚗 {{ t.rental_co or 'Car rental' }}{% if t.pickup_location %} · {{ t.pickup_location }}{% endif %}{% if t.pickup_at %} · {{ t.pickup_at }}{% if t.return_at %}–{{ t.return_at }}{% endif %}{% endif %}{% endif %}
+                    {% elif t.kind == 'car_rental' %}🚗 {{ t.rental_co or 'Car rental' }}{% if t.pickup_location %} · {{ t.pickup_location }}{% endif %}{% if t.pickup_at %} · {{ t.pickup_at }}{% if t.return_at %}–{{ t.return_at }}{% endif %}{% endif %}
+                    {% elif t.kind == 'car_service' %}{% if t.self_report %}🚕 Rideshare — self-book · {{ t.notes or 'Take an Uber to set. Keep your receipt and email it to production.' }}{% else %}🚐 {{ t.rental_co or 'Car service' }}{% if t.pickup_at %} · pickup {{ t.pickup_at }}{% endif %}{% if t.pickup_location %} {{ t.pickup_location }}{% endif %}{% if t.dropoff_location %} → {{ t.dropoff_location }}{% if t.return_at %} {{ t.return_at }}{% endif %}{% elif t.return_at %} → {{ t.return_at }}{% endif %}{% if t.contact_phone %} · ☎ {{ t.contact_phone }}{% endif %}{% endif %}{% endif %}
                   </span>
                 </td>
               </tr>
