@@ -500,7 +500,10 @@
       {# Left: Key Personnel (JS-driven) #}
       <div class="callsheet-col callsheet-col-left">
         <div class="callsheet-section cs-hideable" data-cs-key="section:key_personnel">
-          <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:key_personnel" title="Hide / show Key Personnel">👁</span>Key Personnel</div>
+          <div class="callsheet-section-title" style="display:flex;align-items:center;justify-content:space-between">
+            <span><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:key_personnel" title="Hide / show Key Personnel">👁</span>Key Personnel</span>
+            <span class="cs-screen-only muted" style="font-size:.72rem;font-weight:400">Select from contact sheet or enter manually</span>
+          </div>
           <table class="callsheet-table callsheet-key-contact-table" id="kp-table">
             <thead>
               <tr>
@@ -530,6 +533,14 @@
             </tbody>
           </table>
           <div class="cs-row-toolbar cs-screen-only">
+            <div class="kp-add-picker">
+              <button type="button" class="btn btn-xs btn-ghost" onclick="toggleKpPicker(event)">+ Add from contacts ▾</button>
+              <div id="kp-picker-menu" class="kp-picker-menu" hidden>
+                <input type="text" id="kp-picker-filter" class="kp-picker-filter" placeholder="Filter people…"
+                       oninput="renderKpPickerList(this.value)" onclick="event.stopPropagation()">
+                <div id="kp-picker-list" class="kp-picker-list"></div>
+              </div>
+            </div>
             <button class="btn btn-xs btn-ghost" onclick="addKpRow()">+ Row</button>
             <button class="btn btn-xs btn-ghost" onclick="addKpSpacer()">+ Spacer</button>
           </div>
@@ -1748,6 +1759,15 @@ function renderKpTable() {
   const tbody = document.getElementById('kp-tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
+  if (KP_ROWS.length === 0) {
+    // Screen-only empty state so the section reads as an input area, not dead space.
+    const colspan = CSV.kp_contact ? 5 : 4;
+    const tr = document.createElement('tr');
+    tr.className = 'kp-empty-row cs-screen-only';
+    tr.innerHTML = `<td colspan="${colspan}" class="kp-empty-cell muted">No key personnel yet — add from contacts or a blank row below.</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
   KP_ROWS.forEach((row, i) => {
     const tr = document.createElement('tr');
     if (row.is_spacer) {
@@ -1822,6 +1842,68 @@ function addKpSpacer() {
   renderKpTable();
   scheduleAutoSave();
 }
+
+// "+ Add from contacts ▾" picker — mirrors the per-row contact dropdown but as a
+// discoverable menu so an empty section still offers a clear way to add people.
+function toggleKpPicker(e) {
+  if (e) e.stopPropagation();
+  const menu = document.getElementById('kp-picker-menu');
+  if (!menu) return;
+  const opening = menu.hidden;
+  menu.hidden = !opening;
+  if (opening) {
+    const filter = document.getElementById('kp-picker-filter');
+    if (filter) filter.value = '';
+    renderKpPickerList('');
+    if (filter) filter.focus();
+  }
+}
+
+function renderKpPickerList(q) {
+  const list = document.getElementById('kp-picker-list');
+  if (!list) return;
+  const term = (q || '').trim().toLowerCase();
+  // Keep original indices so the row-add handler can look the contact up safely
+  // (avoids interpolating names — which may contain quotes — into onclick attrs).
+  const matches = (AVAILABLE_CONTACTS || [])
+    .map((c, idx) => ({ c, idx }))
+    .filter(({ c }) => {
+      if (!term) return true;
+      return (c.name || '').toLowerCase().includes(term) ||
+             (c.role || '').toLowerCase().includes(term);
+    });
+  if (matches.length === 0) {
+    list.innerHTML = '<div class="kp-picker-empty muted">No matching people</div>';
+    return;
+  }
+  list.innerHTML = matches.map(({ c, idx }) => {
+    const meta = [c.role, c.phone].filter(Boolean).map(escHtml).join(' · ');
+    return `<button type="button" class="kp-picker-item" onclick="kpAddFromContact(${idx})">
+        <span class="kp-picker-name">${escHtml(c.name)}</span>${meta ? `<span class="kp-picker-meta muted">${meta}</span>` : ''}
+      </button>`;
+  }).join('');
+}
+
+function kpAddFromContact(idx) {
+  const contact = (AVAILABLE_CONTACTS || [])[idx];
+  if (!contact) return;
+  KP_ROWS.push({
+    row_id: _newKpId(), is_spacer: false,
+    role: contact.role || '', name: contact.name || '',
+    phone: contact.phone || '', email: contact.email || '',
+    crew_member_id: contact.id || null,
+  });
+  const menu = document.getElementById('kp-picker-menu');
+  if (menu) menu.hidden = true;
+  renderKpTable();
+  scheduleAutoSave();
+}
+
+// Close the picker menu on any outside click.
+document.addEventListener('click', e => {
+  const menu = document.getElementById('kp-picker-menu');
+  if (menu && !menu.hidden && !e.target.closest('.kp-add-picker')) menu.hidden = true;
+});
 
 function removeKpRow(idx) {
   KP_ROWS.splice(idx, 1);

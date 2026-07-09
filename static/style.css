@@ -4315,6 +4315,54 @@ tr:hover .cs-hide-toggle,
   margin-top: .35rem;
 }
 
+/* Key Personnel "+ Add from contacts" picker */
+.kp-add-picker { position: relative; }
+.kp-picker-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 50;
+  margin-top: .2rem;
+  width: 15rem;
+  max-width: 80vw;
+  background: var(--bg-panel, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.35);
+  padding: .35rem;
+}
+.kp-picker-filter {
+  width: 100%;
+  box-sizing: border-box;
+  padding: .25rem .4rem;
+  font-size: .75rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: .3rem;
+}
+.kp-picker-list { max-height: 14rem; overflow-y: auto; }
+.kp-picker-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .05rem;
+  width: 100%;
+  text-align: left;
+  padding: .3rem .4rem;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text);
+}
+.kp-picker-item:hover { background: rgba(127,127,127,.15); }
+.kp-picker-name { font-size: .78rem; font-weight: 500; }
+.kp-picker-meta { font-size: .68rem; }
+.kp-picker-empty { padding: .35rem .4rem; font-size: .72rem; }
+.kp-empty-cell { padding: .4rem .3rem; font-size: .74rem; font-style: italic; }
+
 /* Future-wiring badge */
 .cs-future-badge {
   display: inline-flex;
