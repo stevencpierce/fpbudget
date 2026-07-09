@@ -324,13 +324,33 @@ input:focus, select:focus { border-color: var(--accent); }
 .data-table tr:hover td { background: rgba(79,126,248,.04); }
 
 .col-code { width: 60px; }
-.col-num  { text-align: right; }
-.col-qty  { text-align: right; width: 60px; }
-.col-days { text-align: right; width: 72px; }
-.col-desc { }
+/* Numeric / money columns never wrap or truncate — a wrapped or clipped
+   dollar figure is unreadable. The colgroup <col> widths in budget.html are
+   authoritative under table-layout:fixed and are sized to fit worst-case
+   content; nowrap here guarantees the digits render on one line (they ride
+   the section-block horizontal scroll if a 7-figure outlier overflows). */
+.col-num  { text-align: right; white-space: nowrap; }
+.col-qty  { text-align: right; width: 56px; white-space: nowrap; }
+.col-days { text-align: right; width: 88px; white-space: nowrap; }
+/* Description is the one column that tolerates truncation — it's kept
+   deliberately slim (22% via the colgroup) so the numeric columns get room,
+   and clips its overflow rather than forcing the table wider. The inline
+   description text gets a true ellipsis (rule below); the meal-summary
+   sub-line and qty badges are free to wrap, so no nowrap on the cell itself. */
+.col-desc { overflow: hidden; }
+/* Ellipsis the editable description text specifically (full text remains in
+   the inline editor on click) without clipping the surrounding badges. */
+.col-desc .editable[data-field="description"] {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
 .col-pc   { }
-.col-rt   { }
-.col-fr   { }
+.col-rt   { white-space: nowrap; }
+.col-fr   { white-space: nowrap; }
 .col-act  { white-space: nowrap; }
 /* In non-labor sections, action col fills remaining space — keep delete button at far right */
 .no-labor .col-act { text-align: right; }
@@ -2240,11 +2260,11 @@ a.tab-link:hover { background: var(--bg-3); }
   color: #fff;
 }
 
-.col-working { width: 80px; text-align: right; }
+.col-working { width: 112px; text-align: right; white-space: nowrap; }
 .working-editable { cursor: pointer; }
 .working-editable:hover { text-decoration: underline; text-decoration-style: dotted; }
 
-.col-variance { width: 85px; text-align: right; }
+.col-variance { width: 102px; text-align: right; white-space: nowrap; }
 .frozen-est { color: var(--text-muted); font-style: italic; font-size: .9em; }
 .frozen-est-header { color: var(--text-muted); font-style: italic; font-weight: 500; }
 .qty-reduce-inst-row {

@@ -1151,7 +1151,16 @@
     </div>
     <table class="data-table line-table {{ 'has-labor' if ns.has_labor else 'no-labor' }} {{ 'has-working' if working_exists else '' }}">
       <colgroup>
-        <col style="width:30%"><!-- desc -->
+        {# Description is intentionally the *narrowest* it can reasonably be
+           (22% vs the old 30%) so the numeric sub-columns to its right get
+           enough room to fully render their content on 1280–1440px laptops.
+           Desc tolerates truncation (ellipsis + title tooltip); dollar
+           figures do not, so the sub-columns below are sized to fit their
+           worst-case rendered content (6-figure money + refund arrow),
+           and 7-figure outliers ride the section-block's horizontal scroll.
+           Widths bumped 2026-07-08 per owner: duration/rate/subtotal were
+           too narrow. #}
+        <col style="width:22%"><!-- desc -->
         {# Labor sections show Payroll Co. (and hide Qty) — non-labor
            sections show Qty (and hide Payroll Co.). With
            table-layout:fixed, the colgroup widths are authoritative;
@@ -1159,19 +1168,19 @@
            rules only affected padding, not actual column width.
            Per user 2026-04-28: this swap never visibly took effect
            because pc was hardcoded width:0. #}
-        <col style="width:{{ '70px' if ns.has_labor else '0' }}"><!-- pc -->
-        <col style="width:{{ '0' if ns.has_labor else '52px' }}"><!-- qty -->
-        <col style="width:72px"><!-- days -->
-        <col style="width:100px"><!-- rate -->
-        <col style="width:105px"><!-- type -->
-        <col style="width:95px"><!-- subtotal -->
-        <col style="width:65px"><!-- ot -->
-        <col style="width:92px"><!-- fringe (type dropdown + calc'd fringe $) -->
-        <col style="width:{{ '65px' if ns.has_agent_or_disc else '0' }}"><!-- agent%/disc% (collapsed when no line has a value) -->
-        <col style="width:115px"><!-- estimated -->
-        <col style="width:{{ '90px' if working_exists else '0' }}"><!-- working -->
-        <col style="width:{{ '95px' if has_actual_budget else '0' }}"><!-- actual (collapsed unless an Actual budget exists) -->
-        <col style="width:{{ '85px' if (is_working_view or has_actual_budget) else '0' }}"><!-- variance -->
+        <col style="width:{{ '76px' if ns.has_labor else '0' }}"><!-- pc -->
+        <col style="width:{{ '0' if ns.has_labor else '56px' }}"><!-- qty -->
+        <col style="width:88px"><!-- days (Duration: value + unit, e.g. "52 Weeks") -->
+        <col style="width:110px"><!-- rate -->
+        <col style="width:108px"><!-- type -->
+        <col style="width:116px"><!-- subtotal -->
+        <col style="width:70px"><!-- ot -->
+        <col style="width:98px"><!-- fringe (type dropdown + calc'd fringe $) -->
+        <col style="width:{{ '68px' if ns.has_agent_or_disc else '0' }}"><!-- agent%/disc% (collapsed when no line has a value) -->
+        <col style="width:120px"><!-- estimated -->
+        <col style="width:{{ '112px' if working_exists else '0' }}"><!-- working -->
+        <col style="width:{{ '116px' if has_actual_budget else '0' }}"><!-- actual (collapsed unless an Actual budget exists) -->
+        <col style="width:{{ '102px' if (is_working_view or has_actual_budget) else '0' }}"><!-- variance -->
         <col><!-- act: auto -->
       </colgroup>
       <thead>
