@@ -1026,6 +1026,27 @@ Example:
         <input type="text" id="cs-dist-notes-input"
                style="flex:1;min-width:140px;padding:4px 8px;font-size:.82rem" placeholder="(optional)">
       </div>
+      {# ✉ Per-audience custom messages — collapsible #}
+      <div class="cs-msg-block" style="margin-bottom:12px;border:1px solid var(--border);border-radius:6px">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 10px;cursor:pointer" onclick="csMsgToggle()">
+          <span style="font-size:.82rem;font-weight:600">✉ Message <span style="font-weight:400;color:var(--text-muted);font-size:.74rem">— customize per audience</span></span>
+          <span id="cs-msg-toggle-caret" style="font-size:.78rem;color:var(--text-muted)">▸</span>
+        </div>
+        <div id="cs-msg-body" style="display:none;padding:0 10px 10px">
+          <div id="cs-dist-config-status" style="font-size:.74rem;color:var(--text-muted);margin-bottom:8px"></div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px" id="cs-msg-tabs">
+            <button type="button" class="btn btn-xs cs-msg-tab" data-view="default" onclick="csMsgSelectTab('default')">Default</button>
+            <button type="button" class="btn btn-xs cs-msg-tab" data-view="crew" onclick="csMsgSelectTab('crew')">Crew</button>
+            <button type="button" class="btn btn-xs cs-msg-tab" data-view="talent" onclick="csMsgSelectTab('talent')">Talent</button>
+            <button type="button" class="btn btn-xs cs-msg-tab" data-view="client" onclick="csMsgSelectTab('client')">Client</button>
+            <button type="button" class="btn btn-xs cs-msg-tab" data-view="union" onclick="csMsgSelectTab('union')">Union</button>
+          </div>
+          <div id="cs-msg-panes"></div>
+          <div style="font-size:.7rem;color:var(--text-muted);margin-top:6px">
+            Placeholders: <code>{name}</code> <code>{call}</code> <code>{date}</code> <code>{project}</code> <code>{version}</code> <code>{link}</code>. The confirm link is always included even if you omit <code>{link}</code>.
+          </div>
+        </div>
+      </div>
       <div style="margin-bottom:10px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
           <span style="font-size:.78rem;color:var(--text-muted)">People on this day are pre-checked · confirmed = green, viewed = yellow · 👁 Preview shows what each receives:</span>
@@ -1109,6 +1130,11 @@ let CS_TEXT_OVERRIDES = Object.assign({}, (CS_DATA.text_overrides || {}));
 let CS_DEPT_OVERRIDES = Object.assign({}, (CS_DATA.dept_overrides || {}));
 let CS_DEPT_RENAMES   = Object.assign({}, (CS_DATA.dept_renames || {}));
 let CS_CUSTOM_DEPTS   = Array.isArray(CS_DATA.custom_depts) ? CS_DATA.custom_depts.slice() : [];
+// Per-audience custom send messages. Shape: {default:{subject,body}, crew:{...},
+// talent:{...}, client:{...}, union:{...}}. Round-trips through the whole-payload
+// save like the maps above and is read live by the ✉ Message panel below.
+let CS_AUDIENCE_MESSAGES = (CS_DATA.audience_messages && typeof CS_DATA.audience_messages === 'object')
+  ? JSON.parse(JSON.stringify(CS_DATA.audience_messages)) : {};
 
 function collectCallSheetData() {
   return {
@@ -1140,7 +1166,29 @@ function collectCallSheetData() {
     hospitals:          collectHospitals(),
     location_order:     collectLocationOrder(),
     useful_contacts:    collectUsefulContacts(),
+    audience_messages:  csCollectAudienceMessages(),
   };
+}
+
+// Read the ✉ Message panel inputs into CS_AUDIENCE_MESSAGES and return it. Safe
+// to call before the panel renders (falls back to the in-memory copy).
+function csCollectAudienceMessages() {
+  const views = ['default', 'crew', 'talent', 'client', 'union'];
+  const out = {};
+  views.forEach(v => {
+    const s = document.getElementById('cs-msg-subject-' + v);
+    const b = document.getElementById('cs-msg-body-' + v);
+    if (s || b) {
+      out[v] = {
+        subject: s ? s.value : ((CS_AUDIENCE_MESSAGES[v] || {}).subject || ''),
+        body:    b ? b.value : ((CS_AUDIENCE_MESSAGES[v] || {}).body || ''),
+      };
+    } else if (CS_AUDIENCE_MESSAGES[v]) {
+      out[v] = CS_AUDIENCE_MESSAGES[v];
+    }
+  });
+  CS_AUDIENCE_MESSAGES = out;
+  return out;
 }
 function getText(id) {
   const el = document.getElementById(id);
@@ -2293,14 +2341,84 @@ function csDistToggle() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+  csMsgRenderPanes();
   csDistLoadHistory();
   csDistBuildRecipientList();
 });
 
+// ── ✉ Per-audience messages ───────────────────────────────────────────────────
+const CS_MSG_VIEWS = ['default', 'crew', 'talent', 'client', 'union'];
+let _csMsgTab = 'default';
+let _csMsgOpen = false;
+// Prefill shown for the Default view (matches the server-side hardcoded fallback,
+// with placeholders visible). Non-default views start empty.
+const CS_MSG_DEFAULT_SUBJECT = 'Call Sheet — {project} — {date} ({version})';
+const CS_MSG_DEFAULT_BODY =
+  'Hi {name},\n\n' +
+  'Your call sheet for {project} on {date} is ready.\n' +
+  'Your call time: {call}\n\n' +
+  'View & confirm your call: {link}\n\n' +
+  'Please confirm receipt by clicking the link above.\n\n' +
+  '— Framework Productions · contact@thefp.tv\n';
+
+function csMsgToggle() {
+  _csMsgOpen = !_csMsgOpen;
+  document.getElementById('cs-msg-body').style.display = _csMsgOpen ? 'block' : 'none';
+  document.getElementById('cs-msg-toggle-caret').textContent = _csMsgOpen ? '▾' : '▸';
+}
+
+function csMsgRenderPanes() {
+  const wrap = document.getElementById('cs-msg-panes');
+  if (!wrap) return;
+  wrap.innerHTML = CS_MSG_VIEWS.map(v => {
+    const saved = CS_AUDIENCE_MESSAGES[v] || {};
+    const isDefault = (v === 'default');
+    const subjVal = (saved.subject != null && saved.subject !== '')
+      ? saved.subject : (isDefault ? CS_MSG_DEFAULT_SUBJECT : '');
+    const bodyVal = (saved.body != null && saved.body !== '')
+      ? saved.body : (isDefault ? CS_MSG_DEFAULT_BODY : '');
+    const subjPh = isDefault ? '' : 'Uses the Default message unless you write something here.';
+    const bodyPh = isDefault ? '' : 'Uses the Default message unless you write something here.';
+    const esc = s => (s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'));
+    return `<div class="cs-msg-pane" data-view="${v}" style="display:${v===_csMsgTab?'block':'none'}">
+      <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-bottom:2px">Subject</label>
+      <input type="text" id="cs-msg-subject-${v}" value="${esc(subjVal)}" placeholder="${subjPh}"
+             oninput="scheduleAutoSave()"
+             style="width:100%;padding:4px 8px;font-size:.82rem;margin-bottom:8px">
+      <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-bottom:2px">Body</label>
+      <textarea id="cs-msg-body-${v}" rows="7" placeholder="${bodyPh}"
+                oninput="scheduleAutoSave()"
+                style="width:100%;padding:6px 8px;font-size:.82rem;font-family:inherit;resize:vertical">${esc(bodyVal)}</textarea>
+    </div>`;
+  }).join('');
+  csMsgSelectTab(_csMsgTab);
+}
+
+function csMsgSelectTab(v) {
+  _csMsgTab = v;
+  document.querySelectorAll('#cs-msg-panes .cs-msg-pane').forEach(p => {
+    p.style.display = (p.dataset.view === v) ? 'block' : 'none';
+  });
+  document.querySelectorAll('.cs-msg-tab').forEach(b => {
+    b.classList.toggle('btn-primary', b.dataset.view === v);
+    b.classList.toggle('btn-ghost', b.dataset.view !== v);
+  });
+}
+
 function csDistLoadHistory() {
   fetch(CS_DIST_URL)
     .then(r => r.json())
-    .then(sends => {
+    .then(resp => {
+      // Response is now {mail_configured, sms_configured, sends:[...]}.
+      const sends = Array.isArray(resp) ? resp : (resp.sends || []);
+      const cfgEl = document.getElementById('cs-dist-config-status');
+      if (cfgEl && !Array.isArray(resp)) {
+        const mailOn = !!resp.mail_configured, smsOn = !!resp.sms_configured;
+        const dot = ok => ok ? '<span style="color:#4ade80">configured</span>'
+                             : '<span style="color:#f87171">not configured</span>';
+        cfgEl.innerHTML = `✉ Email: ${dot(mailOn)} · 📱 SMS: ${dot(smsOn)}`
+          + (smsOn ? '' : ' <span style="color:var(--text-muted)">— phone recipients won\'t get a text.</span>');
+      }
       const el = document.getElementById('cs-dist-history');
       if (!sends.length) { el.innerHTML = '<p style="font-size:.78rem;color:var(--text-muted)">No sends yet.</p>'; return; }
       const rows = sends.map(s => {
@@ -2473,7 +2591,8 @@ function csSendCallSheet() {
   fetch(CS_SEND_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ version_label: version, notes, recipients })
+    body: JSON.stringify({ version_label: version, notes, recipients,
+                           audience_messages: csCollectAudienceMessages() })
   })
   .then(r => r.json())
   .then(d => {

@@ -20830,19 +20830,29 @@ def callsheet_distribution(pid, bid, date_str):
     sends = CallSheetSend.query.filter_by(
         budget_id=bid, date=selected_date, schedule_mode=sched_mode
     ).order_by(CallSheetSend.sent_at.desc()).all()
-    return jsonify([{
-        "id": s.id,
-        "version_label": s.version_label or "",
-        "sent_at": s.sent_at.isoformat() if s.sent_at else None,
-        "sent_by": s.sent_by or "",
-        "notes": s.notes or "",
-        "recipients": [{
-            "id": r.id, "name": r.name, "email": r.email or "",
-            "type": r.recipient_type, "status": r.status,
-            "viewed_at": r.viewed_at.isoformat() if r.viewed_at else None,
-            "confirmed_at": r.confirmed_at.isoformat() if r.confirmed_at else None,
-        } for r in s.recipients],
-    } for s in sends])
+    # Config surface (booleans only — never expose secrets). mail_configured =
+    # Flask-Mail has a username; sms_configured = all three Twilio env vars set.
+    mail_configured = bool(app.config.get('MAIL_USERNAME'))
+    sms_configured = bool(os.getenv('TWILIO_ACCOUNT_SID', '')
+                          and os.getenv('TWILIO_AUTH_TOKEN', '')
+                          and os.getenv('TWILIO_FROM_NUMBER', ''))
+    return jsonify({
+        "mail_configured": mail_configured,
+        "sms_configured": sms_configured,
+        "sends": [{
+            "id": s.id,
+            "version_label": s.version_label or "",
+            "sent_at": s.sent_at.isoformat() if s.sent_at else None,
+            "sent_by": s.sent_by or "",
+            "notes": s.notes or "",
+            "recipients": [{
+                "id": r.id, "name": r.name, "email": r.email or "",
+                "type": r.recipient_type, "status": r.status,
+                "viewed_at": r.viewed_at.isoformat() if r.viewed_at else None,
+                "confirmed_at": r.confirmed_at.isoformat() if r.confirmed_at else None,
+            } for r in s.recipients],
+        } for s in sends],
+    })
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/<date_str>/prepare-send", methods=["POST"])
@@ -20922,6 +20932,34 @@ def callsheet_prepare_send(pid, bid, date_str):
     cct = cs_data_dict.get('crew_call_times') or {}
     general_call = cs_data_dict.get('general_crew_call', '') or ''
 
+    # Per-audience custom messages. Prefer what the POST carried (exactly what was
+    # on screen at send time); fall back to the sheet's saved copy. Shape:
+    #   {default:{subject,body}, crew:{...}, talent:{...}, client:{...}, union:{...}}
+    # Empty view-body → default; empty default-body → hardcoded template below.
+    audience_messages = data.get("audience_messages")
+    if not isinstance(audience_messages, dict):
+        audience_messages = cs_data_dict.get('audience_messages') or {}
+
+    def _msg_for(rtype, field):
+        """Pick the field ('subject'|'body') for a recipient type, falling back
+        default → '' (caller supplies the hardcoded template on empty)."""
+        view = audience_messages.get(rtype) or {}
+        val = (view.get(field) or '').strip()
+        if val:
+            return val
+        dflt = audience_messages.get('default') or {}
+        return (dflt.get(field) or '').strip()
+
+    def _fill(tmpl, name, call_display, view_url):
+        """Substitute {name} {call} {date} {project} {version} {link}."""
+        return (tmpl
+                .replace('{name}', name or '')
+                .replace('{call}', call_display or '')
+                .replace('{date}', date_display)
+                .replace('{project}', project.name)
+                .replace('{version}', version_label)
+                .replace('{link}', view_url))
+
     sent_email = 0
     sent_sms   = 0
     recipient_results = []
@@ -20936,15 +20974,31 @@ def callsheet_prepare_send(pid, bid, date_str):
         call_display = personal_call or general_call or 'TBD'
 
         view_url = request.host_url.rstrip('/') + f"/callsheet/view/{rec.confirm_token}"
-        subject  = f"Call Sheet — {project.name} — {date_display} ({version_label})"
-        body = (
-            f"Hi {rec.name},\n\n"
-            f"Your call sheet for {project.name} on {date_display} is ready.\n"
-            f"Your call time: {call_display}\n\n"
-            f"View & confirm your call: {view_url}\n\n"
-            f"Please confirm receipt by clicking the link above.\n\n"
-            f"— Framework Productions · contact@thefp.tv\n"
-        )
+        rtype = rec.recipient_type or 'crew'
+
+        # Subject: custom (view→default) or hardcoded fallback.
+        subject_tmpl = _msg_for(rtype, 'subject')
+        if subject_tmpl:
+            subject = _fill(subject_tmpl, rec.name, call_display, view_url)
+        else:
+            subject = f"Call Sheet — {project.name} — {date_display} ({version_label})"
+
+        # Body: custom (view→default) or hardcoded fallback. Custom bodies MUST
+        # carry the confirm link — append it if the author left {link} out.
+        body_tmpl = _msg_for(rtype, 'body')
+        if body_tmpl:
+            body = _fill(body_tmpl, rec.name, call_display, view_url)
+            if view_url not in body:
+                body = body.rstrip() + f"\n\nView & confirm your call: {view_url}\n"
+        else:
+            body = (
+                f"Hi {rec.name},\n\n"
+                f"Your call sheet for {project.name} on {date_display} is ready.\n"
+                f"Your call time: {call_display}\n\n"
+                f"View & confirm your call: {view_url}\n\n"
+                f"Please confirm receipt by clicking the link above.\n\n"
+                f"— Framework Productions · contact@thefp.tv\n"
+            )
         email_ok = None
         sms_ok   = None
         if email:
@@ -20956,11 +21010,22 @@ def callsheet_prepare_send(pid, bid, date_str):
                 sent_email += 1
 
         if phone:
+            # Keep SMS short: prepend the first line of the audience body (≤140
+            # chars) as a custom preamble, then the standard call/location/confirm
+            # tail. Falls back to the original text when no custom body is set.
+            sms_lines = [
+                f"{project.name} — Call Sheet {date_display}",
+                f"Hi {rec.name}, your call: {call_display}",
+            ]
+            if body_tmpl:
+                first_line = _fill(body_tmpl, rec.name, call_display, view_url).strip().splitlines()
+                first_line = (first_line[0].strip() if first_line else '')[:140]
+                if first_line and view_url not in first_line:
+                    sms_lines.insert(0, first_line)
             sms_body = (
-                f"{project.name} — Call Sheet {date_display}\n"
-                f"Hi {rec.name}, your call: {call_display}"
-                f"{loc_sms_line}\n"
-                f"Confirm: {view_url}"
+                "\n".join(sms_lines)
+                + f"{loc_sms_line}\n"
+                + f"Confirm: {view_url}"
             )
             sms_ok = _send_sms(phone, sms_body)
             if sms_ok:
