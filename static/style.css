@@ -2675,6 +2675,61 @@ a.tab-link:hover { background: var(--bg-3); }
                   letter-spacing: -.02em; display: inline-block; max-width: 42px;
                   overflow: hidden; white-space: nowrap; }
 
+/* ── Light-theme schedule/Gantt legibility ─────────────────────────────────────
+   The day-type / location-day cell fills above are low-alpha colors (~.25–.40)
+   tuned to wash over the DARK page background, and the cell/chip labels are hard
+   white (#fff). On the app-wide LIGHT theme (data-theme="light", set on <html>)
+   those pale fills all but vanish over white and white labels disappear entirely.
+   This block mirrors the app's [data-theme="light"] override pattern to keep the
+   SAME hue families but at higher opacity + dark label text so day types, chips,
+   flags and status markers stay legible in light mode. Dark theme is untouched.
+   (User 2026-07-09: "the white view … is really hard to see the colors".)      */
+
+/* Cell + legend labels: white → dark ink so text reads on the lighter fills. */
+[data-theme="light"] .cell-label,
+[data-theme="light"] .loc-day-label,
+[data-theme="light"] .loc-legend-chip { color: #1a1d2e; }
+
+/* Crew day-type cell fills — bump alpha so the hue reads solid on white. */
+[data-theme="light"] .day-work          { background: rgba(46,204,113,.55); }
+[data-theme="light"] .day-travel        { background: rgba(52,152,219,.50); }
+[data-theme="light"] .day-travel_half   { background: rgba(52,152,219,.30);
+                                           border-color: rgba(41,128,185,.75); }
+[data-theme="light"] .day-travel_unpaid { background: rgba(120,145,168,.22);
+                                           border-color: rgba(100,120,140,.7); }
+[data-theme="light"] .day-hold          { background: rgba(230,170,10,.50); }
+[data-theme="light"] .day-half          { background: rgba(230,170,10,.28); }
+[data-theme="light"] .day-kill_fee      { background: rgba(231,76,60,.50); }
+
+/* Location-row day-type cell fills — same idea, matched to the loc palette. */
+[data-theme="light"] .loc-day-use      { background: rgba(46,204,113,.55); }
+[data-theme="light"] .loc-day-prep     { background: rgba(155,89,182,.50); }
+[data-theme="light"] .loc-day-scout    { background: rgba(52,152,219,.50); }
+[data-theme="light"] .loc-day-hold     { background: rgba(230,170,10,.50); }
+[data-theme="light"] .loc-day-load_in  { background: rgba(26,188,156,.55); }
+[data-theme="light"] .loc-day-load_out { background: rgba(230,126,34,.55); }
+[data-theme="light"] .loc-day-strike   { background: rgba(231,76,60,.50); }
+[data-theme="light"] .loc-day-pickup   { background: rgba(52,73,94,.85); color: #fff; }
+[data-theme="light"] .loc-day-dropoff  { background: rgba(127,140,141,.55); }
+[data-theme="light"] .loc-day-travel   { background: rgba(41,128,185,.55); }
+/* Pick-up is a dark slate fill even in light mode → keep its label white. */
+[data-theme="light"] .loc-day-pickup .loc-day-label { color: #fff; }
+
+/* Legend chips share the .loc-day-* fills above; the boosted opacity + dark ink
+   already applies. Travel-half/unpaid crew chips carry a dashed border colour. */
+[data-theme="light"] .day-chip.day-travel_unpaid { color: #4a6072; }
+
+/* Legend/grid hover on loc cells used a white overlay (invisible on white). */
+[data-theme="light"] .gantt-loc-cell:hover { background: rgba(0,0,0,.05); }
+
+/* Flag dots: raise a couple that are near-white / low-contrast on the pale
+   fills. Same hues, just darker for ≥3:1 against a light cell. Hotel yellow
+   in particular is illegible on white, so darken to an amber. */
+[data-theme="light"] .flag-hotel-l,
+[data-theme="light"] .flag-hotel-r      { background: #d97706; }
+[data-theme="light"] .flag-dot.flag-per-diem-b { background: #d97706; }
+[data-theme="light"] .meal-dot          { color: #b45309; }
+
 /* ── Schedule locations legend/key ─────────────────────────────────────── */
 .loc-legend {
   display: flex; flex-wrap: wrap; gap: .5rem 1.1rem; align-items: center;
