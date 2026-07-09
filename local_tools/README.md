@@ -21,7 +21,20 @@ happens on the FPBudget server via `POST /api/analyze`, which is
 Low-confidence results are filed into `PROCESSED DOCUMENTS/_NEEDS_REVIEW/`
 so a mis-detected name never hides among the good ones.
 
-## Setup (once)
+## Setup (macOS — one command)
+
+```bash
+cd local_tools
+./install.sh
+```
+
+That installs the script to a stable spot, adds a `fp-file-it` terminal
+command, walks you through login (password → macOS Keychain), and builds the
+Finder **right-click → Quick Actions → Analyze & File** action for you. Re-run
+it any time to update. You can then delete/move this repo — the installed copy
+lives in `~/Library/Application Support/FPBudget/`.
+
+### Or set up by hand
 
 ```bash
 python3 fp_file_it.py --setup
@@ -48,25 +61,30 @@ in-app analyzer). Files already inside `PROCESSED DOCUMENTS/` or
 
 ## Use from Finder (right-click → Quick Action)
 
+`./install.sh` already created this for you. Right-click any document(s) in
+Finder → **Quick Actions → Analyze & File**. A notification reports
+"3 filed, 1 to review" when it's done. The first run may prompt for Keychain
+access — click **Always Allow**.
+
+If the menu item doesn't show up immediately, open **System Settings →
+Keyboard → Keyboard Shortcuts → Services → Files and Folders** and tick
+**Analyze & File** (or log out and back in).
+
+### Building it by hand instead
+
 1. Open **Automator** → New Document → **Quick Action**.
 2. Set "Workflow receives current" to **files or folders** in **Finder**.
-3. Add a **Run Shell Script** action:
-   - Shell: `/bin/zsh` — Pass input: **as arguments**
-   - Script (adjust the path to wherever you keep this repo/script):
+3. Add a **Run Shell Script** action — Shell: `/bin/zsh`, Pass input:
+   **as arguments**:
 
    ```zsh
-   /usr/bin/python3 "$HOME/PythonProjects/FPBudget/local_tools/fp_file_it.py" --notify "$@"
+   /usr/bin/python3 "$HOME/Library/Application Support/FPBudget/fp_file_it.py" --notify "$@"
    ```
 
 4. Save as **"Analyze & File"**.
 
-Now right-click any document(s) in Finder → **Quick Actions → Analyze & File**.
-A notification reports "3 filed, 1 to review" when it's done. The first run
-may prompt for Keychain access — click **Always Allow**.
-
-Tip: you can also make it a Dock droplet — in Automator choose
-**Application** instead of Quick Action with the same shell action, save it to
-`/Applications`, and drag files onto its icon.
+Tip: for a Dock droplet, choose **Application** instead of Quick Action with
+the same shell action, save it to `/Applications`, and drag files onto its icon.
 
 ## Notes
 
