@@ -11122,6 +11122,10 @@ def travel_apply_doc(pid, bid):
         td = TravelDetail(schedule_day_id=sd.id, kind=kind)
         db.session.add(td)
 
+    # Capture the hotel range BEFORE overwrite so the range-flag sync self-heals.
+    _old_check_in  = td.check_in  if kind == 'hotel' else None
+    _old_check_out = td.check_out if kind == 'hotel' else None
+
     def _s(k):
         v = data.get(k)
         v = v.strip() if isinstance(v, str) else v
@@ -11164,6 +11168,15 @@ def travel_apply_doc(pid, bid):
             td.check_in = _pd(data.get('check_in'))
         if data.get('check_out'):
             td.check_out = _pd(data.get('check_out'))
+        # Same typing-artifact / inverted-range guards as travel_detail_save.
+        for _dval in (td.check_in, td.check_out):
+            _yr_err = _reject_insane_year(_dval)
+            if _yr_err:
+                db.session.rollback()
+                return jsonify({"error": _yr_err}), 400
+        if td.check_in and td.check_out and td.check_out < td.check_in:
+            db.session.rollback()
+            return jsonify({"error": "Check-out date is before check-in date."}), 400
     elif kind == 'car_rental':
         for f in ('rental_co', 'pickup_location'):
             if _s(f):
@@ -11180,17 +11193,28 @@ def travel_apply_doc(pid, bid):
         if up is not None and ca is not None and getattr(ca, 'crew_member_id', None):
             up.crew_member_id = ca.crew_member_id
 
+    # Reflect a hotel reservation's date range onto the traveler's schedule cells.
+    hotel_sync = None
+    if kind == 'hotel':
+        db.session.flush()
+        hotel_sync = _sync_hotel_range_flags(td, _old_check_in, _old_check_out)
+
     db.session.commit()
     try:
         sync_schedule_driven_lines(bid, db.session)
+        db.session.commit()
     except Exception as _se:
+        db.session.rollback()
         logging.warning(f"[travel_apply_doc] sync failed: {_se}")
     try:
         _ws_emit_tab_refresh(bid, 'travel')
     except Exception:
         pass
-    return jsonify({"ok": True, "schedule_day_id": sd.id, "travel_detail_id": td.id,
-                    "kind": kind})
+    resp = {"ok": True, "schedule_day_id": sd.id, "travel_detail_id": td.id,
+            "kind": kind}
+    if hotel_sync is not None:
+        resp["hotel_sync"] = hotel_sync
+    return jsonify(resp)
 
 
 @app.route("/projects/<int:pid>/actuals/ai-cleanup", methods=["POST"])
@@ -17128,9 +17152,35 @@ def travel_grid(pid, bid):
     # detail in one pass — avoids per-cell DB lookups on render.
     sd_ids = [sd.id for sd in sched_days]
     details_by_sd = {}  # sd_id → {kind: TravelDetail}
+    _sd_by_id = {sd.id: sd for sd in sched_days}
     if sd_ids:
         for td in TravelDetail.query.filter(TravelDetail.schedule_day_id.in_(sd_ids)).all():
             details_by_sd.setdefault(td.schedule_day_id, {})[td.kind] = td
+
+    # Hotel reservations span multiple days: one TravelDetail row (keyed to the
+    # anchor day) should surface on EVERY day of the stay [check_in, check_out]
+    # (checkout INCLUSIVE for display — the last day is tagged 'check-out day').
+    # Build a per-(line, instance, date) index of hotel TDs so a person mid-stay
+    # sees the same confirmation on each day, not just the anchor cell.
+    from datetime import timedelta as _td_span
+    hotel_spans = {}  # (line_id, instance, date_iso) → list[(td, anchor_iso)]
+    for _sd_id, _kinds in details_by_sd.items():
+        _htd = _kinds.get('hotel')
+        if not _htd or not _htd.check_in or not _htd.check_out:
+            continue
+        if _htd.check_out < _htd.check_in:
+            continue
+        _anchor_sd = _sd_by_id.get(_sd_id)
+        if _anchor_sd is None:
+            continue
+        _k_line = _anchor_sd.budget_line_id
+        _k_inst = _anchor_sd.crew_instance or 1
+        _anchor_iso = _anchor_sd.date.isoformat()
+        _d = _htd.check_in
+        while _d <= _htd.check_out:  # inclusive of checkout for display
+            hotel_spans.setdefault((_k_line, _k_inst, _d.isoformat()), []).append(
+                (_htd, _anchor_iso))
+            _d = _d + _td_span(days=1)
 
     import json as _json_t
     rows = []
@@ -17169,10 +17219,10 @@ def travel_grid(pid, bid):
 
         details = details_by_sd.get(sd.id, {})
 
-        def _td_dict(td):
+        def _td_dict(td, spanned=False, anchor_day=None, checkout_day=False):
             if not td:
                 return None
-            return {
+            d = {
                 "id":              td.id,
                 "kind":            td.kind,
                 "confirmation_no": td.confirmation_no,
@@ -17195,6 +17245,31 @@ def travel_grid(pid, bid):
                 "miles":           float(td.miles) if td.miles is not None else None,
                 "route":           td.route,
             }
+            if spanned:
+                # This day is mid-stay (not the anchor cell the reservation is
+                # keyed to). Carry the anchor day so the UI can open/edit the
+                # single source-of-truth row, and render the entry muted.
+                d["spanned"] = True
+                d["anchor_day"] = anchor_day
+                d["checkout_day"] = checkout_day
+            return d
+
+        # Resolve the hotel detail for THIS day. A day inside a reservation's
+        # [check_in, check_out] range that isn't the anchor gets a spanned copy
+        # of the reservation (same confirmation/info, marked spanned) so the
+        # confirmation is visible on every night, not just the anchor day.
+        _own_hotel = details.get('hotel')
+        _hotel_detail = _td_dict(_own_hotel)
+        if _hotel_detail is None:
+            _spans_here = hotel_spans.get(
+                (line.id, sd.crew_instance or 1, sd.date.isoformat()))
+            if _spans_here:
+                _span_td, _span_anchor = _spans_here[0]
+                _is_checkout = (_span_td.check_out is not None
+                                and sd.date == _span_td.check_out)
+                _hotel_detail = _td_dict(_span_td, spanned=True,
+                                         anchor_day=_span_anchor,
+                                         checkout_day=_is_checkout)
 
         rows.append({
             "schedule_day_id": sd.id,
@@ -17213,7 +17288,7 @@ def travel_grid(pid, bid):
             },
             "detail": {
                 "flight":     _td_dict(details.get('flight')),
-                "hotel":      _td_dict(details.get('hotel')),
+                "hotel":      _hotel_detail,
                 "car_rental": _td_dict(details.get('car_rental')),
                 "mileage":    _td_dict(details.get('mileage')),
             },
@@ -17336,6 +17411,141 @@ def travel_toggle_flag(pid, bid):
     return jsonify({"ok": True, "flags": flags, "schedule_day_id": sd.id})
 
 
+def _sync_hotel_range_flags(td, old_check_in=None, old_check_out=None):
+    """Make a hotel reservation's check-in/check-out date range drive the
+    'hotel' cell-flag across the traveler's schedule.
+
+    ONE TravelDetail row = one reservation (single source of truth — we never
+    duplicate rows per night). This helper reflects the reservation's date range
+    onto the person's EXISTING ScheduleDay cells so the hotel bar renders on
+    every night of the stay, not just the anchor day the reservation is keyed to.
+
+    Nights covered = [check_in, check_out) — the checkout day is NOT a hotel
+    night, so it does not get a flag. (Display surfaces still show the checkout
+    day; only the flag/night math excludes it.)
+
+    Behaviour:
+      • Resolve the traveler as the anchor ScheduleDay's
+        (budget_id, budget_line_id, crew_instance, schedule_mode).
+      • For every EXISTING ScheduleDay of that traveler whose date falls in the
+        covered range → set cell_flags['hotel']=True. We do NOT create
+        ScheduleDay rows: an unscheduled night must not silently alter the
+        schedule. Uncovered dates are collected and returned as `unscheduled`
+        so the UI can warn "no scheduled day on Jul 15 — hotel flag not placed".
+      • Un-covering (self-healing): consider the union of the OLD range and the
+        NEW range. For any date in that union that is no longer covered by ANY
+        of this traveler's hotel reservations (there can be several), clear
+        cell_flags['hotel']. This lets a range edit retract flags it previously
+        placed WITHOUT nuking a manually-set hotel flag that sits outside every
+        reservation's vicinity (such a date is never in the union, so it is
+        never touched).
+
+    Returns {'flagged': [iso...], 'unflagged': [iso...], 'unscheduled': [iso...]}.
+    Does NOT commit — the caller commits (it has other pending writes).
+    """
+    from datetime import timedelta as _td_delta
+    summary = {"flagged": [], "unflagged": [], "unscheduled": []}
+    if not td or td.kind != 'hotel':
+        return summary
+
+    anchor = ScheduleDay.query.get(td.schedule_day_id)
+    if anchor is None:
+        return summary
+
+    # Traveler identity = the anchor cell's line/instance/mode within the budget.
+    bid_       = anchor.budget_id
+    line_id_   = anchor.budget_line_id
+    instance_  = anchor.crew_instance or 1
+    mode_      = anchor.schedule_mode
+
+    def _nights(ci, co):
+        """Set of dates in [ci, co) — checkout NOT a night. Empty if incomplete
+        or inverted."""
+        out = set()
+        if not ci or not co or co <= ci:
+            return out
+        d = ci
+        while d < co:
+            out.add(d)
+            d = d + _td_delta(days=1)
+        return out
+
+    new_nights = _nights(td.check_in, td.check_out)
+    old_nights = _nights(old_check_in, old_check_out)
+
+    # This traveler's schedule cells, keyed by date. Match the active mode OR a
+    # legacy NULL-mode row (same dedup the grid uses) so flags land on the row
+    # the rest of the app will actually read.
+    from sqlalchemy import or_ as _or_hs
+    raw = ScheduleDay.query.filter(
+        ScheduleDay.budget_id == bid_,
+        ScheduleDay.budget_line_id == line_id_,
+        ScheduleDay.crew_instance == instance_,
+        _or_hs(ScheduleDay.schedule_mode == mode_,
+               ScheduleDay.schedule_mode == None),
+    ).all()
+    sd_by_date = {}
+    for sd in raw:
+        ex = sd_by_date.get(sd.date)
+        if ex is None:
+            sd_by_date[sd.date] = sd
+        elif ex.schedule_mode is None and sd.schedule_mode == mode_:
+            sd_by_date[sd.date] = sd
+
+    # ALL of this traveler's hotel reservations (there can be several). Used to
+    # decide whether an uncovered-by-THIS-reservation date is still covered by
+    # ANOTHER reservation before we clear its flag. Uses fresh check_in/check_out
+    # already assigned to `td`, so `td` itself contributes its NEW range here.
+    sd_ids = [s.id for s in raw]
+    other_nights = set()
+    if sd_ids:
+        for other in TravelDetail.query.filter(
+                TravelDetail.schedule_day_id.in_(sd_ids),
+                TravelDetail.kind == 'hotel').all():
+            other_nights |= _nights(other.check_in, other.check_out)
+
+    import json as _json_hs
+
+    def _load(sd):
+        try:
+            return _json_hs.loads(sd.cell_flags) if sd.cell_flags else {}
+        except (ValueError, TypeError):
+            return {}
+
+    def _store(sd, flags):
+        sd.cell_flags = _json_hs.dumps(flags) if flags else None
+
+    # 1) Cover the new range: flag existing cells; record unscheduled nights.
+    for d in sorted(new_nights):
+        sd = sd_by_date.get(d)
+        if sd is None:
+            summary["unscheduled"].append(d.isoformat())
+            continue
+        flags = _load(sd)
+        if not flags.get('hotel'):
+            flags['hotel'] = True
+            _store(sd, flags)
+            summary["flagged"].append(d.isoformat())
+
+    # 2) Un-cover: for dates in (old ∪ new) that this save no longer covers AND
+    #    no other reservation covers, clear the flag. Dates outside the union are
+    #    never inspected, so manual flags elsewhere are preserved.
+    union = old_nights | new_nights
+    for d in sorted(union):
+        if d in other_nights:
+            continue  # still a hotel night per some reservation → leave flagged
+        sd = sd_by_date.get(d)
+        if sd is None:
+            continue
+        flags = _load(sd)
+        if flags.get('hotel'):
+            flags.pop('hotel', None)
+            _store(sd, flags)
+            summary["unflagged"].append(d.isoformat())
+
+    return summary
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/travel/detail", methods=["POST"])
 @login_required
 def travel_detail_save(pid, bid):
@@ -17361,6 +17571,11 @@ def travel_detail_save(pid, bid):
         td = TravelDetail(schedule_day_id=sd_id, kind=kind)
         db.session.add(td)
 
+    # Capture the hotel range BEFORE we overwrite it, so the range-flag sync can
+    # self-heal (un-cover nights the reservation no longer spans).
+    _old_check_in  = td.check_in  if kind == 'hotel' else None
+    _old_check_out = td.check_out if kind == 'hotel' else None
+
     # Generic fields
     if "confirmation_no" in data: td.confirmation_no = (data.get("confirmation_no") or '').strip() or None
     if "notes"           in data: td.notes           = (data.get("notes") or '').strip() or None
@@ -17385,6 +17600,16 @@ def travel_detail_save(pid, bid):
             if f in data: setattr(td, f, (data.get(f) or '').strip() or None)
         if "check_in"  in data: td.check_in  = _parse_d(data.get("check_in"))
         if "check_out" in data: td.check_out = _parse_d(data.get("check_out"))
+        # Guard against date-input typing artifacts (e.g. year 0202) that would
+        # otherwise corrupt the range-flag math, and reject inverted ranges.
+        for _dval in (td.check_in, td.check_out):
+            _yr_err = _reject_insane_year(_dval)
+            if _yr_err:
+                db.session.rollback()
+                return jsonify({"error": _yr_err}), 400
+        if td.check_in and td.check_out and td.check_out < td.check_in:
+            db.session.rollback()
+            return jsonify({"error": "Check-out date is before check-in date."}), 400
     elif kind == 'car_rental':
         for f in ('rental_co', 'pickup_location'):
             if f in data: setattr(td, f, (data.get(f) or '').strip() or None)
@@ -17396,7 +17621,22 @@ def travel_detail_save(pid, bid):
             try: td.miles = float(data.get("miles")) if data.get("miles") not in (None, '') else None
             except (TypeError, ValueError): td.miles = None
 
+    # Reflect a hotel reservation's date range onto the traveler's schedule cells
+    # (hotel bar flag on every night of the stay). `td` already carries the NEW
+    # range; pass the OLD range so the sync can retract nights it no longer spans.
+    hotel_sync = None
+    if kind == 'hotel':
+        db.session.flush()  # ensure td.id / fresh range visible to the range query
+        hotel_sync = _sync_hotel_range_flags(td, _old_check_in, _old_check_out)
+
     db.session.commit()
+    if kind == 'hotel':
+        try:
+            sync_schedule_driven_lines(bid, db.session)
+            db.session.commit()
+        except Exception as _se:
+            db.session.rollback()
+            logging.warning(f"[travel_detail_save] hotel line sync failed: {_se}")
     try:
         _ln = BudgetLine.query.get(sd.budget_line_id) if sd.budget_line_id else None
         _label = (_ln.description or _ln.account_name or '—') if _ln else 'travel'
@@ -17408,7 +17648,10 @@ def travel_detail_save(pid, bid):
                       note=f'Updated {kind} detail for {_label}')
     except Exception: pass
     _ws_emit_tab_refresh(bid, 'travel')
-    return jsonify({"ok": True, "id": td.id})
+    resp = {"ok": True, "id": td.id}
+    if hotel_sync is not None:
+        resp["hotel_sync"] = hotel_sync
+    return jsonify(resp)
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/travel/add", methods=["POST"])
@@ -22261,6 +22504,46 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         for _td in TravelDetail.query.filter(
                 TravelDetail.schedule_day_id.in_(_sd_ids_today)).all():
             _travel_by_sd.setdefault(_td.schedule_day_id, []).append(_td)
+
+    # Hotel span: a reservation keyed to one anchor day should ALSO show on the
+    # internal sheet for every day its check_in..check_out range covers (same
+    # inclusive span the recipient personal card uses), so a person mid-stay
+    # sees their hotel line on any day's internal call sheet — not only the
+    # anchor day. Look up hotels on the SAME (line, instance) whose range spans
+    # selected_date, and attach them to today's matching schedule day.
+    _keys_today = {(d.budget_line_id, d.crew_instance or 1): d for d in days_today}
+    if _keys_today:
+        _line_ids_today = list({k[0] for k in _keys_today.keys() if k[0]})
+        # This person's OTHER schedule days (same budget/mode/line/instance) that
+        # could carry a spanning hotel reservation.
+        _span_days = ScheduleDay.query.filter(
+            ScheduleDay.budget_id == bid,
+            ScheduleDay.schedule_mode == sched_mode,
+            ScheduleDay.budget_line_id.in_(_line_ids_today),
+        ).all() if _line_ids_today else []
+        _span_days = [s for s in _span_days
+                      if (s.budget_line_id, s.crew_instance or 1) in _keys_today]
+        _span_sd_ids = [s.id for s in _span_days]
+        _sd_line_inst = {s.id: (s.budget_line_id, s.crew_instance or 1)
+                         for s in _span_days}
+        _already = {(_td.schedule_day_id, _td.id)
+                    for _lst in _travel_by_sd.values() for _td in _lst}
+        if _span_sd_ids:
+            for _htd in TravelDetail.query.filter(
+                    TravelDetail.schedule_day_id.in_(_span_sd_ids),
+                    TravelDetail.kind == 'hotel').all():
+                if not (_htd.check_in and _htd.check_out
+                        and _htd.check_in <= selected_date <= _htd.check_out):
+                    continue
+                _key = _sd_line_inst.get(_htd.schedule_day_id)
+                _today_sd = _keys_today.get(_key) if _key else None
+                if _today_sd is None:
+                    continue
+                # Avoid double-listing the hotel on its own anchor day.
+                if (_today_sd.id, _htd.id) in _already:
+                    continue
+                _travel_by_sd.setdefault(_today_sd.id, []).append(_htd)
+                _already.add((_today_sd.id, _htd.id))
 
     def _cs_td_view(td):
         def _tm(x): return x.strftime('%-I:%M %p') if x else None

@@ -23476,7 +23476,12 @@ setTimeout(function() {
     const cb = (r, flag, isOn, kind, label) => {
       const handler = `travelToggleFlag(${r.line_id}, ${r.instance}, '${r.date}', '${flag}')`;
       const detailHandler = kind ? `event.stopPropagation(); openTravelDetail(${r.schedule_day_id}, '${kind}')` : '';
-      const hasDetail = kind && r.detail[kind];
+      const detail = kind ? r.detail[kind] : null;
+      const hasDetail = !!detail;
+      // A hotel that spans multiple days shows on each mid-stay day as a
+      // "spanned" copy (same confirmation, muted). The anchor day carries the
+      // editable row; spanned days route their edit to the anchor.
+      const spanned = !!(detail && detail.spanned);
       // "Edit details" button — was a tiny pencil glyph that was hard
       // to spot. Now a proper labelled button so users actually find it.
       const detailBtn = (kind && isOn)
@@ -23491,12 +23496,22 @@ setTimeout(function() {
       const detailDot = hasDetail
         ? '<span style="color:#22c55e;font-size:11px;margin-left:4px" title="Details on file">●</span>'
         : '';
+      // Confirmation number visible inline (esp. for hotels spanning the stay)
+      // so a person mid-stay sees the same conf # on every day.
+      const confBadge = (detail && detail.confirmation_no)
+        ? `<span style="font-size:11px;color:${spanned?'var(--text-muted)':'#8fa9d6'};margin-left:6px" title="Confirmation #">#${_esc(detail.confirmation_no)}</span>`
+        : '';
+      const spanTag = (spanned)
+        ? `<span style="font-size:10px;color:var(--text-muted);margin-left:5px;font-style:italic" title="Hotel reservation spans this day (edit on ${_esc(detail.anchor_day || '')})">${detail.checkout_day ? 'check-out day' : 'mid-stay'}</span>`
+        : '';
       const activeStyle = isOn
-        ? 'background:#1a2540;color:#5b8af9;border:1px solid #2d4070'
+        ? (spanned
+            ? 'background:#141c30;color:#7f93b8;border:1px solid #24314f'
+            : 'background:#1a2540;color:#5b8af9;border:1px solid #2d4070')
         : 'background:transparent;color:var(--text-muted);border:1px solid var(--border)';
       return `<label style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500;${activeStyle}" title="${label}">
                 <input type="checkbox" ${isOn?'checked':''} onclick="${handler}" style="margin:0;width:14px;height:14px">
-                ${label}${detailDot}${detailBtn}
+                ${label}${detailDot}${confBadge}${spanTag}${detailBtn}
               </label>`;
     };
     const pdSelect = (r) => `
@@ -23633,8 +23648,22 @@ setTimeout(function() {
   // ── Travel detail modal (flight/hotel/car/mileage entry) ───────────────
   window.openTravelDetail = function(sd_id, kind) {
     // Find the row in cached data so we can pre-fill the form.
-    const row = _travelData?.rows?.find(r => r.schedule_day_id === sd_id);
-    const detail = row?.detail?.[kind] || {};
+    let row = _travelData?.rows?.find(r => r.schedule_day_id === sd_id);
+    let detail = row?.detail?.[kind] || {};
+    // A hotel reservation spans multiple days but lives on ONE anchor cell.
+    // If the user clicks "Edit details" on a spanned (mid-stay) day, redirect
+    // the edit to the anchor day so we update the single source-of-truth row
+    // instead of creating a duplicate reservation on this day.
+    if (kind === 'hotel' && detail && detail.spanned && detail.anchor_day) {
+      const anchor = _travelData?.rows?.find(
+        r => r.line_id === row.line_id && r.instance === row.instance
+             && r.date === detail.anchor_day);
+      if (anchor) {
+        row = anchor;
+        sd_id = anchor.schedule_day_id;
+        detail = anchor.detail?.[kind] || {};
+      }
+    }
     _detailContext = { sd_id, kind, detail };
 
     const titleMap = {flight:'Flight', hotel:'Hotel', car_rental:'Car Rental', mileage:'Mileage'};
