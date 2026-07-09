@@ -1708,7 +1708,8 @@ if (!RECIPIENT_MODE) {
 // Rich schedule sections build their grid on BOTH internal and recipient screen
 // renders (cells render read-only in recipient mode); csRichScheduleInit no-ops
 // edit listeners when RECIPIENT_MODE. pdf_mode never reaches here (no <script>).
-csRichScheduleInit();
+// NOTE: the csRichScheduleInit() CALL lives after the CS_RICH_STATE declaration
+// (const — calling from here is a temporal-dead-zone ReferenceError).
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HIDE / SHOW ELEMENTS (per-day overrides in CS_HIDDEN)
@@ -3078,6 +3079,7 @@ function csRichScheduleInit() {
     });
   });
 }
+csRichScheduleInit();
 
 // ── Light preview ──────────────────────────────────────────────────────────────
 // The call-sheet page is now ALWAYS the designed LIGHT theme (body.light-preview
