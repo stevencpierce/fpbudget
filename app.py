@@ -17272,10 +17272,20 @@ def travel_grid(pid, bid):
             return d
 
         # Resolve the hotel detail for THIS day. A day inside a reservation's
-        # [check_in, check_out] range that isn't the anchor gets a spanned copy
-        # of the reservation (same confirmation/info, marked spanned) so the
+        # nightly range that isn't the anchor gets a spanned copy of the
+        # reservation (same confirmation/info, marked spanned) so the
         # confirmation is visible on every night, not just the anchor day.
+        # A fully BLANK own-day hotel row (no name/conf/dates — e.g. a
+        # cleared-out entry) must not shadow the span (user 2026-07-09:
+        # mid-stay showed for James but not Steven — Steven's day held an
+        # empty leftover row that blocked the spanned copy).
         _own_hotel = details.get('hotel')
+        if _own_hotel is not None and not any((
+                _own_hotel.hotel_name, _own_hotel.confirmation_no,
+                _own_hotel.hotel_address, _own_hotel.room_type, _own_hotel.notes,
+                (_own_hotel.check_in and _own_hotel.check_out
+                 and _own_hotel.check_out > _own_hotel.check_in))):
+            _own_hotel = None
         _hotel_detail = _td_dict(_own_hotel)
         if _hotel_detail is None:
             _spans_here = hotel_spans.get(
@@ -17586,6 +17596,32 @@ def travel_detail_save(pid, bid):
         return jsonify({"error": "ScheduleDay not found"}), 404
 
     td = TravelDetail.query.filter_by(schedule_day_id=sd_id, kind=kind).first()
+
+    # True DELETE (2026-07-09): body {delete: true} removes the row entirely —
+    # previously blank "neutralized" rows lingered and shadowed reservation
+    # spans on that day. For hotels, the range-flag sync runs first with a
+    # zero-night range so covered nights un-flag (unless another reservation
+    # still covers them), then the row is removed.
+    if data.get("delete"):
+        if not td:
+            return jsonify({"ok": True, "deleted": False})
+        sync_summary = None
+        if kind == 'hotel' and td.check_in and td.check_out:
+            _oci, _oco = td.check_in, td.check_out
+            td.check_out = td.check_in          # zero nights = covers nothing
+            try:
+                sync_summary = _sync_hotel_range_flags(td, _oci, _oco)
+            except Exception:
+                logging.warning("[travel-delete] hotel un-cover failed", exc_info=True)
+        db.session.delete(td)
+        db.session.commit()
+        try:
+            sync_schedule_driven_lines(bid)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        return jsonify({"ok": True, "deleted": True, "hotel_sync": sync_summary})
+
     if not td:
         td = TravelDetail(schedule_day_id=sd_id, kind=kind)
         db.session.add(td)
