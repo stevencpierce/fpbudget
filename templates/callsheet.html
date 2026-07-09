@@ -26,7 +26,7 @@
 {% set personal_travel = personal_travel | default([]) %}
 {% set date_display    = date_display    | default('') %}
 {% block title %}Call Sheet — {{ project.name }} | {{ selected_date.strftime('%b %d, %Y') }}{% endblock %}
-{% block body_class %}{% if recipient_mode %}recipient-mode{% endif %}{% endblock %}
+{% block body_class %}{% if recipient_mode %}recipient-mode{% endif %}{% if pdf_mode %} pdf-mode{% endif %}{% endblock %}
 
 {% block content %}
 {% if pdf_mode %}
@@ -38,15 +38,29 @@
        supports attribute selectors). (2) Force white bg / black text on the page
        shell in case any un-scoped dark-theme variable leaks past @media print. #}
 <style>
-  /* Belt-and-suspenders palette lock for weasyprint (the @media print block
-     already flips most of this; these cover the page shell + wrapper). */
-  html, body { background:#fff !important; color:#111 !important; }
-  body.recipient-mode .main-content,
-  .callsheet-wrapper, .callsheet-page { background:#fff !important; }
+  /* Belt-and-suspenders palette lock for weasyprint. The @media print block
+     (static/style.css) is the single source of truth for the DESIGNED light
+     theme and weasyprint honours it; these `.pdf-mode` rules only re-assert the
+     page shell so an un-scoped dark variable can never leak past. Keep the
+     palette tokens in sync with the @media print block (primary #16181d,
+     tint #fafbfc, hairline #d5d9e0). (User 2026-07-09.) */
+  html, body { background:#fff !important; color:#16181d !important; }
+  body.pdf-mode .main-content { background:#fff !important; }
+  body.pdf-mode .callsheet-wrapper { background:#fff !important; }
+  body.pdf-mode .callsheet-page {
+    background:#fff !important;
+    border:1px solid #d5d9e0 !important;
+    border-radius:5px !important;
+  }
+  /* Crew sheet must begin its own physical page; the day sheet must not force a
+     trailing blank page. Mirrors the @media print pagination rules. */
+  body.pdf-mode .callsheet-page-1 { page-break-after:auto !important; }
+  body.pdf-mode .callsheet-page-2 { page-break-before:always !important; }
+  body.pdf-mode .callsheet-page-break { display:none !important; }
   /* Each element the owner hid on THIS call sheet is dropped from the PDF. */
   {% for _k, _v in (cs_data.get('hidden') or {}).items() %}{% if _v %}[data-cs-key="{{ _k }}"] { display:none !important; }
   {% endif %}{% endfor %}
-  @page { size: letter portrait; margin: .4in; }
+  @page { size: letter portrait; margin: .45in; }
 </style>
 {% endif %}
 {% set MODE_META = {
