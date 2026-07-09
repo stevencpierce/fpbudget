@@ -3115,37 +3115,72 @@ a.tab-link:hover { background: var(--bg-3); }
   position: relative;   /* anchor for the absolutely-positioned logo layer */
 }
 
-/* ── Call-sheet logo layer ──────────────────────────────────────────────────
-   Absolutely-positioned imgs span the dark header band; each item is placed
-   left:x% width:w% (percent of band width) and vertically centered. Rendered
-   identically on screen, in the read-only recipient view, and (server-side,
-   with data: URIs) in the PDF. */
-.cs-logo-layer {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;   /* let header text stay clickable when no logos */
-  z-index: 3;
+/* ── Call-sheet logo strip ──────────────────────────────────────────────────
+   A dedicated WHITE band rendered BETWEEN the dark header and the crew-call bar
+   (the sheet ships white, so logos must be seen against the truth — hence the
+   strip stays white in the dark editing theme too). Three slots (left / center /
+   right); each placed logo is sized by HEIGHT (percent of strip height, 40-100)
+   so mixed aspect ratios sit on a common baseline, with automatic gap spacing.
+   Rendered identically on screen, in the read-only recipient view, and (server-
+   side, with data: URIs) in the PDF. (User 2026-07-09.) */
+.cs-logo-strip {
+  display: none;               /* only shown when it has logos (JS/Jinja add .has-logos) */
+  align-items: center;
+  gap: 1rem;
+  background: #fff;
+  color: #16181d;
+  border-top: 1px solid #d5d9e0;
+  border-bottom: 1px solid #d5d9e0;
+  padding: .45rem 1.25rem;     /* lean vertical footprint — see pagination note below */
+  min-height: 2.6rem;
 }
-.cs-logo-layer.has-logos { pointer-events: none; }
+.cs-logo-strip.has-logos { display: flex; }
+/* PAGINATION NOTE: the strip adds height between the header and the day-sheet
+   body. Kept deliberately lean (padding + min-height above) so a modest sheet
+   still fits page 1. If a real sheet tips the day sheet onto page 2, trim these
+   further before touching the day-sheet layout. (User 2026-07-09.) */
+/* Internal edit mode keeps the strip visible even when empty, as a drop-target
+   hint, whenever the Logos panel is open. */
+.cs-logos-editable .cs-logo-strip.cs-strip-hint { display: flex; }
+.cs-logo-slot {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-height: 2rem;
+}
+.cs-logo-slot-left   { flex: 1 1 0; justify-content: flex-start; }
+.cs-logo-slot-center { flex: 1 1 0; justify-content: center; }
+.cs-logo-slot-right  { flex: 1 1 0; justify-content: flex-end; }
 .cs-logo-item {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  pointer-events: auto;
 }
+/* Size by HEIGHT: h (40-100) maps to a rem height so mixed aspect ratios align on
+   a common baseline and weasyprint never has to resolve a percentage height. The
+   template/JS set --cs-logo-h = h; 100 → 4.5rem, 40 → 1.8rem. */
 .cs-logo-item img {
-  width: 100%;
-  height: auto;
-  max-height: 4.5rem;   /* never taller than the band */
+  width: auto;
+  height: calc(var(--cs-logo-h, 70) / 100 * 4.5rem);
+  max-height: 4.5rem;
   object-fit: contain;
   display: block;
 }
 /* Editing affordances — only inside .cs-logos-editable (internal, not recipient). */
+.cs-logos-editable .cs-logo-slot {
+  border: 1px dashed transparent;
+  border-radius: 5px;
+  padding: .15rem .3rem;
+  transition: border-color .12s, background .12s;
+}
+.cs-logos-editable .cs-logo-slot.cs-slot-dragover {
+  border-color: rgba(139,170,248,.9);
+  background: rgba(79,126,248,.10);
+}
 .cs-logos-editable .cs-logo-item { cursor: grab; }
 .cs-logos-editable .cs-logo-item:hover { outline: 1px dashed rgba(139,170,248,.8); outline-offset: 2px; }
+.cs-logos-editable .cs-logo-item.cs-logo-dragging { opacity: .45; }
 .cs-logo-remove {
   position: absolute;
   top: -8px; right: -8px;
@@ -3159,6 +3194,7 @@ a.tab-link:hover { background: var(--bg-3); }
   cursor: pointer;
   display: none;
   padding: 0;
+  z-index: 2;
 }
 .cs-logo-resize {
   position: absolute;
@@ -3167,11 +3203,13 @@ a.tab-link:hover { background: var(--bg-3); }
   background: #4f7ef8;
   border: 2px solid #fff;
   border-radius: 2px;
-  cursor: nwse-resize;
+  cursor: ns-resize;          /* height-based resize */
   display: none;
+  z-index: 2;
 }
 .cs-logos-editable .cs-logo-item:hover .cs-logo-remove,
 .cs-logos-editable .cs-logo-item:hover .cs-logo-resize { display: block; }
+/* Open-Logos button now sits on the dark header band (strip may be empty). */
 .cs-logos-open-btn {
   position: absolute;
   bottom: 6px; right: 8px;
@@ -3185,6 +3223,14 @@ a.tab-link:hover { background: var(--bg-3); }
   cursor: pointer;
 }
 .cs-logos-open-btn:hover { background: rgba(79,126,248,.4); }
+.cs-logo-strip-empty-hint {
+  flex: 1 1 auto;
+  text-align: center;
+  font-size: .78rem;
+  color: #9aa2b4;
+  pointer-events: none;
+}
+.cs-logo-strip.has-logos .cs-logo-strip-empty-hint { display: none; }
 
 /* ── Logos mini-panel (floating, screen only) ─────────────────────────────── */
 .cs-logos-panel {
@@ -3353,6 +3399,22 @@ a.tab-link:hover { background: var(--bg-3); }
 }
 .cs-aud-pill:hover { border-color: var(--accent); color: var(--accent); }
 .cs-aud-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+
+/* Light-preview toggle: sits at the far right of the audience bar. */
+.cs-light-toggle {
+  margin-left: auto;
+  padding: .2rem .7rem;
+  border: 1px solid var(--border-color);
+  border-radius: 1rem;
+  background: none;
+  cursor: pointer;
+  font-size: .73rem;
+  color: var(--text-muted);
+  transition: all .15s;
+  white-space: nowrap;
+}
+.cs-light-toggle:hover { border-color: #f0b429; color: #f0b429; }
+.cs-light-toggle.active { background: #f0b429; border-color: #f0b429; color: #16181d; font-weight: 600; }
 
 /* ── CS suppress checkboxes ────────────────────────────────────────────────── */
 .cs-suppress-cell { white-space: nowrap; }
@@ -3632,6 +3694,288 @@ a.tab-link:hover { background: var(--bg-3); }
 }
 
 /* ── Print media query ─────────────────────────────────────────────────────── */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   DESIGNED LIGHT THEME — SINGLE SOURCE OF TRUTH.
+   These rules were migrated OUT of the @media print blocks so they apply in
+   BOTH the on-screen Light-preview toggle (body.light-preview) AND the pdf/
+   recipient render (body.pdf-mode) — written once via :is(...). Browser PRINT
+   goes through this same scope: window.onbeforeprint adds body.light-preview
+   (see callsheet.html), so the @media print blocks now carry ONLY structural
+   essentials (page breaks, @page, chrome hiding). Do NOT move colour/theming
+   rules back into @media print — they belong here. (User 2026-07-09.)
+   ════════════════════════════════════════════════════════════════════════ */
+:is(body.light-preview, body.pdf-mode) [contenteditable] {
+    border: none !important;
+    outline: none !important;
+    background: transparent !important;
+    cursor: text !important;
+  }
+:is(body.light-preview, body.pdf-mode) .cs-editable {
+    border: none !important;
+    background: transparent !important;
+  }
+:is(body.light-preview, body.pdf-mode) .cs-schedule-notes {
+    border: none !important;
+    resize: none !important;
+    background: transparent !important;
+  }
+/* ══════════════════════════════════════════════════════════════════════════
+     DESIGNED LIGHT THEME — the single source of truth for the printed / emailed
+     call sheet. Shared by browser print (this @media print block, which
+     weasyprint also honours) AND the pdf_mode render. Do NOT reintroduce a
+     borderless-white flip elsewhere — edit these rules so the two never drift.
+     Palette: primary #16181d · muted #5a6472 · hairline #d5d9e0 · tint #fafbfc
+     · band #f0f2f5 · accent #1d4ed8 (deep blue, prints clean in grayscale).
+     ════════════════════════════════════════════════════════════════════════ */
+:is(body.light-preview, body.pdf-mode) {
+    background: #fff !important;
+    color: #16181d !important;
+    font-size: 9.5pt;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-wrapper {
+    max-width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-page-break { display: none; }
+/* ── Dark header band (kept — established design) ────────────────────────── */
+:is(body.light-preview, body.pdf-mode) .callsheet-header-main,
+  :is(body.light-preview, body.pdf-mode) .callsheet-header-p2-bar {
+    background: #16181d !important;
+    color: #fff !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-header-main { border-bottom: 3px solid #1d4ed8 !important; }
+/* Logo strip (white band between header + crew call) — colour tokens live in the
+   shared "Logo strip" section further down; nothing header-band-specific here now
+   that logos no longer overlay the dark band. */
+:is(body.light-preview, body.pdf-mode) .callsheet-project-title,
+  :is(body.light-preview, body.pdf-mode) .callsheet-date-display { color: #fff !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-company-name,
+  :is(body.light-preview, body.pdf-mode) .callsheet-header-label,
+  :is(body.light-preview, body.pdf-mode) .callsheet-header-sub,
+  :is(body.light-preview, body.pdf-mode) .callsheet-day-num,
+  :is(body.light-preview, body.pdf-mode) .callsheet-p2-budget-sub,
+  :is(body.light-preview, body.pdf-mode) .callsheet-p2-version { color: #c2c8d6 !important; }
+/* ── Logo strip: white band (logos against the truth), hairline top+bottom ─── */
+:is(body.light-preview, body.pdf-mode) .callsheet-page {
+    background: #fff !important;
+    border: 1px solid #d5d9e0 !important;
+    border-radius: 5px !important;
+  }
+:is(body.light-preview, body.pdf-mode) .cs-logo-strip {
+    background: #fff !important;
+    color: #16181d !important;
+    border-top: 1px solid #d5d9e0 !important;
+    border-bottom: 1px solid #d5d9e0 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+:is(body.light-preview, body.pdf-mode) .cs-logo-item img {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+/* ── General crew call bar: deep-blue accent band ───────────────────────── */
+:is(body.light-preview, body.pdf-mode) .callsheet-crew-call-bar {
+    background: #1d4ed8 !important;
+    color: #fff !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-call-label { color: #dbe4ff !important; opacity: 1; }
+/* ── Section title bars: light-gray band, dark left accent, uppercase ───── */
+:is(body.light-preview, body.pdf-mode) .callsheet-section {
+    padding: .5rem .7rem .6rem !important;
+    border-top: 1px solid #e4e7ec !important;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-section-title {
+    background: #f0f2f5 !important;
+    color: #16181d !important;
+    border-left: 3px solid #16181d !important;
+    border-bottom: 2px solid #d5d9e0 !important;
+    padding: .22rem .5rem !important;
+    margin: 0 0 .5rem !important;
+    letter-spacing: .12em;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-section-talent .callsheet-section-title,
+  :is(body.light-preview, body.pdf-mode) .callsheet-section-atl .callsheet-section-title,
+  :is(body.light-preview, body.pdf-mode) .callsheet-section-clients .callsheet-section-title { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-section-talent .callsheet-section-title { border-left-color: #7c3aed !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-section-atl .callsheet-section-title { border-left-color: #1d4ed8 !important; }
+/* ── Two-column divider hairlines ───────────────────────────────────────── */
+:is(body.light-preview, body.pdf-mode) .callsheet-two-col { border-top: 1px solid #e4e7ec !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-col-left { border-right: 1px solid #e4e7ec !important; }
+/* ── Tables: gray header fill, hairline separators, tabular times ───────── */
+:is(body.light-preview, body.pdf-mode) .callsheet-table th {
+    background: #f0f2f5 !important;
+    color: #5a6472 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    border-bottom: 1px solid #d5d9e0 !important;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-table td {
+    border-bottom: 1px solid #e8ebef !important;
+    color: #16181d !important;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-table tr:hover td { background: transparent !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-time-cell { color: #1d4ed8 !important; font-variant-numeric: tabular-nums; }
+:is(body.light-preview, body.pdf-mode) .callsheet-times-divider td {
+    background: #f0f2f5 !important;
+    border-bottom: 1px solid #d5d9e0 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+/* ── Location cards: bordered light tint, clear hierarchy ───────────────── */
+:is(body.light-preview, body.pdf-mode) .callsheet-location-card {
+    background: #fafbfc !important;
+    border: 1px solid #d5d9e0 !important;
+    border-radius: 4px !important;
+    padding: .35rem .5rem !important;
+    margin-bottom: .35rem !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+:is(body.light-preview, body.pdf-mode) .cs-loc-item .callsheet-location-card { border-bottom: 1px solid #d5d9e0 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-location-typeline { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-location-name { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-location-address { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-location-contact { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-location-note { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-contact-label { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-location-type { color: #5a6472 !important; background: #eef0f3 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-map-link { color: #1d4ed8 !important; }
+/* ── Day-info fields (weather / notes) as bordered light cards ──────────── */
+:is(body.light-preview, body.pdf-mode) .cs-info-field,
+  :is(body.light-preview, body.pdf-mode) .cs-weather-field,
+  :is(body.light-preview, body.pdf-mode) .cs-notes-area {
+    background: #fafbfc !important;
+    border: 1px solid #d5d9e0 !important;
+    border-radius: 4px !important;
+    color: #16181d !important;
+    padding: .3rem .45rem !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+:is(body.light-preview, body.pdf-mode) .cs-notes-area { min-height: 0 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-info-label { color: #16181d !important; }
+/* ── Hospital rows ──────────────────────────────────────────────────────── */
+:is(body.light-preview, body.pdf-mode) .cs-hospital-row { border-bottom: 1px solid #e8ebef !important; }
+:is(body.light-preview, body.pdf-mode) .cs-hospital-name { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .cs-hospital-addr,
+  :is(body.light-preview, body.pdf-mode) .cs-hospital-phone { color: #5a6472 !important; }
+/* ── Schedule / advance textareas: collapse to content (no giant empty box).
+     min-height:12rem on screen becomes ~2.4in of blank paper otherwise — the
+     root cause of the page-1 spillover. Height follows content; empty renders
+     as a slim placeholder card. (User 2026-07-09.) ───────────────────────── */
+:is(body.light-preview, body.pdf-mode) .cs-schedule-notes {
+    min-height: 1.4rem !important;
+    height: auto !important;
+    background: #fafbfc !important;
+    border: 1px solid #d5d9e0 !important;
+    border-radius: 4px !important;
+    color: #16181d !important;
+    resize: none !important;
+    padding: .3rem .45rem !important;
+    margin: .2rem 0 .1rem !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+/* Advance-schedule chips */
+:is(body.light-preview, body.pdf-mode) .cs-advance-line {
+    background: #fafbfc !important;
+    border: 1px solid #d5d9e0 !important;
+    color: #5a6472 !important;
+  }
+/* ── Misc text tokens ───────────────────────────────────────────────────── */
+:is(body.light-preview, body.pdf-mode) .callsheet-info-label { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-email-cell,
+  :is(body.light-preview, body.pdf-mode) .callsheet-phone-cell { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-name-cell { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-dept-cell { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-role-cell { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-row-num { color: #8a92a0 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-hours-cell { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-email { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-contact-item { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-contact-cell { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-placeholder { color: #8a92a0 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-mode-pill { display: none; }
+:is(body.light-preview, body.pdf-mode) .callsheet-meal-yes { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-meal-no { color: #8a92a0 !important; }
+/* Day type badges: plain outlined labels */
+:is(body.light-preview, body.pdf-mode) .callsheet-day-type-badge {
+    background: none !important;
+    border: 1px solid #b8bfc9 !important;
+    color: #16181d !important;
+    padding: .05rem .25rem;
+    font-size: 7pt;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-footer {
+    color: #5a6472 !important;
+    background: #f0f2f5 !important;
+    border-top: 1px solid #d5d9e0 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+:is(body.light-preview, body.pdf-mode) a { color: #1d4ed8 !important; }
+:is(body.light-preview, body.pdf-mode) .cs-quote-type-select,
+  :is(body.light-preview, body.pdf-mode) #cs-quote-refresh-btn,
+  :is(body.light-preview, body.pdf-mode) #crew-view-toggle,
+  :is(body.light-preview, body.pdf-mode) .cs-advance-lines,
+  :is(body.light-preview, body.pdf-mode) .cs-dept-notes-container .btn,
+  :is(body.light-preview, body.pdf-mode) .cs-useful-contacts-grid .cs-contact-detail { }
+:is(body.light-preview, body.pdf-mode) .cs-quote-section { background: #fff !important; }
+:is(body.light-preview, body.pdf-mode) .cs-quote-display { background: #fafbfc !important; border: 1px solid #d5d9e0 !important;
+    border-radius: 4px !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+:is(body.light-preview, body.pdf-mode) .cs-quote-text { font-style: italic; color: #5a6472 !important; min-height: 0 !important; }
+:is(body.light-preview, body.pdf-mode) .cs-contact-card { border: 1px solid #d5d9e0 !important; background: #fafbfc !important;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+:is(body.light-preview, body.pdf-mode) .cs-contact-role { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .cs-contact-name { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-note-label { color: #16181d !important; font-weight: 700; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-note-text { border: 1px solid #d5d9e0 !important; color: #16181d !important;
+    background: #fafbfc !important;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+:is(body.light-preview, body.pdf-mode) .callsheet-versions { color: #c2c8d6 !important; }
+:is(body.light-preview, body.pdf-mode) .cs-version-val { color: #c2c8d6 !important; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-box-header {
+    background: #e6e9ee !important;
+    color: #16181d !important;
+    font-size: 9pt;
+    letter-spacing: .05em;
+    padding: .18rem .45rem;
+    border-bottom: 1px solid #d5d9e0 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+:is(body.light-preview, body.pdf-mode) .cs-dept-box-table { font-size: 9.5pt; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-box-table tr { border-bottom: 1px solid #e8ebef !important; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-box-table td { padding: .14rem .4rem; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-role { font-size: 9pt; color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-name { font-size: 9.5pt; color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-call { font-size: 9pt; color: #1d4ed8 !important; font-variant-numeric: tabular-nums; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-header-label:focus { background: none; }
+/* Recipient-highlight tint for the printed crew list (pale blue / green) */
+:is(body.light-preview, body.pdf-mode) .cs-dept-box-table tr.cs-row-confirmed,
+  :is(body.light-preview, body.pdf-mode) tr.cs-row-confirmed { background: #eef6f0 !important;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-box-table tr.cs-row-viewed,
+  :is(body.light-preview, body.pdf-mode) tr.cs-row-viewed { background: #eef3fb !important;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+/* Legacy dept-header rows (flat table view) */
+:is(body.light-preview, body.pdf-mode) .callsheet-dept-header td {
+    background: #e6e9ee !important;
+    color: #16181d !important;
+    border-bottom: 1px solid #d5d9e0 !important;
+    border-top: 1px solid #d5d9e0 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
 @media print {
   /* Hidden-in-this-callsheet elements are fully omitted from print/PDF. */
   .cs-hidden-el { display: none !important; }
@@ -3657,47 +4001,10 @@ a.tab-link:hover { background: var(--bg-3); }
   footer {
     display: none !important;
   }
-
-  [contenteditable] {
-    border: none !important;
-    outline: none !important;
-    background: transparent !important;
-    cursor: text !important;
-  }
-  .cs-editable {
-    border: none !important;
-    background: transparent !important;
-  }
-  .cs-schedule-notes {
-    border: none !important;
-    resize: none !important;
-    background: transparent !important;
-  }
   .kp-table th:first-child,
   .kp-table th:last-child,
   .kp-table td:first-child,
   .kp-table td:last-child { display: none !important; }
-
-  /* ══════════════════════════════════════════════════════════════════════════
-     DESIGNED LIGHT THEME — the single source of truth for the printed / emailed
-     call sheet. Shared by browser print (this @media print block, which
-     weasyprint also honours) AND the pdf_mode render. Do NOT reintroduce a
-     borderless-white flip elsewhere — edit these rules so the two never drift.
-     Palette: primary #16181d · muted #5a6472 · hairline #d5d9e0 · tint #fafbfc
-     · band #f0f2f5 · accent #1d4ed8 (deep blue, prints clean in grayscale).
-     ════════════════════════════════════════════════════════════════════════ */
-  body, html {
-    background: #fff !important;
-    color: #16181d !important;
-    font-size: 9.5pt;
-  }
-
-  .callsheet-wrapper {
-    max-width: 100%;
-    margin: 0;
-    padding: 0;
-  }
-
   /* Each page is a bordered light shell; crew page begins a fresh sheet. */
   .callsheet-page {
     background: #fff !important;
@@ -3710,8 +4017,6 @@ a.tab-link:hover { background: var(--bg-3); }
   }
   .callsheet-page-1 { page-break-after: auto; }
   .callsheet-page-2 { page-break-before: always; }
-  .callsheet-page-break { display: none; }
-
   /* Keep small blocks intact where they comfortably can — no orphaned tiny
      spillovers. The crew-grid section is intentionally excluded (it's the big
      flowing container that MUST be allowed to break across the crew pages). */
@@ -3728,189 +4033,6 @@ a.tab-link:hover { background: var(--bg-3); }
      are pinned to the top of the crew page (which already starts fresh) so the
      grid always follows them on the same sheet. (User 2026-07-09.) */
   .callsheet-page-1 .callsheet-section-title { page-break-after: avoid; break-after: avoid; }
-
-  /* ── Dark header band (kept — established design) ────────────────────────── */
-  .callsheet-header-main,
-  .callsheet-header-p2-bar {
-    background: #16181d !important;
-    color: #fff !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-  .callsheet-header-main { border-bottom: 3px solid #1d4ed8 !important; }
-  /* Logo layer prints over the dark band. The layer + placed items are NOT
-     .cs-screen-only, so they survive the chrome purge above; only the edit
-     handles/buttons (which ARE .cs-screen-only) are dropped. */
-  .cs-logo-layer { position: absolute !important; inset: 0 !important; z-index: 3 !important; }
-  .cs-logo-item  { position: absolute !important; }
-  .cs-logo-item img {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-  .callsheet-project-title,
-  .callsheet-date-display { color: #fff !important; }
-  .callsheet-company-name,
-  .callsheet-header-label,
-  .callsheet-header-sub,
-  .callsheet-day-num,
-  .callsheet-p2-budget-sub,
-  .callsheet-p2-version { color: #c2c8d6 !important; }
-
-  /* ── General crew call bar: deep-blue accent band ───────────────────────── */
-  .callsheet-crew-call-bar {
-    background: #1d4ed8 !important;
-    color: #fff !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-  .callsheet-call-label { color: #dbe4ff !important; opacity: 1; }
-
-  /* ── Section title bars: light-gray band, dark left accent, uppercase ───── */
-  .callsheet-section {
-    padding: .5rem .7rem .6rem !important;
-    border-top: 1px solid #e4e7ec !important;
-  }
-  .callsheet-section-title {
-    background: #f0f2f5 !important;
-    color: #16181d !important;
-    border-left: 3px solid #16181d !important;
-    border-bottom: 2px solid #d5d9e0 !important;
-    padding: .22rem .5rem !important;
-    margin: 0 0 .5rem !important;
-    letter-spacing: .12em;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-  .callsheet-section-talent .callsheet-section-title,
-  .callsheet-section-atl .callsheet-section-title,
-  .callsheet-section-clients .callsheet-section-title { color: #16181d !important; }
-  .callsheet-section-talent .callsheet-section-title { border-left-color: #7c3aed !important; }
-  .callsheet-section-atl .callsheet-section-title { border-left-color: #1d4ed8 !important; }
-
-  /* ── Two-column divider hairlines ───────────────────────────────────────── */
-  .callsheet-two-col { border-top: 1px solid #e4e7ec !important; }
-  .callsheet-col-left { border-right: 1px solid #e4e7ec !important; }
-
-  /* ── Tables: gray header fill, hairline separators, tabular times ───────── */
-  .callsheet-table th {
-    background: #f0f2f5 !important;
-    color: #5a6472 !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-    border-bottom: 1px solid #d5d9e0 !important;
-  }
-  .callsheet-table td {
-    border-bottom: 1px solid #e8ebef !important;
-    color: #16181d !important;
-  }
-  .callsheet-table tr:hover td { background: transparent !important; }
-  .callsheet-time-cell { color: #1d4ed8 !important; font-variant-numeric: tabular-nums; }
-  .callsheet-times-divider td {
-    background: #f0f2f5 !important;
-    border-bottom: 1px solid #d5d9e0 !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
-  /* ── Location cards: bordered light tint, clear hierarchy ───────────────── */
-  .callsheet-location-card {
-    background: #fafbfc !important;
-    border: 1px solid #d5d9e0 !important;
-    border-radius: 4px !important;
-    padding: .35rem .5rem !important;
-    margin-bottom: .35rem !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-  .cs-loc-item .callsheet-location-card { border-bottom: 1px solid #d5d9e0 !important; }
-  .callsheet-location-typeline { color: #5a6472 !important; }
-  .callsheet-location-name { color: #16181d !important; }
-  .callsheet-location-address { color: #5a6472 !important; }
-  .callsheet-location-contact { color: #5a6472 !important; }
-  .callsheet-location-note { color: #5a6472 !important; }
-  .callsheet-contact-label { color: #16181d !important; }
-  .callsheet-location-type { color: #5a6472 !important; background: #eef0f3 !important; }
-  .callsheet-map-link { color: #1d4ed8 !important; }
-
-  /* ── Day-info fields (weather / notes) as bordered light cards ──────────── */
-  .cs-info-field,
-  .cs-weather-field,
-  .cs-notes-area {
-    background: #fafbfc !important;
-    border: 1px solid #d5d9e0 !important;
-    border-radius: 4px !important;
-    color: #16181d !important;
-    padding: .3rem .45rem !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-  .cs-notes-area { min-height: 0 !important; }
-  .callsheet-info-label { color: #16181d !important; }
-
-  /* ── Hospital rows ──────────────────────────────────────────────────────── */
-  .cs-hospital-row { border-bottom: 1px solid #e8ebef !important; }
-  .cs-hospital-name { color: #16181d !important; }
-  .cs-hospital-addr, .cs-hospital-phone { color: #5a6472 !important; }
-
-  /* ── Schedule / advance textareas: collapse to content (no giant empty box).
-     min-height:12rem on screen becomes ~2.4in of blank paper otherwise — the
-     root cause of the page-1 spillover. Height follows content; empty renders
-     as a slim placeholder card. (User 2026-07-09.) ───────────────────────── */
-  .cs-schedule-notes {
-    min-height: 1.4rem !important;
-    height: auto !important;
-    background: #fafbfc !important;
-    border: 1px solid #d5d9e0 !important;
-    border-radius: 4px !important;
-    color: #16181d !important;
-    resize: none !important;
-    padding: .3rem .45rem !important;
-    margin: .2rem 0 .1rem !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-  /* Advance-schedule chips */
-  .cs-advance-line {
-    background: #fafbfc !important;
-    border: 1px solid #d5d9e0 !important;
-    color: #5a6472 !important;
-  }
-
-  /* ── Misc text tokens ───────────────────────────────────────────────────── */
-  .callsheet-info-label { color: #16181d !important; }
-  .callsheet-email-cell, .callsheet-phone-cell { color: #5a6472 !important; }
-  .callsheet-name-cell { color: #16181d !important; }
-  .callsheet-dept-cell { color: #5a6472 !important; }
-  .callsheet-role-cell { color: #16181d !important; }
-  .callsheet-row-num { color: #8a92a0 !important; }
-  .callsheet-hours-cell { color: #5a6472 !important; }
-  .callsheet-email { color: #5a6472 !important; }
-  .callsheet-contact-item { color: #16181d !important; }
-  .callsheet-contact-cell { color: #16181d !important; }
-  .callsheet-placeholder { color: #8a92a0 !important; }
-  .callsheet-mode-pill { display: none; }
-  .callsheet-meal-yes { color: #16181d !important; }
-  .callsheet-meal-no  { color: #8a92a0 !important; }
-
-  /* Day type badges: plain outlined labels */
-  .callsheet-day-type-badge {
-    background: none !important;
-    border: 1px solid #b8bfc9 !important;
-    color: #16181d !important;
-    padding: .05rem .25rem;
-    font-size: 7pt;
-  }
-
-  .callsheet-footer {
-    color: #5a6472 !important;
-    background: #f0f2f5 !important;
-    border-top: 1px solid #d5d9e0 !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
-  a { color: #1d4ed8 !important; }
-
   @page {
     size: letter portrait;
     margin: .45in;
@@ -4434,25 +4556,7 @@ tr:hover .cs-hide-toggle,
 
 /* ── Print: suppress new screen-only elements ─────────────────────────────── */
 @media print {
-  .cs-quote-type-select, #cs-quote-refresh-btn,
-  #crew-view-toggle, .cs-advance-lines,
-  .cs-dept-notes-container .btn,
-  .cs-useful-contacts-grid .cs-contact-detail { }
-  .cs-quote-section { background: #fff !important; }
-  .cs-quote-display { background: #fafbfc !important; border: 1px solid #d5d9e0 !important;
-    border-radius: 4px !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .cs-quote-text { font-style: italic; color: #5a6472 !important; min-height: 0 !important; }
-  .cs-contact-card { border: 1px solid #d5d9e0 !important; background: #fafbfc !important;
-    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .cs-contact-role { color: #5a6472 !important; }
-  .cs-contact-name { color: #16181d !important; }
   .cs-dept-note-row { page-break-inside: avoid; }
-  .cs-dept-note-label { color: #16181d !important; font-weight: 700; }
-  .cs-dept-note-text { border: 1px solid #d5d9e0 !important; color: #16181d !important;
-    background: #fafbfc !important;
-    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .callsheet-versions { color: #c2c8d6 !important; }
-  .cs-version-val { color: #c2c8d6 !important; }
 }
 
 /* ── Contact Sheet: Role Numbers ─────────────────────────────────────────── */
@@ -4666,9 +4770,6 @@ tr.cs-row-viewed    { background: #1a1200; }
   .cs-dept-box { flex: 0 0 100%; }
 }
 @media print {
-  /* ── Crew page: department bands + aligned columns (designed light) ──────
-     2 columns, ~9.5pt. Filled gray dept bands, hairline row separators,
-     recipient-highlight tint adapted to pale blue for the printed sheet. ── */
   /* column-count (not flex) so weasyprint can flow dept boxes down the page and
      across page breaks — a flex grid is treated as one unbreakable block and
      would strand the crew header on a near-empty page. (User 2026-07-09.) */
@@ -4683,41 +4784,6 @@ tr.cs-row-viewed    { background: #1a1200; }
     margin: 0 0 .35rem;
     page-break-inside: avoid;
     break-inside: avoid;
-  }
-  .cs-dept-box-header {
-    background: #e6e9ee !important;
-    color: #16181d !important;
-    font-size: 9pt;
-    letter-spacing: .05em;
-    padding: .18rem .45rem;
-    border-bottom: 1px solid #d5d9e0 !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-  .cs-dept-box-table { font-size: 9.5pt; }
-  .cs-dept-box-table tr { border-bottom: 1px solid #e8ebef !important; }
-  .cs-dept-box-table td { padding: .14rem .4rem; }
-  .cs-dept-role { font-size: 9pt; color: #5a6472 !important; }
-  .cs-dept-name { font-size: 9.5pt; color: #16181d !important; }
-  .cs-dept-call { font-size: 9pt; color: #1d4ed8 !important; font-variant-numeric: tabular-nums; }
-  .cs-dept-header-label:focus { background: none; }
-
-  /* Recipient-highlight tint for the printed crew list (pale blue / green) */
-  .cs-dept-box-table tr.cs-row-confirmed,
-  tr.cs-row-confirmed { background: #eef6f0 !important;
-    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .cs-dept-box-table tr.cs-row-viewed,
-  tr.cs-row-viewed { background: #eef3fb !important;
-    -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-
-  /* Legacy dept-header rows (flat table view) */
-  .callsheet-dept-header td {
-    background: #e6e9ee !important;
-    color: #16181d !important;
-    border-bottom: 1px solid #d5d9e0 !important;
-    border-top: 1px solid #d5d9e0 !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
   }
 }
 

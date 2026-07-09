@@ -79,14 +79,23 @@
   body.pdf-mode .callsheet-page-1 { page-break-after:auto !important; }
   body.pdf-mode .callsheet-page-2 { page-break-before:always !important; }
   body.pdf-mode .callsheet-page-break { display:none !important; }
-  /* Logo layer — re-assert absolute-within-relative-band positioning so
-     weasyprint places each logo at left:x% width:w% over the dark header. The
-     imgs are data: URIs (no network fetch). Edit handles are .cs-screen-only →
-     already dropped. (User 2026-07-09.) */
-  body.pdf-mode .callsheet-header-main { position:relative !important; }
-  body.pdf-mode .cs-logo-layer { position:absolute !important; top:0; left:0; right:0; bottom:0; z-index:3 !important; }
-  body.pdf-mode .cs-logo-item  { position:absolute !important; top:50%; transform:translateY(-50%); }
-  body.pdf-mode .cs-logo-item img { width:100% !important; height:auto !important; max-height:4.5rem; }
+  /* Logo strip — white band between the dark header and the crew-call bar. The
+     imgs are data: URIs (no network fetch). Each item is sized by HEIGHT (h% of
+     the strip) so mixed aspect ratios align on a baseline; the three slots space
+     left/center/right. Edit handles are .cs-screen-only → already dropped. Detail
+     theming lives in the shared :is(body.light-preview, body.pdf-mode) block in
+     static/style.css; these re-assert the flex layout for weasyprint. (2026-07-09.) */
+  body.pdf-mode .cs-logo-strip { display:none !important; }
+  body.pdf-mode .cs-logo-strip.has-logos { display:flex !important; align-items:center; gap:1rem;
+    background:#fff !important; border-top:1px solid #d5d9e0 !important;
+    border-bottom:1px solid #d5d9e0 !important; padding:.45rem 1.25rem; min-height:2.6rem; }
+  body.pdf-mode .cs-logo-slot { display:flex !important; align-items:center; gap:1rem; min-height:2rem; }
+  body.pdf-mode .cs-logo-slot-left   { flex:1 1 0; justify-content:flex-start; }
+  body.pdf-mode .cs-logo-slot-center { flex:1 1 0; justify-content:center; }
+  body.pdf-mode .cs-logo-slot-right  { flex:1 1 0; justify-content:flex-end; }
+  body.pdf-mode .cs-logo-item  { position:relative !important; display:flex; align-items:center; }
+  body.pdf-mode .cs-logo-item img { width:auto !important;
+    height:calc(var(--cs-logo-h, 70) / 100 * 4.5rem) !important; max-height:4.5rem; }
   /* Each element the owner hid on THIS call sheet is dropped from the PDF. */
   {% for _k, _v in (cs_data.get('hidden') or {}).items() %}{% if _v %}[data-cs-key="{{ _k }}"] { display:none !important; }
   {% endif %}{% endfor %}
@@ -370,15 +379,18 @@
   <span id="cs-save-status" class="cs-save-status"></span>
 </div>
 
+{# The legacy 'View As:' client-side pill bar was REMOVED (user 2026-07-09:
+   "two view rows of buttons, one of which doesn't work"). It toggled a few
+   hardcoded sections in JS and had drifted from the real server-side
+   audience matrix — the ?view= link row above is the single, authoritative
+   switcher (it renders each view exactly as recipients/PDFs get it). #}
 <div class="cs-audience-bar cs-screen-only">
-  <span class="cs-audience-label">View As:</span>
-  <div class="cs-audience-pills" id="cs-audience-pills">
-    <button class="cs-aud-pill active" data-audience="internal" onclick="setAudience('internal')">Internal (Full)</button>
-    <button class="cs-aud-pill" data-audience="crew" onclick="setAudience('crew')">Crew</button>
-    <button class="cs-aud-pill" data-audience="client" onclick="setAudience('client')">Client</button>
-    <button class="cs-aud-pill" data-audience="talent" onclick="setAudience('talent')">Talent / Cast</button>
-    <button class="cs-aud-pill" data-audience="union" onclick="setAudience('union')">Union</button>
-  </div>
+  {# Light preview: flips the on-screen sheet into the DESIGNED LIGHT theme (the
+     exact look recipients / the PDF get) without leaving edit mode. Toggles
+     body.light-preview; the designed-light rules are class-scoped so they apply
+     live. Persists in localStorage. (User 2026-07-09.) #}
+  <button class="cs-light-toggle" id="cs-light-toggle" onclick="csToggleLightPreview()"
+          title="Preview the sheet the way it will be sent / printed">☀ Light preview</button>
 </div>
 {% endif %}{# /not recipient_mode — internal editing chrome #}
 
@@ -393,26 +405,8 @@
   <div class="callsheet-page callsheet-page-1">
 
     {# ── Main header bar ──────────────────────────────────────────────────── #}
-    {# Logo layer: absolutely-positioned imgs span the dark header band; each is
-       placed left:x% width:w% (x/w = percent of band width). Order = z-order.
-       In pdf_mode `src` is a data: URI (no network fetch); on web it's the /raw
-       URL. Editing controls (drag/resize/add/remove) are cs-screen-only + only
-       rendered outside recipient_mode. cs_logos is [] when nothing is placed. #}
+    {% set _cs_logos = cs_logos | default([]) %}
     <div class="callsheet-header-main{% if not recipient_mode %} cs-logos-editable{% endif %}">
-      {% set _cs_logos = cs_logos | default([]) %}
-      <div class="cs-logo-layer{% if _cs_logos %} has-logos{% endif %}" id="cs-logo-layer"
-           {% if not recipient_mode %}data-cs-logo-editable="1"{% endif %}>
-        {% for lg in _cs_logos %}
-        <div class="cs-logo-item" data-logo-id="{{ lg.logo_id }}"
-             style="left:{{ lg.x }}%;width:{{ lg.w }}%">
-          <img src="{{ lg.src }}" alt="{{ lg.name }}" draggable="false">
-          {% if not recipient_mode %}
-          <button type="button" class="cs-logo-remove cs-screen-only" title="Remove from sheet">✕</button>
-          <span class="cs-logo-resize cs-screen-only" title="Drag to resize"></span>
-          {% endif %}
-        </div>
-        {% endfor %}
-      </div>
       {% if not recipient_mode %}
       <button type="button" class="cs-logos-open-btn cs-screen-only" id="cs-logos-open-btn"
               onclick="csLogosOpenPanel()" title="Add / arrange logos">🖼 Logos</button>
@@ -456,6 +450,38 @@
           </div>
         </div>
       </div>
+    </div>
+
+    {# ── Logo strip ─────────────────────────────────────────────────────────
+       A dedicated WHITE band between the dark header and the crew-call bar.
+       Structured layout: three slots (left / center / right); each placed logo
+       carries {logo_id, slot, order, h} where h is a percent of strip height
+       (40-100) so mixed aspect ratios align on a common baseline and automatic
+       gap spacing separates them. Renders only when it has logos (or, internally,
+       when the Logos panel adds .cs-strip-hint as a drop-target hint).
+       Editing controls (drag between/within slots, resize, remove) are
+       cs-screen-only + only outside recipient_mode. (User 2026-07-09.) #}
+    <div class="cs-logo-strip{% if _cs_logos %} has-logos{% endif %}" id="cs-logo-strip"
+         {% if not recipient_mode %}data-cs-logo-editable="1"{% endif %}>
+      {% for _slot in ['left', 'center', 'right'] %}
+      <div class="cs-logo-slot cs-logo-slot-{{ _slot }}" data-slot="{{ _slot }}">
+        {% for lg in _cs_logos if lg.slot == _slot %}
+        <div class="cs-logo-item" data-logo-id="{{ lg.logo_id }}" data-slot="{{ lg.slot }}"
+             data-order="{{ lg.order }}" data-h="{{ lg.h }}"
+             style="--cs-logo-h:{{ lg.h }}"
+             {% if not recipient_mode %}draggable="true"{% endif %}>
+          <img src="{{ lg.src }}" alt="{{ lg.name }}" draggable="false">
+          {% if not recipient_mode %}
+          <button type="button" class="cs-logo-remove cs-screen-only" title="Remove from sheet">✕</button>
+          <span class="cs-logo-resize cs-screen-only" title="Drag up / down to resize"></span>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+      {% if not recipient_mode %}
+      <span class="cs-logo-strip-empty-hint cs-screen-only">Drag logos here — or click 🖼 Logos to add</span>
+      {% endif %}
     </div>
 
     {# ── General crew call bar ─────────────────────────────────────────────── #}
@@ -1438,18 +1464,39 @@ let CS_MANUAL_RECIPIENTS = Array.isArray(CS_DATA.manual_recipients)
       name: (m.name || '').trim(), email: (m.email || '').trim(), phone: (m.phone || '').trim() }))
   : [];
 
-// Per-call-sheet logo arrangement: [{logo_id, x, w}] — x = left offset (percent
-// of the header band width, 0-100), w = width (percent, 5-40). Array order =
-// z/stacking. Round-trips through the whole-payload save exactly like the maps
-// above (collected below, initialized from CS_DATA.logos). Only present when the
-// sheet has its own arrangement; absence lets the server fall back to the project
-// default. (User 2026-07-09.)
+// Per-call-sheet logo arrangement (STRIP shape): [{logo_id, slot, order, h}] —
+// slot ∈ {left,center,right}, order = position within the slot, h = height percent
+// of the strip (40-100). Array round-trips through the whole-payload save exactly
+// like the maps above (collected below, initialized from CS_DATA.logos). Only
+// present when the sheet has its own arrangement; absence (null) lets the server
+// fall back to the project default. Back-compat: legacy {logo_id,x,w} entries are
+// mapped on read (x<33→left, <66→center, else right; w→h clamped 40-100). This is
+// the SAME mapping as app.py _logo_placement_shape. (User 2026-07-09.)
+function csLogoMapShape(p) {
+  const lid = +p.logo_id;
+  if (!lid) return null;
+  if ('slot' in p || 'h' in p) {
+    let slot = String(p.slot || 'left').toLowerCase();
+    if (['left','center','right'].indexOf(slot) < 0) slot = 'left';
+    return {
+      logo_id: lid,
+      slot: slot,
+      order: (+p.order) | 0,
+      h: Math.max(40, Math.min(100, +p.h || 70)),
+    };
+  }
+  // Legacy {x,w} → {slot,order,h}
+  const x = Math.max(0, Math.min(100, +p.x || 0));
+  const slot = x < 33 ? 'left' : (x < 66 ? 'center' : 'right');
+  return {
+    logo_id: lid,
+    slot: slot,
+    order: x | 0,
+    h: Math.max(40, Math.min(100, +p.w || 70)),
+  };
+}
 let CS_LOGOS = Array.isArray(CS_DATA.logos)
-  ? CS_DATA.logos.map(p => ({
-      logo_id: p.logo_id,
-      x: Math.max(0, Math.min(100, +p.x || 0)),
-      w: Math.max(5, Math.min(40, +p.w || 15)),
-    }))
+  ? CS_DATA.logos.map(csLogoMapShape).filter(Boolean)
   : null;   // null = never arranged on this sheet (server uses project default)
 
 function collectCallSheetData() {
@@ -2691,36 +2738,53 @@ function warnInvalidEmail(el, val) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // AUDIENCE SELECTOR
 // ═══════════════════════════════════════════════════════════════════════════════
-let _currentAudience = 'internal';
-function setAudience(aud) {
-  _currentAudience = aud;
-  document.querySelectorAll('.cs-aud-pill').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.audience === aud);
-  });
-  // Sections visibility
-  const clientSection = document.querySelector('.callsheet-section-clients');
-  if (clientSection) {
-    clientSection.style.display = (aud === 'crew') ? 'none' : '';
+// ── Light preview toggle ──────────────────────────────────────────────────────
+// Flips the on-screen sheet into the DESIGNED LIGHT theme (body.light-preview) so
+// the owner sees the exact look recipients / the PDF get — WITHOUT leaving edit
+// mode (contenteditable, hide toggles, logo drag all still work; this is purely a
+// style flip, not recipient_mode). State persists in localStorage. Browser PRINT
+// also routes through this class: onbeforeprint adds it, onafterprint restores the
+// pre-print state, so the single class-scoped designed-light rule set drives print
+// too. (User 2026-07-09.)
+const CS_LIGHT_PREVIEW_KEY = 'fpbudget_cs_light_preview';
+function csSetLightPreview(on, persist) {
+  document.body.classList.toggle('light-preview', !!on);
+  const btn = document.getElementById('cs-light-toggle');
+  if (btn) {
+    btn.classList.toggle('active', !!on);
+    btn.textContent = on ? '🌙 Editing view' : '☀ Light preview';
   }
-  // Union section
-  const unionSection = document.querySelector('.cs-callsheet-unions');
-  if (unionSection) {
-    unionSection.style.display = (aud === 'client' || aud === 'crew') ? 'none' : '';
+  if (persist) {
+    try { localStorage.setItem(CS_LIGHT_PREVIEW_KEY, on ? '1' : '0'); } catch (_) {}
   }
-  // Representation section
-  const repSection = document.querySelector('.cs-callsheet-rep');
-  if (repSection) {
-    repSection.style.display = (aud === 'crew' || aud === 'union') ? 'none' : '';
-  }
-  // Phone/email columns in crew table
-  const phoneCols = document.querySelectorAll('.callsheet-phone-cell, .callsheet-email-cell');
-  phoneCols.forEach(el => {
-    el.style.display = (aud === 'client' || aud === 'union') ? 'none' : '';
-  });
-  document.querySelectorAll('.callsheet-section-clients .callsheet-contact-cell .callsheet-contact-item').forEach(el => {
-    el.style.display = (aud === 'crew') ? 'none' : '';
-  });
 }
+function csToggleLightPreview() {
+  csSetLightPreview(!document.body.classList.contains('light-preview'), true);
+}
+(function csInitLightPreview() {
+  let on = false;
+  try { on = localStorage.getItem(CS_LIGHT_PREVIEW_KEY) === '1'; } catch (_) {}
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => csSetLightPreview(on, false));
+  } else {
+    csSetLightPreview(on, false);
+  }
+  // Print routes through the same class scope so the printed sheet is the designed
+  // light theme regardless of the toggle. Restore the prior state afterward.
+  let _prePrintLight = null;
+  window.addEventListener('beforeprint', () => {
+    _prePrintLight = document.body.classList.contains('light-preview');
+    document.body.classList.add('light-preview');
+  });
+  window.addEventListener('afterprint', () => {
+    if (_prePrintLight === false) document.body.classList.remove('light-preview');
+    _prePrintLight = null;
+  });
+})();
+
+// setAudience() + the 'View As:' pill bar were removed 2026-07-09 — the
+// client-side section toggling had drifted from the server-side audience
+// matrix; the ?view= link row is the single switcher now.
 
 function jumpToDate(sel) {
   const dateStr = sel.value;
@@ -3162,24 +3226,25 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// ── Call-sheet logos ────────────────────────────────────────────────────────────
-// Header-band logo layer: add project logos to this sheet, drag them left/right
-// (x = percent of band width) and resize via the corner handle (w = percent).
-// CS_LOGOS is the single source of truth; the DOM layer is re-rendered from it.
-// Every mutation writes CS_LOGOS then scheduleAutoSave() (existing save flow →
-// 'logos' key round-trips via collectCallSheetData). Screen-only; the server
-// renders the identical layer server-side for the PDF.
+// ── Call-sheet logo strip ────────────────────────────────────────────────────────
+// A dedicated WHITE strip between the dark header and the crew-call bar. Add
+// project logos to this sheet; drag them BETWEEN slots (left/center/right) and
+// WITHIN a slot to reorder; drag the corner handle up/down to resize by HEIGHT
+// (h = percent of strip height, 40-100). CS_LOGOS (STRIP shape) is the single
+// source of truth; the DOM strip is re-rendered from it. Every mutation writes
+// CS_LOGOS then scheduleAutoSave() (existing save flow → 'logos' key round-trips
+// via collectCallSheetData). Screen-only; the server renders the identical strip
+// for the PDF. (User 2026-07-09.)
+const CS_LOGO_SLOTS = ['left', 'center', 'right'];
 let CS_LOGO_LIBRARY = [];   // [{id,name,url,width,height}]
 
 function csLogoRawUrl(id) { return CS_LOGO_RAW_BASE + '/' + id + '/raw'; }
 
 // Ensure CS_LOGOS is a mutable array before the first placement (was null =
-// "inherit project default"; the moment the user places one it becomes this
-// sheet's own arrangement).
+// "inherit project default"; the moment the user touches it, it becomes this
+// sheet's own arrangement, seeded from whatever the strip currently shows).
 function csLogosEnsureArray() {
   if (!Array.isArray(CS_LOGOS)) {
-    // Seed from whatever is currently rendered (the inherited default) so
-    // "add one more" keeps the existing ones rather than wiping them.
     CS_LOGOS = csLogosReadFromDom();
   }
   return CS_LOGOS;
@@ -3187,29 +3252,55 @@ function csLogosEnsureArray() {
 
 function csLogosReadFromDom() {
   const out = [];
-  document.querySelectorAll('#cs-logo-layer .cs-logo-item').forEach(el => {
-    out.push({
-      logo_id: +el.getAttribute('data-logo-id'),
-      x: Math.max(0, Math.min(100, parseFloat(el.style.left) || 0)),
-      w: Math.max(5, Math.min(40, parseFloat(el.style.width) || 15)),
+  document.querySelectorAll('#cs-logo-strip .cs-logo-slot').forEach(slotEl => {
+    const slot = slotEl.getAttribute('data-slot') || 'left';
+    slotEl.querySelectorAll('.cs-logo-item').forEach((el, i) => {
+      out.push({
+        logo_id: +el.getAttribute('data-logo-id'),
+        slot: slot,
+        order: i,
+        h: Math.max(40, Math.min(100, parseFloat(el.getAttribute('data-h')) || 70)),
+      });
     });
   });
   return out;
 }
 
-// Rebuild the header-band DOM layer from CS_LOGOS.
+// Renumber order 0..n within each slot (call after any structural change).
+function csLogoNormalizeOrders() {
+  const counter = {};
+  // Sort so slot grouping + order are stable before renumber.
+  const rank = { left: 0, center: 1, right: 2 };
+  CS_LOGOS.sort((a, b) => (rank[a.slot] - rank[b.slot]) || (a.order - b.order));
+  CS_LOGOS.forEach(p => {
+    const n = counter[p.slot] || 0;
+    p.order = n;
+    counter[p.slot] = n + 1;
+  });
+}
+
+// Rebuild the strip DOM from CS_LOGOS.
 function csLogosRender() {
-  const layer = document.getElementById('cs-logo-layer');
-  if (!layer) return;
+  const strip = document.getElementById('cs-logo-strip');
+  if (!strip) return;
   const arr = Array.isArray(CS_LOGOS) ? CS_LOGOS : csLogosReadFromDom();
-  layer.innerHTML = '';
-  layer.classList.toggle('has-logos', arr.length > 0);
-  arr.forEach((p) => {
+  strip.classList.toggle('has-logos', arr.length > 0);
+  // Clear each slot (keep the slot containers + empty hint).
+  CS_LOGO_SLOTS.forEach(slot => {
+    const slotEl = strip.querySelector('.cs-logo-slot[data-slot="' + slot + '"]');
+    if (slotEl) slotEl.innerHTML = '';
+  });
+  const rank = { left: 0, center: 1, right: 2 };
+  arr.slice().sort((a, b) => (rank[a.slot] - rank[b.slot]) || (a.order - b.order)).forEach(p => {
+    const slotEl = strip.querySelector('.cs-logo-slot[data-slot="' + (p.slot || 'left') + '"]');
+    if (!slotEl) return;
     const item = document.createElement('div');
     item.className = 'cs-logo-item';
     item.setAttribute('data-logo-id', p.logo_id);
-    item.style.left  = p.x + '%';
-    item.style.width = p.w + '%';
+    item.setAttribute('data-slot', p.slot || 'left');
+    item.setAttribute('data-h', p.h);
+    item.style.setProperty('--cs-logo-h', p.h);
+    item.setAttribute('draggable', 'true');
     const img = document.createElement('img');
     img.src = csLogoRawUrl(p.logo_id);
     img.draggable = false;
@@ -3222,59 +3313,45 @@ function csLogosRender() {
     rm.addEventListener('click', (e) => { e.stopPropagation(); csLogoRemove(p.logo_id); });
     item.appendChild(rm);
     const rz = document.createElement('span');
-    rz.className = 'cs-logo-resize cs-screen-only'; rz.title = 'Drag to resize';
+    rz.className = 'cs-logo-resize cs-screen-only'; rz.title = 'Drag up / down to resize';
     item.appendChild(rz);
-    csLogoWireDrag(item, rz);
-    layer.appendChild(item);
+    csLogoWireItem(item, rz);
+    slotEl.appendChild(item);
   });
 }
 
-// Pointer drag (move horizontally) + resize handle (change width). Percents are
-// relative to the header band (layer) width.
-function csLogoWireDrag(item, resizeHandle) {
-  const layer = document.getElementById('cs-logo-layer');
+// HTML5 drag between/within slots + pointer-drag height resize on the handle.
+let _csDragLogoId = null;
+function csLogoWireItem(item, resizeHandle) {
   const idOf = () => +item.getAttribute('data-logo-id');
 
-  function bandWidth() { return layer.getBoundingClientRect().width || 1; }
+  // ── Drag to move (between + within slots) ──
+  item.addEventListener('dragstart', (e) => {
+    _csDragLogoId = idOf();
+    item.classList.add('cs-logo-dragging');
+    try { e.dataTransfer.setData('text/plain', String(_csDragLogoId)); } catch (_) {}
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  });
+  item.addEventListener('dragend', () => {
+    item.classList.remove('cs-logo-dragging');
+    _csDragLogoId = null;
+    document.querySelectorAll('#cs-logo-strip .cs-slot-dragover')
+      .forEach(el => el.classList.remove('cs-slot-dragover'));
+  });
 
-  function onMoveStart(ev) {
-    if (ev.target === resizeHandle || ev.target.classList.contains('cs-logo-remove')) return;
-    ev.preventDefault();
-    const bw = bandWidth();
-    const startX = (ev.touches ? ev.touches[0].clientX : ev.clientX);
-    const startLeft = parseFloat(item.style.left) || 0;
-    function move(e) {
-      const cx = (e.touches ? e.touches[0].clientX : e.clientX);
-      const dxPct = ((cx - startX) / bw) * 100;
-      const w = parseFloat(item.style.width) || 15;
-      let nx = Math.max(0, Math.min(100 - w, startLeft + dxPct));
-      item.style.left = nx.toFixed(2) + '%';
-    }
-    function up() {
-      document.removeEventListener('mousemove', move);
-      document.removeEventListener('mouseup', up);
-      document.removeEventListener('touchmove', move);
-      document.removeEventListener('touchend', up);
-      csLogoCommitFromDom(idOf());
-    }
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-    document.addEventListener('touchmove', move, {passive:false});
-    document.addEventListener('touchend', up);
-  }
-
+  // ── Resize by height (pointer drag on the corner handle) ──
   function onResizeStart(ev) {
     ev.preventDefault(); ev.stopPropagation();
-    const bw = bandWidth();
-    const startX = (ev.touches ? ev.touches[0].clientX : ev.clientX);
-    const startW = parseFloat(item.style.width) || 15;
-    const left = parseFloat(item.style.left) || 0;
+    const strip = document.getElementById('cs-logo-strip');
+    const sh = (strip && strip.getBoundingClientRect().height) || 1;
+    const startY = (ev.touches ? ev.touches[0].clientY : ev.clientY);
+    const startH = parseFloat(item.getAttribute('data-h')) || 70;
     function move(e) {
-      const cx = (e.touches ? e.touches[0].clientX : e.clientX);
-      const dwPct = ((cx - startX) / bw) * 100;
-      let nw = Math.max(5, Math.min(40, startW + dwPct));
-      if (left + nw > 100) nw = 100 - left;   // keep on band
-      item.style.width = nw.toFixed(2) + '%';
+      const cy = (e.touches ? e.touches[0].clientY : e.clientY);
+      const dhPct = ((cy - startY) / sh) * 100;   // drag down → taller
+      let nh = Math.max(40, Math.min(100, startH + dhPct));
+      item.setAttribute('data-h', nh.toFixed(2));
+      item.style.setProperty('--cs-logo-h', nh.toFixed(2));
     }
     function up() {
       document.removeEventListener('mousemove', move);
@@ -3288,22 +3365,72 @@ function csLogoWireDrag(item, resizeHandle) {
     document.addEventListener('touchmove', move, {passive:false});
     document.addEventListener('touchend', up);
   }
-
-  item.addEventListener('mousedown', onMoveStart);
-  item.addEventListener('touchstart', onMoveStart, {passive:false});
   resizeHandle.addEventListener('mousedown', onResizeStart);
   resizeHandle.addEventListener('touchstart', onResizeStart, {passive:false});
+  // Don't let a resize-handle grab start an HTML5 drag of the whole item.
+  resizeHandle.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
 }
 
-// After a drag/resize, sync the one item's live style back into CS_LOGOS + save.
+// Wire each slot as a drop target (drop between/within slots reorders + re-slots).
+function csLogoWireSlotDropTargets() {
+  const strip = document.getElementById('cs-logo-strip');
+  if (!strip || strip.getAttribute('data-cs-logo-editable') !== '1') return;
+  strip.querySelectorAll('.cs-logo-slot').forEach(slotEl => {
+    slotEl.addEventListener('dragover', (e) => {
+      if (_csDragLogoId == null) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      slotEl.classList.add('cs-slot-dragover');
+    });
+    slotEl.addEventListener('dragleave', () => slotEl.classList.remove('cs-slot-dragover'));
+    slotEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      slotEl.classList.remove('cs-slot-dragover');
+      if (_csDragLogoId == null) return;
+      csLogoMoveToSlot(_csDragLogoId, slotEl.getAttribute('data-slot'), csLogoDropIndex(slotEl, e.clientX));
+    });
+  });
+}
+
+// Index within the target slot at which to insert, based on cursor X vs siblings.
+function csLogoDropIndex(slotEl, clientX) {
+  const items = [...slotEl.querySelectorAll('.cs-logo-item:not(.cs-logo-dragging)')];
+  for (let i = 0; i < items.length; i++) {
+    const r = items[i].getBoundingClientRect();
+    if (clientX < r.left + r.width / 2) return i;
+  }
+  return items.length;
+}
+
+function csLogoMoveToSlot(logoId, slot, index) {
+  csLogosEnsureArray();
+  if (CS_LOGO_SLOTS.indexOf(slot) < 0) slot = 'left';
+  const rec = CS_LOGOS.find(p => p.logo_id === logoId);
+  if (!rec) return;
+  // Pull it out, then re-insert into the target slot at `index` by ordering.
+  rec.slot = slot;
+  // Give it a fractional order so the stable sort lands it at `index`.
+  const inSlot = CS_LOGOS.filter(p => p.slot === slot && p.logo_id !== logoId)
+    .sort((a, b) => a.order - b.order);
+  const before = inSlot[index - 1];
+  const after = inSlot[index];
+  if (!before && !after)       rec.order = 0;
+  else if (!before)            rec.order = after.order - 0.5;
+  else if (!after)             rec.order = before.order + 0.5;
+  else                         rec.order = (before.order + after.order) / 2;
+  csLogoNormalizeOrders();
+  csLogosRender();
+  scheduleAutoSave();
+}
+
+// After a resize, sync the one item's live height back into CS_LOGOS + save.
 function csLogoCommitFromDom(logoId) {
-  const item = document.querySelector('#cs-logo-layer .cs-logo-item[data-logo-id="' + logoId + '"]');
+  const item = document.querySelector('#cs-logo-strip .cs-logo-item[data-logo-id="' + logoId + '"]');
   if (!item) return;
   csLogosEnsureArray();
   const rec = CS_LOGOS.find(p => p.logo_id === logoId);
   if (rec) {
-    rec.x = Math.max(0, Math.min(100, parseFloat(item.style.left) || 0));
-    rec.w = Math.max(5, Math.min(40, parseFloat(item.style.width) || 15));
+    rec.h = Math.max(40, Math.min(100, parseFloat(item.getAttribute('data-h')) || 70));
     scheduleAutoSave();
   }
 }
@@ -3311,9 +3438,11 @@ function csLogoCommitFromDom(logoId) {
 function csLogoAddToSheet(logoId) {
   csLogosEnsureArray();
   if (CS_LOGOS.some(p => p.logo_id === logoId)) return;   // already placed
-  // Stagger new placements so they don't stack exactly.
-  const x = Math.min(70, 5 + CS_LOGOS.length * 20);
-  CS_LOGOS.push({ logo_id: logoId, x: x, w: 15 });
+  // New logos land in the center slot at the end, at a comfortable default height.
+  const maxOrder = CS_LOGOS.filter(p => p.slot === 'center')
+    .reduce((m, p) => Math.max(m, p.order), -1);
+  CS_LOGOS.push({ logo_id: logoId, slot: 'center', order: maxOrder + 1, h: 70 });
+  csLogoNormalizeOrders();
   csLogosRender();
   csLogosRenderLibrary();
   scheduleAutoSave();
@@ -3322,6 +3451,7 @@ function csLogoAddToSheet(logoId) {
 function csLogoRemove(logoId) {
   csLogosEnsureArray();
   CS_LOGOS = CS_LOGOS.filter(p => p.logo_id !== logoId);
+  csLogoNormalizeOrders();
   csLogosRender();
   csLogosRenderLibrary();
   scheduleAutoSave();
@@ -3331,11 +3461,16 @@ function csLogoRemove(logoId) {
 function csLogosOpenPanel() {
   const p = document.getElementById('cs-logos-panel');
   if (p) p.style.display = '';
+  // Reveal the strip as a drop-target hint even when it's still empty.
+  const strip = document.getElementById('cs-logo-strip');
+  if (strip) strip.classList.add('cs-strip-hint');
   csLogosLoadLibrary();
 }
 function csLogosClosePanel() {
   const p = document.getElementById('cs-logos-panel');
   if (p) p.style.display = 'none';
+  const strip = document.getElementById('cs-logo-strip');
+  if (strip) strip.classList.remove('cs-strip-hint');
 }
 
 function csLogosLoadLibrary() {
@@ -3432,10 +3567,12 @@ function csLogosSetDefault() {
 }
 
 function csLogosInit() {
-  // Wire drag/resize on any server-rendered logo items + load the library so the
-  // panel is ready. CS_LOGOS may be null (inheriting the project default) — the
-  // DOM already shows those; csLogosRender() re-wires them and keeps them.
+  // Re-render the strip from CS_LOGOS (also re-wires drag/resize on server-
+  // rendered items), wire slot drop targets, and load the library so the panel is
+  // ready. CS_LOGOS may be null (inheriting the project default) — csLogosRender()
+  // reads the server-rendered items in that case and keeps them.
   csLogosRender();
+  csLogoWireSlotDropTargets();
   csLogosLoadLibrary();
 }
 </script>

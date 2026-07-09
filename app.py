@@ -15081,19 +15081,64 @@ def _logo_url(pid, lid):
     return url_for('project_logo_raw', pid=pid, lid=lid)
 
 
+def _logo_placement_shape(p):
+    """Normalize ONE stored placement dict into the strip shape
+    {logo_id:int, slot:'left'|'center'|'right', order:int, h:float}.
+
+    Back-compat: the original freeform shape was {logo_id, x, w} (x/w = percent of
+    the dark header band). Map it: x < 33 → left, < 66 → center, else → right; the
+    old width number becomes the new height percent (same number, clamped 40-100).
+    Returns None if logo_id can't be parsed. (User 2026-07-09.)"""
+    if not isinstance(p, dict):
+        return None
+    try:
+        lid = int(p.get('logo_id'))
+    except Exception:
+        return None
+    if 'slot' in p or 'h' in p:
+        # New shape (may be partial).
+        slot = str(p.get('slot', 'left')).lower()
+        if slot not in ('left', 'center', 'right'):
+            slot = 'left'
+        try:
+            order = int(p.get('order', 0))
+        except Exception:
+            order = 0
+        try:
+            h = max(40.0, min(100.0, float(p.get('h', 70))))
+        except Exception:
+            h = 70.0
+    else:
+        # Legacy {x, w} → slot/order/h.
+        try:
+            x = max(0.0, min(100.0, float(p.get('x', 0))))
+        except Exception:
+            x = 0.0
+        slot = 'left' if x < 33 else ('center' if x < 66 else 'right')
+        # order derives from x within the slot; caller renumbers per slot anyway.
+        order = int(x)
+        try:
+            h = max(40.0, min(100.0, float(p.get('w', 70))))
+        except Exception:
+            h = 70.0
+    return {'logo_id': lid, 'slot': slot, 'order': order, 'h': h}
+
+
 def _resolve_callsheet_logos(cs_data, project, embed=False):
-    """Resolve the placed-logo layer for one call sheet into a render-ready list.
+    """Resolve the placed-logo strip for one call sheet into a render-ready list.
 
-    Placement source of truth: cs_data['logos'] (a list of {logo_id,x,w}). When
-    the sheet has NO 'logos' key at all, fall back to the project default arrangement
-    (ProjectSheet.logos_default). An explicit empty list means "no logos" and does
-    NOT fall back.
+    Placement source of truth: cs_data['logos'] (a list; NEW shape {logo_id,slot,
+    order,h}, OLD shape {logo_id,x,w} mapped on read — see _logo_placement_shape).
+    When the sheet has NO 'logos' key at all, fall back to the project default
+    arrangement (ProjectSheet.logos_default). An explicit empty list means "no
+    logos" and does NOT fall back.
 
-    Each returned item: {logo_id, x, w, name, src} where x/w are clamped percents
-    (x 0-100, w 5-40) and src is EITHER a network URL (embed=False, web/screen) or a
-    base64 data: URI (embed=True, pdf_mode — no network fetch back to the app).
-    Missing/deleted logo ids are skipped. Order is preserved (array order = z-order).
-    Returns []."""
+    Each returned item: {logo_id, slot, order, h, name, src}. h is a clamped percent
+    (40-100) of the strip height; slot ∈ {left,center,right}. src is EITHER a network
+    URL (embed=False, web/screen) or a base64 data: URI (embed=True, pdf_mode — no
+    network fetch back to the app). Missing/deleted ids are skipped. The list is
+    sorted by (slot, order) and order is renumbered 0..n within each slot so the
+    template can render slots directly. Returns []."""
     placements = None
     if isinstance(cs_data, dict) and 'logos' in cs_data:
         placements = cs_data.get('logos')
@@ -15105,40 +15150,34 @@ def _resolve_callsheet_logos(cs_data, project, embed=False):
     if not isinstance(placements, list) or not placements:
         return []
 
-    # One query for all referenced logos.
-    ids = []
+    shaped = []
     for p in placements:
-        try:
-            ids.append(int(p.get('logo_id')))
-        except Exception:
-            continue
-    if not ids:
+        s = _logo_placement_shape(p)
+        if s is not None:
+            shaped.append(s)
+    if not shaped:
         return []
+
+    ids = [s['logo_id'] for s in shaped]
     logos_by_id = {
         lg.id: lg for lg in ProjectLogo.query.filter(
             ProjectLogo.project_id == project.id,
             ProjectLogo.id.in_(ids)).all()
     } if project is not None else {}
 
+    # Stable order per slot: preserve incoming order, then renumber 0..n.
+    _slot_rank = {'left': 0, 'center': 1, 'right': 2}
+    shaped.sort(key=lambda s: (_slot_rank.get(s['slot'], 0), s['order']))
+    _counter = {}
     import base64 as _b64
     total_embed = 0
     out = []
-    for p in placements:
-        try:
-            lid = int(p.get('logo_id'))
-        except Exception:
-            continue
-        lg = logos_by_id.get(lid)
+    for s in shaped:
+        lg = logos_by_id.get(s['logo_id'])
         if lg is None:
             continue  # deleted / not this project
-        try:
-            x = max(0.0, min(100.0, float(p.get('x', 0))))
-        except Exception:
-            x = 0.0
-        try:
-            w = max(5.0, min(40.0, float(p.get('w', 15))))
-        except Exception:
-            w = 15.0
+        order = _counter.get(s['slot'], 0)
+        _counter[s['slot']] = order + 1
         if embed:
             total_embed += len(lg.data or b'')
             b64 = _b64.b64encode(lg.data or b'').decode('ascii')
@@ -15146,7 +15185,7 @@ def _resolve_callsheet_logos(cs_data, project, embed=False):
         else:
             src = _logo_url(project.id, lg.id)
         out.append({
-            'logo_id': lg.id, 'x': x, 'w': w,
+            'logo_id': lg.id, 'slot': s['slot'], 'order': order, 'h': s['h'],
             'name': lg.name or '', 'src': src,
         })
     if embed and total_embed > 5 * 1024 * 1024:
@@ -15257,8 +15296,9 @@ def project_logo_delete(pid, lid):
 @login_required
 def project_logos_set_default(pid):
     """Store the posted logo arrangement as the project's default layout.
-    Body: {logos: [{logo_id,x,w}…]} (or a bare array). Sheets without their own
-    'logos' key render this. Values are sanity-clamped."""
+    Body: {logos: [{logo_id,slot,order,h}…]} (or a bare array; the legacy
+    {logo_id,x,w} shape is accepted and mapped). Sheets without their own 'logos'
+    key render this. Values are sanity-clamped to the strip shape."""
     if not _can_access_project(pid, edit=True):
         return jsonify({"error": "Forbidden"}), 403
     project = ProjectSheet.query.get_or_404(pid)
@@ -15268,21 +15308,11 @@ def project_logos_set_default(pid):
         arr = []
     clean = []
     for p in arr:
-        if not isinstance(p, dict):
+        s = _logo_placement_shape(p)
+        if s is None:
             continue
-        try:
-            lid = int(p.get('logo_id'))
-        except Exception:
-            continue
-        try:
-            x = max(0.0, min(100.0, float(p.get('x', 0))))
-        except Exception:
-            x = 0.0
-        try:
-            w = max(5.0, min(40.0, float(p.get('w', 15))))
-        except Exception:
-            w = 15.0
-        clean.append({"logo_id": lid, "x": round(x, 2), "w": round(w, 2)})
+        clean.append({"logo_id": s['logo_id'], "slot": s['slot'],
+                      "order": int(s['order']), "h": round(s['h'], 2)})
     project.logos_default = json.dumps(clean)
     db.session.commit()
     return jsonify({"ok": True, "count": len(clean)})
