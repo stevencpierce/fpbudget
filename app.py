@@ -104,7 +104,7 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     TravelDetail, CateringBill, ActivityLog,
                     SubBudget, SubBudgetLine, EstimateShare, FxRate,
                     TransactionDupDismissal, ProjectCrewMember, Timecard,
-                    ProjectClientContact)
+                    ProjectClientContact, ProjectLogo)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -15058,6 +15058,236 @@ def client_contact_delete(pid, cid):
     return jsonify({"ok": True, "deleted": cid})
 
 
+# ── Call-sheet logos ────────────────────────────────────────────────────────────
+# A per-project logo library (show / brand / client marks). Bytes are stored in
+# Postgres (ProjectLogo.data), NOT Dropbox, so the call sheet can embed them as
+# data: URIs in the PDF and serve them with immutable cache headers on the web.
+# Per-call-sheet placement ({logo_id,x,w}) lives in CallSheetData.data_json
+# ['logos']; the project fallback arrangement in ProjectSheet.logos_default.
+
+_LOGO_MAX_BYTES   = 2 * 1024 * 1024   # 2 MB cap
+_LOGO_CONTENT_TYPES = {
+    'image/png':     'png',
+    'image/jpeg':    'jpeg',
+    'image/jpg':     'jpeg',
+    'image/svg+xml': 'svg',
+    'image/svg':     'svg',
+}
+
+
+def _logo_url(pid, lid):
+    """The web (network-fetch) URL for a logo's bytes. NOT used in pdf_mode —
+    weasyprint gets data: URIs instead (see _resolve_callsheet_logos)."""
+    return url_for('project_logo_raw', pid=pid, lid=lid)
+
+
+def _resolve_callsheet_logos(cs_data, project, embed=False):
+    """Resolve the placed-logo layer for one call sheet into a render-ready list.
+
+    Placement source of truth: cs_data['logos'] (a list of {logo_id,x,w}). When
+    the sheet has NO 'logos' key at all, fall back to the project default arrangement
+    (ProjectSheet.logos_default). An explicit empty list means "no logos" and does
+    NOT fall back.
+
+    Each returned item: {logo_id, x, w, name, src} where x/w are clamped percents
+    (x 0-100, w 5-40) and src is EITHER a network URL (embed=False, web/screen) or a
+    base64 data: URI (embed=True, pdf_mode — no network fetch back to the app).
+    Missing/deleted logo ids are skipped. Order is preserved (array order = z-order).
+    Returns []."""
+    placements = None
+    if isinstance(cs_data, dict) and 'logos' in cs_data:
+        placements = cs_data.get('logos')
+    elif project is not None and getattr(project, 'logos_default', None):
+        try:
+            placements = json.loads(project.logos_default)
+        except Exception:
+            placements = None
+    if not isinstance(placements, list) or not placements:
+        return []
+
+    # One query for all referenced logos.
+    ids = []
+    for p in placements:
+        try:
+            ids.append(int(p.get('logo_id')))
+        except Exception:
+            continue
+    if not ids:
+        return []
+    logos_by_id = {
+        lg.id: lg for lg in ProjectLogo.query.filter(
+            ProjectLogo.project_id == project.id,
+            ProjectLogo.id.in_(ids)).all()
+    } if project is not None else {}
+
+    import base64 as _b64
+    total_embed = 0
+    out = []
+    for p in placements:
+        try:
+            lid = int(p.get('logo_id'))
+        except Exception:
+            continue
+        lg = logos_by_id.get(lid)
+        if lg is None:
+            continue  # deleted / not this project
+        try:
+            x = max(0.0, min(100.0, float(p.get('x', 0))))
+        except Exception:
+            x = 0.0
+        try:
+            w = max(5.0, min(40.0, float(p.get('w', 15))))
+        except Exception:
+            w = 15.0
+        if embed:
+            total_embed += len(lg.data or b'')
+            b64 = _b64.b64encode(lg.data or b'').decode('ascii')
+            src = f"data:{lg.content_type};base64,{b64}"
+        else:
+            src = _logo_url(project.id, lg.id)
+        out.append({
+            'logo_id': lg.id, 'x': x, 'w': w,
+            'name': lg.name or '', 'src': src,
+        })
+    if embed and total_embed > 5 * 1024 * 1024:
+        logging.warning(f"[CALLSHEET PDF] embedded logo payload large "
+                        f"({total_embed} bytes) for project {getattr(project,'id',None)}")
+    return out
+
+
+@app.route("/projects/<int:pid>/logos", methods=["GET"])
+@login_required
+def project_logos_list(pid):
+    """List the project's logo library (metadata + web URLs). No bytes."""
+    if not _can_access_project(pid):
+        return jsonify({"error": "Forbidden"}), 403
+    logos = (ProjectLogo.query.filter_by(project_id=pid)
+             .order_by(ProjectLogo.created_at.asc(), ProjectLogo.id.asc()).all())
+    return jsonify({"logos": [{
+        "id": lg.id, "name": lg.name or "",
+        "content_type": lg.content_type,
+        "width": lg.width, "height": lg.height,
+        "url": _logo_url(pid, lg.id),
+    } for lg in logos]})
+
+
+@app.route("/projects/<int:pid>/logos", methods=["POST"])
+@login_required
+def project_logo_create(pid):
+    """Upload a logo (multipart 'file' + optional 'name'). png/jpeg/svg, ≤2MB.
+    Intrinsic width/height parsed via Pillow for raster (best-effort). Returns
+    {id, name, url}."""
+    if not _can_access_project(pid, edit=True):
+        return jsonify({"error": "Forbidden"}), 403
+    ProjectSheet.query.get_or_404(pid)
+
+    f = request.files.get('file')
+    if not f or not f.filename:
+        return jsonify({"error": "No file provided"}), 400
+    raw = f.read()
+    if not raw:
+        return jsonify({"error": "Empty file"}), 400
+    if len(raw) > _LOGO_MAX_BYTES:
+        return jsonify({"error": "File too large (max 2 MB)"}), 400
+
+    ct = (f.mimetype or '').split(';')[0].strip().lower()
+    kind = _LOGO_CONTENT_TYPES.get(ct)
+    if not kind:
+        # Fall back to extension sniff for browsers that send octet-stream.
+        ext = (f.filename.rsplit('.', 1)[-1] if '.' in f.filename else '').lower()
+        kind = {'png': 'png', 'jpg': 'jpeg', 'jpeg': 'jpeg', 'svg': 'svg'}.get(ext)
+        if kind == 'png':   ct = 'image/png'
+        elif kind == 'jpeg': ct = 'image/jpeg'
+        elif kind == 'svg':  ct = 'image/svg+xml'
+    if not kind:
+        return jsonify({"error": "Unsupported type — use PNG, JPEG, or SVG"}), 400
+    if kind == 'svg':
+        ct = 'image/svg+xml'  # normalize (svg stored as-is otherwise)
+
+    width = height = None
+    if kind in ('png', 'jpeg'):
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(raw)) as im:
+                width, height = int(im.width), int(im.height)
+        except Exception:
+            width = height = None  # Pillow missing / unparseable → null
+
+    name = (request.form.get('name') or '').strip() or (f.filename or '').strip()
+    row = ProjectLogo(
+        project_id=pid, name=(name[:120] if name else None),
+        content_type=ct, data=raw, width=width, height=height,
+        created_at=datetime.utcnow())
+    db.session.add(row)
+    db.session.commit()
+    return jsonify({"ok": True, "id": row.id, "name": row.name or "",
+                    "width": row.width, "height": row.height,
+                    "url": _logo_url(pid, row.id)})
+
+
+@app.route("/projects/<int:pid>/logos/<int:lid>/raw", methods=["GET"])
+@login_required
+def project_logo_raw(pid, lid):
+    """Serve a logo's bytes with its content type + immutable long cache (the
+    bytes for a given id never change — delete + re-upload mints a new id)."""
+    if not _can_access_project(pid):
+        return abort(403)
+    lg = ProjectLogo.query.filter_by(id=lid, project_id=pid).first_or_404()
+    from flask import make_response
+    resp = make_response(lg.data or b'')
+    resp.headers["Content-Type"]  = lg.content_type or "application/octet-stream"
+    resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+    return resp
+
+
+@app.route("/projects/<int:pid>/logos/<int:lid>/delete", methods=["POST"])
+@login_required
+def project_logo_delete(pid, lid):
+    """Remove a logo from the library. Existing per-sheet placements that
+    reference it simply skip the missing id at render time."""
+    if not _can_access_project(pid, edit=True):
+        return jsonify({"error": "Forbidden"}), 403
+    lg = ProjectLogo.query.filter_by(id=lid, project_id=pid).first_or_404()
+    db.session.delete(lg)
+    db.session.commit()
+    return jsonify({"ok": True, "deleted": lid})
+
+
+@app.route("/projects/<int:pid>/logos/default", methods=["POST"])
+@login_required
+def project_logos_set_default(pid):
+    """Store the posted logo arrangement as the project's default layout.
+    Body: {logos: [{logo_id,x,w}…]} (or a bare array). Sheets without their own
+    'logos' key render this. Values are sanity-clamped."""
+    if not _can_access_project(pid, edit=True):
+        return jsonify({"error": "Forbidden"}), 403
+    project = ProjectSheet.query.get_or_404(pid)
+    body = request.get_json(silent=True) or {}
+    arr = body.get('logos') if isinstance(body, dict) else body
+    if not isinstance(arr, list):
+        arr = []
+    clean = []
+    for p in arr:
+        if not isinstance(p, dict):
+            continue
+        try:
+            lid = int(p.get('logo_id'))
+        except Exception:
+            continue
+        try:
+            x = max(0.0, min(100.0, float(p.get('x', 0))))
+        except Exception:
+            x = 0.0
+        try:
+            w = max(5.0, min(40.0, float(p.get('w', 15))))
+        except Exception:
+            w = 15.0
+        clean.append({"logo_id": lid, "x": round(x, 2), "w": round(w, 2)})
+    project.logos_default = json.dumps(clean)
+    db.session.commit()
+    return jsonify({"ok": True, "count": len(clean)})
+
+
 @app.route("/projects/<int:pid>/notify-preview", methods=["GET"])
 @login_required
 def project_notify_preview(pid):
@@ -21356,6 +21586,10 @@ def _render_callsheet_real_pdf(pid, bid, project, budget, selected_date, sched_m
         ctx = _callsheet_full_context(
             pid, bid, project, budget, selected_date, sched_mode,
             all_scheduled_dates)
+        # In pdf_mode the logo layer must embed as base64 data: URIs — weasyprint
+        # must not fetch /logos/…/raw back over the network.
+        ctx['cs_logos'] = _resolve_callsheet_logos(
+            ctx.get('cs_data') or {}, project, embed=True)
         cs_view, csv_flags = _callsheet_audience_flags(view)
         html_str = render_template(
             "callsheet.html",
@@ -23237,6 +23471,9 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         meal_counts=meal_counts,
         on_day_names=on_day_names,
         on_day_emails=on_day_emails,
+        # Resolved logo layer (web URLs). pdf_mode swaps these for data: URIs in
+        # _render_callsheet_real_pdf so weasyprint never fetches over the network.
+        cs_logos=_resolve_callsheet_logos(cs_data, project, embed=False),
     )
 
 
@@ -27098,6 +27335,24 @@ def _web_worker_essential_columns():
                    )""",
                 "CREATE INDEX IF NOT EXISTS ix_project_client_contact_project_id ON project_client_contact (project_id)",
                 "CREATE INDEX IF NOT EXISTS ix_project_client_contact_email ON project_client_contact (email)",
+                # Call-sheet logos (2026-07-09). Per-project logo library (show /
+                # brand / client marks) stored in Postgres — bytes in `data`
+                # (BYTEA), reusable across every call sheet. Per-sheet placement
+                # lives in CallSheetData.data_json['logos'] as {logo_id,x,w}; the
+                # project fallback arrangement lives in project_sheet.logos_default.
+                # Brand-new table → create per-worker like project_client_contact.
+                """CREATE TABLE IF NOT EXISTS project_logo (
+                     id           SERIAL PRIMARY KEY,
+                     project_id   INTEGER NOT NULL REFERENCES project_sheet(id),
+                     name         VARCHAR(120),
+                     content_type VARCHAR(50) NOT NULL,
+                     data         BYTEA NOT NULL,
+                     width        INTEGER,
+                     height       INTEGER,
+                     created_at   TIMESTAMP
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_project_logo_project_id ON project_logo (project_id)",
+                "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS logos_default TEXT",
                 # Production day flag on ProductionDay (set from Schedule)
                 "ALTER TABLE production_day ADD COLUMN IF NOT EXISTS is_production_day BOOLEAN DEFAULT FALSE NOT NULL",
                 # Craft Services per-day flag (2026-05-06). Promoted from

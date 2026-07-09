@@ -57,6 +57,14 @@
   body.pdf-mode .callsheet-page-1 { page-break-after:auto !important; }
   body.pdf-mode .callsheet-page-2 { page-break-before:always !important; }
   body.pdf-mode .callsheet-page-break { display:none !important; }
+  /* Logo layer — re-assert absolute-within-relative-band positioning so
+     weasyprint places each logo at left:x% width:w% over the dark header. The
+     imgs are data: URIs (no network fetch). Edit handles are .cs-screen-only →
+     already dropped. (User 2026-07-09.) */
+  body.pdf-mode .callsheet-header-main { position:relative !important; }
+  body.pdf-mode .cs-logo-layer { position:absolute !important; top:0; left:0; right:0; bottom:0; z-index:3 !important; }
+  body.pdf-mode .cs-logo-item  { position:absolute !important; top:50%; transform:translateY(-50%); }
+  body.pdf-mode .cs-logo-item img { width:100% !important; height:auto !important; max-height:4.5rem; }
   /* Each element the owner hid on THIS call sheet is dropped from the PDF. */
   {% for _k, _v in (cs_data.get('hidden') or {}).items() %}{% if _v %}[data-cs-key="{{ _k }}"] { display:none !important; }
   {% endif %}{% endfor %}
@@ -332,7 +340,30 @@
   <div class="callsheet-page callsheet-page-1">
 
     {# ── Main header bar ──────────────────────────────────────────────────── #}
-    <div class="callsheet-header-main">
+    {# Logo layer: absolutely-positioned imgs span the dark header band; each is
+       placed left:x% width:w% (x/w = percent of band width). Order = z-order.
+       In pdf_mode `src` is a data: URI (no network fetch); on web it's the /raw
+       URL. Editing controls (drag/resize/add/remove) are cs-screen-only + only
+       rendered outside recipient_mode. cs_logos is [] when nothing is placed. #}
+    <div class="callsheet-header-main{% if not recipient_mode %} cs-logos-editable{% endif %}">
+      {% set _cs_logos = cs_logos | default([]) %}
+      <div class="cs-logo-layer{% if _cs_logos %} has-logos{% endif %}" id="cs-logo-layer"
+           {% if not recipient_mode %}data-cs-logo-editable="1"{% endif %}>
+        {% for lg in _cs_logos %}
+        <div class="cs-logo-item" data-logo-id="{{ lg.logo_id }}"
+             style="left:{{ lg.x }}%;width:{{ lg.w }}%">
+          <img src="{{ lg.src }}" alt="{{ lg.name }}" draggable="false">
+          {% if not recipient_mode %}
+          <button type="button" class="cs-logo-remove cs-screen-only" title="Remove from sheet">✕</button>
+          <span class="cs-logo-resize cs-screen-only" title="Drag to resize"></span>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% if not recipient_mode %}
+      <button type="button" class="cs-logos-open-btn cs-screen-only" id="cs-logos-open-btn"
+              onclick="csLogosOpenPanel()" title="Add / arrange logos">🖼 Logos</button>
+      {% endif %}
       <div class="callsheet-header-company">
         <div class="callsheet-company-name">Framework Productions</div>
         <div class="callsheet-header-sub">{{ budget.name }} <span class="callsheet-mode-pill">{{ cur_mode.short }}</span></div>
@@ -1218,6 +1249,37 @@ Example:
 </div>
 {% endif %}{# /not recipient_mode — distribution panel #}
 
+{% if not recipient_mode %}
+{# ── 🖼 Logos mini-panel ─────────────────────────────────────────────────────
+   Add project logos to THIS sheet, upload new ones, and set the arrangement as
+   the project default. Placed logos are dragged/resized directly on the header
+   band above. Screen-only; never in the PDF. #}
+<div class="cs-logos-panel cs-screen-only" id="cs-logos-panel" style="display:none">
+  <div class="cs-logos-panel-header">
+    <h3>Logos</h3>
+    <button type="button" class="btn btn-xs btn-ghost" onclick="csLogosClosePanel()" title="Close">✕</button>
+  </div>
+  <div class="cs-logos-panel-body">
+    <p class="cs-logos-hint">Add a logo to place it on the header band, then drag it left/right and drag its corner to resize.</p>
+    <div id="cs-logos-library" class="cs-logos-library"></div>
+    <div class="cs-logos-upload">
+      <label class="btn btn-sm btn-ghost" style="cursor:pointer">
+        ⬆ Upload logo
+        <input type="file" id="cs-logo-file" accept="image/png,image/jpeg,image/svg+xml" style="display:none" onchange="csLogoUpload(this)">
+      </label>
+      <span id="cs-logos-upload-status" style="font-size:.76rem;color:var(--text-muted)"></span>
+    </div>
+    <div class="cs-logos-panel-footer">
+      <button type="button" class="btn btn-xs btn-ghost" onclick="csLogosSetDefault()"
+              title="Use this sheet's logo arrangement as the default for new call sheets on this project">
+        Set as project default
+      </button>
+      <span id="cs-logos-default-status" style="font-size:.74rem;color:var(--text-muted)"></span>
+    </div>
+  </div>
+</div>
+{% endif %}{# /not recipient_mode — logos panel #}
+
 {# ─── JavaScript ──────────────────────────────────────────────────────────── #}
 {# Skipped entirely in pdf_mode: weasyprint runs no JS, and the JS-only sections
    it would populate are already rendered server-side above. Shipping the block
@@ -1232,6 +1294,9 @@ const CS_SAVE_URL   = "{{ url_for('callsheet_save', pid=project.id, bid=budget.i
 const CS_DIST_URL   = "{{ url_for('callsheet_distribution', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
 const CS_SEND_URL   = "{{ url_for('callsheet_prepare_send', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
 const CS_PREVIEW_URL = "{{ url_for('callsheet_preview_as', pid=project.id, bid=budget.id, date_str=selected_date.strftime('%Y-%m-%d')) }}";
+const CS_LOGOS_URL   = "{{ url_for('project_logos_list', pid=project.id) }}";
+const CS_LOGO_RAW_BASE = "{{ url_for('project_logos_list', pid=project.id) }}";  // + /<id>/raw
+const CS_LOGOS_DEFAULT_URL = "{{ url_for('project_logos_set_default', pid=project.id) }}";
 const CS_VIEW       = {{ cs_view | tojson }};
 const CSV           = {{ csv | tojson }};
 const CS_DATA       = {{ cs_data | tojson }};
@@ -1289,8 +1354,22 @@ let CS_CUSTOM_DEPTS   = Array.isArray(CS_DATA.custom_depts) ? CS_DATA.custom_dep
 let CS_AUDIENCE_MESSAGES = (CS_DATA.audience_messages && typeof CS_DATA.audience_messages === 'object')
   ? JSON.parse(JSON.stringify(CS_DATA.audience_messages)) : {};
 
+// Per-call-sheet logo arrangement: [{logo_id, x, w}] — x = left offset (percent
+// of the header band width, 0-100), w = width (percent, 5-40). Array order =
+// z/stacking. Round-trips through the whole-payload save exactly like the maps
+// above (collected below, initialized from CS_DATA.logos). Only present when the
+// sheet has its own arrangement; absence lets the server fall back to the project
+// default. (User 2026-07-09.)
+let CS_LOGOS = Array.isArray(CS_DATA.logos)
+  ? CS_DATA.logos.map(p => ({
+      logo_id: p.logo_id,
+      x: Math.max(0, Math.min(100, +p.x || 0)),
+      w: Math.max(5, Math.min(40, +p.w || 15)),
+    }))
+  : null;   // null = never arranged on this sheet (server uses project default)
+
 function collectCallSheetData() {
-  return {
+  const _payload = {
     hidden:                  CS_HIDDEN,
     text_overrides:          CS_TEXT_OVERRIDES,
     dept_overrides:          CS_DEPT_OVERRIDES,
@@ -1321,6 +1400,11 @@ function collectCallSheetData() {
     useful_contacts:    collectUsefulContacts(),
     audience_messages:  csCollectAudienceMessages(),
   };
+  // Only persist a 'logos' key once this sheet has its OWN arrangement. Leaving
+  // it out (CS_LOGOS === null) preserves the server-side project-default
+  // fallback for sheets that were never touched.
+  if (Array.isArray(CS_LOGOS)) _payload.logos = CS_LOGOS;
+  return _payload;
 }
 
 // Read the ✉ Message panel inputs into CS_AUDIENCE_MESSAGES and return it. Safe
@@ -2863,8 +2947,286 @@ document.addEventListener('DOMContentLoaded', () => {
   } else {
     initLocationDragDrop();
     initDeptDnD();
+    csLogosInit();
   }
 });
+
+// ── Call-sheet logos ────────────────────────────────────────────────────────────
+// Header-band logo layer: add project logos to this sheet, drag them left/right
+// (x = percent of band width) and resize via the corner handle (w = percent).
+// CS_LOGOS is the single source of truth; the DOM layer is re-rendered from it.
+// Every mutation writes CS_LOGOS then scheduleAutoSave() (existing save flow →
+// 'logos' key round-trips via collectCallSheetData). Screen-only; the server
+// renders the identical layer server-side for the PDF.
+let CS_LOGO_LIBRARY = [];   // [{id,name,url,width,height}]
+
+function csLogoRawUrl(id) { return CS_LOGO_RAW_BASE + '/' + id + '/raw'; }
+
+// Ensure CS_LOGOS is a mutable array before the first placement (was null =
+// "inherit project default"; the moment the user places one it becomes this
+// sheet's own arrangement).
+function csLogosEnsureArray() {
+  if (!Array.isArray(CS_LOGOS)) {
+    // Seed from whatever is currently rendered (the inherited default) so
+    // "add one more" keeps the existing ones rather than wiping them.
+    CS_LOGOS = csLogosReadFromDom();
+  }
+  return CS_LOGOS;
+}
+
+function csLogosReadFromDom() {
+  const out = [];
+  document.querySelectorAll('#cs-logo-layer .cs-logo-item').forEach(el => {
+    out.push({
+      logo_id: +el.getAttribute('data-logo-id'),
+      x: Math.max(0, Math.min(100, parseFloat(el.style.left) || 0)),
+      w: Math.max(5, Math.min(40, parseFloat(el.style.width) || 15)),
+    });
+  });
+  return out;
+}
+
+// Rebuild the header-band DOM layer from CS_LOGOS.
+function csLogosRender() {
+  const layer = document.getElementById('cs-logo-layer');
+  if (!layer) return;
+  const arr = Array.isArray(CS_LOGOS) ? CS_LOGOS : csLogosReadFromDom();
+  layer.innerHTML = '';
+  layer.classList.toggle('has-logos', arr.length > 0);
+  arr.forEach((p) => {
+    const item = document.createElement('div');
+    item.className = 'cs-logo-item';
+    item.setAttribute('data-logo-id', p.logo_id);
+    item.style.left  = p.x + '%';
+    item.style.width = p.w + '%';
+    const img = document.createElement('img');
+    img.src = csLogoRawUrl(p.logo_id);
+    img.draggable = false;
+    const lib = CS_LOGO_LIBRARY.find(l => l.id === p.logo_id);
+    img.alt = lib ? (lib.name || '') : '';
+    item.appendChild(img);
+    const rm = document.createElement('button');
+    rm.type = 'button'; rm.className = 'cs-logo-remove cs-screen-only';
+    rm.title = 'Remove from sheet'; rm.textContent = '✕';
+    rm.addEventListener('click', (e) => { e.stopPropagation(); csLogoRemove(p.logo_id); });
+    item.appendChild(rm);
+    const rz = document.createElement('span');
+    rz.className = 'cs-logo-resize cs-screen-only'; rz.title = 'Drag to resize';
+    item.appendChild(rz);
+    csLogoWireDrag(item, rz);
+    layer.appendChild(item);
+  });
+}
+
+// Pointer drag (move horizontally) + resize handle (change width). Percents are
+// relative to the header band (layer) width.
+function csLogoWireDrag(item, resizeHandle) {
+  const layer = document.getElementById('cs-logo-layer');
+  const idOf = () => +item.getAttribute('data-logo-id');
+
+  function bandWidth() { return layer.getBoundingClientRect().width || 1; }
+
+  function onMoveStart(ev) {
+    if (ev.target === resizeHandle || ev.target.classList.contains('cs-logo-remove')) return;
+    ev.preventDefault();
+    const bw = bandWidth();
+    const startX = (ev.touches ? ev.touches[0].clientX : ev.clientX);
+    const startLeft = parseFloat(item.style.left) || 0;
+    function move(e) {
+      const cx = (e.touches ? e.touches[0].clientX : e.clientX);
+      const dxPct = ((cx - startX) / bw) * 100;
+      const w = parseFloat(item.style.width) || 15;
+      let nx = Math.max(0, Math.min(100 - w, startLeft + dxPct));
+      item.style.left = nx.toFixed(2) + '%';
+    }
+    function up() {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      document.removeEventListener('touchmove', move);
+      document.removeEventListener('touchend', up);
+      csLogoCommitFromDom(idOf());
+    }
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    document.addEventListener('touchmove', move, {passive:false});
+    document.addEventListener('touchend', up);
+  }
+
+  function onResizeStart(ev) {
+    ev.preventDefault(); ev.stopPropagation();
+    const bw = bandWidth();
+    const startX = (ev.touches ? ev.touches[0].clientX : ev.clientX);
+    const startW = parseFloat(item.style.width) || 15;
+    const left = parseFloat(item.style.left) || 0;
+    function move(e) {
+      const cx = (e.touches ? e.touches[0].clientX : e.clientX);
+      const dwPct = ((cx - startX) / bw) * 100;
+      let nw = Math.max(5, Math.min(40, startW + dwPct));
+      if (left + nw > 100) nw = 100 - left;   // keep on band
+      item.style.width = nw.toFixed(2) + '%';
+    }
+    function up() {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      document.removeEventListener('touchmove', move);
+      document.removeEventListener('touchend', up);
+      csLogoCommitFromDom(idOf());
+    }
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    document.addEventListener('touchmove', move, {passive:false});
+    document.addEventListener('touchend', up);
+  }
+
+  item.addEventListener('mousedown', onMoveStart);
+  item.addEventListener('touchstart', onMoveStart, {passive:false});
+  resizeHandle.addEventListener('mousedown', onResizeStart);
+  resizeHandle.addEventListener('touchstart', onResizeStart, {passive:false});
+}
+
+// After a drag/resize, sync the one item's live style back into CS_LOGOS + save.
+function csLogoCommitFromDom(logoId) {
+  const item = document.querySelector('#cs-logo-layer .cs-logo-item[data-logo-id="' + logoId + '"]');
+  if (!item) return;
+  csLogosEnsureArray();
+  const rec = CS_LOGOS.find(p => p.logo_id === logoId);
+  if (rec) {
+    rec.x = Math.max(0, Math.min(100, parseFloat(item.style.left) || 0));
+    rec.w = Math.max(5, Math.min(40, parseFloat(item.style.width) || 15));
+    scheduleAutoSave();
+  }
+}
+
+function csLogoAddToSheet(logoId) {
+  csLogosEnsureArray();
+  if (CS_LOGOS.some(p => p.logo_id === logoId)) return;   // already placed
+  // Stagger new placements so they don't stack exactly.
+  const x = Math.min(70, 5 + CS_LOGOS.length * 20);
+  CS_LOGOS.push({ logo_id: logoId, x: x, w: 15 });
+  csLogosRender();
+  csLogosRenderLibrary();
+  scheduleAutoSave();
+}
+
+function csLogoRemove(logoId) {
+  csLogosEnsureArray();
+  CS_LOGOS = CS_LOGOS.filter(p => p.logo_id !== logoId);
+  csLogosRender();
+  csLogosRenderLibrary();
+  scheduleAutoSave();
+}
+
+// ── Panel + library ──────────────────────────────────────────────────────────
+function csLogosOpenPanel() {
+  const p = document.getElementById('cs-logos-panel');
+  if (p) p.style.display = '';
+  csLogosLoadLibrary();
+}
+function csLogosClosePanel() {
+  const p = document.getElementById('cs-logos-panel');
+  if (p) p.style.display = 'none';
+}
+
+function csLogosLoadLibrary() {
+  fetch(CS_LOGOS_URL, {headers:{'Accept':'application/json'}})
+    .then(r => r.json())
+    .then(d => { CS_LOGO_LIBRARY = (d && d.logos) || []; csLogosRenderLibrary(); })
+    .catch(() => {});
+}
+
+function csLogosRenderLibrary() {
+  const box = document.getElementById('cs-logos-library');
+  if (!box) return;
+  const placed = new Set((Array.isArray(CS_LOGOS) ? CS_LOGOS : csLogosReadFromDom()).map(p => p.logo_id));
+  if (!CS_LOGO_LIBRARY.length) {
+    box.innerHTML = '<div class="cs-logos-empty">No logos yet — upload one below.</div>';
+    return;
+  }
+  box.innerHTML = '';
+  CS_LOGO_LIBRARY.forEach(lg => {
+    const row = document.createElement('div');
+    row.className = 'cs-logos-lib-row';
+    const isPlaced = placed.has(lg.id);
+    row.innerHTML =
+      '<img class="cs-logos-lib-thumb" src="' + lg.url + '" alt="">' +
+      '<span class="cs-logos-lib-name">' + (lg.name || 'Logo #' + lg.id) + '</span>';
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'btn btn-xs ' + (isPlaced ? 'btn-ghost' : 'btn-primary');
+    add.textContent = isPlaced ? '✓ On sheet' : '+ Add to sheet';
+    add.disabled = isPlaced;
+    add.addEventListener('click', () => csLogoAddToSheet(lg.id));
+    row.appendChild(add);
+    const del = document.createElement('button');
+    del.type = 'button'; del.className = 'btn btn-xs btn-ghost';
+    del.title = 'Delete from library'; del.textContent = '🗑';
+    del.addEventListener('click', () => csLogoDeleteFromLibrary(lg.id));
+    row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+
+function csLogoUpload(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  const status = document.getElementById('cs-logos-upload-status');
+  if (f.size > 2 * 1024 * 1024) {
+    if (status) { status.textContent = 'Too large (max 2 MB)'; status.style.color = '#c0392b'; }
+    input.value = ''; return;
+  }
+  if (status) { status.textContent = 'Uploading…'; status.style.color = ''; }
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('name', f.name.replace(/\.[^.]+$/, ''));
+  fetch(CS_LOGOS_URL, { method:'POST', body: fd })
+    .then(r => r.json().then(j => ({ok:r.ok, j})))
+    .then(({ok, j}) => {
+      input.value = '';
+      if (!ok) { if (status) { status.textContent = (j && j.error) || 'Upload failed'; status.style.color = '#c0392b'; } return; }
+      if (status) { status.textContent = 'Added'; status.style.color = ''; }
+      csLogosLoadLibrary();
+      // Convenience: immediately place a freshly uploaded logo.
+      if (j && j.id) csLogoAddToSheet(j.id);
+    })
+    .catch(() => { input.value=''; if (status) { status.textContent = 'Upload failed'; status.style.color = '#c0392b'; } });
+}
+
+function csLogoDeleteFromLibrary(logoId) {
+  if (!confirm('Delete this logo from the project library? It will be removed from any call sheets using it.')) return;
+  fetch(CS_LOGO_RAW_BASE + '/' + logoId + '/delete', { method:'POST' })
+    .then(r => r.json())
+    .then(() => {
+      CS_LOGO_LIBRARY = CS_LOGO_LIBRARY.filter(l => l.id !== logoId);
+      if (Array.isArray(CS_LOGOS) && CS_LOGOS.some(p => p.logo_id === logoId)) {
+        CS_LOGOS = CS_LOGOS.filter(p => p.logo_id !== logoId);
+        scheduleAutoSave();
+      }
+      csLogosRender();
+      csLogosRenderLibrary();
+    })
+    .catch(() => {});
+}
+
+function csLogosSetDefault() {
+  const arr = Array.isArray(CS_LOGOS) ? CS_LOGOS : csLogosReadFromDom();
+  const status = document.getElementById('cs-logos-default-status');
+  if (status) { status.textContent = 'Saving…'; status.style.color=''; }
+  fetch(CS_LOGOS_DEFAULT_URL, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ logos: arr }),
+  })
+    .then(r => r.json())
+    .then(() => { if (status) { status.textContent = 'Set as project default'; } })
+    .catch(() => { if (status) { status.textContent = 'Failed'; status.style.color = '#c0392b'; } });
+}
+
+function csLogosInit() {
+  // Wire drag/resize on any server-rendered logo items + load the library so the
+  // panel is ready. CS_LOGOS may be null (inheriting the project default) — the
+  // DOM already shows those; csLogosRender() re-wires them and keeps them.
+  csLogosRender();
+  csLogosLoadLibrary();
+}
 </script>
 {% endif %}{# /not pdf_mode — main script block #}
 

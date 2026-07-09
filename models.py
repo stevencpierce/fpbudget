@@ -81,6 +81,12 @@ class ProjectSheet(db.Model):
     # weeks after their transaction date.
     last_cdc_sync   = db.Column(db.DateTime, nullable=True)
 
+    # Project-wide DEFAULT call-sheet logo arrangement (2026-07-09). JSON array
+    # of {logo_id, x, w} — the same shape a per-day CallSheetData.data_json
+    # 'logos' key holds. A call sheet with no 'logos' key of its own falls back
+    # to this. Set via the "Set as project default" button on any sheet.
+    logos_default   = db.Column(db.Text, nullable=True)
+
 
 class Transaction(db.Model):
     """Single actuals row. The center of the three-legged stool:
@@ -836,6 +842,28 @@ class CallSheetData(db.Model):
     updated_at    = db.Column(db.DateTime, default=datetime.utcnow)
     __table_args__ = (db.UniqueConstraint("budget_id", "date", "schedule_mode",
                                           name="uq_cs_day"),)
+
+
+class ProjectLogo(db.Model):
+    """A logo image (show / brand / client) uploaded to a project, stored in
+    Postgres and reusable across that project's call sheets. (2026-07-09.)
+
+    The bytes live in `data` (LargeBinary → BYTEA) — deliberately NOT Dropbox,
+    to avoid serve latency + coupling. Each per-call-sheet arrangement stores
+    only {logo_id, x, w} references (in CallSheetData.data_json['logos'] /
+    ProjectSheet.logos_default), so one uploaded logo is placed on many sheets
+    without duplicating bytes. width/height are the intrinsic pixel dimensions
+    parsed at upload when cheap (Pillow for raster; null for SVG / on failure)."""
+    __tablename__ = "project_logo"
+    id           = db.Column(db.Integer, primary_key=True)
+    project_id   = db.Column(db.Integer, db.ForeignKey("project_sheet.id"),
+                             nullable=False, index=True)
+    name         = db.Column(db.String(120), nullable=True)
+    content_type = db.Column(db.String(50),  nullable=False)   # image/png|jpeg|svg+xml
+    data         = db.Column(db.LargeBinary, nullable=False)
+    width        = db.Column(db.Integer, nullable=True)        # intrinsic px (raster)
+    height       = db.Column(db.Integer, nullable=True)
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 class SupportContact(db.Model):
