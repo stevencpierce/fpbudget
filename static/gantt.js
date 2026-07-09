@@ -35,6 +35,15 @@ const MAX_UNDO   = 50;
 function _scrollKey()     { return `gantt_scrollX_${_bid}`; }
 function _rangeKey()      { return `gantt_range_${_bid}`; }
 
+// Sane-year guard for view-range dates. The HTML date input commits
+// MID-KEYSTROKE (typing "2026" fires change at year 0202); an insane range
+// then navigated + stuck in sessionStorage, re-applying itself on every load.
+// (User 2026-07-09: "we're back to 0202 on the schedule".)
+function _saneDateStr(s) {
+  const y = parseInt(String(s || '').split('-')[0], 10);
+  return !isNaN(y) && y >= 1990 && y <= 2100;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // INIT
 // ─────────────────────────────────────────────────────────────────────────────
@@ -60,18 +69,21 @@ function initGantt(pid, bid, activeProfileId) {
     if (savedRange) {
       try {
         const { start, end } = JSON.parse(savedRange);
-        if (start && end) {
+        if (start && end && _saneDateStr(start) && _saneDateStr(end)) {
           const url = new URL(window.location.href);
           url.searchParams.set('gantt_start', start);
           url.searchParams.set('gantt_end', end);
           window.location.replace(url.toString());
           return; // stop init — page will reload with the saved range
         }
+        // Insane saved range (mid-keystroke artifact) — purge it.
+        sessionStorage.removeItem(_rangeKey());
       } catch (_) {}
     }
   }
   // Save current range to sessionStorage (covers direct loads with URL params)
-  if (urlParams.has('gantt_start')) {
+  if (urlParams.has('gantt_start') && _saneDateStr(urlParams.get('gantt_start'))
+      && _saneDateStr(urlParams.get('gantt_end'))) {
     sessionStorage.setItem(_rangeKey(), JSON.stringify({
       start: urlParams.get('gantt_start'),
       end:   urlParams.get('gantt_end'),
@@ -1051,7 +1063,10 @@ function showWeeks(n) {
 function applyDateRange() {
   const start = document.getElementById('gantt-start-input').value;
   const end   = document.getElementById('gantt-end-input').value;
-  if (start && end && start <= end) navigateTo(start, end);
+  // _saneDateStr: don't navigate on mid-keystroke year commits (0202).
+  if (start && end && start <= end && _saneDateStr(start) && _saneDateStr(end)) {
+    navigateTo(start, end);
+  }
 }
 
 function navigateTo(start, end) {

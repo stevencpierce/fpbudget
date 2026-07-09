@@ -16445,6 +16445,11 @@ def gantt_view(pid, bid):
         end_date   = datetime.strptime(param_end,   "%Y-%m-%d").date() if param_end   else None
     except ValueError:
         start_date = end_date = None
+    # Insane view-range years (mid-keystroke 0202 artifacts, possibly stuck in
+    # a stale URL/bookmark) → ignore and fall through to sane defaults.
+    if (start_date and _reject_insane_year(start_date)) or \
+       (end_date and _reject_insane_year(end_date)):
+        start_date = end_date = None
 
     if not start_date or not end_date:
         # Default: use budget.start_date if set, else current week

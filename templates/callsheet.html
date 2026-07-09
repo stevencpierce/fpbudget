@@ -1555,8 +1555,12 @@ function normalizeCrewCallStr(raw) {
   const s = (raw || '').trim();
   if (!s || s.toUpperCase() === 'TBD') return 'TBD';
   const normalized = normalizeTimeStr(s);
-  // If normalizeTimeStr couldn't parse it, fall back to TBD
-  return normalized === s ? 'TBD' : normalized;
+  // normalizeTimeStr returns its input verbatim ONLY when unparseable — but a
+  // perfectly-typed '8:00 AM' also round-trips unchanged, so the old
+  // `normalized === s → TBD` check nuked valid times ("it always resets to
+  // TBD", user 2026-07-09). Parseable output always matches the canonical
+  // H:MM AM/PM shape — test THAT instead.
+  return /^\d{1,2}:\d{2} (AM|PM)$/.test(normalized) ? normalized : 'TBD';
 }
 
 // ── Bind contenteditable auto-save ────────────────────────────────────────────
