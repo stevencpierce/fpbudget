@@ -621,6 +621,20 @@ body.col-resizing * { cursor: col-resize !important; }
 .modal { position: fixed; inset: 0; z-index: 500; display: flex; align-items: center; justify-content: center; }
 .modal.hidden { display: none; }
 .modal-overlay { position: absolute; inset: 0; background: rgba(0,0,0,.6); }
+/* Legacy STANDALONE modal-overlay containers (union/client/support on the
+   People tab): .modal-overlay was designed as a backdrop INSIDE a fixed
+   .modal wrapper — used top-level it anchors to the DOCUMENT top with no
+   centering, so the dialog opened thousands of px above a scrolled page
+   ("I click add union and nothing seems to happen", 2026-07-13). Fixed +
+   centered here; the JS keeps toggling inline display:none/flex. */
+#union-modal.modal-overlay,
+#client-modal.modal-overlay,
+#support-modal.modal-overlay {
+  position: fixed;
+  z-index: 500;
+  align-items: center;
+  justify-content: center;
+}
 .modal-box {
   position: relative;
   background: var(--bg-2);
