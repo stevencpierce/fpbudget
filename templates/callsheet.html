@@ -111,6 +111,13 @@
   /* Each element the owner hid on THIS call sheet is dropped from the PDF. */
   {% for _k, _v in (cs_data.get('hidden') or {}).items() %}{% if _v %}[data-cs-key="{{ _k }}"] { display:none !important; }
   {% endif %}{% endfor %}
+  /* Per-audience hides: also drop elements hidden for THIS PDF's audience view
+     (cs_view). hidden_views = {key: [view,…]} — an element is hidden for view V
+     iff it's universally hidden (above) OR V is in its hidden_views list. No JS
+     runs in weasyprint, so this per-view enforcement MUST be server-side, exactly
+     like the universal block above. (2026-07-13.) */
+  {% for _k, _views in (cs_data.get('hidden_views') or {}).items() %}{% if _views and (cs_view in _views) %}[data-cs-key="{{ _k }}"] { display:none !important; }
+  {% endif %}{% endfor %}
   /* ── PDF-safe travel icons ────────────────────────────────────────────────
      weasyprint on the Render Linux box has NO emoji font, so the emoji icons on
      the travel line render blank / garbled (owner: "text looks incomplete", a
@@ -165,6 +172,16 @@
    emptiness. #}
 {% set _hide_empty = recipient_mode or pdf_mode %}
 {% set _hid_map = (cs_data.get('hidden') if cs_data else {}) or {} %}
+{# Per-view hides (👁 hide-per-audience, 2026-07-13). hidden_views = {key:[view,…]}
+   sits ALONGSIDE the universal `hidden` above (which stays = hidden everywhere).
+   _hid_view_keys = crew_row/etc keys hidden for THIS render's audience (cs_view);
+   it is merged with the universal _hid_map in the empty-dept-box collapse below so
+   a department empty FOR THIS VIEW also collapses in recipient/pdf renders. The
+   internal editing view passes cs_view='internal', which never appears in a
+   hidden_views list, so this set stays empty there and nothing extra collapses. #}
+{% set _hid_views_map = (cs_data.get('hidden_views') if cs_data else {}) or {} %}
+{% set _hid_view_keys = [] %}
+{% for _k, _vs in _hid_views_map.items() %}{% if _vs and (cs_view in _vs) %}{% set _ = _hid_view_keys.append(_k) %}{% endif %}{% endfor %}
 {% set _kp_real = (cs_data.get('key_personnel') or []) | rejectattr('is_spacer') | list %}
 {% set _kp_has = (_kp_real | selectattr('role') | list) or (_kp_real | selectattr('name') | list) or (_kp_real | selectattr('phone') | list) %}
 {% set _ex_rows = cs_data.get('extras') or [] %}
@@ -1141,7 +1158,7 @@
            empty custom drop-targets and boxes whose every row was hidden via 👁
            would otherwise print as bare dark bands. (2026-07-13.) #}
         {% set _visns = namespace(n=0) %}
-        {% for r in dept_rows %}{% if not _hid_map.get('crew_row:' ~ (r.budget_line_id | string) ~ ':' ~ (r.instance | string)) %}{% set _visns.n = _visns.n + 1 %}{% endif %}{% endfor %}
+        {% for r in dept_rows %}{% set _rk = 'crew_row:' ~ (r.budget_line_id | string) ~ ':' ~ (r.instance | string) %}{% if not (_hid_map.get(_rk) or (_rk in _hid_view_keys)) %}{% set _visns.n = _visns.n + 1 %}{% endif %}{% endfor %}
         {% if (not _hide_empty) or _visns.n > 0 %}
         <div class="cs-dept-box" data-dept-name="{{ dept_name }}"{% if is_custom %} data-dept-custom="1"{% endif %}>
           <div class="cs-dept-box-header" data-dept-orig="{{ dept_name }}">
@@ -1619,6 +1636,13 @@ function doAutoSave() {
 // the collect fn merges CS_HIDDEN / CS_TEXT_OVERRIDES back into the payload so
 // they persist alongside everything else. (User 2026-07-08.)
 let CS_HIDDEN         = Object.assign({}, (CS_DATA.hidden || {}));
+// Per-audience hides (👁 hide-per-view, 2026-07-13). Shape: {key: [view,…]} where
+// view ∈ crew/client/talent/union. Sits ALONGSIDE CS_HIDDEN (which stays universal
+// — hidden on every version). An element is hidden FOR VIEW V iff CS_HIDDEN[key]
+// OR V is in CS_HIDDEN_VIEWS[key]. Round-trips through the whole-payload save just
+// like CS_HIDDEN (collected below). The 👁 edits CS_HIDDEN on the Internal (full)
+// view and CS_HIDDEN_VIEWS[current view] on any audience ?view=. (User 2026-07-13.)
+let CS_HIDDEN_VIEWS   = Object.assign({}, (CS_DATA.hidden_views || {}));
 let CS_TEXT_OVERRIDES = Object.assign({}, (CS_DATA.text_overrides || {}));
 // Page-2 department drag/rename/custom overrides (per call sheet day).
 //   CS_DEPT_OVERRIDES: {crew_key: dept_name}  crew_key = "<line_id>:<instance>"
@@ -1681,6 +1705,7 @@ let CS_LOGOS = Array.isArray(CS_DATA.logos)
 function collectCallSheetData() {
   const _payload = {
     hidden:                  CS_HIDDEN,
+    hidden_views:            CS_HIDDEN_VIEWS,
     text_overrides:          CS_TEXT_OVERRIDES,
     dept_overrides:          CS_DEPT_OVERRIDES,
     dept_renames:            CS_DEPT_RENAMES,
@@ -1817,25 +1842,83 @@ if (!RECIPIENT_MODE) {
 // (const — calling from here is a temporal-dead-zone ReferenceError).
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HIDE / SHOW ELEMENTS (per-day overrides in CS_HIDDEN)
-// Every .cs-hideable element carries data-cs-key. Hidden elements render at 35%
-// opacity + dashed outline in the internal editing view (so they can be found
-// and un-hidden) and are FULLY OMITTED in print/PDF/public via the .cs-hidden-el
-// print rule. The 👁 toggles are cs-screen-only so they never print.
-// (User 2026-07-08.)
+// HIDE / SHOW ELEMENTS (per-day overrides in CS_HIDDEN + per-audience CS_HIDDEN_VIEWS)
+// Every .cs-hideable element carries data-cs-key. There are TWO layers:
+//   • CS_HIDDEN[key]            → UNIVERSAL: hidden on every version (unchanged).
+//   • CS_HIDDEN_VIEWS[key]=[…]  → PER-AUDIENCE: hidden only for the listed views
+//                                 (crew/client/talent/union). (User 2026-07-13.)
+// An element is EFFECTIVELY hidden for a view V iff CS_HIDDEN[key] OR V ∈ its
+// views list. Effectively-hidden elements render at 35% opacity + dashed outline
+// in the internal editing view (findable / un-hidable) and are FULLY OMITTED in
+// print/PDF/recipient via the .cs-hidden-el rule. The 👁 is cs-screen-only so it
+// never prints; a small "hidden: <views>" chip flags per-audience hides so they
+// stay discoverable from the Internal (full) view too.
+// The 👁 CLICK is view-scoped by the current ?view= (CS_VIEW):
+//   • on Internal (full)          → toggles CS_HIDDEN[key]        (universal).
+//   • on crew/client/talent/union → toggles that view in CS_HIDDEN_VIEWS[key].
 // ═══════════════════════════════════════════════════════════════════════════════
+function csCurrentView() {
+  // The audience view whose hides the 👁 edits. 'internal' ⇒ universal layer.
+  return (typeof CS_VIEW === 'string' && CS_VIEW) ? CS_VIEW : 'internal';
+}
+function csViewsForKey(key) {
+  const a = CS_HIDDEN_VIEWS[key];
+  return Array.isArray(a) ? a : [];
+}
+function csViewLabel(v) { return v ? (v.charAt(0).toUpperCase() + v.slice(1)) : v; }
+// Manage the little "hidden: <views>" chip on an element's 👁 toggle so per-view
+// hides are visible even from the Internal view. Screen-only (never prints/PDFs);
+// skipped entirely in recipient mode. (User 2026-07-13.)
+function csUpdateHiddenBadge(toggle, views) {
+  if (RECIPIENT_MODE) return;
+  let badge = toggle.nextElementSibling;
+  if (!(badge && badge.classList && badge.classList.contains('cs-hidden-badge'))) badge = null;
+  if (!views.length) { if (badge) badge.remove(); return; }
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'cs-hidden-badge cs-screen-only';
+    toggle.insertAdjacentElement('afterend', badge);
+  }
+  const labels = views.map(csViewLabel).join(', ');
+  badge.textContent = 'hidden: ' + labels;
+  badge.title = 'Hidden only from the ' + labels + ' view'
+              + (views.length > 1 ? 's' : '') + ' — switch to that view and click 👁 to change';
+}
 function applyHiddenState() {
+  const view = csCurrentView();
   document.querySelectorAll('.cs-hideable[data-cs-key]').forEach(el => {
     const key = el.getAttribute('data-cs-key');
-    const hidden = !!CS_HIDDEN[key];
-    el.classList.toggle('cs-hidden-el', hidden);
+    const universal = !!CS_HIDDEN[key];
+    let dim;
+    if (RECIPIENT_MODE) {
+      // Recipient screen: dim ⇒ display:none. Honor the recipient's forced view.
+      dim = universal || (csViewsForKey(key).indexOf(view) !== -1);
+    } else if (view === 'internal') {
+      // Internal (full): only universal hides dim; per-view hides show a chip,
+      // not dimmed (they're not hidden on the full view). (User 2026-07-13.)
+      dim = universal;
+    } else {
+      // Editing a specific audience: dim what's hidden FOR THAT audience.
+      dim = universal || (csViewsForKey(key).indexOf(view) !== -1);
+    }
+    el.classList.toggle('cs-hidden-el', dim);
   });
   document.querySelectorAll('.cs-hide-toggle[data-cs-key]').forEach(t => {
     const key = t.getAttribute('data-cs-key');
-    const hidden = !!CS_HIDDEN[key];
-    t.textContent = hidden ? '🚫' : '👁';
-    t.title = hidden ? 'Hidden — click to show on this call sheet'
-                     : 'Hide this from this call sheet';
+    const universal = !!CS_HIDDEN[key];
+    const views = csViewsForKey(key);
+    const hiddenNow = (view === 'internal') ? universal
+                    : (universal || views.indexOf(view) !== -1);
+    t.textContent = hiddenNow ? '🚫' : '👁';
+    if (view === 'internal') {
+      t.title = universal ? 'Hidden on every version — click to show everywhere'
+                          : 'Hide from every version (switch to an audience view to hide for just that audience)';
+    } else {
+      const vl = csViewLabel(view);
+      t.title = hiddenNow ? ('Hidden from ' + vl + ' — click to show for ' + vl)
+                          : ('Hide from ' + vl + ' only');
+    }
+    csUpdateHiddenBadge(t, views);
   });
 }
 if (!RECIPIENT_MODE) document.addEventListener('click', function(ev) {
@@ -1844,6 +1927,19 @@ if (!RECIPIENT_MODE) document.addEventListener('click', function(ev) {
   ev.preventDefault();
   ev.stopPropagation();
   const key = t.getAttribute('data-cs-key');
+  const view = csCurrentView();
+  if (view !== 'internal') {
+    // Toggle THIS view's membership in the per-audience list (leaves the
+    // universal CS_HIDDEN layer untouched).
+    const arr = csViewsForKey(key).slice();
+    const i = arr.indexOf(view);
+    if (i !== -1) arr.splice(i, 1); else arr.push(view);
+    if (arr.length) CS_HIDDEN_VIEWS[key] = arr; else delete CS_HIDDEN_VIEWS[key];
+    applyHiddenState();
+    clearTimeout(_saveTimer);
+    doAutoSave();
+    return;
+  }
   if (CS_HIDDEN[key]) { delete CS_HIDDEN[key]; }
   else { CS_HIDDEN[key] = true; }
   applyHiddenState();

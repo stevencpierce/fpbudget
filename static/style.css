@@ -4587,6 +4587,25 @@ body.recipient-mode tr.cs-recip-me { background: rgba(37, 99, 235, .18) !importa
 .callsheet-section-title:hover .cs-hide-toggle,
 tr:hover .cs-hide-toggle,
 .cs-hide-toggle:hover { opacity: .75; }
+/* Per-audience hide chip (👁 hide-per-view). Always visible (unlike the 👁 which
+   is hover-only) so per-view hides stay discoverable from the Internal view.
+   cs-screen-only ⇒ never prints; recipient/PDF renders never create it. */
+.cs-hidden-badge {
+  display: inline-block;
+  font-size: .6rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: .02em;
+  padding: 1px 4px;
+  margin-right: .3rem;
+  border-radius: 3px;
+  background: #fdecef;
+  color: #a3234a;
+  border: 1px solid #f4c3ce;
+  vertical-align: .05em;
+  cursor: default;
+  user-select: none;
+}
 .cs-hide-toggle:hover { opacity: 1 !important; }
 
 .cs-edit-banner {
