@@ -22527,10 +22527,10 @@ function _timeAgo(d) {
 
 // window._socket is set by collab.js
 </script>
-<script src="{{ url_for('static', filename='collab.js') }}"></script>
-<script src="{{ url_for('static', filename='import-csv.js') }}"></script>
+<script src="{{ url_for('static', filename='collab.js') }}?v={{ APP_COMMIT }}"></script>
+<script src="{{ url_for('static', filename='import-csv.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
-<script src="{{ url_for('static', filename='drag-reorder.js') }}"></script>
+<script src="{{ url_for('static', filename='drag-reorder.js') }}?v={{ APP_COMMIT }}"></script>
 <script>
 
 // ── Conflict toast helper ─────────────────────────────────────────────────

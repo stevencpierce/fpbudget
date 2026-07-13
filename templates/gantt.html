@@ -843,7 +843,7 @@ window.purgeAllScheduleFlags = async function () {
   });
 })();
 </script>
-<script src="{{ url_for('static', filename='gantt.js') }}"></script>
+<script src="{{ url_for('static', filename='gantt.js') }}?v={{ APP_COMMIT }}"></script>
 <script>
 initGantt({{ project.id }}, {{ budget.id }}, {{ budget.payroll_profile_id or 'null' }});
 </script>
