@@ -2207,15 +2207,31 @@ async function autoFillFromLocation() {
   if (btn) { btn.textContent = '…'; btn.disabled = true; }
 
   try {
-    // 1. Geocode address → lat/lng (Nominatim / OpenStreetMap)
-    const geoResp = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(addr)}`,
-      { headers: { 'Accept-Language': 'en' } }
-    );
-    const geoData = await geoResp.json();
-    if (!geoData.length) { alert('Could not geocode location: ' + addr); return; }
-    const lat = parseFloat(geoData[0].lat);
-    const lng = parseFloat(geoData[0].lon);
+    // 1. Geocode address → lat/lng (Nominatim / OpenStreetMap).
+    // Nominatim chokes on unit numbers ('1026 Highland Ave #2407, …' returns
+    // nothing — user 2026-07-13), so fall back through a ladder: full address →
+    // address with unit/suite markers stripped → city/state/zip tail. Weather,
+    // sunrise and the 15km hospital search don't need rooftop precision.
+    const geocode = async q => {
+      const r = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`,
+        { headers: { 'Accept-Language': 'en' } });
+      const d = await r.json();
+      return d.length ? d[0] : null;
+    };
+    const stripUnit = a => a
+      .replace(/#\s*[\w-]+/g, '')
+      .replace(/\b(?:apt|apartment|suite|ste|unit|rm|room|fl|floor|bldg|building)\.?\s+[\w-]+\s*/gi, '')
+      .replace(/\s*,\s*,+/g, ',').replace(/\s{2,}/g, ' ').replace(/\s+,/g, ',').trim();
+    let hit = await geocode(addr);
+    if (!hit && stripUnit(addr) !== addr) hit = await geocode(stripUnit(addr));
+    if (!hit) {
+      const tail = addr.split(',').slice(1).join(',').trim();  // "Los Angeles, CA 90038, USA"
+      if (tail) hit = await geocode(tail);
+    }
+    if (!hit) { alert('Could not geocode location: ' + addr + '\n\nTry simplifying the address on the location (street + city + zip, no unit number).'); return; }
+    const lat = parseFloat(hit.lat);
+    const lng = parseFloat(hit.lon);
 
     // Run remaining requests in parallel
     const [sunResp, wxResp, hospResp] = await Promise.allSettled([
