@@ -22455,7 +22455,12 @@ def callsheet_preview_as(pid, bid, date_str):
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
 
     as_val = (request.args.get('as') or '').strip()
-    rec_name, rec_email, rec_type = '', '', 'crew'
+    # Optional audience override (?type=talent|client|union|rep|partner|crew) —
+    # previews were hardcoded to the crew view, so per-audience content (and
+    # per-view hides, 2026-07-13) couldn't be previewed for other audiences.
+    _t = (request.args.get('type') or '').strip().lower()
+    rec_type = _t if _t in ('crew', 'talent', 'client', 'union', 'rep', 'partner', 'manual') else 'crew'
+    rec_name, rec_email = '', ''
     cm = None
     if as_val.isdigit():
         cm = CrewMember.query.get(int(as_val))
