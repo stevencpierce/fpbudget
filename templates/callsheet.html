@@ -2247,28 +2247,40 @@ async function autoFillFromLocation() {
     ]);
 
     // Sunrise / Sunset
+    // Parse weather FIRST — Open-Meteo (timezone=auto) resolves the shoot
+    // LOCATION's IANA timezone, which the sun times must be formatted in.
+    // (They were formatted in the BROWSER's timezone — an LA sunset rendered
+    // as 11:06 PM from Central/Eastern. User 2026-07-13.)
+    let wx = null;
+    if (wxResp.status === 'fulfilled' && wxResp.value.ok) {
+      try { wx = await wxResp.value.json(); } catch (_) {}
+    }
+    const locTz = (wx && wx.timezone) || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
     if (sunResp.status === 'fulfilled' && sunResp.value.ok) {
       const sun = await sunResp.value.json();
       if (sun.status === 'OK') {
         const toLocalTime = utcStr => {
           const d = new Date(utcStr);
-          return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+          return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: locTz });
         };
+        // 'TBD' counts as unfilled too (the cells default to 'TBD' on some
+        // sheets, which blocked the sunrise fill while sunset filled).
+        const _unfilled = el => { const t = (el.textContent || '').trim(); return t === '—' || t === 'TBD' || !t; };
         const sunriseEl = document.getElementById('cs-sunrise');
         const sunsetEl  = document.getElementById('cs-sunset');
-        if (sunriseEl && (sunriseEl.textContent.trim() === '—' || !sunriseEl.textContent.trim())) {
+        if (sunriseEl && _unfilled(sunriseEl)) {
           sunriseEl.textContent = toLocalTime(sun.results.sunrise);
         }
-        if (sunsetEl && (sunsetEl.textContent.trim() === '—' || !sunsetEl.textContent.trim())) {
+        if (sunsetEl && _unfilled(sunsetEl)) {
           sunsetEl.textContent = toLocalTime(sun.results.sunset);
         }
         scheduleAutoSave();
       }
     }
 
-    // Weather
-    if (wxResp.status === 'fulfilled' && wxResp.value.ok) {
-      const wx = await wxResp.value.json();
+    // Weather (parsed above for the timezone)
+    if (wx) {
       const daily = wx.daily;
       if (daily && daily.temperature_2m_max && daily.temperature_2m_max[0] != null) {
         const hi  = Math.round(daily.temperature_2m_max[0]);
