@@ -30,12 +30,21 @@
    real monochrome emoji, add a `.pdf-ico { display:none }` + un-hide the emoji —
    but the badges are deliberately the default so a missing font can never break
    the sheet. (User 2026-07-09.) #}
+{# The loc_* keys are location-type badges (loc_<location_type>) — the emoji in
+   the location card typeline rendered as tofu on Render (no emoji font). Keys
+   mirror LOCATION_TYPES in app.py incl. legacy aliases. (2026-07-13.) #}
 {% set _PDF_ICO = {
   'flight':'FLT', 'hotel':'HTL', 'car_rental':'CAR', 'car_service':'VAN',
   'rideshare':'RIDE', 'mileage':'MI', 'phone':'TEL', 'pin':'LOC',
   'clapper':'SET', 'talent':'CAST', 'stadium':'VEN', 'map':'MAP',
   'hospital':'MED', 'store':'SHOP', 'truck':'TRK', 'parking':'PKG',
-  'contacts':'INFO'
+  'contacts':'INFO',
+  'loc_shoot':'SHT', 'loc_venue':'VEN', 'loc_basecamp':'BSC', 'loc_parking':'PRK',
+  'loc_production_office':'OFC', 'loc_holding':'HLD', 'loc_catering':'CAT',
+  'loc_hotel':'HTL', 'loc_hospital':'HOS', 'loc_vendor':'VND', 'loc_pickup':'PKP',
+  'loc_dropoff':'DRP', 'loc_staging':'STG',
+  'loc_office':'OFC', 'loc_stage':'VEN', 'loc_exterior':'SHT',
+  'loc_delivery':'DRP', 'loc_other':'LOC'
 } %}
 {% macro pdf_ico(kind, emoji) -%}
 {%- if pdf_mode -%}<span class="pdf-ico pdf-ico-{{ kind }}">{{ _PDF_ICO.get(kind, '•') }}</span>{%- else -%}{{ emoji }}{%- endif -%}
@@ -142,6 +151,37 @@
   'actual':    {'label':'ACTUAL',    'short':'Act',  'cls':'mode-actual'},
 } %}
 {% set cur_mode = MODE_META.get(budget.budget_mode, MODE_META['estimated']) %}
+
+{# ── Empty-section predicates (redesign round 2, 2026-07-13) ──────────────────
+   In recipient/pdf renders, a section with no real content renders NOTHING —
+   no dark band, no empty table skeleton (the stack of empty bands was eating
+   PDF page 1 and forcing a ~blank page 2). The internal editing view keeps
+   every section visible. These gates test CONTENT only — the 👁 hidden-key
+   system stays orthogonal (.cs-hidden-el on screen, the per-key CSS injection
+   in pdf_mode). Values live in cs_data (whole-payload save), so the same
+   predicate works for both the server-rendered pdf sections and the JS-rendered
+   recipient sections. text_overrides never hold section BODY content for these
+   sections (they override header / location text), so they don't affect
+   emptiness. #}
+{% set _hide_empty = recipient_mode or pdf_mode %}
+{% set _hid_map = (cs_data.get('hidden') if cs_data else {}) or {} %}
+{% set _kp_real = (cs_data.get('key_personnel') or []) | rejectattr('is_spacer') | list %}
+{% set _kp_has = (_kp_real | selectattr('role') | list) or (_kp_real | selectattr('name') | list) or (_kp_real | selectattr('phone') | list) %}
+{% set _ex_rows = cs_data.get('extras') or [] %}
+{% set _extras_has = (_ex_rows | selectattr('type') | list) or (_ex_rows | selectattr('qty') | list) or (_ex_rows | selectattr('call_time') | list) or (_ex_rows | selectattr('location') | list) or (_ex_rows | selectattr('notes') | list) %}
+{% set _uc_rows = cs_data.get('useful_contacts') or [] %}
+{% set _uc_has = (_uc_rows | selectattr('role') | list) or (_uc_rows | selectattr('name') | list) or (_uc_rows | selectattr('phone') | list) %}
+{% set _hosp_rows = cs_data.get('hospitals') or [] %}
+{% set _hosp_has = (_hosp_rows | selectattr('name') | list) or (_hosp_rows | selectattr('address') | list) or (_hosp_rows | selectattr('phone') | list) %}
+{% set _dn_has = (cs_data.get('dept_notes') or {}).values() | select | list %}
+{% set _weather_has = (cs_data.get('weather') or '') | trim %}
+{% set _emerg_has = (cs_data.get('emergency_notes') or '') | trim %}
+{% set _addl_has = (cs_data.get('additional_notes') or '') | trim %}
+{% set _quote_has = (cs_data.get('quote_of_day') or '') | trim %}
+{% set _tsr_cells = (cs_data.get('today_schedule_rich') or {}).get('cells') or [] %}
+{% set _today_has = ((_tsr_cells | select | join(' ') | striptags | trim) or ((cs_data.get('schedule_notes') or '') | trim)) %}
+{% set _asr_cells = (cs_data.get('advance_schedule_rich') or {}).get('cells') or [] %}
+{% set _adv_notes_has = ((_asr_cells | select | join(' ') | striptags | trim) or ((cs_data.get('advance_schedule') or '') | trim)) %}
 
 {# ══════════════════════════════════════════════════════════════════════════
    RECIPIENT PERSONAL LAYER — shown only on the tokenized / preview view, above
@@ -500,6 +540,9 @@
     <div class="callsheet-two-col">
 
       {# Left: Key Personnel (JS-driven) #}
+      {# Empty-collapse: recipient/pdf drop the whole column when no real KP rows
+         exist — the sibling Locations column then fills the zone. (2026-07-13.) #}
+      {% if (not _hide_empty) or _kp_has %}
       <div class="callsheet-col callsheet-col-left">
         <div class="callsheet-section cs-hideable" data-cs-key="section:key_personnel">
           <div class="callsheet-section-title" style="display:flex;align-items:center;justify-content:space-between">
@@ -548,6 +591,7 @@
           </div>
         </div>
       </div>
+      {% endif %}{# /kp empty-collapse #}
 
       {# Right: Locations today (drag-and-drop) #}
       <div class="callsheet-col callsheet-col-right">
@@ -569,7 +613,7 @@
                 <span class="cs-hide-toggle cs-screen-only" data-cs-key="location:{{ loc.id }}" title="Hide / show this location">👁</span>
                 <div class="callsheet-location-card">
                   {% if loc.location_type %}
-                  <div class="callsheet-location-typeline"><span class="callsheet-location-type-icon">{{ _lt.icon }}</span> {{ _lt.label }}</div>
+                  <div class="callsheet-location-typeline"><span class="callsheet-location-type-icon">{{ pdf_ico('loc_' ~ (_lt.value or 'other'), _lt.icon) }}</span> {{ _lt.label }}</div>
                   {% endif %}
                   <div class="callsheet-location-header">
                     <span class="callsheet-location-name cs-editable" contenteditable="true"
@@ -665,10 +709,14 @@
       </div>
 
       {# Right: Weather + Hospital + Notes #}
+      {# Empty-collapse: each sub-block drops in recipient/pdf when empty; the
+         whole column drops when all three are empty. (2026-07-13.) #}
+      {% if (not _hide_empty) or _weather_has or _hosp_has or _emerg_has %}
       <div class="callsheet-col callsheet-col-right">
         <div class="callsheet-section">
 
           {# Weather #}
+          {% if (not _hide_empty) or _weather_has %}
           <div class="cs-hideable" data-cs-key="section:weather">
           <div class="callsheet-section-title">
             <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:weather" title="Hide / show Weather">👁</span>
@@ -680,13 +728,14 @@
                   data-field="weather"
                   title="Click to edit — will auto-populate from location + date in a future update"
                   data-placeholder="Click to add weather info">{{ cs_data.get('weather', '') or '' }}</span>
-            {% if not cs_data.get('weather') %}
-            <span class="cs-field-placeholder cs-screen-only">Check day-of forecast</span>
-            {% endif %}
+            {# 'Check day-of forecast' second placeholder line removed 2026-07-13 —
+               it stacked under the input placeholder as two hint lines. #}
           </div>
           </div>
+          {% endif %}{# /weather empty-collapse #}
 
           {# Nearest Hospital(s) #}
+          {% if (not _hide_empty) or _hosp_has %}
           <div class="cs-hideable" data-cs-key="section:hospital">
           <div class="callsheet-section-title" style="margin-top:.85rem">
             <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:hospital" title="Hide / show Hospital">👁</span>
@@ -709,17 +758,21 @@
             <button class="btn btn-xs btn-ghost" onclick="addHospitalRow()">+ Hospital</button>
           </div>
           </div>
+          {% endif %}{# /hospital empty-collapse #}
 
           {# Notes #}
+          {% if (not _hide_empty) or _emerg_has %}
           <div class="cs-hideable" data-cs-key="section:notes">
           <div class="callsheet-section-title" style="margin-top:.85rem"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:notes" title="Hide / show Notes">👁</span>Emergency / Notes</div>
           <div class="cs-editable cs-notes-area" id="cs-emergency-notes" contenteditable="true"
                data-field="emergency_notes"
                title="Click to edit">{{ cs_data.get('emergency_notes', '') or '' }}</div>
           </div>
+          {% endif %}{# /notes empty-collapse #}
 
         </div>
       </div>
+      {% endif %}{# /weather-hospital-notes column empty-collapse #}
 
     </div>{# /callsheet-two-col #}
     {% endif %}{# /csv.logistics #}
@@ -758,7 +811,9 @@
     </div>
 
     {# ── Background / Extras ────────────────────────────────────────────────── #}
-    {% if csv.background %}
+    {# Empty-collapse: recipient/pdf drop the section when no extras row carries
+       any content. (2026-07-13.) #}
+    {% if csv.background and ((not _hide_empty) or _extras_has) %}
     <div class="callsheet-section cs-hideable" data-cs-key="section:extras">
       <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:extras" title="Hide / show Background / Extras">👁</span>Background / Extras</div>
       <table class="callsheet-table" id="extras-table">
@@ -828,7 +883,8 @@
     {% endif %}
 
     {# ── Clients (shown on page 1 if any are flagged show_on_callsheet) ─────── #}
-    {% if csv.clients %}
+    {# Empty-collapse: recipient/pdf drop the section when no clients are flagged. #}
+    {% if csv.clients and ((not _hide_empty) or project_clients_cs) %}
     <div class="callsheet-section callsheet-section-clients cs-hideable" data-cs-key="section:clients">
       <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:clients" title="Hide / show Clients">👁</span>Clients</div>
       {% if project_clients_cs %}
@@ -862,7 +918,9 @@
     {% endif %}
 
     {# ── Department Notes ─────────────────────────────────────────────────────── #}
-    {% if csv.dept_notes %}
+    {# Empty-collapse: recipient/pdf drop the section when no department carries
+       a note. (2026-07-13.) #}
+    {% if csv.dept_notes and ((not _hide_empty) or _dn_has) %}
     <div class="callsheet-section cs-hideable" data-cs-key="section:dept_notes">
       <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:dept_notes" title="Hide / show Department Notes">👁</span>Department Notes</div>
       <div id="dept-notes-container" class="cs-dept-notes-container">
@@ -904,6 +962,9 @@
        cell 1 on first save). On screen the grid + chrome are built by JS
        (csRichSchedule); in pdf_mode it's rendered server-side (sanitized).
        (User 2026-07-09.) #}
+    {# Empty-collapse: recipient/pdf drop the section when every rich cell is
+       blank and there's no legacy plain-text schedule. (2026-07-13.) #}
+    {% if (not _hide_empty) or _today_has %}
     <div class="callsheet-section cs-hideable cs-rich-sched" data-cs-key="section:shooting_schedule"
          data-rich-id="today" data-rich-key="today_schedule_rich" data-legacy-key="schedule_notes">
       <div class="callsheet-section-title">
@@ -942,8 +1003,12 @@
         <div class="cs-rich-grid" id="cs-rich-grid-today" data-rich-id="today"></div>
       {% endif %}
     </div>
+    {% endif %}{# /today's schedule empty-collapse #}
 
     {# ── Advance Schedule ──────────────────────────────────────────────────────── #}
+    {# Empty-collapse: recipient/pdf drop the section when there are no next-day
+       people, no preview lines, and no advance notes. (2026-07-13.) #}
+    {% if (not _hide_empty) or next_day_people or next_day_lines_preview or _adv_notes_has %}
     <div class="callsheet-section cs-hideable" data-cs-key="section:advance_schedule">
       <div class="callsheet-section-title">
         <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:advance_schedule" title="Hide / show Advance Schedule">👁</span>
@@ -999,6 +1064,7 @@
         {% endif %}
       </div>
     </div>
+    {% endif %}{# /advance schedule empty-collapse #}
 
   </div>{# /callsheet-page-1 #}
 
@@ -1071,6 +1137,12 @@
            whether or not crew were dragged into it — so it always gets its ✕.
            (User 2026-07-09.) #}
         {% set is_custom = dept_name in (p2_custom_all or p2_custom_empty or []) %}
+        {# Empty-collapse: recipient/pdf skip dept boxes with no VISIBLE crew —
+           empty custom drop-targets and boxes whose every row was hidden via 👁
+           would otherwise print as bare dark bands. (2026-07-13.) #}
+        {% set _visns = namespace(n=0) %}
+        {% for r in dept_rows %}{% if not _hid_map.get('crew_row:' ~ (r.budget_line_id | string) ~ ':' ~ (r.instance | string)) %}{% set _visns.n = _visns.n + 1 %}{% endif %}{% endfor %}
+        {% if (not _hide_empty) or _visns.n > 0 %}
         <div class="cs-dept-box" data-dept-name="{{ dept_name }}"{% if is_custom %} data-dept-custom="1"{% endif %}>
           <div class="cs-dept-box-header" data-dept-orig="{{ dept_name }}">
             <span class="cs-dept-header-label" contenteditable="true" data-cs-screen-editable="1" title="Click to rename this department (this call sheet only)">{{ dept_name | upper }}</span>
@@ -1119,6 +1191,7 @@
             </tbody>
           </table>
         </div>
+        {% endif %}{# /dept box empty-collapse #}
         {% endfor %}
       </div>
       <div class="cs-screen-only" style="margin-top:.5rem">
@@ -1157,6 +1230,9 @@
     </div>
 
     {# ── Useful Contacts ──────────────────────────────────────────────────────── #}
+    {# Empty-collapse: recipient/pdf drop the section when no contact row carries
+       any content. (2026-07-13.) #}
+    {% if (not _hide_empty) or _uc_has %}
     <div class="callsheet-section cs-hideable" data-cs-key="section:useful_contacts">
       <div class="callsheet-section-title" style="display:flex;align-items:center;justify-content:space-between">
         <span><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:useful_contacts" title="Hide / show Useful Contacts">👁</span>Useful Contacts</span>
@@ -1193,6 +1269,7 @@
         <button class="btn btn-xs btn-ghost" onclick="addUcRow()">+ Add Contact</button>
       </div>
     </div>
+    {% endif %}{# /useful contacts empty-collapse #}
 
     {# ── Representation & Support Contacts ──────────────────────────────────────── #}
     {% if rep_contacts and csv.reps %}
@@ -1252,7 +1329,14 @@
     {% endif %}
 
     {# ── Meal Counts ───────────────────────────────────────────────────────── #}
+    {# Empty-collapse: recipient/pdf drop Meals when nothing is scheduled and
+       Additional Notes when blank; the zone drops when both are empty. #}
+    {% set _meals_has = (prod_day and (prod_day.courtesy_breakfast or prod_day.first_meal or prod_day.second_meal)) or meal_counts.get('craft_services', 0) %}
+    {% set _show_meals = (not _hide_empty) or _meals_has %}
+    {% set _show_addl = (not _hide_empty) or _addl_has %}
+    {% if _show_meals or _show_addl %}
     <div class="callsheet-two-col">
+      {% if _show_meals %}
       <div class="callsheet-col callsheet-col-left">
         <div class="callsheet-section cs-hideable" data-cs-key="section:meals">
           <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:meals" title="Hide / show Meals Scheduled">👁</span>Meals Scheduled</div>
@@ -1288,12 +1372,15 @@
               {% endif %}
             </tbody>
           </table>
-          <div style="margin-top:.5rem;font-size:.75rem;color:var(--text-muted)">
+          {# Attribution line is app chrome, not sheet content — screen only. #}
+          <div class="cs-screen-only" style="margin-top:.5rem;font-size:.75rem;color:var(--text-muted)">
             Meal settings from Production Day · Counts from budget.
           </div>
         </div>
       </div>
+      {% endif %}{# /meals empty-collapse #}
 
+      {% if _show_addl %}
       <div class="callsheet-col callsheet-col-right">
         <div class="callsheet-section cs-hideable" data-cs-key="section:additional_notes">
           <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:additional_notes" title="Hide / show Additional Notes">👁</span>Additional Notes</div>
@@ -1302,9 +1389,13 @@
                title="Click to edit">{{ cs_data.get('additional_notes', '') or '' }}</div>
         </div>
       </div>
+      {% endif %}{# /additional notes empty-collapse #}
     </div>
+    {% endif %}{# /meals + additional-notes zone empty-collapse #}
 
     {# ── Quote of the Day ────────────────────────────────────────────────────── #}
+    {# Empty-collapse: recipient/pdf drop the section when no quote is set. #}
+    {% if (not _hide_empty) or _quote_has %}
     <div class="callsheet-section cs-quote-section cs-hideable" data-cs-key="section:quote">
       <div class="callsheet-section-title" style="display:flex;align-items:center;justify-content:space-between">
         <span><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:quote" title="Hide / show Quote of the Day">👁</span>Quote of the Day</span>
@@ -1328,6 +1419,7 @@
         {% endif %}
       </div>
     </div>
+    {% endif %}{# /quote empty-collapse #}
 
     {# ── Confidentiality footer ────────────────────────────────────────────── #}
     <div class="callsheet-footer">

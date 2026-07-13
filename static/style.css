@@ -3775,6 +3775,14 @@ a.tab-link:hover { background: var(--bg-3); }
     border: none !important;
     background: transparent !important;
   }
+/* PDF / recipient: an empty editable must NEVER paint its placeholder text —
+   'Click to add weather info' leaked into the weasyprint PDF via the
+   .cs-editable:empty::before content:attr(data-placeholder) rule. Same guard
+   for empty rich-schedule cells ('Type here…'). (2026-07-13.) */
+body.recipient-mode .cs-editable:empty::before,
+  body.pdf-mode .cs-editable:empty::before,
+  body.recipient-mode .cs-rich-cell:empty::before,
+  body.pdf-mode .cs-rich-cell:empty::before { content: none !important; }
 :is(body.light-preview, body.pdf-mode) .cs-schedule-notes {
     border: none !important;
     resize: none !important;
@@ -4040,9 +4048,17 @@ body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-logos-open-btn:hover 
 :is(body.light-preview, body.pdf-mode) .callsheet-section-title .muted,
   :is(body.light-preview, body.pdf-mode) .callsheet-section-title span[style*="text-muted"],
   :is(body.light-preview, body.pdf-mode) .callsheet-section-title strong { color: #c2c8d6 !important; }
-/* ── Two-column divider hairlines ───────────────────────────────────────── */
-:is(body.light-preview, body.pdf-mode) .callsheet-two-col { border-top: 1px solid #e4e7ec !important; }
+/* ── Two-column zones: top-aligned, hairline divider ──────────────────────
+   align-items:flex-start (2026-07-13): columns hug their own content instead
+   of stretching to the taller sibling — kills the dead-white voids below
+   short sections (e.g. empty Key Personnel above a tall Locations column). */
+:is(body.light-preview, body.pdf-mode) .callsheet-two-col {
+    border-top: 1px solid #e4e7ec !important;
+    align-items: flex-start;
+  }
 :is(body.light-preview, body.pdf-mode) .callsheet-col-left { border-right: 1px solid #e4e7ec !important; }
+/* Sections never carry their own min-height — they end at their content. */
+:is(body.light-preview, body.pdf-mode) .callsheet-col .callsheet-section { min-height: 0 !important; }
 /* ── Tables: dense tabular grid, tiny muted headers, tabular times ──────────
    Redesign 2026-07-13. Outer hairline box + tint header row + tight cell
    padding = a call sheet is scanned, not read. */
@@ -4201,10 +4217,25 @@ body.pdf-mode .cs-rich-cell:empty { display: none !important; }
 :is(body.light-preview, body.pdf-mode) .cs-dept-note-text { border: 1px solid #d5d9e0 !important; color: #16181d !important;
     background: #fafbfc !important;
     -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-/* Version chips → one tiny muted meta line on the white masthead. */
-:is(body.light-preview, body.pdf-mode) .callsheet-versions { color: #5a6472 !important; }
+/* Version chips → ONE tidy meta line (CS chip + Script/Sched), consistent
+   gaps, right-aligned under the date in the masthead right block. */
+:is(body.light-preview, body.pdf-mode) .callsheet-versions {
+    color: #5a6472 !important;
+    display: flex !important;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    gap: .4rem !important;
+    margin-top: .25rem !important;
+  }
 :is(body.light-preview, body.pdf-mode) .cs-version-val { color: #16181d !important; }
-:is(body.light-preview, body.pdf-mode) .callsheet-version-sub { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-version-sub {
+    color: #5a6472 !important;
+    display: inline-flex;
+    align-items: center;
+    gap: .2rem;
+    margin-top: 0 !important;
+  }
 :is(body.light-preview, body.pdf-mode) .callsheet-version-badge {
     background: #fff !important;
     color: #16181d !important;
@@ -4212,6 +4243,7 @@ body.pdf-mode .cs-rich-cell:empty { display: none !important; }
     font-weight: 700 !important;
     font-size: .68rem !important;
     padding: .1rem .4rem !important;
+    margin-bottom: 0 !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
@@ -4233,9 +4265,11 @@ body.pdf-mode .cs-rich-cell:empty { display: none !important; }
 :is(body.light-preview, body.pdf-mode) .cs-dept-box-table { font-size: 9.5pt; }
 :is(body.light-preview, body.pdf-mode) .cs-dept-box-table tr { border-bottom: 1px solid #e8ebef !important; }
 :is(body.light-preview, body.pdf-mode) .cs-dept-box-table td { padding: .14rem .4rem; }
-:is(body.light-preview, body.pdf-mode) .cs-dept-role { font-size: 9pt; color: #5a6472 !important; }
-:is(body.light-preview, body.pdf-mode) .cs-dept-name { font-size: 9.5pt; color: #16181d !important; }
-:is(body.light-preview, body.pdf-mode) .cs-dept-call { font-size: 9pt; color: #1d4ed8 !important; font-variant-numeric: tabular-nums; }
+/* Column proportions (2026-07-13): role gets the slack — common role titles
+   ('Director - Mini Series Edit') were wrapping while name had spare width. */
+:is(body.light-preview, body.pdf-mode) .cs-dept-role { font-size: 9pt; color: #5a6472 !important; width: 46% !important; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-name { font-size: 9.5pt; color: #16181d !important; width: 36% !important; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-call { font-size: 9pt; color: #1d4ed8 !important; width: 18% !important; font-variant-numeric: tabular-nums; }
 :is(body.light-preview, body.pdf-mode) .cs-dept-header-label:focus { background: none; }
 /* Recipient-highlight tint for the printed crew list (pale blue / green) */
 :is(body.light-preview, body.pdf-mode) .cs-dept-box-table tr.cs-row-confirmed,
