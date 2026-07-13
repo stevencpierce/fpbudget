@@ -3911,26 +3911,64 @@ body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-msg-block input,
     padding: 0;
   }
 :is(body.light-preview, body.pdf-mode) .callsheet-page-break { display: none; }
-/* ── Dark header band (kept — established design) ────────────────────────── */
-:is(body.light-preview, body.pdf-mode) .callsheet-header-main,
-  :is(body.light-preview, body.pdf-mode) .callsheet-header-p2-bar {
-    background: #16181d !important;
-    color: #fff !important;
+/* 🖼 Logos button legible on the white masthead (was styled for a dark band). */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-logos-open-btn {
+    background: #f0f2f5 !important;
+    color: #1f2733 !important;
+    border: 1px solid #cfd5df !important;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-logos-open-btn:hover {
+    background: #e4e8ef !important;
+    border-color: #1d4ed8 !important;
+    color: #1d4ed8 !important;
+  }
+/* ── Masthead: white boxed header (classic AD call sheet) ─────────────────────
+   Redesign 2026-07-13 (user: "looks terrible / wonky"). The sheet is always the
+   designed light theme now, so the header is a WHITE bordered box (heavy ink
+   bottom rule separating it from the body) rather than a dark band — the industry-
+   standard call-sheet masthead. Legacy dark-band base styles stay in the base
+   .callsheet-* rules for any non-light path; these light overrides win. */
+:is(body.light-preview, body.pdf-mode) .callsheet-header-main {
+    background: #fff !important;
+    color: #16181d !important;
+    padding: .55rem 1rem !important;
+    border-bottom: 1.5px solid #16181d !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-:is(body.light-preview, body.pdf-mode) .callsheet-header-main { border-bottom: 1px solid #d5d9e0 !important; }
-/* Logo strip (white band between header + crew call) — colour tokens live in the
-   shared "Logo strip" section further down; nothing header-band-specific here now
-   that logos no longer overlay the dark band. */
-:is(body.light-preview, body.pdf-mode) .callsheet-project-title,
-  :is(body.light-preview, body.pdf-mode) .callsheet-date-display { color: #fff !important; }
-:is(body.light-preview, body.pdf-mode) .callsheet-company-name,
-  :is(body.light-preview, body.pdf-mode) .callsheet-header-label,
-  :is(body.light-preview, body.pdf-mode) .callsheet-header-sub,
+:is(body.light-preview, body.pdf-mode) .callsheet-header-p2-bar {
+    background: #fff !important;
+    color: #16181d !important;
+    border: 1.5px solid #16181d !important;
+    border-radius: 3px !important;
+    padding: .4rem .85rem !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-project-title {
+    color: #16181d !important;
+    font-weight: 800 !important;
+    font-size: 1.6rem !important;
+    letter-spacing: .015em !important;
+    line-height: 1.1 !important;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-header-label {
+    color: #5a6472 !important;
+    letter-spacing: .2em !important;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-date-display {
+    color: #16181d !important;
+    font-weight: 700 !important;
+    font-size: .95rem !important;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-company-name {
+    color: #16181d !important;
+    font-size: .8rem !important;
+  }
+:is(body.light-preview, body.pdf-mode) .callsheet-header-sub,
   :is(body.light-preview, body.pdf-mode) .callsheet-day-num,
   :is(body.light-preview, body.pdf-mode) .callsheet-p2-budget-sub,
-  :is(body.light-preview, body.pdf-mode) .callsheet-p2-version { color: #c2c8d6 !important; }
+  :is(body.light-preview, body.pdf-mode) .callsheet-p2-version { color: #5a6472 !important; }
 /* ── Logo strip: white band (logos against the truth), hairline top+bottom ─── */
 :is(body.light-preview, body.pdf-mode) .callsheet-page {
     background: #fff !important;
@@ -3940,8 +3978,11 @@ body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-msg-block input,
 :is(body.light-preview, body.pdf-mode) .cs-logo-strip {
     background: #fff !important;
     color: #16181d !important;
-    border-top: 1px solid #d5d9e0 !important;
+    border-top: none !important;
     border-bottom: 1px solid #d5d9e0 !important;
+    padding: .35rem 1rem !important;
+    min-height: 2rem !important;
+    gap: .4rem .9rem !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
@@ -3949,42 +3990,73 @@ body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-msg-block input,
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-/* ── General crew call bar: deep-blue accent band ───────────────────────── */
+/* ── General crew call: solid near-black anchor band, BIG time ────────────────
+   This is the visual anchor of the page (classic AD call sheet). Near-black
+   #16181d band, white text, small tracked label + a large tabular time. */
 :is(body.light-preview, body.pdf-mode) .callsheet-crew-call-bar {
-    background: #1d4ed8 !important;
+    background: #16181d !important;
     color: #fff !important;
+    padding: .5rem 1rem !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-:is(body.light-preview, body.pdf-mode) .callsheet-call-label { color: #dbe4ff !important; opacity: 1; }
-/* ── Section title bars: light-gray band, dark left accent, uppercase ───── */
+:is(body.light-preview, body.pdf-mode) .callsheet-call-label { color: #c2c8d6 !important; opacity: 1; }
+:is(body.light-preview, body.pdf-mode) .callsheet-call-time {
+    color: #fff !important;
+    font-size: 1.45rem !important;
+    font-weight: 800 !important;
+    font-variant-numeric: tabular-nums;
+  }
+/* ── Section headers: full-width solid dark bands (classic AD call sheet) ─────
+   Redesign 2026-07-13. Every section header is a near-black #16181d band with
+   white tracked-out uppercase text — strong hierarchy, no pale left-bars, no
+   dashed dividers. Flexed so any right-aligned meta (e.g. "Next shoot day") and
+   the editing toggles sit at the end of the band. */
 :is(body.light-preview, body.pdf-mode) .callsheet-section {
-    padding: .5rem .7rem .6rem !important;
+    padding: .5rem .7rem .55rem !important;
     border-top: 1px solid #e4e7ec !important;
   }
 :is(body.light-preview, body.pdf-mode) .callsheet-section-title {
-    background: #f0f2f5 !important;
-    color: #16181d !important;
-    border-left: 3px solid #16181d !important;
-    border-bottom: 2px solid #d5d9e0 !important;
-    padding: .22rem .5rem !important;
+    background: #16181d !important;
+    color: #fff !important;
+    border: none !important;
+    padding: .3rem .6rem !important;
     margin: 0 0 .5rem !important;
-    letter-spacing: .12em;
+    font-size: .7rem !important;
+    font-weight: 700 !important;
+    letter-spacing: .1em !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+/* Titles already flexed inline (KP, Locations, Quote, crew p2) keep their
+   space-between; align items centered so the leading 👁 + right meta line up. */
+:is(body.light-preview, body.pdf-mode) .callsheet-section-title[style*="flex"] { align-items: center; }
+/* All section-header variants share the dark band → force white text (base
+   talent/atl/clients colours would otherwise paint ink-on-ink). */
 :is(body.light-preview, body.pdf-mode) .callsheet-section-talent .callsheet-section-title,
   :is(body.light-preview, body.pdf-mode) .callsheet-section-atl .callsheet-section-title,
-  :is(body.light-preview, body.pdf-mode) .callsheet-section-clients .callsheet-section-title { color: #16181d !important; }
-:is(body.light-preview, body.pdf-mode) .callsheet-section-talent .callsheet-section-title { border-left-color: #7c3aed !important; }
-:is(body.light-preview, body.pdf-mode) .callsheet-section-atl .callsheet-section-title { border-left-color: #1d4ed8 !important; }
+  :is(body.light-preview, body.pdf-mode) .callsheet-section-clients .callsheet-section-title { color: #fff !important; }
+/* Meta text and inline hints inside the dark band read as a light muted. */
+:is(body.light-preview, body.pdf-mode) .callsheet-section-title .muted,
+  :is(body.light-preview, body.pdf-mode) .callsheet-section-title span[style*="text-muted"],
+  :is(body.light-preview, body.pdf-mode) .callsheet-section-title strong { color: #c2c8d6 !important; }
 /* ── Two-column divider hairlines ───────────────────────────────────────── */
 :is(body.light-preview, body.pdf-mode) .callsheet-two-col { border-top: 1px solid #e4e7ec !important; }
 :is(body.light-preview, body.pdf-mode) .callsheet-col-left { border-right: 1px solid #e4e7ec !important; }
-/* ── Tables: gray header fill, hairline separators, tabular times ───────── */
+/* ── Tables: dense tabular grid, tiny muted headers, tabular times ──────────
+   Redesign 2026-07-13. Outer hairline box + tint header row + tight cell
+   padding = a call sheet is scanned, not read. */
+:is(body.light-preview, body.pdf-mode) .callsheet-table {
+    border: 1px solid #d5d9e0 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 :is(body.light-preview, body.pdf-mode) .callsheet-table th {
     background: #f0f2f5 !important;
     color: #5a6472 !important;
+    font-size: .62rem !important;
+    letter-spacing: .06em !important;
+    padding: .24rem .5rem !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
     border-bottom: 1px solid #d5d9e0 !important;
@@ -3992,9 +4064,11 @@ body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-msg-block input,
 :is(body.light-preview, body.pdf-mode) .callsheet-table td {
     border-bottom: 1px solid #e8ebef !important;
     color: #16181d !important;
+    padding: .28rem .5rem !important;
+    font-size: .78rem !important;
   }
 :is(body.light-preview, body.pdf-mode) .callsheet-table tr:hover td { background: transparent !important; }
-:is(body.light-preview, body.pdf-mode) .callsheet-time-cell { color: #1d4ed8 !important; font-variant-numeric: tabular-nums; }
+:is(body.light-preview, body.pdf-mode) .callsheet-time-cell { color: #1d4ed8 !important; font-weight: 700 !important; font-variant-numeric: tabular-nums; }
 :is(body.light-preview, body.pdf-mode) .callsheet-times-divider td {
     background: #f0f2f5 !important;
     border-bottom: 1px solid #d5d9e0 !important;
@@ -4021,18 +4095,25 @@ body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-msg-block input,
 :is(body.light-preview, body.pdf-mode) .callsheet-location-type { color: #5a6472 !important; background: #eef0f3 !important; }
 :is(body.light-preview, body.pdf-mode) .callsheet-map-link { color: #1d4ed8 !important; }
 /* ── Day-info fields (weather / notes) as bordered light cards ──────────── */
+/* Weather / notes fields read as plain document text (no input box). The edit
+   affordance (faint tint + border) appears only on hover/focus, internal view. */
 :is(body.light-preview, body.pdf-mode) .cs-info-field,
   :is(body.light-preview, body.pdf-mode) .cs-weather-field,
   :is(body.light-preview, body.pdf-mode) .cs-notes-area {
-    background: #fafbfc !important;
-    border: 1px solid #d5d9e0 !important;
+    background: transparent !important;
+    border: 1px solid transparent !important;
     border-radius: 4px !important;
     color: #16181d !important;
-    padding: .3rem .45rem !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
+    padding: .1rem .2rem !important;
   }
 :is(body.light-preview, body.pdf-mode) .cs-notes-area { min-height: 0 !important; }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-weather-field:hover,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-weather-field:focus,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-notes-area:hover,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-notes-area:focus {
+    background: #fafbfc !important;
+    border-color: #d5d9e0 !important;
+  }
 :is(body.light-preview, body.pdf-mode) .callsheet-info-label { color: #16181d !important; }
 /* ── Hospital rows ──────────────────────────────────────────────────────── */
 :is(body.light-preview, body.pdf-mode) .cs-hospital-row { border-bottom: 1px solid #e8ebef !important; }
@@ -4120,18 +4201,35 @@ body.pdf-mode .cs-rich-cell:empty { display: none !important; }
 :is(body.light-preview, body.pdf-mode) .cs-dept-note-text { border: 1px solid #d5d9e0 !important; color: #16181d !important;
     background: #fafbfc !important;
     -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-:is(body.light-preview, body.pdf-mode) .callsheet-versions { color: #c2c8d6 !important; }
-:is(body.light-preview, body.pdf-mode) .cs-version-val { color: #c2c8d6 !important; }
-:is(body.light-preview, body.pdf-mode) .cs-dept-box-header {
-    background: #e6e9ee !important;
+/* Version chips → one tiny muted meta line on the white masthead. */
+:is(body.light-preview, body.pdf-mode) .callsheet-versions { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .cs-version-val { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-version-sub { color: #5a6472 !important; }
+:is(body.light-preview, body.pdf-mode) .callsheet-version-badge {
+    background: #fff !important;
     color: #16181d !important;
-    font-size: 9pt;
-    letter-spacing: .05em;
-    padding: .18rem .45rem;
-    border-bottom: 1px solid #d5d9e0 !important;
+    border: 1px solid #d5d9e0 !important;
+    font-weight: 700 !important;
+    font-size: .68rem !important;
+    padding: .1rem .4rem !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+:is(body.light-preview, body.pdf-mode) .callsheet-version-badge .cs-version-val { color: #16181d !important; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-box-header {
+    background: #16181d !important;
+    color: #fff !important;
+    font-size: .62rem !important;
+    font-weight: 700 !important;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: .2rem .45rem;
+    border-bottom: none !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+:is(body.light-preview, body.pdf-mode) .cs-dept-box { border: 1px solid #d5d9e0 !important; }
+:is(body.light-preview, body.pdf-mode) .cs-dept-header-label { color: #fff !important; }
 :is(body.light-preview, body.pdf-mode) .cs-dept-box-table { font-size: 9.5pt; }
 :is(body.light-preview, body.pdf-mode) .cs-dept-box-table tr { border-bottom: 1px solid #e8ebef !important; }
 :is(body.light-preview, body.pdf-mode) .cs-dept-box-table td { padding: .14rem .4rem; }
@@ -4146,14 +4244,78 @@ body.pdf-mode .cs-rich-cell:empty { display: none !important; }
 :is(body.light-preview, body.pdf-mode) .cs-dept-box-table tr.cs-row-viewed,
   :is(body.light-preview, body.pdf-mode) tr.cs-row-viewed { background: #eef3fb !important;
     -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-/* Legacy dept-header rows (flat table view) */
+/* Legacy dept-header rows (flat table view) — same dark band as section headers. */
 :is(body.light-preview, body.pdf-mode) .callsheet-dept-header td {
-    background: #e6e9ee !important;
-    color: #16181d !important;
-    border-bottom: 1px solid #d5d9e0 !important;
-    border-top: 1px solid #d5d9e0 !important;
+    background: #16181d !important;
+    color: #fff !important;
+    border-bottom: none !important;
+    border-top: none !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
+  }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   EDITING CHROME RECEDES (internal editing view only).
+   Redesign 2026-07-13. The internal view should read as the finished document
+   until you interact: rich toolbars, section-header controls, +Add rows and row
+   ✕ buttons stay quiet/hidden and reveal on hover / focus-within. All screen-only
+   (scoped :not(.recipient-mode):not(.pdf-mode)); recipient/pdf strip this chrome
+   anyway. Nothing here changes what those modes hide. (User 2026-07-13.)
+   ════════════════════════════════════════════════════════════════════════ */
+/* Rich schedule toolbars (Columns 1-6 · B/I/U · align): hidden until you hover
+   the schedule section or focus a cell. display:none so they add no dead space. */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-rich-toolbar { display: none !important; }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-rich-sched:hover > .cs-rich-toolbar,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-rich-sched:focus-within > .cs-rich-toolbar { display: flex !important; }
+/* Empty rich cells: no permanent "Type here…" box — placeholder only on hover/focus. */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-rich-cell { min-height: 2.2rem !important; }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-rich-cell:empty::before { content: '' !important; }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-rich-cell[contenteditable="true"]:hover:empty::before,
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-rich-cell[contenteditable="true"]:focus:empty::before {
+    content: 'Type here…' !important;
+    color: #aab2bf !important;
+  }
+/* Section-header editing controls (hints, quote picker, autofill, crew toggle):
+   quiet until you hover the section. The 👁 hide-toggle keeps its own behaviour. */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .callsheet-section-title .cs-screen-only:not(.cs-hide-toggle) {
+    opacity: 0;
+    transition: opacity .12s;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .callsheet-section:hover .callsheet-section-title .cs-screen-only:not(.cs-hide-toggle),
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .callsheet-section-title:hover .cs-screen-only:not(.cs-hide-toggle),
+  body.light-preview:not(.recipient-mode):not(.pdf-mode) .callsheet-section-title:focus-within .cs-screen-only:not(.cs-hide-toggle) {
+    opacity: 1;
+  }
+/* "+ Add" affordances: small muted ghost rows, quiet until section hover — no
+   heavy dashed rule. */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-row-toolbar {
+    border-top: none !important;
+    padding: .2rem 0 .1rem !important;
+    margin-top: .1rem !important;
+    opacity: .5;
+    transition: opacity .12s;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .callsheet-section:hover .cs-row-toolbar { opacity: 1; }
+/* Row-level ✕ / action buttons inside tables: faint until the row is hovered. */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .callsheet-table td .btn-ghost {
+    opacity: .3;
+    transition: opacity .12s;
+  }
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .callsheet-table tr:hover td .btn-ghost { opacity: 1; }
+/* Empty Key-Personnel ghost row (JS "+ add key personnel"): slim + quiet. */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .kp-empty-cell {
+    color: #9aa2b1 !important;
+    font-style: normal !important;
+    font-size: .72rem !important;
+    padding: .2rem .3rem !important;
+  }
+
+/* ── Distribution panel: full-width app card (was a narrow centered ~500px float) ── */
+body.light-preview:not(.recipient-mode):not(.pdf-mode) .cs-distribution-panel {
+    max-width: none !important;
+    width: 100% !important;
+    margin: 1.25rem 0 3rem !important;
+    box-sizing: border-box;
   }
 
 @media print {

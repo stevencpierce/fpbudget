@@ -641,13 +641,20 @@
               <tr class="cs-hideable" data-cs-key="meal:second_meal"><td class="callsheet-time-cell cs-editable" id="cs-second-meal-time" contenteditable="true" data-field="second_meal_time" title="Edit time">{{ cs_data.get('second_meal_time', 'TBD') }}</td><td><span class="cs-hide-toggle cs-screen-only" data-cs-key="meal:second_meal" title="Hide / show">👁</span>Second Meal</td><td>{% if meal_counts.get('second_meal') %}{{ meal_counts.second_meal }} ppl{% endif %}</td></tr>
               {% endif %}
               <tr class="cs-hideable" data-cs-key="meal:estimated_wrap"><td class="callsheet-time-cell cs-editable" id="cs-estimated-wrap" contenteditable="true" data-field="estimated_wrap_time" title="Edit time">{{ cs_data.get('estimated_wrap_time', 'TBD') }}</td><td><span class="cs-hide-toggle cs-screen-only" data-cs-key="meal:estimated_wrap" title="Hide / show">👁</span>Estimated Wrap</td><td></td></tr>
-              <tr class="callsheet-times-divider"><td colspan="3"></td></tr>
-              <tr>
+              {# Sunrise/Sunset: phantom '—' rows are internal-only until they carry a
+                 real value — they render on the recipient/PDF/print sheet ONLY when
+                 set (cs-screen-only hides them in those modes). (User 2026-07-13.) #}
+              {% set _sunrise_v = cs_data.get('sunrise') %}
+              {% set _sunset_v = cs_data.get('sunset') %}
+              {% set _has_sunrise = _sunrise_v and _sunrise_v not in ('—', '-', '') %}
+              {% set _has_sunset = _sunset_v and _sunset_v not in ('—', '-', '') %}
+              <tr class="callsheet-times-divider{% if not (_has_sunrise or _has_sunset) %} cs-screen-only{% endif %}"><td colspan="3"></td></tr>
+              <tr{% if not _has_sunrise %} class="cs-screen-only"{% endif %}>
                 <td class="callsheet-time-cell cs-editable" id="cs-sunrise" contenteditable="true" data-field="sunrise" title="Click to edit">{{ cs_data.get('sunrise', '—') }}</td>
                 <td>Sunrise</td>
                 <td class="cs-screen-only"><button class="btn btn-xs btn-ghost" id="btn-autofill-sun" onclick="autoFillFromLocation()" title="Auto-fill sunrise, sunset, weather and hospital from shoot location">⟳</button></td>
               </tr>
-              <tr>
+              <tr{% if not _has_sunset %} class="cs-screen-only"{% endif %}>
                 <td class="callsheet-time-cell cs-editable" id="cs-sunset" contenteditable="true" data-field="sunset" title="Click to edit">{{ cs_data.get('sunset', '—') }}</td>
                 <td>Sunset</td>
                 <td></td>
@@ -1254,17 +1261,20 @@
               <tr><th>Meal</th><th>Scheduled</th><th>Count</th></tr>
             </thead>
             <tbody>
-              <tr>
+              {# Unscheduled meals show internally (compact) but are dropped from the
+                 recipient/PDF/print sheet — a printed call sheet lists only the meals
+                 that are actually happening, not "No / —" rows. (User 2026-07-13.) #}
+              <tr{% if not (prod_day and prod_day.courtesy_breakfast) %} class="cs-screen-only"{% endif %}>
                 <td>Courtesy Breakfast</td>
                 <td>{% if prod_day and prod_day.courtesy_breakfast %}<span class="callsheet-meal-yes">Yes</span>{% else %}<span class="callsheet-meal-no">No</span>{% endif %}</td>
                 <td>{% set _c = meal_counts.get('courtesy_breakfast', 0) %}{% if _c %}{{ _c }}{% else %}—{% endif %}</td>
               </tr>
-              <tr>
+              <tr{% if not (prod_day and prod_day.first_meal) %} class="cs-screen-only"{% endif %}>
                 <td>First Meal</td>
                 <td>{% if prod_day and prod_day.first_meal %}<span class="callsheet-meal-yes">Yes</span>{% else %}<span class="callsheet-meal-no">No</span>{% endif %}</td>
                 <td>{% set _c = meal_counts.get('first_meal', 0) %}{% if _c %}{{ _c }}{% else %}—{% endif %}</td>
               </tr>
-              <tr>
+              <tr{% if not (prod_day and prod_day.second_meal) %} class="cs-screen-only"{% endif %}>
                 <td>Second Meal</td>
                 <td>{% if prod_day and prod_day.second_meal %}<span class="callsheet-meal-yes">Yes</span>{% else %}<span class="callsheet-meal-no">No</span>{% endif %}</td>
                 <td>{% set _c = meal_counts.get('second_meal', 0) %}{% if _c %}{{ _c }}{% else %}—{% endif %}</td>
@@ -1828,7 +1838,7 @@ function renderKpTable() {
     const colspan = CSV.kp_contact ? 5 : 4;
     const tr = document.createElement('tr');
     tr.className = 'kp-empty-row cs-screen-only';
-    tr.innerHTML = `<td colspan="${colspan}" class="kp-empty-cell muted">No key personnel yet — add from contacts or a blank row below.</td>`;
+    tr.innerHTML = `<td colspan="${colspan}" class="kp-empty-cell muted">+ add key personnel</td>`;
     tbody.appendChild(tr);
     return;
   }
@@ -2032,6 +2042,9 @@ function initHospitals() {
   const saved = CS_DATA.hospitals;
   if (saved && saved.length > 0) {
     HOSPITAL_ROWS = saved.map(h => ({ row_id: h.row_id || _newHospId(), name: h.name || '', address: h.address || '', phone: h.phone || '' }));
+  } else if (RECIPIENT_MODE) {
+    // Recipient / preview: no editing — don't seed a phantom empty row.
+    HOSPITAL_ROWS = [];
   } else {
     HOSPITAL_ROWS = [{ row_id: _newHospId(), name: '', address: '', phone: '' }];
   }
@@ -2263,6 +2276,9 @@ function initExtras() {
   const saved = CS_DATA.extras;
   if (saved && saved.length > 0) {
     EXTRAS_ROWS = saved.map(e => ({ row_id: e.row_id || _newExtrasId(), type: e.type || '', qty: e.qty || '', call_time: e.call_time || '', location: e.location || '', notes: e.notes || '' }));
+  } else if (RECIPIENT_MODE) {
+    // Recipient / preview: no editing — don't seed a phantom empty row.
+    EXTRAS_ROWS = [];
   } else {
     EXTRAS_ROWS = [{ row_id: _newExtrasId(), type: '', qty: '', call_time: '', location: '', notes: '' }];
   }
