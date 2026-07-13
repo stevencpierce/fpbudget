@@ -898,6 +898,30 @@ class ProjectUnion(db.Model):
     visibility_flags = db.Column(db.Text, nullable=True)
 
 
+class ProjectPartner(db.Model):
+    """Vendor / partner-company contact scoped to a project (User 2026-07-13).
+
+    People at an outside company involved in a shoot — venue/ops staff, rental-
+    house pickup & drop-off coordinators, recording-studio ops, etc. — who
+    should RECEIVE the call sheet (crew view / full schedule) so they can vet
+    timing on our plan. Distinct from '🏢 Vendors & Loan-Outs' (those are
+    PAYMENT vendors/loan-out companies). Listed on the People tab + printed
+    contact sheet, and surfaced in the call-sheet distribution panel under a
+    '🚚 Vendors & Partners' group — always LISTED, NEVER pre-checked (a partner
+    is emailed only when the user physically ticks the row for that send)."""
+    __tablename__ = "project_partner"
+    id           = db.Column(db.Integer, primary_key=True)
+    project_id   = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False, index=True)
+    name         = db.Column(db.String(200), nullable=False)
+    role         = db.Column(db.String(120), nullable=True)   # free text: 'Ops Manager', 'Pickup Coordinator'
+    company      = db.Column(db.String(200), nullable=True)
+    email        = db.Column(db.String(200), nullable=True)
+    phone        = db.Column(db.String(50),  nullable=True)
+    notes        = db.Column(db.Text, nullable=True)
+    sort_order   = db.Column(db.Integer, default=0)
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 class ProjectClient(db.Model):
     """Client contact scoped to a project — the single source of truth for both
     call-sheet clients (shown on call sheet page 1) and estimate recipients.

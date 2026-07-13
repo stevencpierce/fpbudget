@@ -13771,6 +13771,43 @@
     </div>
   </div>
 
+  {# ── VENDORS & PARTNERS SECTION ──────────────────────────────────────────
+     Outside-company people (venue/recording-studio ops, rental-house pickup &
+     drop-off coordinators) who RECEIVE the call sheet (crew view) so they can
+     vet our schedule. Distinct from '🏢 Vendors & Loan-Outs' above (those are
+     PAYMENT vendors). Prints with the contact sheet like the other sections;
+     surfaced in the call-sheet distribution panel, never pre-checked. #}
+  <div class="contact-sheet-section">
+    <div class="contact-sheet-section-header" style="display:flex;align-items:center;justify-content:space-between">
+      <span><span class="contact-sheet-section-icon">🚚</span> Vendors &amp; Partners</span>
+      <button class="btn btn-xs btn-ghost cs-screen-only" onclick="showAddPartnerModal()">+ Add Partner</button>
+    </div>
+    <div id="partners-list">
+      {% if project_partners %}
+      <table class="contact-table">
+        <thead><tr><th>Name</th><th>Role</th><th>Company</th><th>Phone</th><th>Email</th><th class="cs-screen-only"></th></tr></thead>
+        <tbody>
+          {% for p in project_partners %}
+          <tr data-partner-id="{{ p.id }}">
+            <td><strong>{{ p.name }}</strong></td>
+            <td>{{ p.role or '—' }}</td>
+            <td>{{ p.company or '—' }}</td>
+            <td>{{ p.phone or '—' }}</td>
+            <td>{{ p.email or '—' }}</td>
+            <td class="cs-screen-only">
+              <button class="btn btn-xs btn-ghost" onclick="editPartner({{ p.id }})">Edit</button>
+              <button class="btn btn-xs btn-ghost" onclick="deletePartner({{ p.id }}, this)">✕</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="contact-sheet-empty"><p>No vendors or partners. Add outside-company contacts (venue ops, rental-house pickup/drop-off, etc.) who should receive the call sheet.</p></div>
+      {% endif %}
+    </div>
+  </div>
+
   {# ── CLIENTS SECTION ─────────────────────────────────────────────────────
      ONE unified list (consolidated 2026-07-13). Backed by ProjectClient, which
      now covers BOTH call-sheet clients (source 'manual', ticked On CS) AND
@@ -20484,6 +20521,62 @@ function deleteUnion(uid, btn) {
     .then(r => r.json()).then(d => { if (d.ok) btn.closest('tr').remove(); });
 }
 
+// ── Vendor / Partner CRUD ──────────────────────────────────────────────────
+// Outside-company contacts (venue ops, rental-house pickup/dropoff) who receive
+// the call sheet. Uses the .modal wrapper (hidden class toggle). (User 2026-07-13.)
+const PARTNER_URL      = "{{ url_for('project_partners', pid=project.id) }}";
+const PARTNER_SAVE_URL = "{{ url_for('project_partner_save', pid=project.id) }}";
+
+function showAddPartnerModal() {
+  document.getElementById('partner-id').value = '';
+  document.getElementById('partner-modal-title').textContent = 'Add Partner';
+  ['partner-name','partner-role','partner-company','partner-email','partner-phone','partner-notes']
+    .forEach(id => document.getElementById(id).value = '');
+  document.getElementById('partner-modal').classList.remove('hidden');
+}
+
+function editPartner(partnerId) {
+  fetch(PARTNER_URL).then(r => r.json()).then(partners => {
+    const p = partners.find(x => x.id == partnerId);
+    if (!p) return;
+    document.getElementById('partner-id').value = p.id;
+    document.getElementById('partner-modal-title').textContent = 'Edit Partner';
+    document.getElementById('partner-name').value = p.name || '';
+    document.getElementById('partner-role').value = p.role || '';
+    document.getElementById('partner-company').value = p.company || '';
+    document.getElementById('partner-email').value = p.email || '';
+    document.getElementById('partner-phone').value = p.phone || '';
+    document.getElementById('partner-notes').value = p.notes || '';
+    document.getElementById('partner-modal').classList.remove('hidden');
+  });
+}
+
+function closePartnerModal() { document.getElementById('partner-modal').classList.add('hidden'); }
+
+function savePartner() {
+  const name = document.getElementById('partner-name').value.trim();
+  if (!name) { alert('Name required.'); return; }
+  const emailInput = document.getElementById('partner-email');
+  if (emailInput && !validateEmailField(emailInput)) { return; }
+  const payload = {
+    id: document.getElementById('partner-id').value || null,
+    name: name,
+    role: document.getElementById('partner-role').value.trim(),
+    company: document.getElementById('partner-company').value.trim(),
+    email: document.getElementById('partner-email').value.trim(),
+    phone: document.getElementById('partner-phone').value.trim(),
+    notes: document.getElementById('partner-notes').value.trim(),
+  };
+  fetch(PARTNER_SAVE_URL, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
+    .then(r => r.json()).then(d => { if (d.ok) reloadWithTab(); else alert(d.error || 'Error'); });
+}
+
+function deletePartner(partnerId, btn) {
+  if (!confirm('Remove this partner?')) return;
+  fetch("{{ url_for('project_partner_delete', pid=project.id, partner_id=0) }}".replace('/0', '/' + partnerId), {method:'POST'})
+    .then(r => r.json()).then(d => { if (d.ok) btn.closest('tr').remove(); });
+}
+
 // ── Client CRUD ────────────────────────────────────────────────────────────
 const CLIENT_URL      = "{{ url_for('project_clients', pid=project.id) }}";
 const CLIENT_SAVE_URL = "{{ url_for('project_client_save', pid=project.id) }}";
@@ -20695,6 +20788,28 @@ function normalizePhone(v) {
     <div class="modal-footer">
       <button class="btn btn-sm btn-ghost" onclick="closeUnionModal()">Cancel</button>
       <button class="btn btn-sm btn-primary" onclick="saveUnion()">Save</button>
+    </div>
+  </div>
+</div>
+
+{# ── Vendor / Partner Modal ── (uses the .modal wrapper pattern like #rep-modal
+   so it always centers — no standalone .modal-overlay CSS fix needed.) #}
+<div id="partner-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="closePartnerModal()"></div>
+  <div class="modal-box" style="max-width:480px">
+    <div class="modal-header"><h3 id="partner-modal-title">Add Partner</h3><button class="modal-close" onclick="closePartnerModal()">✕</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="partner-id">
+      <div class="field"><label>Name *</label><input type="text" id="partner-name" placeholder="Contact name"></div>
+      <div class="field"><label>Role</label><input type="text" id="partner-role" placeholder="Ops Manager, Pickup Coordinator, etc."></div>
+      <div class="field"><label>Company</label><input type="text" id="partner-company" placeholder="Venue / rental house name"></div>
+      <div class="field"><label>Email</label><input type="email" id="partner-email" placeholder="ops@venue.com" oninput="validateEmailField(this)" onblur="validateEmailField(this)"></div>
+      <div class="field"><label>Phone</label><input type="tel" id="partner-phone" placeholder="+1-XXX-XXX-XXXX" onblur="this.value = normalizePhone(this.value) || this.value"></div>
+      <div class="field"><label>Notes</label><input type="text" id="partner-notes" placeholder="Optional"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-sm btn-ghost" onclick="closePartnerModal()">Cancel</button>
+      <button class="btn btn-sm btn-primary" onclick="savePartner()">Save</button>
     </div>
   </div>
 </div>

@@ -1583,6 +1583,7 @@ const AVAILABLE_CONTACTS    = {{ available_contacts | tojson }};
 // chip for context only and never auto-add anyone. (User 2026-07-13.)
 const UNION_CONTACTS = {{ project_unions_cs_json | tojson }};
 const REP_CONTACTS   = {{ rep_contacts | tojson }};
+const PARTNER_CONTACTS = {{ project_partners_cs_json | tojson }};
 const ON_DAY_NAMES  = new Set(({{ on_day_names | tojson }}) || []);   // lowercased
 const ON_DAY_EMAILS = new Set(({{ on_day_emails | tojson }}) || []);  // lowercased
 const SHOOT_DATE    = "{{ selected_date.strftime('%Y-%m-%d') }}";
@@ -3351,7 +3352,7 @@ function csDistLoadHistory() {
           const tooltip = r.email ? `${name} <${r.email}>\nStatus: ${label}` : `${name}\n(no email)`;
           // Small type chip for non-crew recipients so union/rep/manual sends are
           // legible at a glance in the history. (User 2026-07-13.)
-          const typeLabel = { union: 'union', rep: 'rep', manual: 'manual' }[r.type] || '';
+          const typeLabel = { union: 'union', rep: 'rep', partner: 'partner', manual: 'manual' }[r.type] || '';
           const typeChip = typeLabel
             ? `<span style="font-size:.58rem;opacity:.75;margin-left:3px">${typeLabel}</span>` : '';
           return `<span class="cs-recip-badge ${cls}" title="${tooltip.replace(/"/g,"&quot;")}">${name}${typeChip}</span>`;
@@ -3581,8 +3582,20 @@ function csDistBuildContactGroups() {
                  type: 'rep', labelHtml: label });
   }).join('');
 
+  // ── 🚚 Vendors & Partners ─── outside-company people (venue/studio ops,
+  // rental-house pickup/dropoff coordinators) who receive the crew-view sheet.
+  const partnerRows = (PARTNER_CONTACTS || []).map(p => {
+    const name = (p.name || '').trim();
+    const meta = [p.role, p.company].filter(Boolean).map(csEscHtml).join(' · ');
+    const label = `<strong>${csEscHtml(p.name || '')}</strong>`
+      + (meta ? ` <span style="color:var(--text-muted);font-size:.73rem">${meta}</span>` : '');
+    return row({ name: name, email: p.email || '', phone: p.phone || '',
+                 type: 'partner', labelHtml: label });
+  }).join('');
+
   return group('cs-dist-grp-union', '⚖ Union', unionRows, (UNION_CONTACTS || []).length)
-       + group('cs-dist-grp-rep', '🤝 Representation', repRows, seenRep.size);
+       + group('cs-dist-grp-rep', '🤝 Representation', repRows, seenRep.size)
+       + group('cs-dist-grp-partner', '🚚 Vendors & Partners', partnerRows, (PARTNER_CONTACTS || []).length);
 }
 
 // Collapse / expand one contact group (caret + body). (User 2026-07-13.)

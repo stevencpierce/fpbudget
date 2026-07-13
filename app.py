@@ -99,7 +99,7 @@ from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, 
                     FringeConfig, CrewMember, CrewAssignment, ScheduleDay,
                     BudgetTemplate, BudgetTemplateLine, TaxCredit, PayrollProfile,
                     ProductionDay, Location, LocationDay, CallSheetData,
-                    SupportContact, ProjectUnion, ProjectClient, CallSheetSend, CallSheetRecipient,
+                    SupportContact, ProjectUnion, ProjectPartner, ProjectClient, CallSheetSend, CallSheetRecipient,
                     BudgetDirectContact, CompanySettings, DocUpload, CatalogItem,
                     TravelDetail, CateringBill, ActivityLog,
                     SubBudget, SubBudgetLine, EstimateShare, FxRate,
@@ -6873,6 +6873,7 @@ def budget_view(pid, bid):
         project_id=pid, active=True
     ).order_by(Location.name).all()
     project_unions  = ProjectUnion.query.filter_by(project_id=pid).order_by(ProjectUnion.sort_order).all()
+    project_partners = ProjectPartner.query.filter_by(project_id=pid).order_by(ProjectPartner.sort_order, ProjectPartner.id).all()
     direct_contacts = BudgetDirectContact.query.filter_by(budget_id=bid).order_by(BudgetDirectContact.sort_order).all()
     # Clients list (ProjectClient) — the merged call-sheet-client + estimate-
     # recipient list. Lazily backfill any past EstimateShare recipient not yet
@@ -7917,6 +7918,7 @@ def budget_view(pid, bid):
         current_estimated_bid=current_estimated_bid,
         parent_names=parent_names,
         project_unions=project_unions,
+        project_partners=project_partners,
         project_clients=project_clients,
         direct_contacts=direct_contacts,
         company_settings=company_settings,
@@ -21455,6 +21457,84 @@ def project_union_delete(pid, uid):
     return jsonify({"ok": True})
 
 
+# ── Project Vendors & Partners ─────────────────────────────────────────────
+# Outside-company people (venue ops, rental-house pickup/dropoff coordinators,
+# recording-studio ops) who RECEIVE the call sheet so they can vet timing.
+# Per-project; mirrors ProjectUnion's CRUD. (User 2026-07-13.)
+
+@app.route("/projects/<int:pid>/partners", methods=["GET"])
+@login_required
+def project_partners(pid):
+    ProjectSheet.query.get_or_404(pid)
+    partners = ProjectPartner.query.filter_by(project_id=pid).order_by(ProjectPartner.sort_order, ProjectPartner.id).all()
+    return jsonify([{
+        "id": p.id, "name": p.name, "role": p.role or "",
+        "company": p.company or "", "email": p.email or "", "phone": p.phone or "",
+        "notes": p.notes or "", "sort_order": p.sort_order,
+    } for p in partners])
+
+
+@app.route("/projects/<int:pid>/partners/save", methods=["POST"])
+@login_required
+def project_partner_save(pid):
+    ProjectSheet.query.get_or_404(pid)
+    data = request.get_json(force=True)
+    partner_id = data.get("id")
+    _is_create = not partner_id
+    if partner_id:
+        p = ProjectPartner.query.filter_by(id=partner_id, project_id=pid).first_or_404()
+        # Partial update — only overwrite fields present in payload. Reads use
+        # (data.get(x) or '') so an explicit JSON null doesn't slip past .get().
+        if "name" in data: p.name = (data.get("name") or "").strip()
+        if "role" in data: p.role = (data.get("role") or "").strip() or None
+        if "company" in data: p.company = (data.get("company") or "").strip() or None
+        if "email" in data: p.email = (data.get("email") or "").strip() or None
+        if "phone" in data: p.phone = _normalize_phone(data.get("phone") or "")
+        if "notes" in data: p.notes = (data.get("notes") or "").strip() or None
+        if "sort_order" in data: p.sort_order = int(data.get("sort_order") or 0)
+        if not p.name:
+            return jsonify({"error": "Name required"}), 400
+    else:
+        p = ProjectPartner(project_id=pid)
+        db.session.add(p)
+        p.name       = (data.get("name") or "").strip()
+        p.role       = (data.get("role") or "").strip() or None
+        p.company    = (data.get("company") or "").strip() or None
+        p.email      = (data.get("email") or "").strip() or None
+        p.phone      = _normalize_phone(data.get("phone") or "")
+        p.notes      = (data.get("notes") or "").strip() or None
+        p.sort_order = int(data.get("sort_order") or 0)
+        if not p.name:
+            return jsonify({"error": "Name required"}), 400
+    db.session.commit()
+    try:
+        _log_activity(
+            action=('create' if _is_create else 'update'),
+            entity_type='project_partner', entity_id=p.id,
+            entity_label=p.name, project_id=pid,
+            before=None,
+            after={'name': p.name, 'role': p.role, 'company': p.company},
+            note=f'{"Added" if _is_create else "Updated"} partner "{p.name}"')
+    except Exception: pass
+    return jsonify({"ok": True, "id": p.id})
+
+
+@app.route("/projects/<int:pid>/partners/<int:partner_id>/delete", methods=["POST"])
+@login_required
+def project_partner_delete(pid, partner_id):
+    p = ProjectPartner.query.filter_by(id=partner_id, project_id=pid).first_or_404()
+    _name = p.name
+    db.session.delete(p)
+    db.session.commit()
+    try:
+        _log_activity(action='delete', entity_type='project_partner',
+                      entity_id=partner_id, entity_label=_name, project_id=pid,
+                      before={'name': _name}, after=None,
+                      note=f'Removed partner "{_name}"')
+    except Exception: pass
+    return jsonify({"ok": True})
+
+
 # ── Project Clients ────────────────────────────────────────────────────────
 
 @app.route("/projects/<int:pid>/clients", methods=["GET"])
@@ -23365,6 +23445,23 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         "receives_callsheet": bool(u.receives_callsheet),
     } for u in project_unions_cs]
 
+    # Vendors & partners for this project (venue ops, rental-house pickup/dropoff
+    # coordinators, etc.) — JSON-serializable copy for the distribution-panel
+    # recipient list. LISTED in the send modal under a "🚚 Vendors & Partners"
+    # group but NEVER pre-checked: a partner is emailed only when the user
+    # physically ticks it for that specific send. (User 2026-07-13.)
+    project_partners_cs = ProjectPartner.query.filter_by(
+        project_id=pid
+    ).order_by(ProjectPartner.sort_order, ProjectPartner.id).all()
+    project_partners_cs_json = [{
+        "id": p.id,
+        "name": p.name or "",
+        "role": p.role or "",
+        "company": p.company or "",
+        "email": p.email or "",
+        "phone": p.phone or "",
+    } for p in project_partners_cs]
+
     # Representation contacts for crew on this budget
     rep_contacts = []
     _seen_cm_rep = set()
@@ -23524,6 +23621,7 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         project_clients_cs=project_clients_cs,
         project_unions_cs=project_unions_cs,
         project_unions_cs_json=project_unions_cs_json,
+        project_partners_cs_json=project_partners_cs_json,
         rep_contacts=rep_contacts,
         crew_p2_all=crew_p2_all,
         p2_custom_empty=p2_custom_empty,
@@ -27795,6 +27893,23 @@ def _web_worker_essential_columns():
                      CONSTRAINT uq_project_crew_member UNIQUE (project_id, crew_member_id)
                    )""",
                 "CREATE INDEX IF NOT EXISTS ix_project_crew_member ON project_crew_member (project_id, crew_member_id)",
+                # 2026-07-13 — vendor/partner-company contacts who RECEIVE the call
+                # sheet (venue ops, rental-house pickup/dropoff coordinators, etc.).
+                # Per-project; listed on People tab + surfaced in the CS distribution
+                # panel (always listed, never pre-checked). (User 2026-07-13.)
+                """CREATE TABLE IF NOT EXISTS project_partner (
+                     id           SERIAL PRIMARY KEY,
+                     project_id   INTEGER NOT NULL REFERENCES project_sheet(id),
+                     name         VARCHAR(200) NOT NULL,
+                     role         VARCHAR(120),
+                     company      VARCHAR(200),
+                     email        VARCHAR(200),
+                     phone        VARCHAR(50),
+                     notes        TEXT,
+                     sort_order   INTEGER DEFAULT 0,
+                     created_at   TIMESTAMP
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_project_partner_project ON project_partner (project_id)",
                 # 2026-07 — per-project loan-out vendor link (User 2026-07.). Points at
                 # a real CrewMember (is_vendor) so the person drawer shows a vendor
                 # dropdown instead of free text; the global column stays as fallback.
