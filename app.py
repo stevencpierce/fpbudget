@@ -21269,11 +21269,14 @@ def support_contact_save(cid):
     else:
         s = SupportContact(crew_member_id=cid)
         db.session.add(s)
-    s.role_type   = data.get("role_type", "other")
-    s.name        = data.get("name", "").strip()
-    s.email       = data.get("email", "").strip() or None
-    s.phone       = _normalize_phone(data.get("phone", ""))
-    s.company     = data.get("company", "").strip() or None
+    # (x or "") not .get(x, ""): the JS sends explicit nulls for blank fields,
+    # and dict.get's default only applies when the KEY is missing — a null
+    # company/email 500'd here ('NoneType' has no .strip, 2026-07-13).
+    s.role_type   = data.get("role_type") or "other"
+    s.name        = (data.get("name") or "").strip()
+    s.email       = (data.get("email") or "").strip() or None
+    s.phone       = _normalize_phone(data.get("phone") or "")
+    s.company     = (data.get("company") or "").strip() or None
     s.notify_callsheet = bool(data.get("notify_callsheet", False))
     s.cc_by_default    = bool(data.get("cc_by_default", False))
     raw_fee = data.get("fee_pct")
