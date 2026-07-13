@@ -16731,8 +16731,6 @@ def gantt_view(pid, bid):
     )
 
 
-@app.route("/projects/<int:pid>/budget/<int:bid>/gantt/day", methods=["POST"])
-@login_required
 def _reject_insane_year(d):
     """Schedule dates outside 1990–2100 are always typing artifacts — the HTML
     date input commits mid-keystroke ('2026' → year 202 → saved as 0202-07-14),
@@ -16743,6 +16741,8 @@ def _reject_insane_year(d):
     return None
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/gantt/day", methods=["POST"])
+@login_required
 def set_gantt_day(pid, bid):
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     data   = request.get_json(force=True)
