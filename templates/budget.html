@@ -21183,7 +21183,13 @@ async function showSupportModal(crewId, crewName) {
 function closeRepModal() {
   document.getElementById('rep-modal').classList.add('hidden');
   _repCrewId = null;
+  // ONE page refresh on close (if anything changed) — the old per-save
+  // reloadWithTab() rebuilt the whole page while the modal was still open,
+  // wiping whatever the user had begun typing for the NEXT contact ("won't
+  // let me add more than three", 2026-07-13).
+  if (_repDirty) { _repDirty = false; reloadWithTab(); }
 }
+var _repDirty = false;
 
 async function loadSupportContacts(crewId) {
   const list = document.getElementById('rep-list');
@@ -21247,7 +21253,8 @@ function editSupport(sc) { openRepForm(sc); }
 async function saveRepContact() {
   const id   = document.getElementById('rep-sc-id').value;
   const name = document.getElementById('rep-sc-name').value.trim();
-  if (!name || !_repCrewId) return;
+  if (!name) { alert('Contact name is required.'); return; }
+  if (!_repCrewId) { alert('Modal lost its crew member — close and reopen it.'); return; }
   const feePctRaw = document.getElementById('rep-sc-fee-pct').value;
   const payload = {
     name,
@@ -21259,16 +21266,22 @@ async function saveRepContact() {
     fee_type:  document.getElementById('rep-sc-fee-type').value || null,
   };
   if (id) payload.id = parseInt(id);
-  const res = await fetch(`/crew/${_repCrewId}/support/save`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(payload),
-  });
-  const body = await res.json();
+  let body;
+  try {
+    const res = await fetch(`/crew/${_repCrewId}/support/save`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    body = await res.json();  // an HTML 500 throws here → caught below
+  } catch (e) {
+    alert('Could not save contact — server error. Try again or reload the page.');
+    return;
+  }
   if (body.ok) {
     document.getElementById('rep-form').classList.add('hidden');
     await loadSupportContacts(_repCrewId);
-    reloadWithTab();  // refresh Agent column
+    _repDirty = true;  // Agent column refreshes ONCE on modal close
   } else {
     alert(body.error || 'Failed to save');
   }
@@ -21278,7 +21291,7 @@ async function deleteSupport(sid) {
   if (!confirm('Remove this contact?')) return;
   await fetch(`/crew/${_repCrewId}/support/${sid}/delete`, { method: 'POST' });
   await loadSupportContacts(_repCrewId);
-  reloadWithTab();
+  _repDirty = true;
 }
 
 // ── Top Sheet Collapsible Sections ──────────────────────────────────────────
