@@ -6873,13 +6873,16 @@ def budget_view(pid, bid):
         project_id=pid, active=True
     ).order_by(Location.name).all()
     project_unions  = ProjectUnion.query.filter_by(project_id=pid).order_by(ProjectUnion.sort_order).all()
-    project_clients = ProjectClient.query.filter_by(project_id=pid).order_by(ProjectClient.sort_order).all()
     direct_contacts = BudgetDirectContact.query.filter_by(budget_id=bid).order_by(BudgetDirectContact.sort_order).all()
-    # Client-contact recipients (estimate sends). Lazily backfill from any past
-    # EstimateShare recipient not yet a contact so the group self-populates.
+    # Clients list (ProjectClient) — the merged call-sheet-client + estimate-
+    # recipient list. Lazily backfill any past EstimateShare recipient not yet
+    # in the list so the group self-populates (estimate rows land with the
+    # call-sheet flags off — they are not call-sheet clients until ticked on).
+    # Backfill BEFORE the query below so new rows appear on this render.
     try:
         _cc_existing = {(c.email or '').lower()
-                        for c in ProjectClientContact.query.filter_by(project_id=pid).all()}
+                        for c in ProjectClient.query.filter_by(project_id=pid).all()
+                        if c.email}
         _cc_changed = False
         for _sh in (EstimateShare.query
                     .filter(EstimateShare.project_id == pid,
@@ -6894,9 +6897,8 @@ def budget_view(pid, bid):
             db.session.commit()
     except Exception:
         db.session.rollback()
-        logging.warning("client-contact backfill on budget_view failed", exc_info=True)
-    client_contacts = (ProjectClientContact.query.filter_by(project_id=pid)
-                       .order_by(ProjectClientContact.created_at.asc()).all())
+        logging.warning("client backfill on budget_view failed", exc_info=True)
+    project_clients = ProjectClient.query.filter_by(project_id=pid).order_by(ProjectClient.sort_order, ProjectClient.id).all()
     # Location days booked for this budget
     location_days = LocationDay.query.filter_by(budget_id=bid).all()
     loc_day_map = {}
@@ -7916,7 +7918,6 @@ def budget_view(pid, bid):
         parent_names=parent_names,
         project_unions=project_unions,
         project_clients=project_clients,
-        client_contacts=client_contacts,
         direct_contacts=direct_contacts,
         company_settings=company_settings,
         dept_filter=dept_filter,
@@ -14869,31 +14870,45 @@ def estimate_share_create(pid, bid):
 
 
 def _upsert_client_contact(pid, email, name=None, phone=None, company=None, source='manual'):
-    """Idempotent client-contact upsert, deduped case-insensitively by
-    (project_id, email). Creates with the given source; on an existing row we
-    fill in a blank name but never downgrade source or clobber existing data.
-    Returns the ProjectClientContact row (committed by the caller)."""
+    """Idempotent client upsert on ProjectClient (the merged Clients list),
+    deduped case-insensitively by (project_id, email). On an existing row we
+    fill in a blank name/phone/company but never clobber existing data and
+    NEVER touch its call-sheet flags. A brand-new estimate recipient is created
+    with show_on_callsheet/receives_callsheet=False (it is not a call-sheet
+    client until a user ticks it on) and placed at the end of the sort order.
+    Kept under the historical name to minimise blast radius. Returns the
+    ProjectClient row (committed by the caller)."""
     email = (email or '').strip()
     if not email:
         return None
-    existing = (ProjectClientContact.query
-                .filter(ProjectClientContact.project_id == pid,
-                        db.func.lower(ProjectClientContact.email) == email.lower())
+    existing = (ProjectClient.query
+                .filter(ProjectClient.project_id == pid,
+                        db.func.lower(ProjectClient.email) == email.lower())
                 .first())
     if existing:
         if name and not (existing.name or '').strip():
             existing.name = name[:200]
         if phone and not (existing.phone or '').strip():
-            existing.phone = phone[:50]
+            existing.phone = _normalize_phone(phone) or phone[:50]
         if company and not (existing.company or '').strip():
             existing.company = company[:200]
+        # Provenance upgrade (mirrors the one-time migration): a manual client
+        # who receives an estimate becomes source='estimate_send' so the
+        # re-send checkboxes pre-check them next time. Never downgrades.
+        if source == 'estimate_send' and (existing.source or 'manual') == 'manual':
+            existing.source = 'estimate_send'
         return existing
-    row = ProjectClientContact(
+    _max_sort = (db.session.query(db.func.max(ProjectClient.sort_order))
+                 .filter(ProjectClient.project_id == pid).scalar())
+    row = ProjectClient(
         project_id=pid, email=email[:200],
-        name=(name or None) and name[:200],
-        phone=(phone or None) and phone[:50],
+        name=(name or email)[:200],
+        phone=(_normalize_phone(phone) or (phone[:50] if phone else None)),
         company=(company or None) and company[:200],
-        source=source, created_at=datetime.utcnow())
+        source=source,
+        show_on_callsheet=False, receives_callsheet=False,
+        sort_order=int(_max_sort or 0) + 1,
+        created_at=datetime.utcnow())
     db.session.add(row)
     return row
 
@@ -14923,7 +14938,7 @@ def estimate_recipients(pid):
     if not _can_access_project(pid):
         return jsonify({"error": "Forbidden"}), 403
 
-    # Lazy backfill from historical sends → client contacts.
+    # Lazy backfill from historical sends → Clients list (ProjectClient).
     try:
         past_shares = (EstimateShare.query
                        .filter(EstimateShare.project_id == pid,
@@ -14931,7 +14946,8 @@ def estimate_recipients(pid):
                        .order_by(EstimateShare.created_at.asc()).all())
         existing_emails = {
             (c.email or '').lower()
-            for c in ProjectClientContact.query.filter_by(project_id=pid).all()
+            for c in ProjectClient.query.filter_by(project_id=pid).all()
+            if c.email
         }
         changed = False
         for s in past_shares:
@@ -14946,14 +14962,20 @@ def estimate_recipients(pid):
         db.session.rollback()
         logging.warning("estimate recipients backfill failed", exc_info=True)
 
-    contacts = (ProjectClientContact.query
-                .filter_by(project_id=pid)
-                .order_by(ProjectClientContact.created_at.asc())
+    # Only rows with an email are usable estimate recipients. Order estimate
+    # senders + manual clients by creation, then id (created_at may be null on
+    # legacy call-sheet clients).
+    contacts = (ProjectClient.query
+                .filter(ProjectClient.project_id == pid,
+                        ProjectClient.email.isnot(None),
+                        ProjectClient.email != '')
+                .order_by(ProjectClient.created_at.asc(),
+                          ProjectClient.id.asc())
                 .all())
     contact_emails = {(c.email or '').lower() for c in contacts}
     contacts_out = [{
         "id": c.id, "name": c.name, "email": c.email,
-        "phone": c.phone, "company": c.company, "source": c.source,
+        "phone": c.phone, "company": c.company, "source": c.source or 'manual',
     } for c in contacts]
 
     # Distinct past recipients not already contacts (should be empty after the
@@ -14978,84 +15000,13 @@ def estimate_recipients(pid):
     return jsonify({"contacts": contacts_out, "past": list(past_map.values())})
 
 
-@app.route("/projects/<int:pid>/client-contacts", methods=["POST"])
-@login_required
-def client_contact_create(pid):
-    """Manually add a client contact on the People tab (source='manual')."""
-    if not _can_access_project(pid, edit=True):
-        return jsonify({"error": "Forbidden"}), 403
-    ProjectSheet.query.get_or_404(pid)
-    body = request.get_json(silent=True) or {}
-    email = (body.get('email') or '').strip()
-    if not email:
-        return jsonify({"error": "Email is required"}), 400
-    name = (body.get('name') or '').strip() or None
-    phone = (body.get('phone') or '').strip() or None
-    company = (body.get('company') or '').strip() or None
-    row = _upsert_client_contact(pid, email, name, phone=phone, company=company,
-                                 source='manual')
-    db.session.commit()
-    return jsonify({"ok": True, "contact": {
-        "id": row.id, "name": row.name, "email": row.email,
-        "phone": row.phone, "company": row.company, "source": row.source,
-    }})
-
-
-@app.route("/projects/<int:pid>/client-contacts/<int:cid>/update", methods=["POST"])
-@login_required
-def client_contact_update(pid, cid):
-    """Edit a client contact on the People tab. Body {name?, email?, phone?,
-    company?} — only provided fields are updated. Email must stay non-empty and,
-    when changed, must not collide case-insensitively with another contact in
-    the project (409). Returns the updated row as JSON."""
-    if not _can_access_project(pid, edit=True):
-        return jsonify({"error": "Forbidden"}), 403
-    row = ProjectClientContact.query.filter_by(id=cid, project_id=pid).first_or_404()
-    body = request.get_json(silent=True) or {}
-
-    if 'email' in body:
-        email = (body.get('email') or '').strip()
-        if not email:
-            return jsonify({"error": "Email is required"}), 400
-        if email.lower() != (row.email or '').lower():
-            clash = (ProjectClientContact.query
-                     .filter(ProjectClientContact.project_id == pid,
-                             ProjectClientContact.id != cid,
-                             db.func.lower(ProjectClientContact.email) == email.lower())
-                     .first())
-            if clash:
-                return jsonify({"error": "Another client already uses that email."}), 409
-        row.email = email[:200]
-    if 'name' in body:
-        row.name = ((body.get('name') or '').strip() or None)
-        if row.name:
-            row.name = row.name[:200]
-    if 'phone' in body:
-        row.phone = ((body.get('phone') or '').strip() or None)
-        if row.phone:
-            row.phone = row.phone[:50]
-    if 'company' in body:
-        row.company = ((body.get('company') or '').strip() or None)
-        if row.company:
-            row.company = row.company[:200]
-
-    db.session.commit()
-    return jsonify({"ok": True, "contact": {
-        "id": row.id, "name": row.name, "email": row.email,
-        "phone": row.phone, "company": row.company, "source": row.source,
-    }})
-
-
-@app.route("/projects/<int:pid>/client-contacts/<int:cid>/delete", methods=["POST"])
-@login_required
-def client_contact_delete(pid, cid):
-    """Remove a client contact from the People tab."""
-    if not _can_access_project(pid, edit=True):
-        return jsonify({"error": "Forbidden"}), 403
-    row = ProjectClientContact.query.filter_by(id=cid, project_id=pid).first_or_404()
-    db.session.delete(row)
-    db.session.commit()
-    return jsonify({"ok": True, "deleted": cid})
+# NOTE (2026-07-13 Clients consolidation): the former
+# /projects/<pid>/client-contacts create/update/delete endpoints were removed.
+# Estimate recipients and call-sheet clients are now one list on ProjectClient;
+# the '🤝 Clients' section's add/edit/delete go through the ProjectClient CRUD
+# (project_client_save / project_client_delete), which now enforces the same
+# case-insensitive email 409. Manual adds land as source='manual'; estimate
+# sends auto-add via _upsert_client_contact (source='estimate_send').
 
 
 # ── Call-sheet logos ────────────────────────────────────────────────────────────
@@ -21514,6 +21465,7 @@ def project_clients(pid):
         "show_on_callsheet": bool(c.show_on_callsheet),
         "receives_callsheet": bool(c.receives_callsheet),
         "sort_order": c.sort_order,
+        "source": c.source or 'manual',
     } for c in clients])
 
 
@@ -21524,6 +21476,20 @@ def project_client_save(pid):
     data = request.get_json(force=True)
     cid = data.get("id")
     _is_create = not cid
+    # Enforce case-insensitive email dedupe per project in code (no DB unique
+    # constraint — legacy rows may collide). Mirrors the retired client-contact
+    # /update 409. Checked up-front (before touching the session) so autoflush
+    # of a pending new row can't produce a false self-collision. Only enforced
+    # when an email is present in the payload.
+    _new_email = (data.get("email") or "").strip() if "email" in data else None
+    if _new_email:
+        _clash = (ProjectClient.query
+                  .filter(ProjectClient.project_id == pid,
+                          db.func.lower(ProjectClient.email) == _new_email.lower())
+                  .filter(ProjectClient.id != cid if cid else db.text("1=1"))
+                  .first())
+        if _clash:
+            return jsonify({"error": "Another client already uses that email."}), 409
     if cid:
         c = ProjectClient.query.filter_by(id=cid, project_id=pid).first_or_404()
         # Partial update — only overwrite fields present in payload
@@ -21546,6 +21512,8 @@ def project_client_save(pid):
         c.show_on_callsheet    = bool(data.get("show_on_callsheet", True))
         c.receives_callsheet   = bool(data.get("receives_callsheet", True))
         c.sort_order        = int(data.get("sort_order", 0) or 0)
+        c.source            = 'manual'
+        c.created_at        = datetime.utcnow()
         if not c.name:
             return jsonify({"error": "Client name required"}), 400
     db.session.commit()
@@ -27492,6 +27460,13 @@ def _web_worker_essential_columns():
                 "ALTER TABLE callsheet_send ADD COLUMN IF NOT EXISTS pdf_data BYTEA",
                 "ALTER TABLE callsheet_send ADD COLUMN IF NOT EXISTS pdf_filename VARCHAR(300)",
                 "ALTER TABLE callsheet_send ADD COLUMN IF NOT EXISTS dropbox_path VARCHAR(500)",
+                # Clients consolidation (2026-07-13). ProjectClient absorbs the
+                # retired ProjectClientContact (estimate recipients). source
+                # tags provenance ('manual' | 'estimate_send'); created_at is
+                # carried over from the merged contacts. The one-time data copy
+                # itself runs in _migrate_client_contacts_into_clients() below.
+                "ALTER TABLE project_client ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'manual'",
+                "ALTER TABLE project_client ADD COLUMN IF NOT EXISTS created_at TIMESTAMP",
                 # Client estimate portal (2026-06-03). preDeploy create_all is
                 # unreliable for brand-new tables (same reason travel_detail /
                 # catering_bill are healed here), so create it per-worker too.
@@ -28143,6 +28118,121 @@ def _web_worker_essential_columns():
 
 with app.app_context():
     _web_worker_essential_columns()
+
+
+# ── One-time Clients consolidation (2026-07-13) ───────────────────────────────
+# Merge the retired ProjectClientContact rows (estimate recipients) into
+# ProjectClient (the unified Clients list). Runs once, at boot, after the
+# essential-columns pass has guaranteed project_client.source / .created_at and
+# the project_client_contact table both exist.
+def _migrate_client_contacts_into_clients():
+    """Idempotent, boot-safe merge of ProjectClientContact → ProjectClient.
+
+    Idempotence has three layers so it is safe on EVERY worker boot (there are
+    ≥2 gunicorn workers, and boot runs on every deploy):
+      1. A `system_task_log` marker ('client_contact_merge_v1') — after the
+         first success every later boot returns early after one cheap SELECT.
+      2. A Postgres advisory lock — only one worker runs the scan at a time; the
+         others skip.
+      3. The copy itself is upsert-by-CI-email — each contact is matched to an
+         existing ProjectClient before any insert, so even a double-run cannot
+         create a duplicate row.
+
+    Estimate recipients are inserted with show_on_callsheet /
+    receives_callsheet = False (they were never call-sheet clients; a user can
+    tick them on later). When a ProjectClient already exists for the same
+    project+email we absorb: upgrade 'manual' → 'estimate_send' provenance, fill
+    blank name/phone/company, but NEVER touch the existing call-sheet flags.
+    ProjectClientContact rows are left untouched (retained for data safety)."""
+    from sqlalchemy import text as _sql_text
+    _LOCK_KEY = 778811742  # arbitrary, stable advisory-lock id for this task
+    try:
+        with app.app_context():
+            if 'postgresql' not in str(db.engine.url).lower():
+                return  # SQLite (local dev): schema is fresh, nothing to migrate
+            with db.engine.connect() as conn:
+                try:
+                    conn.execute(_sql_text(
+                        "CREATE TABLE IF NOT EXISTS system_task_log ("
+                        " task_name VARCHAR(80) PRIMARY KEY,"
+                        " last_run_at TIMESTAMP NOT NULL,"
+                        " last_result TEXT)"))
+                    conn.commit()
+                except Exception:
+                    pass
+                if conn.execute(_sql_text(
+                        "SELECT 1 FROM system_task_log "
+                        "WHERE task_name = 'client_contact_merge_v1'")).fetchone():
+                    return  # already merged on a prior boot
+            with db.engine.connect() as conn:
+                if not conn.execute(_sql_text(
+                        "SELECT pg_try_advisory_lock(:k)"), {'k': _LOCK_KEY}).scalar():
+                    logging.info("[client-merge] another worker holds the lock, skipping")
+                    return
+                try:
+                    if conn.execute(_sql_text(
+                            "SELECT 1 FROM system_task_log "
+                            "WHERE task_name = 'client_contact_merge_v1'")).fetchone():
+                        return  # won the lock but another worker already finished
+                    absorbed = inserted = 0
+                    for cc in ProjectClientContact.query.order_by(ProjectClientContact.id).all():
+                        pid = cc.project_id
+                        em = (cc.email or '').strip()
+                        existing = None
+                        if em:
+                            existing = (ProjectClient.query
+                                        .filter(ProjectClient.project_id == pid,
+                                                db.func.lower(ProjectClient.email) == em.lower())
+                                        .first())
+                        if existing:
+                            if (cc.source == 'estimate_send'
+                                    and (existing.source or 'manual') == 'manual'):
+                                existing.source = 'estimate_send'
+                            if cc.name and not (existing.name or '').strip():
+                                existing.name = cc.name[:200]
+                            if cc.phone and not (existing.phone or '').strip():
+                                existing.phone = cc.phone[:50]
+                            if cc.company and not (existing.company or '').strip():
+                                existing.company = cc.company[:200]
+                            if cc.created_at and not existing.created_at:
+                                existing.created_at = cc.created_at
+                            absorbed += 1
+                        else:
+                            _max_sort = (db.session.query(db.func.max(ProjectClient.sort_order))
+                                         .filter(ProjectClient.project_id == pid).scalar())
+                            db.session.add(ProjectClient(
+                                project_id=pid,
+                                name=(cc.name or em or 'Client')[:200],
+                                email=(em[:200] or None),
+                                phone=cc.phone, company=cc.company,
+                                source=cc.source or 'manual',
+                                show_on_callsheet=False, receives_callsheet=False,
+                                sort_order=int(_max_sort or 0) + 1,
+                                created_at=cc.created_at or datetime.utcnow()))
+                            inserted += 1
+                    db.session.commit()
+                    conn.execute(_sql_text(
+                        "INSERT INTO system_task_log (task_name, last_run_at, last_result) "
+                        "VALUES ('client_contact_merge_v1', NOW(), :r) "
+                        "ON CONFLICT (task_name) DO NOTHING"),
+                        {'r': f'absorbed={absorbed} inserted={inserted}'})
+                    conn.commit()
+                    logging.info(f"[client-merge] done: absorbed={absorbed} inserted={inserted}")
+                except Exception as _e:
+                    db.session.rollback()
+                    logging.error(f"[client-merge] failed: {_e}")
+                finally:
+                    try:
+                        conn.execute(_sql_text("SELECT pg_advisory_unlock(:k)"), {'k': _LOCK_KEY})
+                        conn.commit()
+                    except Exception:
+                        pass
+    except Exception as _e:
+        logging.warning(f"[client-merge] aborted: {_e}")
+
+
+with app.app_context():
+    _migrate_client_contacts_into_clients()
 
 
 # ── Daily trash purge — soft-deleted Dropbox files >30 days hard-deleted ──

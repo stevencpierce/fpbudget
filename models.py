@@ -899,7 +899,16 @@ class ProjectUnion(db.Model):
 
 
 class ProjectClient(db.Model):
-    """Client contact scoped to a project — shown on call sheet page 1."""
+    """Client contact scoped to a project — the single source of truth for both
+    call-sheet clients (shown on call sheet page 1) and estimate recipients.
+
+    Consolidated 2026-07-13: the former ProjectClientContact ('🤝 Clients',
+    estimate recipients) was merged into this table. Rows added by an estimate
+    send carry source='estimate_send' with show_on_callsheet/receives_callsheet
+    = False (they are NOT call-sheet clients until a user ticks them on); rows
+    added manually carry source='manual'. Email is the case-insensitive dedupe
+    key per project where present (enforced in code, not by a DB constraint —
+    legacy rows may collide)."""
     __tablename__ = "project_client"
     id           = db.Column(db.Integer, primary_key=True)
     project_id   = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
@@ -912,6 +921,10 @@ class ProjectClient(db.Model):
     receives_callsheet   = db.Column(db.Boolean, default=True)
     sort_order   = db.Column(db.Integer, default=0)
     visibility_flags = db.Column(db.Text, nullable=True)  # JSON: {"crew":bool,"talent":bool,"union":bool,"internal":bool,"client":bool}
+    # Provenance of the row: 'manual' (added on the People tab / call-sheet
+    # client modal) or 'estimate_send' (auto-added when an estimate was sent).
+    source       = db.Column(db.String(20), default='manual')
+    created_at   = db.Column(db.DateTime, nullable=True)
 
 
 class CallSheetSend(db.Model):
@@ -1468,13 +1481,18 @@ class VendorAlias(db.Model):
 
 
 class ProjectClientContact(db.Model):
-    """A client-side contact for a project (the people we send estimates to).
-    Auto-populated when an estimate is sent (source='estimate_send') and
-    manually addable on the People tab (source='manual'). Deduped
-    case-insensitively by (project_id, email). Surfaced as the '🤝 Clients'
-    group on the People tab and prefilled into the estimate-send popup so a
-    prior recipient can be re-sent a new version with one checkbox.
-    (User 2026-07-08.)"""
+    """RETIRED 2026-07-13 — merged into ProjectClient (see its docstring).
+
+    This model + table are retained for data safety only; the app no longer
+    reads or writes it. Estimate recipients and call-sheet clients are now one
+    list on ProjectClient (source='estimate_send' | 'manual'). A one-time,
+    idempotent boot migration (_migrate_client_contacts_into_clients in app.py)
+    copied every row here into ProjectClient. Do NOT add new writers.
+
+    Historical: was auto-populated when an estimate was sent
+    (source='estimate_send') and manually addable on the People tab
+    (source='manual'); deduped case-insensitively by (project_id, email);
+    surfaced as the '🤝 Clients' group. (User 2026-07-08.)"""
     __tablename__ = "project_client_contact"
     id          = db.Column(db.Integer, primary_key=True)
     project_id  = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False, index=True)

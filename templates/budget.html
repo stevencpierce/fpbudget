@@ -13771,24 +13771,40 @@
     </div>
   </div>
 
-  {# ── CLIENTS SECTION ── #}
+  {# ── CLIENTS SECTION ─────────────────────────────────────────────────────
+     ONE unified list (consolidated 2026-07-13). Backed by ProjectClient, which
+     now covers BOTH call-sheet clients (source 'manual', ticked On CS) AND
+     estimate recipients (source 'estimate_send', auto-added with the CS flags
+     OFF). The 'estimate'/'manual' chip shows provenance; On CS / Receives CS
+     drive the call sheet + its distribution. Only On-CS rows print on the
+     contact sheet (estimate-only recipients stay off the printed sheet).
+     Add/edit go through the shared #client-modal. #}
+  <style>
+    .cc-source-chip{display:inline-block;font-size:.62rem;font-weight:600;text-transform:uppercase;
+      letter-spacing:.3px;padding:2px 7px;border-radius:10px;line-height:1.2}
+    .cc-source-estimate_send{background:rgba(91,138,249,.16);color:#5b8af9}
+    .cc-source-manual{background:rgba(120,130,145,.16);color:#8a94a3}
+    @media print { tr.cs-noprint-row { display:none !important; } }
+    body.recipient-mode tr.cs-noprint-row { display:none !important; }
+  </style>
   <div class="contact-sheet-section">
     <div class="contact-sheet-section-header" style="display:flex;align-items:center;justify-content:space-between">
-      <span><span class="contact-sheet-section-icon">🎬</span> Clients</span>
+      <span><span class="contact-sheet-section-icon">🤝</span> Clients</span>
       <button class="btn btn-xs btn-ghost cs-screen-only" onclick="showAddClientModal()">+ Add Client</button>
     </div>
     <div id="clients-list">
       {% if project_clients %}
       <table class="contact-table">
-        <thead><tr><th>Name</th><th>Title</th><th>Company</th><th>Phone</th><th>Email</th><th>On CS</th><th>Receives CS</th><th class="cs-screen-only"></th></tr></thead>
+        <thead><tr><th>Name</th><th>Title</th><th>Company</th><th>Phone</th><th>Email</th><th>Source</th><th>On CS</th><th>Receives CS</th><th class="cs-screen-only"></th></tr></thead>
         <tbody>
           {% for c in project_clients %}
-          <tr data-client-id="{{ c.id }}">
+          <tr data-client-id="{{ c.id }}"{% if not c.show_on_callsheet %} class="cs-noprint-row"{% endif %}>
             <td><strong>{{ c.name }}</strong></td>
             <td>{{ c.title or '—' }}</td>
             <td>{{ c.company or '—' }}</td>
             <td>{{ c.phone or '—' }}</td>
-            <td>{{ c.email or '—' }}</td>
+            <td>{% if c.email %}<a href="mailto:{{ c.email }}" class="contact-link">{{ c.email }}</a>{% else %}—{% endif %}</td>
+            <td>{% set _src = c.source or 'manual' %}<span class="cc-source-chip cc-source-{{ _src }}">{{ 'estimate' if _src == 'estimate_send' else 'manual' }}</span></td>
             <td>
               <label class="cs-inline-check">
                 <input type="checkbox" class="cs-cb-show-cs"
@@ -13816,46 +13832,8 @@
         </tbody>
       </table>
       {% else %}
-      <div class="contact-sheet-empty"><p>No clients added. Add client contacts for this project.</p></div>
+      <div class="contact-sheet-empty"><p>No clients yet. Add call-sheet clients here — estimate recipients are added automatically when you send an estimate.</p></div>
       {% endif %}
-    </div>
-  </div>
-
-  {# ── CLIENT CONTACTS (ESTIMATE RECIPIENTS) SECTION ──────────────────────
-     People we've sent estimates to. Auto-populated on estimate send + past
-     sends (source chip 'estimate'), plus manual adds. Feeds the send popup's
-     recipient checklist so a prior recipient is one click to re-send.
-     (User 2026-07-08.) #}
-  <style>
-    .cc-source-chip{display:inline-block;font-size:.62rem;font-weight:600;text-transform:uppercase;
-      letter-spacing:.3px;padding:2px 7px;border-radius:10px;line-height:1.2}
-    .cc-source-estimate_send{background:rgba(91,138,249,.16);color:#5b8af9}
-    .cc-source-manual{background:rgba(120,130,145,.16);color:#8a94a3}
-  </style>
-  <div class="contact-sheet-section">
-    <div class="contact-sheet-section-header" style="display:flex;align-items:center;justify-content:space-between">
-      <span><span class="contact-sheet-section-icon">🤝</span> Clients</span>
-      <button class="btn btn-xs btn-ghost cs-screen-only" onclick="showAddClientContact()">+ Add client</button>
-    </div>
-    <div id="client-contacts-list">
-      <table class="contact-table" id="cc-table" {% if not client_contacts %}style="display:none"{% endif %}>
-        <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Company</th><th>Source</th><th class="cs-screen-only"></th></tr></thead>
-        <tbody id="cc-tbody">
-          {% for cc in client_contacts %}
-          <tr data-cc-id="{{ cc.id }}">
-            <td>{{ cc.name or '—' }}</td>
-            <td>{% if cc.email %}<a href="mailto:{{ cc.email }}" class="contact-link">{{ cc.email }}</a>{% else %}—{% endif %}</td>
-            <td>{{ cc.phone or '—' }}</td>
-            <td>{{ cc.company or '—' }}</td>
-            <td><span class="cc-source-chip cc-source-{{ cc.source }}">{{ 'estimate' if cc.source == 'estimate_send' else 'manual' }}</span></td>
-            <td class="cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="editClientContact({{ cc.id }}, this)" title="Edit">✎</button><button class="btn btn-xs btn-ghost" onclick="deleteClientContact({{ cc.id }}, this)" title="Remove">✕</button></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      <div class="contact-sheet-empty" id="cc-empty" {% if client_contacts %}style="display:none"{% endif %}>
-        <p>No client contacts yet. They'll be added automatically when you send an estimate, or add one manually.</p>
-      </div>
     </div>
   </div>
 
@@ -20562,112 +20540,11 @@ function deleteClient(cid, btn) {
     .then(r => r.json()).then(d => { if (d.ok) btn.closest('tr').remove(); });
 }
 
-// ── Client contacts (estimate recipients) group ────────────────────────────
-function _ccEscape(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function _ccAttr(s){ return _ccEscape(s).replace(/"/g,'&quot;'); }
-// Render a contact object into the tr's display cells (name/email/phone/company/source/actions).
-function _ccRenderRow(tr, c) {
-  tr.setAttribute('data-cc-id', c.id);
-  tr.innerHTML =
-    '<td>'+ (_ccEscape(c.name) || '—') +'</td>'+
-    '<td>'+ (c.email ? '<a href="mailto:'+ _ccAttr(c.email) +'" class="contact-link">'+ _ccEscape(c.email) +'</a>' : '—') +'</td>'+
-    '<td>'+ (_ccEscape(c.phone) || '—') +'</td>'+
-    '<td>'+ (_ccEscape(c.company) || '—') +'</td>'+
-    '<td><span class="cc-source-chip cc-source-'+ c.source +'">'+ (c.source === 'estimate_send' ? 'estimate' : 'manual') +'</span></td>'+
-    '<td class="cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="editClientContact('+ c.id +', this)" title="Edit">✎</button><button class="btn btn-xs btn-ghost" onclick="deleteClientContact('+ c.id +', this)" title="Remove">✕</button></td>';
-}
-// Read the current display values off a row (used to seed the inline editor).
-function _ccReadRow(tr) {
-  var tds = tr.children;
-  var emailA = tds[1] ? tds[1].querySelector('a') : null;
-  var val = function(td){ var t = td ? (td.textContent || '').trim() : ''; return t === '—' ? '' : t; };
-  var chip = tr.querySelector('.cc-source-chip');
-  var source = (chip && /estimate/i.test(chip.textContent || '')) ? 'estimate_send' : 'manual';
-  return {
-    id: tr.getAttribute('data-cc-id'),
-    name: val(tds[0]),
-    email: emailA ? (emailA.textContent || '').trim() : val(tds[1]),
-    phone: val(tds[2]),
-    company: val(tds[3]),
-    source: source,
-  };
-}
-// Swap a display row into inline edit inputs with Save/Cancel.
-function editClientContact(cid, btn) {
-  var tr = btn.closest('tr'); if (!tr) return;
-  var c = _ccReadRow(tr);
-  var inp = function(field, ph, val){
-    return '<input type="text" class="cc-edit-inp" data-field="'+ field +'" placeholder="'+ ph +'" value="'+ _ccAttr(val) +'" '+
-           'style="width:100%;box-sizing:border-box;font-size:.82rem;padding:2px 5px">';
-  };
-  tr.innerHTML =
-    '<td>'+ inp('name', 'Name', c.name) +'</td>'+
-    '<td>'+ inp('email', 'Email', c.email) +'</td>'+
-    '<td>'+ inp('phone', 'Phone', c.phone) +'</td>'+
-    '<td>'+ inp('company', 'Company', c.company) +'</td>'+
-    '<td><span class="cc-source-chip cc-source-'+ c.source +'">'+ (c.source === 'estimate_send' ? 'estimate' : 'manual') +'</span></td>'+
-    '<td class="cs-screen-only" style="white-space:nowrap">'+
-      '<button class="btn btn-xs btn-primary" onclick="saveClientContact('+ cid +', this)" title="Save">Save</button>'+
-      '<button class="btn btn-xs btn-ghost" onclick="cancelEditClientContact('+ cid +', this)" title="Cancel">Cancel</button>'+
-    '</td>';
-  var first = tr.querySelector('.cc-edit-inp'); if (first) first.focus();
-}
-function cancelEditClientContact(cid, btn) {
-  var tr = btn.closest('tr'); if (!tr) return;
-  var chip = tr.querySelector('.cc-source-chip');
-  var source = (chip && /estimate/i.test(chip.textContent || '')) ? 'estimate_send' : 'manual';
-  // Values are still sitting in the inputs — read them back for the display row.
-  var get = function(f){ var el = tr.querySelector('.cc-edit-inp[data-field="'+ f +'"]'); return el ? el.value.trim() : ''; };
-  _ccRenderRow(tr, {id: cid, name: get('name'), email: get('email'),
-    phone: get('phone'), company: get('company'), source: source});
-}
-function saveClientContact(cid, btn) {
-  var tr = btn.closest('tr'); if (!tr) return;
-  var get = function(f){ var el = tr.querySelector('.cc-edit-inp[data-field="'+ f +'"]'); return el ? el.value.trim() : ''; };
-  var email = get('email');
-  if (!email) { alert('Email is required.'); return; }
-  var payload = {name:get('name'), email:email, phone:get('phone'), company:get('company')};
-  fetch("{{ url_for('client_contact_update', pid=project.id, cid=0) }}".replace(/\/0\//, '/' + cid + '/'),
-    {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)})
-    .then(function(r){ return r.json().then(function(d){ return {ok:r.ok, d:d}; }); })
-    .then(function(res){
-      if (!res.ok || !res.d.ok) { alert(res.d.error || 'Could not save client.'); return; }
-      _ccRenderRow(tr, res.d.contact);
-    }).catch(function(){ alert('Network error saving client.'); });
-}
-function showAddClientContact() {
-  var name = (prompt('Client name (optional):') || '').trim();
-  var email = (prompt('Client email:') || '').trim();
-  if (!email) { if (email === '') return; alert('Email is required.'); return; }
-  var phone = (prompt('Phone (optional):') || '').trim();
-  var company = (prompt('Company (optional):') || '').trim();
-  fetch("{{ url_for('client_contact_create', pid=project.id) }}",
-    {method:'POST', headers:{'Content-Type':'application/json'},
-     body:JSON.stringify({name:name, email:email, phone:phone, company:company})})
-    .then(r => r.json()).then(d => {
-      if (!d.ok) { alert(d.error || 'Could not add client.'); return; }
-      var c = d.contact;
-      var tbody = document.getElementById('cc-tbody');
-      if (document.querySelector('#cc-tbody tr[data-cc-id="'+c.id+'"]')) return;
-      var tr = document.createElement('tr');
-      _ccRenderRow(tr, c);
-      tbody.appendChild(tr);
-      var tbl = document.getElementById('cc-table'), empt = document.getElementById('cc-empty');
-      if (tbl) tbl.style.display = ''; if (empt) empt.style.display = 'none';
-    }).catch(function(){ alert('Network error adding client.'); });
-}
-function deleteClientContact(cid, btn) {
-  if (!confirm('Remove this client contact?')) return;
-  fetch("{{ url_for('client_contact_delete', pid=project.id, cid=0) }}".replace(/\/0$/, '/' + cid), {method:'POST'})
-    .then(r => r.json()).then(d => {
-      if (!d.ok) { alert('Could not remove.'); return; }
-      var tr = btn.closest('tr'); if (tr) tr.remove();
-      if (!document.querySelector('#cc-tbody tr')) {
-        var tbl = document.getElementById('cc-table'), empt = document.getElementById('cc-empty');
-        if (tbl) tbl.style.display = 'none'; if (empt) empt.style.display = '';
-      }
-    });
-}
+// (2026-07-13) The former estimate-recipient inline-edit group (cc-*) was
+// removed when the two Clients lists merged into ProjectClient. Add/edit now
+// go through the shared #client-modal (showAddClientModal / editClient /
+// saveClient) and delete via deleteClient. Estimate recipients auto-populate
+// server-side on estimate send and on budget-page load.
 
 // ── Support Contact Modal ──────────────────────────────────────────────────
 let _supportCrewId = null;
@@ -20717,6 +20594,9 @@ function toggleClientShowCS(cid, checked) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ id: cid, show_on_callsheet: checked })
   });
+  // Keep the printed contact sheet in sync — only On-CS rows print.
+  var row = document.querySelector('#clients-list tr[data-client-id="'+ cid +'"]');
+  if (row) row.classList.toggle('cs-noprint-row', !checked);
 }
 function toggleClientReceivesCS(cid, checked) {
   fetch(CLIENT_SAVE_URL, {
