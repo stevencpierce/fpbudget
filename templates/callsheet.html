@@ -1576,6 +1576,13 @@ const CS_DATA       = {{ cs_data | tojson }};
 const KEY_CONTACTS_FALLBACK = {{ key_contacts | tojson }};
 const CONFIRM_STATUS = {{ confirm_status | tojson }}; // {name_lower: {status,viewed_at,confirmed_at}}
 const AVAILABLE_CONTACTS    = {{ available_contacts | tojson }};
+// Union contacts + crew representation for the distribution-panel recipient list.
+// These are LISTED under their own groups but NEVER pre-checked — a call sheet
+// only reaches them when the user physically ticks the row for that send. The
+// receives_callsheet / notify_callsheet flags are shown as a muted 'flagged'
+// chip for context only and never auto-add anyone. (User 2026-07-13.)
+const UNION_CONTACTS = {{ project_unions_cs_json | tojson }};
+const REP_CONTACTS   = {{ rep_contacts | tojson }};
 const ON_DAY_NAMES  = new Set(({{ on_day_names | tojson }}) || []);   // lowercased
 const ON_DAY_EMAILS = new Set(({{ on_day_emails | tojson }}) || []);  // lowercased
 const SHOOT_DATE    = "{{ selected_date.strftime('%Y-%m-%d') }}";
@@ -3342,7 +3349,12 @@ function csDistLoadHistory() {
           if (r.status === 'confirmed') { cls = 'cs-status-confirmed';  label = 'confirmed'; }
           const name = r.name || r.email || '?';
           const tooltip = r.email ? `${name} <${r.email}>\nStatus: ${label}` : `${name}\n(no email)`;
-          return `<span class="cs-recip-badge ${cls}" title="${tooltip.replace(/"/g,"&quot;")}">${name}</span>`;
+          // Small type chip for non-crew recipients so union/rep/manual sends are
+          // legible at a glance in the history. (User 2026-07-13.)
+          const typeLabel = { union: 'union', rep: 'rep', manual: 'manual' }[r.type] || '';
+          const typeChip = typeLabel
+            ? `<span style="font-size:.58rem;opacity:.75;margin-left:3px">${typeLabel}</span>` : '';
+          return `<span class="cs-recip-badge ${cls}" title="${tooltip.replace(/"/g,"&quot;")}">${name}${typeChip}</span>`;
         }).join('');
         const pdfLink = s.pdf_url
           ? `<a href="${s.pdf_url}" style="font-size:.75rem;color:#60a5fa;text-decoration:none" title="Download this version as PDF">⬇ PDF</a>`
@@ -3412,11 +3424,11 @@ function csDistBuildRecipientList() {
     if (c && c.name) addPerson(c.name, c.email || '', 'client', c.phone || '',
                                csIsOnDay(c.name, c.email, 'client', true));
   });
-  // Reps who want call sheet notifications
-  ({{ rep_contacts | tojson }}).forEach(r => {
-    if (r && r.rep_name && r.notify_callsheet) addPerson(r.rep_name, r.rep_email || '', 'crew', r.rep_phone || '',
-                               csIsOnDay(r.rep_name, r.rep_email, 'crew'));
-  });
+  // NOTE: crew representation (agents/managers/PAs) and union contacts are NOT
+  // added here. They render in their own always-listed / never-pre-checked groups
+  // appended AFTER the crew list below (csDistBuildContactGroups). The old code
+  // auto-added reps flagged notify_callsheet into the crew list; that auto-add is
+  // removed — no flag pre-checks anyone. (User 2026-07-13.)
   // Manually-added recipients (owner-entered emails). Always treated as "on this
   // day" so they pre-check, and carry a manualIdx so the row shows a ✕ remove.
   CS_MANUAL_RECIPIENTS.forEach((m, idx) => {
@@ -3428,10 +3440,8 @@ function csDistBuildRecipientList() {
   people.sort((a, b) => (b.on_day - a.on_day) || (a.name||'').localeCompare(b.name||''));
 
   const el = document.getElementById('cs-dist-recipient-list');
-  if (!people.length) {
-    el.innerHTML = '<p style="font-size:.78rem;color:var(--text-muted)">No contacts found on this call sheet.</p>';
-    return;
-  }
+  if (!el) return;
+  // Empty crew is OK — the Union / Representation groups below still render.
 
   // Status badge HTML helper
   function statusBadge(name) {
@@ -3450,7 +3460,7 @@ function csDistBuildRecipientList() {
   const onDayTag    = `<span style="background:#052e16;color:#4ade80;border:1px solid #16a34a;border-radius:3px;font-size:.62rem;padding:1px 5px;margin-left:4px">on this day</span>`;
   const manualTag   = `<span style="background:#1c1f2c;color:#9ca3af;border:1px solid var(--border);border-radius:3px;font-size:.62rem;padding:1px 5px;margin-left:4px">manual</span>`;
 
-  el.innerHTML = people.map((p, i) => {
+  el.innerHTML = people.length ? people.map((p, i) => {
     const hasContact = !!(p.email || p.phone);
     // Pre-check ONLY people who are on this day AND have a contact method.
     const checked = (p.on_day && hasContact) ? 'checked' : '';
@@ -3479,7 +3489,110 @@ function csDistBuildRecipientList() {
         ${isManual ? `<span onclick="csRemoveManualRecipient(${p.manualIdx})" title="Remove this manual recipient" style="cursor:pointer;color:#f87171;font-weight:700;font-size:.9rem;padding:0 3px">✕</span>` : ''}
       </span>
     </div>`;
+  }).join('') : '<p style="font-size:.78rem;color:var(--text-muted)">No crew on this call sheet.</p>';
+
+  // Union + Representation groups: always LISTED under their own headers, every
+  // row UNCHECKED on every open (no flag pre-checks anyone). Appended after crew.
+  el.innerHTML += csDistBuildContactGroups();
+}
+
+// Escape a value for an HTML double-quoted attribute.
+function csEscAttr(s) { return (s == null ? '' : String(s)).replace(/"/g, '&quot;'); }
+// Escape a value for HTML text content.
+function csEscHtml(s) {
+  return (s == null ? '' : String(s))
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Build the two never-pre-checked recipient groups (⚖ Union, 🤝 Representation)
+// as HTML appended below the crew list. Rows ride the same .cs-dist-recip-cb
+// class + data-* attrs as crew/manual so the send collector, All/None, and
+// per-recipient tracking treat them identically — the only difference is they
+// render UNCHECKED and carry data-type union|rep for the crew-view PDF + a small
+// type chip in Send History. (User 2026-07-13.)
+function csDistBuildContactGroups() {
+  const flaggedChip = `<span style="background:#1c1f2c;color:#9ca3af;border:1px solid var(--border);border-radius:3px;font-size:.6rem;padding:1px 5px;margin-left:4px" title="Flagged to receive the call sheet — informational only; you still have to check the box">flagged</span>`;
+
+  // One recipient row (unchecked). label/email/phone/type describe the send.
+  function row(opts) {
+    const hasContact = !!(opts.email || opts.phone);
+    const disabled = hasContact ? '' : 'disabled';
+    const previewAs = opts.email || opts.name;
+    return `
+    <div style="display:flex;align-items:center;gap:8px;font-size:.82rem;padding:4px 0;border-bottom:1px solid var(--border);flex-wrap:wrap${hasContact ? '' : ';opacity:.72'}">
+      <label style="display:flex;align-items:center;gap:8px;flex:1;min-width:160px;cursor:pointer">
+        <input type="checkbox" class="cs-dist-recip-cb"
+               data-name="${csEscAttr(opts.name)}"
+               data-email="${csEscAttr(opts.email)}"
+               data-phone="${csEscAttr(opts.phone)}"
+               data-type="${opts.type}"
+               data-on-day="0"
+               ${disabled}>
+        <span>${opts.labelHtml}</span>
+      </label>
+      <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
+        ${opts.email ? `<span style="color:var(--text-muted);font-size:.73rem">✉ ${csEscHtml(opts.email)}</span>` : ''}
+        ${opts.phone ? `<span style="color:var(--text-muted);font-size:.73rem">📱 ${csEscHtml(opts.phone)}</span>` : ''}
+        ${!hasContact ? '<span style="color:var(--text-muted);font-size:.72rem">(no contact info)</span>' : ''}
+        ${hasContact ? `<button type="button" class="btn btn-xs btn-ghost" style="font-size:.68rem;padding:1px 6px"
+                onclick="csPreviewRecipient('${(previewAs||'').replace(/'/g,"\\'")}')"
+                title="Preview what this person receives — does not send">👁 Preview</button>` : ''}
+      </span>
+    </div>`;
+  }
+
+  function group(id, title, rowsHtml, count) {
+    if (!count) return '';
+    return `
+    <div style="margin-top:8px">
+      <div onclick="csDistToggleGroup('${id}')" style="cursor:pointer;display:flex;align-items:center;gap:6px;font-size:.72rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;padding:4px 0;border-top:1px solid var(--border)">
+        <span id="${id}-caret">▾</span><span>${title}</span>
+        <span style="color:#6b7280;text-transform:none;letter-spacing:0">(${count} · none pre-checked)</span>
+      </div>
+      <div id="${id}-body">${rowsHtml}</div>
+    </div>`;
+  }
+
+  // ── ⚖ Union ──────────────────────────────────────────────────────────────
+  const unionRows = (UNION_CONTACTS || []).map(u => {
+    const name = (u.contact_name || u.union_name || '').trim();
+    const label = `<strong>${csEscHtml(u.union_name || '')}</strong>`
+      + (u.contact_name ? ` <span>${csEscHtml(u.contact_name)}</span>` : '')
+      + (u.receives_callsheet ? flaggedChip : '');
+    return row({ name: name, email: u.email || '', phone: u.phone || '',
+                 type: 'union', labelHtml: label });
   }).join('');
+
+  // ── 🤝 Representation ─── active reps of crew on this budget, dedup by rep id.
+  const seenRep = new Set();
+  const repRows = (REP_CONTACTS || []).filter(r => {
+    if (!r || !r.rep_name) return false;
+    const k = (r.rep_id != null ? 'id:' + r.rep_id : 'nm:' + (r.rep_name || '').toLowerCase());
+    if (seenRep.has(k)) return false;
+    seenRep.add(k);
+    return true;
+  }).map(r => {
+    const badge = r.rep_role_type
+      ? `<span class="contact-role-badge" style="font-size:.6rem">${csEscHtml(r.rep_role_type)}</span>` : '';
+    const label = `<strong>${csEscHtml(r.rep_name)}</strong> ${badge}`
+      + ` <span style="color:var(--text-muted);font-size:.73rem">for ${csEscHtml(r.crew_name || '')}</span>`
+      + (r.notify_callsheet ? flaggedChip : '');
+    return row({ name: r.rep_name, email: r.rep_email || '', phone: r.rep_phone || '',
+                 type: 'rep', labelHtml: label });
+  }).join('');
+
+  return group('cs-dist-grp-union', '⚖ Union', unionRows, (UNION_CONTACTS || []).length)
+       + group('cs-dist-grp-rep', '🤝 Representation', repRows, seenRep.size);
+}
+
+// Collapse / expand one contact group (caret + body). (User 2026-07-13.)
+function csDistToggleGroup(id) {
+  const body = document.getElementById(id + '-body');
+  const caret = document.getElementById(id + '-caret');
+  if (!body) return;
+  const hidden = body.style.display === 'none';
+  body.style.display = hidden ? 'block' : 'none';
+  if (caret) caret.textContent = hidden ? '▾' : '▸';
 }
 
 // Add an owner-entered recipient by email. Appends to CS_MANUAL_RECIPIENTS,

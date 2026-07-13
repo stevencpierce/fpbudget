@@ -23350,6 +23350,21 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         project_id=pid
     ).order_by(ProjectUnion.sort_order).all()
 
+    # JSON-serializable copy of the unions for the distribution-panel recipient
+    # list (JS tojson can't serialize ORM objects). These are LISTED in the send
+    # modal under a "⚖ Union" group but NEVER pre-checked — receives_callsheet is
+    # surfaced only as a muted 'flagged' chip for context, it does NOT auto-add
+    # anyone to a send. A union contact is emailed only when the user physically
+    # ticks it for that specific send. (User 2026-07-13.)
+    project_unions_cs_json = [{
+        "id": u.id,
+        "union_name": u.union_name or "",
+        "contact_name": u.contact_name or "",
+        "email": u.email or "",
+        "phone": u.phone or "",
+        "receives_callsheet": bool(u.receives_callsheet),
+    } for u in project_unions_cs]
+
     # Representation contacts for crew on this budget
     rep_contacts = []
     _seen_cm_rep = set()
@@ -23361,6 +23376,7 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
                     for sc in _cm.support_contacts:
                         if sc.active:
                             rep_contacts.append({
+                                'rep_id': sc.id,
                                 'crew_name': _cm.name,
                                 'crew_role': _ln.description or _ln.account_name,
                                 'rep_name': sc.name,
@@ -23368,7 +23384,7 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
                                 'rep_company': sc.company or '',
                                 'rep_phone': sc.phone or '',
                                 'rep_email': sc.email or '',
-                                'notify_callsheet': sc.notify_callsheet,
+                                'notify_callsheet': bool(sc.notify_callsheet),
                             })
                 _seen_cm_rep.add(_ca.crew_member_id)
 
@@ -23507,6 +23523,7 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         next_day_lines_preview=next_day_lines_preview,
         project_clients_cs=project_clients_cs,
         project_unions_cs=project_unions_cs,
+        project_unions_cs_json=project_unions_cs_json,
         rep_contacts=rep_contacts,
         crew_p2_all=crew_p2_all,
         p2_custom_empty=p2_custom_empty,
