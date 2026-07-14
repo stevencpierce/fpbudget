@@ -22397,19 +22397,26 @@ def _rep_client_crew_member(budget, rec_name, rec_email):
     return None
 
 
-def _personal_call_for(cs_portal_data, subject_name):
+def _personal_call_for(cs_portal_data, *candidate_names):
     """This person's individual CALL time from crew_call_times (keyed
     sec||role||name — match the last segment by name), else the general crew call.
     Only real per-person OVERRIDES are stored in crew_call_times (non-override
     cells follow the general call and are NOT persisted — see collectCrewCallTimes),
     so any hit here is an intentional individual time that must win over the
     general call. (User 2026-07-14: "the individual's call time, not the general;
-    a specific line persists over the general even when the general changes.")"""
+    a specific line persists over the general even when the general changes.")
+
+    Matches on ANY of the candidate names — the recipient's send name AND their
+    resolved crew-member name — because a crew_assignment name_override can make the
+    cast-grid key (crew-member name) differ from the name the send recorded, which
+    otherwise left talent showing no call at all. (User 2026-07-14: talent call not
+    showing at the top.)"""
     cct = cs_portal_data.get('crew_call_times') or {}
-    nm = (subject_name or '').strip().lower()
-    if nm and nm not in ('—', '-'):
+    cands = {(n or '').strip().lower() for n in candidate_names
+             if n and (n or '').strip().lower() not in ('', '—', '-')}
+    if cands:
         for key, t in cct.items():
-            if key.split('||')[-1].strip().lower() == nm and (t or '').strip():
+            if key.split('||')[-1].strip().lower() in cands and (t or '').strip():
                 return t
     return cs_portal_data.get('general_crew_call', '') or ''
 
@@ -22452,7 +22459,12 @@ def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
     subject_name = ((proxy_cm.name if personal_is_proxy else rec_name) or '').strip()
     name_lower = subject_name.lower()
 
-    personal_call = _personal_call_for(cs_portal_data, subject_name)
+    # Resolve the subject → crew member up front: a rep uses the client (proxy_cm);
+    # otherwise the recipient themselves. Used for both the call lookup (its name is
+    # a match candidate) and the personal travel below.
+    crew_member = proxy_cm or _resolve_recipient_crew_member(rec_name, rec_email)
+    _cm_name = (crew_member.name if crew_member and crew_member.name else '')
+    personal_call = _personal_call_for(cs_portal_data, subject_name, _cm_name)
 
     # Cast time grid: the SUBJECT's own pickup/HMU/on-set/wrap/drop-off, keyed
     # (like crew_call_times) by the last ||-segment (name). talent_times is a
@@ -22465,10 +22477,8 @@ def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
             personal_talent_times = vals
             break
 
-    # Resolve subject → crew member → personal travel (with confirmations). For a
-    # rep this is the client crew member (proxy_cm) so the rep sees the client's
-    # flight/hotel/car; otherwise resolve the recipient themselves.
-    crew_member = proxy_cm or _resolve_recipient_crew_member(rec_name, rec_email)
+    # Personal travel (with confirmations) for the SUBJECT's crew member (resolved
+    # above) — a rep sees the client's flight/hotel/car.
     personal_travel = []
     if send and budget:
         personal_travel = _personal_travel_for(
