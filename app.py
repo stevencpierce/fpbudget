@@ -22361,6 +22361,59 @@ def _recipient_view_for_type(rec_type):
     return 'crew'
 
 
+def _rep_client_crew_member(budget, rec_name, rec_email):
+    """The crew member a Representation recipient reps. Resolves the SupportContact
+    this recipient is — email-CI first, then name, scoped to crew assigned on THIS
+    budget's labor lines (mirrors _rep_recipient_view's scan) — and returns its
+    crew_member so a rep inherits their CLIENT's individual call time + travel.
+    None when unresolvable. (User 2026-07-14: reps should see the call/flight/hotel
+    of the person they rep, labeled with that person's name.)"""
+    if not budget:
+        return None
+    _email = (rec_email or '').strip().lower()
+    _name = (rec_name or '').strip().lower()
+    if _name in ('—', '-'):
+        _name = ''
+    if not _email and not _name:
+        return None
+    labor_lines = BudgetLine.query.filter_by(budget_id=budget.id, is_labor=True).all()
+    for _by_email in (True, False):
+        key = _email if _by_email else _name
+        if not key:
+            continue
+        for ln in labor_lines:
+            for ca in ln.crew_assignments:
+                if not ca.crew_member_id:
+                    continue
+                cm = ca.crew_member
+                if not (cm and cm.support_contacts):
+                    continue
+                for sc in cm.support_contacts:
+                    if not sc.active:
+                        continue
+                    field = (sc.email if _by_email else sc.name) or ''
+                    if field.strip().lower() == key:
+                        return cm
+    return None
+
+
+def _personal_call_for(cs_portal_data, subject_name):
+    """This person's individual CALL time from crew_call_times (keyed
+    sec||role||name — match the last segment by name), else the general crew call.
+    Only real per-person OVERRIDES are stored in crew_call_times (non-override
+    cells follow the general call and are NOT persisted — see collectCrewCallTimes),
+    so any hit here is an intentional individual time that must win over the
+    general call. (User 2026-07-14: "the individual's call time, not the general;
+    a specific line persists over the general even when the general changes.")"""
+    cct = cs_portal_data.get('crew_call_times') or {}
+    nm = (subject_name or '').strip().lower()
+    if nm and nm not in ('—', '-'):
+        for key, t in cct.items():
+            if key.split('||')[-1].strip().lower() == nm and (t or '').strip():
+                return t
+    return cs_portal_data.get('general_crew_call', '') or ''
+
+
 def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
     """Shared context builder for the tokenized recipient view AND the
     login-gated preview. Given a send + recipient identity, returns the kwargs
@@ -22389,16 +22442,19 @@ def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
             budget_id=send.budget_id, date=send.date).all()]
         cs_locations = Location.query.filter(Location.id.in_(loc_day_ids)).all() if loc_day_ids else []
 
-    cct = cs_portal_data.get('crew_call_times') or {}
-    personal_call = ''
-    name_lower = (rec_name or '').lower()
-    for key, t in cct.items():
-        if key.split('||')[-1].strip().lower() == name_lower:
-            personal_call = t
-            break
-    personal_call = personal_call or cs_portal_data.get('general_crew_call', '') or ''
+    # Personal-layer SUBJECT: normally the recipient themselves. A Representation
+    # recipient (agent/manager) is a PROXY — the call time + travel card refer to
+    # the CLIENT they rep, labeled with the client's name so it's clear whose
+    # details these are. (User 2026-07-14.)
+    _is_rep = (rec_type or '').strip().lower() == 'rep'
+    proxy_cm = _rep_client_crew_member(budget, rec_name, rec_email) if _is_rep else None
+    personal_is_proxy = bool(proxy_cm and (proxy_cm.name or '').strip())
+    subject_name = ((proxy_cm.name if personal_is_proxy else rec_name) or '').strip()
+    name_lower = subject_name.lower()
 
-    # Cast time grid: this recipient's own pickup/HMU/on-set/wrap/drop-off, keyed
+    personal_call = _personal_call_for(cs_portal_data, subject_name)
+
+    # Cast time grid: the SUBJECT's own pickup/HMU/on-set/wrap/drop-off, keyed
     # (like crew_call_times) by the last ||-segment (name). talent_times is a
     # {key: {field: time}} dict; CALL is intentionally NOT here (it rides
     # crew_call_times → personal_call above). (2026-07-14.)
@@ -22409,12 +22465,14 @@ def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
             personal_talent_times = vals
             break
 
-    # Resolve recipient → crew member → personal travel (with confirmations).
-    crew_member = _resolve_recipient_crew_member(rec_name, rec_email)
+    # Resolve subject → crew member → personal travel (with confirmations). For a
+    # rep this is the client crew member (proxy_cm) so the rep sees the client's
+    # flight/hotel/car; otherwise resolve the recipient themselves.
+    crew_member = proxy_cm or _resolve_recipient_crew_member(rec_name, rec_email)
     personal_travel = []
     if send and budget:
         personal_travel = _personal_travel_for(
-            budget, send.date, sched_mode_p, crew_member, rec_name)
+            budget, send.date, sched_mode_p, crew_member, subject_name)
 
     # Timezone lives on BUDGET (the Settings-tab picker) — the old
     # project-attr lookup always fell through to New York. (User 2026-07-09:
@@ -22433,6 +22491,14 @@ def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
         "personal_call": personal_call,
         "personal_travel": personal_travel,
         "personal_talent_times": personal_talent_times,
+        # Who the personal layer is ABOUT and whether the recipient is a proxy
+        # (a rep viewing their client's details). Drives the "Your Call / Your
+        # details" vs "<Name>'s Call / <Name>'s details" labels. (User 2026-07-14.)
+        "personal_owner_name": subject_name,
+        "personal_is_proxy": personal_is_proxy,
+        # Recipient type so the template can suppress the personal call/travel
+        # blocks for audiences that shouldn't get them (union, vendors/partners).
+        "recipient_type": (rec_type or 'crew').strip().lower(),
         "tz_name": tz_name,
     }
 
@@ -23654,11 +23720,28 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
     )
 
     # ── Confirmation status map for crew list ────────────────────────────────
-    # Most-recent send for this date; map name_lower → {status, viewed_at, confirmed_at}
+    # confirm_status: most-recent send for this date; name_lower → {status,…}.
+    # sent_versions: version-aware "already sent" map across ALL sends for this
+    # date, keyed by BOTH name and email (lowercased) → [version_label,…]. The
+    # Send panel uses it to auto-uncheck anyone already sent the current version
+    # label so a re-send doesn't duplicate them. (User 2026-07-14.)
     confirm_status = {}
-    latest_send = CallSheetSend.query.filter_by(
+    sent_versions = {}
+    _all_sends_today = CallSheetSend.query.filter_by(
         budget_id=bid, date=selected_date, schedule_mode=sched_mode
-    ).order_by(CallSheetSend.sent_at.desc()).first()
+    ).order_by(CallSheetSend.sent_at.desc()).all()
+    for _snd in _all_sends_today:
+        _vl = (_snd.version_label or '').strip()
+        if not _vl:
+            continue
+        for _rcp in _snd.recipients:
+            for _idk in ((_rcp.name or '').strip().lower(),
+                         (_rcp.email or '').strip().lower()):
+                if _idk:
+                    _bucket = sent_versions.setdefault(_idk, [])
+                    if _vl not in _bucket:
+                        _bucket.append(_vl)
+    latest_send = _all_sends_today[0] if _all_sends_today else None
     if latest_send:
         # Format in the BUDGET's timezone (Settings-tab picker) — these were
         # raw UTC before ("viewed 5:02 PM" that never happened, 2026-07-09).
@@ -23721,6 +23804,7 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         p2_custom_empty=p2_custom_empty,
         p2_custom_all=p2_custom_all,
         confirm_status=confirm_status,
+        sent_versions=sent_versions,
         meal_counts=meal_counts,
         on_day_names=on_day_names,
         on_day_emails=on_day_emails,

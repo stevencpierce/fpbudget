@@ -223,9 +223,12 @@
         <div class="cs-recip-name">{{ rec.name }}</div>
         <div class="cs-recip-sub">{{ project.name }} · {{ date_display }}</div>
       </div>
-      {% if personal_call %}
+      {# Personal call pill: shown to the individual (and their rep, referencing
+         the client by name). Suppressed for union + vendor/partner recipients —
+         they get logistics, not a personal call time. (User 2026-07-14.) #}
+      {% if personal_call and recipient_type not in ('union', 'partner') %}
       <div class="cs-recip-call-pill">
-        <div class="cs-recip-pill-lbl">Your Call</div>
+        <div class="cs-recip-pill-lbl">{% if personal_is_proxy %}{{ personal_owner_name }}'s Call{% else %}Your Call{% endif %}</div>
         <div class="cs-recip-pill-time">{{ personal_call }}</div>
       </div>
       {% endif %}
@@ -243,10 +246,13 @@
     </div>
   </div>
 
-  {% if personal_travel %}
+  {# Personal travel card. A rep sees their CLIENT's flight/hotel/car, labeled
+     with the client's name ("<Name>'s details") so it's clear whose it is.
+     Suppressed for union + vendor/partner recipients. (User 2026-07-14.) #}
+  {% if personal_travel and recipient_type not in ('union', 'partner') %}
   <div class="cs-recip-outer">
     <div class="yd-card">
-      <div class="yd-hdr">📋 Your details — {{ rec.name }}</div>
+      <div class="yd-hdr">📋 {% if personal_is_proxy %}{{ personal_owner_name }}'s details{% else %}Your details — {{ rec.name }}{% endif %}</div>
       <div class="yd-body">
         {% for t in personal_travel %}
         <div class="yd-item">
@@ -309,10 +315,10 @@
      has saved talent_times (personal_talent_times, built in
      _build_callsheet_recipient_context). Their CALL already shows in the bar pill
      above, so it is not repeated here. #}
-  {% if personal_talent_times %}
+  {% if personal_talent_times and recipient_type not in ('union', 'partner') %}
   <div class="cs-recip-outer">
     <div class="yd-card">
-      <div class="yd-hdr">📋 Your times — {{ rec.name }}</div>
+      <div class="yd-hdr">📋 {% if personal_is_proxy %}{{ personal_owner_name }}'s times{% else %}Your times — {{ rec.name }}{% endif %}</div>
       <div class="yd-times">
         {% if personal_talent_times.get('pickup') %}<div class="yd-time"><span class="yd-time-lbl">Pickup</span><span class="yd-time-val">{{ personal_talent_times.pickup }}</span></div>{% endif %}
         {% if personal_talent_times.get('hmu') %}<div class="yd-time"><span class="yd-time-lbl">Hair &amp; Makeup</span><span class="yd-time-val">{{ personal_talent_times.hmu }}</span></div>{% endif %}
@@ -1192,6 +1198,9 @@
           <button class="btn btn-xs btn-ghost" id="crew-view-toggle" onclick="toggleCrewView()" title="Toggle department/flat view">By Dept</button>
         </div>
       </div>
+      <div class="cs-screen-only muted" style="font-size:.68rem;margin:-2px 0 4px">
+        Call times follow the General Call; type a time on a line to override it (it persists even if the General Call changes) — clear it to follow the General Call again. Codes: <strong>NC</strong> no call · <strong>OC</strong> on call · <strong>RE</strong> remote.
+      </div>
       {% if crew_p2_all %}
       {# Build department groups (server already applied overrides/renames to
          r.p2_section, in sorted order). Empty custom depts get appended so they
@@ -1540,6 +1549,8 @@
         <label style="font-size:.8rem;color:var(--text-muted);white-space:nowrap">Version label:</label>
         <input type="text" id="cs-dist-version-input"
                value="{{ cs_data.get('callsheet_version', 'v1') }}"
+               oninput="csApplyVersionPrecheck()"
+               title="People already sent THIS version label are auto-unchecked. Bump the label (v2, v3…) to re-send to everyone."
                style="width:90px;padding:4px 8px;font-size:.82rem" placeholder="v1">
         <label style="font-size:.8rem;color:var(--text-muted);white-space:nowrap">Notes:</label>
         <input type="text" id="cs-dist-notes-input"
@@ -1657,6 +1668,43 @@ const CSV           = {{ csv | tojson }};
 const CS_DATA       = {{ cs_data | tojson }};
 const KEY_CONTACTS_FALLBACK = {{ key_contacts | tojson }};
 const CONFIRM_STATUS = {{ confirm_status | tojson }}; // {name_lower: {status,viewed_at,confirmed_at}}
+// Version-aware "already sent" map: {name_or_email_lower: [version_label,…]} across
+// every send for this day. Drives auto-uncheck so re-sending a given version label
+// skips anyone who already received THAT version. (User 2026-07-14.)
+const SENT_VERSIONS = {{ sent_versions | tojson }};
+// Has this person already been sent the given version label? Matches on email or
+// name (either identity the send recorded).
+function csAlreadySentVersion(name, email, version) {
+  const v = (version || '').trim();
+  if (!v) return false;
+  const e = (email || '').trim().toLowerCase();
+  const n = (name  || '').trim().toLowerCase();
+  return (e && (SENT_VERSIONS[e] || []).indexOf(v) !== -1)
+      || (n && (SENT_VERSIONS[n] || []).indexOf(v) !== -1);
+}
+// All version labels this person was ever sent (for the info chip in the list).
+function csSentVersionsFor(name, email) {
+  const e = (email || '').trim().toLowerCase();
+  const n = (name  || '').trim().toLowerCase();
+  const set = [];
+  [(e && SENT_VERSIONS[e]) || [], (n && SENT_VERSIONS[n]) || []].forEach(arr =>
+    arr.forEach(v => { if (set.indexOf(v) === -1) set.push(v); }));
+  return set;
+}
+// Re-evaluate the default check state for every on-day crew row against the
+// CURRENT version label: on-day + has-contact + NOT already sent this version.
+// Union/rep/vendor rows (data-on-day='0') stay unchecked. Runs on panel build and
+// whenever the version label changes (bump the version → previously-sent people
+// re-check). (User 2026-07-14.)
+function csApplyVersionPrecheck() {
+  const vEl = document.getElementById('cs-dist-version-input');
+  const version = vEl ? vEl.value.trim() : '';
+  document.querySelectorAll('.cs-dist-recip-cb').forEach(cb => {
+    if (cb.disabled) return;
+    if (cb.dataset.onDay !== '1') return; // never auto-check the never-pre-checked groups
+    cb.checked = !csAlreadySentVersion(cb.dataset.name, cb.dataset.email, version);
+  });
+}
 const AVAILABLE_CONTACTS    = {{ available_contacts | tojson }};
 // Union contacts + crew representation for the distribution-panel recipient list.
 // These are LISTED under their own groups but NEVER pre-checked — a call sheet
@@ -1840,9 +1888,23 @@ function getText(id) {
 }
 
 // ── Time normalization → H:MM AM/PM ───────────────────────────────────────────
+// Non-clock call codes that are valid call-time values alongside H:MM AM/PM:
+// NC = no call, OC = on call, RE = remote. Typed in any case / with slashes or
+// spelled out; canonicalized to the two-letter code. (User 2026-07-14.)
+const CS_CALL_CODES = {
+  'NC': 'NC', 'N/C': 'NC', 'NOCALL': 'NC', 'NO CALL': 'NC',
+  'OC': 'OC', 'O/C': 'OC', 'ONCALL': 'OC', 'ON CALL': 'OC',
+  'RE': 'RE', 'R/E': 'RE', 'REMOTE': 'RE',
+};
+function csCallCode(raw) {
+  const k = (raw || '').trim().toUpperCase().replace(/\./g, '');
+  return CS_CALL_CODES[k] || '';
+}
 function normalizeTimeStr(raw) {
   const s = (raw || '').trim();
   if (!s || s.toUpperCase() === 'TBD' || s === '—' || s === '-') return 'TBD';
+  const _code = csCallCode(s);
+  if (_code) return _code;
   const isPM = /pm/i.test(s);
   const isAM = /am/i.test(s);
   const stripped = s.replace(/[apm\s]/gi, '');
@@ -1876,6 +1938,8 @@ function normalizeTimeStr(raw) {
 function normalizeCrewCallStr(raw) {
   const s = (raw || '').trim();
   if (!s || s.toUpperCase() === 'TBD') return 'TBD';
+  const _code = csCallCode(s);
+  if (_code) return _code;
   const normalized = normalizeTimeStr(s);
   // normalizeTimeStr returns its input verbatim ONLY when unparseable — but a
   // perfectly-typed '8:00 AM' also round-trips unchanged, so the old
@@ -2727,15 +2791,35 @@ function updateCrewCallP2Display(time) {
 }
 
 function crewCallBlur(cell) {
+  // Blank an individual cell to reset it back to FOLLOWING the general call.
+  // A non-empty value is a persistent per-person override that wins over the
+  // general call — even when the general call is later changed. Only overrides
+  // are saved (see collectCrewCallTimes), so a cleared cell simply inherits the
+  // general call again. (User 2026-07-14.)
+  if (!cell.textContent.trim()) {
+    cell.dataset.isOverride = 'false';
+    const g = ((document.getElementById('cs-crew-call') || {}).textContent || '').trim();
+    cell.textContent = (g && g !== 'TBD') ? g : '';
+  }
   scheduleAutoSave();
 }
 
 function collectCrewCallTimes() {
+  // Persist ONLY real per-person overrides (data-is-override='true'). Cells that
+  // merely mirror the general crew call are NOT saved, so they keep following the
+  // general call — including after it later changes — instead of being frozen at
+  // whatever the general call happened to be when this sheet was last saved. This
+  // is what lets an individual line "persist over the general" while everyone
+  // else stays dynamic, and it keeps crew_call_times to intentional overrides so
+  // the recipient's "Your Call" pill shows their real individual time (or, for a
+  // rep, their client's) rather than a baked-in copy of the general call. (User
+  // 2026-07-14; was: saved every non-empty cell, which baked the general onto
+  // everyone and locked them as overrides on the next reload.)
   const times = {};
   document.querySelectorAll('.cs-crew-call-cell').forEach(cell => {
     const key = cell.dataset.crewKey;
     const val = cell.textContent.trim();
-    if (key && val) times[key] = val;
+    if (key && val && cell.dataset.isOverride === 'true') times[key] = val;
   });
   return times;
 }
@@ -3672,13 +3756,22 @@ function csDistBuildRecipientList() {
   const onDayTag    = `<span style="background:#052e16;color:#4ade80;border:1px solid #16a34a;border-radius:3px;font-size:.62rem;padding:1px 5px;margin-left:4px">on this day</span>`;
   const manualTag   = `<span style="background:#1c1f2c;color:#9ca3af;border:1px solid var(--border);border-radius:3px;font-size:.62rem;padding:1px 5px;margin-left:4px">manual</span>`;
 
+  const _curVersion = (document.getElementById('cs-dist-version-input') || {}).value || '';
   el.innerHTML = people.length ? people.map((p, i) => {
     const hasContact = !!(p.email || p.phone);
-    // Pre-check ONLY people who are on this day AND have a contact method.
-    const checked = (p.on_day && hasContact) ? 'checked' : '';
+    // Pre-check people who are on this day, have a contact method, and have NOT
+    // already been sent the current version label (so a re-send doesn't duplicate
+    // them; bumping the version re-checks everyone). (User 2026-07-14.)
+    const sentThis = csAlreadySentVersion(p.name, p.email, _curVersion.trim());
+    const checked = (p.on_day && hasContact && !sentThis) ? 'checked' : '';
     const disabled = hasContact ? '' : 'disabled';
     const isManual = p.manualIdx >= 0;
     const previewAs = (p.cmId ? String(p.cmId) : (p.email || p.name));
+    // Info chip listing every version this person already received (any label).
+    const _sv = csSentVersionsFor(p.name, p.email);
+    const sentTag = _sv.length
+      ? `<span title="Already sent ${_sv.join(', ')} — unchecked automatically when the version label matches" style="background:#0c1a3a;color:#60a5fa;border:1px solid #1d4ed8;border-radius:3px;font-size:.6rem;padding:1px 5px;margin-left:4px">sent ${_sv.join(', ')}</span>`
+      : '';
     return `
     <div style="display:flex;align-items:center;gap:8px;font-size:.82rem;padding:4px 0;border-bottom:1px solid var(--border);flex-wrap:wrap${p.on_day ? '' : ';opacity:.72'}">
       <label style="display:flex;align-items:center;gap:8px;flex:1;min-width:160px;cursor:pointer">
@@ -3689,7 +3782,7 @@ function csDistBuildRecipientList() {
                data-type="${p.type||'crew'}"
                data-on-day="${p.on_day ? '1' : '0'}"
                ${checked} ${disabled}>
-        <span>${p.name}${isManual ? manualTag : (p.on_day ? onDayTag : notOnDayTag)}${statusBadge(p.name)}</span>
+        <span>${p.name}${isManual ? manualTag : (p.on_day ? onDayTag : notOnDayTag)}${statusBadge(p.name)}${sentTag}</span>
       </label>
       <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
         ${p.email ? `<span style="color:var(--text-muted);font-size:.73rem">✉ ${p.email}</span>` : ''}
