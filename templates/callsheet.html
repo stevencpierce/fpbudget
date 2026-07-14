@@ -1162,7 +1162,9 @@
   {# ╔══════════════════════════════════════════════════════════════════════════
      PAGE 2
      ══════════════════════════════════════════════════════════════════════════╗ #}
-  {% if csv.full_crew_list %}
+  {# Page 2 renders for the full-crew audiences AND for talent (talent gets only
+     the bottom zone — Meals + Additional Notes + Quote — not the crew grid). #}
+  {% if csv.full_crew_list or csv.bottom_zone %}
   <div class="callsheet-page callsheet-page-2">
 
     {# ── Page 2 header ────────────────────────────────────────────────────── #}
@@ -1173,7 +1175,7 @@
       </div>
       <div class="callsheet-p2-center">
         <div class="callsheet-project-title">{{ project.name }}</div>
-        <div class="callsheet-header-label">CREW CALL SHEET — PAGE 2</div>
+        <div class="callsheet-header-label">{% if csv.full_crew_list %}CREW CALL SHEET — PAGE 2{% else %}CALL SHEET — PAGE 2{% endif %}</div>
       </div>
       <div class="callsheet-p2-right">
         <div class="callsheet-date-display">{{ selected_date.strftime('%A, %B %d, %Y') }}</div>
@@ -1188,6 +1190,9 @@
       </div>
     </div>
 
+    {# Crew grid + Useful Contacts + Representation + Union are the FULL-crew-list
+       block — talent skips all of it and drops straight to Meals + Notes below. #}
+    {% if csv.full_crew_list %}
     {# ── Crew Call Sheet by department ────────────────────────────────────── #}
     <div class="callsheet-section">
       <div class="callsheet-section-title" style="display:flex;align-items:center;justify-content:space-between;">
@@ -1418,6 +1423,8 @@
       </table>
     </div>
     {% endif %}
+
+    {% endif %}{# /csv.full_crew_list — crew grid + contacts + reps + union #}
 
     {# ── Meal Counts ───────────────────────────────────────────────────────── #}
     {# Empty-collapse: recipient/pdf drop Meals when nothing is scheduled and
@@ -3793,12 +3800,9 @@ function csDistBuildRecipientList() {
   // array of persons; on any sheet with saved call times the dict is truthy,
   // `|| []` never applies, and .forEach threw — killing the ENTIRE recipient
   // list ("no one on the list", user 2026-07-08). Removed.
-  // Project clients marked for call sheet (receives_callsheet honored server-side
-  // via show_on_callsheet; treat listed clients as flagged to receive)
-  ({{ project_clients_cs | tojson }}).forEach(c => {
-    if (c && c.name) addPerson(c.name, c.email || '', 'client', c.phone || '',
-                               csIsOnDay(c.name, c.email, 'client', true));
-  });
+  // Clients are NOT added to the crew list — they render in their own "💼 Clients"
+  // group below (csDistBuildContactGroups), separated from crew but pre-checked
+  // since they're flagged to receive the sheet. (User 2026-07-14.)
   // NOTE: crew representation (agents/managers/PAs) and union contacts are NOT
   // added here. They render in their own always-listed / never-pre-checked groups
   // appended AFTER the crew list below (csDistBuildContactGroups). The old code
@@ -3897,11 +3901,35 @@ function csEscHtml(s) {
 function csDistBuildContactGroups() {
   const flaggedChip = `<span style="background:#1c1f2c;color:#9ca3af;border:1px solid var(--border);border-radius:3px;font-size:.6rem;padding:1px 5px;margin-left:4px" title="Flagged to receive the call sheet — informational only; you still have to check the box">flagged</span>`;
 
-  // One recipient row (unchecked). label/email/phone/type describe the send.
+  const _grpVersion = ((document.getElementById('cs-dist-version-input') || {}).value || '').trim();
+  // Sent/viewed/confirmed badge for a group recipient — same tracking crew rows
+  // get, so union/rep/vendor/client sends are visible in the panel too. (User
+  // 2026-07-14.)
+  function grpStatusBadge(name) {
+    const st = CONFIRM_STATUS[(name || '').toLowerCase()];
+    if (!st) return '';
+    if (st.status === 'confirmed')
+      return `<span style="background:#052e16;color:#4ade80;border:1px solid #16a34a;border-radius:3px;font-size:.62rem;font-weight:600;padding:1px 5px;margin-left:4px">✓ Confirmed${st.confirmed_at ? ' ' + st.confirmed_at : ''}</span>`;
+    if (st.status === 'viewed')
+      return `<span style="background:#1c1500;color:#fbbf24;border:1px solid #d97706;border-radius:3px;font-size:.62rem;font-weight:600;padding:1px 5px;margin-left:4px">Viewed${st.viewed_at ? ' ' + st.viewed_at : ''}</span>`;
+    if (st.status === 'sent')
+      return `<span style="background:#0c1a3a;color:#60a5fa;border:1px solid #1d4ed8;border-radius:3px;font-size:.62rem;font-weight:600;padding:1px 5px;margin-left:4px">Sent</span>`;
+    return '';
+  }
+  // One recipient row. opts.checked pre-checks it (clients); opts.onDay marks it
+  // so the version-aware auto-uncheck manages it. External groups default to
+  // unchecked. label/email/phone/type describe the send.
   function row(opts) {
     const hasContact = !!(opts.email || opts.phone);
     const disabled = hasContact ? '' : 'disabled';
     const previewAs = opts.email || opts.name;
+    const onDay = opts.onDay ? '1' : '0';
+    const checked = (opts.checked && hasContact
+                     && !csAlreadySentVersion(opts.name, opts.email, _grpVersion)) ? 'checked' : '';
+    const sv = csSentVersionsFor(opts.name, opts.email);
+    const sentTag = sv.length
+      ? `<span title="Already sent ${sv.join(', ')} — auto-unchecked when the version label matches" style="background:#0c1a3a;color:#60a5fa;border:1px solid #1d4ed8;border-radius:3px;font-size:.6rem;padding:1px 5px;margin-left:4px">sent ${sv.join(', ')}</span>`
+      : '';
     return `
     <div style="display:flex;align-items:center;gap:8px;font-size:.82rem;padding:4px 0;border-bottom:1px solid var(--border);flex-wrap:wrap${hasContact ? '' : ';opacity:.72'}">
       <label style="display:flex;align-items:center;gap:8px;flex:1;min-width:160px;cursor:pointer">
@@ -3910,9 +3938,9 @@ function csDistBuildContactGroups() {
                data-email="${csEscAttr(opts.email)}"
                data-phone="${csEscAttr(opts.phone)}"
                data-type="${opts.type}"
-               data-on-day="0"
-               ${disabled}>
-        <span>${opts.labelHtml}</span>
+               data-on-day="${onDay}"
+               ${checked} ${disabled}>
+        <span>${opts.labelHtml}${grpStatusBadge(opts.name)}${sentTag}</span>
       </label>
       <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
         ${opts.email ? `<span style="color:var(--text-muted);font-size:.73rem">✉ ${csEscHtml(opts.email)}</span>` : ''}
@@ -3925,13 +3953,13 @@ function csDistBuildContactGroups() {
     </div>`;
   }
 
-  function group(id, title, rowsHtml, count) {
+  function group(id, title, rowsHtml, count, note) {
     if (!count) return '';
     return `
     <div style="margin-top:8px">
       <div onclick="csDistToggleGroup('${id}')" style="cursor:pointer;display:flex;align-items:center;gap:6px;font-size:.72rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em;padding:4px 0;border-top:1px solid var(--border)">
         <span id="${id}-caret">▾</span><span>${title}</span>
-        <span style="color:#6b7280;text-transform:none;letter-spacing:0">(${count} · none pre-checked)</span>
+        <span style="color:#6b7280;text-transform:none;letter-spacing:0">(${count} · ${note || 'none pre-checked'})</span>
       </div>
       <div id="${id}-body">${rowsHtml}</div>
     </div>`;
@@ -3979,7 +4007,19 @@ function csDistBuildContactGroups() {
                  type: 'partner', labelHtml: label });
   }).join('');
 
-  return group('cs-dist-grp-union', '⚖ Union', unionRows, (UNION_CONTACTS || []).length)
+  // ── 💼 Clients ─── project clients flagged for the call sheet (show_on_callsheet).
+  // Their OWN group so they're not mixed into the crew list, but pre-checked since
+  // they're set to receive — and tracked (sent/viewed/confirmed) like everyone.
+  const clientRows = (CLIENT_CONTACTS || []).map(c => {
+    const meta = [c.title, c.company].filter(Boolean).map(csEscHtml).join(' · ');
+    const label = `<strong>${csEscHtml(c.name || '')}</strong>`
+      + (meta ? ` <span style="color:var(--text-muted);font-size:.73rem">${meta}</span>` : '');
+    return row({ name: (c.name || '').trim(), email: c.email || '', phone: c.phone || '',
+                 type: 'client', labelHtml: label, checked: true, onDay: true });
+  }).join('');
+
+  return group('cs-dist-grp-client', '💼 Clients', clientRows, (CLIENT_CONTACTS || []).length, 'flagged · pre-checked')
+       + group('cs-dist-grp-union', '⚖ Union', unionRows, (UNION_CONTACTS || []).length)
        + group('cs-dist-grp-rep', '🤝 Representation', repRows, seenRep.size)
        + group('cs-dist-grp-partner', '🚚 Vendors & Partners', partnerRows, (PARTNER_CONTACTS || []).length);
 }

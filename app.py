@@ -23843,6 +23843,11 @@ def _callsheet_audience_flags(view):
         'key_personnel':   True,                                           # names for all; contacts gated below
         'kp_contact':      _v in ('internal', 'crew'),                     # client/talent/union: KP names only
         'full_crew_list':  _v in ('internal', 'crew', 'client', 'union'),  # talent: no full crew list
+        # Bottom-of-sheet zone (Meals Scheduled + Additional Notes + Quote):
+        # everyone INCLUDING talent. Talent doesn't get the full crew grid, but a
+        # cast member still needs meals + notes — redact per-sheet with per-view 👁
+        # hides if a given day shouldn't show them. (User 2026-07-14.)
+        'bottom_zone':     _v in ('internal', 'crew', 'client', 'union', 'talent'),
         'talent_list':     True,                                           # all views show cast (names ≥)
         'crew_phone_in_list': _v == 'crew',                               # crew view adds phone to the crew list
     }
