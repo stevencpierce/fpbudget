@@ -3581,7 +3581,7 @@ function csDistBuildRecipientList() {
         ${p.phone ? `<span style="color:var(--text-muted);font-size:.73rem">📱 ${p.phone}</span>` : ''}
         ${!p.email && !p.phone ? '<span style="color:var(--text-muted);font-size:.72rem">(no contact info)</span>' : ''}
         <button type="button" class="btn btn-xs btn-ghost" style="font-size:.68rem;padding:1px 6px"
-                onclick="csPreviewRecipient('${(previewAs||'').replace(/'/g,"\\'")}')"
+                onclick="csPreviewRecipient('${(previewAs||'').replace(/'/g,"\\'")}', '${(p.type||'crew').replace(/'/g,'')}')"
                 title="Preview what this person receives — does not send">👁 Preview</button>
         ${isManual ? `<span onclick="csRemoveManualRecipient(${p.manualIdx})" title="Remove this manual recipient" style="cursor:pointer;color:#f87171;font-weight:700;font-size:.9rem;padding:0 3px">✕</span>` : ''}
       </span>
@@ -3632,7 +3632,7 @@ function csDistBuildContactGroups() {
         ${opts.phone ? `<span style="color:var(--text-muted);font-size:.73rem">📱 ${csEscHtml(opts.phone)}</span>` : ''}
         ${!hasContact ? '<span style="color:var(--text-muted);font-size:.72rem">(no contact info)</span>' : ''}
         ${hasContact ? `<button type="button" class="btn btn-xs btn-ghost" style="font-size:.68rem;padding:1px 6px"
-                onclick="csPreviewRecipient('${(previewAs||'').replace(/'/g,"\\'")}')"
+                onclick="csPreviewRecipient('${(previewAs||'').replace(/'/g,"\\'")}', '${(opts.type||'crew').replace(/'/g,'')}')"
                 title="Preview what this person receives — does not send">👁 Preview</button>` : ''}
       </span>
     </div>`;
@@ -3737,8 +3737,12 @@ function csRemoveManualRecipient(idx) {
 }
 
 // Open the login-gated preview for one recipient (no send). (User 2026-07-08.)
-function csPreviewRecipient(asVal) {
-  const url = CS_PREVIEW_URL + '?as=' + encodeURIComponent(asVal || '');
+function csPreviewRecipient(asVal, recType) {
+  // recType routes the preview to the recipient's ACTUAL audience view (and
+  // its per-view hides). Without it the server defaults to crew — which made
+  // previews ignore talent/union/etc hides. (User 2026-07-13.)
+  const url = CS_PREVIEW_URL + '?as=' + encodeURIComponent(asVal || '')
+            + (recType ? '&type=' + encodeURIComponent(recType) : '');
   window.open(url, '_blank', 'noopener');
 }
 
