@@ -4671,6 +4671,14 @@ tr:hover .cs-hide-toggle,
   display: inline-block;
   min-width: 2rem;
 }
+/* inline-block is for INLINE editable spans — on a <td> it ejects the cell
+   from the table's column grid entirely (cast-grid columns didn't line up
+   under their headers; Key Times cells drifted the same way). Table cells
+   stay table cells. (User 2026-07-14.) */
+td.cs-editable {
+  display: table-cell;
+  min-width: 0;
+}
 .cs-editable:hover {
   background: rgba(79,126,248,.07);
   box-shadow: 0 0 0 1.5px rgba(79,126,248,.25);
