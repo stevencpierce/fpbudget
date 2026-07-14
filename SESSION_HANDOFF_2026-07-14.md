@@ -95,18 +95,14 @@ Key Personnel picker, Company Health rollup, estimate-send upgrades.
 
 ## 4. IN FLIGHT right now
 
-- **Rep view inheritance** (task: reps get their client's view — Jeff's agent →
-  talent view; a crew member's rep → crew view). An Opus subagent was building
-  this when this handoff was written. Resolution: SupportContact match
-  (email-CI then name, scoped to crew with assignments on the budget) →
-  crew_member → line section (Talent → 'talent', else 'crew') → applied in
-  `_build_callsheet_recipient_context` (covers screen + preview) AND
-  prepare_send's per-recipient PDF choice. Fallback 'crew'.
-  **If the working tree has uncommitted app.py/callsheet.html changes, that's
-  this build** — review (§2 pipeline), commit, deploy, verify:
-  preview Zach Grove (`?as=zach.grove@caa.com&type=rep`) → expect talent view.
-- After that: nothing queued. Steven will keep reporting from live use
-  (shoot days Jul 14–16 + Levels session).
+Nothing — all builds landed. Two commits after this doc was first written:
+
+| Commit | What |
+|---|---|
+| 1f7c991 | **Rep view inheritance**: `_rep_recipient_view(budget, name, email)` — SupportContact match (email-CI then name, scoped to crew assigned on the budget) → crew member → line section (COA_CODE_TALENT → 'talent', else 'crew'); applied in `_build_callsheet_recipient_context` (links + previews) and prepare_send's per-recipient PDF pick; '→ talent view' hints on Representation send rows. Verified: Zach Grove's preview renders the talent view. |
+| bea1610 | **Cast-grid column fix**: `.cs-editable` sets `display:inline-block` (for inline spans) — on a `<td>` that ejects the cell from the table column grid, so cast-grid times packed left under spread-out headers. `td.cs-editable { display:table-cell; min-width:0 }`. Also fixed latent Key Times drift. |
+
+Steven keeps reporting from live use (shoot days Jul 14–16 + the Levels session).
 
 ## 5. Hard-won gotchas (violating these has SHIPPED bugs — read before editing)
 
