@@ -740,7 +740,7 @@
               <tr{% if not _has_sunrise %} class="cs-screen-only"{% endif %}>
                 <td class="callsheet-time-cell cs-editable" id="cs-sunrise" contenteditable="true" data-field="sunrise" title="Click to edit">{{ cs_data.get('sunrise', '—') }}</td>
                 <td>Sunrise</td>
-                <td class="cs-screen-only"><button class="btn btn-xs btn-ghost" id="btn-autofill-sun" onclick="autoFillFromLocation()" title="Auto-fill sunrise, sunset, weather and hospital from shoot location">⟳</button></td>
+                <td class="cs-screen-only"><button class="btn btn-xs btn-ghost" id="btn-autofill-sun" onclick="autoFillFromLocation()" title="Auto-fill sunrise, sunset, weather and nearest ER from shoot location">⟳</button></td>
               </tr>
               <tr{% if not _has_sunset %} class="cs-screen-only"{% endif %}>
                 <td class="callsheet-time-cell cs-editable" id="cs-sunset" contenteditable="true" data-field="sunset" title="Click to edit">{{ cs_data.get('sunset', '—') }}</td>
@@ -782,8 +782,8 @@
           {% if (not _hide_empty) or _hosp_has %}
           <div class="cs-hideable" data-cs-key="section:hospital">
           <div class="callsheet-section-title" style="margin-top:.85rem">
-            <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:hospital" title="Hide / show Hospital">👁</span>
-            Nearest Hospital
+            <span class="cs-hide-toggle cs-screen-only" data-cs-key="section:hospital" title="Hide / show Emergency Room">👁</span>
+            Nearest Emergency Room
           </div>
           <div id="hospital-container">
             {% if pdf_mode %}
@@ -799,7 +799,7 @@
             {% endif %}
           </div>
           <div class="cs-row-toolbar cs-screen-only" style="margin-top:.25rem">
-            <button class="btn btn-xs btn-ghost" onclick="addHospitalRow()">+ Hospital</button>
+            <button class="btn btn-xs btn-ghost" onclick="addHospitalRow()">+ ER / Hospital</button>
           </div>
           </div>
           {% endif %}{# /hospital empty-collapse #}
@@ -1714,6 +1714,36 @@ const AVAILABLE_CONTACTS    = {{ available_contacts | tojson }};
 const UNION_CONTACTS = {{ project_unions_cs_json | tojson }};
 const REP_CONTACTS   = {{ rep_contacts | tojson }};
 const PARTNER_CONTACTS = {{ project_partners_cs_json | tojson }};
+const CLIENT_CONTACTS  = {{ project_clients_cs | tojson }};
+// Combined Key-Personnel pick pool: crew + clients + vendors/partners + reps, so
+// KP can pull a face from ANY section, not just budget crew. Each entry is
+// normalized to {name, role, phone, email, source, cmId}. cmId (crew_member_id)
+// is set ONLY for crew so KP stays linked to that crew member; client/vendor/rep
+// picks land as plain seeded rows (cmId null). (User 2026-07-14.)
+function kpBuildPool() {
+  const pool = [];
+  (AVAILABLE_CONTACTS || []).forEach(c => {
+    if (c && c.name) pool.push({ name: c.name, role: c.role || '', phone: c.phone || '',
+      email: c.email || '', source: 'Crew', cmId: c.id || null });
+  });
+  (CLIENT_CONTACTS || []).forEach(c => {
+    if (c && c.name) pool.push({ name: c.name, role: c.title || c.company || 'Client',
+      phone: c.phone || '', email: c.email || '', source: 'Client', cmId: null });
+  });
+  (PARTNER_CONTACTS || []).forEach(p => {
+    if (p && p.name) pool.push({ name: p.name, role: p.role || p.company || 'Vendor',
+      phone: p.phone || '', email: p.email || '', source: 'Vendor', cmId: null });
+  });
+  (REP_CONTACTS || []).forEach(r => {
+    if (r && r.rep_name) {
+      const who = r.crew_name ? ' — ' + r.crew_name : '';
+      pool.push({ name: r.rep_name, role: (r.rep_role_type || 'Rep') + who,
+        phone: r.rep_phone || '', email: r.rep_email || '', source: 'Rep', cmId: null });
+    }
+  });
+  return pool;
+}
+const KP_PICK_POOL = kpBuildPool();
 const ON_DAY_NAMES  = new Set(({{ on_day_names | tojson }}) || []);   // lowercased
 const ON_DAY_EMAILS = new Set(({{ on_day_emails | tojson }}) || []);  // lowercased
 const SHOOT_DATE    = "{{ selected_date.strftime('%Y-%m-%d') }}";
@@ -2177,8 +2207,14 @@ function renderKpTable() {
         <td colspan="${CSV.kp_contact ? 3 : 2}" class="kp-spacer-cell"></td>
         <td class="kp-actions cs-screen-only"><button class="btn btn-xs btn-ghost" onclick="removeKpRow(${i})" title="Remove">✕</button></td>`;
     } else {
-      const contactOpts = AVAILABLE_CONTACTS.map(c =>
-        `<option value="${c.id || ''}" ${c.id == row.crew_member_id ? 'selected' : ''}>${escHtml(c.name)}${c.role ? ' — ' + escHtml(c.role) : ''}</option>`
+      // Options grouped by source (Crew / Client / Vendor / Rep). Value is the
+      // pool INDEX (0 is valid) — kpSelectContact looks the person up by index.
+      const _kpGroups = {};
+      KP_PICK_POOL.forEach((c, pi) => { (_kpGroups[c.source] || (_kpGroups[c.source] = [])).push({ c, pi }); });
+      const contactOpts = Object.keys(_kpGroups).map(src =>
+        `<optgroup label="${escHtml(src)}">` + _kpGroups[src].map(({ c, pi }) =>
+          `<option value="${pi}" ${(c.cmId && c.cmId == row.crew_member_id) ? 'selected' : ''}>${escHtml(c.name)}${c.role ? ' — ' + escHtml(c.role) : ''}</option>`
+        ).join('') + `</optgroup>`
       ).join('');
       tr.className = 'kp-row';
       tr.innerHTML = `
@@ -2219,10 +2255,10 @@ function kpFieldBlur(idx, field, el) {
 }
 
 function kpSelectContact(idx, sel) {
-  if (!sel.value) return;
-  const contact = AVAILABLE_CONTACTS.find(c => String(c.id) === sel.value);
+  if (sel.value === '') return;                       // '' = placeholder; '0' is a real pick
+  const contact = KP_PICK_POOL[parseInt(sel.value, 10)];
   if (!contact) return;
-  KP_ROWS[idx].crew_member_id = contact.id;
+  KP_ROWS[idx].crew_member_id = contact.cmId || null; // only crew stays linked
   KP_ROWS[idx].name  = contact.name;
   KP_ROWS[idx].role  = contact.role;
   KP_ROWS[idx].phone = contact.phone;
@@ -2265,12 +2301,14 @@ function renderKpPickerList(q) {
   const term = (q || '').trim().toLowerCase();
   // Keep original indices so the row-add handler can look the contact up safely
   // (avoids interpolating names — which may contain quotes — into onclick attrs).
-  const matches = (AVAILABLE_CONTACTS || [])
+  // Pool spans Crew / Client / Vendor / Rep; searchable by name, role, or source.
+  const matches = (KP_PICK_POOL || [])
     .map((c, idx) => ({ c, idx }))
     .filter(({ c }) => {
       if (!term) return true;
       return (c.name || '').toLowerCase().includes(term) ||
-             (c.role || '').toLowerCase().includes(term);
+             (c.role || '').toLowerCase().includes(term) ||
+             (c.source || '').toLowerCase().includes(term);
     });
   if (matches.length === 0) {
     list.innerHTML = '<div class="kp-picker-empty muted">No matching people</div>';
@@ -2278,20 +2316,23 @@ function renderKpPickerList(q) {
   }
   list.innerHTML = matches.map(({ c, idx }) => {
     const meta = [c.role, c.phone].filter(Boolean).map(escHtml).join(' · ');
+    const srcChip = c.source
+      ? `<span class="kp-picker-src" style="font-size:.62rem;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:0 4px;margin-left:6px">${escHtml(c.source)}</span>`
+      : '';
     return `<button type="button" class="kp-picker-item" onclick="kpAddFromContact(${idx})">
-        <span class="kp-picker-name">${escHtml(c.name)}</span>${meta ? `<span class="kp-picker-meta muted">${meta}</span>` : ''}
+        <span class="kp-picker-name">${escHtml(c.name)}${srcChip}</span>${meta ? `<span class="kp-picker-meta muted">${meta}</span>` : ''}
       </button>`;
   }).join('');
 }
 
 function kpAddFromContact(idx) {
-  const contact = (AVAILABLE_CONTACTS || [])[idx];
+  const contact = (KP_PICK_POOL || [])[idx];
   if (!contact) return;
   KP_ROWS.push({
     row_id: _newKpId(), is_spacer: false,
     role: contact.role || '', name: contact.name || '',
     phone: contact.phone || '', email: contact.email || '',
-    crew_member_id: contact.id || null,
+    crew_member_id: contact.cmId || null,
   });
   const menu = document.getElementById('kp-picker-menu');
   if (menu) menu.hidden = true;
@@ -2473,10 +2514,23 @@ async function autoFillFromLocation() {
       fetch(`https://api.sunrise-sunset.org/json?lat=${lat}&lng=${lng}&date=${SHOOT_DATE}&formatted=0`),
       // 3. Weather (Open-Meteo — free, no key)
       fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&start_date=${SHOOT_DATE}&end_date=${SHOOT_DATE}&wind_speed_unit=mph&temperature_unit=fahrenheit`),
-      // 4. Nearest hospital (Overpass — OpenStreetMap)
+      // 4. Nearest EMERGENCY ROOM (Overpass — OpenStreetMap). We want the ER you'd
+      //    take an accident victim to — NOT psychiatric / rehab / recovery / specialty
+      //    hospitals, which plain amenity=hospital returns. Pull nearby hospitals
+      //    PLUS explicit emergency departments, then rank ER-capable first and drop
+      //    non-emergency facilities in JS below. (User 2026-07-14.)
       fetch(`https://overpass-api.de/api/interpreter`, {
         method: 'POST',
-        body: `[out:json][timeout:10];(node["amenity"="hospital"](around:15000,${lat},${lng});way["amenity"="hospital"](around:15000,${lat},${lng}););out center 3;`
+        body: `[out:json][timeout:25];(`
+          + `node["amenity"="hospital"](around:25000,${lat},${lng});`
+          + `way["amenity"="hospital"](around:25000,${lat},${lng});`
+          + `node["healthcare"="hospital"](around:25000,${lat},${lng});`
+          + `way["healthcare"="hospital"](around:25000,${lat},${lng});`
+          + `node["emergency"="department"](around:25000,${lat},${lng});`
+          + `way["emergency"="department"](around:25000,${lat},${lng});`
+          + `node["healthcare"="emergency_ward"](around:25000,${lat},${lng});`
+          + `way["healthcare"="emergency_ward"](around:25000,${lat},${lng});`
+          + `);out center 30;`
       }),
     ]);
 
@@ -2535,21 +2589,46 @@ async function autoFillFromLocation() {
       }
     }
 
-    // Nearest hospital
+    // Nearest EMERGENCY ROOM. Rank ER-capable facilities first (emergency=yes /
+    // department, healthcare=emergency_ward); fall back to general hospitals with
+    // psychiatric / rehab / recovery / specialty facilities filtered out so an
+    // accident victim is routed to real emergency services. (User 2026-07-14.)
     if (hospResp.status === 'fulfilled' && hospResp.value.ok) {
       const hosp = await hospResp.value.json();
-      const elements = (hosp.elements || []).slice(0, 2);
-      if (elements.length && HOSPITAL_ROWS.length === 1 && !HOSPITAL_ROWS[0].name) {
-        HOSPITAL_ROWS = elements.map(el => {
-          const tags = el.tags || {};
-          const hospLat = el.lat || (el.center && el.center.lat);
-          const hospLng = el.lon || (el.center && el.center.lon);
-          const distKm  = hospLat ? Math.round(Math.sqrt(Math.pow((hospLat-lat)*110.574,2)+Math.pow((hospLng-lng)*111.32*Math.cos(lat*Math.PI/180),2))*10)/10 : null;
+      // Hard-exclude by name/speciality even if mis-tagged with emergency:
+      const HARD_NON = /(psychiatr|behavioral|behaviour|mental health|veterinary|animal hospital|\bdental\b|\beye\b|dialysis|\brehab|rehabilitation|recovery|addiction|detox|hospice|maternity|fertility|birth center)/i;
+      // Soft-exclude specialty centers only when NOT flagged as an ER:
+      const SOFT_NON = /(oncology|cancer center|orthopaed|orthoped|surgical center|surgery center|surgicenter|urgent care|\bclinic\b)/i;
+      const _dist = (aLat, aLng) => Math.round(Math.sqrt(Math.pow((aLat-lat)*110.574,2)+Math.pow((aLng-lng)*111.32*Math.cos(lat*Math.PI/180),2))*10)/10;
+      const cands = (hosp.elements || []).map(el => {
+        const tags = el.tags || {};
+        const hLat = el.lat != null ? el.lat : (el.center && el.center.lat);
+        const hLng = el.lon != null ? el.lon : (el.center && el.center.lon);
+        if (hLat == null || hLng == null) return null;
+        const em = (tags.emergency || '').toLowerCase();
+        const hc = (tags.healthcare || '').toLowerCase();
+        const isER = em === 'yes' || em === 'department' || hc === 'emergency_ward' || hc === 'emergency';
+        const name = tags.name || tags['name:en'] || '';
+        const spec = (tags['healthcare:speciality'] || tags['healthcare:specialty'] || '').toLowerCase();
+        const hay  = (name + ' ' + spec);
+        const nonER = HARD_NON.test(hay) || em === 'no' || (!isER && SOFT_NON.test(hay));
+        return { tags, name, distKm: _dist(hLat, hLng), isER, nonER, key: (name || ('@'+hLat+','+hLng)).toLowerCase() };
+      }).filter(Boolean);
+      // Dedup by name (an ER can appear as a node AND a way, or via two tags).
+      const byKey = {};
+      cands.forEach(c => { if (!byKey[c.key] || c.distKm < byKey[c.key].distKm) byKey[c.key] = c; });
+      const uniq = Object.values(byKey);
+      const ers  = uniq.filter(c => c.isER && !c.nonER).sort((a, b) => a.distKm - b.distKm);
+      const genl = uniq.filter(c => !c.isER && !c.nonER).sort((a, b) => a.distKm - b.distKm);
+      const picked = (ers.length ? ers : genl).slice(0, 2);
+      if (picked.length && HOSPITAL_ROWS.length === 1 && !HOSPITAL_ROWS[0].name) {
+        HOSPITAL_ROWS = picked.map(c => {
+          const tags = c.tags;
           return {
             row_id:  _newHospId(),
-            name:    tags.name || tags['name:en'] || 'Hospital',
-            address: tags['addr:full'] || [tags['addr:housenumber'], tags['addr:street'], tags['addr:city']].filter(Boolean).join(' ') || (distKm ? `~${distKm} km away` : ''),
-            phone:   tags.phone || tags['contact:phone'] || '',
+            name:    (c.name || 'Emergency Room') + (c.isER ? ' (ER)' : ''),
+            address: tags['addr:full'] || [tags['addr:housenumber'], tags['addr:street'], tags['addr:city']].filter(Boolean).join(' ') || (c.distKm ? `~${c.distKm} km away` : ''),
+            phone:   tags.phone || tags['contact:phone'] || tags['emergency:phone'] || '',
           };
         });
         renderHospitals();
