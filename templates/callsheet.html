@@ -55,6 +55,7 @@
 {% set confirmed_local = confirmed_local | default(none) %}
 {% set personal_call   = personal_call   | default('') %}
 {% set personal_travel = personal_travel | default([]) %}
+{% set personal_talent_times = personal_talent_times | default({}) %}
 {% set date_display    = date_display    | default('') %}
 {% block title %}Call Sheet — {{ project.name }} | {{ selected_date.strftime('%b %d, %Y') }}{% endblock %}
 {# light-preview is ALWAYS on: the call sheet is unconditionally the designed
@@ -298,6 +299,26 @@
           {% endif %}
         </div>
         {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {# Cast member's own call-grid times (pickup/HMU/on-set/wrap/drop-off). Additive
+     and fully guarded: only renders when this recipient matched a cast row that
+     has saved talent_times (personal_talent_times, built in
+     _build_callsheet_recipient_context). Their CALL already shows in the bar pill
+     above, so it is not repeated here. #}
+  {% if personal_talent_times %}
+  <div class="cs-recip-outer">
+    <div class="yd-card">
+      <div class="yd-hdr">📋 Your times — {{ rec.name }}</div>
+      <div class="yd-times">
+        {% if personal_talent_times.get('pickup') %}<div class="yd-time"><span class="yd-time-lbl">Pickup</span><span class="yd-time-val">{{ personal_talent_times.pickup }}</span></div>{% endif %}
+        {% if personal_talent_times.get('hmu') %}<div class="yd-time"><span class="yd-time-lbl">Hair &amp; Makeup</span><span class="yd-time-val">{{ personal_talent_times.hmu }}</span></div>{% endif %}
+        {% if personal_talent_times.get('onset') %}<div class="yd-time"><span class="yd-time-lbl">On Set</span><span class="yd-time-val">{{ personal_talent_times.onset }}</span></div>{% endif %}
+        {% if personal_talent_times.get('wrap') %}<div class="yd-time"><span class="yd-time-lbl">Wrap</span><span class="yd-time-val">{{ personal_talent_times.wrap }}</span></div>{% endif %}
+        {% if personal_talent_times.get('dropoff') %}<div class="yd-time"><span class="yd-time-lbl">Drop-Off</span><span class="yd-time-val">{{ personal_talent_times.dropoff }}</span></div>{% endif %}
       </div>
     </div>
   </div>
@@ -794,29 +815,72 @@
     </div>{# /callsheet-two-col #}
     {% endif %}{# /csv.logistics #}
 
-    {# ── Cast / Talent section (always shown — populates when cast data exists) #}
+    {# ── Cast / Talent — industry cast time grid (pickup → drop-off) ───────────
+       Emptiness gate: no cast → internal keeps the section + hint; recipient/pdf
+       collapse the WHOLE section (same policy as the _*_has predicates for other
+       sections). Talent emptiness = `talent_rows`, a server-derived per-day list,
+       so no cs_data predicate is needed. (2026-07-14.) #}
+    {% if talent_rows or not _hide_empty %}
     <div class="callsheet-section callsheet-section-talent cs-hideable" data-cs-key="section:talent">
       <div class="callsheet-section-title"><span class="cs-hide-toggle cs-screen-only" data-cs-key="section:talent" title="Hide / show Cast / Talent">👁</span>Cast / Talent</div>
       {% if talent_rows %}
-      <table class="callsheet-table">
+      <table class="callsheet-table callsheet-cast-grid">
         <thead>
           <tr>
-            <th>Role</th>
+            <th class="cs-cast-num">#</th>
             <th>Name</th>
-            <th>Day Type</th>
+            <th>Role</th>
+            <th class="cs-cast-time-th">Pickup</th>
+            <th class="cs-cast-time-th">Call</th>
+            <th class="cs-cast-time-th">HMU</th>
+            <th class="cs-cast-time-th">On Set</th>
+            <th class="cs-cast-time-th">Wrap</th>
+            <th class="cs-cast-time-th">Drop-Off</th>
             {% if csv.talent_contact %}<th>Contact</th>{% endif %}
           </tr>
         </thead>
         <tbody>
           {% for r in talent_rows %}
-          <tr>
-            <td>{{ r.role }}</td>
-            <td>{{ r.name }}</td>
-            <td><span class="callsheet-day-type-badge callsheet-dt-{{ r.day_type }}">{{ r.day_type | upper }}</span></td>
+          {# talent_key = "Talent||<role>||<name>" — the SAME sec||role||name shape
+             the crew grid uses (every cast row's p2_section_default is 'Talent'),
+             so the CALL cell below reads/writes the SAME crew_call_times[tkey]
+             entry as this person's row in the crew "Talent" box → ONE source of
+             truth for call time (no duplicate state). The other five columns live
+             in cs_data.talent_times[tkey] and carry NO call field. #}
+          {% set tkey = 'Talent||' ~ r.role ~ '||' ~ r.name %}
+          {% set tt = (cs_data.get('talent_times', {}).get(tkey, {}) or {}) %}
+          {% set trow_key = 'talent_row:' ~ tkey %}
+          <tr class="cs-cast-row cs-hideable" data-cs-key="{{ trow_key }}">
+            <td class="cs-cast-num callsheet-row-num"><span class="cs-hide-toggle cs-screen-only" data-cs-key="{{ trow_key }}" title="Hide / show this cast member on this call sheet">👁</span>{{ loop.index }}</td>
+            <td class="callsheet-name-cell">{{ r.name }}<span class="callsheet-day-type-badge callsheet-dt-{{ r.day_type }} cs-cast-dt">{{ r.day_type | upper }}</span></td>
+            <td class="callsheet-role-cell">{{ r.role }}</td>
+            <td class="callsheet-time-cell cs-editable cs-tt-cell"
+                contenteditable="true" data-talent-key="{{ tkey }}" data-talent-field="pickup"
+                data-placeholder="—" title="Pickup time">{{ tt.get('pickup', '') or '' }}</td>
+            {# CALL — single source of truth: reads/writes crew_call_times[tkey],
+               the same entry as the crew-grid Talent box. Mirrors the value onto
+               that sibling cell on input/blur so the later-in-DOM duplicate can't
+               clobber this edit when collectCrewCallTimes() runs (last-wins). #}
+            <td class="callsheet-time-cell cs-editable cs-tt-cell cs-crew-call-cell"
+                contenteditable="true" data-crew-key="{{ tkey }}" data-is-override="false"
+                data-placeholder="—" title="Call time (this cast member)"
+                onblur="csTalentCallBlur(this)" oninput="csTalentCallMirror(this)">{{ cs_data.get('crew_call_times', {}).get(tkey, '') or '' }}</td>
+            <td class="callsheet-time-cell cs-editable cs-tt-cell"
+                contenteditable="true" data-talent-key="{{ tkey }}" data-talent-field="hmu"
+                data-placeholder="—" title="Hair &amp; makeup time">{{ tt.get('hmu', '') or '' }}</td>
+            <td class="callsheet-time-cell cs-editable cs-tt-cell"
+                contenteditable="true" data-talent-key="{{ tkey }}" data-talent-field="onset"
+                data-placeholder="—" title="On-set ready time">{{ tt.get('onset', '') or '' }}</td>
+            <td class="callsheet-time-cell cs-editable cs-tt-cell"
+                contenteditable="true" data-talent-key="{{ tkey }}" data-talent-field="wrap"
+                data-placeholder="—" title="Wrap time">{{ tt.get('wrap', '') or '' }}</td>
+            <td class="callsheet-time-cell cs-editable cs-tt-cell"
+                contenteditable="true" data-talent-key="{{ tkey }}" data-talent-field="dropoff"
+                data-placeholder="—" title="Drop-off time">{{ tt.get('dropoff', '') or '' }}</td>
             {% if csv.talent_contact %}<td class="callsheet-contact-cell">
               {% if r.phone %}<div class="callsheet-contact-item">{{ r.phone }}</div>{% endif %}
               {% if r.email %}<div class="callsheet-contact-item callsheet-email">{{ r.email }}</div>{% endif %}
-              {% if not r.phone and not r.email %}—{% endif %}
+              {% if not r.phone and not r.email %}<span class="cs-screen-only">—</span>{% endif %}
             </td>{% endif %}
           </tr>
           {% endfor %}
@@ -826,6 +890,7 @@
       <div class="callsheet-placeholder" style="padding:.6rem .25rem;font-style:italic">No cast scheduled for this day. Cast will appear here once assigned in the schedule.</div>
       {% endif %}
     </div>
+    {% endif %}{# /talent section empty-collapse #}
 
     {# ── Background / Extras ────────────────────────────────────────────────── #}
     {# Empty-collapse: recipient/pdf drop the section when no extras row carries
@@ -1735,6 +1800,7 @@ function collectCallSheetData() {
     extras:             collectExtras(),
     dept_notes:         collectDeptNotes(),
     crew_call_times:    collectCrewCallTimes(),
+    talent_times:       collectTalentTimes(),
     key_personnel:      collectKeyPersonnel(),
     hospitals:          collectHospitals(),
     location_order:     collectLocationOrder(),
@@ -2672,6 +2738,55 @@ function collectCrewCallTimes() {
     if (key && val) times[key] = val;
   });
   return times;
+}
+
+// ── Cast / Talent time grid ────────────────────────────────────────────────────
+// The five columns pickup/hmu/onset/wrap/dropoff persist in
+// cs_data.talent_times = { "Talent||<role>||<name>": {pickup,hmu,onset,wrap,dropoff} }
+// (a DICT of dicts, mirroring crew_call_times' shape). The CALL column is NOT here
+// — it lives in crew_call_times under the SAME key (single source of truth), so a
+// cast member never has two competing call-time values. Only non-empty fields are
+// written, so a key with every cell blank drops out entirely. Edit/save rides the
+// global .cs-editable input/blur listeners (normalize + scheduleAutoSave) exactly
+// like the crew call cells, so these need no per-cell handlers.
+function collectTalentTimes() {
+  const out = {};
+  document.querySelectorAll('.cs-cast-row [data-talent-field]').forEach(cell => {
+    const key = cell.dataset.talentKey;
+    const field = cell.dataset.talentField;
+    if (!key || !field) return;
+    const val = cell.textContent.trim();
+    if (val) { (out[key] || (out[key] = {}))[field] = val; }
+  });
+  return out;
+}
+
+// CALL cell in the cast grid shares crew_call_times[key] with this person's row in
+// the crew "Talent" box (same data-crew-key). Because collectCrewCallTimes() is
+// last-wins over DOM order and the crew box sits AFTER the cast grid, an edit made
+// here would be clobbered by the stale duplicate at save time. Mirror the value
+// onto every sibling .cs-crew-call-cell so both hold the same text before collect.
+function csTalentCallMirror(cell) {
+  cell.dataset.isOverride = 'true';
+  const key = cell.dataset.crewKey;
+  const val = cell.textContent;
+  document.querySelectorAll('.cs-crew-call-cell').forEach(c => {
+    if (c !== cell && c.dataset.crewKey === key) {
+      c.textContent = val;
+      c.dataset.isOverride = 'true';
+    }
+  });
+}
+
+// Blur: normalize this cell FIRST (so the mirrored value is the canonical
+// H:MM AM/PM string, not the raw typed text), then push it to the siblings and
+// queue a save. The global .cs-editable blur listener also runs (normalize is
+// idempotent) and fires the immediate doAutoSave that collects the synced cells.
+function csTalentCallBlur(cell) {
+  const norm = normalizeTimeStr(cell.textContent.trim());
+  if (norm !== cell.textContent.trim()) cell.textContent = norm;
+  csTalentCallMirror(cell);
+  scheduleAutoSave();
 }
 
 function toggleCrewView() {

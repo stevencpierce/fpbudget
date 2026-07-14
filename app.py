@@ -22339,6 +22339,17 @@ def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
             break
     personal_call = personal_call or cs_portal_data.get('general_crew_call', '') or ''
 
+    # Cast time grid: this recipient's own pickup/HMU/on-set/wrap/drop-off, keyed
+    # (like crew_call_times) by the last ||-segment (name). talent_times is a
+    # {key: {field: time}} dict; CALL is intentionally NOT here (it rides
+    # crew_call_times → personal_call above). (2026-07-14.)
+    tt_all = cs_portal_data.get('talent_times') or {}
+    personal_talent_times = {}
+    for key, vals in tt_all.items():
+        if isinstance(vals, dict) and key.split('||')[-1].strip().lower() == name_lower:
+            personal_talent_times = vals
+            break
+
     # Resolve recipient → crew member → personal travel (with confirmations).
     crew_member = _resolve_recipient_crew_member(rec_name, rec_email)
     personal_travel = []
@@ -22362,6 +22373,7 @@ def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
         "cs_locations": cs_locations,
         "personal_call": personal_call,
         "personal_travel": personal_travel,
+        "personal_talent_times": personal_talent_times,
         "tz_name": tz_name,
     }
 

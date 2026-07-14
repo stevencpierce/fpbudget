@@ -3713,6 +3713,22 @@ a.tab-link:hover { background: var(--bg-3); }
   color: var(--accent);
 }
 
+/* ── Cast time grid (pickup → drop-off) ────────────────────────────────────── */
+.callsheet-cast-grid { table-layout: auto; }
+.callsheet-cast-grid th.cs-cast-num,
+.callsheet-cast-grid td.cs-cast-num {
+  width: 2rem; text-align: left; padding-right: .25rem;
+}
+.callsheet-cast-grid th.cs-cast-time-th { text-align: center; white-space: nowrap; }
+.callsheet-cast-grid td.cs-tt-cell {
+  text-align: center;
+  min-width: 4.2rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+/* Day-type badge trailing the cast member's name. */
+.cs-cast-dt { margin-left: .4rem; vertical-align: middle; }
+
 /* ── Contact cells ─────────────────────────────────────────────────────────── */
 .callsheet-contact-cell { font-size: .82rem; }
 .callsheet-contact-item { line-height: 1.4; }
@@ -4547,6 +4563,17 @@ body.recipient-mode tr.cs-recip-me { background: rgba(37, 99, 235, .18) !importa
   font-weight: 800; letter-spacing: .06em; color: #052e16;
   background: #4ade80; border-radius: 7px; padding: 5px 14px;
   user-select: all;
+}
+/* Cast member's own time card (📋 Your times) — big, readable timeline. */
+.yd-times { display: flex; flex-wrap: wrap; gap: 10px 22px; padding: 12px 18px 16px; }
+.yd-time { display: flex; flex-direction: column; gap: 2px; min-width: 5rem; }
+.yd-time-lbl {
+  font-size: .62rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .1em; color: #6b7280;
+}
+.yd-time-val {
+  font-size: 1.25rem; font-weight: 800; color: #e8e9ec;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Recipient mobile (~390px) — sheet is desktop-oriented; keep it usable. ── */
