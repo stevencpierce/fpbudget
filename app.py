@@ -21944,10 +21944,21 @@ def callsheet_prepare_send(pid, bid, date_str):
             _pdf_by_view[_view] = (_b, _f)
         return _pdf_by_view[_view]
 
+    # Resolve each recipient's audience view ONCE (rep rows inherit their
+    # client's view via _rep_recipient_view — talent's rep → talent, crew's rep
+    # → crew; everything else maps by type). Keyed by recipient id so the PDF
+    # attach loop below just picks from the per-view cache, no re-query. (User
+    # 2026-07-14.)
+    _view_by_rec_id = {}
+    for _r, _e, _p in created_recs:
+        _rt = (_r.recipient_type or 'crew').strip().lower()
+        _view_by_rec_id[_r.id] = (_rep_recipient_view(budget, _r.name, _r.email)
+                                  if _rt == 'rep'
+                                  else _recipient_view_for_type(_rt))
+
     # Pre-build every view that will actually be sent, plus the 'crew' view for
     # the archived/downloadable artifact (the fullest recipient-facing copy).
-    _needed_views = {_recipient_view_for_type(r.recipient_type or 'crew')
-                     for r, _e, _p in created_recs}
+    _needed_views = set(_view_by_rec_id.values())
     _needed_views.add('crew')
     for _v in _needed_views:
         _pdf_for_view(_v)
@@ -22043,9 +22054,11 @@ def callsheet_prepare_send(pid, bid, date_str):
                 f"— Framework Productions · contact@thefp.tv\n"
             )
         # Attach the PDF for THIS recipient's audience view (crew/talent/client/
-        # union). Falls back to the crew-view artifact if a view failed to build.
+        # union; rep rows inherit their client's view). Uses the per-recipient
+        # view resolved once above. Falls back to the crew-view artifact if a
+        # view failed to build.
         _rec_pdf_bytes, _rec_pdf_filename = _pdf_for_view(
-            _recipient_view_for_type(rtype))
+            _view_by_rec_id.get(rec.id) or _recipient_view_for_type(rtype))
         if not _rec_pdf_bytes:
             _rec_pdf_bytes, _rec_pdf_filename = crew_pdf_bytes, crew_pdf_filename
 
@@ -22283,6 +22296,52 @@ def _personal_travel_for(budget, selected_date, sched_mode, crew_member, rec_nam
     return [v for _k, v in out]
 
 
+def _rep_recipient_view(budget, rec_name, rec_email):
+    """A Representation recipient (an agent/manager) inherits their CLIENT's
+    audience view: a rep of talent gets the Talent view, a rep of crew gets the
+    Crew view. (User 2026-07-14: "representation should get the same view as
+    their client… if their talent → TalentView; if it's rep of a crew → Crew
+    view.")
+
+    Resolve the SupportContact this recipient is — scoped to crew members with
+    assignments on THIS budget's labor lines (mirrors how rep_contacts itself is
+    built) — case-insensitive email first, then name. From SupportContact →
+    crew_member → their assignment's budget line: Talent section (COA_CODE_TALENT
+    account code) → 'talent', else → 'crew'. Unresolvable → 'crew' (the
+    pre-2026-07-14 behavior)."""
+    if not budget:
+        return 'crew'
+    _email = (rec_email or '').strip().lower()
+    _name = (rec_name or '').strip().lower()
+    if _name in ('—', '-'):
+        _name = ''
+    if not _email and not _name:
+        return 'crew'
+    labor_lines = BudgetLine.query.filter_by(
+        budget_id=budget.id, is_labor=True).all()
+    # Pass 1 matches on email, pass 2 on name — so an email hit always wins over
+    # a name hit (same precedence as _resolve_recipient_crew_member).
+    for _by_email in (True, False):
+        key = _email if _by_email else _name
+        if not key:
+            continue
+        for ln in labor_lines:
+            for ca in ln.crew_assignments:
+                if not ca.crew_member_id:
+                    continue
+                cm = ca.crew_member
+                if not (cm and cm.support_contacts):
+                    continue
+                for sc in cm.support_contacts:
+                    if not sc.active:
+                        continue
+                    field = (sc.email if _by_email else sc.name) or ''
+                    if field.strip().lower() == key:
+                        return ('talent' if ln.account_code == COA_CODE_TALENT
+                                else 'crew')
+    return 'crew'
+
+
 def _recipient_view_for_type(rec_type):
     """Map a recipient type → the audience view the recipient sheet renders.
     Crew (and anything unrecognized) get the full Crew view; client-type
@@ -22394,9 +22453,15 @@ def _build_callsheet_recipient_context(send, rec_name, rec_email, rec_type):
         ctx.update(full)  # full context wins on shared keys (cs_data, project…)
 
     # Forced audience view per recipient type (recipients never get the internal
-    # editing switcher).
-    cs_view, csv_flags = _callsheet_audience_flags(
-        _recipient_view_for_type(rec_type))
+    # editing switcher). Representation recipients ('rep') inherit their client's
+    # view (talent's rep → talent view, crew's rep → crew view) via a
+    # budget-scoped SupportContact lookup; everything else maps by type. This is
+    # the single place preview + tokenized recipient view both flow through.
+    if (rec_type or '').strip().lower() == 'rep':
+        _resolved_view = _rep_recipient_view(budget, rec_name, rec_email)
+    else:
+        _resolved_view = _recipient_view_for_type(rec_type)
+    cs_view, csv_flags = _callsheet_audience_flags(_resolved_view)
     ctx["cs_view"] = cs_view
     ctx["csv"] = csv_flags
     return ctx
@@ -23505,6 +23570,12 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
                                 'rep_phone': sc.phone or '',
                                 'rep_email': sc.email or '',
                                 'notify_callsheet': bool(sc.notify_callsheet),
+                                # The view this rep inherits from their client
+                                # (talent's rep → talent view, else crew view) —
+                                # shown as a hint in the send panel. (2026-07-14.)
+                                'client_audience': (
+                                    'talent' if _ln.account_code == COA_CODE_TALENT
+                                    else 'crew'),
                             })
                 _seen_cm_rep.add(_ca.crew_member_id)
 

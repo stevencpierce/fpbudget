@@ -3786,8 +3786,11 @@ function csDistBuildContactGroups() {
   }).map(r => {
     const badge = r.rep_role_type
       ? `<span class="contact-role-badge" style="font-size:.6rem">${csEscHtml(r.rep_role_type)}</span>` : '';
+    const viewHint = r.client_audience
+      ? ` <span style="color:var(--text-muted);font-size:.68rem">→ ${csEscHtml(r.client_audience)} view</span>` : '';
     const label = `<strong>${csEscHtml(r.rep_name)}</strong> ${badge}`
       + ` <span style="color:var(--text-muted);font-size:.73rem">for ${csEscHtml(r.crew_name || '')}</span>`
+      + viewHint
       + (r.notify_callsheet ? flaggedChip : '');
     return row({ name: r.rep_name, email: r.rep_email || '', phone: r.rep_phone || '',
                  type: 'rep', labelHtml: label });
