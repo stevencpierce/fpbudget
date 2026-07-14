@@ -978,14 +978,25 @@
       {% if project_clients_cs %}
       <table class="callsheet-table">
         <thead>
-          <tr><th>Name</th><th>Title</th><th>Company</th><th>Contact</th></tr>
+          <tr><th>Name</th><th>Title</th><th>Company</th><th class="cs-cast-time-th">Call</th><th>Contact</th></tr>
         </thead>
         <tbody>
           {% for c in project_clients_cs %}
+          {# Per-client CALL time. Stored in crew_call_times under "client||<name>"
+             so the recipient "Your Call" pill (which matches by the last ||-segment)
+             resolves it with no extra plumbing. data-no-general keeps client cells
+             from inheriting/being overwritten by the General Crew Call — a client's
+             call is always their own explicit time. (User 2026-07-14.) #}
+          {% set _ckey = 'client||' ~ c.name %}
           <tr>
             <td><strong>{{ c.name }}</strong></td>
             <td>{{ c.title or '—' }}</td>
             <td>{{ c.company or '—' }}</td>
+            <td class="callsheet-time-cell cs-editable cs-crew-call-cell cs-client-call-cell"
+                {% if not recipient_mode %}contenteditable="true"{% endif %}
+                data-crew-key="{{ _ckey }}" data-is-override="true" data-no-general="1"
+                data-placeholder="—" title="Call time for this client"
+                onblur="csClientCallBlur(this)" oninput="this.dataset.isOverride='true'">{{ (cs_data.get('crew_call_times') or {}).get(_ckey, '') or '' }}</td>
             <td class="callsheet-contact-cell">
               {% if c.phone %}<div class="callsheet-contact-item">{{ c.phone }}</div>{% endif %}
               {% if c.email %}<div class="callsheet-contact-item callsheet-email">{{ c.email }}</div>{% endif %}
@@ -2838,6 +2849,9 @@ function initCrewCallTimes() {
   const saved = CS_DATA.crew_call_times || {};
 
   document.querySelectorAll('.cs-crew-call-cell').forEach(cell => {
+    // Client call cells are always their own explicit time — never seed them from
+    // the General Crew Call. They're rendered server-side with their saved value.
+    if (cell.dataset.noGeneral) return;
     const key = cell.dataset.crewKey;
     if (saved[key]) {
       cell.textContent = saved[key];
@@ -2863,6 +2877,7 @@ function initCrewCallTimes() {
 function propagateGeneralCrewCall(time) {
   updateCrewCallP2Display(time);
   document.querySelectorAll('.cs-crew-call-cell').forEach(cell => {
+    if (cell.dataset.noGeneral) return;  // client cells never follow the general call
     if (cell.dataset.isOverride !== 'true') {
       cell.textContent = time;
     }
@@ -2887,6 +2902,16 @@ function crewCallBlur(cell) {
     const g = ((document.getElementById('cs-crew-call') || {}).textContent || '').trim();
     cell.textContent = (g && g !== 'TBD') ? g : '';
   }
+  scheduleAutoSave();
+}
+
+// Client call cells are ALWAYS an explicit per-client time — they never follow the
+// General Crew Call, so a blank stays blank (no general fallback) and any value is
+// kept as an override. collectCrewCallTimes persists them like any override; the
+// recipient's "Your Call" pill reads them via the "client||<name>" key. (User
+// 2026-07-14.)
+function csClientCallBlur(cell) {
+  cell.dataset.isOverride = 'true';
   scheduleAutoSave();
 }
 
