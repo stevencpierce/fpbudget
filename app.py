@@ -22293,6 +22293,12 @@ def _recipient_view_for_type(rec_type):
         return 'client'
     if t == 'talent':
         return 'talent'
+    if t == 'union':
+        # Union recipients get the UNION view — the editor's ?view=union (and
+        # its per-view hides) is exactly what they receive. Previously they
+        # fell through to 'crew', so the union editor view and the union
+        # send/print disagreed. (User 2026-07-13.)
+        return 'union'
     return 'crew'
 
 
@@ -23653,15 +23659,22 @@ def _callsheet_audience_flags(view):
     return _v, {
         'view':            _v,
         'is_full':         _v == 'internal',
-        'logistics':       _v != 'union',                                  # union: bare lists only
+        # Union used to be bare lists only ('logistics': _v != 'union') — but
+        # that meant the union EDITOR view showed no locations to hide, while
+        # union recipients fell through to the crew view and saw everything.
+        # Union now shows logistics/KP like the others (contact info still
+        # excluded below); redact per-sheet with per-view 👁 hides. (User
+        # 2026-07-13: "make it show the locations... so I can hide things for
+        # the union... and make sure it actually prints for them that way.")
+        'logistics':       True,
         'crew_contact':    _v in ('internal', 'crew'),                     # phones/emails on crew rows
         'talent_contact':  _v == 'internal',
         'clients':         _v in ('internal', 'client'),
         'reps':            _v == 'internal',
         'background':      _v in ('internal', 'crew'),                     # extras list (production-facing)
         'dept_notes':      _v in ('internal', 'crew'),
-        'key_personnel':   _v != 'union',                                  # union: no KP block
-        'kp_contact':      _v in ('internal', 'crew'),                     # client/talent: KP names only
+        'key_personnel':   True,                                           # names for all; contacts gated below
+        'kp_contact':      _v in ('internal', 'crew'),                     # client/talent/union: KP names only
         'full_crew_list':  _v in ('internal', 'crew', 'client', 'union'),  # talent: no full crew list
         'talent_list':     True,                                           # all views show cast (names ≥)
         'crew_phone_in_list': _v == 'crew',                               # crew view adds phone to the crew list
