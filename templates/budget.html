@@ -6684,7 +6684,7 @@
     row.innerHTML =
       '<input class="ditem-desc" placeholder="description" value="' + _esc(desc || '') + '" oninput="window._docItemizeDirty=true" style="flex:1.5;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px">' +
       '<input class="ditem-amt" type="number" step="0.01" placeholder="0.00" value="' + (amount != null && amount !== '' ? amount : '') + '" oninput="_itemUpdateTotal();window._docItemizeDirty=true" style="width:88px;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px;text-align:right">' +
-      '<select class="ditem-line actuals-line-picker" onfocus="_actualsFillPicker(this)" onchange="window._docItemizeDirty=true" style="flex:1.3;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px"><option value="">— budget line —</option></select>' +
+      '<select class="ditem-line actuals-line-picker" onfocus="_actualsFillPicker(this)" onchange="_ditemLineChanged(this)" style="flex:1.3;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px"><option value="">— budget line —</option></select>' +
       '<button type="button" title="Remove line" onclick="this.closest(\'.ditem-row\').remove();_itemUpdateTotal();window._docItemizeDirty=true" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px">✕</button>';
     host.appendChild(row);
     if (lineId) { const sel = row.querySelector('.ditem-line'); sel.dataset.current = String(lineId); if (typeof window._actualsFillPicker === 'function') window._actualsFillPicker(sel); }
@@ -6693,9 +6693,18 @@
   window._itemUpdateTotal = function () {
     const _n = document.querySelectorAll('#docItemizeRows .ditem-row').length;
     const _hdr = document.getElementById('docItemizeHdr'); if (_hdr) _hdr.style.display = _n ? 'flex' : 'none';
-    let sub = 0;
-    document.querySelectorAll('#docItemizeRows .ditem-amt').forEach(i => { sub += parseFloat(i.value || 0) || 0; });
-    sub = Math.round(sub * 100) / 100;
+    // Only lines WITH a budget line peel off; lines with an amount but no line
+    // stay on the main line (amber border flags them). (User 2026-07-20.)
+    let sub = 0, uncSub = 0, uncN = 0;
+    document.querySelectorAll('#docItemizeRows .ditem-row').forEach(r => {
+      const a = parseFloat((r.querySelector('.ditem-amt') || {}).value || 0) || 0;
+      const sel = r.querySelector('.ditem-line');
+      const hasLine = !!(sel && sel.value);
+      if (a && !hasLine) { uncSub += a; uncN++; if (sel) sel.style.borderColor = '#e0a13a'; }
+      else { sub += a; if (sel) sel.style.borderColor = ''; }
+    });
+    sub = Math.round(sub * 100) / 100; uncSub = Math.round(uncSub * 100) / 100;
+    window._itemUncodedN = uncN; window._itemUncodedSub = uncSub;
     const el = document.getElementById('docItemizeTotal'); if (!el) return;
     const tot = _itemDocTotal;
     const fmt = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -6709,11 +6718,30 @@
     if (tot != null) {
       const remainder = Math.round((tot - sub) * 100) / 100;
       const over = remainder < -0.01;
-      el.innerHTML = 'Sublines <b>' + fmt(sub) + '</b> · ' +
+      const uncNote = uncN
+        ? ' <span style="color:#e0a13a">(incl. ' + fmt(uncSub) + ' from ' + uncN + ' line' + (uncN !== 1 ? 's' : '') + ' with no budget line)</span>'
+        : '';
+      el.innerHTML = 'Peeling off <b>' + fmt(sub) + '</b> · ' +
         (over
           ? '<span style="color:#e0a13a">⚠ ' + fmt(-remainder) + ' over the doc total</span>'
-          : '→ <b style="color:#5fd0a0">' + fmt(remainder) + '</b> to ' + (mp && mp.value ? '<b>'+mainLabel+'</b>' : '<span style="color:#e0a13a">main line (pick one above)</span>'));
+          : '→ <b style="color:#5fd0a0">' + fmt(remainder) + '</b> to ' + (mp && mp.value ? '<b>'+mainLabel+'</b>' : '<span style="color:#e0a13a">main line (pick one above)</span>') + uncNote);
     } else { el.innerHTML = 'Sublines: <b>' + fmt(sub) + '</b>'; }
+  };
+  // Subline budget-line pick: handles the ＋ New-line option, marks dirty, and
+  // refreshes the peel-off math (coded vs uncoded). (2026-07-20.)
+  window._ditemLineChanged = function (sel) {
+    if (sel.value === '__newline__') {
+      sel.value = '';
+      window._newBudgetLineFlow(function (nl) {
+        window._pickerInsertNewLine(nl);
+        sel.value = String(nl.line_id);
+        window._docItemizeDirty = true;
+        _itemUpdateTotal();
+      });
+      return;
+    }
+    window._docItemizeDirty = true;
+    _itemUpdateTotal();
   };
   window.docItemizePull = function () {
     const items = window._itemVeryfi || [];
@@ -6777,18 +6805,33 @@
     if (!_itemUid) return;
     const st = document.getElementById('docItemizeStatus');
     const btn = document.getElementById('docItemizeSaveBtn');
-    const rows = [];
+    // Only rows WITH a budget line peel off; rows without one stay on the main
+    // line (their dollars ride the remainder). (User 2026-07-20.)
+    const rows = []; let uncoded = 0, uncodedAmt = 0;
     document.querySelectorAll('#docItemizeRows .ditem-row').forEach(r => {
       const amt = parseFloat((r.querySelector('.ditem-amt')||{}).value || 0);
       const line = (r.querySelector('.ditem-line')||{}).value || '';
       const desc = (r.querySelector('.ditem-desc')||{}).value || '';
-      if (amt) rows.push({ amount: amt, budget_line_id: line, description: desc });
+      if (amt && line) rows.push({ amount: amt, budget_line_id: line, description: desc });
+      else if (amt) { uncoded++; uncodedAmt += amt; }
     });
     const mainLine = (document.getElementById('docDetailLinePicker')||{}).value || '';
     // Guard: no sublines AND no main line would silently UN-code the doc — make
     // the user pick something instead of losing coding on a stray click. (2026-07.)
     if (!rows.length && !mainLine) {
-      if (st) { st.textContent = 'Nothing to save — add sublines or pick a main budget line above.'; st.style.color = '#e0a13a'; }
+      if (st) { st.textContent = uncoded
+        ? 'No line has a budget line yet — pick budget lines on the rows, or pick a main budget line above.'
+        : 'Nothing to save — add sublines or pick a main budget line above.'; st.style.color = '#e0a13a'; }
+      return;
+    }
+    // Uncoded rows need a main line to land on — otherwise their dollars vanish.
+    if (uncoded && !mainLine) {
+      if (st) {
+        const money = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+        st.textContent = uncoded + ' line' + (uncoded!==1?'s have':' has') + ' no budget line ('
+          + money(uncodedAmt) + ') — pick lines for them, or pick a main budget line above to receive that amount.';
+        st.style.color = '#e0a13a';
+      }
       return;
     }
     if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
@@ -6803,7 +6846,8 @@
           const money = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
           if (d.cleared) st.textContent = 'Itemization cleared.';
           else if (d.over) st.textContent = '⚠ Saved, but sublines are '+money(-d.remainder)+' over the doc total — check the amounts.';
-          else st.textContent = '✓ Saved — '+money(d.sublines_total)+' peeled off, '+money(d.main_line_amount)+' stays on the main line.';
+          else st.textContent = '✓ Saved — '+money(d.sublines_total)+' peeled off, '+money(d.main_line_amount)+' stays on the main line'
+            + (d.uncoded_n ? ' (incl. '+money(d.uncoded_total)+' from '+d.uncoded_n+' line'+(d.uncoded_n!==1?'s':'')+' without a budget line)' : '') + '.';
           st.style.color = d.over ? '#e0a13a' : '';
         }
         const nsub = rows.filter(x=>x.amount).length;
@@ -8027,6 +8071,7 @@
           <option value="">— pick budget line —</option>
           <option value="not_project" style="color:#e0a060">🚫 Not a project expense</option>
           <option value="__clear__" style="color:#e08080">✕ Clear assignment</option>
+          <option value="__newline__" style="color:#8fb4ff">＋ New budget line… (any COA section)</option>
           {% for grp in actuals_pick_groups %}
           <optgroup label="{{ grp.code }}  {{ grp.name }}">
             <option value="section:{{ grp.code }}">📂 All {{ grp.name }} (section-only, no specific line)</option>
@@ -8062,7 +8107,11 @@
         <div id="actuals-txn-list">
         {% for t in (actuals_transactions if active_tab == 'actuals' else []) %}
           {% set _doc = docs_by_id.get(t.doc_upload_id) if t.doc_upload_id else None %}
-          {% set _coded = (t.budget_line_id is not none) or (t.account_code is not none) %}
+          {# Itemized container: coded VIA its invoice_split children — the row
+             counts as coded and its picker is replaced by an "Itemized" state
+             (server already 409s re-coding it). (User 2026-07-20.) #}
+          {% set _is_split_parent = t.id in split_parent_ids %}
+          {% set _coded = _is_split_parent or (t.budget_line_id is not none) or (t.account_code is not none) %}
           {% set _has_doc = (t.doc_upload_id is not none) or (t.source == 'doc_upload') %}
           {% set _is_sugg = (t.match_status == 'suggested' and t.doc_upload_id) %}
           {# Suggested-match banner — the gold HEADER of the suggestion card; the
@@ -8221,6 +8270,14 @@
                    chip. The AI suggestion (if any) sits on its OWN row below. #}
                 <div class="ax-line-top">
                   <span class="ax-ic">🏷</span>
+                  {% if _is_split_parent %}
+                  {# Itemized container — coding lives on the line-item children.
+                     Disabled state instead of an "Add budget line" invite. #}
+                  <select class="actuals-line-picker" disabled data-populated="1"
+                          title="This invoice is itemized — each line item carries its own budget line. Open the document (🧾 Itemize) to change the split.">
+                    <option selected>🧾 Itemized — coded by line items</option>
+                  </select>
+                  {% else %}
                   {# Lazy picker: seed with ONLY the current assignment; the full
                      ~300-option list is cloned in on focus by _actualsFillPicker. #}
                   <select class="actuals-line-picker"
@@ -8240,6 +8297,7 @@
                   <button type="button" class="ax-jump-line" onclick="actualsJumpToLine('{{ _cur }}')"
                           title="Go to this line on the Budget tab">↗</button>
                   {% endif %}
+                  {% endif %}{# /_is_split_parent #}
                 </div>
                 {# AI code suggestion (advisory) — the single suggestion source. #}
                 {% if t.ai_suggested_code and not _coded and not t.not_project_expense %}
@@ -8985,10 +9043,92 @@
     //   "__clear__"       — clear the assignment via unlink
     //   "section:<code>"  — section-only (no specific line) → /set-coa
     //   "<line_id>"       — specific line → /set-line (auto-clones Actual)
+    // ── ＋ New budget line from ANY picker (2026-07-20) ──────────────────
+    // Creates a Working-budget line under any COA section (added to the budget
+    // if missing) then patches the shared options template + every live picker.
+    window._pickerInsertNewLine = function (nl) {
+      function patch(sel) {
+        if (!sel) return;
+        let grp = null;
+        sel.querySelectorAll('optgroup').forEach(g => {
+          if (!grp && (g.label || '').indexOf(String(nl.account_code)) === 0) grp = g;
+        });
+        if (!grp) {
+          grp = document.createElement('optgroup');
+          grp.label = nl.account_code + '  ' + nl.section_name;
+          const so = document.createElement('option');
+          so.value = 'section:' + nl.account_code;
+          so.textContent = '📂 All ' + nl.section_name + ' (section-only, no specific line)';
+          grp.appendChild(so);
+          sel.appendChild(grp);
+        }
+        if (!grp.querySelector('option[value="' + nl.line_id + '"]')) {
+          const o = document.createElement('option');
+          o.value = String(nl.line_id);
+          o.textContent = nl.label;
+          grp.appendChild(o);
+        }
+      }
+      patch(document.getElementById('actualsLineOptsTpl'));
+      document.querySelectorAll('select.actuals-line-picker[data-populated="1"], select.ditem-line').forEach(patch);
+    };
+    window._newBudgetLineFlow = function (onCreated) {
+      let dlg = document.getElementById('newBudgetLineDlg');
+      if (!dlg) {
+        dlg = document.createElement('div');
+        dlg.id = 'newBudgetLineDlg';
+        dlg.style.cssText = 'position:fixed;inset:0;z-index:10050;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center';
+        const secs = (window.COA_SECTIONS || []).map(s => '<option value="' + s[0] + '">' + s[0] + ' · ' + s[1] + '</option>').join('');
+        dlg.innerHTML = '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;width:340px;max-width:92vw">'
+          + '<div style="font-weight:700;font-size:14px;margin-bottom:10px">＋ New budget line</div>'
+          + '<label style="font-size:11px;color:var(--text-muted)">COA section (any — added to the budget if missing)</label>'
+          + '<select id="nblSection" style="width:100%;margin:3px 0 10px;padding:6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:6px">' + secs + '</select>'
+          + '<label style="font-size:11px;color:var(--text-muted)">Line description</label>'
+          + '<input id="nblDesc" placeholder="e.g. Parking" style="width:100%;margin:3px 0 4px;padding:6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:6px">'
+          + '<div id="nblStatus" style="font-size:11px;color:#e0a13a;min-height:14px"></div>'
+          + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">'
+          + '<button type="button" id="nblCancel" style="padding:6px 12px;border-radius:6px;background:none;border:1px solid var(--border);color:var(--text);cursor:pointer">Cancel</button>'
+          + '<button type="button" id="nblCreate" style="padding:6px 14px;border-radius:6px;background:#1f7a4d;border:none;color:#fff;font-weight:600;cursor:pointer">Create line</button>'
+          + '</div></div>';
+        document.body.appendChild(dlg);
+      }
+      dlg.style.display = 'flex';
+      const desc = dlg.querySelector('#nblDesc'), stat = dlg.querySelector('#nblStatus');
+      desc.value = ''; stat.textContent = '';
+      dlg.querySelector('#nblCancel').onclick = () => { dlg.style.display = 'none'; };
+      dlg.querySelector('#nblCreate').onclick = async () => {
+        const code = dlg.querySelector('#nblSection').value;
+        const d = desc.value.trim();
+        if (!d) { stat.style.color = '#e0a13a'; stat.textContent = 'Enter a description.'; return; }
+        stat.style.color = 'var(--text-muted)'; stat.textContent = 'Creating…';
+        try {
+          const r = await fetch('/projects/' + PROJ_ID + '/actuals/budget-line/new', {
+            method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ account_code: code, description: d }) });
+          const j = await r.json();
+          if (r.ok && j.ok) { dlg.style.display = 'none'; onCreated(j); }
+          else { stat.style.color = '#e0a13a'; stat.textContent = j.error || ('Failed (' + r.status + ')'); }
+        } catch (e) { stat.style.color = '#e0a13a'; stat.textContent = 'Error: ' + e.message; }
+      };
+      setTimeout(() => desc.focus(), 50);
+    };
+
     window.actualsSetLine = async function (selectEl) {
       const tid    = parseInt(selectEl.dataset.tid);
       const value  = selectEl.value;
       if (!value) return;  // placeholder — nothing to do
+      if (value === '__newline__') {
+        // Revert the visible pick, run the create flow, then re-enter with the
+        // real new line id via a synthetic change (works for actuals rows AND
+        // the doc-detail main picker, which share this handler). (2026-07-20.)
+        selectEl.value = selectEl.dataset.current || '';
+        window._newBudgetLineFlow(function (nl) {
+          window._pickerInsertNewLine(nl);
+          selectEl.value = String(nl.line_id);
+          selectEl.dispatchEvent(new Event('change'));
+        });
+        return;
+      }
       selectEl.disabled = true;
       try {
         let url, body;

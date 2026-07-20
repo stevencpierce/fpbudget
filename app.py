@@ -12296,8 +12296,10 @@ def actuals_edit_transaction(pid, tid):
 
     # Sync back to the linked DocUpload so the Docs tab reflects the
     # same vendor/amount/date. Symmetric to the /docs/upload/<uid>/update
-    # path that pushes the other direction.
-    if txn.doc_upload_id:
+    # path that pushes the other direction. NEVER from an invoice_split
+    # child — a subline edit must not overwrite the DOCUMENT's total with
+    # one line's amount. (2026-07-20, same family as the doc→txn guard.)
+    if txn.doc_upload_id and txn.source != 'invoice_split':
         doc = DocUpload.query.get(txn.doc_upload_id)
         if doc:
             doc.vendor = txn.vendor
@@ -30324,7 +30326,10 @@ def docs_split_integrity():
                 if dry:
                     healed.append(entry)
                 else:
-                    result, status = _itemize_apply(upload, parent, rows, main_raw)
+                    # strict=False: legacy rebuilds pass uncoded children
+                    # verbatim so healing stays byte-for-byte. (2026-07-20.)
+                    result, status = _itemize_apply(upload, parent, rows, main_raw,
+                                                    strict=False)
                     if status:
                         errors.append({"id": upload.id, "err": result.get("error", "apply rejected")})
                     else:
@@ -32844,9 +32849,17 @@ def docs_upload_line_items(uid):
     })
 
 
-def _itemize_apply(upload, parent, rows, main_line_raw):
+def _itemize_apply(upload, parent, rows, main_line_raw, strict=True):
     """CORE of the itemization save — shared by the /itemize route AND the
     /docs/split-integrity healer so the two can never diverge (2026-07).
+
+    strict=True (the live /itemize route): rows WITHOUT a budget line are NOT
+    peeled off — their dollars stay in the remainder that bills to the main
+    line, and a remainder with no main line to receive it is rejected (it
+    previously became invisible uncoded child spend — user 2026-07-20: "it
+    saved the whole amount... only half the things are coded").
+    strict=False (the split-integrity healer): legacy rebuilds pass uncoded
+    children verbatim so healing stays byte-for-byte.
 
     Replaces a document's child invoice_split rows (each coded to its own
     budget line), un-codes the parent + doc siblings, and auto-bills any
@@ -32913,6 +32926,7 @@ def _itemize_apply(upload, parent, rows, main_line_raw):
     # phantom coded spend on a $1,203 invoice. Sublines exceeding the document
     # total are always an error; reject with a clear message).
     sublines = []
+    uncoded_n, uncoded_total = 0, 0.0
     for r in rows:
         try:
             amt = round(float(r.get("amount")), 2)
@@ -32920,12 +32934,34 @@ def _itemize_apply(upload, parent, rows, main_line_raw):
             return {"error": "each row needs a numeric amount"}, 400
         if amt == 0:
             continue
-        sublines.append((amt, _parse_target(r.get("budget_line_id")), (r.get("description") or '')[:300]))
+        target = _parse_target(r.get("budget_line_id"))
+        if strict and target is None:
+            # No budget line picked → NOT peeled off; the dollars stay in the
+            # remainder that bills to the main line. (User 2026-07-20.)
+            uncoded_n += 1
+            uncoded_total = round(uncoded_total + amt, 2)
+            continue
+        sublines.append((amt, target, (r.get("description") or '')[:300]))
     _sub_total_check = round(sum(a for a, _, _ in sublines), 2)
     if doc_total > 0 and _sub_total_check > doc_total + 0.01:
         return {"error": f"Sublines total ${_sub_total_check:,.2f} exceeds the "
                          f"document total ${doc_total:,.2f} — fix the amounts "
                          f"before saving."}, 400
+    # Strict-mode guards (BEFORE any mutation): a remainder — including the
+    # dollars from lines with no budget line — must have a main line to land
+    # on, or it becomes invisible uncoded spend. (User 2026-07-20.)
+    if strict and mtarget is None:
+        _rem_check = round(doc_total - _sub_total_check, 2)
+        if sublines and _rem_check > 0.01:
+            return {"error": f"${_rem_check:,.2f} has nowhere to go"
+                             + (f" ({uncoded_n} line{'s' if uncoded_n != 1 else ''} "
+                                f"with no budget line)" if uncoded_n else "")
+                             + " — pick a main budget line above (it receives the "
+                               "remainder), or code every line."}, 400
+        if not sublines and uncoded_n:
+            return {"error": "None of the lines has a budget line picked — pick "
+                             "budget lines on the rows, or pick a main budget "
+                             "line above."}, 400
 
     # Remove any previous itemization for this DOCUMENT (replace-on-save).
     # FIX 2026-07 (Consulting Engineer case, txn 4259): matching only
@@ -33011,7 +33047,67 @@ def _itemize_apply(upload, parent, rows, main_line_raw):
     return {"ok": True, "children": len(created), "child_ids": created,
             "sublines_total": sub_total, "main_line_amount": round(main_amt, 2),
             "remainder": remainder, "doc_total": round(doc_total, 2),
+            "uncoded_n": uncoded_n, "uncoded_total": uncoded_total,
             "over": remainder < -0.01}, None
+
+
+@app.route("/projects/<int:pid>/actuals/budget-line/new", methods=["POST"])
+@login_required
+def actuals_new_budget_line(pid):
+    """Create a budget line in the Working budget straight from a line picker
+    (Actuals rows, doc coding, invoice itemization) — including under a COA
+    section that isn't in the budget yet. Body: {account_code, description}.
+    (User 2026-07-20: "billing a line that doesn't exist in the budget… I need
+    to be able to add a section that is not currently included.")
+
+    Reuses ensure_section_in_working_budget (auto-inits Working, seeds the
+    section + Estimated peer). If that call just CREATED the section's
+    placeholder line, we rename the placeholder to the requested description
+    instead of leaving '(Auto-added — no estimate)' noise plus a second line;
+    otherwise we append a new $0 line at the bottom of the section."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    from actuals import ensure_section_in_working_budget, get_current_working_budget
+    data = request.get_json(force=True) or {}
+    desc = (data.get("description") or '').strip()[:200]
+    if not desc:
+        return jsonify({"error": "description required"}), 400
+    try:
+        code = int(data.get("account_code"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "account_code must be a COA section code"}), 400
+    sec_name = dict(FP_COA_SECTIONS).get(code)
+    if not sec_name:
+        return jsonify({"error": f"unknown COA section {code}"}), 400
+
+    res = ensure_section_in_working_budget(pid, code, sec_name)
+    working = get_current_working_budget(pid)
+    if not working:
+        return jsonify({"error": "This project has no budget yet — create an "
+                                 "Estimated or Working budget first."}), 400
+    line = None
+    if res.get('created') and res.get('working_line_id'):
+        # Brand-new section → its fresh placeholder becomes the named line.
+        _ph = BudgetLine.query.get(res['working_line_id'])
+        if _ph and (_ph.description or '').startswith('(Auto-added'):
+            _ph.description = desc
+            line = _ph
+    if line is None:
+        line = BudgetLine(
+            budget_id=working.id, account_code=code, account_name=sec_name[:100],
+            description=desc, is_labor=False, quantity=1, days=1, rate=0,
+            fringe_type='N', agent_pct=0, rate_type='flat_day',
+            estimated_total=0, working_total=0, sort_order=99999)
+        db.session.add(line)
+    db.session.commit()
+    try:
+        _log_activity(action='create', entity_type='budget_line', entity_id=line.id,
+                      entity_label=desc, project_id=pid,
+                      note=f'Added "{desc}" under {code} · {sec_name} from a line picker')
+    except Exception:
+        pass
+    return jsonify({"ok": True, "line_id": line.id, "account_code": code,
+                    "section_name": sec_name, "label": desc})
 
 
 @app.route("/docs/upload/<int:uid>/itemize", methods=["POST"])
@@ -35660,8 +35756,15 @@ def docs_upload_update(uid):
                              f"category '{upload.category}' — deleted "
                              f"{len(_txn_ids)} linked Transaction row(s)")
         else:
+            # NEVER sync onto invoice_split children: their amount is the
+            # SUBLINE amount and their note is the subline description — the
+            # doc-level metadata belongs to the container only. Syncing them
+            # overwrote every itemized line with the full invoice total on any
+            # doc Save (user 2026-07-20: "it doesn't hold the value of that
+            # line and replaces it with the total value for the invoice").
             linked_txns = (Transaction.query
-                           .filter_by(doc_upload_id=upload.id)
+                           .filter(Transaction.doc_upload_id == upload.id,
+                                   Transaction.source != 'invoice_split')
                            .all())
             for _t in linked_txns:
                 _t.vendor   = upload.vendor
