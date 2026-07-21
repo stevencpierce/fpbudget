@@ -8090,6 +8090,7 @@
           <option value="not_project" style="color:#e0a060">🚫 Not a project expense</option>
           <option value="__clear__" style="color:#e08080">✕ Clear assignment</option>
           <option value="__newline__" style="color:#8fb4ff">＋ New budget line… (any COA section)</option>
+          <option value="__backup__" style="color:#e0c060">📎 Backup for an invoice (do not count this charge)</option>
           {% for grp in actuals_pick_groups %}
           <optgroup label="{{ grp.code }}  {{ grp.name }}">
             <option value="section:{{ grp.code }}">📂 All {{ grp.name }} (section-only, no specific line)</option>
@@ -9159,6 +9160,12 @@
           const code = value.slice(8);
           url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`;
           body = JSON.stringify({ account_code: code });
+        } else if (value === '__backup__') {
+          // Receipt is DOCUMENTATION for an invoice already on the ledger —
+          // exclude this charge so the invoice's lines aren't double-counted.
+          const ref = window.prompt('This receipt backs up which invoice / vendor?\n(Shown in the note, e.g. "Upshot Films invoice 260715")', '') || '';
+          url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/mark-backup`;
+          body = JSON.stringify({ backs_up: ref });
         } else if (value === 'not_project') {
           // Mark not-a-project-expense right from the picker (User 2026-06-22).
           url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`;

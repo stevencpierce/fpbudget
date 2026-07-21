@@ -75,3 +75,15 @@ Keep this file updated as items land.
 - [ ] L4 — Expire call-sheet/estimate share links; constant-time cron-token
   compare.
 - [ ] L5 — Move top-level JS bootstrap calls into DOMContentLoaded (TDZ trap).
+
+## 🧾 Docs/receipts model (2026-07-20, from live FIFA use)
+- [x] v1 — "📎 Backup for an invoice" picker action: excludes the receipt's own
+  charge from all rollups (receipt stays filed; note names the invoice).
+- [ ] v2 — Proper backup linkage: dedicated status/field (not
+  not_project_expense), receipt shown beside the invoice subline in the Line
+  Ledger, 📎 badge on backed-up sublines.
+- [ ] v3 — Duplicate scanner suggests "backup?" when a receipt ≈ an invoice
+  subline (vendor/date/amount) instead of leaving a parallel charge.
+- [ ] v4 — Rename/clarify queue language around Steven's activate model:
+  receipts sit passive until matched to a charge, marked backup, or ACTIVATED
+  into a standalone charge (cash/reimbursement).

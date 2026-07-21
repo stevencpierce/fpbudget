@@ -33256,6 +33256,35 @@ def _itemize_apply(upload, parent, rows, main_line_raw, strict=True):
             "over": remainder < -0.01}, None
 
 
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/mark-backup", methods=["POST"])
+@login_required
+def actuals_mark_backup(pid, tid):
+    """Mark a receipt's charge as BACKUP DOCUMENTATION for an invoice already
+    on the ledger — the receipt file stays filed, but its own charge is
+    excluded from every rollup so the invoice's itemized lines aren't double-
+    counted. (User 2026-07-20: vendor sends an invoice PLUS the underlying
+    parking receipts → both were counting.) v1 rides not_project_expense (the
+    established exclusion flag) with a 📎 note naming what it backs up."""
+    _require_project_role(pid, 'editor')
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    ref = (data.get("backs_up") or '').strip()[:200]
+    from actuals import unlink_transaction
+    try:
+        unlink_transaction(txn.id)
+    except Exception:
+        txn.budget_line_id = None
+        txn.account_code = txn.account_code_name = None
+    txn.not_project_expense = True
+    txn.match_status = 'confirmed'
+    _tag = "\U0001F4CE Backup" + (f" for {ref}" if ref else " for an invoice")
+    if _tag not in (txn.note or ''):
+        txn.note = ((_tag + '. ' + (txn.note or '')).strip())[:500]
+    txn.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"ok": True, "note": txn.note})
+
+
 @app.route("/projects/<int:pid>/actuals/budget-line/new", methods=["POST"])
 @login_required
 def actuals_new_budget_line(pid):
