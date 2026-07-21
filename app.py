@@ -1164,6 +1164,10 @@ def admin_veryfi_status():
 @app.route("/admin/docs/project/<int:pid>/wipe", methods=["POST"])
 @login_required
 def admin_docs_wipe_project(pid):
+    # Destructive/one-time repair tool — super-admin only before outside
+    # users arrive (tools audit 2026-07-20).
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
     """Super admin testing tool: delete every DocUpload row for a project
     and move each filed Dropbox file to /_TRASH/{date}_{slug}/. Lets us
     do clean-start iteration while the Analyzer pipeline is still
@@ -29903,6 +29907,10 @@ def docs_upload_retry_filing(uid):
 @app.route("/docs/repair-extensions", methods=["GET", "POST"])
 @login_required
 def docs_repair_extensions():
+    # Destructive/one-time repair tool — super-admin only before outside
+    # users arrive (tools audit 2026-07-20).
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
     """Repair legacy DocUpload rows whose FILED file was named '.pdf' but whose
     bytes are actually a JPEG/PNG (the old build_name() hard-coded '.pdf' on
     every filed doc). The SOURCE ARCHIVE extension is ground truth — the
@@ -30031,6 +30039,10 @@ def _split_integrity_child_target(k):
 @app.route("/admin/repair-date-years", methods=["GET", "POST"])
 @login_required
 def admin_repair_date_years(pid=None):
+    # Destructive/one-time repair tool — super-admin only before outside
+    # users arrive (tools audit 2026-07-20).
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
     """Repair typing-artifact YEARS in schedule-adjacent dates (2026-07-09).
 
     The HTML date input commits mid-keystroke ('2026' → 0202), which stored
@@ -30294,6 +30306,10 @@ def docs_reset_person_invoices(pid):
 @app.route("/docs/split-integrity", methods=["GET", "POST"])
 @login_required
 def docs_split_integrity():
+    # Destructive/one-time repair tool — super-admin only before outside
+    # users arrive (tools audit 2026-07-20).
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
     """One-time repair crawler for PHANTOM itemization splits (2026-07).
 
     Old itemization saves (before the over-total guard + doc-wide sweep) left
@@ -33512,6 +33528,10 @@ def _refile_doc(upload, dry=False):
 @app.route("/projects/<int:pid>/debug-mirror", methods=["GET"])
 @login_required
 def debug_mirror(pid):
+    # Destructive/one-time repair tool — super-admin only before outside
+    # users arrive (tools audit 2026-07-20).
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
     """Diagnostic: what does the auto-mirror resolve + do? Returns the resolved
     working/actual budget ids, how many Working lines lack a mirror, and the
     result (or error) of calling ensure_actual_mirrors. (User 2026-06-02.)"""
@@ -33662,6 +33682,10 @@ def actual_audit(pid):
 @app.route("/projects/<int:pid>/rebuild-actual-mirror", methods=["POST"])
 @login_required
 def rebuild_actual_mirror(pid):
+    # Destructive/one-time repair tool — super-admin only before outside
+    # users arrive (tools audit 2026-07-20).
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
     """Make the Actual budget structurally MIRROR the Working budget by fixing
     the duplicate-clone corruption surfaced by /actual-audit. Three operations,
     each independently gated; dry-run by default (apply only with ?apply=1):
@@ -34454,6 +34478,10 @@ def sync_actual_from_working(pid):
 @app.route("/projects/<int:pid>/repair-clone-links", methods=["POST"])
 @login_required
 def repair_clone_links(pid):
+    # Destructive/one-time repair tool — super-admin only before outside
+    # users arrive (tools audit 2026-07-20).
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
     """Repair the cross-budget clone chain so Working→Estimated and
     Actual→Working source_line_id links point at the TRUE counterpart, matched
     by (account_code, normalized description) with a positional tiebreak for
@@ -34650,6 +34678,10 @@ def _repair_po_number(line):
 @app.route("/budget/repair-line-links", methods=["GET", "POST"])
 @login_required
 def repair_line_links():
+    # Destructive/one-time repair tool — super-admin only before outside
+    # users arrive (tools audit 2026-07-20).
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
     """BACKFILL Working→Estimated source_line_id for CURRENT working budgets
     whose lines lack it. Pairing is by (account_code, normalized description);
     a link is written ONLY when the match is UNIQUE on BOTH sides — exactly one
@@ -34958,6 +34990,10 @@ def _migrate_actuals_pick_working(all_b, pid):
 @app.route("/projects/<int:pid>/migrate-actuals", methods=["POST", "GET"])
 @login_required
 def migrate_actuals(pid):
+    # Destructive/one-time repair tool — super-admin only before outside
+    # users arrive (tools audit 2026-07-20).
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
     """PHASE 2 one-time migration: remap every legacy reference off the Actual
     clone lines onto Working lines, then archive the Actual budgets.
 
