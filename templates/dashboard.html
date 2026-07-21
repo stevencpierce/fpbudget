@@ -48,8 +48,10 @@
 </div>
 
 <!-- Hidden forms for bulk actions (submitted via JS) -->
-<form id="bulk-delete-form" method="POST" action="{{ url_for('projects_bulk_delete') }}" style="display:none"></form>
-<form id="bulk-archive-form" method="POST" action="{{ url_for('projects_bulk_archive') }}" style="display:none"></form>
+<form id="bulk-delete-form" method="POST" action="{{ url_for('projects_bulk_delete') }}" style="display:none">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></form>
+<form id="bulk-archive-form" method="POST" action="{{ url_for('projects_bulk_archive') }}" style="display:none">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"></form>
 
 <div class="card-grid" id="proj-grid">
   {% for p in projects %}
@@ -79,11 +81,13 @@
            instead of a confusing empty menu. #}
         {% if _is_admin %}
         <form method="POST" action="{{ url_for('project_rename', pid=p.id) }}" class="proj-rename-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="name" value="">
           <button type="button" class="proj-menu-item proj-rename-btn"
                   data-pid="{{ p.id }}" data-name="{{ p.name | e }}">Rename Project</button>
         </form>
         <form method="POST" action="{{ url_for('project_duplicate', pid=p.id) }}" class="proj-duplicate-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <input type="hidden" name="name" value="">
           <input type="hidden" name="include_data" value="">
           <button type="button" class="proj-menu-item proj-duplicate-btn"
@@ -102,10 +106,12 @@
 
         <form method="POST" action="{{ url_for('project_wrap', pid=p.id) }}"
               onsubmit="return confirm('Wrap {{ p.name | e }}? The Dropbox folder will be moved to _WRAPPED PROJECTS.')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="proj-menu-item">Wrap Project</button>
         </form>
         <form method="POST" action="{{ url_for('project_archive', pid=p.id) }}"
               onsubmit="return confirm('Archive {{ p.name | e }}? The Dropbox folder will be moved to _archived.')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="proj-menu-item">Archive Project</button>
         </form>
 
@@ -116,6 +122,7 @@
         {% if _is_super_admin %}
         <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}"
               onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets? This cannot be undone.')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="proj-menu-item proj-menu-danger">Delete Project</button>
         </form>
         {% else %}
@@ -137,11 +144,13 @@
     <div class="project-card-actions">
       <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-sm btn-outline">View</a>
       <form method="POST" action="{{ url_for('project_reactivate', pid=p.id) }}" style="display:inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
       </form>
       {% if current_user.role == 'super_admin' %}
       <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
             onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets?')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-sm btn-ghost" title="Permanently delete (super admin)">✕</button>
       </form>
       {% endif %}
@@ -157,11 +166,13 @@
     <div class="project-card-actions">
       <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-sm btn-outline">View</a>
       <form method="POST" action="{{ url_for('project_reactivate', pid=p.id) }}" style="display:inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
       </form>
       {% if current_user.role == 'super_admin' %}
       <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
             onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets? This cannot be undone.')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-sm btn-ghost" title="Permanently delete (super admin only)">✕ Delete forever</button>
       </form>
       {% endif %}
@@ -179,6 +190,7 @@
   <div class="modal-box">
     <h2>New Project</h2>
     <form method="POST" action="{{ url_for('project_new') }}" id="new-project-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="timezone" id="new-project-tz">
       <div class="field">
         <label>Project Name</label>

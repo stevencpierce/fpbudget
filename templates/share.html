@@ -7,6 +7,7 @@
 
   <form method="POST" action="{{ url_for('project_share', pid=project.id) }}"
         style="display:flex;gap:8px;align-items:center;margin-top:24px">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="email" name="email" required placeholder="collaborator@email.com" style="flex:1">
     <button type="submit" class="btn btn-primary">Add Collaborator</button>
   </form>
@@ -31,6 +32,7 @@
           <td>{{ pa.role }}</td>
           <td>
             <form method="POST" action="{{ url_for('project_share_remove', pid=project.id) }}" style="display:inline">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <input type="hidden" name="user_id" value="{{ u.id }}">
               <button type="submit" class="btn btn-sm btn-ghost" title="Remove"
                       onclick="return confirm('Remove {{ u.email }} from this project?')">✕</button>

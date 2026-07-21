@@ -184,13 +184,16 @@
                       data-role="{{ u.role }}"
                       data-dept="{{ u.dept_code or '' }}">Edit</button>
               <form method="POST" action="{{ url_for('admin_user_reset_password',uid=u.id) }}" style="display:contents" class="confirm-form" data-msg="Reset password for {{ u.email }}?">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="btn-xs">Reset PW</button>
               </form>
               <form method="POST" action="{{ url_for('admin_user_toggle_active',uid=u.id) }}" style="display:contents">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="btn-xs" {% if u.id==current_user.id %}disabled{% endif %}>{{ 'Deactivate' if u.is_active else 'Activate' }}</button>
               </form>
               {% if (current_user.role=='super_admin' and u.id!=current_user.id) or (current_user.role=='admin' and u.role not in ('super_admin','admin') and u.id!=current_user.id) %}
               <form method="POST" action="{{ url_for('admin_user_delete',uid=u.id) }}" style="display:contents" class="confirm-form" data-msg="Delete {{ u.email }}? Cannot be undone.">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="btn-xs danger">Delete</button>
               </form>
               {% endif %}
@@ -208,6 +211,7 @@
   <div class="admin-card">
     <div class="admin-card-header"><h2>Create New User</h2></div>
     <form method="POST" action="{{ url_for('admin_user_create') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="create-form">
         <div class="fg"><label>Full Name</label><input type="text" name="name" placeholder="Jane Smith"></div>
         <div class="fg"><label>Email <span style="color:#f87171">*</span></label><input type="email" name="email" required placeholder="jane@example.com"></div>
@@ -239,6 +243,7 @@
       <h2>Project Access</h2>
       <form method="POST" action="{{ url_for('admin_import_dropbox') }}"
             class="confirm-form" data-msg="Scan Dropbox for project folders and import any missing ones?">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-sm btn-outline">Import from Dropbox</button>
       </form>
     </div>
@@ -514,6 +519,7 @@
   <div class="edit-box">
     <h3>Edit User</h3>
     <form id="edit-form" method="POST">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="edit-fields">
         <div class="fg"><label>Full Name</label><input type="text" name="name" id="en"></div>
         <div class="fg"><label>Email</label><input type="email" name="email" id="ee" required></div>

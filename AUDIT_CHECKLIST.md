@@ -22,8 +22,10 @@ Keep this file updated as items land.
   not a static "ok".
   - [x] C4b — Sentry wired (activates when Steven adds `SENTRY_DSN` in Render;
     no-op until then). ⬜ Steven: create Sentry project + add the env var.
-  - [ ] C4c — Point the Playwright test suite at a staging site (it currently
-    creates/deletes projects on LIVE production).
+  - [x] C4c — Test suite REFUSES to run against production (defaults to
+    localhost; prod needs ALLOW_PROD_TESTS=1). ⬜ Steven: create the staging
+    service on Render (duplicate the fp-budget service off a `staging` branch
+    with its own free Postgres), then set BASE_URL to it for test runs.
   - [ ] C4d — Make the budget-math tests actually assert numbers (several pass
     no matter what).
 
@@ -43,7 +45,9 @@ Keep this file updated as items land.
   - [ ] H6b — Eager-load the recipient/rep lookups (N+1 on call-sheet send).
 - [ ] H7 — Persist background-job state in the DB (analyzer batches can be
   silently dropped on worker restart).
-- [ ] H8 — Add CSRF protection (Flask-WTF) on state-changing routes.
+- [x] H8 — CSRF protection live: session token + fetch/form shim on every
+  mutating request; public token routes (call-sheet confirm, estimate respond,
+  cron, OAuth) exempt.
 
 ## 🟡 Medium
 - [ ] M1 — Split app.py (36k lines) into blueprints; start with /docs and

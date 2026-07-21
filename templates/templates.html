@@ -21,6 +21,7 @@
       <a href="{{ url_for('template_edit', tid=t.id) }}" class="btn btn-sm btn-outline">Edit</a>
       <form method="POST" action="{{ url_for('template_delete', tid=t.id) }}" style="display:inline"
             onsubmit="return confirm('Delete template?')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-sm btn-ghost">Delete</button>
       </form>
     </div>
@@ -36,6 +37,7 @@
   <div class="modal-box">
     <h2>New Template</h2>
     <form method="POST" action="{{ url_for('template_new') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field">
         <label>Name</label>
         <input type="text" name="name" required>

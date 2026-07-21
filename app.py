@@ -651,6 +651,54 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 # whole files into memory, so an unbounded body was a trivial OOM. 413 above.
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 
+# ── CSRF protection (audit H8, 2026-07-20) ─────────────────────────────────
+# Session-synchronizer token: {{ csrf_token() }} (meta tag + hidden form
+# inputs) must round-trip on every mutating request as the X-CSRFToken header
+# (static/csrf.js patches fetch + form submits) or a csrf_token form field.
+# Public capability-token routes and machine endpoints are exempt — they are
+# authenticated by their own tokens, not by a browser session.
+_CSRF_EXEMPT_PREFIXES = (
+    "/cron/", "/callsheet/confirm/", "/e/", "/qbo/oauth",
+    "/health", "/readyz", "/webhook",
+)
+
+
+@app.context_processor
+def _csrf_context():
+    def csrf_token():
+        from flask import session as _s
+        if not _s.get("_csrf"):
+            import secrets as _sec
+            _s["_csrf"] = _sec.token_urlsafe(32)
+        return _s["_csrf"]
+    return {"csrf_token": csrf_token}
+
+
+@app.before_request
+def _csrf_protect():
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return
+    p = request.path or ""
+    if any(p.startswith(x) for x in _CSRF_EXEMPT_PREFIXES):
+        return
+    from flask import session as _s
+    expected = _s.get("_csrf")
+    if not expected:
+        # Transition path: sessions minted before this deploy carry no token
+        # yet. Seed one now; the next page load embeds it. (Blocking here
+        # would 403 every logged-in user mid-session at rollout.)
+        import secrets as _sec
+        _s["_csrf"] = _sec.token_urlsafe(32)
+        return
+    sent = (request.headers.get("X-CSRFToken")
+            or request.form.get("csrf_token")
+            or ((request.get_json(silent=True) or {}).get("csrf_token")
+                if request.is_json else None))
+    import hmac as _hmac
+    if not (sent and _hmac.compare_digest(str(sent), str(expected))):
+        return jsonify({"error": "CSRF token missing or invalid — reload the "
+                                 "page and try again."}), 403
+
 # Sentry error monitoring (audit C4b). Activates ONLY when SENTRY_DSN is set
 # in the environment (Steven adds it in Render); otherwise a silent no-op.
 try:

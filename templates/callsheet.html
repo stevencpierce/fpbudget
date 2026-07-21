@@ -240,6 +240,7 @@
         </div>
       {% else %}
         <form method="POST" action="/callsheet/confirm/{{ token }}" style="display:contents">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="cs-recip-btn-confirm">✓ Confirm My Call</button>
         </form>
       {% endif %}

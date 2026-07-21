@@ -124,6 +124,7 @@
           {% elif est and vg.is_current %}
             <div class="version-item version-item-subrow version-item-create">
               <form method="POST" action="{{ url_for('create_working_from_estimated', pid=project.id, bid=est.id) }}" style="flex:1">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-xs btn-ghost" style="width:100%;text-align:left;padding:.2rem .5rem">
                   <span class="mode-badge mode-working" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem">WRK</span>
                   + Initialize Working v{{ vn }}
@@ -734,6 +735,7 @@
     <strong>No Working Budget for v{{ budget.version_number or 1 }} yet.</strong>
     The Estimated is your locked baseline. Create a paired Working budget to track the live forecast without touching the Estimated.
     <form method="POST" action="{{ url_for('create_working_from_estimated', pid=project.id, bid=peer_estimated_bid) }}" style="display:inline;margin:0">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-sm btn-primary">Initialize Working v{{ budget.version_number or 1 }}</button>
     </form>
   </div>
@@ -14218,6 +14220,7 @@
       <p class="muted">Reuse these budget lines on future projects.</p>
       <form method="POST"
             action="{{ url_for('save_as_template', pid=project.id, bid=budget.id) }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="field">
           <input type="text" name="template_name" placeholder="Template name" required>
         </div>
@@ -14710,6 +14713,7 @@
     {% set cur_est = version_groups[0].estimated if version_groups else none %}
     {% if cur_est %}
     <form method="POST" action="{{ url_for('budget_new', pid=project.id) }}" style="margin-bottom:.3rem">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="source_bid" value="{{ cur_est.id }}">
       <button type="submit" class="btn btn-outline version-option-btn version-option-current" style="width:100%">
         <strong>New Estimated v{{ (version_groups[0].version_number + 1) if version_groups else 1 }}</strong>
@@ -14718,6 +14722,7 @@
     </form>
     {% else %}
     <form method="POST" action="{{ url_for('budget_new', pid=project.id) }}" style="margin-bottom:.3rem">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-outline version-option-btn version-option-current" style="width:100%">
         <strong>New Estimated v1</strong>
         <span class="version-option-desc">Start from scratch</span>

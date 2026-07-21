@@ -39,6 +39,7 @@
         {% if f.fringe_type not in DEFAULT_FRINGES %}
         <form method="POST" action="{{ url_for('fringe_config_delete', fid=f.id) }}"
               style="display:inline" onsubmit="return confirm('Delete fringe {{ f.fringe_type }}?')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="btn btn-xs btn-ghost" style="color:var(--red,#e74c3c)">Delete</button>
         </form>
         {% endif %}
@@ -54,6 +55,7 @@
   <div class="modal-box">
     <h2 id="fringe-modal-title">Edit Fringe</h2>
     <form method="POST" action="{{ url_for('fringe_config_save') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="fringe_id" id="f-id">
       <div class="field-row-2">
         <div class="field">
@@ -91,6 +93,7 @@
   <div class="modal-box">
     <h2>Add New Fringe</h2>
     <form method="POST" action="{{ url_for('fringe_config_new') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="field-row-2">
         <div class="field">
           <label>Type Code <span class="muted" style="font-size:.8rem">(max 5 chars, e.g. FICA)</span></label>

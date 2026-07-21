@@ -27,7 +27,16 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 # Configuration
 # ---------------------------------------------------------------------------
 
-BASE_URL = os.getenv("BASE_URL", "https://fp-budget.onrender.com")
+# SAFETY (audit C4c, 2026-07-20): the suite creates and deletes real projects,
+# so it must NEVER default to production. Point BASE_URL at a staging
+# deployment; running against the live site now requires an explicit
+# ALLOW_PROD_TESTS=1 acknowledgement.
+BASE_URL = os.getenv("BASE_URL", "http://localhost:5000")
+if "fp-budget.onrender.com" in BASE_URL and os.getenv("ALLOW_PROD_TESTS") != "1":
+    raise RuntimeError(
+        "Refusing to run the test suite against PRODUCTION "
+        f"({BASE_URL}) — it creates/deletes real projects. Set BASE_URL to a "
+        "staging instance, or set ALLOW_PROD_TESTS=1 if you really mean it.")
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "steven@thefp.tv")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 TEST_EMAIL = os.getenv("TEST_EMAIL", "claudes-tester-app@thefp.tv")

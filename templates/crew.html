@@ -80,6 +80,7 @@
                 onclick='openEditCrew({{ m.id }}, {{ {"name": m.name, "department": m.department or "", "company": m.company or "", "email": m.email or "", "phone": m.phone or "", "default_rate": m.default_rate | float if m.default_rate else 0, "default_rate_type": m.default_rate_type, "default_fringe": m.default_fringe, "default_agent_pct": m.default_agent_pct | float, "active": m.active} | tojson }})'>Edit</button>
         <form method="POST" action="{{ url_for('crew_delete', cid=m.id) }}" style="display:inline"
               onsubmit="return confirm('Delete {{ m.name | e }}?')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="btn btn-xs btn-ghost">✕</button>
         </form>
       </td>
@@ -99,6 +100,7 @@
   <div class="modal-box">
     <h2>Add Crew Member</h2>
     <form method="POST" action="{{ url_for('crew_new') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       {% include "_crew_fields.html" %}
       <div class="modal-actions">
         <button type="button" class="btn btn-outline"
@@ -124,6 +126,7 @@
     <!-- Basic Info Tab -->
     <div id="tab-panel-info">
       <form id="edit-crew-form" method="POST">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         {% include "_crew_fields.html" %}
         <div class="field-row">
           <label class="checkbox-label">
