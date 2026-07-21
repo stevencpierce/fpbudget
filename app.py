@@ -32073,14 +32073,23 @@ def person_timecards(pid, cmid):
                 .order_by(Timecard.week_ending.desc()).all())
     have_weeks = {t.week_ending for t in existing}
 
-    sched = _person_schedule_weeks(pid, cmid)   # {week_ending(date): [days]}
+    # "Needs timecard" nags apply ONLY to per-project employees — the locked
+    # design is employee→timecard, loan_out/vendor→invoice. An unset employment
+    # type gets no nag either (a person already paying via invoice was being
+    # told they "need a timecard"; user 2026-07-20). Existing timecards still
+    # list for everyone; only the EXPECTED-week nags are gated.
+    _pcm = ProjectCrewMember.query.filter_by(
+        project_id=pid, crew_member_id=cmid).first()
+    _etype = (_pcm.employment_type if _pcm else None) or ''
     expected = []
-    for we in sorted(sched.keys(), reverse=True):
-        if we in have_weeks:
-            continue
-        expected.append({"week_ending": we.isoformat(),
-                         "days": sched[we],
-                         "days_count": len(sched[we])})
+    if _etype == 'employee':
+        sched = _person_schedule_weeks(pid, cmid)   # {week_ending(date): [days]}
+        for we in sorted(sched.keys(), reverse=True):
+            if we in have_weeks:
+                continue
+            expected.append({"week_ending": we.isoformat(),
+                             "days": sched[we],
+                             "days_count": len(sched[we])})
 
     def _count_days(t):
         try:
