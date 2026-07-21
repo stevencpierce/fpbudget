@@ -16061,14 +16061,8 @@ def import_csv_apply(pid, bid):
 
 
 # Legacy import route — kept for backward compatibility but redirects to the new UI
-@app.route("/projects/<int:pid>/budget/<int:bid>/import", methods=["POST"])
-@login_required
-def import_csv(pid, bid):
-    """Legacy naive import — redirects users to the new smart import UI."""
-    flash("Please use the new Import CSV button to map columns.", "info")
-    return redirect(url_for("budget_view", pid=pid, bid=bid) + "?tab=settings")
-
-
+# Legacy naive-import route deleted 2026-07-20 (tools audit) — it only
+# redirected to the smart import UI; old bookmarks now 404.
 @app.route("/projects/<int:pid>/budget/<int:bid>/from-template", methods=["POST"])
 @login_required
 def budget_from_template(pid, bid):

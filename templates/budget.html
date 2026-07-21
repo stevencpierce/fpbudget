@@ -14211,22 +14211,7 @@
       </div>
     </div>
 
-    <div class="card">
-      <h3>Apply Template</h3>
-      <p class="muted">Pre-populate this budget from a saved template.</p>
-      <form method="POST"
-            action="{{ url_for('budget_from_template', pid=project.id, bid=budget.id) }}">
-        {% set all_templates = [] %}
-        <select name="template_id" class="select-sm" style="width:100%;margin-bottom:.5rem">
-          <option value="">— select template —</option>
-          {% for t in all_templates %}
-          <option value="{{ t.id }}">{{ t.name }}</option>
-          {% endfor %}
-        </select>
-        <button type="submit" class="btn btn-outline">Apply</button>
-      </form>
-      <p><a href="{{ url_for('template_list') }}">Manage Templates →</a></p>
-    </div>
+    {# Apply Template card removed 2026-07-20 — its template list was hardcoded empty (never functional); template management lives at /templates. #}
 
     <div class="card">
       <h3>Save as Template</h3>
