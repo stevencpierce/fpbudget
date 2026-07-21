@@ -10479,10 +10479,17 @@ def _deterministic_line_suggestion(pid, vendor, crew_member_id=None):
         # (a) explicit person → their line(s)
         if crew_member_id:
             lines = _det_person_lines(pid, wb.id, crew_member_id)
-            if len(lines) == 1:
-                candidates.append(_det_line_payload(lines[0], 'person', 0.95))
-            elif len(lines) > 1:
-                candidates.append(_det_line_payload(lines[0], 'person', 0.8))
+            if lines:
+                # Label names the person AND the exact line (code · description)
+                # so it's obvious this targets their assigned line, not just the
+                # section. (User 2026-07-20: "make that more specific.")
+                _cm_a = CrewMember.query.get(crew_member_id)
+                _lbl = ((f"{_cm_a.name} → " if _cm_a and _cm_a.name else "")
+                        + f"{lines[0].account_code or ''} · "
+                        + (lines[0].description or lines[0].account_name or 'line'))
+                candidates.append(_det_line_payload(
+                    lines[0], 'person', 0.95 if len(lines) == 1 else 0.8,
+                    label=_lbl))
 
         # (b) vendor name ≈ a project crew member's name → their line(s)
         v = (vendor or '').strip()
@@ -10513,9 +10520,11 @@ def _deterministic_line_suggestion(pid, vendor, crew_member_id=None):
                 lines = _det_person_lines(pid, wb.id, best_cm.id)
                 if lines:
                     base_conf = 0.95 if len(lines) == 1 else 0.8
+                    _lbl = (f"{best_cm.name} → {lines[0].account_code or ''} · "
+                            + (lines[0].description or lines[0].account_name or 'line'))
                     candidates.append(_det_line_payload(
                         lines[0], 'person_name', best_sim * base_conf,
-                        label=lines[0].description or lines[0].account_name))
+                        label=_lbl))
 
         # (c) vendor name ≈ a PurchaseOrder vendor → the PO's working-budget line
         if v:
