@@ -9132,6 +9132,61 @@
       setTimeout(() => desc.focus(), 50);
     };
 
+    // 📎 v2 backup chooser: list likely targets (itemized invoice sublines
+    // first, ranked by amount closeness) and hard-link the receipt to the one
+    // picked, so the Line Ledger shows the receipt beside that line.
+    window._backupChooser = async function (tid, selectEl) {
+      let cands = [];
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/backup-candidates`, {credentials:'same-origin'});
+        const j = await r.json();
+        cands = (j && j.candidates) || [];
+      } catch (e) {}
+      const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
+        c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      const money = v => v == null ? '—' : '$' + Number(v).toLocaleString('en-US',{minimumFractionDigits:2});
+      let dlg = document.getElementById('backupChooserDlg');
+      if (dlg) dlg.remove();
+      dlg = document.createElement('div');
+      dlg.id = 'backupChooserDlg';
+      dlg.style.cssText = 'position:fixed;inset:0;z-index:10060;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center';
+      const rows = cands.map(c =>
+        '<label style="display:flex;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer">'
+        + '<input type="radio" name="bkTarget" value="' + c.id + '">'
+        + '<span style="flex:1;min-width:0">' + (c.is_split ? '↳ ' : '') + esc(c.vendor || '—')
+        + (c.note ? ' <span style="color:var(--text-muted);font-size:.75rem">' + esc(c.note) + '</span>' : '') + '</span>'
+        + '<span style="color:var(--text-muted);font-size:.78rem;white-space:nowrap">' + esc(c.date || '') + '</span>'
+        + '<b style="white-space:nowrap">' + money(c.amount) + '</b></label>').join('');
+      dlg.innerHTML = '<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;width:520px;max-width:94vw;max-height:80vh;overflow:auto">'
+        + '<div style="font-weight:700;font-size:14px;margin-bottom:4px">📎 This receipt backs up…</div>'
+        + '<div style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px">Pick the charge it documents (invoice line items listed first). Its own charge stops counting; the file stays attached in the Line Ledger.</div>'
+        + (rows || '<div style="color:var(--text-muted);font-size:.85rem;margin-bottom:8px">No likely targets found.</div>')
+        + '<label style="display:flex;gap:8px;align-items:center;padding:6px 8px;cursor:pointer;color:var(--text-muted)">'
+        + '<input type="radio" name="bkTarget" value=""> No specific charge — just mark as backup</label>'
+        + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">'
+        + '<button type="button" id="bkCancel" style="padding:6px 12px;border-radius:6px;background:none;border:1px solid var(--border);color:var(--text);cursor:pointer">Cancel</button>'
+        + '<button type="button" id="bkSave" style="padding:6px 14px;border-radius:6px;background:#1f7a4d;border:none;color:#fff;font-weight:600;cursor:pointer">Mark as backup</button>'
+        + '</div></div>';
+      document.body.appendChild(dlg);
+      dlg.querySelector('#bkCancel').onclick = () => dlg.remove();
+      dlg.querySelector('#bkSave').onclick = async () => {
+        const sel = dlg.querySelector('input[name="bkTarget"]:checked');
+        if (!sel) { return; }
+        try {
+          const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/mark-backup`, {
+            method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify(sel.value ? { target_txn_id: parseInt(sel.value) } : { backs_up: '' }) });
+          const j = await r.json();
+          if (r.ok && j.ok) {
+            dlg.remove();
+            if (typeof _refreshRowAfterCode === 'function') _refreshRowAfterCode(tid, false, true);
+            if (typeof _actualsToast === 'function') _actualsToast('📎 Marked as backup — charge no longer counts.', 'green');
+            else location.reload();
+          } else if (typeof _actualsToast === 'function') _actualsToast(j.error || 'Failed', 'yellow');
+        } catch (e) { if (typeof _actualsToast === 'function') _actualsToast('Error: ' + e.message, 'yellow'); }
+      };
+    };
+
     window.actualsSetLine = async function (selectEl) {
       const tid    = parseInt(selectEl.dataset.tid);
       const value  = selectEl.value;
@@ -9161,11 +9216,12 @@
           url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`;
           body = JSON.stringify({ account_code: code });
         } else if (value === '__backup__') {
-          // Receipt is DOCUMENTATION for an invoice already on the ledger —
-          // exclude this charge so the invoice's lines aren't double-counted.
-          const ref = window.prompt('This receipt backs up which invoice / vendor?\n(Shown in the note, e.g. "Upshot Films invoice 260715")', '') || '';
-          url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/mark-backup`;
-          body = JSON.stringify({ backs_up: ref });
+          // Receipt is DOCUMENTATION for a charge already on the ledger — open
+          // the target chooser (v2); it POSTs mark-backup itself.
+          selectEl.value = selectEl.dataset.current || '';
+          selectEl.disabled = false;
+          window._backupChooser(tid, selectEl);
+          return;
         } else if (value === 'not_project') {
           // Mark not-a-project-expense right from the picker (User 2026-06-22).
           url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`;
@@ -26154,6 +26210,14 @@ setTimeout(function() {
         + '<td class="ll-rev-cell"><input type="checkbox" class="ll-rev"'
           + (r.reviewed ? ' checked' : '') + ' data-tid="' + r.id + '"></td>'
         + '</tr>';
+      (r.backups || []).forEach(bk => {
+        html += '<tr class="ll-bk-row" style="background:rgba(224,192,96,.05)"><td></td>'
+          + '<td colspan="4" style="font-size:.74rem;color:var(--text-muted);padding:2px 6px 4px 14px">📎 backup: '
+          + (bk.doc_id
+              ? '<a href="/projects/' + PID + '/docs/' + bk.doc_id + '/editor?from=budget" class="ll-doc-link">' + _esc(bk.filename || 'receipt') + '</a>'
+              : _esc(bk.filename || 'receipt'))
+          + (bk.amount != null ? ' · ' + _money(bk.amount) : '') + '</td><td></td></tr>';
+      });
     });
     html += '</tbody></table>';
     elBody.innerHTML = html;

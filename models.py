@@ -120,6 +120,10 @@ class Transaction(db.Model):
     budget_line_id        = db.Column(db.Integer, db.ForeignKey("budget_line.id"), nullable=True)
     doc_upload_id         = db.Column(db.Integer, db.ForeignKey("doc_upload.id"), nullable=True)
     parent_transaction_id = db.Column(db.Integer, db.ForeignKey("transaction.id"), nullable=True)
+    # Backup-doc linkage (v2, 2026-07-20): this charge is DOCUMENTATION backing
+    # another transaction (typically an invoice_split subline). Set → excluded
+    # from rollups and shown 📎-attached to its target in the Line Ledger.
+    backup_of_txn_id      = db.Column(db.Integer, db.ForeignKey("transaction.id"), nullable=True)
     source                = db.Column(db.String(20), default='manual_entry')
     # match_status: unmatched | suggested | confirmed. Suggestions
     # written by the auto-matcher, never silently committed — user

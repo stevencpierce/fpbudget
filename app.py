@@ -9952,6 +9952,25 @@ def actuals_line_ledger(pid, lid):
                 .filter(Transaction.id.in_(parent_ids)).all()):
             parent_docs[p_id] = p_doc
 
+    # 📎 Backup receipts pointing at these rows (v2): map target txn id →
+    # [{doc_id, filename, amount}] in one batched pass.
+    backups_by_target = {}
+    if tids:
+        _bk_rows = (Transaction.query
+                    .filter(Transaction.backup_of_txn_id.in_(tids)).all())
+        _bk_doc_ids = {b.doc_upload_id for b in _bk_rows if b.doc_upload_id}
+        _bk_docs = {}
+        if _bk_doc_ids:
+            for _bd in DocUpload.query.filter(DocUpload.id.in_(_bk_doc_ids)).all():
+                _bk_docs[_bd.id] = (_bd.filed_filename or _bd.original_filename
+                                    or f'Upload #{_bd.id}')
+        for b in _bk_rows:
+            backups_by_target.setdefault(b.backup_of_txn_id, []).append({
+                "doc_id": b.doc_upload_id,
+                "filename": _bk_docs.get(b.doc_upload_id, 'receipt'),
+                "amount": float(b.amount) if b.amount is not None else None,
+            })
+
     out = []
     coded_total = 0.0
     for t in txns:
@@ -9983,6 +10002,7 @@ def actuals_line_ledger(pid, lid):
             "reviewed_by": t.reviewed_by,
             "flagged": (t.id in flagged_tids),
             "matched": (eff_doc_id is not None),
+            "backups": backups_by_target.get(t.id, []),
         })
 
     # Forecast total: the Working sister's working_total (the evolving forecast),
@@ -28370,6 +28390,9 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS employment_type VARCHAR(20)",
                 "ALTER TABLE crew_member "
                 "  ADD COLUMN IF NOT EXISTS union_status VARCHAR(20)",
+                # 2026-07-20 — backup-receipt linkage (docs model v2).
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS backup_of_txn_id INTEGER",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The
@@ -33256,6 +33279,40 @@ def _itemize_apply(upload, parent, rows, main_line_raw, strict=True):
             "over": remainder < -0.01}, None
 
 
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/backup-candidates", methods=["GET"])
+@login_required
+def actuals_backup_candidates(pid, tid):
+    """Candidate targets a backup receipt might document: itemized invoice
+    sublines first (they ARE the line items), then other doc-carrying charges.
+    Ranked by amount closeness then date closeness to the receipt. (v2.)"""
+    _require_project_role(pid, 'viewer')
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    _amt = abs(float(txn.amount or 0))
+    cands = (Transaction.query
+             .filter(Transaction.project_id == pid,
+                     Transaction.id != tid,
+                     Transaction.not_project_expense == False,  # noqa: E712
+                     Transaction.backup_of_txn_id.is_(None))
+             .filter((Transaction.source == 'invoice_split')
+                     | (Transaction.doc_upload_id.isnot(None)))
+             .all())
+    def _rank(t):
+        a = abs(abs(float(t.amount or 0)) - _amt)
+        split_first = 0 if t.source == 'invoice_split' else 1
+        return (split_first, a)
+    out = []
+    for t in sorted(cands, key=_rank)[:12]:
+        out.append({
+            "id": t.id,
+            "vendor": t.vendor or '',
+            "amount": float(t.amount) if t.amount is not None else None,
+            "date": t.txn_date or '',
+            "is_split": t.source == 'invoice_split',
+            "note": (t.note or '')[:80],
+        })
+    return jsonify({"ok": True, "candidates": out})
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/mark-backup", methods=["POST"])
 @login_required
 def actuals_mark_backup(pid, tid):
@@ -33269,6 +33326,19 @@ def actuals_mark_backup(pid, tid):
     txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
     data = request.get_json(force=True) or {}
     ref = (data.get("backs_up") or '').strip()[:200]
+    # v2: hard linkage to the specific transaction (usually an invoice_split
+    # subline) this receipt documents — powers the Line Ledger 📎 attachment.
+    _target_id = data.get("target_txn_id")
+    if _target_id:
+        _target = Transaction.query.filter_by(id=int(_target_id),
+                                              project_id=pid).first()
+        if not _target:
+            return jsonify({"error": "target transaction not found"}), 404
+        if _target.id == txn.id:
+            return jsonify({"error": "a charge cannot back itself up"}), 400
+        txn.backup_of_txn_id = _target.id
+        if not ref:
+            ref = f"{_target.vendor or 'invoice'} · ${float(_target.amount or 0):,.2f}"
     from actuals import unlink_transaction
     try:
         unlink_transaction(txn.id)

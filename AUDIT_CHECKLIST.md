@@ -79,9 +79,9 @@ Keep this file updated as items land.
 ## 🧾 Docs/receipts model (2026-07-20, from live FIFA use)
 - [x] v1 — "📎 Backup for an invoice" picker action: excludes the receipt's own
   charge from all rollups (receipt stays filed; note names the invoice).
-- [ ] v2 — Proper backup linkage: dedicated status/field (not
-  not_project_expense), receipt shown beside the invoice subline in the Line
-  Ledger, 📎 badge on backed-up sublines.
+- [x] v2 — Backup linkage: transaction.backup_of_txn_id column; chooser
+  dialog ranks likely targets (invoice sublines first, by amount closeness);
+  Line Ledger shows 📎 backup receipts beneath the charge they document.
 - [ ] v3 — Duplicate scanner suggests "backup?" when a receipt ≈ an invoice
   subline (vendor/date/amount) instead of leaving a parallel charge.
 - [ ] v4 — Rename/clarify queue language around Steven's activate model:
