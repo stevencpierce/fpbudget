@@ -647,6 +647,20 @@ if not _SECRET_KEY:
     _SECRET_KEY = "fpbudget-dev-secret"
 app.config["SECRET_KEY"]                     = _SECRET_KEY
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+# Audit H2 (2026-07-20): hard cap on request bodies — upload handlers read
+# whole files into memory, so an unbounded body was a trivial OOM. 413 above.
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+
+# Sentry error monitoring (audit C4b). Activates ONLY when SENTRY_DSN is set
+# in the environment (Steven adds it in Render); otherwise a silent no-op.
+try:
+    if os.getenv("SENTRY_DSN"):
+        import sentry_sdk
+        sentry_sdk.init(dsn=os.getenv("SENTRY_DSN"),
+                        traces_sample_rate=0.0, send_default_pii=False)
+        logging.info("[sentry] initialized")
+except Exception as _se_init:
+    logging.warning(f"[sentry] init failed (continuing without): {_se_init}")
 
 # ── SocketIO ──────────────────────────────────────────────────────────────────
 # async_mode='threading' (2026-04-20): we run under gunicorn's stock sync
@@ -979,12 +993,13 @@ def _dbx_client():
     app_secret    = os.getenv('DROPBOX_APP_SECRET', '')
     if refresh_token and app_key and app_secret:
         dbx = _dbx_mod.Dropbox(
+            timeout=30,
             oauth2_refresh_token=refresh_token,
             app_key=app_key,
             app_secret=app_secret,
         )
     else:
-        dbx = _dbx_mod.Dropbox(os.getenv('DROPBOX_ACCESS_TOKEN', ''))
+        dbx = _dbx_mod.Dropbox(os.getenv('DROPBOX_ACCESS_TOKEN', ''), timeout=30)
     # Route into the shared folder namespace so paths like /!_TEMPLATE work directly
     if _DBX_NAMESPACE_ID:
         from dropbox.common import PathRoot
@@ -2832,7 +2847,10 @@ def _send_sms(to_phone, body):
         digits = '+1' + digits  # default to US
     try:
         from twilio.rest import Client as _TwilioClient
-        _TwilioClient(sid, token).messages.create(body=body, from_=from_num, to=digits)
+        from twilio.http.http_client import TwilioHttpClient as _TwilioHttp
+        # 15s timeout (audit H1): a hung Twilio POST in the per-recipient send
+        # loop could exceed gunicorn's 120s and kill the worker mid-send.
+        _TwilioClient(sid, token, http_client=_TwilioHttp(timeout=15)).messages.create(body=body, from_=from_num, to=digits)
         return True
     except Exception as e:
         logging.warning(f"SMS send failed: {e}")
@@ -13742,6 +13760,16 @@ def actuals_sync_now(pid):
         return jsonify({"error": "end_date must be YYYY-MM-DD"}), 400
 
     from qbo_sync import sync_project
+    # Audit H4 (2026-07-20): single-flight per project. A double-click or an
+    # overlapping run duplicated qbo_txn_ids → IntegrityError at commit → the
+    # ENTIRE batch (every genuinely-new row) rolled back. Non-blocking try-lock:
+    # a second caller gets a clear message instead of a doomed parallel run.
+    _sync_lock_key = 776600000 + int(pid)
+    _got = db.session.execute(text("SELECT pg_try_advisory_lock(:k)"),
+                              {"k": _sync_lock_key}).scalar()
+    if not _got:
+        return jsonify({"error": "A QBO sync for this project is already "
+                                 "running — wait for it to finish."}), 409
     try:
         result = sync_project(project, conn, db,
                               start_date=start_date, end_date=end_date)
@@ -13767,7 +13795,15 @@ def actuals_sync_now(pid):
         return jsonify({"ok": True, **result})
     except Exception as e:
         logging.exception(f"[actuals] sync_now failed: {e}")
+        db.session.rollback()
         return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            db.session.execute(text("SELECT pg_advisory_unlock(:k)"),
+                               {"k": _sync_lock_key})
+            db.session.commit()
+        except Exception:
+            pass
 
 
 # ── QBO OAuth routes (slice 3 — pulled forward 2026-04-30) ────────────
@@ -27047,6 +27083,22 @@ def _do_boot_work():
             db.session.commit()
         except Exception:
             db.session.rollback()
+
+    # ── Hot-path indexes (audit H6, 2026-07-20) — the three most-filtered
+    # columns had no index: budget_line.budget_id (every budget/callsheet
+    # render), transaction.project_id and transaction.budget_line_id (every
+    # actuals view/rollup). IF NOT EXISTS → idempotent under the boot runner.
+    for _isql in (
+        "CREATE INDEX IF NOT EXISTS ix_budget_line_budget_id ON budget_line (budget_id)",
+        "CREATE INDEX IF NOT EXISTS ix_transaction_project_id ON transaction (project_id)",
+        "CREATE INDEX IF NOT EXISTS ix_transaction_budget_line_id ON transaction (budget_line_id)",
+    ):
+        try:
+            db.session.execute(text(_isql))
+            db.session.commit()
+        except Exception as _ie:
+            db.session.rollback()
+            logging.warning(f"[boot/index] {_isql[:60]}… failed: {_ie}")
 
     # ── Essential-column healing pass ─────────────────────────────────────
     # The migrations above each run under the 5-second per-connection

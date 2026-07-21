@@ -59,3 +59,6 @@ pypdfium2
 # (sandbox|production), and QBO_REDIRECT_URI env vars. Refresh
 # tokens persist in the qbo_connection table.
 requests
+# Error monitoring (audit C4b, 2026-07-20). Init is guarded on SENTRY_DSN —
+# without the env var the app runs exactly as before.
+sentry-sdk[flask]

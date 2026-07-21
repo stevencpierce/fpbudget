@@ -97,6 +97,28 @@ def _headers(token):
 def refresh_qbo_token(conn, db):
     """Trade the refresh_token for a new access_token. Intuit may also
     rotate the refresh_token itself; we save whatever they send back."""
+    # Audit H4 (2026-07-20): two workers refreshing concurrently each POST the
+    # same refresh_token; Intuit rotates it and the second writer clobbers the
+    # stored value with a now-dead token, killing QBO auth until re-OAuth.
+    # Serialize under an advisory lock and re-read: if another worker already
+    # refreshed while we waited, use its fresh token and skip the POST.
+    from sqlalchemy import text as _lk_text
+    db.session.execute(_lk_text("SELECT pg_advisory_lock(:k)"), {"k": 776500001})
+    try:
+        _tok_before = conn.access_token
+        db.session.refresh(conn)
+        if conn.access_token != _tok_before and conn.access_token:
+            return  # a sibling worker just refreshed — reuse its token
+        return _refresh_qbo_token_locked(conn, db)
+    finally:
+        try:
+            db.session.execute(_lk_text("SELECT pg_advisory_unlock(:k)"), {"k": 776500001})
+        except Exception:
+            pass
+
+
+def _refresh_qbo_token_locked(conn, db):
+    """Body of refresh_qbo_token — runs holding advisory lock 776500001."""
     import base64
     client_id     = os.getenv("QBO_CLIENT_ID")
     client_secret = os.getenv("QBO_CLIENT_SECRET")
@@ -799,6 +821,8 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             existing_doc_txn.qbo_category   = r["qbo_category"]
             # Trust QBO for the canonical amount + vendor + date; the
             # user-typed receipt values may have been approximate.
+            _amt_delta = abs(float(existing_doc_txn.amount or 0)
+                             - float(r["amount"] or 0))
             existing_doc_txn.amount         = r["amount"]
             existing_doc_txn.is_expense     = r["is_expense"]
             # Vendor: prefer the receipt's OCR'd / human-typed value
@@ -815,7 +839,20 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             # Confirmed because the user manually placed the receipt
             # against a budget line — they own the categorization.
             if existing_doc_txn.budget_line_id or existing_doc_txn.account_code:
-                existing_doc_txn.match_status = 'confirmed'
+                # Audit H3 (2026-07-20): only auto-confirm when the receipt and
+                # the bank charge agree to the cent. A fuzzy pairing whose
+                # amounts differ may be the WRONG receipt (two similar expenses
+                # within the ±$1/±5d window) — surface it for human review
+                # instead of silently promoting it to confirmed.
+                if _amt_delta <= 0.01:
+                    existing_doc_txn.match_status = 'confirmed'
+                else:
+                    existing_doc_txn.match_status = 'suggested'
+                    _dnote = (f"[QBO reconcile: bank amount differed from "
+                              f"receipt by ${_amt_delta:,.2f} — review]")
+                    if _dnote not in (existing_doc_txn.note or ''):
+                        existing_doc_txn.note = (((existing_doc_txn.note or '')
+                                                  + ' ' + _dnote).strip())[:500]
             # Fire cross-project claim propagation: reconciliation
             # stamped a qbo_txn_id onto this doc row, which means QBO
             # siblings on other projects now share that id and should

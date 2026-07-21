@@ -20,27 +20,27 @@ Keep this file updated as items land.
   actually shipped). Production 500s now push to the ntfy phone alert
   (rate-limited). Render's health check now verifies the database (/readyz),
   not a static "ok".
-  - [ ] C4b — Add real error monitoring (Sentry): Steven adds `SENTRY_DSN` in
-    Render, then wire `sentry-sdk`.
+  - [x] C4b — Sentry wired (activates when Steven adds `SENTRY_DSN` in Render;
+    no-op until then). ⬜ Steven: create Sentry project + add the env var.
   - [ ] C4c — Point the Playwright test suite at a staging site (it currently
     creates/deletes projects on LIVE production).
   - [ ] C4d — Make the budget-math tests actually assert numbers (several pass
     no matter what).
 
 ## 🟠 High
-- [ ] H1 — Timeouts on Twilio / Dropbox / Veryfi calls; move call-sheet send
-  emails/SMS to a background job (a slow provider can hang a worker mid-send).
-- [ ] H2 — Cap upload size (`MAX_CONTENT_LENGTH`) and stop reading whole files
-  into memory (OOM risk).
-- [ ] H3 — QBO fuzzy reconcile must stop silently overwriting a user-entered
-  amount and marking it confirmed — flag a discrepancy instead.
-- [ ] H4 — QBO sync: add a per-project lock + insert-on-conflict so a duplicate
-  row can't roll back the whole batch; serialize token refresh.
+- [x] H1a — Timeouts added: Twilio 15s, Dropbox 30s.
+- [ ] H1b — Move call-sheet send emails/SMS to a background job.
+- [x] H2 — Upload/request body capped at 50 MB (413 above).
+  - [ ] H2b — Stream large uploads instead of reading into memory.
+- [x] H3 — Fuzzy reconcile with a differing amount now lands as 'suggested'
+  with a review note instead of silently 'confirmed'.
+- [x] H4 — Per-project sync lock (second click gets 'already running') +
+  token refresh serialized under an advisory lock.
+  - [ ] H4b — insert-on-conflict for qbo_txn_id (belt & suspenders).
 - [ ] H5 — Move migrations to Alembic (boot-time DDL silently skips failed
   ALTERs; three hand-synced copies of the column list).
-- [ ] H6 — Add missing DB indexes (`budget_line.budget_id`,
-  `transaction.project_id`, `transaction.budget_line_id`) + eager-load the
-  recipient/rep lookups (N+1 queries on every call-sheet send).
+- [x] H6a — The three missing hot-path indexes now created at boot.
+  - [ ] H6b — Eager-load the recipient/rep lookups (N+1 on call-sheet send).
 - [ ] H7 — Persist background-job state in the DB (analyzer batches can be
   silently dropped on worker restart).
 - [ ] H8 — Add CSRF protection (Flask-WTF) on state-changing routes.
