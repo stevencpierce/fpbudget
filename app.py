@@ -31912,6 +31912,15 @@ def _line_budget_total(ln):
     estimated total. Used for the person-profile deal headline + mismatch check."""
     try:
         if ln.is_labor:
+            # Prefer the working_total snapshot — it carries SCHEDULE-DRIVEN
+            # days (the Budget tab's Working column). Recomputing rate×stored
+            # days here used days=1 on a line the schedule runs for 2, so the
+            # profile said "over budget by $500" while the budget showed $900
+            # UNDER. (User 2026-07-20.) Fallback: rate×days×qty when no
+            # working snapshot exists yet.
+            wt = float(ln.working_total or 0)
+            if wt > 0:
+                return round(wt, 2)
             return round(float(ln.rate or 0) * float(ln.days or 0) * float(ln.quantity or 1), 2)
         return round(float(ln.estimated_total or 0), 2)
     except (TypeError, ValueError):
