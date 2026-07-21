@@ -90,11 +90,27 @@
           {% if est %}
             {% set is_cur = (est.id == budget.id) %}
             {% set est_count = version_groups | selectattr('estimated') | list | length %}
-            <div class="version-item version-item-subrow {% if is_cur %}version-item-active{% endif %}">
+            <div class="version-item version-item-subrow {% if is_cur %}version-item-active{% endif %}" style="flex-wrap:wrap">
+              {% set _ss = share_status_by_bid.get(est.id) %}
               <a href="{{ url_for('budget_view', pid=project.id, bid=est.id) }}" class="version-item-link">
                 <span class="mode-badge mode-estimated" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem">EST</span>
                 <span class="version-item-ts">{% if est.updated_at %}{{ est.updated_at | in_tz(budget.timezone) }}{% endif %}</span>
+                {% if _ss and _ss.approved %}
+                <span title="Approved by {{ _ss.approved | join(', ') }}{% if _ss.sent %} — also sent to {{ _ss.sent | join(', ') }}{% endif %}"
+                      style="font-size:.62rem;font-weight:700;background:#052e16;color:#4ade80;border:1px solid #16a34a;border-radius:4px;padding:1px 6px;margin-left:6px;white-space:nowrap">✔ Approved by client</span>
+                {% elif _ss and _ss.sent %}
+                <span title="Sent to {{ _ss.sent | join(', ') }} — not approved yet"
+                      style="font-size:.62rem;font-weight:600;background:#0c1a3a;color:#60a5fa;border:1px solid #1d4ed8;border-radius:4px;padding:1px 6px;margin-left:6px;white-space:nowrap">✉ Sent to client</span>
+                {% endif %}
               </a>
+              {% if _ss and (_ss.approved or _ss.sent) %}
+              {# Long form: who, exactly. Approvals show the e-signature name + date. #}
+              <div style="flex-basis:100%;order:99;font-size:.66rem;color:var(--text-muted);padding:0 .6rem .25rem 2.6rem;line-height:1.35">
+                {% if _ss.approved %}<span style="color:#4ade80">Approved by {{ _ss.approved | join(', ') }}</span>{% endif %}
+                {% if _ss.approved and _ss.sent %} · {% endif %}
+                {% if _ss.sent %}Sent to {{ _ss.sent | join(', ') }}{% endif %}
+              </div>
+              {% endif %}
               <div class="version-item-actions">
                 {% if not is_cur %}
                 <button class="btn btn-xs btn-ghost version-archive-btn" data-bid="{{ est.id }}" title="Archive">⊘</button>

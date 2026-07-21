@@ -7512,6 +7512,26 @@ def budget_view(pid, bid):
         _vd['is_current'] = (_vd['version_number'] == _max_vn)
     version_groups = sorted(_vn_map.values(), key=lambda x: x['version_number'], reverse=True)
 
+    # Client send/approval per budget VERSION (User 2026-07-20: "not readily
+    # shown which version was approved"). From EstimateShare: short chip state
+    # for the version menu + the recipient/approver names for the long form.
+    share_status_by_bid = {}
+    try:
+        from models import EstimateShare as _ESh
+        for _sh in (_ESh.query.filter(_ESh.project_id == pid,
+                                      _ESh.status != 'revoked').all()):
+            _e = share_status_by_bid.setdefault(_sh.budget_id,
+                                                {"sent": [], "approved": []})
+            _who = (_sh.client_name or _sh.client_email or 'client').strip()
+            if _sh.status == 'approved':
+                _sig = (_sh.approver_name or _who).strip()
+                _when = (_sh.responded_at.strftime('%b %-d') if _sh.responded_at else '')
+                _e["approved"].append((_sig + (f' · {_when}' if _when else '')))
+            elif _sh.status in ('sent', 'viewed'):
+                _e["sent"].append(_who)
+    except Exception as _shx:
+        logging.warning(f"[versions] share status map failed: {_shx}")
+
     # Mode-switcher peers: same-version Estimated and Working for the budget being viewed
     _cur_vn = budget.version_number or 1
     _vn_peer = _vn_map.get(_cur_vn, {})
@@ -7929,6 +7949,7 @@ def budget_view(pid, bid):
         actuals_line_crew=actuals_line_crew,
         all_budgets=all_budgets,
         version_groups=version_groups,
+        share_status_by_bid=share_status_by_bid,
         peer_estimated_bid=peer_estimated_bid,
         peer_working_bid=peer_working_bid,
         peer_actual_bid=peer_actual_bid,
