@@ -20847,6 +20847,7 @@ def location_db_save():
 @app.route("/locations/<int:lid>/delete", methods=["POST"])
 @login_required
 def location_db_delete(lid):
+    _require_global_editor()
     """Soft-delete a global library location."""
     loc = Location.query.filter_by(id=lid, project_id=None).first_or_404()
     loc.active = False
@@ -21095,9 +21096,27 @@ def crew_list():
                            agent_map=agent_map)
 
 
+
+def _require_global_editor():
+    """Guard for SHARED/global objects (crew members, budget templates, library
+    locations) that carry no project id, so the central enforce_project_access
+    gate never runs for them. Admins pass; everyone else needs an owner/editor
+    role on at least one project. Viewer-only / docs-only accounts could
+    previously read the full crew PII database and mutate shared records via
+    these routes (security audit C1, 2026-07-20)."""
+    if getattr(current_user, 'role', None) in ('super_admin', 'admin'):
+        return
+    ok = (ProjectAccess.query
+          .filter(ProjectAccess.user_id == current_user.id,
+                  ProjectAccess.role.in_(('owner', 'editor'))).first())
+    if not ok:
+        abort(403)
+
+
 @app.route("/crew/new", methods=["POST"])
 @login_required
 def crew_new():
+    _require_global_editor()
     want_json = request.is_json or request.args.get("fmt") == "json"
     name = (request.json or request.form).get("name", "").strip() if want_json else request.form.get("name", "").strip()
     if not name:
@@ -21168,6 +21187,7 @@ def crew_new():
 @app.route("/crew/<int:cid>/edit", methods=["POST"])
 @login_required
 def crew_edit(cid):
+    _require_global_editor()
     m = CrewMember.query.get_or_404(cid)
     want_json = request.is_json or request.args.get("fmt") == "json"
 
@@ -21215,6 +21235,7 @@ def crew_edit(cid):
 @app.route("/crew/<int:cid>/json", methods=["GET"])
 @login_required
 def crew_get_json(cid):
+    _require_global_editor()
     m = CrewMember.query.get_or_404(cid)
     return jsonify({
         "id": m.id, "name": m.name, "department": m.department or "",
@@ -21232,6 +21253,7 @@ def crew_get_json(cid):
 @app.route("/crew/<int:cid>/delete", methods=["POST"])
 @login_required
 def crew_delete(cid):
+    _require_global_editor()
     m = CrewMember.query.get_or_404(cid)
     # Null out FK references so the delete doesn't fail on constraint violations
     BudgetLine.query.filter_by(assigned_crew_id=cid).update({"assigned_crew_id": None},
@@ -21250,6 +21272,7 @@ def crew_delete(cid):
 @app.route("/crew/<int:cid>/support", methods=["GET"])
 @login_required
 def support_contacts_list(cid):
+    _require_global_editor()
     CrewMember.query.get_or_404(cid)
     contacts = SupportContact.query.filter_by(crew_member_id=cid, active=True).all()
     return jsonify([{
@@ -21265,6 +21288,7 @@ def support_contacts_list(cid):
 @app.route("/crew/<int:cid>/support/save", methods=["POST"])
 @login_required
 def support_contact_save(cid):
+    _require_global_editor()
     CrewMember.query.get_or_404(cid)
     data = request.get_json(force=True)
     sid = data.get("id")
@@ -21309,6 +21333,7 @@ def support_contact_save(cid):
 @app.route("/crew/<int:cid>/support/<int:sid>/delete", methods=["POST"])
 @login_required
 def support_contact_delete(cid, sid):
+    _require_global_editor()
     s = SupportContact.query.filter_by(id=sid, crew_member_id=cid).first_or_404()
     s.active = False
     db.session.commit()
@@ -22701,6 +22726,7 @@ def template_edit(tid):
 @app.route("/budget-templates/<int:tid>/save", methods=["POST"])
 @login_required
 def template_save(tid):
+    _require_global_editor()
     t = BudgetTemplate.query.get_or_404(tid)
     data = request.get_json(force=True)
     # Replace all lines
@@ -22727,6 +22753,7 @@ def template_save(tid):
 @app.route("/budget-templates/<int:tid>/delete", methods=["POST"])
 @login_required
 def template_delete(tid):
+    _require_global_editor()
     t = BudgetTemplate.query.get_or_404(tid)
     db.session.delete(t)
     db.session.commit()
@@ -23096,16 +23123,34 @@ def callsheet_save(pid, bid, date_str):
     except ValueError:
         return jsonify({"error": "invalid date"}), 400
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
-    payload = request.get_json(force=True, silent=True) or {}
+    # Audit C2 hardening (2026-07-20): (a) an empty/invalid body must never
+    # wipe a live sheet; (b) merge over the stored blob so keys this client
+    # build doesn't emit survive; (c) optimistic concurrency — a stale tab
+    # gets a 409 instead of silently clobbering another editor's changes.
+    payload = request.get_json(force=True, silent=True)
+    if not isinstance(payload, dict) or not payload:
+        return jsonify({"error": "empty or invalid payload — nothing saved"}), 400
+    client_rev = payload.pop('_rev', None)
     rec = CallSheetData.query.filter_by(
         budget_id=bid, date=selected_date, schedule_mode=sched_mode).first()
     if not rec:
         rec = CallSheetData(budget_id=bid, date=selected_date, schedule_mode=sched_mode)
         db.session.add(rec)
+    else:
+        server_rev = rec.updated_at.isoformat() if rec.updated_at else None
+        if client_rev and server_rev and client_rev != server_rev:
+            return jsonify({"error": "conflict", "conflict": True,
+                            "server_rev": server_rev}), 409
+        try:
+            stored = json.loads(rec.data_json) if rec.data_json else {}
+        except Exception:
+            stored = {}
+        if isinstance(stored, dict):
+            payload = {**stored, **payload}
     rec.data_json = json.dumps(payload)
     rec.updated_at = datetime.utcnow()
     db.session.commit()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "rev": rec.updated_at.isoformat()})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/contacts")
@@ -23478,6 +23523,7 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
     cs_rec = CallSheetData.query.filter_by(
         budget_id=bid, date=selected_date, schedule_mode=sched_mode).first()
     cs_data = json.loads(cs_rec.data_json) if cs_rec and cs_rec.data_json else {}
+    cs_rev = (cs_rec.updated_at.isoformat() if cs_rec and cs_rec.updated_at else '')
 
     # ── Apply per-day department overrides / renames / custom depts ─────────
     # These are DISPLAY truth for page-2 grouping and are honored across ALL
@@ -23803,6 +23849,7 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         current_working_bid=current_working_bid,
         current_estimated_bid=current_estimated_bid,
         cs_data=cs_data,
+        cs_rev=cs_rev,
         available_contacts=available_contacts,
         next_day_date=next_day_date,
         next_day_people=next_day_people,
@@ -36259,6 +36306,27 @@ def _unhandled_exception(e):
     logging.error(
         f"[ERR-{ref}] {_method} {_path} user={_user_id}\n{_trace}"
     )
+    # Push-alert production 500s via ntfy (rate-limited to 1 per 5 min so an
+    # error loop can't flood the phone). Fire-and-forget daemon thread with a
+    # hard timeout — alerting must never slow or break the error response.
+    # Stopgap until a real error monitor (Sentry) is wired. (Audit C4.)
+    try:
+        import time as _t
+        _now = _t.time()
+        if _now - getattr(_unhandled_exception, '_last_alert', 0) > 300:
+            _unhandled_exception._last_alert = _now
+            _topic = os.getenv('NTFY_TOPIC', 'fpbudget-2UNogKZFtFM')
+
+            def _alert_500(topic=_topic, msg=f"FPBudget 500 [ERR-{ref}] {_method} {_path}"):
+                try:
+                    import requests as _rq
+                    _rq.post(f"https://ntfy.sh/{topic}", data=msg.encode(), timeout=4)
+                except Exception:
+                    pass
+            import threading as _thr
+            _thr.Thread(target=_alert_500, daemon=True).start()
+    except Exception:
+        pass
     # Show the traceback inline to super-admins only — so production errors are
     # debuggable without server-log access. Everyone else gets the generic page.
     _admin_trace = ''

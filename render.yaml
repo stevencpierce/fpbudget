@@ -39,7 +39,9 @@ services:
     # We're on 2GB/1CPU now, so memory pressure no longer justifies aggressive
     # recycling. 5000 still sheds long-lived leaks, far less churn.
     startCommand: gunicorn -k gthread -w 2 --threads 8 --bind 0.0.0.0:$PORT --timeout 120 --max-requests 5000 --max-requests-jitter 500 app:app
-    healthCheckPath: /health
+    # /readyz does a real SELECT 1 — a deploy is only "healthy" when the DB is
+    # reachable (audit C4; /health was a static "ok" that green-lit dead deploys)
+    healthCheckPath: /readyz
     envVars:
       - key: DATABASE_URL
         sync: false

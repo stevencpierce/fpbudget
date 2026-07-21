@@ -1773,8 +1773,13 @@ function scheduleAutoSave() {
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(doAutoSave, 900);
 }
+// Optimistic-concurrency rev: the sheet version this tab loaded. Echoed on every
+// save; the server 409s when another tab/user saved since, instead of letting
+// this tab silently clobber their edits. (Audit C2, 2026-07-20.)
+let CS_REV = {{ cs_rev | default('') | tojson }};
 function doAutoSave() {
   const payload = collectCallSheetData();
+  payload._rev = CS_REV || '';
   const statusEl = document.getElementById('cs-save-status');
   if (statusEl) { statusEl.textContent = 'Saving…'; statusEl.className = 'cs-save-status saving'; }
   fetch(CS_SAVE_URL, {
@@ -1782,8 +1787,13 @@ function doAutoSave() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload)
   })
-  .then(r => r.json())
-  .then(d => {
+  .then(r => r.json().then(d => ({ status: r.status, d })))
+  .then(({ status, d }) => {
+    if (status === 409 && d && d.conflict) {
+      if (statusEl) { statusEl.textContent = '⚠ Sheet changed elsewhere — reload before editing (this edit was NOT saved)'; statusEl.className = 'cs-save-status error'; }
+      return;
+    }
+    if (d && d.rev) CS_REV = d.rev;
     if (statusEl) { statusEl.textContent = 'Saved'; statusEl.className = 'cs-save-status saved'; }
     setTimeout(() => { if (statusEl) { statusEl.textContent = ''; statusEl.className = 'cs-save-status'; } }, 2500);
   })
@@ -3761,25 +3771,25 @@ function csDistLoadHistory() {
           const typeLabel = { union: 'union', rep: 'rep', partner: 'partner', manual: 'manual' }[r.type] || '';
           const typeChip = typeLabel
             ? `<span style="font-size:.58rem;opacity:.75;margin-left:3px">${typeLabel}</span>` : '';
-          return `<span class="cs-recip-badge ${cls}" title="${tooltip.replace(/"/g,"&quot;")}">${name}${typeChip}</span>`;
+          return `<span class="cs-recip-badge ${cls}" title="${csEscAttr(tooltip)}">${csEscHtml(name)}${typeChip}</span>`;
         }).join('');
         const pdfLink = s.pdf_url
-          ? `<a href="${s.pdf_url}" style="font-size:.75rem;color:#60a5fa;text-decoration:none" title="Download this version as PDF">⬇ PDF</a>`
+          ? `<a href="${csEscAttr(s.pdf_url)}" style="font-size:.75rem;color:#60a5fa;text-decoration:none" title="Download this version as PDF">⬇ PDF</a>`
           : '';
         const archived = s.archived
           ? `<span style="font-size:.72rem;color:#4ade80" title="Archived to Dropbox admin folder">✓ Dropbox</span>`
           : '';
         return `<div class="cs-dist-send-record">
           <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px">
-            <strong style="font-size:.83rem">${s.version_label || ''}</strong>
+            <strong style="font-size:.83rem">${csEscHtml(s.version_label || '')}</strong>
             <span style="font-size:.75rem;color:var(--text-muted)">${dt}</span>
-            <span style="font-size:.75rem;color:var(--text-muted)">by ${s.sent_by || ''}</span>
+            <span style="font-size:.75rem;color:var(--text-muted)">by ${csEscHtml(s.sent_by || '')}</span>
             <span style="font-size:.75rem;background:#1e3a5f;color:#60a5fa;border-radius:4px;padding:1px 6px">${confirmed}/${total} confirmed · ${viewed}/${total} viewed</span>
             ${pdfLink}
             ${archived}
           </div>
           <div style="display:flex;flex-wrap:wrap;gap:4px">${badges}</div>
-          ${s.notes ? `<div style="font-size:.75rem;color:var(--text-muted);margin-top:4px">${s.notes}</div>` : ''}
+          ${s.notes ? `<div style="font-size:.75rem;color:var(--text-muted);margin-top:4px">${csEscHtml(s.notes)}</div>` : ''}
         </div>`;
       }).join('');
       el.innerHTML = `<div style="margin-bottom:8px;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em">Send History</div>${rows}`;
@@ -4155,7 +4165,7 @@ function csSendCallSheet() {
                       : '';
       const parts = [emailPart, smsPart].filter(Boolean).join(' ');
       return `<div style="display:flex;justify-content:space-between;font-size:.78rem;padding:2px 0;border-bottom:1px solid #1c1f2c">
-        <span>${r.name} <span style="color:#6b7280;font-size:.7rem">${r.version}</span></span>
+        <span>${csEscHtml(r.name)} <span style="color:#6b7280;font-size:.7rem">${csEscHtml(r.version)}</span></span>
         <span>${parts || '<span style="color:#6b7280">recorded</span>'}</span>
       </div>`;
     }).join('');

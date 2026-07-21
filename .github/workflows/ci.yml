@@ -1,0 +1,41 @@
+# Minimal CI safety net (audit C4, 2026-07-20). Every check here maps to a
+# class of bug that actually shipped: py_compile (syntax), Jinja parse
+# (template errors), route audit (the ed2aeca 4-day 500), js_check (the
+# 6abf125 TDZ crash class). Runs on every push and PR — no secrets needed.
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Python compile
+        run: python -m py_compile app.py models.py budget_calc.py actuals.py ai_layer.py fp_analyzer.py qbo_sync.py external_export.py wsgi.py
+      - name: Jinja parse all templates
+        run: |
+          pip install jinja2 --quiet
+          python - <<'EOF'
+          import glob, sys
+          from jinja2 import Environment, FileSystemLoader
+          env = Environment(loader=FileSystemLoader('templates'))
+          bad = 0
+          for p in glob.glob('templates/*.html'):
+              try:
+                  env.parse(open(p).read())
+              except Exception as e:
+                  bad += 1; print(f"JINJA ERROR {p}: {e}")
+          sys.exit(1 if bad else 0)
+          EOF
+      - name: Route-binding audit
+        run: python scripts/route_audit.py app.py
+      - name: Inline JS syntax check
+        run: python scripts/js_check.py
