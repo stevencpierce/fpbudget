@@ -20422,7 +20422,7 @@ function renderCrewList(list, q) {
     if (q) document.getElementById('ca-new-name').value = q;
   } else {
     el.innerHTML = list.slice(0, 30).map(c =>
-      `<div class="crew-assign-item" onclick="assignCrew(${c.id},'${c.name.replace(/'/g,"\\'")}')">
+      `<div class="crew-assign-item" onclick="assignCrew(${c.id},'${c.name.replace(/'/g,"\\'")}')" style="display:flex;align-items:center;gap:6px"><button type="button" title="Open ${c.name.replace(/"/g,'&quot;')}'s profile (deal, docs, timecards) — does not assign" onclick="event.stopPropagation();document.getElementById('crew-assign-modal').classList.add('hidden');window.openPersonProfile(${c.id})" style="background:none;border:1px solid var(--border);border-radius:5px;color:var(--text-muted);cursor:pointer;font-size:.8rem;padding:1px 6px;flex-shrink:0">👤</button>
         <strong>${c.name}</strong>${c.dept ? ` <span class="muted" style="font-size:.75rem">${c.dept}</span>` : ''}
       </div>`
     ).join('');
@@ -26001,6 +26001,7 @@ setTimeout(function() {
   </div>
   <div class="ll-foot">
     <span class="ll-hint">j/k move · space = reviewed · Enter opens receipt · Esc closes</span>
+    <button type="button" class="btn btn-sm" title="Open the repair view for this line — merge duplicates, unmatch receipts, uncode rows" onclick="if(window._llLineId&&window.openReconcileLine){document.getElementById('ll-close')?.click();window.openReconcileLine(window._llLineId)}">⚖ Reconcile</button>
     <button type="button" class="btn btn-sm" id="ll-review-all">✓ Mark all reviewed</button>
   </div>
 </div>
@@ -26310,3 +26311,31 @@ setTimeout(function() {
 </script>
 
 {% endblock %}
+
+{# ── Budget-as-home-base wiring (user 2026-07-20): the Actual column amount on
+   every line opens that line's Ledger (inspect); the ledger footer's
+   ⚖ Reconcile jumps to the repair view. Delegated listener + a thin wrapper
+   around openLineLedger to remember the current line. Runs after every other
+   script block so all openers exist. #}
+<style>
+  td.line-actual[data-acell-line]{cursor:pointer}
+  td.line-actual[data-acell-line]:hover{text-decoration:underline;text-decoration-style:dotted;background:rgba(139,180,255,.07)}
+</style>
+<script>
+(function () {
+  var orig = window.openLineLedger;
+  if (typeof orig === 'function') {
+    window.openLineLedger = function (lid) { window._llLineId = lid; return orig(lid); };
+  }
+  document.addEventListener('click', function (ev) {
+    var td = ev.target.closest ? ev.target.closest('td.line-actual[data-acell-line]') : null;
+    if (!td) return;
+    if (ev.target.closest('a,button,select,input,[contenteditable="true"]')) return;
+    var lid = parseInt(td.getAttribute('data-acell-line'));
+    if (lid && typeof window.openLineLedger === 'function') window.openLineLedger(lid);
+  });
+  document.querySelectorAll('td.line-actual[data-acell-line]').forEach(function (td) {
+    if (!td.title) td.title = 'Click: open this line\u2019s ledger (every charge coded here, with receipts)';
+  });
+})();
+</script>
