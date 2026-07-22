@@ -7472,7 +7472,7 @@
     #tab-actuals .ax-add-receipt{ flex:1; text-align:left; background:none; border:none;
         color:#7ba6e8; font-size:.72rem; cursor:pointer; padding:0; }
     #tab-actuals .ax-add-receipt:hover{ text-decoration:underline; }
-    #tab-actuals .ax-colhint{ display:flex; gap:8px; align-items:center; padding:2px 10px 8px;
+    #tab-actuals .ax-colhint{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:2px 10px 8px;
                               font-size:.66rem; color:var(--text-muted); }
     /* COA drag-drop highlight (User 2026-06-17): driven by a CSS class, NOT
        inline-style mutation. The boxes carry their base look (background,
@@ -8108,6 +8108,7 @@
           <span style="color:#f0c88a">🧾 Document</span><span>·</span>
           <span style="color:#8fe0b8">🏷 Budget line</span>
           <span style="margin-left:6px">— solid = done, dashed = still needed</span>
+          <span style="flex-basis:100%;font-size:.72rem;color:var(--text-muted);padding-top:2px">Uploaded receipts count <b>$0</b> until you act: <span style="color:#9ec0ff">🔗 match</span> it to a charge · <span style="color:#e0c060">📎 mark as backup</span> for an invoice already on the ledger · or <span style="color:#8fe0b8">⚡ activate</span> it as its own charge (cash / reimbursement) by picking a budget line.</span>
         </div>
         {# ✨ AI line-suggestion review bar — makes the per-row suggestion chips
            findable in a long list. Populated/toggled by JS. (User 2026-06-18.) #}
@@ -8309,7 +8310,7 @@
                     {% elif _cur %}
                     <option value="{{ _cur }}" selected>{{ t.account_code_name or t.account_code or 'Section' }} · section only</option>
                     {% else %}
-                    <option value="">Add budget line</option>
+                    <option value="">{% if not _txn_filled %}⚡ Activate — pick budget line{% else %}Add budget line{% endif %}</option>
                     {% endif %}
                   </select>
                   {% if _cur and 'section:' not in _cur %}
@@ -10737,7 +10738,7 @@
       wrap.innerHTML = '';
       const defs = [
         { key: 'needs',    title: '⚡ Needs receipt',     color: '#e0a040', desc: 'charges with no proof yet', collapsed: false },
-        { key: 'receipts', title: '🧾 Receipts to place', color: '#7ba6e8', desc: 'uploaded receipts not yet on a charge', collapsed: false },
+        { key: 'receipts', title: '🧾 Receipts — waiting (not counted yet)', color: '#7ba6e8', desc: 'each needs one of: 🔗 match to a charge · 📎 backup for an invoice · ⚡ activate as its own charge (cash / reimbursement) by picking a budget line', collapsed: false },
         { key: 'linked',   title: '🔗 Linked',            color: '#74c69d', desc: 'matched pairs (suggested + confirmed)', collapsed: true },
       ];
       const bodies = {};

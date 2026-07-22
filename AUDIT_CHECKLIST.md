@@ -101,6 +101,8 @@ Keep this file updated as items land.
   SUBLINE's description/vendor) get an advisory one-click "Backup of …?"
   chip that runs mark-backup with the matched target. Already-backed
   sublines excluded; advisory only, never automatic.
-- [ ] v4 — Rename/clarify queue language around Steven's activate model:
-  receipts sit passive until matched to a charge, marked backup, or ACTIVATED
-  into a standalone charge (cash/reimbursement).
+- [x] v4 — Queue speaks the match/backup/activate model: receipts section
+  retitled "Receipts — waiting (not counted yet)" with the three fates named;
+  doc-only rows' picker reads "⚡ Activate — pick budget line"; the Match-view
+  legend states that receipts count $0 until matched / marked backup /
+  activated.
