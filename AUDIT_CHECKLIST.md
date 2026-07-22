@@ -77,8 +77,11 @@ Keep this file updated as items land.
 - [ ] M7 — Timestamps: standardize on timezone-aware UTC / TIMESTAMPTZ.
 - [ ] M8 — Accessibility pass on the call sheet (labels on editable cells,
   status not conveyed by color alone).
-- [ ] M9 — Extract the ~18k lines of inline JS from budget.html into cached
-  static files.
+- [x] M9 — 20 script blocks (~14,000 lines, incl. the 4.7k and 3.5k engines)
+  extracted to static/budget-js/*.js (cache-busted, classic scripts, document
+  order — semantics identical). Jinja values hoisted via window.__BJ inline
+  preambles so name/scope stay in place. ~4.7k genuinely template-driven
+  lines remain inline. js_check now lints the static files in CI.
 
 ## ⚪ Low / hygiene
 - [x] L1 — Untrack the stale `.report.json` pytest artifact (+ .gitignore).

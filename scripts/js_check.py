@@ -35,7 +35,21 @@ for path in FILES:
             first = (r.stderr.strip().splitlines() or ["?"])
             msg = next((l for l in first if "Error" in l), first[-1])
             print(f"JS ERROR {path} block {i}: {msg}")
+# Also lint the standalone static JS files (M9 extracted budget engine +
+# any hand-written statics) when running the default sweep.
+static_js = []
+if not sys.argv[1:]:
+    import glob
+    static_js = sorted(glob.glob("static/*.js") + glob.glob("static/*/*.js"))
+    for path in static_js:
+        r = subprocess.run(["node", "--check", path], capture_output=True, text=True)
+        if r.returncode != 0:
+            failed += 1
+            first = (r.stderr.strip().splitlines() or ["?"])
+            msg = next((l for l in first if "Error" in l), first[-1])
+            print(f"JS ERROR {path}: {msg}")
+
 if failed:
-    print(f"JS CHECK FAILED: {failed} block(s)")
+    print(f"JS CHECK FAILED: {failed} file(s)/block(s)")
     sys.exit(1)
-print(f"js check OK ({len(FILES)} template(s))")
+print(f"js check OK ({len(FILES)} template(s), {len(static_js)} static js)")
