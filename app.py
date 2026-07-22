@@ -28356,6 +28356,23 @@ def _web_worker_essential_columns():
                 # 2026-07-20 — backup-receipt linkage (docs model v2).
                 "ALTER TABLE transaction "
                 "  ADD COLUMN IF NOT EXISTS backup_of_txn_id INTEGER",
+                # 2026-07-20 HOTFIX — Actualizing 2.0 columns as a healing
+                # BELT alongside Alembic 0003/0004: if the alembic step ever
+                # fails to apply, every Transaction SELECT 500s on the missing
+                # column (the exact budget-page-crash failure mode). Idempotent.
+                "ALTER TABLE transaction "
+                "  ADD COLUMN IF NOT EXISTS activated_at TIMESTAMP",
+                "CREATE TABLE IF NOT EXISTS expense_evidence ("
+                "  id SERIAL PRIMARY KEY,"
+                "  transaction_id INTEGER NOT NULL REFERENCES transaction(id),"
+                "  doc_upload_id INTEGER NOT NULL REFERENCES doc_upload(id),"
+                "  kind VARCHAR(16) DEFAULT 'backup',"
+                "  created_at TIMESTAMP,"
+                "  CONSTRAINT uq_expense_evidence UNIQUE (transaction_id, doc_upload_id))",
+                "CREATE INDEX IF NOT EXISTS ix_expense_evidence_transaction_id "
+                "  ON expense_evidence (transaction_id)",
+                "CREATE INDEX IF NOT EXISTS ix_expense_evidence_doc_upload_id "
+                "  ON expense_evidence (doc_upload_id)",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The
