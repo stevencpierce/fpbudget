@@ -595,8 +595,13 @@ def sync_schedule_driven_lines(budget_id, db_session):
 
     # Adopt any untagged meal/travel lines that match description+account_code.
     # This prevents duplicates when a template-seeded line already exists.
+    # ONLY adopt when the schedule actually flags this tag (count > 0):
+    # adopting at count == 0 turned a user-created line (e.g. a CSV-imported
+    # "Working Meals" row) into an auto line and then DELETED it two loops
+    # later as "schedule-derived with nothing left to derive" — silent data
+    # loss on the next page view. Found 2026-07-22 (Van Cliburn import).
     for tag, defn in SCHEDULE_LINE_DEFS.items():
-        if tag not in existing_auto:
+        if counts.get(tag, 0) > 0 and tag not in existing_auto:
             ac, an, desc = defn[0], defn[1], defn[2]
             orphan = next(
                 (ln for ln in all_lines
