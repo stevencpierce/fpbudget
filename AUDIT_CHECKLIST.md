@@ -64,8 +64,9 @@ Keep this file updated as items land.
 - [ ] M2 — Collapse the 5 overlapping project-access helpers into one.
 - [ ] M3 — Collapse the ~30 inconsistent JS escape helpers into one canonical
   pair.
-- [ ] M4 — Pin dependencies (13 of 16 unpinned — any deploy can pull a breaking
-  major version). Generate a lock file.
+- [x] M4 — Every dependency ceiling-pinned (< next breaking major; no floors,
+  so current resolution stays valid). Resolver verified clean. ⬜ Optional
+  later: true-pin via `pip freeze` in a Render shell → requirements.lock.
 - [x] M5 — fp_analyzer bare `except:` converted to `except Exception:` (no
   longer swallows SystemExit/KeyboardInterrupt).
 - [x] M6 — Upload allowlist + magic-byte validation on all 7 upload routes

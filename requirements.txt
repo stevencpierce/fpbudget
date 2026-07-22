@@ -1,14 +1,21 @@
-flask
-flask-login
-flask-sqlalchemy
-python-dotenv
-gunicorn
-psycopg2-binary
-werkzeug
-anthropic
-weasyprint
-Flask-Mail
-twilio
+# ── Version policy (audit M4, 2026-07-20) ────────────────────────────────
+# Every dependency carries a CEILING pin (< next breaking major) so a deploy
+# can never silently pull an incompatible major release. No floors are set —
+# whatever the build currently resolves stays valid, so this change cannot
+# break an existing environment. tzdata stays unpinned (calendar data).
+# To true-pin exact versions later: run `pip freeze` in a Render shell and
+# commit it as requirements.lock, then install from that.
+flask<4
+flask-login<1
+flask-sqlalchemy<4
+python-dotenv<2
+gunicorn<24
+psycopg2-binary<3
+werkzeug<4
+anthropic<2
+weasyprint<70
+Flask-Mail<1
+twilio<10
 tzdata
 # Pinned BELOW 1.36 — botocore 1.36 introduced default flexible request
 # checksums (CRC32) that Cloudflare R2 rejects, sending botocore into an
@@ -18,8 +25,8 @@ tzdata
 # checksums are off by default. Revisit when R2 supports flexible checksums.
 boto3>=1.35,<1.36
 botocore>=1.35,<1.36
-dropbox
-flask-socketio
+dropbox<13
+flask-socketio<6
 # gevent: upper-bounded at <26 on 2026-04-17. gevent 26.x breaks our
 # custom GeventWebSocketNoSSLWorker — the gunicorn worker hangs during
 # module import and never binds its port. gevent-websocket (required
@@ -33,7 +40,7 @@ flask-socketio
 # in `super(SSLContext, SSLContext).options.__set__` when any HTTPS
 # client initializes.
 gevent>=24.10,<26
-gevent-websocket
+gevent-websocket<1
 
 # FP Document Analyzer (fp_analyzer.py) — OCR + doc-type detection
 # + auto-filing pipeline, copied from FPReceiptRouter. Used by the
@@ -41,26 +48,26 @@ gevent-websocket
 # through Veryfi and file them into the correct Dropbox subfolder
 # of the project. Needs VERYFI_CLIENT_ID/CLIENT_SECRET/USERNAME/API_KEY
 # env vars set on the Render web service.
-veryfi
-pillow-heif
+veryfi<6
+pillow-heif<2
 # Pillow — explicit pin (previously present only transitively via pillow-heif).
 # Used by the Docs Inbox thumbnail endpoint (/docs/upload/<id>/thumb) to resize
 # image receipts to small JPEG previews, plus the existing HEIC→JPEG conversion
 # in /docs/upload/<id>/raw. (User 2026-07.)
-pillow
+pillow<12
 # pypdfium2 — pure-pip PDF rasterizer (bundled PDFium, no poppler/system deps).
 # Renders page 1 for Docs Inbox thumbnails — the Analyzer files nearly all docs
 # as PDF, so without this the repository shows only placeholder icons. (User 2026-07.)
-pypdfium2
+pypdfium2<5
 
 # QBO sync (qbo_sync.py) — REST API client for QuickBooks Online.
 # We hit /v3/company/<realmId>/query and /cdc directly, no Intuit
 # SDK. Requires QBO_CLIENT_ID, QBO_CLIENT_SECRET, QBO_ENVIRONMENT
 # (sandbox|production), and QBO_REDIRECT_URI env vars. Refresh
 # tokens persist in the qbo_connection table.
-requests
+requests<3
 # Error monitoring (audit C4b, 2026-07-20). Init is guarded on SENTRY_DSN —
 # without the env var the app runs exactly as before.
-sentry-sdk[flask]
+sentry-sdk[flask]<3
 # Versioned migrations (audit H5, 2026-07-20) — runs in preDeployCommand.
-alembic
+alembic<2
