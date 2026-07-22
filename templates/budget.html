@@ -8327,6 +8327,16 @@
                         onclick="actualsAcceptAiCode(this)"
                         title="AI suggests {{ t.ai_suggested_code }} · {{ t.ai_suggested_code_name }} ({{ (_aiconf*100)|int }}% confident){% if t.ai_code_reason %} — {{ t.ai_code_reason }}{% endif %}. Click to apply; pick from the dropdown to override.">✨ Use {{ t.ai_suggested_code_name }} · {{ (_aiconf*100)|int }}%</button>
                 {% endif %}
+                {# 📎 v3 (2026-07-20): receipt ≈ an itemized invoice subline →
+                   probably backup documentation, not a second charge. Advisory
+                   one-click; runs the existing mark-backup with this target. #}
+                {% set _bsug = actuals_backup_suggestions.get(t.id) %}
+                {% if _bsug and not _coded and not t.not_project_expense %}
+                <button type="button" class="actuals-ai-suggest-btn" style="border-color:#8a6d3b;color:#e0c060"
+                        data-tid="{{ t.id }}" data-target="{{ _bsug.target_id }}"
+                        onclick="actualsAcceptBackup(this)"
+                        title="This receipt closely matches an itemized invoice line ({{ _bsug.label }}). Accepting marks it as BACKUP documentation — its own charge stops counting; the file stays attached in the Line Ledger.">📎 Backup of {{ _bsug.label }}? · {{ (_bsug.confidence*100)|int }}%</button>
+                {% endif %}
                 {# Assigned person on crew-invoice rows: the budget line this charge
                    is coded to has an assigned crew member. (User 2026-06-18.) #}
                 {% set _crewname = (actuals_line_crew.get(_cur|int) if (_cur and 'section:' not in _cur) else None) %}
@@ -9355,6 +9365,32 @@
     // Accept a per-row ✨ suggestion: code the charge to the suggested COA
     // section via the same set-coa path as drag-drop. Reinforces the learned
     // vendor mapping server-side. (User 2026-06-18.)
+    // 📎 v3: accept a backup suggestion — link the receipt to the matched
+    // invoice subline via the existing mark-backup endpoint.
+    window.actualsAcceptBackup = async function (btn) {
+      const tid = btn.dataset.tid, target = btn.dataset.target;
+      if (!tid || !target) return;
+      const _orig = btn.textContent;
+      btn.disabled = true; btn.textContent = '📎 linking…';
+      try {
+        const r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/mark-backup`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target_txn_id: parseInt(target) }) });
+        const j = await r.json();
+        if (r.ok && j.ok) {
+          if (typeof _refreshRowAfterCode === 'function') _refreshRowAfterCode(tid, false, true);
+          if (typeof _actualsToast === 'function') _actualsToast('📎 Marked as backup — charge no longer counts.', 'green');
+          btn.remove();
+        } else {
+          btn.disabled = false; btn.textContent = _orig;
+          if (typeof _actualsToast === 'function') _actualsToast(j.error || 'Failed', 'yellow');
+        }
+      } catch (e) {
+        btn.disabled = false; btn.textContent = _orig;
+        if (typeof _actualsToast === 'function') _actualsToast('Error: ' + e.message, 'yellow');
+      }
+    };
+
     window.actualsAcceptAiCode = async function (btn) {
       const tid  = btn.dataset.tid;
       const code = btn.dataset.code;

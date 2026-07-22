@@ -7796,6 +7796,70 @@ def budget_view(pid, bid):
     # endpoint stay identical). 2026-05-29.
     actuals_line_suggestions = _actuals_vendor_suggestions(pid)
 
+    # ── 📎 Backup suggestions (docs-model v3, 2026-07-20) ────────────────────
+    # A doc-only UNCODED receipt that closely matches an itemized invoice
+    # subline (amount ±$3/10%, date ±10d, receipt vendor ≈ the SUBLINE's
+    # description — the invoice vendor is usually different, e.g. garage
+    # receipt vs. the production company's invoice) is probably BACKUP
+    # DOCUMENTATION, not a second charge. Advisory chip only — one click runs
+    # the existing mark-backup with the matched target. {txn_id: {...}}
+    actuals_backup_suggestions = {}
+    try:
+        from actuals import _vendor_similarity as _bsim
+        from datetime import datetime as _bdt
+        _b_receipts = [t for t in actuals_transactions
+                       if t.source == 'doc_upload'
+                       and not t.budget_line_id and not t.account_code
+                       and not t.not_project_expense
+                       and getattr(t, 'backup_of_txn_id', None) is None
+                       and t.amount is not None]
+        if _b_receipts:
+            _b_targets = (Transaction.query
+                          .filter(Transaction.project_id == pid,
+                                  Transaction.source == 'invoice_split',
+                                  Transaction.backup_of_txn_id.is_(None)).all())
+            _b_taken = {b.backup_of_txn_id for b in Transaction.query.filter(
+                Transaction.project_id == pid,
+                Transaction.backup_of_txn_id.isnot(None)).all()}
+
+            def _b_date(v):
+                try:
+                    return _bdt.strptime(str(v)[:10], "%Y-%m-%d").date()
+                except Exception:
+                    return None
+            for r in _b_receipts:
+                r_amt = abs(float(r.amount or 0))
+                r_date = _b_date(r.txn_date)
+                best, best_score = None, 0.0
+                for tgt in _b_targets:
+                    if tgt.id in _b_taken or tgt.id == r.id:
+                        continue
+                    t_amt = abs(float(tgt.amount or 0))
+                    diff = abs(t_amt - r_amt)
+                    if diff > max(3.0, 0.10 * max(t_amt, r_amt)):
+                        continue
+                    t_date = _b_date(tgt.txn_date)
+                    if r_date and t_date and abs((r_date - t_date).days) > 10:
+                        continue
+                    name_sim = max(
+                        _bsim(r.vendor or '', tgt.note or ''),
+                        _bsim(r.vendor or '', tgt.vendor or ''))
+                    exact = diff <= 0.01
+                    if not exact and name_sim < 0.5:
+                        continue
+                    score = (0.6 if exact else 0.35) + 0.4 * name_sim
+                    if score > best_score:
+                        best, best_score = tgt, score
+                if best is not None:
+                    actuals_backup_suggestions[r.id] = {
+                        "target_id": best.id,
+                        "label": ((best.note or best.vendor or 'invoice line')[:60]
+                                  + f" · ${abs(float(best.amount or 0)):,.2f}"),
+                        "confidence": round(min(best_score, 0.99), 2),
+                    }
+    except Exception as _bse:
+        logging.warning(f"[actuals/backup-suggest] scan failed: {_bse}")
+
     # ── "Code expenses" sub-tab: project-expense rows grouped by COA
     # department (2026-06-15). A register-style view (Quicken/QuickBooks
     # inspired) for fine-tuning which line each charge/receipt lands on,
@@ -8089,6 +8153,7 @@ def budget_view(pid, bid):
         actuals_transactions=actuals_transactions,
         actuals_code_groups=actuals_code_groups,
         actuals_line_suggestions=actuals_line_suggestions,
+        actuals_backup_suggestions=actuals_backup_suggestions,
         actuals_claimed_elsewhere=actuals_claimed_elsewhere,
         actuals_claimed_project_names=actuals_claimed_project_names,
         actuals_is_admin_view=_is_admin_view,

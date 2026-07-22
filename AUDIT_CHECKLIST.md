@@ -95,8 +95,11 @@ Keep this file updated as items land.
 - [x] v2 — Backup linkage: transaction.backup_of_txn_id column; chooser
   dialog ranks likely targets (invoice sublines first, by amount closeness);
   Line Ledger shows 📎 backup receipts beneath the charge they document.
-- [ ] v3 — Duplicate scanner suggests "backup?" when a receipt ≈ an invoice
-  subline (vendor/date/amount) instead of leaving a parallel charge.
+- [x] v3 — 📎 Backup suggestions: uncoded doc-only receipts matching an
+  itemized invoice subline (amount ±$3/10%, date ±10d, receipt vendor ≈ the
+  SUBLINE's description/vendor) get an advisory one-click "Backup of …?"
+  chip that runs mark-backup with the matched target. Already-backed
+  sublines excluded; advisory only, never automatic.
 - [ ] v4 — Rename/clarify queue language around Steven's activate model:
   receipts sit passive until matched to a charge, marked backup, or ACTIVATED
   into a standalone charge (cash/reimbursement).
