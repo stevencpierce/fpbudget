@@ -32,4 +32,11 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
 - Money: `db.Numeric` only. AI features: advisory + fail-open, never
   auto-confirm financial mutations.
 
+## Splitting app.py (M1, ongoing)
+Route slices move to `routes/<name>.py` — plain modules using `@app.route` on
+the SAME app object (endpoint names/URLs unchanged; NO blueprints — url_for
+must keep working). Import the module at app.py's BOTTOM. Verify every slice:
+`python scripts/route_snapshot.py save b.json` (before) → cut → `diff b.json`
+must print IDENTICAL. First slice: routes/budget_templates.py.
+
 Status ledger: AUDIT_CHECKLIST.md. Deploy = push `main`; verify /readyz sha.

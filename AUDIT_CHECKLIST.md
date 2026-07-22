@@ -59,8 +59,14 @@ Keep this file updated as items land.
   cron, OAuth) exempt.
 
 ## 🟡 Medium
-- [ ] M1 — Split app.py (36k lines) into blueprints; start with /docs and
-  /admin. Break up the 1,950-line `budget_view`.
+- [x] M1a — Monolith-split pattern established + first slice landed:
+  routes/budget_templates.py registers on the same app object (endpoint
+  names/URLs byte-identical — verified via scripts/route_snapshot.py: 361
+  routes, zero drift). CLAUDE.md documents the slice workflow; route audit
+  covers routes/*.py in CI.
+  - [ ] M1b — Continue slicing: /docs (36 routes), /admin (59), crew/actuals.
+  - [ ] M1c — Break up the 1,950-line `budget_view`.
+  - [ ] M1d — Move boot/migration code (~2.6k lines) into boot.py.
 - [ ] M2 — Collapse the 5 overlapping project-access helpers into one.
 - [ ] M3 — Collapse the ~30 inconsistent JS escape helpers into one canonical
   pair.
