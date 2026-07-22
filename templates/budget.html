@@ -3556,6 +3556,22 @@
                 <span id="docItemizeStatus" style="font-size:11px;color:var(--text-muted)"></span>
               </div>
             </details>
+            {# 📎 Backup documents (2026-07-22): invoice-side view + attach of
+               backup docs — for the invoice total or any itemized subline.
+               Mirrors the receipt-side 📎 mark-backup flow. #}
+            <details id="docDetailBackupsBlock" class="field" style="margin-bottom:.6rem;display:none;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
+              <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">
+                📎 Backup documents <span id="docBackupsCount" style="color:#5fd0a0"></span>
+              </summary>
+              <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Receipts and supporting docs attached as backup for this expense — the whole invoice, or a specific itemized subline.</div>
+              <div id="docBackupsList" style="font-size:12px"></div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+                <select id="docBackupsTarget" style="flex:1;min-width:180px;font-size:12px;padding:5px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:6px"></select>
+                <button type="button" onclick="docBackupsShowCandidates()" style="padding:5px 10px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;font-size:12px;cursor:pointer">+ Attach backup…</button>
+              </div>
+              <div id="docBackupsCandidates" style="display:none;margin-top:8px;max-height:260px;overflow:auto;border-top:1px solid var(--border);padding-top:8px"></div>
+              <div id="docBackupsStatus" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div>
+            </details>
             {# ✈️ Travel intelligence (2026-06-22): a PERSISTENT collapsible panel on
                every doc. Auto-opens when the doc looks like a flight/hotel/car;
                otherwise stays collapsed and the user expands it and clicks Pull.
@@ -6220,11 +6236,13 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
           <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.5rem;flex-wrap:wrap">
             <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;cursor:pointer">
               <input type="radio" name="fee-mode" value="pct" id="set-fee-mode-pct"
+                     onchange="feeModeToggle()"
                      {% if _fee_mode != 'flat' %}checked{% endif %}>
               <span>Percentage</span>
             </label>
             <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;cursor:pointer">
               <input type="radio" name="fee-mode" value="flat" id="set-fee-mode-flat"
+                     onchange="feeModeToggle()"
                      {% if _fee_mode == 'flat' %}checked{% endif %}>
               <span>Flat amount</span>
             </label>
@@ -9973,7 +9991,25 @@ function autoSetEndDate(startVal) {
   {% endif %}
 })();
 
+// Swap the % / $ input as the Production Company Fee mode radios change.
+// (Bug 2026-07-22: the radios had NO wiring — picking "Flat amount" never
+// revealed the $ input unless the budget was ALREADY saved in flat mode,
+// so a flat fee could never be entered.)
+function feeModeToggle() {
+  const flat = document.getElementById('set-fee-mode-flat')?.checked;
+  const pw = document.getElementById('set-fee-pct-wrap');
+  const fw = document.getElementById('set-fee-flat-wrap');
+  if (pw) pw.style.display = flat ? 'none' : 'flex';
+  if (fw) fw.style.display = flat ? 'flex' : 'none';
+}
+
 async function saveSettings() {
+  // A thrown error anywhere in here used to die silently — the Save button
+  // just did nothing, with no message. Surface it instead. (2026-07-22.)
+  try { await _saveSettingsInner(); }
+  catch (e) { alert('Settings save failed: ' + (e && e.message ? e.message : e)); }
+}
+async function _saveSettingsInner() {
   const payload = {
     name:           document.getElementById('set-name').value.trim(),
     company_fee_pct:        parseFloat(document.getElementById('set-fee').value || 0),

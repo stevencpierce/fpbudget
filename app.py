@@ -33069,6 +33069,204 @@ def docs_upload_line_items(uid):
     })
 
 
+def _doc_backup_targets(upload):
+    """Attach targets for the invoice-side backup panel: the doc's own expense
+    ('Invoice total') plus each itemized subline. Mirrors the child sweep in
+    docs_upload_line_items (parent OR doc linkage, remainder child excluded).
+    Returns (parent_txn, [{txn_id, label, amount, is_parent}]). (2026-07-22,
+    owner: 'an invoice can also have backups on it for subitems… you should
+    be able to do it from the invoice itself.')"""
+    parent = _doc_parent_txn(upload.id)
+    if parent is None:
+        return None, []
+    from sqlalchemy import or_ as _or_bt
+    kids = (Transaction.query
+            .filter(Transaction.project_id == upload.project_id,
+                    Transaction.source == 'invoice_split',
+                    _or_bt(Transaction.parent_transaction_id == parent.id,
+                           Transaction.doc_upload_id == upload.id))
+            .order_by(Transaction.id).all())
+    targets = [{"txn_id": parent.id, "label": "Invoice total",
+                "amount": abs(float(parent.amount)) if parent.amount is not None else None,
+                "is_parent": True}]
+    for k in kids:
+        if (k.note or '') == 'Remainder → main line':
+            continue
+        targets.append({"txn_id": k.id,
+                        "label": (k.note or '').strip() or f"Subline #{k.id}",
+                        "amount": abs(float(k.amount)) if k.amount is not None else None,
+                        "is_parent": False})
+    return parent, targets
+
+
+@app.route("/docs/upload/<int:uid>/backups", methods=["GET"])
+@login_required
+def docs_upload_backups(uid):
+    """Invoice-side backup panel: targets (invoice total + sublines), the
+    backup docs already attached to each (expense_evidence kind='backup'),
+    and ranked candidate docs to attach. (2026-07-22.)"""
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+    parent, targets = _doc_backup_targets(upload)
+    if parent is None:
+        return jsonify({"ok": True, "targets": [], "backups": {}, "candidates": []})
+    tids = [t["txn_id"] for t in targets]
+    backups = {str(t): [] for t in tids}
+    attached = set()
+    from models import ExpenseEvidence
+    ev_rows = (db.session.query(ExpenseEvidence, DocUpload)
+               .join(DocUpload, DocUpload.id == ExpenseEvidence.doc_upload_id)
+               .filter(ExpenseEvidence.transaction_id.in_(tids),
+                       ExpenseEvidence.kind == 'backup').all())
+    for ev, d in ev_rows:
+        attached.add(d.id)
+        backups[str(ev.transaction_id)].append({
+            "doc_id": d.id,
+            "filename": d.filed_filename or d.original_filename or f"doc #{d.id}",
+            "vendor": d.vendor or '',
+            "amount": float(d.amount) if d.amount is not None else None,
+            "doc_date": d.doc_date.isoformat() if d.doc_date else '',
+        })
+    # Candidates: other live docs on this project, ranked by amount closeness
+    # to ANY target (sublines included — a $514 parking receipt should rank
+    # against the $514 parking subline), then date closeness to the invoice.
+    _tamts = [t["amount"] for t in targets if t["amount"]]
+    _inv_date = upload.doc_date
+    cand_docs = (DocUpload.query
+                 .filter(DocUpload.project_id == upload.project_id,
+                         DocUpload.id != upload.id,
+                         DocUpload.status != 'deleted')
+                 .all())
+    # Docs whose own charge is still just a document (uncoded, not activated)
+    # get absorbed on attach — their charge stops counting, like the
+    # receipt-side 📎 flow. Look them up in one sweep.
+    _own = {}
+    _cand_ids = [d.id for d in cand_docs]
+    if _cand_ids:
+        for _t in (Transaction.query
+                   .filter(Transaction.project_id == upload.project_id,
+                           Transaction.doc_upload_id.in_(_cand_ids),
+                           Transaction.source == 'doc_upload',
+                           Transaction.parent_transaction_id.is_(None)).all()):
+            _own.setdefault(_t.doc_upload_id, _t)
+    scored = []
+    for d in cand_docs:
+        if d.id in attached:
+            continue
+        _amt = abs(float(d.amount)) if d.amount is not None else None
+        _adist = min((abs(_amt - ta) for ta in _tamts), default=1e12) if _amt else 1e12
+        _ddist = abs((d.doc_date - _inv_date).days) if (d.doc_date and _inv_date) else 9999
+        scored.append((_adist, _ddist, d))
+    scored.sort(key=lambda x: (x[0], x[1], -x[2].id))
+    candidates = []
+    for _adist, _ddist, d in scored[:40]:
+        _ot = _own.get(d.id)
+        candidates.append({
+            "doc_id": d.id,
+            "filename": d.filed_filename or d.original_filename or f"doc #{d.id}",
+            "vendor": d.vendor or '',
+            "amount": float(d.amount) if d.amount is not None else None,
+            "doc_date": d.doc_date.isoformat() if d.doc_date else '',
+            "category": d.category or '',
+            "will_absorb": bool(_ot is not None and _ot.activated_at is None
+                                and _ot.budget_line_id is None
+                                and _ot.account_code is None
+                                and not _ot.not_project_expense),
+        })
+    return jsonify({"ok": True, "targets": targets, "backups": backups,
+                    "candidates": candidates})
+
+
+@app.route("/docs/upload/<int:uid>/attach-backup", methods=["POST"])
+@login_required
+def docs_upload_attach_backup(uid):
+    """Attach a doc as backup FOR this invoice (whole-invoice or a subline) —
+    the invoice-side mirror of the receipt-side 📎 mark-backup. If the backing
+    doc's own charge is still just a document (uncoded, not activated), it's
+    absorbed exactly like the receipt-side flow: hard-linked, uncounted, note-
+    tagged. Otherwise the doc is attached as evidence only. Body:
+    {doc_id, target_txn_id}. (2026-07-22.)"""
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+    _require_project_role(upload.project_id, 'editor')
+    data = request.get_json(force=True) or {}
+    parent, targets = _doc_backup_targets(upload)
+    if parent is None:
+        return jsonify({"error": "This document has no expense yet — nothing to back up."}), 400
+    try:
+        target_id = int(data.get("target_txn_id"))
+        doc_id = int(data.get("doc_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "doc_id and target_txn_id required"}), 400
+    if target_id not in {t["txn_id"] for t in targets}:
+        return jsonify({"error": "target is not this invoice or one of its sublines"}), 400
+    if doc_id == uid:
+        return jsonify({"error": "a document cannot back itself up"}), 400
+    doc = DocUpload.query.filter_by(id=doc_id, project_id=upload.project_id).first()
+    if not doc or doc.status == 'deleted':
+        return jsonify({"error": "backup document not found"}), 404
+    target = Transaction.query.get(target_id)
+    absorbed = False
+    own = (Transaction.query
+           .filter(Transaction.project_id == upload.project_id,
+                   Transaction.doc_upload_id == doc_id,
+                   Transaction.source == 'doc_upload',
+                   Transaction.parent_transaction_id.is_(None)).first())
+    if (own is not None and own.id != target_id and own.activated_at is None
+            and own.budget_line_id is None and own.account_code is None
+            and not own.not_project_expense):
+        _absorb_receipt_as_backup(own, target)
+        absorbed = True
+    else:
+        _add_evidence(target_id, doc_id, 'backup')
+    db.session.commit()
+    return jsonify({"ok": True, "absorbed": absorbed})
+
+
+@app.route("/docs/upload/<int:uid>/detach-backup", methods=["POST"])
+@login_required
+def docs_upload_detach_backup(uid):
+    """Undo an invoice-side backup attachment: remove the evidence row and, if
+    the backing doc's own charge was absorbed (backup_of_txn_id → this
+    target), restore it to the queue. Body: {doc_id, target_txn_id}. (2026-07-22.)"""
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+    _require_project_role(upload.project_id, 'editor')
+    data = request.get_json(force=True) or {}
+    try:
+        target_id = int(data.get("target_txn_id"))
+        doc_id = int(data.get("doc_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "doc_id and target_txn_id required"}), 400
+    from models import ExpenseEvidence
+    ExpenseEvidence.query.filter_by(transaction_id=target_id,
+                                    doc_upload_id=doc_id,
+                                    kind='backup').delete()
+    own = (Transaction.query
+           .filter(Transaction.project_id == upload.project_id,
+                   Transaction.doc_upload_id == doc_id,
+                   Transaction.source == 'doc_upload',
+                   Transaction.backup_of_txn_id == target_id).first())
+    if own is not None:
+        own.backup_of_txn_id = None
+        own.not_project_expense = False
+        own.match_status = 'unmatched'
+        # Strip the "📎 Backup for {ref}. " tag: the terminating period must be
+        # followed by whitespace or end-of-string, so amounts like $514.00
+        # inside the ref don't truncate the match early.
+        own.note = (re.sub(r'^\U0001F4CE Backup.*?\.(\s+|$)', '', own.note or '').strip()
+                    or None)
+        own.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"ok": True, "restored": bool(own is not None)})
+
+
 def _itemize_apply(upload, parent, rows, main_line_raw, strict=True):
     """CORE of the itemization save — shared by the /itemize route AND the
     /docs/split-integrity healer so the two can never diverge (2026-07).
@@ -33356,6 +33554,30 @@ def actuals_backup_candidates(pid, tid):
     return jsonify({"ok": True, "candidates": out})
 
 
+def _absorb_receipt_as_backup(txn, target, ref=''):
+    """Shared receipt→backup semantics (receipt-side 📎 mark-backup AND the
+    invoice-side attach, 2026-07-22): hard-link the receipt's charge to the
+    target it documents, uncount it from every rollup, tag the note, and write
+    the evidence row. Commit-free — callers commit."""
+    if target is not None:
+        txn.backup_of_txn_id = target.id
+        _add_evidence(target.id, txn.doc_upload_id, 'backup')
+        if not ref:
+            ref = f"{target.vendor or 'invoice'} · ${float(target.amount or 0):,.2f}"
+    from actuals import unlink_transaction
+    try:
+        unlink_transaction(txn.id)
+    except Exception:
+        txn.budget_line_id = None
+        txn.account_code = txn.account_code_name = None
+    txn.not_project_expense = True
+    txn.match_status = 'confirmed'
+    _tag = "\U0001F4CE Backup" + (f" for {ref}" if ref else " for an invoice")
+    if _tag not in (txn.note or ''):
+        txn.note = ((_tag + '. ' + (txn.note or '')).strip())[:500]
+    txn.updated_at = datetime.utcnow()
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/mark-backup", methods=["POST"])
 @login_required
 def actuals_mark_backup(pid, tid):
@@ -33371,6 +33593,7 @@ def actuals_mark_backup(pid, tid):
     ref = (data.get("backs_up") or '').strip()[:200]
     # v2: hard linkage to the specific transaction (usually an invoice_split
     # subline) this receipt documents — powers the Line Ledger 📎 attachment.
+    _target = None
     _target_id = data.get("target_txn_id")
     if _target_id:
         _target = Transaction.query.filter_by(id=int(_target_id),
@@ -33379,22 +33602,7 @@ def actuals_mark_backup(pid, tid):
             return jsonify({"error": "target transaction not found"}), 404
         if _target.id == txn.id:
             return jsonify({"error": "a charge cannot back itself up"}), 400
-        txn.backup_of_txn_id = _target.id
-        _add_evidence(_target.id, txn.doc_upload_id, 'backup')
-        if not ref:
-            ref = f"{_target.vendor or 'invoice'} · ${float(_target.amount or 0):,.2f}"
-    from actuals import unlink_transaction
-    try:
-        unlink_transaction(txn.id)
-    except Exception:
-        txn.budget_line_id = None
-        txn.account_code = txn.account_code_name = None
-    txn.not_project_expense = True
-    txn.match_status = 'confirmed'
-    _tag = "\U0001F4CE Backup" + (f" for {ref}" if ref else " for an invoice")
-    if _tag not in (txn.note or ''):
-        txn.note = ((_tag + '. ' + (txn.note or '')).strip())[:500]
-    txn.updated_at = datetime.utcnow()
+    _absorb_receipt_as_backup(txn, _target, ref)
     db.session.commit()
     return jsonify({"ok": True, "note": txn.note})
 

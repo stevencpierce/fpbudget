@@ -2821,6 +2821,7 @@
       'Upload ID #' + uid;
     _docDetailLoadCoding(uid);
     docItemizeLoad(uid);
+    docBackupsLoad(uid);
   };
 
   // ── Itemize into budget lines (QuickBooks-style line-item split) ──────────
@@ -3008,6 +3009,118 @@
       } else { if (st) st.textContent = 'Save failed: ' + (d.error || r.status); }
     } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
     finally { if (btn) { btn.disabled = false; btn.textContent = 'Save itemization'; } }
+  };
+
+  // ── 📎 Invoice-side backups (2026-07-22) ──────────────────────────────────
+  // View + attach backup documents FROM the invoice: for the invoice total or
+  // any itemized subline. Mirror of the receipt-side mark-backup flow.
+  let _bkUid = null, _bkData = null;
+  const _bkMoney = v => v == null ? '—' :
+    '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  window.docBackupsLoad = async function (uid) {
+    _bkUid = uid; _bkData = null;
+    const block = document.getElementById('docDetailBackupsBlock');
+    if (!block) return;
+    block.style.display = 'none';
+    const list = document.getElementById('docBackupsList');
+    const cand = document.getElementById('docBackupsCandidates');
+    const st = document.getElementById('docBackupsStatus');
+    const cnt = document.getElementById('docBackupsCount');
+    if (list) list.innerHTML = '';
+    if (cand) { cand.style.display = 'none'; cand.innerHTML = ''; }
+    if (st) st.textContent = '';
+    if (cnt) cnt.textContent = '';
+    try {
+      const r = await fetch('/docs/upload/' + uid + '/backups', { credentials: 'same-origin' });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (!d.ok || !d.targets || !d.targets.length) return;   // no expense yet — panel hidden
+      _bkData = d;
+      block.style.display = '';
+      const sel = document.getElementById('docBackupsTarget');
+      if (sel) sel.innerHTML = d.targets.map(t =>
+        '<option value="' + t.txn_id + '">' + (t.is_parent ? '' : '↳ ') + _esc(t.label)
+        + (t.amount != null ? ' · ' + _bkMoney(t.amount) : '') + '</option>').join('');
+      let n = 0, html = '';
+      d.targets.forEach(t => {
+        const bs = d.backups[String(t.txn_id)] || [];
+        if (!bs.length) return;
+        html += '<div style="margin-top:6px;font-size:10.5px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">'
+          + (t.is_parent ? '' : '↳ ') + _esc(t.label)
+          + (t.amount != null ? ' · ' + _bkMoney(t.amount) : '') + '</div>';
+        bs.forEach(b => {
+          n++;
+          html += '<div style="display:flex;gap:8px;align-items:center;padding:4px 6px;border:1px solid var(--border);border-radius:6px;margin-top:3px">'
+            + '<a href="#" onclick="openDocDetail(' + b.doc_id + ', null);return false" '
+            + 'style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8fb4ff;text-decoration:none" '
+            + 'title="Open this backup document">📎 ' + _esc(b.vendor || b.filename) + '</a>'
+            + '<span style="color:var(--text-muted);font-size:.78rem;white-space:nowrap">' + _esc(b.doc_date || '') + '</span>'
+            + '<b style="white-space:nowrap">' + _bkMoney(b.amount) + '</b>'
+            + '<button type="button" title="Detach this backup" onclick="docBackupsDetach(' + b.doc_id + ',' + t.txn_id + ')" '
+            + 'style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:13px">✕</button>'
+            + '</div>';
+        });
+      });
+      if (list) list.innerHTML = html ||
+        '<div style="color:var(--text-muted)">No backups attached yet — use <b>+ Attach backup…</b> below, or open a receipt in the Actuals queue and mark it 📎 Backup from there.</div>';
+      if (cnt) cnt.textContent = n ? ('· ' + n) : '';
+      if (n) block.open = true;
+    } catch (e) {}
+  };
+  window.docBackupsShowCandidates = function () {
+    const cand = document.getElementById('docBackupsCandidates');
+    if (!cand || !_bkData) return;
+    if (cand.style.display !== 'none') { cand.style.display = 'none'; return; }
+    const cs = _bkData.candidates || [];
+    cand.innerHTML = cs.length
+      ? ('<div style="font-size:10.5px;color:var(--text-muted);margin-bottom:4px">Pick the document that backs up the target chosen above (closest amounts first):</div>'
+        + cs.map(c =>
+          '<div style="display:flex;gap:8px;align-items:center;padding:4px 6px;border:1px solid var(--border);border-radius:6px;margin-top:3px">'
+          + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _esc(c.vendor || c.filename)
+          + (c.category ? ' <span style="color:var(--text-muted);font-size:.75rem">' + _esc(c.category) + '</span>' : '') + '</span>'
+          + '<span style="color:var(--text-muted);font-size:.78rem;white-space:nowrap">' + _esc(c.doc_date || '') + '</span>'
+          + '<b style="white-space:nowrap">' + _bkMoney(c.amount) + '</b>'
+          + '<button type="button" onclick="docBackupsAttach(' + c.doc_id + ')" '
+          + 'title="' + (c.will_absorb ? 'Attach — its own charge stops counting (it becomes documentation)' : 'Attach as backup documentation') + '" '
+          + 'style="padding:3px 10px;border-radius:5px;background:#1f7a4d;border:none;color:#fff;font-size:11px;cursor:pointer">Attach</button>'
+          + '</div>').join(''))
+      : '<div style="color:var(--text-muted);font-size:.85rem">No other documents on this project to attach.</div>';
+    cand.style.display = '';
+  };
+  window.docBackupsAttach = async function (docId) {
+    if (!_bkUid) return;
+    const sel = document.getElementById('docBackupsTarget');
+    const st = document.getElementById('docBackupsStatus');
+    const target = sel ? parseInt(sel.value) : null;
+    if (!target) return;
+    if (st) { st.style.color = 'var(--text-muted)'; st.textContent = 'Attaching…'; }
+    try {
+      const r = await fetch('/docs/upload/' + _bkUid + '/attach-backup', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_id: docId, target_txn_id: target }) });
+      const j = await r.json();
+      if (r.ok && j.ok) {
+        if (st) { st.style.color = '#5fd0a0'; st.textContent = j.absorbed
+          ? '📎 Attached — that document’s own charge no longer counts.'
+          : '📎 Attached as backup documentation.'; }
+        docBackupsLoad(_bkUid);
+      } else if (st) { st.style.color = '#e0a13a'; st.textContent = j.error || ('Failed (' + r.status + ')'); }
+    } catch (e) { if (st) { st.style.color = '#e0a13a'; st.textContent = 'Error: ' + e.message; } }
+  };
+  window.docBackupsDetach = async function (docId, targetId) {
+    if (!_bkUid) return;
+    const st = document.getElementById('docBackupsStatus');
+    try {
+      const r = await fetch('/docs/upload/' + _bkUid + '/detach-backup', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_id: docId, target_txn_id: targetId }) });
+      const j = await r.json();
+      if (r.ok && j.ok) {
+        if (st) { st.style.color = 'var(--text-muted)'; st.textContent = j.restored
+          ? 'Detached — the document’s charge is back in the queue.' : 'Detached.'; }
+        docBackupsLoad(_bkUid);
+      } else if (st) { st.style.color = '#e0a13a'; st.textContent = j.error || ('Failed (' + r.status + ')'); }
+    } catch (e) { if (st) { st.style.color = '#e0a13a'; st.textContent = 'Error: ' + e.message; } }
   };
 
   // Load the budget-line coding context for the open doc and wire the

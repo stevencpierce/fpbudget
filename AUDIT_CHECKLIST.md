@@ -141,3 +141,10 @@ from it (cash/reimbursement/accrual) — and every expense gets coded + backed.
   naturally when QBO reconcile merges the payment). Line Ledger summary gains
   exception counts: "⚠ No backup N" (expenses with no evidence) and
   "⏳ Awaiting payment N". Actualizing 2.0 model complete (A1+A2+A3).
+- [x] A4 — Invoice-side backups (owner 2026-07-22: "you should be able to do
+  it from the receipt itself, or from the invoice itself"): the doc-detail
+  modal gains a "📎 Backup documents" panel showing backups attached to the
+  invoice total AND each itemized subline, with attach (ranked candidate
+  docs; a still-uncoded receipt's own charge is absorbed exactly like the
+  receipt-side flow) and detach (restores an absorbed charge to the queue).
+  Shared _absorb_receipt_as_backup helper backs both directions.
