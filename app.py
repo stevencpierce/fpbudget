@@ -9580,6 +9580,23 @@ def _clear_ai_code_suggestion(txn):
     txn.suggested_budget_line_id = None
 
 
+def _guard_doc_expense(txn, data):
+    """Actualizing 2.0 A1 (2026-07-20): a doc-born row is a DOCUMENT, not an
+    expense — coding it requires the explicit Create-expense step (the client
+    sends create_expense=true from the Create-expense flow, which also stamps
+    activated_at so the receipt rides along as backup evidence). Returns an
+    error response or None. Clearing coding is always allowed."""
+    if txn.source != 'doc_upload' or txn.activated_at is not None:
+        return None
+    if data.get("create_expense"):
+        txn.activated_at = datetime.utcnow()
+        return None
+    return jsonify({"error": "This is a document (invoice/receipt), not an "
+                             "expense yet. Use Create expense (pick a budget "
+                             "line on its row), or Match it to an imported "
+                             "charge."}), 400
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-line", methods=["POST"])
 @login_required
 def actuals_set_line(pid, tid):
@@ -9588,6 +9605,10 @@ def actuals_set_line(pid, tid):
     actuals.link_transaction_to_line. Returns JSON."""
     txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
     data = request.get_json(force=True) or {}
+    if data.get("budget_line_id"):
+        _ge = _guard_doc_expense(txn, data)
+        if _ge is not None:
+            return _ge
     raw  = data.get("budget_line_id")
 
     # Itemized container: its coding lives on the sublines — re-coding it would
@@ -12330,6 +12351,10 @@ def actuals_set_coa(pid, tid):
     """
     txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
     data = request.get_json(force=True) or {}
+    if data.get("account_code"):
+        _ge = _guard_doc_expense(txn, data)
+        if _ge is not None:
+            return _ge
     code_raw = data.get("account_code")
     name_raw = (data.get("account_code_name") or "").strip()
     # Itemized container: sublines carry the coding — block re-coding (incl.

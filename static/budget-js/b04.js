@@ -454,8 +454,12 @@
         } else if (value.startsWith('section:')) {
           // Section-only: set account_code without a specific line.
           const code = value.slice(8);
+          const _rowS = selectEl.closest('.actuals-txn-row');
+          const _mkExpS = !!(_rowS && _rowS.dataset.source === 'doc_upload' && _rowS.dataset.activated === '0');
+          if (_mkExpS && _rowS) _rowS.dataset.activated = '1';
           url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`;
-          body = JSON.stringify({ account_code: code });
+          body = JSON.stringify(_mkExpS ? { account_code: code, create_expense: true }
+                                        : { account_code: code });
         } else if (value === '__backup__') {
           // Receipt is DOCUMENTATION for a charge already on the ledger — open
           // the target chooser (v2); it POSTs mark-backup itself.
@@ -468,9 +472,17 @@
           url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-coa`;
           body = JSON.stringify({ account_code: 'not_project' });
         } else {
-          // Specific budget line.
+          // Specific budget line. On an un-activated DOCUMENT row this is the
+          // Create-expense step (Actualizing 2.0 A1): the server stamps
+          // activated_at and the receipt rides along as backup evidence.
+          const _row = selectEl.closest('.actuals-txn-row');
+          const _mkExp = !!(_row && _row.dataset.source === 'doc_upload' && _row.dataset.activated === '0');
+          if (_mkExp && _row) _row.dataset.activated = '1';
           url  = `/projects/${PROJ_ID}/actuals/transaction/${tid}/set-line`;
-          body = JSON.stringify({ budget_line_id: value });
+          body = JSON.stringify(_mkExp ? { budget_line_id: value, create_expense: true }
+                                       : { budget_line_id: value });
+          if (_mkExp && typeof _actualsToast === 'function')
+            setTimeout(() => _actualsToast('＋ Expense created from this document — coded, with the file attached as backup.', 'green'), 400);
         }
         const r = await fetch(url, {
           method:  'POST',

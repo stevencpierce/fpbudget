@@ -4590,7 +4590,7 @@ __BJ["b03_CURRENT_USER_NAME"] = {{ (current_user.name or (current_user.email.spl
           <span style="color:#f0c88a">🧾 Document</span><span>·</span>
           <span style="color:#8fe0b8">🏷 Budget line</span>
           <span style="margin-left:6px">— solid = done, dashed = still needed</span>
-          <span style="flex-basis:100%;font-size:.72rem;color:var(--text-muted);padding-top:2px">Uploaded receipts count <b>$0</b> until you act: <span style="color:#9ec0ff">🔗 match</span> it to a charge · <span style="color:#e0c060">📎 mark as backup</span> for an invoice already on the ledger · or <span style="color:#8fe0b8">⚡ activate</span> it as its own charge (cash / reimbursement) by picking a budget line.</span>
+          <span style="flex-basis:100%;font-size:.72rem;color:var(--text-muted);padding-top:2px">Uploaded receipts count <b>$0</b> until you act: <span style="color:#9ec0ff">🔗 match</span> it to a charge · <span style="color:#e0c060">📎 mark as backup</span> for an invoice already on the ledger · or <span style="color:#8fe0b8">＋ create an expense</span> from it (cash / reimbursement) by picking a budget line.</span>
         </div>
         {# ✨ AI line-suggestion review bar — makes the per-row suggestion chips
            findable in a long list. Populated/toggled by JS. (User 2026-06-18.) #}
@@ -4676,6 +4676,7 @@ __BJ["b03_CURRENT_USER_NAME"] = {{ (current_user.name or (current_user.email.spl
                data-tid="{{ t.id }}"
                data-doc-id="{{ t.doc_upload_id or '' }}"
                data-source="{{ t.source or '' }}"
+               data-activated="{{ '1' if (t.activated_at or t.source != 'doc_upload') else '0' }}"
                data-coded="{{ '1' if _coded else '0' }}"
                data-has-doc="{{ '1' if _has_doc else '0' }}"
                data-has-txn="{{ '1' if _txn_filled else '0' }}"
@@ -4792,7 +4793,7 @@ __BJ["b03_CURRENT_USER_NAME"] = {{ (current_user.name or (current_user.email.spl
                     {% elif _cur %}
                     <option value="{{ _cur }}" selected>{{ t.account_code_name or t.account_code or 'Section' }} · section only</option>
                     {% else %}
-                    <option value="">{% if not _txn_filled %}⚡ Activate — pick budget line{% else %}Add budget line{% endif %}</option>
+                    <option value="">{% if not _txn_filled %}＋ Create expense — pick budget line{% else %}Add budget line{% endif %}</option>
                     {% endif %}
                   </select>
                   {% if _cur and 'section:' not in _cur %}

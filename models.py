@@ -124,6 +124,11 @@ class Transaction(db.Model):
     # another transaction (typically an invoice_split subline). Set → excluded
     # from rollups and shown 📎-attached to its target in the Line Ledger.
     backup_of_txn_id      = db.Column(db.Integer, db.ForeignKey("transaction.id"), nullable=True)
+    # Actualizing 2.0 A1 (2026-07-20): documents are EVIDENCE, not expenses.
+    # A doc-born row (source='doc_upload') may only be coded once the user has
+    # explicitly CREATED an expense from it — stamped here. Imported rows
+    # (qbo/csv) are expenses by definition and never need it.
+    activated_at          = db.Column(db.DateTime, nullable=True)
     source                = db.Column(db.String(20), default='manual_entry')
     # match_status: unmatched | suggested | confirmed. Suggestions
     # written by the auto-matcher, never silently committed — user

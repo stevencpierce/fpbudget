@@ -118,3 +118,19 @@ Keep this file updated as items land.
   doc-only rows' picker reads "⚡ Activate — pick budget line"; the Match-view
   legend states that receipts count $0 until matched / marked backup /
   activated.
+
+## 💳 Actualizing 2.0 (2026-07-20, owner design: documents vs. expenses)
+Model: invoices/receipts are EVIDENCE, never directly codeable. A document
+either MATCHES an imported charge (its proof) or the user CREATES an expense
+from it (cash/reimbursement/accrual) — and every expense gets coded + backed.
+- [x] A1 — Enforced: set-line/set-coa reject coding a doc-born row unless the
+  Create-expense step runs (create_expense flag stamps activated_at; the doc
+  rides along as backup evidence). Picker on document rows reads "＋ Create
+  expense — pick budget line"; success toast names what happened. Alembic
+  0003 adds activated_at and GRANDFATHERS already-coded doc rows. Match stays
+  its own separate path (owner decision; "activate" renamed "create expense").
+- [ ] A2 — Unify evidence: general doc→expense attachment replaces the
+  backup_of_txn_id special case; itemization auto-attaches the invoice to its
+  sublines; Line Ledger shows evidence uniformly.
+- [ ] A3 — "Awaiting payment" state on created-but-unreconciled invoice
+  expenses; every-expense-needs-backup exception chip.
