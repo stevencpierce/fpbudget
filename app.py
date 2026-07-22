@@ -10203,6 +10203,12 @@ def actuals_line_ledger(pid, lid):
             "reviewed_by": t.reviewed_by,
             "flagged": (t.id in flagged_tids),
             "matched": (eff_doc_id is not None),
+            # A3: accrual state — an invoice/receipt-born expense with no bank
+            # charge reconciled to it yet ("awaiting payment"). QBO reconcile
+            # flips source to 'reconciled', which clears this naturally.
+            "awaiting": (t.source in ('doc_upload', 'invoice_split')
+                         and not t.not_project_expense
+                         and getattr(t, 'backup_of_txn_id', None) is None),
             "backups": backups_by_target.get(t.id, []),
         })
 

@@ -4704,6 +4704,10 @@ __BJ["b03_CURRENT_USER_NAME"] = {{ (current_user.name or (current_user.email.spl
             {# Source pill · date · vendor · amount (the at-a-glance left block) #}
             <span style="flex-shrink:0;font-size:.7rem;width:22px;text-align:center"
                   title="Source: {{ t.source or 'unknown' }}">{{ _src_icon }}</span>
+            {% if _coded and t.source in ('doc_upload', 'invoice_split') and not t.not_project_expense and not _is_split_parent %}
+            <span title="Expense created from an invoice/receipt — no bank charge reconciled to it yet. When the payment clears (QBO sync), reconcile merges them and this clears."
+                  style="flex-shrink:0;font-size:.6rem;padding:1px 5px;background:#1c1500;border:1px solid #8a6d3b;border-radius:3px;color:#e0c060;white-space:nowrap">⏳ awaiting payment</span>
+            {% endif %}
             <span class="actuals-txn-date" style="flex-shrink:0;font-size:.72rem;color:var(--text-muted);width:78px">{{ t.txn_date or '—' }}</span>
             <span class="actuals-txn-vendor"
                   style="flex:1;min-width:90px;font-size:.83rem;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"

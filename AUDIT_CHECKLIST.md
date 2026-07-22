@@ -136,5 +136,8 @@ from it (cash/reimbursement/accrual) — and every expense gets coded + backed.
   each subline), match-confirm. Line Ledger merges evidence rows beneath each
   expense with kind-aware 📎 labels; backup_of_txn_id stays populated in
   parallel (removal deferred until nothing legacy reads it).
-- [ ] A3 — "Awaiting payment" state on created-but-unreconciled invoice
-  expenses; every-expense-needs-backup exception chip.
+- [x] A3 — "⏳ awaiting payment" chip on invoice/receipt-born expenses with
+  no bank charge reconciled yet (Actuals rows + Line Ledger markers; clears
+  naturally when QBO reconcile merges the payment). Line Ledger summary gains
+  exception counts: "⚠ No backup N" (expenses with no evidence) and
+  "⏳ Awaiting payment N". Actualizing 2.0 model complete (A1+A2+A3).

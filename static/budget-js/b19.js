@@ -78,7 +78,18 @@
         + (budget == null ? '—' : _money(budget)) + '</span></div>'
       + '<div><span class="ll-k">Coded</span><span class="ll-v">' + _money(coded) + '</span></div>'
       + '<div><span class="ll-k">Remaining</span><span class="ll-v' + overCls + '">'
-        + (remain == null ? '—' : _money(remain)) + '</span></div>';
+        + (remain == null ? '—' : _money(remain)) + '</span></div>'
+      + (function () {
+          // A3 exception chips: every expense needs backup; accruals awaiting
+          // payment are worth a glance. Counts over the FULL row list.
+          var rows = (_rows || []);
+          var noDoc = rows.filter(function (r) { return !r.matched && !(r.backups || []).length; }).length;
+          var wait  = rows.filter(function (r) { return r.awaiting; }).length;
+          var bits = '';
+          if (noDoc) bits += '<div><span class="ll-k" style="color:#e0a040">⚠ No backup</span><span class="ll-v" style="color:#e0a040">' + noDoc + '</span></div>';
+          if (wait)  bits += '<div><span class="ll-k" style="color:#e0c060">⏳ Awaiting payment</span><span class="ll-v" style="color:#e0c060">' + wait + '</span></div>';
+          return bits;
+        })();
   }
 
   function _renderRows() {
@@ -109,11 +120,13 @@
         ? '<span class="ll-split" title="Part of a document split across multiple lines">(split)</span>'
         : '';
       const flagTag = r.flagged ? '<span class="ll-flag" title="Has an unresolved flag">⚠</span>' : '';
+      const waitTag = r.awaiting
+        ? '<span title="Awaiting payment — no bank charge reconciled yet" style="font-size:.68rem;color:#e0c060;margin-left:4px">⏳</span>' : '';
       html += '<tr class="ll-row' + (r._idx === _sel ? ' is-sel' : '') + '" data-tid="' + r.id
         + '" data-rowidx="' + r._idx + '">'
         + '<td style="color:var(--text-muted);font-variant-numeric:tabular-nums;white-space:nowrap">'
           + _esc(r.date || '—') + '</td>'
-        + '<td>' + _esc(r.vendor || '—') + splitTag + flagTag + '</td>'
+        + '<td>' + _esc(r.vendor || '—') + splitTag + flagTag + waitTag + '</td>'
         + '<td class="ll-doc-cell">' + docCell + '</td>'
         + '<td class="ll-num' + (amtNeg ? ' ll-amt-neg' : '') + '">'
           + (amtNeg ? '↩ ' : '') + (r.amount != null ? _money(r.amount) : '—') + '</td>'
