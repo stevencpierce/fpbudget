@@ -32,7 +32,10 @@ Keep this file updated as items land.
 
 ## 🟠 High
 - [x] H1a — Timeouts added: Twilio 15s, Dropbox 30s.
-- [ ] H1b — Move call-sheet send emails/SMS to a background job.
+- [x] H1b — Call-sheet delivery (PDF builds, Dropbox archive, email/SMS loop)
+  runs in a background worker with per-recipient status commits ('sent' /
+  '⚠ send failed' badges live-update in Send History); the send request
+  returns instantly.
 - [x] H2 — Upload/request body capped at 50 MB (413 above).
   - [ ] H2b — Stream large uploads instead of reading into memory.
 - [x] H3 — Fuzzy reconcile with a differing amount now lands as 'suggested'
@@ -45,7 +48,8 @@ Keep this file updated as items land.
   documents the workflow).
   - [ ] H5b — Eventually port the frozen legacy boot-DDL lists into revisions.
 - [x] H6a — The three missing hot-path indexes now created at boot.
-  - [ ] H6b — Eager-load the recipient/rep lookups (N+1 on call-sheet send).
+  - [x] H6b — Rep view resolution is ONE eager-loaded query per send
+  (_rep_view_maps) instead of lines×assignments×contacts lazy scans per rep.
 - [ ] H7 — Persist background-job state in the DB (analyzer batches can be
   silently dropped on worker restart).
 - [x] H8 — CSRF protection live: session token + fetch/form shim on every

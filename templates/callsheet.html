@@ -3765,6 +3765,7 @@ function csDistLoadHistory() {
           if (r.status === 'sent')      { cls = 'cs-status-sent';      label = 'sent'; }
           if (r.status === 'viewed')    { cls = 'cs-status-viewed';     label = 'viewed'; }
           if (r.status === 'confirmed') { cls = 'cs-status-confirmed';  label = 'confirmed'; }
+          if (r.status === 'failed')    { cls = 'cs-status-pending';   label = '⚠ send failed'; }
           const name = r.name || r.email || '?';
           const tooltip = r.email ? `${name} <${r.email}>\nStatus: ${label}` : `${name}\n(no email)`;
           // Small type chip for non-crew recipients so union/rep/manual sends are
@@ -3868,6 +3869,8 @@ function csDistBuildRecipientList() {
       return `<span style="background:#1c1500;color:#fbbf24;border:1px solid #d97706;border-radius:3px;font-size:.65rem;font-weight:600;padding:1px 5px;margin-left:4px">Viewed${st.viewed_at ? ' ' + st.viewed_at : ''}</span>`;
     if (st.status === 'sent')
       return `<span style="background:#0c1a3a;color:#60a5fa;border:1px solid #1d4ed8;border-radius:3px;font-size:.65rem;font-weight:600;padding:1px 5px;margin-left:4px">Sent</span>`;
+    if (st.status === 'failed')
+      return `<span style="background:#2a1010;color:#f87171;border:1px solid #b91c1c;border-radius:3px;font-size:.65rem;font-weight:600;padding:1px 5px;margin-left:4px">⚠ send failed</span>`;
     return '';
   }
 
@@ -4156,26 +4159,18 @@ function csSendCallSheet() {
     // Uncheck all selected recipients after successful send
     document.querySelectorAll('.cs-dist-recip-cb:checked').forEach(cb => { cb.checked = false; });
 
-    // Build per-recipient result lines
-    const resultsHtml = (d.recipients || []).map(r => {
-      const emailPart = r.email_ok === true  ? '<span style="color:#4ade80">✉ sent</span>'
-                      : r.email_ok === false ? '<span style="color:#f87171">✉ failed</span>'
-                      : '';
-      const smsPart   = r.sms_ok   === true  ? '<span style="color:#4ade80">📱 sent</span>'
-                      : r.sms_ok   === false ? '<span style="color:#f87171">📱 failed</span>'
-                      : '';
-      const parts = [emailPart, smsPart].filter(Boolean).join(' ');
-      return `<div style="display:flex;justify-content:space-between;font-size:.78rem;padding:2px 0;border-bottom:1px solid #1c1f2c">
-        <span>${csEscHtml(r.name)} <span style="color:#6b7280;font-size:.7rem">${csEscHtml(r.version)}</span></span>
-        <span>${parts || '<span style="color:#6b7280">recorded</span>'}</span>
-      </div>`;
-    }).join('');
-
-    const parts = [];
-    if (d.sent_email > 0) parts.push(`✉ ${d.sent_email}`);
-    if (d.sent_sms   > 0) parts.push(`📱 ${d.sent_sms}`);
-    statusEl.innerHTML = `<div style="color:#4ade80;margin-bottom:6px">✓ Sent ${parts.join(', ')} · ${d.total} recipients</div>${resultsHtml}`;
-
+    // H1b (2026-07-20): delivery now runs in the BACKGROUND — the server
+    // returns immediately and per-recipient status lands in Send History as
+    // the worker progresses. Poll the history a few times so statuses appear
+    // without a manual refresh.
+    const money = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    if (statusEl) {
+      statusEl.innerHTML = '✉ Sending to <b>' + (d.queued || 0) + '</b> recipient'
+        + ((d.queued || 0) !== 1 ? 's' : '') + ' in the background — statuses appear in Send History below as they go out.';
+    }
+    setTimeout(() => csDistLoadHistory(), 4000);
+    setTimeout(() => csDistLoadHistory(), 15000);
+    setTimeout(() => csDistLoadHistory(), 45000);
     csDistLoadHistory();
     btn.disabled = false;
   })

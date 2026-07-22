@@ -22036,6 +22036,214 @@ def callsheet_distribution(pid, bid, date_str):
     })
 
 
+def _rep_view_maps(budget):
+    """H6b (2026-07-20): ONE eager-loaded pass over the budget's labor lines →
+    {support-contact email → view} and {name → view} maps, replacing the
+    per-recipient _rep_recipient_view scans (labor_lines × assignments ×
+    support_contacts lazy queries PER rep recipient). Same precedence: email
+    hit beats name hit; Talent-section client → 'talent', else 'crew';
+    first match in line order wins."""
+    email_map, name_map = {}, {}
+    if not budget:
+        return email_map, name_map
+    from sqlalchemy.orm import selectinload
+    lines = (BudgetLine.query
+             .options(selectinload(BudgetLine.crew_assignments)
+                      .selectinload(CrewAssignment.crew_member)
+                      .selectinload(CrewMember.support_contacts))
+             .filter_by(budget_id=budget.id, is_labor=True).all())
+    for ln in lines:
+        view = 'talent' if ln.account_code == COA_CODE_TALENT else 'crew'
+        for ca in ln.crew_assignments:
+            cm = ca.crew_member if ca.crew_member_id else None
+            if not (cm and cm.support_contacts):
+                continue
+            for sc in cm.support_contacts:
+                if not sc.active:
+                    continue
+                e = (sc.email or '').strip().lower()
+                n = (sc.name or '').strip().lower()
+                if e and e not in email_map:
+                    email_map[e] = view
+                if n and n not in name_map:
+                    name_map[n] = view
+    return email_map, name_map
+
+
+def _callsheet_send_worker(flask_app, pid, bid, send_id, view_by_rec_id,
+                           audience_messages, host_url):
+    """H1b (2026-07-20): the delivery half of a call-sheet send — PDF builds,
+    Dropbox archive, and the per-recipient email/SMS loop — off the request
+    thread. Progress is committed PER RECIPIENT (status 'sent'/'failed'), so
+    the Send History reflects live state and a worker death mid-loop loses
+    nothing already delivered. Was: 30 recipients = 30 sequential blocking
+    provider calls inside one web request."""
+    with flask_app.app_context():
+        try:
+            send = CallSheetSend.query.get(send_id)
+            if send is None:
+                return
+            budget = Budget.query.get(bid)
+            project = ProjectSheet.query.get(pid)
+            selected_date = send.date
+            sched_mode = send.schedule_mode
+            version_label = send.version_label or 'v1'
+            date_display = selected_date.strftime("%A, %B %-d, %Y")
+
+            cs_rec = CallSheetData.query.filter_by(
+                budget_id=bid, date=selected_date, schedule_mode=sched_mode).first()
+            cs_data_dict = (json.loads(cs_rec.data_json)
+                            if cs_rec and cs_rec.data_json else {})
+            from models import LocationDay, Location
+            loc_day_ids = [ld.location_id for ld in LocationDay.query.filter_by(
+                budget_id=bid, date=selected_date).all()]
+            pdf_locations = (Location.query
+                             .filter(Location.id.in_(loc_day_ids)).all()
+                             if loc_day_ids else [])
+
+            _pdf_by_view = {}
+
+            def _pdf_for_view(_view):
+                if _view not in _pdf_by_view:
+                    _b, _f = _build_callsheet_pdf_bytes(
+                        pid, bid, project, budget, selected_date, sched_mode,
+                        send, view=_view)
+                    _pdf_by_view[_view] = (_b, _f)
+                return _pdf_by_view[_view]
+
+            recipients = list(send.recipients)
+            _needed_views = {view_by_rec_id.get(r.id) or
+                             _recipient_view_for_type(r.recipient_type)
+                             for r in recipients}
+            _needed_views.add('crew')
+            for _v in _needed_views:
+                _pdf_for_view(_v)
+
+            crew_pdf_bytes, crew_pdf_filename = _pdf_by_view.get('crew', (None, None))
+            if crew_pdf_bytes:
+                send.pdf_data = crew_pdf_bytes
+                send.pdf_filename = crew_pdf_filename
+                send.dropbox_path = _archive_callsheet_to_dropbox(
+                    project, selected_date, version_label, crew_pdf_bytes)
+                db.session.commit()
+
+            first_loc = pdf_locations[0] if pdf_locations else None
+            loc_sms_line = ""
+            if first_loc:
+                loc_sms_line = f"\nLocation: {first_loc.name or ''}"
+                if getattr(first_loc, 'address', None):
+                    loc_sms_line += f"\n{first_loc.address}"
+
+            cct = cs_data_dict.get('crew_call_times') or {}
+            general_call = cs_data_dict.get('general_crew_call', '') or ''
+
+            def _msg_for(rtype, field):
+                view = audience_messages.get(rtype) or {}
+                val = (view.get(field) or '').strip()
+                if val:
+                    return val
+                dflt = audience_messages.get('default') or {}
+                return (dflt.get(field) or '').strip()
+
+            def _fill(tmpl, name, call_display, view_url):
+                return (tmpl
+                        .replace('{name}', name or '')
+                        .replace('{call}', call_display or '')
+                        .replace('{date}', date_display)
+                        .replace('{project}', project.name)
+                        .replace('{version}', version_label)
+                        .replace('{link}', view_url))
+
+            for rec in recipients:
+                email = rec.email or ''
+                phone = rec.phone or ''
+                personal_call = ''
+                name_lower = (rec.name or '').lower()
+                for key, t in cct.items():
+                    if key.split('||')[-1].strip().lower() == name_lower:
+                        personal_call = t
+                        break
+                call_display = personal_call or general_call or 'TBD'
+                view_url = host_url.rstrip('/') + f"/callsheet/view/{rec.confirm_token}"
+                rtype = rec.recipient_type or 'crew'
+
+                subject_tmpl = _msg_for(rtype, 'subject')
+                if subject_tmpl:
+                    subject = _fill(subject_tmpl, rec.name, call_display, view_url)
+                else:
+                    subject = f"Call Sheet — {project.name} — {date_display} ({version_label})"
+
+                body_tmpl = _msg_for(rtype, 'body')
+                if body_tmpl:
+                    body = _fill(body_tmpl, rec.name, call_display, view_url)
+                    if view_url not in body:
+                        body = body.rstrip() + f"\n\nView & confirm your call: {view_url}\n"
+                else:
+                    body = (
+                        f"Hi {rec.name},\n\n"
+                        f"Your call sheet for {project.name} on {date_display} is ready.\n"
+                        f"Your call time: {call_display}\n\n"
+                        f"View & confirm your call: {view_url}\n\n"
+                        f"Please confirm receipt by clicking the link above.\n\n"
+                        f"— Framework Productions · contact@thefp.tv\n"
+                    )
+                _rec_pdf_bytes, _rec_pdf_filename = _pdf_for_view(
+                    view_by_rec_id.get(rec.id) or _recipient_view_for_type(rtype))
+                if not _rec_pdf_bytes:
+                    _rec_pdf_bytes, _rec_pdf_filename = crew_pdf_bytes, crew_pdf_filename
+
+                email_ok = None
+                sms_ok = None
+                if email:
+                    email_ok = _send_email(email, subject, body,
+                                           attachment_bytes=_rec_pdf_bytes,
+                                           attachment_filename=_rec_pdf_filename)
+                    if email_ok:
+                        rec.status = "sent"
+                if phone:
+                    sms_lines = [
+                        f"{project.name} — Call Sheet {date_display}",
+                        f"Hi {rec.name}, your call: {call_display}",
+                    ]
+                    if body_tmpl:
+                        first_line = _fill(body_tmpl, rec.name, call_display,
+                                           view_url).strip().splitlines()
+                        first_line = (first_line[0].strip() if first_line else '')[:140]
+                        if first_line and view_url not in first_line:
+                            sms_lines.insert(0, first_line)
+                    sms_body = ("\n".join(sms_lines)
+                                + f"{loc_sms_line}\n"
+                                + f"Confirm: {view_url}")
+                    sms_ok = _send_sms(phone, sms_body)
+                    if sms_ok:
+                        if rec.status == "pending":
+                            rec.status = "sent"
+                # Attempted but nothing went through → visible failure.
+                if rec.status == "pending" and (email_ok is False or sms_ok is False):
+                    rec.status = "failed"
+                db.session.commit()   # per-recipient progress survives crashes
+        except Exception as _we:
+            logging.exception(f"[callsheet-send] worker failed for send {send_id}: {_we}")
+            try:
+                import sentry_sdk as _ssdk
+                _ssdk.capture_exception(_we)
+            except Exception:
+                pass
+            try:
+                db.session.rollback()
+                for r in CallSheetRecipient.query.filter_by(
+                        send_id=send_id, status='pending').all():
+                    r.status = 'failed'
+                db.session.commit()
+            except Exception:
+                pass
+        finally:
+            try:
+                db.session.remove()
+            except Exception:
+                pass
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/<date_str>/prepare-send", methods=["POST"])
 @login_required
 def callsheet_prepare_send(pid, bid, date_str):
@@ -22097,183 +22305,37 @@ def callsheet_prepare_send(pid, bid, date_str):
     # recipient): the personal travel card still lives on each person's web link,
     # and per-recipient renders would be dozens of weasyprint passes. Cache keyed
     # by audience view so we render each view at most once. (User 2026-07-09.)
-    _pdf_by_view = {}      # view -> (bytes, filename)
-    pdf_renderer = 'none'  # reported in the response for observability
-    def _pdf_for_view(_view):
-        if _view not in _pdf_by_view:
-            _b, _f = _build_callsheet_pdf_bytes(
-                pid, bid, project, budget, selected_date, sched_mode, send,
-                view=_view)
-            _pdf_by_view[_view] = (_b, _f)
-        return _pdf_by_view[_view]
-
-    # Resolve each recipient's audience view ONCE (rep rows inherit their
-    # client's view via _rep_recipient_view — talent's rep → talent, crew's rep
-    # → crew; everything else maps by type). Keyed by recipient id so the PDF
-    # attach loop below just picks from the per-view cache, no re-query. (User
-    # 2026-07-14.)
+    # H6b: resolve every recipient's audience view from ONE eager-loaded pass
+    # (rep rows inherit their client's view; everything else maps by type).
+    _rep_email_view, _rep_name_view = _rep_view_maps(budget)
     _view_by_rec_id = {}
     for _r, _e, _p in created_recs:
         _rt = (_r.recipient_type or 'crew').strip().lower()
-        _view_by_rec_id[_r.id] = (_rep_recipient_view(budget, _r.name, _r.email)
-                                  if _rt == 'rep'
-                                  else _recipient_view_for_type(_rt))
+        if _rt == 'rep':
+            _view_by_rec_id[_r.id] = (
+                _rep_email_view.get((_r.email or '').strip().lower())
+                or _rep_name_view.get((_r.name or '').strip().lower())
+                or 'crew')
+        else:
+            _view_by_rec_id[_r.id] = _recipient_view_for_type(_rt)
 
-    # Pre-build every view that will actually be sent, plus the 'crew' view for
-    # the archived/downloadable artifact (the fullest recipient-facing copy).
-    _needed_views = set(_view_by_rec_id.values())
-    _needed_views.add('crew')
-    for _v in _needed_views:
-        _pdf_for_view(_v)
-
-    # Persist the 'crew' view as the exact artifact + Dropbox mirror on the send
-    # row so every version is retrievable later. Both are fail-open: a null
-    # pdf_data (weasyprint missing) or a failed archive must NOT block the send.
-    crew_pdf_bytes, crew_pdf_filename = _pdf_by_view.get('crew', (None, None))
-    if crew_pdf_bytes:
-        pdf_renderer = ('real' if len(crew_pdf_bytes) >= 5120 else 'legacy')
-        send.pdf_data = crew_pdf_bytes
-        send.pdf_filename = crew_pdf_filename
-        send.dropbox_path = _archive_callsheet_to_dropbox(
-            project, selected_date, version_label, crew_pdf_bytes)
-        db.session.commit()
-
-    # Build first location summary for SMS
-    first_loc = pdf_locations[0] if pdf_locations else None
-    loc_sms_line = ""
-    if first_loc:
-        loc_sms_line = f"\nLocation: {first_loc.name or ''}"
-        if getattr(first_loc, 'address', None):
-            loc_sms_line += f"\n{first_loc.address}"
-
-    cct = cs_data_dict.get('crew_call_times') or {}
-    general_call = cs_data_dict.get('general_crew_call', '') or ''
-
-    # Per-audience custom messages. Prefer what the POST carried (exactly what was
-    # on screen at send time); fall back to the sheet's saved copy. Shape:
-    #   {default:{subject,body}, crew:{...}, talent:{...}, client:{...}, union:{...}}
-    # Empty view-body → default; empty default-body → hardcoded template below.
+    # H1b: PDFs + Dropbox archive + the per-recipient email/SMS loop run in a
+    # background thread (same pattern as _duplicate_worker). The response
+    # returns immediately; per-recipient status lands in Send History as the
+    # worker progresses (committed per recipient).
     audience_messages = data.get("audience_messages")
     if not isinstance(audience_messages, dict):
         audience_messages = cs_data_dict.get('audience_messages') or {}
+    _host_url = request.host_url
+    import threading as _send_threading
+    _send_threading.Thread(
+        target=_callsheet_send_worker,
+        args=(app, pid, bid, send.id, dict(_view_by_rec_id),
+              dict(audience_messages), _host_url),
+        daemon=True).start()
 
-    def _msg_for(rtype, field):
-        """Pick the field ('subject'|'body') for a recipient type, falling back
-        default → '' (caller supplies the hardcoded template on empty)."""
-        view = audience_messages.get(rtype) or {}
-        val = (view.get(field) or '').strip()
-        if val:
-            return val
-        dflt = audience_messages.get('default') or {}
-        return (dflt.get(field) or '').strip()
-
-    def _fill(tmpl, name, call_display, view_url):
-        """Substitute {name} {call} {date} {project} {version} {link}."""
-        return (tmpl
-                .replace('{name}', name or '')
-                .replace('{call}', call_display or '')
-                .replace('{date}', date_display)
-                .replace('{project}', project.name)
-                .replace('{version}', version_label)
-                .replace('{link}', view_url))
-
-    sent_email = 0
-    sent_sms   = 0
-    recipient_results = []
-    for rec, email, phone in created_recs:
-        # Find this person's individual call time
-        personal_call = ''
-        name_lower = rec.name.lower()
-        for key, t in cct.items():
-            if key.split('||')[-1].strip().lower() == name_lower:
-                personal_call = t
-                break
-        call_display = personal_call or general_call or 'TBD'
-
-        view_url = request.host_url.rstrip('/') + f"/callsheet/view/{rec.confirm_token}"
-        rtype = rec.recipient_type or 'crew'
-
-        # Subject: custom (view→default) or hardcoded fallback.
-        subject_tmpl = _msg_for(rtype, 'subject')
-        if subject_tmpl:
-            subject = _fill(subject_tmpl, rec.name, call_display, view_url)
-        else:
-            subject = f"Call Sheet — {project.name} — {date_display} ({version_label})"
-
-        # Body: custom (view→default) or hardcoded fallback. Custom bodies MUST
-        # carry the confirm link — append it if the author left {link} out.
-        body_tmpl = _msg_for(rtype, 'body')
-        if body_tmpl:
-            body = _fill(body_tmpl, rec.name, call_display, view_url)
-            if view_url not in body:
-                body = body.rstrip() + f"\n\nView & confirm your call: {view_url}\n"
-        else:
-            body = (
-                f"Hi {rec.name},\n\n"
-                f"Your call sheet for {project.name} on {date_display} is ready.\n"
-                f"Your call time: {call_display}\n\n"
-                f"View & confirm your call: {view_url}\n\n"
-                f"Please confirm receipt by clicking the link above.\n\n"
-                f"— Framework Productions · contact@thefp.tv\n"
-            )
-        # Attach the PDF for THIS recipient's audience view (crew/talent/client/
-        # union; rep rows inherit their client's view). Uses the per-recipient
-        # view resolved once above. Falls back to the crew-view artifact if a
-        # view failed to build.
-        _rec_pdf_bytes, _rec_pdf_filename = _pdf_for_view(
-            _view_by_rec_id.get(rec.id) or _recipient_view_for_type(rtype))
-        if not _rec_pdf_bytes:
-            _rec_pdf_bytes, _rec_pdf_filename = crew_pdf_bytes, crew_pdf_filename
-
-        email_ok = None
-        sms_ok   = None
-        if email:
-            email_ok = _send_email(email, subject, body,
-                                   attachment_bytes=_rec_pdf_bytes,
-                                   attachment_filename=_rec_pdf_filename)
-            if email_ok:
-                rec.status = "sent"
-                sent_email += 1
-
-        if phone:
-            # Keep SMS short: prepend the first line of the audience body (≤140
-            # chars) as a custom preamble, then the standard call/location/confirm
-            # tail. Falls back to the original text when no custom body is set.
-            sms_lines = [
-                f"{project.name} — Call Sheet {date_display}",
-                f"Hi {rec.name}, your call: {call_display}",
-            ]
-            if body_tmpl:
-                first_line = _fill(body_tmpl, rec.name, call_display, view_url).strip().splitlines()
-                first_line = (first_line[0].strip() if first_line else '')[:140]
-                if first_line and view_url not in first_line:
-                    sms_lines.insert(0, first_line)
-            sms_body = (
-                "\n".join(sms_lines)
-                + f"{loc_sms_line}\n"
-                + f"Confirm: {view_url}"
-            )
-            sms_ok = _send_sms(phone, sms_body)
-            if sms_ok:
-                sent_sms += 1
-                if rec.status == "pending":
-                    rec.status = "sent"
-
-        recipient_results.append({
-            "name":      rec.name,
-            "email_ok":  email_ok,   # True/False/None (None = not attempted)
-            "sms_ok":    sms_ok,     # True/False/None
-            "version":   version_label,
-        })
-
-    db.session.commit()
-    return jsonify({"ok": True, "send_id": send.id,
-                    "sent_email": sent_email, "sent_sms": sent_sms,
-                    "total": len(created_recs),
-                    # which renderer produced the archived artifact: 'real' (the
-                    # on-site sheet via callsheet.html) or 'legacy' (fallback).
-                    "pdf_renderer": pdf_renderer,
-                    "recipients": recipient_results})
+    return jsonify({"ok": True, "send_id": send.id, "background": True,
+                    "queued": len(created_recs)})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/send/<int:send_id>/pdf")
