@@ -1342,6 +1342,20 @@ class SubBudgetLine(db.Model):
 # SNAPSHOT of the totals + version at send time so the client always sees
 # exactly what was sent and the approval is bound to that specific version,
 # even if the budget is edited afterward.
+class AnalyzerBatch(db.Model):
+    """H7 (2026-07-20): durable mirror of fp_analyzer's in-memory batch state
+    (_raw_pending / _pending). The staged FILES already live in Dropbox; this
+    row preserves the metadata (which staged paths belong to the batch, OCR
+    results, review state) across worker recycles — previously a recycle
+    between staging and analysis silently dropped the whole upload batch."""
+    __tablename__ = "analyzer_batch"
+    batch_token  = db.Column(db.String(64), primary_key=True)
+    raw_json     = db.Column(db.Text, nullable=True)   # _raw_pending items
+    pending_json = db.Column(db.Text, nullable=True)   # _pending items
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at   = db.Column(db.DateTime, default=datetime.utcnow)
+
+
 class EstimateShare(db.Model):
     __tablename__ = "estimate_share"
     id              = db.Column(db.Integer, primary_key=True)

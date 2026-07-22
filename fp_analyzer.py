@@ -1432,3 +1432,112 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
         "item_id":           item["id"],
         "vr":                item.get("vr") or {},
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# H7 (2026-07-20): batch durability. _raw_pending/_pending are per-process
+# dicts; with 2 gunicorn workers + --max-requests recycling, a batch staged on
+# one worker was invisible to the next request's worker and silently dropped.
+# Fix: write-through every batch mutation to models.AnalyzerBatch and
+# rehydrate on in-memory miss. Staged files are in Dropbox, so metadata is
+# all that needs to survive. Fail-open: persistence errors log and never
+# block the pipeline.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _hydrate_batch(batch_token):
+    if not batch_token or batch_token in _raw_pending or batch_token in _pending:
+        return
+    try:
+        from models import AnalyzerBatch
+        import json as _j
+        row = AnalyzerBatch.query.get(batch_token)
+        if row is None:
+            return
+        if row.raw_json:
+            _raw_pending[batch_token] = _j.loads(row.raw_json)
+        if row.pending_json:
+            _pending[batch_token] = _j.loads(row.pending_json)
+        logging.info(f"[analyzer/H7] rehydrated batch {batch_token} from DB")
+    except Exception as e:
+        logging.warning(f"[analyzer/H7] hydrate failed for {batch_token}: {e}")
+
+
+def _persist_batch(batch_token):
+    if not batch_token:
+        return
+    try:
+        from models import db, AnalyzerBatch
+        from datetime import datetime as _dt, timedelta as _td
+        import json as _j
+        raw = _raw_pending.get(batch_token) or []
+        pend = _pending.get(batch_token) or []
+        row = AnalyzerBatch.query.get(batch_token)
+        if not raw and not pend:
+            if row is not None:
+                db.session.delete(row)
+                db.session.commit()
+            return
+        if row is None:
+            row = AnalyzerBatch(batch_token=batch_token)
+            db.session.add(row)
+            # Opportunistic prune on batch creation only: stale batches older
+            # than 7 days are abandoned uploads — the staged Dropbox files are
+            # covered by the archive/trash sweeps.
+            try:
+                AnalyzerBatch.query.filter(
+                    AnalyzerBatch.updated_at < _dt.utcnow() - _td(days=7)
+                ).delete(synchronize_session=False)
+            except Exception:
+                pass
+        row.raw_json = _j.dumps(raw)
+        row.pending_json = _j.dumps(pend)
+        row.updated_at = _dt.utcnow()
+        db.session.commit()
+    except Exception as e:
+        logging.warning(f"[analyzer/H7] persist failed for {batch_token}: {e}")
+        try:
+            from models import db as _db
+            _db.session.rollback()
+        except Exception:
+            pass
+
+
+def _durable_batch(fn):
+    """Hydrate-before / persist-after wrapper for batch_token-first functions."""
+    import functools
+
+    @functools.wraps(fn)
+    def _wrapped(batch_token, *args, **kwargs):
+        _hydrate_batch(batch_token)
+        try:
+            return fn(batch_token, *args, **kwargs)
+        finally:
+            _persist_batch(batch_token)
+    return _wrapped
+
+
+find_duplicate_groups     = _durable_batch(find_duplicate_groups)
+remove_items_from_pending = _durable_batch(remove_items_from_pending)
+run_analysis              = _durable_batch(run_analysis)
+handle_duplicates_auto    = _durable_batch(handle_duplicates_auto)
+mark_known_dupes          = _durable_batch(mark_known_dupes)
+auto_file_high_confidence = _durable_batch(auto_file_high_confidence)
+has_review_items          = _durable_batch(has_review_items)
+flush_auto_results        = _durable_batch(flush_auto_results)
+file_confirmed            = _durable_batch(file_confirmed)
+
+# prepare_files generates the token internally, so it wraps by capturing the
+# returned token instead of the decorator shape above.
+_orig_prepare_files = prepare_files
+
+
+def prepare_files(file_storages, batch_token=None, project_name=""):
+    if batch_token:
+        _hydrate_batch(batch_token)
+    res = _orig_prepare_files(file_storages, batch_token=batch_token,
+                              project_name=project_name)
+    try:
+        _persist_batch(res[0])
+    except Exception:
+        pass
+    return res

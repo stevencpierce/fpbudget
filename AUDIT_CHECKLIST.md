@@ -50,8 +50,10 @@ Keep this file updated as items land.
 - [x] H6a — The three missing hot-path indexes now created at boot.
   - [x] H6b — Rep view resolution is ONE eager-loaded query per send
   (_rep_view_maps) instead of lines×assignments×contacts lazy scans per rep.
-- [ ] H7 — Persist background-job state in the DB (analyzer batches can be
-  silently dropped on worker restart).
+- [x] H7 — Analyzer batch state is durable: AnalyzerBatch table (Alembic rev
+  0002) write-through-mirrors _raw_pending/_pending; any worker rehydrates a
+  batch it doesn't hold in memory, so recycles/restarts no longer drop
+  uploaded batches. Stale rows pruned after 7 days.
 - [x] H8 — CSRF protection live: session token + fetch/form shim on every
   mutating request; public token routes (call-sheet confirm, estimate respond,
   cron, OAuth) exempt.
