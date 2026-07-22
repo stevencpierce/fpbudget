@@ -644,7 +644,11 @@ _SECRET_KEY = os.getenv("SECRET_KEY")
 if not _SECRET_KEY:
     if _IS_PROD:
         raise RuntimeError("SECRET_KEY must be set in production (RENDER env present).")
-    _SECRET_KEY = "fpbudget-dev-secret"
+    # Random per boot (audit L3): the old hardcoded constant meant any
+    # deployment missing both SECRET_KEY and the RENDER env var served
+    # FORGEABLE sessions. Local dev sessions now just reset on restart.
+    import secrets as _sk_mod
+    _SECRET_KEY = _sk_mod.token_hex(32)
 app.config["SECRET_KEY"]                     = _SECRET_KEY
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 # Audit H2 (2026-07-20): hard cap on request bodies — upload handlers read
@@ -24989,7 +24993,8 @@ def cron_reprocess_unpaired():
     body = request.get_json(silent=True) or {}
     token = (request.args.get("token") or request.headers.get("X-Cron-Token")
              or body.get("token"))
-    if not expected or not token or token != expected:
+    import hmac as _cron_hmac
+    if not expected or not token or not _cron_hmac.compare_digest(str(token), str(expected)):
         return jsonify({"error": "forbidden"}), 403
     # Resolve the target project by id or by name substring.
     proj = None

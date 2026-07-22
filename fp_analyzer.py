@@ -757,7 +757,7 @@ def remove_items_from_pending(batch_token, discard_ids):
         for p in (it.get("pdf_path"), it.get("original_path")):
             if p and os.path.exists(p):
                 try: os.unlink(p)
-                except: pass
+                except Exception: pass
     _pending[batch_token] = keep
 
 
@@ -1026,7 +1026,7 @@ def _file_item(item, dest_path, _unused, dbx):
         for p in (item.get("pdf_path"), item.get("original_path")):
             if p and os.path.exists(p):
                 try: os.unlink(p)
-                except: pass
+                except Exception: pass
 
 
 def handle_duplicates_auto(batch_token, project_name, user_name):
@@ -1216,7 +1216,7 @@ def file_confirmed(batch_token, confirmations, project_name, user_name):
             for p in (it.get("pdf_path"), it.get("original_path")):
                 if p and os.path.exists(p):
                     try: os.unlink(p)
-                    except: pass
+                    except Exception: pass
 
         if item.get("error") or item.get("vr") is None:
             cleanup()

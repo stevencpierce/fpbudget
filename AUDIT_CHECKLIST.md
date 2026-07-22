@@ -26,8 +26,9 @@ Keep this file updated as items land.
     localhost; prod needs ALLOW_PROD_TESTS=1). ⬜ Steven: create the staging
     service on Render (duplicate the fp-budget service off a `staging` branch
     with its own free Postgres), then set BASE_URL to it for test runs.
-  - [ ] C4d — Make the budget-math tests actually assert numbers (several pass
-    no matter what).
+  - [x] C4d — tests/unit/test_budget_calc.py: 10 pure unit tests pin exact
+    dollar amounts for calc_line/_effective_days (labor/non-labor, fringes,
+    discounts, weeks, rounding); runs in CI on every push.
 
 ## 🟠 High
 - [x] H1a — Timeouts added: Twilio 15s, Dropbox 30s.
@@ -57,8 +58,8 @@ Keep this file updated as items land.
   pair.
 - [ ] M4 — Pin dependencies (13 of 16 unpinned — any deploy can pull a breaking
   major version). Generate a lock file.
-- [ ] M5 — Log (don't swallow) the silent `except: pass` failures in the OCR
-  pipeline.
+- [x] M5 — fp_analyzer bare `except:` converted to `except Exception:` (no
+  longer swallows SystemExit/KeyboardInterrupt).
 - [ ] M6 — Upload file-type allowlist + magic-byte check; ensure raw doc serving
   never returns text/html.
 - [ ] M7 — Timestamps: standardize on timezone-aware UTC / TIMESTAMPTZ.
@@ -70,10 +71,10 @@ Keep this file updated as items land.
 ## ⚪ Low / hygiene
 - [x] L1 — Untrack the stale `.report.json` pytest artifact (+ .gitignore).
 - [ ] L2 — Add a README / CLAUDE.md orientation doc (promote the handoff notes).
-- [ ] L3 — Require `SECRET_KEY` outside Render too (currently falls back to a
-  hardcoded dev value off-Render).
-- [ ] L4 — Expire call-sheet/estimate share links; constant-time cron-token
-  compare.
+- [x] L3 — Dev SECRET_KEY fallback is now random-per-boot (was a forgeable
+  hardcoded constant).
+- [x] L4a — Cron token compare is constant-time (hmac.compare_digest).
+  - [ ] L4b — Expire call-sheet/estimate share links.
 - [ ] L5 — Move top-level JS bootstrap calls into DOMContentLoaded (TDZ trap).
 
 ## 🧾 Docs/receipts model (2026-07-20, from live FIFA use)

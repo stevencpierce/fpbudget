@@ -39,3 +39,7 @@ jobs:
         run: python scripts/route_audit.py app.py
       - name: Inline JS syntax check
         run: python scripts/js_check.py
+      - name: Budget-math unit tests
+        run: |
+          pip install pytest --quiet
+          python -m pytest tests/unit -q --confcutdir=tests/unit -o addopts=""
