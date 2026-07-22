@@ -33284,6 +33284,17 @@ def _itemize_apply(upload, parent, rows, main_line_raw, strict=True):
             "over": remainder < -0.01}, None
 
 
+@app.route("/admin/sentry-test")
+@login_required
+def admin_sentry_test():
+    """Deliberately raise an unhandled exception so the owner can verify the
+    full error chain (Sentry event + ntfy ping + ERR page). Super-admin only.
+    (2026-07-20, Sentry verification.)"""
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
+    raise RuntimeError("Sentry verification test — this error is intentional.")
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/backup-candidates", methods=["GET"])
 @login_required
 def actuals_backup_candidates(pid, tid):
@@ -36588,6 +36599,17 @@ def _unhandled_exception(e):
     logging.error(
         f"[ERR-{ref}] {_method} {_path} user={_user_id}\n{_trace}"
     )
+    # Explicit Sentry capture: with a custom errorhandler the exception counts
+    # as "handled", so the SDK's automatic hook may not fire. No-op if the SDK
+    # isn't initialized (no SENTRY_DSN). The ERR ref rides along as a tag so a
+    # user-reported "ERR-XXXX" finds its Sentry event. (2026-07-20.)
+    try:
+        import sentry_sdk as _ssdk
+        with _ssdk.push_scope() as _scope:
+            _scope.set_tag("err_ref", ref)
+            _ssdk.capture_exception(e)
+    except Exception:
+        pass
     # Push-alert production 500s via ntfy (rate-limited to 1 per 5 min so an
     # error loop can't flood the phone). Fire-and-forget daemon thread with a
     # hard timeout — alerting must never slow or break the error response.
