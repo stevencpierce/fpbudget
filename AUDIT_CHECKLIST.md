@@ -68,8 +68,11 @@ Keep this file updated as items land.
   major version). Generate a lock file.
 - [x] M5 — fp_analyzer bare `except:` converted to `except Exception:` (no
   longer swallows SystemExit/KeyboardInterrupt).
-- [ ] M6 — Upload file-type allowlist + magic-byte check; ensure raw doc serving
-  never returns text/html.
+- [x] M6 — Upload allowlist + magic-byte validation on all 7 upload routes
+  (documents / images / CSV kinds; HTML/SVG rejected; stream rewound); raw
+  doc + logo serving force non-PDF/non-raster-image content to
+  application/octet-stream + attachment; global X-Content-Type-Options:
+  nosniff.
 - [ ] M7 — Timestamps: standardize on timezone-aware UTC / TIMESTAMPTZ.
 - [ ] M8 — Accessibility pass on the call sheet (labels on editable cells,
   status not conveyed by color alone).

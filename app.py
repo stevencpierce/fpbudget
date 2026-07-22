@@ -661,10 +661,74 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
 # (static/csrf.js patches fetch + form submits) or a csrf_token form field.
 # Public capability-token routes and machine endpoints are exempt — they are
 # authenticated by their own tokens, not by a browser session.
+# ── Upload allowlist + magic-byte validation (audit M6, 2026-07-20) ────────
+_UPLOAD_ALLOW = {
+    'document': {'pdf', 'jpg', 'jpeg', 'png', 'heic', 'heif', 'webp', 'tif',
+                 'tiff', 'bmp', 'gif', 'docx', 'xlsx', 'csv', 'txt', 'eml'},
+    'image':    {'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'},
+    'csv':      {'csv', 'txt', 'tsv'},
+}
+
+
+def _validate_upload_file(fs, kind='document'):
+    """Extension allowlist + magic-byte check for user uploads. Returns an
+    error STRING (reject with 400) or None (accept). Reads the head of the
+    stream and seeks back, so downstream .read()/.save() see the full file.
+    Text types skip magic but are rejected if they smell like HTML — an
+    uploaded HTML file must never enter the doc store (M6)."""
+    try:
+        name = (fs.filename or '')
+        ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+        allowed = _UPLOAD_ALLOW.get(kind, _UPLOAD_ALLOW['document'])
+        if ext not in allowed:
+            return (f"File type '.{ext or '?'}' isn't accepted here. "
+                    f"Allowed: {', '.join(sorted(allowed))}.")
+        head = fs.stream.read(16)
+        fs.stream.seek(0)
+        if ext in ('csv', 'txt', 'tsv', 'eml'):
+            low = (head or b'').lstrip().lower()
+            if low.startswith(b'<!doct') or low.startswith(b'<html')                or low.startswith(b'<script') or low.startswith(b'<svg'):
+                return "This file looks like HTML/SVG, which isn't accepted."
+            return None
+        ok = False
+        if ext == 'pdf':
+            ok = head[:4] == b'%PDF'
+        elif ext in ('jpg', 'jpeg'):
+            ok = head[:3] == b'\xff\xd8\xff'
+        elif ext == 'png':
+            ok = head[:8] == b'\x89PNG\r\n\x1a\n'
+        elif ext == 'gif':
+            ok = head[:6] in (b'GIF87a', b'GIF89a')
+        elif ext == 'webp':
+            ok = head[:4] == b'RIFF' and head[8:12] == b'WEBP'
+        elif ext in ('tif', 'tiff'):
+            ok = head[:2] in (b'II', b'MM')
+        elif ext == 'bmp':
+            ok = head[:2] == b'BM'
+        elif ext in ('heic', 'heif'):
+            ok = head[4:8] == b'ftyp'
+        elif ext in ('docx', 'xlsx'):
+            ok = head[:4] == b'PK\x03\x04'
+        if not ok:
+            return (f"The file's contents don't match '.{ext}' — it may be "
+                    "renamed or corrupted. Upload the original file.")
+        return None
+    except Exception as _ve:
+        logging.warning(f"[upload-validate] check failed (accepting): {_ve}")
+        return None   # fail-open: validation bugs must never block real work
+
+
 _CSRF_EXEMPT_PREFIXES = (
     "/cron/", "/callsheet/confirm/", "/e/", "/qbo/oauth",
     "/health", "/readyz", "/webhook",
 )
+
+
+@app.after_request
+def _security_headers(resp):
+    # M6 (2026-07-20): never let browsers MIME-sniff a served file into HTML.
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return resp
 
 
 @app.context_processor
@@ -13631,6 +13695,9 @@ def actuals_upload_receipt_to_transaction(pid, tid):
     f = request.files.get("file")
     if not f or not f.filename:
         return jsonify({"error": "No file provided"}), 400
+    _upl_err = _validate_upload_file(f, 'document') if f else None
+    if _upl_err:
+        return jsonify({"error": _upl_err}), 400
 
     if not project.dropbox_folder:
         return jsonify({"error": "Project has no Dropbox folder configured"}), 500
@@ -15328,6 +15395,9 @@ def project_logo_create(pid):
     f = request.files.get('file')
     if not f or not f.filename:
         return jsonify({"error": "No file provided"}), 400
+    _upl_err = _validate_upload_file(f, 'image') if f else None
+    if _upl_err:
+        return jsonify({"error": _upl_err}), 400
     raw = f.read()
     if not raw:
         return jsonify({"error": "Empty file"}), 400
@@ -15379,7 +15449,12 @@ def project_logo_raw(pid, lid):
     lg = ProjectLogo.query.filter_by(id=lid, project_id=pid).first_or_404()
     from flask import make_response
     resp = make_response(lg.data or b'')
-    resp.headers["Content-Type"]  = lg.content_type or "application/octet-stream"
+    # M6: logos serve inline only as raster images — anything else (svg/html/
+    # unknown) goes out as a generic binary so it can't execute in our origin.
+    _lg_ct = lg.content_type or "application/octet-stream"
+    if not _lg_ct.startswith("image/") or _lg_ct == "image/svg+xml":
+        _lg_ct = "application/octet-stream"
+    resp.headers["Content-Type"]  = _lg_ct
     resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
     return resp
 
@@ -15911,6 +15986,9 @@ def import_csv_analyze(pid, bid):
     f = request.files.get("file")
     if not f:
         return jsonify({"error": "No file uploaded"}), 400
+    _upl_err = _validate_upload_file(f, 'csv') if f else None
+    if _upl_err:
+        return jsonify({"error": _upl_err}), 400
 
     try:
         content = f.read().decode("utf-8-sig")
@@ -16030,6 +16108,9 @@ def import_csv_apply(pid, bid):
     """Apply confirmed column mapping + per-row actions from a CSV upload."""
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     f = request.files.get("file")
+    _upl_err = _validate_upload_file(f, 'csv') if f else None
+    if _upl_err:
+        return jsonify({"error": _upl_err}), 400
     mapping_json = request.form.get("mapping", "{}")
     actions_json = request.form.get("row_actions", "[]")
     header_row_index = request.form.get("header_row_index", 0, type=int)
@@ -26712,6 +26793,9 @@ def admin_role_mapping_bulk_import():
     f = request.files.get("file")
     if not f:
         return jsonify({"error": "No CSV file provided"}), 400
+    _upl_err = _validate_upload_file(f, 'csv') if f else None
+    if _upl_err:
+        return jsonify({"error": _upl_err}), 400
     reader = _csv.DictReader(_io.StringIO(f.read().decode("utf-8-sig")))
     updated = 0
     for row in reader:
@@ -29573,6 +29657,9 @@ def docs_upload_post(pid):
     f = request.files.get("file")
     if not f or not f.filename:
         return jsonify({"error": "No file provided"}), 400
+    _upl_err = _validate_upload_file(f, 'document') if f else None
+    if _upl_err:
+        return jsonify({"error": _upl_err}), 400
 
     import hashlib, uuid as _uuid
     data = f.read()
@@ -31966,6 +32053,13 @@ def docs_upload_raw(uid):
 
     from flask import make_response
     from urllib.parse import quote as _q
+    # M6 (2026-07-20): only PDF and images may render INLINE in our origin.
+    # Anything else (incl. text/html, svg, unknown) downloads as a generic
+    # binary so an uploaded HTML/SVG file can never execute as a page here.
+    _inline_safe = (ct == 'application/pdf'
+                    or (ct or '').startswith('image/')) and ct != 'image/svg+xml'
+    if not _inline_safe:
+        ct = 'application/octet-stream'
     resp_out = make_response(content)
     resp_out.headers["Content-Type"]        = ct
     # ?download=1 → force the browser to SAVE the file (attachment) with its
@@ -31974,8 +32068,10 @@ def docs_upload_raw(uid):
     _want_download = request.args.get('download') in ('1', 'true', 'yes')
     if _want_download:
         resp_out.headers["Content-Disposition"] = _content_disposition_attachment(fname)
-    else:
+    elif _inline_safe:
         resp_out.headers["Content-Disposition"] = f"inline; filename=\"{_q(fname)}\""
+    else:
+        resp_out.headers["Content-Disposition"] = _content_disposition_attachment(fname)
     resp_out.headers["Cache-Control"]       = "private, max-age=300"
     return resp_out
 
@@ -34524,6 +34620,9 @@ def actuals_import_bank_csv(pid):
     f = request.files.get('file')
     if not f:
         return jsonify({"error": "No file uploaded"}), 400
+    _upl_err = _validate_upload_file(f, 'document') if f else None
+    if _upl_err:
+        return jsonify({"error": _upl_err}), 400
     try:
         content = f.read().decode('utf-8-sig')
     except UnicodeDecodeError:
