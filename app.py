@@ -33283,6 +33283,45 @@ def admin_sentry_test():
     raise RuntimeError("Sentry verification test — this error is intentional.")
 
 
+@app.route("/admin/errors")
+@login_required
+def admin_recent_errors():
+    """Last ~40 production tracebacks, straight from the 500 handler's on-disk
+    ring (/tmp/fpb-errors). Exists because a traceback must be reachable even
+    when Sentry misses the event and Render's log window has scrolled past.
+    Super-admin only. (2026-07-22, Van Cliburn crash debugging.)"""
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
+    import glob as _glob
+    import html as _html
+    from datetime import datetime as _dt
+    entries = []
+    for p in sorted(_glob.glob('/tmp/fpb-errors/*.txt'), reverse=True)[:40]:
+        try:
+            base = os.path.basename(p)
+            ts, _, refpart = base.partition('-')
+            when = _dt.fromtimestamp(int(ts)).strftime('%Y-%m-%d %H:%M:%S')
+            entries.append((refpart[:-4], when, open(p).read()))
+        except Exception:
+            continue
+    body = ['<!doctype html><html><head><title>Recent errors</title>'
+            '<style>body{font-family:system-ui,sans-serif;max-width:960px;'
+            'margin:40px auto;padding:0 20px;color:#222}'
+            'pre{white-space:pre-wrap;font-size:12px;background:#f8f8f8;'
+            'padding:12px;border-radius:6px;overflow:auto}</style></head><body>'
+            '<h1>Recent errors (this server instance)</h1>'
+            '<p>Newest first. Times are server-local (UTC on Render). Each '
+            'entry matches the ERR code shown on the error page.</p>']
+    if not entries:
+        body.append('<p><em>No errors recorded since this instance booted. '
+                    'Reproduce the error, then reload this page.</em></p>')
+    for ref, when, text in entries:
+        body.append(f'<h3><code>{_html.escape(ref)}</code> — {when}</h3>'
+                    f'<pre>{_html.escape(text)}</pre>')
+    body.append('</body></html>')
+    return ''.join(body)
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/backup-candidates", methods=["GET"])
 @login_required
 def actuals_backup_candidates(pid, tid):
@@ -36591,6 +36630,31 @@ def _unhandled_exception(e):
     logging.error(
         f"[ERR-{ref}] {_method} {_path} user={_user_id}\n{_trace}"
     )
+    # If the exception was a DB error the session is now in an aborted state,
+    # and ANY further query (current_user reload, the error page itself) would
+    # raise too — which is how a traceback can vanish from every surface at
+    # once. Roll back first so the rest of this handler works. (2026-07-22,
+    # Van Cliburn crash debugging.)
+    try:
+        db.session.rollback()
+    except Exception:
+        pass
+    # Persist the traceback to a small on-disk ring so it's readable at
+    # /admin/errors even when Sentry misses the event and Render's log window
+    # has scrolled past. /tmp is per-instance and shared across gunicorn
+    # workers, which is exactly the scope we need. (2026-07-22.)
+    try:
+        import glob as _glob
+        import time as _time
+        _edir = '/tmp/fpb-errors'
+        os.makedirs(_edir, exist_ok=True)
+        with open(os.path.join(_edir, f"{int(_time.time())}-ERR-{ref}.txt"), 'w') as _f:
+            _f.write(f"{_method} {_path} user={_user_id}\n\n{_trace}")
+        _old = sorted(_glob.glob(os.path.join(_edir, '*.txt')))[:-40]
+        for _p in _old:
+            os.unlink(_p)
+    except Exception:
+        pass
     # Explicit Sentry capture: with a custom errorhandler the exception counts
     # as "handled", so the SDK's automatic hook may not fire. No-op if the SDK
     # isn't initialized (no SENTRY_DSN). The ERR ref rides along as a tag so a
