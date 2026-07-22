@@ -1621,6 +1621,17 @@ def confirm_match(qbo_transaction_id):
         q.source = 'reconciled'
     q.match_status = 'confirmed'
     q.updated_at   = datetime.utcnow()
+    # A2 (2026-07-20): a confirmed match makes the receipt this expense's
+    # PRIMARY evidence in the unified attachment table. Fail-open.
+    try:
+        from models import ExpenseEvidence
+        if q.doc_upload_id and not ExpenseEvidence.query.filter_by(
+                transaction_id=q.id, doc_upload_id=q.doc_upload_id).first():
+            db.session.add(ExpenseEvidence(transaction_id=q.id,
+                                           doc_upload_id=q.doc_upload_id,
+                                           kind='primary'))
+    except Exception:
+        pass
     db.session.commit()
     return {'transaction_id': q.id, 'merged_doc_txn': sister.id if sister else None}
 

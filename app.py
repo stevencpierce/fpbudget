@@ -9580,6 +9580,21 @@ def _clear_ai_code_suggestion(txn):
     txn.suggested_budget_line_id = None
 
 
+def _add_evidence(txn_id, doc_id, kind):
+    """Idempotently record a doc→expense evidence link (A2). Fail-open and
+    commit-free — callers commit. Duplicate (txn, doc) pairs are no-ops."""
+    if not txn_id or not doc_id:
+        return
+    try:
+        from models import ExpenseEvidence
+        if not ExpenseEvidence.query.filter_by(transaction_id=txn_id,
+                                               doc_upload_id=doc_id).first():
+            db.session.add(ExpenseEvidence(transaction_id=txn_id,
+                                           doc_upload_id=doc_id, kind=kind))
+    except Exception as _ee:
+        logging.warning(f"[evidence] add failed txn={txn_id} doc={doc_id}: {_ee}")
+
+
 def _guard_doc_expense(txn, data):
     """Actualizing 2.0 A1 (2026-07-20): a doc-born row is a DOCUMENT, not an
     expense — coding it requires the explicit Create-expense step (the client
@@ -9590,6 +9605,7 @@ def _guard_doc_expense(txn, data):
         return None
     if data.get("create_expense"):
         txn.activated_at = datetime.utcnow()
+        _add_evidence(txn.id, txn.doc_upload_id, 'primary')
         return None
     return jsonify({"error": "This is a document (invoice/receipt), not an "
                              "expense yet. Use Create expense (pick a budget "
@@ -10109,6 +10125,7 @@ def actuals_line_ledger(pid, lid):
     # 📎 Backup receipts pointing at these rows (v2): map target txn id →
     # [{doc_id, filename, amount}] in one batched pass.
     backups_by_target = {}
+    _bk_docs = {}
     if tids:
         _bk_rows = (Transaction.query
                     .filter(Transaction.backup_of_txn_id.in_(tids)).all())
@@ -10124,6 +10141,36 @@ def actuals_line_ledger(pid, lid):
                 "filename": _bk_docs.get(b.doc_upload_id, 'receipt'),
                 "amount": float(b.amount) if b.amount is not None else None,
             })
+
+    # A2: unified evidence — merge expense_evidence rows into the same map.
+    # Skip pairs already present from the legacy backup shadow rows, and skip
+    # each row's own primary doc (rendered as the row's doc cell already).
+    try:
+        from models import ExpenseEvidence as _EEv
+        _seen_pairs = {(tgt, b["doc_id"]) for tgt, lst in backups_by_target.items()
+                       for b in lst if b.get("doc_id")}
+        _ev_rows = (_EEv.query.filter(_EEv.transaction_id.in_(tids)).all()
+                    if tids else [])
+        _ev_doc_ids = {e.doc_upload_id for e in _ev_rows} - set(_bk_docs or {})
+        _ev_docs = dict(_bk_docs or {})
+        if _ev_doc_ids:
+            for _bd in DocUpload.query.filter(DocUpload.id.in_(_ev_doc_ids)).all():
+                _ev_docs[_bd.id] = (_bd.filed_filename or _bd.original_filename
+                                    or f'Upload #{_bd.id}')
+        _own_doc = {t.id: t.doc_upload_id for t in txns}
+        for e in _ev_rows:
+            if e.kind == 'primary' and _own_doc.get(e.transaction_id) == e.doc_upload_id:
+                continue   # the row's doc cell already shows it
+            if (e.transaction_id, e.doc_upload_id) in _seen_pairs:
+                continue
+            backups_by_target.setdefault(e.transaction_id, []).append({
+                "doc_id": e.doc_upload_id,
+                "filename": _ev_docs.get(e.doc_upload_id, 'document'),
+                "amount": None,
+                "kind": e.kind,
+            })
+    except Exception as _eve:
+        logging.warning(f"[ledger] evidence merge failed: {_eve}")
 
     out = []
     coded_total = 0.0
@@ -33158,6 +33205,7 @@ def _itemize_apply(upload, parent, rows, main_line_raw, strict=True):
                         note=note[:300], match_status='confirmed')
         db.session.add(c); db.session.flush()
         _apply_target(c, target)
+        _add_evidence(c.id, upload.id, 'itemized')   # A2: invoice backs each subline
         return c.id
 
     if not sublines:
@@ -33270,6 +33318,7 @@ def actuals_mark_backup(pid, tid):
         if _target.id == txn.id:
             return jsonify({"error": "a charge cannot back itself up"}), 400
         txn.backup_of_txn_id = _target.id
+        _add_evidence(_target.id, txn.doc_upload_id, 'backup')
         if not ref:
             ref = f"{_target.vendor or 'invoice'} · ${float(_target.amount or 0):,.2f}"
     from actuals import unlink_transaction

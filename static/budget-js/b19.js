@@ -123,7 +123,7 @@
         + '</tr>';
       (r.backups || []).forEach(bk => {
         html += '<tr class="ll-bk-row" style="background:rgba(224,192,96,.05)"><td></td>'
-          + '<td colspan="4" style="font-size:.74rem;color:var(--text-muted);padding:2px 6px 4px 14px">📎 backup: '
+          + '<td colspan="4" style="font-size:.74rem;color:var(--text-muted);padding:2px 6px 4px 14px">📎 ' + (bk.kind === 'itemized' ? 'invoice' : (bk.kind === 'primary' ? 'evidence' : 'backup')) + ': '
           + (bk.doc_id
               ? '<a href="/projects/' + PID + '/docs/' + bk.doc_id + '/editor?from=budget" class="ll-doc-link">' + _esc(bk.filename || 'receipt') + '</a>'
               : _esc(bk.filename || 'receipt'))

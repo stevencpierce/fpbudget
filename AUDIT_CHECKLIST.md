@@ -129,8 +129,12 @@ from it (cash/reimbursement/accrual) — and every expense gets coded + backed.
   expense — pick budget line"; success toast names what happened. Alembic
   0003 adds activated_at and GRANDFATHERS already-coded doc rows. Match stays
   its own separate path (owner decision; "activate" renamed "create expense").
-- [ ] A2 — Unify evidence: general doc→expense attachment replaces the
-  backup_of_txn_id special case; itemization auto-attaches the invoice to its
-  sublines; Line Ledger shows evidence uniformly.
+- [x] A2 — Unified evidence: expense_evidence table (Alembic 0004, backfilled
+  from all three legacy shapes with ON CONFLICT dedupe) is THE doc→expense
+  attachment (kinds: primary/backup/itemized). Write-through at every choke
+  point — Create expense, mark-backup, itemization (invoice auto-attached to
+  each subline), match-confirm. Line Ledger merges evidence rows beneath each
+  expense with kind-aware 📎 labels; backup_of_txn_id stays populated in
+  parallel (removal deferred until nothing legacy reads it).
 - [ ] A3 — "Awaiting payment" state on created-but-unreconciled invoice
   expenses; every-expense-needs-backup exception chip.

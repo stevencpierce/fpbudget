@@ -1347,6 +1347,26 @@ class SubBudgetLine(db.Model):
 # SNAPSHOT of the totals + version at send time so the client always sees
 # exactly what was sent and the approval is bound to that specific version,
 # even if the budget is edited afterward.
+class ExpenseEvidence(db.Model):
+    """Actualizing 2.0 A2 (2026-07-20): THE doc→expense attachment. One row =
+    one document serving as evidence for one expense. kind: 'primary' (the
+    expense's own receipt/invoice — matched or created-from), 'backup'
+    (supporting doc for an expense evidenced elsewhere, e.g. a garage receipt
+    behind an invoice subline), 'itemized' (the invoice behind a split
+    subline). Replaces the transaction.backup_of_txn_id special case as the
+    read model; the legacy column stays populated in parallel for now."""
+    __tablename__ = "expense_evidence"
+    id             = db.Column(db.Integer, primary_key=True)
+    transaction_id = db.Column(db.Integer, db.ForeignKey("transaction.id"),
+                               nullable=False, index=True)
+    doc_upload_id  = db.Column(db.Integer, db.ForeignKey("doc_upload.id"),
+                               nullable=False, index=True)
+    kind           = db.Column(db.String(16), default='backup')
+    created_at     = db.Column(db.DateTime, default=datetime.utcnow)
+    __table_args__ = (db.UniqueConstraint('transaction_id', 'doc_upload_id',
+                                          name='uq_expense_evidence'),)
+
+
 class AnalyzerBatch(db.Model):
     """H7 (2026-07-20): durable mirror of fp_analyzer's in-memory batch state
     (_raw_pending / _pending). The staged FILES already live in Dropbox; this
