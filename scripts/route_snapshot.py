@@ -9,9 +9,11 @@ names, and methods. Requires app to be importable (deps installed; DATABASE_URL
 may be unset — sqlite fallback is fine, boot tasks are skipped).
 """
 import json
+import os
 import sys
 
-import app as _app
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import app as _app  # noqa: E402
 
 
 def _rules():

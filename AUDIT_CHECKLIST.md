@@ -64,7 +64,10 @@ Keep this file updated as items land.
   names/URLs byte-identical — verified via scripts/route_snapshot.py: 361
   routes, zero drift). CLAUDE.md documents the slice workflow; route audit
   covers routes/*.py in CI.
-  - [ ] M1b — Continue slicing: /docs (36 routes), /admin (59), crew/actuals.
+  - [x] M1b-1 — Crew & support-contact routes (8 routes, 274 lines) →
+    routes/crew.py; the shared _require_global_editor guard stays in app.py.
+    Route map re-verified IDENTICAL (361 routes).
+  - [ ] M1b-2 — Continue slicing: /docs (36 routes), /admin (59), actuals.
   - [ ] M1c — Break up the 1,950-line `budget_view`.
   - [ ] M1d — Move boot/migration code (~2.6k lines) into boot.py.
 - [ ] M2 — Collapse the 5 overlapping project-access helpers into one.
