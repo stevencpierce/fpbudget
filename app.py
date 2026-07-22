@@ -36610,27 +36610,9 @@ def _unhandled_exception(e):
             _ssdk.capture_exception(e)
     except Exception:
         pass
-    # Push-alert production 500s via ntfy (rate-limited to 1 per 5 min so an
-    # error loop can't flood the phone). Fire-and-forget daemon thread with a
-    # hard timeout — alerting must never slow or break the error response.
-    # Stopgap until a real error monitor (Sentry) is wired. (Audit C4.)
-    try:
-        import time as _t
-        _now = _t.time()
-        if _now - getattr(_unhandled_exception, '_last_alert', 0) > 300:
-            _unhandled_exception._last_alert = _now
-            _topic = os.getenv('NTFY_TOPIC', 'fpbudget-2UNogKZFtFM')
-
-            def _alert_500(topic=_topic, msg=f"FPBudget 500 [ERR-{ref}] {_method} {_path}"):
-                try:
-                    import requests as _rq
-                    _rq.post(f"https://ntfy.sh/{topic}", data=msg.encode(), timeout=4)
-                except Exception:
-                    pass
-            import threading as _thr
-            _thr.Thread(target=_alert_500, daemon=True).start()
-    except Exception:
-        pass
+    # Alerting: Sentry (captured below) is the alert channel — email on new
+    # issues + optional mobile push. The old ntfy phone ping was removed
+    # 2026-07-20 at the owner's request (delivery was unreliable).
     # Show the traceback inline to super-admins only — so production errors are
     # debuggable without server-log access. Everyone else gets the generic page.
     _admin_trace = ''

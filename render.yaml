@@ -6,7 +6,9 @@ services:
     # Run migrations + seeds in a separate container BEFORE the web container
     # starts. This avoids blocking the gevent worker with synchronous psycopg2
     # calls — which was hanging deploys (worker couldn't answer health checks).
-    preDeployCommand: RUN_BOOT_TASKS=1 python -c "import app"
+    # Alembic first (go-forward migrations, audit H5), then the legacy boot
+    # tasks (frozen pre-Alembic DDL + seeds). Both idempotent.
+    preDeployCommand: alembic upgrade head && RUN_BOOT_TASKS=1 python -c "import app"
     # gthread worker (2 processes × 8 threads = 16 concurrent slots).
     # Bumped back from 4 threads (2026-05-08) after user reported 502s
     # when navigating between budget tabs: each open browser tab parks

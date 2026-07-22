@@ -40,8 +40,10 @@ Keep this file updated as items land.
 - [x] H4 — Per-project sync lock (second click gets 'already running') +
   token refresh serialized under an advisory lock.
   - [ ] H4b — insert-on-conflict for qbo_txn_id (belt & suspenders).
-- [ ] H5 — Move migrations to Alembic (boot-time DDL silently skips failed
-  ALTERs; three hand-synced copies of the column list).
+- [x] H5a — Alembic live as the GO-FORWARD migration system (baseline rev +
+  `alembic upgrade head` in preDeploy; boot-DDL lists frozen; CLAUDE.md
+  documents the workflow).
+  - [ ] H5b — Eventually port the frozen legacy boot-DDL lists into revisions.
 - [x] H6a — The three missing hot-path indexes now created at boot.
   - [ ] H6b — Eager-load the recipient/rep lookups (N+1 on call-sheet send).
 - [ ] H7 — Persist background-job state in the DB (analyzer batches can be
@@ -70,7 +72,8 @@ Keep this file updated as items land.
 
 ## ⚪ Low / hygiene
 - [x] L1 — Untrack the stale `.report.json` pytest artifact (+ .gitignore).
-- [ ] L2 — Add a README / CLAUDE.md orientation doc (promote the handoff notes).
+- [x] L2 — CLAUDE.md orientation doc added (verify pipeline, Alembic workflow,
+  monitoring, gotchas).
 - [x] L3 — Dev SECRET_KEY fallback is now random-per-boot (was a forgeable
   hardcoded constant).
 - [x] L4a — Cron token compare is constant-time (hmac.compare_digest).

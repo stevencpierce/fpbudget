@@ -62,3 +62,5 @@ requests
 # Error monitoring (audit C4b, 2026-07-20). Init is guarded on SENTRY_DSN —
 # without the env var the app runs exactly as before.
 sentry-sdk[flask]
+# Versioned migrations (audit H5, 2026-07-20) — runs in preDeployCommand.
+alembic
