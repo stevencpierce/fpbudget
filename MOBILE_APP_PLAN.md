@@ -110,10 +110,24 @@ land in the same commit/PR. Split later only if it becomes painful.
 
 ## Phasing
 
-**Phase 0 — API foundation (Flask only, no app yet)**
-Token table + Alembic revision, `/api/v1/auth/login|logout`, Bearer decorator,
-`/api/v1/me` (role + accessible projects), `/api/v1/projects/<pid>/docs/upload`
-wrapper. Testable with curl before any app exists.
+**Phase 0 — API foundation (Flask only, no app yet)** — ✅ SHIPPED 2026-07-23
+Implemented (see `routes/api_v1.py`, `api_auth.py`, Alembic `0005_api_token`):
+- `POST /api/v1/auth/login` — JSON `{email, password, device_name?}` →
+  `{token, user}`. Token is `fpb_`-prefixed, shown once, stored as SHA-256
+  in `api_token`. Per-worker throttle: 10 failures / 15 min per email+IP.
+  `must_change_password` users are told to set a password on the web first.
+- All other `/api/v1` routes: `Authorization: Bearer fpb_...`, resolved by a
+  Flask-Login `request_loader` in app.py. Cookie sessions are **rejected**
+  on `/api/v1` (that's what makes its CSRF exemption safe).
+- `GET /api/v1/me` — user + projects with per-project `role` and
+  `can_upload_docs` (false ⇒ no Dropbox folder yet).
+- `POST /api/v1/projects/<pid>/docs/upload` and
+  `GET /api/v1/docs/<uid>/status` — thin aliases over the existing
+  validated Veryfi/Dropbox pipeline; central project-access gate applies.
+- `POST /api/v1/auth/logout` — revokes the presented token
+  (`revoked_at`; rows kept for device/audit history).
+Not yet built (fast follow when the app needs it): token list/revoke UI in
+web admin.
 
 **Phase 1 — Uploader app (the turnkey product)**
 Expo app: login → project picker → camera / photo library (multi-select) →

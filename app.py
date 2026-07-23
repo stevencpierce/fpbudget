@@ -73,7 +73,7 @@ os.environ.setdefault('AWS_S3_DISABLE_DEFAULT_CHECKSUMS',  'true')
 from flask_mail import Mail, Message as MailMessage
 from datetime import date, datetime, timedelta
 from flask import (Flask, render_template, redirect, url_for, request,
-                   flash, jsonify, Response, abort, session)
+                   flash, jsonify, Response, abort, session, g)
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
                          login_required, current_user)
 from dotenv import load_dotenv
@@ -95,7 +95,7 @@ from weasyprint import HTML as WeasyprintHTML
 # already-loaded names — cheap).
 import fp_analyzer  # noqa: F401
 
-from models import (db, User, ProjectAccess, ProjectSheet, Transaction, Budget, BudgetLine,
+from models import (db, User, ApiToken, ProjectAccess, ProjectSheet, Transaction, Budget, BudgetLine,
                     FringeConfig, CrewMember, CrewAssignment, ScheduleDay,
                     BudgetTemplate, BudgetTemplateLine, TaxCredit, PayrollProfile,
                     ProductionDay, Location, LocationDay, CallSheetData,
@@ -721,6 +721,13 @@ def _validate_upload_file(fs, kind='document'):
 _CSRF_EXEMPT_PREFIXES = (
     "/cron/", "/callsheet/confirm/", "/e/", "/qbo/oauth",
     "/health", "/readyz", "/webhook",
+    # /api/v1/ is bearer-token auth (Authorization header, never cookies) —
+    # cross-site pages can't set that header, so CSRF doesn't apply. The
+    # api_auth_required decorator rejects cookie-only sessions on these
+    # routes, so this exemption never opens a cookie-authed mutation path.
+    # Deliberately NOT the bare "/api/" prefix: the legacy /api/catalog,
+    # /api/quote, /api/role-mapping routes are cookie-session GETs.
+    "/api/v1/",
 )
 
 
@@ -3175,6 +3182,38 @@ def load_user(uid):
     return User.query.get(int(uid))
 
 
+@login_manager.request_loader
+def load_user_from_bearer(req):
+    """Mobile-app auth (Phase 0, 2026-07-23): resolve `Authorization:
+    Bearer fpb_...` to a User via the api_token table. Flask-Login consults
+    this only when the session/remember cookies yield no user, so web login
+    is untouched. Sets g.api_bearer_auth so /api/ routes can insist the
+    request authenticated by token (not by a browser cookie) — that flag is
+    what keeps the /api/ CSRF exemption safe."""
+    from api_auth import parse_bearer, hash_token
+    raw = parse_bearer(req.headers.get("Authorization"))
+    if not raw:
+        return None
+    try:
+        tok = (ApiToken.query
+               .filter_by(token_hash=hash_token(raw), revoked_at=None)
+               .first())
+        if not tok or not tok.user or not tok.user.is_active:
+            return None
+        now = datetime.utcnow()
+        # Throttled usage stamp: at most one write per token per 15 min so
+        # every API call doesn't become a DB write.
+        if not tok.last_used_at or (now - tok.last_used_at) > timedelta(minutes=15):
+            tok.last_used_at = now
+            db.session.commit()
+        g.api_bearer_auth = True
+        g.api_token_id = tok.id
+        return tok.user
+    except Exception:
+        logging.warning("[api-auth] bearer token lookup failed", exc_info=True)
+        return None
+
+
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -3199,7 +3238,11 @@ _FORCE_PW_ALLOWED = {"profile", "logout", "login", "static",
                      "callsheet_view_public", "callsheet_confirm_public",
                      "docs_dashboard", "docs_project", "docs_upload_post",
                      "docs_upload_status",
-                     "mobile_upload"}
+                     "mobile_upload",
+                     # Mobile API (routes/api_v1.py) — mirrors the docs-
+                     # upload allowances above for token-authed requests.
+                     "api_auth_login", "api_auth_logout", "api_me",
+                     "api_docs_upload", "api_docs_upload_status"}
 
 _DOCS_ONLY_ALLOWED = _FORCE_PW_ALLOWED | {"docs_upload_delete"}
 
@@ -3257,7 +3300,8 @@ def enforce_project_access():
         abort(403)
     if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
         role = 'editor' if pa.role == 'collaborator' else (pa.role or '')
-        if role in ('viewer', 'docs_only') and not (request.endpoint or '').startswith('docs'):
+        if (role in ('viewer', 'docs_only')
+                and not (request.endpoint or '').startswith(('docs', 'api_docs'))):
             abort(403)
 
 
@@ -36922,6 +36966,7 @@ def projects_redirect():
 # names and URLs are unchanged.
 import routes.budget_templates  # noqa: E402,F401
 import routes.crew  # noqa: E402,F401
+import routes.api_v1  # noqa: E402,F401
 
 if __name__ == "__main__":
     if _HAS_SOCKETIO:
