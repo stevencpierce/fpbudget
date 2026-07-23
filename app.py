@@ -16581,6 +16581,59 @@ def budget_settings(pid, bid):
     return jsonify({"ok": True})
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/fee", methods=["POST"])
+@login_required
+def budget_fee_update(pid, bid):
+    """Dedicated Production Company Fee save (2026-07-22, owner: 'move that
+    production company fee thing to the budget view… make it right click…
+    take it out of the settings page'). Edits THIS budget version only, so
+    Estimated and Working can carry different fees. Small and strict on
+    purpose — flat-fee saves through the monolithic settings route kept
+    failing opaquely. Body: {mode: 'pct'|'flat', pct?, flat?, dispersed?};
+    only provided keys change. Returns the saved values."""
+    _require_project_role(pid, 'editor')
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    m = (data.get("mode") or '').strip().lower()
+    if m:
+        if m not in ('pct', 'flat'):
+            return jsonify({"error": f"unknown fee mode '{m}'"}), 400
+        budget.company_fee_mode = m
+    if "pct" in data:
+        try:
+            v = float(str(data["pct"]).replace('%', '').replace(',', '').strip())
+        except (TypeError, ValueError):
+            return jsonify({"error": "Percentage must be a number (e.g. 18)"}), 400
+        # company_fee_pct is Numeric(6,4): stored /100, so input must be < 100
+        # ×100 headroom-wise — cap at 99 to keep the column from overflowing.
+        if not (0 <= v <= 99):
+            return jsonify({"error": "Percentage must be between 0 and 99"}), 400
+        budget.company_fee_pct = v / 100
+    if "flat" in data:
+        try:
+            v = float(str(data["flat"]).replace('$', '').replace(',', '').strip())
+        except (TypeError, ValueError):
+            return jsonify({"error": "Flat amount must be a number (e.g. 25000)"}), 400
+        if not (0 <= v <= 999_999_999):
+            return jsonify({"error": "Flat amount out of range"}), 400
+        budget.company_fee_flat = v
+    if "dispersed" in data:
+        budget.company_fee_dispersed = bool(data.get("dispersed"))
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='budget_settings',
+                      entity_id=bid, entity_label=budget.name or 'Budget',
+                      budget_id=bid, project_id=pid, before=None,
+                      after={k: data.get(k) for k in ('mode', 'pct', 'flat', 'dispersed') if k in data},
+                      note='Updated Production Company Fee')
+    except Exception: pass
+    return jsonify({"ok": True,
+                    "mode": budget.company_fee_mode or 'pct',
+                    "pct": float(budget.company_fee_pct or 0),
+                    "flat": float(budget.company_fee_flat or 0),
+                    "dispersed": bool(budget.company_fee_dispersed)})
+
+
 @app.route("/settings/company", methods=["GET"])
 @login_required
 def get_company_settings():

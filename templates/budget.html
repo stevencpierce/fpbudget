@@ -971,16 +971,32 @@
             data-a="{{ top_sheet.subtotal_actual }}"></td>
       </tr>
       {% set fee_w = working_company_fee or 0 %}
-      {% set fee_a = (top_sheet.subtotal_actual * top_sheet.company_fee_pct) | round(2) if not top_sheet.company_fee_dispersed else 0 %}
+      {% set _fee_is_flat = (top_sheet.company_fee_mode == 'flat') %}
+      {% if _fee_is_flat %}
+        {% set fee_a = top_sheet.company_fee if not top_sheet.company_fee_dispersed else 0 %}
+      {% else %}
+        {% set fee_a = (top_sheet.subtotal_actual * top_sheet.company_fee_pct) | round(2) if not top_sheet.company_fee_dispersed else 0 %}
+      {% endif %}
       {% set fee_var = est_top_sheet.company_fee - fee_a %}
-      <tr class="fee-row {% if top_sheet.company_fee_dispersed %}fee-row-dispersed{% endif %}" data-ts-row="fee" data-fee-pct="{{ top_sheet.company_fee_pct }}" data-dispersed="{{ 'true' if top_sheet.company_fee_dispersed else 'false' }}">
+      {# Right-click opens the fee editor (mode / % / $ / dispersed) — the fee
+         is stored per budget VERSION, so Estimated and Working can differ.
+         Moved out of Settings 2026-07-22 at the owner's request. #}
+      <tr class="fee-row {% if top_sheet.company_fee_dispersed %}fee-row-dispersed{% endif %}" data-ts-row="fee"
+          data-fee-mode="{{ top_sheet.company_fee_mode or 'pct' }}"
+          data-fee-pct="{{ top_sheet.company_fee_pct }}"
+          data-fee-flat="{{ top_sheet.company_fee_flat or 0 }}"
+          data-dispersed="{{ 'true' if top_sheet.company_fee_dispersed else 'false' }}"
+          style="cursor:context-menu"
+          oncontextmenu="feeEditMenu(event)" title="Right-click to edit the Production Company Fee (percentage or flat, this version)">
         <td colspan="2">
-          Production Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(2) }}%)
+          Production Company Fee
+          {% if _fee_is_flat %}(flat {{ top_sheet.company_fee_flat | currency }}){% else %}({{ (top_sheet.company_fee_pct * 100) | round(2) }}%){% endif %}
           {% if top_sheet.company_fee_dispersed %}
           <span class="fee-mode-badge dispersed-badge">Dispersed</span>
           {% else %}
           <span class="fee-mode-badge">Line Item</span>
           {% endif %}
+          <span class="muted" style="font-size:.7rem;margin-left:.35rem" title="Right-click to edit">✎</span>
         </td>
         <td class="col-num">{{ est_top_sheet.company_fee | currency }}</td>
         <td class="col-num {% if not working_exists %}muted{% endif %}">{{ fee_w | currency }}</td>
@@ -6229,41 +6245,17 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
         </div>
         <div class="field">
           <label>Production Company Fee</label>
-          {# Mode picker — percentage of eligible base, or fixed flat $.
-             Per user 2026-05-06: support fixed-fee deals where the
-             producer's fee is a negotiated dollar amount, not a markup. #}
-          {% set _fee_mode = (budget.company_fee_mode or 'pct') %}
-          <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.5rem;flex-wrap:wrap">
-            <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;cursor:pointer">
-              <input type="radio" name="fee-mode" value="pct" id="set-fee-mode-pct"
-                     onchange="feeModeToggle()"
-                     {% if _fee_mode != 'flat' %}checked{% endif %}>
-              <span>Percentage</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;cursor:pointer">
-              <input type="radio" name="fee-mode" value="flat" id="set-fee-mode-flat"
-                     onchange="feeModeToggle()"
-                     {% if _fee_mode == 'flat' %}checked{% endif %}>
-              <span>Flat amount</span>
-            </label>
-          </div>
-          <div style="display:flex;align-items:flex-start;gap:1.5rem;flex-wrap:wrap">
-            <div id="set-fee-pct-wrap" style="display:{{ 'none' if _fee_mode == 'flat' else 'flex' }};align-items:center;gap:.4rem">
-              <input type="number" id="set-fee" value="{{ (budget.company_fee_pct | float * 100) | round(2) }}" min="0" step="0.25" style="width:120px">
-              <span class="muted">%</span>
-            </div>
-            <div id="set-fee-flat-wrap" style="display:{{ 'flex' if _fee_mode == 'flat' else 'none' }};align-items:center;gap:.4rem">
-              <span class="muted">$</span>
-              <input type="number" id="set-fee-flat" value="{{ budget.company_fee_flat | float | round(2) if budget.company_fee_flat else 0 }}" min="0" step="100" style="width:160px">
-            </div>
-            <label style="display:flex;align-items:flex-start;gap:.5rem;cursor:pointer;font-weight:400;max-width:360px">
-              <input type="checkbox" id="set-fee-dispersed" style="margin-top:2px;flex-shrink:0" {% if budget.company_fee_dispersed %}checked{% endif %}>
-              <span>
-                <strong style="font-weight:600">Disperse fee across lines</strong><br>
-                <span class="muted" style="font-size:.8rem">Instead of a separate fee line, the fee is spread proportionally into each eligible section (rounded to the nearest dollar). The grand total is identical — useful for client-facing budgets where the fee should not appear as a line item.</span>
-              </span>
-            </label>
-          </div>
+          {# Moved to the budget view 2026-07-22 (owner request): right-click
+             the fee row on the Top Sheet to set percentage / flat amount /
+             dispersed — per version, so Estimated and Working can differ. #}
+          <p class="muted" style="font-size:.85rem;margin:.25rem 0 0">
+            Set on the <strong>Top Sheet</strong> now: right-click the
+            "Production Company Fee" row to choose percentage or flat amount
+            (and dispersal). The fee is saved per budget version, so
+            Estimated and Working can carry different fees.
+            Currently: <strong>
+            {% if (budget.company_fee_mode or 'pct') == 'flat' %}flat {{ budget.company_fee_flat | currency }}{% else %}{{ (budget.company_fee_pct | float * 100) | round(2) }}%{% endif %}{% if budget.company_fee_dispersed %}, dispersed{% endif %}</strong>.
+          </p>
         </div>
         {# Per-project section exemptions for the Production Company Fee.
            Default = none ticked → fee applies to every section. Ticking a
@@ -9099,6 +9091,10 @@ function refreshLineRow(id, data) {
 
 // ── Floating budget total bar ──────────────────────────────────────────────
 let _FLOAT_FEE_PCT        = {{ top_sheet.company_fee_pct | float }};
+// Flat-fee mode (2026-07-22): the float bar must show the fixed dollar fee,
+// not feeBase × pct, when the budget's fee is a negotiated flat amount.
+const _FLOAT_FEE_MODE     = "{{ top_sheet.company_fee_mode or 'pct' }}";
+const _FLOAT_FEE_FLAT     = {{ top_sheet.company_fee_flat | float }};
 let _FLOAT_DISPERSED      = {{ 'true' if top_sheet.company_fee_dispersed else 'false' }};
 // Industry-standard: labor fringes pass through without the Prod Co Fee
 // marked up on them. Top Sheet subtracts per-section fringes from the
@@ -9153,7 +9149,7 @@ function updateFloatBar() {
       feeBase += Math.max(v - fringe, 0);
     }
   });
-  const fee   = feeBase * _FLOAT_FEE_PCT;
+  const fee   = _FLOAT_FEE_MODE === 'flat' ? _FLOAT_FEE_FLAT : feeBase * _FLOAT_FEE_PCT;
   const grand = subtotal + fee;
   const subEl   = document.getElementById('float-subtotal');
   const feeEl   = document.getElementById('float-fee');
@@ -9991,17 +9987,64 @@ function autoSetEndDate(startVal) {
   {% endif %}
 })();
 
-// Swap the % / $ input as the Production Company Fee mode radios change.
-// (Bug 2026-07-22: the radios had NO wiring — picking "Flat amount" never
-// revealed the $ input unless the budget was ALREADY saved in flat mode,
-// so a flat fee could never be entered.)
-function feeModeToggle() {
-  const flat = document.getElementById('set-fee-mode-flat')?.checked;
-  const pw = document.getElementById('set-fee-pct-wrap');
-  const fw = document.getElementById('set-fee-flat-wrap');
-  if (pw) pw.style.display = flat ? 'none' : 'flex';
-  if (fw) fw.style.display = flat ? 'flex' : 'none';
+// ── Production Company Fee editor (2026-07-22) ────────────────────────────
+// Right-click the Top Sheet fee row → this popup. Saves through the
+// dedicated /fee endpoint and edits THIS budget version only, so Estimated
+// and Working can carry different fees. Replaced the Settings-page fee
+// fields at the owner's request after flat-fee saves kept failing there.
+const FEE_URL = `{{ url_for('budget_fee_update', pid=project.id, bid=budget.id) }}`;
+function feeEditMenu(event) {
+  event.preventDefault();
+  const row = event.target.closest('.fee-row') || document.querySelector('.fee-row[data-ts-row="fee"]');
+  const pop = document.getElementById('fee-edit-popup');
+  if (!pop || !row) return;
+  const mode = row.dataset.feeMode === 'flat' ? 'flat' : 'pct';
+  document.querySelectorAll('input[name="fee-pop-mode"]').forEach(r => { r.checked = (r.value === mode); });
+  pop.dataset.pct  = (parseFloat(row.dataset.feePct)  || 0) * 100;
+  pop.dataset.flat = parseFloat(row.dataset.feeFlat) || 0;
+  document.getElementById('fee-pop-dispersed').checked = row.dataset.dispersed === 'true';
+  document.getElementById('fee-pop-status').textContent = '';
+  feePopModeSwap();
+  pop.classList.remove('hidden');
+  pop.style.left = Math.min(event.clientX, window.innerWidth - 300) + 'px';
+  pop.style.top  = (event.clientY + 8) + 'px';
+  setTimeout(() => document.getElementById('fee-pop-value').focus(), 50);
 }
+function feePopModeSwap() {
+  const flat = document.querySelector('input[name="fee-pop-mode"][value="flat"]')?.checked;
+  const pop = document.getElementById('fee-edit-popup');
+  document.getElementById('fee-pop-prefix').style.display = flat ? '' : 'none';
+  document.getElementById('fee-pop-suffix').style.display = flat ? 'none' : '';
+  const inp = document.getElementById('fee-pop-value');
+  inp.step  = flat ? '100' : '0.25';
+  inp.value = flat ? (parseFloat(pop.dataset.flat) || 0) : (parseFloat(pop.dataset.pct) || 0);
+}
+function closeFeePopup() { document.getElementById('fee-edit-popup')?.classList.add('hidden'); }
+async function saveFeeEdit() {
+  const flat = document.querySelector('input[name="fee-pop-mode"][value="flat"]')?.checked;
+  const val = parseFloat(document.getElementById('fee-pop-value').value);
+  const st = document.getElementById('fee-pop-status');
+  if (isNaN(val) || val < 0) { if (st) st.textContent = 'Enter a number.'; return; }
+  const body = { mode: flat ? 'flat' : 'pct',
+                 dispersed: document.getElementById('fee-pop-dispersed').checked };
+  body[flat ? 'flat' : 'pct'] = val;
+  if (st) st.textContent = 'Saving…';
+  try {
+    const r = await fetch(FEE_URL, { method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) {
+      if (st) st.textContent = '✓ Saved — refreshing…';
+      // Fee line, dispersal, and grand totals are server-computed — reload
+      // in place, keeping the active tab.
+      if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload();
+    } else if (st) { st.textContent = j.error || ('Failed (' + r.status + ')'); }
+  } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
+}
+document.addEventListener('click', e => {
+  const pop = document.getElementById('fee-edit-popup');
+  if (pop && !pop.classList.contains('hidden') && !e.target.closest('#fee-edit-popup')) closeFeePopup();
+});
 
 async function saveSettings() {
   // A thrown error anywhere in here used to die silently — the Save button
@@ -10012,10 +10055,8 @@ async function saveSettings() {
 async function _saveSettingsInner() {
   const payload = {
     name:           document.getElementById('set-name').value.trim(),
-    company_fee_pct:        parseFloat(document.getElementById('set-fee').value || 0),
-    company_fee_dispersed:  document.getElementById('set-fee-dispersed').checked,
-    company_fee_mode:       (document.querySelector('input[name="fee-mode"]:checked')?.value === 'flat' ? 'flat' : 'pct'),
-    company_fee_flat:       parseFloat(document.getElementById('set-fee-flat')?.value || 0),
+    // Production Company Fee fields left Settings 2026-07-22 — edited via
+    // right-click on the Top Sheet fee row (dedicated /fee endpoint).
     target_budget:  document.getElementById('set-target').value || null,
     start_date:     document.getElementById('set-start').value || null,
     end_date:       document.getElementById('set-end').value || null,
@@ -10051,11 +10092,6 @@ async function _saveSettingsInner() {
   });
 
   if (res.ok) {
-    // Update fee display live
-    _FLOAT_FEE_PCT   = payload.company_fee_pct / 100;
-    _FLOAT_DISPERSED = payload.company_fee_dispersed;
-    applyFeeDisplay();
-
     // Update heading + page title immediately
     const newName = payload.name || document.getElementById('set-name').value.trim();
     document.getElementById('budget-name-heading').textContent = newName;
@@ -12129,6 +12165,36 @@ function normalizePhone(v) {
     <button class="btn btn-xs btn-ghost" onclick="closePctPopup()">✕</button>
   </div>
   <div class="pct-edit-note" id="pct-edit-note"></div>
+</div>
+
+{# ── Production Company Fee editor (right-click on the Top Sheet fee row).
+     Per-version: edits the budget being viewed, so Estimated and Working can
+     carry different fees. Saves through the dedicated /fee endpoint. #}
+<div id="fee-edit-popup" class="pct-edit-popup hidden" style="min-width:250px">
+  <div class="pct-edit-label">Production Company Fee</div>
+  <div style="display:flex;gap:1rem;margin-top:.45rem">
+    <label style="display:flex;align-items:center;gap:.35rem;font-weight:400;cursor:pointer;font-size:.85rem">
+      <input type="radio" name="fee-pop-mode" value="pct" onchange="feePopModeSwap()"> Percentage
+    </label>
+    <label style="display:flex;align-items:center;gap:.35rem;font-weight:400;cursor:pointer;font-size:.85rem">
+      <input type="radio" name="fee-pop-mode" value="flat" onchange="feePopModeSwap()"> Flat amount
+    </label>
+  </div>
+  <div style="display:flex;align-items:center;gap:.5rem;margin-top:.45rem">
+    <span id="fee-pop-prefix" style="display:none">$</span>
+    <input type="number" id="fee-pop-value" min="0" step="0.01" style="width:120px"
+           onkeydown="if(event.key==='Enter'){saveFeeEdit()}if(event.key==='Escape'){closeFeePopup()}">
+    <span id="fee-pop-suffix">%</span>
+  </div>
+  <label style="display:flex;align-items:center;gap:.4rem;margin-top:.5rem;font-weight:400;cursor:pointer;font-size:.82rem">
+    <input type="checkbox" id="fee-pop-dispersed"> Disperse across lines (no separate fee line)
+  </label>
+  <div style="display:flex;gap:.5rem;margin-top:.55rem;align-items:center">
+    <button class="btn btn-xs btn-primary" onclick="saveFeeEdit()">✓ Save</button>
+    <button class="btn btn-xs btn-ghost" onclick="closeFeePopup()">✕</button>
+    <span id="fee-pop-status" style="font-size:.75rem;color:var(--text-muted)"></span>
+  </div>
+  <div class="pct-edit-note">Applies to this budget version only ({{ budget.name }}) — Estimated and Working can differ.</div>
 </div>
 
 <script>
