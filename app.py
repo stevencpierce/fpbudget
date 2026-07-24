@@ -6472,7 +6472,14 @@ def budget_view(pid, bid):
         dept_filter = current_user.dept_code
         sections = [s for s in sections if s['code'] == dept_filter]
 
-    fringes      = FringeConfig.query.filter_by(project_id=None).order_by(FringeConfig.fringe_type).all()
+    # Project-aware fringe list for the line dropdowns: project overrides
+    # replace the global row of the same fringe_type, and project-only custom
+    # types appear too — matching the calc path (get_fringe_configs), which
+    # was already project-aware. Bug 2026-07-22: an override added on the
+    # project Fringes page never showed up in the budget-line fringe dropdown
+    # because this list was globals-only.
+    fringes      = sorted(get_fringe_configs(db.session, pid).values(),
+                          key=lambda f: f.fringe_type)
     # Full company roster — used ONLY for crew ASSIGNMENT (pick anyone onto a line).
     all_crew_members = CrewMember.query.filter_by(active=True).order_by(CrewMember.name).all()
     # Project-scoped crew + vendors for the doc/vendor pickers and vendors section.
