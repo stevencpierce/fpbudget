@@ -163,3 +163,29 @@ def api_docs_upload(pid):
 @api_auth_required
 def api_docs_upload_status(uid):
     return docs_upload_status(uid)
+
+
+@app.route("/api/v1/projects/<int:pid>/docs/recent", methods=["GET"])
+@api_auth_required
+def api_docs_recent(pid):
+    """The current user's own recent uploads in this project — powers the
+    app's 'Recent uploads' list (and survives app reinstall, unlike a
+    device-local history). Project access is enforced by the central
+    enforce_project_access gate on <pid>."""
+    from models import DocUpload
+    rows = (DocUpload.query
+            .filter_by(project_id=pid, uploader_id=current_user.id)
+            .filter(DocUpload.status != 'deleted')
+            .order_by(DocUpload.uploaded_at.desc())
+            .limit(25).all())
+    return jsonify({"uploads": [{
+        "id": u.id,
+        "status": u.status,
+        "original_filename": u.original_filename,
+        "filed_filename": u.filed_filename,
+        "vendor": u.vendor,
+        "amount": float(u.amount) if u.amount is not None else None,
+        "doc_date": u.doc_date.isoformat() if u.doc_date else None,
+        "is_duplicate": bool(u.is_duplicate),
+        "uploaded_at": u.uploaded_at.isoformat() if u.uploaded_at else None,
+    } for u in rows]})

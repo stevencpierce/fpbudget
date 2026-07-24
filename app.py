@@ -3242,7 +3242,8 @@ _FORCE_PW_ALLOWED = {"profile", "logout", "login", "static",
                      # Mobile API (routes/api_v1.py) — mirrors the docs-
                      # upload allowances above for token-authed requests.
                      "api_auth_login", "api_auth_logout", "api_me",
-                     "api_docs_upload", "api_docs_upload_status"}
+                     "api_docs_upload", "api_docs_upload_status",
+                     "api_docs_recent"}
 
 _DOCS_ONLY_ALLOWED = _FORCE_PW_ALLOWED | {"docs_upload_delete"}
 

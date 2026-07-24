@@ -129,12 +129,18 @@ Implemented (see `routes/api_v1.py`, `api_auth.py`, Alembic `0005_api_token`):
 Not yet built (fast follow when the app needs it): token list/revoke UI in
 web admin.
 
-**Phase 1 — Uploader app (the turnkey product)**
-Expo app: login → project picker → camera / photo library (multi-select) →
-upload with progress → recent-uploads list with OCR status (vendor/amount once
-Veryfi finishes). `docs_only` users see only this. This is deliberately small:
-it's the whole app for the base tier, and the shell for everything else.
-Handle the no-Dropbox-folder 400 with a human-readable message.
+**Phase 1 — Uploader app (the turnkey product)** — ✅ BUILT 2026-07-24
+Expo SDK 57 app in `mobile/` (see mobile/README.md for run/build steps):
+login (server override hidden behind "Server settings") → project picker
+with per-project role + upload-readiness → camera / photo library
+(multi-select, up to 10) → serial upload queue with progress + retry →
+OCR results (vendor/amount) shown from the synchronous upload response →
+recent-uploads list via the new `GET /api/v1/projects/<pid>/docs/recent`.
+Token in the OS keychain (expo-secure-store). Projects without a Dropbox
+folder show a friendly "ask your line producer" note instead of buttons.
+Verified: `tsc --noEmit` clean, Metro bundle exports, server smoke tests.
+Still to do before crew hands: real app icon, EAS build + TestFlight
+(needs Apple Developer account), then field-test with a real receipt.
 
 **Phase 2 — Budget view + edit**
 Read: budget list per project (estimated/working/versions), mobile-native
