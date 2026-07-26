@@ -7,6 +7,9 @@ import { Platform } from "react-native";
 
 import { DEFAULT_SERVER } from "./config";
 import {
+  BudgetInfo,
+  BudgetSummary,
+  LineSavePayload,
   LoginResponse,
   MeResponse,
   RecentUpload,
@@ -18,9 +21,17 @@ const SERVER_KEY = "fpb.server";
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  // Parsed JSON body when the server sent one — structured 409s
+  // (estimated_protected / schedule_conflict) ride along here.
+  body: Record<string, unknown> | null;
+  constructor(
+    message: string,
+    status: number,
+    body: Record<string, unknown> | null = null
+  ) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -52,13 +63,15 @@ async function setToken(token: string | null): Promise<void> {
 
 async function parseError(res: Response): Promise<ApiError> {
   let msg = `Request failed (${res.status})`;
+  let body: Record<string, unknown> | null = null;
   try {
-    const j = await res.json();
-    if (j && typeof j.error === "string") msg = j.error;
+    body = await res.json();
+    if (body && typeof body.error === "string") msg = body.error;
+    else if (body && typeof body.message === "string") msg = body.message;
   } catch {
     // non-JSON body (proxy page, HTML error) — keep the generic message
   }
-  return new ApiError(msg, res.status);
+  return new ApiError(msg, res.status, body);
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -107,6 +120,45 @@ export async function fetchRecent(projectId: number): Promise<RecentUpload[]> {
     `/api/v1/projects/${projectId}/docs/recent`
   );
   return out.uploads;
+}
+
+export async function fetchBudgets(projectId: number): Promise<BudgetInfo[]> {
+  const out = await request<{ budgets: BudgetInfo[] }>(
+    `/api/v1/projects/${projectId}/budgets`
+  );
+  return out.budgets;
+}
+
+export async function fetchBudgetSummary(
+  projectId: number,
+  budgetId: number
+): Promise<BudgetSummary> {
+  return request<BudgetSummary>(
+    `/api/v1/projects/${projectId}/budgets/${budgetId}/summary`
+  );
+}
+
+export async function saveLine(
+  projectId: number,
+  budgetId: number,
+  payload: LineSavePayload
+): Promise<void> {
+  await request(`/api/v1/projects/${projectId}/budgets/${budgetId}/line`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteLine(
+  projectId: number,
+  budgetId: number,
+  lineId: number
+): Promise<void> {
+  await request(
+    `/api/v1/projects/${projectId}/budgets/${budgetId}/line/${lineId}`,
+    { method: "DELETE" }
+  );
 }
 
 export interface PickedFile {

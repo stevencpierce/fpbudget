@@ -1402,6 +1402,11 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
 
     return {
         "rows":              rows,
+        # Per-line calc results ({line_id: calc_line(...) dict}) so callers
+        # that need both the roll-up AND line detail (mobile /api/v1 budget
+        # summary) get them from ONE computation — additive key, existing
+        # callers unaffected.
+        "line_totals":       line_totals,
         "subtotal_estimated": round(subtotal_est, 2),
         "subtotal_actual":    round(subtotal_act, 2),
         "company_fee_pct":    fee_pct,

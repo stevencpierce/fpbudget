@@ -20,8 +20,10 @@ from flask import request, jsonify, g
 from flask_login import current_user
 
 from app import (app, docs_upload_post, docs_upload_status,
-                 _docs_accessible_projects)
-from models import db, User, ApiToken, ProjectAccess
+                 _docs_accessible_projects, _actuals_by_section_code,
+                 upsert_line, delete_line)
+from models import db, User, ApiToken, ProjectAccess, Budget, BudgetLine
+from budget_calc import get_fringe_configs, calc_top_sheet
 from api_auth import generate_token, hash_token, parse_bearer
 
 
@@ -189,3 +191,144 @@ def api_docs_recent(pid):
         "is_duplicate": bool(u.is_duplicate),
         "uploaded_at": u.uploaded_at.isoformat() if u.uploaded_at else None,
     } for u in rows]})
+
+
+# ── Budgets (Phase 2) ─────────────────────────────────────────────────────
+# Read endpoints serve the app's budget list + a fully-computed summary so
+# the phone NEVER does budget math — calc_top_sheet/calc_line on the server
+# remain the single source of truth. Mutations are thin wrappers over the
+# battle-tested web handlers (upsert_line / delete_line), so activity
+# logging, estimated-edit protection, and schedule guards all apply
+# unchanged. enforce_project_access gates <pid> centrally: any project
+# member may GET; POST/DELETE require editor or better.
+
+_MODE_LABELS = {"estimated": "Estimated", "working": "Working",
+                "schedule": "Working", "hybrid": "Hybrid",
+                "actual": "Actual"}
+
+
+@app.route("/api/v1/projects/<int:pid>/budgets", methods=["GET"])
+@api_auth_required
+def api_budgets_list(pid):
+    rows = (Budget.query.filter_by(project_id=pid)
+            .filter(Budget.version_status != 'archived')
+            .order_by(Budget.updated_at.desc().nullslast(), Budget.id.desc())
+            .all())
+    return jsonify({"budgets": [{
+        "id": b.id,
+        "name": b.name,
+        "budget_mode": b.budget_mode,
+        "mode_label": ("Actual" if b.is_actual
+                       else _MODE_LABELS.get(b.budget_mode, b.budget_mode)),
+        "is_actual": bool(b.is_actual),
+        "version_status": b.version_status,
+        "version_number": b.version_number,
+        "start_date": b.start_date.isoformat() if b.start_date else None,
+        "end_date": b.end_date.isoformat() if b.end_date else None,
+        "target_budget": (float(b.target_budget)
+                          if b.target_budget is not None else None),
+        "updated_at": b.updated_at.isoformat() if b.updated_at else None,
+    } for b in rows]})
+
+
+@app.route("/api/v1/projects/<int:pid>/budgets/<int:bid>/summary",
+           methods=["GET"])
+@api_auth_required
+def api_budget_summary(pid, bid):
+    """Whole-budget view for the app: section roll-up (top sheet), grand
+    totals incl. auto lines (Workers' Comp / Payroll Fee / Insurance /
+    Company Fee), and every line with its server-computed total."""
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    lines = (BudgetLine.query.filter_by(budget_id=bid)
+             .order_by(BudgetLine.account_code, BudgetLine.sort_order,
+                       BudgetLine.id).all())
+    fringe_cfgs = get_fringe_configs(db.session, pid)
+    profile = budget.payroll_profile
+    pw_start = (budget.payroll_week_start
+                if budget.payroll_week_start is not None
+                else (profile.payroll_week_start if profile else 6))
+    actuals_by_code = _actuals_by_section_code(pid)
+    ts = calc_top_sheet(budget, lines, fringe_cfgs, actuals_by_code,
+                        profile, pw_start)
+    lt = ts.get("line_totals") or {}
+
+    def _num(x):
+        return float(x) if x is not None else None
+
+    return jsonify({
+        "budget": {
+            "id": budget.id,
+            "name": budget.name,
+            "budget_mode": budget.budget_mode,
+            "mode_label": ("Actual" if budget.is_actual
+                           else _MODE_LABELS.get(budget.budget_mode,
+                                                 budget.budget_mode)),
+            "is_actual": bool(budget.is_actual),
+            "version_status": budget.version_status,
+            "version_number": budget.version_number,
+            "target_budget": _num(budget.target_budget),
+            "start_date": (budget.start_date.isoformat()
+                           if budget.start_date else None),
+            "end_date": (budget.end_date.isoformat()
+                         if budget.end_date else None),
+        },
+        "totals": {
+            "subtotal_estimated": ts["subtotal_estimated"],
+            "subtotal_actual": ts["subtotal_actual"],
+            "company_fee": ts["company_fee"],
+            "company_fee_dispersed": ts["company_fee_dispersed"],
+            "workers_comp_amount": ts["workers_comp_amount"],
+            "payroll_fee_amount": ts["payroll_fee_amount"],
+            "production_insurance_amount": ts["production_insurance_amount"],
+            "grand_total_estimated": ts["grand_total_estimated"],
+            "grand_total_actual": ts["grand_total_actual"],
+            "grand_variance": ts["grand_variance"],
+        },
+        "sections": [{
+            "code": r["code"],
+            "account": r["account"],
+            "estimated": r["estimated"],
+            "actual": r["actual"],
+            "variance": r["variance"],
+        } for r in ts["rows"]],
+        "lines": [{
+            "id": ln.id,
+            "account_code": ln.account_code,
+            "account_name": ln.account_name,
+            "description": ln.description or "",
+            "is_labor": bool(ln.is_labor),
+            "use_schedule": bool(ln.use_schedule),
+            "line_tag": ln.line_tag,
+            "quantity": _num(ln.quantity),
+            "days": _num(ln.days),
+            "rate": _num(ln.rate),
+            "rate_type": ln.rate_type,
+            "est_ot": _num(ln.est_ot),
+            "fringe_type": ln.fringe_type,
+            "agent_pct": _num(ln.agent_pct),
+            "note": ln.note,
+            "sort_order": ln.sort_order or 0,
+            "parent_line_id": ln.parent_line_id,
+            "subtotal": (lt.get(ln.id) or {}).get("subtotal", 0),
+            "fringe_amount": (lt.get(ln.id) or {}).get("fringe_amount", 0),
+            "agent_amount": (lt.get(ln.id) or {}).get("agent_amount", 0),
+            "total": (lt.get(ln.id) or {}).get("total", 0),
+        } for ln in lines],
+    })
+
+
+@app.route("/api/v1/projects/<int:pid>/budgets/<int:bid>/line",
+           methods=["POST"])
+@api_auth_required
+def api_budget_line_save(pid, bid):
+    # Same body/semantics as the web endpoint, including the 409 responses
+    # (estimated_protected → resend with override_estimated: true;
+    # schedule_conflict → resolve on the website).
+    return upsert_line(pid, bid)
+
+
+@app.route("/api/v1/projects/<int:pid>/budgets/<int:bid>/line/<int:lid>",
+           methods=["DELETE"])
+@api_auth_required
+def api_budget_line_delete(pid, bid, lid):
+    return delete_line(pid, bid, lid)

@@ -3265,6 +3265,10 @@ def enforce_docs_only_role():
             and request.endpoint
             and request.endpoint not in _DOCS_ONLY_ALLOWED
             and not request.endpoint.startswith('static')):
+        if request.path.startswith('/api/'):
+            # API clients (mobile app) need a JSON denial, not a redirect.
+            return jsonify({"error": "Your account is docs-only — this "
+                                     "area isn't available."}), 403
         return redirect(url_for("docs_dashboard"))
 
 

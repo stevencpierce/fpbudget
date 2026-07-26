@@ -142,11 +142,23 @@ Verified: `tsc --noEmit` clean, Metro bundle exports, server smoke tests.
 Still to do before crew hands: real app icon, EAS build + TestFlight
 (needs Apple Developer account), then field-test with a real receipt.
 
-**Phase 2 — Budget view + edit**
-Read: budget list per project (estimated/working/versions), mobile-native
-grid built from `lines.json` + totals endpoints — sections collapse, tap a
-line for a detail sheet. Edit: the existing line CRUD JSON endpoints (add,
-edit amounts/rates/days, delete, assign crew). Respect `viewer` vs `editor`.
+**Phase 2 — Budget view + edit** — ✅ BUILT 2026-07-24
+Server: `GET /api/v1/projects/<pid>/budgets` (non-archived list),
+`GET .../budgets/<bid>/summary` (sections + grand totals + every line with
+server-computed totals — calc_top_sheet gained an additive `line_totals`
+return key so the phone NEVER does budget math), and thin wrappers over the
+existing `upsert_line`/`delete_line` handlers (activity log, estimated-edit
+protection, and schedule guards all apply unchanged). docs_only users get a
+JSON 403 on /api/ instead of an HTML redirect.
+App: project home menu (Budgets / Upload docs; docs_only logins skip
+straight to upload) → budget list with mode badges → budget screen with
+grand-total card, collapsible COA sections, auto-lines (WC / payroll fee /
+insurance / company fee), tap-a-line bottom-sheet editor (description,
+qty/days/rate/OT, note; view-only for viewers; delete with confirm).
+Handles the estimated-protection 409 with a native confirm → override
+resend; schedule-conflict 409s point the user to the website.
+Verified: tsc clean, Metro bundle exports, 8-scenario API smoke test incl.
+math parity, role gates, 409 flows.
 
 **Phase 3 — Call sheets + People**
 Call sheet: day picker → view assembled sheet, edit key fields via the
