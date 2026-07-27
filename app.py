@@ -28810,6 +28810,224 @@ with app.app_context():
     _migrate_client_contacts_into_clients()
 
 
+# ── One-time data import (2026-07-27): MinuteCon 26 AV budget ────────────────
+# Loads the "MinuteCon 2027 — Detailed Preliminary Breakdown" doc (prepared
+# 7/27/26) into the MinuteCon project's current ESTIMATED budget, replacing
+# whatever lines were already there (user-approved override). Line amounts are
+# the TOP of each quoted range; each line's note preserves the quoted range.
+# Labor rows are fringe type N per user. Same three-layer idempotence as the
+# client-contact merge above: system_task_log marker + pg advisory lock +
+# per-budget try/except (a budget whose lines are referenced by transactions
+# fails its FK delete, rolls back untouched, and is reported in the marker).
+def _import_minutecon26_budget():
+    from sqlalchemy import text as _sql_text
+    _MARKER = 'minutecon26_budget_import_v1'
+    _LOCK_KEY = 779301126  # arbitrary, stable advisory-lock id for this task
+
+    _COA = dict(FP_COA_SECTIONS)
+    # (code, description, is_labor, qty, days, rate, note)
+    # Non-labor: estimated_total = qty × days × rate. Labor: qty is ALWAYS 1
+    # (multi-person hires split into separate rows per the labor invariant);
+    # estimated_total stored 0, computed live by budget_calc.
+    _LINES = [
+        # ── Track 1 — Mainstage (450 theatre) ──
+        (2900, "Mainstage — Projector (12K lumen laser)",                False, 1, 2, 1000, "Quoted $700–1,000/day ($1,400–2,000)"),
+        (2900, "Mainstage — Screen (16' fastfold + dress kit)",          False, 1, 2, 450,  "Quoted $300–450/day ($600–900)"),
+        (2800, "Mainstage — PA (2 powered tops + 2 subs)",               False, 1, 2, 500,  "Quoted $350–500/day ($700–1,000)"),
+        (2800, "Mainstage — Console (digital mixer, X32/SQ class)",      False, 1, 2, 250,  "Quoted $150–250/day ($300–500)"),
+        (2800, "Mainstage — Wireless mics (1 lapel + 2 handheld, 3 ch)", False, 1, 2, 300,  "Quoted $225–300/day ($450–600)"),
+        (2800, "Mainstage — Stands / DI / cabling",                      False, 1, 1, 300,  "Flat, quoted $150–300"),
+        (2900, "Mainstage — Switcher + playback (seamless switcher, slides machine)", False, 1, 2, 400, "Quoted $250–400/day ($500–800)"),
+        (2900, "Mainstage — Confidence monitor + timer (presenter-facing)", False, 1, 2, 250, "Quoted $150–250/day ($300–500)"),
+        # ── Track 2 (350 theatre) ──
+        (2900, "Track 2 — Projector (10K lumen laser)",                  False, 1, 2, 800,  "Quoted $500–800/day ($1,000–1,600)"),
+        (2900, "Track 2 — Screen (12'–14' fastfold + dress)",            False, 1, 2, 350,  "Quoted $250–350/day ($500–700)"),
+        (2800, "Track 2 — PA (2 powered tops, no subs)",                 False, 1, 2, 350,  "Quoted $250–350/day ($500–700)"),
+        (2800, "Track 2 — Console (digital mixer)",                      False, 1, 2, 250,  "Quoted $150–250/day ($300–500)"),
+        (2800, "Track 2 — Wireless mics (1 lapel + 2 handheld, 3 ch)",   False, 1, 2, 300,  "Quoted $225–300/day ($450–600)"),
+        (2800, "Track 2 — Stands / DI / cabling",                        False, 1, 1, 250,  "Flat, quoted $150–250"),
+        (2900, "Track 2 — Switcher + playback (seamless switcher, slides machine)", False, 1, 2, 400, "Quoted $250–400/day ($500–800)"),
+        (2900, "Track 2 — Confidence monitor + timer (presenter-facing)", False, 1, 2, 250, "Quoted $150–250/day ($300–500)"),
+        # ── Labor ──
+        (2000, "A1 (audio) — Mainstage",                                 True,  1, 2, 850,  "Quoted $700–850/day"),
+        (2000, "A1 (audio) — Track 2",                                   True,  1, 2, 850,  "Quoted $700–850/day"),
+        (2000, "V1 (video/switch) — Mainstage",                          True,  1, 2, 850,  "Quoted $700–850/day"),
+        (2000, "V1 (video/switch) — Track 2",                            True,  1, 2, 850,  "Quoted $700–850/day"),
+        (2000, "Load-in crew — 3–4 crew, half-day (Thu eve)",            False, 1, 1, 1400, "Quoted $900–1,400 total"),
+        (2000, "Strike crew — 3–4 crew, half-day (Sat night)",           False, 1, 1, 1100, "Quoted $600–1,100 total"),
+        # ── Recording — Track 1 only (nice-to-have, priced as option) ──
+        (2600, "Recording (option) — 2 × camera kits",                   False, 2, 2, 400,  "Quoted $1,000–1,600 (2 kits × 2 days)"),
+        (2000, "Recording (option) — Camera op (cam 2 static/locked)",   True,  1, 2, 850,  "Quoted $1,400–1,700 (1 op × 2 days)"),
+        (2900, "Recording (option) — Program + slide capture (ISO of switcher output + board audio)", False, 1, 1, 500, "Flat, quoted $300–500"),
+        (4700, "Recording (option) — Post: per-talk cuts (~15–20 talks), titles, upload-ready", False, 1, 1, 1500, "Flat, quoted $800–1,500"),
+        # ── Event-wide ──
+        (2700, "Vendor area power (~5 distro runs / 10 tables)",         False, 1, 1, 500,  "Flat, quoted $250–500"),
+        (2000, "Production mgmt, advance, show flow",                    False, 1, 1, 2500, "Flat, quoted $1,500–2,500"),
+        (3400, "Truck / transport / consumables",                        False, 1, 1, 1000, "Flat, quoted $500–1,000"),
+    ]
+
+    _NOTES = (
+        "MinuteCon 2027 — AV budget imported 7/27/26 from the "
+        "'minutecon_quote_breakdown' doc. Event: Fri Apr 30 – Sat May 1, 2027, "
+        "9a–5p, Boston Marriott Cambridge. 2 days × 2 tracks (Mainstage 450 / "
+        "Track 2 350 theatre). Line amounts are the TOP of each quoted range; "
+        "each line's note holds the quoted range. '(option)' lines are the "
+        "Track 1 recording package — nice-to-have, priced as an option "
+        "(cheaper alt: single locked cam + program capture, minimal post "
+        "≈ $1,500–2,500). Doc totals (gear+labor, no fringes/fees): core "
+        "$17,450–$25,550; core + full recording $20,950–$30,850; core + "
+        "budget recording $18,950–$28,050. EXCLUDED (pin down with "
+        "venue/Ori): Marriott in-house AV exclusivity/patch fees, rigging, "
+        "power drops, hardline internet; lighting beyond house ballroom "
+        "lighting; stage/riser & backdrop; livestreaming; nonprofit discount."
+    )
+
+    try:
+        with app.app_context():
+            if 'postgresql' not in str(db.engine.url).lower():
+                return  # SQLite (local dev / tests): live-data import only
+            with db.engine.connect() as conn:
+                try:
+                    conn.execute(_sql_text(
+                        "CREATE TABLE IF NOT EXISTS system_task_log ("
+                        " task_name VARCHAR(80) PRIMARY KEY,"
+                        " last_run_at TIMESTAMP NOT NULL,"
+                        " last_result TEXT)"))
+                    conn.commit()
+                except Exception:
+                    pass
+                if conn.execute(_sql_text(
+                        "SELECT 1 FROM system_task_log WHERE task_name = :t"),
+                        {'t': _MARKER}).fetchone():
+                    return  # already imported on a prior boot
+            with db.engine.connect() as conn:
+                if not conn.execute(_sql_text(
+                        "SELECT pg_try_advisory_lock(:k)"), {'k': _LOCK_KEY}).scalar():
+                    logging.info("[minutecon-import] another worker holds the lock, skipping")
+                    return
+                try:
+                    if conn.execute(_sql_text(
+                            "SELECT 1 FROM system_task_log WHERE task_name = :t"),
+                            {'t': _MARKER}).fetchone():
+                        return  # won the lock but another worker already finished
+                    results = []
+
+                    # ── Resolve the MinuteCon project (name variants: "MinuteCon 26",
+                    # "Minute Con 26", "MinuteCon 2027", …) ──
+                    matches = (ProjectSheet.query
+                               .filter(ProjectSheet.name.ilike('%minute%con%'))
+                               .all())
+                    project = None
+                    if matches:
+                        matches.sort(key=lambda p: (p.status == 'active',
+                                                    ('26' in p.name or '27' in p.name),
+                                                    p.id),
+                                     reverse=True)
+                        project = matches[0]
+                    created_project = False
+                    if project is None:
+                        project = ProjectSheet(name='MinuteCon 26')
+                        db.session.add(project)
+                        db.session.flush()
+                        _admin = (User.query.filter_by(role='super_admin')
+                                  .order_by(User.id).first())
+                        if _admin:
+                            db.session.add(ProjectAccess(project_id=project.id,
+                                                         user_id=_admin.id,
+                                                         role='owner'))
+                        created_project = True
+
+                    # ── Resolve target: the current ESTIMATED budget(s) only
+                    # (per user: "just work estimated") ──
+                    budgets = [b for b in Budget.query.filter(
+                                   Budget.project_id == project.id,
+                                   Budget.is_actual == False,
+                                   Budget.version_status == 'current').all()
+                               if _budget_type(b.budget_mode) == 'estimated']
+                    if not budgets:
+                        budgets = [b for b in Budget.query.filter(
+                                       Budget.project_id == project.id,
+                                       Budget.is_actual == False,
+                                       Budget.version_status != 'archived').all()
+                                   if _budget_type(b.budget_mode) == 'estimated']
+                    if not budgets:
+                        _flat = (PayrollProfile.query
+                                 .filter(PayrollProfile.name.ilike('%flat%'))
+                                 .first())
+                        b = Budget(project_id=project.id,
+                                   name=f"{project.name} Budget",
+                                   payroll_profile_id=_flat.id if _flat else None,
+                                   timezone='America/New_York',
+                                   start_date=datetime(2027, 4, 30).date(),
+                                   end_date=datetime(2027, 5, 1).date())
+                        db.session.add(b)
+                        db.session.flush()
+                        budgets = [b]
+                    db.session.commit()
+
+                    for b in budgets:
+                        try:
+                            old = BudgetLine.query.filter_by(budget_id=b.id).all()
+                            # Children (kit fees etc.) first, then parents
+                            for ln in sorted(old, key=lambda l: l.parent_line_id is None):
+                                db.session.delete(ln)
+                            db.session.flush()
+                            for i, (code, desc, labor, qty, days, rate, note) in enumerate(_LINES):
+                                est = 0 if labor else round(qty * days * rate, 2)
+                                db.session.add(BudgetLine(
+                                    budget_id=b.id,
+                                    account_code=code,
+                                    account_name=_COA.get(code, str(code)),
+                                    description=desc,
+                                    is_labor=labor,
+                                    quantity=qty,
+                                    days=days,
+                                    rate=rate,
+                                    rate_type='flat_day' if labor else 'day_10',
+                                    fringe_type='N',
+                                    agent_pct=0,
+                                    estimated_total=est,
+                                    note=note,
+                                    sort_order=i * 10,
+                                ))
+                            b.start_date = b.start_date or datetime(2027, 4, 30).date()
+                            b.end_date = b.end_date or datetime(2027, 5, 1).date()
+                            _prior = (b.notes or '').strip()
+                            b.notes = _NOTES if not _prior else _NOTES + "\n\n" + _prior
+                            db.session.commit()
+                            results.append(f"budget {b.id} '{b.name}': replaced "
+                                           f"{len(old)} lines with {len(_LINES)}")
+                        except Exception as _be:
+                            db.session.rollback()
+                            results.append(f"budget {b.id}: FAILED ({_be})")
+
+                    if created_project:
+                        results.insert(0, f"created project '{project.name}' (id {project.id})")
+                    summary = '; '.join(results)[:2000]
+                    conn.execute(_sql_text(
+                        "INSERT INTO system_task_log (task_name, last_run_at, last_result) "
+                        "VALUES (:t, NOW(), :r) ON CONFLICT (task_name) DO NOTHING"),
+                        {'t': _MARKER, 'r': summary})
+                    conn.commit()
+                    logging.info(f"[minutecon-import] done: {summary}")
+                except Exception as _e:
+                    db.session.rollback()
+                    logging.error(f"[minutecon-import] failed: {_e}")
+                finally:
+                    try:
+                        conn.execute(_sql_text("SELECT pg_advisory_unlock(:k)"),
+                                     {'k': _LOCK_KEY})
+                        conn.commit()
+                    except Exception:
+                        pass
+    except Exception as _e:
+        logging.warning(f"[minutecon-import] aborted: {_e}")
+
+
+with app.app_context():
+    _import_minutecon26_budget()
+
+
 # ── Daily trash purge — soft-deleted Dropbox files >30 days hard-deleted ──
 # Runs once per worker boot if it's been >24h since the last successful run.
 # Multiple gunicorn workers booting at once: an advisory lock + UPSERT on a
