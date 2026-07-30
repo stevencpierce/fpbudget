@@ -743,18 +743,24 @@
       {% else %}
         {% set _tm_cols.n = _tm_cols.n + 1 %}
       {% endif %}
+      {# No dollar figures on mirror rows (owner 2026-07-22): a rate edited on
+         the Travel aggregate after export made these read stale (GINTS 2026:
+         crew flights said $400 after the line moved to $500). The count is
+         stable; the money lives in — and is only claimed by — the Travel
+         section, so point there instead. #}
       {% for _tm in _tm_rows %}
+      {% set _tm_unit = 'flight' if _tm.kind.startswith('flight')
+                        else ('night' if _tm.kind.startswith('hotel') else 'day') %}
+      {% set _tm_sec = 'Meals' if _tm.kind == 'working_meal' else 'Travel' %}
       <tr class="travel-mirror">
         <td>
           ↪ {{ _tm.label }}
-          <span style="color:#888"> — {{ _tm.days }} day{{ 's' if _tm.days != 1 else '' }} × ${{ "{:,.2f}".format(_tm.rate) }}</span>
+          <span style="color:#888"> — {{ _tm.days }} {{ _tm_unit }}{{ 's' if _tm.days != 1 else '' }} · costed in the {{ _tm_sec }} section</span>
         </td>
         <td class="num" colspan="{{ _tm_cols.n - 2 }}">
           {# Blank middle — keeps the mirror visually de-emphasized #}
         </td>
-        <td class="num">
-          ${{ "{:,.2f}".format(_tm.amount) }}
-        </td>
+        <td class="num" style="color:#888">—</td>
       </tr>
       {% endfor %}
     {% endif %}

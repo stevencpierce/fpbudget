@@ -213,8 +213,17 @@ def compute_travel_mirror_per_line(budget, labor_lines, schedule_days, all_lines
     if all_lines:
         for ln in all_lines:
             if ln.line_tag and ln.line_tag in SCHEDULE_LINE_DEFS:
-                # rate per unit: prefer unit_rate (set on creation), then rate, then default.
-                _r = float(ln.unit_rate) if ln.unit_rate is not None else float(ln.rate or 0)
+                # rate per unit: prefer the line's EDITED rate — that's what
+                # the Travel section actually charges (sync's effective_rate
+                # uses the same preference) — then unit_rate (creation
+                # default), then the SCHEDULE_LINE_DEFS default. Was
+                # unit_rate-first, which kept showing the stale creation
+                # default after the user edited the aggregate's rate (GINTS
+                # 2026 export: crew flights edited $400→$500, every mirror
+                # row still said $400). 2026-07-22.
+                _r = float(ln.rate or 0)
+                if not _r and ln.unit_rate is not None:
+                    _r = float(ln.unit_rate)
                 if not _r:
                     _r = SCHEDULE_LINE_DEFS[ln.line_tag][3]
                 rate_by_tag[ln.line_tag] = _r
