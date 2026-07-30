@@ -1398,8 +1398,12 @@
                       title="Outdent" style="padding:1px 7px;{% if _h_indent < 1 %}opacity:.4{% endif %}">⇤</button>
               <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="indent-in" data-id="{{ ln.id }}"
                       title="Indent" style="padding:1px 7px">⇥</button>
+              {# list= wires the native picker to the shared recent-colors
+                 datalist (populated by JS): colors picked anywhere show up
+                 as one-click swatches everywhere. 2026-07-22. #}
               <input type="color" class="header-fmt-color" data-id="{{ ln.id }}"
-                     value="{{ _h_color or '#5b8af9' }}" title="Header color"
+                     value="{{ _h_color or '#5b8af9' }}" title="Header color — recently used colors appear as swatches"
+                     list="header-recent-colors"
                      style="width:24px;height:22px;border:1px solid var(--border);border-radius:4px;
                             padding:0;cursor:pointer;vertical-align:middle">
             </span>
@@ -7709,8 +7713,49 @@ window.saveInlinePo = async function() {
     if (!id || !row) return;
     const fmt = _readFmt(row);
     fmt.color = inp.value;
+    _rcRemember(inp.value);
     _saveFmt(id, row, fmt);
   });
+
+  // ── Recent colors palette (2026-07-22, owner request) ────────────────────
+  // Every color picked on a header/sub-header is remembered (localStorage,
+  // capped at 12) and offered as one-click swatches inside the native color
+  // picker via a shared <datalist> — so a color set in one place is easy to
+  // reuse anywhere, including other budgets and projects. Colors already in
+  // use on this page's headers seed the list too.
+  const _RC_KEY = 'fpb_recent_colors';
+  function _rcList() {
+    try { return JSON.parse(localStorage.getItem(_RC_KEY)) || []; }
+    catch (_) { return []; }
+  }
+  function _rcRefresh() {
+    let dl = document.getElementById('header-recent-colors');
+    if (!dl) {
+      dl = document.createElement('datalist');
+      dl.id = 'header-recent-colors';
+      document.body.appendChild(dl);
+    }
+    const seen = new Set(), opts = [];
+    const add = c => {
+      c = String(c || '').toLowerCase();
+      if (/^#[0-9a-f]{6}$/.test(c) && !seen.has(c)) { seen.add(c); opts.push(c); }
+    };
+    _rcList().forEach(add);                       // picked recently (any page)
+    document.querySelectorAll('.header-row').forEach(r => {   // in use here
+      try { add(JSON.parse(r.dataset.format || '{}').color); } catch (_) {}
+    });
+    dl.innerHTML = opts.slice(0, 20).map(c => '<option value="' + c + '"></option>').join('');
+  }
+  function _rcRemember(color) {
+    const c = String(color || '').toLowerCase();
+    if (!/^#[0-9a-f]{6}$/.test(c)) return;
+    try {
+      const list = [c].concat(_rcList().filter(x => x !== c)).slice(0, 12);
+      localStorage.setItem(_RC_KEY, JSON.stringify(list));
+    } catch (_) {}
+    _rcRefresh();
+  }
+  _rcRefresh();
 })();
 
 // ── Actual view: line / section-only expand + drag-drop reassign ──
