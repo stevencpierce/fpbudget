@@ -150,7 +150,14 @@
       </table>
     </div>
 
-    {% if share.status == 'approved' %}
+    {% if (share.role or 'approver') == 'cc' %}
+      {# CC copy: view-only for reference — no approve/decline controls.
+         (Owner 2026-07-22.) #}
+      <div class="banner" style="background:#eef2f9;border:1px solid #cfd6df;color:#3a4757">
+        You've been copied on this estimate for reference. Approval is
+        handled by the primary recipient.
+      </div>
+    {% elif share.status == 'approved' %}
       <div class="banner ok">
         <strong>Approved.</strong> Signed by {{ share.approver_name }}{% if share.responded_at %} on {{ share.responded_at.strftime('%B %d, %Y') }}{% endif %}.
         {% if share.approver_note %}<br>Note: “{{ share.approver_note }}”{% endif %}
@@ -189,6 +196,7 @@
         var name=(document.getElementById('nm')||{}).value||'';
         var note=(document.getElementById('nt')||{}).value||'';
         if(action==='approve' && !name.trim()){ show('Please type your name to approve.'); return; }
+        if(action==='decline' && !name.trim()){ show('Please type your name so we know who is requesting the changes.'); return; }
         if(action==='decline' && !note.trim()){ show('Please add a note describing the changes you’d like.'); return; }
         var a=document.getElementById('btnApprove'), d=document.getElementById('btnDecline');
         if(a) a.disabled=true; if(d) d.disabled=true;

@@ -15119,7 +15119,10 @@ def estimate_share_create(pid, bid):
             if not em or key in seen_emails:
                 continue
             seen_emails.add(key)
-            recipients.append({"name": nm, "email": em})
+            # cc: copied for reference — gets a VIEW-ONLY link (role='cc'),
+            # cannot approve or request changes. (Owner 2026-07-22.)
+            recipients.append({"name": nm, "email": em,
+                               "cc": bool(r.get('cc'))})
     else:
         # Legacy single-recipient path.
         lc_name = (body.get('client_name') or '').strip()[:200] or None
@@ -15167,8 +15170,19 @@ def estimate_share_create(pid, bid):
 
     mail_configured = bool(app.config.get('MAIL_USERNAME'))
 
-    def _default_body(name_val, link_val):
+    def _default_body(name_val, link_val, is_cc=False):
         who = name_val or "there"
+        if is_cc:
+            # CC copy: reference wording, no approve language — their link is
+            # view-only anyway.
+            return (f"Hi {who},\n\n"
+                    f"You're copied on the estimate for {project.name} "
+                    f"({version_label}) for your reference. You can view it "
+                    f"here:\n\n"
+                    f"{link_val}\n\n"
+                    f"Estimated total: ${grand:,.2f}\n\n"
+                    f"Thank you,\n"
+                    f"{signature}")
         return (f"Hi {who},\n\n"
                 f"Please review the estimate for {project.name} "
                 f"({version_label}). You can view and approve it here:\n\n"
@@ -15177,10 +15191,10 @@ def estimate_share_create(pid, bid):
                 f"Thank you,\n"
                 f"{signature}")
 
-    def _render_body(name_val, link_val):
+    def _render_body(name_val, link_val, is_cc=False):
         """Substitute placeholders in the user-authored body; ensure link present."""
         if not email_body_in.strip():
-            return _default_body(name_val, link_val)
+            return _default_body(name_val, link_val, is_cc)
         txt = (email_body_in
                .replace('{link}', link_val)
                .replace('{total}', f"${grand:,.2f}")
@@ -15206,13 +15220,15 @@ def estimate_share_create(pid, bid):
     expires = now + _td(days=90)
     for rec in recipients:
         token = secrets.token_urlsafe(32)
+        _is_cc = bool(rec.get('cc'))
         share = EstimateShare(
             project_id=pid, budget_id=bid, token=token,
             client_name=rec['name'], client_email=rec['email'],
             detail_mode=detail_mode, version_label=version_label,
             snapshot_json=snapshot_str, grand_total=grand,
             status='sent', created_by_user_id=current_user.id,
-            sent_at=now, expires_at=expires)
+            sent_at=now, expires_at=expires,
+            role=('cc' if _is_cc else 'approver'))
         db.session.add(share)
         db.session.flush()  # assign share.id + keep token unique per row
 
@@ -15225,7 +15241,7 @@ def estimate_share_create(pid, bid):
                                "(MAIL_USERNAME unset) — use the copyable link instead.")
             else:
                 subj = _render_subject(rec['name'], link)
-                bodytxt = _render_body(rec['name'], link)
+                bodytxt = _render_body(rec['name'], link, _is_cc)
                 emailed = _send_email(rec['email'], subj, bodytxt,
                                       reply_to=reply_to, sender_name=sender_name)
                 if emailed:
@@ -15234,7 +15250,7 @@ def estimate_share_create(pid, bid):
                     email_error = "Email send failed — use the copyable link instead."
         results.append({
             "share_id": share.id, "token": token, "link": link,
-            "email": rec['email'], "name": rec['name'],
+            "email": rec['email'], "name": rec['name'], "cc": _is_cc,
             "emailed": emailed, "email_error": email_error,
         })
 
@@ -15257,7 +15273,8 @@ def estimate_share_create(pid, bid):
         for r in results:
             if not r['email'] and not r['name']:
                 continue
-            label = (r['name'] or '—') + (f" <{r['email']}>" if r['email'] else "")
+            label = ((r['name'] or '—') + (f" <{r['email']}>" if r['email'] else "")
+                     + (" (cc — view only)" if r.get('cc') else ""))
             _state = ('emailed' if r['emailed']
                       else ('link only' if not r['email'] else 'link shared manually'))
             _recip_lines.append(f"  • {label} — {_state}")
@@ -15739,6 +15756,7 @@ def estimate_share_list(pid, bid):
             "view_count": s.view_count,
             "responded_at": s.responded_at.isoformat() + 'Z' if s.responded_at else None,
             "approver_name": s.approver_name, "approver_note": s.approver_note,
+            "role": (getattr(s, 'role', None) or 'approver'),
         })
     return jsonify({"shares": out})
 
@@ -15772,6 +15790,7 @@ def _serialize_estimate_share(s):
         "view_count": s.view_count,
         "responded_at": s.responded_at.isoformat() + 'Z' if s.responded_at else None,
         "approver_name": s.approver_name, "approver_note": s.approver_note,
+        "role": (getattr(s, 'role', None) or 'approver'),
     }
 
 
@@ -16005,14 +16024,25 @@ def estimate_portal_respond(token):
         return jsonify({"error": "This estimate link has expired."}), 410
     if s.status in ('approved', 'declined'):
         return jsonify({"error": f"Already {s.status}.", "status": s.status}), 409
+    # CC links are view-only — approval/changes belong to the primary
+    # recipient(s). (Owner 2026-07-22: "cc should not be able to approve
+    # or comment".) Legacy rows have role NULL = approver.
+    if (getattr(s, 'role', None) or 'approver') == 'cc':
+        return jsonify({"error": "This link is a CC copy for reference only — "
+                                 "approval is handled by the primary recipient."}), 403
     body = request.get_json(silent=True) or {}
     action = (body.get('action') or '').strip().lower()
     name = (body.get('name') or '').strip()[:200]
     note = (body.get('note') or '').strip()[:2000] or None
     if action not in ('approve', 'decline'):
         return jsonify({"error": "Invalid action"}), 400
-    if action == 'approve' and not name:
-        return jsonify({"error": "Please type your name to approve."}), 400
+    # Both responses are tracked signatures: approvals AND change requests
+    # need a typed name so it's always attributable who asked for what.
+    # (Owner 2026-07-22: "track who asks revisions and who approves".)
+    if not name:
+        return jsonify({"error": "Please type your name to approve."
+                        if action == 'approve' else
+                        "Please type your name so we know who requested changes."}), 400
     s.status = 'approved' if action == 'approve' else 'declined'
     s.approver_name = name or None
     s.approver_note = note
@@ -28488,6 +28518,10 @@ def _web_worker_essential_columns():
                 "  ON expense_evidence (transaction_id)",
                 "CREATE INDEX IF NOT EXISTS ix_expense_evidence_doc_upload_id "
                 "  ON expense_evidence (doc_upload_id)",
+                # 2026-07-22 — CC recipients on estimate sends (belt alongside
+                # Alembic 0005): missing column would 500 every share query.
+                "ALTER TABLE estimate_share "
+                "  ADD COLUMN IF NOT EXISTS role VARCHAR(12) DEFAULT 'approver' NOT NULL",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The

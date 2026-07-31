@@ -291,10 +291,17 @@
           var label = esc(name || email);
           var sub = email && name ? '<span style="color:#6b7785;font-size:12px"> · '+esc(email)+'</span>' : '';
           var badge = sentBefore ? '<span style="color:#5b8af9;font-size:11px;font-weight:600"> · sent before</span>' : '';
-          return '<label style="display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:14px;cursor:pointer">'+
+          // CC toggle: copied for reference — view-only link, can't approve
+          // or request changes. Sibling labels so ticking CC never toggles
+          // the main include-checkbox. (Owner 2026-07-22.)
+          return '<div class="estshare-recip-row" style="display:flex;align-items:center;gap:8px;padding:6px 12px">'+
+                 '<label style="display:flex;flex:1;min-width:0;align-items:center;gap:8px;font-size:14px;cursor:pointer">'+
                  '<input type="checkbox" class="estshare-recip-cb" '+(checked?'checked':'')+
                  ' data-name="'+esc(name||'')+'" data-email="'+esc(email||'')+'">'+
-                 '<span>'+label+sub+badge+'</span></label>';
+                 '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+label+sub+badge+'</span></label>'+
+                 '<label title="CC — copied for reference only: their link is view-only and cannot approve or request changes" '+
+                 'style="display:flex;align-items:center;gap:4px;font-size:11.5px;color:#6b7785;white-space:nowrap;cursor:pointer">'+
+                 '<input type="checkbox" class="estshare-recip-cc"> CC</label></div>';
         }
 
         function loadRecipients(){
@@ -340,7 +347,13 @@
           var detail=(document.querySelector('input[name="estshare-detail"]:checked')||{}).value==='1';
           var recipients = [];
           document.querySelectorAll('.estshare-recip-cb').forEach(function(cb){
-            if(cb.checked){ recipients.push({ name: cb.getAttribute('data-name')||'', email: cb.getAttribute('data-email')||'' }); }
+            if(cb.checked){
+              var row = cb.closest('.estshare-recip-row');
+              var ccBox = row ? row.querySelector('.estshare-recip-cc') : null;
+              recipients.push({ name: cb.getAttribute('data-name')||'',
+                                email: cb.getAttribute('data-email')||'',
+                                cc: !!(ccBox && ccBox.checked) });
+            }
           });
           if(recipients.length === 0){
             if(!confirm('No recipients checked. Create a copyable link only?')){ btn.disabled=false; btn.textContent='Send estimate'; return; }
@@ -364,7 +377,8 @@
             var list = document.getElementById('estshare-result-list');
             list.innerHTML = '';
             (j.shares||[]).forEach(function(s){
-              var who = esc(s.name || s.email || 'Link');
+              var who = esc(s.name || s.email || 'Link')
+                + (s.cc ? ' <span style="font-size:10.5px;font-weight:700;color:#6b7785;border:1px solid #cfd6df;border-radius:4px;padding:0 5px" title="View-only copy — cannot approve or request changes">CC</span>' : '');
               var status = s.emailed
                 ? '<span style="color:#2a5a3a;font-weight:600">✓ emailed</span>'
                 : (s.email
@@ -422,10 +436,23 @@
             var revoked=(s.status==='revoked');
             var total=(typeof s.grand_total==='number')?('$'+s.grand_total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'';
             var viewed=s.view_count?(' · '+s.view_count+' view'+(s.view_count!==1?'s':'')):'';
-            var appr=s.approver_name?('<div style="font-size:.7rem;color:#74c69d;margin-top:2px">✓ '+_esc(s.approver_name)+(s.responded_at?(' · '+_fmtEstDate(s.responded_at)):'')+'</div>'):'';
+            // Attribution line: WHO approved (green ✓) or WHO requested
+            // changes (amber ✎) + when + their note. (Owner 2026-07-22:
+            // "track who asks revisions and who approves".)
+            var appr='';
+            if(s.approver_name){
+              var _isApproved=(s.status==='approved');
+              appr='<div style="font-size:.7rem;color:'+(_isApproved?'#74c69d':'#d9a441')+';margin-top:2px">'
+                +(_isApproved?'✓ Approved by ':'✎ Changes requested by ')+_esc(s.approver_name)
+                +(s.responded_at?(' · '+_fmtEstDate(s.responded_at)):'')
+                +(s.approver_note?('<div style="color:var(--text-muted);margin-top:1px">“'+_esc(s.approver_note)+'”</div>'):'')
+                +'</div>';
+            }
+            var ccBadge=(s.role==='cc')?'<span title="View-only copy — cannot approve or request changes" style="font-size:.62rem;font-weight:700;border:1px solid var(--border);border-radius:4px;padding:1px 6px;color:var(--text-muted)">CC</span>':'';
             return '<div style="border:1px solid var(--border);border-radius:10px;padding:11px 13px;margin-bottom:9px;'+(revoked?'opacity:.55;':'')+'">'
               +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
               +'<div style="font-weight:600">'+_esc(s.client_name||'(no client name)')+'</div>'
+              +ccBadge
               +_estStatusBadge(s.status)
               +'<div style="font-size:.72rem;color:var(--text-muted)">'+_esc(s.version_label||'')+' · '+_esc(s.budget_name||'')+'</div>'
               +'<div style="margin-left:auto;font-weight:700">'+total+'</div>'

@@ -1408,6 +1408,12 @@ class EstimateShare(db.Model):
     approver_note   = db.Column(db.Text, nullable=True)
     approver_ip     = db.Column(db.String(64), nullable=True)
     expires_at      = db.Column(db.DateTime, nullable=True)
+    # 'approver' (default) — can approve / request changes.
+    # 'cc' — copied for reference: own view-only link, own view tracking,
+    # can never respond. (Owner 2026-07-22: "cc should not be able to
+    # approve or comment".) NULL on legacy rows = approver.
+    role            = db.Column(db.String(12), nullable=False,
+                                default='approver', server_default='approver')
 
     project = db.relationship("ProjectSheet", foreign_keys=[project_id])
     budget  = db.relationship("Budget",       foreign_keys=[budget_id])
