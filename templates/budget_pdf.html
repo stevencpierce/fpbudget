@@ -590,7 +590,9 @@
               border-top:0.75pt solid #b8c4dc;
               border-bottom:0.75pt solid #b8c4dc;
               padding:5pt 8pt 5pt {{ 8 + _h_indent * 12 }}pt;
-              font-size:8.5pt;
+              {# Screen px → print pt at the same ratio as the 13.6px/8.5pt
+                 default, so A+/A− sizing carries into exports. 2026-07-22. #}
+              font-size:{{ ((_hf.get('size') | float) * 0.625) | round(1) if _hf.get('size') else 8.5 }}pt;
               {% if _h_bold %}font-weight:700;{% endif %}
               {% if _h_under %}text-decoration:underline;{% endif %}
               {% if _h_italic %}font-style:italic;{% endif %}

@@ -6466,6 +6466,20 @@ def budget_view(pid, bid):
                 sg = _get_talent_subgroup(ln.description)
             line_sub_groups[ln.id] = sg
 
+    # Auto dept-group labels the user converted to real sub-headers: the
+    # header line's format JSON records group=<name>. Those derived labels
+    # are suppressed on render — the editable header stands in for them,
+    # and stays suppressed even if the header is renamed. (2026-07-22.)
+    claimed_group_names = set()
+    for ln in lines:
+        if getattr(ln, 'line_tag', None) == 'header' and ln.note:
+            try:
+                _cg = (json.loads(ln.note).get('group') or '').strip().lower()
+                if _cg:
+                    claimed_group_names.add(_cg)
+            except Exception:
+                pass
+
     # Dept head filtering: restrict to their assigned dept_code only
     dept_filter = None
     if current_user.role == 'dept_head' and current_user.dept_code:
@@ -8154,6 +8168,7 @@ def budget_view(pid, bid):
         company_settings=company_settings,
         dept_filter=dept_filter,
         line_sub_groups=line_sub_groups,
+        claimed_group_names=claimed_group_names,
         line_assigned_location=line_assigned_location,
         doc_uploads=doc_uploads,
         doc_groups=doc_groups,
@@ -8534,6 +8549,20 @@ def line_insert(pid, bid):
             line_tag     = line_kind,
             sort_order   = 0,
         )
+        # Optional initial formatting (2026-07-22): the convert-auto-dept-
+        # label flow seeds the header styled like the derived label it
+        # replaces, and fmt.group records WHICH auto group it claims (so
+        # the derived label stops rendering even after a rename).
+        _fmt = data.get("format")
+        if line_kind == "header" and isinstance(_fmt, dict):
+            try:
+                _keep = {k: _fmt[k] for k in
+                         ('group', 'size', 'bold', 'underline', 'italic',
+                          'indent', 'color') if k in _fmt}
+                if _keep:
+                    new_ln.note = json.dumps(_keep)[:300]
+            except Exception:
+                pass
     else:
         new_ln = BudgetLine(
             budget_id    = bid,

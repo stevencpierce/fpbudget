@@ -1372,6 +1372,7 @@
         {% set _h_bold    = _hf.get('bold', true)  if _hf else true  %}
         {% set _h_under   = _hf.get('underline', false) if _hf else false %}
         {% set _h_italic  = _hf.get('italic', false) if _hf else false %}
+        {% set _h_size    = _hf.get('size') if _hf else none %}
         <tr class="line-row header-row" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-tag="header"
             data-format='{{ _hf | tojson }}'>
           <td colspan="14" style="padding:8px 12px 8px {{ 12 + _h_indent * 24 }}px;background:rgba(91,138,249,.06);border-top:1px solid var(--border);border-bottom:1px solid var(--border);position:relative">
@@ -1380,7 +1381,7 @@
                          padding:2px 4px;margin-right:4px;user-select:none">⋮⋮</span>
             <span class="editable header-label" data-field="description" data-id="{{ ln.id }}"
                   data-placeholder="Sub-header (click to edit, leave blank to remove)"
-                  style="font-size:.85rem;
+                  style="font-size:{{ (_h_size ~ 'px') if _h_size else '.85rem' }};
                          font-weight:{{ '700' if _h_bold else '500' }};
                          {% if _h_under %}text-decoration:underline;{% endif %}
                          {% if _h_italic %}font-style:italic;{% endif %}
@@ -1398,6 +1399,10 @@
                       title="Outdent" style="padding:1px 7px;{% if _h_indent < 1 %}opacity:.4{% endif %}">⇤</button>
               <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="indent-in" data-id="{{ ln.id }}"
                       title="Indent" style="padding:1px 7px">⇥</button>
+              <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="size-down" data-id="{{ ln.id }}"
+                      title="Smaller text" style="padding:1px 6px;font-size:.68rem">A−</button>
+              <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="size-up" data-id="{{ ln.id }}"
+                      title="Larger text" style="padding:1px 6px">A+</button>
               {# list= wires the native picker to the shared recent-colors
                  datalist (populated by JS): colors picked anywhere show up
                  as one-click swatches everywhere. 2026-07-22. #}
@@ -1428,7 +1433,16 @@
         {% if sec.code == 2000 and not is_kit_fee %}
           {% set _sg = line_sub_groups.get(ln.id) %}
           {% if _sg and _sg != ns.prev_sub_group %}
-        <tr class="dept-group-header-row"><td colspan="14"><span class="dept-group-label">{{ _sg }}</span></td></tr>
+          {# Suppressed once converted to a real sub-header (the header's
+             format JSON claims the group via fmt.group) — the editable
+             header now stands in for this derived label. 2026-07-22. #}
+          {% if (_sg | lower) not in claimed_group_names %}
+        <tr class="dept-group-header-row"><td colspan="14"><span class="dept-group-label">{{ _sg }}</span>
+          <button class="btn btn-xs btn-ghost" title="Make this an editable sub-header (rename, color, size — same as manually added sub-headers)"
+                  onclick='convertDeptGroup({{ ln.id }}, {{ _sg | tojson }})'
+                  style="opacity:.45;font-size:.62rem;padding:0 5px;margin-left:6px;vertical-align:middle">✎</button>
+        </td></tr>
+          {% endif %}
           {% set ns.prev_sub_group = _sg %}
           {% endif %}
         {% endif %}
@@ -7674,6 +7688,9 @@ window.saveInlinePo = async function() {
       label.style.textDecoration = fmt.underline ? 'underline' : '';
       label.style.fontStyle = fmt.italic ? 'italic' : '';
       label.style.color = fmt.color || 'var(--accent)';
+      // 13.6px == the default .85rem — always set explicitly so A+/A− steps
+      // render live without a reload. (2026-07-22.)
+      label.style.fontSize = (parseFloat(fmt.size) || 13.6) + 'px';
     }
     if (cell) {
       const ind = parseInt(fmt.indent || 0) || 0;
@@ -7703,8 +7720,36 @@ window.saveInlinePo = async function() {
     else if (act === 'italic')     fmt.italic    = !fmt.italic;
     else if (act === 'indent-in')  fmt.indent    = Math.min(8, (parseInt(fmt.indent || 0) || 0) + 1);
     else if (act === 'indent-out') fmt.indent    = Math.max(0, (parseInt(fmt.indent || 0) || 0) - 1);
+    // Font size steps (owner 2026-07-22: "make our subheadings font sizes
+    // increaseable and decreaseable… so they can all match"). 9–22px,
+    // 1px per press; unset starts from the 14px default neighborhood.
+    else if (act === 'size-up')   fmt.size = Math.min(22, Math.round(parseFloat(fmt.size) || 14) + 1);
+    else if (act === 'size-down') fmt.size = Math.max(9,  Math.round(parseFloat(fmt.size) || 14) - 1);
     _saveFmt(id, row, fmt);
   });
+
+  // Convert an auto department label (CONTROL ROOM, SOUND, …) into a REAL
+  // sub-header line — same rename/format/color/size powers as manually
+  // added sub-headers. Inserts a header line where the label sat, styled
+  // to match the auto label (small, accent, bold); fmt.group records which
+  // auto group it replaces so the derived label stops rendering, even
+  // after a rename. (Owner 2026-07-22: "however those are added in
+  // automatically, just make those the same functionality as the
+  // subheaders that we manually add".)
+  window.convertDeptGroup = async function (firstLineId, name) {
+    try {
+      const res = await fetch(`/projects/${PID}/budget/${BID}/line/insert`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reference_id: firstLineId, position: 'above', line_kind: 'header',
+          description: name,
+          format: { group: name, size: 10, bold: true }
+        })
+      });
+      if (res.ok) { if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload(); }
+      else alert('Could not convert this department label (' + res.status + ')');
+    } catch (e) { alert('Could not convert: ' + e.message); }
+  };
   document.addEventListener('change', function(e) {
     const inp = e.target.closest('.header-fmt-color');
     if (!inp) return;
