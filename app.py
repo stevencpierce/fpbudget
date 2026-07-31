@@ -15021,10 +15021,36 @@ def _build_estimate_snapshot(project, budget, detail_mode):
             return best
         by_code = {s["code"]: s for s in sections}
         for ln in lines:
-            if getattr(ln, 'is_header', False):
-                continue
             sdict = by_code.get(_sec_for(ln.account_code))
             if not sdict:
+                continue
+            # Sub-headers and spacers are presentation rows, not charges.
+            # (Was `getattr(ln, 'is_header', False)` — an attribute that
+            # doesn't exist — so they leaked into client estimates as plain
+            # "$0.00" lines. Owner 2026-07-22: obey the header formatting on
+            # client sends; never show amounts on headers/spacers.) Headers
+            # carry their formatting JSON so the portal renders them styled;
+            # spacers become a small visual gap.
+            _tag = getattr(ln, 'line_tag', None)
+            if _tag == 'spacer':
+                sdict["lines"].append({"kind": "spacer"})
+                continue
+            if _tag == 'header':
+                if not (ln.description or '').strip():
+                    continue   # empty placeholder — never send
+                _hfmt = {}
+                try:
+                    _hfmt = json.loads(ln.note) if ln.note else {}
+                    if not isinstance(_hfmt, dict):
+                        _hfmt = {}
+                except Exception:
+                    _hfmt = {}
+                sdict["lines"].append({
+                    "kind": "header",
+                    "desc": (ln.description or '').strip(),
+                    "fmt": {k: _hfmt.get(k) for k in
+                            ('bold', 'underline', 'italic', 'color',
+                             'size', 'indent') if _hfmt.get(k) is not None}})
                 continue
             if ln.use_schedule:
                 sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()

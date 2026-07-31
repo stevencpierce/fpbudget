@@ -123,7 +123,25 @@
             <tr class="sec-row"><td>{{ sec.name or ('Section ' ~ sec.code) }}</td><td class="num">{{ sec.total | currency }}</td></tr>
             {% if snap.detail_mode %}
               {% for ln in sec.lines %}
+                {% if ln.kind == 'spacer' %}
+                <tr class="spacer-row"><td colspan="2" style="height:10px;border:none;padding:0"></td></tr>
+                {% elif ln.kind == 'header' %}
+                {# Sub-header: obeys the budget's formatting (bold / color /
+                   size / indent), no amount — matches how it looks in-app.
+                   Old snapshots (no `kind`) fall through to plain rows. #}
+                {% set _f = ln.fmt or {} %}
+                <tr class="subhdr-row"><td colspan="2" style="
+                      padding:7px 10px 5px {{ 10 + (_f.get('indent', 0) | int) * 18 }}px;
+                      background:#f2f5fb;
+                      font-size:{{ _f.get('size', 13) }}px;
+                      font-weight:{{ '400' if _f.get('bold') is sameas false else '700' }};
+                      {% if _f.get('underline') %}text-decoration:underline;{% endif %}
+                      {% if _f.get('italic') %}font-style:italic;{% endif %}
+                      letter-spacing:.05em;text-transform:uppercase;
+                      color:{{ _f.get('color') or '#4f7ef8' }};">{{ ln.desc }}</td></tr>
+                {% else %}
                 <tr class="line-row"><td>{{ ln.desc or '—' }}</td><td class="num">{{ ln.total | currency }}</td></tr>
+                {% endif %}
               {% endfor %}
             {% endif %}
           {% endfor %}
