@@ -15008,18 +15008,43 @@ def _build_estimate_snapshot(project, budget, detail_mode):
         sections.append({"code": 99999, "name": "Production Company Fee",
                          "total": fee, "lines": []})
 
+    def _sec_for(code):
+        best = None
+        for start, _ in FP_COA_SECTIONS:
+            if code is not None and code >= start:
+                best = start
+            else:
+                break
+        return best
+    by_code = {s["code"]: s for s in sections}
+
+    # Per-line calc pass — runs in BOTH modes: detail rows reuse it, and it
+    # feeds the per-section DISCOUNT sums (owner 2026-07-22: "we are not
+    # seeing discounts included at all in what it said to the client — I
+    # definitely want those per section and then totaled"). Non-labor
+    # agent_amount IS the line's discount (see calc_line); labor agent fees
+    # are real charges, not discounts, so they're excluded.
+    _line_res = {}
+    for ln in lines:
+        if getattr(ln, 'line_tag', None) in ('header', 'spacer'):
+            continue
+        if ln.use_schedule:
+            sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
+            res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
+        else:
+            res = calc_line(ln, fringe_cfgs)
+        _line_res[ln.id] = res
+        if not ln.is_labor:
+            _d = round(float((res or {}).get('agent_amount') or 0), 2)
+            if _d:
+                _sd = by_code.get(_sec_for(ln.account_code))
+                if _sd is not None:
+                    _sd["discount"] = round(_sd.get("discount", 0) + _d, 2)
+    discount_total = round(sum(s.get("discount", 0) for s in sections), 2)
+
     # Optional per-line breakdown under each section (best-effort: section-level
     # adds like fringe / WC / fee live at the section total, not on a line).
     if detail_mode:
-        def _sec_for(code):
-            best = None
-            for start, _ in FP_COA_SECTIONS:
-                if code is not None and code >= start:
-                    best = start
-                else:
-                    break
-            return best
-        by_code = {s["code"]: s for s in sections}
         for ln in lines:
             sdict = by_code.get(_sec_for(ln.account_code))
             if not sdict:
@@ -15052,15 +15077,11 @@ def _build_estimate_snapshot(project, budget, detail_mode):
                             ('bold', 'underline', 'italic', 'color',
                              'size', 'indent') if _hfmt.get(k) is not None}})
                 continue
-            if ln.use_schedule:
-                sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
-                res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
-            else:
-                res = calc_line(ln, fringe_cfgs)
+            res = _line_res.get(ln.id) or {}
             sdict["lines"].append({
                 "code": ln.account_code,
                 "desc": (ln.description or '').strip(),
-                "total": round(float((res or {}).get('est_total') or 0), 2)})
+                "total": round(float(res.get('est_total') or 0), 2)})
 
     cs = CompanySettings.query.get(1) or CompanySettings()
     company_addr = [getattr(cs, 'address_line1', None), getattr(cs, 'address_line2', None),
@@ -15083,6 +15104,7 @@ def _build_estimate_snapshot(project, budget, detail_mode):
         },
         "detail_mode": bool(detail_mode),
         "grand_total": round(grand, 2),
+        "discount_total": discount_total,
         "sections": sections,
     }
     return snap, round(grand, 2)

@@ -44,9 +44,21 @@
   th { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted);
        border-bottom:2px solid var(--line); }
   td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; }
-  .sec-row td { background:#f8fafc; font-weight:700; border-top:1px solid var(--line); }
+  /* Roomier section separation (owner 2026-07-22: "better spacing between
+     sections so you can see things laid out a bit better") — each section
+     header gets breathing room above and a stronger rule. */
+  .sec-row td { background:#f8fafc; font-weight:700; border-top:2px solid #dfe5ee;
+                padding-top:14px; padding-bottom:9px; }
+  tbody tr.sec-row:first-child td { border-top:none; }
   .line-row td { color:#33414f; border-top:1px solid #f1f3f6; }
   .line-row td:first-child { padding-left:26px; }
+  /* Per-section discount line + all-sections discount total (owner
+     2026-07-22: discounts must be visible to the client, per section and
+     totaled). Muted — the amounts are already reflected in the totals. */
+  .disc-row td { color:#1f7a4d; font-style:italic; font-size:13px;
+                 border-top:1px solid #f1f3f6; padding-bottom:12px; }
+  .disc-row td:first-child { padding-left:26px; }
+  .disc-total td { color:#1f7a4d; font-weight:700; border-top:1px solid var(--line); }
   .grand td { border-top:2px solid var(--ink); font-weight:800; font-size:16px; }
 
   .banner { padding:14px 18px; border-radius:12px; font-size:14px; margin:16px 0; }
@@ -144,10 +156,22 @@
                 {% endif %}
               {% endfor %}
             {% endif %}
+            {% if sec.discount %}
+            <tr class="disc-row"><td>↳ Discounts applied in this section</td><td class="num">−{{ sec.discount | currency }}</td></tr>
+            {% endif %}
           {% endfor %}
+          {% if snap.discount_total %}
+          <tr class="disc-total"><td>Total discounts applied</td><td class="num">−{{ snap.discount_total | currency }}</td></tr>
+          {% endif %}
           <tr class="grand"><td>Grand Total</td><td class="num">{{ snap.grand_total | currency }}</td></tr>
         </tbody>
       </table>
+      {% if snap.discount_total %}
+      <div style="padding:8px 14px 12px;font-size:12px;color:#6b7785">
+        Discounts are already reflected in the section totals and the grand
+        total shown above.
+      </div>
+      {% endif %}
     </div>
 
     {% if (share.role or 'approver') == 'cc' %}
