@@ -1089,7 +1089,7 @@
 
   <div id="working-budget-wrap">
   {% for sec in sections %}
-  {% set ns = namespace(sec_subtotal=0, sec_ot=0, sec_fringe=0, sec_total=0, has_labor=false, has_agent_or_disc=false, line_counter=0, kit_total=0, kit_working=0, sec_agent=0, prev_sub_group=None) %}
+  {% set ns = namespace(sec_subtotal=0, sec_ot=0, sec_fringe=0, sec_total=0, has_labor=false, has_agent_or_disc=false, line_counter=0, kit_total=0, kit_working=0, sec_agent=0, sec_disc=0, prev_sub_group=None) %}
   {# Pre-compute non-labor flag at the section level so empty sections
      (auto-calc-only like Insurance / Administrative) still reserve the
      Disc% column. Without this hoist, the flag was only set inside the
@@ -1104,7 +1104,15 @@
     {% set ns.sec_ot = ns.sec_ot + (res.ot_amount if res.ot_amount is defined else (ln.est_ot | float)) %}
     {% set ns.sec_fringe = ns.sec_fringe + res.fringe_amount %}
     {% set ns.sec_total = ns.sec_total + res.est_total %}
+    {# agent_amount doubles as the DISCOUNT amount on non-labor lines (see
+       calc_line) — split the two so equipment discounts never render under
+       an "Agent Fees" label. (MinuteCon report 2026-07-22: "I'm getting
+       agent fees calculating into the budget" — it was the discount sum.) #}
+    {% if ln.is_labor %}
     {% set ns.sec_agent = ns.sec_agent + (res.agent_amount | default(0) | float) %}
+    {% else %}
+    {% set ns.sec_disc = ns.sec_disc + (res.agent_amount | default(0) | float) %}
+    {% endif %}
     {# Non-labor sections always show the Disc% column so users can ADD a
        discount even when none exists yet. Labor sections still collapse
        Agent% when no Talent line has an agency commission set — only
@@ -2411,6 +2419,17 @@
           <td></td>
         </tr>
         {% endif %}
+        {# Non-labor discounts: money REMOVED from the section, shown with a
+           leading − so it can't read as a fee added on top. (2026-07-22.) #}
+        <tr class="discount-subtotal-row" {% if not (ns.sec_disc > 0) %}style="display:none"{% endif %}>
+          <td colspan="9" class="col-desc" style="font-size:.78rem;color:var(--text-muted);padding-left:1.6rem;font-style:italic;text-align:right">Discounts applied</td>
+          <td class="col-num disc-est-total" style="font-size:.78rem;color:var(--text-muted)">−{{ ns.sec_disc | currency }}</td>
+          <td class="col-num disc-est-total-2" style="font-size:.78rem;color:var(--text-muted)">−{{ ns.sec_disc | currency }}</td>
+          <td class="col-num col-working" style="font-size:.78rem;color:var(--text-muted)"></td>
+          <td class="col-num col-actual"></td>
+          <td class="col-num col-variance"></td>
+          <td></td>
+        </tr>
         <tr class="section-subtotal-row">
           <td colspan="5" class="col-desc muted" style="font-size:.75rem;font-style:italic;text-align:right">Section breakdown</td>
           <td class="col-num muted"></td>
@@ -9420,7 +9439,7 @@ function refreshSectionTotals(table) {
   const tfoot = table.querySelector('tfoot');
   if (!tfoot) return;
 
-  let liveTotal = 0, kitTotal = 0, agentTotal = 0, otTotal = 0, fringeTotal = 0, subtotalTotal = 0;
+  let liveTotal = 0, kitTotal = 0, agentTotal = 0, discTotal = 0, otTotal = 0, fringeTotal = 0, subtotalTotal = 0;
   tbody.querySelectorAll('.line-row').forEach(row => {
     // Auto-calc rows (Workers' Comp, Production Liability Insurance,
     // Payroll Service Fee) carry their amount on data-auto-amount —
@@ -9443,7 +9462,10 @@ function refreshSectionTotals(table) {
     }
     liveTotal += base;
     if (row.classList.contains('kit-fee-row')) kitTotal += base;
-    agentTotal    += parseFloat(row.dataset.agent    || 0);
+    // data-agent doubles as the discount amount on non-labor rows — keep
+    // agent fees and discounts in separate footer rows. (2026-07-22.)
+    if (row.classList.contains('labor-line')) agentTotal += parseFloat(row.dataset.agent || 0);
+    else                                      discTotal  += parseFloat(row.dataset.agent || 0);
     otTotal       += parseFloat(row.dataset.ot       || 0);
     fringeTotal   += parseFloat(row.dataset.fringe   || 0);
     subtotalTotal += parseFloat(row.dataset.subtotal || 0);
@@ -9470,6 +9492,16 @@ function refreshSectionTotals(table) {
     agentEst.textContent = fmtCurrency(agentTotal);
     const agentRow = tfoot.querySelector('.agent-fee-subtotal-row');
     if (agentRow) agentRow.style.display = agentTotal > 0 ? '' : 'none';
+  }
+
+  // Update discounts subtotal (non-labor Disc% column) — shown negative.
+  const discRow = tfoot.querySelector('.discount-subtotal-row');
+  if (discRow) {
+    discRow.style.display = discTotal > 0 ? '' : 'none';
+    const d1 = discRow.querySelector('.disc-est-total');
+    const d2 = discRow.querySelector('.disc-est-total-2');
+    if (d1) d1.textContent = '−' + fmtCurrency(discTotal);
+    if (d2) d2.textContent = '−' + fmtCurrency(discTotal);
   }
 
   // Update Subtotal / OT / Fringe cells on the "Section breakdown" row.
