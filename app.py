@@ -4571,6 +4571,40 @@ def _clone_project_data(src_p, new_p, old_slug, new_slug, line_map, loc_id_map):
 _PROJECT_DUP = {}   # job_id -> {state, name, new_pid, error, docs, txns}
 
 
+def _record_bg_error(context, tag=None):
+    """Write the CURRENT exception's traceback into the /admin/errors ring
+    (/tmp/fpb-errors) + capture to Sentry. Background threads bypass the 500
+    handler, so without this their failures are invisible outside Render's
+    log window — the exact hole the project-duplicate bug hid in (Dropbox
+    folder created, project row rolled back, no error anywhere). The optional
+    tag lands in the filename so status endpoints on OTHER gunicorn workers
+    can detect the failure via the shared filesystem. Returns the ERR ref.
+    (2026-07-22.)"""
+    import uuid as _uuid
+    import traceback as _tb
+    ref = _uuid.uuid4().hex[:8].upper()
+    try:
+        import glob as _glob
+        import time as _time
+        _edir = '/tmp/fpb-errors'
+        os.makedirs(_edir, exist_ok=True)
+        _suffix = f"-{tag}" if tag else ''
+        with open(os.path.join(_edir, f"{int(_time.time())}-ERR-{ref}{_suffix}.txt"), 'w') as _f:
+            _f.write(f"[background] {context}\n\n{_tb.format_exc()}")
+        for _p in sorted(_glob.glob(os.path.join(_edir, '*.txt')))[:-40]:
+            os.unlink(_p)
+    except Exception:
+        pass
+    try:
+        import sentry_sdk as _ssdk
+        with _ssdk.push_scope() as _scope:
+            _scope.set_tag("err_ref", ref)
+            _ssdk.capture_exception()
+    except Exception:
+        pass
+    return ref
+
+
 def _duplicate_worker(flask_app, job_id, src_pid, new_name, include_data, user_id):
     """Background project duplication so a large copy never ties up a web worker
     (mirrors the reprocess pattern). Clones every Budget, project Locations +
@@ -4678,7 +4712,12 @@ def _duplicate_worker(flask_app, job_id, src_pid, new_name, include_data, user_i
         except Exception as e:
             db.session.rollback()
             logging.exception("duplicate worker failed")
-            prog.update(state='error', error=str(e))
+            _ref = _record_bg_error(
+                f"project duplicate '{new_name}' from #{src_pid} "
+                f"(include_data={include_data})", tag=f"dup-{job_id}")
+            prog.update(state='error',
+                        error=(f"{type(e).__name__}: {e} — full traceback at "
+                               f"/admin/errors (ERR-{_ref})"))
         finally:
             try:
                 db.session.remove()
@@ -4724,6 +4763,21 @@ def project_duplicate_status(job_id):
         out = {k: prog.get(k) for k in ('state', 'name', 'new_pid', 'error', 'docs', 'txns')}
     else:
         out = {'state': 'running', 'name': request.args.get('name'), 'new_pid': None}
+        # _PROJECT_DUP is per-process memory: with 2 gunicorn workers this
+        # poll can land on the worker that DIDN'T run the job, which used to
+        # report 'running' forever even after the job died — the user saw
+        # the Dropbox folder appear but no project and no error. The worker
+        # now drops a tagged traceback file in the shared /tmp ring, so any
+        # worker can detect the failure. (2026-07-22.)
+        try:
+            import glob as _glob_ds
+            _errf = _glob_ds.glob(f"/tmp/fpb-errors/*-dup-{job_id}.txt")
+            if _errf:
+                out['state'] = 'error'
+                out['error'] = ("Duplication failed — open /admin/errors for the "
+                                "full traceback (newest entry).")
+        except Exception:
+            pass
     name = out.get('name') or request.args.get('name')
     if not out.get('new_pid') and name:
         p = ProjectSheet.query.filter(ProjectSheet.name == name).first()

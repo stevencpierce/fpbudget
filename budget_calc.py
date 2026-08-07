@@ -647,9 +647,25 @@ def sync_schedule_driven_lines(budget_id, db_session):
             # lingered at its full unit rate, and schedule detail showed no
             # items. sync_omit lines are exempt above (user-managed by hand).
             if count == 0:
-                db_session.delete(ln)
-                deleted_line_ids.add(ln.id)
-                existing_auto.pop(tag, None)
+                # Delete inside a SAVEPOINT: if ANYTHING still references the
+                # line (coded transactions, schedule rows, locations, …) the
+                # FK failure rolls back only the savepoint — not the caller's
+                # whole transaction. Without this, one undeletable auto line
+                # aborted the entire session: budget_view's sync silently
+                # no-opped forever, and project DUPLICATION rolled back the
+                # half-built clone mid-flight (Dropbox folder created, no
+                # project visible, worker died on the expired objects).
+                # Fallback: keep the line but zero the phantom 1×1×rate
+                # charge the original delete existed to kill. (2026-07-22.)
+                try:
+                    with db_session.begin_nested():
+                        db_session.delete(ln)
+                        db_session.flush()
+                    deleted_line_ids.add(ln.id)
+                    existing_auto.pop(tag, None)
+                except Exception:
+                    ln.days = 0
+                    ln.estimated_total = 0
                 continue
         else:
             ln = BudgetLine(
