@@ -86,13 +86,9 @@
           <button type="button" class="proj-menu-item proj-rename-btn"
                   data-pid="{{ p.id }}" data-name="{{ p.name | e }}">Rename Project</button>
         </form>
-        <form method="POST" action="{{ url_for('project_duplicate', pid=p.id) }}" class="proj-duplicate-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="hidden" name="name" value="">
-          <input type="hidden" name="include_data" value="">
-          <button type="button" class="proj-menu-item proj-duplicate-btn"
-                  data-pid="{{ p.id }}" data-name="{{ p.name | e }}">Duplicate Project</button>
-        </form>
+        <button type="button" class="proj-menu-item proj-duplicate-btn"
+                data-action="{{ url_for('project_duplicate', pid=p.id) }}"
+                data-name="{{ p.name | e }}">Duplicate Project</button>
         {% else %}
         <button type="button" class="proj-menu-item proj-menu-disabled" disabled
                 title="Admin only">
@@ -147,6 +143,14 @@
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
       </form>
+      {% if current_user.role in ('super_admin', 'admin') %}
+      {# Duplicate FROM a wrapped project (owner 2026-07-22) — e.g. clone last
+         season's wrapped show as the starting point for the new one. The
+         wrapped original stays untouched; the copy is created active. #}
+      <button type="button" class="btn btn-sm btn-outline proj-duplicate-btn"
+              data-action="{{ url_for('project_duplicate', pid=p.id) }}"
+              data-name="{{ p.name | e }}">Duplicate</button>
+      {% endif %}
       {% if current_user.role == 'super_admin' %}
       <form method="POST" action="{{ url_for('project_delete', pid=p.id) }}" style="display:inline"
             onsubmit="return confirm('Permanently delete {{ p.name | e }} and all its budgets?')">
@@ -230,6 +234,60 @@
         <button type="submit" class="btn btn-primary">Create</button>
       </div>
     </form>
+  </div>
+</div>
+
+<!-- Duplicate Project Modal (replaces the old prompt/confirm flow whose
+     OK=full-copy / Cancel=lines-only buttons were unreadable — owner
+     2026-07-22) -->
+<div id="dup-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box" style="max-width:520px">
+    <h2>Duplicate Project</h2>
+    <p style="margin:2px 0 12px;color:var(--text-muted);font-size:.85rem">
+      Copying <b id="dup-src-name"></b>. The original is not changed.
+    </p>
+    <div class="field">
+      <label>New project name</label>
+      <input type="text" id="dup-new-name"
+             onkeydown="if(event.key==='Enter'){dupModalGo()}">
+    </div>
+    <div class="field">
+      <label>What to copy</label>
+      <label style="display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;font-weight:400;margin-bottom:8px">
+        <input type="radio" name="dup-mode" value="lines" checked style="margin-top:3px">
+        <span><strong style="font-weight:600">Budgets &amp; lines only</strong><br>
+        <span style="color:var(--text-muted);font-size:.8rem">Every budget version, schedule, fringes and locations — no receipts or spending. The usual choice for starting a new job from an old one.</span></span>
+      </label>
+      <label style="display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;font-weight:400">
+        <input type="radio" name="dup-mode" value="full" style="margin-top:3px">
+        <span><strong style="font-weight:600">Full copy — include receipts &amp; transactions</strong><br>
+        <span style="color:var(--text-muted);font-size:.8rem">A complete isolated sandbox with its own Dropbox folder — safe to experiment in. Takes longer on big projects.</span></span>
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline"
+              onclick="document.getElementById('dup-modal').classList.add('hidden')">Cancel</button>
+      <button type="button" class="btn btn-primary" id="dup-go-btn" onclick="dupModalGo()">Duplicate</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rename Project Modal (replaces the old browser prompt) -->
+<div id="rename-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box" style="max-width:460px">
+    <h2>Rename Project</h2>
+    <div class="field">
+      <label>Project name</label>
+      <input type="text" id="rename-new-name"
+             onkeydown="if(event.key==='Enter'){renameModalGo()}">
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline"
+              onclick="document.getElementById('rename-modal').classList.add('hidden')">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="renameModalGo()">Save Name</button>
+    </div>
   </div>
 </div>
 
@@ -418,45 +476,59 @@ document.addEventListener('click', function() {
   document.querySelectorAll('.proj-menu').forEach(m => m.classList.add('hidden'));
 });
 
-// Rename Project — prompt for new name, inject into form, submit
+// Rename Project — proper modal (was a browser prompt; owner 2026-07-22).
+let _renameForm = null, _renameCurrent = '';
 document.addEventListener('click', function(e) {
   const btn = e.target.closest('.proj-rename-btn');
   if (!btn) return;
   e.preventDefault();
   e.stopPropagation();
-  const current = btn.dataset.name || '';
-  const next = prompt('Rename project:', current);
-  if (next === null) return;               // cancelled
-  const trimmed = next.trim();
-  if (!trimmed) { alert('Name cannot be empty.'); return; }
-  if (trimmed === current) return;         // no change
-  const form = btn.closest('form.proj-rename-form');
-  if (!form) return;
-  form.querySelector('input[name="name"]').value = trimmed;
-  form.submit();
+  _renameForm = btn.closest('form.proj-rename-form');
+  _renameCurrent = btn.dataset.name || '';
+  const inp = document.getElementById('rename-new-name');
+  inp.value = _renameCurrent;
+  document.getElementById('rename-modal').classList.remove('hidden');
+  document.querySelectorAll('.proj-menu').forEach(m => m.classList.add('hidden'));
+  setTimeout(() => { inp.focus(); inp.select(); }, 50);
 });
+function renameModalGo() {
+  const trimmed = (document.getElementById('rename-new-name').value || '').trim();
+  if (!trimmed) { alert('Name cannot be empty.'); return; }
+  document.getElementById('rename-modal').classList.add('hidden');
+  if (trimmed === _renameCurrent || !_renameForm) return;
+  _renameForm.querySelector('input[name="name"]').value = trimmed;
+  _renameForm.submit();
+}
 
-// Duplicate Project — prompt for new name, inject into form, submit
+// Duplicate Project — proper modal with a named choice of what to copy
+// (was prompt + a confirm whose OK/Cancel meant full-copy/lines-only —
+// unreadable; owner 2026-07-22). Also opens from WRAPPED project cards.
+let _dupAction = null;
 document.addEventListener('click', function(e) {
   const btn = e.target.closest('.proj-duplicate-btn');
   if (!btn) return;
   e.preventDefault();
   e.stopPropagation();
+  _dupAction = btn.dataset.action;
   const current = btn.dataset.name || '';
-  const suggestion = current + ' (copy)';
-  const next = prompt('Duplicate project as:', suggestion);
-  if (next === null) return;
-  const trimmed = next.trim();
-  if (!trimmed) { alert('Name cannot be empty.'); return; }
-  const form = btn.closest('form.proj-duplicate-form');
-  if (!form) return;
-  // Offer a FULL isolated copy (receipts + transactions, Dropbox folder copied
-  // and paths remapped) vs the lightweight budgets-only duplicate.
-  const withData = confirm('Include ALL receipts + transactions too?\n\n'
-    + 'OK = full isolated copy (a real test bed — its own Dropbox folder, safe to edit).\n'
-    + 'Cancel = budgets + lines only.');
-  duplicateProjectBg(form.getAttribute('action'), trimmed, withData);
+  document.getElementById('dup-src-name').textContent = current;
+  const inp = document.getElementById('dup-new-name');
+  inp.value = current + ' (copy)';
+  document.querySelector('input[name="dup-mode"][value="lines"]').checked = true;
+  const go = document.getElementById('dup-go-btn');
+  go.disabled = false; go.textContent = 'Duplicate';
+  document.getElementById('dup-modal').classList.remove('hidden');
+  document.querySelectorAll('.proj-menu').forEach(m => m.classList.add('hidden'));
+  setTimeout(() => { inp.focus(); inp.select(); }, 50);
 });
+function dupModalGo() {
+  const trimmed = (document.getElementById('dup-new-name').value || '').trim();
+  if (!trimmed) { alert('Enter a name for the new project.'); return; }
+  if (!_dupAction) return;
+  const withData = (document.querySelector('input[name="dup-mode"]:checked') || {}).value === 'full';
+  document.getElementById('dup-modal').classList.add('hidden');
+  duplicateProjectBg(_dupAction, trimmed, withData);
+}
 
 // Background duplication: POST to start, then poll status (runs server-side so a
 // big copy never holds a request). Shows a fixed progress banner.

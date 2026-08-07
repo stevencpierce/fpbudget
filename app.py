@@ -4637,6 +4637,29 @@ def _duplicate_worker(flask_app, job_id, src_pid, new_name, include_data, user_i
                     else:
                         src_path = f"{_DBX_OPS_ROOT}/{src_p.dropbox_folder}"
                         dest_path = f"{_DBX_OPS_ROOT}/{new_slug}"
+                    # Duplicating FROM a wrapped/archived project (owner
+                    # 2026-07-22): wrap/archive MOVED the folder to its root
+                    # as <YYYY-MM-DD>_<slug> (autorename possible) while
+                    # dropbox_folder kept the plain slug — the original path
+                    # no longer exists. Resolve the real location so the copy
+                    # pulls the actual files; on any miss we fall through to
+                    # the old path (whose failure falls back to template
+                    # provision, as before).
+                    if getattr(src_p, 'status', None) in ('wrapped', 'archived'):
+                        _root = (_DBX_WRAP_ROOT if src_p.status == 'wrapped'
+                                 else _DBX_ARCHIVE_ROOT)
+                        try:
+                            _entries = dbx.files_list_folder(_root).entries
+                            _match = next(
+                                (en for en in _entries
+                                 if en.name == src_p.dropbox_folder
+                                 or en.name.endswith('_' + src_p.dropbox_folder)),
+                                None)
+                            if _match is not None:
+                                src_path = f"{_root}/{_match.name}"
+                        except Exception as _we:
+                            logging.warning(f"[DBX DUP] wrapped-source folder "
+                                            f"lookup failed: {_we}")
                     dbx.files_copy_v2(src_path, dest_path)
                     logging.info(f"[DBX DUP] {src_path} → {dest_path}")
                 else:
