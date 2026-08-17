@@ -1,14 +1,14 @@
 """api_token — bearer tokens for the mobile app API (Phase 0).
 
-Revision ID: 0005_api_token
-Revises: 0004_expense_evidence
+Revision ID: 0008_api_token
+Revises: 0007_budget_comments
 Create Date: 2026-07-23
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0005_api_token"
-down_revision = "0004_expense_evidence"
+revision = "0008_api_token"
+down_revision = "0007_budget_comments"
 branch_labels = None
 depends_on = None
 
