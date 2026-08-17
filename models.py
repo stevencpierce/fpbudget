@@ -49,6 +49,23 @@ class User(db.Model, UserMixin):
         }.get(self.role, self.role)
 
 
+class ApiToken(db.Model):
+    """Bearer token for the mobile app's /api/v1 endpoints (Phase 0,
+    2026-07-23). The raw token is returned once by /api/v1/auth/login and
+    only its SHA-256 hex is stored here (api_auth.hash_token). Revocation is
+    a soft flag so a device list / audit trail survives logout."""
+    __tablename__ = "api_token"
+    id           = db.Column(db.Integer, primary_key=True)
+    user_id      = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    token_hash   = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    device_name  = db.Column(db.String(120), nullable=True)   # e.g. "Steven's iPhone"
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow)
+    last_used_at = db.Column(db.DateTime, nullable=True)      # stamped at most every 15 min
+    revoked_at   = db.Column(db.DateTime, nullable=True)      # set = token dead
+
+    user = db.relationship("User", backref=db.backref("api_tokens", lazy="dynamic"))
+
+
 class ProjectAccess(db.Model):
     __tablename__ = "project_access"
     id         = db.Column(db.Integer, primary_key=True)

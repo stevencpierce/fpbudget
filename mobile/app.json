@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "FP Budget",
+    "slug": "fpbudget-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0d0f14",
+    "scheme": "fpbudget",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "tv.thefp.fpbudget"
+    },
+    "android": {
+      "package": "tv.thefp.fpbudget",
+      "adaptiveIcon": {
+        "backgroundColor": "#0d0f14",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "experiments": {
+      "baseUrl": "/app"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "FP Budget uploads receipts and documents you choose from your photo library.",
+          "cameraPermission": "FP Budget uses the camera to photograph receipts and documents."
+        }
+      ],
+      "expo-secure-store"
+    ]
+  }
+}
