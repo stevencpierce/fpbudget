@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Alert,
   FlatList,
   Pressable,
   StyleSheet,
@@ -10,6 +9,7 @@ import {
 import * as ImagePicker from "expo-image-picker";
 
 import { ApiError, PickedFile, fetchRecent, uploadReceipt } from "../lib/api";
+import { notify } from "../lib/confirm";
 import { colors, spacing } from "../lib/theme";
 import { ApiProject, RecentUpload, UploadResponse } from "../lib/types";
 
@@ -138,7 +138,7 @@ export default function UploadScreen({ project, onBack }: Props) {
   const takePhoto = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert(
+      notify(
         "Camera access needed",
         "Allow camera access in Settings to photograph receipts."
       );
@@ -151,7 +151,7 @@ export default function UploadScreen({ project, onBack }: Props) {
   const pickFromLibrary = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert(
+      notify(
         "Photos access needed",
         "Allow photo library access in Settings to upload receipts."
       );

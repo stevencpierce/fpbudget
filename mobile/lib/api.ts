@@ -19,6 +19,27 @@ import {
 const TOKEN_KEY = "fpb.token";
 const SERVER_KEY = "fpb.server";
 
+// Token storage: OS keychain on the phone; expo-secure-store has no web
+// implementation, so the /app browser preview falls back to AsyncStorage
+// (localStorage under the hood).
+const secureKV = {
+  get(key: string): Promise<string | null> {
+    return Platform.OS === "web"
+      ? AsyncStorage.getItem(key)
+      : SecureStore.getItemAsync(key);
+  },
+  set(key: string, value: string): Promise<void> {
+    return Platform.OS === "web"
+      ? AsyncStorage.setItem(key, value)
+      : SecureStore.setItemAsync(key, value);
+  },
+  del(key: string): Promise<void> {
+    return Platform.OS === "web"
+      ? AsyncStorage.removeItem(key)
+      : SecureStore.deleteItemAsync(key);
+  },
+};
+
 export class ApiError extends Error {
   status: number;
   // Parsed JSON body when the server sent one — structured 409s
@@ -40,7 +61,13 @@ let _token: string | null = null;
 
 export async function getServer(): Promise<string> {
   if (_server) return _server;
-  _server = (await AsyncStorage.getItem(SERVER_KEY)) || DEFAULT_SERVER;
+  // In the browser preview the app is served BY the FPBudget server, so
+  // same-origin is always the right default (works for staging copies too).
+  const fallback =
+    Platform.OS === "web" && typeof window !== "undefined"
+      ? window.location.origin
+      : DEFAULT_SERVER;
+  _server = (await AsyncStorage.getItem(SERVER_KEY)) || fallback;
   return _server;
 }
 
@@ -51,14 +78,14 @@ export async function setServer(url: string): Promise<void> {
 
 export async function getToken(): Promise<string | null> {
   if (_token) return _token;
-  _token = await SecureStore.getItemAsync(TOKEN_KEY);
+  _token = await secureKV.get(TOKEN_KEY);
   return _token;
 }
 
 async function setToken(token: string | null): Promise<void> {
   _token = token;
-  if (token) await SecureStore.setItemAsync(TOKEN_KEY, token);
-  else await SecureStore.deleteItemAsync(TOKEN_KEY);
+  if (token) await secureKV.set(TOKEN_KEY, token);
+  else await secureKV.del(TOKEN_KEY);
 }
 
 async function parseError(res: Response): Promise<ApiError> {
@@ -216,13 +243,25 @@ export function uploadReceipt(
       reject(new ApiError("Timed out — the server took too long.", 0));
 
     const form = new FormData();
-    // React Native's FormData takes {uri, name, type} for files; the DOM
-    // typings don't know that shape, hence the cast.
-    form.append("file", {
-      uri: file.uri,
-      name: file.name,
-      type: file.type,
-    } as unknown as Blob);
+    if (Platform.OS === "web") {
+      // Browser: the picker's uri is a blob:/data: URL — materialize it
+      // into a real Blob (the RN {uri,name,type} shape only works native).
+      try {
+        const blob = await (await fetch(file.uri)).blob();
+        form.append("file", blob, file.name);
+      } catch {
+        reject(new ApiError("Could not read the selected file.", 0));
+        return;
+      }
+    } else {
+      // React Native's FormData takes {uri, name, type} for files; the DOM
+      // typings don't know that shape, hence the cast.
+      form.append("file", {
+        uri: file.uri,
+        name: file.name,
+        type: file.type,
+      } as unknown as Blob);
+    }
     xhr.send(form);
   });
 }

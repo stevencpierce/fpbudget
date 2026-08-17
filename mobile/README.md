@@ -58,3 +58,18 @@ new native modules, SDK upgrades) need a fresh `eas build` + store review.
 The queue uploads one file at a time on purpose — OCR runs server-side
 inside each request and the Render worker has 512 MB; serial uploads keep
 memory flat and match how the web PWA behaves.
+
+## Browser preview (/app)
+
+The same app compiles to a browser build served by Flask at `/app`
+(routes/mobile_web.py). After changing anything in `mobile/`, regenerate the
+committed build:
+
+```bash
+cd mobile && npx expo export --platform web --output-dir ../mobile_web_dist
+```
+
+Web differences are handled in code: token storage falls back to
+AsyncStorage (no keychain in browsers), dialogs go through lib/confirm.ts
+(RN-web's Alert is a no-op), and uploads materialize the picked file into a
+real Blob.

@@ -3243,7 +3243,10 @@ _FORCE_PW_ALLOWED = {"profile", "logout", "login", "static",
                      # upload allowances above for token-authed requests.
                      "api_auth_login", "api_auth_logout", "api_me",
                      "api_docs_upload", "api_docs_upload_status",
-                     "api_docs_recent"}
+                     "api_docs_recent",
+                     # /app browser build (routes/mobile_web.py) — static
+                     # files, must stay reachable for docs_only sessions.
+                     "mobile_app_index", "mobile_app_assets"}
 
 _DOCS_ONLY_ALLOWED = _FORCE_PW_ALLOWED | {"docs_upload_delete"}
 
@@ -36972,6 +36975,7 @@ def projects_redirect():
 import routes.budget_templates  # noqa: E402,F401
 import routes.crew  # noqa: E402,F401
 import routes.api_v1  # noqa: E402,F401
+import routes.mobile_web  # noqa: E402,F401
 
 if __name__ == "__main__":
     if _HAS_SOCKETIO:

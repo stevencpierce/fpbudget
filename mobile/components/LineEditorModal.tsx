@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -14,6 +13,7 @@ import {
 } from "react-native";
 
 import { ApiError, deleteLine, saveLine } from "../lib/api";
+import { confirmDialog } from "../lib/confirm";
 import { money } from "../lib/format";
 import { colors, spacing } from "../lib/theme";
 import { BudgetLineData } from "../lib/types";
@@ -96,13 +96,11 @@ export default function LineEditorModal({
       if (e instanceof ApiError && e.status === 409 && e.body) {
         if (e.body.estimated_protected) {
           setBusy(false);
-          Alert.alert(
+          confirmDialog(
             "Editing the Estimated budget",
             "A Working budget exists — this change affects Estimated only. Continue?",
-            [
-              { text: "Cancel", style: "cancel" },
-              { text: "Edit Estimated", onPress: () => doSave(true) },
-            ]
+            "Edit Estimated",
+            () => doSave(true)
           );
           return;
         }
@@ -120,29 +118,24 @@ export default function LineEditorModal({
   };
 
   const doDelete = () => {
-    Alert.alert(
+    confirmDialog(
       "Delete this line?",
       `"${line.description || line.account_name}" will be removed from the budget.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            setBusy(true);
-            try {
-              await deleteLine(projectId, budgetId, line.id);
-              onSaved();
-              onClose();
-            } catch (e) {
-              setError(
-                e instanceof ApiError ? e.message : "Delete failed — try again."
-              );
-              setBusy(false);
-            }
-          },
-        },
-      ]
+      "Delete",
+      async () => {
+        setBusy(true);
+        try {
+          await deleteLine(projectId, budgetId, line.id);
+          onSaved();
+          onClose();
+        } catch (e) {
+          setError(
+            e instanceof ApiError ? e.message : "Delete failed — try again."
+          );
+          setBusy(false);
+        }
+      },
+      true
     );
   };
 

@@ -1,6 +1,5 @@
 import React from "react";
 import {
-  Alert,
   FlatList,
   Pressable,
   StyleSheet,
@@ -8,6 +7,7 @@ import {
   View,
 } from "react-native";
 
+import { confirmDialog } from "../lib/confirm";
 import { colors, spacing } from "../lib/theme";
 import { ApiProject, ApiUser } from "../lib/types";
 
@@ -36,10 +36,13 @@ export default function ProjectsScreen({
   onLogout,
 }: Props) {
   const confirmLogout = () =>
-    Alert.alert("Log out?", "You'll need your password to log back in.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Log out", style: "destructive", onPress: onLogout },
-    ]);
+    confirmDialog(
+      "Log out?",
+      "You'll need your password to log back in.",
+      "Log out",
+      onLogout,
+      true
+    );
 
   return (
     <View style={styles.root}>
