@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compare — {{ project.name }}</title>
+<style>
+  :root { --line:#e3e8ef; --ink:#1c2430; --muted:#6b7785; }
+  body { font-family:system-ui,-apple-system,sans-serif; margin:0; background:#f4f6f9; color:var(--ink); }
+  .wrap { max-width:1060px; margin:0 auto; padding:24px 18px 60px; }
+  h1 { font-size:20px; margin:0 0 2px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:14px; }
+  .cols { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:13.5px; margin-bottom:16px; }
+  .pill { background:#fff; border:1px solid var(--line); border-radius:999px; padding:5px 14px; }
+  .pill b { font-weight:700; }
+  a.back { color:#3563c4; text-decoration:none; font-size:13px; }
+  table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th, td { padding:7px 12px; text-align:left; font-size:13px; border-top:1px solid #f0f2f6; }
+  th { background:#f8fafc; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); border-top:none; }
+  td.num, th.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  tr.sec td { background:#eef2f8; font-weight:700; border-top:2px solid #d7deea; padding-top:11px; }
+  tr.grand td { border-top:2px solid var(--ink); font-weight:800; font-size:14.5px; }
+  .st { font-size:10.5px; font-weight:700; border-radius:4px; padding:1px 7px; margin-left:8px; white-space:nowrap; }
+  .st-added   { background:#e5f6ec; color:#1f7a4d; }
+  .st-removed { background:#fbe9e9; color:#b03a3a; }
+  .st-changed { background:#fdf3e0; color:#9a6a15; }
+  td.pos { color:#b03a3a; }  /* B costs more */
+  td.neg { color:#1f7a4d; } /* B costs less */
+  .rowsame td { color:#8a94a3; }
+  .toggle { font-size:12.5px; color:#3563c4; text-decoration:none; margin-left:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="{{ url_for('budget_view', pid=project.id, bid=b.id) }}">← Back to {{ b.name }}</a>
+  <h1>{{ project.name }} — version comparison</h1>
+  <div class="sub">Line amounts are each version's estimated totals; Δ = B − A. Grand totals include fees and auto-calculated items.</div>
+  <div class="cols">
+    <span class="pill">A&nbsp;·&nbsp;<b>{{ a_label }}</b></span>
+    <span style="color:var(--muted)">vs</span>
+    <span class="pill">B&nbsp;·&nbsp;<b>{{ b_label }}</b></span>
+    {% if only_changes %}
+    <a class="toggle" href="{{ url_for('budget_compare', pid=project.id, a=a.id, b=b.id) }}">Show all lines</a>
+    {% else %}
+    <a class="toggle" href="{{ url_for('budget_compare', pid=project.id, a=a.id, b=b.id, changes=1) }}">Show only changes</a>
+    {% endif %}
+  </div>
+  <table>
+    <thead><tr><th>Line</th><th class="num">A</th><th class="num">B</th><th class="num">Δ</th></tr></thead>
+    <tbody>
+      {% for sec in sections %}
+        {% if not only_changes or sec.changed_n or (sec.delta | abs) > 0.005 %}
+        <tr class="sec">
+          <td>{{ sec.code }} · {{ sec.name }}
+            {% if sec.changed_n %}<span class="st st-changed">{{ sec.changed_n }} change{{ 's' if sec.changed_n != 1 }}</span>{% endif %}
+          </td>
+          <td class="num">{{ sec.a_total | currency }}</td>
+          <td class="num">{{ sec.b_total | currency }}</td>
+          <td class="num {{ 'pos' if sec.delta > 0 else ('neg' if sec.delta < 0 else '') }}">
+            {{ '+' if sec.delta > 0 }}{{ sec.delta | currency }}</td>
+        </tr>
+        {% for r in sec.rows %}
+          {% if not only_changes or r.status != 'same' %}
+          <tr class="{{ 'rowsame' if r.status == 'same' }}">
+            <td style="padding-left:26px">{{ r.desc }}
+              {% if r.status == 'added' %}<span class="st st-added">added in B</span>
+              {% elif r.status == 'removed' %}<span class="st st-removed">removed in B</span>
+              {% elif r.status == 'changed' %}<span class="st st-changed">changed</span>{% endif %}
+            </td>
+            <td class="num">{{ r.a | currency if r.a is not none else '—' }}</td>
+            <td class="num">{{ r.b | currency if r.b is not none else '—' }}</td>
+            <td class="num {{ 'pos' if r.delta > 0 else ('neg' if r.delta < 0 else '') }}">
+              {{ '+' if r.delta > 0 }}{{ r.delta | currency }}</td>
+          </tr>
+          {% endif %}
+        {% endfor %}
+        {% endif %}
+      {% endfor %}
+      <tr class="grand">
+        <td>Grand Total (incl. fees &amp; auto items)</td>
+        <td class="num">{{ a_grand | currency }}</td>
+        <td class="num">{{ b_grand | currency }}</td>
+        {% set gd = (b_grand - a_grand) | round(2) %}
+        <td class="num {{ 'pos' if gd > 0 else ('neg' if gd < 0 else '') }}">{{ '+' if gd > 0 }}{{ gd | currency }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+</body>
+</html>

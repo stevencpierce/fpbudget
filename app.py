@@ -767,6 +767,62 @@ def _csrf_protect():
         return jsonify({"error": "CSRF token missing or invalid — reload the "
                                  "page and try again."}), 403
 
+# ── Budget write-gate (owner 2026-07-22) ─────────────────────────────────────
+# One chokepoint for every budget-content mutation:
+#   1. LOCKED versions are fully READ-ONLY (the lock lives on the version's
+#      Estimated anchor and covers the whole Estimated+Working pair).
+#   2. ESTIMATED budgets are only editable by admins or a project OWNER (the
+#      LP role an admin grants in Share). Working budgets stay open to editors.
+# Enforced via before_request on the endpoints below so every guarded route
+# gets identical behavior without per-handler edits.
+_BUDGET_WRITE_ENDPOINTS = {
+    'upsert_line', 'add_kit_fee', 'line_insert', 'line_duplicate',
+    'line_reorder', 'line_set_group', 'remove_schedule_instance',
+    'schedule_purge_tag', 'schedule_purge_all', 'travel_apply_doc',
+    'toggle_sync_omit', 'import_csv_apply', 'budget_from_template',
+    'budget_settings', 'budget_fee_update', 'set_gantt_day',
+    'set_gantt_days_batch', 'gantt_assign_crew', 'set_gantt_meal',
+    'expand_gantt', 'set_schedule_label',
+}
+
+
+@app.before_request
+def _budget_write_gate():
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return
+    if request.endpoint not in _BUDGET_WRITE_ENDPOINTS:
+        return
+    _bid = (request.view_args or {}).get('bid')
+    if not _bid:
+        return
+    budget = Budget.query.get(_bid)
+    if budget is None:
+        return   # the handler's own 404 will fire
+    _locked = bool(getattr(budget, 'locked', False))
+    if not _locked and budget.version_number is not None:
+        _anchor = Budget.query.filter_by(project_id=budget.project_id,
+                                         version_number=budget.version_number,
+                                         budget_mode='estimated').first()
+        _locked = bool(_anchor is not None and getattr(_anchor, 'locked', False))
+    if _locked:
+        return jsonify({"error": "This version is locked (read-only). "
+                                 "Unlock it via ✎ in the version menu first."}), 403
+    if budget.budget_mode == 'estimated' and not budget.is_actual:
+        from flask_login import current_user as _cu
+        if getattr(_cu, 'role', None) in ('super_admin', 'admin'):
+            return
+        _acc = None
+        try:
+            if getattr(_cu, 'is_authenticated', False):
+                _acc = ProjectAccess.query.filter_by(
+                    project_id=budget.project_id, user_id=_cu.id).first()
+        except Exception:
+            _acc = None
+        if not _acc or _acc.role != 'owner':
+            return jsonify({"error": "Estimated budgets can only be changed by "
+                                     "an admin or the project owner/LP."}), 403
+
+
 # Sentry error monitoring (audit C4b). Activates ONLY when SENTRY_DSN is set
 # in the environment (Steven adds it in Render); otherwise a silent no-op.
 try:
@@ -5741,6 +5797,217 @@ def _delete_budget_cascade(bid):
     db.session.delete(budget)
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/comments", methods=["GET"])
+@login_required
+def budget_comments_list(pid, bid):
+    """Internal comments on a budget (?line_id absent) or a line (?line_id=N).
+    Any project member can read. (Owner 2026-07-22.)"""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'viewer')
+    from models import BudgetComment
+    q = BudgetComment.query.filter_by(budget_id=bid)
+    _lid = request.args.get('line_id', type=int)
+    q = q.filter_by(budget_line_id=_lid) if _lid else q.filter_by(budget_line_id=None)
+    out = []
+    for cm in q.order_by(BudgetComment.created_at.asc()).all():
+        out.append({"id": cm.id,
+                    "author": (cm.author.name or cm.author.email) if cm.author else '—',
+                    "mine": bool(cm.author_id == current_user.id),
+                    "body": cm.body,
+                    "created_at": cm.created_at.isoformat() + 'Z' if cm.created_at else None})
+    return jsonify({"ok": True, "comments": out})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/comments", methods=["POST"])
+@login_required
+def budget_comments_add(pid, bid):
+    """Add a comment; @name tokens email the matching teammates (users with
+    access to this project, matched on first name or email prefix,
+    case-insensitive). Fail-open on notification. Body: {body, line_id?}."""
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'viewer')
+    from models import BudgetComment
+    data = request.get_json(force=True) or {}
+    body_txt = (data.get('body') or '').strip()[:4000]
+    if not body_txt:
+        return jsonify({"error": "Comment is empty."}), 400
+    _lid = data.get('line_id')
+    ln = None
+    if _lid:
+        ln = BudgetLine.query.filter_by(id=int(_lid), budget_id=bid).first()
+        if ln is None:
+            return jsonify({"error": "line not found"}), 404
+    cm = BudgetComment(project_id=pid, budget_id=bid,
+                       budget_line_id=(ln.id if ln else None),
+                       author_id=current_user.id, body=body_txt)
+    db.session.add(cm)
+    db.session.commit()
+    # @mention notifications — project members whose first name or email
+    # prefix matches an @token. Advisory + fail-open.
+    try:
+        tokens = {t.lower() for t in re.findall(r'@([A-Za-z0-9._-]+)', body_txt)}
+        if tokens:
+            _uids = [a.user_id for a in ProjectAccess.query.filter_by(project_id=pid).all()]
+            _users = User.query.filter(
+                (User.id.in_(_uids)) | (User.role.in_(('super_admin', 'admin')))).all()
+            proj = ProjectSheet.query.get(pid)
+            _where = (f'line "{(ln.description or "").strip() or ln.account_name}"'
+                      if ln else f'budget "{budget.name}"')
+            _link = url_for('budget_view', pid=pid, bid=bid, _external=True)
+            for u in _users:
+                if u.id == current_user.id or not u.email:
+                    continue
+                _first = ((u.name or '').split() or [''])[0].lower()
+                _eprefix = u.email.split('@')[0].lower()
+                if _first in tokens or _eprefix in tokens:
+                    _send_email(
+                        u.email,
+                        f"💬 {current_user.name or current_user.email} mentioned you — {proj.name if proj else ''}",
+                        (f"{current_user.name or current_user.email} mentioned you in a "
+                         f"comment on {_where} ({proj.name if proj else ''}):\n\n"
+                         f"“{body_txt}”\n\nOpen the budget: {_link}"))
+    except Exception:
+        logging.warning("comment mention notify failed", exc_info=True)
+    return jsonify({"ok": True, "id": cm.id})
+
+
+@app.route("/projects/<int:pid>/budget/comments/<int:cid>/delete", methods=["POST"])
+@login_required
+def budget_comments_delete(pid, cid):
+    """Delete a comment — its author or an admin."""
+    from models import BudgetComment
+    cm = BudgetComment.query.filter_by(id=cid, project_id=pid).first_or_404()
+    if cm.author_id != current_user.id and \
+            getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+        return jsonify({"error": "Only the author or an admin can delete a comment."}), 403
+    db.session.delete(cm)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/budget/compare")
+@login_required
+def budget_compare(pid):
+    """Side-by-side comparison of two budget versions (owner 2026-07-22:
+    'a way that you can selectively choose and view multiple versions of a
+    budget to see what has changed'). Lines are matched by the explicit
+    source_line_id clone chain first, then by (account_code, description);
+    everything else shows as added/removed. Internal page — never shared."""
+    ProjectSheet.query.get_or_404(pid)
+    if not _user_can_access_project(pid):
+        abort(403)
+    try:
+        a_id, b_id = int(request.args.get('a')), int(request.args.get('b'))
+    except (TypeError, ValueError):
+        abort(400)
+    bud_a = Budget.query.filter_by(id=a_id, project_id=pid).first_or_404()
+    bud_b = Budget.query.filter_by(id=b_id, project_id=pid).first_or_404()
+    fringe_cfgs = get_fringe_configs(db.session, pid)
+
+    def _snap(budget):
+        lines = (BudgetLine.query.filter_by(budget_id=budget.id)
+                 .order_by(BudgetLine.account_code, BudgetLine.sort_order,
+                           BudgetLine.id).all())
+        profile = budget.payroll_profile
+        pw = (budget.payroll_week_start if budget.payroll_week_start is not None
+              else (profile.payroll_week_start if profile else 6))
+        smode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+        rows = {}
+        for ln in lines:
+            if getattr(ln, 'line_tag', None) in ('header', 'spacer'):
+                continue
+            if ln.use_schedule:
+                sched = ScheduleDay.query.filter_by(budget_line_id=ln.id,
+                                                    schedule_mode=smode).all()
+                res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw)
+            else:
+                res = calc_line(ln, fringe_cfgs)
+            rows[ln.id] = (ln, round(float((res or {}).get('est_total') or 0), 2))
+        ts = calc_top_sheet(budget, lines, fringe_cfgs, {}, profile, pw)
+        return rows, ts
+
+    rows_a, ts_a = _snap(bud_a)
+    rows_b, ts_b = _snap(bud_b)
+
+    # Pair lines: explicit clone chain first (either direction), then
+    # (account_code, lowered description) with multiset semantics.
+    unmatched_b = dict(rows_b)
+    pairs = []   # (a_line|None, a_total|None, b_line|None, b_total|None)
+    b_by_src = {}
+    for bid_, (ln, _t) in rows_b.items():
+        if ln.source_line_id:
+            b_by_src.setdefault(ln.source_line_id, bid_)
+    for aid_, (a_ln, a_t) in rows_a.items():
+        b_hit = b_by_src.get(aid_)
+        if b_hit is None and a_ln.source_line_id in unmatched_b:
+            b_hit = a_ln.source_line_id
+        if b_hit is not None and b_hit in unmatched_b:
+            b_ln, b_t = unmatched_b.pop(b_hit)
+            pairs.append((a_ln, a_t, b_ln, b_t))
+        else:
+            pairs.append((a_ln, a_t, None, None))
+    # key-match the leftovers
+    kmap = {}
+    for bid_, (ln, _t) in unmatched_b.items():
+        kmap.setdefault((ln.account_code, (ln.description or '').strip().lower()),
+                        []).append(bid_)
+    for i, (a_ln, a_t, b_ln, b_t) in enumerate(pairs):
+        if b_ln is not None or a_ln is None:
+            continue
+        cands = kmap.get((a_ln.account_code, (a_ln.description or '').strip().lower()))
+        if cands:
+            hit = cands.pop(0)
+            if hit in unmatched_b:
+                nb_ln, nb_t = unmatched_b.pop(hit)
+                pairs[i] = (a_ln, a_t, nb_ln, nb_t)
+    for bid_, (b_ln, b_t) in unmatched_b.items():
+        pairs.append((None, None, b_ln, b_t))
+
+    # Group by COA section, ordered by code; compute per-section sums.
+    sec_names = dict(FP_COA_SECTIONS)
+    sections = {}
+    for a_ln, a_t, b_ln, b_t in pairs:
+        ref = a_ln or b_ln
+        code = ref.account_code
+        s = sections.setdefault(code, {"code": code,
+                                       "name": ref.account_name or sec_names.get(code, ''),
+                                       "rows": [], "a_total": 0.0, "b_total": 0.0})
+        if a_ln is None:
+            status = 'added'
+        elif b_ln is None:
+            status = 'removed'
+        elif abs((a_t or 0) - (b_t or 0)) > 0.005:
+            status = 'changed'
+        else:
+            status = 'same'
+        s["rows"].append({
+            "desc": ((a_ln or b_ln).description or '').strip() or '—',
+            "a": a_t, "b": b_t,
+            "delta": round((b_t or 0) - (a_t or 0), 2),
+            "status": status,
+        })
+        s["a_total"] = round(s["a_total"] + (a_t or 0), 2)
+        s["b_total"] = round(s["b_total"] + (b_t or 0), 2)
+    sec_list = [sections[c] for c in sorted(sections)]
+    for s in sec_list:
+        s["delta"] = round(s["b_total"] - s["a_total"], 2)
+        s["changed_n"] = sum(1 for r in s["rows"] if r["status"] != 'same')
+
+    def _blabel(b):
+        lbl = f"v{b.version_number or 1} · {b.name}"
+        if getattr(b, 'internal_label', None):
+            lbl += f' · “{b.internal_label}”'
+        return lbl
+
+    return render_template(
+        "budget_compare.html", project=ProjectSheet.query.get(pid),
+        a=bud_a, b=bud_b, a_label=_blabel(bud_a), b_label=_blabel(bud_b),
+        sections=sec_list,
+        a_grand=round(float(ts_a.get('grand_total_estimated') or 0), 2),
+        b_grand=round(float(ts_b.get('grand_total_estimated') or 0), 2),
+        only_changes=(request.args.get('changes') == '1'))
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/version-meta", methods=["POST"])
 @login_required
 def budget_version_meta(pid, bid):
@@ -6600,6 +6867,23 @@ def budget_view(pid, bid):
                     claimed_group_names.add(_cg)
             except Exception:
                 pass
+
+    # Internal comment counts (owner 2026-07-22) — per line + budget-level,
+    # one grouped query. Fail-open: comments must never break the page.
+    comment_counts = {}
+    budget_comment_count = 0
+    try:
+        from models import BudgetComment
+        for _clid, _cn in (db.session.query(BudgetComment.budget_line_id,
+                                            db.func.count(BudgetComment.id))
+                           .filter(BudgetComment.budget_id == bid)
+                           .group_by(BudgetComment.budget_line_id).all()):
+            if _clid is None:
+                budget_comment_count = _cn
+            else:
+                comment_counts[_clid] = _cn
+    except Exception:
+        pass
 
     # Dept head filtering: restrict to their assigned dept_code only
     dept_filter = None
@@ -8290,6 +8574,8 @@ def budget_view(pid, bid):
         dept_filter=dept_filter,
         line_sub_groups=line_sub_groups,
         claimed_group_names=claimed_group_names,
+        comment_counts=comment_counts,
+        budget_comment_count=budget_comment_count,
         line_assigned_location=line_assigned_location,
         doc_uploads=doc_uploads,
         doc_groups=doc_groups,
@@ -28671,6 +28957,19 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS internal_label VARCHAR(120)",
                 "ALTER TABLE budget "
                 "  ADD COLUMN IF NOT EXISTS locked BOOLEAN DEFAULT FALSE NOT NULL",
+                # 2026-07-22 — internal comments (belt alongside Alembic 0007).
+                "CREATE TABLE IF NOT EXISTS budget_comment ("
+                "  id SERIAL PRIMARY KEY,"
+                "  project_id INTEGER NOT NULL REFERENCES project_sheet(id),"
+                "  budget_id INTEGER NOT NULL REFERENCES budget(id),"
+                "  budget_line_id INTEGER REFERENCES budget_line(id),"
+                "  author_id INTEGER REFERENCES users(id),"
+                "  body TEXT NOT NULL,"
+                "  created_at TIMESTAMP)",
+                "CREATE INDEX IF NOT EXISTS ix_budget_comment_budget_id "
+                "  ON budget_comment (budget_id)",
+                "CREATE INDEX IF NOT EXISTS ix_budget_comment_budget_line_id "
+                "  ON budget_comment (budget_line_id)",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The

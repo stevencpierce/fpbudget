@@ -940,6 +940,25 @@ class ProjectPartner(db.Model):
     created_at   = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class BudgetComment(db.Model):
+    """Internal note/comment on a budget (budget_line_id NULL) or a specific
+    budget line. @mentions in the body email the tagged teammate. Internal
+    only — never client-facing. (Owner 2026-07-22: 'things happen and lines
+    might even need notes attached to them… tag people'.)"""
+    __tablename__ = "budget_comment"
+    id             = db.Column(db.Integer, primary_key=True)
+    project_id     = db.Column(db.Integer, db.ForeignKey("project_sheet.id"),
+                               nullable=False, index=True)
+    budget_id      = db.Column(db.Integer, db.ForeignKey("budget.id"),
+                               nullable=False, index=True)
+    budget_line_id = db.Column(db.Integer, db.ForeignKey("budget_line.id"),
+                               nullable=True, index=True)
+    author_id      = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    body           = db.Column(db.Text, nullable=False)
+    created_at     = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    author         = db.relationship("User", foreign_keys=[author_id])
+
+
 class ProjectClient(db.Model):
     """Client contact scoped to a project — the single source of truth for both
     call-sheet clients (shown on call sheet page 1) and estimate recipients.

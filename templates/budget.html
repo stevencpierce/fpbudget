@@ -179,10 +179,15 @@
             Show {{ archived_count }} archived
           </button>
           {% endif %}
+          <button class="btn btn-xs btn-ghost" style="width:100%;margin-bottom:.35rem" onclick="openCompareModal(event)">⇄ Compare versions…</button>
           <button class="btn btn-sm btn-outline" style="width:100%" onclick="showNewBudgetModal()">+ New Version</button>
         </div>
       </div>
     </div>
+    <button class="btn btn-sm btn-outline line-comments-btn" onclick="openComments(null, 'this budget version')"
+            title="Internal notes on this budget version — @name tags a teammate. Never visible to clients.">
+      🗒 Notes{% if budget_comment_count %} <span style="color:#5fd0a0">({{ budget_comment_count }})</span>{% endif %}
+    </button>
     <div class="dropdown">
       <button class="btn btn-sm btn-outline">Export ▾</button>
       <div class="dropdown-menu">
@@ -2153,6 +2158,11 @@
                     data-pid="{{ project.id }}" data-bid="{{ budget.id }}" data-lid="{{ ln.id }}"
                     title="View per-day, per-person breakdown of this auto-calculated line">Schedule Detail</button>
             {% endif %}
+            {# 💬 internal comments on this line (owner 2026-07-22) #}
+            <button class="btn btn-xs btn-ghost line-comments-btn"
+                    title="Comments / notes on this line — @name tags a teammate"
+                    onclick='openComments({{ ln.id }}, {{ ((ln.description or ln.account_name or "line") | truncate(40)) | tojson }})'
+                    style="{% if not comment_counts.get(ln.id) %}opacity:.4{% endif %}">💬{% if comment_counts.get(ln.id) %}<span style="font-size:.62rem;color:#5fd0a0">{{ comment_counts.get(ln.id) }}</span>{% endif %}</button>
             <button class="btn btn-xs btn-ghost line-row-menu-btn"
                     data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
                     title="Insert / Move row" onclick="openLineRowMenu(this)">⋮</button>
@@ -8551,6 +8561,21 @@ const BUDGET_MAX_UNDO = 50;
 // `focusSectionCode`: optional COA code to scroll to after the reload (used
 // when adding a new line so the user lands at the section they just
 // modified instead of being thrown back to the top of the budget).
+// Switching versions keeps your place (owner 2026-07-22: "if I go from
+// version two to version three, it changes back to the dashboard"): the
+// version links carry the active tab into the new version's URL.
+document.addEventListener('click', function(e) {
+  const a = e.target.closest('.version-item-link');
+  if (!a) return;
+  const activeBtn = document.querySelector('.tab-btn.active[data-tab]');
+  if (!activeBtn) return;
+  try {
+    const url = new URL(a.href, window.location.origin);
+    url.searchParams.set('tab', activeBtn.dataset.tab);
+    a.href = url.toString();
+  } catch (_) {}
+});
+
 function reloadWithTab(focusSectionCode) {
   const activeBtn = document.querySelector('.tab-btn.active[data-tab]');
   const tab = activeBtn ? activeBtn.dataset.tab : null;
@@ -10216,6 +10241,105 @@ async function saveFeeEdit() {
 document.addEventListener('click', e => {
   const pop = document.getElementById('fee-edit-popup');
   if (pop && !pop.classList.contains('hidden') && !e.target.closest('#fee-edit-popup')) closeFeePopup();
+});
+
+// ── Internal comments (2026-07-22): budget-level 🗒 + per-line 💬 ─────────
+const COMMENTS_URL = '{{ url_for("budget_comments_list", pid=project.id, bid=budget.id) }}';
+const COMMENT_DEL_TMPL = '{{ url_for("budget_comments_delete", pid=project.id, cid=999999999) }}';
+let _cmLineId = null;
+function _cmEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+async function _cmLoad() {
+  const list = document.getElementById('comments-list');
+  list.innerHTML = '<div style="color:var(--text-muted)">Loading…</div>';
+  try {
+    const r = await fetch(COMMENTS_URL + (_cmLineId ? ('?line_id=' + _cmLineId) : ''),
+                          { credentials: 'same-origin' });
+    const j = await r.json();
+    const cs = (j && j.comments) || [];
+    list.innerHTML = cs.length ? cs.map(c =>
+      '<div style="border-top:1px solid var(--border);padding:5px 0 6px">'
+      + '<div style="display:flex;gap:8px;align-items:center">'
+      + '<b style="font-size:.72rem">' + _cmEsc(c.author) + '</b>'
+      + '<span style="font-size:.65rem;color:var(--text-muted)">'
+      + (c.created_at ? new Date(c.created_at).toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '') + '</span>'
+      + (c.mine ? '<button onclick="delComment(' + c.id + ')" title="Delete" style="margin-left:auto;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:.7rem">✕</button>' : '')
+      + '</div>'
+      + '<div style="white-space:pre-wrap;margin-top:2px">' + _cmEsc(c.body) + '</div></div>'
+    ).join('') : '<div style="color:var(--text-muted)">No notes yet.</div>';
+    list.scrollTop = list.scrollHeight;
+  } catch (e) { list.innerHTML = '<div style="color:#e0a13a">Could not load comments.</div>'; }
+}
+function openComments(lineId, label) {
+  _cmLineId = lineId;
+  const pop = document.getElementById('comments-popup');
+  document.getElementById('comments-title').textContent =
+    (lineId ? '💬 ' : '🗒 ') + 'Notes — ' + (label || '');
+  document.getElementById('comments-status').textContent = '';
+  document.getElementById('comments-input').value = '';
+  pop.classList.remove('hidden');
+  pop.style.left = Math.max(12, (window.innerWidth - 420) / 2) + 'px';
+  pop.style.top = '110px';
+  _cmLoad();
+}
+function closeComments() { document.getElementById('comments-popup')?.classList.add('hidden'); }
+async function postComment() {
+  const inp = document.getElementById('comments-input');
+  const st = document.getElementById('comments-status');
+  const body = (inp.value || '').trim();
+  if (!body) return;
+  if (st) st.textContent = 'Posting…';
+  try {
+    const r = await fetch(COMMENTS_URL, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: body, line_id: _cmLineId }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) { inp.value = ''; if (st) st.textContent = ''; _cmLoad(); }
+    else if (st) st.textContent = j.error || ('Failed (' + r.status + ')');
+  } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
+}
+async function delComment(cid) {
+  try {
+    const r = await fetch(COMMENT_DEL_TMPL.replace('999999999', String(cid)),
+                          { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: '{}' });
+    if (r.ok) _cmLoad();
+  } catch (e) {}
+}
+document.addEventListener('click', e => {
+  const pop = document.getElementById('comments-popup');
+  if (pop && !pop.classList.contains('hidden')
+      && !e.target.closest('#comments-popup')
+      && !e.target.closest('.line-comments-btn')) closeComments();
+});
+
+// ── Version compare picker (2026-07-22) ──────────────────────────────────
+const COMPARE_URL = '{{ url_for("budget_compare", pid=project.id) }}';
+function openCompareModal(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const pop = document.getElementById('vcompare-popup');
+  if (!pop) return;
+  // Default A to something other than B (the current budget).
+  const selA = document.getElementById('vcompare-a');
+  const selB = document.getElementById('vcompare-b');
+  if (selA && selB && selA.value === selB.value) {
+    const other = Array.from(selA.options).find(o => o.value !== selB.value);
+    if (other) selA.value = other.value;
+  }
+  pop.classList.remove('hidden');
+  pop.style.left = Math.min(event.clientX, window.innerWidth - 330) + 'px';
+  pop.style.top  = (event.clientY + 8) + 'px';
+}
+function goCompare() {
+  const a = document.getElementById('vcompare-a').value;
+  const b = document.getElementById('vcompare-b').value;
+  if (!a || !b || a === b) { alert('Pick two different versions.'); return; }
+  window.location = COMPARE_URL + '?a=' + a + '&b=' + b + '&changes=1';
+}
+document.addEventListener('click', e => {
+  const pop = document.getElementById('vcompare-popup');
+  if (pop && !pop.classList.contains('hidden') && !e.target.closest('#vcompare-popup')) pop.classList.add('hidden');
 });
 
 // ── Version options popup (2026-07-22): internal subtitle + delete-lock ──
@@ -12400,6 +12524,43 @@ function normalizePhone(v) {
     <button class="btn btn-xs btn-primary" onclick="saveVersionMeta()">✓ Save</button>
     <button class="btn btn-xs btn-ghost" onclick="closeVmetaPopup()">✕</button>
     <span id="vmeta-status" style="font-size:.72rem;color:var(--text-muted)"></span>
+  </div>
+</div>
+
+{# ── Internal comments popup — budget-level (🗒 Notes) and per-line (💬).
+     @name in a comment emails the matching teammate. Never client-facing.
+     (Owner 2026-07-22.) #}
+<div id="comments-popup" class="pct-edit-popup hidden" style="min-width:340px;max-width:440px">
+  <div class="pct-edit-label" id="comments-title">Comments</div>
+  <div id="comments-list" style="max-height:280px;overflow:auto;margin-top:.5rem;font-size:.8rem"></div>
+  <textarea id="comments-input" rows="2" placeholder="Add a note… use @name to tag a teammate (they get an email)"
+            style="width:100%;margin-top:.5rem;font-size:.8rem;resize:vertical"></textarea>
+  <div style="display:flex;gap:.5rem;margin-top:.4rem;align-items:center">
+    <button class="btn btn-xs btn-primary" onclick="postComment()">Post</button>
+    <button class="btn btn-xs btn-ghost" onclick="closeComments()">✕</button>
+    <span id="comments-status" style="font-size:.7rem;color:var(--text-muted)"></span>
+  </div>
+</div>
+
+{# ── Version compare picker (⇄ in the version dropdown). Opens the
+     side-by-side comparison page. (Owner 2026-07-22.) #}
+<div id="vcompare-popup" class="pct-edit-popup hidden" style="min-width:290px">
+  <div class="pct-edit-label">Compare versions</div>
+  <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-top:.5rem">A — baseline</label>
+  <select id="vcompare-a" style="width:100%;margin-top:2px">
+    {% for vb in all_budgets if not vb.is_actual %}
+    <option value="{{ vb.id }}">v{{ vb.version_number or 1 }} · {{ vb.name }}{% if vb.internal_label %} · “{{ vb.internal_label }}”{% endif %}</option>
+    {% endfor %}
+  </select>
+  <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-top:.5rem">B — compare to</label>
+  <select id="vcompare-b" style="width:100%;margin-top:2px">
+    {% for vb in all_budgets if not vb.is_actual %}
+    <option value="{{ vb.id }}" {% if vb.id == budget.id %}selected{% endif %}>v{{ vb.version_number or 1 }} · {{ vb.name }}{% if vb.internal_label %} · “{{ vb.internal_label }}”{% endif %}</option>
+    {% endfor %}
+  </select>
+  <div style="display:flex;gap:.5rem;margin-top:.6rem">
+    <button class="btn btn-xs btn-primary" onclick="goCompare()">⇄ Compare</button>
+    <button class="btn btn-xs btn-ghost" onclick="document.getElementById('vcompare-popup').classList.add('hidden')">✕</button>
   </div>
 </div>
 
