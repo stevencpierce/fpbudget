@@ -5741,6 +5741,37 @@ def _delete_budget_cascade(bid):
     db.session.delete(budget)
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/version-meta", methods=["POST"])
+@login_required
+def budget_version_meta(pid, bid):
+    """Internal version naming + delete-lock (owner 2026-07-22: 'name budget
+    versions or lock budget versions from being deleted or add internal-only
+    subtitles'). Body: {internal_label?, locked?}. The bid is the version's
+    ESTIMATED anchor; the subtitle lives there and the lock covers the whole
+    version pair. internal_label is INTERNAL ONLY — the estimate portal and
+    PDF exports never read it. Lock/unlock requires admin+."""
+    _require_project_role(pid, 'editor')
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    if "internal_label" in data:
+        budget.internal_label = (data.get("internal_label") or '').strip()[:120] or None
+    if "locked" in data:
+        if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+            return jsonify({"error": "Only admins can lock or unlock a version."}), 403
+        budget.locked = bool(data.get("locked"))
+    budget.updated_at = datetime.utcnow()
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='budget_version_meta',
+                      entity_id=bid, entity_label=budget.name or 'Budget',
+                      budget_id=bid, project_id=pid, before=None,
+                      after={k: data.get(k) for k in ('internal_label', 'locked') if k in data},
+                      note='Updated version label/lock')
+    except Exception: pass
+    return jsonify({"ok": True, "internal_label": budget.internal_label,
+                    "locked": bool(budget.locked)})
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/delete", methods=["POST"])
 @login_required
 def delete_budget(pid, bid):
@@ -5749,6 +5780,19 @@ def delete_budget(pid, bid):
     Deleting a Working budget while an Estimated exists is always allowed.
     """
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+
+    # Locked versions can't be deleted — the version's Estimated anchor
+    # carries the lock and it covers the whole version pair. (Owner
+    # 2026-07-22: "lock budget versions from being deleted".)
+    _anchor_locked = bool(getattr(budget, 'locked', False))
+    if not _anchor_locked and budget.version_number is not None:
+        _anchor = Budget.query.filter_by(
+            project_id=pid, version_number=budget.version_number,
+            budget_mode='estimated').first()
+        _anchor_locked = bool(_anchor is not None and getattr(_anchor, 'locked', False))
+    if _anchor_locked:
+        return jsonify({"error": "This version is locked — unlock it (✎ in the "
+                                 "version menu) before deleting."}), 403
 
     # Guard: never delete the last estimated budget
     if _budget_type(budget.budget_mode) == 'estimated':
@@ -28621,6 +28665,12 @@ def _web_worker_essential_columns():
                 # Alembic 0005): missing column would 500 every share query.
                 "ALTER TABLE estimate_share "
                 "  ADD COLUMN IF NOT EXISTS role VARCHAR(12) DEFAULT 'approver' NOT NULL",
+                # 2026-07-22 — version naming + delete-lock (belt alongside
+                # Alembic 0006).
+                "ALTER TABLE budget "
+                "  ADD COLUMN IF NOT EXISTS internal_label VARCHAR(120)",
+                "ALTER TABLE budget "
+                "  ADD COLUMN IF NOT EXISTS locked BOOLEAN DEFAULT FALSE NOT NULL",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The

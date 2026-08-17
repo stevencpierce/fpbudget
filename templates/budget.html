@@ -80,11 +80,26 @@
           {% set vn = vg.version_number %}
           {% set est = vg.estimated %}
           {% set wrk = vg.working %}
-          <div class="version-group-header">
+          {% set _vlocked = est.locked if est else false %}
+          <div class="version-group-header" style="align-items:center">
             <span class="version-item-name">v{{ vn }}</span>
+            {% if est and est.internal_label %}
+            {# Internal-only subtitle — never on client pages or exports. #}
+            <span title="Internal note — clients never see this"
+                  style="font-size:.68rem;color:var(--text-muted);font-style:italic;margin-left:.4rem;
+                         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px">“{{ est.internal_label }}”</span>
+            {% endif %}
+            {% if _vlocked %}
+            <span title="Locked — this version can't be deleted" style="margin-left:.35rem;font-size:.7rem">🔒</span>
+            {% endif %}
             <span class="version-status-badge vs-{{ 'current' if vg.is_current else 'superseded' }}">
               {{ 'Current' if vg.is_current else 'Previous' }}
             </span>
+            {% if est %}
+            <button class="btn btn-xs btn-ghost" style="margin-left:auto;padding:0 5px;font-size:.68rem;opacity:.6"
+                    title="Version options — internal subtitle{% if current_user.role in ('super_admin','admin') %}, lock{% endif %}"
+                    onclick='versionMetaMenu(event, {{ est.id }}, {{ vn | tojson }}, {{ (est.internal_label or "") | tojson }}, {{ "true" if _vlocked else "false" }})'>✎</button>
+            {% endif %}
           </div>
           {# Estimated row #}
           {% if est %}
@@ -116,9 +131,13 @@
                 <button class="btn btn-xs btn-ghost version-archive-btn" data-bid="{{ est.id }}" title="Archive">⊘</button>
                 {% endif %}
                 {% if est_count > 1 %}
+                {% if _vlocked %}
+                <span title="Locked — unlock via ✎ to delete" style="font-size:.7rem;opacity:.5;padding:0 4px">🔒</span>
+                {% else %}
                 <button class="btn btn-xs btn-ghost version-delete-btn"
                         data-bid="{{ est.id }}" data-name="{{ est.name }}" data-mode="{{ est.budget_mode }}"
                         title="Delete">✕</button>
+                {% endif %}
                 {% endif %}
               </div>
             </div>
@@ -132,9 +151,13 @@
                 <span class="version-item-ts">{% if wrk.updated_at %}{{ wrk.updated_at | in_tz(budget.timezone) }}{% endif %}</span>
               </a>
               <div class="version-item-actions">
+                {% if _vlocked %}
+                <span title="Locked — unlock via ✎ to delete" style="font-size:.7rem;opacity:.5;padding:0 4px">🔒</span>
+                {% else %}
                 <button class="btn btn-xs btn-ghost version-delete-btn"
                         data-bid="{{ wrk.id }}" data-name="{{ wrk.name }}" data-mode="{{ wrk.budget_mode }}"
                         title="Delete">✕</button>
+                {% endif %}
               </div>
             </div>
           {% elif est and vg.is_current %}
@@ -10195,6 +10218,47 @@ document.addEventListener('click', e => {
   if (pop && !pop.classList.contains('hidden') && !e.target.closest('#fee-edit-popup')) closeFeePopup();
 });
 
+// ── Version options popup (2026-07-22): internal subtitle + delete-lock ──
+const VMETA_URL_TMPL = '{{ url_for("budget_version_meta", pid=project.id, bid=999999999) }}';
+let _vmetaBid = null;
+function versionMetaMenu(event, bid, vn, label, locked) {
+  event.preventDefault();
+  event.stopPropagation();
+  _vmetaBid = bid;
+  const pop = document.getElementById('vmeta-popup');
+  if (!pop) return;
+  document.getElementById('vmeta-title').textContent = 'Version v' + vn + ' — internal options';
+  document.getElementById('vmeta-label').value = label || '';
+  const lk = document.getElementById('vmeta-locked');
+  if (lk) lk.checked = !!locked;
+  document.getElementById('vmeta-status').textContent = '';
+  pop.classList.remove('hidden');
+  pop.style.left = Math.min(event.clientX, window.innerWidth - 310) + 'px';
+  pop.style.top  = (event.clientY + 8) + 'px';
+  setTimeout(() => document.getElementById('vmeta-label').focus(), 50);
+}
+function closeVmetaPopup() { document.getElementById('vmeta-popup')?.classList.add('hidden'); }
+async function saveVersionMeta() {
+  if (!_vmetaBid) return;
+  const st = document.getElementById('vmeta-status');
+  const body = { internal_label: document.getElementById('vmeta-label').value };
+  const lk = document.getElementById('vmeta-locked');
+  if (lk) body.locked = lk.checked;
+  if (st) st.textContent = 'Saving…';
+  try {
+    const r = await fetch(VMETA_URL_TMPL.replace('999999999', String(_vmetaBid)), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) { if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload(); }
+    else if (st) st.textContent = j.error || ('Failed (' + r.status + ')');
+  } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
+}
+document.addEventListener('click', e => {
+  const pop = document.getElementById('vmeta-popup');
+  if (pop && !pop.classList.contains('hidden') && !e.target.closest('#vmeta-popup')) closeVmetaPopup();
+});
+
 async function saveSettings() {
   // A thrown error anywhere in here used to die silently — the Save button
   // just did nothing, with no message. Surface it instead. (2026-07-22.)
@@ -12314,6 +12378,29 @@ function normalizePhone(v) {
     <button class="btn btn-xs btn-ghost" onclick="closePctPopup()">✕</button>
   </div>
   <div class="pct-edit-note" id="pct-edit-note"></div>
+</div>
+
+{# ── Version options popup (✎ in the version dropdown): internal-only
+     subtitle + delete-lock. The subtitle NEVER reaches client-facing
+     surfaces. (Owner 2026-07-22.) #}
+<div id="vmeta-popup" class="pct-edit-popup hidden" style="min-width:270px">
+  <div class="pct-edit-label" id="vmeta-title">Version</div>
+  <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-top:.5rem">
+    Internal subtitle <span style="opacity:.7">(only your team sees this — never clients)</span>
+  </label>
+  <input type="text" id="vmeta-label" maxlength="120" placeholder='e.g. "post-client-call cut" or "DO NOT TOUCH"'
+         style="width:100%;margin-top:3px"
+         onkeydown="if(event.key==='Enter'){saveVersionMeta()}if(event.key==='Escape'){closeVmetaPopup()}">
+  {% if current_user.role in ('super_admin', 'admin') %}
+  <label style="display:flex;align-items:center;gap:.4rem;margin-top:.55rem;font-weight:400;cursor:pointer;font-size:.82rem">
+    <input type="checkbox" id="vmeta-locked"> 🔒 Lock this version — it can't be deleted until unlocked
+  </label>
+  {% endif %}
+  <div style="display:flex;gap:.5rem;margin-top:.6rem;align-items:center">
+    <button class="btn btn-xs btn-primary" onclick="saveVersionMeta()">✓ Save</button>
+    <button class="btn btn-xs btn-ghost" onclick="closeVmetaPopup()">✕</button>
+    <span id="vmeta-status" style="font-size:.72rem;color:var(--text-muted)"></span>
+  </div>
 </div>
 
 {# ── Production Company Fee editor (right-click on the Top Sheet fee row).

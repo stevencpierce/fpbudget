@@ -305,6 +305,15 @@ class Budget(db.Model):
     version_status  = db.Column(db.String(20), default='current', nullable=False)  # current | superseded | archived
     parent_budget_id = db.Column(db.Integer, db.ForeignKey('budget.id'), nullable=True)
     version_number  = db.Column(db.Integer, nullable=True)   # shared by Estimated + its Working pair
+    # Internal-only version subtitle ("the one after the client call") —
+    # shown in the version dropdown, NEVER on client-facing surfaces
+    # (estimate portal, PDF exports). Stored on the version's Estimated
+    # anchor budget. (Owner 2026-07-22.)
+    internal_label  = db.Column(db.String(120), nullable=True)
+    # Locked versions can't be deleted (server-enforced in delete_budget).
+    # Lock/unlock is admin+. (Owner 2026-07-22.)
+    locked          = db.Column(db.Boolean, default=False, nullable=False,
+                                server_default='0')
 
     # Marks an Actual budget — peer to Estimated/Working but represents
     # accounting reality, not planning intent. Auto-cloned from Working
