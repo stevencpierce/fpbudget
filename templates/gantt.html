@@ -411,15 +411,19 @@
 
     {# Department header row when account_code changes #}
     {% if loop.first or row.account_code != ns.prev_account_code %}
-    <tr class="gantt-dept-header">
-      <td colspan="{{ date_range|length + 1 }}">{{ row.account_name }}</td>
+    {# Click to collapse/expand this department (owner 2026-07-22: "fold
+       Camera away while working Sound"). Collapse state persists per
+       budget in localStorage. #}
+    <tr class="gantt-dept-header" data-dept="{{ row.account_code }}"
+        onclick="toggleDept(this)" style="cursor:pointer" title="Click to collapse / expand">
+      <td colspan="{{ date_range|length + 1 }}"><span class="dept-arrow">▾</span> {{ row.account_name }}</td>
     </tr>
     {% set ns.prev_sub_group = None %}
     {% endif %}
 
     {# Sub-department header row when sub_group changes within a section #}
     {% if row.sub_group and row.sub_group != ns.prev_sub_group %}
-    <tr class="gantt-sub-dept-header">
+    <tr class="gantt-sub-dept-header" data-dept="{{ row.account_code }}">
       <td colspan="{{ date_range|length + 1 }}">{{ row.sub_group }}</td>
     </tr>
     {% set ns.prev_sub_group = row.sub_group %}
@@ -436,7 +440,7 @@
     {% else %}
       {% set assigned_name = None %}
     {% endif %}
-    <tr class="gantt-row" data-line-id="{{ row.id }}" data-instance="{{ row.instance }}" data-rate="{{ row.rate }}">
+    <tr class="gantt-row" data-line-id="{{ row.id }}" data-instance="{{ row.instance }}" data-rate="{{ row.rate }}" data-dept="{{ row.account_code }}">
       <td class="gantt-row-label">
         <span class="gantt-line-code">{{ row.account_code }}</span>
         <span class="gantt-line-desc {{ 'gantt-label-custom' if row.custom_label else '' }}"
@@ -614,6 +618,9 @@
 
 <!-- Day type picker (right-click context menu — subcategory selection) -->
 <div id="day-picker" class="day-picker hidden">
+  {# Person-day header (owner 2026-07-22): who + which day this card edits. #}
+  <div id="day-picker-who" style="font-weight:700;font-size:.8rem;margin-bottom:.4rem;
+       padding-bottom:.35rem;border-bottom:1px solid var(--border,#333)"></div>
   <div class="day-picker-section-label">Day Type</div>
   {# Pretty labels for day types that don't render well as auto-titlecased
      keys (e.g. travel_half → "Travel Half" reads weak). Keys not in this
@@ -633,8 +640,18 @@
   {% endif %}{% endfor %}
   <button class="day-pick-btn day-off" data-type="off">Off (clear)</button>
   <div class="day-picker-divider"></div>
-  <button class="day-pick-btn day-note-btn" data-type="__note__">📝 Add Note</button>
-  <button class="day-pick-btn day-ot-btn" data-type="__ot__">⏱ OT Hours</button>
+  {# Inline note + OT (owner 2026-07-22) — replaces the prompt() buttons so
+     the whole person-day edits in one card. #}
+  <div style="display:flex;gap:6px;align-items:center;padding:2px 0">
+    <input type="text" id="day-picker-note" placeholder="📝 Note for this day…"
+           style="flex:1;min-width:150px;font-size:.75rem;padding:4px 7px"
+           onkeydown="if(event.key==='Enter'){saveDayCardMeta()}">
+    <input type="number" id="day-picker-ot" step="0.25" min="0" placeholder="OT h"
+           title="Overtime hours (0.25 steps)"
+           style="width:64px;font-size:.75rem;padding:4px 7px"
+           onkeydown="if(event.key==='Enter'){saveDayCardMeta()}">
+    <button type="button" class="btn btn-xs btn-primary" onclick="saveDayCardMeta()">Save</button>
+  </div>
   <div class="day-picker-divider"></div>
   <button class="day-pick-btn" data-type="__copy__">📋 Copy</button>
   <button class="day-pick-btn" data-type="__paste__">📋 Paste</button>
@@ -846,6 +863,7 @@ window.purgeAllScheduleFlags = async function () {
 <script src="{{ url_for('static', filename='gantt.js') }}?v={{ APP_COMMIT }}"></script>
 <script>
 initGantt({{ project.id }}, {{ budget.id }}, {{ budget.payroll_profile_id or 'null' }});
+restoreDeptCollapse();
 </script>
 <script>
 // Canonical location-day vocab, mirrored from app.py DAY_TYPES.

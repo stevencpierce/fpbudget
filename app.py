@@ -6072,6 +6072,26 @@ def budget_version_meta(pid, bid):
     _require_project_role(pid, 'editor')
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     data = request.get_json(force=True) or {}
+    # Custom version NAME (owner 2026-07-22: "allow me to give it a custom
+    # name… don't allow two to have the same name"). Renames the whole
+    # version pair (Estimated + Working share it); uniqueness is enforced
+    # case-insensitively against every OTHER version's budgets.
+    if "name" in data:
+        _nm = (data.get("name") or '').strip()[:200]
+        if not _nm:
+            return jsonify({"error": "Version name cannot be empty."}), 400
+        _clash = (Budget.query
+                  .filter(Budget.project_id == pid,
+                          db.func.lower(Budget.name) == _nm.lower())
+                  .filter(Budget.version_number != budget.version_number)
+                  .first())
+        if _clash:
+            return jsonify({"error": f'Another version is already named "{_nm}" '
+                                     f'(v{_clash.version_number or 1}). Names must be unique.'}), 400
+        for _vb in Budget.query.filter_by(project_id=pid,
+                                          version_number=budget.version_number).all():
+            _vb.name = _nm
+            _vb.updated_at = datetime.utcnow()
     if "internal_label" in data:
         budget.internal_label = (data.get("internal_label") or '').strip()[:120] or None
     if "locked" in data:

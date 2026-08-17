@@ -750,6 +750,26 @@ function showPicker(e, cell) {
   const picker = document.getElementById('day-picker');
   picker._targetCell = cell;
 
+  // Person-day header + inline note/OT (2026-07-22): the card names WHOSE
+  // day is being edited and pre-fills the metadata fields.
+  const whoEl = document.getElementById('day-picker-who');
+  if (whoEl) {
+    const rowEl = cell.closest('tr');
+    const role  = (rowEl?.querySelector('.gantt-line-desc')?.childNodes[0]?.textContent || '').trim();
+    const chip  = (rowEl?.querySelector('.gantt-crew-chip')?.childNodes[0]?.textContent || '').trim();
+    const who   = (chip && chip !== '+ Assign') ? chip + ' · ' + role : role;
+    let dstr = cell.dataset.date || '';
+    try {
+      dstr = new Date(dstr + 'T12:00:00').toLocaleDateString(undefined,
+        { weekday: 'short', month: 'short', day: 'numeric' });
+    } catch (_) {}
+    whoEl.textContent = (who || 'Day') + ' — ' + dstr;
+  }
+  const noteInp = document.getElementById('day-picker-note');
+  if (noteInp) noteInp.value = (cell.title || '').trim();
+  const otInp = document.getElementById('day-picker-ot');
+  if (otInp) otInp.value = parseFloat(cell.dataset.otHours || 0) || '';
+
   // Sync flag button active states before showing
   const flags = _getCellFlags(cell);
   document.querySelectorAll('.flag-toggle-btn').forEach(btn => {
@@ -1920,4 +1940,47 @@ function buildProfileDescription(p) {
   lines.push('<em style="color:var(--text-muted)">Note: lines marked Exempt fringe skip OT regardless of this profile.</em>');
 
   return `<ul>${lines.map(l=>`<li>${l}</li>`).join('')}</ul>`;
+}
+
+// ── Person-day card: inline note + OT save (2026-07-22) ──────────────────────
+function saveDayCardMeta() {
+  const picker = document.getElementById('day-picker');
+  const cell = picker && picker._targetCell;
+  if (!cell) return;
+  const note = (document.getElementById('day-picker-note')?.value || '').trim();
+  const rawOt = document.getElementById('day-picker-ot')?.value || '';
+  const hrs = Math.max(0, Math.round(parseFloat(rawOt || 0) * 4) / 4);
+  cell.dataset.otHours = hrs;
+  if (typeof updateOtBadge === 'function') updateOtBadge(cell, hrs);
+  saveDay(cell, cell.dataset.type, note, hrs);
+  cell.title = note;
+  picker.classList.add('hidden');
+}
+
+// ── Collapsible departments (2026-07-22) ─────────────────────────────────────
+// Click a department header to fold its rows away; state persists per budget.
+function toggleDept(hdr, skipStore) {
+  const dept = hdr.dataset.dept;
+  const collapsed = hdr.classList.toggle('dept-collapsed');
+  document.querySelectorAll(
+    'tr[data-dept="' + dept + '"]:not(.gantt-dept-header)').forEach(tr => {
+    tr.style.display = collapsed ? 'none' : '';
+  });
+  const arrow = hdr.querySelector('.dept-arrow');
+  if (arrow) arrow.textContent = collapsed ? '▸' : '▾';
+  if (skipStore) return;
+  try {
+    const key = 'gantt_collapsed_' + _bid;
+    const set = new Set(JSON.parse(localStorage.getItem(key) || '[]'));
+    if (collapsed) set.add(dept); else set.delete(dept);
+    localStorage.setItem(key, JSON.stringify(Array.from(set)));
+  } catch (_) {}
+}
+function restoreDeptCollapse() {
+  try {
+    const set = new Set(JSON.parse(localStorage.getItem('gantt_collapsed_' + _bid) || '[]'));
+    document.querySelectorAll('.gantt-dept-header[data-dept]').forEach(h => {
+      if (set.has(h.dataset.dept)) toggleDept(h, true);
+    });
+  } catch (_) {}
 }

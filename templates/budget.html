@@ -98,7 +98,7 @@
             {% if est %}
             <button class="btn btn-xs btn-ghost" style="margin-left:auto;padding:0 5px;font-size:.68rem;opacity:.6"
                     title="Version options — internal subtitle{% if current_user.role in ('super_admin','admin') %}, lock{% endif %}"
-                    onclick='versionMetaMenu(event, {{ est.id }}, {{ vn | tojson }}, {{ (est.internal_label or "") | tojson }}, {{ "true" if _vlocked else "false" }})'>✎</button>
+                    onclick='versionMetaMenu(event, {{ est.id }}, {{ vn | tojson }}, {{ (est.internal_label or "") | tojson }}, {{ "true" if _vlocked else "false" }}, {{ (est.name or "") | tojson }})'>✎</button>
             {% endif %}
           </div>
           {# Estimated row #}
@@ -10345,13 +10345,15 @@ document.addEventListener('click', e => {
 // ── Version options popup (2026-07-22): internal subtitle + delete-lock ──
 const VMETA_URL_TMPL = '{{ url_for("budget_version_meta", pid=project.id, bid=999999999) }}';
 let _vmetaBid = null;
-function versionMetaMenu(event, bid, vn, label, locked) {
+function versionMetaMenu(event, bid, vn, label, locked, name) {
   event.preventDefault();
   event.stopPropagation();
   _vmetaBid = bid;
   const pop = document.getElementById('vmeta-popup');
   if (!pop) return;
-  document.getElementById('vmeta-title').textContent = 'Version v' + vn + ' — internal options';
+  document.getElementById('vmeta-title').textContent = 'Version v' + vn + ' — options';
+  const nameInp = document.getElementById('vmeta-name');
+  if (nameInp) nameInp.value = name || '';
   document.getElementById('vmeta-label').value = label || '';
   const lk = document.getElementById('vmeta-locked');
   if (lk) lk.checked = !!locked;
@@ -10366,6 +10368,8 @@ async function saveVersionMeta() {
   if (!_vmetaBid) return;
   const st = document.getElementById('vmeta-status');
   const body = { internal_label: document.getElementById('vmeta-label').value };
+  const nameInp = document.getElementById('vmeta-name');
+  if (nameInp && nameInp.value.trim()) body.name = nameInp.value.trim();
   const lk = document.getElementById('vmeta-locked');
   if (lk) body.locked = lk.checked;
   if (st) st.textContent = 'Saving…';
@@ -12509,6 +12513,12 @@ function normalizePhone(v) {
      surfaces. (Owner 2026-07-22.) #}
 <div id="vmeta-popup" class="pct-edit-popup hidden" style="min-width:270px">
   <div class="pct-edit-label" id="vmeta-title">Version</div>
+  <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-top:.5rem">
+    Version name <span style="opacity:.7">(renames Estimated + Working together; must be unique)</span>
+  </label>
+  <input type="text" id="vmeta-name" maxlength="200" placeholder='e.g. "Client Cut"'
+         style="width:100%;margin-top:3px"
+         onkeydown="if(event.key==='Enter'){saveVersionMeta()}if(event.key==='Escape'){closeVmetaPopup()}">
   <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-top:.5rem">
     Internal subtitle <span style="opacity:.7">(only your team sees this — never clients)</span>
   </label>
