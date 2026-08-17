@@ -213,8 +213,17 @@ def compute_travel_mirror_per_line(budget, labor_lines, schedule_days, all_lines
     if all_lines:
         for ln in all_lines:
             if ln.line_tag and ln.line_tag in SCHEDULE_LINE_DEFS:
-                # rate per unit: prefer unit_rate (set on creation), then rate, then default.
-                _r = float(ln.unit_rate) if ln.unit_rate is not None else float(ln.rate or 0)
+                # rate per unit: prefer the line's EDITED rate — that's what
+                # the Travel section actually charges (sync's effective_rate
+                # uses the same preference) — then unit_rate (creation
+                # default), then the SCHEDULE_LINE_DEFS default. Was
+                # unit_rate-first, which kept showing the stale creation
+                # default after the user edited the aggregate's rate (GINTS
+                # 2026 export: crew flights edited $400→$500, every mirror
+                # row still said $400). 2026-07-22.
+                _r = float(ln.rate or 0)
+                if not _r and ln.unit_rate is not None:
+                    _r = float(ln.unit_rate)
                 if not _r:
                     _r = SCHEDULE_LINE_DEFS[ln.line_tag][3]
                 rate_by_tag[ln.line_tag] = _r
@@ -638,9 +647,25 @@ def sync_schedule_driven_lines(budget_id, db_session):
             # lingered at its full unit rate, and schedule detail showed no
             # items. sync_omit lines are exempt above (user-managed by hand).
             if count == 0:
-                db_session.delete(ln)
-                deleted_line_ids.add(ln.id)
-                existing_auto.pop(tag, None)
+                # Delete inside a SAVEPOINT: if ANYTHING still references the
+                # line (coded transactions, schedule rows, locations, …) the
+                # FK failure rolls back only the savepoint — not the caller's
+                # whole transaction. Without this, one undeletable auto line
+                # aborted the entire session: budget_view's sync silently
+                # no-opped forever, and project DUPLICATION rolled back the
+                # half-built clone mid-flight (Dropbox folder created, no
+                # project visible, worker died on the expired objects).
+                # Fallback: keep the line but zero the phantom 1×1×rate
+                # charge the original delete existed to kill. (2026-07-22.)
+                try:
+                    with db_session.begin_nested():
+                        db_session.delete(ln)
+                        db_session.flush()
+                    deleted_line_ids.add(ln.id)
+                    existing_auto.pop(tag, None)
+                except Exception:
+                    ln.days = 0
+                    ln.estimated_total = 0
                 continue
         else:
             ln = BudgetLine(

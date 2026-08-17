@@ -774,6 +774,62 @@ def _csrf_protect():
         return jsonify({"error": "CSRF token missing or invalid — reload the "
                                  "page and try again."}), 403
 
+# ── Budget write-gate (owner 2026-07-22) ─────────────────────────────────────
+# One chokepoint for every budget-content mutation:
+#   1. LOCKED versions are fully READ-ONLY (the lock lives on the version's
+#      Estimated anchor and covers the whole Estimated+Working pair).
+#   2. ESTIMATED budgets are only editable by admins or a project OWNER (the
+#      LP role an admin grants in Share). Working budgets stay open to editors.
+# Enforced via before_request on the endpoints below so every guarded route
+# gets identical behavior without per-handler edits.
+_BUDGET_WRITE_ENDPOINTS = {
+    'upsert_line', 'add_kit_fee', 'line_insert', 'line_duplicate',
+    'line_reorder', 'line_set_group', 'remove_schedule_instance',
+    'schedule_purge_tag', 'schedule_purge_all', 'travel_apply_doc',
+    'toggle_sync_omit', 'import_csv_apply', 'budget_from_template',
+    'budget_settings', 'budget_fee_update', 'set_gantt_day',
+    'set_gantt_days_batch', 'gantt_assign_crew', 'set_gantt_meal',
+    'expand_gantt', 'set_schedule_label',
+}
+
+
+@app.before_request
+def _budget_write_gate():
+    if request.method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return
+    if request.endpoint not in _BUDGET_WRITE_ENDPOINTS:
+        return
+    _bid = (request.view_args or {}).get('bid')
+    if not _bid:
+        return
+    budget = Budget.query.get(_bid)
+    if budget is None:
+        return   # the handler's own 404 will fire
+    _locked = bool(getattr(budget, 'locked', False))
+    if not _locked and budget.version_number is not None:
+        _anchor = Budget.query.filter_by(project_id=budget.project_id,
+                                         version_number=budget.version_number,
+                                         budget_mode='estimated').first()
+        _locked = bool(_anchor is not None and getattr(_anchor, 'locked', False))
+    if _locked:
+        return jsonify({"error": "This version is locked (read-only). "
+                                 "Unlock it via ✎ in the version menu first."}), 403
+    if budget.budget_mode == 'estimated' and not budget.is_actual:
+        from flask_login import current_user as _cu
+        if getattr(_cu, 'role', None) in ('super_admin', 'admin'):
+            return
+        _acc = None
+        try:
+            if getattr(_cu, 'is_authenticated', False):
+                _acc = ProjectAccess.query.filter_by(
+                    project_id=budget.project_id, user_id=_cu.id).first()
+        except Exception:
+            _acc = None
+        if not _acc or _acc.role != 'owner':
+            return jsonify({"error": "Estimated budgets can only be changed by "
+                                     "an admin or the project owner/LP."}), 403
+
+
 # Sentry error monitoring (audit C4b). Activates ONLY when SENTRY_DSN is set
 # in the environment (Steven adds it in Render); otherwise a silent no-op.
 try:
@@ -4623,6 +4679,40 @@ def _clone_project_data(src_p, new_p, old_slug, new_slug, line_map, loc_id_map):
 _PROJECT_DUP = {}   # job_id -> {state, name, new_pid, error, docs, txns}
 
 
+def _record_bg_error(context, tag=None):
+    """Write the CURRENT exception's traceback into the /admin/errors ring
+    (/tmp/fpb-errors) + capture to Sentry. Background threads bypass the 500
+    handler, so without this their failures are invisible outside Render's
+    log window — the exact hole the project-duplicate bug hid in (Dropbox
+    folder created, project row rolled back, no error anywhere). The optional
+    tag lands in the filename so status endpoints on OTHER gunicorn workers
+    can detect the failure via the shared filesystem. Returns the ERR ref.
+    (2026-07-22.)"""
+    import uuid as _uuid
+    import traceback as _tb
+    ref = _uuid.uuid4().hex[:8].upper()
+    try:
+        import glob as _glob
+        import time as _time
+        _edir = '/tmp/fpb-errors'
+        os.makedirs(_edir, exist_ok=True)
+        _suffix = f"-{tag}" if tag else ''
+        with open(os.path.join(_edir, f"{int(_time.time())}-ERR-{ref}{_suffix}.txt"), 'w') as _f:
+            _f.write(f"[background] {context}\n\n{_tb.format_exc()}")
+        for _p in sorted(_glob.glob(os.path.join(_edir, '*.txt')))[:-40]:
+            os.unlink(_p)
+    except Exception:
+        pass
+    try:
+        import sentry_sdk as _ssdk
+        with _ssdk.push_scope() as _scope:
+            _scope.set_tag("err_ref", ref)
+            _ssdk.capture_exception()
+    except Exception:
+        pass
+    return ref
+
+
 def _duplicate_worker(flask_app, job_id, src_pid, new_name, include_data, user_id):
     """Background project duplication so a large copy never ties up a web worker
     (mirrors the reprocess pattern). Clones every Budget, project Locations +
@@ -4655,6 +4745,29 @@ def _duplicate_worker(flask_app, job_id, src_pid, new_name, include_data, user_i
                     else:
                         src_path = f"{_DBX_OPS_ROOT}/{src_p.dropbox_folder}"
                         dest_path = f"{_DBX_OPS_ROOT}/{new_slug}"
+                    # Duplicating FROM a wrapped/archived project (owner
+                    # 2026-07-22): wrap/archive MOVED the folder to its root
+                    # as <YYYY-MM-DD>_<slug> (autorename possible) while
+                    # dropbox_folder kept the plain slug — the original path
+                    # no longer exists. Resolve the real location so the copy
+                    # pulls the actual files; on any miss we fall through to
+                    # the old path (whose failure falls back to template
+                    # provision, as before).
+                    if getattr(src_p, 'status', None) in ('wrapped', 'archived'):
+                        _root = (_DBX_WRAP_ROOT if src_p.status == 'wrapped'
+                                 else _DBX_ARCHIVE_ROOT)
+                        try:
+                            _entries = dbx.files_list_folder(_root).entries
+                            _match = next(
+                                (en for en in _entries
+                                 if en.name == src_p.dropbox_folder
+                                 or en.name.endswith('_' + src_p.dropbox_folder)),
+                                None)
+                            if _match is not None:
+                                src_path = f"{_root}/{_match.name}"
+                        except Exception as _we:
+                            logging.warning(f"[DBX DUP] wrapped-source folder "
+                                            f"lookup failed: {_we}")
                     dbx.files_copy_v2(src_path, dest_path)
                     logging.info(f"[DBX DUP] {src_path} → {dest_path}")
                 else:
@@ -4730,7 +4843,12 @@ def _duplicate_worker(flask_app, job_id, src_pid, new_name, include_data, user_i
         except Exception as e:
             db.session.rollback()
             logging.exception("duplicate worker failed")
-            prog.update(state='error', error=str(e))
+            _ref = _record_bg_error(
+                f"project duplicate '{new_name}' from #{src_pid} "
+                f"(include_data={include_data})", tag=f"dup-{job_id}")
+            prog.update(state='error',
+                        error=(f"{type(e).__name__}: {e} — full traceback at "
+                               f"/admin/errors (ERR-{_ref})"))
         finally:
             try:
                 db.session.remove()
@@ -4776,6 +4894,21 @@ def project_duplicate_status(job_id):
         out = {k: prog.get(k) for k in ('state', 'name', 'new_pid', 'error', 'docs', 'txns')}
     else:
         out = {'state': 'running', 'name': request.args.get('name'), 'new_pid': None}
+        # _PROJECT_DUP is per-process memory: with 2 gunicorn workers this
+        # poll can land on the worker that DIDN'T run the job, which used to
+        # report 'running' forever even after the job died — the user saw
+        # the Dropbox folder appear but no project and no error. The worker
+        # now drops a tagged traceback file in the shared /tmp ring, so any
+        # worker can detect the failure. (2026-07-22.)
+        try:
+            import glob as _glob_ds
+            _errf = _glob_ds.glob(f"/tmp/fpb-errors/*-dup-{job_id}.txt")
+            if _errf:
+                out['state'] = 'error'
+                out['error'] = ("Duplication failed — open /admin/errors for the "
+                                "full traceback (newest entry).")
+        except Exception:
+            pass
     name = out.get('name') or request.args.get('name')
     if not out.get('new_pid') and name:
         p = ProjectSheet.query.filter(ProjectSheet.name == name).first()
@@ -5716,6 +5849,248 @@ def _delete_budget_cascade(bid):
     db.session.delete(budget)
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/comments", methods=["GET"])
+@login_required
+def budget_comments_list(pid, bid):
+    """Internal comments on a budget (?line_id absent) or a line (?line_id=N).
+    Any project member can read. (Owner 2026-07-22.)"""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'viewer')
+    from models import BudgetComment
+    q = BudgetComment.query.filter_by(budget_id=bid)
+    _lid = request.args.get('line_id', type=int)
+    q = q.filter_by(budget_line_id=_lid) if _lid else q.filter_by(budget_line_id=None)
+    out = []
+    for cm in q.order_by(BudgetComment.created_at.asc()).all():
+        out.append({"id": cm.id,
+                    "author": (cm.author.name or cm.author.email) if cm.author else '—',
+                    "mine": bool(cm.author_id == current_user.id),
+                    "body": cm.body,
+                    "created_at": cm.created_at.isoformat() + 'Z' if cm.created_at else None})
+    return jsonify({"ok": True, "comments": out})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/comments", methods=["POST"])
+@login_required
+def budget_comments_add(pid, bid):
+    """Add a comment; @name tokens email the matching teammates (users with
+    access to this project, matched on first name or email prefix,
+    case-insensitive). Fail-open on notification. Body: {body, line_id?}."""
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'viewer')
+    from models import BudgetComment
+    data = request.get_json(force=True) or {}
+    body_txt = (data.get('body') or '').strip()[:4000]
+    if not body_txt:
+        return jsonify({"error": "Comment is empty."}), 400
+    _lid = data.get('line_id')
+    ln = None
+    if _lid:
+        ln = BudgetLine.query.filter_by(id=int(_lid), budget_id=bid).first()
+        if ln is None:
+            return jsonify({"error": "line not found"}), 404
+    cm = BudgetComment(project_id=pid, budget_id=bid,
+                       budget_line_id=(ln.id if ln else None),
+                       author_id=current_user.id, body=body_txt)
+    db.session.add(cm)
+    db.session.commit()
+    # @mention notifications — project members whose first name or email
+    # prefix matches an @token. Advisory + fail-open.
+    try:
+        tokens = {t.lower() for t in re.findall(r'@([A-Za-z0-9._-]+)', body_txt)}
+        if tokens:
+            _uids = [a.user_id for a in ProjectAccess.query.filter_by(project_id=pid).all()]
+            _users = User.query.filter(
+                (User.id.in_(_uids)) | (User.role.in_(('super_admin', 'admin')))).all()
+            proj = ProjectSheet.query.get(pid)
+            _where = (f'line "{(ln.description or "").strip() or ln.account_name}"'
+                      if ln else f'budget "{budget.name}"')
+            _link = url_for('budget_view', pid=pid, bid=bid, _external=True)
+            for u in _users:
+                if u.id == current_user.id or not u.email:
+                    continue
+                _first = ((u.name or '').split() or [''])[0].lower()
+                _eprefix = u.email.split('@')[0].lower()
+                if _first in tokens or _eprefix in tokens:
+                    _send_email(
+                        u.email,
+                        f"💬 {current_user.name or current_user.email} mentioned you — {proj.name if proj else ''}",
+                        (f"{current_user.name or current_user.email} mentioned you in a "
+                         f"comment on {_where} ({proj.name if proj else ''}):\n\n"
+                         f"“{body_txt}”\n\nOpen the budget: {_link}"))
+    except Exception:
+        logging.warning("comment mention notify failed", exc_info=True)
+    return jsonify({"ok": True, "id": cm.id})
+
+
+@app.route("/projects/<int:pid>/budget/comments/<int:cid>/delete", methods=["POST"])
+@login_required
+def budget_comments_delete(pid, cid):
+    """Delete a comment — its author or an admin."""
+    from models import BudgetComment
+    cm = BudgetComment.query.filter_by(id=cid, project_id=pid).first_or_404()
+    if cm.author_id != current_user.id and \
+            getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+        return jsonify({"error": "Only the author or an admin can delete a comment."}), 403
+    db.session.delete(cm)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/budget/compare")
+@login_required
+def budget_compare(pid):
+    """Side-by-side comparison of two budget versions (owner 2026-07-22:
+    'a way that you can selectively choose and view multiple versions of a
+    budget to see what has changed'). Lines are matched by the explicit
+    source_line_id clone chain first, then by (account_code, description);
+    everything else shows as added/removed. Internal page — never shared."""
+    ProjectSheet.query.get_or_404(pid)
+    if not _user_can_access_project(pid):
+        abort(403)
+    try:
+        a_id, b_id = int(request.args.get('a')), int(request.args.get('b'))
+    except (TypeError, ValueError):
+        abort(400)
+    bud_a = Budget.query.filter_by(id=a_id, project_id=pid).first_or_404()
+    bud_b = Budget.query.filter_by(id=b_id, project_id=pid).first_or_404()
+    fringe_cfgs = get_fringe_configs(db.session, pid)
+
+    def _snap(budget):
+        lines = (BudgetLine.query.filter_by(budget_id=budget.id)
+                 .order_by(BudgetLine.account_code, BudgetLine.sort_order,
+                           BudgetLine.id).all())
+        profile = budget.payroll_profile
+        pw = (budget.payroll_week_start if budget.payroll_week_start is not None
+              else (profile.payroll_week_start if profile else 6))
+        smode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+        rows = {}
+        for ln in lines:
+            if getattr(ln, 'line_tag', None) in ('header', 'spacer'):
+                continue
+            if ln.use_schedule:
+                sched = ScheduleDay.query.filter_by(budget_line_id=ln.id,
+                                                    schedule_mode=smode).all()
+                res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw)
+            else:
+                res = calc_line(ln, fringe_cfgs)
+            rows[ln.id] = (ln, round(float((res or {}).get('est_total') or 0), 2))
+        ts = calc_top_sheet(budget, lines, fringe_cfgs, {}, profile, pw)
+        return rows, ts
+
+    rows_a, ts_a = _snap(bud_a)
+    rows_b, ts_b = _snap(bud_b)
+
+    # Pair lines: explicit clone chain first (either direction), then
+    # (account_code, lowered description) with multiset semantics.
+    unmatched_b = dict(rows_b)
+    pairs = []   # (a_line|None, a_total|None, b_line|None, b_total|None)
+    b_by_src = {}
+    for bid_, (ln, _t) in rows_b.items():
+        if ln.source_line_id:
+            b_by_src.setdefault(ln.source_line_id, bid_)
+    for aid_, (a_ln, a_t) in rows_a.items():
+        b_hit = b_by_src.get(aid_)
+        if b_hit is None and a_ln.source_line_id in unmatched_b:
+            b_hit = a_ln.source_line_id
+        if b_hit is not None and b_hit in unmatched_b:
+            b_ln, b_t = unmatched_b.pop(b_hit)
+            pairs.append((a_ln, a_t, b_ln, b_t))
+        else:
+            pairs.append((a_ln, a_t, None, None))
+    # key-match the leftovers
+    kmap = {}
+    for bid_, (ln, _t) in unmatched_b.items():
+        kmap.setdefault((ln.account_code, (ln.description or '').strip().lower()),
+                        []).append(bid_)
+    for i, (a_ln, a_t, b_ln, b_t) in enumerate(pairs):
+        if b_ln is not None or a_ln is None:
+            continue
+        cands = kmap.get((a_ln.account_code, (a_ln.description or '').strip().lower()))
+        if cands:
+            hit = cands.pop(0)
+            if hit in unmatched_b:
+                nb_ln, nb_t = unmatched_b.pop(hit)
+                pairs[i] = (a_ln, a_t, nb_ln, nb_t)
+    for bid_, (b_ln, b_t) in unmatched_b.items():
+        pairs.append((None, None, b_ln, b_t))
+
+    # Group by COA section, ordered by code; compute per-section sums.
+    sec_names = dict(FP_COA_SECTIONS)
+    sections = {}
+    for a_ln, a_t, b_ln, b_t in pairs:
+        ref = a_ln or b_ln
+        code = ref.account_code
+        s = sections.setdefault(code, {"code": code,
+                                       "name": ref.account_name or sec_names.get(code, ''),
+                                       "rows": [], "a_total": 0.0, "b_total": 0.0})
+        if a_ln is None:
+            status = 'added'
+        elif b_ln is None:
+            status = 'removed'
+        elif abs((a_t or 0) - (b_t or 0)) > 0.005:
+            status = 'changed'
+        else:
+            status = 'same'
+        s["rows"].append({
+            "desc": ((a_ln or b_ln).description or '').strip() or '—',
+            "a": a_t, "b": b_t,
+            "delta": round((b_t or 0) - (a_t or 0), 2),
+            "status": status,
+        })
+        s["a_total"] = round(s["a_total"] + (a_t or 0), 2)
+        s["b_total"] = round(s["b_total"] + (b_t or 0), 2)
+    sec_list = [sections[c] for c in sorted(sections)]
+    for s in sec_list:
+        s["delta"] = round(s["b_total"] - s["a_total"], 2)
+        s["changed_n"] = sum(1 for r in s["rows"] if r["status"] != 'same')
+
+    def _blabel(b):
+        lbl = f"v{b.version_number or 1} · {b.name}"
+        if getattr(b, 'internal_label', None):
+            lbl += f' · “{b.internal_label}”'
+        return lbl
+
+    return render_template(
+        "budget_compare.html", project=ProjectSheet.query.get(pid),
+        a=bud_a, b=bud_b, a_label=_blabel(bud_a), b_label=_blabel(bud_b),
+        sections=sec_list,
+        a_grand=round(float(ts_a.get('grand_total_estimated') or 0), 2),
+        b_grand=round(float(ts_b.get('grand_total_estimated') or 0), 2),
+        only_changes=(request.args.get('changes') == '1'))
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/version-meta", methods=["POST"])
+@login_required
+def budget_version_meta(pid, bid):
+    """Internal version naming + delete-lock (owner 2026-07-22: 'name budget
+    versions or lock budget versions from being deleted or add internal-only
+    subtitles'). Body: {internal_label?, locked?}. The bid is the version's
+    ESTIMATED anchor; the subtitle lives there and the lock covers the whole
+    version pair. internal_label is INTERNAL ONLY — the estimate portal and
+    PDF exports never read it. Lock/unlock requires admin+."""
+    _require_project_role(pid, 'editor')
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    if "internal_label" in data:
+        budget.internal_label = (data.get("internal_label") or '').strip()[:120] or None
+    if "locked" in data:
+        if getattr(current_user, 'role', None) not in ('super_admin', 'admin'):
+            return jsonify({"error": "Only admins can lock or unlock a version."}), 403
+        budget.locked = bool(data.get("locked"))
+    budget.updated_at = datetime.utcnow()
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='budget_version_meta',
+                      entity_id=bid, entity_label=budget.name or 'Budget',
+                      budget_id=bid, project_id=pid, before=None,
+                      after={k: data.get(k) for k in ('internal_label', 'locked') if k in data},
+                      note='Updated version label/lock')
+    except Exception: pass
+    return jsonify({"ok": True, "internal_label": budget.internal_label,
+                    "locked": bool(budget.locked)})
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/delete", methods=["POST"])
 @login_required
 def delete_budget(pid, bid):
@@ -5724,6 +6099,19 @@ def delete_budget(pid, bid):
     Deleting a Working budget while an Estimated exists is always allowed.
     """
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+
+    # Locked versions can't be deleted — the version's Estimated anchor
+    # carries the lock and it covers the whole version pair. (Owner
+    # 2026-07-22: "lock budget versions from being deleted".)
+    _anchor_locked = bool(getattr(budget, 'locked', False))
+    if not _anchor_locked and budget.version_number is not None:
+        _anchor = Budget.query.filter_by(
+            project_id=pid, version_number=budget.version_number,
+            budget_mode='estimated').first()
+        _anchor_locked = bool(_anchor is not None and getattr(_anchor, 'locked', False))
+    if _anchor_locked:
+        return jsonify({"error": "This version is locked — unlock it (✎ in the "
+                                 "version menu) before deleting."}), 403
 
     # Guard: never delete the last estimated budget
     if _budget_type(budget.budget_mode) == 'estimated':
@@ -6518,13 +6906,51 @@ def budget_view(pid, bid):
                 sg = _get_talent_subgroup(ln.description)
             line_sub_groups[ln.id] = sg
 
+    # Auto dept-group labels the user converted to real sub-headers: the
+    # header line's format JSON records group=<name>. Those derived labels
+    # are suppressed on render — the editable header stands in for them,
+    # and stays suppressed even if the header is renamed. (2026-07-22.)
+    claimed_group_names = set()
+    for ln in lines:
+        if getattr(ln, 'line_tag', None) == 'header' and ln.note:
+            try:
+                _cg = (json.loads(ln.note).get('group') or '').strip().lower()
+                if _cg:
+                    claimed_group_names.add(_cg)
+            except Exception:
+                pass
+
+    # Internal comment counts (owner 2026-07-22) — per line + budget-level,
+    # one grouped query. Fail-open: comments must never break the page.
+    comment_counts = {}
+    budget_comment_count = 0
+    try:
+        from models import BudgetComment
+        for _clid, _cn in (db.session.query(BudgetComment.budget_line_id,
+                                            db.func.count(BudgetComment.id))
+                           .filter(BudgetComment.budget_id == bid)
+                           .group_by(BudgetComment.budget_line_id).all()):
+            if _clid is None:
+                budget_comment_count = _cn
+            else:
+                comment_counts[_clid] = _cn
+    except Exception:
+        pass
+
     # Dept head filtering: restrict to their assigned dept_code only
     dept_filter = None
     if current_user.role == 'dept_head' and current_user.dept_code:
         dept_filter = current_user.dept_code
         sections = [s for s in sections if s['code'] == dept_filter]
 
-    fringes      = FringeConfig.query.filter_by(project_id=None).order_by(FringeConfig.fringe_type).all()
+    # Project-aware fringe list for the line dropdowns: project overrides
+    # replace the global row of the same fringe_type, and project-only custom
+    # types appear too — matching the calc path (get_fringe_configs), which
+    # was already project-aware. Bug 2026-07-22: an override added on the
+    # project Fringes page never showed up in the budget-line fringe dropdown
+    # because this list was globals-only.
+    fringes      = sorted(get_fringe_configs(db.session, pid).values(),
+                          key=lambda f: f.fringe_type)
     # Full company roster — used ONLY for crew ASSIGNMENT (pick anyone onto a line).
     all_crew_members = CrewMember.query.filter_by(active=True).order_by(CrewMember.name).all()
     # Project-scoped crew + vendors for the doc/vendor pickers and vendors section.
@@ -8199,6 +8625,9 @@ def budget_view(pid, bid):
         company_settings=company_settings,
         dept_filter=dept_filter,
         line_sub_groups=line_sub_groups,
+        claimed_group_names=claimed_group_names,
+        comment_counts=comment_counts,
+        budget_comment_count=budget_comment_count,
         line_assigned_location=line_assigned_location,
         doc_uploads=doc_uploads,
         doc_groups=doc_groups,
@@ -8579,6 +9008,20 @@ def line_insert(pid, bid):
             line_tag     = line_kind,
             sort_order   = 0,
         )
+        # Optional initial formatting (2026-07-22): the convert-auto-dept-
+        # label flow seeds the header styled like the derived label it
+        # replaces, and fmt.group records WHICH auto group it claims (so
+        # the derived label stops rendering even after a rename).
+        _fmt = data.get("format")
+        if line_kind == "header" and isinstance(_fmt, dict):
+            try:
+                _keep = {k: _fmt[k] for k in
+                         ('group', 'size', 'bold', 'underline', 'italic',
+                          'indent', 'color') if k in _fmt}
+                if _keep:
+                    new_ln.note = json.dumps(_keep)[:300]
+            except Exception:
+                pass
     else:
         new_ln = BudgetLine(
             budget_id    = bid,
@@ -15024,33 +15467,80 @@ def _build_estimate_snapshot(project, budget, detail_mode):
         sections.append({"code": 99999, "name": "Production Company Fee",
                          "total": fee, "lines": []})
 
+    def _sec_for(code):
+        best = None
+        for start, _ in FP_COA_SECTIONS:
+            if code is not None and code >= start:
+                best = start
+            else:
+                break
+        return best
+    by_code = {s["code"]: s for s in sections}
+
+    # Per-line calc pass — runs in BOTH modes: detail rows reuse it, and it
+    # feeds the per-section DISCOUNT sums (owner 2026-07-22: "we are not
+    # seeing discounts included at all in what it said to the client — I
+    # definitely want those per section and then totaled"). Non-labor
+    # agent_amount IS the line's discount (see calc_line); labor agent fees
+    # are real charges, not discounts, so they're excluded.
+    _line_res = {}
+    for ln in lines:
+        if getattr(ln, 'line_tag', None) in ('header', 'spacer'):
+            continue
+        if ln.use_schedule:
+            sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
+            res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
+        else:
+            res = calc_line(ln, fringe_cfgs)
+        _line_res[ln.id] = res
+        if not ln.is_labor:
+            _d = round(float((res or {}).get('agent_amount') or 0), 2)
+            if _d:
+                _sd = by_code.get(_sec_for(ln.account_code))
+                if _sd is not None:
+                    _sd["discount"] = round(_sd.get("discount", 0) + _d, 2)
+    discount_total = round(sum(s.get("discount", 0) for s in sections), 2)
+
     # Optional per-line breakdown under each section (best-effort: section-level
     # adds like fringe / WC / fee live at the section total, not on a line).
     if detail_mode:
-        def _sec_for(code):
-            best = None
-            for start, _ in FP_COA_SECTIONS:
-                if code is not None and code >= start:
-                    best = start
-                else:
-                    break
-            return best
-        by_code = {s["code"]: s for s in sections}
         for ln in lines:
-            if getattr(ln, 'is_header', False):
-                continue
             sdict = by_code.get(_sec_for(ln.account_code))
             if not sdict:
                 continue
-            if ln.use_schedule:
-                sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
-                res = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
-            else:
-                res = calc_line(ln, fringe_cfgs)
+            # Sub-headers and spacers are presentation rows, not charges.
+            # (Was `getattr(ln, 'is_header', False)` — an attribute that
+            # doesn't exist — so they leaked into client estimates as plain
+            # "$0.00" lines. Owner 2026-07-22: obey the header formatting on
+            # client sends; never show amounts on headers/spacers.) Headers
+            # carry their formatting JSON so the portal renders them styled;
+            # spacers become a small visual gap.
+            _tag = getattr(ln, 'line_tag', None)
+            if _tag == 'spacer':
+                sdict["lines"].append({"kind": "spacer"})
+                continue
+            if _tag == 'header':
+                if not (ln.description or '').strip():
+                    continue   # empty placeholder — never send
+                _hfmt = {}
+                try:
+                    _hfmt = json.loads(ln.note) if ln.note else {}
+                    if not isinstance(_hfmt, dict):
+                        _hfmt = {}
+                except Exception:
+                    _hfmt = {}
+                sdict["lines"].append({
+                    "kind": "header",
+                    "desc": (ln.description or '').strip(),
+                    "fmt": {k: _hfmt.get(k) for k in
+                            ('bold', 'underline', 'italic', 'color',
+                             'size', 'indent') if _hfmt.get(k) is not None}})
+                continue
+            res = _line_res.get(ln.id) or {}
             sdict["lines"].append({
                 "code": ln.account_code,
                 "desc": (ln.description or '').strip(),
-                "total": round(float((res or {}).get('est_total') or 0), 2)})
+                "total": round(float(res.get('est_total') or 0), 2)})
 
     cs = CompanySettings.query.get(1) or CompanySettings()
     company_addr = [getattr(cs, 'address_line1', None), getattr(cs, 'address_line2', None),
@@ -15073,6 +15563,7 @@ def _build_estimate_snapshot(project, budget, detail_mode):
         },
         "detail_mode": bool(detail_mode),
         "grand_total": round(grand, 2),
+        "discount_total": discount_total,
         "sections": sections,
     }
     return snap, round(grand, 2)
@@ -15109,7 +15600,10 @@ def estimate_share_create(pid, bid):
             if not em or key in seen_emails:
                 continue
             seen_emails.add(key)
-            recipients.append({"name": nm, "email": em})
+            # cc: copied for reference — gets a VIEW-ONLY link (role='cc'),
+            # cannot approve or request changes. (Owner 2026-07-22.)
+            recipients.append({"name": nm, "email": em,
+                               "cc": bool(r.get('cc'))})
     else:
         # Legacy single-recipient path.
         lc_name = (body.get('client_name') or '').strip()[:200] or None
@@ -15157,8 +15651,19 @@ def estimate_share_create(pid, bid):
 
     mail_configured = bool(app.config.get('MAIL_USERNAME'))
 
-    def _default_body(name_val, link_val):
+    def _default_body(name_val, link_val, is_cc=False):
         who = name_val or "there"
+        if is_cc:
+            # CC copy: reference wording, no approve language — their link is
+            # view-only anyway.
+            return (f"Hi {who},\n\n"
+                    f"You're copied on the estimate for {project.name} "
+                    f"({version_label}) for your reference. You can view it "
+                    f"here:\n\n"
+                    f"{link_val}\n\n"
+                    f"Estimated total: ${grand:,.2f}\n\n"
+                    f"Thank you,\n"
+                    f"{signature}")
         return (f"Hi {who},\n\n"
                 f"Please review the estimate for {project.name} "
                 f"({version_label}). You can view and approve it here:\n\n"
@@ -15167,10 +15672,10 @@ def estimate_share_create(pid, bid):
                 f"Thank you,\n"
                 f"{signature}")
 
-    def _render_body(name_val, link_val):
+    def _render_body(name_val, link_val, is_cc=False):
         """Substitute placeholders in the user-authored body; ensure link present."""
         if not email_body_in.strip():
-            return _default_body(name_val, link_val)
+            return _default_body(name_val, link_val, is_cc)
         txt = (email_body_in
                .replace('{link}', link_val)
                .replace('{total}', f"${grand:,.2f}")
@@ -15196,13 +15701,15 @@ def estimate_share_create(pid, bid):
     expires = now + _td(days=90)
     for rec in recipients:
         token = secrets.token_urlsafe(32)
+        _is_cc = bool(rec.get('cc'))
         share = EstimateShare(
             project_id=pid, budget_id=bid, token=token,
             client_name=rec['name'], client_email=rec['email'],
             detail_mode=detail_mode, version_label=version_label,
             snapshot_json=snapshot_str, grand_total=grand,
             status='sent', created_by_user_id=current_user.id,
-            sent_at=now, expires_at=expires)
+            sent_at=now, expires_at=expires,
+            role=('cc' if _is_cc else 'approver'))
         db.session.add(share)
         db.session.flush()  # assign share.id + keep token unique per row
 
@@ -15215,7 +15722,7 @@ def estimate_share_create(pid, bid):
                                "(MAIL_USERNAME unset) — use the copyable link instead.")
             else:
                 subj = _render_subject(rec['name'], link)
-                bodytxt = _render_body(rec['name'], link)
+                bodytxt = _render_body(rec['name'], link, _is_cc)
                 emailed = _send_email(rec['email'], subj, bodytxt,
                                       reply_to=reply_to, sender_name=sender_name)
                 if emailed:
@@ -15224,7 +15731,7 @@ def estimate_share_create(pid, bid):
                     email_error = "Email send failed — use the copyable link instead."
         results.append({
             "share_id": share.id, "token": token, "link": link,
-            "email": rec['email'], "name": rec['name'],
+            "email": rec['email'], "name": rec['name'], "cc": _is_cc,
             "emailed": emailed, "email_error": email_error,
         })
 
@@ -15247,7 +15754,8 @@ def estimate_share_create(pid, bid):
         for r in results:
             if not r['email'] and not r['name']:
                 continue
-            label = (r['name'] or '—') + (f" <{r['email']}>" if r['email'] else "")
+            label = ((r['name'] or '—') + (f" <{r['email']}>" if r['email'] else "")
+                     + (" (cc — view only)" if r.get('cc') else ""))
             _state = ('emailed' if r['emailed']
                       else ('link only' if not r['email'] else 'link shared manually'))
             _recip_lines.append(f"  • {label} — {_state}")
@@ -15729,6 +16237,7 @@ def estimate_share_list(pid, bid):
             "view_count": s.view_count,
             "responded_at": s.responded_at.isoformat() + 'Z' if s.responded_at else None,
             "approver_name": s.approver_name, "approver_note": s.approver_note,
+            "role": (getattr(s, 'role', None) or 'approver'),
         })
     return jsonify({"shares": out})
 
@@ -15762,6 +16271,7 @@ def _serialize_estimate_share(s):
         "view_count": s.view_count,
         "responded_at": s.responded_at.isoformat() + 'Z' if s.responded_at else None,
         "approver_name": s.approver_name, "approver_note": s.approver_note,
+        "role": (getattr(s, 'role', None) or 'approver'),
     }
 
 
@@ -15995,14 +16505,25 @@ def estimate_portal_respond(token):
         return jsonify({"error": "This estimate link has expired."}), 410
     if s.status in ('approved', 'declined'):
         return jsonify({"error": f"Already {s.status}.", "status": s.status}), 409
+    # CC links are view-only — approval/changes belong to the primary
+    # recipient(s). (Owner 2026-07-22: "cc should not be able to approve
+    # or comment".) Legacy rows have role NULL = approver.
+    if (getattr(s, 'role', None) or 'approver') == 'cc':
+        return jsonify({"error": "This link is a CC copy for reference only — "
+                                 "approval is handled by the primary recipient."}), 403
     body = request.get_json(silent=True) or {}
     action = (body.get('action') or '').strip().lower()
     name = (body.get('name') or '').strip()[:200]
     note = (body.get('note') or '').strip()[:2000] or None
     if action not in ('approve', 'decline'):
         return jsonify({"error": "Invalid action"}), 400
-    if action == 'approve' and not name:
-        return jsonify({"error": "Please type your name to approve."}), 400
+    # Both responses are tracked signatures: approvals AND change requests
+    # need a typed name so it's always attributable who asked for what.
+    # (Owner 2026-07-22: "track who asks revisions and who approves".)
+    if not name:
+        return jsonify({"error": "Please type your name to approve."
+                        if action == 'approve' else
+                        "Please type your name so we know who requested changes."}), 400
     s.status = 'approved' if action == 'approve' else 'declined'
     s.approver_name = name or None
     s.approver_note = note
@@ -16631,6 +17152,59 @@ def budget_settings(pid, bid):
                           note=f'Updated budget settings: {", ".join(_changed)}')
     except Exception: pass
     return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/fee", methods=["POST"])
+@login_required
+def budget_fee_update(pid, bid):
+    """Dedicated Production Company Fee save (2026-07-22, owner: 'move that
+    production company fee thing to the budget view… make it right click…
+    take it out of the settings page'). Edits THIS budget version only, so
+    Estimated and Working can carry different fees. Small and strict on
+    purpose — flat-fee saves through the monolithic settings route kept
+    failing opaquely. Body: {mode: 'pct'|'flat', pct?, flat?, dispersed?};
+    only provided keys change. Returns the saved values."""
+    _require_project_role(pid, 'editor')
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    m = (data.get("mode") or '').strip().lower()
+    if m:
+        if m not in ('pct', 'flat'):
+            return jsonify({"error": f"unknown fee mode '{m}'"}), 400
+        budget.company_fee_mode = m
+    if "pct" in data:
+        try:
+            v = float(str(data["pct"]).replace('%', '').replace(',', '').strip())
+        except (TypeError, ValueError):
+            return jsonify({"error": "Percentage must be a number (e.g. 18)"}), 400
+        # company_fee_pct is Numeric(6,4): stored /100, so input must be < 100
+        # ×100 headroom-wise — cap at 99 to keep the column from overflowing.
+        if not (0 <= v <= 99):
+            return jsonify({"error": "Percentage must be between 0 and 99"}), 400
+        budget.company_fee_pct = v / 100
+    if "flat" in data:
+        try:
+            v = float(str(data["flat"]).replace('$', '').replace(',', '').strip())
+        except (TypeError, ValueError):
+            return jsonify({"error": "Flat amount must be a number (e.g. 25000)"}), 400
+        if not (0 <= v <= 999_999_999):
+            return jsonify({"error": "Flat amount out of range"}), 400
+        budget.company_fee_flat = v
+    if "dispersed" in data:
+        budget.company_fee_dispersed = bool(data.get("dispersed"))
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='budget_settings',
+                      entity_id=bid, entity_label=budget.name or 'Budget',
+                      budget_id=bid, project_id=pid, before=None,
+                      after={k: data.get(k) for k in ('mode', 'pct', 'flat', 'dispersed') if k in data},
+                      note='Updated Production Company Fee')
+    except Exception: pass
+    return jsonify({"ok": True,
+                    "mode": budget.company_fee_mode or 'pct',
+                    "pct": float(budget.company_fee_pct or 0),
+                    "flat": float(budget.company_fee_flat or 0),
+                    "dispersed": bool(budget.company_fee_dispersed)})
 
 
 @app.route("/settings/company", methods=["GET"])
@@ -28425,6 +28999,29 @@ def _web_worker_essential_columns():
                 "  ON expense_evidence (transaction_id)",
                 "CREATE INDEX IF NOT EXISTS ix_expense_evidence_doc_upload_id "
                 "  ON expense_evidence (doc_upload_id)",
+                # 2026-07-22 — CC recipients on estimate sends (belt alongside
+                # Alembic 0005): missing column would 500 every share query.
+                "ALTER TABLE estimate_share "
+                "  ADD COLUMN IF NOT EXISTS role VARCHAR(12) DEFAULT 'approver' NOT NULL",
+                # 2026-07-22 — version naming + delete-lock (belt alongside
+                # Alembic 0006).
+                "ALTER TABLE budget "
+                "  ADD COLUMN IF NOT EXISTS internal_label VARCHAR(120)",
+                "ALTER TABLE budget "
+                "  ADD COLUMN IF NOT EXISTS locked BOOLEAN DEFAULT FALSE NOT NULL",
+                # 2026-07-22 — internal comments (belt alongside Alembic 0007).
+                "CREATE TABLE IF NOT EXISTS budget_comment ("
+                "  id SERIAL PRIMARY KEY,"
+                "  project_id INTEGER NOT NULL REFERENCES project_sheet(id),"
+                "  budget_id INTEGER NOT NULL REFERENCES budget(id),"
+                "  budget_line_id INTEGER REFERENCES budget_line(id),"
+                "  author_id INTEGER REFERENCES users(id),"
+                "  body TEXT NOT NULL,"
+                "  created_at TIMESTAMP)",
+                "CREATE INDEX IF NOT EXISTS ix_budget_comment_budget_id "
+                "  ON budget_comment (budget_id)",
+                "CREATE INDEX IF NOT EXISTS ix_budget_comment_budget_line_id "
+                "  ON budget_comment (budget_line_id)",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The
@@ -28800,6 +29397,224 @@ def _migrate_client_contacts_into_clients():
 
 with app.app_context():
     _migrate_client_contacts_into_clients()
+
+
+# ── One-time data import (2026-07-27): MinuteCon 26 AV budget ────────────────
+# Loads the "MinuteCon 2027 — Detailed Preliminary Breakdown" doc (prepared
+# 7/27/26) into the MinuteCon project's current ESTIMATED budget, replacing
+# whatever lines were already there (user-approved override). Line amounts are
+# the TOP of each quoted range; each line's note preserves the quoted range.
+# Labor rows are fringe type N per user. Same three-layer idempotence as the
+# client-contact merge above: system_task_log marker + pg advisory lock +
+# per-budget try/except (a budget whose lines are referenced by transactions
+# fails its FK delete, rolls back untouched, and is reported in the marker).
+def _import_minutecon26_budget():
+    from sqlalchemy import text as _sql_text
+    _MARKER = 'minutecon26_budget_import_v1'
+    _LOCK_KEY = 779301126  # arbitrary, stable advisory-lock id for this task
+
+    _COA = dict(FP_COA_SECTIONS)
+    # (code, description, is_labor, qty, days, rate, note)
+    # Non-labor: estimated_total = qty × days × rate. Labor: qty is ALWAYS 1
+    # (multi-person hires split into separate rows per the labor invariant);
+    # estimated_total stored 0, computed live by budget_calc.
+    _LINES = [
+        # ── Track 1 — Mainstage (450 theatre) ──
+        (2900, "Mainstage — Projector (12K lumen laser)",                False, 1, 2, 1000, "Quoted $700–1,000/day ($1,400–2,000)"),
+        (2900, "Mainstage — Screen (16' fastfold + dress kit)",          False, 1, 2, 450,  "Quoted $300–450/day ($600–900)"),
+        (2800, "Mainstage — PA (2 powered tops + 2 subs)",               False, 1, 2, 500,  "Quoted $350–500/day ($700–1,000)"),
+        (2800, "Mainstage — Console (digital mixer, X32/SQ class)",      False, 1, 2, 250,  "Quoted $150–250/day ($300–500)"),
+        (2800, "Mainstage — Wireless mics (1 lapel + 2 handheld, 3 ch)", False, 1, 2, 300,  "Quoted $225–300/day ($450–600)"),
+        (2800, "Mainstage — Stands / DI / cabling",                      False, 1, 1, 300,  "Flat, quoted $150–300"),
+        (2900, "Mainstage — Switcher + playback (seamless switcher, slides machine)", False, 1, 2, 400, "Quoted $250–400/day ($500–800)"),
+        (2900, "Mainstage — Confidence monitor + timer (presenter-facing)", False, 1, 2, 250, "Quoted $150–250/day ($300–500)"),
+        # ── Track 2 (350 theatre) ──
+        (2900, "Track 2 — Projector (10K lumen laser)",                  False, 1, 2, 800,  "Quoted $500–800/day ($1,000–1,600)"),
+        (2900, "Track 2 — Screen (12'–14' fastfold + dress)",            False, 1, 2, 350,  "Quoted $250–350/day ($500–700)"),
+        (2800, "Track 2 — PA (2 powered tops, no subs)",                 False, 1, 2, 350,  "Quoted $250–350/day ($500–700)"),
+        (2800, "Track 2 — Console (digital mixer)",                      False, 1, 2, 250,  "Quoted $150–250/day ($300–500)"),
+        (2800, "Track 2 — Wireless mics (1 lapel + 2 handheld, 3 ch)",   False, 1, 2, 300,  "Quoted $225–300/day ($450–600)"),
+        (2800, "Track 2 — Stands / DI / cabling",                        False, 1, 1, 250,  "Flat, quoted $150–250"),
+        (2900, "Track 2 — Switcher + playback (seamless switcher, slides machine)", False, 1, 2, 400, "Quoted $250–400/day ($500–800)"),
+        (2900, "Track 2 — Confidence monitor + timer (presenter-facing)", False, 1, 2, 250, "Quoted $150–250/day ($300–500)"),
+        # ── Labor ──
+        (2000, "A1 (audio) — Mainstage",                                 True,  1, 2, 850,  "Quoted $700–850/day"),
+        (2000, "A1 (audio) — Track 2",                                   True,  1, 2, 850,  "Quoted $700–850/day"),
+        (2000, "V1 (video/switch) — Mainstage",                          True,  1, 2, 850,  "Quoted $700–850/day"),
+        (2000, "V1 (video/switch) — Track 2",                            True,  1, 2, 850,  "Quoted $700–850/day"),
+        (2000, "Load-in crew — 3–4 crew, half-day (Thu eve)",            False, 1, 1, 1400, "Quoted $900–1,400 total"),
+        (2000, "Strike crew — 3–4 crew, half-day (Sat night)",           False, 1, 1, 1100, "Quoted $600–1,100 total"),
+        # ── Recording — Track 1 only (nice-to-have, priced as option) ──
+        (2600, "Recording (option) — 2 × camera kits",                   False, 2, 2, 400,  "Quoted $1,000–1,600 (2 kits × 2 days)"),
+        (2000, "Recording (option) — Camera op (cam 2 static/locked)",   True,  1, 2, 850,  "Quoted $1,400–1,700 (1 op × 2 days)"),
+        (2900, "Recording (option) — Program + slide capture (ISO of switcher output + board audio)", False, 1, 1, 500, "Flat, quoted $300–500"),
+        (4700, "Recording (option) — Post: per-talk cuts (~15–20 talks), titles, upload-ready", False, 1, 1, 1500, "Flat, quoted $800–1,500"),
+        # ── Event-wide ──
+        (2700, "Vendor area power (~5 distro runs / 10 tables)",         False, 1, 1, 500,  "Flat, quoted $250–500"),
+        (2000, "Production mgmt, advance, show flow",                    False, 1, 1, 2500, "Flat, quoted $1,500–2,500"),
+        (3400, "Truck / transport / consumables",                        False, 1, 1, 1000, "Flat, quoted $500–1,000"),
+    ]
+
+    _NOTES = (
+        "MinuteCon 2027 — AV budget imported 7/27/26 from the "
+        "'minutecon_quote_breakdown' doc. Event: Fri Apr 30 – Sat May 1, 2027, "
+        "9a–5p, Boston Marriott Cambridge. 2 days × 2 tracks (Mainstage 450 / "
+        "Track 2 350 theatre). Line amounts are the TOP of each quoted range; "
+        "each line's note holds the quoted range. '(option)' lines are the "
+        "Track 1 recording package — nice-to-have, priced as an option "
+        "(cheaper alt: single locked cam + program capture, minimal post "
+        "≈ $1,500–2,500). Doc totals (gear+labor, no fringes/fees): core "
+        "$17,450–$25,550; core + full recording $20,950–$30,850; core + "
+        "budget recording $18,950–$28,050. EXCLUDED (pin down with "
+        "venue/Ori): Marriott in-house AV exclusivity/patch fees, rigging, "
+        "power drops, hardline internet; lighting beyond house ballroom "
+        "lighting; stage/riser & backdrop; livestreaming; nonprofit discount."
+    )
+
+    try:
+        with app.app_context():
+            if 'postgresql' not in str(db.engine.url).lower():
+                return  # SQLite (local dev / tests): live-data import only
+            with db.engine.connect() as conn:
+                try:
+                    conn.execute(_sql_text(
+                        "CREATE TABLE IF NOT EXISTS system_task_log ("
+                        " task_name VARCHAR(80) PRIMARY KEY,"
+                        " last_run_at TIMESTAMP NOT NULL,"
+                        " last_result TEXT)"))
+                    conn.commit()
+                except Exception:
+                    pass
+                if conn.execute(_sql_text(
+                        "SELECT 1 FROM system_task_log WHERE task_name = :t"),
+                        {'t': _MARKER}).fetchone():
+                    return  # already imported on a prior boot
+            with db.engine.connect() as conn:
+                if not conn.execute(_sql_text(
+                        "SELECT pg_try_advisory_lock(:k)"), {'k': _LOCK_KEY}).scalar():
+                    logging.info("[minutecon-import] another worker holds the lock, skipping")
+                    return
+                try:
+                    if conn.execute(_sql_text(
+                            "SELECT 1 FROM system_task_log WHERE task_name = :t"),
+                            {'t': _MARKER}).fetchone():
+                        return  # won the lock but another worker already finished
+                    results = []
+
+                    # ── Resolve the MinuteCon project (name variants: "MinuteCon 26",
+                    # "Minute Con 26", "MinuteCon 2027", …) ──
+                    matches = (ProjectSheet.query
+                               .filter(ProjectSheet.name.ilike('%minute%con%'))
+                               .all())
+                    project = None
+                    if matches:
+                        matches.sort(key=lambda p: (p.status == 'active',
+                                                    ('26' in p.name or '27' in p.name),
+                                                    p.id),
+                                     reverse=True)
+                        project = matches[0]
+                    created_project = False
+                    if project is None:
+                        project = ProjectSheet(name='MinuteCon 26')
+                        db.session.add(project)
+                        db.session.flush()
+                        _admin = (User.query.filter_by(role='super_admin')
+                                  .order_by(User.id).first())
+                        if _admin:
+                            db.session.add(ProjectAccess(project_id=project.id,
+                                                         user_id=_admin.id,
+                                                         role='owner'))
+                        created_project = True
+
+                    # ── Resolve target: the current ESTIMATED budget(s) only
+                    # (per user: "just work estimated") ──
+                    budgets = [b for b in Budget.query.filter(
+                                   Budget.project_id == project.id,
+                                   Budget.is_actual == False,
+                                   Budget.version_status == 'current').all()
+                               if _budget_type(b.budget_mode) == 'estimated']
+                    if not budgets:
+                        budgets = [b for b in Budget.query.filter(
+                                       Budget.project_id == project.id,
+                                       Budget.is_actual == False,
+                                       Budget.version_status != 'archived').all()
+                                   if _budget_type(b.budget_mode) == 'estimated']
+                    if not budgets:
+                        _flat = (PayrollProfile.query
+                                 .filter(PayrollProfile.name.ilike('%flat%'))
+                                 .first())
+                        b = Budget(project_id=project.id,
+                                   name=f"{project.name} Budget",
+                                   payroll_profile_id=_flat.id if _flat else None,
+                                   timezone='America/New_York',
+                                   start_date=datetime(2027, 4, 30).date(),
+                                   end_date=datetime(2027, 5, 1).date())
+                        db.session.add(b)
+                        db.session.flush()
+                        budgets = [b]
+                    db.session.commit()
+
+                    for b in budgets:
+                        try:
+                            old = BudgetLine.query.filter_by(budget_id=b.id).all()
+                            # Children (kit fees etc.) first, then parents
+                            for ln in sorted(old, key=lambda l: l.parent_line_id is None):
+                                db.session.delete(ln)
+                            db.session.flush()
+                            for i, (code, desc, labor, qty, days, rate, note) in enumerate(_LINES):
+                                est = 0 if labor else round(qty * days * rate, 2)
+                                db.session.add(BudgetLine(
+                                    budget_id=b.id,
+                                    account_code=code,
+                                    account_name=_COA.get(code, str(code)),
+                                    description=desc,
+                                    is_labor=labor,
+                                    quantity=qty,
+                                    days=days,
+                                    rate=rate,
+                                    rate_type='flat_day' if labor else 'day_10',
+                                    fringe_type='N',
+                                    agent_pct=0,
+                                    estimated_total=est,
+                                    note=note,
+                                    sort_order=i * 10,
+                                ))
+                            b.start_date = b.start_date or datetime(2027, 4, 30).date()
+                            b.end_date = b.end_date or datetime(2027, 5, 1).date()
+                            _prior = (b.notes or '').strip()
+                            b.notes = _NOTES if not _prior else _NOTES + "\n\n" + _prior
+                            db.session.commit()
+                            results.append(f"budget {b.id} '{b.name}': replaced "
+                                           f"{len(old)} lines with {len(_LINES)}")
+                        except Exception as _be:
+                            db.session.rollback()
+                            results.append(f"budget {b.id}: FAILED ({_be})")
+
+                    if created_project:
+                        results.insert(0, f"created project '{project.name}' (id {project.id})")
+                    summary = '; '.join(results)[:2000]
+                    conn.execute(_sql_text(
+                        "INSERT INTO system_task_log (task_name, last_run_at, last_result) "
+                        "VALUES (:t, NOW(), :r) ON CONFLICT (task_name) DO NOTHING"),
+                        {'t': _MARKER, 'r': summary})
+                    conn.commit()
+                    logging.info(f"[minutecon-import] done: {summary}")
+                except Exception as _e:
+                    db.session.rollback()
+                    logging.error(f"[minutecon-import] failed: {_e}")
+                finally:
+                    try:
+                        conn.execute(_sql_text("SELECT pg_advisory_unlock(:k)"),
+                                     {'k': _LOCK_KEY})
+                        conn.commit()
+                    except Exception:
+                        pass
+    except Exception as _e:
+        logging.warning(f"[minutecon-import] aborted: {_e}")
+
+
+with app.app_context():
+    _import_minutecon26_budget()
 
 
 # ── Daily trash purge — soft-deleted Dropbox files >30 days hard-deleted ──

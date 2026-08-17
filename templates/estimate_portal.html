@@ -44,9 +44,21 @@
   th { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--muted);
        border-bottom:2px solid var(--line); }
   td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; }
-  .sec-row td { background:#f8fafc; font-weight:700; border-top:1px solid var(--line); }
+  /* Roomier section separation (owner 2026-07-22: "better spacing between
+     sections so you can see things laid out a bit better") — each section
+     header gets breathing room above and a stronger rule. */
+  .sec-row td { background:#f8fafc; font-weight:700; border-top:2px solid #dfe5ee;
+                padding-top:14px; padding-bottom:9px; }
+  tbody tr.sec-row:first-child td { border-top:none; }
   .line-row td { color:#33414f; border-top:1px solid #f1f3f6; }
   .line-row td:first-child { padding-left:26px; }
+  /* Per-section discount line + all-sections discount total (owner
+     2026-07-22: discounts must be visible to the client, per section and
+     totaled). Muted — the amounts are already reflected in the totals. */
+  .disc-row td { color:#1f7a4d; font-style:italic; font-size:13px;
+                 border-top:1px solid #f1f3f6; padding-bottom:12px; }
+  .disc-row td:first-child { padding-left:26px; }
+  .disc-total td { color:#1f7a4d; font-weight:700; border-top:1px solid var(--line); }
   .grand td { border-top:2px solid var(--ink); font-weight:800; font-size:16px; }
 
   .banner { padding:14px 18px; border-radius:12px; font-size:14px; margin:16px 0; }
@@ -123,16 +135,53 @@
             <tr class="sec-row"><td>{{ sec.name or ('Section ' ~ sec.code) }}</td><td class="num">{{ sec.total | currency }}</td></tr>
             {% if snap.detail_mode %}
               {% for ln in sec.lines %}
+                {% if ln.kind == 'spacer' %}
+                <tr class="spacer-row"><td colspan="2" style="height:10px;border:none;padding:0"></td></tr>
+                {% elif ln.kind == 'header' %}
+                {# Sub-header: obeys the budget's formatting (bold / color /
+                   size / indent), no amount — matches how it looks in-app.
+                   Old snapshots (no `kind`) fall through to plain rows. #}
+                {% set _f = ln.fmt or {} %}
+                <tr class="subhdr-row"><td colspan="2" style="
+                      padding:7px 10px 5px {{ 10 + (_f.get('indent', 0) | int) * 18 }}px;
+                      background:#f2f5fb;
+                      font-size:{{ _f.get('size', 13) }}px;
+                      font-weight:{{ '400' if _f.get('bold') is sameas false else '700' }};
+                      {% if _f.get('underline') %}text-decoration:underline;{% endif %}
+                      {% if _f.get('italic') %}font-style:italic;{% endif %}
+                      letter-spacing:.05em;text-transform:uppercase;
+                      color:{{ _f.get('color') or '#4f7ef8' }};">{{ ln.desc }}</td></tr>
+                {% else %}
                 <tr class="line-row"><td>{{ ln.desc or '—' }}</td><td class="num">{{ ln.total | currency }}</td></tr>
+                {% endif %}
               {% endfor %}
             {% endif %}
+            {% if sec.discount %}
+            <tr class="disc-row"><td>↳ Discounts applied in this section</td><td class="num">−{{ sec.discount | currency }}</td></tr>
+            {% endif %}
           {% endfor %}
+          {% if snap.discount_total %}
+          <tr class="disc-total"><td>Total discounts applied</td><td class="num">−{{ snap.discount_total | currency }}</td></tr>
+          {% endif %}
           <tr class="grand"><td>Grand Total</td><td class="num">{{ snap.grand_total | currency }}</td></tr>
         </tbody>
       </table>
+      {% if snap.discount_total %}
+      <div style="padding:8px 14px 12px;font-size:12px;color:#6b7785">
+        Discounts are already reflected in the section totals and the grand
+        total shown above.
+      </div>
+      {% endif %}
     </div>
 
-    {% if share.status == 'approved' %}
+    {% if (share.role or 'approver') == 'cc' %}
+      {# CC copy: view-only for reference — no approve/decline controls.
+         (Owner 2026-07-22.) #}
+      <div class="banner" style="background:#eef2f9;border:1px solid #cfd6df;color:#3a4757">
+        You've been copied on this estimate for reference. Approval is
+        handled by the primary recipient.
+      </div>
+    {% elif share.status == 'approved' %}
       <div class="banner ok">
         <strong>Approved.</strong> Signed by {{ share.approver_name }}{% if share.responded_at %} on {{ share.responded_at.strftime('%B %d, %Y') }}{% endif %}.
         {% if share.approver_note %}<br>Note: “{{ share.approver_note }}”{% endif %}
@@ -171,6 +220,7 @@
         var name=(document.getElementById('nm')||{}).value||'';
         var note=(document.getElementById('nt')||{}).value||'';
         if(action==='approve' && !name.trim()){ show('Please type your name to approve.'); return; }
+        if(action==='decline' && !name.trim()){ show('Please type your name so we know who is requesting the changes.'); return; }
         if(action==='decline' && !note.trim()){ show('Please add a note describing the changes you’d like.'); return; }
         var a=document.getElementById('btnApprove'), d=document.getElementById('btnDecline');
         if(a) a.disabled=true; if(d) d.disabled=true;

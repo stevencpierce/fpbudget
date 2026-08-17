@@ -322,6 +322,15 @@ class Budget(db.Model):
     version_status  = db.Column(db.String(20), default='current', nullable=False)  # current | superseded | archived
     parent_budget_id = db.Column(db.Integer, db.ForeignKey('budget.id'), nullable=True)
     version_number  = db.Column(db.Integer, nullable=True)   # shared by Estimated + its Working pair
+    # Internal-only version subtitle ("the one after the client call") —
+    # shown in the version dropdown, NEVER on client-facing surfaces
+    # (estimate portal, PDF exports). Stored on the version's Estimated
+    # anchor budget. (Owner 2026-07-22.)
+    internal_label  = db.Column(db.String(120), nullable=True)
+    # Locked versions can't be deleted (server-enforced in delete_budget).
+    # Lock/unlock is admin+. (Owner 2026-07-22.)
+    locked          = db.Column(db.Boolean, default=False, nullable=False,
+                                server_default='0')
 
     # Marks an Actual budget — peer to Estimated/Working but represents
     # accounting reality, not planning intent. Auto-cloned from Working
@@ -948,6 +957,25 @@ class ProjectPartner(db.Model):
     created_at   = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class BudgetComment(db.Model):
+    """Internal note/comment on a budget (budget_line_id NULL) or a specific
+    budget line. @mentions in the body email the tagged teammate. Internal
+    only — never client-facing. (Owner 2026-07-22: 'things happen and lines
+    might even need notes attached to them… tag people'.)"""
+    __tablename__ = "budget_comment"
+    id             = db.Column(db.Integer, primary_key=True)
+    project_id     = db.Column(db.Integer, db.ForeignKey("project_sheet.id"),
+                               nullable=False, index=True)
+    budget_id      = db.Column(db.Integer, db.ForeignKey("budget.id"),
+                               nullable=False, index=True)
+    budget_line_id = db.Column(db.Integer, db.ForeignKey("budget_line.id"),
+                               nullable=True, index=True)
+    author_id      = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    body           = db.Column(db.Text, nullable=False)
+    created_at     = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    author         = db.relationship("User", foreign_keys=[author_id])
+
+
 class ProjectClient(db.Model):
     """Client contact scoped to a project — the single source of truth for both
     call-sheet clients (shown on call sheet page 1) and estimate recipients.
@@ -1425,6 +1453,12 @@ class EstimateShare(db.Model):
     approver_note   = db.Column(db.Text, nullable=True)
     approver_ip     = db.Column(db.String(64), nullable=True)
     expires_at      = db.Column(db.DateTime, nullable=True)
+    # 'approver' (default) — can approve / request changes.
+    # 'cc' — copied for reference: own view-only link, own view tracking,
+    # can never respond. (Owner 2026-07-22: "cc should not be able to
+    # approve or comment".) NULL on legacy rows = approver.
+    role            = db.Column(db.String(12), nullable=False,
+                                default='approver', server_default='approver')
 
     project = db.relationship("ProjectSheet", foreign_keys=[project_id])
     budget  = db.relationship("Budget",       foreign_keys=[budget_id])

@@ -80,11 +80,26 @@
           {% set vn = vg.version_number %}
           {% set est = vg.estimated %}
           {% set wrk = vg.working %}
-          <div class="version-group-header">
+          {% set _vlocked = est.locked if est else false %}
+          <div class="version-group-header" style="align-items:center">
             <span class="version-item-name">v{{ vn }}</span>
+            {% if est and est.internal_label %}
+            {# Internal-only subtitle — never on client pages or exports. #}
+            <span title="Internal note — clients never see this"
+                  style="font-size:.68rem;color:var(--text-muted);font-style:italic;margin-left:.4rem;
+                         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px">“{{ est.internal_label }}”</span>
+            {% endif %}
+            {% if _vlocked %}
+            <span title="Locked — this version can't be deleted" style="margin-left:.35rem;font-size:.7rem">🔒</span>
+            {% endif %}
             <span class="version-status-badge vs-{{ 'current' if vg.is_current else 'superseded' }}">
               {{ 'Current' if vg.is_current else 'Previous' }}
             </span>
+            {% if est %}
+            <button class="btn btn-xs btn-ghost" style="margin-left:auto;padding:0 5px;font-size:.68rem;opacity:.6"
+                    title="Version options — internal subtitle{% if current_user.role in ('super_admin','admin') %}, lock{% endif %}"
+                    onclick='versionMetaMenu(event, {{ est.id }}, {{ vn | tojson }}, {{ (est.internal_label or "") | tojson }}, {{ "true" if _vlocked else "false" }})'>✎</button>
+            {% endif %}
           </div>
           {# Estimated row #}
           {% if est %}
@@ -116,9 +131,13 @@
                 <button class="btn btn-xs btn-ghost version-archive-btn" data-bid="{{ est.id }}" title="Archive">⊘</button>
                 {% endif %}
                 {% if est_count > 1 %}
+                {% if _vlocked %}
+                <span title="Locked — unlock via ✎ to delete" style="font-size:.7rem;opacity:.5;padding:0 4px">🔒</span>
+                {% else %}
                 <button class="btn btn-xs btn-ghost version-delete-btn"
                         data-bid="{{ est.id }}" data-name="{{ est.name }}" data-mode="{{ est.budget_mode }}"
                         title="Delete">✕</button>
+                {% endif %}
                 {% endif %}
               </div>
             </div>
@@ -132,9 +151,13 @@
                 <span class="version-item-ts">{% if wrk.updated_at %}{{ wrk.updated_at | in_tz(budget.timezone) }}{% endif %}</span>
               </a>
               <div class="version-item-actions">
+                {% if _vlocked %}
+                <span title="Locked — unlock via ✎ to delete" style="font-size:.7rem;opacity:.5;padding:0 4px">🔒</span>
+                {% else %}
                 <button class="btn btn-xs btn-ghost version-delete-btn"
                         data-bid="{{ wrk.id }}" data-name="{{ wrk.name }}" data-mode="{{ wrk.budget_mode }}"
                         title="Delete">✕</button>
+                {% endif %}
               </div>
             </div>
           {% elif est and vg.is_current %}
@@ -156,10 +179,15 @@
             Show {{ archived_count }} archived
           </button>
           {% endif %}
+          <button class="btn btn-xs btn-ghost" style="width:100%;margin-bottom:.35rem" onclick="openCompareModal(event)">⇄ Compare versions…</button>
           <button class="btn btn-sm btn-outline" style="width:100%" onclick="showNewBudgetModal()">+ New Version</button>
         </div>
       </div>
     </div>
+    <button class="btn btn-sm btn-outline line-comments-btn" onclick="openComments(null, 'this budget version')"
+            title="Internal notes on this budget version — @name tags a teammate. Never visible to clients.">
+      🗒 Notes{% if budget_comment_count %} <span style="color:#5fd0a0">({{ budget_comment_count }})</span>{% endif %}
+    </button>
     <div class="dropdown">
       <button class="btn btn-sm btn-outline">Export ▾</button>
       <div class="dropdown-menu">
@@ -291,10 +319,17 @@
           var label = esc(name || email);
           var sub = email && name ? '<span style="color:#6b7785;font-size:12px"> · '+esc(email)+'</span>' : '';
           var badge = sentBefore ? '<span style="color:#5b8af9;font-size:11px;font-weight:600"> · sent before</span>' : '';
-          return '<label style="display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:14px;cursor:pointer">'+
+          // CC toggle: copied for reference — view-only link, can't approve
+          // or request changes. Sibling labels so ticking CC never toggles
+          // the main include-checkbox. (Owner 2026-07-22.)
+          return '<div class="estshare-recip-row" style="display:flex;align-items:center;gap:8px;padding:6px 12px">'+
+                 '<label style="display:flex;flex:1;min-width:0;align-items:center;gap:8px;font-size:14px;cursor:pointer">'+
                  '<input type="checkbox" class="estshare-recip-cb" '+(checked?'checked':'')+
                  ' data-name="'+esc(name||'')+'" data-email="'+esc(email||'')+'">'+
-                 '<span>'+label+sub+badge+'</span></label>';
+                 '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+label+sub+badge+'</span></label>'+
+                 '<label title="CC — copied for reference only: their link is view-only and cannot approve or request changes" '+
+                 'style="display:flex;align-items:center;gap:4px;font-size:11.5px;color:#6b7785;white-space:nowrap;cursor:pointer">'+
+                 '<input type="checkbox" class="estshare-recip-cc"> CC</label></div>';
         }
 
         function loadRecipients(){
@@ -340,7 +375,13 @@
           var detail=(document.querySelector('input[name="estshare-detail"]:checked')||{}).value==='1';
           var recipients = [];
           document.querySelectorAll('.estshare-recip-cb').forEach(function(cb){
-            if(cb.checked){ recipients.push({ name: cb.getAttribute('data-name')||'', email: cb.getAttribute('data-email')||'' }); }
+            if(cb.checked){
+              var row = cb.closest('.estshare-recip-row');
+              var ccBox = row ? row.querySelector('.estshare-recip-cc') : null;
+              recipients.push({ name: cb.getAttribute('data-name')||'',
+                                email: cb.getAttribute('data-email')||'',
+                                cc: !!(ccBox && ccBox.checked) });
+            }
           });
           if(recipients.length === 0){
             if(!confirm('No recipients checked. Create a copyable link only?')){ btn.disabled=false; btn.textContent='Send estimate'; return; }
@@ -364,7 +405,8 @@
             var list = document.getElementById('estshare-result-list');
             list.innerHTML = '';
             (j.shares||[]).forEach(function(s){
-              var who = esc(s.name || s.email || 'Link');
+              var who = esc(s.name || s.email || 'Link')
+                + (s.cc ? ' <span style="font-size:10.5px;font-weight:700;color:#6b7785;border:1px solid #cfd6df;border-radius:4px;padding:0 5px" title="View-only copy — cannot approve or request changes">CC</span>' : '');
               var status = s.emailed
                 ? '<span style="color:#2a5a3a;font-weight:600">✓ emailed</span>'
                 : (s.email
@@ -422,10 +464,23 @@
             var revoked=(s.status==='revoked');
             var total=(typeof s.grand_total==='number')?('$'+s.grand_total.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})):'';
             var viewed=s.view_count?(' · '+s.view_count+' view'+(s.view_count!==1?'s':'')):'';
-            var appr=s.approver_name?('<div style="font-size:.7rem;color:#74c69d;margin-top:2px">✓ '+_esc(s.approver_name)+(s.responded_at?(' · '+_fmtEstDate(s.responded_at)):'')+'</div>'):'';
+            // Attribution line: WHO approved (green ✓) or WHO requested
+            // changes (amber ✎) + when + their note. (Owner 2026-07-22:
+            // "track who asks revisions and who approves".)
+            var appr='';
+            if(s.approver_name){
+              var _isApproved=(s.status==='approved');
+              appr='<div style="font-size:.7rem;color:'+(_isApproved?'#74c69d':'#d9a441')+';margin-top:2px">'
+                +(_isApproved?'✓ Approved by ':'✎ Changes requested by ')+_esc(s.approver_name)
+                +(s.responded_at?(' · '+_fmtEstDate(s.responded_at)):'')
+                +(s.approver_note?('<div style="color:var(--text-muted);margin-top:1px">“'+_esc(s.approver_note)+'”</div>'):'')
+                +'</div>';
+            }
+            var ccBadge=(s.role==='cc')?'<span title="View-only copy — cannot approve or request changes" style="font-size:.62rem;font-weight:700;border:1px solid var(--border);border-radius:4px;padding:1px 6px;color:var(--text-muted)">CC</span>':'';
             return '<div style="border:1px solid var(--border);border-radius:10px;padding:11px 13px;margin-bottom:9px;'+(revoked?'opacity:.55;':'')+'">'
               +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
               +'<div style="font-weight:600">'+_esc(s.client_name||'(no client name)')+'</div>'
+              +ccBadge
               +_estStatusBadge(s.status)
               +'<div style="font-size:.72rem;color:var(--text-muted)">'+_esc(s.version_label||'')+' · '+_esc(s.budget_name||'')+'</div>'
               +'<div style="margin-left:auto;font-weight:700">'+total+'</div>'
@@ -971,16 +1026,32 @@
             data-a="{{ top_sheet.subtotal_actual }}"></td>
       </tr>
       {% set fee_w = working_company_fee or 0 %}
-      {% set fee_a = (top_sheet.subtotal_actual * top_sheet.company_fee_pct) | round(2) if not top_sheet.company_fee_dispersed else 0 %}
+      {% set _fee_is_flat = (top_sheet.company_fee_mode == 'flat') %}
+      {% if _fee_is_flat %}
+        {% set fee_a = top_sheet.company_fee if not top_sheet.company_fee_dispersed else 0 %}
+      {% else %}
+        {% set fee_a = (top_sheet.subtotal_actual * top_sheet.company_fee_pct) | round(2) if not top_sheet.company_fee_dispersed else 0 %}
+      {% endif %}
       {% set fee_var = est_top_sheet.company_fee - fee_a %}
-      <tr class="fee-row {% if top_sheet.company_fee_dispersed %}fee-row-dispersed{% endif %}" data-ts-row="fee" data-fee-pct="{{ top_sheet.company_fee_pct }}" data-dispersed="{{ 'true' if top_sheet.company_fee_dispersed else 'false' }}">
+      {# Right-click opens the fee editor (mode / % / $ / dispersed) — the fee
+         is stored per budget VERSION, so Estimated and Working can differ.
+         Moved out of Settings 2026-07-22 at the owner's request. #}
+      <tr class="fee-row {% if top_sheet.company_fee_dispersed %}fee-row-dispersed{% endif %}" data-ts-row="fee"
+          data-fee-mode="{{ top_sheet.company_fee_mode or 'pct' }}"
+          data-fee-pct="{{ top_sheet.company_fee_pct }}"
+          data-fee-flat="{{ top_sheet.company_fee_flat or 0 }}"
+          data-dispersed="{{ 'true' if top_sheet.company_fee_dispersed else 'false' }}"
+          style="cursor:context-menu"
+          oncontextmenu="feeEditMenu(event)" title="Right-click to edit the Production Company Fee (percentage or flat, this version)">
         <td colspan="2">
-          Production Company Fee ({{ (top_sheet.company_fee_pct * 100) | round(2) }}%)
+          Production Company Fee
+          {% if _fee_is_flat %}(flat {{ top_sheet.company_fee_flat | currency }}){% else %}({{ (top_sheet.company_fee_pct * 100) | round(2) }}%){% endif %}
           {% if top_sheet.company_fee_dispersed %}
           <span class="fee-mode-badge dispersed-badge">Dispersed</span>
           {% else %}
           <span class="fee-mode-badge">Line Item</span>
           {% endif %}
+          <span class="muted" style="font-size:.7rem;margin-left:.35rem" title="Right-click to edit">✎</span>
         </td>
         <td class="col-num">{{ est_top_sheet.company_fee | currency }}</td>
         <td class="col-num {% if not working_exists %}muted{% endif %}">{{ fee_w | currency }}</td>
@@ -1073,7 +1144,7 @@
 
   <div id="working-budget-wrap">
   {% for sec in sections %}
-  {% set ns = namespace(sec_subtotal=0, sec_ot=0, sec_fringe=0, sec_total=0, has_labor=false, has_agent_or_disc=false, line_counter=0, kit_total=0, kit_working=0, sec_agent=0, prev_sub_group=None) %}
+  {% set ns = namespace(sec_subtotal=0, sec_ot=0, sec_fringe=0, sec_total=0, has_labor=false, has_agent_or_disc=false, line_counter=0, kit_total=0, kit_working=0, sec_agent=0, sec_disc=0, prev_sub_group=None) %}
   {# Pre-compute non-labor flag at the section level so empty sections
      (auto-calc-only like Insurance / Administrative) still reserve the
      Disc% column. Without this hoist, the flag was only set inside the
@@ -1088,7 +1159,15 @@
     {% set ns.sec_ot = ns.sec_ot + (res.ot_amount if res.ot_amount is defined else (ln.est_ot | float)) %}
     {% set ns.sec_fringe = ns.sec_fringe + res.fringe_amount %}
     {% set ns.sec_total = ns.sec_total + res.est_total %}
+    {# agent_amount doubles as the DISCOUNT amount on non-labor lines (see
+       calc_line) — split the two so equipment discounts never render under
+       an "Agent Fees" label. (MinuteCon report 2026-07-22: "I'm getting
+       agent fees calculating into the budget" — it was the discount sum.) #}
+    {% if ln.is_labor %}
     {% set ns.sec_agent = ns.sec_agent + (res.agent_amount | default(0) | float) %}
+    {% else %}
+    {% set ns.sec_disc = ns.sec_disc + (res.agent_amount | default(0) | float) %}
+    {% endif %}
     {# Non-labor sections always show the Disc% column so users can ADD a
        discount even when none exists yet. Labor sections still collapse
        Agent% when no Talent line has an agency commission set — only
@@ -1356,6 +1435,7 @@
         {% set _h_bold    = _hf.get('bold', true)  if _hf else true  %}
         {% set _h_under   = _hf.get('underline', false) if _hf else false %}
         {% set _h_italic  = _hf.get('italic', false) if _hf else false %}
+        {% set _h_size    = _hf.get('size') if _hf else none %}
         <tr class="line-row header-row" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-tag="header"
             data-format='{{ _hf | tojson }}'>
           <td colspan="14" style="padding:8px 12px 8px {{ 12 + _h_indent * 24 }}px;background:rgba(91,138,249,.06);border-top:1px solid var(--border);border-bottom:1px solid var(--border);position:relative">
@@ -1364,7 +1444,7 @@
                          padding:2px 4px;margin-right:4px;user-select:none">⋮⋮</span>
             <span class="editable header-label" data-field="description" data-id="{{ ln.id }}"
                   data-placeholder="Sub-header (click to edit, leave blank to remove)"
-                  style="font-size:.85rem;
+                  style="font-size:{{ (_h_size ~ 'px') if _h_size else '.85rem' }};
                          font-weight:{{ '700' if _h_bold else '500' }};
                          {% if _h_under %}text-decoration:underline;{% endif %}
                          {% if _h_italic %}font-style:italic;{% endif %}
@@ -1382,8 +1462,16 @@
                       title="Outdent" style="padding:1px 7px;{% if _h_indent < 1 %}opacity:.4{% endif %}">⇤</button>
               <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="indent-in" data-id="{{ ln.id }}"
                       title="Indent" style="padding:1px 7px">⇥</button>
+              <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="size-down" data-id="{{ ln.id }}"
+                      title="Smaller text" style="padding:1px 6px;font-size:.68rem">A−</button>
+              <button class="btn btn-xs btn-ghost header-fmt-btn" data-act="size-up" data-id="{{ ln.id }}"
+                      title="Larger text" style="padding:1px 6px">A+</button>
+              {# list= wires the native picker to the shared recent-colors
+                 datalist (populated by JS): colors picked anywhere show up
+                 as one-click swatches everywhere. 2026-07-22. #}
               <input type="color" class="header-fmt-color" data-id="{{ ln.id }}"
-                     value="{{ _h_color or '#5b8af9' }}" title="Header color"
+                     value="{{ _h_color or '#5b8af9' }}" title="Header color — recently used colors appear as swatches"
+                     list="header-recent-colors"
                      style="width:24px;height:22px;border:1px solid var(--border);border-radius:4px;
                             padding:0;cursor:pointer;vertical-align:middle">
             </span>
@@ -1408,7 +1496,16 @@
         {% if sec.code == 2000 and not is_kit_fee %}
           {% set _sg = line_sub_groups.get(ln.id) %}
           {% if _sg and _sg != ns.prev_sub_group %}
-        <tr class="dept-group-header-row"><td colspan="14"><span class="dept-group-label">{{ _sg }}</span></td></tr>
+          {# Suppressed once converted to a real sub-header (the header's
+             format JSON claims the group via fmt.group) — the editable
+             header now stands in for this derived label. 2026-07-22. #}
+          {% if (_sg | lower) not in claimed_group_names %}
+        <tr class="dept-group-header-row"><td colspan="14"><span class="dept-group-label">{{ _sg }}</span>
+          <button class="btn btn-xs btn-ghost" title="Make this an editable sub-header (rename, color, size — same as manually added sub-headers)"
+                  onclick='convertDeptGroup({{ ln.id }}, {{ _sg | tojson }})'
+                  style="opacity:.45;font-size:.62rem;padding:0 5px;margin-left:6px;vertical-align:middle">✎</button>
+        </td></tr>
+          {% endif %}
           {% set ns.prev_sub_group = _sg %}
           {% endif %}
         {% endif %}
@@ -2061,6 +2158,11 @@
                     data-pid="{{ project.id }}" data-bid="{{ budget.id }}" data-lid="{{ ln.id }}"
                     title="View per-day, per-person breakdown of this auto-calculated line">Schedule Detail</button>
             {% endif %}
+            {# 💬 internal comments on this line (owner 2026-07-22) #}
+            <button class="btn btn-xs btn-ghost line-comments-btn"
+                    title="Comments / notes on this line — @name tags a teammate"
+                    onclick='openComments({{ ln.id }}, {{ ((ln.description or ln.account_name or "line") | truncate(40)) | tojson }})'
+                    style="{% if not comment_counts.get(ln.id) %}opacity:.4{% endif %}">💬{% if comment_counts.get(ln.id) %}<span style="font-size:.62rem;color:#5fd0a0">{{ comment_counts.get(ln.id) }}</span>{% endif %}</button>
             <button class="btn btn-xs btn-ghost line-row-menu-btn"
                     data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
                     title="Insert / Move row" onclick="openLineRowMenu(this)">⋮</button>
@@ -2377,6 +2479,17 @@
           <td></td>
         </tr>
         {% endif %}
+        {# Non-labor discounts: money REMOVED from the section, shown with a
+           leading − so it can't read as a fee added on top. (2026-07-22.) #}
+        <tr class="discount-subtotal-row" {% if not (ns.sec_disc > 0) %}style="display:none"{% endif %}>
+          <td colspan="9" class="col-desc" style="font-size:.78rem;color:var(--text-muted);padding-left:1.6rem;font-style:italic;text-align:right">Discounts applied</td>
+          <td class="col-num disc-est-total" style="font-size:.78rem;color:var(--text-muted)">−{{ ns.sec_disc | currency }}</td>
+          <td class="col-num disc-est-total-2" style="font-size:.78rem;color:var(--text-muted)">−{{ ns.sec_disc | currency }}</td>
+          <td class="col-num col-working" style="font-size:.78rem;color:var(--text-muted)"></td>
+          <td class="col-num col-actual"></td>
+          <td class="col-num col-variance"></td>
+          <td></td>
+        </tr>
         <tr class="section-subtotal-row">
           <td colspan="5" class="col-desc muted" style="font-size:.75rem;font-style:italic;text-align:right">Section breakdown</td>
           <td class="col-num muted"></td>
@@ -6229,41 +6342,17 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
         </div>
         <div class="field">
           <label>Production Company Fee</label>
-          {# Mode picker — percentage of eligible base, or fixed flat $.
-             Per user 2026-05-06: support fixed-fee deals where the
-             producer's fee is a negotiated dollar amount, not a markup. #}
-          {% set _fee_mode = (budget.company_fee_mode or 'pct') %}
-          <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.5rem;flex-wrap:wrap">
-            <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;cursor:pointer">
-              <input type="radio" name="fee-mode" value="pct" id="set-fee-mode-pct"
-                     onchange="feeModeToggle()"
-                     {% if _fee_mode != 'flat' %}checked{% endif %}>
-              <span>Percentage</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:.4rem;font-weight:400;cursor:pointer">
-              <input type="radio" name="fee-mode" value="flat" id="set-fee-mode-flat"
-                     onchange="feeModeToggle()"
-                     {% if _fee_mode == 'flat' %}checked{% endif %}>
-              <span>Flat amount</span>
-            </label>
-          </div>
-          <div style="display:flex;align-items:flex-start;gap:1.5rem;flex-wrap:wrap">
-            <div id="set-fee-pct-wrap" style="display:{{ 'none' if _fee_mode == 'flat' else 'flex' }};align-items:center;gap:.4rem">
-              <input type="number" id="set-fee" value="{{ (budget.company_fee_pct | float * 100) | round(2) }}" min="0" step="0.25" style="width:120px">
-              <span class="muted">%</span>
-            </div>
-            <div id="set-fee-flat-wrap" style="display:{{ 'flex' if _fee_mode == 'flat' else 'none' }};align-items:center;gap:.4rem">
-              <span class="muted">$</span>
-              <input type="number" id="set-fee-flat" value="{{ budget.company_fee_flat | float | round(2) if budget.company_fee_flat else 0 }}" min="0" step="100" style="width:160px">
-            </div>
-            <label style="display:flex;align-items:flex-start;gap:.5rem;cursor:pointer;font-weight:400;max-width:360px">
-              <input type="checkbox" id="set-fee-dispersed" style="margin-top:2px;flex-shrink:0" {% if budget.company_fee_dispersed %}checked{% endif %}>
-              <span>
-                <strong style="font-weight:600">Disperse fee across lines</strong><br>
-                <span class="muted" style="font-size:.8rem">Instead of a separate fee line, the fee is spread proportionally into each eligible section (rounded to the nearest dollar). The grand total is identical — useful for client-facing budgets where the fee should not appear as a line item.</span>
-              </span>
-            </label>
-          </div>
+          {# Moved to the budget view 2026-07-22 (owner request): right-click
+             the fee row on the Top Sheet to set percentage / flat amount /
+             dispersed — per version, so Estimated and Working can differ. #}
+          <p class="muted" style="font-size:.85rem;margin:.25rem 0 0">
+            Set on the <strong>Top Sheet</strong> now: right-click the
+            "Production Company Fee" row to choose percentage or flat amount
+            (and dispersal). The fee is saved per budget version, so
+            Estimated and Working can carry different fees.
+            Currently: <strong>
+            {% if (budget.company_fee_mode or 'pct') == 'flat' %}flat {{ budget.company_fee_flat | currency }}{% else %}{{ (budget.company_fee_pct | float * 100) | round(2) }}%{% endif %}{% if budget.company_fee_dispersed %}, dispersed{% endif %}</strong>.
+          </p>
         </div>
         {# Per-project section exemptions for the Production Company Fee.
            Default = none ticked → fee applies to every section. Ticking a
@@ -7678,6 +7767,9 @@ window.saveInlinePo = async function() {
       label.style.textDecoration = fmt.underline ? 'underline' : '';
       label.style.fontStyle = fmt.italic ? 'italic' : '';
       label.style.color = fmt.color || 'var(--accent)';
+      // 13.6px == the default .85rem — always set explicitly so A+/A− steps
+      // render live without a reload. (2026-07-22.)
+      label.style.fontSize = (parseFloat(fmt.size) || 13.6) + 'px';
     }
     if (cell) {
       const ind = parseInt(fmt.indent || 0) || 0;
@@ -7707,8 +7799,36 @@ window.saveInlinePo = async function() {
     else if (act === 'italic')     fmt.italic    = !fmt.italic;
     else if (act === 'indent-in')  fmt.indent    = Math.min(8, (parseInt(fmt.indent || 0) || 0) + 1);
     else if (act === 'indent-out') fmt.indent    = Math.max(0, (parseInt(fmt.indent || 0) || 0) - 1);
+    // Font size steps (owner 2026-07-22: "make our subheadings font sizes
+    // increaseable and decreaseable… so they can all match"). 9–22px,
+    // 1px per press; unset starts from the 14px default neighborhood.
+    else if (act === 'size-up')   fmt.size = Math.min(22, Math.round(parseFloat(fmt.size) || 14) + 1);
+    else if (act === 'size-down') fmt.size = Math.max(9,  Math.round(parseFloat(fmt.size) || 14) - 1);
     _saveFmt(id, row, fmt);
   });
+
+  // Convert an auto department label (CONTROL ROOM, SOUND, …) into a REAL
+  // sub-header line — same rename/format/color/size powers as manually
+  // added sub-headers. Inserts a header line where the label sat, styled
+  // to match the auto label (small, accent, bold); fmt.group records which
+  // auto group it replaces so the derived label stops rendering, even
+  // after a rename. (Owner 2026-07-22: "however those are added in
+  // automatically, just make those the same functionality as the
+  // subheaders that we manually add".)
+  window.convertDeptGroup = async function (firstLineId, name) {
+    try {
+      const res = await fetch(`/projects/${PID}/budget/${BID}/line/insert`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reference_id: firstLineId, position: 'above', line_kind: 'header',
+          description: name,
+          format: { group: name, size: 10, bold: true }
+        })
+      });
+      if (res.ok) { if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload(); }
+      else alert('Could not convert this department label (' + res.status + ')');
+    } catch (e) { alert('Could not convert: ' + e.message); }
+  };
   document.addEventListener('change', function(e) {
     const inp = e.target.closest('.header-fmt-color');
     if (!inp) return;
@@ -7717,8 +7837,49 @@ window.saveInlinePo = async function() {
     if (!id || !row) return;
     const fmt = _readFmt(row);
     fmt.color = inp.value;
+    _rcRemember(inp.value);
     _saveFmt(id, row, fmt);
   });
+
+  // ── Recent colors palette (2026-07-22, owner request) ────────────────────
+  // Every color picked on a header/sub-header is remembered (localStorage,
+  // capped at 12) and offered as one-click swatches inside the native color
+  // picker via a shared <datalist> — so a color set in one place is easy to
+  // reuse anywhere, including other budgets and projects. Colors already in
+  // use on this page's headers seed the list too.
+  const _RC_KEY = 'fpb_recent_colors';
+  function _rcList() {
+    try { return JSON.parse(localStorage.getItem(_RC_KEY)) || []; }
+    catch (_) { return []; }
+  }
+  function _rcRefresh() {
+    let dl = document.getElementById('header-recent-colors');
+    if (!dl) {
+      dl = document.createElement('datalist');
+      dl.id = 'header-recent-colors';
+      document.body.appendChild(dl);
+    }
+    const seen = new Set(), opts = [];
+    const add = c => {
+      c = String(c || '').toLowerCase();
+      if (/^#[0-9a-f]{6}$/.test(c) && !seen.has(c)) { seen.add(c); opts.push(c); }
+    };
+    _rcList().forEach(add);                       // picked recently (any page)
+    document.querySelectorAll('.header-row').forEach(r => {   // in use here
+      try { add(JSON.parse(r.dataset.format || '{}').color); } catch (_) {}
+    });
+    dl.innerHTML = opts.slice(0, 20).map(c => '<option value="' + c + '"></option>').join('');
+  }
+  function _rcRemember(color) {
+    const c = String(color || '').toLowerCase();
+    if (!/^#[0-9a-f]{6}$/.test(c)) return;
+    try {
+      const list = [c].concat(_rcList().filter(x => x !== c)).slice(0, 12);
+      localStorage.setItem(_RC_KEY, JSON.stringify(list));
+    } catch (_) {}
+    _rcRefresh();
+  }
+  _rcRefresh();
 })();
 
 // ── Actual view: line / section-only expand + drag-drop reassign ──
@@ -8400,6 +8561,21 @@ const BUDGET_MAX_UNDO = 50;
 // `focusSectionCode`: optional COA code to scroll to after the reload (used
 // when adding a new line so the user lands at the section they just
 // modified instead of being thrown back to the top of the budget).
+// Switching versions keeps your place (owner 2026-07-22: "if I go from
+// version two to version three, it changes back to the dashboard"): the
+// version links carry the active tab into the new version's URL.
+document.addEventListener('click', function(e) {
+  const a = e.target.closest('.version-item-link');
+  if (!a) return;
+  const activeBtn = document.querySelector('.tab-btn.active[data-tab]');
+  if (!activeBtn) return;
+  try {
+    const url = new URL(a.href, window.location.origin);
+    url.searchParams.set('tab', activeBtn.dataset.tab);
+    a.href = url.toString();
+  } catch (_) {}
+});
+
 function reloadWithTab(focusSectionCode) {
   const activeBtn = document.querySelector('.tab-btn.active[data-tab]');
   const tab = activeBtn ? activeBtn.dataset.tab : null;
@@ -9099,6 +9275,10 @@ function refreshLineRow(id, data) {
 
 // ── Floating budget total bar ──────────────────────────────────────────────
 let _FLOAT_FEE_PCT        = {{ top_sheet.company_fee_pct | float }};
+// Flat-fee mode (2026-07-22): the float bar must show the fixed dollar fee,
+// not feeBase × pct, when the budget's fee is a negotiated flat amount.
+const _FLOAT_FEE_MODE     = "{{ top_sheet.company_fee_mode or 'pct' }}";
+const _FLOAT_FEE_FLAT     = {{ top_sheet.company_fee_flat | float }};
 let _FLOAT_DISPERSED      = {{ 'true' if top_sheet.company_fee_dispersed else 'false' }};
 // Industry-standard: labor fringes pass through without the Prod Co Fee
 // marked up on them. Top Sheet subtracts per-section fringes from the
@@ -9153,7 +9333,7 @@ function updateFloatBar() {
       feeBase += Math.max(v - fringe, 0);
     }
   });
-  const fee   = feeBase * _FLOAT_FEE_PCT;
+  const fee   = _FLOAT_FEE_MODE === 'flat' ? _FLOAT_FEE_FLAT : feeBase * _FLOAT_FEE_PCT;
   const grand = subtotal + fee;
   const subEl   = document.getElementById('float-subtotal');
   const feeEl   = document.getElementById('float-fee');
@@ -9334,7 +9514,7 @@ function refreshSectionTotals(table) {
   const tfoot = table.querySelector('tfoot');
   if (!tfoot) return;
 
-  let liveTotal = 0, kitTotal = 0, agentTotal = 0, otTotal = 0, fringeTotal = 0, subtotalTotal = 0;
+  let liveTotal = 0, kitTotal = 0, agentTotal = 0, discTotal = 0, otTotal = 0, fringeTotal = 0, subtotalTotal = 0;
   tbody.querySelectorAll('.line-row').forEach(row => {
     // Auto-calc rows (Workers' Comp, Production Liability Insurance,
     // Payroll Service Fee) carry their amount on data-auto-amount —
@@ -9357,7 +9537,10 @@ function refreshSectionTotals(table) {
     }
     liveTotal += base;
     if (row.classList.contains('kit-fee-row')) kitTotal += base;
-    agentTotal    += parseFloat(row.dataset.agent    || 0);
+    // data-agent doubles as the discount amount on non-labor rows — keep
+    // agent fees and discounts in separate footer rows. (2026-07-22.)
+    if (row.classList.contains('labor-line')) agentTotal += parseFloat(row.dataset.agent || 0);
+    else                                      discTotal  += parseFloat(row.dataset.agent || 0);
     otTotal       += parseFloat(row.dataset.ot       || 0);
     fringeTotal   += parseFloat(row.dataset.fringe   || 0);
     subtotalTotal += parseFloat(row.dataset.subtotal || 0);
@@ -9384,6 +9567,16 @@ function refreshSectionTotals(table) {
     agentEst.textContent = fmtCurrency(agentTotal);
     const agentRow = tfoot.querySelector('.agent-fee-subtotal-row');
     if (agentRow) agentRow.style.display = agentTotal > 0 ? '' : 'none';
+  }
+
+  // Update discounts subtotal (non-labor Disc% column) — shown negative.
+  const discRow = tfoot.querySelector('.discount-subtotal-row');
+  if (discRow) {
+    discRow.style.display = discTotal > 0 ? '' : 'none';
+    const d1 = discRow.querySelector('.disc-est-total');
+    const d2 = discRow.querySelector('.disc-est-total-2');
+    if (d1) d1.textContent = '−' + fmtCurrency(discTotal);
+    if (d2) d2.textContent = '−' + fmtCurrency(discTotal);
   }
 
   // Update Subtotal / OT / Fringe cells on the "Section breakdown" row.
@@ -9991,17 +10184,204 @@ function autoSetEndDate(startVal) {
   {% endif %}
 })();
 
-// Swap the % / $ input as the Production Company Fee mode radios change.
-// (Bug 2026-07-22: the radios had NO wiring — picking "Flat amount" never
-// revealed the $ input unless the budget was ALREADY saved in flat mode,
-// so a flat fee could never be entered.)
-function feeModeToggle() {
-  const flat = document.getElementById('set-fee-mode-flat')?.checked;
-  const pw = document.getElementById('set-fee-pct-wrap');
-  const fw = document.getElementById('set-fee-flat-wrap');
-  if (pw) pw.style.display = flat ? 'none' : 'flex';
-  if (fw) fw.style.display = flat ? 'flex' : 'none';
+// ── Production Company Fee editor (2026-07-22) ────────────────────────────
+// Right-click the Top Sheet fee row → this popup. Saves through the
+// dedicated /fee endpoint and edits THIS budget version only, so Estimated
+// and Working can carry different fees. Replaced the Settings-page fee
+// fields at the owner's request after flat-fee saves kept failing there.
+const FEE_URL = `{{ url_for('budget_fee_update', pid=project.id, bid=budget.id) }}`;
+function feeEditMenu(event) {
+  event.preventDefault();
+  const row = event.target.closest('.fee-row') || document.querySelector('.fee-row[data-ts-row="fee"]');
+  const pop = document.getElementById('fee-edit-popup');
+  if (!pop || !row) return;
+  const mode = row.dataset.feeMode === 'flat' ? 'flat' : 'pct';
+  document.querySelectorAll('input[name="fee-pop-mode"]').forEach(r => { r.checked = (r.value === mode); });
+  pop.dataset.pct  = (parseFloat(row.dataset.feePct)  || 0) * 100;
+  pop.dataset.flat = parseFloat(row.dataset.feeFlat) || 0;
+  document.getElementById('fee-pop-dispersed').checked = row.dataset.dispersed === 'true';
+  document.getElementById('fee-pop-status').textContent = '';
+  feePopModeSwap();
+  pop.classList.remove('hidden');
+  pop.style.left = Math.min(event.clientX, window.innerWidth - 300) + 'px';
+  pop.style.top  = (event.clientY + 8) + 'px';
+  setTimeout(() => document.getElementById('fee-pop-value').focus(), 50);
 }
+function feePopModeSwap() {
+  const flat = document.querySelector('input[name="fee-pop-mode"][value="flat"]')?.checked;
+  const pop = document.getElementById('fee-edit-popup');
+  document.getElementById('fee-pop-prefix').style.display = flat ? '' : 'none';
+  document.getElementById('fee-pop-suffix').style.display = flat ? 'none' : '';
+  const inp = document.getElementById('fee-pop-value');
+  inp.step  = flat ? '100' : '0.25';
+  inp.value = flat ? (parseFloat(pop.dataset.flat) || 0) : (parseFloat(pop.dataset.pct) || 0);
+}
+function closeFeePopup() { document.getElementById('fee-edit-popup')?.classList.add('hidden'); }
+async function saveFeeEdit() {
+  const flat = document.querySelector('input[name="fee-pop-mode"][value="flat"]')?.checked;
+  const val = parseFloat(document.getElementById('fee-pop-value').value);
+  const st = document.getElementById('fee-pop-status');
+  if (isNaN(val) || val < 0) { if (st) st.textContent = 'Enter a number.'; return; }
+  const body = { mode: flat ? 'flat' : 'pct',
+                 dispersed: document.getElementById('fee-pop-dispersed').checked };
+  body[flat ? 'flat' : 'pct'] = val;
+  if (st) st.textContent = 'Saving…';
+  try {
+    const r = await fetch(FEE_URL, { method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) {
+      if (st) st.textContent = '✓ Saved — refreshing…';
+      // Fee line, dispersal, and grand totals are server-computed — reload
+      // in place, keeping the active tab.
+      if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload();
+    } else if (st) { st.textContent = j.error || ('Failed (' + r.status + ')'); }
+  } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
+}
+document.addEventListener('click', e => {
+  const pop = document.getElementById('fee-edit-popup');
+  if (pop && !pop.classList.contains('hidden') && !e.target.closest('#fee-edit-popup')) closeFeePopup();
+});
+
+// ── Internal comments (2026-07-22): budget-level 🗒 + per-line 💬 ─────────
+const COMMENTS_URL = '{{ url_for("budget_comments_list", pid=project.id, bid=budget.id) }}';
+const COMMENT_DEL_TMPL = '{{ url_for("budget_comments_delete", pid=project.id, cid=999999999) }}';
+let _cmLineId = null;
+function _cmEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+async function _cmLoad() {
+  const list = document.getElementById('comments-list');
+  list.innerHTML = '<div style="color:var(--text-muted)">Loading…</div>';
+  try {
+    const r = await fetch(COMMENTS_URL + (_cmLineId ? ('?line_id=' + _cmLineId) : ''),
+                          { credentials: 'same-origin' });
+    const j = await r.json();
+    const cs = (j && j.comments) || [];
+    list.innerHTML = cs.length ? cs.map(c =>
+      '<div style="border-top:1px solid var(--border);padding:5px 0 6px">'
+      + '<div style="display:flex;gap:8px;align-items:center">'
+      + '<b style="font-size:.72rem">' + _cmEsc(c.author) + '</b>'
+      + '<span style="font-size:.65rem;color:var(--text-muted)">'
+      + (c.created_at ? new Date(c.created_at).toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '') + '</span>'
+      + (c.mine ? '<button onclick="delComment(' + c.id + ')" title="Delete" style="margin-left:auto;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:.7rem">✕</button>' : '')
+      + '</div>'
+      + '<div style="white-space:pre-wrap;margin-top:2px">' + _cmEsc(c.body) + '</div></div>'
+    ).join('') : '<div style="color:var(--text-muted)">No notes yet.</div>';
+    list.scrollTop = list.scrollHeight;
+  } catch (e) { list.innerHTML = '<div style="color:#e0a13a">Could not load comments.</div>'; }
+}
+function openComments(lineId, label) {
+  _cmLineId = lineId;
+  const pop = document.getElementById('comments-popup');
+  document.getElementById('comments-title').textContent =
+    (lineId ? '💬 ' : '🗒 ') + 'Notes — ' + (label || '');
+  document.getElementById('comments-status').textContent = '';
+  document.getElementById('comments-input').value = '';
+  pop.classList.remove('hidden');
+  pop.style.left = Math.max(12, (window.innerWidth - 420) / 2) + 'px';
+  pop.style.top = '110px';
+  _cmLoad();
+}
+function closeComments() { document.getElementById('comments-popup')?.classList.add('hidden'); }
+async function postComment() {
+  const inp = document.getElementById('comments-input');
+  const st = document.getElementById('comments-status');
+  const body = (inp.value || '').trim();
+  if (!body) return;
+  if (st) st.textContent = 'Posting…';
+  try {
+    const r = await fetch(COMMENTS_URL, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: body, line_id: _cmLineId }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) { inp.value = ''; if (st) st.textContent = ''; _cmLoad(); }
+    else if (st) st.textContent = j.error || ('Failed (' + r.status + ')');
+  } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
+}
+async function delComment(cid) {
+  try {
+    const r = await fetch(COMMENT_DEL_TMPL.replace('999999999', String(cid)),
+                          { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: '{}' });
+    if (r.ok) _cmLoad();
+  } catch (e) {}
+}
+document.addEventListener('click', e => {
+  const pop = document.getElementById('comments-popup');
+  if (pop && !pop.classList.contains('hidden')
+      && !e.target.closest('#comments-popup')
+      && !e.target.closest('.line-comments-btn')) closeComments();
+});
+
+// ── Version compare picker (2026-07-22) ──────────────────────────────────
+const COMPARE_URL = '{{ url_for("budget_compare", pid=project.id) }}';
+function openCompareModal(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const pop = document.getElementById('vcompare-popup');
+  if (!pop) return;
+  // Default A to something other than B (the current budget).
+  const selA = document.getElementById('vcompare-a');
+  const selB = document.getElementById('vcompare-b');
+  if (selA && selB && selA.value === selB.value) {
+    const other = Array.from(selA.options).find(o => o.value !== selB.value);
+    if (other) selA.value = other.value;
+  }
+  pop.classList.remove('hidden');
+  pop.style.left = Math.min(event.clientX, window.innerWidth - 330) + 'px';
+  pop.style.top  = (event.clientY + 8) + 'px';
+}
+function goCompare() {
+  const a = document.getElementById('vcompare-a').value;
+  const b = document.getElementById('vcompare-b').value;
+  if (!a || !b || a === b) { alert('Pick two different versions.'); return; }
+  window.location = COMPARE_URL + '?a=' + a + '&b=' + b + '&changes=1';
+}
+document.addEventListener('click', e => {
+  const pop = document.getElementById('vcompare-popup');
+  if (pop && !pop.classList.contains('hidden') && !e.target.closest('#vcompare-popup')) pop.classList.add('hidden');
+});
+
+// ── Version options popup (2026-07-22): internal subtitle + delete-lock ──
+const VMETA_URL_TMPL = '{{ url_for("budget_version_meta", pid=project.id, bid=999999999) }}';
+let _vmetaBid = null;
+function versionMetaMenu(event, bid, vn, label, locked) {
+  event.preventDefault();
+  event.stopPropagation();
+  _vmetaBid = bid;
+  const pop = document.getElementById('vmeta-popup');
+  if (!pop) return;
+  document.getElementById('vmeta-title').textContent = 'Version v' + vn + ' — internal options';
+  document.getElementById('vmeta-label').value = label || '';
+  const lk = document.getElementById('vmeta-locked');
+  if (lk) lk.checked = !!locked;
+  document.getElementById('vmeta-status').textContent = '';
+  pop.classList.remove('hidden');
+  pop.style.left = Math.min(event.clientX, window.innerWidth - 310) + 'px';
+  pop.style.top  = (event.clientY + 8) + 'px';
+  setTimeout(() => document.getElementById('vmeta-label').focus(), 50);
+}
+function closeVmetaPopup() { document.getElementById('vmeta-popup')?.classList.add('hidden'); }
+async function saveVersionMeta() {
+  if (!_vmetaBid) return;
+  const st = document.getElementById('vmeta-status');
+  const body = { internal_label: document.getElementById('vmeta-label').value };
+  const lk = document.getElementById('vmeta-locked');
+  if (lk) body.locked = lk.checked;
+  if (st) st.textContent = 'Saving…';
+  try {
+    const r = await fetch(VMETA_URL_TMPL.replace('999999999', String(_vmetaBid)), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) { if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload(); }
+    else if (st) st.textContent = j.error || ('Failed (' + r.status + ')');
+  } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
+}
+document.addEventListener('click', e => {
+  const pop = document.getElementById('vmeta-popup');
+  if (pop && !pop.classList.contains('hidden') && !e.target.closest('#vmeta-popup')) closeVmetaPopup();
+});
 
 async function saveSettings() {
   // A thrown error anywhere in here used to die silently — the Save button
@@ -10012,10 +10392,8 @@ async function saveSettings() {
 async function _saveSettingsInner() {
   const payload = {
     name:           document.getElementById('set-name').value.trim(),
-    company_fee_pct:        parseFloat(document.getElementById('set-fee').value || 0),
-    company_fee_dispersed:  document.getElementById('set-fee-dispersed').checked,
-    company_fee_mode:       (document.querySelector('input[name="fee-mode"]:checked')?.value === 'flat' ? 'flat' : 'pct'),
-    company_fee_flat:       parseFloat(document.getElementById('set-fee-flat')?.value || 0),
+    // Production Company Fee fields left Settings 2026-07-22 — edited via
+    // right-click on the Top Sheet fee row (dedicated /fee endpoint).
     target_budget:  document.getElementById('set-target').value || null,
     start_date:     document.getElementById('set-start').value || null,
     end_date:       document.getElementById('set-end').value || null,
@@ -10051,11 +10429,6 @@ async function _saveSettingsInner() {
   });
 
   if (res.ok) {
-    // Update fee display live
-    _FLOAT_FEE_PCT   = payload.company_fee_pct / 100;
-    _FLOAT_DISPERSED = payload.company_fee_dispersed;
-    applyFeeDisplay();
-
     // Update heading + page title immediately
     const newName = payload.name || document.getElementById('set-name').value.trim();
     document.getElementById('budget-name-heading').textContent = newName;
@@ -12129,6 +12502,96 @@ function normalizePhone(v) {
     <button class="btn btn-xs btn-ghost" onclick="closePctPopup()">✕</button>
   </div>
   <div class="pct-edit-note" id="pct-edit-note"></div>
+</div>
+
+{# ── Version options popup (✎ in the version dropdown): internal-only
+     subtitle + delete-lock. The subtitle NEVER reaches client-facing
+     surfaces. (Owner 2026-07-22.) #}
+<div id="vmeta-popup" class="pct-edit-popup hidden" style="min-width:270px">
+  <div class="pct-edit-label" id="vmeta-title">Version</div>
+  <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-top:.5rem">
+    Internal subtitle <span style="opacity:.7">(only your team sees this — never clients)</span>
+  </label>
+  <input type="text" id="vmeta-label" maxlength="120" placeholder='e.g. "post-client-call cut" or "DO NOT TOUCH"'
+         style="width:100%;margin-top:3px"
+         onkeydown="if(event.key==='Enter'){saveVersionMeta()}if(event.key==='Escape'){closeVmetaPopup()}">
+  {% if current_user.role in ('super_admin', 'admin') %}
+  <label style="display:flex;align-items:center;gap:.4rem;margin-top:.55rem;font-weight:400;cursor:pointer;font-size:.82rem">
+    <input type="checkbox" id="vmeta-locked"> 🔒 Lock this version — it can't be deleted until unlocked
+  </label>
+  {% endif %}
+  <div style="display:flex;gap:.5rem;margin-top:.6rem;align-items:center">
+    <button class="btn btn-xs btn-primary" onclick="saveVersionMeta()">✓ Save</button>
+    <button class="btn btn-xs btn-ghost" onclick="closeVmetaPopup()">✕</button>
+    <span id="vmeta-status" style="font-size:.72rem;color:var(--text-muted)"></span>
+  </div>
+</div>
+
+{# ── Internal comments popup — budget-level (🗒 Notes) and per-line (💬).
+     @name in a comment emails the matching teammate. Never client-facing.
+     (Owner 2026-07-22.) #}
+<div id="comments-popup" class="pct-edit-popup hidden" style="min-width:340px;max-width:440px">
+  <div class="pct-edit-label" id="comments-title">Comments</div>
+  <div id="comments-list" style="max-height:280px;overflow:auto;margin-top:.5rem;font-size:.8rem"></div>
+  <textarea id="comments-input" rows="2" placeholder="Add a note… use @name to tag a teammate (they get an email)"
+            style="width:100%;margin-top:.5rem;font-size:.8rem;resize:vertical"></textarea>
+  <div style="display:flex;gap:.5rem;margin-top:.4rem;align-items:center">
+    <button class="btn btn-xs btn-primary" onclick="postComment()">Post</button>
+    <button class="btn btn-xs btn-ghost" onclick="closeComments()">✕</button>
+    <span id="comments-status" style="font-size:.7rem;color:var(--text-muted)"></span>
+  </div>
+</div>
+
+{# ── Version compare picker (⇄ in the version dropdown). Opens the
+     side-by-side comparison page. (Owner 2026-07-22.) #}
+<div id="vcompare-popup" class="pct-edit-popup hidden" style="min-width:290px">
+  <div class="pct-edit-label">Compare versions</div>
+  <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-top:.5rem">A — baseline</label>
+  <select id="vcompare-a" style="width:100%;margin-top:2px">
+    {% for vb in all_budgets if not vb.is_actual %}
+    <option value="{{ vb.id }}">v{{ vb.version_number or 1 }} · {{ vb.name }}{% if vb.internal_label %} · “{{ vb.internal_label }}”{% endif %}</option>
+    {% endfor %}
+  </select>
+  <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-top:.5rem">B — compare to</label>
+  <select id="vcompare-b" style="width:100%;margin-top:2px">
+    {% for vb in all_budgets if not vb.is_actual %}
+    <option value="{{ vb.id }}" {% if vb.id == budget.id %}selected{% endif %}>v{{ vb.version_number or 1 }} · {{ vb.name }}{% if vb.internal_label %} · “{{ vb.internal_label }}”{% endif %}</option>
+    {% endfor %}
+  </select>
+  <div style="display:flex;gap:.5rem;margin-top:.6rem">
+    <button class="btn btn-xs btn-primary" onclick="goCompare()">⇄ Compare</button>
+    <button class="btn btn-xs btn-ghost" onclick="document.getElementById('vcompare-popup').classList.add('hidden')">✕</button>
+  </div>
+</div>
+
+{# ── Production Company Fee editor (right-click on the Top Sheet fee row).
+     Per-version: edits the budget being viewed, so Estimated and Working can
+     carry different fees. Saves through the dedicated /fee endpoint. #}
+<div id="fee-edit-popup" class="pct-edit-popup hidden" style="min-width:250px">
+  <div class="pct-edit-label">Production Company Fee</div>
+  <div style="display:flex;gap:1rem;margin-top:.45rem">
+    <label style="display:flex;align-items:center;gap:.35rem;font-weight:400;cursor:pointer;font-size:.85rem">
+      <input type="radio" name="fee-pop-mode" value="pct" onchange="feePopModeSwap()"> Percentage
+    </label>
+    <label style="display:flex;align-items:center;gap:.35rem;font-weight:400;cursor:pointer;font-size:.85rem">
+      <input type="radio" name="fee-pop-mode" value="flat" onchange="feePopModeSwap()"> Flat amount
+    </label>
+  </div>
+  <div style="display:flex;align-items:center;gap:.5rem;margin-top:.45rem">
+    <span id="fee-pop-prefix" style="display:none">$</span>
+    <input type="number" id="fee-pop-value" min="0" step="0.01" style="width:120px"
+           onkeydown="if(event.key==='Enter'){saveFeeEdit()}if(event.key==='Escape'){closeFeePopup()}">
+    <span id="fee-pop-suffix">%</span>
+  </div>
+  <label style="display:flex;align-items:center;gap:.4rem;margin-top:.5rem;font-weight:400;cursor:pointer;font-size:.82rem">
+    <input type="checkbox" id="fee-pop-dispersed"> Disperse across lines (no separate fee line)
+  </label>
+  <div style="display:flex;gap:.5rem;margin-top:.55rem;align-items:center">
+    <button class="btn btn-xs btn-primary" onclick="saveFeeEdit()">✓ Save</button>
+    <button class="btn btn-xs btn-ghost" onclick="closeFeePopup()">✕</button>
+    <span id="fee-pop-status" style="font-size:.75rem;color:var(--text-muted)"></span>
+  </div>
+  <div class="pct-edit-note">Applies to this budget version only ({{ budget.name }}) — Estimated and Working can differ.</div>
 </div>
 
 <script>
