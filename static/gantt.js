@@ -170,6 +170,17 @@ function initGantt(pid, bid, activeProfileId) {
     // Skip non-editable meal-row cells (their own click handler runs)
     if (cell.dataset.meal) return;
 
+    // 🖌 Paint mode (2026-07-22): drag applies the chosen day type directly —
+    // no selection step. Mousedown paints the first cell and arms the drag.
+    if (_paintMode) {
+      e.preventDefault();
+      _paintDragging = true;
+      _paintType = document.getElementById('paint-type-select')?.value || 'work';
+      paintAndSave(cell, _paintType, true);
+      _mousedownDidAct = true;
+      return;
+    }
+
     const isMac = navigator.platform.toUpperCase().includes('MAC');
     const ctrl  = isMac ? e.metaKey : e.ctrlKey;
 
@@ -191,6 +202,14 @@ function initGantt(pid, bid, activeProfileId) {
   });
 
   document.addEventListener('mouseover', e => {
+    if (_paintMode && _paintDragging) {
+      const pc = e.target.closest('.gantt-cell');
+      if (pc && !pc.dataset.meal && pc.dataset.date
+          && (pc.dataset.type || 'off') !== _paintType) {
+        paintAndSave(pc, _paintType, false);
+      }
+      return;
+    }
     if (!_dragging || !_dragAnchor) return;
     const cell = e.target.closest('.gantt-cell');
     if (!cell || cell.dataset.meal || !cell.dataset.date) return;
@@ -1984,3 +2003,92 @@ function restoreDeptCollapse() {
     });
   } catch (_) {}
 }
+
+// ── 🖌 Paint mode (2026-07-22) ───────────────────────────────────────────────
+let _paintMode = false, _paintType = 'work', _paintDragging = false;
+function togglePaintMode() {
+  _paintMode = !_paintMode;
+  const btn = document.getElementById('btn-paint-mode');
+  const sel = document.getElementById('paint-type-select');
+  if (btn) {
+    btn.classList.toggle('btn-primary', _paintMode);
+    btn.classList.toggle('btn-ghost', !_paintMode);
+  }
+  if (sel) sel.classList.toggle('hidden', !_paintMode);
+  document.body.style.cursor = _paintMode ? 'crosshair' : '';
+  if (typeof clearSelection === 'function' && _paintMode) clearSelection();
+}
+document.addEventListener('mouseup', () => { _paintDragging = false; });
+
+// ── 📅 Day View (2026-07-22): click a date header ────────────────────────────
+function _dvEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function openDayView(dateStr) {
+  const panel = document.getElementById('day-view-panel');
+  const body = document.getElementById('day-view-body');
+  if (!panel || !body || !dateStr) return;
+  const FLAG_LABELS = {
+    working_meal: '🍽 working meal', per_diem_full: '💰 per diem',
+    per_diem_breakfast: '🥐 PD breakfast', per_diem_lunch: '🥪 PD lunch',
+    per_diem_dinner: '🍽 PD dinner', flight: '✈ flight', mileage: '🚗 mileage',
+    hotel: '🏨 hotel', car_rental: '🔑 car rental', car_service: '🚐 car service',
+  };
+  const groups = {}, order = [];
+  document.querySelectorAll(`.gantt-cell[data-date="${dateStr}"]`).forEach(cell => {
+    if (cell.dataset.meal) return;
+    const t = cell.dataset.type || 'off';
+    if (t === 'off') return;
+    const tr = cell.closest('tr');
+    if (!tr || !tr.classList.contains('gantt-row')) return;
+    const role = (tr.querySelector('.gantt-line-desc')?.childNodes[0]?.textContent || '').trim();
+    const chip = (tr.querySelector('.gantt-crew-chip')?.childNodes[0]?.textContent || '').trim();
+    let dept = '';
+    let p = tr.previousElementSibling;
+    while (p) {
+      if (p.classList.contains('gantt-dept-header')) { dept = p.textContent.replace(/[▾▸]/g, '').trim(); break; }
+      p = p.previousElementSibling;
+    }
+    const flags = _getCellFlags(cell);
+    const bits = Object.keys(flags).filter(k => flags[k]).map(k => FLAG_LABELS[k] || k);
+    const ot = parseFloat(cell.dataset.otHours || 0);
+    if (ot > 0) bits.push('⏱ ' + ot + 'h OT');
+    const note = (cell.title || '').trim();
+    const who = (chip && chip !== '+ Assign') ? chip : role;
+    const sub = (chip && chip !== '+ Assign') ? role : '';
+    if (!groups[dept]) { groups[dept] = []; order.push(dept); }
+    groups[dept].push(
+      '<div style="padding:5px 0;border-top:1px solid var(--border,#2c3444)">'
+      + '<b>' + _dvEsc(who) + '</b>'
+      + (sub ? ' <span style="color:var(--text-muted,#8a94a3)">· ' + _dvEsc(sub) + '</span>' : '')
+      + ' <span style="font-size:.66rem;padding:1px 7px;border-radius:999px;'
+      + 'background:rgba(91,138,249,.15);text-transform:capitalize">' + _dvEsc(t.replace(/_/g, ' ')) + '</span>'
+      + (bits.length ? '<div style="color:var(--text-muted,#8a94a3);margin-top:1px">' + bits.join(' · ') + '</div>' : '')
+      + (note ? '<div style="color:var(--text-muted,#8a94a3);font-style:italic">📝 ' + _dvEsc(note) + '</div>' : '')
+      + '</div>');
+  });
+  let html = '', n = 0;
+  order.forEach(d => {
+    html += '<div style="margin-top:9px;font-size:.66rem;text-transform:uppercase;'
+      + 'letter-spacing:.06em;color:var(--text-muted,#8a94a3);font-weight:700">'
+      + _dvEsc(d || 'Other') + '</div>' + groups[d].join('');
+    n += groups[d].length;
+  });
+  let dLabel = dateStr;
+  try {
+    dLabel = new Date(dateStr + 'T12:00:00').toLocaleDateString(undefined,
+      { weekday: 'long', month: 'long', day: 'numeric' });
+  } catch (_) {}
+  document.getElementById('day-view-title').textContent = '📅 ' + dLabel + (n ? ' — ' + n + ' scheduled' : '');
+  body.innerHTML = html || '<div style="color:var(--text-muted,#8a94a3);padding:8px 0">No one is scheduled on this day.</div>';
+  panel.classList.remove('hidden');
+  panel.style.left = Math.max(12, (window.innerWidth - 460) / 2) + 'px';
+  panel.style.top = '80px';
+}
+document.addEventListener('mousedown', e => {
+  const panel = document.getElementById('day-view-panel');
+  if (panel && !panel.classList.contains('hidden')
+      && !e.target.closest('#day-view-panel')
+      && !e.target.closest('.gantt-date-col')) panel.classList.add('hidden');
+});
