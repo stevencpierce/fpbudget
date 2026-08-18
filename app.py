@@ -5975,30 +5975,35 @@ def pull_budget_candidates(pid, bid):
     src = Budget.query.filter_by(id=src_bid, project_id=pid).first_or_404()
     dest_lines = BudgetLine.query.filter_by(budget_id=bid).all()
     dest_keys = set()
-    dest_src_ids = set()
+    dest_lineage = set()   # line ids linked into dest via source chains
     for dl in dest_lines:
         dest_keys.add((dl.account_code, (dl.description or '').strip().lower(),
                        dl.line_tag or ''))
+        dest_lineage.add(dl.id)
         if dl.source_line_id:
-            dest_src_ids.add(dl.source_line_id)
+            dest_lineage.add(dl.source_line_id)
     out = []
     for sl in (BudgetLine.query.filter_by(budget_id=src.id)
                .order_by(BudgetLine.account_code, BudgetLine.sort_order,
                          BudgetLine.id).all()):
-        if sl.id in dest_src_ids:
-            continue
-        key = (sl.account_code, (sl.description or '').strip().lower(),
-               sl.line_tag or '')
-        if key in dest_keys:
-            continue
         if sl.line_tag == 'spacer':
             continue   # spacers are positional noise — headers carry meaning
+        # 'present' is ADVISORY only — every line is returned so the user
+        # picks line by line (owner 2026-07-22: the missing-only filter hid
+        # headers on real data and left nothing pullable). Lineage matches
+        # in EITHER direction (dest cloned from src, src cloned from the
+        # same ancestor as dest, or vice versa), then name matching.
+        present = (sl.id in dest_lineage
+                   or (sl.source_line_id and sl.source_line_id in dest_lineage)
+                   or (sl.account_code, (sl.description or '').strip().lower(),
+                       sl.line_tag or '') in dest_keys)
         out.append({
             "id": sl.id, "account_code": sl.account_code,
             "account_name": sl.account_name,
             "description": (sl.description or '').strip(),
             "kind": (sl.line_tag if sl.line_tag in ('header',) else 'line'),
             "is_labor": bool(sl.is_labor),
+            "present": bool(present),
             "total": float(sl.working_total if sl.working_total is not None
                            else (sl.estimated_total or 0)),
         })

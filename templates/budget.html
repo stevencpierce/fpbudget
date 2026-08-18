@@ -10339,12 +10339,16 @@ async function loadPullCandidates() {
     const j = await r.json();
     const cs = (j && j.candidates) || [];
     if (!cs.length) {
-      list.innerHTML = '<div style="color:var(--text-muted)">Nothing to pull — every line in that version already exists here.</div>';
+      list.innerHTML = '<div style="color:var(--text-muted)">That version has no lines.</div>';
       return;
     }
+    // Every source line renders, line by line (owner 2026-07-22). Lines we
+    // believe are already here start unchecked with a badge — but remain
+    // selectable, so nothing is ever unpullable.
+    const nNew = cs.filter(c => !c.present).length;
     let html = '<label style="display:flex;gap:6px;align-items:center;font-size:.72rem;color:var(--text-muted);padding:2px 0;cursor:pointer">'
-      + '<input type="checkbox" checked onchange="document.querySelectorAll(\'.vpull-cb\').forEach(c=>c.checked=this.checked)"> Select all ('
-      + cs.length + ')</label>';
+      + '<input type="checkbox" checked onchange="document.querySelectorAll(\'.vpull-cb\').forEach(c=>{if(!c.dataset.present||this.dataset.all===\'1\')c.checked=this.checked})" data-all="0"> '
+      + 'Select the ' + nNew + ' line' + (nNew !== 1 ? 's' : '') + ' not in this budget</label>';
     let lastSec = null;
     cs.forEach(c => {
       if (c.account_code !== lastSec) {
@@ -10352,13 +10356,16 @@ async function loadPullCandidates() {
         html += '<div style="margin-top:6px;font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">'
           + c.account_code + ' · ' + _pEsc(c.account_name || '') + '</div>';
       }
-      html += '<label style="display:flex;gap:6px;align-items:center;padding:2px 0 2px 8px;cursor:pointer">'
-        + '<input type="checkbox" class="vpull-cb" checked value="' + c.id + '">'
+      html += '<label style="display:flex;gap:6px;align-items:center;padding:2px 0 2px 8px;cursor:pointer'
+        + (c.present ? ';opacity:.55' : '') + '">'
+        + '<input type="checkbox" class="vpull-cb" ' + (c.present ? 'data-present="1"' : 'checked') + ' value="' + c.id + '">'
         + (c.kind === 'header'
-            ? '<span style="text-transform:uppercase;letter-spacing:.04em;font-weight:700;font-size:.7rem">' + _pEsc(c.description) + '</span>'
+            ? '<span style="text-transform:uppercase;letter-spacing:.04em;font-weight:700;font-size:.7rem">' + _pEsc(c.description || '(unnamed header)') + '</span>'
               + '<span style="font-size:.62rem;color:var(--text-muted)">sub-header</span>'
-            : '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _pEsc(c.description || '—') + '</span>'
-              + '<span style="margin-left:auto;white-space:nowrap">$' + Number(c.total || 0).toLocaleString('en-US', {minimumFractionDigits: 2}) + '</span>')
+            : '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _pEsc(c.description || '—') + '</span>')
+        + (c.present ? '<span style="font-size:.6rem;color:var(--text-muted);white-space:nowrap;margin-left:auto">already here</span>'
+                     : (c.kind === 'header' ? ''
+                        : '<span style="margin-left:auto;white-space:nowrap">$' + Number(c.total || 0).toLocaleString('en-US', {minimumFractionDigits: 2}) + '</span>'))
         + '</label>';
     });
     list.innerHTML = html;
