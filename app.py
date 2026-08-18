@@ -21763,9 +21763,27 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
             for sbl, ln in raw_rows:
                 # Use calc_line_from_schedule() for use_schedule lines so
                 # the displayed total matches the gantt-driven computation.
+                _sched_days_n = None
                 if ln.use_schedule:
-                    _sched = ScheduleDay.query.filter_by(
-                        budget_line_id=ln.id, schedule_mode=_sched_mode).all()
+                    # MIRROR budget_view's fetch exactly: legacy rows carry
+                    # schedule_mode NULL and must count, deduped per
+                    # (instance, date) with the mode-tagged row winning.
+                    # The old strict mode filter dropped legacy days —
+                    # user report 2026-07-22: "5 days in the budget and
+                    # schedule, but the sub budget shows 4 days".
+                    _raw_sd = ScheduleDay.query.filter(
+                        ScheduleDay.budget_line_id == ln.id,
+                        db.or_(ScheduleDay.schedule_mode == _sched_mode,
+                               ScheduleDay.schedule_mode == None)).all()
+                    _dd = {}
+                    for _d in _raw_sd:
+                        _k = (_d.crew_instance or 1, _d.date)
+                        _ex = _dd.get(_k)
+                        if _ex is None or (_ex.schedule_mode is None
+                                           and _d.schedule_mode == _sched_mode):
+                            _dd[_k] = _d
+                    _sched = list(_dd.values())
+                    _sched_days_n = sum(1 for _d in _sched if _d.day_type != 'off')
                     _res = calc_line_from_schedule(ln, _sched, fringe_cfgs, _profile, _pw_start)
                 else:
                     _res = calc_line(ln, fringe_cfgs)
@@ -21776,7 +21794,11 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
                     "account_code":    ln.account_code,
                     "description":     ln.description or ln.account_name or "",
                     "qty":             float(ln.quantity or 0),
-                    "days":            float(ln.days or 0),
+                    # Schedule-driven lines show the SCHEDULE's day count,
+                    # not the stale stored days field.
+                    "days":            (float(_sched_days_n)
+                                        if _sched_days_n is not None
+                                        else float(ln.days or 0)),
                     "rate":            float(ln.rate or 0),
                     "estimated_total": _eff_total,
                     "is_labor":        bool(ln.is_labor),
