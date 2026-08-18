@@ -970,6 +970,10 @@ class BudgetComment(db.Model):
                                nullable=False, index=True)
     budget_line_id = db.Column(db.Integer, db.ForeignKey("budget_line.id"),
                                nullable=True, index=True)
+    # Set together with budget_line_id for a SCHEDULE person-day thread
+    # (line × date on the Gantt). NULL = budget- or line-level thread.
+    # (Owner 2026-07-22: "add per-day comments to the schedule too".)
+    day_date       = db.Column(db.Date, nullable=True)
     author_id      = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     body           = db.Column(db.Text, nullable=False)
     created_at     = db.Column(db.DateTime, default=datetime.utcnow, index=True)

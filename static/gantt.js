@@ -788,6 +788,11 @@ function showPicker(e, cell) {
   if (noteInp) noteInp.value = (cell.title || '').trim();
   const otInp = document.getElementById('day-picker-ot');
   if (otInp) otInp.value = parseFloat(cell.dataset.otHours || 0) || '';
+  const ccn = document.getElementById('day-picker-comments-n');
+  if (ccn) {
+    const n = parseInt(cell.dataset.comments || 0);
+    ccn.textContent = n ? '(' + n + ')' : '';
+  }
 
   // Sync flag button active states before showing
   const flags = _getCellFlags(cell);
@@ -2091,4 +2096,76 @@ document.addEventListener('mousedown', e => {
   if (panel && !panel.classList.contains('hidden')
       && !e.target.closest('#day-view-panel')
       && !e.target.closest('.gantt-date-col')) panel.classList.add('hidden');
+});
+
+// ── 💬 Per-day comments (2026-07-22): person-day threads on schedule cells ───
+function _ccUrl() { return `/projects/${_pid}/budget/${_bid}/comments`; }
+function _ccCell() {
+  const picker = document.getElementById('day-picker');
+  return picker && picker._targetCell;
+}
+async function _ccLoad(cell) {
+  const list = document.getElementById('cell-comments-list');
+  list.innerHTML = '<div style="color:var(--text-muted,#8a94a3)">Loading…</div>';
+  try {
+    const r = await fetch(_ccUrl() + '?line_id=' + cell.dataset.line
+                          + '&date=' + cell.dataset.date, { credentials: 'same-origin' });
+    const j = await r.json();
+    const cs = (j && j.comments) || [];
+    list.innerHTML = cs.length ? cs.map(c =>
+      '<div style="border-top:1px solid var(--border,#2c3444);padding:4px 0">'
+      + '<b style="font-size:.72rem">' + _dvEsc(c.author) + '</b> '
+      + '<span style="font-size:.64rem;color:var(--text-muted,#8a94a3)">'
+      + (c.created_at ? new Date(c.created_at).toLocaleString(undefined,
+          { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '') + '</span>'
+      + '<div style="white-space:pre-wrap">' + _dvEsc(c.body) + '</div></div>'
+    ).join('') : '<div style="color:var(--text-muted,#8a94a3)">No notes on this day yet.</div>';
+    // keep the picker's count + the cell marker current
+    const nEl = document.getElementById('day-picker-comments-n');
+    if (nEl) nEl.textContent = cs.length ? '(' + cs.length + ')' : '';
+    if (cs.length) cell.setAttribute('data-comments', cs.length);
+    else cell.removeAttribute('data-comments');
+    list.scrollTop = list.scrollHeight;
+  } catch (e) {
+    list.innerHTML = '<div style="color:#e0a13a">Could not load comments.</div>';
+  }
+}
+function openCellComments() {
+  const cell = _ccCell();
+  if (!cell) return;
+  const pop = document.getElementById('cell-comments-popup');
+  const whoEl = document.getElementById('day-picker-who');
+  document.getElementById('cell-comments-title').textContent =
+    '💬 ' + (whoEl ? whoEl.textContent : 'Day notes');
+  document.getElementById('cell-comments-input').value = '';
+  document.getElementById('cell-comments-status').textContent = '';
+  pop._targetCell = cell;
+  pop.classList.remove('hidden');
+  pop.style.left = Math.max(12, (window.innerWidth - 420) / 2) + 'px';
+  pop.style.top = '100px';
+  document.getElementById('day-picker').classList.add('hidden');
+  _ccLoad(cell);
+}
+async function postCellComment() {
+  const pop = document.getElementById('cell-comments-popup');
+  const cell = pop._targetCell;
+  const inp = document.getElementById('cell-comments-input');
+  const st = document.getElementById('cell-comments-status');
+  const body = (inp.value || '').trim();
+  if (!cell || !body) return;
+  if (st) st.textContent = 'Posting…';
+  try {
+    const r = await fetch(_ccUrl(), { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: body, line_id: parseInt(cell.dataset.line),
+                             date: cell.dataset.date }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) { inp.value = ''; if (st) st.textContent = ''; _ccLoad(cell); }
+    else if (st) st.textContent = (j.error || 'Failed (' + r.status + ')');
+  } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
+}
+document.addEventListener('mousedown', e => {
+  const pop = document.getElementById('cell-comments-popup');
+  if (pop && !pop.classList.contains('hidden')
+      && !e.target.closest('#cell-comments-popup')) pop.classList.add('hidden');
 });

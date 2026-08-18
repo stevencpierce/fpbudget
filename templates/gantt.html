@@ -501,6 +501,8 @@
           data-type="{{ cell.day_type if cell else 'off' }}"
           data-ot-hours="{{ cell.est_ot_hours | float if cell and cell.est_ot_hours else 0 }}"
           data-flags="{{ cell.cell_flags or '{}' }}"
+          {% set _dcc = day_comment_counts.get(row.id ~ ':' ~ d.isoformat()) %}
+          {% if _dcc %}data-comments="{{ _dcc }}"{% endif %}
           title="{{ cell.note or '' }}"
           onclick="handleCellClick(event, this)">
         {% if cell and cell.day_type != 'off' %}
@@ -632,6 +634,30 @@
 {% endif %}
 
 <!-- Day type picker (right-click context menu — subcategory selection) -->
+<style>
+  /* 💬 marker on cells that carry per-day comments (2026-07-22) */
+  .gantt-cell { position: relative; }
+  .gantt-cell[data-comments]::after {
+    content: '💬'; position: absolute; top: 0; right: 1px;
+    font-size: 7px; line-height: 1; opacity: .9; pointer-events: none;
+  }
+</style>
+{# 💬 Cell comments popup — the person-day thread (owner 2026-07-22) #}
+<div id="cell-comments-popup" class="day-picker hidden" style="min-width:320px;max-width:420px;position:fixed">
+  <div style="display:flex;align-items:center;gap:8px">
+    <div class="day-picker-section-label" id="cell-comments-title" style="font-size:.8rem"></div>
+    <button class="btn btn-xs btn-ghost" style="margin-left:auto"
+            onclick="document.getElementById('cell-comments-popup').classList.add('hidden')">✕</button>
+  </div>
+  <div id="cell-comments-list" style="max-height:240px;overflow:auto;font-size:.78rem;margin-top:.3rem"></div>
+  <textarea id="cell-comments-input" rows="2" placeholder="Add a note for this day… @name to tag a teammate"
+            style="width:100%;margin-top:.4rem;font-size:.78rem;resize:vertical"></textarea>
+  <div style="display:flex;gap:.5rem;margin-top:.35rem;align-items:center">
+    <button class="btn btn-xs btn-primary" onclick="postCellComment()">Post</button>
+    <span id="cell-comments-status" style="font-size:.7rem;color:var(--text-muted,#8a94a3)"></span>
+  </div>
+</div>
+
 {# 📅 Day View (owner 2026-07-22): click a date header → everyone scheduled
    that day, grouped by department, with day types, flags, OT and notes —
    a call-sheet preview for the day. #}
@@ -648,6 +674,11 @@
   {# Person-day header (owner 2026-07-22): who + which day this card edits. #}
   <div id="day-picker-who" style="font-weight:700;font-size:.8rem;margin-bottom:.4rem;
        padding-bottom:.35rem;border-bottom:1px solid var(--border,#333)"></div>
+  {# 💬 per-day comment thread for this person-day (owner 2026-07-22) #}
+  <button type="button" class="day-pick-btn" onclick="openCellComments()"
+          style="width:100%;text-align:left">💬 Comments
+    <span id="day-picker-comments-n" style="color:#5fd0a0"></span></button>
+  <div class="day-picker-divider"></div>
   <div class="day-picker-section-label">Day Type</div>
   {# Pretty labels for day types that don't render well as auto-titlecased
      keys (e.g. travel_half → "Travel Half" reads weak). Keys not in this

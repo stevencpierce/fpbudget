@@ -180,6 +180,8 @@
           </button>
           {% endif %}
           <button class="btn btn-xs btn-ghost" style="width:100%;margin-bottom:.35rem" onclick="openCompareModal(event)">⇄ Compare versions…</button>
+          <button class="btn btn-xs btn-ghost" style="width:100%;margin-bottom:.35rem" onclick="openPullModal(event)"
+                  title="Copy lines that exist in another version (e.g. added in Working) into this budget">⇩ Pull in from another version…</button>
           <button class="btn btn-sm btn-outline" style="width:100%" onclick="showNewBudgetModal()">+ New Version</button>
         </div>
       </div>
@@ -10313,6 +10315,79 @@ document.addEventListener('click', e => {
       && !e.target.closest('.line-comments-btn')) closeComments();
 });
 
+// ── Pull-in from another version (2026-07-22) ────────────────────────────
+const _pEsc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const PULL_CAND_URL = '{{ url_for("pull_budget_candidates", pid=project.id, bid=budget.id) }}';
+const PULL_APPLY_URL = '{{ url_for("pull_budget_lines", pid=project.id, bid=budget.id) }}';
+function openPullModal(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const pop = document.getElementById('vpull-popup');
+  if (!pop) return;
+  pop.classList.remove('hidden');
+  pop.style.left = Math.max(12, (window.innerWidth - 460) / 2) + 'px';
+  pop.style.top = '90px';
+  document.getElementById('vpull-status').textContent = '';
+  loadPullCandidates();
+}
+async function loadPullCandidates() {
+  const src = document.getElementById('vpull-src').value;
+  const list = document.getElementById('vpull-list');
+  list.innerHTML = '<div style="color:var(--text-muted)">Looking for lines not in this budget…</div>';
+  try {
+    const r = await fetch(PULL_CAND_URL + '?src=' + src, { credentials: 'same-origin' });
+    const j = await r.json();
+    const cs = (j && j.candidates) || [];
+    if (!cs.length) {
+      list.innerHTML = '<div style="color:var(--text-muted)">Nothing to pull — every line in that version already exists here.</div>';
+      return;
+    }
+    let html = '<label style="display:flex;gap:6px;align-items:center;font-size:.72rem;color:var(--text-muted);padding:2px 0;cursor:pointer">'
+      + '<input type="checkbox" checked onchange="document.querySelectorAll(\'.vpull-cb\').forEach(c=>c.checked=this.checked)"> Select all ('
+      + cs.length + ')</label>';
+    let lastSec = null;
+    cs.forEach(c => {
+      if (c.account_code !== lastSec) {
+        lastSec = c.account_code;
+        html += '<div style="margin-top:6px;font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)">'
+          + c.account_code + ' · ' + _pEsc(c.account_name || '') + '</div>';
+      }
+      html += '<label style="display:flex;gap:6px;align-items:center;padding:2px 0 2px 8px;cursor:pointer">'
+        + '<input type="checkbox" class="vpull-cb" checked value="' + c.id + '">'
+        + (c.kind === 'header'
+            ? '<span style="text-transform:uppercase;letter-spacing:.04em;font-weight:700;font-size:.7rem">' + _pEsc(c.description) + '</span>'
+              + '<span style="font-size:.62rem;color:var(--text-muted)">sub-header</span>'
+            : '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _pEsc(c.description || '—') + '</span>'
+              + '<span style="margin-left:auto;white-space:nowrap">$' + Number(c.total || 0).toLocaleString('en-US', {minimumFractionDigits: 2}) + '</span>')
+        + '</label>';
+    });
+    list.innerHTML = html;
+  } catch (e) {
+    list.innerHTML = '<div style="color:#e0a13a">Could not load: ' + _pEsc(e.message) + '</div>';
+  }
+}
+async function doPullLines() {
+  const src = document.getElementById('vpull-src').value;
+  const st = document.getElementById('vpull-status');
+  const ids = Array.from(document.querySelectorAll('.vpull-cb:checked')).map(c => parseInt(c.value));
+  if (!ids.length) { if (st) st.textContent = 'Nothing selected.'; return; }
+  if (st) st.textContent = 'Pulling…';
+  try {
+    const r = await fetch(PULL_APPLY_URL, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ src_bid: parseInt(src), line_ids: ids }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) {
+      if (st) st.textContent = '✓ Pulled ' + j.pulled + ' — refreshing…';
+      if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload();
+    } else if (st) st.textContent = j.error || ('Failed (' + r.status + ')');
+  } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
+}
+document.addEventListener('click', e => {
+  const pop = document.getElementById('vpull-popup');
+  if (pop && !pop.classList.contains('hidden') && !e.target.closest('#vpull-popup')) pop.classList.add('hidden');
+});
+
 // ── Version compare picker (2026-07-22) ──────────────────────────────────
 const COMPARE_URL = '{{ url_for("budget_compare", pid=project.id) }}';
 function openCompareModal(event) {
@@ -12549,6 +12624,26 @@ function normalizePhone(v) {
     <button class="btn btn-xs btn-primary" onclick="postComment()">Post</button>
     <button class="btn btn-xs btn-ghost" onclick="closeComments()">✕</button>
     <span id="comments-status" style="font-size:.7rem;color:var(--text-muted)"></span>
+  </div>
+</div>
+
+{# ── Pull-in picker (⇩ in the version dropdown): copy lines that exist in
+     another version but not here — incl. sub-headers with their formatting.
+     (Owner 2026-07-22: scope shifted, new Estimated needs the elements
+     added in Working for re-approval.) #}
+<div id="vpull-popup" class="pct-edit-popup hidden" style="min-width:340px;max-width:460px">
+  <div class="pct-edit-label">⇩ Pull lines into {{ budget.name }}</div>
+  <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-top:.5rem">Copy from</label>
+  <select id="vpull-src" style="width:100%;margin-top:2px" onchange="loadPullCandidates()">
+    {% for vb in all_budgets if vb.id != budget.id and not vb.is_actual %}
+    <option value="{{ vb.id }}" {% if vb.budget_mode == 'working' and loop.first %}selected{% endif %}>v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode in ('working','actual') else 'Estimated' }})</option>
+    {% endfor %}
+  </select>
+  <div id="vpull-list" style="max-height:280px;overflow:auto;margin-top:.5rem;font-size:.78rem"></div>
+  <div style="display:flex;gap:.5rem;margin-top:.5rem;align-items:center">
+    <button class="btn btn-xs btn-primary" onclick="doPullLines()">⇩ Pull selected</button>
+    <button class="btn btn-xs btn-ghost" onclick="document.getElementById('vpull-popup').classList.add('hidden')">✕</button>
+    <span id="vpull-status" style="font-size:.7rem;color:var(--text-muted)"></span>
   </div>
 </div>
 

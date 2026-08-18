@@ -787,7 +787,7 @@ _BUDGET_WRITE_ENDPOINTS = {
     'line_reorder', 'line_set_group', 'remove_schedule_instance',
     'schedule_purge_tag', 'schedule_purge_all', 'travel_apply_doc',
     'toggle_sync_omit', 'import_csv_apply', 'budget_from_template',
-    'budget_settings', 'budget_fee_update', 'set_gantt_day',
+    'budget_settings', 'budget_fee_update', 'pull_budget_lines', 'set_gantt_day',
     'set_gantt_days_batch', 'gantt_assign_crew', 'set_gantt_meal',
     'expand_gantt', 'set_schedule_label',
 }
@@ -5860,6 +5860,16 @@ def budget_comments_list(pid, bid):
     q = BudgetComment.query.filter_by(budget_id=bid)
     _lid = request.args.get('line_id', type=int)
     q = q.filter_by(budget_line_id=_lid) if _lid else q.filter_by(budget_line_id=None)
+    # Three thread scopes: budget (no line, no date), line (line only), and
+    # schedule person-day (line + date). Date filter keeps them distinct.
+    _dstr = (request.args.get('date') or '').strip()
+    if _dstr:
+        try:
+            q = q.filter_by(day_date=datetime.strptime(_dstr, '%Y-%m-%d').date())
+        except ValueError:
+            return jsonify({"error": "bad date"}), 400
+    else:
+        q = q.filter_by(day_date=None)
     out = []
     for cm in q.order_by(BudgetComment.created_at.asc()).all():
         out.append({"id": cm.id,
@@ -5889,8 +5899,18 @@ def budget_comments_add(pid, bid):
         ln = BudgetLine.query.filter_by(id=int(_lid), budget_id=bid).first()
         if ln is None:
             return jsonify({"error": "line not found"}), 404
+    _day = None
+    _dstr = (data.get('date') or '').strip()
+    if _dstr:
+        if ln is None:
+            return jsonify({"error": "a day comment needs its line"}), 400
+        try:
+            _day = datetime.strptime(_dstr, '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({"error": "bad date"}), 400
     cm = BudgetComment(project_id=pid, budget_id=bid,
                        budget_line_id=(ln.id if ln else None),
+                       day_date=_day,
                        author_id=current_user.id, body=body_txt)
     db.session.add(cm)
     db.session.commit()
@@ -5905,6 +5925,8 @@ def budget_comments_add(pid, bid):
             proj = ProjectSheet.query.get(pid)
             _where = (f'line "{(ln.description or "").strip() or ln.account_name}"'
                       if ln else f'budget "{budget.name}"')
+            if _day:
+                _where += f' on {_day.strftime("%b %-d") if hasattr(_day, "strftime") else _day}'
             _link = url_for('budget_view', pid=pid, bid=bid, _external=True)
             for u in _users:
                 if u.id == current_user.id or not u.email:
@@ -5935,6 +5957,117 @@ def budget_comments_delete(pid, cid):
     db.session.delete(cm)
     db.session.commit()
     return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/pull-candidates")
+@login_required
+def pull_budget_candidates(pid, bid):
+    """Lines present in another version (?src=<bid>, typically a Working)
+    but MISSING from this budget — powering 'Pull in from Working' (owner
+    2026-07-22: scope shifted mid-show, a new Estimated needs the elements
+    added in Working for re-approval; 'make sure the headers and all things
+    can be pulled through also'). Missing = no source-chain link into this
+    budget and no (account_code, description[, tag]) match. Headers and
+    spacers are included and marked."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'viewer')
+    src_bid = request.args.get('src', type=int)
+    src = Budget.query.filter_by(id=src_bid, project_id=pid).first_or_404()
+    dest_lines = BudgetLine.query.filter_by(budget_id=bid).all()
+    dest_keys = set()
+    dest_src_ids = set()
+    for dl in dest_lines:
+        dest_keys.add((dl.account_code, (dl.description or '').strip().lower(),
+                       dl.line_tag or ''))
+        if dl.source_line_id:
+            dest_src_ids.add(dl.source_line_id)
+    out = []
+    for sl in (BudgetLine.query.filter_by(budget_id=src.id)
+               .order_by(BudgetLine.account_code, BudgetLine.sort_order,
+                         BudgetLine.id).all()):
+        if sl.id in dest_src_ids:
+            continue
+        key = (sl.account_code, (sl.description or '').strip().lower(),
+               sl.line_tag or '')
+        if key in dest_keys:
+            continue
+        if sl.line_tag == 'spacer':
+            continue   # spacers are positional noise — headers carry meaning
+        out.append({
+            "id": sl.id, "account_code": sl.account_code,
+            "account_name": sl.account_name,
+            "description": (sl.description or '').strip(),
+            "kind": (sl.line_tag if sl.line_tag in ('header',) else 'line'),
+            "is_labor": bool(sl.is_labor),
+            "total": float(sl.working_total if sl.working_total is not None
+                           else (sl.estimated_total or 0)),
+        })
+    return jsonify({"ok": True, "src_name": src.name, "candidates": out})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/pull-lines", methods=["POST"])
+@login_required
+def pull_budget_lines(pid, bid):
+    """Copy the picked lines from another version into this budget — full
+    field copy including header formatting (note JSON), fringe/agent/rates,
+    tagged with source_line_id so future version chains keep working.
+    Appended at the end of each line's section. Body: {src_bid, line_ids}.
+    Goes through the budget write-gate (locked/estimated rules apply)."""
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'editor')
+    data = request.get_json(force=True) or {}
+    src = Budget.query.filter_by(id=int(data.get('src_bid') or 0),
+                                 project_id=pid).first_or_404()
+    try:
+        ids = [int(x) for x in (data.get('line_ids') or [])]
+    except (TypeError, ValueError):
+        return jsonify({"error": "line_ids must be ids"}), 400
+    if not ids:
+        return jsonify({"error": "Nothing selected."}), 400
+    src_lines = (BudgetLine.query
+                 .filter(BudgetLine.budget_id == src.id, BudgetLine.id.in_(ids))
+                 .order_by(BudgetLine.account_code, BudgetLine.sort_order,
+                           BudgetLine.id).all())
+    # Next sort_order per destination section, so pulls land at the bottom
+    # of their section in source order.
+    _next_sort = {}
+    for code, mx in (db.session.query(BudgetLine.account_code,
+                                      db.func.max(BudgetLine.sort_order))
+                     .filter(BudgetLine.budget_id == bid)
+                     .group_by(BudgetLine.account_code).all()):
+        _next_sort[code] = (mx or 0) + 1
+    n = 0
+    for sl in src_lines:
+        so = _next_sort.get(sl.account_code, 0)
+        _next_sort[sl.account_code] = so + 1
+        db.session.add(BudgetLine(
+            budget_id=bid, account_code=sl.account_code,
+            account_name=sl.account_name, description=sl.description,
+            is_labor=sl.is_labor, sort_order=so,
+            estimated_total=sl.estimated_total, payroll_co=sl.payroll_co,
+            quantity=sl.quantity, days=sl.days, rate=sl.rate,
+            rate_type=sl.rate_type, est_ot=sl.est_ot,
+            fringe_type=sl.fringe_type, agent_pct=sl.agent_pct,
+            note=sl.note,   # headers: carries the formatting JSON through
+            days_unit=sl.days_unit, days_per_week=sl.days_per_week,
+            line_tag=(sl.line_tag if sl.line_tag == 'header' else None),
+            role_group=sl.role_group, unit_rate=sl.unit_rate,
+            catalog_item_id=sl.catalog_item_id,
+            # schedule stays with the source version; totals here are static
+            use_schedule=False,
+            source_line_id=sl.id))
+        n += 1
+    db.session.commit()
+    _touch_budget(bid)
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='budget', entity_id=bid,
+                      entity_label=budget.name or 'Budget', budget_id=bid,
+                      project_id=pid, before=None,
+                      after={'pulled_from': src.id, 'lines': n},
+                      note=f'Pulled {n} line(s) in from "{src.name}"')
+    except Exception: pass
+    return jsonify({"ok": True, "pulled": n})
 
 
 @app.route("/projects/<int:pid>/budget/compare")
@@ -17660,8 +17793,25 @@ def gantt_view(pid, bid):
         (b.id for b in all_budgets if _budget_type(b.budget_mode) == 'estimated' and b.version_status != 'archived'), None
     )
 
+    # Per-day comment counts (owner 2026-07-22) keyed "lineid:iso-date" —
+    # stamps a 💬 marker on commented cells. Fail-open.
+    day_comment_counts = {}
+    try:
+        from models import BudgetComment
+        for _lid2, _dd, _n in (db.session.query(
+                BudgetComment.budget_line_id, BudgetComment.day_date,
+                db.func.count(BudgetComment.id))
+                .filter(BudgetComment.budget_id == bid,
+                        BudgetComment.day_date.isnot(None))
+                .group_by(BudgetComment.budget_line_id,
+                          BudgetComment.day_date).all()):
+            day_comment_counts[f"{_lid2}:{_dd.isoformat()}"] = _n
+    except Exception:
+        pass
+
     return render_template("gantt.html",
         project=project, budget=budget,
+        day_comment_counts=day_comment_counts,
         all_budgets=all_budgets,
         parent_names=parent_names,
         current_working_bid=current_working_bid,
@@ -29042,6 +29192,9 @@ def _web_worker_essential_columns():
                 "  ON budget_comment (budget_id)",
                 "CREATE INDEX IF NOT EXISTS ix_budget_comment_budget_line_id "
                 "  ON budget_comment (budget_line_id)",
+                # 2026-07-22 — per-day schedule comments (belt alongside 0009).
+                "ALTER TABLE budget_comment "
+                "  ADD COLUMN IF NOT EXISTS day_date DATE",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The
