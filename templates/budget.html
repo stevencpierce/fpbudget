@@ -2412,6 +2412,14 @@
             <span class="line-number">{{ sec.code }}-↔</span>
             {{ _orph.description }}
             <span style="margin-left:.4rem;font-size:.7rem;font-style:normal;padding:1px 6px;border-radius:8px;background:var(--bg-3,#e8e8ee);color:var(--text-muted);white-space:nowrap">↔ only in {{ _orph.sister_label }}</span>
+            {% if _orph.id %}
+            {# One-click pull-through: copies the {{ _orph.sister_label }} line
+               into THIS budget; the badge clears because the copy is chain-
+               linked to its source. (Owner 2026-07-22.) #}
+            <button class="btn btn-xs btn-ghost" style="font-style:normal;font-size:.68rem;padding:1px 7px;margin-left:.3rem"
+                    title="Copy this line from {{ _orph.sister_label }} into this budget — the badge clears once pulled"
+                    onclick='pullOrphanLine(this, {{ _orph.sister_bid }}, {{ _orph.id }})'>⇩ Pull in</button>
+            {% endif %}
           </td>
           <td class="col-pc col-labor-only"></td>
           <td class="col-qty"></td>
@@ -10394,6 +10402,27 @@ document.addEventListener('click', e => {
   const pop = document.getElementById('vpull-popup');
   if (pop && !pop.classList.contains('hidden') && !e.target.closest('#vpull-popup')) pop.classList.add('hidden');
 });
+
+// One-click pull of a single "↔ only in Working/Estimated" ghost line.
+async function pullOrphanLine(btn, srcBid, lineId) {
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const r = await fetch(PULL_APPLY_URL, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ src_bid: srcBid, line_ids: [lineId] }) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) {
+      if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload();
+    } else {
+      alert(j.error || ('Pull failed (' + r.status + ')'));
+      btn.disabled = false; btn.textContent = '⇩ Pull in';
+    }
+  } catch (e) {
+    alert('Pull failed: ' + e.message);
+    btn.disabled = false; btn.textContent = '⇩ Pull in';
+  }
+}
 
 // ── Version compare picker (2026-07-22) ──────────────────────────────────
 const COMPARE_URL = '{{ url_for("budget_compare", pid=project.id) }}';

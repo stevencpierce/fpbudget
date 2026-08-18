@@ -8152,6 +8152,13 @@ def budget_view(pid, bid):
                     _paired = (
                         (_sl.source_line_id is not None and _sl.source_line_id in _this_ids)
                         or (_sl.id in _this_src_ids)
+                        # Shared ancestor (2026-07-22): both this budget's
+                        # line and the sister line were cloned from the same
+                        # older line (e.g. renamed in Working while the new
+                        # Estimated kept the old name) — same lineage, so
+                        # not an orphan. Matches pull-candidates' logic.
+                        or (_sl.source_line_id is not None
+                            and _sl.source_line_id in _this_src_ids)
                     )
                     # (b) (account_code, normalized description) fallback.
                     if not _paired:
@@ -8184,6 +8191,11 @@ def budget_view(pid, bid):
                         'is_labor': bool(_sl.is_labor),
                         'account_code': _sl.account_code,
                         'sister_label': sister_label,
+                        # One-click pull-through (owner 2026-07-22): the ghost
+                        # row offers '⇩ Pull in', which copies THIS sister
+                        # line here — pairing then clears the badge.
+                        'id': _sl.id,
+                        'sister_bid': _sister_bid,
                     })
     except Exception as _soe:
         logging.warning(f"[budget_view] sister_orphans resolve failed: {_soe}")
