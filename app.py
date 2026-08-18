@@ -21147,23 +21147,44 @@ def sub_budgets_page(pid):
                          .filter_by(project_id=pid, version_status='current')
                          .order_by(Budget.id.desc()).first())
 
+    # Per-ROW fail-open (2026-07-22): the old page-wide try/except meant one
+    # sub-budget whose rollup raised blanked EVERY sub-budget with only a
+    # Render-log warning — 'sub budgets aren't displaying'. Now a failing row
+    # still renders (without its rollup), the traceback lands in the
+    # /admin/errors ring, and the page says how many rows degraded.
     sub_budgets_data = []
+    sb_load_errors = 0
     try:
         _sbs = (SubBudget.query
                 .filter_by(project_id=pid)
                 .order_by(SubBudget.archived.asc(),
                           SubBudget.created_at.desc())
                 .all())
-        sub_budgets_data = [_sub_budget_to_dict(sb, with_rollup=True,
-                                                project_id=pid,
-                                                return_budget=return_budget)
-                            for sb in _sbs]
-    except Exception as _sbe:
-        logging.warning(f"[sub-budgets page] build failed: {_sbe}")
+    except Exception:
+        logging.warning("[sub-budgets page] list query failed", exc_info=True)
+        _sbs = []
+    for sb in _sbs:
+        try:
+            sub_budgets_data.append(_sub_budget_to_dict(
+                sb, with_rollup=True, project_id=pid,
+                return_budget=return_budget))
+        except Exception:
+            sb_load_errors += 1
+            logging.warning(f"[sub-budgets] row {sb.id} rollup failed",
+                            exc_info=True)
+            _record_bg_error(f"sub-budget #{sb.id} '{sb.name}' rollup",
+                             tag=f"subbudget-{sb.id}")
+            try:
+                sub_budgets_data.append(_sub_budget_to_dict(
+                    sb, with_rollup=False, project_id=pid,
+                    return_budget=return_budget))
+            except Exception:
+                pass
 
     return render_template("sub_budgets.html",
                            project=project,
                            sub_budgets=sub_budgets_data,
+                           sb_load_errors=sb_load_errors,
                            return_budget=return_budget,
                            now=datetime.utcnow())
 

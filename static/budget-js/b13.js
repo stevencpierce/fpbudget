@@ -17,9 +17,12 @@
   // Modal collects suppress_zeros + fee-dispersed override, then builds
   // the right URL with query params and triggers the download.
   let _exportPending = null;
-  window.openExportOptions = function (ev, format, variant) {
+  // subBudgetId/subBudgetName (2026-07-22): scope the export to ONE
+  // sub-budget with the SAME options dialog as full-budget exports.
+  window.openExportOptions = function (ev, format, variant, subBudgetId, subBudgetName) {
     if (ev && ev.preventDefault) ev.preventDefault();
-    _exportPending = { format: format, variant: variant };
+    _exportPending = { format: format, variant: variant,
+                       subBudget: subBudgetId || null };
     const labelMap = {
       pdf:     (variant === 'detail' ? 'Full Detail PDF' : 'Top Sheet PDF'),
       csv:     (variant === 'working' ? 'Line Detail CSV' : 'Top Sheet CSV'),
@@ -27,7 +30,8 @@
       showbiz: 'ShowBiz Budgeting (.txt)',
     };
     document.getElementById('export-opts-target').textContent =
-      'Format: ' + (labelMap[format] || format);
+      'Format: ' + (labelMap[format] || format)
+      + (subBudgetId ? (' · Sub-budget: ' + (subBudgetName || ('#' + subBudgetId))) : '');
     // Reset checkboxes/radios to defaults each open.
     document.getElementById('export-opt-suppress-zeros').checked = false;
     // Travel notes checkbox — only meaningful for PDF detail export.
@@ -92,8 +96,9 @@
 
   document.getElementById('btn-export-go')?.addEventListener('click', () => {
     if (!_exportPending) return;
-    const { format, variant } = _exportPending;
+    const { format, variant, subBudget } = _exportPending;
     const params = new URLSearchParams();
+    if (subBudget) params.set('sub_budget', subBudget);
     if (document.getElementById('export-opt-suppress-zeros').checked) {
       params.set('suppress_zeros', '1');
     }
@@ -187,3 +192,22 @@
     document.getElementById('export-preview-overlay').classList.remove('is-open');
     document.getElementById('export-preview-drawer').classList.remove('is-open');
   }
+
+  // Auto-open the export dialog scoped to a sub-budget when arriving from
+  // the Sub-Budgets page (?export_sub=<id>&export_sub_name=…). Gives
+  // sub-budget exports the SAME options as full-budget exports without
+  // duplicating the dialog. (Owner 2026-07-22.)
+  (function () {
+    try {
+      const u = new URL(window.location.href);
+      const sbId = u.searchParams.get('export_sub');
+      if (!sbId) return;
+      const sbName = u.searchParams.get('export_sub_name') || '';
+      u.searchParams.delete('export_sub');
+      u.searchParams.delete('export_sub_name');
+      window.history.replaceState({}, '', u.toString());
+      setTimeout(function () {
+        window.openExportOptions(null, 'pdf', 'detail', parseInt(sbId), sbName);
+      }, 300);
+    } catch (e) {}
+  })();

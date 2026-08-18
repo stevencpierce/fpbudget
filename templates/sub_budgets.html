@@ -102,6 +102,14 @@
 
 <div class="page-header" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-top:1rem">
   <h1 style="margin:0">Sub-Budgets</h1>
+  {% if sb_load_errors %}
+  <div style="background:#3a2a1a;border:1px solid #7a5a2a;color:#e0c060;border-radius:8px;
+              padding:8px 12px;font-size:.8rem;margin:8px 0">
+    ⚠ {{ sb_load_errors }} sub-budget{{ 's' if sb_load_errors != 1 }} couldn't compute
+    {{ 'their' if sb_load_errors != 1 else 'its' }} totals — shown without rollups.
+    The full traceback is at <a href="/admin/errors" style="color:#e0c060">/admin/errors</a>.
+  </div>
+  {% endif %}
   <span class="muted" style="font-size:.9rem">{{ project.name }}</span>
   <button class="btn btn-primary" onclick="openSubBudgetModal()" style="margin-left:auto">+ New Sub-Budget</button>
 </div>
@@ -139,7 +147,7 @@
       {% endif %}
       <div style="margin-left:auto;display:flex;gap:6px">
         <button class="btn btn-xs btn-ghost" onclick="openSubBudgetLinePicker({{ sb.id }})" title="Add budget lines">+ Lines</button>
-        <button class="btn btn-xs btn-ghost" onclick="exportSubBudget({{ sb.id }}, 'pdf')" title="Export as PDF">📄 PDF</button>
+        <button class="btn btn-xs btn-ghost" onclick='exportSubBudget({{ sb.id }}, "pdf", {{ (sb.name or "") | tojson }})' title="Export as PDF — opens the export options (zeros, fee mode, columns…)">📄 PDF</button>
         <button class="btn btn-xs btn-ghost" onclick="editSubBudget({{ sb.id }})" title="Edit">✎ Edit</button>
         {% if sb.archived %}
         <button class="btn btn-xs btn-ghost" onclick="restoreSubBudget({{ sb.id }})" title="Restore">↺ Restore</button>
@@ -497,15 +505,16 @@ async function saveSubBudgetLines() {
   }
 }
 
-function exportSubBudget(sbId, format) {
-  format = format || 'pdf';
+function exportSubBudget(sbId, format, sbName) {
   if (!PROJECT_RETURN_BID) {
     alert('No budget context. Open this page from inside a budget to enable export.');
     return;
   }
-  const url = `/projects/${PROJECT_ID}/budget/${PROJECT_RETURN_BID}/export.${format}` +
-              `?sub_budget=${sbId}&detail=1`;
-  window.open(url, '_blank');
+  // Same export options as full-budget exports (owner 2026-07-22): open the
+  // budget page with the Export Options dialog pre-opened and scoped to
+  // this sub-budget (suppress zeros, fee mode, columns, travel notes…).
+  window.location.href = `/projects/${PROJECT_ID}/budget/${PROJECT_RETURN_BID}` +
+    `?export_sub=${sbId}&export_sub_name=${encodeURIComponent(sbName || '')}`;
 }
 </script>
 {% endblock %}
