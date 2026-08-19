@@ -15244,13 +15244,29 @@ def export_pdf(pid, bid):
     detail_mode = request.args.get("detail", "0") == "1"
     dispersed   = bool(budget.company_fee_dispersed)
 
-    # Build section detail for full-detail export
+    # Build section detail for full-detail export. Schedule fetch MIRRORS
+    # budget_view: legacy NULL-mode rows count, deduped per (instance, date)
+    # with the mode-tagged row winning. The old strict mode filter made
+    # export totals drop legacy days (same defect as the sub-budget card —
+    # user report 2026-07-22: 'when I export sub budgets the totals are not
+    # correct').
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
     line_results = {}
     for ln in lines:
         if ln.use_schedule:
-            sched = ScheduleDay.query.filter_by(budget_line_id=ln.id, schedule_mode=sched_mode).all()
-            line_results[ln.id] = calc_line_from_schedule(ln, sched, fringe_cfgs, profile, pw_start)
+            _raw_sd = ScheduleDay.query.filter(
+                ScheduleDay.budget_line_id == ln.id,
+                db.or_(ScheduleDay.schedule_mode == sched_mode,
+                       ScheduleDay.schedule_mode == None)).all()
+            _dd = {}
+            for _d in _raw_sd:
+                _k = (_d.crew_instance or 1, _d.date)
+                _ex = _dd.get(_k)
+                if _ex is None or (_ex.schedule_mode is None
+                                   and _d.schedule_mode == sched_mode):
+                    _dd[_k] = _d
+            line_results[ln.id] = calc_line_from_schedule(
+                ln, list(_dd.values()), fringe_cfgs, profile, pw_start)
         else:
             line_results[ln.id] = calc_line(ln, fringe_cfgs)
 
@@ -15600,16 +15616,25 @@ def export_pdf(pid, bid):
         include_travel_notes=include_travel_notes,
         travel_mirror_by_line=travel_mirror_by_line,
         est_ver=est_ver, work_ver=work_ver, work_ver_label=work_ver_label,
+        sub_budget=sub_budget_obj,
         today=date.today(),
     )
 
     pdf_bytes = WeasyprintHTML(string=html_str, base_url=request.host_url).write_pdf()
     mode_label = "Working" if is_working_view else "Estimated"
-    detail_label = "_detail" if detail_mode else "_topsheet"
-    # If this is a sub-budget slice, tag the filename so the client
-    # immediately knows what they got (vs the full budget export).
-    sb_label = f"_{sub_budget_obj.name.replace(' ', '_')}" if sub_budget_obj else ""
-    fname = f"{project.name.replace(' ', '_')}_{budget.name.replace(' ', '_')}{sb_label}_{mode_label}{detail_label}.pdf"
+    # Human filenames (owner 2026-07-22: 'the PDF export default file names
+    # are a bit crazy'): the old scheme concatenated project + budget name
+    # (which usually REPEATS the project) with underscores —
+    # 'GINTS_2026_GINTS_2026_Budget_Estimated_detail.pdf'. Now:
+    #   'GINTS 2026 - Estimated v2 Detail.pdf'
+    #   'GINTS 2026 - Sub-Budget Day 2 Filming.pdf'
+    _ver_bit = f" v{budget.version_number}" if budget.version_number else ""
+    if sub_budget_obj:
+        fname = f"{project.name} - Sub-Budget {sub_budget_obj.name}.pdf"
+    else:
+        _detail_bit = "Detail" if detail_mode else "Top Sheet"
+        fname = f"{project.name} - {mode_label}{_ver_bit} {_detail_bit}.pdf"
+    fname = re.sub(r'\s+', ' ', fname).strip()
     return Response(
         pdf_bytes,
         mimetype="application/pdf",

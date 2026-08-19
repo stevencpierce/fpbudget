@@ -7,10 +7,11 @@ routes remain gated by _require_global_editor (audit C1).
 from flask import (render_template, request, jsonify, flash, redirect,
                    url_for, abort)
 from flask_login import login_required, current_user
+from sqlalchemy import func
 
 from app import app, _require_global_editor, _normalize_phone, _validate_email
 from models import (db, CrewMember, SupportContact, CrewAssignment, Budget,
-                    BudgetLine, BudgetDirectContact)
+                    BudgetLine, BudgetDirectContact, ProjectSheet)
 
 @app.route("/crew")
 @login_required

@@ -306,8 +306,22 @@
   </div>
   <div class="pdf-header-right">
     <div class="production-title">{{ project.name }}</div>
+    {% if sub_budget %}
+    {# Unmissable sub-budget banner (owner 2026-07-22: 'it should very
+       clearly be labeled as the sub budget') — this document is a SLICE,
+       not the full budget. #}
+    <div style="display:inline-block;background:#1d3a5a;color:#fff;border-radius:4pt;
+                padding:3pt 10pt;font-size:11pt;font-weight:700;margin:2pt 0 4pt;
+                letter-spacing:0.5px">SUB-BUDGET: {{ sub_budget.name }}</div>
+    {% if sub_budget.description %}
+    <div style="font-size:8pt;color:#4a5668;margin-bottom:2pt">{{ sub_budget.description }}</div>
+    {% endif %}
+    <div style="font-size:7.5pt;color:#8a94a3;margin-bottom:3pt">
+      Partial slice of {{ budget.name }} — totals cover only the lines in this sub-budget.
+    </div>
+    {% endif %}
     <div class="meta-row">
-      <span class="version-badge">{{ 'Working Budget' if is_working_view else 'Estimated Budget' }}</span><br>
+      <span class="version-badge">{{ 'Sub-Budget — ' if sub_budget }}{{ 'Working Budget' if is_working_view else 'Estimated Budget' }}</span><br>
       {% if budget.client_name %}<strong>Client:</strong> {{ budget.client_name }}<br>{% endif %}
       {% if est_ver or work_ver %}<strong>Versions:</strong>
         {% if est_ver %}Estimated {{ est_ver }}{% endif %}
