@@ -5376,6 +5376,38 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
                                          link_source=(new_mode in ('working', 'estimated')))
         b._dup_line_map = dict(line_id_map)
         db.session.flush()
+        # Carry sub-budget membership to the duplicated lines (user
+        # 2026-08-19: "Can duplicate budgets include sub budgets?").
+        # SubBudget cards filter to the CURRENT canonical Working budget's
+        # line ids, so without this every new version emptied the cards.
+        # Same-project only — project duplication copies budgets across
+        # projects and sub-budgets are per-project. Fail-open: membership
+        # is bookkeeping, never block version creation on it.
+        if source.project_id == pid and line_id_map:
+            # Savepoint, NOT session rollback — a bare rollback here would
+            # destroy the whole in-flight budget creation (Van Cliburn
+            # lesson: poisoned-session bugs come from exactly this shape).
+            try:
+                with db.session.begin_nested():
+                    _sbls = (SubBudgetLine.query
+                             .filter(SubBudgetLine.budget_line_id.in_(list(line_id_map.keys())))
+                             .all())
+                    for _sbl in _sbls:
+                        _new_lid = line_id_map.get(_sbl.budget_line_id)
+                        if not _new_lid:
+                            continue
+                        _dupe = SubBudgetLine.query.filter_by(
+                            sub_budget_id=_sbl.sub_budget_id,
+                            budget_line_id=_new_lid).first()
+                        if not _dupe:
+                            db.session.add(SubBudgetLine(
+                                sub_budget_id=_sbl.sub_budget_id,
+                                budget_line_id=_new_lid,
+                                sort_order=_sbl.sort_order,
+                                note=_sbl.note))
+            except Exception:
+                _record_bg_error(f"sub-budget membership carry (src={source.id} → dest={b.id})",
+                                 tag=f"sbcarry-{b.id}")
         _copy_schedule_days(source.id, b.id, line_id_map, dest_mode=new_mode)
         db.session.flush()
         _copy_budget_extras(source.id, b.id, dest_mode=new_mode)
@@ -15532,6 +15564,24 @@ def export_pdf(pid, bid):
                          .filter_by(budget_id=_est_peer.id)
                          .order_by(BudgetLine.account_code,
                                    BudgetLine.sort_order).all())
+            if sub_budget_obj:
+                # Sub-budget slice (2026-07-22): the Estimated column must
+                # cover the SAME slice — pair est lines to the kept working
+                # lines via source chains (either direction, incl. shared
+                # ancestor) then (code, description). Previously the est
+                # side used the FULL estimated budget, so the Top Sheet
+                # mixed slice-Working numbers against full-Estimated ones.
+                _kept_ids = {l.id for l in lines}
+                _kept_src = {l.source_line_id for l in lines if l.source_line_id}
+                _kept_keys = {(l.account_code, (l.description or '').strip().lower())
+                              for l in lines}
+                _eb_lines = [el for el in _eb_lines
+                             if el.id in _kept_src
+                             or (el.source_line_id is not None
+                                 and (el.source_line_id in _kept_ids
+                                      or el.source_line_id in _kept_src))
+                             or (el.account_code,
+                                 (el.description or '').strip().lower()) in _kept_keys]
             _eb_profile = _est_peer.payroll_profile
             _eb_pw_start = (_est_peer.payroll_week_start
                             if _est_peer.payroll_week_start is not None

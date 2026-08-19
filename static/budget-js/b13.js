@@ -59,10 +59,20 @@
       const _hasActual = window.__BJ["b13__hasActual"];
       const _isWorkView = window.__BJ["b13__isWorkView"];
       const _isActView = window.__BJ["b13__isActView"];
-      document.getElementById('export-col-est').checked  = true;
-      document.getElementById('export-col-work').checked = _isWorkView || _isActView;
-      document.getElementById('export-col-act').checked  = _isActView || _hasActual;
-      document.getElementById('export-col-var').checked  = _isWorkView || _isActView;
+      if (subBudgetId && (_isWorkView || _isActView)) {
+        // Sub-budget exports (2026-08-19): the sub-budget card shows LIVE
+        // Working totals, so default the PDF to the Working column only —
+        // otherwise the frozen Estimated snapshots disagree with the card.
+        document.getElementById('export-col-est').checked  = false;
+        document.getElementById('export-col-work').checked = true;
+        document.getElementById('export-col-act').checked  = _isActView;
+        document.getElementById('export-col-var').checked  = false;
+      } else {
+        document.getElementById('export-col-est').checked  = true;
+        document.getElementById('export-col-work').checked = _isWorkView || _isActView;
+        document.getElementById('export-col-act').checked  = _isActView || _hasActual;
+        document.getElementById('export-col-var').checked  = _isWorkView || _isActView;
+      }
       document.getElementById('export-var-basis').value =
         _isActView ? 'work_v_act' : 'est_v_work';
       _updateVarBasisVisibility();
