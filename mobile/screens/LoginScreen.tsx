@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -103,6 +104,19 @@ export default function LoginScreen({ onLoggedIn }: Props) {
               <Text style={styles.buttonText}>Log in</Text>
             )}
           </Pressable>
+
+          <Pressable
+            onPress={async () => {
+              const base = (server.trim() || (await getServer())).replace(
+                /\/+$/,
+                ""
+              );
+              Linking.openURL(`${base}/forgot-password`);
+            }}
+            hitSlop={8}
+          >
+            <Text style={styles.forgotLink}>Forgot password?</Text>
+          </Pressable>
         </View>
 
         <Pressable onPress={() => setShowServer(!showServer)}>
@@ -170,6 +184,12 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   error: { color: colors.danger, marginTop: spacing.md },
+  forgotLink: {
+    color: colors.accent,
+    textAlign: "center",
+    marginTop: spacing.md,
+    fontSize: 15,
+  },
   button: {
     backgroundColor: colors.accent,
     borderRadius: 10,

@@ -3270,6 +3270,31 @@ def load_user_from_bearer(req):
         return None
 
 
+@app.before_request
+def _api_bearer_priority():
+    """On /api/v1 requests that present a Bearer token, the TOKEN is the
+    identity — resolve it before any auth-dependent gate runs. Without this,
+    a browser that also holds a website session/remember cookie (the /app
+    browser build, or anyone who ever logged into the site in that browser)
+    shadows the token: Flask-Login resolves the cookie user, the request
+    loader never fires, g.api_bearer_auth stays unset, and api_auth_required
+    401s → the app bounces to its login screen in a loop (found live
+    2026-08-18). Registered BEFORE enforce_password_change /
+    enforce_docs_only_role / enforce_project_access so those gates evaluate
+    the token user too."""
+    if not (request.path or "").startswith("/api/v1/"):
+        return
+    if not (request.headers.get("Authorization") or "").lower().startswith("bearer"):
+        return
+    user = load_user_from_bearer(request)
+    if user is not None:
+        # Install as current_user for this request only. login_user writes
+        # session keys; resetting `modified` keeps them in-memory so the
+        # response never rewrites the browser's website cookies.
+        login_user(user)
+        session.modified = False
+
+
 def admin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
