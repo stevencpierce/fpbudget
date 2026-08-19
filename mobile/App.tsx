@@ -27,26 +27,48 @@ export default function App() {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [stack, setStack] = useState<Route[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  // Diagnostic notice shown on the login screen. A silent bounce back to
+  // login is undebuggable from a user's description (learned 2026-08-18);
+  // every failure path must say what happened, with a code to report.
+  const [notice, setNotice] = useState<string | null>(null);
 
   const push = (r: Route) => setStack((s) => [...s, r]);
   const pop = () => setStack((s) => s.slice(0, -1));
 
-  const loadMe = useCallback(async (): Promise<boolean> => {
-    try {
-      const out = await fetchMe();
-      setMe(out);
-      return true;
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
-        // Token revoked/expired — back to login.
-        await logout();
-        setMe(null);
+  const loadMe = useCallback(
+    async (context: "startup" | "login" | "refresh"): Promise<boolean> => {
+      try {
+        const out = await fetchMe();
+        setMe(out);
+        return true;
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) {
+          // Token revoked/expired — back to login. At startup that's
+          // normal (old token); right after login it's a server-side
+          // problem worth reporting loudly.
+          await logout();
+          setMe(null);
+          if (context === "login") {
+            setNotice(
+              "Your password was accepted, but the server then rejected " +
+                "the session (code ME-401). Please report this code."
+            );
+          }
+          return false;
+        }
+        if (me !== null) return true; // network hiccup: keep what we had
+        if (context === "login") {
+          setNotice(
+            e instanceof ApiError
+              ? `Signed in, but couldn't load your projects: ${e.message}`
+              : "Signed in, but couldn't reach the server after login."
+          );
+        }
         return false;
       }
-      // Network hiccup: keep whatever we already had on screen.
-      return me !== null;
-    }
-  }, [me]);
+    },
+    [me]
+  );
 
   useEffect(() => {
     (async () => {
@@ -55,7 +77,7 @@ export default function App() {
         setPhase("login");
         return;
       }
-      const ok = await loadMe();
+      const ok = await loadMe("startup");
       setPhase(ok ? "home" : "login");
     })();
     // Startup only.
@@ -64,7 +86,8 @@ export default function App() {
 
   const onLoggedIn = async () => {
     setPhase("loading");
-    const ok = await loadMe();
+    setNotice(null);
+    const ok = await loadMe("login");
     setPhase(ok ? "home" : "login");
   };
 
@@ -87,7 +110,7 @@ export default function App() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await loadMe();
+    await loadMe("refresh");
     setRefreshing(false);
   };
 
@@ -100,7 +123,7 @@ export default function App() {
       </View>
     );
   } else if (phase === "login" || !me) {
-    body = <LoginScreen onLoggedIn={onLoggedIn} />;
+    body = <LoginScreen onLoggedIn={onLoggedIn} notice={notice} />;
   } else if (!top) {
     body = (
       <ProjectsScreen

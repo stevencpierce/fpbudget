@@ -13,15 +13,17 @@ import {
 } from "react-native";
 
 import { ApiError, getServer, login, setServer } from "../lib/api";
-import { APP_DISPLAY_NAME } from "../lib/config";
+import { APP_BUILD, APP_DISPLAY_NAME } from "../lib/config";
 import { colors, spacing } from "../lib/theme";
 import { LoginResponse } from "../lib/types";
 
 interface Props {
   onLoggedIn: (out: LoginResponse) => void;
+  // Diagnostic message from a failed post-login step (see App.loadMe).
+  notice?: string | null;
 }
 
-export default function LoginScreen({ onLoggedIn }: Props) {
+export default function LoginScreen({ onLoggedIn, notice }: Props) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -63,6 +65,8 @@ export default function LoginScreen({ onLoggedIn }: Props) {
       >
         <Text style={styles.logo}>{APP_DISPLAY_NAME}</Text>
         <Text style={styles.tagline}>Production docs & budgets</Text>
+
+        {notice ? <Text style={styles.notice}>{notice}</Text> : null}
 
         <View style={styles.card}>
           <Text style={styles.label}>Email</Text>
@@ -136,6 +140,7 @@ export default function LoginScreen({ onLoggedIn }: Props) {
             placeholderTextColor={colors.textDim}
           />
         ) : null}
+        <Text style={styles.buildTag}>{APP_BUILD}</Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -206,4 +211,21 @@ const styles = StyleSheet.create({
     textDecorationLine: "underline",
   },
   serverInput: { marginTop: spacing.sm },
+  notice: {
+    color: colors.warning,
+    backgroundColor: colors.card,
+    borderColor: colors.warning,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+    lineHeight: 20,
+  },
+  buildTag: {
+    color: colors.textDim,
+    textAlign: "center",
+    fontSize: 12,
+    marginTop: spacing.lg,
+    opacity: 0.7,
+  },
 });
