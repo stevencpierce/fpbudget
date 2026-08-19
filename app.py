@@ -29635,6 +29635,26 @@ def _web_worker_essential_columns():
                 "  ADD COLUMN IF NOT EXISTS last_synced TIMESTAMP",
                 "ALTER TABLE project_sheet "
                 "  ADD COLUMN IF NOT EXISTS last_cdc_sync TIMESTAMP",
+                # ── 2026-08-18: api_token (mobile app bearer tokens) ────
+                # Found live: production has NO alembic_version table —
+                # `alembic upgrade head` in preDeploy has been silently
+                # running against alembic.ini's sqlite fallback whenever
+                # DATABASE_URL wasn't in its environment, so NO revision
+                # has ever applied to production Postgres. Alembic 0008
+                # remains the canonical definition (it's existence-guarded);
+                # this entry is the same defense-in-depth as every column
+                # above. alembic/env.py now hard-fails on Render+sqlite so
+                # the root cause shows up in deploy logs instead of here.
+                "CREATE TABLE IF NOT EXISTS api_token ("
+                "  id SERIAL PRIMARY KEY,"
+                "  user_id INTEGER NOT NULL REFERENCES users(id),"
+                "  token_hash VARCHAR(64) NOT NULL UNIQUE,"
+                "  device_name VARCHAR(120),"
+                "  created_at TIMESTAMP,"
+                "  last_used_at TIMESTAMP,"
+                "  revoked_at TIMESTAMP)",
+                "CREATE INDEX IF NOT EXISTS ix_api_token_user_id "
+                "  ON api_token (user_id)",
             ]:
                 try:
                     cur.execute(sql)

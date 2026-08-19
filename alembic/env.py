@@ -19,6 +19,16 @@ _url = os.getenv("DATABASE_URL", "")
 if _url:
     config.set_main_option(
         "sqlalchemy.url", _url.replace("postgres://", "postgresql://", 1))
+elif os.getenv("RENDER"):
+    # Found live 2026-08-18: with DATABASE_URL absent, alembic "succeeded"
+    # against the sqlite fallback in alembic.ini — a throwaway file in the
+    # build container — so production Postgres never got a single revision
+    # (no alembic_version table existed). Fail LOUDLY on Render instead:
+    # a misconfigured pre-deploy must break the deploy, not no-op.
+    raise RuntimeError(
+        "DATABASE_URL is not set — refusing to run migrations against the "
+        "sqlite fallback on Render. Fix the pre-deploy environment so "
+        "DATABASE_URL is available to `alembic upgrade head`.")
 
 target_metadata = None
 
