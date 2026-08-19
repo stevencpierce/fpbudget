@@ -2410,7 +2410,12 @@
             title="This line exists in the {{ _orph.sister_label }} version only. It isn't in this budget, so it's shown at $0 here for cross-version comparison. Add it in this version to include it.">
           <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
             <span class="line-number">{{ sec.code }}-↔</span>
+            {% if _orph.kind == 'header' %}
+            <span style="text-transform:uppercase;letter-spacing:.05em;font-weight:700;font-size:.75rem">{{ _orph.description }}</span>
+            <span style="margin-left:.3rem;font-size:.62rem;font-style:normal;color:var(--text-muted)">sub-header</span>
+            {% else %}
             {{ _orph.description }}
+            {% endif %}
             <span style="margin-left:.4rem;font-size:.7rem;font-style:normal;padding:1px 6px;border-radius:8px;background:var(--bg-3,#e8e8ee);color:var(--text-muted);white-space:nowrap">↔ only in {{ _orph.sister_label }}</span>
             {% if _orph.id %}
             {# One-click pull-through: copies the {{ _orph.sister_label }} line
@@ -2421,18 +2426,22 @@
                     onclick='pullOrphanLine(this, {{ _orph.sister_bid }}, {{ _orph.id }})'>⇩ Pull in</button>
             {% endif %}
           </td>
+          {# Grayed-out sister-line detail (owner 2026-07-22) so the ghost
+             reads like the real row it would become. Headers keep the cells
+             empty — they carry no money. #}
           <td class="col-pc col-labor-only"></td>
-          <td class="col-qty"></td>
-          <td class="col-days"></td>
-          <td class="col-num"></td>
-          <td class="col-rt"></td>
-          <td class="col-num muted" style="font-size:.85rem">$0.00</td>
+          <td class="col-qty muted" style="font-size:.8rem">{% if _orph.kind != 'header' and _orph.qty %}{{ _orph.qty | int if _orph.qty == (_orph.qty | int) else _orph.qty }}{% endif %}</td>
+          <td class="col-days muted" style="font-size:.8rem">{% if _orph.kind != 'header' and _orph.days %}{{ _orph.days | int if _orph.days == (_orph.days | int) else _orph.days }}{% endif %}</td>
+          <td class="col-num muted" style="font-size:.8rem">{% if _orph.kind != 'header' and _orph.rate %}{{ _orph.rate | currency }}{% endif %}</td>
+          <td class="col-rt muted" style="font-size:.7rem">{% if _orph.kind != 'header' %}{{ _orph.rate_type or '' }}{% endif %}</td>
+          <td class="col-num muted" style="font-size:.85rem">{% if _orph.kind != 'header' %}{{ _orph.total | currency }}{% endif %}</td>
           <td class="col-num"></td>
           <td class="col-fr"></td>
           <td class="col-num"></td>
-          <td class="col-num muted" style="font-size:.85rem" title="$0 in this version">
-            $0.00
+          <td class="col-num muted" style="font-size:.85rem" title="$0 in this version until pulled in">
+            {% if _orph.kind != 'header' %}$0.00
             <span class="muted" style="display:block;font-size:.7rem;font-style:italic">({{ _orph.total | currency }} in {{ _orph.sister_label }})</span>
+            {% endif %}
           </td>
           <td class="col-num col-working"></td>
           <td class="col-num col-actual"></td>
@@ -6667,17 +6676,32 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
     <h2>New Version — Copy From</h2>
     <p class="muted" style="font-size:.82rem;margin-bottom:.75rem">
       Creates a new <strong>Estimated v{{ (version_groups[0].version_number + 1) if version_groups else 1 }}</strong>
-      copied from the current Estimated. Once created, initialize a Working budget for the new version from the version picker.
+      copied from the version you pick — including a <strong>Working</strong>
+      version, so mid-show scope carries straight into the new estimate.
+      Once created, initialize a Working budget for the new version from the
+      version picker.
     </p>
 
     {% set cur_est = version_groups[0].estimated if version_groups else none %}
     {% if cur_est %}
     <form method="POST" action="{{ url_for('budget_new', pid=project.id) }}" style="margin-bottom:.3rem">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <input type="hidden" name="source_bid" value="{{ cur_est.id }}">
+      {# Source picker (owner 2026-07-22: "I wanna create a new estimated
+         from the previous working version… can we select which budget to
+         duplicate?"). Defaults to the current Estimated; any non-Actual
+         version (Estimated or Working) is a valid source — headers,
+         formatting, settings and lines all clone through. #}
+      <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-bottom:2px">Copy everything from</label>
+      <select name="source_bid" style="width:100%;margin-bottom:.5rem;font-size:.85rem;padding:6px">
+        {% for vb in all_budgets if not vb.is_actual %}
+        <option value="{{ vb.id }}" {% if vb.id == cur_est.id %}selected{% endif %}>
+          v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode in ('working', 'actual') else 'Estimated' }}){% if vb.internal_label %} · “{{ vb.internal_label }}”{% endif %}
+        </option>
+        {% endfor %}
+      </select>
       <button type="submit" class="btn btn-outline version-option-btn version-option-current" style="width:100%">
-        <strong>New Estimated v{{ (version_groups[0].version_number + 1) if version_groups else 1 }}</strong>
-        <span class="version-option-desc">Copied from {{ cur_est.name }}</span>
+        <strong>Create Estimated v{{ (version_groups[0].version_number + 1) if version_groups else 1 }}</strong>
+        <span class="version-option-desc">Full copy of the selected version</span>
       </button>
     </form>
     {% else %}

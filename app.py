@@ -8203,11 +8203,16 @@ def budget_view(pid, bid):
                         _tot = _line_budget_total(_sl)
                     _tot = round(float(_tot or 0), 2)
                     _desc = (_sl.description or '').strip()
-                    # Skip ALL zero-value orphans — a '$0.00 (… $0.00 in
+                    _is_hdr = (getattr(_sl, 'line_tag', None) == 'header')
+                    # Skip zero-value orphans — a '$0.00 (… $0.00 in
                     # Estimated)' row is pure clutter (user 2026-07, the
-                    # Robotic Operator rows). The point of orphan rows is
-                    # showing MONEY that exists in only one version.
-                    if _tot == 0:
+                    # Robotic Operator rows). EXCEPT sub-headers (owner
+                    # 2026-07-22: "doesn't allow me to pull in a header"):
+                    # they're always $0 but organize the section, so they
+                    # ghost + pull like lines.
+                    if _tot == 0 and not _is_hdr:
+                        continue
+                    if _is_hdr and not _desc:
                         continue
                     _seccode = _section_for_code(_sl.account_code)
                     sister_orphans.setdefault(_seccode, []).append({
@@ -8221,6 +8226,14 @@ def budget_view(pid, bid):
                         # line here — pairing then clears the badge.
                         'id': _sl.id,
                         'sister_bid': _sister_bid,
+                        # Grayed-out detail for the ghost row (owner
+                        # 2026-07-22: "it should have all the grayed out
+                        # rate, duration, type, all that stuff").
+                        'kind': ('header' if _is_hdr else 'line'),
+                        'qty': float(_sl.quantity or 0),
+                        'days': float(_sl.days or 0),
+                        'rate': float(_sl.rate or 0),
+                        'rate_type': (_sl.rate_type or ''),
                     })
     except Exception as _soe:
         logging.warning(f"[budget_view] sister_orphans resolve failed: {_soe}")
@@ -25208,10 +25221,33 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
     from models import TravelDetail
     dest_sched_mode = 'working' if dest_mode in ('working', 'actual') else None
 
+    # Cross-family clone (owner 2026-07-22: "create a new estimated from the
+    # previous working version"): a WORKING source cloned into an ESTIMATED
+    # dest must land its schedule as 'estimated'-mode rows — otherwise the
+    # new Estimated's schedule reads empty and use_schedule lines compute $0.
+    # Copy only the source's active-mode rows (mode-tagged + legacy NULL,
+    # deduped, tagged row wins) and restamp them.
+    _src_budget = Budget.query.get(source_bid)
+    _restamp = None
+    if (_src_budget and _src_budget.budget_mode in ('working', 'actual')
+            and dest_mode not in ('working', 'actual')):
+        _restamp = 'estimated'
+
     # Build sched_id_map = {old_schedule_day_id: new_schedule_day_id} so
     # TravelDetail rows can be reparented onto the cloned ScheduleDays.
     sched_id_map = {}
     src_days = ScheduleDay.query.filter_by(budget_id=source_bid).all()
+    if _restamp:
+        _dd_cross = {}
+        for d in src_days:
+            if d.schedule_mode not in ('working', None):
+                continue
+            _k = (d.budget_line_id, d.crew_instance or 1, d.date)
+            _ex = _dd_cross.get(_k)
+            if _ex is None or (_ex.schedule_mode is None
+                               and d.schedule_mode == 'working'):
+                _dd_cross[_k] = d
+        src_days = list(_dd_cross.values())
     for d in src_days:
         new_lid = line_id_map.get(d.budget_line_id)
         if d.budget_line_id and not new_lid:
@@ -25228,7 +25264,7 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
             note=d.note,
             est_ot_hours=d.est_ot_hours,
             cell_flags=d.cell_flags,
-            schedule_mode=dest_sched_mode or d.schedule_mode,
+            schedule_mode=_restamp or dest_sched_mode or d.schedule_mode,
         )
         db.session.add(new_sd)
         db.session.flush()  # so new_sd.id is available for TravelDetail FK
