@@ -38110,6 +38110,15 @@ def _unhandled_exception(e):
             _ssdk.capture_exception(e)
     except Exception:
         pass
+    # API clients need machine-readable errors: the mobile app can't parse
+    # the HTML page, so users saw a bare "Request failed (500)" with no ref
+    # to report (live debugging 2026-08-18). JSON + the ERR ref instead.
+    try:
+        if (request.path or '').startswith('/api/'):
+            return jsonify({"error": f"Server error — reference ERR-{ref}",
+                            "err_ref": ref}), 500
+    except Exception:
+        pass
     # Alerting: Sentry (captured below) is the alert channel — email on new
     # issues + optional mobile push. The old ntfy phone ping was removed
     # 2026-07-20 at the owner's request (delivery was unreliable).

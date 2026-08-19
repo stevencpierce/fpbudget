@@ -332,3 +332,28 @@ def api_budget_line_save(pid, bid):
 @api_auth_required
 def api_budget_line_delete(pid, bid, lid):
     return delete_line(pid, bid, lid)
+
+
+@app.route("/api/v1/health", methods=["GET"])
+def api_v1_health():
+    """Unauthenticated self-check for the mobile API's prerequisites.
+    Distinguishes 'server not migrated' from other 500s without needing
+    Render log access — added while debugging the live login 500
+    (2026-08-18). Open in any browser."""
+    import os as _os
+    out = {"commit": (_os.getenv("RENDER_GIT_COMMIT") or "")[:12] or "unknown"}
+    try:
+        row = db.session.execute(
+            db.text("SELECT version_num FROM alembic_version")).first()
+        out["alembic_version"] = row[0] if row else None
+    except Exception as e:
+        db.session.rollback()
+        out["alembic_version"] = f"unreadable ({type(e).__name__})"
+    try:
+        db.session.execute(db.text("SELECT 1 FROM api_token LIMIT 1"))
+        out["api_token_table"] = True
+    except Exception:
+        db.session.rollback()
+        out["api_token_table"] = False
+    out["ok"] = out["api_token_table"] is True
+    return jsonify(out), (200 if out["ok"] else 503)
