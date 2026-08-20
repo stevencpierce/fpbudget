@@ -23,7 +23,7 @@ from app import (app, docs_upload_post, docs_upload_status,
                  _docs_accessible_projects, _actuals_by_section_code,
                  upsert_line, delete_line)
 from models import db, User, ApiToken, ProjectAccess, Budget, BudgetLine
-from budget_calc import get_fringe_configs, calc_top_sheet
+from budget_calc import get_fringe_configs, calc_top_sheet, section_for_code
 from api_auth import generate_token, hash_token, parse_bearer
 
 
@@ -307,6 +307,13 @@ def api_budget_summary(pid, bid):
             "fringe_type": ln.fringe_type,
             "agent_pct": _num(ln.agent_pct),
             "note": ln.note,
+            # Real COA section (2900/3400/3500 etc. are their own sections
+            # — NOT thousands buckets). The app groups lines by this.
+            "section_code": section_for_code(ln.account_code),
+            # Scheduled working days, present for use_schedule lines
+            # (calc_line_from_schedule's day_count) — the stored `days`
+            # column is stale for those.
+            "sched_days": (lt.get(ln.id) or {}).get("day_count"),
             "sort_order": ln.sort_order or 0,
             "parent_line_id": ln.parent_line_id,
             "subtotal": (lt.get(ln.id) or {}).get("subtotal", 0),

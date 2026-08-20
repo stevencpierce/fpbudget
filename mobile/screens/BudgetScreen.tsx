@@ -48,11 +48,25 @@ export default function BudgetScreen({ project, budget, onBack }: Props) {
     load();
   }, [load]);
 
-  // Group lines by COA section (thousands bucket matches the top sheet).
+  // Group lines by their server-assigned COA section. Sections are NOT
+  // thousands buckets (2900 Control Room Equipment, 3400 Transportation…),
+  // so derive locally only as a fallback for an older server: greatest
+  // section code ≤ account_code, using the section list in the summary.
   const linesBySection = useMemo(() => {
+    const secCodes = (summary?.sections || [])
+      .map((s) => s.code)
+      .sort((a, b) => a - b);
+    const fallbackSection = (code: number) => {
+      let best = Math.floor(code / 1000) * 1000;
+      for (const sc of secCodes) {
+        if (code >= sc) best = sc;
+        else break;
+      }
+      return best;
+    };
     const map = new Map<number, BudgetLineData[]>();
     for (const ln of summary?.lines || []) {
-      const sec = Math.floor(ln.account_code / 1000) * 1000;
+      const sec = ln.section_code ?? fallbackSection(ln.account_code);
       const arr = map.get(sec) || [];
       arr.push(ln);
       map.set(sec, arr);
@@ -160,7 +174,9 @@ export default function BudgetScreen({ project, budget, onBack }: Props) {
                           </Text>
                           {ln.is_labor ? (
                             <Text style={styles.lineMeta} numberOfLines={1}>
-                              {ln.days ?? 0}d × {money(ln.rate)}
+                              {ln.use_schedule
+                                ? `${ln.sched_days ?? "—"}d (schedule) × ${money(ln.rate)}`
+                                : `${ln.days ?? 0}d × ${money(ln.rate)}`}
                               {ln.fringe_type ? ` · ${ln.fringe_type}` : ""}
                             </Text>
                           ) : null}

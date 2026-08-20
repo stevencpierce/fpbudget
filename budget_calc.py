@@ -1205,6 +1205,21 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
     }
 
 
+def section_for_code(code):
+    """Return the COA section start for an account code — the greatest
+    section code ≤ the account code (sections are NOT thousands buckets:
+    2900 Control Room Equipment, 3400 Transportation, 3500 Travel are
+    their own sections). Single source of truth for both the top sheet
+    and the mobile API's line grouping."""
+    best = None
+    for start, _ in FP_COA_SECTIONS:
+        if code >= start:
+            best = start
+        else:
+            break
+    return best
+
+
 def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profile=None, payroll_week_start=0):
     """
     Build Top Sheet rows grouped by COA section.
@@ -1276,15 +1291,8 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     for start, name in FP_COA_SECTIONS:
         section_map[start] = {"code": start, "account": name, "estimated": 0.0, "actual": 0.0}
 
-    def section_for_code(code):
-        """Return the section start for a given account code."""
-        best = None
-        for start, _ in FP_COA_SECTIONS:
-            if code >= start:
-                best = start
-            else:
-                break
-        return best
+    # section_for_code is module-level (shared with the mobile /api/v1
+    # summary so app grouping can never drift from top-sheet grouping).
 
     # Track per-section fringe totals separately so we can subtract them
     # from the Prod Co Fee base when fee_exclude_fringes is on (default).

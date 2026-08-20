@@ -86,6 +86,12 @@ export interface BudgetLineData {
   fringe_type: string | null;
   agent_pct: number | null;
   note: string | null;
+  // Real COA section this line belongs to (2900/3400/... are their own
+  // sections — NOT thousands buckets). Grouping key for the budget screen.
+  section_code?: number | null;
+  // Scheduled working days for use_schedule lines (server-computed);
+  // the stored `days` column is stale for those.
+  sched_days?: number | null;
   sort_order: number;
   parent_line_id: number | null;
   subtotal: number;
