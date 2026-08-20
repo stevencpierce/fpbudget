@@ -125,6 +125,9 @@ export interface LineSavePayload {
   days?: number;
   rate?: number;
   est_ot?: number;
+  // Fraction on the wire (0.15 = 15%): discount on non-labor, agent fee
+  // on labor — same field the web grid edits.
+  agent_pct?: number;
   account_code?: number;
   account_name?: string;
   is_labor?: boolean;

@@ -47,6 +47,10 @@ export default function LineEditorModal({
   const [days, setDays] = useState("");
   const [rate, setRate] = useState("");
   const [estOt, setEstOt] = useState("");
+  // agent_pct is stored as a fraction (0.15 = 15%) and doubles as the
+  // DISCOUNT % on non-labor lines (subtracts) vs agent fee on labor
+  // (adds) — same convention as the web grid. UI shows percent.
+  const [agentPct, setAgentPct] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +62,7 @@ export default function LineEditorModal({
     setDays(line.days !== null ? String(line.days) : "");
     setRate(line.rate !== null ? String(line.rate) : "");
     setEstOt(line.est_ot ? String(line.est_ot) : "");
+    setAgentPct(line.agent_pct ? String(+(line.agent_pct * 100).toFixed(2)) : "");
     setNote(line.note || "");
     setError(null);
     setBusy(false);
@@ -81,6 +86,12 @@ export default function LineEditorModal({
     if (d !== undefined) p.days = d;
     if (r !== undefined) p.rate = r;
     if (line.is_labor && ot !== undefined) p.est_ot = ot;
+    // Percent in the UI → fraction on the wire (matches the web grid).
+    if (agentPct.trim() === "") p.agent_pct = 0;
+    else {
+      const ap = numOrUndef(agentPct);
+      if (ap !== undefined) p.agent_pct = ap / 100;
+    }
     if (override) p.override_estimated = true;
     return p;
   };
@@ -180,6 +191,10 @@ export default function LineEditorModal({
                   ? ` + ${money(line.agent_amount)} agent`
                   : ""}
               </Text>
+            ) : line.agent_amount ? (
+              <Text style={styles.breakdown}>
+                {money(line.subtotal)} − {money(line.agent_amount)} discount
+              </Text>
             ) : null}
             {line.line_tag ? (
               <Text style={styles.autoNote}>
@@ -213,6 +228,16 @@ export default function LineEditorModal({
             {line.is_labor ? (
               <View style={styles.row}>
                 {field("Est. OT ($)", estOt, setEstOt)}
+                {field("Agent %", agentPct, setAgentPct)}
+              </View>
+            ) : (
+              <View style={styles.row}>
+                {field("Discount %", agentPct, setAgentPct)}
+                <View style={styles.fieldWrap} />
+              </View>
+            )}
+            {line.is_labor ? (
+              <View style={styles.row}>
                 <View style={styles.fieldWrap}>
                   <Text style={styles.label}>Fringe</Text>
                   <Text style={styles.readonly}>
