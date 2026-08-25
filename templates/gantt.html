@@ -27,46 +27,70 @@
     <span id="gantt-sync-flash" style="font-size:.7rem;color:var(--green);opacity:0;transition:opacity .4s"></span>
   </div>
   <div class="budget-header-right" style="display:flex;align-items:center;gap:.75rem;">
-    <!-- Version picker dropdown -->
-    {% set active_count = all_budgets | rejectattr('version_status', 'eq', 'archived') | list | length %}
+    <!-- Version picker dropdown — SAME grouped versions as the Budget page
+         (built by the shared _version_groups helper), so the two pickers
+         can never drift apart. Rows link within the Schedule view. -->
     {% set archived_count = all_budgets | selectattr('version_status', 'eq', 'archived') | list | length %}
-    {% set status_label = {'current': 'Active', 'superseded': 'Previous', 'archived': 'Archived'} %}
+    {% set live_vg = version_groups | rejectattr('estimated', 'none') | list %}
     <div class="dropdown version-dropdown">
       <button class="btn btn-sm btn-outline version-picker-btn">
-        Versions ({{ active_count }}) ▾
+        {{ 'v' + (budget.version_number | string) if budget.version_number else 'v1' }}
+        ({{ live_vg | length }} version{{ 's' if live_vg | length != 1 else '' }}) ▾
       </button>
       <div class="dropdown-menu version-menu">
-        {% for b in all_budgets %}
-        {% set bm = MODE_META.get(b.budget_mode, MODE_META['estimated']) %}
-        {% set is_cur = (b.id == budget.id) %}
-        <div class="version-item {% if is_cur %}version-item-active{% endif %} {% if b.version_status == 'archived' %}version-item-archived{% endif %}">
+        {% for vg in live_vg %}
+          {% set vn = vg.version_number %}
+          {% set est = vg.estimated %}
+          {% set wrk = vg.working %}
+          {% if (est and est.version_status != 'archived') or (wrk and wrk.version_status != 'archived') %}
+          <div class="version-group-header" style="align-items:center">
+            <span class="version-item-name">v{{ vn }}</span>
+            {% if est and est.internal_label %}
+            <span title="Internal note — clients never see this"
+                  style="font-size:.68rem;color:var(--text-muted);font-style:italic;margin-left:.4rem;
+                         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px">“{{ est.internal_label }}”</span>
+            {% endif %}
+            {% if est and est.locked %}
+            <span title="Locked — this version can't be deleted" style="margin-left:.35rem;font-size:.7rem">🔒</span>
+            {% endif %}
+            <span class="version-status-badge vs-{{ 'current' if vg.is_current else 'superseded' }}">
+              {{ 'Current' if vg.is_current else 'Previous' }}
+            </span>
+          </div>
+          {% if est and est.version_status != 'archived' %}
+          <div class="version-item version-item-subrow {% if est.id == budget.id %}version-item-active{% endif %}">
+            <a href="{{ url_for('gantt_view', pid=project.id, bid=est.id) }}" class="version-item-link">
+              <span class="mode-badge mode-estimated" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem">EST</span>
+              <span class="version-item-ts">{% if est.updated_at %}{{ est.updated_at | in_tz(budget.timezone) }}{% endif %}</span>
+            </a>
+          </div>
+          {% endif %}
+          {% if wrk and wrk.version_status != 'archived' %}
+          <div class="version-item version-item-subrow {% if wrk.id == budget.id %}version-item-active{% endif %}">
+            <a href="{{ url_for('gantt_view', pid=project.id, bid=wrk.id) }}" class="version-item-link">
+              <span class="mode-badge mode-working" style="font-size:.65rem;padding:.15rem .5rem;margin-right:.4rem">WRK</span>
+              <span class="version-item-ts">{% if wrk.updated_at %}{{ wrk.updated_at | in_tz(budget.timezone) }}{% endif %}</span>
+            </a>
+          </div>
+          {% endif %}
+          {% endif %}
+        {% endfor %}
+        {% if archived_count > 0 %}
+        {% for b in all_budgets if b.version_status == 'archived' and not b.is_actual %}
+        <div class="version-item version-item-archived">
           <a href="{{ url_for('gantt_view', pid=project.id, bid=b.id) }}" class="version-item-link">
             <span class="version-item-name">{{ b.name }}</span>
             <div class="version-item-meta">
-              <span class="version-status-badge vs-{{ b.version_status }}">{{ status_label.get(b.version_status, b.version_status | capitalize) }}</span>
-              <span class="mode-badge {{ bm.cls }}" style="font-size:.65rem;padding:.1rem .4rem">{{ bm.short }}</span>
-              {% if parent_names.get(b.id) %}
-              <span class="version-parent-ref">← {{ parent_names[b.id] }}</span>
-              {% endif %}
-            </div>
-            <div class="version-item-ts">
-              {% if b.updated_at %}Updated {{ b.updated_at | in_tz(budget.timezone) }}{% elif b.created_at %}Created {{ b.created_at | in_tz(budget.timezone) }}{% endif %}
+              <span class="version-status-badge vs-archived">Archived</span>
             </div>
           </a>
-          {% if not is_cur %}
           <div class="version-item-actions">
             <button class="btn btn-xs btn-ghost version-archive-btn"
-                    data-bid="{{ b.id }}"
-                    title="{{ 'Restore to Previous' if b.version_status == 'archived' else 'Archive' }}">
-              {{ '↩' if b.version_status == 'archived' else '⊘' }}
-            </button>
-            <button class="btn btn-xs btn-ghost version-delete-btn"
-                    data-bid="{{ b.id }}" data-name="{{ b.name }}"
-                    title="Permanently delete {{ b.name }}">✕</button>
+                    data-bid="{{ b.id }}" title="Restore to Previous">↩</button>
           </div>
-          {% endif %}
         </div>
         {% endfor %}
+        {% endif %}
         <div class="version-menu-footer">
           {% if archived_count > 0 %}
           <button class="btn btn-xs btn-ghost version-show-archived-btn" style="width:100%;margin-bottom:.35rem">

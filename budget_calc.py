@@ -1102,7 +1102,19 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
         inst_map[d.crew_instance or 1].append(d)
 
     num_instances = len(inst_map)
-    total_day_count = sum(len(v) for v in inst_map.values())
+    # BILLABLE day count — weight each day by its day-type multiplier so a
+    # half day shows as 0.5, a hold as 0.5, kill fee as 0.2, off as 0
+    # (user 2026-08-19: "my half days are not calculating correctly on the
+    # schedule to the budget" — the money was right but the days column
+    # counted a half day as a full day, so days × rate ≠ total on screen).
+    def _day_weight(d):
+        if d.day_type == 'custom':
+            return _float(d.rate_multiplier, 1.0)
+        return DAY_TYPE_MULTIPLIERS.get(d.day_type, 0.0)
+    total_day_count = round(sum(_day_weight(d) for v in inst_map.values()
+                                for d in v), 2)
+    if total_day_count == int(total_day_count):
+        total_day_count = int(total_day_count)
 
     # ── Weekly flat rate: convert scheduled days → weeks per instance ─────────
     if (getattr(line, 'rate_type', None) or '') == 'week':
@@ -1174,7 +1186,7 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
         st_base  *= qty
         ot_base  *= qty
         dt_base  *= qty
-        total_day_count = round(total_day_count * qty)
+        total_day_count = round(total_day_count * qty, 2)
 
     legacy_ot = 0.0  # est_ot is a manual-mode override; ignored in schedule-driven calc
     base      = st_base + ot_base + dt_base

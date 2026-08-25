@@ -8308,31 +8308,11 @@ def budget_view(pid, bid):
         sister_orphans = {}
         sister_label = None
 
-    # Build version groups: list of {version_number, estimated, working, is_current}
-    # sorted descending so newest version is first.
-    # Skip is_actual budgets — they share budget_mode='working'/'actual' with
-    # real Working budgets but aren't peers in the version-group sense (the
-    # version switcher only swaps Estimated↔Working). Without this filter,
-    # peer_working_bid could resolve to the Actual budget when it's more
-    # recently created. C-5, 2026-05-08.
-    _vn_map = {}
-    for _b in all_budgets:
-        if _b.is_actual:
-            continue
-        _vn = _b.version_number or 1
-        if _vn not in _vn_map:
-            _vn_map[_vn] = {'version_number': _vn, 'estimated': None, 'working': None}
-        if _budget_type(_b.budget_mode) == 'estimated':
-            # prefer current over superseded
-            if _vn_map[_vn]['estimated'] is None or _b.version_status == 'current':
-                _vn_map[_vn]['estimated'] = _b
-        else:
-            if _vn_map[_vn]['working'] is None or _b.version_status == 'current':
-                _vn_map[_vn]['working'] = _b
-    _max_vn = max(_vn_map.keys()) if _vn_map else 1
-    for _vd in _vn_map.values():
-        _vd['is_current'] = (_vd['version_number'] == _max_vn)
-    version_groups = sorted(_vn_map.values(), key=lambda x: x['version_number'], reverse=True)
+    # Build version groups — shared with the Schedule page's picker so the
+    # two show IDENTICAL versions (user 2026-08-19: "the schedule tab
+    # versions don't match the budget versions and they should be
+    # concretely tied together").
+    version_groups = _version_groups(all_budgets)
 
     # Client send/approval per budget VERSION (User 2026-07-20: "not readily
     # shown which version was approved"). From EstimateShare: short chip state
@@ -8356,7 +8336,8 @@ def budget_view(pid, bid):
 
     # Mode-switcher peers: same-version Estimated and Working for the budget being viewed
     _cur_vn = budget.version_number or 1
-    _vn_peer = _vn_map.get(_cur_vn, {})
+    _vn_peer = next((g for g in version_groups
+                     if g['version_number'] == _cur_vn), {})
     peer_estimated_bid = _vn_peer.get('estimated', {})
     peer_estimated_bid = peer_estimated_bid.id if peer_estimated_bid else current_estimated_bid
     peer_working_bid   = _vn_peer.get('working', {})
@@ -17979,6 +17960,7 @@ def gantt_view(pid, bid):
         project=project, budget=budget,
         day_comment_counts=day_comment_counts,
         all_budgets=all_budgets,
+        version_groups=_version_groups(all_budgets),
         parent_names=parent_names,
         current_working_bid=current_working_bid,
         current_estimated_bid=current_estimated_bid,
@@ -21950,8 +21932,10 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
                                            and _d.schedule_mode == _sched_mode):
                             _dd[_k] = _d
                     _sched = list(_dd.values())
-                    _sched_days_n = sum(1 for _d in _sched if _d.day_type != 'off')
                     _res = calc_line_from_schedule(ln, _sched, fringe_cfgs, _profile, _pw_start)
+                    # Weighted billable days from the calc (half day = 0.5)
+                    # so the card's days column matches the budget's.
+                    _sched_days_n = _res.get('day_count')
                 else:
                     _res = calc_line(ln, fringe_cfgs)
                 _eff_total = float(_res.get('est_total') or 0)
@@ -25123,6 +25107,37 @@ def _supersede_current(project_id, budget_type, exclude_id=None):
             continue
         if _budget_type(b.budget_mode) == budget_type:
             b.version_status = 'superseded'
+
+
+def _version_groups(all_budgets):
+    """Group a project's budgets into version rows for the version pickers:
+    [{version_number, estimated, working, is_current}], newest first.
+
+    Skips is_actual budgets — they share budget_mode='working'/'actual' with
+    real Working budgets but aren't peers in the version-group sense (the
+    version switcher only swaps Estimated↔Working). Without this filter,
+    peer_working_bid could resolve to the Actual budget when it's more
+    recently created. C-5, 2026-05-08. Shared by budget_view AND gantt_view
+    so the Budget and Schedule pages list IDENTICAL versions (2026-08-19).
+    """
+    _vn_map = {}
+    for _b in all_budgets:
+        if _b.is_actual:
+            continue
+        _vn = _b.version_number or 1
+        if _vn not in _vn_map:
+            _vn_map[_vn] = {'version_number': _vn, 'estimated': None, 'working': None}
+        if _budget_type(_b.budget_mode) == 'estimated':
+            # prefer current over superseded
+            if _vn_map[_vn]['estimated'] is None or _b.version_status == 'current':
+                _vn_map[_vn]['estimated'] = _b
+        else:
+            if _vn_map[_vn]['working'] is None or _b.version_status == 'current':
+                _vn_map[_vn]['working'] = _b
+    _max_vn = max(_vn_map.keys()) if _vn_map else 1
+    for _vd in _vn_map.values():
+        _vd['is_current'] = (_vd['version_number'] == _max_vn)
+    return sorted(_vn_map.values(), key=lambda x: x['version_number'], reverse=True)
 
 
 def _copy_budget_lines(source_id, dest_id, link_source=False):

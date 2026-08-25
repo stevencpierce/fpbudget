@@ -6693,9 +6693,12 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
          formatting, settings and lines all clone through. #}
       <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-bottom:2px">Copy everything from</label>
       <select name="source_bid" style="width:100%;margin-bottom:.5rem;font-size:.85rem;padding:6px">
-        {% for vb in all_budgets if not vb.is_actual %}
+        {# Archived versions are hidden — they're retired noise here (user
+           2026-08-19 screenshot: old archived budgets with legacy names
+           cluttered this picker). Un-archive one to copy from it. #}
+        {% for vb in all_budgets if not vb.is_actual and vb.version_status != 'archived' %}
         <option value="{{ vb.id }}" {% if vb.id == cur_est.id %}selected{% endif %}>
-          v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode in ('working', 'actual') else 'Estimated' }}){% if vb.internal_label %} · “{{ vb.internal_label }}”{% endif %}
+          v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode in ('working', 'actual') else 'Estimated' }}){% if vb.version_status != 'current' %} · previous{% endif %}{% if vb.internal_label %} · “{{ vb.internal_label }}”{% endif %}
         </option>
         {% endfor %}
       </select>
@@ -8742,12 +8745,9 @@ function startRename(el) {
     // Sync with settings panel input
     const si = document.getElementById('set-name');
     if (si) si.value = val;
-    // Update version selector
-    const sel = document.querySelector('.select-sm');
-    if (sel) {
-      const opt = sel.options[sel.selectedIndex];
-      if (opt) opt.textContent = val;
-    }
+    // (Stale legacy-version-<select> sync removed 2026-08-19: the old
+    // .select-sm lookup now matched the Add Line modal's SECTION dropdown
+    // and overwrote its selected option's label with the budget name.)
     await fetch(SETTINGS_URL, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -10572,12 +10572,8 @@ async function _saveSettingsInner() {
     const newName = payload.name || document.getElementById('set-name').value.trim();
     document.getElementById('budget-name-heading').textContent = newName;
     document.title = newName + ' — {{ project.name }}';
-    // Update version selector if present
-    const sel = document.querySelector('.select-sm');
-    if (sel) {
-      const opt = sel.querySelector(`option[selected]`) || sel.options[sel.selectedIndex];
-      if (opt) opt.textContent = newName;
-    }
+    // (Stale legacy-version-<select> sync removed 2026-08-19 — see
+    // commitRename's matching note.)
     // If this was a first-time setup (came from project creation), switch to Budget tab
     if (document.getElementById('btn-save-settings') && document.getElementById('btn-save-settings').dataset.firstSetup === '1') {
       document.getElementById('btn-save-settings').dataset.firstSetup = '0';
