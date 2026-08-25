@@ -4832,12 +4832,40 @@ def _duplicate_worker(flask_app, job_id, src_pid, new_name, include_data, user_i
             src_budgets = Budget.query.filter_by(project_id=src_p.id).order_by(
                 Budget.created_at.asc()).all()
             dup_line_map = {}
+            dup_budget_map = {}
             for sb in src_budgets:
                 new_b = _create_budget_from_source(
                     new_p.id, sb, sb.name, sb.budget_mode or 'estimated',
                     parent_bid=None, version_number=sb.version_number)
                 new_b.version_status = sb.version_status
+                dup_budget_map[sb.id] = new_b.id
                 dup_line_map.update(getattr(new_b, '_dup_line_map', {}))
+
+            # 5a. Clone sub-budgets (user 2026-08-19: "copy sub budgets when
+            # duplicating projects too"). Membership remaps through
+            # dup_line_map (old line id → new line id across every cloned
+            # budget); the pinned budget_id remaps through dup_budget_map.
+            # A membership row whose line wasn't cloned is skipped rather
+            # than pointed at the source project's line.
+            for src_sb in SubBudget.query.filter_by(project_id=src_p.id).all():
+                new_sb = SubBudget(
+                    project_id=new_p.id, name=src_sb.name,
+                    description=src_sb.description,
+                    total_committed=src_sb.total_committed,
+                    budget_id=dup_budget_map.get(src_sb.budget_id),
+                    notes=src_sb.notes, archived=src_sb.archived,
+                    created_by_user_id=user_id)
+                db.session.add(new_sb)
+                db.session.flush()
+                for src_sbl in (SubBudgetLine.query
+                                .filter_by(sub_budget_id=src_sb.id)
+                                .order_by(SubBudgetLine.sort_order,
+                                          SubBudgetLine.id).all()):
+                    _nlid = dup_line_map.get(src_sbl.budget_line_id)
+                    if _nlid:
+                        db.session.add(SubBudgetLine(
+                            sub_budget_id=new_sb.id, budget_line_id=_nlid,
+                            sort_order=src_sbl.sort_order, note=src_sbl.note))
 
             # 5b. Optional: receipts + actuals into a fully isolated sandbox.
             data_counts = None
