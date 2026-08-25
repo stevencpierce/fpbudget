@@ -583,7 +583,9 @@ def _actuals_vendor_suggestions(pid):
     try:
         pick = (Budget.query
                 .filter_by(project_id=pid, version_status='current', is_actual=False)
-                .filter(Budget.parent_budget_id.isnot(None))
+                .filter(db.or_(Budget.budget_mode == 'working',
+                               db.and_(Budget.budget_mode == None,
+                                       Budget.parent_budget_id.isnot(None))))
                 .order_by(Budget.id.desc()).first()
                 or Budget.query
                 .filter_by(project_id=pid, version_status='current', is_actual=False)
@@ -5243,20 +5245,24 @@ def project_budget_redirect(pid):
     # docs_only project role → go straight to docs
     if _user_project_role(pid) == 'docs_only':
         return redirect(url_for("docs_project", pid=pid))
-    # Land on the CURRENT WORKING budget by preference, then the current
-    # Estimated, then anything non-archived/non-actual — never an archived
-    # Actual clone (post-migration those hold no txns and render $0 actuals,
-    # which is exactly where 'newest created_at' was landing). (User 2026-07.)
-    latest = (Budget.query.filter_by(project_id=pid, is_actual=False,
-                                     version_status='current')
-              .filter(Budget.budget_mode.in_(('working', 'actual')))
-              .order_by(Budget.version_number.desc().nullslast(), Budget.id.desc())
-              .first())
-    if not latest:
-        latest = (Budget.query.filter_by(project_id=pid, is_actual=False,
-                                         version_status='current')
-                  .order_by(Budget.version_number.desc().nullslast(), Budget.id.desc())
-                  .first())
+    # Land on the HIGHEST current version; within it prefer Working over
+    # Estimated. Previously this preferred ANY current Working outright —
+    # but an old version's Working stays 'current' until a newer Working
+    # supersedes it (coded txns live there), so projects whose newest
+    # versions are Estimated-only kept landing on a stale "X Working v1"
+    # with no schedule. (User 2026-08-19: "defaulting to a budget version
+    # that has no schedule attached… I have to go manually select
+    # estimated and the most recent version".)
+    _cands = (Budget.query.filter_by(project_id=pid, is_actual=False,
+                                     version_status='current').all())
+    latest = None
+    if _cands:
+        _max_v = max((b.version_number or 1) for b in _cands)
+        _within = sorted((b for b in _cands if (b.version_number or 1) == _max_v),
+                         key=lambda b: b.id, reverse=True)
+        latest = (next((b for b in _within
+                        if b.budget_mode in ('working', 'actual')), None)
+                  or _within[0])
     if not latest:
         latest = (Budget.query.filter_by(project_id=pid, is_actual=False)
                   .filter(Budget.version_status != 'archived')
@@ -6783,7 +6789,9 @@ def _line_picker_groups(pid):
     pick_budget = (Budget.query
                    .filter_by(project_id=pid, version_status='current',
                               is_actual=False)
-                   .filter(Budget.parent_budget_id.isnot(None))
+                   .filter(db.or_(Budget.budget_mode == 'working',
+                               db.and_(Budget.budget_mode == None,
+                                       Budget.parent_budget_id.isnot(None))))
                    .order_by(Budget.id.desc())
                    .first())
     if not pick_budget:
@@ -20986,7 +20994,9 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                       .filter_by(project_id=_pid_for_rollup,
                                  version_status='current',
                                  is_actual=False)
-                      .filter(Budget.parent_budget_id.isnot(None))
+                      .filter(db.or_(Budget.budget_mode == 'working',
+                               db.and_(Budget.budget_mode == None,
+                                       Budget.parent_budget_id.isnot(None))))
                       .order_by(Budget.id.desc())
                       .first())
         if not _canonical:
@@ -21205,7 +21215,9 @@ def po_list_page(pid):
                         .filter_by(project_id=pid,
                                    version_status='current',
                                    is_actual=False)
-                        .filter(Budget.parent_budget_id.isnot(None))
+                        .filter(db.or_(Budget.budget_mode == 'working',
+                               db.and_(Budget.budget_mode == None,
+                                       Budget.parent_budget_id.isnot(None))))
                         .order_by(Budget.id.desc())
                         .first())
         if not _canonical_w:
@@ -21876,7 +21888,9 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
     canonical = (Budget.query
                  .filter_by(project_id=pid, version_status='current',
                             is_actual=False)
-                 .filter(Budget.parent_budget_id.isnot(None))
+                 .filter(db.or_(Budget.budget_mode == 'working',
+                               db.and_(Budget.budget_mode == None,
+                                       Budget.parent_budget_id.isnot(None))))
                  .order_by(Budget.id.desc()).first())
     if not canonical:
         canonical = (Budget.query
