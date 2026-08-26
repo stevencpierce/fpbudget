@@ -1312,6 +1312,8 @@ async function loadWaypoints(force) {
             <div style="font-weight:600">Restore at ${when}${label}</div>
             <div class="muted" style="font-size:.68rem">${w.n_days} scheduled day${w.n_days !== 1 ? 's' : ''}</div>
           </div>
+          <button class="btn btn-xs btn-primary" onclick="previewWaypoint(${w.id}, '${when.replace(/'/g, '')}')"
+                  title="See what's different between the schedule now and at this point — line by line, with totals — before deciding">👁 Preview</button>
           <button class="btn btn-xs btn-outline" onclick="restoreWaypoint(${w.id}, '${when.replace(/'/g, '')}')"
                   title="Replace the current schedule with this snapshot (the current state is saved as its own waypoint first)">↶ Restore</button>
           <button class="btn btn-xs btn-ghost" onclick="waypointToVersion(${w.id}, '${when.replace(/'/g, '')}')"
@@ -1337,6 +1339,84 @@ async function restoreWaypoint(wid, when) {
     if (!r.ok || !j.ok) { alert(j.error || 'Restore failed'); return; }
     window.location.reload();
   } catch (e) { alert('Restore failed: ' + e.message); }
+}
+async function previewWaypoint(wid, when) {
+  let overlay = document.getElementById('wp-preview-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'wp-preview-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1200;' +
+      'display:flex;align-items:center;justify-content:center;padding:24px';
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML = '<div style="background:var(--bg-card);border:1px solid var(--border);' +
+    'border-radius:10px;padding:18px;font-size:.85rem;color:var(--text-muted)">Loading preview…</div>';
+  let j;
+  try {
+    j = await fetch(`/projects/{{ project.id }}/budget/{{ budget.id }}/schedule/waypoints/${wid}/preview`)
+      .then(r => r.json());
+  } catch (e) { j = null; }
+  if (!j || !j.ok) {
+    overlay.innerHTML = '<div style="background:var(--bg-card);border:1px solid var(--border);' +
+      'border-radius:10px;padding:18px;font-size:.85rem">Could not load the preview.' +
+      '<div style="text-align:right;margin-top:10px"><button class="btn btn-sm btn-outline" ' +
+      'onclick="document.getElementById(\'wp-preview-overlay\').remove()">Close</button></div></div>';
+    return;
+  }
+  const fmt = n => (n == null ? '—' : '$' + Number(n).toLocaleString('en-US',
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const stBadge = {
+    added:   '<span style="color:#4ade80;font-size:.68rem">added since</span>',
+    removed: '<span style="color:#f87171;font-size:.68rem">removed since</span>',
+    changed: '<span style="color:#e0c060;font-size:.68rem">changed</span>',
+    orphan:  '<span style="color:#f87171;font-size:.68rem">line deleted</span>',
+    same:    '<span style="color:var(--text-muted);font-size:.68rem">same</span>',
+  };
+  const rows = (j.rows || []).map(r => `
+    <tr style="border-bottom:1px dashed var(--border);${r.status === 'same' ? 'opacity:.55' : ''}">
+      <td style="padding:4px 8px;font-variant-numeric:tabular-nums;color:var(--text-muted)">${r.code || ''}</td>
+      <td style="padding:4px 8px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_wpEsc(r.desc)}</td>
+      <td style="padding:4px 8px;text-align:center">${r.now_days} → <strong>${r.wp_days}</strong></td>
+      <td style="padding:4px 8px;text-align:right;font-variant-numeric:tabular-nums">${fmt(r.now_total)}</td>
+      <td style="padding:4px 8px;text-align:right;font-variant-numeric:tabular-nums"><strong>${fmt(r.wp_total)}</strong></td>
+      <td style="padding:4px 8px">${stBadge[r.status] || ''}</td>
+    </tr>`).join('');
+  const delta = (j.total_wp || 0) - (j.total_now || 0);
+  overlay.innerHTML = `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;
+                max-width:760px;width:100%;max-height:82vh;display:flex;flex-direction:column;
+                box-shadow:0 12px 40px rgba(0,0,0,.5)">
+      <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+        <strong>⏱ Schedule at ${when}</strong>
+        ${j.label ? `<span class="muted" style="font-size:.78rem;font-style:italic">${_wpEsc(j.label)}</span>` : ''}
+        <span class="muted" style="font-size:.75rem;margin-left:auto">${j.n_changed} line${j.n_changed !== 1 ? 's' : ''} differ${j.n_changed === 1 ? 's' : ''} from now</span>
+      </div>
+      <div style="overflow-y:auto;padding:6px 10px;flex:1">
+        <table style="width:100%;border-collapse:collapse;font-size:.8rem">
+          <thead><tr style="color:var(--text-muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.05em">
+            <th style="text-align:left;padding:4px 8px">Code</th>
+            <th style="text-align:left;padding:4px 8px">Line</th>
+            <th style="padding:4px 8px" title="Billable days: now → at this waypoint">Days now→then</th>
+            <th style="text-align:right;padding:4px 8px">$ Now</th>
+            <th style="text-align:right;padding:4px 8px">$ At waypoint</th>
+            <th style="padding:4px 8px"></th>
+          </tr></thead>
+          <tbody>${rows || '<tr><td colspan="6" style="padding:12px;text-align:center" class="muted">No schedule-driven lines in either state.</td></tr>'}</tbody>
+          <tfoot><tr style="border-top:1.5pt solid var(--text);font-weight:700">
+            <td colspan="3" style="padding:6px 8px;text-transform:uppercase;font-size:.7rem;color:var(--text-muted)">Schedule-driven total</td>
+            <td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums">${fmt(j.total_now)}</td>
+            <td style="padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums">${fmt(j.total_wp)}</td>
+            <td style="padding:6px 8px;font-size:.72rem;color:${delta > 0 ? '#4ade80' : delta < 0 ? '#f87171' : 'var(--text-muted)'}">${delta === 0 ? '' : (delta > 0 ? '+' : '−') + fmt(Math.abs(delta))}</td>
+          </tr></tfoot>
+        </table>
+      </div>
+      <div style="padding:12px 18px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-sm btn-ghost" onclick="document.getElementById('wp-preview-overlay').remove()">Close</button>
+        <button class="btn btn-sm btn-ghost" onclick="document.getElementById('wp-preview-overlay').remove();waypointToVersion(${wid}, '${when.replace(/'/g, '')}')">⎘ Copy to new version</button>
+        <button class="btn btn-sm btn-primary" onclick="document.getElementById('wp-preview-overlay').remove();restoreWaypoint(${wid}, '${when.replace(/'/g, '')}')">↶ Restore this state</button>
+      </div>
+    </div>`;
 }
 async function waypointToVersion(wid, when) {
   if (!confirm(`Create a NEW Estimated version carrying the schedule as it was at ${when}?\n\n` +

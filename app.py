@@ -18201,6 +18201,114 @@ def schedule_waypoints_list(pid, bid):
                     "timezone": budget.timezone or 'America/Los_Angeles'})
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/schedule/waypoints/<int:wid>/preview",
+           methods=["GET"])
+@login_required
+def schedule_waypoint_preview(pid, bid, wid):
+    """Per-line NOW vs AT-WAYPOINT comparison (owner 2026-08-19: 'is there a
+    way you could preview the budget so you knew what you wanted to do').
+    Computes each schedule-driven line's day count and dollar total under
+    the waypoint's snapshot IN MEMORY — nothing in the DB changes."""
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    from models import ScheduleWaypoint
+    from types import SimpleNamespace as _NS
+    w = ScheduleWaypoint.query.filter_by(id=wid, budget_id=bid).first_or_404()
+    try:
+        snap_days = json.loads(w.days_json) if w.days_json else []
+    except Exception:
+        return jsonify({"error": "This waypoint's snapshot is unreadable."}), 400
+
+    _mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+
+    def _dedupe(rows, keyf, modef):
+        out = {}
+        for r in rows:
+            m = modef(r)
+            if m is not None and m != _mode:
+                continue
+            k = keyf(r)
+            ex = out.get(k)
+            if ex is None or (modef(ex) is None and m == _mode):
+                out[k] = r
+        return list(out.values())
+
+    # Current rows, grouped per line (mode OR legacy NULL, deduped).
+    cur_by_line = {}
+    for sd in _dedupe(ScheduleDay.query.filter_by(budget_id=bid).all(),
+                      lambda r: (r.budget_line_id, r.crew_instance or 1, r.date),
+                      lambda r: r.schedule_mode):
+        cur_by_line.setdefault(sd.budget_line_id, []).append(sd)
+
+    # Snapshot rows → in-memory pseudo ScheduleDay objects per line.
+    wp_by_line = {}
+    for r in _dedupe(snap_days,
+                     lambda r: (r.get('line_id'), r.get('instance') or 1, r.get('date')),
+                     lambda r: r.get('schedule_mode')):
+        try:
+            _d = datetime.strptime(r['date'], "%Y-%m-%d").date()
+        except (KeyError, ValueError, TypeError):
+            continue
+        wp_by_line.setdefault(r.get('line_id'), []).append(_NS(
+            date=_d, day_type=r.get('day_type') or 'work',
+            crew_instance=r.get('instance') or 1,
+            est_ot_hours=r.get('est_ot_hours') or 0,
+            rate_multiplier=r.get('rate_multiplier'),
+            cell_flags=r.get('cell_flags'), schedule_mode=_mode))
+
+    fringe_cfgs = get_fringe_configs(db.session, pid)
+    _profile = budget.payroll_profile
+    _pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
+        _profile.payroll_week_start if _profile else 6)
+
+    def _calc(ln, rows):
+        if not rows:
+            return 0.0, 0
+        try:
+            res = calc_line_from_schedule(ln, rows, fringe_cfgs, _profile, _pw_start)
+            return float(res.get('est_total') or 0), res.get('day_count') or 0
+        except Exception:
+            return 0.0, len(rows)
+
+    rows_out = []
+    tot_now = tot_wp = 0.0
+    for lid in sorted(set(cur_by_line) | set(wp_by_line)):
+        ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first()
+        if ln is None:
+            # Line has since been deleted — its waypoint days can't restore.
+            rows_out.append({"line_id": lid, "desc": "(line since deleted)",
+                             "code": None, "now_total": None, "now_days": 0,
+                             "wp_total": None,
+                             "wp_days": len(wp_by_line.get(lid) or []),
+                             "status": "orphan"})
+            continue
+        now_t, now_d = _calc(ln, cur_by_line.get(lid) or [])
+        wp_t, wp_d = _calc(ln, wp_by_line.get(lid) or [])
+        tot_now += now_t
+        tot_wp += wp_t
+        if lid not in wp_by_line:
+            _st = 'added'          # scheduled now, absent at the waypoint
+        elif lid not in cur_by_line:
+            _st = 'removed'        # at the waypoint, gone now
+        elif round(now_t, 2) != round(wp_t, 2) or now_d != wp_d:
+            _st = 'changed'
+        else:
+            _st = 'same'
+        rows_out.append({"line_id": lid,
+                         "desc": ln.description or ln.account_name or f'line {lid}',
+                         "code": ln.account_code,
+                         "now_total": round(now_t, 2), "now_days": now_d,
+                         "wp_total": round(wp_t, 2), "wp_days": wp_d,
+                         "status": _st})
+    _when = (w.state_time or w.created_at)
+    return jsonify({"ok": True,
+                    "state_time": _when.isoformat() if _when else None,
+                    "label": w.label,
+                    "rows": rows_out,
+                    "total_now": round(tot_now, 2),
+                    "total_wp": round(tot_wp, 2),
+                    "n_changed": sum(1 for r in rows_out if r['status'] != 'same')})
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/schedule/waypoints/<int:wid>/restore",
            methods=["POST"])
 @login_required
