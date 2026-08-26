@@ -9,6 +9,12 @@
 {% set working_exists = (budget.budget_mode in ('working', 'actual')) or has_working_budget %}
 {# True only when THIS budget IS the working/actual budget — enables frozen-est + variance columns #}
 {% set is_working_view = budget.budget_mode in ('working', 'actual') %}
+{# True when any per-line actuals exist for this project — coded transactions
+   can exist BEFORE an Actual (or even Working) budget does (owner 2026-08-19:
+   Estimated-only project with actuals coded in). The Actual column must get
+   real width in that case; previously it stayed 0px-wide and the JS-injected
+   green amounts overflowed on top of the Assign/actions cell. #}
+{% set has_line_actuals = ((has_line_actuals | default(false)) or actual_line_totals_by_lid or actual_line_totals_by_desc or actual_line_totals) and true %}
 {# PHASE 4 (2026-07): viewing a SUPERSEDED Working budget whose per-line actuals
    were frozen (actual_snapshot) at supersede time. The Actual column then shows
    the frozen figures and the P3 ▸ live-fetch expanders are suppressed (the
@@ -1274,7 +1280,7 @@
         <col style="width:{{ '68px' if ns.has_agent_or_disc else '0' }}"><!-- agent%/disc% (collapsed when no line has a value) -->
         <col style="width:120px"><!-- estimated -->
         <col style="width:{{ '112px' if working_exists else '0' }}"><!-- working -->
-        <col style="width:{{ '116px' if has_actual_budget else '0' }}"><!-- actual (collapsed unless an Actual budget exists) -->
+        <col style="width:{{ '116px' if (has_actual_budget or has_line_actuals) else '0' }}"><!-- actual (collapsed unless an Actual budget OR any coded actuals exist) -->
         <col style="width:{{ '102px' if (is_working_view or has_actual_budget) else '0' }}"><!-- variance -->
         <col><!-- act: auto -->
       </colgroup>
@@ -1292,7 +1298,7 @@
           <th class="col-num{% if not ns.has_agent_or_disc %} col-empty{% endif %}">{% if ns.has_agent_or_disc %}{{ 'Agent%' if ns.has_labor else 'Disc%' }}{% endif %}</th>
           <th class="col-num {% if is_working_view %}frozen-est-header{% endif %} var-col-header" data-budget="estimated">Estimated</th>
           <th class="col-num col-working var-col-header" data-budget="working">Working</th>
-          <th class="col-num col-actual var-col-header" data-budget="actual" title="{% if actuals_frozen %}Per-line actuals frozen when this version was superseded — the live transactions have since moved to the newer Working version{% elif is_actual_view %}Actual planned (top) + cumulative transaction spend (bottom){% else %}Sum of linked transaction amounts{% endif %}">{% if is_actual_view %}Actual{% elif has_actual_budget %}Actual{% endif %}{% if actuals_frozen %}<span style="display:block;font-weight:400;font-size:.62rem;color:#c084fc;text-transform:none;letter-spacing:0;line-height:1.1;margin-top:1px" title="These figures were frozen when a newer Working version was created.">❄ frozen at supersede</span>{% endif %}</th>
+          <th class="col-num col-actual var-col-header" data-budget="actual" title="{% if actuals_frozen %}Per-line actuals frozen when this version was superseded — the live transactions have since moved to the newer Working version{% elif is_actual_view %}Actual planned (top) + cumulative transaction spend (bottom){% else %}Sum of linked transaction amounts{% endif %}">{% if is_actual_view or has_actual_budget or has_line_actuals %}Actual{% endif %}{% if actuals_frozen %}<span style="display:block;font-weight:400;font-size:.62rem;color:#c084fc;text-transform:none;letter-spacing:0;line-height:1.1;margin-top:1px" title="These figures were frozen when a newer Working version was created.">❄ frozen at supersede</span>{% endif %}</th>
           <th class="col-num col-variance" title="{% if has_actual_budget %}Working − Actual{% else %}Estimated − Working{% endif %}">{% if has_actual_budget or is_working_view %}Variance{% endif %}</th>
           <th class="col-act"></th>
         </tr>
@@ -1917,7 +1923,7 @@
               {% else %}
                 <span class="muted" style="font-size:.75rem">—</span>
               {% endif %}
-            {% elif has_actual_budget %}
+            {% elif has_actual_budget or has_line_actuals %}
               {% if _actual != 0 %}
                 {# P3 (User 2026-07): actuals now live on Working. When a line
                    has spend, the Actual cell becomes a ▸ expander that lazily
@@ -1978,7 +1984,7 @@
           {% endif %}
           {% set _actual_e = (_actual_e or 0) | float %}
           <td class="col-num col-actual line-actual" data-acell-line="{{ ln.id }}">
-            {% if has_actual_budget %}
+            {% if has_actual_budget or has_line_actuals %}
               {% if _actual_e != 0 %}
                 {# Estimated view gets the SAME ▸ expander as Working (user
                    2026-07: "there's only one actual — if you move it in one of
@@ -2229,9 +2235,9 @@
           <td class="col-num">
             <span style="color:var(--text-muted)">${{ "{:,.2f}".format(_tm.amount) }}</span>
           </td>
-          {% if working_exists %}<td class="col-num col-working"></td>{% endif %}
-          {% if has_actual_budget %}<td class="col-num col-actual"></td>{% endif %}
-          {% if is_working_view or has_actual_budget %}<td class="col-num col-variance"></td>{% endif %}
+          <td class="col-num col-working"></td>
+          <td class="col-num col-actual"></td>
+          <td class="col-num col-variance"></td>
           <td class="col-act">
             {% if _tm.source_line_id %}
             <a href="#"

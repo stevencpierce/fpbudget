@@ -8049,6 +8049,18 @@ def budget_view(pid, bid):
     actual_line_totals = {}
     actual_line_totals_by_lid = {}  # by Actual line id (used in Actual view)
     actual_line_totals_by_desc = {}  # {(account_code, lower desc): total}
+    # ANY coded spend on the project — even before a Working/Actual budget
+    # exists (owner 2026-08-19: Estimated-only project with actuals coded).
+    # Drives the Actual column's width/header so the JS-injected live
+    # amounts have a real column instead of overflowing the actions cell.
+    try:
+        _has_line_actuals = db.session.query(Transaction.id).filter(
+            Transaction.project_id == pid,
+            Transaction.not_project_expense == False,
+            db.or_(Transaction.budget_line_id.isnot(None),
+                   Transaction.account_code.isnot(None))).first() is not None
+    except Exception:
+        _has_line_actuals = False
     if peer_actual_bid:
         try:
             _alines = BudgetLine.query.filter_by(budget_id=peer_actual_bid).all()
@@ -8862,6 +8874,7 @@ def budget_view(pid, bid):
         actual_line_totals=actual_line_totals,
         actual_line_totals_by_lid=actual_line_totals_by_lid,
         actual_line_totals_by_desc=actual_line_totals_by_desc,
+        has_line_actuals=_has_line_actuals,
         working_line_totals_by_desc=working_line_totals_by_desc,
         xb_est=xb_est, xb_work=xb_work, xb_act=xb_act,
         sister_orphans=sister_orphans,
@@ -10349,20 +10362,27 @@ def _add_evidence(txn_id, doc_id, kind):
 
 def _guard_doc_expense(txn, data):
     """Actualizing 2.0 A1 (2026-07-20): a doc-born row is a DOCUMENT, not an
-    expense — coding it requires the explicit Create-expense step (the client
-    sends create_expense=true from the Create-expense flow, which also stamps
-    activated_at so the receipt rides along as backup evidence). Returns an
-    error response or None. Clearing coding is always allowed."""
+    expense until an explicit user action makes it one.
+
+    REWORKED 2026-08-19 (owner: "AI suggested codes… doesn't create an
+    expense… when I try to assign it to a line or take the AI suggestion it
+    gives me an error… the whole creating-an-expense process is pretty
+    muddy"): originally only the row dropdown's Create-expense option sent
+    create_expense=true, and EVERY other explicit coding path — the doc
+    editor's assign dropdown, drag-and-drop, the ✨ AI-suggestion accept,
+    bulk coding — bounced with a 400. Coding a document to a budget line or
+    section IS the create-expense intent, so all of these now activate the
+    document as an expense (stamping activated_at + the primary evidence
+    link) instead of erroring. These code paths are all user-driven clicks;
+    nothing automated codes doc-born rows, so upload + AI suggestion alone
+    still never creates spend — the doc stays $0 until a person codes it,
+    matches it to an imported charge, or marks it as backup.
+    Returns None (never blocks); callers commit."""
     if txn.source != 'doc_upload' or txn.activated_at is not None:
         return None
-    if data.get("create_expense"):
-        txn.activated_at = datetime.utcnow()
-        _add_evidence(txn.id, txn.doc_upload_id, 'primary')
-        return None
-    return jsonify({"error": "This is a document (invoice/receipt), not an "
-                             "expense yet. Use Create expense (pick a budget "
-                             "line on its row), or Match it to an imported "
-                             "charge."}), 400
+    txn.activated_at = datetime.utcnow()
+    _add_evidence(txn.id, txn.doc_upload_id, 'primary')
+    return None
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-line", methods=["POST"])
@@ -13156,7 +13176,9 @@ def actuals_set_coa(pid, tid):
     """
     txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
     data = request.get_json(force=True) or {}
-    if data.get("account_code"):
+    if data.get("account_code") and data.get("account_code") != "not_project":
+        # not_project is excluded: flagging a document as "not a project
+        # expense" must not activate it as one.
         _ge = _guard_doc_expense(txn, data)
         if _ge is not None:
             return _ge
@@ -13300,6 +13322,9 @@ def actuals_set_line_bulk(pid):
             if not txn:
                 failed += 1
                 continue
+            # Bulk-coding a doc-born row is an explicit create-expense act,
+            # same as single-row coding (see _guard_doc_expense, 2026-08-19).
+            _guard_doc_expense(txn, data)
             if line_id:
                 link_transaction_to_line(int(tid), int(line_id), user_id=current_user.id)
                 if line_label is None:
