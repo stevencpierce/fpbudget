@@ -573,6 +573,32 @@ class Timecard(db.Model):
                                            name="uq_timecard_proj_crew_week"),)
 
 
+class ScheduleWaypoint(db.Model):
+    """Automatic restore point for a budget's schedule (owner 2026-08-19:
+    "add way points like — restore at X time… when there have been changes
+    and then inactivity for a while, say 30 min").
+
+    Created automatically when a schedule edit arrives after ≥30 minutes of
+    schedule quiet — the snapshot captures the state as it stood at the END
+    of the previous editing burst (identical to the state just before the
+    new burst's first change). days_json / prod_days_json hold full row
+    dumps; restore wipes the budget's current rows and reinserts these.
+    """
+    __tablename__ = "schedule_waypoint"
+    id                 = db.Column(db.Integer, primary_key=True)
+    project_id         = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
+    budget_id          = db.Column(db.Integer, db.ForeignKey("budget.id", ondelete="CASCADE"), nullable=False)
+    created_at         = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    # When the captured state was last edited (the label users see).
+    state_time         = db.Column(db.DateTime, nullable=True)
+    label              = db.Column(db.String(200), nullable=True)
+    days_json          = db.Column(db.Text, nullable=True)   # [{line_id,instance,date,day_type,...}]
+    prod_days_json     = db.Column(db.Text, nullable=True)   # [{date,mode,cs,cb,m1,m2,ispd}]
+    created_by_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+
+    __table_args__ = (db.Index('ix_sched_waypoint_budget', 'budget_id'),)
+
+
 class ProductionDay(db.Model):
     """Per-production-day flags: meals. Separate rows per schedule_mode (estimated/working)."""
     __tablename__ = "production_day"

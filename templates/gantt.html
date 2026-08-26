@@ -108,6 +108,17 @@
         <a href="{{ url_for('export_csv', pid=project.id, bid=budget.id, type='working') }}">Working Budget CSV</a>
       </div>
     </div>
+    {# Waypoints — automatic schedule restore points (owner 2026-08-19).
+       One is captured whenever edits resume after ≥30 min of quiet. #}
+    <div class="dropdown">
+      <button class="btn btn-sm btn-outline" onmouseenter="loadWaypoints()"
+              onclick="loadWaypoints()"
+              title="Automatic schedule restore points — captured whenever edits resume after 30+ minutes of inactivity">⏱ Waypoints ▾</button>
+      <div class="dropdown-menu" id="waypoints-menu"
+           style="min-width:320px;max-height:360px;overflow-y:auto;right:0;left:auto">
+        <p class="muted" style="padding:.6rem;font-size:.78rem">Loading…</p>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1272,5 +1283,71 @@ function closeLocDayPicker() {
   // Close on scroll (position:fixed menu would otherwise detach from the cell).
   window.addEventListener('scroll', closeLocDayPicker, true);
 })();
+
+// ── Schedule waypoints (owner 2026-08-19) ─────────────────────────────────
+let _wpLoaded = false;
+async function loadWaypoints(force) {
+  if (_wpLoaded && !force) return;
+  const menu = document.getElementById('waypoints-menu');
+  try {
+    const j = await fetch(`/projects/{{ project.id }}/budget/{{ budget.id }}/schedule/waypoints`)
+      .then(r => r.json());
+    const wps = (j && j.waypoints) || [];
+    if (!wps.length) {
+      menu.innerHTML = '<p class="muted" style="padding:.7rem;font-size:.78rem;max-width:280px">' +
+        'No restore points yet. One is captured automatically whenever schedule ' +
+        'edits resume after 30+ minutes of quiet.</p>';
+      _wpLoaded = true;
+      return;
+    }
+    menu.innerHTML = wps.map(w => {
+      const t = w.state_time ? new Date(w.state_time + 'Z') : null;
+      const when = t ? t.toLocaleString(undefined, { month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit' }) : '—';
+      const label = w.label ? ` · ${_wpEsc(w.label)}` : '';
+      return `
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;
+                    border-bottom:1px dashed var(--border);font-size:.8rem">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600">Restore at ${when}${label}</div>
+            <div class="muted" style="font-size:.68rem">${w.n_days} scheduled day${w.n_days !== 1 ? 's' : ''}</div>
+          </div>
+          <button class="btn btn-xs btn-outline" onclick="restoreWaypoint(${w.id}, '${when.replace(/'/g, '')}')"
+                  title="Replace the current schedule with this snapshot (the current state is saved as its own waypoint first)">↶ Restore</button>
+          <button class="btn btn-xs btn-ghost" onclick="waypointToVersion(${w.id}, '${when.replace(/'/g, '')}')"
+                  title="Create a NEW Estimated version carrying this schedule — the current schedule is untouched">⎘ New version</button>
+        </div>`;
+    }).join('');
+    _wpLoaded = true;
+  } catch (e) {
+    menu.innerHTML = '<p class="muted" style="padding:.7rem;font-size:.78rem">Could not load waypoints.</p>';
+  }
+}
+function _wpEsc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+async function restoreWaypoint(wid, when) {
+  if (!confirm(`Restore the schedule to how it was at ${when}?\n\n` +
+               'Everything scheduled since then is replaced. The current state is ' +
+               'saved as its own "Before restore" waypoint first, so you can flip back.')) return;
+  try {
+    const r = await fetch(`/projects/{{ project.id }}/budget/{{ budget.id }}/schedule/waypoints/${wid}/restore`,
+                          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) { alert(j.error || 'Restore failed'); return; }
+    window.location.reload();
+  } catch (e) { alert('Restore failed: ' + e.message); }
+}
+async function waypointToVersion(wid, when) {
+  if (!confirm(`Create a NEW Estimated version carrying the schedule as it was at ${when}?\n\n` +
+               'The current budget and schedule are untouched.')) return;
+  try {
+    const r = await fetch(`/projects/{{ project.id }}/budget/{{ budget.id }}/schedule/waypoints/${wid}/copy-to-version`,
+                          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) { alert(j.error || 'Could not create the version'); return; }
+    window.location.href = j.redirect || window.location.href;
+  } catch (e) { alert('Failed: ' + e.message); }
+}
 </script>
 {% endblock %}

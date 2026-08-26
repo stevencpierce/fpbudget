@@ -792,6 +792,7 @@ _BUDGET_WRITE_ENDPOINTS = {
     'budget_settings', 'budget_fee_update', 'pull_budget_lines', 'set_gantt_day',
     'set_gantt_days_batch', 'gantt_assign_crew', 'set_gantt_meal',
     'expand_gantt', 'set_schedule_label',
+    'schedule_waypoint_restore', 'schedule_waypoint_copy_version',
 }
 
 
@@ -18025,6 +18026,280 @@ def _reject_insane_year(d):
     return None
 
 
+# ── Schedule waypoints (owner 2026-08-19) ─────────────────────────────────
+# "Add way points like — restore at X time… when there have been changes
+#  made and then inactivity for a while, say 30 min, and allow that to be
+#  restored and/or copied to a new version."
+# A waypoint is created automatically when a schedule edit arrives after
+# ≥30 minutes of schedule quiet: the snapshot captures the state as it
+# stood at the END of the previous editing burst (identical to the state
+# just before the new burst's first change), so every burst of edits gets
+# a "restore to how it was at X" point. Capped per budget.
+
+_WAYPOINT_QUIET_MIN = 30
+_WAYPOINT_KEEP = 25
+
+
+def _snapshot_schedule_state(bid):
+    """Dump every ScheduleDay + ProductionDay row for this budget."""
+    days = [{'line_id': sd.budget_line_id, 'instance': sd.crew_instance or 1,
+             'date': sd.date.isoformat(), 'day_type': sd.day_type,
+             'episode': sd.episode, 'note': sd.note,
+             'est_ot_hours': float(sd.est_ot_hours or 0),
+             'rate_multiplier': (float(sd.rate_multiplier)
+                                 if sd.rate_multiplier is not None else None),
+             'cell_flags': sd.cell_flags, 'schedule_mode': sd.schedule_mode}
+            for sd in ScheduleDay.query.filter_by(budget_id=bid).all()]
+    from models import ProductionDay as _PD
+    pdays = [{'date': p.date.isoformat(), 'mode': p.schedule_mode,
+              'cs': bool(p.craft_services), 'cb': bool(p.courtesy_breakfast),
+              'm1': bool(p.first_meal), 'm2': bool(p.second_meal),
+              'ispd': bool(getattr(p, 'is_production_day', False))}
+             for p in _PD.query.filter_by(budget_id=bid).all()]
+    return days, pdays
+
+
+def _restore_schedule_state(bid, days, pdays, *, line_id_map=None, restamp_mode=None,
+                            default_mode='estimated'):
+    """Replace a budget's schedule rows with a snapshot. line_id_map remaps
+    line ids (copy-to-new-version); restamp_mode forces schedule_mode (and
+    filters snapshot rows to the modes that were active in the source).
+    Does NOT commit; caller syncs + commits."""
+    from models import ProductionDay as _PD, TravelDetail as _TD
+    _old_ids = [r.id for r in ScheduleDay.query.filter_by(budget_id=bid)
+                .with_entities(ScheduleDay.id).all()]
+    if _old_ids:
+        _TD.query.filter(_TD.schedule_day_id.in_(_old_ids)).delete(synchronize_session=False)
+        ScheduleDay.query.filter(ScheduleDay.id.in_(_old_ids)).delete(synchronize_session=False)
+    _PD.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+
+    if restamp_mode:
+        # Cross-budget copy: keep one row per (line, instance, date) — the
+        # mode-tagged row wins over legacy NULL — then restamp.
+        _dd = {}
+        for r in days:
+            _k = (r.get('line_id'), r.get('instance') or 1, r.get('date'))
+            _ex = _dd.get(_k)
+            if _ex is None or (_ex.get('schedule_mode') is None and r.get('schedule_mode')):
+                _dd[_k] = r
+        days = list(_dd.values())
+        _pd_dd = {}
+        for r in pdays:
+            _ex = _pd_dd.get(r.get('date'))
+            if _ex is None or (_ex.get('mode') is None and r.get('mode')):
+                _pd_dd[r.get('date')] = r
+        pdays = list(_pd_dd.values())
+
+    inserted = 0
+    lines_with_days = set()
+    for r in days:
+        _lid = r.get('line_id')
+        if line_id_map is not None:
+            _lid = line_id_map.get(_lid)
+            if not _lid:
+                continue
+        try:
+            _d = datetime.strptime(r['date'], "%Y-%m-%d").date()
+        except (KeyError, ValueError, TypeError):
+            continue
+        sd = ScheduleDay(budget_id=bid, budget_line_id=_lid,
+                         crew_instance=r.get('instance') or 1, date=_d,
+                         day_type=r.get('day_type') or 'work',
+                         episode=r.get('episode'), note=r.get('note'),
+                         est_ot_hours=r.get('est_ot_hours') or 0,
+                         cell_flags=r.get('cell_flags'),
+                         schedule_mode=(restamp_mode or r.get('schedule_mode')
+                                        or default_mode))
+        if r.get('rate_multiplier') is not None:
+            sd.rate_multiplier = r['rate_multiplier']
+        db.session.add(sd)
+        lines_with_days.add(_lid)
+        inserted += 1
+    for r in pdays:
+        try:
+            _d = datetime.strptime(r['date'], "%Y-%m-%d").date()
+        except (KeyError, ValueError, TypeError):
+            continue
+        db.session.add(_PD(budget_id=bid, date=_d,
+                           schedule_mode=(restamp_mode or r.get('mode') or default_mode),
+                           craft_services=bool(r.get('cs')),
+                           courtesy_breakfast=bool(r.get('cb')),
+                           first_meal=bool(r.get('m1')),
+                           second_meal=bool(r.get('m2')),
+                           is_production_day=bool(r.get('ispd'))))
+    # Keep use_schedule coherent with the restored rows.
+    for _ln in BudgetLine.query.filter_by(budget_id=bid, is_labor=True).all():
+        if _ln.id in lines_with_days and not _ln.use_schedule:
+            _ln.use_schedule = True
+    return inserted
+
+
+def _maybe_schedule_waypoint(pid, bid):
+    """Create a waypoint if this edit starts a NEW burst (no schedule
+    activity in the last 30 min). Fail-open — never blocks the edit."""
+    try:
+        from models import ScheduleWaypoint
+        _cut = datetime.utcnow() - timedelta(minutes=_WAYPOINT_QUIET_MIN)
+        if (ActivityLog.query
+                .filter(ActivityLog.budget_id == bid,
+                        ActivityLog.entity_type.in_(('schedule_day', 'schedule')),
+                        ActivityLog.created_at >= _cut)
+                .first()) is not None:
+            return  # mid-burst — the burst's start already got its waypoint
+        days, pdays = _snapshot_schedule_state(bid)
+        if not days and not pdays:
+            return  # empty schedule — nothing worth restoring to
+        _days_js = json.dumps(days)
+        _pd_js = json.dumps(pdays)
+        _newest = (ScheduleWaypoint.query.filter_by(budget_id=bid)
+                   .order_by(ScheduleWaypoint.id.desc()).first())
+        if (_newest is not None and _newest.days_json == _days_js
+                and _newest.prod_days_json == _pd_js):
+            return  # identical to the newest waypoint — skip the duplicate
+        _last_act = (ActivityLog.query
+                     .filter(ActivityLog.budget_id == bid,
+                             ActivityLog.entity_type.in_(('schedule_day', 'schedule')))
+                     .order_by(ActivityLog.id.desc()).first())
+        db.session.add(ScheduleWaypoint(
+            project_id=pid, budget_id=bid,
+            state_time=(_last_act.created_at if _last_act else datetime.utcnow()),
+            days_json=_days_js, prod_days_json=_pd_js,
+            created_by_user_id=(current_user.id
+                                if getattr(current_user, 'is_authenticated', False)
+                                else None)))
+        for _o in (ScheduleWaypoint.query.filter_by(budget_id=bid)
+                   .order_by(ScheduleWaypoint.id.desc())
+                   .offset(_WAYPOINT_KEEP).all()):
+            db.session.delete(_o)
+        db.session.commit()
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        logging.warning("[waypoint] snapshot failed", exc_info=True)
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/schedule/waypoints", methods=["GET"])
+@login_required
+def schedule_waypoints_list(pid, bid):
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    from models import ScheduleWaypoint
+    out = []
+    for w in (ScheduleWaypoint.query.filter_by(budget_id=bid)
+              .order_by(ScheduleWaypoint.id.desc()).limit(_WAYPOINT_KEEP).all()):
+        try:
+            _n = len(json.loads(w.days_json)) if w.days_json else 0
+        except Exception:
+            _n = 0
+        out.append({"id": w.id, "label": w.label,
+                    "state_time": (w.state_time or w.created_at).isoformat()
+                                  if (w.state_time or w.created_at) else None,
+                    "created_at": w.created_at.isoformat() if w.created_at else None,
+                    "n_days": _n})
+    return jsonify({"ok": True, "waypoints": out,
+                    "timezone": budget.timezone or 'America/Los_Angeles'})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/schedule/waypoints/<int:wid>/restore",
+           methods=["POST"])
+@login_required
+def schedule_waypoint_restore(pid, bid, wid):
+    _wb = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'editor')
+    from models import ScheduleWaypoint
+    w = ScheduleWaypoint.query.filter_by(id=wid, budget_id=bid).first_or_404()
+    try:
+        days = json.loads(w.days_json) if w.days_json else []
+        pdays = json.loads(w.prod_days_json) if w.prod_days_json else []
+    except Exception:
+        return jsonify({"error": "This waypoint's snapshot is unreadable."}), 400
+    # Safety net: snapshot the CURRENT state first so the restore itself
+    # can be undone by restoring the auto "Before restore" waypoint.
+    try:
+        _cd, _cp = _snapshot_schedule_state(bid)
+        db.session.add(ScheduleWaypoint(
+            project_id=pid, budget_id=bid, state_time=datetime.utcnow(),
+            label='Before restore', days_json=json.dumps(_cd),
+            prod_days_json=json.dumps(_cp),
+            created_by_user_id=current_user.id))
+        db.session.flush()
+    except Exception:
+        db.session.rollback()
+    try:
+        n = _restore_schedule_state(
+            bid, days, pdays,
+            default_mode=('working' if _wb.budget_mode in ('working', 'actual')
+                          else 'estimated'))
+        db.session.commit()
+        sync_schedule_driven_lines(bid, db.session)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logging.exception("[waypoint] restore failed")
+        return jsonify({"error": f"Restore failed: {e}"}), 500
+    try:
+        _when = (w.state_time or w.created_at)
+        _log_activity(action='restore', entity_type='schedule',
+                      entity_id=bid, entity_label=w.label or 'Schedule waypoint',
+                      budget_id=bid, project_id=pid, before=None,
+                      after={'waypoint_id': w.id, 'days_restored': n},
+                      note=f'Restored schedule to waypoint from '
+                           f'{_when.strftime("%b %-d %H:%M") if _when else "?"} UTC')
+    except Exception:
+        pass
+    return jsonify({"ok": True, "days_restored": n})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/schedule/waypoints/<int:wid>/copy-to-version",
+           methods=["POST"])
+@login_required
+def schedule_waypoint_copy_version(pid, bid, wid):
+    """Create a NEW Estimated version copied from this budget, with its
+    schedule replaced by the waypoint's snapshot — 'copy the restore point
+    to a new version' without touching the current schedule."""
+    project = ProjectSheet.query.get_or_404(pid)
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'editor')
+    from models import ScheduleWaypoint
+    w = ScheduleWaypoint.query.filter_by(id=wid, budget_id=bid).first_or_404()
+    try:
+        days = json.loads(w.days_json) if w.days_json else []
+        pdays = json.loads(w.prod_days_json) if w.prod_days_json else []
+    except Exception:
+        return jsonify({"error": "This waypoint's snapshot is unreadable."}), 400
+    try:
+        next_vnum = _next_version_number(pid)
+        base_name = _project_base_name(pid, project.name)
+        new_name = _estimated_version_name(base_name, next_vnum)
+        _supersede_current(pid, 'estimated')
+        db.session.flush()
+        b = _create_budget_from_source(pid, budget, new_name, 'estimated',
+                                       parent_bid=bid, version_number=next_vnum)
+        line_id_map = dict(getattr(b, '_dup_line_map', {}) or {})
+        db.session.flush()
+        _restore_schedule_state(b.id, days, pdays,
+                                line_id_map=line_id_map,
+                                restamp_mode='estimated')
+        db.session.commit()
+        sync_schedule_driven_lines(b.id, db.session)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logging.exception("[waypoint] copy-to-version failed")
+        return jsonify({"error": f"Could not create the version: {e}"}), 500
+    try:
+        _log_activity(action='create', entity_type='budget',
+                      entity_id=b.id, entity_label=b.name,
+                      budget_id=b.id, project_id=pid, before=None,
+                      after={'from_waypoint': w.id, 'source_bid': bid},
+                      note=f'Created {b.name} from a schedule waypoint')
+    except Exception:
+        pass
+    return jsonify({"ok": True, "new_bid": b.id, "name": b.name,
+                    "redirect": url_for('gantt_view', pid=pid, bid=b.id)})
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/gantt/day", methods=["POST"])
 @login_required
 def set_gantt_day(pid, bid):
@@ -18056,6 +18331,7 @@ def set_gantt_day(pid, bid):
         return jsonify({"error": _yr_err}), 400
 
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    _maybe_schedule_waypoint(pid, bid)
 
     existing = ScheduleDay.query.filter_by(
         budget_id=bid, budget_line_id=line_id,
@@ -18064,6 +18340,11 @@ def set_gantt_day(pid, bid):
 
     if day_type == "off" and existing:
         _act_prev_type = existing.day_type
+        _act_row = {'day_type': existing.day_type, 'cell_flags': existing.cell_flags,
+                    'note': existing.note, 'episode': existing.episode,
+                    'est_ot_hours': float(existing.est_ot_hours or 0),
+                    'line_id': line_id, 'date': date_str, 'instance': crew_instance,
+                    'schedule_mode': existing.schedule_mode}
         db.session.delete(existing)
         db.session.commit()
         try:
@@ -18072,8 +18353,7 @@ def set_gantt_day(pid, bid):
             _log_activity(action='delete', entity_type='schedule_day',
                           entity_id=None, entity_label=f'{_label} — {date_str}',
                           budget_id=bid, project_id=pid,
-                          before={'day_type': _act_prev_type, 'date': date_str,
-                                  'line_id': line_id, 'instance': crew_instance},
+                          before=_act_row,
                           after=None,
                           note=f'Cleared schedule cell ({_act_prev_type} → off)')
         except Exception: pass
@@ -18081,6 +18361,15 @@ def set_gantt_day(pid, bid):
 
     _act_is_create = existing is None
     _act_prev_type = existing.day_type if existing else None
+    # FULL before-state (2026-08-19): undo needs every restorable field —
+    # the old {'day_type': X} shallow snapshot couldn't revert flag edits.
+    _act_prev = None if _act_is_create else {
+        'day_type': existing.day_type, 'cell_flags': existing.cell_flags,
+        'note': existing.note, 'episode': existing.episode,
+        'est_ot_hours': float(existing.est_ot_hours or 0),
+        'line_id': line_id, 'date': date_str, 'instance': crew_instance,
+        'schedule_mode': existing.schedule_mode,
+    }
     if not existing:
         existing = ScheduleDay(budget_id=bid, budget_line_id=line_id,
                                crew_instance=crew_instance, date=d,
@@ -18173,8 +18462,10 @@ def set_gantt_day(pid, bid):
                 entity_type='schedule_day', entity_id=saved_id,
                 entity_label=f'{_label} — {date_str}',
                 budget_id=bid, project_id=pid,
-                before=(None if _act_is_create else {'day_type': _act_prev_type}),
-                after={'day_type': day_type, 'cell_flags': cell_flags},
+                before=_act_prev,
+                after={'day_type': day_type, 'cell_flags': saved_flags,
+                       'line_id': line_id, 'date': date_str,
+                       'instance': crew_instance, 'schedule_mode': sched_mode},
                 note=(f'Set {_label} {date_str} to {day_type}'
                       if _act_prev_type != day_type
                       else f'Toggled flags on {_label} {date_str}'))
@@ -18197,6 +18488,7 @@ def set_gantt_days_batch(pid, bid):
         return jsonify({"error": "days array required"}), 400
 
     sched_mode        = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    _maybe_schedule_waypoint(pid, bid)
     affected_line_ids = set()
     applied           = 0
 
@@ -18333,6 +18625,7 @@ def clear_gantt_day(pid, bid):
     date_str = data.get("date")
     crew_instance = int(data.get("crew_instance") or 1)
     sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    _maybe_schedule_waypoint(pid, bid)
     if line_id and date_str:
         try:
             d = datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -18358,6 +18651,15 @@ def clear_gantt_day(pid, bid):
                         .all())
             if matching:
                 _prev_type = matching[0].day_type
+                # Full row snapshots so Activity-undo can recreate every
+                # deleted row (mode-tagged AND legacy-NULL). 2026-08-19.
+                _act_rows = [{'day_type': m.day_type, 'cell_flags': m.cell_flags,
+                              'note': m.note, 'episode': m.episode,
+                              'est_ot_hours': float(m.est_ot_hours or 0),
+                              'line_id': line_id, 'date': date_str,
+                              'instance': crew_instance,
+                              'schedule_mode': m.schedule_mode}
+                             for m in matching]
                 _ids = [m.id for m in matching]
                 # Travel details FK ScheduleDay — drop them first so the
                 # parent delete doesn't trip the FK constraint.
@@ -18377,6 +18679,8 @@ def clear_gantt_day(pid, bid):
                                   entity_label=f'{_label} — {date_str}',
                                   budget_id=bid, project_id=pid,
                                   before={'day_type': _prev_type, 'date': date_str,
+                                          'line_id': line_id, 'instance': crew_instance,
+                                          'rows': _act_rows,
                                           'rows_deleted': len(matching)},
                                   after=None,
                                   note=f'Cleared {_label} {date_str}'
@@ -18502,13 +18806,29 @@ def set_gantt_meal(pid, bid):
     except ValueError:
         return jsonify({"error": "invalid date"}), 400
 
+    _maybe_schedule_waypoint(pid, bid)
     row = ProductionDay.query.filter_by(budget_id=bid, date=d, schedule_mode=sched_mode).first()
     if row is None:
         row = ProductionDay(budget_id=bid, date=d, schedule_mode=sched_mode)
         db.session.add(row)
 
+    _prev_val = bool(getattr(row, field, False))
     setattr(row, field, value)
     db.session.commit()
+    # Log production-day flag flips so they show in Activity AND count as
+    # schedule edits for the waypoint burst detection (2026-08-19). Not
+    # individually undoable — waypoint restore covers them.
+    try:
+        if _prev_val != value:
+            _log_activity(action='update', entity_type='schedule',
+                          entity_id=bid, entity_label=f'{field} — {date_str}',
+                          budget_id=bid, project_id=pid,
+                          before={field: _prev_val, 'date': date_str},
+                          after={field: value, 'date': date_str},
+                          note=f'{"Enabled" if value else "Disabled"} '
+                               f'{field.replace("_", " ")} on {date_str}')
+    except Exception:
+        pass
     try:
         sync_schedule_driven_lines(bid, db.session)
     except Exception as _sdl_err:
@@ -20463,6 +20783,7 @@ def activity_feed(pid, bid):
             "mine":         (r.user_id == current_user.id),
             "can_undo":     (r.undone_at is None
                              and ((r.entity_type == 'budget_line' and r.action in ('create', 'update', 'delete'))
+                                  or (r.entity_type == 'schedule_day' and r.action in ('create', 'update', 'delete'))
                                   or r.entity_type in ('transaction', 'transaction_match'))
                              and (getattr(current_user, 'role', None) in ('admin', 'super_admin')
                                   or r.user_id == current_user.id)),
@@ -20491,7 +20812,8 @@ def activity_undo(pid, bid, aid):
            .first_or_404())
     if row.undone_at is not None:
         return jsonify({"ok": False, "error": "Already undone"}), 409
-    if row.entity_type not in ('budget_line', 'transaction', 'transaction_match'):
+    if row.entity_type not in ('budget_line', 'transaction', 'transaction_match',
+                               'schedule_day'):
         return jsonify({"ok": False, "error": "Undo isn't supported for this action yet"}), 400
 
     # Visibility check — user must be allowed to see this row to undo it
@@ -20566,6 +20888,80 @@ def activity_undo(pid, bid, aid):
                 except Exception:
                     pass
             db.session.add(ln)
+
+    elif row.entity_type == 'schedule_day':
+        # Schedule moves — day set/cleared/flag toggles (owner 2026-08-19:
+        # "include schedule moves in the activity for undo… including flags").
+        _SD_FIELDS = ('day_type', 'cell_flags', 'note', 'episode', 'est_ot_hours')
+
+        def _sd_from_snapshot(snap):
+            """Recreate one ScheduleDay from a logged snapshot dict."""
+            if not snap or not snap.get('line_id') or not snap.get('date'):
+                return None
+            try:
+                _d = datetime.strptime(snap['date'], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                return None
+            sd = ScheduleDay(budget_id=bid, budget_line_id=snap['line_id'],
+                             crew_instance=snap.get('instance') or 1, date=_d,
+                             schedule_mode=snap.get('schedule_mode'))
+            for k in _SD_FIELDS:
+                if snap.get(k) is not None:
+                    setattr(sd, k, snap[k])
+            db.session.add(sd)
+            return sd
+
+        if row.action == 'create':
+            # Revert create → remove the day again.
+            sd = ScheduleDay.query.filter_by(id=row.entity_id, budget_id=bid).first()
+            if sd is None and after and after.get('line_id') and after.get('date'):
+                try:
+                    _d = datetime.strptime(after['date'], "%Y-%m-%d").date()
+                    sd = ScheduleDay.query.filter_by(
+                        budget_id=bid, budget_line_id=after['line_id'],
+                        crew_instance=after.get('instance') or 1, date=_d).first()
+                except (ValueError, TypeError):
+                    sd = None
+            if sd is not None:
+                try:
+                    TravelDetail.query.filter_by(schedule_day_id=sd.id)\
+                        .delete(synchronize_session=False)
+                except Exception:
+                    pass
+                db.session.delete(sd)
+        elif row.action == 'update':
+            if not before:
+                return jsonify({"ok": False, "error": "No saved state to restore for this action."}), 400
+            sd = ScheduleDay.query.filter_by(id=row.entity_id, budget_id=bid).first()
+            if sd is not None:
+                for k in _SD_FIELDS:
+                    if k in before:
+                        try:
+                            setattr(sd, k, before[k])
+                        except Exception:
+                            pass
+            else:
+                # Row was deleted since — recreate it in its before-state.
+                if _sd_from_snapshot(before) is None:
+                    return jsonify({"ok": False, "error": "That schedule cell no longer "
+                                    "exists and this entry predates full snapshots."}), 400
+        elif row.action == 'delete':
+            _snaps = (before or {}).get('rows') or ([before] if before else [])
+            recreated = 0
+            for _snap in _snaps:
+                if _sd_from_snapshot(_snap) is not None:
+                    recreated += 1
+            if not recreated:
+                return jsonify({"ok": False, "error": "This entry predates full snapshots — "
+                                "the cleared cell can't be rebuilt automatically."}), 400
+            # Restoring a day means the line is schedule-driven again.
+            try:
+                _lid = _snaps[0].get('line_id')
+                _rln = BudgetLine.query.filter_by(id=_lid, budget_id=bid).first() if _lid else None
+                if _rln and _rln.is_labor and not _rln.use_schedule:
+                    _rln.use_schedule = True
+            except Exception:
+                pass
 
     elif row.entity_type == 'transaction':
         # Coding (set-line / set-coa / clear / edit): restore the before-snapshot
@@ -20645,7 +21041,8 @@ def activity_undo_batch(pid, bid):
             failed.append({"id": aid, "error": "not found"}); continue
         if row.undone_at is not None:
             failed.append({"id": aid, "error": "already undone"}); continue
-        if row.entity_type not in ('budget_line', 'transaction', 'transaction_match'):
+        if row.entity_type not in ('budget_line', 'transaction', 'transaction_match',
+                                   'schedule_day'):
             failed.append({"id": aid, "error": "unsupported"}); continue
         if not _scoped_activity_query(budget_id=bid).filter(ActivityLog.id == aid).first():
             failed.append({"id": aid, "error": "forbidden"}); continue
@@ -29473,6 +29870,19 @@ def _web_worker_essential_columns():
                 # 2026-07-22 — per-day schedule comments (belt alongside 0009).
                 "ALTER TABLE budget_comment "
                 "  ADD COLUMN IF NOT EXISTS day_date DATE",
+                # 2026-08-19 — schedule waypoints (belt alongside Alembic 0010).
+                "CREATE TABLE IF NOT EXISTS schedule_waypoint ("
+                "  id SERIAL PRIMARY KEY,"
+                "  project_id INTEGER NOT NULL REFERENCES project_sheet(id),"
+                "  budget_id INTEGER NOT NULL REFERENCES budget(id) ON DELETE CASCADE,"
+                "  created_at TIMESTAMP,"
+                "  state_time TIMESTAMP,"
+                "  label VARCHAR(200),"
+                "  days_json TEXT,"
+                "  prod_days_json TEXT,"
+                "  created_by_user_id INTEGER REFERENCES users(id))",
+                "CREATE INDEX IF NOT EXISTS ix_sched_waypoint_budget "
+                "  ON schedule_waypoint (budget_id)",
                 # 2026-05-04 — labor-line qty corruption backfill. Some
                 # legacy rows have qty>1 on labor lines, silently
                 # multiplying their subtotals (qty × days × rate). The
