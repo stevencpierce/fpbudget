@@ -121,6 +121,11 @@
   only the rows that pertain to them — totals roll up to that slice's grand total.
 </p>
 
+{# sb-cards-region wraps everything that changes when a sub-budget is
+   added/edited/archived — the soft refresh re-fetches the page and swaps
+   ONLY this container, so add/remove no longer reloads the whole page
+   (owner 2026-08-19). #}
+<div id="sb-cards-region">
 <div class="po-tiles-heading">
   <h2>🧩 Sub-Budgets</h2>
   <span class="po-tiles-count">
@@ -251,6 +256,7 @@
   <button class="btn btn-primary" onclick="openSubBudgetModal()" style="margin-top:1rem">+ Create your first sub-budget</button>
 </div>
 {% endif %}
+</div>{# /sb-cards-region #}
 
 {# ── Sub-Budget create / edit modal ── #}
 <div id="sb-modal" class="modal hidden">
@@ -314,6 +320,38 @@
 const PROJECT_ID = {{ project.id }};
 const PROJECT_RETURN_BID = {{ return_budget.id if return_budget else 'null' }};
 
+// ── Soft refresh ─────────────────────────────────────────────────────────
+// Re-fetch the page and swap ONLY the cards region in place, preserving
+// each card's ▾ expanded/collapsed state and the scroll position — no more
+// full page reload on every add/edit/remove (owner 2026-08-19). Falls back
+// to a hard reload if anything goes sideways.
+async function softRefreshSubBudgets() {
+  try {
+    const openState = {};
+    document.querySelectorAll('#sb-cards-region .po-card').forEach(c => {
+      const d = c.querySelector('details');
+      if (d) openState[c.dataset.subBudgetId] = d.open;
+    });
+    const r = await fetch(window.location.href, { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const doc   = new DOMParser().parseFromString(await r.text(), 'text/html');
+    const fresh = doc.getElementById('sb-cards-region');
+    const cur   = document.getElementById('sb-cards-region');
+    if (!fresh || !cur) throw new Error('region missing');
+    cur.innerHTML = fresh.innerHTML;
+    cur.querySelectorAll('.po-card').forEach(c => {
+      const d = c.querySelector('details');
+      if (d && openState[c.dataset.subBudgetId] !== undefined) {
+        d.open = openState[c.dataset.subBudgetId];
+      }
+    });
+    return true;
+  } catch (e) {
+    window.location.reload();
+    return false;
+  }
+}
+
 // ── Sub-Budget CRUD ──────────────────────────────────────────────────────
 let _editingSbId = null;
 
@@ -374,7 +412,8 @@ async function saveSubBudget() {
       return;
     }
     closeSubBudgetModal();
-    window.location.reload();
+    await softRefreshSubBudgets();
+    btn.disabled = false; btn.textContent = 'Save';
   } catch (e) {
     alert('Save failed: ' + e.message);
     btn.disabled = false; btn.textContent = 'Save';
@@ -388,7 +427,7 @@ async function deleteSubBudget(id, hard) {
   const url = hard ? `/projects/${PROJECT_ID}/sub-budgets/${id}/delete?hard=1`
                    : `/projects/${PROJECT_ID}/sub-budgets/${id}/delete`;
   const r = await fetch(url, { method: 'POST' });
-  if (r.ok) window.location.reload();
+  if (r.ok) await softRefreshSubBudgets();
   else alert('Delete failed');
 }
 async function restoreSubBudget(id) {
@@ -396,7 +435,7 @@ async function restoreSubBudget(id) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, archived: false }),
   });
-  if (r.ok) window.location.reload();
+  if (r.ok) await softRefreshSubBudgets();
   else alert('Restore failed');
 }
 
@@ -405,7 +444,7 @@ async function removeSubBudgetLine(sbId, lineId) {
                '(The line stays in the main budget — only the assignment is dropped.)')) return;
   const r = await fetch(`/projects/${PROJECT_ID}/sub-budgets/${sbId}/lines/${lineId}`,
                         { method: 'DELETE' });
-  if (r.ok) window.location.reload();
+  if (r.ok) await softRefreshSubBudgets();
   else alert('Remove failed');
 }
 
@@ -498,7 +537,8 @@ async function saveSubBudgetLines() {
       return;
     }
     closeSubBudgetLinePicker();
-    window.location.reload();
+    await softRefreshSubBudgets();
+    btn.disabled = false; btn.textContent = 'Add Selected';
   } catch (e) {
     alert('Add failed: ' + e.message);
     btn.disabled = false; btn.textContent = 'Add Selected';
