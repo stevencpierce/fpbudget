@@ -8497,6 +8497,36 @@ def budget_view(pid, bid):
     # Convenience: doc upload by id, for the doc-badge column in the
     # transactions list.
     docs_by_id = {d.id: d for d in doc_uploads}
+
+    # Docs-tab row parity (owner 2026-08-19: "make sure the documents and
+    # actuals tabs function the same way"): per-upload coding summary so a
+    # doc row shows the SAME coded-state and ✨ AI-accept chip its ledger
+    # row shows on the Actuals tab. Same electronic-charge preference as
+    # docs_upload_coding.
+    doc_coding_by_uid = {}
+    _txns_by_uid = {}
+    for _t in actuals_transactions:
+        if _t.doc_upload_id:
+            _txns_by_uid.setdefault(_t.doc_upload_id, []).append(_t)
+    for _uid, _ts in _txns_by_uid.items():
+        _t = (next((x for x in _ts
+                    if x.source in ('qbo_sync', 'csv_import', 'reconciled')
+                    and x.ai_suggested_code), None)
+              or next((x for x in _ts
+                       if x.source in ('qbo_sync', 'csv_import', 'reconciled')), None)
+              or _ts[0])
+        _is_coded = bool(_t.budget_line_id or _t.account_code)
+        doc_coding_by_uid[_uid] = {
+            'tid': _t.id,
+            'coded': _is_coded,
+            'code': _t.account_code,
+            'code_label': (_t.account_code_name
+                           or (str(_t.account_code) if _t.account_code else '')),
+            'not_project': bool(_t.not_project_expense),
+            'ai_code': (_t.ai_suggested_code if not _is_coded else None),
+            'ai_name': _t.ai_suggested_code_name or '',
+            'ai_conf': float(_t.ai_code_confidence or 0),
+        }
     # QBO connection status (single global row for now)
     from models import QBOConnection
     qbo_connection = QBOConnection.query.first()
@@ -8910,6 +8940,7 @@ def budget_view(pid, bid):
         actuals_claimed_project_names=actuals_claimed_project_names,
         actuals_is_admin_view=_is_admin_view,
         docs_by_id=docs_by_id,
+        doc_coding_by_uid=doc_coding_by_uid,
         qbo_connection=qbo_connection,
         actuals_pick_groups=actuals_pick_groups,
         actuals_pick_crew=actuals_pick_crew,

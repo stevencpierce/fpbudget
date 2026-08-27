@@ -3348,6 +3348,35 @@
              grid. Per user 2026-05-05 — list view became unviewable
              when PO buttons ate horizontal space. #}
           <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+            {# Coding parity with the Actuals tab (owner 2026-08-19: "make
+               sure the documents and actuals tabs function the same way"):
+               a ledger doc shows its coded state right on the row, and an
+               uncoded one gets the SAME ✨ AI-accept chip as its Actuals
+               row — one click codes it AND creates the expense. #}
+            {% set _dc = doc_coding_by_uid.get(u.id) if doc_coding_by_uid is defined else none %}
+            {% if _dc %}
+              {% if _dc.not_project %}
+              <span style="font-size:10.5px;padding:2px 8px;border-radius:10px;white-space:nowrap;
+                           background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border)"
+                    title="Marked not a project expense — it doesn't count toward any budget line">⃠ not project</span>
+              {% elif _dc.coded %}
+              <span class="doc-coded-chip" style="font-size:10.5px;padding:2px 8px;border-radius:10px;white-space:nowrap;
+                           background:#14291e;color:#22c55e;border:1px solid #1a4228;max-width:150px;
+                           overflow:hidden;text-overflow:ellipsis"
+                    title="Coded to {{ _dc.code or '' }} · {{ _dc.code_label }} — expense counted in Actuals">✓ {{ _dc.code_label or _dc.code }}</span>
+              {% else %}
+              <span class="doc-uncoded-chip" style="font-size:10.5px;padding:2px 8px;border-radius:10px;white-space:nowrap;
+                           background:var(--bg-input);color:#e0a13a;border:1px solid #4a3a1a"
+                    title="Not coded to a budget line yet — it counts $0 until you code it, match it to a charge, or mark it as backup">uncoded</span>
+              {% if _dc.ai_code %}
+              <button type="button" class="actuals-ai-suggest-btn"
+                      data-tid="{{ _dc.tid }}" data-code="{{ _dc.ai_code }}"
+                      data-name="{{ _dc.ai_name }}"
+                      onclick="event.stopPropagation();var b=this;actualsAcceptAiCode(b).then(function(){var r=b.closest('.doc-row');var s=r&&r.querySelector('.doc-uncoded-chip');if(s&&!document.body.contains(b)){s.textContent='✓ '+(b.dataset.name||'coded');s.style.color='#22c55e';s.style.background='#14291e';s.style.borderColor='#1a4228';}})"
+                      title="AI suggests {{ _dc.ai_code }} · {{ _dc.ai_name }} ({{ (_dc.ai_conf*100)|int }}% confident). One click codes the charge AND creates the expense.">✨ {{ _dc.ai_name }} · {{ (_dc.ai_conf*100)|int }}%</button>
+              {% endif %}
+              {% endif %}
+            {% endif %}
             {# Duplicate states split into TWO looks (2026-05-29):
                • pending review (is_duplicate AND status!='duplicate') →
                  amber "🔁 Review?" + Keep/Duplicate buttons. File stays

@@ -3150,7 +3150,13 @@
       block.style.display = '';
       if (d.not_project) { picker.disabled = true; statusEl.textContent = 'Marked “not a project expense.”'; return; }
       const sel = picker.options[picker.selectedIndex];
-      statusEl.textContent = d.current && sel ? ('Currently: ' + sel.text.trim()) : 'Not yet coded.';
+      // Same language as the Actuals row (2026-08-19 parity pass): picking a
+      // line on an uncoded document IS the create-expense step.
+      const _ph = Array.from(picker.options).find(o => o.value === '');
+      if (_ph) _ph.text = d.current ? 'Change budget line' : '＋ Create expense — pick budget line';
+      statusEl.textContent = d.current && sel
+        ? ('Currently: ' + sel.text.trim())
+        : 'Not an expense yet — picking a line creates it (the doc rides along as backup).';
       // Smart suggestion chip — only when not already coded.
       if (d.suggestion && !d.current) {
         const s = d.suggestion;
