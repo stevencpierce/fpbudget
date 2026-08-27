@@ -206,7 +206,22 @@
           ▾ {{ sb.lines | length }} budget line{{ 's' if sb.lines | length != 1 else '' }} in this sub-budget
         </summary>
         <div style="margin-top:6px;padding-left:14px;display:flex;flex-direction:column;gap:3px">
-          {% for ln in sb.lines %}
+          {# Grouped by COA section so the card reads like a mini budget —
+             department header + department subtotal (owner 2026-08-19:
+             "Can sub budgets organize better? Match department org?").
+             Falls back to the flat list if sections aren't available. #}
+          {% for sec in (sb.sections or [{'code': none, 'name': none, 'lines': sb.lines, 'subtotal': none}]) %}
+          {% if sec.name %}
+          <div style="display:flex;gap:10px;align-items:baseline;margin-top:{{ '10px' if not loop.first else '2px' }};
+                      padding:3px 0;border-bottom:2px solid var(--border);
+                      font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#a78bfa">
+            <span style="min-width:50px">{{ sec.code }}</span>
+            <span style="flex:1">{{ sec.name }}</span>
+            <span style="min-width:100px;text-align:right;font-variant-numeric:tabular-nums">${{ '{:,.2f}'.format(sec.subtotal or 0) }}</span>
+            <span style="width:24px"></span>
+          </div>
+          {% endif %}
+          {% for ln in sec.lines %}
           <div style="display:flex;gap:10px;align-items:center;font-variant-numeric:tabular-nums;font-size:.78rem;
                       padding:3px 0;border-bottom:1px dashed var(--border)">
             <span style="color:var(--text-muted);min-width:50px">{{ ln.account_code }}</span>
@@ -226,6 +241,7 @@
                     title="Remove this line from the sub-budget"
                     style="font-size:.65rem;padding:1px 5px;color:#ef4444">✕</button>
           </div>
+          {% endfor %}
           {% endfor %}
           {# Footer subtotal — shipped 2026-05-26 per user "it doesn't
              show the total of the lines currently". Mirrors the

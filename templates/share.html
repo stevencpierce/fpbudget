@@ -29,7 +29,22 @@
         <tr>
           <td>{{ u.name or '—' }}</td>
           <td>{{ u.email }}</td>
-          <td>{{ pa.role }}</td>
+          <td>
+            {# Role picker (owner 2026-08-19: there was NO way to change a
+               collaborator's role — everyone stayed 'collaborator'). The
+               LP / Owner role is what unlocks editing ESTIMATED budgets. #}
+            {% set _eff_role = 'editor' if pa.role == 'collaborator' else pa.role %}
+            <select class="share-role-select" data-user-id="{{ u.id }}"
+                    onchange="shareSetRole(this)"
+                    style="font-size:.85rem;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:6px;max-width:220px"
+                    title="What this person can do on THIS project">
+              <option value="owner"     {% if _eff_role == 'owner' %}selected{% endif %}>LP / Owner — everything, incl. Estimated</option>
+              <option value="editor"    {% if _eff_role == 'editor' %}selected{% endif %}>Editor — Working, schedule, docs, actuals</option>
+              <option value="viewer"    {% if _eff_role == 'viewer' %}selected{% endif %}>Viewer — read-only</option>
+              <option value="docs_only" {% if _eff_role == 'docs_only' %}selected{% endif %}>Docs only</option>
+            </select>
+            <span class="share-role-status" style="font-size:.72rem;color:var(--text-muted);margin-left:6px"></span>
+          </td>
           <td>
             <form method="POST" action="{{ url_for('project_share_remove', pid=project.id) }}" style="display:inline">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -47,8 +62,43 @@
     {% endif %}
   </div>
 
+  <p class="muted" style="margin-top:14px;font-size:.8rem;max-width:60ch">
+    <strong>LP / Owner</strong> is the role that allows editing the <strong>Estimated</strong>
+    budget (and managing sharing). Editors can change the Working budget, schedule,
+    docs and actuals, but Estimated stays read-only for them.
+  </p>
+
   <div style="margin-top:24px">
     <a href="{{ url_for('dashboard') }}" class="btn btn-outline">Back to Projects</a>
   </div>
 </div>
+
+<script>
+async function shareSetRole(sel) {
+  const status = sel.parentElement.querySelector('.share-role-status');
+  const prev = sel.dataset.prev || null;
+  status.textContent = 'Saving…';
+  try {
+    const body = new URLSearchParams({ user_id: sel.dataset.userId, role: sel.value });
+    const r = await fetch("{{ url_for('project_share_role', pid=project.id) }}",
+                          { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: body.toString() });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) {
+      sel.dataset.prev = sel.value;
+      status.textContent = '✓ saved';
+      status.style.color = '#22c55e';
+      setTimeout(() => { status.textContent = ''; }, 2500);
+    } else {
+      status.textContent = j.error || ('Failed (' + r.status + ')');
+      status.style.color = '#e0a13a';
+      if (prev) sel.value = prev;
+    }
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+    status.style.color = '#e0a13a';
+  }
+}
+document.querySelectorAll('.share-role-select').forEach(s => { s.dataset.prev = s.value; });
+</script>
 {% endblock %}

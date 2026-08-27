@@ -22564,8 +22564,29 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
     over        = (cap is not None and billed > cap)
     remaining   = (cap - billed) if cap is not None else None
 
+    # Group the card's lines by COA section so the sub-budget reads like a
+    # mini budget — department header + department subtotal (owner
+    # 2026-08-19: "Can sub budgets organize better? Match department org?").
+    sections = []
+    try:
+        from budget_calc import section_for_code, FP_COA_NAMES
+        _sec_map = {}
+        for _r in line_rows:
+            _sc = section_for_code(_r.get("account_code") or 0)
+            if _sc not in _sec_map:
+                _sec_map[_sc] = {"code": _sc,
+                                 "name": FP_COA_NAMES.get(_sc, f"Section {_sc}"),
+                                 "lines": [], "subtotal": 0.0}
+            _sec_map[_sc]["lines"].append(_r)
+            _sec_map[_sc]["subtotal"] += float(_r.get("estimated_total") or 0)
+        sections = [dict(s, subtotal=round(s["subtotal"], 2))
+                    for s in sorted(_sec_map.values(), key=lambda s: s["code"])]
+    except Exception as _sge:
+        logging.warning(f"[sub_budget] section grouping failed for sb={sb.id}: {_sge}")
+
     out.update({
         "lines":         line_rows,
+        "sections":      sections,
         "line_count":    line_count,
         "lines_total":   lines_total,
         "billed_total":  round(billed, 2),
@@ -28553,11 +28574,48 @@ View it here: https://fp-budget.onrender.com/
 def project_share_remove(pid):
     if not _user_can_access_project(pid):
         abort(403)
+    # ACL change — owner/admin only (same rule as adding; previously any
+    # member could remove collaborators. Tightened 2026-08-19.)
+    _require_project_role(pid, 'owner')
     uid = request.form.get("user_id", type=int)
     if uid:
         ProjectAccess.query.filter_by(project_id=pid, user_id=uid).delete()
         db.session.commit()
     return redirect(url_for("project_share", pid=pid))
+
+
+@app.route("/projects/<int:pid>/share/role", methods=["POST"])
+@login_required
+def project_share_role(pid):
+    """Change a collaborator's project role (owner 2026-08-19: 'he is shared
+    as a line producer and I don't know where to do that on the project
+    share' — the Share page had NO role picker; everyone landed as
+    'collaborator' with no way to grant the LP/owner role that Estimated
+    editing requires). Owner/admin only."""
+    if not _user_can_access_project(pid):
+        abort(403)
+    _require_project_role(pid, 'owner')
+    uid = request.form.get("user_id", type=int)
+    role = (request.form.get("role") or '').strip()
+    if role not in ('owner', 'editor', 'viewer', 'docs_only'):
+        return jsonify({"error": "Invalid role."}), 400
+    pa = ProjectAccess.query.filter_by(project_id=pid, user_id=uid).first()
+    if pa is None:
+        return jsonify({"error": "That person isn't on this project."}), 404
+    _prev = pa.role
+    pa.role = role
+    db.session.commit()
+    try:
+        _tu = User.query.get(uid)
+        _log_activity(action='update', entity_type='project_access',
+                      entity_id=uid,
+                      entity_label=(_tu.name or _tu.email) if _tu else f'user {uid}',
+                      project_id=pid,
+                      before={'role': _prev}, after={'role': role},
+                      note=f'Project role changed: {_prev} → {role}')
+    except Exception:
+        pass
+    return jsonify({"ok": True, "role": role})
 
 
 # ── Profile / password change route ───────────────────────────────────────────
