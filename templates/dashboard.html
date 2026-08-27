@@ -430,7 +430,41 @@ function _loadCollaborators(pid) {
       const list = doc.getElementById('collaborator-list');
       document.getElementById('share-collaborators').innerHTML =
         list ? list.outerHTML : '';
+      // Seed the revert-baseline on the cloned role selects (the cloned
+      // markup's inline <script> never runs — see shareSetRole below).
+      document.querySelectorAll('#share-collaborators .share-role-select')
+        .forEach(s => { s.dataset.prev = s.value; });
     });
+}
+
+// Role save for the collaborator list INSIDE this modal (owner 2026-08-19:
+// "I set James to LP/Owner but it doesn't hold — resets back to editor").
+// The modal clones share.html's markup via innerHTML, which never executes
+// that page's <script> — so its shareSetRole didn't exist here and the
+// change silently went nowhere. Keep this in sync with share.html's copy.
+async function shareSetRole(sel) {
+  const status = sel.parentElement.querySelector('.share-role-status');
+  const prev = sel.dataset.prev || null;
+  if (status) status.textContent = 'Saving…';
+  try {
+    const body = new URLSearchParams({ user_id: sel.dataset.userId, role: sel.value });
+    const r = await fetch(`/projects/${sel.dataset.pid}/share/role`,
+                          { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: body.toString() });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) {
+      sel.dataset.prev = sel.value;
+      if (status) { status.textContent = '✓ saved'; status.style.color = '#22c55e';
+                    setTimeout(() => { status.textContent = ''; }, 2500); }
+    } else {
+      if (status) { status.textContent = j.error || ('Failed (' + r.status + ')');
+                    status.style.color = '#e0a13a'; }
+      if (prev) sel.value = prev;
+    }
+  } catch (e) {
+    if (status) { status.textContent = 'Error: ' + e.message; status.style.color = '#e0a13a'; }
+    if (prev) sel.value = prev;
+  }
 }
 
 function addCollaborator() {

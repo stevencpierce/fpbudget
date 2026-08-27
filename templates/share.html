@@ -34,7 +34,7 @@
                collaborator's role — everyone stayed 'collaborator'). The
                LP / Owner role is what unlocks editing ESTIMATED budgets. #}
             {% set _eff_role = 'editor' if pa.role == 'collaborator' else pa.role %}
-            <select class="share-role-select" data-user-id="{{ u.id }}"
+            <select class="share-role-select" data-user-id="{{ u.id }}" data-pid="{{ project.id }}"
                     onchange="shareSetRole(this)"
                     style="font-size:.85rem;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:6px;max-width:220px"
                     title="What this person can do on THIS project">
@@ -74,13 +74,17 @@
 </div>
 
 <script>
+// NOTE: the dashboard Share MODAL clones this page's #collaborator-list
+// markup via innerHTML — scripts don't execute there, so dashboard.html
+// defines its own identical shareSetRole. The select carries data-pid so
+// both copies build the URL without Jinja context. Keep the two in sync.
 async function shareSetRole(sel) {
   const status = sel.parentElement.querySelector('.share-role-status');
   const prev = sel.dataset.prev || null;
   status.textContent = 'Saving…';
   try {
     const body = new URLSearchParams({ user_id: sel.dataset.userId, role: sel.value });
-    const r = await fetch("{{ url_for('project_share_role', pid=project.id) }}",
+    const r = await fetch(`/projects/${sel.dataset.pid}/share/role`,
                           { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                             body: body.toString() });
     const j = await r.json().catch(() => ({}));
