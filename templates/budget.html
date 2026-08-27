@@ -9218,10 +9218,38 @@ async function patchLine(id, updates, opts = {}) {
   if (!res.ok) {
     const row = document.querySelector(`.line-row[data-id="${id}"]`);
     if (row) { row.style.outline = '1px solid var(--red)'; setTimeout(() => row.style.outline = '', 2000); }
+    // SAY WHY the edit didn't stick (owner 2026-08-19: James's qty change
+    // silently reverted — the 403 from the Estimated permission gate was
+    // swallowed, which read as a bug instead of a permissions message).
+    let _msg = `Save failed (HTTP ${res.status})`;
+    try {
+      const _b = await res.json();
+      _msg = _b.error || _b.message || _msg;
+    } catch (_e) {}
+    _lineSaveToast(_msg);
     return;
   }
   const data = await res.json();
   refreshLineRow(id, data);
+}
+
+// Small self-contained toast for line-save failures (the Actuals toast
+// lives inside b04's closure and isn't reachable here).
+function _lineSaveToast(msg) {
+  let t = document.getElementById('line-save-toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'line-save-toast';
+    t.style.cssText = 'position:fixed;bottom:26px;left:50%;transform:translateX(-50%);' +
+      'background:#2a1414;color:#f0b0b0;border:1px solid #7a3030;border-radius:8px;' +
+      'padding:10px 18px;font-size:.85rem;z-index:1500;max-width:560px;text-align:center;' +
+      'box-shadow:0 6px 24px rgba(0,0,0,.5)';
+    document.body.appendChild(t);
+  }
+  t.textContent = '⚠ ' + msg;
+  t.style.display = '';
+  clearTimeout(t._hideT);
+  t._hideT = setTimeout(() => { t.style.display = 'none'; }, 6000);
 }
 
 const fmtCurrency = v => '$' + parseFloat(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
