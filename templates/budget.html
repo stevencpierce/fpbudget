@@ -2128,30 +2128,37 @@
                  a single click from any view propagates correctly).
                  Hidden when no sub-budgets exist on the project. #}
               {% if sub_budgets_for_project %}
-                {% if is_actual_view %}
-                  {% set _sb_list = sb_by_wline.get(ln.source_line_id) if ln.source_line_id else None %}
-                  {% set _sb_target_lid = ln.source_line_id %}
-                {% elif is_working_view %}
-                  {% set _sb_list = sb_by_wline.get(ln.id) %}
-                  {% set _sb_target_lid = ln.id %}
-                {% else %}
-                  {% set _sb_list = sb_by_key.get((ln.account_code, ln.sort_order)) %}
-                  {# Find the matching Working line id for the picker target. #}
-                  {% set _sb_target_lid = None %}
-                  {% for _wlid, _wpoid in working_po_by_wlid.items() %}{# loop to find a wlid #}{% endfor %}
-                  {% set _sb_target_lid = ln.id %}{# fallback — server picker handles cross-view resolution #}
-                {% endif %}
-                {% set _sb_n = (_sb_list | length) if _sb_list else 0 %}
+                {# Union of every resolution path, deduped by id — direct
+                   membership on THIS line (any view; versions carry their
+                   own rows since 2026-08-19), the source-chain line, and
+                   the (code, sort_order) cross-view mirror. #}
+                {% set _sb_seen = namespace(ids=[], list=[]) %}
+                {% for _cand in [sb_by_wline.get(ln.id),
+                                 (sb_by_wline.get(ln.source_line_id) if ln.source_line_id else None),
+                                 sb_by_key.get((ln.account_code, ln.sort_order))] %}
+                  {% for _e in (_cand or []) %}
+                    {% if _e.id not in _sb_seen.ids %}
+                      {% set _sb_seen.ids = _sb_seen.ids + [_e.id] %}
+                      {% set _sb_seen.list = _sb_seen.list + [_e] %}
+                    {% endif %}
+                  {% endfor %}
+                {% endfor %}
+                {% set _sb_list = _sb_seen.list %}
+                {% set _sb_target_lid = (ln.source_line_id if (is_actual_view and ln.source_line_id) else ln.id) %}
+                {% set _sb_n = _sb_list | length %}
+                {# Show the NAMES on the line (owner 2026-08-19: "have the
+                   sub budgets an item belongs to show on the line") — first
+                   name + "+N" overflow; full list in the tooltip. #}
                 <span class="line-sb-badge {{ '' if _sb_n else 'no-assignment' }}"
                       data-id="{{ ln.id }}"
                       data-target-lid="{{ _sb_target_lid or ln.id }}"
                       onclick="openLineSubBudgetPicker(this)"
-                      title="{% if _sb_n %}In {{ _sb_n }} sub-budget{{ 's' if _sb_n != 1 else '' }}: {{ _sb_list | map(attribute='name') | join(', ') }}{% else %}Click to add to a sub-budget{% endif %}"
+                      title="{% if _sb_n %}In {{ _sb_n }} sub-budget{{ 's' if _sb_n != 1 else '' }}: {{ _sb_list | map(attribute='name') | join(', ') }} — click to change{% else %}Click to add to a sub-budget{% endif %}"
                       style="cursor:pointer;font-size:.72rem;padding:2px 8px;border-radius:10px;margin-left:3px;
                              {% if _sb_n %}background:rgba(167,139,250,.12);color:#a78bfa;border:1px solid rgba(167,139,250,.3);
                              {% else %}background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);{% endif %}
-                             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px;display:inline-block;vertical-align:middle">
-                  {% if _sb_n %}🧩 {{ _sb_n }}{% else %}+ SB{% endif %}
+                             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;display:inline-block;vertical-align:middle">
+                  {% if _sb_n %}🧩 {{ _sb_list[0].name }}{% if _sb_n > 1 %} +{{ _sb_n - 1 }}{% endif %}{% else %}+ SB{% endif %}
                 </span>
               {% endif %}
             {% endif %}
