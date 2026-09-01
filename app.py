@@ -32050,6 +32050,7 @@ def _drop_sweep_loop():
     import time as _time
     from sqlalchemy import text as _sql_text
     _INTERVAL_S = 600          # check every 10 minutes
+    _first = True
     _CLAIM_SQL = (
         "INSERT INTO system_task_log (task_name, last_run_at) "
         "VALUES ('drop_folder_sweep', NOW()) "
@@ -32058,7 +32059,11 @@ def _drop_sweep_loop():
         "  WHERE system_task_log.last_run_at < NOW() - INTERVAL '9 minutes' "
         "RETURNING task_name")
     while True:
-        _time.sleep(_INTERVAL_S)
+        # Short first delay so folders provision within ~2 min of a deploy
+        # instead of a full interval later. (Owner 2026-09-08: "I'm looking
+        # at the project and see nothing".)
+        _time.sleep(120 if _first else _INTERVAL_S)
+        _first = False
         try:
             has_dbx = (os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')) \
                       or os.getenv('DROPBOX_ACCESS_TOKEN')
@@ -32106,6 +32111,76 @@ import threading as _dropsweep_threading
 if not os.getenv('RUN_BOOT_TASKS'):
     _dst = _dropsweep_threading.Thread(target=_drop_sweep_loop, daemon=True)
     _dst.start()
+
+
+@app.route("/admin/drop-sweep-status")
+@login_required
+def admin_drop_sweep_status(pid=None):
+    """Super-admin diagnostic (owner 2026-09-08: 'I'm looking at the GINTS
+    project and see nothing'): shows when the background sweeper last ran
+    and, per active project, whether its _INBOX exists in Dropbox — with a
+    reason when it can't. Read-only except ?provision=1, which creates any
+    missing folders right now instead of waiting for the next cycle."""
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
+    from sqlalchemy import text as _sql_text
+    last_run = None
+    try:
+        with db.engine.connect() as conn:
+            row = conn.execute(_sql_text(
+                "SELECT last_run_at FROM system_task_log "
+                "WHERE task_name = 'drop_folder_sweep'")).fetchone()
+            last_run = row[0] if row else None
+    except Exception:
+        pass
+    provision = request.args.get('provision') == '1'
+    rows = []
+    try:
+        dbx = _dbx_client()
+    except Exception as _ce:
+        return (f"<h2>Drop-sweep status</h2><p>Sweeper last ran: {last_run or 'never'}</p>"
+                f"<p style='color:#c00'>Dropbox client unavailable: {_ce}</p>"), 200
+    import dropbox as _dbx_mod
+    for prj in ProjectSheet.query.order_by(ProjectSheet.name).all():
+        status = getattr(prj, 'status', 'active') or 'active'
+        if status != 'active':
+            rows.append((prj.name, status, '— (only active projects are swept)'))
+            continue
+        if not prj.dropbox_folder:
+            rows.append((prj.name, status, '✗ no Dropbox folder configured'))
+            continue
+        path = _drop_folder_path(prj)
+        try:
+            dbx.files_get_metadata(path)
+            rows.append((prj.name, status, f'✓ {path}'))
+        except Exception:
+            if provision:
+                try:
+                    dbx.files_create_folder_v2(path)
+                    try:
+                        dbx.files_create_folder_v2(f"{path}/_imported")
+                    except Exception:
+                        pass
+                    rows.append((prj.name, status, f'✓ CREATED {path}'))
+                except Exception as _pe2:
+                    rows.append((prj.name, status, f'✗ create failed: {_pe2}'))
+            else:
+                rows.append((prj.name, status, f'✗ missing — expected at {path}'))
+    import html as _h
+    body = ''.join(f"<tr><td>{_h.escape(n)}</td><td>{_h.escape(st)}</td>"
+                   f"<td>{_h.escape(msg)}</td></tr>" for n, st, msg in rows)
+    _missing = sum(1 for _, _, m in rows if m.startswith('✗ missing'))
+    return (f"<!doctype html><html><head><title>Drop-sweep status</title>"
+            f"<style>body{{font-family:system-ui,sans-serif;max-width:1000px;margin:40px auto;"
+            f"padding:0 20px}}table{{border-collapse:collapse;font-size:13px}}"
+            f"td,th{{border:1px solid #ccc;padding:4px 8px}}</style></head><body>"
+            f"<h1>Drop-folder sweep status</h1>"
+            f"<p>Background sweeper last ran: <b>{last_run or 'never yet'}</b> (UTC). "
+            f"It runs ~every 10 minutes; only active projects are swept.</p>"
+            + (f"<p><a href='?provision=1'><b>Create the {_missing} missing folder(s) now</b></a></p>"
+               if _missing and not provision else '')
+            + f"<table><tr><th>Project</th><th>Status</th><th>_INBOX</th></tr>{body}</table>"
+            f"</body></html>"), 200
 
 
 @app.route("/docs/upload/<int:uid>/retry-filing", methods=["POST"])
