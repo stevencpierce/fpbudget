@@ -1771,6 +1771,56 @@
     else initIfActive();
   })();
 
+  // ── Dropbox drop-folder sweep (owner 2026-09-01) ─────────────────────
+  // manual=true → the 📥 Import now button (always runs, shows feedback).
+  // manual=false → auto-sweep when the Docs tab opens, throttled to once
+  // per 5 minutes per project so tab-hopping doesn't hammer Dropbox.
+  window.docsDropSweep = async function (manual) {
+    if (!manual) {
+      try {
+        const k = 'fpDropSweep.' + PROJ_ID;
+        const last = parseInt(localStorage.getItem(k) || '0', 10);
+        if (Date.now() - last < 5 * 60 * 1000) return;
+        localStorage.setItem(k, String(Date.now()));
+      } catch (e) {}
+    }
+    const btn = document.getElementById('btn-drop-sweep');
+    const orig = btn ? btn.textContent : '';
+    if (btn && manual) { btn.disabled = true; btn.textContent = '📥 Checking…'; }
+    const reset = (label, holdMs) => {
+      if (!btn || !manual) return;
+      btn.textContent = label || orig;
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, holdMs || 0);
+    };
+    try {
+      const r = await fetch(`/projects/${PROJ_ID}/docs/drop-sweep`, { method: 'POST' });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { reset(); if (manual) alert(j.error || 'Sweep failed'); return; }
+      if (j.imported > 0) {
+        if (btn) btn.textContent = `📥 Imported ${j.imported}…`;
+        setTimeout(() => window.location.reload(), 900);
+        return;
+      }
+      if (manual && j.errors && j.errors.length) {
+        alert('Nothing imported. Skipped:\n' + j.errors.join('\n'));
+      }
+      reset(j.created ? '📥 Folder created' : '📥 Nothing new', 2500);
+    } catch (e) {
+      reset();
+      if (manual) alert('Sweep failed: ' + e.message);
+    }
+  };
+  (function _wireDropSweep() {
+    const tabBtn = document.querySelector('[data-tab="docs"]');
+    if (tabBtn) tabBtn.addEventListener('click', () => setTimeout(() => docsDropSweep(false), 800));
+    const initIfActive = () => {
+      const panel = document.getElementById('tab-docs');
+      if (panel && panel.classList.contains('active')) setTimeout(() => docsDropSweep(false), 1200);
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initIfActive);
+    else initIfActive();
+  })();
+
   // ── Document detail modal ────────────────────────────────────────────
   // Click any non-edit, non-delete area of a doc-row to open. Loads a
   // Dropbox temporary link and the editable metadata.

@@ -2997,6 +2997,25 @@
       Upload All
     </button>
 
+    {# Dropbox drop folder (owner 2026-09-01): put files in the project's
+       _INBOX folder in Dropbox and they get pulled through the same
+       document reader as a web upload. Auto-swept on tab load (throttled);
+       button forces an immediate sweep. #}
+    <div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding:9px 12px;
+                background:var(--bg-card);border:1px dashed var(--border);border-radius:8px;font-size:12px">
+      <span style="flex:1;color:var(--text-muted)">
+        📥 <strong>Dropbox drop folder:</strong>
+        <code style="font-size:11px">{{ project.dropbox_folder }}/_INBOX</code>
+        — files saved there import through the document reader automatically.
+      </span>
+      <button type="button" id="btn-drop-sweep" onclick="docsDropSweep(true)"
+              style="font-size:11px;padding:5px 12px;border-radius:6px;white-space:nowrap;
+                     background:#1a2540;color:#8fb4ff;border:1px solid #2d4070;cursor:pointer;"
+              title="Check the Dropbox _INBOX folder now and import anything in it">
+        📥 Import now
+      </button>
+    </div>
+
     <!-- History -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin:28px 0 6px;">
       <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;">Previously Uploaded</div>

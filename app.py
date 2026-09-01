@@ -31445,24 +31445,15 @@ def mobile_upload():
     return render_template("mobile_upload.html", projects=projects)
 
 
-@app.route("/docs/<int:pid>/upload", methods=["POST"])
-@login_required
-def docs_upload_post(pid):
-    project = ProjectSheet.query.get_or_404(pid)
-    if current_user.role not in ('super_admin', 'admin'):
-        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
-        if not access:
-            return jsonify({"error": "Forbidden"}), 403
-
-    f = request.files.get("file")
-    if not f or not f.filename:
-        return jsonify({"error": "No file provided"}), 400
-    _upl_err = _validate_upload_file(f, 'document') if f else None
-    if _upl_err:
-        return jsonify({"error": _upl_err}), 400
-
+def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=None):
+    """Full document-ingest pipeline for RAW BYTES — extracted verbatim from
+    docs_upload_post (2026-09-01) so the Dropbox drop-folder sweep can push
+    files through the IDENTICAL path as a web upload: Veryfi OCR -> type
+    detection -> auto-file -> DocUpload row -> AI cleanup -> travel extract ->
+    auto-Transaction -> claim sync. Returns (payload_dict, http_status);
+    callers jsonify. uploader is REQUIRED in practice (DocUpload.uploader_id
+    is NOT NULL) — the drop-folder sweep passes the sweeping user."""
     import hashlib, uuid as _uuid
-    data = f.read()
     file_hash = hashlib.sha256(data).hexdigest()
 
     # Duplicate detection: hash match against an existing row in this
@@ -31488,8 +31479,8 @@ def docs_upload_post(pid):
         .first()
     )
 
-    content_type = f.content_type or "application/octet-stream"
-    ext = os.path.splitext(f.filename)[1].lower() if f.filename else ""
+    content_type = content_type or "application/octet-stream"
+    ext = os.path.splitext(filename)[1].lower() if filename else ""
     # r2_key kept as a unique filing id (for DocUpload.r2_key column).
     # The actual R2 upload was removed — source of truth is Dropbox.
     r2_key = f"docs/{pid}/{_uuid.uuid4().hex}{ext}"
@@ -31511,9 +31502,9 @@ def docs_upload_post(pid):
     from fp_analyzer import analyze_and_file_single
     import json as _json
 
-    _raw_user = (getattr(current_user, 'name', None)
-                 or (current_user.email or '').split('@')[0]
-                 or 'unknown')
+    _raw_user = ((getattr(uploader, 'name', None)
+                  or (getattr(uploader, 'email', '') or '').split('@')[0])
+                 if uploader is not None else None) or 'drop-folder'
     _safe_user = _re.sub(r"[^\w\- ]", "", _raw_user) or "unknown"
 
     # Capture the size BEFORE running the analyzer so we can safely
@@ -31525,13 +31516,13 @@ def docs_upload_post(pid):
     try:
         result = analyze_and_file_single(
             file_bytes=data,
-            filename=f.filename,
+            filename=filename,
             project_name=project.dropbox_folder,   # Analyzer files under /{ops_root}/{project_name}/...
             user_name=_safe_user,
         )
     except Exception as _ae:
         logging.exception("Analyzer pipeline crashed")
-        return jsonify({"error": f"Analyzer failed: {_ae}"}), 500
+        return {"error": f"Analyzer failed: {_ae}"}, 500
     # Release the file bytes now that the analyzer has consumed them
     # (it copies bytes into a temp file + Veryfi request internally).
     # Per user 2026-04-29: reduces peak working set so concurrent
@@ -31648,9 +31639,9 @@ def docs_upload_post(pid):
     # Persist the upload row with whatever we got back from the Analyzer.
     upload = DocUpload(
         project_id=pid,
-        uploader_id=current_user.id,
+        uploader_id=(uploader.id if uploader is not None else None),
         r2_key=r2_key,
-        original_filename=f.filename,
+        original_filename=filename,
         file_size=_data_size,
         content_type=content_type,
         file_hash=file_hash,
@@ -31764,7 +31755,7 @@ def docs_upload_post(pid):
                 # No account_code yet — user picks budget line in Actuals.
                 # match_status stays 'unmatched' until the user confirms.
                 match_status        = 'unmatched',
-                created_via_user_id = current_user.id if current_user.is_authenticated else None,
+                created_via_user_id = (uploader.id if uploader is not None else None),
             )
             db.session.add(auto_txn)
             db.session.flush()
@@ -31857,7 +31848,7 @@ def docs_upload_post(pid):
     }
     if result.get("status") == "filed":
         _is_dup = bool(duplicate_of)
-        return jsonify({
+        return {
             # "review_dup" tells the upload UI this is a flagged-but-kept
             # possible duplicate (filed in place, awaiting Keep-both /
             # confirm), distinct from the old "duplicate" = buried state.
@@ -31877,9 +31868,9 @@ def docs_upload_post(pid):
                             if _is_dup
                             else f"Filed as {result.get('doc_type')} ({int((result.get('confidence') or 0) * 100)}% confidence)."),
             **_ocr_fields,
-        }), 201
+        }, 201
     if result.get("status") == "needs_review":
-        return jsonify({
+        return {
             "status":      "review",
             "upload_id":   upload.id,
             "doc_type":    result.get("doc_type"),
@@ -31888,13 +31879,137 @@ def docs_upload_post(pid):
             "message":     f"OCR complete but confidence too low to auto-file "
                            f"({int((result.get('confidence') or 0) * 100)}%). Review required.",
             **_ocr_fields,
-        }), 202
+        }, 202
     # status == 'error'
-    return jsonify({
+    return {
         "status":   "error",
         "upload_id": upload.id,
         "error":    result.get("error") or "Unknown analyzer error",
-    }), 500
+    }, 500
+
+
+@app.route("/docs/<int:pid>/upload", methods=["POST"])
+@login_required
+def docs_upload_post(pid):
+    project = ProjectSheet.query.get_or_404(pid)
+    if current_user.role not in ('super_admin', 'admin'):
+        access = ProjectAccess.query.filter_by(project_id=pid, user_id=current_user.id).first()
+        if not access:
+            return jsonify({"error": "Forbidden"}), 403
+
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "No file provided"}), 400
+    _upl_err = _validate_upload_file(f, 'document') if f else None
+    if _upl_err:
+        return jsonify({"error": _upl_err}), 400
+
+    data = f.read()
+    payload, code = _ingest_document_bytes(pid, project, f.filename,
+                                           f.content_type, data,
+                                           uploader=current_user)
+    return jsonify(payload), code
+
+
+# ── Dropbox drop folder (owner 2026-09-01) ───────────────────────────────
+# "A dump folder where you download files, and then it processes it
+#  through the document reader." Each project gets /<slug>/_INBOX in
+# Dropbox; anything placed there is pulled through the SAME ingest
+# pipeline as a web upload, then moved to _INBOX/_imported so it never
+# double-processes. Swept on demand (📥 button) and automatically when
+# the Docs tab loads (client-side throttled).
+
+_DROP_FOLDER_NAME = "_INBOX"
+_DROP_SWEEP_MAX_FILES = 10          # per sweep — bounds worker memory
+_DROP_SWEEP_MAX_BYTES = 25 * 1024 * 1024
+
+
+def _drop_folder_path(project):
+    if _DBX_NAMESPACE_ID:
+        return f"/{project.dropbox_folder}/{_DROP_FOLDER_NAME}"
+    return f"{_DBX_OPS_ROOT}/{project.dropbox_folder}/{_DROP_FOLDER_NAME}"
+
+
+@app.route("/projects/<int:pid>/docs/drop-sweep", methods=["POST"])
+@login_required
+def docs_drop_sweep(pid):
+    project = ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    if not project.dropbox_folder:
+        return jsonify({"error": "Project has no Dropbox folder configured."}), 400
+    import mimetypes
+    try:
+        dbx = _dbx_client()
+    except Exception as _ce:
+        return jsonify({"error": f"Dropbox unavailable: {_ce}"}), 502
+    path = _drop_folder_path(project)
+    try:
+        entries = dbx.files_list_folder(path).entries
+    except Exception:
+        # First use — create the folder (and its _imported child) so the
+        # user has somewhere to drop files. Not an error.
+        try:
+            dbx.files_create_folder_v2(path)
+        except Exception:
+            pass
+        try:
+            dbx.files_create_folder_v2(f"{path}/_imported")
+        except Exception:
+            pass
+        return jsonify({"ok": True, "created": True, "imported": 0, "skipped": 0,
+                        "path": path,
+                        "message": "Drop folder created — put files in it and sweep again."})
+    import dropbox as _dbx_mod
+    files = [e for e in entries if isinstance(e, _dbx_mod.files.FileMetadata)]
+    allowed = _UPLOAD_ALLOW['document']
+    imported, skipped, errors = 0, 0, []
+    remaining = 0
+    for i, e in enumerate(files):
+        if imported + skipped >= _DROP_SWEEP_MAX_FILES:
+            remaining = len(files) - i
+            break
+        ext = e.name.rsplit('.', 1)[-1].lower() if '.' in e.name else ''
+        if ext not in allowed:
+            skipped += 1
+            errors.append(f"{e.name}: type .{ext or '?'} not accepted")
+            continue
+        if (e.size or 0) > _DROP_SWEEP_MAX_BYTES:
+            skipped += 1
+            errors.append(f"{e.name}: larger than 25 MB")
+            continue
+        try:
+            _md, _resp = dbx.files_download(e.path_display)
+            data = _resp.content
+            ctype = mimetypes.guess_type(e.name)[0] or "application/octet-stream"
+            payload, code = _ingest_document_bytes(
+                pid, project, e.name, ctype, data, uploader=current_user)
+            del data
+            if code >= 500:
+                skipped += 1
+                errors.append(f"{e.name}: {payload.get('error') or 'ingest failed'}")
+                continue   # leave the file in place for a retry
+            imported += 1
+            # Move out of the inbox so the next sweep doesn't re-read it
+            # (the hash dedupe would catch it anyway — this keeps the
+            # folder legible). Original bytes are already archived to
+            # _SOURCE_ARCHIVE by the ingest pipeline.
+            try:
+                dbx.files_move_v2(e.path_display,
+                                  f"{path}/_imported/{e.name}", autorename=True)
+            except Exception as _mv:
+                logging.warning(f"[drop-sweep] move failed for {e.name}: {_mv}")
+        except Exception as _fe:
+            db.session.rollback()
+            skipped += 1
+            errors.append(f"{e.name}: {_fe}")
+            logging.exception(f"[drop-sweep] failed on {e.name}")
+    try:
+        import gc as _gc
+        _gc.collect()
+    except Exception:
+        pass
+    return jsonify({"ok": True, "imported": imported, "skipped": skipped,
+                    "remaining": remaining, "errors": errors[:10], "path": path})
 
 
 @app.route("/docs/upload/<int:uid>/retry-filing", methods=["POST"])
