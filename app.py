@@ -6870,15 +6870,29 @@ def budget_view(pid, bid):
             budget.version_status = 'current'
             db.session.commit()
 
-    # Catch-up: reconcile schedule-driven auto lines (meals, flights, hotel,
-    # mileage, per diem) every time budget view loads. Ensures any flags/meals
-    # set on the Gantt are reflected in the budget lines even if a prior sync
-    # failed silently.
-    try:
-        sync_schedule_driven_lines(bid, db.session)
-    except Exception as _se:
-        app.logger.warning("budget_view sync_schedule_driven_lines failed: %s", _se)
-        db.session.rollback()
+    # ── VERSION INDEPENDENCE: freeze on view, recompute only on edit ─────
+    # A budget version is an immutable snapshot. Its schedule-driven auto
+    # lines (meals, flights, hotel, mileage, per diem) are STORED on the
+    # line (estimated_total / quantity) and are authoritative. We must NOT
+    # re-derive them just because the page was viewed — doing so made a
+    # version's totals fluid: they shifted whenever the sync logic changed,
+    # whenever legacy schedule_mode=NULL / production-day data was present,
+    # or whenever you navigated back to a version after touching a sibling
+    # version (e.g. duplicate v2→v3 then delete v3 → v2 silently re-derived
+    # from 102k to 130k). Per the user's rule "a version is king and must
+    # be steadfast — v1 must always equal v1," viewing never mutates.
+    #
+    # Recompute happens ONLY on an explicit edit to THIS version's schedule
+    # or lines. Every such path already calls sync_schedule_driven_lines
+    # after committing the edit (set_gantt_day, set_gantt_days_batch,
+    # clear_gantt_day, set_gantt_meal, travel_toggle_flag,
+    # catering_meal_toggle, schedule_purge_*, delete_line, toggle_sync_omit,
+    # activity_undo). A fresh duplicate inherits its source's frozen totals
+    # verbatim via _copy_budget_lines, so it starts identical to its source.
+    #
+    # (Legacy versions whose stored totals predate the current calc can be
+    # refreshed intentionally via the admin "recompute" tool — an explicit
+    # edit-class action — never as a side effect of opening the page.)
 
     all_budgets = Budget.query.filter_by(project_id=pid).order_by(Budget.created_at.desc()).all()
 
