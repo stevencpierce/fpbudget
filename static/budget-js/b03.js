@@ -2944,6 +2944,49 @@
     window._docItemizeDirty = true;
     _itemUpdateTotal();
   };
+  // ⚡ Payroll package → per-person pre-coded itemize rows (owner 2026-09-15:
+  // "tens of employees… uploaded as one big package… hard to sort through
+  // fifty or a hundred line items"). Server AI-extracts {name, amount} rows
+  // and matches each to the person's budget line; rows land pre-selected.
+  window.docItemizeParsePeople = async function () {
+    const uid = _docDetailUid;
+    if (!uid) return;
+    const btn = document.getElementById('docItemizePeopleBtn');
+    const st = document.getElementById('docItemizeStatus');
+    const orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '⚡ Reading document…'; }
+    if (st) { st.style.color = 'var(--text-muted)'; st.textContent = 'AI is parsing the payroll package — this can take up to a minute for big documents.'; }
+    try {
+      const r = await fetch(`/docs/upload/${uid}/parse-people`, { method: 'POST' });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) {
+        if (st) { st.style.color = '#e0a13a'; st.textContent = j.error || ('Parse failed (' + r.status + ')'); }
+        return;
+      }
+      if (!j.rows || !j.rows.length) {
+        if (st) { st.style.color = '#e0a13a'; st.textContent = 'No per-person rows found in this document.'; }
+        return;
+      }
+      j.rows.forEach(row => _itemAddRow(row.desc, row.amount, row.line_id || ''));
+      window._docItemizeDirty = true;
+      const blk = document.getElementById('docDetailItemizeBlock');
+      if (blk) blk.open = true;
+      const unmatched = j.total_rows - j.matched;
+      const money = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      if (st) {
+        st.style.color = unmatched ? '#e0a13a' : '#5fd0a0';
+        st.textContent = `${j.total_rows} people parsed (${money(j.sum)}), ` +
+          `${j.matched} matched to budget lines` +
+          (unmatched ? ` — ${unmatched} need a line picked (amber)` : '') +
+          '. Review, then Save itemization.';
+      }
+    } catch (e) {
+      if (st) { st.style.color = '#e0a13a'; st.textContent = 'Parse failed: ' + e.message; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = orig; }
+    }
+  };
+
   window.docItemizePull = function () {
     const items = window._itemVeryfi || [];
     if (!items.length) { document.getElementById('docItemizeStatus').textContent = 'No OCR line items found on this document.'; return; }

@@ -34249,6 +34249,126 @@ def _picker_value_for_line(bl):
     return bl.id
 
 
+@app.route("/docs/upload/<int:uid>/parse-people", methods=["POST"])
+@login_required
+def docs_parse_people(uid):
+    """Payroll-package parser (owner 2026-09-15: 'a large Wrapbook payroll
+    summary… tens of employees… we wanna parse them as individual lines, but
+    it's really hard to sort through fifty or a hundred line items'). AI
+    extracts one row per PERSON from the doc's OCR, then each row is matched
+    to the crew member's budget line (assignments + line descriptions) so the
+    itemize table arrives PRE-CODED — the user reviews once and saves.
+    Advisory + fail-open: no AI → falls back to Veryfi line items, unmatched
+    rows come back with an empty line picker."""
+    import re as _re_pp
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+    pid = upload.project_id
+    try:
+        vr = json.loads(upload.veryfi_data) if upload.veryfi_data else {}
+    except Exception:
+        vr = {}
+    ocr_text = str(vr.get('text') or vr.get('ocr_text') or '')[:40000]
+    li = [{"description": (x.get('description') or '')[:120], "total": x.get('total')}
+          for x in (vr.get('line_items') or [])[:200] if isinstance(x, dict)]
+
+    # Roster: the canonical Working budget's labor lines + who's on them.
+    pick_budget, _pg = _line_picker_groups(pid)
+    roster = []
+    if pick_budget:
+        _lines = [l for l in pick_budget.lines
+                  if l.is_labor and not (l.line_tag or '') and not l.parent_line_id]
+        _line_ids = [l.id for l in _lines]
+        _cas = (CrewAssignment.query
+                .filter(CrewAssignment.budget_line_id.in_(_line_ids)).all()
+                if _line_ids else [])
+        _cm_ids = ({c.crew_member_id for c in _cas if c.crew_member_id}
+                   | {l.assigned_crew_id for l in _lines if l.assigned_crew_id})
+        _cm_names = ({c.id: (c.name or '') for c in
+                      CrewMember.query.filter(CrewMember.id.in_(_cm_ids)).all()}
+                     if _cm_ids else {})
+        _ca_by_line = {}
+        for c in _cas:
+            nm = c.name_override or _cm_names.get(c.crew_member_id, '')
+            if nm:
+                _ca_by_line.setdefault(c.budget_line_id, []).append(nm)
+        for l in _lines:
+            names = list(_ca_by_line.get(l.id, []))
+            if l.assigned_crew_id and _cm_names.get(l.assigned_crew_id):
+                names.append(_cm_names[l.assigned_crew_id])
+            _pv = _picker_value_for_line(l)
+            roster.append({"value": str(_pv if _pv is not None else l.id),
+                           "label": f"{l.account_code} · {(l.description or l.account_name or '')[:60]}",
+                           "names": sorted({n for n in names if n}),
+                           "desc": (l.description or '').strip()})
+
+    import ai_layer as _ai_pp
+    res = _ai_pp.extract_people({
+        "document": {"vendor": upload.vendor,
+                     "total": float(upload.amount or 0),
+                     "line_items": li, "ocr_text": ocr_text},
+        "roster": sorted({n for r in roster for n in r["names"]}),
+    })
+    rows_in = res.get("rows") or []
+    used_fallback = False
+    if not rows_in and li:
+        rows_in = [{"name": x["description"], "amount": x.get("total")}
+                   for x in li if x.get("total")]
+        used_fallback = True
+
+    def _norm(n):
+        return _re_pp.sub(r'[^a-z ]', '', (n or '').lower()).strip()
+
+    def _match(raw_name):
+        alts = {_norm(raw_name)}
+        if ',' in (raw_name or ''):
+            _parts = [x.strip() for x in raw_name.split(',')]
+            if len(_parts) == 2:
+                alts.add(_norm(_parts[1] + ' ' + _parts[0]))
+        alts.discard('')
+        if not alts:
+            return None
+        best = None
+        for r in roster:
+            for c in ([_norm(x) for x in r["names"]] + [_norm(r["desc"])]):
+                if not c:
+                    continue
+                if any(a == c for a in alts):
+                    return r                      # exact — done
+                if any((a in c or c in a) for a in alts):
+                    if best is None:
+                        best = r
+                    elif best is not r:
+                        best = 'AMBIG'            # two different lines — punt
+        return None if best == 'AMBIG' else best
+
+    out_rows, matched_n = [], 0
+    for r0 in rows_in[:200]:
+        nm = (r0.get("name") or '').strip()
+        try:
+            amt = round(float(r0.get("amount")), 2)
+        except (TypeError, ValueError):
+            continue
+        if not nm or amt <= 0:
+            continue
+        mt = _match(nm)
+        if mt:
+            matched_n += 1
+        out_rows.append({"desc": f"{nm} — payroll", "amount": amt,
+                         "line_id": (mt["value"] if mt else ""),
+                         "line_label": (mt["label"] if mt else ""),
+                         "matched": bool(mt)})
+    return jsonify({"ok": True, "rows": out_rows,
+                    "total_rows": len(out_rows), "matched": matched_n,
+                    "ai": (not used_fallback
+                           and res.get("_provider") not in (None, "none")),
+                    "confidence": res.get("confidence"),
+                    "document_total": res.get("document_total"),
+                    "sum": round(sum(r["amount"] for r in out_rows), 2)})
+
+
 @app.route("/docs/upload/<int:uid>/coding", methods=["GET"])
 @login_required
 def docs_upload_coding(uid):

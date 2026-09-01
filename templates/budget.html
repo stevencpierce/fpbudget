@@ -3750,6 +3750,9 @@
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
                 <button type="button" onclick="_itemAddRow('','', '');window._docItemizeDirty=true" style="padding:5px 10px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;font-size:12px;cursor:pointer">+ Add line</button>
                 <button type="button" id="docItemizePullBtn" onclick="docItemizePull()" style="padding:5px 10px;border-radius:6px;background:#10231a;border:1px solid #1f5140;color:#5fd0a0;font-size:12px;cursor:pointer">⤓ Pull items from OCR</button>
+                <button type="button" id="docItemizePeopleBtn" onclick="docItemizeParsePeople()"
+                        title="For payroll packages (e.g. a Wrapbook summary covering many people): AI extracts one row per person and pre-selects each person's budget line from your crew assignments — review, then Save."
+                        style="padding:5px 10px;border-radius:6px;background:#241a3a;border:1px solid #4a2d70;color:#c0a0ff;font-size:12px;cursor:pointer">⚡ Parse payroll package</button>
                 <span style="flex:1"></span>
                 <span id="docItemizeTotal" style="font-size:12px;color:var(--text-muted)"></span>
               </div>

@@ -60,6 +60,9 @@ class AIProvider:
     def extract_travel(self, payload, image_url=None):
         raise NotImplementedError
 
+    def extract_people(self, payload):
+        raise NotImplementedError
+
 
 class _NeutralProvider(AIProvider):
     """Fail-open stand-in when no real provider is configured/reachable."""
@@ -92,6 +95,11 @@ class _NeutralProvider(AIProvider):
     def extract_travel(self, payload, image_url=None):
         return {"is_travel": False, "kind": None, "confirmation_no": None,
                 "confidence": 0.0, "_provider": "none"}
+
+    def extract_people(self, payload):
+        return {"rows": [], "confidence": 0.0,
+                "reasoning": "AI extraction unavailable (no provider/key)",
+                "_provider": "none"}
 
 
 # Forced-output schemas (Claude tool-use) — see spec §3/§4.
@@ -238,8 +246,10 @@ class ClaudeProvider(AIProvider):
     def available(self):
         return bool(_HAS_ANTHROPIC and self._key)
 
-    def _call(self, system, user_obj, tool, image_url=None):
-        client = _anthropic.Anthropic(api_key=self._key, timeout=_TIMEOUT_S)
+    def _call(self, system, user_obj, tool, image_url=None,
+              max_tokens=900, timeout_s=None):
+        client = _anthropic.Anthropic(api_key=self._key,
+                                      timeout=(timeout_s or _TIMEOUT_S))
         # When an image is supplied (low-confidence docs), attach it so the model
         # can read the actual receipt, not just the OCR JSON. (claude-haiku-4-5
         # supports vision.)
@@ -250,7 +260,7 @@ class ClaudeProvider(AIProvider):
         content.append({"type": "text", "text": json.dumps(user_obj, default=str)})
         msg = client.messages.create(
             model=_CLAUDE_MODEL,
-            max_tokens=900,
+            max_tokens=max_tokens,
             system=system,
             tools=[tool],
             tool_choice={"type": "tool", "name": tool["name"]},
@@ -270,6 +280,23 @@ class ClaudeProvider(AIProvider):
             "guessing. Reason only from the data given."
         )
         out = self._call(system, payload, _CATEGORIZE_TOOL)
+        out["_provider"] = "claude"
+        out["_model"] = _CLAUDE_MODEL
+        return out
+
+    def extract_people(self, payload):
+        system = (
+            "You extract per-person payment rows from a PAYROLL PACKAGE document "
+            "(e.g. a Wrapbook payroll summary covering many employees). The OCR "
+            "text and any line items are provided. Return one row per PERSON with "
+            "their total amount in this document. Use the ROSTER of known crew "
+            "names to normalize spellings when a printed name clearly refers to a "
+            "rostered person (return the roster spelling). Skip subtotal/header/"
+            "tax-summary rows that aren't a person. Amounts are positive numbers. "
+            "Reason only from the data given; do not invent people."
+        )
+        out = self._call(system, payload, _PEOPLE_TOOL,
+                         max_tokens=6000, timeout_s=45.0)
         out["_provider"] = "claude"
         out["_model"] = _CLAUDE_MODEL
         return out
@@ -353,6 +380,40 @@ class ClaudeProvider(AIProvider):
         return out
 
 
+_PEOPLE_TOOL = {
+    "name": "extract_people_payments",
+    "description": "Extract one row per PERSON payment from a payroll package / "
+                   "payroll summary document (e.g. a Wrapbook payroll report "
+                   "covering many employees).",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name":   {"type": "string",
+                                   "description": "The person's name as printed"},
+                        "amount": {"type": "number",
+                                   "description": "That person's TOTAL amount in "
+                                                  "this document (gross wages plus "
+                                                  "employer costs/fees when itemized "
+                                                  "per person; the per-person total "
+                                                  "column when one exists)"},
+                    },
+                    "required": ["name", "amount"],
+                },
+            },
+            "document_total": {"type": ["number", "null"],
+                               "description": "The document's own grand total if printed"},
+            "confidence": {"type": "number"},
+        },
+        "required": ["rows", "confidence"],
+    },
+}
+
+
 def get_provider(task):
     """Provider for a task ('categorize'|'anomaly'), honoring AI_ROUTE_*. Falls
     back to the neutral fail-open provider when the chosen one isn't available."""
@@ -426,6 +487,17 @@ def pick_match(payload):
     except Exception as e:
         log.warning("[ai_layer] pick_match failed (%s): %s", getattr(p, "name", "?"), e)
         return _NeutralProvider().pick_match(payload)
+
+
+def extract_people(payload):
+    """Fail-open payroll-package extractor. payload: {document:{...}, roster:[names]}.
+    Returns {rows:[{name, amount}], document_total, confidence}."""
+    p = get_provider("people")
+    try:
+        return p.extract_people(payload)
+    except Exception as e:
+        log.warning("[ai_layer] extract_people failed (%s): %s", getattr(p, "name", "?"), e)
+        return _NeutralProvider().extract_people(payload)
 
 
 def extract_travel(payload, image_url=None):
