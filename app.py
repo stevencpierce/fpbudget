@@ -30108,6 +30108,9 @@ def _web_worker_essential_columns():
                 # 2026-07-22 — per-day schedule comments (belt alongside 0009).
                 "ALTER TABLE budget_comment "
                 "  ADD COLUMN IF NOT EXISTS day_date DATE",
+                # 2026-09-08 — background drop-folder sweep imports carry no
+                # human uploader (belt alongside Alembic 0011).
+                "ALTER TABLE doc_upload ALTER COLUMN uploader_id DROP NOT NULL",
                 # 2026-08-19 — schedule waypoints (belt alongside Alembic 0010).
                 "CREATE TABLE IF NOT EXISTS schedule_waypoint ("
                 "  id SERIAL PRIMARY KEY,"
@@ -31945,18 +31948,13 @@ def _drop_folder_path(project):
     return f"{_DBX_OPS_ROOT}/{project.dropbox_folder}/{_DROP_FOLDER_NAME}"
 
 
-@app.route("/projects/<int:pid>/docs/drop-sweep", methods=["POST"])
-@login_required
-def docs_drop_sweep(pid):
-    project = ProjectSheet.query.get_or_404(pid)
-    _require_project_role(pid, 'editor')
-    if not project.dropbox_folder:
-        return jsonify({"error": "Project has no Dropbox folder configured."}), 400
+def _sweep_project_drop_folder(project, uploader=None):
+    """Core _INBOX sweep for ONE project — shared by the Docs-tab route
+    (uploader=the person sweeping) and the scheduled background sweeper
+    (uploader=None; DocUpload.uploader_id stays NULL). Returns a summary
+    dict; raises only on total Dropbox unavailability."""
     import mimetypes
-    try:
-        dbx = _dbx_client()
-    except Exception as _ce:
-        return jsonify({"error": f"Dropbox unavailable: {_ce}"}), 502
+    dbx = _dbx_client()
     path = _drop_folder_path(project)
     try:
         entries = dbx.files_list_folder(path).entries
@@ -31971,9 +31969,9 @@ def docs_drop_sweep(pid):
             dbx.files_create_folder_v2(f"{path}/_imported")
         except Exception:
             pass
-        return jsonify({"ok": True, "created": True, "imported": 0, "skipped": 0,
-                        "path": path,
-                        "message": "Drop folder created — put files in it and sweep again."})
+        return {"ok": True, "created": True, "imported": 0, "skipped": 0,
+                "path": path,
+                "message": "Drop folder created — put files in it and sweep again."}
     import dropbox as _dbx_mod
     files = [e for e in entries if isinstance(e, _dbx_mod.files.FileMetadata)]
     allowed = _UPLOAD_ALLOW['document']
@@ -31997,7 +31995,7 @@ def docs_drop_sweep(pid):
             data = _resp.content
             ctype = mimetypes.guess_type(e.name)[0] or "application/octet-stream"
             payload, code = _ingest_document_bytes(
-                pid, project, e.name, ctype, data, uploader=current_user)
+                project.id, project, e.name, ctype, data, uploader=uploader)
             del data
             if code >= 500:
                 skipped += 1
@@ -32023,8 +32021,91 @@ def docs_drop_sweep(pid):
         _gc.collect()
     except Exception:
         pass
-    return jsonify({"ok": True, "imported": imported, "skipped": skipped,
-                    "remaining": remaining, "errors": errors[:10], "path": path})
+    return {"ok": True, "imported": imported, "skipped": skipped,
+            "remaining": remaining, "errors": errors[:10], "path": path}
+
+
+@app.route("/projects/<int:pid>/docs/drop-sweep", methods=["POST"])
+@login_required
+def docs_drop_sweep(pid):
+    project = ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    if not project.dropbox_folder:
+        return jsonify({"error": "Project has no Dropbox folder configured."}), 400
+    try:
+        result = _sweep_project_drop_folder(project, uploader=current_user)
+    except Exception as _ce:
+        return jsonify({"error": f"Dropbox unavailable: {_ce}"}), 502
+    return jsonify(result)
+
+
+def _drop_sweep_loop():
+    """Scheduled background sweep (owner 2026-09-08: "add the scheduled
+    background sweep, make sure all current projects have this folder and
+    it is active"). Every worker runs this daemon loop; a system_task_log
+    claim (same pattern as trash_purge) lets only ONE worker per interval
+    actually sweep. Each cycle walks every ACTIVE project with a Dropbox
+    folder: creates _INBOX if missing, imports whatever's in it — so drops
+    process even when nobody has the app open. Fail-open everywhere."""
+    import time as _time
+    from sqlalchemy import text as _sql_text
+    _INTERVAL_S = 600          # check every 10 minutes
+    _CLAIM_SQL = (
+        "INSERT INTO system_task_log (task_name, last_run_at) "
+        "VALUES ('drop_folder_sweep', NOW()) "
+        "ON CONFLICT (task_name) DO UPDATE "
+        "  SET last_run_at = EXCLUDED.last_run_at "
+        "  WHERE system_task_log.last_run_at < NOW() - INTERVAL '9 minutes' "
+        "RETURNING task_name")
+    while True:
+        _time.sleep(_INTERVAL_S)
+        try:
+            has_dbx = (os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')) \
+                      or os.getenv('DROPBOX_ACCESS_TOKEN')
+            if not has_dbx:
+                continue   # local dev / creds missing — nothing to sweep
+            with app.app_context():
+                if 'postgresql' not in str(db.engine.url).lower():
+                    continue   # claim SQL is Postgres-only; dev skips
+                try:
+                    with db.engine.connect() as conn:
+                        claimed = conn.execute(_sql_text(_CLAIM_SQL)).fetchone()
+                        conn.commit()
+                except Exception as _ce:
+                    logging.warning(f"[drop-sweep] claim failed: {_ce}")
+                    continue
+                if not claimed:
+                    continue   # another worker swept this interval
+                projects = (ProjectSheet.query
+                            .filter(ProjectSheet.dropbox_folder.isnot(None))
+                            .all())
+                tot_imported = tot_created = tot_errors = 0
+                for prj in projects:
+                    if (getattr(prj, 'status', 'active') or 'active') != 'active':
+                        continue
+                    try:
+                        r = _sweep_project_drop_folder(prj, uploader=None)
+                        tot_imported += r.get('imported', 0)
+                        tot_created += 1 if r.get('created') else 0
+                        if r.get('errors'):
+                            tot_errors += len(r['errors'])
+                    except Exception as _pe:
+                        logging.warning(f"[drop-sweep] project {prj.id} failed: {_pe}")
+                        try:
+                            db.session.rollback()
+                        except Exception:
+                            pass
+                if tot_imported or tot_created:
+                    logging.info(f"[drop-sweep] cycle done: imported={tot_imported} "
+                                 f"folders_created={tot_created} errors={tot_errors}")
+        except Exception as _le:
+            logging.warning(f"[drop-sweep] cycle aborted: {_le}")
+
+
+import threading as _dropsweep_threading
+if not os.getenv('RUN_BOOT_TASKS'):
+    _dst = _dropsweep_threading.Thread(target=_drop_sweep_loop, daemon=True)
+    _dst.start()
 
 
 @app.route("/docs/upload/<int:uid>/retry-filing", methods=["POST"])

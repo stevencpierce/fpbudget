@@ -1106,7 +1106,9 @@ class DocUpload(db.Model):
     __tablename__ = "doc_upload"
     id               = db.Column(db.Integer, primary_key=True)
     project_id       = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
-    uploader_id      = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    # nullable since 2026-09-08: the background drop-folder sweep imports
+    # documents with no human uploader (shown as blank in the Docs list).
+    uploader_id      = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     uploaded_at      = db.Column(db.DateTime, default=datetime.utcnow)
 
     # R2 storage
