@@ -31958,17 +31958,30 @@ def _sweep_project_drop_folder(project, uploader=None):
     path = _drop_folder_path(project)
     try:
         entries = dbx.files_list_folder(path).entries
-    except Exception:
+    except Exception as _le:
         # First use — create the folder (and its _imported child) so the
-        # user has somewhere to drop files. Not an error.
+        # user has somewhere to drop files. A create FAILURE must be LOUD
+        # (2026-09-08: the folder silently never appeared for GINTS — the
+        # old `except: pass` here hid whatever Dropbox said).
         try:
             dbx.files_create_folder_v2(path)
-        except Exception:
-            pass
+        except Exception as _ce:
+            _err = (f"could not create {path}: {type(_ce).__name__}: {_ce} "
+                    f"(list said: {type(_le).__name__}: {_le})")
+            logging.error(f"[drop-sweep] {project.id}/{project.dropbox_folder}: {_err}")
+            try:
+                _record_bg_error(f"drop-folder create for project "
+                                 f"#{project.id} ({project.dropbox_folder})",
+                                 tag=f"dropfolder-{project.id}")
+            except Exception:
+                pass
+            return {"ok": False, "created": False, "imported": 0, "skipped": 0,
+                    "path": path, "error": _err}
         try:
             dbx.files_create_folder_v2(f"{path}/_imported")
         except Exception:
             pass
+        logging.info(f"[drop-sweep] created {path}")
         return {"ok": True, "created": True, "imported": 0, "skipped": 0,
                 "path": path,
                 "message": "Drop folder created — put files in it and sweep again."}
@@ -32036,6 +32049,8 @@ def docs_drop_sweep(pid):
         result = _sweep_project_drop_folder(project, uploader=current_user)
     except Exception as _ce:
         return jsonify({"error": f"Dropbox unavailable: {_ce}"}), 502
+    if not result.get("ok"):
+        return jsonify(result), 502
     return jsonify(result)
 
 
@@ -32085,24 +32100,32 @@ def _drop_sweep_loop():
                             .filter(ProjectSheet.dropbox_folder.isnot(None))
                             .all())
                 tot_imported = tot_created = tot_errors = 0
+                tot_swept = 0
                 for prj in projects:
                     if (getattr(prj, 'status', 'active') or 'active') != 'active':
                         continue
+                    tot_swept += 1
                     try:
                         r = _sweep_project_drop_folder(prj, uploader=None)
                         tot_imported += r.get('imported', 0)
                         tot_created += 1 if r.get('created') else 0
-                        if r.get('errors'):
+                        if not r.get('ok'):
+                            tot_errors += 1
+                            logging.error(f"[drop-sweep] project {prj.id}: {r.get('error')}")
+                        elif r.get('errors'):
                             tot_errors += len(r['errors'])
                     except Exception as _pe:
+                        tot_errors += 1
                         logging.warning(f"[drop-sweep] project {prj.id} failed: {_pe}")
                         try:
                             db.session.rollback()
                         except Exception:
                             pass
-                if tot_imported or tot_created:
-                    logging.info(f"[drop-sweep] cycle done: imported={tot_imported} "
-                                 f"folders_created={tot_created} errors={tot_errors}")
+                # Log EVERY claimed cycle (2026-09-08) — a quiet log made
+                # "is it even running?" undiagnosable from Render logs.
+                logging.info(f"[drop-sweep] cycle done: swept={tot_swept} "
+                             f"imported={tot_imported} folders_created={tot_created} "
+                             f"errors={tot_errors}")
         except Exception as _le:
             logging.warning(f"[drop-sweep] cycle aborted: {_le}")
 
