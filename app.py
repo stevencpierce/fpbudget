@@ -4496,6 +4496,7 @@ def project_delete(pid):
             Transaction.query.filter(Transaction.parent_transaction_id.in_(_txn_ids)).update(
                 {"parent_transaction_id": None}, synchronize_session=False)
             db.session.flush()
+            _delete_evidence_for_txns(_txn_ids)
             Transaction.query.filter_by(project_id=pid).delete(synchronize_session=False)
 
         # 4. Null parent_budget_id self-refs, then cascade-delete each budget.
@@ -10407,6 +10408,25 @@ def _add_evidence(txn_id, doc_id, kind):
         logging.warning(f"[evidence] add failed txn={txn_id} doc={doc_id}: {_ee}")
 
 
+def _delete_evidence_for_txns(txn_ids):
+    """Remove ExpenseEvidence rows pointing at soon-to-be-deleted
+    transactions. expense_evidence.transaction_id has NO cascade, so every
+    Transaction bulk-delete must call this first or Postgres rejects the
+    commit with an FK violation — surfacing to the user as the HTML 500
+    page ('Unexpected token <' on delete, owner 2026-09-08). Made acute by
+    the 2026-08 change that files an evidence row whenever a doc is coded."""
+    if not txn_ids:
+        return 0
+    try:
+        from models import ExpenseEvidence
+        return (ExpenseEvidence.query
+                .filter(ExpenseEvidence.transaction_id.in_(list(txn_ids)))
+                .delete(synchronize_session=False))
+    except Exception as _ee:
+        logging.warning(f"[evidence] cleanup failed for txns {list(txn_ids)[:5]}…: {_ee}")
+        return 0
+
+
 def _guard_doc_expense(txn, data):
     """Actualizing 2.0 A1 (2026-07-20): a doc-born row is a DOCUMENT, not an
     expense until an explicit user action makes it one.
@@ -10649,6 +10669,8 @@ def actuals_link_split(pid):
         linked += 1
     # The keeper's OWN auto-created doc_upload row is now redundant (the receipt
     # is backing real charges) — drop it so it isn't double-counted.
+    _delete_evidence_for_txns([r[0] for r in db.session.query(Transaction.id)
+                               .filter_by(doc_upload_id=keeper, source='doc_upload').all()])
     Transaction.query.filter_by(doc_upload_id=keeper, source='doc_upload').delete(synchronize_session=False)
     # Fold redundant duplicate receipts into the keeper.
     folded = 0
@@ -10661,6 +10683,8 @@ def actuals_link_split(pid):
                                  Transaction.doc_upload_id == rid,
                                  Transaction.source != 'doc_upload').update(
             {"doc_upload_id": keeper}, synchronize_session=False)
+        _delete_evidence_for_txns([r[0] for r in db.session.query(Transaction.id)
+                                   .filter_by(doc_upload_id=rid, source='doc_upload').all()])
         Transaction.query.filter_by(doc_upload_id=rid, source='doc_upload').delete(synchronize_session=False)
         rdoc.is_duplicate = True
         rdoc.duplicate_of_id = keeper
@@ -13759,6 +13783,7 @@ def actuals_delete_duplicate_txn(pid, tid):
               "match_status": t.match_status}
     Transaction.query.filter_by(parent_transaction_id=tid).update(
         {"parent_transaction_id": None}, synchronize_session=False)
+    _delete_evidence_for_txns([tid])
     _label = (t.vendor or f'Txn #{tid}')[:80]
     _amt = float(t.amount or 0)
     db.session.delete(t)
@@ -33480,7 +33505,16 @@ def docs_upload_delete(uid):
     _moves = []
     trashed = _trash_dropbox_paths(paths_to_trash, moves_out=_moves)
     # The doc's own ledger row(s) go (restore recreates); matched bank rows are
-    # UNLINKED, never deleted — their coding survives.
+    # UNLINKED, never deleted — their coding survives. Evidence rows for the
+    # doomed txns AND for this doc must go first (no FK cascade — 2026-09-08).
+    _doomed_ids = [r[0] for r in db.session.query(Transaction.id)
+                   .filter_by(doc_upload_id=upload.id, source='doc_upload').all()]
+    _delete_evidence_for_txns(_doomed_ids)
+    try:
+        from models import ExpenseEvidence as _EE_del
+        _EE_del.query.filter_by(doc_upload_id=upload.id).delete(synchronize_session=False)
+    except Exception:
+        pass
     removed_doc_txns = (Transaction.query
                         .filter_by(doc_upload_id=upload.id, source='doc_upload')
                         .delete(synchronize_session=False))
@@ -33614,6 +33648,11 @@ def docs_upload_purge(uid):
             _r2_client().delete_object(Bucket=_R2_BUCKET, Key=upload.r2_key)
         except Exception:
             pass
+    try:
+        from models import ExpenseEvidence as _EE_purge
+        _EE_purge.query.filter_by(doc_upload_id=upload.id).delete(synchronize_session=False)
+    except Exception:
+        pass
     Transaction.query.filter_by(doc_upload_id=upload.id).update(
         {"doc_upload_id": None}, synchronize_session=False)
     try:
