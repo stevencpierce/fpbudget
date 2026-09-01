@@ -431,7 +431,18 @@ def clone_estimated_to_working(estimated_budget):
     new_budget.is_actual        = False
     new_budget.version_status   = 'current'
     new_budget.parent_budget_id = estimated_budget.id
-    base_name = (estimated_budget.name or 'Budget').strip()
+    # THE PHANTOM-WORKING BUG (found live 2026-09-01): the column copy above
+    # carried budget_mode='estimated' onto the clone — so every picker and
+    # get_current_working_budget (which discriminates by budget_mode) failed
+    # to see it as a Working. The reuse guard then never matched, each coding
+    # action cloned AGAIN (from the previous clone, whose name already ended
+    # in '— Working'), and projects accumulated 'X — Working — Working'
+    # budgets all marked current. Stamp the mode explicitly and never stack
+    # the name suffix.
+    new_budget.budget_mode = 'working'
+    import re as _re_ct
+    base_name = _re_ct.sub(r'(\s*—\s*Working)+\s*$', '',
+                           (estimated_budget.name or 'Budget').strip()).strip() or 'Budget'
     new_budget.name = f"{base_name} — Working"
     new_budget.created_at = datetime.utcnow()
     new_budget.updated_at = datetime.utcnow()

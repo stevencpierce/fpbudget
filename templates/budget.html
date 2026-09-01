@@ -10540,7 +10540,9 @@ function goCompare() {
   const a = document.getElementById('vcompare-a').value;
   const b = document.getElementById('vcompare-b').value;
   if (!a || !b || a === b) { alert('Pick two different versions.'); return; }
-  window.location = COMPARE_URL + '?a=' + a + '&b=' + b + '&changes=1';
+  // New tab (owner 2026-09-01: "can compare open a new window?") — keeps
+  // your place in the budget while you read the diff.
+  window.open(COMPARE_URL + '?a=' + a + '&b=' + b + '&changes=1', '_blank');
 }
 document.addEventListener('click', e => {
   const pop = document.getElementById('vcompare-popup');

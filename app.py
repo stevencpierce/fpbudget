@@ -35452,6 +35452,91 @@ def admin_sentry_test():
     raise RuntimeError("Sentry verification test — this error is intentional.")
 
 
+@app.route("/admin/repair-phantom-workings", methods=["GET", "POST"])
+@login_required
+def admin_repair_phantom_workings():
+    """One-time data repair for the phantom-Working bug (found 2026-09-01):
+    actuals.clone_estimated_to_working copied budget_mode='estimated' onto
+    its auto-created Working clones and stacked ' — Working' onto their
+    names on each re-fire. This finds every affected budget (mode not
+    working/actual, name ending in one or more '— Working'), and:
+      • stamps budget_mode='working'
+      • collapses the stacked suffix to a single ' — Working'
+      • per (project, version): keeps only the NEWEST as 'current' Working;
+        older phantoms become 'superseded' with ' (old N)' name suffixes
+    GET = dry run (shows what WOULD change). POST = apply.
+    Nothing is deleted — coded transactions on these budgets stay put."""
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
+    import re as _re_ph
+    from collections import defaultdict as _dd_ph
+    _suffix = _re_ph.compile(r'(\s*—\s*Working)+\s*$')
+    phantoms = [b for b in Budget.query.filter(Budget.is_actual == False).all()  # noqa: E712
+                if (b.budget_mode or 'estimated') not in ('working', 'actual')
+                and _suffix.search(b.name or '')]
+    by_ver = _dd_ph(list)
+    for b in phantoms:
+        by_ver[(b.project_id, b.version_number or 1)].append(b)
+    plan = []
+    for (pid_k, vn), bs in sorted(by_ver.items()):
+        bs.sort(key=lambda x: x.id, reverse=True)   # newest first
+        # Is there already a REAL current Working for this version?
+        real_w = Budget.query.filter(
+            Budget.project_id == pid_k, Budget.is_actual == False,  # noqa: E712
+            Budget.version_number == vn,
+            Budget.budget_mode.in_(('working', 'actual')),
+            Budget.version_status == 'current').first()
+        for i, b in enumerate(bs):
+            base = _suffix.sub('', b.name or 'Budget').strip() or 'Budget'
+            keep_current = (i == 0 and real_w is None)
+            new_name = f"{base} — Working" if keep_current else f"{base} — Working (old {i})"
+            plan.append({"id": b.id, "project_id": pid_k, "version": vn,
+                         "old_name": b.name, "new_name": new_name,
+                         "old_mode": b.budget_mode, "old_status": b.version_status,
+                         "new_status": 'current' if keep_current else 'superseded'})
+    if request.method == "GET":
+        import html as _html_ph
+        rows = ''.join(
+            f"<tr><td>{c['id']}</td><td>{c['project_id']}</td><td>v{c['version']}</td>"
+            f"<td>{_html_ph.escape(c['old_name'] or '')}</td>"
+            f"<td>{_html_ph.escape(c['new_name'])}</td>"
+            f"<td>{c['old_mode']} → working</td>"
+            f"<td>{c['old_status']} → {c['new_status']}</td></tr>"
+            for c in plan)
+        return (f"<!doctype html><html><head><title>Phantom-Working repair</title>"
+                f"<style>body{{font-family:system-ui,sans-serif;max-width:1100px;"
+                f"margin:40px auto;padding:0 20px}}table{{border-collapse:collapse;"
+                f"font-size:13px}}td,th{{border:1px solid #ccc;padding:4px 8px}}</style>"
+                f"</head><body><h1>Phantom-Working repair — dry run</h1>"
+                f"<p>{len(plan)} budget(s) would be repaired. Nothing is deleted; "
+                f"coded transactions stay put.</p>"
+                f"<table><tr><th>ID</th><th>Proj</th><th>Ver</th><th>Current name</th>"
+                f"<th>New name</th><th>Mode</th><th>Status</th></tr>{rows}</table>"
+                + ("<form method='POST' style='margin-top:18px'>"
+                   f"<input type='hidden' name='csrf_token' value='{session.get('_csrf', '')}'>"
+                   "<button type='submit' style='padding:10px 22px;font-size:15px'>"
+                   "Apply repair</button></form>" if plan else
+                   "<p><b>Nothing to repair — all clean.</b></p>")
+                + "</body></html>")
+    by_id = {b.id: b for b in phantoms}
+    for ch in plan:
+        b = by_id[ch["id"]]
+        b.budget_mode = 'working'
+        b.name = ch["new_name"]
+        b.version_status = ch["new_status"]
+        b.updated_at = datetime.utcnow()
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='budget',
+                      entity_id=None, entity_label='Phantom-Working repair',
+                      project_id=None, before=None,
+                      after={'repaired': len(plan)},
+                      note=f'Repaired {len(plan)} phantom Working budget(s)')
+    except Exception:
+        pass
+    return jsonify({"ok": True, "repaired": len(plan), "plan": plan})
+
+
 @app.route("/admin/errors")
 @login_required
 def admin_recent_errors():
