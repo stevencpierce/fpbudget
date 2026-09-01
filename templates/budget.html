@@ -1868,7 +1868,10 @@
           <td class="col-num col-working line-working">
             {% if is_actual_view %}
               {% set _wlt_act = working_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
-              {% if _wlt_act is none %}{% set _wlt_act = working_line_totals.get((ln.account_code, ln.sort_order), none) %}{% endif %}
+              {# Positional fallback only for TOP-LEVEL lines — child fee/kit
+                 rows share the parent's sort_order and matched the PARENT's
+                 working total (2026-09-08: Agent Fee showed \$1,268). #}
+              {% if _wlt_act is none and not ln.parent_line_id %}{% set _wlt_act = working_line_totals.get((ln.account_code, ln.sort_order), none) %}{% endif %}
               {% if _wlt_act is not none %}
                 <span class="muted" style="font-size:.85rem"
                       title="Live total from the current Working budget for this line">{{ (_wlt_act * _sec_fee_m) | currency }}</span>
@@ -1963,7 +1966,7 @@
           <td class="col-num col-working line-working">
             {% if working_exists %}
               {% set _wlt = working_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
-              {% if _wlt is none %}{% set _wlt = working_line_totals.get((ln.account_code, ln.sort_order), none) %}{% endif %}
+              {% if _wlt is none and not ln.parent_line_id %}{% set _wlt = working_line_totals.get((ln.account_code, ln.sort_order), none) %}{% endif %}
               {% if _wlt is not none %}
               <span class="muted" style="font-size:.85rem" title="Current Working budget total for this line">{{ (_wlt * _sec_fee_m) | currency }}</span>
               {% else %}
@@ -2012,7 +2015,8 @@
              current line (the budget being viewed), W is the sister
              Working budget's value if it exists, A is per-line actual. #}
           {% set _wlt_for_var = working_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
-          {% if _wlt_for_var is none %}{% set _wlt_for_var = working_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
+          {% if _wlt_for_var is none and not ln.parent_line_id %}{% set _wlt_for_var = working_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
+          {% if _wlt_for_var is none %}{% set _wlt_for_var = 0 %}{% endif %}
           {% set _wlt_for_var = _wlt_for_var or 0 %}
           <td class="col-num col-variance line-variance line-var-cell"
               data-e="{{ res.est_total * _sec_fee_m }}"
