@@ -9226,12 +9226,27 @@ def upsert_line(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/kit-fee", methods=["POST"])
 @login_required
 def add_kit_fee(pid, bid, lid):
-    """Add a kit fee child row to an existing labor line."""
+    """Add a fee child row to an existing labor line. Originally kit fees
+    only; generalized 2026-09-01 (owner: "right click as we do for a kit
+    fee… wardrobe fees… custom fees… agent fee") — the optional `tag`
+    selects the flavor ('kit_fee' | 'agent_fee' | 'custom_fee'), which
+    drives the default description and the row's line_tag. Percentage
+    agent fees don't come through here — they set the parent line's
+    agent_pct (the calc engine already computes % of the pre-tax/fringe
+    subtotal); this creates the FLAT-amount child rows."""
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     parent = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     data   = request.get_json(force=True) or {}
 
-    desc      = data.get("description") or f"Kit Fee — {parent.description or parent.account_name}"
+    tag = (data.get("tag") or "kit_fee").strip()
+    if tag not in ("kit_fee", "agent_fee", "custom_fee"):
+        tag = "kit_fee"
+    _default_desc = {
+        "kit_fee":    f"Kit Fee — {parent.description or parent.account_name}",
+        "agent_fee":  f"Agent Fee — {parent.description or parent.account_name}",
+        "custom_fee": f"Fee — {parent.description or parent.account_name}",
+    }[tag]
+    desc      = data.get("description") or _default_desc
     rate      = _bc_float(data.get("rate", 0))
     qty       = _bc_float(data.get("quantity", 1), 1)
     days_val  = _bc_float(data.get("days", 1), 1)
@@ -9244,7 +9259,7 @@ def add_kit_fee(pid, bid, lid):
         account_name   = parent.account_name,
         description    = desc,
         is_labor       = False,
-        line_tag       = "kit_fee",
+        line_tag       = tag,
         parent_line_id = parent.id,
         sort_order     = parent.sort_order,
         quantity       = qty,

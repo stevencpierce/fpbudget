@@ -83,28 +83,102 @@
     }
   });
 
-  // Add Kit Fee — opens centered modal (per user 2026-05-04: replaces
-  // the old 3-stacked-prompt flow that popped at the top of the page).
-  document.getElementById('ctx-add-kit-fee').addEventListener('click', function() {
+  // Add Kit Fee / Custom Fee — one centered modal, two flavors (owner
+  // 2026-09-01: "right click as we do for a kit fee… wardrobe fees…
+  // custom fees"). _kitFeeTag rides the POST so the server stamps the
+  // right line_tag + default description.
+  let _kitFeeTag = 'kit_fee';
+  function _openFeeModal(tag) {
     menu.classList.add('hidden');
     if (!_ctxLineId || !_ctxLineRow) return;
-    // Populate parent-line context in the modal subtitle so the user
-    // knows which row this kit fee will hang under.
+    _kitFeeTag = tag;
+    const isKit = tag === 'kit_fee';
     const parentDesc = (_ctxLineRow.querySelector('.editable[data-field="description"]')?.textContent || '').trim();
+    const title = document.querySelector('#kit-fee-modal h2');
+    if (title) title.textContent = isKit ? '🔧 Add Kit Fee' : '👔 Add Custom Fee';
     const sub = document.getElementById('kit-fee-modal-subtitle');
-    if (sub && parentDesc) {
-      sub.textContent = `Adds a child kit-fee line under "${parentDesc}". Kit fees are never labor.`;
+    if (sub) {
+      sub.textContent = isKit
+        ? `Adds a child kit-fee line under "${parentDesc}". Kit fees are never labor.`
+        : `Adds a child fee line under "${parentDesc}" — wardrobe fee, styling fee, any custom payment. Fees are never labor.`;
     }
-    // Reset form fields.
-    document.getElementById('kit-fee-description').value = '';
+    const descEl = document.getElementById('kit-fee-description');
+    descEl.value = '';
+    descEl.placeholder = isKit ? 'Kit Fee' : 'e.g. Wardrobe Fee';
     document.getElementById('kit-fee-qty').value = '1';
     document.getElementById('kit-fee-days').value = '1';
-    document.getElementById('kit-fee-type').value = 'days';
+    document.getElementById('kit-fee-type').value = isKit ? 'days' : 'flat';
     document.getElementById('kit-fee-rate').value = '';
     document.getElementById('kit-fee-preview').style.display = 'none';
     document.getElementById('kit-fee-modal').classList.remove('hidden');
     setTimeout(() => document.getElementById('kit-fee-rate').focus(), 50);
+  }
+  document.getElementById('ctx-add-kit-fee').addEventListener('click', () => _openFeeModal('kit_fee'));
+  const _customFeeBtn = document.getElementById('ctx-add-custom-fee');
+  if (_customFeeBtn) _customFeeBtn.addEventListener('click', () => _openFeeModal('custom_fee'));
+
+  // Agent / Rep fee (owner 2026-09-01): usually a % of the pre-tax/fringe
+  // subtotal (rides the line's agent_pct so it tracks rate changes live),
+  // or a flat child line when they're paid an odd fixed amount.
+  const _agentFeeBtn = document.getElementById('ctx-add-agent-fee');
+  if (_agentFeeBtn) _agentFeeBtn.addEventListener('click', function() {
+    menu.classList.add('hidden');
+    if (!_ctxLineId || !_ctxLineRow) return;
+    window._agentFeeLineId = _ctxLineId;
+    const parentDesc = (_ctxLineRow.querySelector('.editable[data-field="description"]')?.textContent || '').trim();
+    const sub = document.getElementById('agent-fee-modal-subtitle');
+    if (sub) sub.textContent = `Agent / representative fee for "${parentDesc}".`;
+    // Prefill the current agent %, if the line already has one.
+    const cur = (_ctxLineRow.querySelector('.editable[data-field="agent_pct"]')?.textContent || '').trim();
+    document.getElementById('agent-fee-pct').value = (cur && cur !== '—' && parseFloat(cur) > 0) ? parseFloat(cur) : '10';
+    document.getElementById('agent-fee-flat').value = '';
+    document.querySelectorAll('input[name="agent-fee-mode"]').forEach(r => { r.checked = (r.value === 'pct'); });
+    if (typeof window._agentFeeModeSync === 'function') window._agentFeeModeSync();
+    document.getElementById('agent-fee-modal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('agent-fee-pct').focus(), 50);
   });
+
+  window._agentFeeModeSync = function() {
+    const mode = document.querySelector('input[name="agent-fee-mode"]:checked')?.value || 'pct';
+    document.getElementById('agent-fee-pct-wrap').style.display  = mode === 'pct'  ? '' : 'none';
+    document.getElementById('agent-fee-flat-wrap').style.display = mode === 'flat' ? '' : 'none';
+  };
+
+  window.applyAgentFee = async function() {
+    const lid = window._agentFeeLineId;
+    if (!lid) return;
+    const mode = document.querySelector('input[name="agent-fee-mode"]:checked')?.value || 'pct';
+    const btn = document.getElementById('agent-fee-apply-btn');
+    btn.disabled = true; btn.textContent = 'Adding…';
+    try {
+      let r;
+      if (mode === 'pct') {
+        const pct = parseFloat(document.getElementById('agent-fee-pct').value || '0') || 0;
+        r = await fetch(`/projects/${_pid}/budget/${_bid}/line`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ id: lid, agent_pct: pct / 100 }),
+        });
+      } else {
+        const amt = parseFloat(document.getElementById('agent-fee-flat').value || '0') || 0;
+        r = await fetch(`/projects/${_pid}/budget/${_bid}/line/${lid}/kit-fee`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ tag: 'agent_fee', description: 'Agent Fee',
+                                 rate: amt, quantity: 1, days: 1, days_unit: 'flat' }),
+        });
+      }
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        document.getElementById('agent-fee-modal').classList.add('hidden');
+        reloadWithTab();
+      } else {
+        alert(j.error || 'Failed to add agent fee.');
+        btn.disabled = false; btn.textContent = 'Add Fee';
+      }
+    } catch (e) {
+      alert('Failed: ' + e.message);
+      btn.disabled = false; btn.textContent = 'Add Fee';
+    }
+  };
 
   // Live preview as the user types — qty × days × rate.
   function _kitFeeRecalc() {
@@ -140,6 +214,7 @@
       quantity:    parseFloat(document.getElementById('kit-fee-qty').value  || '1') || 1,
       days:        parseFloat(document.getElementById('kit-fee-days').value || '1') || 1,
       days_unit:   document.getElementById('kit-fee-type').value || 'days',
+      tag:         _kitFeeTag,
     };
     try {
       const r = await fetch(`/projects/${_pid}/budget/${_bid}/line/${lid}/kit-fee`, {
@@ -161,7 +236,12 @@
   };
 
   // ── All-in Total Calculator ──────────────────────────────────────────────
-  document.getElementById('ctx-all-in-total').addEventListener('click', function() {
+  // All-in Total is PAUSED (owner 2026-09-01: "not fully vetted — remove
+  // that function until we're ready"). The menu button is gone from the
+  // template; the modal + handlers stay dormant behind this null guard so
+  // re-enabling is a one-line template change.
+  const _allInBtn = document.getElementById('ctx-all-in-total');
+  if (_allInBtn) _allInBtn.addEventListener('click', function() {
     menu.classList.add('hidden');
     if (!_ctxLineId || !_ctxLineRow) return;
     // Reset modal

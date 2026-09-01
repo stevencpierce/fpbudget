@@ -1161,6 +1161,11 @@
   {% set _sec_has_labor = namespace(any=false) %}
   {% for ln in sec.lines %}{% if ln.is_labor %}{% set _sec_has_labor.any = true %}{% endif %}{% endfor %}
   {% if not _sec_has_labor.any %}{% set ns.has_agent_or_disc = true %}{% endif %}
+  {# Talent (2100) ALWAYS shows Agent% — the collapse-when-empty rule left no
+     cell to type the FIRST fee into (owner 2026-09-01: "no area in talent to
+     add agent or representative fees"). Other sections still expand once a
+     fee exists or via right-click → Add Agent / Rep Fee. #}
+  {% if _sec_has_labor.any and sec.code == 2100 %}{% set ns.has_agent_or_disc = true %}{% endif %}
   {% for ln in sec.lines %}
     {% set res = line_results[ln.id] %}
     {% set ns.sec_subtotal = ns.sec_subtotal + res.subtotal %}
@@ -1281,7 +1286,7 @@
         <col style="width:120px"><!-- estimated -->
         <col style="width:{{ '112px' if working_exists else '0' }}"><!-- working -->
         <col style="width:{{ '116px' if (has_actual_budget or has_line_actuals) else '0' }}"><!-- actual (collapsed unless an Actual budget OR any coded actuals exist) -->
-        <col style="width:{{ '102px' if (is_working_view or has_actual_budget) else '0' }}"><!-- variance -->
+        <col style="width:{{ '102px' if (is_working_view or has_actual_budget or working_exists or has_line_actuals) else '0' }}"><!-- variance (visible whenever two comparable columns exist) -->
         <col><!-- act: auto -->
       </colgroup>
       <thead>
@@ -1299,7 +1304,7 @@
           <th class="col-num {% if is_working_view %}frozen-est-header{% endif %} var-col-header" data-budget="estimated">Estimated</th>
           <th class="col-num col-working var-col-header" data-budget="working">Working</th>
           <th class="col-num col-actual var-col-header" data-budget="actual" title="{% if actuals_frozen %}Per-line actuals frozen when this version was superseded — the live transactions have since moved to the newer Working version{% elif is_actual_view %}Actual planned (top) + cumulative transaction spend (bottom){% else %}Sum of linked transaction amounts{% endif %}">{% if is_actual_view or has_actual_budget or has_line_actuals %}Actual{% endif %}{% if actuals_frozen %}<span style="display:block;font-weight:400;font-size:.62rem;color:#c084fc;text-transform:none;letter-spacing:0;line-height:1.1;margin-top:1px" title="These figures were frozen when a newer Working version was created.">❄ frozen at supersede</span>{% endif %}</th>
-          <th class="col-num col-variance" title="{% if has_actual_budget %}Working − Actual{% else %}Estimated − Working{% endif %}">{% if has_actual_budget or is_working_view %}Variance{% endif %}</th>
+          <th class="col-num col-variance" title="{% if has_actual_budget %}Working − Actual{% else %}Estimated − Working{% endif %}">{% if has_actual_budget or is_working_view or working_exists or has_line_actuals %}Variance{% endif %}</th>
           <th class="col-act"></th>
         </tr>
       </thead>
@@ -1498,7 +1503,7 @@
            the Add Kit Fee modal) but legacy rows used a description
            prefix. Check both. Without this, kit fees with custom
            descriptions ("Camera Kit") missed the .kit-fee-row class. #}
-        {% set is_kit_fee = (ln.line_tag == 'kit_fee') or (ln.description and ln.description.startswith('Kit Fee')) %}
+        {% set is_kit_fee = (ln.line_tag in ('kit_fee', 'agent_fee', 'custom_fee')) or (ln.description and ln.description.startswith('Kit Fee')) %}
         {% set ns.line_counter = ns.line_counter + 1 %}
         {# Sub-department group header for Production Staff section (2000) #}
         {% if sec.code == 2000 and not is_kit_fee %}
@@ -10732,8 +10737,15 @@ async function _saveSettingsInner() {
       const cls = v < 0 ? 'over' : (v > 0 ? 'under' : '');
       cell.innerHTML = `<span class="${cls}">${fmt(v)}</span>`;
     });
-    // Budget tab line + section + grand cells
+    // Budget tab line + section + grand cells.
+    // GUARD (owner 2026-09-01, "odd spacing in the actual total column"):
+    // when the Variance column is collapsed (0-width, blank header) these
+    // cells must stay EMPTY — filled text in a 0-width cell overflows on
+    // top of the neighboring Actual/actions cells.
+    const _thVar = document.querySelector('th.col-variance');
+    const _varVisible = !!(_thVar && _thVar.textContent.trim());
     document.querySelectorAll('.line-var-cell').forEach(cell => {
+      if (!_varVisible) { cell.innerHTML = ''; return; }
       const e = parseFloat(cell.dataset.e || 0);
       const w = parseFloat(cell.dataset.w || 0);
       const a = parseFloat(cell.dataset.a || 0);
@@ -10825,10 +10837,56 @@ async function _saveSettingsInner() {
 
 <script src="{{ url_for('static', filename='budget-js/b05.js') }}?v={{ APP_COMMIT }}"></script>
 
+<!-- Agent / Rep fee modal (owner 2026-09-01) -->
+<div id="agent-fee-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box" style="min-width:380px">
+    <h2>💼 Add Agent / Rep Fee</h2>
+    <p id="agent-fee-modal-subtitle" class="muted" style="font-size:.8rem;margin-top:2px"></p>
+    <div style="display:flex;gap:16px;margin:10px 0 8px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer">
+        <input type="radio" name="agent-fee-mode" value="pct" checked onchange="_agentFeeModeSync()">
+        % of subtotal
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:.85rem;cursor:pointer">
+        <input type="radio" name="agent-fee-mode" value="flat" onchange="_agentFeeModeSync()">
+        Flat amount
+      </label>
+    </div>
+    <div id="agent-fee-pct-wrap" class="field">
+      <label style="font-size:.72rem;color:var(--text-muted)">Agent fee %</label>
+      <input type="number" id="agent-fee-pct" min="0" max="99" step="0.5" value="10"
+             style="width:110px" onkeydown="if(event.key==='Enter')applyAgentFee()">
+      <div class="muted" style="font-size:.72rem;margin-top:3px">
+        Calculated on the line's wage subtotal (before fringes/taxes) — updates
+        automatically when the rate or days change. Shows in the Agent% column.
+      </div>
+    </div>
+    <div id="agent-fee-flat-wrap" class="field" style="display:none">
+      <label style="font-size:.72rem;color:var(--text-muted)">Flat fee $</label>
+      <input type="number" id="agent-fee-flat" min="0" step="0.01" placeholder="e.g. 500"
+             style="width:140px" onkeydown="if(event.key==='Enter')applyAgentFee()">
+      <div class="muted" style="font-size:.72rem;margin-top:3px">
+        Adds an "Agent Fee" child line under this person — a fixed dollar amount.
+      </div>
+    </div>
+    <div class="modal-actions" style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button type="button" class="btn btn-outline"
+              onclick="document.getElementById('agent-fee-modal').classList.add('hidden')">Cancel</button>
+      <button type="button" class="btn btn-primary" id="agent-fee-apply-btn"
+              onclick="applyAgentFee()">Add Fee</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Budget Row Context Menu (right-click on labor rows) ─────────────────── -->
 <div id="budget-row-ctx-menu" class="budget-ctx-menu hidden">
   <button type="button" class="ctx-menu-item" id="ctx-add-kit-fee">🔧 Add Kit Fee</button>
-  <button type="button" class="ctx-menu-item" id="ctx-all-in-total">💰 Enter All-in Total</button>
+  <button type="button" class="ctx-menu-item" id="ctx-add-agent-fee">💼 Add Agent / Rep Fee</button>
+  <button type="button" class="ctx-menu-item" id="ctx-add-custom-fee">👔 Add Custom Fee…</button>
+  {# All-in Total PAUSED (owner 2026-09-01: "not fully vetted — remove until
+     we're ready"). Modal + JS stay dormant; restore by re-adding:
+     <button type="button" class="ctx-menu-item" id="ctx-all-in-total">💰 Enter All-in Total</button> #}
   <hr style="margin:.25rem 0;border:none;border-top:1px solid var(--border)">
   <button type="button" class="ctx-menu-item labor-rowop" data-op="insert-above">Insert Row Above</button>
   <button type="button" class="ctx-menu-item labor-rowop" data-op="insert-below">Insert Row Below</button>
