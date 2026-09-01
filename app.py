@@ -25145,6 +25145,29 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
     crew_rows_bg = [r for r in crew_rows
                     if r['account_code'] != COA_CODE_TALENT and not _row_is_atl(r)]
 
+    # Agent / representative per talent row (owner 2026-09-01: "add in the
+    # agent or representative column for talent"). First active agent-type
+    # SupportContact per crew member — same pick as the crew page's
+    # agent_map. Internal view only (csv.talent_agent); fail-open.
+    try:
+        _tal_cm_ids = {r['crew_member_id'] for r in talent_rows if r.get('crew_member_id')}
+        if _tal_cm_ids:
+            _agent_by_cm = {}
+            for _ag in (SupportContact.query
+                        .filter(SupportContact.crew_member_id.in_(_tal_cm_ids),
+                                SupportContact.role_type == 'agent',
+                                SupportContact.active == True)  # noqa: E712
+                        .order_by(SupportContact.id).all()):
+                _agent_by_cm.setdefault(_ag.crew_member_id, _ag)
+            for r in talent_rows:
+                _ag = _agent_by_cm.get(r.get('crew_member_id'))
+                if _ag:
+                    r['agent_name']  = _ag.name or ''
+                    r['agent_phone'] = _ag.phone or ''
+                    r['agent_email'] = _ag.email or ''
+    except Exception as _age:
+        logging.warning(f"[callsheet] talent agent lookup failed: {_age}")
+
     # ── Build Page 2 unified crew list (ATL + Talent + Production Staff) ────
     _P2_SECTION_SORT = {
         "Above the Line": 0,
@@ -25563,6 +25586,9 @@ def _callsheet_audience_flags(view):
         'logistics':       True,
         'crew_contact':    _v in ('internal', 'crew'),                     # phones/emails on crew rows
         'talent_contact':  _v == 'internal',
+        # Agent/rep column on the cast grid — production-facing info, so
+        # internal only (same policy as 'reps'). 2026-09-01.
+        'talent_agent':    _v == 'internal',
         'clients':         _v in ('internal', 'client'),
         'reps':            _v == 'internal',
         'background':      _v in ('internal', 'crew'),                     # extras list (production-facing)

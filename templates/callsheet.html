@@ -844,6 +844,7 @@
             <th class="cs-cast-time-th">Wrap</th>
             <th class="cs-cast-time-th">Drop-Off</th>
             {% if csv.talent_contact %}<th>Contact</th>{% endif %}
+            {% if csv.talent_agent %}<th>Agent / Rep</th>{% endif %}
           </tr>
         </thead>
         <tbody>
@@ -888,6 +889,16 @@
               {% if r.phone %}<div class="callsheet-contact-item">{{ r.phone }}</div>{% endif %}
               {% if r.email %}<div class="callsheet-contact-item callsheet-email">{{ r.email }}</div>{% endif %}
               {% if not r.phone and not r.email %}<span class="cs-screen-only">—</span>{% endif %}
+            </td>{% endif %}
+            {% if csv.talent_agent %}<td class="callsheet-contact-cell">
+              {# Agent / representative (owner 2026-09-01) — from the talent's
+                 agent-type support contact; internal view only via csv flag.
+                 Plain markup: renders identically in internal/recipient/pdf. #}
+              {% if r.agent_name %}
+                <div class="callsheet-contact-item">{{ r.agent_name }}</div>
+                {% if r.agent_phone %}<div class="callsheet-contact-item">{{ r.agent_phone }}</div>{% endif %}
+                {% if r.agent_email %}<div class="callsheet-contact-item callsheet-email">{{ r.agent_email }}</div>{% endif %}
+              {% else %}<span class="cs-screen-only">—</span>{% endif %}
             </td>{% endif %}
           </tr>
           {% endfor %}
