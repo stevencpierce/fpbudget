@@ -128,15 +128,34 @@
     const parentDesc = (_ctxLineRow.querySelector('.editable[data-field="description"]')?.textContent || '').trim();
     const sub = document.getElementById('agent-fee-modal-subtitle');
     if (sub) sub.textContent = `Agent / representative fee for "${parentDesc}".`;
-    // Prefill the current agent %, if the line already has one.
-    const cur = (_ctxLineRow.querySelector('.editable[data-field="agent_pct"]')?.textContent || '').trim();
-    document.getElementById('agent-fee-pct').value = (cur && cur !== '—' && parseFloat(cur) > 0) ? parseFloat(cur) : '10';
+    // Wage subtotal (before fringes/taxes) read from the row — the % fee
+    // is computed against it and added as a CHILD line (owner 2026-09-08:
+    // "get rid of the column, just use the right click — it'll be a lower
+    // down line, like a kit fee. That's much better.").
+    const subTxt = (_ctxLineRow.querySelector('.line-subtotal')?.textContent || '').replace(/[$,]/g, '');
+    window._agentFeeSubtotal = parseFloat(subTxt) || 0;
+    document.getElementById('agent-fee-pct').value = '10';
     document.getElementById('agent-fee-flat').value = '';
     document.querySelectorAll('input[name="agent-fee-mode"]').forEach(r => { r.checked = (r.value === 'pct'); });
     if (typeof window._agentFeeModeSync === 'function') window._agentFeeModeSync();
+    if (typeof window._agentFeePreview === 'function') window._agentFeePreview();
     document.getElementById('agent-fee-modal').classList.remove('hidden');
     setTimeout(() => document.getElementById('agent-fee-pct').focus(), 50);
   });
+
+  window._agentFeePreview = function() {
+    const el = document.getElementById('agent-fee-preview');
+    if (!el) return;
+    const pct = parseFloat(document.getElementById('agent-fee-pct').value || '0') || 0;
+    const sub = window._agentFeeSubtotal || 0;
+    if (pct > 0 && sub > 0) {
+      const amt = sub * pct / 100;
+      const money = n => '$' + n.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      el.textContent = `${pct}% of ${money(sub)} = ${money(amt)}`;
+    } else {
+      el.textContent = '';
+    }
+  };
 
   window._agentFeeModeSync = function() {
     const mode = document.querySelector('input[name="agent-fee-mode"]:checked')?.value || 'pct';
@@ -151,21 +170,29 @@
     const btn = document.getElementById('agent-fee-apply-btn');
     btn.disabled = true; btn.textContent = 'Adding…';
     try {
-      let r;
+      // Both modes create a CHILD LINE (2026-09-08) — the earlier % path
+      // patched the parent's agent_pct, which bounced off the
+      // Estimated-protection 409 ("Failed to add agent fee") and hid the
+      // fee in a column nobody wanted. Child lines behave like kit fees.
+      let amt, desc;
       if (mode === 'pct') {
         const pct = parseFloat(document.getElementById('agent-fee-pct').value || '0') || 0;
-        r = await fetch(`/projects/${_pid}/budget/${_bid}/line`, {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ id: lid, agent_pct: pct / 100 }),
-        });
+        amt = Math.round((window._agentFeeSubtotal || 0) * pct) / 100;
+        desc = `Agent Fee (${pct}%)`;
+        if (!(amt > 0)) {
+          alert('Enter a percentage — the line needs a wage subtotal to calculate from.');
+          btn.disabled = false; btn.textContent = 'Add Fee';
+          return;
+        }
       } else {
-        const amt = parseFloat(document.getElementById('agent-fee-flat').value || '0') || 0;
-        r = await fetch(`/projects/${_pid}/budget/${_bid}/line/${lid}/kit-fee`, {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ tag: 'agent_fee', description: 'Agent Fee',
-                                 rate: amt, quantity: 1, days: 1, days_unit: 'flat' }),
-        });
+        amt = parseFloat(document.getElementById('agent-fee-flat').value || '0') || 0;
+        desc = 'Agent Fee';
       }
+      const r = await fetch(`/projects/${_pid}/budget/${_bid}/line/${lid}/kit-fee`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ tag: 'agent_fee', description: desc,
+                               rate: amt, quantity: 1, days: 1, days_unit: 'flat' }),
+      });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
         document.getElementById('agent-fee-modal').classList.add('hidden');

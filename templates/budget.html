@@ -1161,11 +1161,11 @@
   {% set _sec_has_labor = namespace(any=false) %}
   {% for ln in sec.lines %}{% if ln.is_labor %}{% set _sec_has_labor.any = true %}{% endif %}{% endfor %}
   {% if not _sec_has_labor.any %}{% set ns.has_agent_or_disc = true %}{% endif %}
-  {# Talent (2100) ALWAYS shows Agent% — the collapse-when-empty rule left no
-     cell to type the FIRST fee into (owner 2026-09-01: "no area in talent to
-     add agent or representative fees"). Other sections still expand once a
-     fee exists or via right-click → Add Agent / Rep Fee. #}
-  {% if _sec_has_labor.any and sec.code == 2100 %}{% set ns.has_agent_or_disc = true %}{% endif %}
+  {# 2026-09-08: the short-lived "Talent always shows Agent%" rule is gone —
+     owner: "no reason to have the column AND the right click. Get rid of the
+     column, just use the right click" (agent fees are child lines now, like
+     kit fees). Legacy agent_pct values still surface the column via the
+     per-line check above. #}
   {% for ln in sec.lines %}
     {% set res = line_results[ln.id] %}
     {% set ns.sec_subtotal = ns.sec_subtotal + res.subtotal %}
@@ -10856,10 +10856,13 @@ async function _saveSettingsInner() {
     <div id="agent-fee-pct-wrap" class="field">
       <label style="font-size:.72rem;color:var(--text-muted)">Agent fee %</label>
       <input type="number" id="agent-fee-pct" min="0" max="99" step="0.5" value="10"
-             style="width:110px" onkeydown="if(event.key==='Enter')applyAgentFee()">
+             style="width:110px" onkeydown="if(event.key==='Enter')applyAgentFee()"
+             oninput="if(window._agentFeePreview)_agentFeePreview()">
+      <div id="agent-fee-preview" class="muted" style="font-size:.78rem;margin-top:4px;font-weight:600"></div>
       <div class="muted" style="font-size:.72rem;margin-top:3px">
-        Calculated on the line's wage subtotal (before fringes/taxes) — updates
-        automatically when the rate or days change. Shows in the Agent% column.
+        Calculated on the line's wage subtotal (before fringes/taxes) and added
+        as an "Agent Fee" line under this person — like a kit fee. If the rate
+        or days change later, re-run this to refresh the amount.
       </div>
     </div>
     <div id="agent-fee-flat-wrap" class="field" style="display:none">
