@@ -9226,9 +9226,19 @@ async function saveLine(span, newVal) {
   await patchLine(id, {[field]: sendVal});
 }
 
+// Once the user confirms "edit Estimated anyway" for this budget, remember it
+// for the rest of the browser session so we don't re-prompt on every cell edit.
+const _EST_OVERRIDE_KEY = 'fpEstOverride.' + SAVE_URL;
+function _estOverrideRemembered() {
+  try { return sessionStorage.getItem(_EST_OVERRIDE_KEY) === '1'; } catch (e) { return false; }
+}
+function _rememberEstOverride() {
+  try { sessionStorage.setItem(_EST_OVERRIDE_KEY, '1'); } catch (e) {}
+}
+
 async function patchLine(id, updates, opts = {}) {
   const payload = {id, ...updates};
-  if (opts.override_estimated) payload.override_estimated = true;
+  if (opts.override_estimated || _estOverrideRemembered()) payload.override_estimated = true;
   const res = await fetch(SAVE_URL, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -9238,7 +9248,10 @@ async function patchLine(id, updates, opts = {}) {
     const body = await res.json();
     if (body.estimated_protected) {
       const ok = confirm(body.message + '\n\nProceed with editing Estimated?');
-      if (ok) { await patchLine(id, updates, {override_estimated: true}); }
+      if (ok) {
+        _rememberEstOverride();
+        await patchLine(id, updates, {override_estimated: true});
+      }
       return;
     }
     if (body.schedule_conflict) {
@@ -10070,6 +10083,7 @@ async function submitAddLine() {
 
   let res;
   try {
+    if (_estOverrideRemembered()) payload.override_estimated = true;
     res = await fetch(SAVE_URL, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -10090,6 +10104,7 @@ async function submitAddLine() {
       // Estimated-protected: prompt user to confirm override and retry
       if (d.estimated_protected) {
         if (confirm((d.message || 'A Working budget exists. Editing Estimated will not affect Working.') + '\n\nProceed anyway?')) {
+          _rememberEstOverride();
           payload.override_estimated = true;
           const r2 = await fetch(SAVE_URL, {
             method: 'POST',

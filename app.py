@@ -5627,6 +5627,27 @@ def create_working_from_estimated(pid, bid):
         db.session.flush()
 
         remap_summary = ""
+        if not old_working:
+            # FIRST Working for this project. Transactions coded before any
+            # Working existed point at ESTIMATED lines (auto-init on coding was
+            # removed 2026-09-01 — pre-SOW the Estimated is the live document).
+            # Carry those codings onto the new Working's peer lines via the
+            # copy's line map so per-line actuals follow into the Working view.
+            try:
+                _est_map = dict(getattr(w, '_dup_line_map', {}) or {})
+                _n_carried = 0
+                if _est_map:
+                    for _old_lid, _new_lid in _est_map.items():
+                        _n_carried += (Transaction.query
+                                       .filter_by(budget_line_id=_old_lid)
+                                       .update({'budget_line_id': _new_lid},
+                                               synchronize_session=False))
+                if _n_carried:
+                    remap_summary = (f" — {_n_carried} coded transaction"
+                                     f"{'s' if _n_carried != 1 else ''} carried "
+                                     f"over from Estimated.")
+            except Exception:
+                logging.exception("[create-working] est→working txn carry failed")
         if old_working and old_working.id != w.id:
             n_remapped = _remap_working_actuals(pid, old_working, w)
             remap_summary = (f" — {n_remapped} transaction"
@@ -7495,14 +7516,18 @@ def budget_view(pid, bid):
     # one budget), so keys never overlap between legacy and direct — but we ADD
     # into the dict to be safe. Also captured separately (direct_by_wid) so the
     # Actual-column maps below can be merged without re-querying.
-    direct_by_wid = {}   # {working_line_id: summed direct-coded actual}
-    if current_working_bid:
+    # Pre-Working projects (owner decision 2026-09-01: no auto-init on coding)
+    # carry codings on ESTIMATED lines — sum those too so per-line actuals
+    # show while the Estimated is still the live document.
+    direct_by_wid = {}   # {line_id: summed direct-coded actual}
+    _direct_bids = [b for b in (current_working_bid, current_estimated_bid) if b]
+    if _direct_bids:
         try:
             from sqlalchemy import func as _dfunc
             for _wlid, _amt in (
                 db.session.query(BudgetLine.id, _dfunc.sum(_signed_amount()))  # credits contribute 0 (CR-3 revert)
                 .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
-                .filter(BudgetLine.budget_id == current_working_bid,
+                .filter(BudgetLine.budget_id.in_(_direct_bids),
                         Transaction.not_project_expense == False,
                         _exclude_estimate_linked_txns_clause())
                 .group_by(BudgetLine.id)
@@ -8965,13 +8990,19 @@ def upsert_line(pid, bid):
     data   = request.get_json(force=True)
     lid    = data.get("id")
 
-    # Estimated edit protection: require explicit override when a Working budget exists
+    # Estimated edit protection: require explicit override when a *current,
+    # same-version* Working/Actual budget exists. Superseded or other-version
+    # workings (e.g. auto-clones from older versions) must not trigger this.
     if _budget_type(budget.budget_mode) == 'estimated' and not data.get('override_estimated'):
         has_working = Budget.query.filter(
             Budget.project_id == pid,
-            Budget.version_status != 'archived',
+            Budget.version_status == 'current',
+            db.func.coalesce(Budget.version_number, 1) == (budget.version_number or 1),
         ).filter(
-            Budget.budget_mode.in_(('working', 'actual'))
+            db.or_(
+                Budget.budget_mode.in_(('working', 'actual')),
+                db.and_(Budget.budget_mode.is_(None), Budget.parent_budget_id.isnot(None)),
+            )
         ).first()
         if has_working:
             return jsonify({
@@ -36161,7 +36192,10 @@ def actuals_new_budget_line(pid):
         return jsonify({"error": f"unknown COA section {code}"}), 400
 
     res = ensure_section_in_working_budget(pid, code, sec_name)
-    working = get_current_working_budget(pid)
+    # Pre-Working projects (no auto-init on coding, owner 2026-09-01): the
+    # section/line lands on the current Estimated instead.
+    from actuals import get_current_estimated_budget as _gceb
+    working = get_current_working_budget(pid) or _gceb(pid)
     if not working:
         return jsonify({"error": "This project has no budget yet — create an "
                                  "Estimated or Working budget first."}), 400

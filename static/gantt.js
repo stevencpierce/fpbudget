@@ -286,9 +286,15 @@ function initGantt(pid, bid, activeProfileId) {
   document.querySelectorAll('.use-sched-cb').forEach(cb => {
     cb.addEventListener('change', async function() {
       const want = this.checked;
+      // Same session-remembered override key as the Budget grid, so one
+      // confirmed "OK" covers both tabs for this budget.
+      const _ovKey = 'fpEstOverride.' + `/projects/${_pid}/budget/${_bid}/line`;
+      const _ovRemembered = () => {
+        try { return sessionStorage.getItem(_ovKey) === '1'; } catch (e) { return false; }
+      };
       const save = async (override) => {
         const payload = {id: parseInt(this.dataset.id), use_schedule: want};
-        if (override) payload.override_estimated = true;
+        if (override || _ovRemembered()) payload.override_estimated = true;
         return fetch(`/projects/${_pid}/budget/${_bid}/line`, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -303,6 +309,7 @@ function initGantt(pid, bid, activeProfileId) {
         try { body = await res.json(); } catch (e) {}
         if (body.estimated_protected) {
           if (confirm((body.message || 'Editing Estimated will not affect Working.') + '\n\nProceed?')) {
+            try { sessionStorage.setItem(_ovKey, '1'); } catch (e) {}
             res = await save(true);
           } else { this.checked = !want; return; }
         }

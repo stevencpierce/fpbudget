@@ -480,6 +480,27 @@ def clone_estimated_to_working(estimated_budget):
             if not new_child.parent_line_id:
                 new_child.parent_line_id = line_map[src.parent_line_id].id
 
+    # OWNER DECISION 2026-09-01: while no Working existed, transactions coded
+    # straight to Estimated lines (auto-init on first coding was removed —
+    # pre-SOW the Estimated is the live document). Now that the Working exists,
+    # carry those codings onto the matching Working lines so the post-Phase-1
+    # invariant (coded txns point at Working ids) is restored and per-line
+    # actuals follow the user into the Working view.
+    try:
+        _moved = 0
+        for _src_id, _nl in line_map.items():
+            _moved += (Transaction.query
+                       .filter_by(budget_line_id=_src_id)
+                       .update({'budget_line_id': _nl.id},
+                               synchronize_session=False))
+        if _moved:
+            log.info(
+                f"[actuals] carried {_moved} coded transaction(s) from "
+                f"Estimated #{estimated_budget.id} lines onto new Working "
+                f"#{new_budget.id}")
+    except Exception:
+        log.exception("[actuals] est→working txn carry on working-clone failed")
+
     # AUDIT FIX (2026-07, CRITICAL-1): this clone previously copied LINES ONLY —
     # no ScheduleDay/ProductionDay/TravelDetail and no CrewAssignments. The next
     # sync_schedule_driven_lines on the new Working found zero schedule rows and
@@ -634,23 +655,49 @@ def ensure_section_in_working_budget(project_id, account_code, account_name):
         return {'created': False, 'working_line_id': None,
                 'actual_line_id': None, 'working_was_just_created': False}
 
-    # Get / auto-init Working budget.
+    # Get the Working budget. OWNER DECISION 2026-09-01: never auto-init a
+    # Working just because actuals are being coded — pre-SOW the Estimated is
+    # the live document and a clone would freeze wrong numbers. With no
+    # Working, seed the placeholder into the current Estimated instead (the
+    # txn codes to the Estimated line; the explicit "Initialize Working"
+    # action later carries lines + codings onto the new Working).
     working = get_current_working_budget(project_id)
     working_was_just_created = False
     if not working:
         est = get_current_estimated_budget(project_id)
-        if est:
-            working = clone_estimated_to_working(est)
-            db.session.add(working)
-            db.session.flush()  # get id
-            working_was_just_created = True
-        else:
+        if not est:
             # No Estimated either — bail. Coding still works at the
             # transaction level; we just can't auto-add a line without
             # any budget shell to put it in. This is a brand-new
             # project edge case.
             return {'created': False, 'working_line_id': None,
                     'actual_line_id': None, 'working_was_just_created': False}
+        existing_est = (BudgetLine.query
+                        .filter_by(budget_id=est.id, account_code=code_int)
+                        .first())
+        if existing_est:
+            return {'created': False, 'working_line_id': existing_est.id,
+                    'actual_line_id': None, 'working_was_just_created': False}
+        est_line = BudgetLine(
+            budget_id          = est.id,
+            account_code       = code_int,
+            account_name       = (account_name or '')[:100],
+            description        = '(Auto-added — no estimate)',
+            is_labor           = False,
+            quantity           = 1,
+            days               = 1,
+            rate               = 0,
+            fringe_type        = 'N',
+            agent_pct          = 0,
+            rate_type          = 'flat_day',
+            estimated_total    = 0,
+            working_total      = 0,
+            sort_order         = 99999,
+        )
+        db.session.add(est_line)
+        db.session.flush()
+        return {'created': True, 'working_line_id': est_line.id,
+                'actual_line_id': None, 'working_was_just_created': False}
 
     # Already a line with this code? no-op.
     existing = (BudgetLine.query
@@ -853,29 +900,20 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
                 "fallback to avoid data loss",
                 txn.id, working_line.id, working_line.source_line_id)
     else:
-        # Picked from Working or Estimated. Ensure a current Working budget
-        # exists (auto-init from Estimated if the user actualized straight off
-        # an Estimated line — per user 2026-04-30) and, if the pick was on
-        # Estimated, translate it to its Working peer. We do NOT clone/write an
-        # Actual budget anymore (Phase 1): the txn codes directly to Working.
+        # Picked from Working or Estimated. If a current Working budget exists
+        # and the pick was on Estimated, translate it to its Working peer so we
+        # store a Working id. We do NOT clone/write an Actual budget anymore
+        # (Phase 1): the txn codes directly to Working.
+        #
+        # OWNER DECISION 2026-09-01: if NO Working exists, do NOT auto-init one.
+        # Pre-SOW the Estimated *is* the live document — a Working silently
+        # cloned off it at first coding freezes numbers that are still moving
+        # ("our numbers wouldn't be right if we initialized a working"). The
+        # txn codes straight to the picked (Estimated) line; the explicit
+        # "Initialize Working vN" button later carries these codings onto the
+        # new Working (clone_estimated_to_working remaps via source_line_id).
         working_budget = get_current_working_budget(project_id)
-        if not working_budget:
-            estimated = get_current_estimated_budget(project_id)
-            # Fall back to the picked line's own budget if neither
-            # working nor estimated exists in canonical form.
-            source = estimated or line_budget
-            if not source:
-                raise ValueError(
-                    f"project {project_id} has no budget to clone from"
-                )
-            working_budget = clone_estimated_to_working(source)
-            working_was_just_made = True
-
-        # If the user's picked line lives on the Estimated budget (not the
-        # Working budget), translate to its Working peer so we store a Working
-        # id. This covers both the just-cloned case and the case where a
-        # Working budget already existed but the user picked an Estimated line.
-        if line_budget and not line_budget.is_actual \
+        if working_budget and line_budget and not line_budget.is_actual \
                 and line_budget.id != working_budget.id:
             _peer = (BudgetLine.query
                      .filter_by(budget_id=working_budget.id,
