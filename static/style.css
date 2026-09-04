@@ -562,6 +562,20 @@ body.col-resizing * { cursor: col-resize !important; }
   color: var(--green);
 }
 
+/* Per-line dispersed fee chip (2026-09-04) — editable dollar share shown
+   next to the line total. Green = auto first pass, amber = user override. */
+.fee-chip {
+  display: block;
+  font-size: .65rem;
+  font-weight: 600;
+  line-height: 1.1;
+  cursor: pointer;
+  color: var(--green);
+  white-space: nowrap;
+}
+.fee-chip:hover { text-decoration: underline; }
+.fee-chip.fee-chip-override { color: #e0a13a; }
+
 /* Per-rate-cell dispersed fee badge */
 .fee-disp-badge {
   display: block;

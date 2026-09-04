@@ -20,8 +20,18 @@
    the frozen figures and the P3 ▸ live-fetch expanders are suppressed (the
    transactions have since moved to the newer Working). Default False. #}
 {% set actuals_frozen = actuals_frozen | default(false) %}
-{# Fee multiplier: when dispersed, each line total is shown fee-inclusive #}
+{# Fee multiplier: when dispersed, each line total is shown fee-inclusive.
+   Kept ONLY for cross-view columns (frozen Estimated snapshots, sister-
+   Working comparisons) where no per-line share is available. #}
 {% set _fee_m = (1 + budget.company_fee_pct | float) if budget.company_fee_dispersed else 1.0 %}
+{# Per-LINE dispersed fee shares (2026-09-04): explicit whole-dollar amounts
+   from calc_top_sheet — user override (fee_disperse_amount) or dollar-
+   rounded auto. The viewed budget's OWN totals are rendered base + share
+   (with an editable chip); the fee total is the sum of the shares. #}
+{% set fee_ln      = top_sheet.fee_by_line or {} %}
+{% set fee_ln_auto = top_sheet.fee_line_auto or {} %}
+{% set fee_pseudo  = top_sheet.fee_pseudo_by_sec or {} %}
+{% set _fee_eff_rate = top_sheet.company_fee_effective_rate or 0 %}
 
 {% block title %}{{ budget.name }} [{{ cur_mode.label }}] — {{ project.name }}{% endblock %}
 
@@ -1056,6 +1066,12 @@
           {% if _fee_is_flat %}(flat {{ top_sheet.company_fee_flat | currency }}){% else %}({{ (top_sheet.company_fee_pct * 100) | round(2) }}%){% endif %}
           {% if top_sheet.company_fee_dispersed %}
           <span class="fee-mode-badge dispersed-badge">Dispersed</span>
+          <button class="btn btn-xs btn-ghost" style="margin-left:.35rem;font-size:.7rem"
+                  onclick="event.stopPropagation(); setDispersedFeeTotal()"
+                  title="Type a new fee total — it re-spreads across all lines proportionally (whole dollars). You can then nudge individual line shares via the +$ chips.">⚖ Set total</button>
+          <button class="btn btn-xs btn-ghost" style="font-size:.7rem"
+                  onclick="event.stopPropagation(); resetDispersedFee()"
+                  title="Clear every custom per-line share on this budget — all lines go back to the automatic percentage first pass.">↺ Auto</button>
           {% else %}
           <span class="fee-mode-badge">Line Item</span>
           {% endif %}
@@ -1232,6 +1248,15 @@
      at their raw total, matching calc_top_sheet's row.fee_amount=0 for
      exempt rows). #}
   {% set _sec_fee_m = 1.0 if _sec_fee_exempt else _fee_m %}
+  {# Per-section dispersed fee = sum of this section's per-line shares plus
+     the rounded share on any auto-injected WC/PI/PF amount. Drives the
+     section badge / totals so they equal the sum of the line totals shown. #}
+  {% set _sec_fee_ns = namespace(v=0) %}
+  {% if budget.company_fee_dispersed %}
+    {% for _fl in sec.lines %}{% set _sec_fee_ns.v = _sec_fee_ns.v + (fee_ln.get(_fl.id, 0) | float) %}{% endfor %}
+    {% set _sec_fee_ns.v = _sec_fee_ns.v + (fee_pseudo.get(sec.code, 0) | float) %}
+  {% endif %}
+  {% set _sec_fee_add = _sec_fee_ns.v %}
   {# Per-section labor-fringe total, pulled from the Top Sheet rows so
      the Budget-tab fee recalc can subtract it (when fee_exclude_fringes
      is on, which is the default and industry-standard). Without this,
@@ -1253,7 +1278,7 @@
       {% endif %}
       <button class="btn btn-xs btn-ghost add-line-btn"
               onclick="addLineInSection({{ sec.code }}, '{{ sec.name }}')">+ Line</button>
-      <span class="section-total-badge">{{ (ns.sec_total * _sec_fee_m) | currency }}</span>
+      <span class="section-total-badge">{{ (ns.sec_total + _sec_fee_add) | currency }}</span>
     </div>
     <table class="data-table line-table {{ 'has-labor' if ns.has_labor else 'no-labor' }} {{ 'has-working' if working_exists else '' }}">
       <colgroup>
@@ -1533,6 +1558,10 @@
           {% endfor %}
         {% endif %}
         {% set _act_txn_sum = _act_txn_sum_ns.t %}
+        {# This line's dispersed Prod Co Fee share (whole dollars; user
+           override or auto first pass). 0 when not dispersed / exempt. #}
+        {% set _ln_fee = fee_ln.get(ln.id, 0) | float %}
+        {% set _ln_fee_has_chip = budget.company_fee_dispersed and not is_actual_view and ln.id in fee_ln %}
         <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }} {{ 'sync-line' if ln.line_tag else '' }} {{ 'sync-omitted' if ln.sync_omit else '' }} {{ 'schedule-driven' if ln.use_schedule else '' }} {% if is_actual_view %}actual-view-row{% endif %}" data-id="{{ ln.id }}"
             data-code="{{ ln.account_code }}" data-code-name="{{ ln.account_name }}"
             data-agent="{{ res.agent_amount | default(0) | float | round(2) }}"
@@ -1768,10 +1797,13 @@
               {% else %}
                 <span class="muted" style="font-size:.85rem">$0.00</span>
               {% endif %}
-            {% elif ln.is_labor %}{{ (res.subtotal * _sec_fee_m) | currency }}
+            {# Components show RAW (pre-fee) — the dispersed fee is an
+               explicit editable share on the TOTAL cell now (2026-09-04),
+               so inflating each component would double-tell the story. #}
+            {% elif ln.is_labor %}{{ res.subtotal | currency }}
             {% else %}
               {% set _nl_pre = (ln.quantity|float) * (ln.days|float) * (ln.rate|float) %}
-              {% if _nl_pre > 0 %}{{ (_nl_pre * _sec_fee_m) | round(2) | currency }}{% else %}{{ (res.est_total * _sec_fee_m) | currency }}{% endif %}
+              {% if _nl_pre > 0 %}{{ _nl_pre | round(2) | currency }}{% else %}{{ res.est_total | currency }}{% endif %}
             {% endif %}
           </td>
           <td class="col-num">
@@ -1781,7 +1813,7 @@
             {% if ln.use_schedule and res.ot_amount is defined and res.ot_amount > 0 %}
             {# Schedule-driven OT — currency formatted, blue italic to
                match the schedule-driven row treatment elsewhere. #}
-            <span class="sched-ot" title="OT computed from the Schedule tab — flagged OT/DT hours on calendar days. Edit there to change.">{{ (res.ot_amount * _sec_fee_m) | currency }}</span>
+            <span class="sched-ot" title="OT computed from the Schedule tab — flagged OT/DT hours on calendar days. Edit there to change.">{{ res.ot_amount | currency }}</span>
             {% else %}
             {# Manual est_ot field. Shown as plain number (no $) to
                distinguish from schedule-driven. Per user 2026-05-05 —
@@ -1879,7 +1911,14 @@
                 <span class="muted" style="font-size:.75rem">—</span>
               {% endif %}
             {% else %}
-              <strong data-base="{{ res.est_total }}">{{ (res.est_total * _sec_fee_m) | currency }}</strong>
+              <strong data-base="{{ res.est_total }}">{{ (res.est_total + _ln_fee) | currency }}</strong>
+              {% if _ln_fee_has_chip %}
+              <span class="fee-chip {{ 'fee-chip-auto' if fee_ln_auto.get(ln.id) else 'fee-chip-override' }}"
+                    data-line-id="{{ ln.id }}" data-amt="{{ _ln_fee }}"
+                    data-auto="{{ '1' if fee_ln_auto.get(ln.id) else '0' }}"
+                    onclick="editLineFee(event, {{ ln.id }})"
+                    title="Includes dispersed Prod Co Fee share ({{ 'auto' if fee_ln_auto.get(ln.id) else 'custom' }}) — click to edit; blank resets to auto">+<span class="fee-chip-val">{{ _ln_fee | currency }}</span></span>
+              {% endif %}
             {% endif %}
           </td>
           {# Per-line ACTUAL: sum of Transaction.amount for this line.
@@ -1958,11 +1997,19 @@
              actual. #}
           <td class="col-num col-variance line-variance line-var-cell"
               data-e="{{ _frozen * _sec_fee_m }}"
-              data-w="{{ res.est_total * _sec_fee_m }}"
+              data-w="{{ res.est_total + _ln_fee }}"
               data-a="{{ _actual }}">
           </td>
           {% else %}
-          <td class="col-num line-total"><strong data-base="{{ res.est_total }}">{{ (res.est_total * _sec_fee_m) | currency }}</strong></td>
+          <td class="col-num line-total"><strong data-base="{{ res.est_total }}">{{ (res.est_total + _ln_fee) | currency }}</strong>
+            {%- if _ln_fee_has_chip %}
+            <span class="fee-chip {{ 'fee-chip-auto' if fee_ln_auto.get(ln.id) else 'fee-chip-override' }}"
+                  data-line-id="{{ ln.id }}" data-amt="{{ _ln_fee }}"
+                  data-auto="{{ '1' if fee_ln_auto.get(ln.id) else '0' }}"
+                  onclick="editLineFee(event, {{ ln.id }})"
+                  title="Includes dispersed Prod Co Fee share ({{ 'auto' if fee_ln_auto.get(ln.id) else 'custom' }}) — click to edit; blank resets to auto">+<span class="fee-chip-val">{{ _ln_fee | currency }}</span></span>
+            {%- endif %}
+          </td>
           <td class="col-num col-working line-working">
             {% if working_exists %}
               {% set _wlt = working_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
@@ -2019,7 +2066,7 @@
           {% if _wlt_for_var is none %}{% set _wlt_for_var = 0 %}{% endif %}
           {% set _wlt_for_var = _wlt_for_var or 0 %}
           <td class="col-num col-variance line-variance line-var-cell"
-              data-e="{{ res.est_total * _sec_fee_m }}"
+              data-e="{{ res.est_total + _ln_fee }}"
               data-w="{{ (_wlt_for_var | float) * _sec_fee_m }}"
               data-a="{{ _actual_e }}">
           </td>
@@ -2349,8 +2396,9 @@
           <td class="col-num"></td>
           <td class="col-fr"></td>
           <td class="col-num"></td>
-          <td class="col-num">{{ (top_sheet.workers_comp_amount * _sec_fee_m) | currency }}</td>
-          <td class="col-num col-working">{{ (top_sheet.workers_comp_amount * _sec_fee_m) | currency }}</td>
+          {% set _wc_fee = ((top_sheet.workers_comp_amount * _fee_eff_rate + 0.5) | int) if (budget.company_fee_dispersed and not _sec_fee_exempt) else 0 %}
+          <td class="col-num">{{ (top_sheet.workers_comp_amount + _wc_fee) | currency }}</td>
+          <td class="col-num col-working">{{ (top_sheet.workers_comp_amount + _wc_fee) | currency }}</td>
           <td class="col-num col-actual"></td>
           <td class="col-num col-variance"></td>
           <td class="col-act"></td>
@@ -2384,8 +2432,9 @@
           <td class="col-num"></td>
           <td class="col-fr"></td>
           <td class="col-num"></td>
-          <td class="col-num">{{ (top_sheet.production_insurance_amount * _sec_fee_m) | currency }}</td>
-          <td class="col-num col-working">{{ (top_sheet.production_insurance_amount * _sec_fee_m) | currency }}</td>
+          {% set _pi_fee = ((top_sheet.production_insurance_amount * _fee_eff_rate + 0.5) | int) if (budget.company_fee_dispersed and not _sec_fee_exempt) else 0 %}
+          <td class="col-num">{{ (top_sheet.production_insurance_amount + _pi_fee) | currency }}</td>
+          <td class="col-num col-working">{{ (top_sheet.production_insurance_amount + _pi_fee) | currency }}</td>
           <td class="col-num col-actual"></td>
           <td class="col-num col-variance"></td>
           <td class="col-act"></td>
@@ -2409,8 +2458,9 @@
           <td class="col-num"></td>
           <td class="col-fr"></td>
           <td class="col-num"></td>
-          <td class="col-num">{{ (top_sheet.payroll_fee_amount * _sec_fee_m) | currency }}</td>
-          <td class="col-num col-working">{{ (top_sheet.payroll_fee_amount * _sec_fee_m) | currency }}</td>
+          {% set _pf_fee = ((top_sheet.payroll_fee_amount * _fee_eff_rate + 0.5) | int) if (budget.company_fee_dispersed and not _sec_fee_exempt) else 0 %}
+          <td class="col-num">{{ (top_sheet.payroll_fee_amount + _pf_fee) | currency }}</td>
+          <td class="col-num col-working">{{ (top_sheet.payroll_fee_amount + _pf_fee) | currency }}</td>
           <td class="col-num col-actual"></td>
           <td class="col-num col-variance"></td>
           <td class="col-act"></td>
@@ -2534,9 +2584,9 @@
         <tr class="section-subtotal-row">
           <td colspan="5" class="col-desc muted" style="font-size:.75rem;font-style:italic;text-align:right">Section breakdown</td>
           <td class="col-num muted"></td>
-          <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_subtotal * _sec_fee_m) | currency if ns.sec_subtotal else '' }}</td>
-          <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_ot * _sec_fee_m) | currency if ns.sec_ot else '' }}</td>
-          <td class="col-num muted" style="font-size:.8rem">{{ (ns.sec_fringe * _sec_fee_m) | currency if ns.sec_fringe else '' }}</td>
+          <td class="col-num muted" style="font-size:.8rem">{{ ns.sec_subtotal | currency if ns.sec_subtotal else '' }}</td>
+          <td class="col-num muted" style="font-size:.8rem">{{ ns.sec_ot | currency if ns.sec_ot else '' }}</td>
+          <td class="col-num muted" style="font-size:.8rem">{{ ns.sec_fringe | currency if ns.sec_fringe else '' }}</td>
           <td class="col-num muted"></td>
           {# Section ACTUAL total = (a) sum of actual_by_line_id for
              every line in this section that has matching transactions
@@ -2588,7 +2638,7 @@
                 <span class="muted">{{ (_sec_w_live_ns.t * _sec_fee_m) | currency }}</span>
               {% else %}<span class="muted">—</span>{% endif %}
             {% else %}
-              <strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong>
+              <strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total + _sec_fee_add) | currency }}</strong>
             {% endif %}
           </td>
           <td class="col-num col-actual sec-actual-total" style="font-size:.8rem">
@@ -2611,11 +2661,11 @@
                             Actual lines don't carry estimated_total), A = _sec_actual. #}
           <td class="col-num col-variance sec-variance-total line-var-cell" style="font-size:.8rem"
               data-e="{{ sec_working.total * _sec_fee_m }}"
-              data-w="{{ (_sec_w_live_ns.t if is_actual_view else ns.sec_total) * _sec_fee_m }}"
+              data-w="{{ (_sec_w_live_ns.t * _sec_fee_m) if is_actual_view else (ns.sec_total + _sec_fee_add) }}"
               data-a="{{ _sec_actual }}">
           </td>
           {% else %}
-          <td class="col-num sec-est-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
+          <td class="col-num sec-est-total" style="font-size:.8rem"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total + _sec_fee_add) | currency }}</strong></td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-size:.8rem"><strong>{{ sec_working.total | currency }}</strong></td>
           <td class="col-num col-actual" style="font-size:.8rem">
             {% if _sec_actual > 0 %}<strong style="color:var(--green)">{{ _sec_actual | currency }}</strong>{% endif %}
@@ -2624,7 +2674,7 @@
              section total, W = sister Working section total, A = sum
              of actuals across all lines in this section. #}
           <td class="col-num col-variance sec-variance-total line-var-cell" style="font-size:.8rem"
-              data-e="{{ ns.sec_total * _sec_fee_m }}"
+              data-e="{{ ns.sec_total + _sec_fee_add }}"
               data-w="{{ (sec_working.total | float) * _sec_fee_m }}"
               data-a="{{ _sec_actual }}">
           </td>
@@ -2658,23 +2708,23 @@
           </td>
           {% elif is_working_view %}
           <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem"><strong data-base="{{ sec_working.total }}">{{ (sec_working.total * _sec_fee_m) | currency }}</strong></td>
-          <td class="col-num col-working sec-grand-working" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
+          <td class="col-num col-working sec-grand-working" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total + _sec_fee_add) | currency }}</strong></td>
           <td class="col-num col-actual sec-grand-actual" style="font-weight:700;font-size:.92rem">
             {% if _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
           </td>
           <td class="col-num col-variance sec-grand-variance line-var-cell" style="font-weight:700;font-size:.88rem"
               data-e="{{ sec_working.total * _sec_fee_m }}"
-              data-w="{{ ns.sec_total * _sec_fee_m }}"
+              data-w="{{ ns.sec_total + _sec_fee_add }}"
               data-a="{{ _sec_actual }}">
           </td>
           {% else %}
-          <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total * _sec_fee_m) | currency }}</strong></td>
+          <td class="col-num sec-grand-est" style="font-weight:700;font-size:.95rem;color:var(--accent,#4f7ef8)"><strong data-base="{{ ns.sec_total }}">{{ (ns.sec_total + _sec_fee_add) | currency }}</strong></td>
           <td class="col-num col-working {% if not working_exists %}muted{% endif %}" style="font-weight:700;font-size:.95rem"><strong>{{ sec_working.total | currency }}</strong></td>
           <td class="col-num col-actual" style="font-weight:700;font-size:.92rem">
             {% if _sec_actual > 0 %}<span style="color:var(--green)">{{ _sec_actual | currency }}</span>{% endif %}
           </td>
           <td class="col-num col-variance sec-grand-variance line-var-cell" style="font-weight:700;font-size:.88rem"
-              data-e="{{ ns.sec_total * _sec_fee_m }}"
+              data-e="{{ ns.sec_total + _sec_fee_add }}"
               data-w="{{ (sec_working.total | float) * _sec_fee_m }}"
               data-a="{{ _sec_actual }}">
           </td>
@@ -9297,7 +9347,91 @@ function _lineSaveToast(msg) {
 }
 
 const fmtCurrency = v => '$' + parseFloat(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+// feeMult() is now ONLY for cross-view columns (frozen Estimated snapshots,
+// sister-Working comparisons). The viewed budget's own totals use explicit
+// per-line dollar shares — see feeLineAmt() below. (2026-09-04.)
 function feeMult() { return _FLOAT_DISPERSED ? (1 + _FLOAT_FEE_PCT) : 1.0; }
+
+// ── Per-line dispersed fee shares (2026-09-04) ────────────────────────────
+// Each eligible line carries a .fee-chip next to its total: data-amt is the
+// share in whole dollars, data-auto says whether it's the automatic first
+// pass (recomputed live as round(base × effective rate)) or a user override
+// (fixed until cleared). Rows without a chip contribute $0.
+function feeLineAmt(row, base) {
+  if (!_FLOAT_DISPERSED) return 0;
+  const chip = row.querySelector('.fee-chip');
+  if (!chip) return 0;
+  if (chip.dataset.auto === '0') return parseFloat(chip.dataset.amt) || 0;
+  let b = base;
+  if (_FLOAT_EXCLUDE_FRINGES) b -= parseFloat(row.dataset.fringe || 0);
+  const amt = Math.max(0, Math.round(b * _FEE_EFF_RATE));
+  chip.dataset.amt = amt;
+  const v = chip.querySelector('.fee-chip-val');
+  if (v) v.textContent = fmtCurrency(amt);
+  return amt;
+}
+
+// Click a +$ chip → type a new dollar share (blank = back to auto).
+async function editLineFee(event, id) {
+  event.stopPropagation();
+  const chip = event.target.closest('.fee-chip');
+  if (!chip) return;
+  const cur = parseFloat(chip.dataset.amt) || 0;
+  const raw = prompt(
+    'Dispersed Prod Co Fee share for this line (whole dollars).\n' +
+    'Leave blank to go back to the automatic percentage first pass.',
+    chip.dataset.auto === '0' ? String(cur) : '');
+  if (raw === null) return;  // cancelled
+  const cleaned = raw.replace(/[$,\s]/g, '');
+  if (cleaned === '') {
+    chip.dataset.auto = '1';
+    chip.classList.remove('fee-chip-override');
+    chip.classList.add('fee-chip-auto');
+    await patchLine(id, {fee_disperse_amount: ''});
+    return;
+  }
+  const v = Math.round(parseFloat(cleaned));
+  if (isNaN(v) || v < 0) { _lineSaveToast('Fee share must be a number ≥ 0.'); return; }
+  chip.dataset.auto = '0';
+  chip.dataset.amt = v;
+  chip.classList.remove('fee-chip-auto');
+  chip.classList.add('fee-chip-override');
+  const vs = chip.querySelector('.fee-chip-val');
+  if (vs) vs.textContent = fmtCurrency(v);
+  await patchLine(id, {fee_disperse_amount: v});
+}
+
+// Fee row → ⚖ Set total: re-spread every line's share to hit a new total.
+async function setDispersedFeeTotal() {
+  const raw = prompt(
+    'New dispersed Production Company Fee TOTAL (whole dollars).\n' +
+    'Every line\'s share is scaled proportionally and rounded to the ' +
+    'dollar so the sum lands exactly on this number.');
+  if (raw === null) return;
+  const v = parseFloat(raw.replace(/[$,\s]/g, ''));
+  if (isNaN(v) || v < 0) { _lineSaveToast('Enter a dollar amount.'); return; }
+  try {
+    const r = await fetch(`/projects/${PID}/budget/${BID}/fee/disperse-total`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({total: v})});
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) { if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload(); }
+    else _lineSaveToast(j.error || ('Failed (' + r.status + ')'));
+  } catch (e) { _lineSaveToast('Error: ' + e.message); }
+}
+
+async function resetDispersedFee() {
+  if (!confirm('Clear every custom per-line fee share on this budget?\n' +
+               'All lines go back to the automatic percentage first pass.')) return;
+  try {
+    const r = await fetch(`/projects/${PID}/budget/${BID}/fee/disperse-total`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reset: true})});
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) { if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload(); }
+    else _lineSaveToast(j.error || ('Failed (' + r.status + ')'));
+  } catch (e) { _lineSaveToast('Error: ' + e.message); }
+}
 
 function refreshLineRow(id, data) {
   const row = document.querySelector(`.line-row[data-id="${id}"]`);
@@ -9364,13 +9498,14 @@ function refreshLineRow(id, data) {
   if (data.fringe_amount !== undefined) row.dataset.fringe   = (data.fringe_amount || 0);
   if (data.agent_amount !== undefined)  row.dataset.agent    = (data.agent_amount || 0);
 
-  const fm = feeMult();
+  // Viewed budget's own total = base + explicit per-line fee share
+  // (chip-driven; auto shares rescale live with the new base). 2026-09-04.
+  const _lnFee = feeLineAmt(row, parseFloat(data.est_total || 0));
   if (_IS_WORKING_MODE) {
-    // Working col = live est_total (the <strong> inside line-working), shown fee-inflated
     const workStrong = row.querySelector('.line-working strong');
     if (workStrong) {
       workStrong.dataset.base = data.est_total || 0;
-      workStrong.textContent = fmtCurrency((data.est_total || 0) * fm);
+      workStrong.textContent = fmtCurrency((parseFloat(data.est_total || 0)) + _lnFee);
     }
     // Variance cell's data-w needs to reflect the new live est_total so
     // the basis-toggle JS computes correctly. data-e (frozen snapshot)
@@ -9378,7 +9513,7 @@ function refreshLineRow(id, data) {
     // 2026-05-10 — fix for stale variance after edit.
     const varCell = row.querySelector('.line-var-cell');
     if (varCell) {
-      varCell.dataset.w = (data.est_total || 0) * fm;
+      varCell.dataset.w = (parseFloat(data.est_total || 0)) + _lnFee;
     }
   } else {
     const tot = row.querySelector('.line-total');
@@ -9386,7 +9521,7 @@ function refreshLineRow(id, data) {
       const strong = tot.querySelector('strong');
       if (strong) {
         strong.dataset.base = data.est_total || 0;
-        strong.textContent = fmtCurrency((data.est_total || 0) * fm);
+        strong.textContent = fmtCurrency((parseFloat(data.est_total || 0)) + _lnFee);
       }
     }
     // Estimated view: variance cell's data-e is the live Estimated value.
@@ -9396,7 +9531,7 @@ function refreshLineRow(id, data) {
     // 2026-05-10.
     const varCell = row.querySelector('.line-var-cell');
     if (varCell) {
-      varCell.dataset.e = (data.est_total || 0) * fm;
+      varCell.dataset.e = (parseFloat(data.est_total || 0)) + _lnFee;
     }
   }
 
@@ -9436,6 +9571,11 @@ let _FLOAT_EXCLUDE_FRINGES = {{ 'true' if top_sheet.company_fee_exclude_fringes 
 // Auto-calculated line items not rendered as BudgetLine rows — must be added to float bar separately
 const _AUTO_WORKERS_COMP  = {{ top_sheet.workers_comp_amount | float }};
 const _AUTO_PAYROLL_FEE   = {{ top_sheet.payroll_fee_amount  | float }};
+// Per-line dispersal (2026-09-04): rate auto chip shares are computed at
+// (company pct, or flat ÷ eligible base), and the fixed rounded shares the
+// server gave the auto-injected WC / PI / Payroll Fee amounts.
+const _FEE_EFF_RATE     = {{ top_sheet.company_fee_effective_rate | default(0) | float }};
+const _FEE_PSEUDO_TOTAL = {{ (top_sheet.fee_pseudo_by_sec or {}).values() | sum }};
 
 function updateFloatBar() {
   // In Actual view the float bar shows "Actual Spend" = sum of
@@ -9481,7 +9621,22 @@ function updateFloatBar() {
       feeBase += Math.max(v - fringe, 0);
     }
   });
-  const fee   = _FLOAT_FEE_MODE === 'flat' ? _FLOAT_FEE_FLAT : feeBase * _FLOAT_FEE_PCT;
+  // Dispersed mode: the fee is the SUM of the explicit per-line shares
+  // (chips) plus the fixed shares on WC/PI/PF — so a hand-tuned total
+  // shows exactly, not pct × base. (2026-09-04.)
+  let fee;
+  if (_FLOAT_DISPERSED) {
+    fee = _FEE_PSEUDO_TOTAL;
+    const _rowSel = _IS_WORKING_MODE ? '.line-working strong' : '.line-total strong';
+    document.querySelectorAll('#working-budget-wrap tbody .line-row').forEach(row => {
+      if (row.classList.contains('auto-calc-line')) return;
+      const strong = row.querySelector(_rowSel);
+      const base = strong ? (parseFloat(strong.dataset.base) || 0) : 0;
+      fee += feeLineAmt(row, base);
+    });
+  } else {
+    fee = _FLOAT_FEE_MODE === 'flat' ? _FLOAT_FEE_FLAT : feeBase * _FLOAT_FEE_PCT;
+  }
   const grand = subtotal + fee;
   const subEl   = document.getElementById('float-subtotal');
   const feeEl   = document.getElementById('float-fee');
@@ -9503,16 +9658,18 @@ function applyFeeDisplay() {
     el.title         = 'Production Company Fee ' + pctLbl + ' dispersed into this rate';
   });
 
-  // 2. Re-inflate / deflate all line totals from their stored data-base values
-  document.querySelectorAll('#working-budget-wrap .line-total strong').forEach(el => {
+  // 2. Re-render line totals from their stored data-base values. The viewed
+  //    budget's own totals = base + explicit per-line share (chips); cross-
+  //    view frozen Estimated snapshots keep the uniform multiplier.
+  document.querySelectorAll('#working-budget-wrap tbody .line-row').forEach(row => {
+    if (row.classList.contains('auto-calc-line')) return;
+    const el = row.querySelector(_IS_WORKING_MODE ? '.line-working strong' : '.line-total strong');
+    if (!el) return;
     const base = parseFloat(el.dataset.base);
-    if (!isNaN(base)) el.textContent = fmtCurrency(base * mult);
+    if (isNaN(base)) return;
+    el.textContent = fmtCurrency(base + feeLineAmt(row, base));
   });
   if (_IS_WORKING_MODE) {
-    document.querySelectorAll('#working-budget-wrap .line-working strong').forEach(el => {
-      const base = parseFloat(el.dataset.base);
-      if (!isNaN(base)) el.textContent = fmtCurrency(base * mult);
-    });
     document.querySelectorAll('#working-budget-wrap .line-frozen-est .frozen-est').forEach(el => {
       const raw = parseFloat(el.dataset.raw);
       if (!isNaN(raw)) el.textContent = fmtCurrency(raw * mult);
@@ -9523,7 +9680,7 @@ function applyFeeDisplay() {
       if (!row) return;
       const workBase  = parseFloat(row.querySelector('.line-working strong')?.dataset.base) || 0;
       const frozenRaw = parseFloat(row.querySelector('.line-frozen-est .frozen-est')?.dataset.raw) || 0;
-      const variance  = (workBase - frozenRaw) * mult;
+      const variance  = (workBase + feeLineAmt(row, workBase)) - frozenRaw * mult;
       span.textContent = fmtCurrency(variance);
       span.className   = variance > 0.005 ? 'var-pos' : variance < -0.005 ? 'var-neg' : 'var-zero';
     });
@@ -9662,7 +9819,12 @@ function refreshSectionTotals(table) {
   const tfoot = table.querySelector('tfoot');
   if (!tfoot) return;
 
+  // Exempt marker must be known inside the row loop (auto-calc fee shares).
+  const _blockPre = table.closest('.section-block');
+  const _exemptPre = _blockPre && _blockPre.dataset.feeExempt === '1';
+
   let liveTotal = 0, kitTotal = 0, agentTotal = 0, discTotal = 0, otTotal = 0, fringeTotal = 0, subtotalTotal = 0;
+  let feeTotal = 0;  // dispersed Prod Co Fee: sum of per-line shares (2026-09-04)
   tbody.querySelectorAll('.line-row').forEach(row => {
     // Auto-calc rows (Workers' Comp, Production Liability Insurance,
     // Payroll Service Fee) carry their amount on data-auto-amount —
@@ -9672,9 +9834,10 @@ function refreshSectionTotals(table) {
     if (row.classList.contains('auto-calc-line')) {
       const auto = parseFloat(row.dataset.autoAmount || 0);
       liveTotal += auto;
+      if (_FLOAT_DISPERSED && !_exemptPre) feeTotal += Math.round(auto * _FEE_EFF_RATE);
       return;
     }
-    // Always read the BASE value (data-base) for section sum; inflate in display
+    // Always read the BASE value (data-base) for section sum; fee added in display
     let base = 0;
     if (_IS_WORKING_MODE) {
       const strong = row.querySelector('.line-working strong');
@@ -9684,6 +9847,7 @@ function refreshSectionTotals(table) {
       base = strong ? (parseFloat(strong.dataset.base !== undefined ? strong.dataset.base : strong.textContent.replace(/[$,]/g,'')) || 0) : 0;
     }
     liveTotal += base;
+    feeTotal += feeLineAmt(row, base);
     if (row.classList.contains('kit-fee-row')) kitTotal += base;
     // data-agent doubles as the discount amount on non-labor rows — keep
     // agent fees and discounts in separate footer rows. (2026-07-22.)
@@ -9703,6 +9867,8 @@ function refreshSectionTotals(table) {
   // agree row-by-row.
   const _block = table.closest('.section-block');
   const _isExempt = _block && _block.dataset.feeExempt === '1';
+  // fm now applies ONLY to cross-view frozen Estimated snapshots — the
+  // viewed budget's own totals are additive (liveTotal + feeTotal).
   const fm = _isExempt ? 1.0 : feeMult();
 
   // Update kit fee subtotal
@@ -9736,17 +9902,19 @@ function refreshSectionTotals(table) {
     // cells[1] = Subtotal
     // cells[2] = OT
     // cells[3] = Fringe
-    if (cells[1]) cells[1].textContent = subtotalTotal ? fmtCurrency(subtotalTotal * fm) : '';
-    if (cells[2]) cells[2].textContent = otTotal       ? fmtCurrency(otTotal       * fm) : '';
-    if (cells[3]) cells[3].textContent = fringeTotal   ? fmtCurrency(fringeTotal   * fm) : '';
+    // Components stay RAW — the dispersed fee is an explicit share on the
+    // total cells now, not baked into each component. (2026-09-04.)
+    if (cells[1]) cells[1].textContent = subtotalTotal ? fmtCurrency(subtotalTotal) : '';
+    if (cells[2]) cells[2].textContent = otTotal       ? fmtCurrency(otTotal)       : '';
+    if (cells[3]) cells[3].textContent = fringeTotal   ? fmtCurrency(fringeTotal)   : '';
   }
 
   if (_IS_WORKING_MODE) {
-    // Update live working total (base stored in data-base, display inflated)
+    // Update live working total (base stored in data-base, display = base + fee shares)
     const secWork = tfoot.querySelector('.sec-working-total strong');
     if (secWork) {
       secWork.dataset.base = liveTotal;
-      secWork.textContent = fmtCurrency(liveTotal * fm);
+      secWork.textContent = fmtCurrency(liveTotal + feeTotal);
     }
 
     // Compute frozen total from data-raw on .frozen-est spans (base values)
@@ -9763,21 +9931,21 @@ function refreshSectionTotals(table) {
     // visible span, which the basis toggle then overwrote with stale data
     // when the user clicked between bases.
     const secVarCell = tfoot.querySelector('.sec-variance-total');
-    if (secVarCell) secVarCell.dataset.w = liveTotal * fm;
+    if (secVarCell) secVarCell.dataset.w = liveTotal + feeTotal;
 
-    // Update section badge (inflated)
+    // Update section badge
     const block = table.closest('.section-block');
     if (block) {
       const badge = block.querySelector('.section-total-badge');
-      if (badge) badge.textContent = fmtCurrency(liveTotal * fm);
+      if (badge) badge.textContent = fmtCurrency(liveTotal + feeTotal);
     }
 
-    // Update section fee row (shows fee portion = base × fee_pct)
+    // Update section fee row (shows the summed per-line shares)
     const feeRow = tfoot.querySelector('.section-fee-row');
     if (feeRow) {
-      feeRow.style.display = (_FLOAT_DISPERSED && !_isExempt) ? '' : 'none';
+      feeRow.style.display = (_FLOAT_DISPERSED && feeTotal > 0) ? '' : 'none';
       const feeTotalEl = feeRow.querySelector('.sec-fee-total');
-      if (feeTotalEl) feeTotalEl.textContent = fmtCurrency(liveTotal * (_isExempt ? 0 : _FLOAT_FEE_PCT));
+      if (feeTotalEl) feeTotalEl.textContent = fmtCurrency(feeTotal);
     }
 
     // Update the BIG "Total [Section]" grand-total row
@@ -9794,47 +9962,47 @@ function refreshSectionTotals(table) {
     const grandWorking = tfoot.querySelector('.sec-grand-working strong');
     if (grandWorking) {
       grandWorking.dataset.base = liveTotal;
-      grandWorking.textContent = fmtCurrency(liveTotal * fm);
+      grandWorking.textContent = fmtCurrency(liveTotal + feeTotal);
     }
     const grandVarCell = tfoot.querySelector('.sec-grand-variance');
-    if (grandVarCell) grandVarCell.dataset.w = liveTotal * fm;
+    if (grandVarCell) grandVarCell.dataset.w = liveTotal + feeTotal;
   } else {
-    // Update section estimated total (base stored in data-base, display inflated)
+    // Update section estimated total (base stored in data-base, display = base + fee shares)
     const secEst = tfoot.querySelector('.sec-est-total strong');
     if (secEst) {
       secEst.dataset.base = liveTotal;
-      secEst.textContent = fmtCurrency(liveTotal * fm);
+      secEst.textContent = fmtCurrency(liveTotal + feeTotal);
     }
 
-    // Update section badge in header (inflated)
+    // Update section badge in header
     const block = table.closest('.section-block');
     if (block) {
       const badge = block.querySelector('.section-total-badge');
-      if (badge) badge.textContent = fmtCurrency(liveTotal * fm);
+      if (badge) badge.textContent = fmtCurrency(liveTotal + feeTotal);
     }
 
-    // Update section fee row (shows fee portion = base × fee_pct)
+    // Update section fee row (shows the summed per-line shares)
     const feeRow = tfoot.querySelector('.section-fee-row');
     if (feeRow) {
-      feeRow.style.display = (_FLOAT_DISPERSED && !_isExempt) ? '' : 'none';
+      feeRow.style.display = (_FLOAT_DISPERSED && feeTotal > 0) ? '' : 'none';
       const feeTotalEl = feeRow.querySelector('.sec-fee-total');
-      if (feeTotalEl) feeTotalEl.textContent = fmtCurrency(liveTotal * (_isExempt ? 0 : _FLOAT_FEE_PCT));
+      if (feeTotalEl) feeTotalEl.textContent = fmtCurrency(feeTotal);
     }
 
     // Update the BIG "Total [Section]" grand-total row (non-working mode)
     const grandEst = tfoot.querySelector('.sec-grand-est strong');
     if (grandEst) {
       grandEst.dataset.base = liveTotal;
-      grandEst.textContent = fmtCurrency(liveTotal * fm);
+      grandEst.textContent = fmtCurrency(liveTotal + feeTotal);
     }
     // Push the new live Estimated total into data-e on section + grand-
     // total variance cells so basis-toggle JS recomputes against fresh
     // data. data-w (cross-view Working sister) is unchanged — it'd only
     // change if the Working budget itself were edited. 2026-05-10.
     const secVarCell = tfoot.querySelector('.sec-variance-total');
-    if (secVarCell) secVarCell.dataset.e = liveTotal * fm;
+    if (secVarCell) secVarCell.dataset.e = liveTotal + feeTotal;
     const grandVarCell = tfoot.querySelector('.sec-grand-variance');
-    if (grandVarCell) grandVarCell.dataset.e = liveTotal * fm;
+    if (grandVarCell) grandVarCell.dataset.e = liveTotal + feeTotal;
   }
 
   // Re-apply the active variance basis so the basis-toggle JS reads the

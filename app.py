@@ -793,6 +793,7 @@ _BUDGET_WRITE_ENDPOINTS = {
     'set_gantt_days_batch', 'gantt_assign_crew', 'set_gantt_meal',
     'expand_gantt', 'set_schedule_label',
     'schedule_waypoint_restore', 'schedule_waypoint_copy_version',
+    'budget_fee_disperse_total',
 }
 
 
@@ -9093,6 +9094,9 @@ def upsert_line(pid, bid):
               "parent_line_id", "line_tag", "role_group", "unit_rate",
               "days_unit", "days_per_week",
               "working_total", "manual_actual",
+              # Prod Co Fee dispersal override (2026-09-04): dollars for
+              # THIS line's dispersed fee share; blank/None → back to auto.
+              "fee_disperse_amount",
               # Task 2: catalog linkage for exports
               "catalog_item_id"]
     # Schedule-driven lines (Flights, Per Diem, Hotel, Meals, etc.) get
@@ -15538,10 +15542,15 @@ def export_pdf(pid, bid):
         true_grand = 0.0
         line_exact = {}     # id → exact dispersed total
         line_remainder = {} # id → signed distance to next $10 bucket
+        # Per-line dispersal (2026-09-04): each line's dispersed total is its
+        # base + its explicit fee share (user override or dollar-rounded
+        # auto) from calc_top_sheet — NOT a uniform × (1+pct). Hand-tuned
+        # line amounts flow through to the export.
+        _pdf_fee_by_line = top_sheet.get("fee_by_line") or {}
         for sec in sections_ordered:
             for ln in sec["lines"]:
                 res = line_results.get(ln.id) or {}
-                exact = float(res.get("est_total") or 0) * fee_m
+                exact = float(res.get("est_total") or 0) + float(_pdf_fee_by_line.get(ln.id, 0) or 0)
                 line_exact[ln.id] = exact
                 rounded = round(exact / PDF_BUCKET) * PDF_BUCKET
                 pdf_line_totals[ln.id] = rounded
@@ -17633,6 +17642,101 @@ def budget_fee_update(pid, bid):
                     "pct": float(budget.company_fee_pct or 0),
                     "flat": float(budget.company_fee_flat or 0),
                     "dispersed": bool(budget.company_fee_dispersed)})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/fee/disperse-total", methods=["POST"])
+@login_required
+def budget_fee_disperse_total(pid, bid):
+    """Set the dispersed Production Company Fee TOTAL and re-spread it
+    across the lines (owner 2026-09-04: "update the total, which would
+    update the disbursement").
+
+    Body: {total: dollars} — every line's current share (override or auto)
+    is scaled proportionally to hit the new total, rounded to whole
+    dollars, with the remainder trued up on the largest shares so the sum
+    lands exactly on the target. All results are written as per-line
+    overrides (fee_disperse_amount). Or {reset: true} — clears every
+    override on this budget so all lines fall back to the auto first pass.
+    """
+    _require_project_role(pid, 'editor')
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+
+    if data.get('reset'):
+        n = BudgetLine.query.filter_by(budget_id=bid).filter(
+            BudgetLine.fee_disperse_amount.isnot(None)
+        ).update({'fee_disperse_amount': None}, synchronize_session=False)
+        db.session.commit()
+        try:
+            _log_activity(action='update', entity_type='budget_settings',
+                          entity_id=bid, entity_label=budget.name or 'Budget',
+                          budget_id=bid, project_id=pid,
+                          after={'fee_disperse_reset': n},
+                          note='Reset dispersed fee shares to auto')
+        except Exception:
+            pass
+        return jsonify({"ok": True, "reset": n})
+
+    if not budget.company_fee_dispersed:
+        return jsonify({"error": "The fee is not dispersed on this budget — "
+                                 "turn on 'Disperse across lines' first "
+                                 "(right-click the fee row)."}), 400
+    try:
+        target = float(str(data.get("total", "")).replace('$', '').replace(',', '').strip())
+    except (TypeError, ValueError):
+        return jsonify({"error": "Total must be a number (e.g. 15000)"}), 400
+    if not (0 <= target <= 999_999_999):
+        return jsonify({"error": "Total out of range"}), 400
+    target = float(round(target))  # per-line shares are whole dollars
+
+    # Current shares straight from the same math the page renders.
+    lines = BudgetLine.query.filter_by(budget_id=bid).all()
+    fringe_cfgs = get_fringe_configs(db.session, pid)
+    profile  = budget.payroll_profile
+    pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
+        profile.payroll_week_start if profile else 6)
+    ts = calc_top_sheet(budget, lines, fringe_cfgs, {}, profile, pw_start)
+    cur = {lid: float(a or 0) for lid, a in (ts.get("fee_by_line") or {}).items()}
+    cur = {lid: a for lid, a in cur.items() if a > 0}
+    if not cur:
+        return jsonify({"error": "No fee-eligible lines to spread the total "
+                                 "across (all sections exempt, or every "
+                                 "line is $0)."}), 400
+
+    cur_sum = sum(cur.values())
+    scale = (target / cur_sum) if cur_sum > 0 else 0.0
+    new_amts = {lid: float(int(a * scale + 0.5)) for lid, a in cur.items()}
+    # True up rounding drift $1 at a time on the largest shares so the
+    # sum hits the target exactly.
+    drift = int(round(target - sum(new_amts.values())))
+    if drift != 0:
+        step = 1.0 if drift > 0 else -1.0
+        for lid in sorted(new_amts, key=lambda i: new_amts[i], reverse=True):
+            if drift == 0:
+                break
+            if step < 0 and new_amts[lid] <= 0:
+                continue
+            new_amts[lid] += step
+            drift -= int(step)
+
+    by_id = {ln.id: ln for ln in lines}
+    changed = 0
+    for lid, amt in new_amts.items():
+        ln = by_id.get(lid)
+        if ln is None:
+            continue
+        ln.fee_disperse_amount = amt
+        changed += 1
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='budget_settings',
+                      entity_id=bid, entity_label=budget.name or 'Budget',
+                      budget_id=bid, project_id=pid,
+                      after={'fee_disperse_total': target, 'lines': changed},
+                      note=f'Re-spread dispersed fee to {target:,.0f} across {changed} lines')
+    except Exception:
+        pass
+    return jsonify({"ok": True, "total": target, "lines": changed})
 
 
 @app.route("/settings/company", methods=["GET"])
@@ -29689,6 +29793,10 @@ def _web_worker_essential_columns():
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_mode VARCHAR(10) DEFAULT 'pct' NOT NULL",
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_pct  NUMERIC(8,6) DEFAULT 0.015",
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS production_insurance_flat NUMERIC(12,2) DEFAULT 0",
+                # Prod Co Fee per-line dispersal override (2026-09-04) —
+                # alembic 0012 covers this too; belt per CLAUDE.md (prod PG
+                # may never have run alembic).
+                "ALTER TABLE budget_line ADD COLUMN IF NOT EXISTS fee_disperse_amount NUMERIC(12,2)",
                 # Cross-project claim (2026-05-07).
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claimed_by_project_id INTEGER REFERENCES project_sheet(id)",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_claimed_by ON transaction (claimed_by_project_id)",

@@ -407,6 +407,12 @@ class BudgetLine(db.Model):
     working_total   = db.Column(db.Numeric(14, 2), nullable=True)  # Working forecast (snapshot + evolving)
     manual_actual   = db.Column(db.Numeric(14, 2), nullable=True)  # Manual actual override per line
 
+    # Prod Co Fee dispersal (2026-09-04): user-tuned dollar share of the
+    # dispersed Production Company Fee for THIS line. NULL = auto (first
+    # pass = line fee base × effective rate, rounded to the nearest
+    # dollar). Survives toggling dispersal off/on.
+    fee_disperse_amount = db.Column(db.Numeric(12, 2), nullable=True)
+
     # Per-instance custom schedule display labels: JSON {"1": "Hero Biker", "3": "Lead Double"}
     schedule_labels = db.Column(db.Text, nullable=True)
 

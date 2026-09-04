@@ -1421,20 +1421,64 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         company_fee_est = round(fee_base * fee_pct, 2)
         effective_rate = fee_pct
 
+    # ── Per-LINE dispersal (owner 2026-09-04: "disperse across lines") ──
+    # Each budget line gets an explicit whole-dollar fee share: the user's
+    # stored override (BudgetLine.fee_disperse_amount) when set, else an
+    # auto first pass = round(line fee base × effective rate) to the
+    # nearest dollar. Section rows sum their lines' shares (plus a rounded
+    # share for the auto-injected WC / PI / Payroll Fee amounts, which
+    # have no BudgetLine to edit), and the fee TOTAL becomes the sum of
+    # the shares — so hand-tuned line amounts flow all the way up.
+    # Overrides survive toggling dispersal off/on (the column is never
+    # cleared by the toggle) and are respected even on fee-exempt lines
+    # (an explicit override is explicit user intent).
+    fee_by_line = {}      # line_id → dollars (override or auto)
+    fee_line_auto = {}    # line_id → True when auto (no stored override)
+    fee_pseudo_by_sec = {}  # section code → rounded share for WC/PI/PF injects
     if dispersed:
-        # Spread the fee proportionally into each ELIGIBLE section row,
-        # but only on the row's NON-fringe portion when fringes are
-        # excluded. Excluded rows keep their raw total and $0 fee_amount.
+        sec_fee_sums = {}
+        for ln in lines:
+            sec = section_for_code(ln.account_code)
+            res = line_totals.get(ln.id) or {}
+            base = float(res.get("est_total", 0) or 0)
+            if exclude_fringes and ln.is_labor:
+                base -= float(res.get("fringe_amount", 0) or 0)
+            eligible = (sec is not None and sec not in _excluded_codes
+                        and base > 0)
+            ov = getattr(ln, 'fee_disperse_amount', None)
+            if ov is not None:
+                amt = round(float(ov), 2)
+                fee_line_auto[ln.id] = False
+            elif eligible:
+                # int(x + .5) not round(): matches JS Math.round (Python
+                # round() is banker's rounding — round(2.5) == 2 — and the
+                # client recomputes autos live with Math.round).
+                amt = float(int(base * effective_rate + 0.5))
+                fee_line_auto[ln.id] = True
+            else:
+                continue
+            fee_by_line[ln.id] = amt
+            if sec is not None:
+                sec_fee_sums[sec] = sec_fee_sums.get(sec, 0.0) + amt
+        # Auto-injected amounts (no BudgetLine): rounded auto share only.
+        for _amt, _sec in ((workers_comp_amount, 6000),
+                           (production_insurance_amount, 6000),
+                           (payroll_fee_amount, 6500)):
+            if _amt and _sec not in _excluded_codes:
+                _share = float(int(_amt * effective_rate + 0.5))
+                if _share:
+                    fee_pseudo_by_sec[_sec] = fee_pseudo_by_sec.get(_sec, 0.0) + _share
+                    sec_fee_sums[_sec] = sec_fee_sums.get(_sec, 0.0) + _share
         for row in rows:
             raw = row["estimated"]
             row["raw_estimated"] = raw
-            row_base = _row_fee_base(row)
-            if row_base > 0:
-                fee_amt = round(row_base * effective_rate, 2)
-                row["fee_amount"] = fee_amt
-                row["estimated"]  = round(raw + fee_amt, 2)
-            else:
-                row["fee_amount"] = 0.0
+            fee_amt = round(sec_fee_sums.get(row["code"], 0.0), 2)
+            row["fee_amount"] = fee_amt
+            row["estimated"]  = round(raw + fee_amt, 2)
+        # Fee total = sum of the explicit shares (may differ from
+        # pct × base by the per-line dollar rounding + any overrides —
+        # intentional; the user tunes lines and the total follows).
+        company_fee_est = round(sum(sec_fee_sums.values()), 2)
         grand_total_est = round(subtotal_est + company_fee_est, 2)
     else:
         for row in rows:
@@ -1463,6 +1507,14 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         "company_fee_exclude_fringes": exclude_fringes,
         "company_fee_total_fringes":   round(sum(section_fringe.values()), 2),
         "company_fee_dispersed": dispersed,
+        # Per-line dispersal detail (2026-09-04): {line_id: dollars} shares,
+        # which of them are auto vs user overrides, the rounded shares given
+        # to the auto-injected WC/PI/PF amounts (keyed by section), and the
+        # effective rate autos were computed at (pct, or flat ÷ base).
+        "fee_by_line":        fee_by_line,
+        "fee_line_auto":      fee_line_auto,
+        "fee_pseudo_by_sec":  fee_pseudo_by_sec,
+        "company_fee_effective_rate": effective_rate,
         "grand_total_estimated": round(grand_total_est, 2),
         "grand_total_actual":    round(grand_total_act, 2),
         "grand_variance":        round(grand_variance, 2),
