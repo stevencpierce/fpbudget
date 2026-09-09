@@ -1443,8 +1443,15 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
             base = float(res.get("est_total", 0) or 0)
             if exclude_fringes and ln.is_labor:
                 base -= float(res.get("fringe_amount", 0) or 0)
-            eligible = (sec is not None and sec not in _excluded_codes
-                        and base > 0)
+            # Section exemption beats everything — a section ticked exempt
+            # in Settings gets NO fee, even on lines carrying a stored
+            # per-line override (user 2026-09-09: "I select sections to not
+            # apply the fee to and it doesn't take"). The override value
+            # stays stored, dormant, and comes back if the section is
+            # un-exempted.
+            if sec is not None and sec in _excluded_codes:
+                continue
+            eligible = (sec is not None and base > 0)
             ov = getattr(ln, 'fee_disperse_amount', None)
             if ov is not None:
                 amt = round(float(ov), 2)

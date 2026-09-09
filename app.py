@@ -22587,6 +22587,36 @@ def line_assign_po(pid, bid, lid):
 # under their own section heading. Each one can be exported as a mini-
 # PDF (filtered subset of the parent budget) for client handoff.
 
+def _dispersed_fee_share_map(budget):
+    """{line_id: dispersed Prod Co Fee share} for a budget whose fee is
+    dispersed; {} otherwise. Memoized per request (the sub-budget cards
+    page calls this once per card against the same canonical budget).
+    Owner 2026-09-09: sub-budget totals must include the dispersed fee —
+    "sub budgets that don't include the actual total representation"."""
+    if not budget or not getattr(budget, 'company_fee_dispersed', False):
+        return {}
+    from flask import g as _g
+    cache = getattr(_g, '_fee_share_maps', None)
+    if cache is None:
+        cache = _g._fee_share_maps = {}
+    if budget.id in cache:
+        return cache[budget.id]
+    try:
+        _lines = BudgetLine.query.filter_by(budget_id=budget.id).all()
+        _cfgs = get_fringe_configs(db.session, budget.project_id)
+        _prof = budget.payroll_profile
+        _pw = budget.payroll_week_start if budget.payroll_week_start is not None else (
+            _prof.payroll_week_start if _prof else 6)
+        _ts = calc_top_sheet(budget, _lines, _cfgs, {}, _prof, _pw)
+        cache[budget.id] = {int(k): float(v or 0)
+                            for k, v in (_ts.get('fee_by_line') or {}).items()}
+    except Exception:
+        logging.warning(f"[fee-share-map] failed for budget {budget.id}",
+                        exc_info=True)
+        cache[budget.id] = {}
+    return cache[budget.id]
+
+
 def _resolve_sub_budget_lines(sb_id, target_budget, target_lines=None):
     """Resolve a sub-budget's memberships onto TARGET budget's lines.
 
@@ -22775,6 +22805,19 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
                     "note":            sbl.note or "",
                 })
 
+    # Fold each line's dispersed Prod Co Fee share into its shown total so
+    # the card matches the budget grid's fee-inclusive line totals (owner
+    # 2026-09-09: sub budgets must show "the actual total representation").
+    fee_included_total = 0.0
+    _fee_shares = _dispersed_fee_share_map(canonical)
+    if _fee_shares:
+        for r in line_rows:
+            _fs = _fee_shares.get(r["id"], 0.0)
+            if _fs:
+                r["fee_share"] = _fs
+                r["estimated_total"] = round(r["estimated_total"] + _fs, 2)
+                fee_included_total += _fs
+
     lines_total = round(sum(r["estimated_total"] for r in line_rows), 2)
     line_count  = len(line_rows)
 
@@ -22838,6 +22881,9 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
         "sections":      sections,
         "line_count":    line_count,
         "lines_total":   lines_total,
+        # Dispersed Prod Co Fee dollars already folded into lines_total /
+        # the per-line estimated_totals above (0 when not dispersed).
+        "fee_included_total": round(fee_included_total, 2),
         "billed_total":  round(billed, 2),
         "over_cap":      over,
         "cap_remaining": remaining,

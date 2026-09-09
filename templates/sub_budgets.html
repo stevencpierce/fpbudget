@@ -172,10 +172,13 @@
             {% if sb_cap is not none %}${{ '{:,.2f}'.format(sb_cap) }}{% else %}<span class="muted">—</span>{% endif %}
           </div>
         </div>
-        <div title="Sum of estimated_total for every line in this sub-budget">
+        <div title="Sum of estimated_total for every line in this sub-budget{% if sb.fee_included_total %} — includes ${{ '{:,.2f}'.format(sb.fee_included_total) }} dispersed Prod Co Fee on these lines{% endif %}">
           <div style="color:var(--text-muted);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em">Lines ({{ sb.line_count }})</div>
           <div style="font-weight:600;font-variant-numeric:tabular-nums">
             ${{ '{:,.2f}'.format(sb_lines_total) }}
+            {% if sb.fee_included_total %}
+            <div style="font-weight:400;font-size:.68rem;color:var(--green,#22c55e)">incl. ${{ '{:,.0f}'.format(sb.fee_included_total) }} fee</div>
+            {% endif %}
           </div>
         </div>
         <div title="Actual spend on this sub-budget's lines">
@@ -233,8 +236,9 @@
               ${{ '{:,.2f}'.format(ln.rate) }}
             </span>
             {% endif %}
-            <span style="font-weight:600;min-width:100px;text-align:right">
-              ${{ '{:,.2f}'.format(ln.estimated_total) }}
+            <span style="font-weight:600;min-width:100px;text-align:right"
+                  {% if ln.fee_share %}title="Includes ${{ '{:,.0f}'.format(ln.fee_share) }} dispersed Prod Co Fee share"{% endif %}>
+              ${{ '{:,.2f}'.format(ln.estimated_total) }}{% if ln.fee_share %}<span style="color:var(--green,#22c55e);font-size:.65rem"> *</span>{% endif %}
             </span>
             <button class="btn btn-xs btn-ghost"
                     onclick="removeSubBudgetLine({{ sb.id }}, {{ ln.id }})"
@@ -246,6 +250,13 @@
           {# Footer subtotal — shipped 2026-05-26 per user "it doesn't
              show the total of the lines currently". Mirrors the
              Section Subtotal row pattern used in the budget PDF. #}
+          {% if sb.fee_included_total %}
+          <div style="display:flex;gap:10px;align-items:baseline;font-size:.72rem;color:var(--green,#22c55e);font-style:italic;padding:2px 0">
+            <span style="flex:1;text-align:right">* totals include the dispersed Prod. Company Fee on these lines</span>
+            <span style="min-width:100px;text-align:right;font-variant-numeric:tabular-nums">${{ '{:,.2f}'.format(sb.fee_included_total) }}</span>
+            <span style="width:24px"></span>
+          </div>
+          {% endif %}
           <div class="sb-line-subtotal">
             <span class="sb-label">Sub-Budget Total ({{ sb.line_count }} line{{ 's' if sb.line_count != 1 else '' }})</span>
             <span class="sb-value">${{ '{:,.2f}'.format(sb_lines_total) }}</span>
