@@ -7887,31 +7887,21 @@ def budget_view(pid, bid):
                                    .order_by(SubBudget.name)
                                    .all())
         if sub_budgets_for_project:
-            _sb_lookup = {s.id: s for s in sub_budgets_for_project}
-            # Build the universe of line IDs membership might point at:
-            # current view's lines + (if different) the canonical Working
-            # budget's lines, so the badge resolves correctly in all
-            # three views.
-            _line_id_universe = {l.id for l in lines}
-            _all_lines_by_id  = {l.id: l for l in lines}
-            if current_working_bid and current_working_bid != bid:
-                for _wln in _wlines:
-                    _line_id_universe.add(_wln.id)
-                    _all_lines_by_id.setdefault(_wln.id, _wln)
-            if _line_id_universe:
-                _mem_q = (db.session.query(SubBudgetLine)
-                          .filter(SubBudgetLine.budget_line_id.in_(_line_id_universe)))
-                for sbl in _mem_q.all():
-                    _sb = _sb_lookup.get(sbl.sub_budget_id)
-                    if not _sb:
-                        continue
-                    _entry = {"id": _sb.id, "name": _sb.name, "archived": bool(_sb.archived)}
-                    sb_by_wline.setdefault(sbl.budget_line_id, []).append(_entry)
-                    _ln_for_key = _all_lines_by_id.get(sbl.budget_line_id)
-                    if _ln_for_key:
-                        sb_by_key.setdefault(
-                            (_ln_for_key.account_code, _ln_for_key.sort_order),
-                            []).append(_entry)
+            # Resolve each sub-budget's memberships onto the VIEWED budget's
+            # lines via _resolve_sub_budget_lines (direct id → source-chain
+            # → desc match). The old id-universe only covered the current
+            # view + the current Working, so memberships created on a since-
+            # superseded sibling (e.g. an old auto-inited Working) matched
+            # nothing and the 🧩 badges vanished — user 2026-09-09 GINTS:
+            # "still no sub budgets… just POs and comments".
+            for _sb in sub_budgets_for_project:
+                _entry = {"id": _sb.id, "name": _sb.name, "archived": bool(_sb.archived)}
+                for _sbl, _rln in _resolve_sub_budget_lines(
+                        _sb.id, budget, target_lines=lines):
+                    sb_by_wline.setdefault(_rln.id, []).append(_entry)
+                    sb_by_key.setdefault(
+                        (_rln.account_code, _rln.sort_order),
+                        []).append(_entry)
     except Exception as _sbm_e:
         logging.warning(f"[budget_view] sub-budget membership build failed: {_sbm_e}")
 
@@ -9106,8 +9096,14 @@ def upsert_line(pid, bid):
     # page loads stop clobbering their value. Without this, zeroing
     # Flights in Working "comes back" to its computed value as soon as
     # the user navigates away. User report 2026-05-07.
-    _AUTO_OVERRIDE_FIELDS = {"quantity", "days", "rate", "estimated_total",
-                             "rate_type", "fringe_type"}
+    # NARROWED 2026-09-09 (user: "when I remove a tag it doesn't always
+    # update"): only fields the sync would CLOBBER back freeze the line.
+    # rate / rate_type / fringe_type edits are respected by the sync as-is
+    # (it recomputes qty × days × the line's own rate), so freezing on a
+    # rate edit silently stopped flag add/remove from ever updating the
+    # line again — the classic "I set the flight price, now deleting the
+    # flag does nothing" trap.
+    _AUTO_OVERRIDE_FIELDS = {"quantity", "days", "estimated_total"}
     _has_line_tag = bool(getattr(ln, 'line_tag', None))
     _user_touched_auto_field = _has_line_tag and any(
         f in data for f in _AUTO_OVERRIDE_FIELDS
@@ -9131,8 +9127,10 @@ def upsert_line(pid, bid):
                 setattr(ln, f, val)
     # Apply the auto-override AFTER the field loop so an explicit
     # sync_omit in the payload still wins.
+    _sync_omit_just_set = False
     if _user_touched_auto_field and not getattr(ln, 'sync_omit', False):
         ln.sync_omit = True
+        _sync_omit_just_set = True
         logging.info(
             "[upsert_line] auto-set sync_omit=True on schedule-driven "
             "line id=%s tag=%s — user manually edited %s",
@@ -9236,6 +9234,11 @@ def upsert_line(pid, bid):
         result = calc_line(ln, fringe_cfgs)
 
     resp = {"id": ln.id, **result}
+    # Tell the client when this edit just paused auto-sync so it can say so
+    # out loud — the silent freeze was why "removing a tag doesn't always
+    # update" (2026-09-09).
+    if _sync_omit_just_set:
+        resp["sync_omit_set"] = True
     # Include the editable input fields in the response so other clients can
     # patch their visible Rate / Duration / Qty / Type / Fringe / Agent% /
     # Payroll Co. cells in real time. Without these, the WS broadcast only
@@ -22584,7 +22587,7 @@ def line_assign_po(pid, bid, lid):
 # under their own section heading. Each one can be exported as a mini-
 # PDF (filtered subset of the parent budget) for client handoff.
 
-def _resolve_sub_budget_lines(sb_id, target_budget):
+def _resolve_sub_budget_lines(sb_id, target_budget, target_lines=None):
     """Resolve a sub-budget's memberships onto TARGET budget's lines.
 
     SubBudgetLine rows point at the exact BudgetLine ids they were created
@@ -22605,6 +22608,8 @@ def _resolve_sub_budget_lines(sb_id, target_budget):
     De-duped per resolved target line (an est line + its working peer both
     holding membership count once). Returns [(sbl, line)] in membership
     order. target_budget None → raw memberships, de-duped by line id.
+    target_lines: optional prefetched list of the target budget's lines
+    (callers resolving many sub-budgets pass it to avoid N re-queries).
     """
     from models import SubBudgetLine as _SBL
     rows = (db.session.query(_SBL, BudgetLine)
@@ -22621,7 +22626,8 @@ def _resolve_sub_budget_lines(sb_id, target_budget):
             seen.add(ln.id)
             out.append((sbl, ln))
         return out
-    tlines = BudgetLine.query.filter_by(budget_id=target_budget.id).all()
+    tlines = (target_lines if target_lines is not None
+              else BudgetLine.query.filter_by(budget_id=target_budget.id).all())
     by_src = {}
     by_key = {}
     for tl in tlines:
@@ -32366,6 +32372,78 @@ import threading as _dropsweep_threading
 if not os.getenv('RUN_BOOT_TASKS'):
     _dst = _dropsweep_threading.Thread(target=_drop_sweep_loop, daemon=True)
     _dst.start()
+
+
+@app.route("/admin/sub-budget-status")
+@login_required
+def admin_sub_budget_status():
+    """Super-admin diagnostic (owner 2026-09-09: 'still no sub budgets' on
+    GINTS): per project, every SubBudget row — archived flag, membership
+    count, WHICH budget each membership's line lives on (name / mode /
+    version status), and whether resolution onto the canonical budget
+    finds them. Read-only. ?pid=N narrows to one project."""
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
+    _pid_filter = request.args.get('pid', type=int)
+    q = SubBudget.query
+    if _pid_filter:
+        q = q.filter_by(project_id=_pid_filter)
+    sbs = q.order_by(SubBudget.project_id, SubBudget.archived,
+                     SubBudget.name).all()
+    rows_html = []
+    for sb in sbs:
+        proj = ProjectSheet.query.get(sb.project_id)
+        mems = (db.session.query(SubBudgetLine, BudgetLine)
+                .join(BudgetLine, BudgetLine.id == SubBudgetLine.budget_line_id)
+                .filter(SubBudgetLine.sub_budget_id == sb.id).all())
+        by_budget = {}
+        for _sbl, _ln in mems:
+            by_budget.setdefault(_ln.budget_id, []).append(_ln)
+        homes = []
+        for _bid2, _lns in sorted(by_budget.items()):
+            _b = Budget.query.get(_bid2)
+            if _b:
+                homes.append(f"{len(_lns)} line(s) on budget #{_bid2} "
+                             f"“{(_b.name or '?')[:60]}” "
+                             f"[{_b.budget_mode or 'NULL'} / {_b.version_status or '?'}"
+                             f"{' / ACTUAL' if _b.is_actual else ''}]")
+            else:
+                homes.append(f"{len(_lns)} line(s) on MISSING budget #{_bid2}")
+        canonical = (Budget.query
+                     .filter_by(project_id=sb.project_id,
+                                version_status='current', is_actual=False)
+                     .filter(db.or_(Budget.budget_mode == 'working',
+                                    db.and_(Budget.budget_mode == None,
+                                            Budget.parent_budget_id.isnot(None))))
+                     .order_by(Budget.id.desc()).first()) or (
+                     Budget.query
+                     .filter_by(project_id=sb.project_id,
+                                version_status='current', is_actual=False)
+                     .order_by(Budget.id.desc()).first())
+        try:
+            n_resolved = len(_resolve_sub_budget_lines(sb.id, canonical))
+        except Exception as _re:
+            n_resolved = f"ERR {_re}"
+        _canon_lbl = (f"#{canonical.id} “{(canonical.name or '?')[:50]}” "
+                      f"[{canonical.budget_mode or 'NULL'}]" if canonical else "NONE")
+        rows_html.append(
+            f"<tr><td>{sb.project_id} — {(proj.name if proj else '?')}</td>"
+            f"<td>#{sb.id} {sb.name}</td>"
+            f"<td>{'⚠ ARCHIVED' if sb.archived else '✓ active'}</td>"
+            f"<td>{len(mems)}</td>"
+            f"<td>{'<br>'.join(homes) or '— none —'}</td>"
+            f"<td>{_canon_lbl}</td>"
+            f"<td>{n_resolved}</td></tr>")
+    return (f"<html><body style='font-family:monospace;background:#111;color:#ddd'>"
+            f"<h2>Sub-budget diagnostic ({len(sbs)} row(s))</h2>"
+            f"<p>Archived sub-budgets are hidden from the budget grid's 🧩 "
+            f"badges and shown last on the cards page. 'Resolved' = lines "
+            f"the card would show against the canonical budget.</p>"
+            f"<table border=1 cellpadding=6 style='border-collapse:collapse'>"
+            f"<tr><th>Project</th><th>Sub-budget</th><th>State</th>"
+            f"<th>Memberships</th><th>Membership lines live on</th>"
+            f"<th>Canonical budget</th><th>Resolved</th></tr>"
+            f"{''.join(rows_html)}</table></body></html>")
 
 
 @app.route("/admin/drop-sweep-status")

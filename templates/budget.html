@@ -9324,6 +9324,13 @@ async function patchLine(id, updates, opts = {}) {
     return;
   }
   const data = await res.json();
+  if (data.sync_omit_set) {
+    _lineSaveToast('Auto-calc paused for this line — your edit is kept and the ' +
+                   'schedule will no longer overwrite it. Right-click the line → ' +
+                   '"↺ Re-enable auto-calc" to re-link it.');
+    const _row = document.querySelector(`.line-row[data-id="${id}"]`);
+    if (_row) { _row.classList.add('sync-omitted'); _row.dataset.syncOmit = '1'; }
+  }
   refreshLineRow(id, data);
 }
 
