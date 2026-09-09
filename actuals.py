@@ -501,6 +501,35 @@ def clone_estimated_to_working(estimated_budget):
     except Exception:
         log.exception("[actuals] est→working txn carry on working-clone failed")
 
+    # Carry sub-budget membership onto the cloned lines (2026-09-09). The
+    # explicit create-working path has done this via _create_budget_from_source
+    # since 2026-08; this auto-clone path never did, which left sub-budget
+    # cards empty once the clone became the canonical Working ("my sub
+    # budgets are missing"). Fail-open: membership is bookkeeping.
+    try:
+        from models import SubBudgetLine as _SBL_cw
+        _carried = 0
+        for _sbl in _SBL_cw.query.filter(
+                _SBL_cw.budget_line_id.in_(list(line_map.keys()))).all():
+            _new_ln = line_map.get(_sbl.budget_line_id)
+            if _new_ln is None:
+                continue
+            _dupe = _SBL_cw.query.filter_by(
+                sub_budget_id=_sbl.sub_budget_id,
+                budget_line_id=_new_ln.id).first()
+            if _dupe:
+                continue
+            db.session.add(_SBL_cw(sub_budget_id=_sbl.sub_budget_id,
+                                   budget_line_id=_new_ln.id,
+                                   sort_order=_sbl.sort_order,
+                                   note=_sbl.note))
+            _carried += 1
+        if _carried:
+            log.info(f"[actuals] carried {_carried} sub-budget membership(s) "
+                     f"onto Working #{new_budget.id}")
+    except Exception:
+        log.exception("[actuals] sub-budget membership carry on working-clone failed")
+
     # AUDIT FIX (2026-07, CRITICAL-1): this clone previously copied LINES ONLY —
     # no ScheduleDay/ProductionDay/TravelDetail and no CrewAssignments. The next
     # sync_schedule_driven_lines on the new Working found zero schedule rows and

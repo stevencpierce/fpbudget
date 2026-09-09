@@ -15399,9 +15399,12 @@ def export_pdf(pid, bid):
             id=sub_budget_id, project_id=pid).first()
         if not sub_budget_obj:
             return jsonify({"error": "Sub-budget not found"}), 404
-        _sb_line_ids = {r[0] for r in db.session.query(SubBudgetLine.budget_line_id)
-                                         .filter(SubBudgetLine.sub_budget_id == sub_budget_id)
-                                         .all()}
+        # Resolve memberships onto THIS budget's lines (direct / clone
+        # chain / desc match) — a strict id set went empty whenever the
+        # memberships were created on a sibling version's lines
+        # (2026-09-09, same root cause as the missing sub-budget cards).
+        _sb_line_ids = {ln.id for _sbl, ln
+                        in _resolve_sub_budget_lines(sub_budget_id, budget)}
         # Also include any child rows (kit fees) of included parent
         # lines, so the export reads naturally with their parent.
         _children = {ln.id for ln in lines
@@ -22581,6 +22584,69 @@ def line_assign_po(pid, bid, lid):
 # under their own section heading. Each one can be exported as a mini-
 # PDF (filtered subset of the parent budget) for client handoff.
 
+def _resolve_sub_budget_lines(sb_id, target_budget):
+    """Resolve a sub-budget's memberships onto TARGET budget's lines.
+
+    SubBudgetLine rows point at the exact BudgetLine ids they were created
+    on. When the project's canonical budget changes underneath them — a new
+    version, or a Working that was auto-inited from Estimated (the old
+    clone_estimated_to_working path never carried membership) — those ids
+    belong to a SIBLING budget and a strict budget_id filter drops every
+    row, so the cards/exports look empty even though the memberships exist
+    (user 2026-09-09: "my sub budgets are missing"). POs survived the same
+    transition because po_id is a copied COLUMN, not a join table.
+
+    Resolution per membership, in order:
+      1. direct — the line is already on the target budget;
+      2. clone chain — a target line whose source_line_id points at the
+         member line (est → its working/new-est clone), or that shares the
+         member line's source (old working → est ← new working);
+      3. (account_code, normalized description) match, last resort.
+    De-duped per resolved target line (an est line + its working peer both
+    holding membership count once). Returns [(sbl, line)] in membership
+    order. target_budget None → raw memberships, de-duped by line id.
+    """
+    from models import SubBudgetLine as _SBL
+    rows = (db.session.query(_SBL, BudgetLine)
+            .join(BudgetLine, BudgetLine.id == _SBL.budget_line_id)
+            .filter(_SBL.sub_budget_id == sb_id)
+            .order_by(_SBL.sort_order, BudgetLine.account_code,
+                      BudgetLine.sort_order, BudgetLine.id)
+            .all())
+    if not target_budget:
+        seen, out = set(), []
+        for sbl, ln in rows:
+            if ln.id in seen:
+                continue
+            seen.add(ln.id)
+            out.append((sbl, ln))
+        return out
+    tlines = BudgetLine.query.filter_by(budget_id=target_budget.id).all()
+    by_src = {}
+    by_key = {}
+    for tl in tlines:
+        if tl.source_line_id and tl.source_line_id not in by_src:
+            by_src[tl.source_line_id] = tl
+        k = (tl.account_code, (tl.description or '').strip().lower())
+        by_key.setdefault(k, tl)
+    seen, out = set(), []
+    for sbl, ln in rows:
+        if ln.budget_id == target_budget.id:
+            target = ln
+        else:
+            target = by_src.get(ln.id)
+            if target is None and ln.source_line_id:
+                target = by_src.get(ln.source_line_id)
+            if target is None:
+                target = by_key.get(
+                    (ln.account_code, (ln.description or '').strip().lower()))
+        if target is None or target.id in seen:
+            continue
+        seen.add(target.id)
+        out.append((sbl, target))
+    return out
+
+
 def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
                         return_budget=None):
     """Serialize a SubBudget. with_rollup adds lines_total, billed_total
@@ -22616,18 +22682,13 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
                                 is_actual=False)
                      .order_by(Budget.id.desc()).first())
 
-    # Pull every line assigned to this sub-budget. Filter to the canonical
-    # Working budget's line ids so cross-version clones don't double-count.
-    sbl_q = (db.session.query(SubBudgetLine, BudgetLine)
-             .join(BudgetLine, BudgetLine.id == SubBudgetLine.budget_line_id)
-             .filter(SubBudgetLine.sub_budget_id == sb.id))
-    if canonical:
-        sbl_q = sbl_q.filter(BudgetLine.budget_id == canonical.id)
-    sbl_q = sbl_q.order_by(SubBudgetLine.sort_order,
-                           BudgetLine.account_code,
-                           BudgetLine.sort_order,
-                           BudgetLine.id)
-    raw_rows = list(sbl_q.all())
+    # Pull every line assigned to this sub-budget, RESOLVED onto the
+    # canonical budget's lines (direct / clone-chain / desc match, de-duped
+    # — see _resolve_sub_budget_lines). The old strict budget_id filter
+    # dropped every membership created on a sibling budget (e.g. an
+    # Estimated whose Working was auto-inited without membership carry) —
+    # user 2026-09-09: "my sub budgets are missing" on GINTS.
+    raw_rows = _resolve_sub_budget_lines(sb.id, canonical)
 
     # ── Per-line total — compute via calc_line()/calc_line_from_schedule()
     # instead of reading the stored estimated_total field. Many lines
@@ -22720,6 +22781,12 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
     try:
         from sqlalchemy import or_ as _or_sb, func as _func_sb
         _line_ids = [r["id"] for r in line_rows]
+        # Also the resolved lines' SOURCE ids (canonical Working line →
+        # its Estimated source): txns coded pre-Working point at the
+        # Estimated lines, and est.source_line_id never points forward at
+        # the Working peer, so the OR below can't reach them by chain.
+        _src_ids = [ln.source_line_id for _sbl, ln in raw_rows
+                    if ln.source_line_id]
         if _line_ids:
             _working_lines_sub = (db.session.query(BudgetLine.id)
                                   .filter(BudgetLine.id.in_(_line_ids))
@@ -22728,6 +22795,7 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
                          .query(_func_sb.coalesce(_func_sb.sum(_signed_amount()), 0))
                          .join(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
                          .filter(_or_sb(BudgetLine.id.in_(_line_ids),
+                                        BudgetLine.id.in_(_src_ids or [0]),
                                         BudgetLine.source_line_id.in_(_working_lines_sub)),
                                  Transaction.not_project_expense == False,
                                  _exclude_estimate_linked_txns_clause()))
