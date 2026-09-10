@@ -5388,6 +5388,11 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
         end_date=_src('end_date', None),
         target_budget=_src('target_budget', None),
         notes=_src('notes', None),
+        # Assumptions / exclusions / comments follow the version chain
+        # (2026-09-10) — a new version starts from the last one's terms.
+        assumptions=_src('assumptions', None),
+        exclusions=_src('exclusions', None),
+        overall_comments=_src('overall_comments', None),
         payroll_profile_id=_src_profile_id,
         payroll_week_start=_src_week_start,
         timezone=_src('timezone', 'America/Los_Angeles'),
@@ -15966,6 +15971,11 @@ def _build_estimate_snapshot(project, budget, detail_mode):
         "grand_total": round(grand, 2),
         "discount_total": discount_total,
         "sections": sections,
+        # Assumptions tab (2026-09-10) — frozen into the snapshot so the
+        # portal shows the terms as they stood when this estimate was sent.
+        "assumptions": [x.strip() for x in (budget.assumptions or '').split('\n') if x.strip()],
+        "exclusions":  [x.strip() for x in (budget.exclusions or '').split('\n') if x.strip()],
+        "overall_comments": (budget.overall_comments or '').strip() or None,
     }
     return snap, round(grand, 2)
 
@@ -17529,6 +17539,13 @@ def budget_settings(pid, bid):
         # Co Fee base. User can disable per-budget if their prodco does
         # charge fee on fringes (rare).
         budget.fee_exclude_fringes = bool(data.get("fee_exclude_fringes"))
+    # Assumptions / exclusions / overall comments (2026-09-10) — saved from
+    # the Assumptions tab; blank clears. assumptions/exclusions are one
+    # item per line, overall_comments free prose.
+    for _af in ("assumptions", "exclusions", "overall_comments"):
+        if _af in data:
+            _v = (data.get(_af) or '').strip()
+            setattr(budget, _af, _v or None)
     if "client_name" in data:
         budget.client_name = data["client_name"].strip() or None
     if "prepared_by" in data:
@@ -17959,7 +17976,11 @@ def budget_present_json(pid, bid):
                    "total": round(insurance + admin + fee, 2)},
         "aicp": aicp,
         "levers": [],
-        "assumptions": [], "exclusions": [], "allowances": [],
+        # Assumptions tab (2026-09-10): one item per line in storage.
+        "assumptions": [s.strip() for s in (budget.assumptions or '').split('\n') if s.strip()],
+        "exclusions":  [s.strip() for s in (budget.exclusions or '').split('\n') if s.strip()],
+        "comments":    (budget.overall_comments or '').strip() or None,
+        "allowances": [],
         "discussion": [
             {"line_id": l.id, "account_code": l.account_code,
              "description": l.description or "", "note": l.discussion_note,
@@ -30155,6 +30176,10 @@ def _web_worker_essential_columns():
                 "ALTER TABLE budget_line ADD COLUMN IF NOT EXISTS fee_disperse_amount NUMERIC(12,2)",
                 # Discussion flag + note (2026-09-10, alembic 0013).
                 "ALTER TABLE budget_line ADD COLUMN IF NOT EXISTS discussion_note TEXT",
+                # Assumptions / exclusions / overall comments (2026-09-10, alembic 0014).
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS assumptions TEXT",
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS exclusions TEXT",
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS overall_comments TEXT",
                 # Cross-project claim (2026-05-07).
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claimed_by_project_id INTEGER REFERENCES project_sheet(id)",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_claimed_by ON transaction (claimed_by_project_id)",

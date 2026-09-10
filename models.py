@@ -317,6 +317,14 @@ class Budget(db.Model):
     prepared_by_title = db.Column(db.String(100), nullable=True)
     prepared_by_email = db.Column(db.String(200), nullable=True)
     prepared_by_phone = db.Column(db.String(50),  nullable=True)
+    # Assumptions / exclusions / overall comments (owner 2026-09-10) —
+    # per budget VERSION, client-facing: shown on the Assumptions tab,
+    # the estimate PDF, the client portal, and present.json (which will
+    # eventually power the SOW too). assumptions/exclusions are one item
+    # per line; overall_comments is free prose.
+    assumptions      = db.Column(db.Text, nullable=True)
+    exclusions       = db.Column(db.Text, nullable=True)
+    overall_comments = db.Column(db.Text, nullable=True)
     # Version management
     updated_at      = db.Column(db.DateTime, default=datetime.utcnow, nullable=True)
     version_status  = db.Column(db.String(20), default='current', nullable=False)  # current | superseded | archived

@@ -769,6 +769,7 @@
     <button class="tab-btn" data-tab="catering">Catering</button>
     <button class="tab-btn" data-tab="contacts">People</button>
     <button class="tab-btn" data-tab="locations">Locations</button>
+    <button class="tab-btn" data-tab="assumptions">Assumptions</button>
     <a class="tab-btn tab-link" href="{{ url_for('po_list_page', pid=project.id) }}?return_bid={{ budget.id }}">POs</a>
     <a class="tab-btn tab-link" href="{{ url_for('sub_budgets_page', pid=project.id) }}?return_bid={{ budget.id }}">Sub-Budgets</a>
     <a class="tab-btn tab-link" href="{{ url_for('callsheet_view', pid=project.id, bid=budget.id) }}">Call Sheets</a>
@@ -6472,6 +6473,40 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
 </div>
 
 <!-- ═══ Settings Tab Panel ═══════════════════════════════════════════════ -->
+{# ── Assumptions / Exclusions / Overall comments (owner 2026-09-10) ──────
+   Client-facing terms for THIS budget version. Exported to the estimate
+   PDF, the client portal, and present.json (Framework Present decks —
+   and eventually the SOW). One item per line for the two lists. #}
+<div class="tab-panel" id="tab-assumptions">
+  <div style="max-width:860px">
+    <h3 style="margin:0 0 4px">Assumptions &amp; Exclusions</h3>
+    <p class="muted" style="font-size:.85rem;margin:0 0 16px">
+      These travel with this budget version everywhere the client sees it:
+      the estimate PDF, the client portal, and the Framework Present deck.
+      One item per line.
+    </p>
+    <div class="field">
+      <label>Assumptions <span class="muted" style="font-weight:400;font-size:.8rem">— what this estimate is priced on (one per line)</span></label>
+      <textarea id="assump-assumptions" rows="7" style="width:100%;font-family:inherit"
+                placeholder="Non-union cast and crew; payroll fringe at 24% is in every labour line&#10;A stage in the NY metro: build, shoot, half-day strike&#10;One shoot day; overtime beyond 10 hours billed at time-and-a-half">{{ budget.assumptions or '' }}</textarea>
+    </div>
+    <div class="field" style="margin-top:12px">
+      <label>Exclusions <span class="muted" style="font-weight:400;font-size:.8rem">— what this estimate does NOT cover (one per line)</span></label>
+      <textarea id="assump-exclusions" rows="6" style="width:100%;font-family:inherit"
+                placeholder="Licensed music beyond a $500 allowance&#10;Travel or lodging; the crew is local&#10;Talent usage beyond the two-year term on the sheet">{{ budget.exclusions or '' }}</textarea>
+    </div>
+    <div class="field" style="margin-top:12px">
+      <label>Overall comments <span class="muted" style="font-weight:400;font-size:.8rem">— free prose; appears under the lists</span></label>
+      <textarea id="assump-comments" rows="5" style="width:100%;font-family:inherit"
+                placeholder="Anything the reader should know about how this number was built.">{{ budget.overall_comments or '' }}</textarea>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+      <button class="btn btn-primary" onclick="saveAssumptions()">Save</button>
+      <span id="assumptions-saved-msg" class="muted hidden" style="color:#22c55e">✓ Saved</span>
+    </div>
+  </div>
+</div>
+
 <div class="tab-panel" id="tab-settings">
   <div class="settings-panel">
     <h2 class="settings-heading">Project Settings</h2>
@@ -9441,6 +9476,27 @@ async function setDispersedFeeTotal() {
     if (r.ok && j.ok) { if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload(); }
     else _lineSaveToast(j.error || ('Failed (' + r.status + ')'));
   } catch (e) { _lineSaveToast('Error: ' + e.message); }
+}
+
+// ── Assumptions tab save (owner 2026-09-10) ───────────────────────────────
+async function saveAssumptions() {
+  const payload = {
+    assumptions:      document.getElementById('assump-assumptions').value,
+    exclusions:       document.getElementById('assump-exclusions').value,
+    overall_comments: document.getElementById('assump-comments').value,
+  };
+  try {
+    const r = await fetch(SETTINGS_URL, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)});
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      _lineSaveToast('Save failed: ' + (j.error || ('HTTP ' + r.status)));
+      return;
+    }
+    const msg = document.getElementById('assumptions-saved-msg');
+    if (msg) { msg.classList.remove('hidden'); setTimeout(() => msg.classList.add('hidden'), 2500); }
+  } catch (e) { _lineSaveToast('Save failed: ' + (e.message || e)); }
 }
 
 // ── 🎬 Send to Framework Present (owner 2026-09-10) ───────────────────────

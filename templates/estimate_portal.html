@@ -174,6 +174,29 @@
       {% endif %}
     </div>
 
+    {# ── Assumptions / Exclusions / Notes (frozen at send time) ─────────── #}
+    {% if snap.assumptions or snap.exclusions or snap.overall_comments %}
+    <div class="card"><div class="pad">
+      <h1 style="font-size:16px;margin:0 0 8px">Assumptions &amp; Exclusions</h1>
+      {% if snap.assumptions %}
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#6b7785;margin:8px 0 4px">This estimate assumes</div>
+      <ul style="margin:0 0 4px 18px;padding:0;font-size:13.5px;line-height:1.55">
+        {% for it in snap.assumptions %}<li>{{ it }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if snap.exclusions %}
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#6b7785;margin:10px 0 4px">Not included</div>
+      <ul style="margin:0 0 4px 18px;padding:0;font-size:13.5px;line-height:1.55">
+        {% for it in snap.exclusions %}<li>{{ it }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if snap.overall_comments %}
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#6b7785;margin:10px 0 4px">Notes</div>
+      <div style="font-size:13.5px;line-height:1.55;white-space:pre-line">{{ snap.overall_comments }}</div>
+      {% endif %}
+    </div></div>
+    {% endif %}
+
     {% if (share.role or 'approver') == 'cc' %}
       {# CC copy: view-only for reference — no approve/decline controls.
          (Owner 2026-07-22.) #}
