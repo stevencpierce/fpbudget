@@ -380,10 +380,26 @@
        export came from a Working / Actual budget, that's the Working
        value, not the Estimated peer's value. 2026-05-15 user report. #}
     {% set _est_row = est_section_lookup.get(row.code) if est_section_lookup else None %}
+    {# Dispersed mode: the Estimated column must be FEE-INCLUSIVE — the fee
+       row below is hidden when dispersed, so raw (pre-fee) rows neither
+       summed to the grand total nor matched the fee-inclusive detail pages
+       (user 2026-09-10: "look at the top sheet versus the detail"). Prefer
+       the $10-reconciled pdf_rounded_estimated (only present when this
+       row set IS the exported budget's) so Top Sheet rows equal the sum of
+       the detail-page line totals exactly; an Estimated-peer row set falls
+       back to its exact fee-inclusive .estimated. Non-dispersed keeps the
+       raw value (identical to .estimated there anyway, fee shown as its
+       own line). #}
     {% if _est_row %}
-      {% set _row_est = _est_row.raw_estimated if _est_row.raw_estimated is defined else _est_row.estimated %}
+      {% set _row_est = (_est_row.pdf_rounded_estimated
+                         if (dispersed and _est_row.pdf_rounded_estimated is defined)
+                         else (_est_row.estimated if dispersed
+                               else (_est_row.raw_estimated if _est_row.raw_estimated is defined else _est_row.estimated))) %}
     {% else %}
-      {% set _row_est = row.raw_estimated if row.raw_estimated is defined else row.estimated %}
+      {% set _row_est = (row.pdf_rounded_estimated
+                         if (dispersed and row.pdf_rounded_estimated is defined)
+                         else (row.estimated if dispersed
+                               else (row.raw_estimated if row.raw_estimated is defined else row.estimated))) %}
     {% endif %}
     {% set _row_work = (row.pdf_rounded_estimated if (dispersed and row.pdf_rounded_estimated is defined) else row.estimated) %}
     {% set _row_act  = row.actual | default(0) %}
@@ -485,7 +501,12 @@
        basis (was hardcoded "—"). Per user request 2026-05-15.
        Estimated grand total pulls from the Estimated peer rollup when
        available so it matches what the in-app Top Sheet shows. #}
-    {% set _grand_est  = (est_top_sheet.grand_total_estimated if est_top_sheet else top_sheet.grand_total_estimated) %}
+    {# Dispersed: grand total = sum of the $10-reconciled rows above, so the
+       column adds up on paper. Falls back to the exact fee-inclusive figure
+       for an Estimated-peer row set (which has no pdf rounding). #}
+    {% set _grand_est  = (est_top_sheet.pdf_rounded_grand_total_estimated
+                          if (est_top_sheet and dispersed and est_top_sheet.pdf_rounded_grand_total_estimated is defined)
+                          else (est_top_sheet.grand_total_estimated if est_top_sheet else top_sheet.grand_total_estimated)) %}
     {% set _grand_work = top_sheet.pdf_rounded_grand_total_estimated if (dispersed and top_sheet.pdf_rounded_grand_total_estimated is defined) else top_sheet.grand_total_estimated %}
     {% set _grand_act  = top_sheet.grand_total_actual | default(0) %}
     {% if   _var_basis == 'est_v_work' %}{% set _grand_var = _grand_work - _grand_est %}
