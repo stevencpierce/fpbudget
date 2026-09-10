@@ -15516,106 +15516,39 @@ def export_pdf(pid, bid):
 
     fee_m = (1 + float(budget.company_fee_pct)) if dispersed else 1.0
 
-    # ── Client-facing rounding for dispersed mode ──────────────────────
-    # When the Prod Co Fee is dispersed across line totals, the raw math
-    # produces awkward numbers ($1,070, $1,650) that flag the gross-up
-    # to clients/auditors. For PDF export only (in-app stays exact), we
-    # round each line's dispersed total to the nearest $10. Flat $10
-    # bucket across labor + non-labor (per user 2026-04-28 — the prior
-    # $25-for-labor split risked shifting line totals between exports
-    # when only the bucket boundary changed).
-    #
-    # IMPORTANT: rounding is INDEPENDENT per line — one line's rounded
-    # total never depends on another. So the same budget always exports
-    # the same PDF numbers; adding/removing a line doesn't shift the
-    # rounded values of existing lines. Determinism is the priority
-    # over making section sums hit perfect round numbers.
-    PDF_BUCKET = 10.0
+    # ── Dispersed-mode export totals: EXACT amounts (2026-09-10) ────────
+    # History: from 2026-04 the dispersed PDF rounded every line to the
+    # nearest $10 (with a largest-remainder reconciliation pass) to hide
+    # the gross-up's awkward cents. Owner 2026-09-10 killed it: "it's
+    # rounding to the nearest zero dollar… doesn't match my SOWs — I need
+    # the top sheet to have the exact amounts." Since fee shares are now
+    # explicit whole-dollar amounts per line (user-tunable chips), the
+    # only cents left come from the real base costs — exactly the numbers
+    # the SOW carries. So: line total = base + its fee share, verbatim;
+    # sections and the grand total are plain sums, tying out to the penny.
+    # (Variable names keep the pdf_rounded_* keys so the templates are
+    # untouched.)
     pdf_line_totals = {}
     pdf_section_totals = {}
     if dispersed:
-        # ── Two-pass rounding with grand-total reconciliation ──────────
-        # Pass 1: round each line's dispersed total independently to the
-        #         nearest $10. Independent rounding = stability — adding
-        #         or editing one line never shifts another's rounded total.
-        # Pass 2: compute drift between sum(rounded lines) and
-        #         round(true grand total). If drift != 0, distribute the
-        #         drift in $10 increments by bumping individual lines
-        #         whose fractional remainder was closest to the rounding
-        #         boundary (largest-remainder method). This keeps every
-        #         bumped line within $10 of its natural rounded value
-        #         while making the visible grand total exact.
-        true_grand = 0.0
-        line_exact = {}     # id → exact dispersed total
-        line_remainder = {} # id → signed distance to next $10 bucket
-        # Per-line dispersal (2026-09-04): each line's dispersed total is its
-        # base + its explicit fee share (user override or dollar-rounded
-        # auto) from calc_top_sheet — NOT a uniform × (1+pct). Hand-tuned
-        # line amounts flow through to the export.
         _pdf_fee_by_line = top_sheet.get("fee_by_line") or {}
         for sec in sections_ordered:
             for ln in sec["lines"]:
                 res = line_results.get(ln.id) or {}
-                exact = float(res.get("est_total") or 0) + float(_pdf_fee_by_line.get(ln.id, 0) or 0)
-                line_exact[ln.id] = exact
-                rounded = round(exact / PDF_BUCKET) * PDF_BUCKET
-                pdf_line_totals[ln.id] = rounded
-                true_grand += exact
-                # Remainder = how far from the bucket boundary in the
-                # OPPOSITE direction we'd have to go (positive if we
-                # rounded down and could bump up, negative if we rounded
-                # up and could bump down).
-                line_remainder[ln.id] = exact - rounded
-
-        # Target = true grand total rounded to $10. Drift = target − sum(rounded).
-        target_grand = round(true_grand / PDF_BUCKET) * PDF_BUCKET
-        sum_rounded = sum(pdf_line_totals.values())
-        drift = round((target_grand - sum_rounded) / PDF_BUCKET)  # in $10 units
-
-        if drift != 0:
-            # Bump up: pick lines that rounded DOWN (positive remainder),
-            #          sorted by largest remainder first (closest to bumping anyway).
-            # Bump down: pick lines that rounded UP (negative remainder),
-            #          sorted by most-negative remainder first.
-            # Each pick adjusts by one $10 unit; iterate until drift = 0
-            # or we run out of candidates.
-            ordered_ids = sorted(line_remainder, key=lambda i: line_remainder[i], reverse=(drift > 0))
-            step = PDF_BUCKET if drift > 0 else -PDF_BUCKET
-            remaining = abs(drift)
-            for lid in ordered_ids:
-                if remaining == 0:
-                    break
-                # Stop once the remainder sign flips — bumping further
-                # would mean rounding a line away from its natural target
-                # by more than $10, which defeats nearest-$10 rounding.
-                if (drift > 0 and line_remainder[lid] <= 0) or \
-                   (drift < 0 and line_remainder[lid] >= 0):
-                    break
-                pdf_line_totals[lid] += step
-                remaining -= 1
-
-        # Section totals: clean sum of the (now reconciled) rounded lines.
-        for sec in sections_ordered:
-            pdf_section_totals[sec["code"]] = sum(
-                pdf_line_totals.get(ln.id, 0) for ln in sec["lines"]
-            )
-
-        # Top-sheet rows: re-derive from the section totals so they
-        # match the detail pages exactly. Falls back to round-to-$10 of
-        # the raw estimated for sections that have no detail rows
-        # (Workers' Comp / Payroll Fee auto-injects).
+                pdf_line_totals[ln.id] = round(
+                    float(res.get("est_total") or 0)
+                    + float(_pdf_fee_by_line.get(ln.id, 0) or 0), 2)
+            pdf_section_totals[sec["code"]] = round(sum(
+                pdf_line_totals.get(ln.id, 0) for ln in sec["lines"]), 2)
+        # Top-sheet rows: calc_top_sheet's fee-inclusive row value — equal
+        # to the section's detail-line sum for pure-detail sections, and
+        # additionally carrying the WC/PI/PF auto-inject (+ share) for
+        # sections that have one (those show as ↳ sub-rows, not detail
+        # lines). Grand total is the calc's exact fee-inclusive figure, so
+        # rows sum to it to the penny.
         for row in top_sheet.get("rows", []):
-            code = row.get("code")
-            if code in pdf_section_totals:
-                row["pdf_rounded_estimated"] = pdf_section_totals[code]
-            else:
-                row["pdf_rounded_estimated"] = round(float(row["estimated"]) / PDF_BUCKET) * PDF_BUCKET
-        # Grand total: sum of the (now reconciled) rounded rows.
-        ts_rows = top_sheet.get("rows", [])
-        if ts_rows:
-            top_sheet["pdf_rounded_grand_total_estimated"] = sum(
-                r.get("pdf_rounded_estimated", r["estimated"]) for r in ts_rows
-            )
+            row["pdf_rounded_estimated"] = row["estimated"]
+        top_sheet["pdf_rounded_grand_total_estimated"] = top_sheet["grand_total_estimated"]
 
     # Filter out zero-total lines + zero-total sections when suppress_zeros
     # is on. Done at the template-data level so the math (top sheet,
