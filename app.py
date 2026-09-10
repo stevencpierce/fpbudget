@@ -104,7 +104,7 @@ from models import (db, User, ApiToken, ProjectAccess, ProjectSheet, Transaction
                     TravelDetail, CateringBill, ActivityLog,
                     SubBudget, SubBudgetLine, EstimateShare, FxRate,
                     TransactionDupDismissal, ProjectCrewMember, Timecard,
-                    ProjectClientContact, ProjectLogo)
+                    ProjectClientContact, ProjectLogo, BudgetLever)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -5393,6 +5393,7 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
         assumptions=_src('assumptions', None),
         exclusions=_src('exclusions', None),
         overall_comments=_src('overall_comments', None),
+        payment_terms=_src('payment_terms', None),
         payroll_profile_id=_src_profile_id,
         payroll_week_start=_src_week_start,
         timezone=_src('timezone', 'America/Los_Angeles'),
@@ -17542,10 +17543,10 @@ def budget_settings(pid, bid):
     # Assumptions / exclusions / overall comments (2026-09-10) — saved from
     # the Assumptions tab; blank clears. assumptions/exclusions are one
     # item per line, overall_comments free prose.
-    for _af in ("assumptions", "exclusions", "overall_comments"):
+    for _af in ("assumptions", "exclusions", "overall_comments", "payment_terms"):
         if _af in data:
             _v = (data.get(_af) or '').strip()
-            setattr(budget, _af, _v or None)
+            setattr(budget, _af, (_v[:300] if _af == "payment_terms" else _v) or None)
     if "client_name" in data:
         budget.client_name = data["client_name"].strip() or None
     if "prepared_by" in data:
@@ -17781,6 +17782,15 @@ def _present_token(pid, bid):
     return _hm.new(key, f"present:{pid}:{bid}".encode(), _hl.sha256).hexdigest()[:32]
 
 
+def _lever_line_ids(lv):
+    """Parse a lever's line_ids JSON safely → list of ints."""
+    try:
+        v = json.loads(lv.line_ids) if lv.line_ids else []
+        return v if isinstance(v, list) else []
+    except Exception:
+        return []
+
+
 def _present_phase_for_line(ln):
     d = (ln.description or '').lower()
     for phase, words in _PRESENT_PHASE_WORDS:
@@ -17968,14 +17978,31 @@ def budget_present_json(pid, bid):
         },
         "revision": revision,
         "totals": {"lines": lines_total, "fee_pct": fee_pct, "fee": round(fee, 2),
-                   "grand": grand, "terms": None},
+                   "grand": grand,
+                   "terms": (budget.payment_terms or '').strip() or None},
         "groups": groups,
         "phases": phases,
         "on_top": {"insurance": insurance, "admin": admin,
                    "fee": round(fee, 2),
                    "total": round(insurance + admin + fee, 2)},
         "aicp": aicp,
-        "levers": [],
+        "levers": [
+            {
+                "id": f"lv-{lv.id}", "title": lv.title,
+                "delta": round(float(lv.delta_lines or 0)
+                               * (1 + (fee_pct / 100.0 if lv.fee_applied else 0)), 2),
+                "delta_lines": float(lv.delta_lines or 0),
+                "fee_applied": bool(lv.fee_applied),
+                "scope": lv.scope or "", "consequence": lv.consequence or "",
+                "choice": {"yes": "Take", "no": "Keep", "maybe": "Later"},
+                "status": lv.status or 'open',
+                "decision_note": lv.decision_note or None,
+                "line_ids": _lever_line_ids(lv),
+                "alt_version_id": None,
+            }
+            for lv in BudgetLever.query.filter_by(budget_id=bid)
+                       .order_by(BudgetLever.sort_order, BudgetLever.id).all()
+        ],
         # Assumptions tab (2026-09-10): one item per line in storage.
         "assumptions": [s.strip() for s in (budget.assumptions or '').split('\n') if s.strip()],
         "exclusions":  [s.strip() for s in (budget.exclusions or '').split('\n') if s.strip()],
@@ -18062,6 +18089,133 @@ def budget_present_build(pid, bid):
     except Exception as e:
         logging.warning(f"[present-build] builder call failed: {e}")
         return jsonify({"error": f"Could not reach the deck builder: {e}"}), 502
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/levers.json")
+@login_required
+def budget_levers_json(pid, bid):
+    """Levers list for the Assumptions & Levers tab."""
+    _require_project_role(pid, 'viewer')
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    out = []
+    for lv in (BudgetLever.query.filter_by(budget_id=bid)
+               .order_by(BudgetLever.sort_order, BudgetLever.id).all()):
+        out.append({
+            "id": lv.id, "title": lv.title, "scope": lv.scope or "",
+            "consequence": lv.consequence or "",
+            "delta_lines": float(lv.delta_lines or 0),
+            "fee_applied": bool(lv.fee_applied),
+            "status": lv.status or 'open',
+            "decision_note": lv.decision_note or "",
+            "decided_by": lv.decided_by,
+        })
+    return jsonify({"ok": True, "levers": out})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/levers/save", methods=["POST"])
+@login_required
+def budget_lever_save(pid, bid):
+    """Create/update a lever. Body: {id?, title, delta_lines, fee_applied,
+    scope, consequence}. delta_lines negative = savings."""
+    _require_project_role(pid, 'editor')
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    lid = data.get('id')
+    if lid:
+        lv = BudgetLever.query.filter_by(id=int(lid), budget_id=bid).first_or_404()
+    else:
+        lv = BudgetLever(budget_id=bid)
+        db.session.add(lv)
+    title = (data.get('title') or '').strip()
+    if not title:
+        return jsonify({"error": "Title required"}), 400
+    lv.title = title[:200]
+    if 'delta_lines' in data:
+        try:
+            lv.delta_lines = float(str(data.get('delta_lines') or 0)
+                                   .replace('$', '').replace(',', ''))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Delta must be a number (negative = savings)"}), 400
+    if 'fee_applied' in data:
+        lv.fee_applied = bool(data.get('fee_applied'))
+    if 'scope' in data:
+        lv.scope = (data.get('scope') or '').strip() or None
+    if 'consequence' in data:
+        lv.consequence = (data.get('consequence') or '').strip() or None
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='budget_settings',
+                      entity_id=bid, entity_label=lv.title, budget_id=bid,
+                      project_id=pid, after={'lever': lv.title,
+                                             'delta_lines': float(lv.delta_lines or 0)},
+                      note=f'Lever saved: {lv.title}')
+    except Exception:
+        pass
+    return jsonify({"ok": True, "id": lv.id})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/levers/<int:lid>", methods=["DELETE"])
+@login_required
+def budget_lever_delete(pid, bid, lid):
+    _require_project_role(pid, 'editor')
+    lv = BudgetLever.query.filter_by(id=lid, budget_id=bid).first_or_404()
+    db.session.delete(lv)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/decisions", methods=["POST"])
+def budget_present_decisions(pid, bid):
+    """Framework Present write-back (brief §4): lever decisions from the
+    client call. Auth: app session (editor) OR the present.json ?t= token
+    (the deck's server posts with it). Records Take/Keep/Later + notes on
+    each lever and activity-logs a summary. Applying taken levers to a
+    new version is a later phase — nothing here mutates lines."""
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    import hmac as _hm_d
+    tok = request.args.get('t', '') or (request.get_json(silent=True) or {}).get('t', '')
+    token_ok = bool(tok) and _hm_d.compare_digest(tok, _present_token(pid, bid))
+    if not token_ok:
+        if not current_user.is_authenticated:
+            return jsonify({"error": "auth required (session or ?t= token)"}), 401
+        _require_project_role(pid, 'editor')
+    data = request.get_json(force=True) or {}
+    choices = data.get('levers') or {}
+    notes   = data.get('notes') or {}
+    by      = (data.get('by') or '').strip()[:200] or None
+    _STATUS = {'yes': 'taken', 'no': 'kept', 'maybe': 'later'}
+    applied = []
+    for key, choice in choices.items():
+        st = _STATUS.get(str(choice).lower())
+        if not st:
+            continue
+        try:
+            _lid = int(str(key).replace('lv-', ''))
+        except ValueError:
+            continue
+        lv = BudgetLever.query.filter_by(id=_lid, budget_id=bid).first()
+        if not lv:
+            continue
+        lv.status = st
+        lv.decided_by = by
+        lv.decided_at = datetime.utcnow()
+        _n = (notes.get(key) or '').strip()
+        if _n:
+            lv.decision_note = _n[:500]
+        applied.append(f"{lv.title}: {st}")
+    db.session.commit()
+    if applied:
+        try:
+            _log_activity(action='update', entity_type='budget_settings',
+                          entity_id=bid, entity_label=budget.name or 'Budget',
+                          budget_id=bid, project_id=pid,
+                          after={'decisions': applied, 'by': by},
+                          note='Levers decided'
+                               + (f' by {by}' if by else '')
+                               + ': ' + '; '.join(applied)[:380])
+        except Exception:
+            pass
+    return jsonify({"ok": True, "applied": len(applied)})
 
 
 @app.route("/settings/company", methods=["GET"])
@@ -30242,6 +30396,24 @@ def _web_worker_essential_columns():
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS assumptions TEXT",
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS exclusions TEXT",
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS overall_comments TEXT",
+                # Levers + payment terms (2026-09-10, alembic 0015).
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS payment_terms VARCHAR(300)",
+                """CREATE TABLE IF NOT EXISTS budget_lever (
+                     id            SERIAL PRIMARY KEY,
+                     budget_id     INTEGER NOT NULL REFERENCES budget(id) ON DELETE CASCADE,
+                     title         VARCHAR(200) NOT NULL,
+                     scope         TEXT,
+                     consequence   TEXT,
+                     delta_lines   NUMERIC(14,2) DEFAULT 0,
+                     fee_applied   BOOLEAN DEFAULT TRUE NOT NULL,
+                     line_ids      TEXT,
+                     status        VARCHAR(10) DEFAULT 'open' NOT NULL,
+                     decision_note VARCHAR(500),
+                     decided_by    VARCHAR(200),
+                     decided_at    TIMESTAMP,
+                     sort_order    INTEGER DEFAULT 0,
+                     created_at    TIMESTAMP
+                   )""",
                 # Cross-project claim (2026-05-07).
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claimed_by_project_id INTEGER REFERENCES project_sheet(id)",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_claimed_by ON transaction (claimed_by_project_id)",

@@ -325,6 +325,7 @@ class Budget(db.Model):
     assumptions      = db.Column(db.Text, nullable=True)
     exclusions       = db.Column(db.Text, nullable=True)
     overall_comments = db.Column(db.Text, nullable=True)
+    payment_terms    = db.Column(db.String(300), nullable=True)  # e.g. "50% on execution, 50% on delivery"
     # Version management
     updated_at      = db.Column(db.DateTime, default=datetime.utcnow, nullable=True)
     version_status  = db.Column(db.String(20), default='current', nullable=False)  # current | superseded | archived
@@ -592,6 +593,34 @@ class Timecard(db.Model):
     updated_at      = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     __table_args__  = (db.UniqueConstraint("project_id", "crew_member_id", "week_ending",
                                            name="uq_timecard_proj_crew_week"),)
+
+
+class BudgetLever(db.Model):
+    """A named alternate on an estimate (owner 2026-09-10, Framework
+    Present brief §3): "three or four options that move the number, each
+    with a delta (fee included), a one-line scope consequence, and
+    Take / Keep / Later buttons." Decided live on the client call; the
+    deck posts decisions back via /decisions. delta_lines is the change
+    to the LINES total (negative = savings); the fee is applied on top
+    when fee_applied. Applying a taken lever to a new version is a later
+    phase — for now levers are presented + recorded."""
+    __tablename__ = "budget_lever"
+    id            = db.Column(db.Integer, primary_key=True)
+    budget_id     = db.Column(db.Integer, db.ForeignKey("budget.id", ondelete="CASCADE"), nullable=False)
+    title         = db.Column(db.String(200), nullable=False)
+    scope         = db.Column(db.Text, nullable=True)        # what changes, one line
+    consequence   = db.Column(db.Text, nullable=True)        # what it means for the work
+    delta_lines   = db.Column(db.Numeric(14, 2), default=0)  # change to lines total; negative = savings
+    fee_applied   = db.Column(db.Boolean, default=True, nullable=False)
+    line_ids      = db.Column(db.Text, nullable=True)        # JSON array of affected BudgetLine ids
+    status        = db.Column(db.String(10), default='open', nullable=False)  # open|taken|kept|later
+    decision_note = db.Column(db.String(500), nullable=True)
+    decided_by    = db.Column(db.String(200), nullable=True)
+    decided_at    = db.Column(db.DateTime, nullable=True)
+    sort_order    = db.Column(db.Integer, default=0)
+    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
+
+    budget = db.relationship("Budget", foreign_keys=[budget_id])
 
 
 class ScheduleWaypoint(db.Model):

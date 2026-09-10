@@ -6500,10 +6500,32 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
       <textarea id="assump-comments" rows="5" style="width:100%;font-family:inherit"
                 placeholder="Anything the reader should know about how this number was built.">{{ budget.overall_comments or '' }}</textarea>
     </div>
+    <div class="field" style="margin-top:12px">
+      <label>Payment terms <span class="muted" style="font-weight:400;font-size:.8rem">— shown on the deck's top sheet (e.g. "50% on execution, 50% on delivery")</span></label>
+      <input type="text" id="assump-terms" maxlength="300" style="width:100%"
+             placeholder="50% on execution, 50% on delivery"
+             value="{{ budget.payment_terms or '' }}">
+    </div>
     <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
       <button class="btn btn-primary" onclick="saveAssumptions()">Save</button>
       <span id="assumptions-saved-msg" class="muted hidden" style="color:#22c55e">✓ Saved</span>
     </div>
+
+    {# ── Levers (owner 2026-09-10, Framework Present brief §3) ──────────
+       Named alternates that move the number, decided live on the client
+       call (Take / Keep / Later) — the deck reads them from present.json
+       and posts decisions back. delta is on the LINES; the fee rides on
+       top when ticked. #}
+    <hr style="margin:22px 0;border:none;border-top:1px solid var(--border)">
+    <h3 style="margin:0 0 4px">⚖ Levers</h3>
+    <p class="muted" style="font-size:.85rem;margin:0 0 12px">
+      Options that move the number — each becomes a card on the deck's
+      levers slide with Take / Keep / Later buttons. Delta is the change to
+      the <em>lines</em> total (negative = savings); the fee is added on top
+      when "+ fee" is ticked. Decisions from the call land back here.
+    </p>
+    <div id="levers-list" style="display:flex;flex-direction:column;gap:10px"></div>
+    <button class="btn btn-sm btn-outline" style="margin-top:10px" onclick="leverAdd()">＋ Add lever</button>
   </div>
 </div>
 
@@ -9484,6 +9506,7 @@ async function saveAssumptions() {
     assumptions:      document.getElementById('assump-assumptions').value,
     exclusions:       document.getElementById('assump-exclusions').value,
     overall_comments: document.getElementById('assump-comments').value,
+    payment_terms:    document.getElementById('assump-terms').value,
   };
   try {
     const r = await fetch(SETTINGS_URL, {
@@ -9498,6 +9521,82 @@ async function saveAssumptions() {
     if (msg) { msg.classList.remove('hidden'); setTimeout(() => msg.classList.add('hidden'), 2500); }
   } catch (e) { _lineSaveToast('Save failed: ' + (e.message || e)); }
 }
+
+// ── ⚖ Levers (owner 2026-09-10) ──────────────────────────────────────────
+const _LEVER_STATUS_LBL = {open: '', taken: '✅ Taken', kept: '⏸ Kept', later: '🕐 Later'};
+function _leverRowHtml(lv) {
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const st = _LEVER_STATUS_LBL[lv.status] || '';
+  return `
+  <div class="lever-row" data-id="${lv.id || ''}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--bg-card)">
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <input type="text" class="lv-title" placeholder="A one-year usage term" value="${esc(lv.title)}"
+             style="flex:2;min-width:220px">
+      <span style="display:inline-flex;align-items:center;gap:4px">
+        <span class="muted" style="font-size:.75rem">Δ lines $</span>
+        <input type="text" class="lv-delta" placeholder="-7440" value="${lv.delta_lines || ''}"
+               style="width:100px;text-align:right">
+      </span>
+      <label style="display:inline-flex;align-items:center;gap:4px;font-size:.78rem;cursor:pointer">
+        <input type="checkbox" class="lv-fee" ${lv.fee_applied !== false ? 'checked' : ''}> + fee
+      </label>
+      ${st ? `<span style="font-size:.75rem;font-weight:600;color:${lv.status === 'taken' ? '#22c55e' : 'var(--text-muted)'}"
+                    title="${esc(lv.decided_by || '')} ${esc(lv.decision_note || '')}">${st}</span>` : ''}
+      <button class="btn btn-xs btn-ghost" style="margin-left:auto;color:#ef4444"
+              onclick="leverDelete(this)" title="Delete lever">✕</button>
+    </div>
+    <input type="text" class="lv-scope" placeholder="What changes — e.g. Two principals at $3,000 each instead of $6,000."
+           value="${esc(lv.scope)}" style="width:100%;margin-top:6px;font-size:.82rem">
+    <input type="text" class="lv-consequence" placeholder="Consequence — e.g. The two-year term is the number on the sheet; one year is the fallback."
+           value="${esc(lv.consequence)}" style="width:100%;margin-top:6px;font-size:.82rem">
+    <div style="margin-top:6px"><button class="btn btn-xs btn-outline" onclick="leverSave(this)">Save lever</button></div>
+  </div>`;
+}
+async function loadLevers() {
+  const box = document.getElementById('levers-list');
+  if (!box) return;
+  try {
+    const r = await fetch(`/projects/${PID}/budget/${BID}/levers.json`);
+    const j = await r.json();
+    box.innerHTML = (j.levers || []).map(_leverRowHtml).join('') ||
+      '<div class="muted" style="font-size:.82rem;font-style:italic">No levers yet — add the options you want to put on the table.</div>';
+  } catch (e) { box.innerHTML = '<div class="muted">Could not load levers.</div>'; }
+}
+function leverAdd() {
+  const box = document.getElementById('levers-list');
+  const ph = box.querySelector('.muted');
+  if (ph && !box.querySelector('.lever-row')) box.innerHTML = '';
+  box.insertAdjacentHTML('beforeend', _leverRowHtml({title: '', scope: '', consequence: '', delta_lines: '', fee_applied: true, status: 'open'}));
+}
+async function leverSave(btn) {
+  const row = btn.closest('.lever-row');
+  const payload = {
+    id: row.dataset.id || null,
+    title: row.querySelector('.lv-title').value,
+    delta_lines: row.querySelector('.lv-delta').value || 0,
+    fee_applied: row.querySelector('.lv-fee').checked,
+    scope: row.querySelector('.lv-scope').value,
+    consequence: row.querySelector('.lv-consequence').value,
+  };
+  const r = await fetch(`/projects/${PID}/budget/${BID}/levers/save`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)});
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.ok) { row.dataset.id = j.id; _lineSaveToast('✓ Lever saved'); }
+  else _lineSaveToast(j.error || 'Lever save failed');
+}
+async function leverDelete(btn) {
+  const row = btn.closest('.lever-row');
+  const id = row.dataset.id;
+  if (!id) { row.remove(); return; }
+  if (!confirm('Delete this lever?')) return;
+  const r = await fetch(`/projects/${PID}/budget/${BID}/levers/${id}`, {method: 'DELETE'});
+  if (r.ok) row.remove(); else _lineSaveToast('Delete failed');
+}
+// Load levers when the Assumptions tab is opened (and on page load if it's active).
+document.querySelector('.tab-btn[data-tab="assumptions"]')?.addEventListener('click', loadLevers);
+if (new URLSearchParams(location.search).get('tab') === 'assumptions') setTimeout(loadLevers, 200);
 
 // ── 🎬 Send to Framework Present (owner 2026-09-10) ───────────────────────
 // Opens a Claude chat pre-loaded with the budget's live present.json share
@@ -9537,7 +9636,7 @@ async function sendToFrameworkPresent() {
   }
   const share = (j.share && j.share.url) || '';
   const disc = (j.discussion || []).length;
-  const prompt =
+  const promptText =
     `Build (or update) the Framework Present budget-review deck for ` +
     `${j.budget.project} — ${j.budget.version_label}.\n\n` +
     `Live budget contract (read-only JSON; poll it while the deck is open — ` +
@@ -9553,11 +9652,40 @@ async function sendToFrameworkPresent() {
     `${j.pdf.filename.replace(/\.pdf$/, '')} to match.\n\n` +
     `Start by reading the contract and proposing the slide set — then work ` +
     `with me on the wording.`;
-  const url = 'https://claude.ai/new?q=' + encodeURIComponent(prompt);
+
+  // Preferred chat target: the user's "Framework Presents" folder on
+  // claude.ai — chats started there have the fp-kit files/specs in reach,
+  // which makes the deck come out right (owner 2026-09-10: a plain new
+  // chat "didn't hit this framework presents folder… a little bit less
+  // good"). claude.ai can't prefill inside a folder from a URL, so we
+  // open the folder and put the handoff on the clipboard to paste.
+  let folder = null;
+  try { folder = localStorage.getItem('fpFrameworkFolderUrl'); } catch (e) {}
+  if (folder === null) {
+    const v = window.prompt(
+      'One-time setup: paste the URL of your "Framework Presents" folder on ' +
+      'claude.ai (open the folder, copy the address bar).\n\nWith it set, this ' +
+      'button opens that folder and copies the handoff for you to paste — the ' +
+      'coworker then has all the fp-kit files and builds the deck right.\n\n' +
+      'Leave blank to always use a plain new chat instead.', '');
+    if (v === null) return;
+    folder = v.trim();
+    try { localStorage.setItem('fpFrameworkFolderUrl', folder); } catch (e) {}
+  }
+  if (folder) {
+    let copied = false;
+    try { await navigator.clipboard.writeText(promptText); copied = true; } catch (e) {}
+    window.open(folder, '_blank');
+    _lineSaveToast(copied
+      ? 'Handoff copied — start a new chat in the Framework Presents folder and paste.'
+      : 'Folder opened, but clipboard was blocked — click the button again and allow clipboard access.');
+    return;
+  }
+  const url = 'https://claude.ai/new?q=' + encodeURIComponent(promptText);
   const win = window.open(url, '_blank');
   if (!win) {
     try {
-      await navigator.clipboard.writeText(prompt);
+      await navigator.clipboard.writeText(promptText);
       _lineSaveToast('Pop-up blocked — the handoff text is on your clipboard; paste it into a new Claude chat.');
     } catch (e) {
       _lineSaveToast('Pop-up blocked and clipboard unavailable — allow pop-ups for this site and try again.');
