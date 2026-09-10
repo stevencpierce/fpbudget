@@ -576,6 +576,18 @@ body.col-resizing * { cursor: col-resize !important; }
 .fee-chip:hover { text-decoration: underline; }
 .fee-chip.fee-chip-override { color: #e0a13a; }
 
+/* 🚩 Discussion rows (2026-09-10) — flagged talking points on the budget.
+   Amber left bar + faint tint so they pop when scanning the grid. */
+tr.line-row.discussion-row {
+  background: rgba(251, 191, 36, .07);
+  box-shadow: inset 3px 0 0 #fbbf24;
+}
+.discussion-flag {
+  cursor: pointer;
+  margin-left: 6px;
+  font-size: .8rem;
+}
+
 /* Per-rate-cell dispersed fee badge */
 .fee-disp-badge {
   display: block;

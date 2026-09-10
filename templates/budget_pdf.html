@@ -528,6 +528,40 @@
   </tbody>
 </table>
 
+{# ⚑ Points for Discussion (owner 2026-09-10): every flagged line in one
+   place right under the Top Sheet, so the talking points lead the
+   conversation — "this is the expensive way, there's a cheaper way". #}
+{% if sections_ordered is defined %}
+{% set _disc_ns = namespace(rows=[]) %}
+{% for _dsec in sections_ordered %}{% for _dln in _dsec.lines %}{% if _dln.discussion_note %}{% set _disc_ns.rows = _disc_ns.rows + [(_dsec, _dln)] %}{% endif %}{% endfor %}{% endfor %}
+{% if _disc_ns.rows %}
+<div class="section-title" style="margin-top:12pt">Points for Discussion</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:52pt">Code</th>
+      <th style="width:30%">Item</th>
+      <th>Note</th>
+      <th class="num" style="width:80pt">Amount</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for _dsec, _dln in _disc_ns.rows %}
+    {% set _dres = line_results.get(_dln.id) or {} %}
+    {% set _damt = (pdf_line_totals.get(_dln.id) if (dispersed and pdf_line_totals) else none) %}
+    {% if _damt is none %}{% set _damt = _dres.est_total or 0 %}{% endif %}
+    <tr>
+      <td class="code">{{ _dln.account_code }}</td>
+      <td>{{ _dln.description }}</td>
+      <td style="font-style:italic;color:#b45309">⚑ {{ _dln.discussion_note }}</td>
+      <td class="num">{{ currency(_damt or 0) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endif %}
+
 {# ── Detail Lines ── #}
 {% if detail_mode %}
 <div class="page-break"></div>
@@ -758,6 +792,16 @@
       <td class="num">{{ currency(line_total) }}</td>
       {% endif %}
     </tr>
+    {# ⚑ Discussion note (owner 2026-09-10): flagged talking point rendered
+       right under its line so it travels with the estimate PDF/email.
+       Text glyph ⚑ (not emoji) — the PDF font renders it reliably. #}
+    {% if ln.discussion_note %}
+    <tr class="discussion-note-row">
+      <td colspan="12" style="color:#b45309;font-style:italic;font-size:8pt;padding:2pt 4pt 4pt 14pt">
+        ⚑ For discussion: {{ ln.discussion_note }}
+      </td>
+    </tr>
+    {% endif %}
     {# ── Per-person travel / per-diem mirror notes (opt-in)
        Rendered under each labor line when the user ticked "Include
        travel & per-diem notes" in the Export Options modal. These are

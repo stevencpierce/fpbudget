@@ -413,6 +413,13 @@ class BudgetLine(db.Model):
     # dollar). Survives toggling dispersal off/on.
     fee_disperse_amount = db.Column(db.Numeric(12, 2), nullable=True)
 
+    # Discussion flag (owner 2026-09-10: "highlight a specific row… this is
+    # a discussion row… attach a note"). Non-empty = the row is flagged for
+    # discussion; the text is the talking point (e.g. "expensive set build —
+    # cheaper option exists"). Shows highlighted in the grid and as an
+    # annotation in estimate exports.
+    discussion_note = db.Column(db.Text, nullable=True)
+
     # Per-instance custom schedule display labels: JSON {"1": "Hero Biker", "3": "Lead Double"}
     schedule_labels = db.Column(db.Text, nullable=True)
 

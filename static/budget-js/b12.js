@@ -300,6 +300,16 @@
     if (typeof window.openLineLedger === 'function') window.openLineLedger(_menuLineId);
   };
 
+  // 🚩 Discussion note — flag this row as a talking point (owner
+  // 2026-09-10: "highlight a specific row… this is a discussion row…
+  // attach a note"). editDiscussionNote lives in the budget.html inline
+  // block (needs patchLine).
+  window.discussionNoteMenuLine = function() {
+    _menu.classList.add('hidden');
+    if (!_menuLineId) return;
+    if (typeof window.editDiscussionNote === 'function') window.editDiscussionNote(_menuLineId);
+  };
+
   window.openLineMoveModal = function() {
     _menu.classList.add('hidden');
     if (!_menuLineId || !_menuCode) return;

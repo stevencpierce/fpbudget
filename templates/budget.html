@@ -1562,7 +1562,8 @@
            override or auto first pass). 0 when not dispersed / exempt. #}
         {% set _ln_fee = fee_ln.get(ln.id, 0) | float %}
         {% set _ln_fee_has_chip = budget.company_fee_dispersed and not is_actual_view and ln.id in fee_ln %}
-        <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }} {{ 'sync-line' if ln.line_tag else '' }} {{ 'sync-omitted' if ln.sync_omit else '' }} {{ 'schedule-driven' if ln.use_schedule else '' }} {% if is_actual_view %}actual-view-row{% endif %}" data-id="{{ ln.id }}"
+        <tr class="line-row {{ 'labor-line' if ln.is_labor else '' }} {{ 'kit-fee-row' if is_kit_fee else '' }} {{ 'sync-line' if ln.line_tag else '' }} {{ 'sync-omitted' if ln.sync_omit else '' }} {{ 'schedule-driven' if ln.use_schedule else '' }} {{ 'discussion-row' if ln.discussion_note else '' }} {% if is_actual_view %}actual-view-row{% endif %}" data-id="{{ ln.id }}"
+            data-discussion="{{ ln.discussion_note or '' }}"
             data-code="{{ ln.account_code }}" data-code-name="{{ ln.account_name }}"
             data-agent="{{ res.agent_amount | default(0) | float | round(2) }}"
             data-ot="{{ res.ot_amount | default(0) | float | round(2) }}"
@@ -1592,6 +1593,17 @@
             {% endif %}
             <span class="line-number">{{ sec.code }}-{{ '%02d' % ns.line_counter }}</span><span class="editable" data-field="description"
                   data-id="{{ ln.id }}">{{ ln.description or '' }}</span>
+            {# 🚩 Discussion flag (owner 2026-09-10). Click to edit/clear;
+               set via the row's right-click / ⋮ menu. #}
+            <span class="discussion-flag" data-line-id="{{ ln.id }}"
+                  onclick="editDiscussionNote({{ ln.id }})"
+                  {% if not ln.discussion_note %}style="display:none"{% endif %}
+                  title="Discussion point: {{ (ln.discussion_note or '') | e }} — click to edit">🚩</span>
+            {% if ln.discussion_note %}
+            <div class="discussion-note-text" style="font-size:.72rem;margin-top:.1rem;color:#fbbf24;font-style:italic">
+              🗣 {{ ln.discussion_note }}
+            </div>
+            {% endif %}
             {# Amber qty>1 badge for labor lines. The .col-qty cell is
                width:0 when the section contains labor (colgroup rule),
                so any qty UI rendered there is invisible. Surface it
@@ -9427,6 +9439,43 @@ async function setDispersedFeeTotal() {
   } catch (e) { _lineSaveToast('Error: ' + e.message); }
 }
 
+// ── 🚩 Discussion notes (owner 2026-09-10) ────────────────────────────────
+// Flag a row as a talking point ("expensive set build — cheaper option
+// exists"). Highlights the row, shows the note under the description, and
+// annotates estimate detail exports. Blank clears the flag.
+async function editDiscussionNote(id) {
+  const row = document.querySelector(`.line-row[data-id="${id}"]`);
+  if (!row) return;
+  const cur = row.dataset.discussion || '';
+  const v = prompt('Discussion note for this row — the point to raise with the ' +
+                   'client (it shows highlighted here and as a note in the ' +
+                   'estimate detail export).\nLeave blank to remove the flag.', cur);
+  if (v === null) return;
+  const trimmed = v.trim();
+  row.dataset.discussion = trimmed;
+  row.classList.toggle('discussion-row', !!trimmed);
+  const flag = row.querySelector('.discussion-flag');
+  if (flag) {
+    flag.style.display = trimmed ? '' : 'none';
+    flag.title = 'Discussion point: ' + trimmed + ' — click to edit';
+  }
+  let txt = row.querySelector('.discussion-note-text');
+  if (trimmed) {
+    if (!txt) {
+      txt = document.createElement('div');
+      txt.className = 'discussion-note-text';
+      txt.style.cssText = 'font-size:.72rem;margin-top:.1rem;color:#fbbf24;font-style:italic';
+      const host = row.querySelector('.col-desc');
+      if (host) host.appendChild(txt);
+    }
+    txt.textContent = '🗣 ' + trimmed;
+  } else if (txt) {
+    txt.remove();
+  }
+  await patchLine(id, {discussion_note: trimmed});
+}
+window.editDiscussionNote = editDiscussionNote;
+
 async function resetDispersedFee() {
   if (!confirm('Clear every custom per-line fee share on this budget?\n' +
                'All lines go back to the automatic percentage first pass.')) return;
@@ -11084,6 +11133,7 @@ async function _saveSettingsInner() {
   <button type="button" class="ctx-menu-item" id="ctx-add-kit-fee">🔧 Add Kit Fee</button>
   <button type="button" class="ctx-menu-item" id="ctx-add-agent-fee">💼 Add Agent / Rep Fee</button>
   <button type="button" class="ctx-menu-item" id="ctx-add-custom-fee">👔 Add Custom Fee…</button>
+  <button type="button" class="ctx-menu-item" id="ctx-discussion-note">🚩 Discussion note…</button>
   {# All-in Total PAUSED (owner 2026-09-01: "not fully vetted — remove until
      we're ready"). Modal + JS stay dormant; restore by re-adding:
      <button type="button" class="ctx-menu-item" id="ctx-all-in-total">💰 Enter All-in Total</button> #}
@@ -11124,6 +11174,7 @@ async function _saveSettingsInner() {
   {% if not is_actual_view and not actuals_frozen %}
   <button type="button" onclick="lineLedgerMenuLine()">📒 Line ledger…</button>
   {% endif %}
+  <button type="button" onclick="discussionNoteMenuLine()">🚩 Discussion note…</button>
 </div>
 
 <!-- ── Change Group Modal (section 2000 role_group picker) ─────────────────── -->

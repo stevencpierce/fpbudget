@@ -9110,6 +9110,8 @@ def upsert_line(pid, bid):
               # Prod Co Fee dispersal override (2026-09-04): dollars for
               # THIS line's dispersed fee share; blank/None → back to auto.
               "fee_disperse_amount",
+              # Discussion flag + talking point (2026-09-10); blank clears.
+              "discussion_note",
               # Task 2: catalog linkage for exports
               "catalog_item_id"]
     # Schedule-driven lines (Flights, Per Diem, Hotel, Meals, etc.) get
@@ -29873,6 +29875,8 @@ def _web_worker_essential_columns():
                 # alembic 0012 covers this too; belt per CLAUDE.md (prod PG
                 # may never have run alembic).
                 "ALTER TABLE budget_line ADD COLUMN IF NOT EXISTS fee_disperse_amount NUMERIC(12,2)",
+                # Discussion flag + note (2026-09-10, alembic 0013).
+                "ALTER TABLE budget_line ADD COLUMN IF NOT EXISTS discussion_note TEXT",
                 # Cross-project claim (2026-05-07).
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS claimed_by_project_id INTEGER REFERENCES project_sheet(id)",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_claimed_by ON transaction (claimed_by_project_id)",

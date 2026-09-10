@@ -117,6 +117,14 @@
   const _customFeeBtn = document.getElementById('ctx-add-custom-fee');
   if (_customFeeBtn) _customFeeBtn.addEventListener('click', () => _openFeeModal('custom_fee'));
 
+  // 🚩 Discussion note on labor rows (owner 2026-09-10).
+  const _discBtn = document.getElementById('ctx-discussion-note');
+  if (_discBtn) _discBtn.addEventListener('click', function() {
+    menu.classList.add('hidden');
+    if (!_ctxLineId) return;
+    if (typeof window.editDiscussionNote === 'function') window.editDiscussionNote(_ctxLineId);
+  });
+
   // Agent / Rep fee (owner 2026-09-01): usually a % of the pre-tax/fringe
   // subtotal (rides the line's agent_pct so it tracks rate changes live),
   // or a flat child line when they're paid an odd fixed amount.
