@@ -4571,6 +4571,26 @@ def project_rename(pid):
     old_slug = p.dropbox_folder
     p.name = new_name
 
+    # Carry the rename onto the project's BUDGET names (2026-09-10). The
+    # budget name — "OldName v5", "OldName v5 — Working" — is what shows in
+    # the budget header, version pickers, and exports, so renaming only
+    # ProjectSheet.name looked like it "didn't take" the moment the user
+    # opened the project (they then re-renamed via in-project Settings,
+    # which edits ONE budget's name and drifts the rest). Prefix-swap
+    # every budget whose name starts with the old project name; custom-
+    # named budgets are left alone.
+    budgets_renamed = 0
+    try:
+        if old_name:
+            for _b in Budget.query.filter_by(project_id=pid).all():
+                _bn = _b.name or ''
+                if _bn == old_name or _bn.startswith(old_name + ' '):
+                    _b.name = new_name + _bn[len(old_name):]
+                    budgets_renamed += 1
+    except Exception:
+        logging.warning(f"[rename] budget-name carry failed for pid={pid}",
+                        exc_info=True)
+
     # Generate a new slug from the new name. Preserve the original
     # YYYY-MM prefix from the old slug (so the folder keeps its
     # creation-month sort order) — only the name portion changes.
@@ -4633,6 +4653,9 @@ def project_rename(pid):
                            + (' (folder moved)' if dropbox_renamed else ''))
     except Exception: pass
     msg = f"Renamed '{old_name}' → '{new_name}'."
+    if budgets_renamed:
+        msg += (f" {budgets_renamed} budget version"
+                f"{'s' if budgets_renamed != 1 else ''} renamed to match.")
     if old_slug and new_slug and not dropbox_renamed and new_slug != old_slug:
         msg += " Note: Dropbox folder could not be moved — rename it manually."
     flash(msg, "success")
