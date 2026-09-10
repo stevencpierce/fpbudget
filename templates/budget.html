@@ -227,6 +227,10 @@
         <div class="dropdown-divider"></div>
         <a href="#" onclick="openEstimateShare(event)">📤 Send as Estimate (client portal)…</a>
         <a href="#" onclick="openEstimateManager(event)">📋 Manage sent estimates…</a>
+        <div class="dropdown-divider"></div>
+        <a href="#" onclick="event.preventDefault(); sendToFrameworkPresent()"
+           title="Opens a Claude chat pre-loaded with this budget's live present.json link and deck instructions — build the Framework Present budget-review deck together from there.">
+          🎬 Send to Framework Present…</a>
       </div>
     </div>
 
@@ -581,10 +585,6 @@
           </div>
         </div>
         <div class="export-opts-foot">
-          <button type="button" class="btn btn-sm btn-outline" onclick="sendToFrameworkPresent()"
-                  style="margin-right:auto"
-                  title="Opens a Claude chat pre-loaded with this budget's live present.json link and deck instructions — the coworker builds the Framework Present budget-review deck with you from there.">
-            🎬 Send to Framework Present</button>
           <button type="button" class="btn btn-sm" onclick="closeExportOptions()">Cancel</button>
           <button type="button" class="btn btn-sm btn-primary" id="btn-export-go">Download</button>
         </div>
