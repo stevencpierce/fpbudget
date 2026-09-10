@@ -9574,15 +9574,54 @@ function _leverRowHtml(lv) {
     <div style="margin-top:6px"><button class="btn btn-xs btn-outline" onclick="leverSave(this)">Save lever</button></div>
   </div>`;
 }
+function _leverSuggestionHtml(s) {
+  const esc = t => String(t == null ? '' : t).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const amt = Number(s.amount || 0);
+  return `
+  <div class="lever-suggestion" style="border:1px dashed rgba(251,191,36,.5);border-radius:8px;padding:8px 12px;
+              background:rgba(251,191,36,.05);display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <span style="font-size:.8rem">🚩 <strong>${esc(s.description)}</strong>
+      <span class="muted">(${s.account_code} · $${amt.toLocaleString('en-US')})</span><br>
+      <span style="font-size:.75rem;color:#fbbf24;font-style:italic">${esc(s.note)}</span></span>
+    <button class="btn btn-xs btn-outline" style="margin-left:auto;white-space:nowrap"
+            onclick='makeLeverFromSuggestion(${JSON.stringify(s).replace(/'/g, "&#39;")})'
+            title="Creates a lever pre-filled from this row: savings = the line total (fee added on top), scope = your note. Edit anything after.">＋ Make lever</button>
+  </div>`;
+}
 async function loadLevers() {
   const box = document.getElementById('levers-list');
   if (!box) return;
   try {
     const r = await fetch(`/projects/${PID}/budget/${BID}/levers.json`);
     const j = await r.json();
-    box.innerHTML = (j.levers || []).map(_leverRowHtml).join('') ||
+    let html = (j.levers || []).map(_leverRowHtml).join('') ||
       '<div class="muted" style="font-size:.82rem;font-style:italic">No levers yet — add the options you want to put on the table.</div>';
+    if ((j.suggestions || []).length) {
+      html += '<div class="muted" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin-top:8px">Suggested from 🚩 flagged rows</div>';
+      html += j.suggestions.map(_leverSuggestionHtml).join('');
+    }
+    box.innerHTML = html;
   } catch (e) { box.innerHTML = '<div class="muted">Could not load levers.</div>'; }
+}
+async function makeLeverFromSuggestion(s) {
+  // One click adopts the flagged row as a lever: title = the row, delta =
+  // −line total (a removal; edit it down for a reduction), scope = the 🚩
+  // note. The line is claimed so the suggestion disappears.
+  const payload = {
+    title: s.description || ('Line ' + s.line_id),
+    delta_lines: -(Number(s.amount) || 0),
+    fee_applied: true,
+    scope: s.note || '',
+    consequence: '',
+    line_ids: [s.line_id],
+  };
+  const r = await fetch(`/projects/${PID}/budget/${BID}/levers/save`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)});
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && j.ok) { _lineSaveToast('✓ Lever created from the flagged row — adjust the delta or wording as needed.'); loadLevers(); }
+  else _lineSaveToast(j.error || 'Could not create the lever');
 }
 function leverAdd() {
   const box = document.getElementById('levers-list');

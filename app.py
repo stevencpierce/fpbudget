@@ -18094,12 +18094,18 @@ def budget_present_build(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/levers.json")
 @login_required
 def budget_levers_json(pid, bid):
-    """Levers list for the Assumptions & Levers tab."""
+    """Levers list for the Assumptions & Levers tab — plus SUGGESTIONS
+    auto-populated from 🚩 discussion-flagged rows (owner 2026-09-10:
+    "could it auto populate anything that is flagged in the budget and
+    allow me to use those if I wish?"). A flagged line becomes a
+    suggestion until some lever claims it via line_ids."""
     _require_project_role(pid, 'viewer')
-    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
     out = []
+    claimed = set()
     for lv in (BudgetLever.query.filter_by(budget_id=bid)
                .order_by(BudgetLever.sort_order, BudgetLever.id).all()):
+        claimed.update(_lever_line_ids(lv))
         out.append({
             "id": lv.id, "title": lv.title, "scope": lv.scope or "",
             "consequence": lv.consequence or "",
@@ -18109,7 +18115,34 @@ def budget_levers_json(pid, bid):
             "decision_note": lv.decision_note or "",
             "decided_by": lv.decided_by,
         })
-    return jsonify({"ok": True, "levers": out})
+    suggestions = []
+    try:
+        flagged = (BudgetLine.query.filter_by(budget_id=bid)
+                   .filter(BudgetLine.discussion_note.isnot(None))
+                   .order_by(BudgetLine.account_code, BudgetLine.sort_order)
+                   .all())
+        if flagged:
+            fringe_cfgs = get_fringe_configs(db.session, pid)
+            _sm = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+            for ln in flagged:
+                if ln.id in claimed or not (ln.discussion_note or '').strip():
+                    continue
+                if ln.use_schedule:
+                    _sched = ScheduleDay.query.filter_by(
+                        budget_line_id=ln.id, schedule_mode=_sm).all()
+                    _res = calc_line_from_schedule(ln, _sched, fringe_cfgs)
+                else:
+                    _res = calc_line(ln, fringe_cfgs)
+                suggestions.append({
+                    "line_id": ln.id,
+                    "account_code": ln.account_code,
+                    "description": ln.description or "",
+                    "amount": round(float(_res.get('est_total') or 0), 2),
+                    "note": ln.discussion_note,
+                })
+    except Exception:
+        logging.warning("[levers] suggestion build failed", exc_info=True)
+    return jsonify({"ok": True, "levers": out, "suggestions": suggestions})
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/levers/save", methods=["POST"])
@@ -18142,6 +18175,12 @@ def budget_lever_save(pid, bid):
         lv.scope = (data.get('scope') or '').strip() or None
     if 'consequence' in data:
         lv.consequence = (data.get('consequence') or '').strip() or None
+    if 'line_ids' in data:
+        try:
+            _ids = [int(x) for x in (data.get('line_ids') or [])]
+            lv.line_ids = json.dumps(_ids) if _ids else None
+        except (TypeError, ValueError):
+            pass
     db.session.commit()
     try:
         _log_activity(action='update', entity_type='budget_settings',
