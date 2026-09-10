@@ -581,6 +581,10 @@
           </div>
         </div>
         <div class="export-opts-foot">
+          <button type="button" class="btn btn-sm btn-outline" onclick="sendToFrameworkPresent()"
+                  style="margin-right:auto"
+                  title="Opens a Claude chat pre-loaded with this budget's live present.json link and deck instructions — the coworker builds the Framework Present budget-review deck with you from there.">
+            🎬 Send to Framework Present</button>
           <button type="button" class="btn btn-sm" onclick="closeExportOptions()">Cancel</button>
           <button type="button" class="btn btn-sm btn-primary" id="btn-export-go">Download</button>
         </div>
@@ -9437,6 +9441,51 @@ async function setDispersedFeeTotal() {
     if (r.ok && j.ok) { if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload(); }
     else _lineSaveToast(j.error || ('Failed (' + r.status + ')'));
   } catch (e) { _lineSaveToast('Error: ' + e.message); }
+}
+
+// ── 🎬 Send to Framework Present (owner 2026-09-10) ───────────────────────
+// Opens a Claude chat pre-loaded with the budget's live present.json share
+// link + deck instructions. The coworker's framework-present-deck skill
+// picks it up and builds the budget-review deck interactively; every
+// number stays live via the contract URL (no re-typing).
+async function sendToFrameworkPresent() {
+  let j;
+  try {
+    const r = await fetch(`/projects/${PID}/budget/${BID}/present.json`);
+    j = await r.json();
+    if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  } catch (e) {
+    _lineSaveToast('Could not load present.json: ' + (e.message || e));
+    return;
+  }
+  const share = (j.share && j.share.url) || '';
+  const disc = (j.discussion || []).length;
+  const prompt =
+    `Build (or update) the Framework Present budget-review deck for ` +
+    `${j.budget.project} — ${j.budget.version_label}.\n\n` +
+    `Live budget contract (read-only JSON; poll it while the deck is open — ` +
+    `every number comes from here, none typed into slides):\n${share}\n\n` +
+    `Right now: grand total $${Number(j.totals.grand).toLocaleString('en-US')} ` +
+    `(${j.groups.length} cost groups, fee ${j.totals.fee_pct}% stated once on top` +
+    (disc ? `, ${disc} flagged discussion point${disc !== 1 ? 's' : ''} in the ` +
+            `"discussion" array — candidates for the levers slide` : '') + `).\n\n` +
+    `Use the fp-kit budget-review slide types (top sheet, phases & spend, ` +
+    `agency top sheet, levers) around a cover, what-we're-making, assumptions ` +
+    `& exclusions, what-happens-next, and contact. The backing estimate PDF ` +
+    `is ${location.origin}${j.pdf.url} (my login); name the deck's PDF ` +
+    `${j.pdf.filename.replace(/\.pdf$/, '')} to match.\n\n` +
+    `Start by reading the contract and proposing the slide set — then work ` +
+    `with me on the wording.`;
+  const url = 'https://claude.ai/new?q=' + encodeURIComponent(prompt);
+  const win = window.open(url, '_blank');
+  if (!win) {
+    try {
+      await navigator.clipboard.writeText(prompt);
+      _lineSaveToast('Pop-up blocked — the handoff text is on your clipboard; paste it into a new Claude chat.');
+    } catch (e) {
+      _lineSaveToast('Pop-up blocked and clipboard unavailable — allow pop-ups for this site and try again.');
+    }
+  }
 }
 
 // ── 🚩 Discussion notes (owner 2026-09-10) ────────────────────────────────
