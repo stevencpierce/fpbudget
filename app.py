@@ -17703,6 +17703,284 @@ def budget_fee_disperse_total(pid, bid):
     return jsonify({"ok": True, "total": target, "lines": changed})
 
 
+# ── Framework Present integration (2026-09-10) ──────────────────────────────
+# present.json — one read-only endpoint per budget version, read by the
+# Framework Present budget-review deck at build time and polled while a
+# deck is open (integration brief from the Cowork session, 2026-09-10).
+# V1 = the brief's "first step": groups defaulted from the chart of
+# accounts, phases inferred from description keywords, exact totals.
+# Group/phase pickers, presented-version diffs and levers come later —
+# the contract already carries their fields (null/empty) so the deck
+# reads one stable shape.
+
+# Deliverable/cost groups, defaulted from COA sections (brief §3.1).
+_PRESENT_GROUPS = [
+    ("g-development", "Director & development",      [1000, 1100]),
+    ("g-crew",        "Production crew",             [2000, 2300]),
+    ("g-talent",      "Talent & casting",            [2100, 2200]),
+    ("g-equipment",   "Equipment",                   [2600, 2700, 2800, 2900]),
+    ("g-stage",       "Stage, set & wardrobe",       [3000, 3100, 3200, 3300, 3800]),
+    ("g-transport",   "Transport & meals",           [3400, 3500, 3600, 3700]),
+    ("g-post",        "Post, VFX & graphics",        [4000, 4500, 4600, 4700, 4800, 4900, 5000]),
+    ("g-insurance",   "Insurance & administration",  [6000, 6500]),
+    ("g-other",       "Licensing, software & misc",  [6100, 6200, 6300, 6400, 6600, 6700]),
+]
+
+# develop / prep / shoot / post / deliver — keyword first, section fallback.
+_PRESENT_PHASE_WORDS = [
+    ('deliver', ('strike', 'wrap', 'deliverable', 'delivery', 'master')),
+    ('prep',    ('prep', 'pre-pro', 'pre pro', 'scout', 'fitting', 'build',
+                 'casting', 'rehearsal', 'storyboard')),
+    ('shoot',   ('shoot', 'production day', 'stage day', 'on set', 'filming')),
+    ('develop', ('develop', 'treatment', 'concept', 'script')),
+    ('post',    ('edit', 'color', 'colour', 'mix', 'vfx', 'graphic', 'post')),
+]
+_PRESENT_PHASE_ORDER = [('develop', 'Develop'), ('prep', 'Prep'),
+                        ('shoot', 'Shoot'), ('post', 'Post'),
+                        ('deliver', 'Deliver')]
+
+# Illustrative AICP A–K rollup (brief §3.3 — to be replaced by the real
+# chart-of-accounts mapping when that redesign lands).
+_PRESENT_AICP = [
+    ("A", "Pre-production & wrap",        [1000, 1100, 2200, 2300]),
+    ("B", "Shooting crew",                [2000]),
+    ("C", "Location & travel",            [3300, 3400, 3500, 3600]),
+    ("D", "Props, wardrobe & animals",    [3000, 3100, 3200]),
+    ("E", "Equipment & stage",            [2600, 2700, 2800, 2900, 3800]),
+    ("F", "Talent",                       [2100]),
+    ("G", "Meals & craft services",       [3700]),
+    ("H", "Post-production",              [4000, 4500, 4600, 4700, 4800, 4900, 5000]),
+    ("I", "Insurance & administration",   [6000, 6500]),
+    ("J", "Miscellaneous",                [6100, 6200, 6300, 6400, 6600, 6700]),
+]
+
+
+def _present_token(pid, bid):
+    """Stable signed read-only token for present.json — lets the deck's
+    server (and the browser poll) fetch without a session. Derived from
+    SECRET_KEY; rotating the key revokes every token."""
+    import hmac as _hm, hashlib as _hl
+    key = (app.config.get('SECRET_KEY') or 'dev').encode()
+    return _hm.new(key, f"present:{pid}:{bid}".encode(), _hl.sha256).hexdigest()[:32]
+
+
+def _present_phase_for_line(ln):
+    d = (ln.description or '').lower()
+    for phase, words in _PRESENT_PHASE_WORDS:
+        if any(w in d for w in words):
+            return phase
+    from budget_calc import section_for_code as _sfc
+    sec = _sfc(ln.account_code) or 0
+    if sec in (1000, 1100):
+        return 'develop'
+    if sec == 2300:
+        return 'prep'
+    if 4000 <= sec <= 5000:
+        return 'post'
+    if sec >= 6100:
+        return 'prep'
+    return 'shoot'
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/present.json")
+def budget_present_json(pid, bid):
+    """Read-only contract for the Framework Present budget-review deck.
+    Auth: app session (viewer+) OR the signed ?t= token. Never mutates."""
+    budget  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    project = ProjectSheet.query.get_or_404(pid)
+    import hmac as _hm
+    tok = request.args.get('t', '')
+    token_ok = bool(tok) and _hm.compare_digest(tok, _present_token(pid, bid))
+    session_auth = current_user.is_authenticated
+    if not token_ok:
+        if not session_auth:
+            return jsonify({"error": "auth required (session or ?t= token)"}), 401
+        _require_project_role(pid, 'viewer')
+
+    lines = BudgetLine.query.filter_by(budget_id=bid).order_by(
+        BudgetLine.account_code, BudgetLine.sort_order).all()
+    fringe_cfgs = get_fringe_configs(db.session, pid)
+    profile  = budget.payroll_profile
+    pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
+        profile.payroll_week_start if profile else 6)
+    ts = calc_top_sheet(budget, lines, fringe_cfgs, {}, profile, pw_start)
+    from budget_calc import section_for_code
+
+    # Pre-fee section amounts (raw_estimated) — the fee is stated once in
+    # totals/on_top, never baked into a group, dispersed or not.
+    row_amt = {}
+    for row in ts.get("rows", []):
+        if row["code"] == 6800:
+            continue  # the fee line itself is totals.fee
+        row_amt[row["code"]] = float(row.get("raw_estimated",
+                                             row.get("estimated", 0)) or 0)
+    lines_by_sec = {}
+    for ln in lines:
+        lines_by_sec.setdefault(section_for_code(ln.account_code) or 0, []).append(ln)
+
+    # Groups — built from the section rows, so Σ groups == Σ rows exactly.
+    groups, mapped = [], set()
+    for gid, gname, codes in _PRESENT_GROUPS:
+        amt = round(sum(row_amt.get(c, 0.0) for c in codes), 2)
+        secs = [c for c in codes if row_amt.get(c)]
+        if not secs:
+            continue
+        mapped.update(codes)
+        g_lines = [l for c in secs for l in lines_by_sec.get(c, [])]
+        descs = []
+        for l in g_lines:
+            _d = (l.description or '').strip()
+            if _d and _d not in descs:
+                descs.append(_d)
+            if len(descs) >= 6:
+                break
+        groups.append({
+            "id": gid, "name": gname,
+            "includes": ", ".join(descs),
+            "amount": amt, "previous": amt, "changed": False,
+            "accounts": [str(c) for c in secs],
+            "line_ids": [l.id for l in g_lines],
+        })
+    from budget_calc import FP_COA_NAMES as _COA_NAMES
+    for code, amt in row_amt.items():  # any unmapped section → its own group
+        if code in mapped or not amt:
+            continue
+        g_lines = lines_by_sec.get(code, [])
+        groups.append({
+            "id": f"g-{code}", "name": _COA_NAMES.get(code, f"Section {code}"),
+            "includes": "", "amount": round(amt, 2), "previous": round(amt, 2),
+            "changed": False, "accounts": [str(code)],
+            "line_ids": [l.id for l in g_lines],
+        })
+
+    lines_total = round(sum(g["amount"] for g in groups), 2)
+    fee   = float(ts.get("company_fee") or 0)
+    grand = round(lines_total + fee, 2)
+    fee_pct = (round(float(ts.get("company_fee_pct") or 0) * 100, 2)
+               if (ts.get("company_fee_mode") or 'pct') == 'pct'
+               else (round(fee / lines_total * 100, 2) if lines_total else 0))
+
+    insurance = round(row_amt.get(6000, 0.0), 2)
+    admin     = round(row_amt.get(6500, 0.0), 2)
+
+    # Phases — every line outside insurance/admin/fee lands in exactly one
+    # phase; cent drift against (lines − insurance − admin) is trued up on
+    # the largest phase so the brief's sum rule holds exactly.
+    phase_amt = {k: 0.0 for k, _ in _PRESENT_PHASE_ORDER}
+    phase_lines = {k: [] for k, _ in _PRESENT_PHASE_ORDER}
+    line_totals = ts.get("line_totals") or {}
+    for ln in lines:
+        sec = section_for_code(ln.account_code) or 0
+        if sec in (6000, 6500, 6800):
+            continue
+        ph = _present_phase_for_line(ln)
+        phase_amt[ph] += float((line_totals.get(ln.id) or {}).get("est_total", 0) or 0)
+        phase_lines[ph].append(ln.id)
+    phases_target = round(lines_total - insurance - admin, 2)
+    for k in phase_amt:
+        phase_amt[k] = round(phase_amt[k], 2)
+    _drift = round(phases_target - sum(phase_amt.values()), 2)
+    if abs(_drift) >= 0.01 and any(phase_amt.values()):
+        _big = max(phase_amt, key=lambda k: phase_amt[k])
+        phase_amt[_big] = round(phase_amt[_big] + _drift, 2)
+    phases = []
+    for i, (key, label) in enumerate(_PRESENT_PHASE_ORDER, 1):
+        amt = phase_amt[key]
+        phases.append({
+            "id": f"p-{key}", "n": f"{i:02d}", "name": label,
+            "when": None, "weeks": None, "what": "",
+            "amount": amt,
+            "share": round(amt / phases_target, 3) if phases_target else 0,
+            "line_ids": phase_lines[key],
+        })
+
+    aicp = []
+    for code_l, name, codes in _PRESENT_AICP:
+        amt = round(sum(row_amt.get(c, 0.0) for c in codes), 2)
+        if amt:
+            aicp.append({"code": code_l, "name": name, "amount": amt})
+
+    # Revision: budget timestamps + the last "meaningful" activity — a line
+    # add/remove, or a line change moving ≥ $250 (brief §2's threshold).
+    revision = {"updated_at": (budget.updated_at.isoformat() + 'Z') if budget.updated_at else None,
+                "by": None, "last_meaningful": None,
+                "presented_version": None, "presented_at": None}
+    try:
+        from models import ActivityLog
+        _last = (ActivityLog.query.filter_by(budget_id=bid)
+                 .order_by(ActivityLog.created_at.desc()).first())
+        if _last and _last.user_id:
+            _u = User.query.get(_last.user_id)
+            revision["by"] = _u.name if _u else None
+        _mean = (ActivityLog.query
+                 .filter(ActivityLog.budget_id == bid,
+                         ActivityLog.entity_type == 'budget_line',
+                         db.or_(ActivityLog.action.in_(('create', 'delete')),
+                                db.func.abs(ActivityLog.dollar_delta) >= 250))
+                 .order_by(ActivityLog.created_at.desc()).first())
+        if _mean:
+            _mu = User.query.get(_mean.user_id) if _mean.user_id else None
+            revision["last_meaningful"] = {
+                "at": _mean.created_at.isoformat() + 'Z' if _mean.created_at else None,
+                "by": _mu.name if _mu else None,
+                "summary": _mean.note or (
+                    f"{_mean.action.title()}: {_mean.entity_label or 'line'}"),
+                "delta": float(_mean.dollar_delta or 0),
+            }
+    except Exception:
+        logging.warning("[present.json] revision block failed", exc_info=True)
+
+    kind = _budget_type(budget.budget_mode)
+    version = budget.version_number or 1
+    version_label = f"{'Estimated' if kind == 'estimated' else 'Working'} v{version}"
+    has_working = bool(Budget.query.filter_by(
+        project_id=pid, budget_mode='working', version_status='current',
+        is_actual=False).first())
+
+    import re as _re_p
+    _slug = _re_p.sub(r'[^A-Za-z0-9]+', '-', f"{project.name}-{version_label}").strip('-')
+    payload = {
+        "budget": {
+            "project_id": pid, "budget_id": bid,
+            "project": project.name, "title": budget.name or project.name,
+            "client": budget.client_name or getattr(project, 'client_name', None),
+            "agency": None,
+            "kind": kind, "version": version, "version_label": version_label,
+            "currency": "USD",
+            "status": "production" if has_working else "bidding",
+        },
+        "revision": revision,
+        "totals": {"lines": lines_total, "fee_pct": fee_pct, "fee": round(fee, 2),
+                   "grand": grand, "terms": None},
+        "groups": groups,
+        "phases": phases,
+        "on_top": {"insurance": insurance, "admin": admin,
+                   "fee": round(fee, 2),
+                   "total": round(insurance + admin + fee, 2)},
+        "aicp": aicp,
+        "levers": [],
+        "assumptions": [], "exclusions": [], "allowances": [],
+        "discussion": [
+            {"line_id": l.id, "account_code": l.account_code,
+             "description": l.description or "", "note": l.discussion_note,
+             "amount": float((line_totals.get(l.id) or {}).get("est_total", 0) or 0)}
+            for l in lines if l.discussion_note
+        ],
+        "pdf": {"url": url_for('export_pdf', pid=pid, bid=bid) + "?variant=detail",
+                "filename": f"{_slug}.pdf"},
+    }
+    if session_auth:
+        payload["share"] = {
+            "token": _present_token(pid, bid),
+            "url": url_for('budget_present_json', pid=pid, bid=bid, _external=True)
+                   + f"?t={_present_token(pid, bid)}",
+        }
+    resp = jsonify(payload)
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+
 @app.route("/settings/company", methods=["GET"])
 @login_required
 def get_company_settings():
