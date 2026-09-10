@@ -533,6 +533,27 @@
          can scan it as a panel rather than a sidebar form. Per user
          feedback 2026-05-19: "the export interface is clunky to look
          at as a side bar". -->
+    {# 🎬 Framework Present handoff popup (owner 2026-09-10: "just give me
+       a paste… copy it to my clipboard and notify me") #}
+    <div id="fp-handoff-overlay" class="export-opts-overlay hidden" onclick="fpHandoffClose(event)">
+      <div class="export-opts-card" onclick="event.stopPropagation()" style="max-width:680px">
+        <div class="export-opts-head">
+          <div>
+            <h3 class="export-opts-title">🎬 Hand off to Framework Present</h3>
+            <p class="export-opts-sub" id="fp-handoff-status" style="font-weight:600"></p>
+          </div>
+          <button type="button" class="export-opts-close" onclick="fpHandoffClose()" aria-label="Close">×</button>
+        </div>
+        <textarea id="fp-handoff-text" readonly
+                  style="width:100%;height:280px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.78rem;
+                         background:var(--bg-2);color:var(--text);border:1px solid var(--border);border-radius:6px;
+                         padding:10px;resize:vertical;white-space:pre-wrap"></textarea>
+        <div class="export-opts-foot">
+          <button type="button" class="btn btn-sm" onclick="fpHandoffClose()">Close</button>
+          <button type="button" class="btn btn-sm btn-primary" onclick="fpHandoffCopy()">📋 Copy again</button>
+        </div>
+      </div>
+    </div>
     <div id="export-options-overlay" class="export-opts-overlay hidden" onclick="closeExportOptions(event)">
       <div class="export-opts-card" onclick="event.stopPropagation()">
         <div class="export-opts-head">
@@ -9603,28 +9624,11 @@ if (new URLSearchParams(location.search).get('tab') === 'assumptions') setTimeou
 // link + deck instructions. The coworker's framework-present-deck skill
 // picks it up and builds the budget-review deck interactively; every
 // number stays live via the contract URL (no re-typing).
+// Simplified per owner 2026-09-10 ("just give me a paste… copy it to my
+// clipboard and notify me"): one click → a popup shows the complete
+// handoff, already on the clipboard — paste it into the Framework
+// Presents cowork chat. No windows opened, no builder call.
 async function sendToFrameworkPresent() {
-  // 1. Preferred path: the Framework Present builder constructs the deck
-  //    from present.json directly and hands back its URL — one click,
-  //    deck opens. Requires FRAMEWORK_PRESENT_BUILD_URL on the server;
-  //    not configured (501) → fall through to the Claude-chat handoff.
-  _lineSaveToast('Sending to Framework Present…');
-  try {
-    const rb = await fetch(`/projects/${PID}/budget/${BID}/present/build`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: '{}'});
-    const jb = await rb.json().catch(() => ({}));
-    if (rb.ok && jb.deck_url) {
-      window.open(jb.deck_url, '_blank');
-      _lineSaveToast('Deck built — opened in a new tab. It re-reads this budget live.');
-      return;
-    }
-    if (rb.status !== 501) {
-      _lineSaveToast((jb.error || 'Deck builder failed') + ' — opening the Claude handoff instead.');
-    }
-  } catch (e) { /* fall through to the chat handoff */ }
-
-  // 2. Fallback: open a Claude chat pre-loaded with the handoff.
   let j;
   try {
     const r = await fetch(`/projects/${PID}/budget/${BID}/present.json`);
@@ -9636,61 +9640,57 @@ async function sendToFrameworkPresent() {
   }
   const share = (j.share && j.share.url) || '';
   const disc = (j.discussion || []).length;
+  const nlev = (j.levers || []).length;
+  const nassump = (j.assumptions || []).length + (j.exclusions || []).length;
   const promptText =
     `Build (or update) the Framework Present budget-review deck for ` +
     `${j.budget.project} — ${j.budget.version_label}.\n\n` +
     `Live budget contract (read-only JSON; poll it while the deck is open — ` +
     `every number comes from here, none typed into slides):\n${share}\n\n` +
-    `Right now: grand total $${Number(j.totals.grand).toLocaleString('en-US')} ` +
-    `(${j.groups.length} cost groups, fee ${j.totals.fee_pct}% stated once on top` +
-    (disc ? `, ${disc} flagged discussion point${disc !== 1 ? 's' : ''} in the ` +
-            `"discussion" array — candidates for the levers slide` : '') + `).\n\n` +
+    `Right now: grand total $${Number(j.totals.grand).toLocaleString('en-US')} — ` +
+    `${j.groups.length} cost groups, fee ${j.totals.fee_pct}% stated once on top` +
+    (j.totals.terms ? `, terms "${j.totals.terms}"` : '') +
+    (nlev ? `, ${nlev} lever${nlev !== 1 ? 's' : ''} ready in "levers" (fee-applied deltas)` : '') +
+    (nassump ? `, assumptions & exclusions filled in` : '') +
+    (disc ? `, ${disc} flagged discussion point${disc !== 1 ? 's' : ''} in "discussion"` : '') + `.\n\n` +
     `Use the fp-kit budget-review slide types (top sheet, phases & spend, ` +
     `agency top sheet, levers) around a cover, what-we're-making, assumptions ` +
-    `& exclusions, what-happens-next, and contact. The backing estimate PDF ` +
-    `is ${location.origin}${j.pdf.url} (my login); name the deck's PDF ` +
-    `${j.pdf.filename.replace(/\.pdf$/, '')} to match.\n\n` +
+    `& exclusions, what-happens-next, and contact. Lever decisions from the ` +
+    `call POST back to ${location.origin}/projects/${PID}/budget/${BID}/decisions` +
+    `?t=<same token as the contract URL> with the standard body. The backing ` +
+    `estimate PDF is ${location.origin}${j.pdf.url} (my login); name the ` +
+    `deck's PDF ${j.pdf.filename.replace(/\.pdf$/, '')} to match.\n\n` +
     `Start by reading the contract and proposing the slide set — then work ` +
     `with me on the wording.`;
 
-  // Preferred chat target: the user's "Framework Presents" folder on
-  // claude.ai — chats started there have the fp-kit files/specs in reach,
-  // which makes the deck come out right (owner 2026-09-10: a plain new
-  // chat "didn't hit this framework presents folder… a little bit less
-  // good"). claude.ai can't prefill inside a folder from a URL, so we
-  // open the folder and put the handoff on the clipboard to paste.
-  let folder = null;
-  try { folder = localStorage.getItem('fpFrameworkFolderUrl'); } catch (e) {}
-  if (folder === null) {
-    const v = window.prompt(
-      'One-time setup: paste the URL of your "Framework Presents" folder on ' +
-      'claude.ai (open the folder, copy the address bar).\n\nWith it set, this ' +
-      'button opens that folder and copies the handoff for you to paste — the ' +
-      'coworker then has all the fp-kit files and builds the deck right.\n\n' +
-      'Leave blank to always use a plain new chat instead.', '');
-    if (v === null) return;
-    folder = v.trim();
-    try { localStorage.setItem('fpFrameworkFolderUrl', folder); } catch (e) {}
+  let copied = false;
+  try { await navigator.clipboard.writeText(promptText); copied = true; } catch (e) {}
+  const ta = document.getElementById('fp-handoff-text');
+  if (ta) ta.value = promptText;
+  const st = document.getElementById('fp-handoff-status');
+  if (st) {
+    st.textContent = copied
+      ? '✓ Copied to your clipboard — open your Framework Presents cowork and paste.'
+      : '⚠ Clipboard was blocked — press the Copy button below (or select-all in the box).';
+    st.style.color = copied ? '#22c55e' : '#fbbf24';
   }
-  if (folder) {
-    let copied = false;
-    try { await navigator.clipboard.writeText(promptText); copied = true; } catch (e) {}
-    window.open(folder, '_blank');
-    _lineSaveToast(copied
-      ? 'Handoff copied — start a new chat in the Framework Presents folder and paste.'
-      : 'Folder opened, but clipboard was blocked — click the button again and allow clipboard access.');
-    return;
+  document.getElementById('fp-handoff-overlay')?.classList.remove('hidden');
+}
+async function fpHandoffCopy() {
+  const ta = document.getElementById('fp-handoff-text');
+  try {
+    await navigator.clipboard.writeText(ta.value);
+    const st = document.getElementById('fp-handoff-status');
+    if (st) { st.textContent = '✓ Copied to your clipboard.'; st.style.color = '#22c55e'; }
+  } catch (e) {
+    ta.focus(); ta.select();
+    const st = document.getElementById('fp-handoff-status');
+    if (st) { st.textContent = 'Selected — press ⌘C / Ctrl+C to copy.'; st.style.color = '#fbbf24'; }
   }
-  const url = 'https://claude.ai/new?q=' + encodeURIComponent(promptText);
-  const win = window.open(url, '_blank');
-  if (!win) {
-    try {
-      await navigator.clipboard.writeText(promptText);
-      _lineSaveToast('Pop-up blocked — the handoff text is on your clipboard; paste it into a new Claude chat.');
-    } catch (e) {
-      _lineSaveToast('Pop-up blocked and clipboard unavailable — allow pop-ups for this site and try again.');
-    }
-  }
+}
+function fpHandoffClose(ev) {
+  if (ev && ev.target !== ev.currentTarget) return;
+  document.getElementById('fp-handoff-overlay')?.classList.add('hidden');
 }
 
 // ── 🚩 Discussion notes (owner 2026-09-10) ────────────────────────────────
