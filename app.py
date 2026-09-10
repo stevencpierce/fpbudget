@@ -18002,6 +18002,68 @@ def budget_present_json(pid, bid):
     return resp
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/present/build", methods=["POST"])
+@login_required
+def budget_present_build(pid, bid):
+    """Ask the Framework Present server to build (or rebuild) the
+    budget-review deck for this budget, and hand back its URL (owner
+    2026-09-10: "can it just auto trigger it and then provide me a URL").
+
+    FPBudget can't spawn a Claude chat on the owner's account, but the
+    deck side's build.py constructs the slides from present.json without
+    one — so this POSTs the live contract URL to that builder and returns
+    {deck_url}. Configuration (owner sets these in Render):
+      FRAMEWORK_PRESENT_BUILD_URL   — the builder endpoint on steven.thefp.tv
+      FRAMEWORK_PRESENT_BUILD_TOKEN — optional bearer token for it
+    Not configured → 501 and the client falls back to the Claude-chat
+    handoff."""
+    _require_project_role(pid, 'editor')
+    project = ProjectSheet.query.get_or_404(pid)
+    budget  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    build_url = (os.getenv('FRAMEWORK_PRESENT_BUILD_URL') or '').strip()
+    if not build_url:
+        return jsonify({"configured": False,
+                        "error": "FRAMEWORK_PRESENT_BUILD_URL is not set"}), 501
+    kind = _budget_type(budget.budget_mode)
+    version_label = f"{'Estimated' if kind == 'estimated' else 'Working'} v{budget.version_number or 1}"
+    payload = {
+        "present_url": url_for('budget_present_json', pid=pid, bid=bid,
+                               _external=True) + f"?t={_present_token(pid, bid)}",
+        "project": project.name,
+        "project_id": pid,
+        "budget_id": bid,
+        "version_label": version_label,
+        "requested_by": getattr(current_user, 'email', None),
+    }
+    headers = {'Content-Type': 'application/json'}
+    tok = (os.getenv('FRAMEWORK_PRESENT_BUILD_TOKEN') or '').strip()
+    if tok:
+        headers['Authorization'] = f'Bearer {tok}'
+    import requests as _rq
+    try:
+        r = _rq.post(build_url, json=payload, headers=headers, timeout=120)
+        try:
+            j = r.json()
+        except Exception:
+            j = {}
+        if r.ok and j.get('deck_url'):
+            try:
+                _log_activity(action='update', entity_type='budget_settings',
+                              entity_id=bid, entity_label=budget.name or 'Budget',
+                              budget_id=bid, project_id=pid,
+                              after={'deck_url': j['deck_url']},
+                              note='Sent to Framework Present — deck built')
+            except Exception:
+                pass
+            return jsonify({"ok": True, "deck_url": j['deck_url'],
+                            "message": j.get('message')})
+        return jsonify({"error": j.get('error')
+                        or f"Deck builder returned HTTP {r.status_code}"}), 502
+    except Exception as e:
+        logging.warning(f"[present-build] builder call failed: {e}")
+        return jsonify({"error": f"Could not reach the deck builder: {e}"}), 502
+
+
 @app.route("/settings/company", methods=["GET"])
 @login_required
 def get_company_settings():

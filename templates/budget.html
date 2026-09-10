@@ -9505,6 +9505,27 @@ async function saveAssumptions() {
 // picks it up and builds the budget-review deck interactively; every
 // number stays live via the contract URL (no re-typing).
 async function sendToFrameworkPresent() {
+  // 1. Preferred path: the Framework Present builder constructs the deck
+  //    from present.json directly and hands back its URL — one click,
+  //    deck opens. Requires FRAMEWORK_PRESENT_BUILD_URL on the server;
+  //    not configured (501) → fall through to the Claude-chat handoff.
+  _lineSaveToast('Sending to Framework Present…');
+  try {
+    const rb = await fetch(`/projects/${PID}/budget/${BID}/present/build`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: '{}'});
+    const jb = await rb.json().catch(() => ({}));
+    if (rb.ok && jb.deck_url) {
+      window.open(jb.deck_url, '_blank');
+      _lineSaveToast('Deck built — opened in a new tab. It re-reads this budget live.');
+      return;
+    }
+    if (rb.status !== 501) {
+      _lineSaveToast((jb.error || 'Deck builder failed') + ' — opening the Claude handoff instead.');
+    }
+  } catch (e) { /* fall through to the chat handoff */ }
+
+  // 2. Fallback: open a Claude chat pre-loaded with the handoff.
   let j;
   try {
     const r = await fetch(`/projects/${PID}/budget/${BID}/present.json`);
