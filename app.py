@@ -18257,6 +18257,64 @@ def budget_present_decisions(pid, bid):
     return jsonify({"ok": True, "applied": len(applied)})
 
 
+@app.route("/admin/crew-lookup")
+@login_required
+def admin_crew_lookup():
+    """Super-admin diagnostic (owner 2026-09-16: "Haiden Williams crew
+    doesn't show up but says she is in the database" — still hidden after
+    the NULL-active fix): shows every CrewMember AND SupportContact row
+    matching ?q=<name>, with the exact fields that gate picker
+    visibility, and says whether the crew pickers would include each.
+    ?activate=<crew_id> flips a row back to active."""
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
+    q = (request.args.get('q') or '').strip()
+    act_id = request.args.get('activate', type=int)
+    note = ''
+    if act_id:
+        _cm = CrewMember.query.get(act_id)
+        if _cm:
+            _cm.active = True
+            db.session.commit()
+            note = f"<p style='color:#22c55e'>✓ #{act_id} “{_cm.name}” set active=True.</p>"
+    rows = []
+    if q:
+        for cm in (CrewMember.query
+                   .filter(CrewMember.name.ilike(f'%{q}%'))
+                   .order_by(CrewMember.name).all()):
+            in_picker = cm.active is not False  # mirrors active IS NOT false
+            rows.append(
+                f"<tr><td>CrewMember #{cm.id}</td><td>{cm.name}</td>"
+                f"<td>{cm.department or '—'}</td>"
+                f"<td>{'NULL' if cm.active is None else cm.active}</td>"
+                f"<td>{'⚠ VENDOR' if cm.is_vendor else 'person'}</td>"
+                f"<td>{'✓ shows in pickers' if in_picker else '✗ HIDDEN (deactivated)'}"
+                + ('' if in_picker else
+                   f" — <a href='?q={q}&activate={cm.id}'>reactivate</a>")
+                + "</td></tr>")
+        for sc in (SupportContact.query
+                   .filter(SupportContact.name.ilike(f'%{q}%'))
+                   .order_by(SupportContact.name).all()):
+            _parent = CrewMember.query.get(sc.crew_member_id)
+            rows.append(
+                f"<tr><td>SupportContact #{sc.id}</td><td>{sc.name}</td>"
+                f"<td>{sc.role_type}</td>"
+                f"<td>{'NULL' if sc.active is None else sc.active}</td>"
+                f"<td>attached to “{(_parent.name if _parent else '?')}”</td>"
+                f"<td>✗ support contacts (agents/managers) never appear in "
+                f"CREW pickers — they ride their person's record</td></tr>")
+    return (f"<html><body style='font-family:monospace;background:#111;color:#ddd'>"
+            f"<h2>Crew lookup</h2>{note}"
+            f"<form><input name='q' value='{q}' placeholder='name…' "
+            f"style='padding:6px;width:280px'> <button>Search</button></form>"
+            + (f"<p>{len(rows)} match(es) for “{q}”.</p>"
+               f"<table border=1 cellpadding=6 style='border-collapse:collapse'>"
+               f"<tr><th>Row</th><th>Name</th><th>Dept / role</th><th>active</th>"
+               f"<th>Kind</th><th>Picker visibility</th></tr>"
+               + ''.join(rows) + "</table>" if q else "")
+            + "</body></html>")
+
+
 @app.route("/settings/company", methods=["GET"])
 @login_required
 def get_company_settings():
