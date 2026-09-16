@@ -2268,10 +2268,11 @@
                     title="View per-day, per-person breakdown of this auto-calculated line">Schedule Detail</button>
             {% endif %}
             {# 💬 internal comments on this line (owner 2026-07-22) #}
-            <button class="btn btn-xs btn-ghost line-comments-btn"
+            <button class="btn btn-xs btn-ghost line-comments-btn {% if comment_counts.get(ln.id) %}has-notes{% endif %}"
                     title="Comments / notes on this line — @name tags a teammate"
                     onclick='openComments({{ ln.id }}, {{ ((ln.description or ln.account_name or "line") | truncate(40)) | tojson }})'
-                    style="{% if not comment_counts.get(ln.id) %}opacity:.4{% endif %}">💬{% if comment_counts.get(ln.id) %}<span style="font-size:.62rem;color:#5fd0a0">{{ comment_counts.get(ln.id) }}</span>{% endif %}</button>
+                    style="{% if not comment_counts.get(ln.id) %}opacity:.4{% endif %}"
+                    title="{% if comment_counts.get(ln.id) %}{{ comment_counts.get(ln.id) }} internal note{{ 's' if comment_counts.get(ln.id) != 1 else '' }} on this line — click to read{% else %}Add an internal note to this line{% endif %}">💬{% if comment_counts.get(ln.id) %}<span class="cm-count" style="font-size:.66rem;font-weight:700;color:#fbbf24;margin-left:2px">{{ comment_counts.get(ln.id) }}</span>{% endif %}</button>
             <button class="btn btn-xs btn-ghost line-row-menu-btn"
                     data-id="{{ ln.id }}" data-code="{{ ln.account_code }}"
                     title="Insert / Move row" onclick="openLineRowMenu(this)">⋮</button>
@@ -10925,23 +10926,50 @@ async function _cmLoad() {
     const j = await r.json();
     const cs = (j && j.comments) || [];
     list.innerHTML = cs.length ? cs.map(c =>
-      '<div style="border-top:1px solid var(--border);padding:5px 0 6px">'
+      '<div style="border-left:3px solid rgba(251,191,36,.55);background:rgba(251,191,36,.06);'
+      + 'border-radius:6px;padding:7px 10px;margin-bottom:7px">'
       + '<div style="display:flex;gap:8px;align-items:center">'
-      + '<b style="font-size:.72rem">' + _cmEsc(c.author) + '</b>'
-      + '<span style="font-size:.65rem;color:var(--text-muted)">'
+      + '<b style="font-size:.76rem">' + _cmEsc(c.author) + '</b>'
+      + '<span style="font-size:.7rem;color:var(--text-muted)">'
       + (c.created_at ? new Date(c.created_at).toLocaleString(undefined, {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}) : '') + '</span>'
-      + (c.mine ? '<button onclick="delComment(' + c.id + ')" title="Delete" style="margin-left:auto;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:.7rem">✕</button>' : '')
+      + (c.mine ? '<button onclick="delComment(' + c.id + ')" title="Delete" style="margin-left:auto;background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:.75rem">✕</button>' : '')
       + '</div>'
-      + '<div style="white-space:pre-wrap;margin-top:2px">' + _cmEsc(c.body) + '</div></div>'
+      + '<div style="white-space:pre-wrap;margin-top:3px">' + _cmEsc(c.body) + '</div></div>'
     ).join('') : '<div style="color:var(--text-muted)">No notes yet.</div>';
     list.scrollTop = list.scrollHeight;
+    _cmSyncButton(cs.length);
   } catch (e) { list.innerHTML = '<div style="color:#e0a13a">Could not load comments.</div>'; }
+}
+// Keep the row's 💬 chip live: amber + count while the line has notes,
+// dimmed when the last one is deleted. (2026-09-16.)
+function _cmSyncButton(n) {
+  if (!_cmLineId) return;
+  const row = document.querySelector(`.line-row[data-id="${_cmLineId}"]`);
+  const btn = row && row.querySelector('.line-comments-btn');
+  if (!btn) return;
+  btn.classList.toggle('has-notes', n > 0);
+  btn.style.opacity = n > 0 ? '1' : '.4';
+  btn.title = n > 0
+    ? `${n} internal note${n !== 1 ? 's' : ''} on this line — click to read`
+    : 'Add an internal note to this line';
+  let cnt = btn.querySelector('.cm-count');
+  if (n > 0) {
+    if (!cnt) {
+      cnt = document.createElement('span');
+      cnt.className = 'cm-count';
+      cnt.style.cssText = 'font-size:.66rem;font-weight:700;color:#fbbf24;margin-left:2px';
+      btn.appendChild(cnt);
+    }
+    cnt.textContent = n;
+  } else if (cnt) {
+    cnt.remove();
+  }
 }
 function openComments(lineId, label) {
   _cmLineId = lineId;
   const pop = document.getElementById('comments-popup');
   document.getElementById('comments-title').textContent =
-    (lineId ? '💬 ' : '🗒 ') + 'Notes — ' + (label || '');
+    (lineId ? '💬 ' : '🗒 ') + 'Internal notes — ' + (label || '');
   document.getElementById('comments-status').textContent = '';
   document.getElementById('comments-input').value = '';
   pop.classList.remove('hidden');
@@ -13364,15 +13392,20 @@ function normalizePhone(v) {
 {# ── Internal comments popup — budget-level (🗒 Notes) and per-line (💬).
      @name in a comment emails the matching teammate. Never client-facing.
      (Owner 2026-07-22.) #}
-<div id="comments-popup" class="pct-edit-popup hidden" style="min-width:340px;max-width:440px">
-  <div class="pct-edit-label" id="comments-title">Comments</div>
-  <div id="comments-list" style="max-height:280px;overflow:auto;margin-top:.5rem;font-size:.8rem"></div>
-  <textarea id="comments-input" rows="2" placeholder="Add a note… use @name to tag a teammate (they get an email)"
-            style="width:100%;margin-top:.5rem;font-size:.8rem;resize:vertical"></textarea>
-  <div style="display:flex;gap:.5rem;margin-top:.4rem;align-items:center">
-    <button class="btn btn-xs btn-primary" onclick="postComment()">Post</button>
-    <button class="btn btn-xs btn-ghost" onclick="closeComments()">✕</button>
-    <span id="comments-status" style="font-size:.7rem;color:var(--text-muted)"></span>
+<div id="comments-popup" class="pct-edit-popup hidden" style="min-width:420px;max-width:560px;padding:14px 16px">
+  <div class="pct-edit-label" id="comments-title" style="font-size:.95rem;font-weight:700">Comments</div>
+  <div style="font-size:.74rem;color:var(--text-muted);margin-top:2px;line-height:1.45">
+    🔒 <strong>Internal only</strong> — visible to people with access to this
+    budget, never to clients or exports. For a client-facing talking point
+    (a potential lever), use the row's <span style="white-space:nowrap">🚩 Discussion note</span> instead.
+  </div>
+  <div id="comments-list" style="max-height:320px;overflow:auto;margin-top:.6rem;font-size:.88rem;line-height:1.5"></div>
+  <textarea id="comments-input" rows="3" placeholder="Add a note… use @name to tag a teammate (they get an email)"
+            style="width:100%;margin-top:.6rem;font-size:.9rem;line-height:1.45;padding:8px 10px;resize:vertical"></textarea>
+  <div style="display:flex;gap:.5rem;margin-top:.5rem;align-items:center">
+    <button class="btn btn-sm btn-primary" onclick="postComment()">Post</button>
+    <button class="btn btn-sm btn-ghost" onclick="closeComments()">Close</button>
+    <span id="comments-status" style="font-size:.75rem;color:var(--text-muted)"></span>
   </div>
 </div>
 
