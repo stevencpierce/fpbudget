@@ -7256,7 +7256,7 @@ def budget_view(pid, bid):
     fringes      = sorted(get_fringe_configs(db.session, pid).values(),
                           key=lambda f: f.fringe_type)
     # Full company roster — used ONLY for crew ASSIGNMENT (pick anyone onto a line).
-    all_crew_members = CrewMember.query.filter_by(active=True).order_by(CrewMember.name).all()
+    all_crew_members = CrewMember.query.filter(CrewMember.active.isnot(False)).order_by(CrewMember.name).all()  # NULL active = active (2026-09-16: legacy/imported rows carry NULL; != False also skips NULL in SQL)
     # Project-scoped crew + vendors for the doc/vendor pickers and vendors section.
     # CrewMember has no project_id, so scope by association: assigned on one of this
     # project's budget lines, or linked to one of its documents. Without this,
@@ -18657,7 +18657,7 @@ def gantt_view(pid, bid):
     assignments_map = {(ca.budget_line_id, ca.instance or 1): ca for ca in crew_assignments_raw}
 
     # All active crew members for the picker
-    all_crew = CrewMember.query.filter_by(active=True).order_by(CrewMember.name).all()
+    all_crew = CrewMember.query.filter(CrewMember.active.isnot(False)).order_by(CrewMember.name).all()  # NULL active = active (2026-09-16: legacy/imported rows carry NULL; != False also skips NULL in SQL)
     crew_members_json = json.dumps([{
         "id": c.id, "name": c.name,
         "department": c.department or "",
@@ -35625,7 +35625,7 @@ def project_vendors_json(pid):
     _require_project_role(pid, 'viewer')
     vs = (CrewMember.query
           .filter(CrewMember.is_vendor == True,                     # noqa: E712
-                  CrewMember.active != False)                       # noqa: E712  (NULL active = active)
+                  CrewMember.active.isnot(False))                   # NULL active = active (fixed 2026-09-16: != False skipped NULL rows)
           .order_by(func.lower(CrewMember.name)).all())
     return jsonify({"ok": True, "vendors": [{"id": v.id, "name": v.name} for v in vs]})
 
