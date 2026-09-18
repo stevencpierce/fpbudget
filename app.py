@@ -23571,13 +23571,41 @@ def sub_budget_add_lines(pid, sb_id):
 @login_required
 def sub_budget_remove_line(pid, sb_id, lid):
     """Remove a budget line from this sub-budget (the underlying
-    BudgetLine row is untouched — only the assignment is dropped)."""
+    BudgetLine row is untouched — only the assignment is dropped).
+
+    2026-09-18: the cards display memberships RESOLVED across sibling
+    versions (see _resolve_sub_budget_lines), so the ✕ arrives with the
+    canonical line id while the SubBudgetLine row may point at the
+    Estimated peer / an old version's line. Deleting only the exact id
+    removed nothing ("it won't remove it — still shows up"). Now every
+    membership that resolves to the clicked line is dropped: direct id,
+    clone chain in either direction, sibling clones of the same source,
+    and the cross-budget (account_code, description) fallback the
+    display uses."""
     _require_project_role(pid, 'editor')
     sb = SubBudget.query.filter_by(id=sb_id, project_id=pid).first_or_404()
-    SubBudgetLine.query.filter_by(sub_budget_id=sb_id, budget_line_id=lid)\
-        .delete(synchronize_session=False)
+    target = BudgetLine.query.get_or_404(lid)
+    removed = 0
+    _tdesc = (target.description or '').strip().lower()
+    for sbl in SubBudgetLine.query.filter_by(sub_budget_id=sb_id).all():
+        ml = BudgetLine.query.get(sbl.budget_line_id)
+        if ml is None:
+            continue
+        match = (
+            ml.id == target.id
+            or (target.source_line_id and ml.id == target.source_line_id)
+            or (ml.source_line_id and ml.source_line_id == target.id)
+            or (ml.source_line_id and target.source_line_id
+                and ml.source_line_id == target.source_line_id)
+            or (ml.budget_id != target.budget_id
+                and ml.account_code == target.account_code
+                and (ml.description or '').strip().lower() == _tdesc)
+        )
+        if match:
+            db.session.delete(sbl)
+            removed += 1
     db.session.commit()
-    return jsonify({"ok": True,
+    return jsonify({"ok": True, "removed": removed,
                     "sub_budget": _sub_budget_to_dict(sb, with_rollup=True, project_id=pid)})
 
 
