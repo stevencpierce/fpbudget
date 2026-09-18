@@ -7771,14 +7771,51 @@ def budget_view(pid, bid):
         else:
             _w_eff_rate = _wfee_pct
             working_company_fee = round(_wfee_base * _wfee_pct, 2)
-        # Apply dispersal in place
-        for _sk in list(working_by_section.keys()):
-            if _sk in _wexcluded:
-                continue
-            _raw = working_by_section[_sk]
-            _base = _raw - (working_section_fringe.get(_sk, 0.0) if _wfee_exclude_fringes else 0.0)
-            if _base > 0:
-                working_by_section[_sk] = round(_raw + _base * _w_eff_rate, 2)
+        # ── Per-line shares (2026-09-18) ──────────────────────────────────
+        # The Estimated column uses calc_top_sheet's per-line DOLLAR-ROUNDED
+        # fee shares; this Working rollup used the exact effective rate on
+        # each section base — so every section drifted a few dollars and
+        # the Top Sheet variance column lit up in every category on a
+        # freshly-cloned Working (user 2026-09-18, GINTS 26). Use the same
+        # per-line shares (the working budget's own; the viewed budget's
+        # when no Working exists and this column mirrors Estimated), with
+        # the same rounded WC/PI/PF pseudo shares, so both columns come
+        # from one math. Falls back to the exact-rate spread when settings
+        # diverge (working exists but its own dispersal flag is off).
+        if current_working_bid and current_working_bid == budget.id:
+            _wshare_obj, _wshare_lines = budget, lines
+        elif current_working_bid:
+            _wshare_obj, _wshare_lines = _wb, _wblines
+        else:
+            _wshare_obj, _wshare_lines = budget, lines  # mirror of Estimated
+        _w_shares = _dispersed_fee_share_map(_wshare_obj) if _wshare_obj else {}
+        if _w_shares:
+            _fee_total = 0.0
+            for _l in _wshare_lines:
+                _amt = float(_w_shares.get(_l.id, 0) or 0)
+                if not _amt:
+                    continue
+                _sk = _section_for_code(_l.account_code)
+                working_by_section[_sk] = round(working_by_section.get(_sk, 0.0) + _amt, 2)
+                _fee_total += _amt
+            for _pamt, _psec in ((round(working_gross_labor * _wc_pct, 2), COA_CODE_INSURANCE),
+                                 (_pi_amount, COA_CODE_INSURANCE),
+                                 (round(working_gross_labor * _pf_pct, 2), COA_CODE_ADMIN)):
+                if _pamt and _psec not in _wexcluded:
+                    _psh = float(int(_pamt * _w_eff_rate + 0.5))
+                    if _psh:
+                        working_by_section[_psec] = round(working_by_section.get(_psec, 0.0) + _psh, 2)
+                        _fee_total += _psh
+            working_company_fee = round(_fee_total, 2)
+        else:
+            # Legacy exact-rate spread (divergent dispersal settings).
+            for _sk in list(working_by_section.keys()):
+                if _sk in _wexcluded:
+                    continue
+                _raw = working_by_section[_sk]
+                _base = _raw - (working_section_fringe.get(_sk, 0.0) if _wfee_exclude_fringes else 0.0)
+                if _base > 0:
+                    working_by_section[_sk] = round(_raw + _base * _w_eff_rate, 2)
     else:
         # Non-dispersed: fee is shown as its own line item, not baked into sections.
         _wfee_base = 0.0
