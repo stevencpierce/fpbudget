@@ -7624,6 +7624,13 @@ def budget_view(pid, bid):
                     _wb_sched_by_line.setdefault(_d.budget_line_id, []).append(_d)
             except Exception:
                 pass  # any line will fall through to the empty list below
+            # Cross-view Working totals are DISPLAY values → include the
+            # Working budget's own per-line dispersed fee shares
+            # (2026-09-18: the template's uniform ×(1+pct) multiplier
+            # inflated fringes too, so a freshly-initialized Working
+            # showed est+0.18×fringe against Estimated — user: "the
+            # estimated is different than the working immediately").
+            _wfee_shares = _dispersed_fee_share_map(_wb) if _wb else {}
             for _wln in _wblines:
                 try:
                     if _wln.use_schedule:
@@ -7631,8 +7638,9 @@ def budget_view(pid, bid):
                         _wres = calc_line_from_schedule(_wln, _wb_sched, _wb_fringe, _wb_profile, _wb_pw_start)
                     else:
                         _wres = calc_line(_wln, _wb_fringe)
-                    working_line_totals[(_wln.account_code, _wln.sort_order)] = _wres['est_total']
-                    working_line_totals_by_desc[_wdesc_key(_wln)] = _wres['est_total']
+                    _wv = float(_wres['est_total'] or 0) + float(_wfee_shares.get(_wln.id, 0) or 0)
+                    working_line_totals[(_wln.account_code, _wln.sort_order)] = _wv
+                    working_line_totals_by_desc[_wdesc_key(_wln)] = _wv
                     working_line_results[_wln.id] = _wres
                 except Exception:
                     pass  # skip any line that fails to calc; column shows — for that line
@@ -8010,6 +8018,11 @@ def budget_view(pid, bid):
                     _eb_sched_by_line.setdefault(_d.budget_line_id, []).append(_d)
             except Exception:
                 pass
+            # Same display treatment as the Working maps above (2026-09-18):
+            # the Estimated cross column shows est totals + the Estimated
+            # budget's own per-line fee shares, replacing the template's
+            # fringe-inflating uniform multiplier.
+            _efee_shares = _dispersed_fee_share_map(_eb) if _eb else {}
             for _eln in _eblines:
                 try:
                     if _eln.use_schedule:
@@ -8017,9 +8030,10 @@ def budget_view(pid, bid):
                         _eres = calc_line_from_schedule(_eln, _eb_sched, _eb_fringe, _eb_profile, _eb_pw_start)
                     else:
                         _eres = calc_line(_eln, _eb_fringe)
-                    estimated_line_totals[(_eln.account_code, _eln.sort_order)] = _eres['est_total']
-                    estimated_line_totals_by_desc[_desc_key(_eln)] = _eres['est_total']
-                    est_total_by_eid[_eln.id] = _eres['est_total']
+                    _ev = float(_eres['est_total'] or 0) + float(_efee_shares.get(_eln.id, 0) or 0)
+                    estimated_line_totals[(_eln.account_code, _eln.sort_order)] = _ev
+                    estimated_line_totals_by_desc[_desc_key(_eln)] = _ev
+                    est_total_by_eid[_eln.id] = _ev
                 except Exception:
                     pass  # skip any line that fails to calc
 
