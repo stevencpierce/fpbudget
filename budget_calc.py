@@ -902,7 +902,7 @@ def calc_days_ot_status(rate_type, schedule_days, payroll_profile=None, payroll_
     # fringe, and any line whose budget has no payroll profile assigned.
     if not st_hours_per_day or not payroll_profile or not ot_applies:
         for d in schedule_days:
-            if d.day_type not in ('work', 'travel'):
+            if d.day_type in ('off', 'kill_fee', 'travel_unpaid'):
                 continue
             if _float(getattr(d, 'est_ot_hours', None), 0.0) > 0:
                 result[d.date.isoformat()] = 'ot'
@@ -923,22 +923,28 @@ def calc_days_ot_status(rate_type, schedule_days, payroll_profile=None, payroll_
     weekly_days_work = defaultdict(list)
 
     for d in sorted(schedule_days, key=lambda x: x.date):
-        if d.day_type not in ('work', 'travel'):
-            continue
+        ot_added = _float(getattr(d, 'est_ot_hours', None), 0.0)
 
-        ot_added  = _float(getattr(d, 'est_ot_hours', None), 0.0)
-        total_hrs = st_hours_per_day + ot_added
+        if d.day_type not in ('work', 'travel'):
+            # Manual OT on half / hold / custom / travel_half days still
+            # pays (see _run_payroll_calc) — highlight it.
+            if ot_added > 0 and d.day_type not in ('off', 'kill_fee', 'travel_unpaid'):
+                result[d.date.isoformat()] = 'ot'
+            continue
 
         wk = get_week_key(d.date)
         weekly_days_work[wk].append(d.date)
         is_seventh = (seventh_rule == 'ot_all' and len(weekly_days_work[wk]) == 7)
 
         if is_seventh:
+            total_hrs = st_hours_per_day + ot_added
             st_hrs = 0.0
             ot_hrs = min(total_hrs, 8.0)
             dt_hrs = max(0.0, total_hrs - 8.0)
         else:
-            st_hrs, ot_hrs, dt_hrs = calc_day_labor_hours(total_hrs, daily_st, daily_dt)
+            # Mirror _run_payroll_calc: thresholds see base hours only;
+            # manually-entered OT is forced into the OT bucket.
+            st_hrs, ot_hrs, dt_hrs = calc_day_labor_hours(st_hours_per_day, daily_st, daily_dt)
             if weekly_st is not None:
                 weekly_st_f  = float(weekly_st)
                 accum        = weekly_st_accum[wk]
@@ -948,6 +954,7 @@ def calc_days_ot_status(rate_type, schedule_days, payroll_profile=None, payroll_
                     st_hrs   = remaining_st
                     ot_hrs  += overflow
                 weekly_st_accum[wk] += st_hrs
+            ot_hrs += ot_added
 
         if dt_hrs > 0:
             result[d.date.isoformat()] = 'dt'
@@ -1000,24 +1007,35 @@ def _run_payroll_calc(rate, rate_type, qty, schedule_days, payroll_profile, payr
             if d.day_type == 'off' or mult == 0.0:
                 continue
 
+            ot_added = _float(getattr(d, 'est_ot_hours', None), 0.0)
+
             if d.day_type not in ('work', 'travel'):
                 m = _float(d.rate_multiplier, 1.0) if d.day_type == 'custom' else mult
                 st_base += rate * m
+                # Manually-entered OT is still owed on half / hold / custom /
+                # travel_half days (crew worked past the shortened day). A
+                # kill-fee day has no work, so no OT there.
+                if ot_added > 0 and d.day_type != 'kill_fee':
+                    ot_base += hourly_rate * ot_mult * ot_added
                 continue
-
-            ot_added  = _float(getattr(d, 'est_ot_hours', None), 0.0)
-            total_hrs = st_hours_per_day + ot_added
 
             wk = get_week_key(d.date)
             weekly_days_work[wk].append(d.date)
             is_seventh = (seventh_rule == 'ot_all' and len(weekly_days_work[wk]) == 7)
 
             if is_seventh:
+                total_hrs = st_hours_per_day + ot_added
                 st_hrs = 0.0
                 ot_hrs = min(total_hrs, 8.0)
                 dt_hrs = max(0.0, total_hrs - 8.0)
             else:
-                st_hrs, ot_hrs, dt_hrs = calc_day_labor_hours(total_hrs, daily_st, daily_dt)
+                # Threshold-split the day's BASE hours only. Manually-entered
+                # est_ot_hours means "pay these hours as OT" — feeding them
+                # through calc_day_labor_hours let a profile with a daily ST
+                # threshold above the rate-type day (e.g. 8hr Day under an
+                # OT-after-10 profile) silently reclassify them as straight
+                # time, so the entered OT never reached the budget.
+                st_hrs, ot_hrs, dt_hrs = calc_day_labor_hours(st_hours_per_day, daily_st, daily_dt)
                 if weekly_st is not None:
                     weekly_st_f  = float(weekly_st)
                     accum        = weekly_st_accum[wk]
@@ -1027,6 +1045,7 @@ def _run_payroll_calc(rate, rate_type, qty, schedule_days, payroll_profile, payr
                         st_hrs   = remaining_st
                         ot_hrs  += overflow
                     weekly_st_accum[wk] += st_hrs
+                ot_hrs += ot_added
 
             st_base += hourly_rate * st_hrs
             ot_base += hourly_rate * ot_mult * ot_hrs
@@ -1057,9 +1076,10 @@ def _run_payroll_calc(rate, rate_type, qty, schedule_days, payroll_profile, payr
             if d.day_type == 'custom':
                 mult = _float(d.rate_multiplier, 1.0)
             st_base += rate * mult
-            # Add manual OT hours for this day (work / travel only — it
-            # doesn't make sense to pay OT on an off / kill_fee day).
-            if d.day_type in ('work', 'travel'):
+            # Add manual OT hours for any paid day (incl. half / hold /
+            # custom) — but not off / travel_unpaid (no pay) or kill_fee
+            # (no work performed).
+            if mult > 0 and d.day_type != 'kill_fee':
                 _ot_hrs = _float(getattr(d, 'est_ot_hours', None), 0.0)
                 if _ot_hrs > 0:
                     ot_base += _implied_hourly * _ot_mult_flat * _ot_hrs
