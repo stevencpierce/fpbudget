@@ -22381,9 +22381,53 @@ def _exclude_estimate_linked_txns_clause():
 # budget lines (typically non-labor) reference one via BudgetLine.po_id.
 # Future: Transaction.po_id + DocUpload.po_id for spend rollup.
 
+def _po_live_line_totals(budget, po_lines, pid):
+    """LIVE est_total per PO-assigned line, same calc as the budget grid.
+
+    The stored BudgetLine.estimated_total column is only a fallback the
+    calc honors for never-touched lines — editing qty/rate/days (incl.
+    zeroing a line) changes the LIVE total but leaves the stored value
+    behind, so any PO rollup reading the column showed stale amounts
+    (owner 2026-09-22: "zeroed a few out … the zero in the working did
+    not apply to the PO"). Returns {line_id: float}; falls back to the
+    stored column per line if its calc fails."""
+    fringe  = get_fringe_configs(db.session, pid)
+    profile = budget.payroll_profile
+    pw      = (budget.payroll_week_start
+               if budget.payroll_week_start is not None
+               else (profile.payroll_week_start if profile else 6))
+    smode   = ('working' if (budget.budget_mode in ('working', 'actual'))
+               else 'estimated')
+    live = {}
+    for l in po_lines:
+        try:
+            if l.use_schedule:
+                sd_rows = ScheduleDay.query.filter(
+                    ScheduleDay.budget_line_id == l.id,
+                    db.or_(ScheduleDay.schedule_mode == smode,
+                           ScheduleDay.schedule_mode == None)).all()
+                # Dedup NULL-mode legacy rows against mode-tagged rows
+                # for the same (instance, date) — same rule the grid uses.
+                dedup = {}
+                for d in sd_rows:
+                    k = (d.crew_instance or 1, d.date)
+                    ex = dedup.get(k)
+                    if ex is None or (ex.schedule_mode is None
+                                      and d.schedule_mode is not None):
+                        dedup[k] = d
+                res = calc_line_from_schedule(l, list(dedup.values()),
+                                              fringe, profile, pw)
+            else:
+                res = calc_line(l, fringe)
+            live[l.id] = float(res.get('est_total') or 0)
+        except Exception:
+            live[l.id] = float(l.estimated_total or 0)
+    return live
+
+
 def _po_to_dict(po, *, with_rollup=False, project_id=None):
-    """Serialize a PurchaseOrder. with_rollup adds budgeted (sum of
-    BudgetLine.estimated_total for assigned lines) and over_cap flag."""
+    """Serialize a PurchaseOrder. with_rollup adds budgeted (live-calc
+    sum of assigned lines' totals) and over_cap flag."""
     out = {
         "id":             po.id,
         "po_number":      po.po_number,
@@ -22480,7 +22524,15 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                                    BudgetLine.sort_order,
                                    BudgetLine.id)
                          .all())
-            budgeted = sum((float(l.estimated_total or 0) for l in _po_lines), 0.0)
+            # LIVE per-line totals (owner 2026-09-22: "zeroed a few out
+            # … the zero in the working did not apply to the PO"). The
+            # stored estimated_total column is only a fallback the calc
+            # honors for never-touched lines — editing qty/rate/days to
+            # zero zeroes the LIVE total but leaves the stored value
+            # behind, so the PO kept summing the stale figure. Run the
+            # same calc the budget grid uses instead.
+            _po_live = _po_live_line_totals(_canonical, _po_lines, _pid_for_rollup)
+            budgeted = sum(_po_live.values())
             line_count = len(_po_lines)
             # Per-line breakdown so the PO card can show which lines
             # contribute and at what amounts. Helps the user spot
@@ -22490,7 +22542,7 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                 "id":             l.id,
                 "account_code":   l.account_code,
                 "description":    l.description or l.account_name or '',
-                "estimated_total": float(l.estimated_total or 0),
+                "estimated_total": _po_live.get(l.id, 0.0),
                 "qty":            float(l.quantity or 0),
                 "days":           float(l.days or 0),
                 "rate":           float(l.rate or 0),
@@ -22722,8 +22774,14 @@ def po_list_page(pid):
                         break
                 return (_start, FP_COA_NAMES.get(_start, "Unassigned"))
 
+            _mirror_rows = _po_lines_q.all()
+            # Live per-line totals — same calc as the PO cards, so the
+            # COA mirror agrees with them (and with the budget grid)
+            # after edits. 2026-09-22.
+            _mirror_live = _po_live_line_totals(
+                _canonical_w, [_r[0] for _r in _mirror_rows], pid)
             _buckets = {}  # (start, name) -> list of dicts
-            for _ln, _po in _po_lines_q.all():
+            for _ln, _po in _mirror_rows:
                 _key = _section_for(_ln.account_code)
                 _buckets.setdefault(_key, []).append({
                     "id":              _ln.id,
@@ -22732,7 +22790,7 @@ def po_list_page(pid):
                     "qty":             float(_ln.quantity or 0),
                     "days":            float(_ln.days or 0),
                     "rate":            float(_ln.rate or 0),
-                    "estimated_total": float(_ln.estimated_total or 0),
+                    "estimated_total": _mirror_live.get(_ln.id, 0.0),
                     "po_id":           _po.id,
                     "po_number":       _po.po_number,
                     "vendor_name":     _po.vendor_name,
