@@ -630,20 +630,22 @@
     </tr>
   </thead>
   <tbody>
-    {% set ns = namespace(sec_est=0, sec_work=0) %}
+    {% set ns = namespace(sec_est=0, sec_work=0, sec_est_disp=0) %}
     {% for ln in sec.lines %}
     {% set res = line_results[ln.id] %}
-    {# Line total: in dispersed mode, use the server-rounded value so
-       sums line up across detail page → top sheet → grand total. Per
-       line, rounding is independent (stable across exports), then a
-       largest-remainder pass bumps individual lines by ±$10 to make the
-       visible grand total exact. Cells above (Rate × Qty × Days =
-       Subtotal) stay at exact fee_m × base — the small gap between
-       Subtotal and the rounded Total is acceptable since rounding is
-       always to the nearest $10 (within $5 of true value). #}
+    {# Line total: in dispersed mode, the exact per-line fee-inclusive
+       value from the server (base + this line's whole-dollar share). #}
     {% set line_total = pdf_line_totals.get(ln.id, res.est_total * fee_m) if dispersed else (res.est_total * fee_m) %}
     {% set frozen = (ln.working_total | float) if ln.working_total is not none else res.est_total %}
+    {# Estimated column display: a real frozen snapshot is a scalar with
+       no per-line share breakdown → best effort ×fee_m. But when there
+       is NO snapshot, frozen IS this line's current est_total, so use
+       the same exact fee-inclusive figure as the Working cell —
+       otherwise every labor line printed a phantom variance (share
+       excludes fringes; ×fee_m marks fringes up too). #}
+    {% set _est_disp = (line_total if (dispersed and ln.working_total is none) else (frozen * fee_m)) %}
     {% set ns.sec_est = ns.sec_est + frozen %}
+    {% set ns.sec_est_disp = ns.sec_est_disp + _est_disp %}
     {% set ns.sec_work = ns.sec_work + res.est_total %}
     {% set _meal_tags = ['craft_services','meal_courtesy_breakfast','meal_first','meal_second','working_meal'] %}
     {% set _is_meal = ln.line_tag in _meal_tags %}
@@ -785,34 +787,39 @@
         {% set _show_count = true %}
       {% endif %}
       <td class="num">{% if _show_count %}{{ _dur_disp }} {% endif %}{{ _unit_label }}</td>
-      {# Dispersed mode: inflate EVERY cell by fee_m so Rate × Qty × Days
-         = Subtotal = Estimated all line up internally. Per user 2026-04-28:
-         the previous "show base rate but inflated total" approach left a
-         visible gap that exposed the markup. Showing every cell at the
-         dispersed level means the client sees what looks like a higher
-         natural rate — no inconsistency to spot. #}
-      {% set _cell_m = fee_m %}
-      <td class="num">${{ "{:,.2f}".format(ln.rate | float * _cell_m) }}</td>
+      {# Dispersed mode: each money cell carries the line's OWN fee share
+         (server-computed pdf_line_cells), folded into exactly the
+         components the fee was computed on. The old uniform ×fee_m
+         inflated the Fringe cell too, so Subtotal + Fringe never equaled
+         the exact per-line Total (owner 2026-09-22: "the subtotal
+         doesn't add up to the line by line total"). Now Rate × Qty ×
+         Days = Subtotal and Subtotal + OT-in-sub + Fringe = Total to
+         the penny, and fee-exempt lines print raw. #}
+      {% set _pc = pdf_line_cells.get(ln.id) if (dispersed and pdf_line_cells) else none %}
+      <td class="num">${{ "{:,.2f}".format(_pc.rate if _pc else (ln.rate | float * fee_m)) }}</td>
       {% if sec.has_ot %}
-      <td class="num">{% if ln.is_labor and res.ot_amount %}{{ currency(res.ot_amount * _cell_m) }}{% endif %}</td>
+      <td class="num">{% if ln.is_labor and res.ot_amount %}{{ currency(_pc.ot if _pc else (res.ot_amount * fee_m)) }}{% endif %}</td>
       {% endif %}
       {% if sec.has_fringe %}
-      <td class="num">{% if ln.is_labor and res.fringe_amount %}{{ currency(res.fringe_amount * _cell_m) }}{% endif %}</td>
+      <td class="num">{% if ln.is_labor and res.fringe_amount %}{{ currency(_pc.fringe if _pc else (res.fringe_amount * fee_m)) }}{% endif %}</td>
       {% endif %}
-      <td class="num">{{ currency(res.subtotal * _cell_m) }}</td>
+      <td class="num">{{ currency(_pc.subtotal if _pc else (res.subtotal * fee_m)) }}</td>
       {% if sec.has_agent %}
       <td class="num">{% if ln.is_labor and ln.agent_pct %}{{ (ln.agent_pct | float * 100) | round(1) }}%{% endif %}</td>
       {% elif sec.has_discount %}
       <td class="num">{% if (not ln.is_labor) and ln.agent_pct %}{{ (ln.agent_pct | float * 100) | round(1) }}%{% endif %}</td>
       {% endif %}
       {% if is_working_view %}
-      {% if _col_est  %}<td class="num">{{ currency(frozen * fee_m) }}</td>{% endif %}
-      {% if _col_work %}<td class="num">{{ currency(res.est_total * fee_m) }}</td>{% endif %}
+      {% if _col_est  %}<td class="num">{{ currency(_est_disp) }}</td>{% endif %}
+      {# Working cell: exact per-line fee-inclusive total (matches Top
+         Sheet per-line shares). #}
+      {% set _work_disp = (pdf_line_totals.get(ln.id, res.est_total * fee_m) if (dispersed and pdf_line_totals) else (res.est_total * fee_m)) %}
+      {% if _col_work %}<td class="num">{{ currency(_work_disp) }}</td>{% endif %}
       {% if _show_var %}
         {# Detail-line variance uses Work − Est (est_v_work). Per-line
            Actual isn't computed in this template; the other basis
            options only apply to the Top Sheet rollups. #}
-        {% set _var = (res.est_total - frozen) * fee_m %}
+        {% set _var = _work_disp - _est_disp %}
         <td class="num {% if _var > 0.005 %}var-over{% elif _var < -0.005 %}var-under{% endif %}">{{ currency(_var) }}</td>
       {% endif %}
       {% else %}
@@ -874,38 +881,42 @@
     {% endif %}
     {% endif %}{# /header-elif-spacer-else block #}
     {% endfor %}
+    {# Accumulate the DISPLAY values (per-line fee shares folded in when
+       dispersed) so section cells equal the sum of the cells printed
+       above them — column-consistent by construction. #}
     {% set ns_sub = namespace(subtot=0, ot=0, fringe=0) %}
     {% for ln in sec.lines %}{% set _r = line_results[ln.id] %}
-      {% set ns_sub.subtot = ns_sub.subtot + _r.subtotal %}
-      {% set ns_sub.ot     = ns_sub.ot     + (_r.ot_amount or 0) %}
-      {% set ns_sub.fringe = ns_sub.fringe + (_r.fringe_amount or 0) %}
+      {% set _pcs = pdf_line_cells.get(ln.id) if (dispersed and pdf_line_cells) else none %}
+      {% set ns_sub.subtot = ns_sub.subtot + (_pcs.subtotal if _pcs else (_r.subtotal * fee_m)) %}
+      {% set ns_sub.ot     = ns_sub.ot     + (_pcs.ot if _pcs else ((_r.ot_amount or 0) * fee_m)) %}
+      {% set ns_sub.fringe = ns_sub.fringe + (_pcs.fringe if _pcs else ((_r.fringe_amount or 0) * fee_m)) %}
     {% endfor %}
     {# colspan accounts for: Description (1) + Qty/Payroll if shown (1)
        + Days (1) + Rate (1) = up to 4. We collapse to 3 columns of
        label, then leave Rate column blank, so total leading columns =
        1 (label group) covering Description + (Qty/Payroll if any).
        Simpler: span everything before Subtotal. #}
-    {# Description + (Payroll/Qty if shown) + Days + Rate + (OT?) + (Fringe?) #}
+    {# Description + (Payroll/Qty if shown) + Days + Rate. OT / Fringe
+       columns now print their sums on the section row (previously
+       swallowed by the colspan) so Subtotal + Fringe visibly equals
+       the section Total on labor sections. #}
     {% set _lead_cols = 1
        + (1 if (sec.has_payroll or sec.has_qty) else 0)
-       + 2
-       + (1 if sec.has_ot else 0)
-       + (1 if sec.has_fringe else 0) %}
-    {# Section total: in dispersed mode, sum of the server-rounded line
-       totals so it reconciles exactly with detail rows AND the top
-       sheet. Section subtotal cell still shows fee_m-inflated value so
-       Subtotal column stays consistent with line cells above. #}
+       + 2 %}
+    {# Section total: in dispersed mode, sum of the exact per-line
+       totals so it reconciles with detail rows AND the top sheet. #}
     {% set _sec_total_disp = pdf_section_totals.get(sec.code, ns.sec_work * fee_m) if dispersed else (ns.sec_work * fee_m) %}
-    {% set _cell_m = fee_m %}
     <tr class="section-sub">
       <td colspan="{{ _lead_cols }}" style="text-align:right;padding-right:9pt">{{ sec.name }} — Subtotal</td>
-      <td class="num">{{ currency(ns_sub.subtot * _cell_m) }}</td>
+      {% if sec.has_ot %}<td class="num">{{ currency(ns_sub.ot) }}</td>{% endif %}
+      {% if sec.has_fringe %}<td class="num">{{ currency(ns_sub.fringe) }}</td>{% endif %}
+      <td class="num">{{ currency(ns_sub.subtot) }}</td>
       {% if sec.has_agent or sec.has_discount %}<td class="num"></td>{% endif %}
       {% if is_working_view %}
-      {% if _col_est  %}<td class="num">{{ currency(ns.sec_est * _cell_m) }}</td>{% endif %}
+      {% if _col_est  %}<td class="num">{{ currency(ns.sec_est_disp) }}</td>{% endif %}
       {% if _col_work %}<td class="num">{{ currency(_sec_total_disp) }}</td>{% endif %}
       {% if _show_var %}
-        {% set _svar = _sec_total_disp - (ns.sec_est * _cell_m) %}
+        {% set _svar = _sec_total_disp - ns.sec_est_disp %}
         <td class="num {% if _svar > 0.005 %}var-over{% elif _svar < -0.005 %}var-under{% endif %}">{{ currency(_svar) }}</td>
       {% endif %}
       {% else %}

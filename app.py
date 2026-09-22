@@ -15612,14 +15612,52 @@ def export_pdf(pid, bid):
     # untouched.)
     pdf_line_totals = {}
     pdf_section_totals = {}
+    pdf_line_cells = {}
     if dispersed:
         _pdf_fee_by_line = top_sheet.get("fee_by_line") or {}
+        _pdf_excl_fr = bool(top_sheet.get("company_fee_exclude_fringes", True))
         for sec in sections_ordered:
             for ln in sec["lines"]:
                 res = line_results.get(ln.id) or {}
                 pdf_line_totals[ln.id] = round(
                     float(res.get("est_total") or 0)
                     + float(_pdf_fee_by_line.get(ln.id, 0) or 0), 2)
+                # Per-line display cells (owner 2026-09-22: "the subtotal
+                # doesn't add up to the line by line total"). The old
+                # uniform ×(1+pct) on Rate/OT/Fringe/Subtotal broke row
+                # math against the exact per-line fee share in Total —
+                # worst on labor, where fringes are (by default) NOT in
+                # the fee base but the fringe cell got marked up anyway.
+                # Instead scale each line by ITS OWN share, folded into
+                # exactly the components the fee was computed on, so
+                # Subtotal + OT-in-subtotal + Fringe (+Agent%) = Total
+                # to the penny and fee-exempt/overridden lines show raw.
+                _sub = float(res.get("subtotal") or 0)
+                _fr  = float(res.get("fringe_amount") or 0)
+                _ag  = float(res.get("agent_amount") or 0)
+                _est = float(res.get("est_total") or 0)
+                _ot  = float(res.get("ot_amount") or 0)
+                _share = float(_pdf_fee_by_line.get(ln.id, 0) or 0)
+                if getattr(ln, 'is_labor', False) and _pdf_excl_fr:
+                    # Fee base = subtotal + agent (fringe exempt): the
+                    # whole share lands on the subtotal side; fringe
+                    # prints its true dollars (matches the WC/PI/PF
+                    # "x% of $N labor" sidecars on the top sheet).
+                    _den = _sub + _ag
+                    _k = (1.0 + _share / _den) if _den > 0 else 1.0
+                    _fr_disp = _fr
+                else:
+                    # Fee base includes fringe (or non-labor, where
+                    # agent_pct is a discount applied AFTER subtotal):
+                    # scale everything so post-discount math still ties.
+                    _k = ((_est + _share) / _est) if _est > 0 else 1.0
+                    _fr_disp = _fr * _k
+                pdf_line_cells[ln.id] = {
+                    "rate":     float(ln.rate or 0) * _k,
+                    "ot":       _ot * _k,
+                    "fringe":   _fr_disp,
+                    "subtotal": _sub * _k,
+                }
             pdf_section_totals[sec["code"]] = round(sum(
                 pdf_line_totals.get(ln.id, 0) for ln in sec["lines"]), 2)
         # Top-sheet rows: calc_top_sheet's fee-inclusive row value — equal
@@ -15833,8 +15871,9 @@ def export_pdf(pid, bid):
         sections_ordered=sections_ordered,
         line_results=line_results,
         fee_m=fee_m,
-        pdf_line_totals=pdf_line_totals,        # rounded dispersed line totals
-        pdf_section_totals=pdf_section_totals,  # rounded dispersed section sums
+        pdf_line_totals=pdf_line_totals,        # exact dispersed line totals
+        pdf_section_totals=pdf_section_totals,  # exact dispersed section sums
+        pdf_line_cells=pdf_line_cells,          # per-line display Rate/OT/Fringe/Subtotal
         suppress_zeros=suppress_zeros,
         col_est=col_est, col_work=col_work, col_act=col_act, col_var=col_var,
         var_basis=var_basis,
