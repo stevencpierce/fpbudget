@@ -1619,6 +1619,16 @@
             {% endif %}
             <span class="line-number">{{ sec.code }}-{{ '%02d' % ns.line_counter }}</span><span class="editable" data-field="description"
                   data-id="{{ ln.id }}">{{ ln.description or '' }}</span>
+            {# Estimated-ancestor title (owner 2026-09-22): when a Working/
+               Actual line was renamed — or duplicated to split one
+               Estimated item in two — show which Estimated line it came
+               from, so the change is visible at a glance. #}
+            {% if is_working_view and est_origin_desc_by_wlid and est_origin_desc_by_wlid.get(ln.id) %}
+            <div class="muted" style="font-size:.7rem;margin-top:.1rem;font-style:italic;color:#94a3b8"
+                 title="This line descends from this Estimated line — the title was changed in this version">
+              ↳ Est: {{ est_origin_desc_by_wlid.get(ln.id) }}
+            </div>
+            {% endif %}
             {# 🚩 Discussion flag (owner 2026-09-10). Click to edit/clear;
                set via the row's right-click / ⋮ menu. #}
             <span class="discussion-flag" data-line-id="{{ ln.id }}"
@@ -1914,6 +1924,25 @@
              sort_order collisions (kit fee shares parent's sort_order) AND to
              corrupted source_line_id links. Positional only as last resort.
              (User 2026-06-01.) #}
+          {# Claim-once resolution (owner 2026-09-22): each Estimated
+             line's dollars belong to exactly ONE row here, resolved
+             server-side (clone link → description → position). A row
+             that claims nothing — e.g. a duplicate made to split one
+             Estimated item in two — is genuinely new in this version
+             and shows Estimated $0, not its sibling's value. The old
+             template-side lookups couldn't know a sister row already
+             matched, so a split showed the full amount TWICE and
+             inflated the section's Estimated total. #}
+          {% set _est_new_line = false %}
+          {% if est_claim_active and est_claim_val_by_wlid %}
+            {% set _ecv = est_claim_val_by_wlid.get(ln.id, none) %}
+            {% if _ecv is not none %}
+              {% set _frozen = _ecv %}
+            {% else %}
+              {% set _frozen = 0.0 %}
+              {% set _est_new_line = true %}
+            {% endif %}
+          {% else %}
           {% set _est_live = estimated_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
           {% if _est_live is none %}
             {% set _est_live = estimated_line_totals.get((ln.account_code, ln.sort_order), none) %}
@@ -1925,8 +1954,10 @@
           {% else %}
             {% set _frozen = res.est_total %}
           {% endif %}
+          {% endif %}
           <td class="col-num line-total line-frozen-est">
-            <span class="frozen-est" data-raw="{{ _frozen }}">{{ _frozen | currency }}</span>
+            <span class="frozen-est" data-raw="{{ _frozen }}"
+                  {% if _est_new_line %}title="Not in the Estimated budget — this line was added (or split off) in this version"{% endif %}>{{ _frozen | currency }}</span>
           </td>
           {# Working column: in pure Working view this is the active edit
              cell (bold) — res.est_total IS the Working line. In Actual
@@ -2564,7 +2595,12 @@
       </tbody>
       {% set sec_working = namespace(total=0) %}
       {% for ln in sec.lines %}
-        {% if ln.working_total is not none %}
+        {% if est_claim_active and est_claim_val_by_wlid %}
+          {# Claim-once: sum what the per-line Estimated cells actually
+             display, so a split/duplicated row (Estimated $0) no longer
+             inflates the section's Estimated total. #}
+          {% set sec_working.total = sec_working.total + ((est_claim_val_by_wlid.get(ln.id) or 0) | float) %}
+        {% elif ln.working_total is not none %}
           {% set sec_working.total = sec_working.total + (ln.working_total | float) %}
         {% else %}
           {% set sec_working.total = sec_working.total + line_results[ln.id].est_total %}

@@ -8074,6 +8074,74 @@ def budget_view(pid, bid):
                 except Exception:
                     pass  # skip any line that fails to calc
 
+    # ── Claim-once Estimated resolution for Working/Actual views ────────
+    # (owner 2026-09-22) Duplicating a Working line to split one Estimated
+    # item in two left BOTH halves resolving to the same Estimated line —
+    # the per-line "Estimated" column showed the full $3,000 twice and the
+    # section Estimated total inflated accordingly. The template's
+    # independent desc→position→snapshot lookups can't know a sister row
+    # already matched, so resolution moves server-side: each Estimated
+    # line's dollars are claimable by exactly ONE line of the viewed
+    # budget (clone link first, then description, then position). A line
+    # that claims nothing is genuinely new in this version → Estimated $0.
+    # est_origin_desc_by_wlid carries the Estimated ancestor's title for
+    # lines that were renamed (or split) so the grid can show what it was.
+    est_claim_val_by_wlid   = {}   # viewed line id → claimed est display value | None
+    est_origin_desc_by_wlid = {}   # viewed line id → Estimated ancestor's title
+    est_claim_active = (bool(current_estimated_bid)
+                        and current_estimated_bid != budget.id
+                        and budget.budget_mode in ('working', 'actual'))
+    if est_claim_active:
+        def _is_struct_ln(_l):
+            return getattr(_l, 'line_tag', None) in ('header', 'spacer')
+        _e_real    = [_e for _e in _eblines if not _is_struct_ln(_e)]
+        _e_by_id   = {_e.id: _e for _e in _e_real}
+        _e_by_desc = {}
+        for _e in _e_real:
+            _e_by_desc.setdefault(_desc_key(_e), []).append(_e)
+        _e_by_pos  = {(_e.account_code, _e.sort_order): _e
+                      for _e in _e_real if not _e.parent_line_id}
+        _w_sorted  = sorted((l for l in lines if not _is_struct_ln(l)),
+                            key=lambda l: (l.account_code or 0, l.sort_order or 0, l.id))
+        _claimed, _resolved = set(), {}
+        # Pass 1 — explicit clone link (source_line_id → Estimated line).
+        for _wl in _w_sorted:
+            _e = _e_by_id.get(getattr(_wl, 'source_line_id', None) or 0)
+            if _e is not None and _e.id not in _claimed:
+                _claimed.add(_e.id)
+                _resolved[_wl.id] = _e
+        # Pass 2 — same normalized description within the account code.
+        for _wl in _w_sorted:
+            if _wl.id in _resolved:
+                continue
+            for _e in _e_by_desc.get(_desc_key(_wl), []):
+                if _e.id not in _claimed:
+                    _claimed.add(_e.id)
+                    _resolved[_wl.id] = _e
+                    break
+        # Pass 3 — position, top-level rows only (kit-fee children share
+        # the parent's sort_order and would collide).
+        for _wl in _w_sorted:
+            if _wl.id in _resolved or _wl.parent_line_id:
+                continue
+            _e = _e_by_pos.get((_wl.account_code, _wl.sort_order))
+            if _e is not None and _e.id not in _claimed:
+                _claimed.add(_e.id)
+                _resolved[_wl.id] = _e
+        for _wl in _w_sorted:
+            _e = _resolved.get(_wl.id)
+            est_claim_val_by_wlid[_wl.id] = (
+                float(est_total_by_eid.get(_e.id, 0) or 0) if _e is not None else None)
+            # Ancestor title: the claimed match, else the clone link even
+            # when a sibling claimed its dollars (a split copy still
+            # descends from that Estimated line).
+            _osrc = _e if _e is not None else _e_by_id.get(
+                getattr(_wl, 'source_line_id', None) or 0)
+            if _osrc is not None:
+                _od = (_osrc.description or '').strip()
+                if _od and _od.lower() != (_wl.description or '').strip().lower():
+                    est_origin_desc_by_wlid[_wl.id] = _od
+
     # ── Estimated Top Sheet — live cross-view rollup ─────────────────────
     # The Top Sheet's Estimated column was previously reading
     # row.estimated from the *current* budget's top_sheet. For Working /
@@ -8997,6 +9065,9 @@ def budget_view(pid, bid):
         working_line_totals=working_line_totals,
         estimated_line_totals=estimated_line_totals,
         estimated_line_totals_by_desc=estimated_line_totals_by_desc,
+        est_claim_active=est_claim_active,
+        est_claim_val_by_wlid=est_claim_val_by_wlid,
+        est_origin_desc_by_wlid=est_origin_desc_by_wlid,
         est_top_sheet=est_top_sheet,
         est_section_lookup=est_section_lookup,
         actual_line_totals=actual_line_totals,
@@ -9542,8 +9613,19 @@ def line_duplicate(pid, bid, lid):
             unit_rate        = src.unit_rate,
             assigned_crew_id = None,                     # <-- cleared
             catalog_item_id  = src.catalog_item_id,
-            working_total    = src.working_total,
-            manual_actual    = src.manual_actual,
+            # Frozen cross-version snapshots are NOT copied (owner
+            # 2026-09-22: duplicated a Working line to split one
+            # Estimated item in two, and both halves showed the full
+            # $3,000 Estimated — the copy had inherited working_total).
+            # The copy is a NEW line: it has no Estimated counterpart
+            # of its own and no manually-keyed actual.
+            working_total    = None,
+            manual_actual    = None,
+            # Keep the clone-provenance link so the grid can show which
+            # Estimated line this copy was split from. Claim-once
+            # resolution in budget_view stops it double-claiming the
+            # original's Estimated dollars.
+            source_line_id   = src.source_line_id,
             schedule_labels  = src.schedule_labels,
             sort_order       = 0,                        # placeholder, reseated below
         )
