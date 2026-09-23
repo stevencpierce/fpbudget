@@ -449,18 +449,29 @@ def sync_schedule_driven_lines(budget_id, db_session):
     # Build date → crew headcount map (non-off days only). Used for craft
     # services, per-diem, hotel, flight, mileage — things that apply to
     # everyone present that day including travel / hold / half.
+    #
+    # LABOR ROWS ONLY (2026-09-23): equipment / rental lines can be
+    # schedule-driven too, and their ScheduleDay cells were being counted
+    # as PEOPLE here — inflating meal / craft headcounts with camera
+    # bodies. The Catering tab's grid always filtered to labor lines;
+    # the sync now matches it.
     date_headcount = {}
-    # SEPARATE map: date → WORKING headcount only (day_type == 'work').
-    # Used for meal calculations (courtesy breakfast / first meal /
-    # second meal). Per user 2026-04-17: meals should only count people
-    # actually working on that day — travel / hold / off / half / kill_fee
-    # crew aren't on set to eat the meal, so they shouldn't inflate the
-    # meal line qty.
+    # SEPARATE map: date → WORKING headcount only. Used for meal
+    # calculations (courtesy breakfast / first meal / second meal). Per
+    # user 2026-04-17: meals should only count people actually working
+    # that day — travel / hold / off / half / kill_fee crew aren't on
+    # set to eat the meal, so they shouldn't inflate the meal line qty.
+    # 'custom' counts as working (2026-09-23, owner: "many more people
+    # on today and no first meals for them") — a custom-multiplier day
+    # is a paid work day (late-night bonus, event-day rate, etc.), its
+    # crew are on set.
     date_working_headcount = {}
     for sd in sched_days:
+        if sd.budget_line_id not in labor_by_id:
+            continue
         if sd.day_type != 'off':
             date_headcount[sd.date] = date_headcount.get(sd.date, 0) + 1
-        if sd.day_type == 'work':
+        if sd.day_type in ('work', 'custom'):
             date_working_headcount[sd.date] = date_working_headcount.get(sd.date, 0) + 1
 
     # Craft Services — user-toggled per-day flag on ProductionDay. Was
@@ -596,7 +607,9 @@ def sync_schedule_driven_lines(budget_id, db_session):
     headcounts  = {}
     for tag in SCHEDULE_LINE_DEFS:
         hcs = day_hcs[tag]
-        headcounts[tag] = round(sum(hcs) / len(hcs)) if hcs else 0
+        # int(x + .5), not round(): banker's rounding rounds 12.5 → 12,
+        # silently shaving a head off qty on .5 averages.
+        headcounts[tag] = int(sum(hcs) / len(hcs) + 0.5) if hcs else 0
 
     # Existing auto lines by tag
     existing_auto = {ln.line_tag: ln for ln in all_lines

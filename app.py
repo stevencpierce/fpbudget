@@ -18429,6 +18429,86 @@ def budget_present_decisions(pid, bid):
     return jsonify({"ok": True, "applied": len(applied)})
 
 
+@app.route("/admin/meal-status")
+@login_required
+def admin_meal_status():
+    """Super-admin diagnostic (owner 2026-09-23: "many more people on
+    today and no first meals for them are being calculated"). Shows, for
+    ?project=<id or name fragment>, every current budget's meal picture:
+    per date — ProductionDay flags WITH their schedule_mode (a flag
+    stored under the wrong mode is invisible to the sync), headcounts
+    split by day_type, and the meal auto-lines' stored qty/days/total
+    plus sync_omit (a frozen line never updates from the schedule)."""
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
+    import json as _json_ms
+    q = (request.args.get('project') or '').strip()
+    if not q:
+        return jsonify({"usage": "?project=<id or name fragment>"})
+    if q.isdigit():
+        proj = ProjectSheet.query.get(int(q))
+    else:
+        proj = ProjectSheet.query.filter(ProjectSheet.name.ilike(f'%{q}%')).first()
+    if not proj:
+        return jsonify({"error": f"no project matching {q!r}"})
+    from models import ProductionDay as _PD
+    _MEAL_TAGS = ['meal_courtesy_breakfast', 'meal_first', 'meal_second',
+                  'craft_services', 'working_meal']
+    out = {"project": {"id": proj.id, "name": proj.name}, "budgets": []}
+    budgets = (Budget.query.filter_by(project_id=proj.id, version_status='current')
+               .order_by(Budget.id).all())
+    for b in budgets:
+        smode = 'working' if b.budget_mode in ('working', 'actual') else 'estimated'
+        binfo = {"id": b.id, "name": b.name, "mode": b.budget_mode,
+                 "sched_mode_used": smode, "dates": [], "meal_lines": [],
+                 "pd_rows_other_mode": []}
+        lines = BudgetLine.query.filter_by(budget_id=b.id).all()
+        labor_ids = {l.id for l in lines if l.is_labor}
+        qty_gt1 = [{"line": l.description or l.account_name, "qty": float(l.quantity or 0)}
+                   for l in lines if l.is_labor and float(l.quantity or 0) > 1]
+        if qty_gt1:
+            binfo["labor_qty_gt1"] = qty_gt1  # schedule rows count instances, not qty
+        for l in lines:
+            if l.line_tag in _MEAL_TAGS:
+                binfo["meal_lines"].append({
+                    "tag": l.line_tag, "description": l.description,
+                    "qty": float(l.quantity or 0), "days": float(l.days or 0),
+                    "rate": float(l.rate or 0),
+                    "estimated_total": float(l.estimated_total or 0),
+                    "sync_omit": bool(l.sync_omit),
+                })
+        # ALL pd rows (both modes) so mode mismatches are visible.
+        pd_rows = _PD.query.filter_by(budget_id=b.id).all()
+        sd_rows = ScheduleDay.query.filter_by(budget_id=b.id).all()
+        by_date = {}
+        for sd in sd_rows:
+            if sd.schedule_mode not in (smode, None):
+                continue
+            if sd.budget_line_id not in labor_ids:
+                continue
+            d = by_date.setdefault(sd.date, {})
+            d[sd.day_type or 'off'] = d.get(sd.day_type or 'off', 0) + 1
+        pd_by_date = {}
+        for pd_row in pd_rows:
+            flags = {k: bool(getattr(pd_row, k, False)) for k in
+                     ('courtesy_breakfast', 'first_meal', 'second_meal',
+                      'craft_services', 'is_production_day')}
+            entry = {"schedule_mode": pd_row.schedule_mode, **flags}
+            if pd_row.schedule_mode in (smode, None):
+                pd_by_date[pd_row.date] = entry
+            elif any(flags.values()):
+                binfo["pd_rows_other_mode"].append(
+                    {"date": pd_row.date.isoformat(), **entry})
+        for d in sorted(set(by_date) | set(pd_by_date)):
+            binfo["dates"].append({
+                "date": d.isoformat(),
+                "headcount_by_day_type": by_date.get(d, {}),
+                "meal_flags": pd_by_date.get(d),
+            })
+        out["budgets"].append(binfo)
+    return Response(_json_ms.dumps(out, indent=2), mimetype="application/json")
+
+
 @app.route("/admin/crew-lookup")
 @login_required
 def admin_crew_lookup():
@@ -20909,7 +20989,9 @@ def catering_grid(pid, bid):
         }
         if sd.day_type != 'off':
             bucket["all_crew"].append(person_entry)
-        if sd.day_type == 'work':
+        # 'custom' is a paid work day (late-night bonus / event rate) —
+        # its crew are on set and eat like any work day. 2026-09-23.
+        if sd.day_type in ('work', 'custom'):
             bucket["working_crew"].append(person_entry)
         if flags.get('working_meal'):
             bucket["people_working_meal"].append({**person_entry, "schedule_day_id": sd.id})
@@ -21329,7 +21411,8 @@ def catering_export(pid, bid):
                  "ident": ident}
         if sd.day_type != 'off':
             bucket["all_present"].append(entry)
-        if sd.day_type == 'work':
+        # 'custom' = paid work day — counts for meals. 2026-09-23.
+        if sd.day_type in ('work', 'custom'):
             bucket["working"].append(entry)
         if flags.get('working_meal'):
             bucket["working_meal"].append(entry)
@@ -21481,6 +21564,164 @@ def catering_export(pid, bid):
     )
 
 
+@app.route("/projects/<int:pid>/budget/<int:bid>/travel/export")
+@login_required
+def travel_export(pid, bid):
+    """Printable travel manifest — the Travel-tab sibling of
+    /catering/export (owner 2026-09-23: "build the travel report
+    export"). One section per person, chronological: flights (airline /
+    number / airports / times / confirmation), hotel stays (nights,
+    confirmation), car rentals / car service, travel + mileage days,
+    and a per-diem summary. Optional filters:
+      ?from=YYYY-MM-DD&to=YYYY-MM-DD  (default: whole schedule)
+      &recipient=coordinator|crew     (header phrasing)
+    Print-to-PDF from the browser, same as the catering exports."""
+    budget  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    project = ProjectSheet.query.get_or_404(pid)
+    sched_mode = 'working' if budget.budget_mode in ('working', 'actual') else 'estimated'
+    recipient  = (request.args.get('recipient') or 'coordinator').strip()
+
+    def _arg_date(name):
+        v = (request.args.get(name) or '').strip()
+        try:
+            return datetime.strptime(v[:10], "%Y-%m-%d").date() if v else None
+        except ValueError:
+            return None
+    d_from, d_to = _arg_date('from'), _arg_date('to')
+
+    from sqlalchemy import or_ as _or_tx
+    from models import TravelDetail
+    raw_sd = ScheduleDay.query.filter(
+        ScheduleDay.budget_id == bid,
+        _or_tx(ScheduleDay.schedule_mode == sched_mode,
+               ScheduleDay.schedule_mode == None),
+    ).all()
+    dedup = {}
+    for sd in raw_sd:
+        key = (sd.budget_line_id, sd.crew_instance or 1, sd.date)
+        ex = dedup.get(key)
+        if ex is None:
+            dedup[key] = sd
+        elif ex.schedule_mode is None and sd.schedule_mode == sched_mode:
+            dedup[key] = sd
+    sched_days = [sd for sd in dedup.values()
+                  if (d_from is None or sd.date >= d_from)
+                  and (d_to is None or sd.date <= d_to)]
+
+    all_lines  = BudgetLine.query.filter_by(budget_id=bid).all()
+    line_by_id = {ln.id: ln for ln in all_lines}
+    cas = CrewAssignment.query.filter(
+        CrewAssignment.budget_line_id.in_([ln.id for ln in all_lines if ln.is_labor])
+    ).all()
+    ca_by_key = {(ca.budget_line_id, ca.instance or 1): ca for ca in cas}
+
+    sd_ids = [sd.id for sd in sched_days]
+    tds_by_sd = {}
+    if sd_ids:
+        for td in TravelDetail.query.filter(
+                TravelDetail.schedule_day_id.in_(sd_ids)).all():
+            tds_by_sd.setdefault(td.schedule_day_id, []).append(td)
+
+    import json as _json_tx
+    from budget_calc import SCHEDULE_LINE_DEFS as _SLD_tx
+    _pd_rate = lambda k: float(_SLD_tx[f'per_diem_{k}'][3])
+
+    _PD_KINDS = ('full', 'breakfast', 'lunch', 'dinner')
+    people = {}   # (line_id, instance) → person dict
+    for sd in sorted(sched_days, key=lambda s: s.date):
+        line = line_by_id.get(sd.budget_line_id)
+        if not line or not line.is_labor:
+            continue
+        try:
+            flags = _json_tx.loads(sd.cell_flags) if sd.cell_flags else {}
+        except (ValueError, TypeError):
+            flags = {}
+        if flags.get('per_diem') and not flags.get('per_diem_full'):
+            flags['per_diem_full'] = True
+        tds = tds_by_sd.get(sd.id, [])
+        is_travel_day = (sd.day_type or '').startswith('travel')
+        pd_kind = next((k for k in _PD_KINDS if flags.get(f'per_diem_{k}')), None)
+        has_any = (is_travel_day or tds or flags.get('flight')
+                   or flags.get('hotel') or flags.get('car_rental')
+                   or flags.get('mileage') or pd_kind)
+        if not has_any:
+            continue
+        role, person = _resolve_person_for_cell(line, sd.crew_instance, ca_by_key)
+        key = (line.id, sd.crew_instance or 1)
+        p = people.setdefault(key, {
+            "role": role, "person": person or '—',
+            "flights": [], "hotels": [], "cars": [],
+            "travel_days": [], "mileage_days": [],
+            "pd_counts": {k: 0 for k in _PD_KINDS}, "pd_total": 0.0,
+            "notes": [],
+        })
+        if is_travel_day:
+            p["travel_days"].append({
+                "date": sd.date,
+                "label": {'travel': 'Travel', 'travel_half': 'Travel — ½ day',
+                          'travel_unpaid': 'Travel — unpaid'}.get(sd.day_type, 'Travel'),
+                "note": sd.note or '',
+            })
+        elif flags.get('flight') and not any(td.kind == 'flight' for td in tds):
+            # Flight flagged but no detail entered yet — still list the day.
+            p["flights"].append({"date": sd.date, "airline": '', "flight_no": '',
+                                 "route": '', "depart_at": None, "arrive_at": None,
+                                 "confirmation_no": '', "notes": 'flagged — details TBD'})
+        if flags.get('mileage'):
+            p["mileage_days"].append(sd.date)
+        if pd_kind:
+            p["pd_counts"][pd_kind] += 1
+            p["pd_total"] += _pd_rate(pd_kind)
+        for td in tds:
+            if td.kind == 'flight':
+                _route = ' → '.join(x for x in (td.depart_airport, td.arrive_airport) if x)
+                p["flights"].append({
+                    "date": sd.date, "airline": td.airline or '',
+                    "flight_no": td.flight_no or '', "route": _route,
+                    "depart_at": td.depart_at, "arrive_at": td.arrive_at,
+                    "confirmation_no": td.confirmation_no or '',
+                    "notes": td.notes or '',
+                })
+            elif td.kind == 'hotel':
+                _nights = ((td.check_out - td.check_in).days
+                           if (td.check_in and td.check_out
+                               and td.check_out > td.check_in) else None)
+                _hkey = (td.hotel_name, td.check_in, td.check_out, td.confirmation_no)
+                if _hkey not in {(h["hotel_name"], h["check_in"], h["check_out"],
+                                  h["confirmation_no"]) for h in p["hotels"]}:
+                    p["hotels"].append({
+                        "hotel_name": td.hotel_name or '—',
+                        "hotel_address": td.hotel_address or '',
+                        "check_in": td.check_in, "check_out": td.check_out,
+                        "nights": _nights, "room_type": td.room_type or '',
+                        "confirmation_no": td.confirmation_no or '',
+                        "notes": td.notes or '',
+                    })
+            elif td.kind in ('car_rental', 'car_service', 'mileage'):
+                p["cars"].append({
+                    "kind": td.kind, "date": sd.date,
+                    "rental_co": td.rental_co or '',
+                    "pickup_at": td.pickup_at, "return_at": td.return_at,
+                    "pickup_location": td.pickup_location or '',
+                    "confirmation_no": td.confirmation_no or '',
+                    "notes": td.notes or '',
+                })
+
+    people_rows = sorted(people.values(),
+                         key=lambda p: (p["person"] == '—', p["person"].lower(),
+                                        p["role"].lower()))
+    all_dates = sorted({sd.date for sd in sched_days}) if sched_days else []
+    return render_template(
+        "travel_export.html",
+        project=project, budget=budget, recipient=recipient,
+        people=people_rows,
+        date_from=d_from or (all_dates[0] if all_dates else None),
+        date_to=d_to or (all_dates[-1] if all_dates else None),
+        pd_rates={k: _pd_rate(k) for k in _PD_KINDS},
+        today=date.today(),
+    )
+
+
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>/schedule-detail")
 @login_required
 def line_schedule_detail(pid, bid, lid):
@@ -21597,7 +21838,9 @@ def line_schedule_detail(pid, bid, lid):
         ).all()
         meal_dates = {pd.date for pd in prod_days if getattr(pd, prod_flag_attr, False)}
         for sd in sched_days:
-            if sd.day_type != 'work':       # meals only feed working crew
+            # Meals only feed working crew — 'custom' is a paid work day
+            # (late-night bonus / event rate), so it counts. 2026-09-23.
+            if sd.day_type not in ('work', 'custom'):
                 continue
             if sd.date not in meal_dates:
                 continue
@@ -27166,16 +27409,32 @@ def _copy_schedule_days(source_bid, dest_bid, line_id_map, dest_mode=None):
     # failed attempt where SQLite reused the same budget_id after a rollback).
     ProductionDay.query.filter_by(budget_id=dest_bid).delete()
     # Deduplicate by date before inserting — older DBs have UNIQUE(budget_id,
-    # date) without schedule_mode, so we take the first row per date.
-    seen_pd_dates = set()
+    # date) without schedule_mode. Prefer the source's ACTIVE-mode row over a
+    # legacy NULL when both exist for a date (same rule as the ScheduleDay
+    # copy above), instead of whatever the query returned first.
+    _src_pd_mode = ('working' if (_src_budget and _src_budget.budget_mode
+                                  in ('working', 'actual')) else 'estimated')
+    _pd_pick = {}
     for pd in ProductionDay.query.filter_by(budget_id=source_bid).all():
-        if pd.date in seen_pd_dates:
-            continue
-        seen_pd_dates.add(pd.date)
+        ex = _pd_pick.get(pd.date)
+        if ex is None:
+            _pd_pick[pd.date] = pd
+        elif ex.schedule_mode is None and pd.schedule_mode == _src_pd_mode:
+            _pd_pick[pd.date] = pd
+    for pd in _pd_pick.values():
         db.session.add(ProductionDay(
             budget_id=dest_bid,
             date=pd.date,
-            schedule_mode=dest_sched_mode or pd.schedule_mode,
+            # _restamp mirrors the ScheduleDay handling above: a WORKING
+            # source cloned into an ESTIMATED dest must restamp to
+            # 'estimated'. Before 2026-09-23 the ProductionDay copy missed
+            # it, so the new Estimated version's meal-day flags (first
+            # meal / breakfast / second meal / craft services) stayed
+            # tagged 'working' — invisible to the new budget's catering
+            # grid AND to sync_schedule_driven_lines, which then deleted
+            # the meal lines as "nothing left to derive". Every Working
+            # initialized from that version inherited the loss.
+            schedule_mode=_restamp or dest_sched_mode or pd.schedule_mode,
             craft_services=getattr(pd, 'craft_services', False),
             courtesy_breakfast=pd.courtesy_breakfast,
             first_meal=pd.first_meal,

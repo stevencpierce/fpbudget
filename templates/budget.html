@@ -2844,6 +2844,11 @@
           <input type="checkbox" id="travel-only-flagged"> Only flagged
         </label>
         <button class="btn btn-sm btn-primary" id="travel-add-day-btn">+ Add Travel Day</button>
+        <button class="btn btn-sm btn-outline"
+                onclick="window.open('{{ url_for('travel_export', pid=project.id, bid=budget.id) }}', '_blank')"
+                title="Printable per-person travel manifest — flights, hotels, ground transport, travel days and per diem, with confirmation numbers. Print-to-PDF to send.">
+          📤 Export Travel Report
+        </button>
         <button class="btn btn-sm" id="travel-refresh-btn" title="Reload">↻</button>
       </span>
     </div>

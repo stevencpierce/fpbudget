@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Travel — {{ project.name }}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         max-width: 1100px; margin: 32px auto; padding: 0 24px; color: #1a1a2e;
+         line-height: 1.5; }
+  h1 { font-size: 22pt; margin: 0 0 4px; color: #0f172a; }
+  .meta { color: #64748b; font-size: 10pt; margin-bottom: 4px; }
+  .recipient-banner { background: #f1f5fb; border-left: 4px solid #2563eb;
+                      padding: 10px 14px; border-radius: 0 6px 6px 0;
+                      margin: 16px 0 24px; font-size: 11pt; }
+  .person-card { border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden;
+                 margin-bottom: 18px; page-break-inside: avoid; }
+  .person-header { background: #1e3a8a; color: #fff; padding: 10px 14px;
+                   display: flex; align-items: baseline; gap: 12px; }
+  .person-header .p-name { font-weight: 600; font-size: 13pt; }
+  .person-header .p-role { opacity: 0.85; font-size: 10pt; }
+  .person-body { padding: 12px 16px; }
+  h3 { font-size: 10.5pt; color: #1e3a8a; margin: 12px 0 4px;
+       text-transform: uppercase; letter-spacing: .04em; }
+  h3:first-child { margin-top: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 10pt; }
+  th { background: #f1f5f9; text-align: left; padding: 5px 10px;
+       border-bottom: 1px solid #cbd5e1; font-size: 9pt;
+       text-transform: uppercase; letter-spacing: .03em; color: #475569; }
+  td { padding: 5px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  td.num { text-align: right; }
+  .conf { font-family: ui-monospace, Menlo, monospace; font-size: 9.5pt;
+          background: #f8fafc; padding: 1px 6px; border-radius: 4px;
+          border: 1px solid #e2e8f0; white-space: nowrap; }
+  .muted { color: #94a3b8; }
+  .pd-summary { background: #f8fafc; padding: 8px 12px; border-radius: 4px;
+                margin-top: 4px; font-size: 10pt; }
+  .pd-summary strong { color: #1e3a8a; }
+  .footer { margin-top: 36px; font-size: 9pt; color: #94a3b8;
+            border-top: 1px solid #e2e8f0; padding-top: 12px; }
+  .print-hint { background: #fef3c7; color: #78350f; padding: 8px 12px;
+                border-radius: 4px; margin-bottom: 16px; font-size: 10pt; }
+  @media print { .print-hint { display: none; } body { margin: 0; } }
+</style>
+</head>
+<body>
+
+<div class="print-hint">
+  📄 Tip: <strong>File → Print → Save as PDF</strong> to send this as an
+  attachment, or take a screenshot for quick share.
+</div>
+
+{% set _recipient_lines = {
+  'coordinator': 'Travel manifest — bookings, confirmations and travel days per person for the period below.',
+  'crew':        'Your travel itinerary — flights, hotel and ground transport details for the period below.',
+} %}
+
+<h1>{{ project.name }} — Travel Report</h1>
+<div class="meta">{{ budget.name }} · Generated {{ today.strftime('%b %-d, %Y') }}</div>
+{% if date_from and date_to %}
+<div class="meta">
+  Period: <strong>{{ date_from.strftime('%a %b %-d, %Y') }}</strong>
+  {% if date_to != date_from %} → <strong>{{ date_to.strftime('%a %b %-d, %Y') }}</strong>{% endif %}
+</div>
+{% endif %}
+
+<div class="recipient-banner">
+  {{ _recipient_lines.get(recipient, _recipient_lines['coordinator']) }}
+</div>
+
+{% if not people %}
+<p class="muted">No travel flags, bookings or travel days found on this
+budget's schedule{% if date_from %} for the selected period{% endif %}.
+Flag flights / hotels / per diem on the Schedule or Travel tab and re-open
+this report.</p>
+{% endif %}
+
+{% for p in people %}
+<div class="person-card">
+  <div class="person-header">
+    <span class="p-name">{{ p.person }}</span>
+    <span class="p-role">{{ p.role }}</span>
+  </div>
+  <div class="person-body">
+
+    {% if p.flights %}
+    <h3>✈ Flights</h3>
+    <table>
+      <thead><tr><th>Date</th><th>Airline / Flight</th><th>Route</th>
+                 <th>Depart</th><th>Arrive</th><th>Confirmation</th></tr></thead>
+      <tbody>
+      {% for f in p.flights %}
+        <tr>
+          <td>{{ f.date.strftime('%a %b %-d') }}</td>
+          <td>{{ f.airline }}{% if f.flight_no %} {{ f.flight_no }}{% endif %}
+              {% if not f.airline and not f.flight_no %}<span class="muted">TBD</span>{% endif %}</td>
+          <td>{{ f.route or '' }}</td>
+          <td>{{ f.depart_at.strftime('%-I:%M %p') if f.depart_at else '—' }}</td>
+          <td>{{ f.arrive_at.strftime('%-I:%M %p') if f.arrive_at else '—' }}</td>
+          <td>{% if f.confirmation_no %}<span class="conf">{{ f.confirmation_no }}</span>{% else %}<span class="muted">—</span>{% endif %}
+              {% if f.notes %}<div class="muted" style="font-size:9pt">{{ f.notes }}</div>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% if p.hotels %}
+    <h3>🏨 Hotel</h3>
+    <table>
+      <thead><tr><th>Hotel</th><th>Check-in</th><th>Check-out</th>
+                 <th>Nights</th><th>Room</th><th>Confirmation</th></tr></thead>
+      <tbody>
+      {% for h in p.hotels %}
+        <tr>
+          <td>{{ h.hotel_name }}
+              {% if h.hotel_address %}<div class="muted" style="font-size:9pt">{{ h.hotel_address }}</div>{% endif %}</td>
+          <td>{{ h.check_in.strftime('%a %b %-d') if h.check_in else '—' }}</td>
+          <td>{{ h.check_out.strftime('%a %b %-d') if h.check_out else '—' }}</td>
+          <td class="num">{{ h.nights if h.nights is not none else '—' }}</td>
+          <td>{{ h.room_type or '' }}</td>
+          <td>{% if h.confirmation_no %}<span class="conf">{{ h.confirmation_no }}</span>{% else %}<span class="muted">—</span>{% endif %}
+              {% if h.notes %}<div class="muted" style="font-size:9pt">{{ h.notes }}</div>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% if p.cars %}
+    <h3>🚗 Ground Transport</h3>
+    <table>
+      <thead><tr><th>Date</th><th>Type</th><th>Company</th>
+                 <th>Pickup</th><th>Return / Drop</th><th>Confirmation</th></tr></thead>
+      <tbody>
+      {% for c in p.cars %}
+        <tr>
+          <td>{{ c.date.strftime('%a %b %-d') }}</td>
+          <td>{{ {'car_rental': 'Rental', 'car_service': 'Car service', 'mileage': 'Mileage'}.get(c.kind, c.kind) }}</td>
+          <td>{{ c.rental_co or '—' }}</td>
+          <td>{{ c.pickup_at.strftime('%-I:%M %p') if c.pickup_at else '—' }}
+              {% if c.pickup_location %}<div class="muted" style="font-size:9pt">{{ c.pickup_location }}</div>{% endif %}</td>
+          <td>{{ c.return_at.strftime('%-I:%M %p') if c.return_at else '—' }}</td>
+          <td>{% if c.confirmation_no %}<span class="conf">{{ c.confirmation_no }}</span>{% else %}<span class="muted">—</span>{% endif %}
+              {% if c.notes %}<div class="muted" style="font-size:9pt">{{ c.notes }}</div>{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% if p.travel_days %}
+    <h3>🧳 Travel Days</h3>
+    <table>
+      <thead><tr><th>Date</th><th>Type</th><th>Note</th></tr></thead>
+      <tbody>
+      {% for t in p.travel_days %}
+        <tr>
+          <td>{{ t.date.strftime('%a %b %-d') }}</td>
+          <td>{{ t.label }}</td>
+          <td class="muted">{{ t.note }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% set _pd_n = p.pd_counts.full + p.pd_counts.breakfast + p.pd_counts.lunch + p.pd_counts.dinner %}
+    {% if _pd_n %}
+    <div class="pd-summary">
+      <strong>Per Diem:</strong>
+      {% if p.pd_counts.full %}{{ p.pd_counts.full }} full day{{ 's' if p.pd_counts.full != 1 else '' }}{% endif %}
+      {% if p.pd_counts.breakfast %}{% if p.pd_counts.full %} · {% endif %}{{ p.pd_counts.breakfast }} breakfast{% endif %}
+      {% if p.pd_counts.lunch %} · {{ p.pd_counts.lunch }} lunch{% endif %}
+      {% if p.pd_counts.dinner %} · {{ p.pd_counts.dinner }} dinner{% endif %}
+      — <strong>${{ '%.2f' % p.pd_total }}</strong> total
+    </div>
+    {% endif %}
+
+    {% if p.mileage_days %}
+    <div class="pd-summary">
+      <strong>Mileage days:</strong>
+      {% for d in p.mileage_days %}{{ d.strftime('%b %-d') }}{{ ', ' if not loop.last else '' }}{% endfor %}
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+{% endfor %}
+
+<div class="footer">
+  {{ project.name }} · {{ budget.name }} · Travel Report · {{ people | length }}
+  {{ 'person' if people | length == 1 else 'people' }} ·
+  Generated {{ today.strftime('%b %-d, %Y') }} — FPBudget
+</div>
+
+</body>
+</html>
