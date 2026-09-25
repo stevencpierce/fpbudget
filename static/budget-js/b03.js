@@ -2099,12 +2099,22 @@
     if (crewField) crewField.style.display = spec.crew ? '' : 'none';
     const locField  = document.getElementById('docDetailLocationField');
     if (locField)  locField.style.display = spec.location ? '' : 'none';
-    // PO actions visible only when type is estimate / quote / SOW / PO.
-    // Per user 2026-05-05.
+    // PO actions — the 2026-05-05 gate listed only estimate/quote/PO,
+    // so invoices and contracts/SOWs silently lost their PO buttons
+    // (owner 2026-09-25: "invoices, estimates or POs — I could create
+    // or add them to a PO but I don't see that anymore"). Now: any
+    // commitment-shaped doc (estimate / quote / contract / PO / invoice)
+    // can create OR join a PO; a receipt can only be attached to an
+    // existing PO (it backs a commitment that already exists — the PO
+    // rollup counts it in the receipts bucket).
     const poActions = document.getElementById('docDetailPoActions');
     if (poActions) {
-      const isPoCandidate = ['estimate', 'quote', 'purchase_order'].includes((type || '').toLowerCase());
-      poActions.style.display = isPoCandidate ? '' : 'none';
+      const _pt = (type || '').toLowerCase();
+      const canCreatePo = ['estimate', 'quote', 'contract', 'sow', 'purchase_order', 'invoice'].includes(_pt);
+      const canAttachPo = canCreatePo || _pt === 'receipt';
+      poActions.style.display = canAttachPo ? '' : 'none';
+      const _createBtn = document.getElementById('docDetailCreatePoBtn');
+      if (_createBtn) _createBtn.style.display = canCreatePo ? '' : 'none';
     }
     // Detail-section heading tracks the doc type — an invoice isn't a
     // "receipt". (User 2026-07 — "'receipt details' is confusing because this
