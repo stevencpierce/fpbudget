@@ -5394,6 +5394,7 @@ def _create_budget_from_source(pid, source, new_name, new_mode, parent_bid=None,
         exclusions=_src('exclusions', None),
         overall_comments=_src('overall_comments', None),
         payment_terms=_src('payment_terms', None),
+        hidden_group_labels=_src('hidden_group_labels', None),
         payroll_profile_id=_src_profile_id,
         payroll_week_start=_src_week_start,
         timezone=_src('timezone', 'America/Los_Angeles'),
@@ -7223,6 +7224,15 @@ def budget_view(pid, bid):
                     claimed_group_names.add(_cg)
             except Exception:
                 pass
+    # Labels the user explicitly hid on this budget (✕ on the derived
+    # label, or deleting a converted sub-header). Same suppression
+    # mechanism as a claim, minus the replacement header. 2026-09-26.
+    try:
+        for _hg in json.loads(getattr(budget, 'hidden_group_labels', None) or '[]'):
+            if (_hg or '').strip():
+                claimed_group_names.add(_hg.strip().lower())
+    except Exception:
+        pass
 
     # Internal comment counts (owner 2026-07-22) — per line + budget-level,
     # one grouped query. Fail-open: comments must never break the page.
@@ -10283,6 +10293,15 @@ def delete_line(pid, bid, lid):
     _act_before = _budget_line_snapshot(ln)
     _act_label  = ln.description or ln.account_name
     _line_tag   = getattr(ln, 'line_tag', None)
+    # Converted sub-headers claim a derived dept-group label via fmt.group
+    # in the note JSON — captured before delete so the label can be added
+    # to the budget's hidden list afterwards (see below).
+    _hdr_group = None
+    if _line_tag == 'header' and ln.note:
+        try:
+            _hdr_group = (json.loads(ln.note).get('group') or '').strip() or None
+        except Exception:
+            pass
 
     # ── Auto-line resurrection check FIRST (before any cascade) ────────
     # If the line is schedule-driven AND flags are still set, refuse the
@@ -10404,7 +10423,68 @@ def delete_line(pid, bid, lid):
         logging.warning(f"[activity] delete_line log failed: {_e}")
         try: db.session.rollback()
         except Exception: pass
+    # A converted sub-header claims a derived dept-group label (fmt.group
+    # in its note JSON). Deleting the header used to un-claim the label,
+    # so the auto-rendered "Camera" / "Direction / AD" row came straight
+    # back — the delete looked like it "kept failing" (owner 2026-09-26).
+    # Now the deleted header's group goes onto the budget's hidden list
+    # so the label stays gone. Fail-open: never break the delete over it.
+    try:
+        if _hdr_group:
+            _b = db.session.get(Budget, bid)
+            try:
+                _cur = json.loads(getattr(_b, 'hidden_group_labels', None) or '[]')
+                if not isinstance(_cur, list):
+                    _cur = []
+            except Exception:
+                _cur = []
+            if _hdr_group.lower() not in [(x or '').strip().lower() for x in _cur]:
+                _cur.append(_hdr_group)
+                _b.hidden_group_labels = json.dumps(_cur)
+                db.session.commit()
+    except Exception:
+        try: db.session.rollback()
+        except Exception: pass
     return jsonify({"ok": True})
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/group-label/hide", methods=["POST"])
+@login_required
+def hide_group_label(pid, bid):
+    """Hide (or restore) a derived dept-group label on this budget.
+
+    The "Camera" / "Direction / AD" rows in Production Staff / Talent are
+    NOT budget lines — they're auto-rendered from each line's sub-group,
+    so there was nothing to delete and they always came back (owner
+    2026-09-26). Body: {"name": "Camera", "hidden": true|false}."""
+    _require_project_role(pid, 'editor')
+    budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    data = request.get_json(force=True) or {}
+    name = (data.get('name') or '').strip()
+    hidden = bool(data.get('hidden', True))
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    try:
+        cur = json.loads(getattr(budget, 'hidden_group_labels', None) or '[]')
+        if not isinstance(cur, list):
+            cur = []
+    except Exception:
+        cur = []
+    lower = [(x or '').strip().lower() for x in cur]
+    if hidden and name.lower() not in lower:
+        cur.append(name)
+    elif not hidden:
+        cur = [x for x in cur if (x or '').strip().lower() != name.lower()]
+    budget.hidden_group_labels = json.dumps(cur)
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='budget',
+                      entity_id=bid, entity_label=budget.name,
+                      budget_id=bid, project_id=pid,
+                      note=f"{'Hid' if hidden else 'Restored'} group label “{name}”")
+    except Exception:
+        pass
+    return jsonify({"ok": True, "hidden_group_labels": cur})
 
 
 # ── Actuals tab routes (ported from FPBudgetSync 2026-04-30) ─────────
@@ -31012,6 +31092,8 @@ def _web_worker_essential_columns():
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS overall_comments TEXT",
                 # Levers + payment terms (2026-09-10, alembic 0015).
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS payment_terms VARCHAR(300)",
+                # Hidden dept-group labels (2026-09-26, alembic 0016).
+                "ALTER TABLE budget ADD COLUMN IF NOT EXISTS hidden_group_labels TEXT",
                 """CREATE TABLE IF NOT EXISTS budget_lever (
                      id            SERIAL PRIMARY KEY,
                      budget_id     INTEGER NOT NULL REFERENCES budget(id) ON DELETE CASCADE,

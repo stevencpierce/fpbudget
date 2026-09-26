@@ -1568,6 +1568,9 @@
           <button class="btn btn-xs btn-ghost" title="Make this an editable sub-header (rename, color, size — same as manually added sub-headers)"
                   onclick='convertDeptGroup({{ ln.id }}, {{ _sg | tojson }})'
                   style="opacity:.45;font-size:.62rem;padding:0 5px;margin-left:6px;vertical-align:middle">✎</button>
+          <button class="btn btn-xs btn-ghost" title="Hide this group label on this budget (the lines stay — only the label goes). Undo from the toast, or re-add later via a manual sub-header."
+                  onclick='hideDeptGroup({{ _sg | tojson }})'
+                  style="opacity:.45;font-size:.62rem;padding:0 5px;margin-left:2px;vertical-align:middle">✕</button>
         </td></tr>
           {% endif %}
           {% set ns.prev_sub_group = _sg %}
@@ -8111,6 +8114,17 @@ window.saveInlinePo = async function() {
   // after a rename. (Owner 2026-07-22: "however those are added in
   // automatically, just make those the same functionality as the
   // subheaders that we manually add".)
+  window.hideDeptGroup = async function (name, restore) {
+    if (!restore && !confirm(`Hide the “${name}” group label on this budget?\n\nThe lines stay — only the label row goes away. (It can be brought back by adding a sub-header with the same name, or ask an admin.)`)) return;
+    try {
+      const res = await fetch(`/projects/${PID}/budget/${BID}/group-label/hide`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, hidden: !restore })
+      });
+      if (!res.ok) { alert('Could not update group label (' + res.status + ')'); return; }
+      if (typeof reloadWithTab === 'function') reloadWithTab(); else location.reload();
+    } catch (e) { alert('Could not update group label: ' + e.message); }
+  };
   window.convertDeptGroup = async function (firstLineId, name) {
     try {
       const res = await fetch(`/projects/${PID}/budget/${BID}/line/insert`, {

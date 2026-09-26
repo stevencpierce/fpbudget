@@ -326,6 +326,12 @@ class Budget(db.Model):
     exclusions       = db.Column(db.Text, nullable=True)
     overall_comments = db.Column(db.Text, nullable=True)
     payment_terms    = db.Column(db.String(300), nullable=True)  # e.g. "50% on execution, 50% on delivery"
+    # Derived dept-group labels ("Camera", "Direction / AD") the user
+    # hid on this budget — JSON array of lowercased names. The labels
+    # are auto-rendered from lines' sub-groups, so without this there
+    # was no way to remove one that stuck (owner 2026-09-26: "I keep
+    # trying to delete the pre filled headers … and it keeps failing").
+    hidden_group_labels = db.Column(db.Text, nullable=True)
     # Version management
     updated_at      = db.Column(db.DateTime, default=datetime.utcnow, nullable=True)
     version_status  = db.Column(db.String(20), default='current', nullable=False)  # current | superseded | archived
