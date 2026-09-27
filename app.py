@@ -26592,6 +26592,8 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
                     'budget_line_id': ln.id,
                     'instance': inst,
                     'crew_member_id': a.crew_member_id,
+                    'role_group': getattr(ln, 'role_group', None),
+                    'catalog_item_id': getattr(ln, 'catalog_item_id', None),
                     'travel': _cs_travel_for(sd),
                 })
         else:
@@ -26611,6 +26613,8 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
                     'budget_line_id': ln.id,
                     'instance': inst,
                     'crew_member_id': None,
+                    'role_group': getattr(ln, 'role_group', None),
+                    'catalog_item_id': getattr(ln, 'catalog_item_id', None),
                     'travel': _cs_travel_for(sd),
                 })
 
@@ -26672,6 +26676,24 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         "Craft Services": 97,
     }
 
+    # Explicit-group lookup (2026-09-28, owner: "sort by crew on page 2 —
+    # they are going to random departments"): the budget grid resolves a
+    # line's department as role_group column → linked CatalogItem group →
+    # keyword guess, but page 2 only ever keyword-guessed the role text.
+    # Roles the keywords don't know ("EIC (A)", "Streaming / Lead
+    # Engineer") landed wherever a stray keyword sent them, ignoring the
+    # group set via Change Group on the budget. Same resolution now.
+    _cs_cat_ids = [getattr(l, 'catalog_item_id', None) for l in lines_today
+                   if getattr(l, 'catalog_item_id', None)]
+    _cs_cat_group = {}
+    if _cs_cat_ids:
+        try:
+            _cs_cat_group = {c.id: c.group_name for c in
+                             CatalogItem.query.filter(CatalogItem.id.in_(_cs_cat_ids)).all()
+                             if c.group_name}
+        except Exception:
+            _cs_cat_group = {}
+
     def _p2_section_for_row(r):
         # 2026-04 renumber: "Above the Line" is no longer a section code;
         # ATL roles live in Production Staff. Detect by role name.
@@ -26679,7 +26701,14 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
             return "Above the Line"
         if r['account_code'] == COA_CODE_TALENT:
             return "Talent"
-        # Production Staff or anything else — use subgroup or section_name
+        # Explicit group set on the budget line wins, then the linked
+        # catalog item's group, then the keyword guess, then the section.
+        rg = (r.get('role_group') or '').strip()
+        if rg:
+            return rg
+        cg = _cs_cat_group.get(r.get('catalog_item_id'))
+        if cg:
+            return cg
         sg = _get_prod_staff_subgroup(r['role'])
         return sg if sg else r['section_name']
 
@@ -26700,6 +26729,31 @@ def _callsheet_full_context(pid, bid, project, budget, selected_date,
         budget_id=bid, date=selected_date, schedule_mode=sched_mode).first()
     cs_data = json.loads(cs_rec.data_json) if cs_rec and cs_rec.data_json else {}
     cs_rev = (cs_rec.updated_at.isoformat() if cs_rec and cs_rec.updated_at else '')
+
+    # Key migration (2026-09-28): per-person call times / notes are keyed
+    # "default-section||role||name". Explicit role_group now wins over the
+    # keyword guess when computing that default, which can CHANGE the key
+    # for lines whose group was set on the budget. Mirror values saved
+    # under the legacy (keyword-derived) key onto the new key, in-memory,
+    # so nothing already entered disappears; the next save persists them
+    # under the new key. Fail-open.
+    try:
+        _mig_maps = [cs_data.get('crew_call_times') or {},
+                     cs_data.get('crew_notes') or {}]
+        for _mr in crew_p2_all:
+            if _mr['account_code'] == COA_CODE_TALENT:
+                continue
+            _legacy_sect = (_get_prod_staff_subgroup(_mr['role'])
+                            or _mr['section_name'])
+            if _legacy_sect == _mr['p2_section_default']:
+                continue
+            _new_k = f"{_mr['p2_section_default']}||{_mr['role']}||{_mr['name']}"
+            _old_k = f"{_legacy_sect}||{_mr['role']}||{_mr['name']}"
+            for _mm in _mig_maps:
+                if _old_k in _mm and _new_k not in _mm:
+                    _mm[_new_k] = _mm[_old_k]
+    except Exception:
+        pass
 
     # ── Apply per-day department overrides / renames / custom depts ─────────
     # These are DISPLAY truth for page-2 grouping and are honored across ALL
