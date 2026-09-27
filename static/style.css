@@ -5347,6 +5347,15 @@ tr:hover .cs-rep-btn { opacity: 1; }
 .cs-dept-box-table td { padding: .34rem .5rem; line-height: 1.45; }
 .cs-dept-role { color: var(--text-muted); font-size: .82rem; width: 40%; }
 .cs-dept-name { font-weight: 500; font-size: .86rem; width: 38%; }
+/* Per-person note under the name (2026-09-27). Editable inline on the
+   internal view; prints small + muted on recipient/PDF versions. */
+.cs-crew-note { font-size: .7rem; color: #8a93a6; font-style: italic;
+                font-weight: 400; margin-top: 1px; white-space: normal; }
+.cs-crew-note[contenteditable]:empty::before { content: '+ note'; opacity: .32; cursor: text; }
+.cs-crew-note[contenteditable]:focus { outline: 1px dashed var(--accent, #4f8cff); outline-offset: 1px; opacity: 1; }
+:is(body.light-preview, body.pdf-mode) .cs-crew-note { font-size: 6.8pt; color: #555 !important; }
+/* File-drop hover feedback on the logo strip / panel (2026-09-27). */
+.cs-logo-filedrop-over { outline: 2px dashed var(--accent, #4f8cff); outline-offset: -2px; }
 .cs-crew-member-row[draggable="true"] { cursor: grab; }
 .cs-crew-member-row.cs-row-dragging { opacity: .45; }
 .cs-drag-handle { cursor: grab; color: var(--text-muted); margin-right: .25rem; font-size: .78rem; }

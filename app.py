@@ -26245,26 +26245,65 @@ def callsheet_save(pid, bid, date_str):
     if not isinstance(payload, dict) or not payload:
         return jsonify({"error": "empty or invalid payload — nothing saved"}), 400
     client_rev = payload.pop('_rev', None)
+    # Sparse save (2026-09-27): the client sends ONLY the keys the user
+    # actually changed since load / last save (nested dicts included;
+    # explicit null = delete this key). The server deep-merges them into
+    # the stored blob, so two people editing DIFFERENT lines never
+    # clobber each other — the whole-payload + rev-409 flow made every
+    # save from the second editor's (stale-rev) tab silently die (owner
+    # 2026-09-27: James's per-person call time changes "not accepted"
+    # while the owner's own tab kept winning). A rev conflict on a
+    # sparse save is fine by construction, so no 409 is raised for it;
+    # full-payload saves from old clients keep the strict check.
+    sparse = bool(payload.pop('_sparse', False))
     rec = CallSheetData.query.filter_by(
         budget_id=bid, date=selected_date, schedule_mode=sched_mode).first()
     if not rec:
         rec = CallSheetData(budget_id=bid, date=selected_date, schedule_mode=sched_mode)
         db.session.add(rec)
+        if sparse:
+            payload = _cs_strip_nulls(payload)
     else:
         server_rev = rec.updated_at.isoformat() if rec.updated_at else None
-        if client_rev and server_rev and client_rev != server_rev:
+        if not sparse and client_rev and server_rev and client_rev != server_rev:
             return jsonify({"error": "conflict", "conflict": True,
                             "server_rev": server_rev}), 409
         try:
             stored = json.loads(rec.data_json) if rec.data_json else {}
         except Exception:
             stored = {}
-        if isinstance(stored, dict):
+        if not isinstance(stored, dict):
+            stored = {}
+        if sparse:
+            payload = _cs_deep_merge(stored, payload)
+        else:
             payload = {**stored, **payload}
     rec.data_json = json.dumps(payload)
     rec.updated_at = datetime.utcnow()
     db.session.commit()
     return jsonify({"ok": True, "rev": rec.updated_at.isoformat()})
+
+
+def _cs_deep_merge(base, patch):
+    """Merge a sparse call-sheet patch into the stored blob. Dicts merge
+    recursively; an explicit None deletes the key; everything else
+    (strings, numbers, lists) replaces atomically."""
+    out = dict(base)
+    for k, v in patch.items():
+        if v is None:
+            out.pop(k, None)
+        elif isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _cs_deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _cs_strip_nulls(d):
+    """Drop delete-markers from a sparse patch applied to an EMPTY sheet
+    (nothing to delete) so nulls don't get stored as values."""
+    return {k: (_cs_strip_nulls(v) if isinstance(v, dict) else v)
+            for k, v in d.items() if v is not None}
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/callsheet/contacts")

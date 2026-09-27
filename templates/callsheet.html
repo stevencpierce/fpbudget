@@ -1280,7 +1280,20 @@
               {% set cs_status = cs.get('status', '') %}
               <tr class="cs-crew-member-row cs-hideable{% if cs_status == 'confirmed' %} cs-row-confirmed{% elif cs_status == 'viewed' %} cs-row-viewed{% endif %}" data-cs-key="{{ row_key }}" data-crew-key="{{ dept_key }}" data-dept-default="{{ r.p2_section_default }}" draggable="true">
                 <td class="cs-dept-role"><span class="cs-drag-handle cs-screen-only" title="Drag to another department">⠿</span><span class="cs-hide-toggle cs-screen-only" data-cs-key="{{ row_key }}" title="Hide / show this person on this call sheet">👁</span><span class="cs-dept-reset cs-screen-only" title="Reset to default department">↩</span>{{ r.role }}</td>
-                <td class="cs-dept-name">{{ r.name }}{% if cs_status == 'confirmed' %}<span class="cs-conf-badge cs-conf-confirmed cs-screen-only" title="Confirmed {{ cs.get('confirmed_at','') }}">✓ Confirmed</span>{% elif cs_status == 'viewed' %}<span class="cs-conf-badge cs-conf-viewed cs-screen-only" title="Viewed {{ cs.get('viewed_at','') }}">Viewed</span>{% elif cs_status in ('sent',) %}<span class="cs-conf-badge cs-conf-sent cs-screen-only">Sent</span>{% endif %}</td>
+                <td class="cs-dept-name">{{ r.name }}{% if cs_status == 'confirmed' %}<span class="cs-conf-badge cs-conf-confirmed cs-screen-only" title="Confirmed {{ cs.get('confirmed_at','') }}">✓ Confirmed</span>{% elif cs_status == 'viewed' %}<span class="cs-conf-badge cs-conf-viewed cs-screen-only" title="Viewed {{ cs.get('viewed_at','') }}">Viewed</span>{% elif cs_status in ('sent',) %}<span class="cs-conf-badge cs-conf-sent cs-screen-only">Sent</span>{% endif %}
+                  {# Per-person note (owner 2026-09-27: "notes for a specific
+                     person on the call sheet — where do we enter those").
+                     Editable inline under the name; prints on every audience
+                     version + the person's tokenized copy when non-empty. #}
+                  {% set _cn = (cs_data.get('crew_notes') or {}).get(crew_key, '') %}
+                  {% if not recipient_mode %}
+                  <div class="cs-crew-note cs-editable" contenteditable="true"
+                       data-crew-note-key="{{ crew_key }}"
+                       title="Note for this person — shows under their name on the call sheet"
+                       oninput="scheduleAutoSave()">{{ _cn }}</div>
+                  {% elif _cn %}
+                  <div class="cs-crew-note">{{ _cn }}</div>
+                  {% endif %}</td>
                 <td class="callsheet-time-cell cs-editable cs-crew-call-cell cs-dept-call"
                     contenteditable="true"
                     data-crew-key="{{ crew_key }}"
@@ -1791,8 +1804,40 @@ function scheduleAutoSave() {
 // save; the server 409s when another tab/user saved since, instead of letting
 // this tab silently clobber their edits. (Audit C2, 2026-07-20.)
 let CS_REV = {{ cs_rev | default('') | tojson }};
+// Sparse saves (2026-09-27): send only the keys this tab actually changed
+// (deep diff vs. the baseline captured at load / after each save). The server
+// deep-merges them, so two people editing DIFFERENT lines never clobber each
+// other. The old whole-payload + rev-409 flow made every save from the
+// second editor's tab silently die while the busier tab kept winning.
+var CS_BASELINE = null;   // set at end of script once everything is initialized
+function csDeepDiff(base, cur) {
+  const out = {};
+  const keys = new Set([...Object.keys(base || {}), ...Object.keys(cur || {})]);
+  for (const k of keys) {
+    const b = base ? base[k] : undefined, c = cur ? cur[k] : undefined;
+    if (c === undefined) { if (b !== undefined) out[k] = null; continue; }
+    if (b === undefined) { out[k] = c; continue; }
+    const bo = b && typeof b === 'object' && !Array.isArray(b);
+    const co = c && typeof c === 'object' && !Array.isArray(c);
+    if (bo && co) {
+      const d = csDeepDiff(b, c);
+      if (Object.keys(d).length) out[k] = d;
+    } else if (JSON.stringify(b) !== JSON.stringify(c)) {
+      out[k] = c;
+    }
+  }
+  return out;
+}
 function doAutoSave() {
-  const payload = collectCallSheetData();
+  const current = collectCallSheetData();
+  let payload;
+  if (CS_BASELINE) {
+    payload = csDeepDiff(CS_BASELINE, current);
+    if (!Object.keys(payload).length) return;   // nothing changed — no save
+    payload._sparse = 1;
+  } else {
+    payload = current;   // baseline capture failed — legacy full-payload save
+  }
   payload._rev = CS_REV || '';
   const statusEl = document.getElementById('cs-save-status');
   if (statusEl) { statusEl.textContent = 'Saving…'; statusEl.className = 'cs-save-status saving'; }
@@ -1801,13 +1846,27 @@ function doAutoSave() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload)
   })
-  .then(r => r.json().then(d => ({ status: r.status, d })))
+  .then(r => r.json().then(d => ({ status: r.status, d })).catch(() => ({ status: r.status, d: null })))
   .then(({ status, d }) => {
     if (status === 409 && d && d.conflict) {
       if (statusEl) { statusEl.textContent = '⚠ Sheet changed elsewhere — reload before editing (this edit was NOT saved)'; statusEl.className = 'cs-save-status error'; }
       return;
     }
+    // Any other non-2xx is a REAL failure. Previously only 409 was
+    // checked, so a 403 (project role too low to save) fell through and
+    // showed "Saved" while the edit silently died (owner 2026-09-27:
+    // James's per-person call time changes "not accepted" with no error).
+    if (status >= 400) {
+      if (statusEl) {
+        statusEl.textContent = (status === 403)
+          ? '⛔ Not saved — your access to this project is view-only. Ask the owner for editor access.'
+          : ('⚠ Not saved — ' + ((d && d.error) || ('server error ' + status)));
+        statusEl.className = 'cs-save-status error';
+      }
+      return;
+    }
     if (d && d.rev) CS_REV = d.rev;
+    if (CS_BASELINE) CS_BASELINE = current;   // these edits are now on the server
     if (statusEl) { statusEl.textContent = 'Saved'; statusEl.className = 'cs-save-status saved'; }
     setTimeout(() => { if (statusEl) { statusEl.textContent = ''; statusEl.className = 'cs-save-status'; } }, 2500);
   })
@@ -1919,6 +1978,7 @@ function collectCallSheetData() {
     estimated_wrap_time:     getText('cs-estimated-wrap'),
     extras:             collectExtras(),
     dept_notes:         collectDeptNotes(),
+    crew_notes:         collectCrewNotes(),
     crew_call_times:    collectCrewCallTimes(),
     talent_times:       collectTalentTimes(),
     key_personnel:      collectKeyPersonnel(),
@@ -2859,6 +2919,18 @@ function collectDeptNotes() {
   const result = {};
   DEPT_NOTE_ORDER.forEach(d => { result[d] = DEPT_NOTES[d] || ''; });
   return result;
+}
+
+// Per-person notes (2026-09-27) — keyed like crew_call_times (sec||role||name).
+// Only non-empty notes are stored; clearing one deletes the key via the
+// sparse-save null marker.
+function collectCrewNotes() {
+  const out = {};
+  document.querySelectorAll('[data-crew-note-key]').forEach(el => {
+    const t = (el.textContent || '').trim();
+    if (t) out[el.dataset.crewNoteKey] = t;
+  });
+  return out;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -4569,10 +4641,16 @@ function csLogosRenderLibrary() {
 function csLogoUpload(input) {
   const f = input.files && input.files[0];
   if (!f) return;
+  csLogoUploadFile(f, () => { input.value = ''; });
+}
+
+// Shared upload path for the ⬆ button and drag-and-drop (2026-09-27).
+function csLogoUploadFile(f, done) {
   const status = document.getElementById('cs-logos-upload-status');
+  const finish = () => { if (typeof done === 'function') done(); };
   if (f.size > 2 * 1024 * 1024) {
     if (status) { status.textContent = 'Too large (max 2 MB)'; status.style.color = '#c0392b'; }
-    input.value = ''; return;
+    finish(); return;
   }
   if (status) { status.textContent = 'Uploading…'; status.style.color = ''; }
   const fd = new FormData();
@@ -4581,14 +4659,14 @@ function csLogoUpload(input) {
   fetch(CS_LOGOS_URL, { method:'POST', body: fd })
     .then(r => r.json().then(j => ({ok:r.ok, j})))
     .then(({ok, j}) => {
-      input.value = '';
+      finish();
       if (!ok) { if (status) { status.textContent = (j && j.error) || 'Upload failed'; status.style.color = '#c0392b'; } return; }
       if (status) { status.textContent = 'Added'; status.style.color = ''; }
       csLogosLoadLibrary();
       // Convenience: immediately place a freshly uploaded logo.
       if (j && j.id) csLogoAddToSheet(j.id);
     })
-    .catch(() => { input.value=''; if (status) { status.textContent = 'Upload failed'; status.style.color = '#c0392b'; } });
+    .catch(() => { finish(); if (status) { status.textContent = 'Upload failed'; status.style.color = '#c0392b'; } });
 }
 
 function csLogoDeleteFromLibrary(logoId) {
@@ -4628,7 +4706,53 @@ function csLogosInit() {
   csLogosRender();
   csLogoWireStripDropTarget();
   csLogosLoadLibrary();
+  csLogoWireFileDrop();
 }
+
+// ── Drag-and-drop logo upload (owner 2026-09-27: "adding logos drag and
+// drop doesn't work") — there were no file-drop handlers at all; upload
+// was button-only. Dropping image files onto the logo strip OR the Logos
+// panel now uploads them (same path as the ⬆ button) and places them.
+// Internal logo REORDER drags carry _csDragLogoId and no files, so the
+// two drop flows never collide.
+function csLogoWireFileDrop() {
+  if (RECIPIENT_MODE) return;
+  const targets = [document.getElementById('cs-logo-strip'),
+                   document.getElementById('cs-logos-panel')];
+  targets.forEach(el => {
+    if (!el) return;
+    el.addEventListener('dragover', (e) => {
+      if (_csDragLogoId != null) return;   // internal reorder — not ours
+      const types = e.dataTransfer ? Array.from(e.dataTransfer.types || []) : [];
+      if (!types.includes('Files')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      el.classList.add('cs-logo-filedrop-over');
+    });
+    el.addEventListener('dragleave', (e) => {
+      if (e.target === el && !el.contains(e.relatedTarget)) el.classList.remove('cs-logo-filedrop-over');
+    });
+    el.addEventListener('drop', (e) => {
+      el.classList.remove('cs-logo-filedrop-over');
+      const files = (e.dataTransfer && e.dataTransfer.files) ? Array.from(e.dataTransfer.files) : [];
+      if (!files.length) return;           // reorder drop — existing handler owns it
+      e.preventDefault();
+      e.stopPropagation();
+      const imgs = files.filter(f => /^image\/(png|jpeg|svg\+xml)$/.test(f.type));
+      const status = document.getElementById('cs-logos-upload-status');
+      if (!imgs.length) {
+        if (status) { status.textContent = 'Drop a PNG, JPG or SVG'; status.style.color = '#c0392b'; }
+        return;
+      }
+      imgs.forEach(csLogoUploadFile);
+    });
+  });
+}
+
+// Baseline for sparse saves — captured once everything above has run, so
+// the first diff compares against exactly what this page loaded with.
+try { CS_BASELINE = RECIPIENT_MODE ? null : collectCallSheetData(); }
+catch (e) { CS_BASELINE = null; }
 </script>
 {% endif %}{# /not pdf_mode — main script block #}
 
