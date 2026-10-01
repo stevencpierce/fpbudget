@@ -23333,6 +23333,65 @@ def po_delete(pid, po_id):
     return jsonify({"ok": True})
 
 
+@app.route("/docs/upload/<int:uid>/log-expense", methods=["POST"])
+@login_required
+def doc_log_expense(uid):
+    """Turn a receipt / invoice document into a standalone expense when no
+    electronic charge will ever arrive to match it (cash, check, petty
+    cash). Owner 2026-10-01: "how do I take a transaction that is a
+    receipt and turn it into an expense only? … right now I can't do
+    that so it feels sort of orphaned."
+
+    Ensures the doc-born Transaction row exists (source='doc_upload' —
+    some upload paths never created one), stamps activated_at + the
+    primary evidence link (the explicit create-expense intent of
+    Actualizing 2.0), and marks it match_status='confirmed' so the
+    matcher stops hunting for a card charge that will never come. The
+    expense then shows in the Actuals tab ready to code to a line
+    (coding later is unaffected — activation already done)."""
+    doc = DocUpload.query.get_or_404(uid)
+    pid = doc.project_id
+    _require_project_role(pid, 'editor')
+    if (doc.category or '') not in ('receipt', 'invoice'):
+        return jsonify({"error": "Only receipts and invoices can be logged "
+                                 "as expenses."}), 400
+    txn = (Transaction.query
+           .filter_by(doc_upload_id=uid, source='doc_upload')
+           .order_by(Transaction.id).first())
+    created = False
+    if txn is None:
+        txn = Transaction(
+            project_id=pid, source='doc_upload', doc_upload_id=uid,
+            vendor=doc.vendor, amount=doc.amount,
+            txn_date=doc.doc_date.isoformat() if doc.doc_date else None,
+            card_last4=getattr(doc, 'card_last4', None),
+            is_expense=True, match_status='unmatched',
+            created_via_user_id=current_user.id)
+        db.session.add(txn)
+        db.session.flush()
+        created = True
+    already = txn.activated_at is not None
+    if not already:
+        txn.activated_at = datetime.utcnow()
+        _add_evidence(txn.id, uid, 'primary')
+    # Resolved: no electronic charge is coming for this one.
+    txn.match_status = 'confirmed'
+    db.session.commit()
+    try:
+        _label = (doc.vendor or doc.filed_filename or f'Doc #{uid}')[:80]
+        _log_activity(action='update', entity_type='transaction',
+                      entity_id=txn.id, entity_label=_label,
+                      project_id=pid,
+                      note=f'Logged {doc.category} as a standalone expense '
+                           f'(cash/check — no charge to match)'
+                           + (' — expense row created' if created else ''))
+    except Exception:
+        pass
+    return jsonify({"ok": True, "transaction_id": txn.id,
+                    "created": created, "already_activated": already,
+                    "amount": float(txn.amount or 0)})
+
+
 @app.route("/docs/upload/<int:uid>/create-po", methods=["POST"])
 @login_required
 def create_po_from_doc(uid):

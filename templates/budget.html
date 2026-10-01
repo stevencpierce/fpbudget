@@ -3791,9 +3791,29 @@
               <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Person / Vendor</label>
               <select id="docDetailCrewId" style="width:100%">
                 <option value="">— not linked —</option>
-                {% for cm in (crew_members or []) %}
+                {% set _dd_proj_ids = (crew_members or []) | map(attribute='id') | list %}
+                {% if crew_members %}
+                <optgroup label="This project">
+                {% for cm in crew_members %}
                 <option value="{{ cm.id }}">{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.is_vendor %} (vendor){% elif cm.role %} — {{ cm.role }}{% endif %}</option>
                 {% endfor %}
+                </optgroup>
+                {% endif %}
+                {# Everyone else (owner 2026-10-01: "attach docs to people like
+                   tax docs and releases — that seems to be gone"). The picker
+                   was scoped to people ALREADY linked to this project, so on a
+                   project with no assignments yet it rendered empty — a
+                   chicken-and-egg that made the feature look removed. The full
+                   roster is offered below the project group; picking someone
+                   links them (and they join the project group from then on). #}
+                {% set _dd_rest = (all_crew_members or []) | rejectattr('id', 'in', _dd_proj_ids) | list %}
+                {% if _dd_rest %}
+                <optgroup label="{{ 'All people & vendors' if not crew_members else 'Everyone else' }}">
+                {% for cm in _dd_rest %}
+                <option value="{{ cm.id }}">{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.is_vendor %} (vendor){% elif cm.role %} — {{ cm.role }}{% endif %}</option>
+                {% endfor %}
+                </optgroup>
+                {% endif %}
               </select>
               {# Create a new person/vendor without leaving the doc popup —
                  for when a doc arrives for someone not in the system yet.
@@ -3972,6 +3992,14 @@
                         style="padding:6px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#5b8af9;font-size:12px;cursor:pointer">🔗 Find transactions for this receipt</button>
                 <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted);cursor:pointer">
                   <input type="checkbox" id="docDetailInclMatched" onchange="if(document.getElementById('docDetailTxnResults').innerHTML)docDetailFindTxns()"> include already-matched</label>
+              </div>
+              {# Cash / check purchases have no card charge to match — log the
+                 receipt as a standalone expense instead. (Owner 2026-10-01.) #}
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+                <button type="button" id="docDetailLogExpenseBtn" onclick="docDetailLogExpense()"
+                        title="For cash / check / petty-cash purchases with no electronic charge coming: creates the expense from this receipt so it counts in Actuals. Code it to a budget line on the Actuals tab."
+                        style="padding:6px 12px;border-radius:6px;background:#1a3a2a;border:1px solid #2a5a3a;color:#74c69d;font-size:12px;cursor:pointer">💵 Log as expense (no charge to match)</button>
+                <span id="docDetailLogExpenseStatus" style="font-size:11px;color:var(--text-muted)"></span>
               </div>
               <div id="docDetailTxnResults" style="margin-top:7px"></div>
             </div>

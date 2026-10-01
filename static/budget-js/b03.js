@@ -1829,6 +1829,29 @@
   // ── Receipt-side transaction matcher (User 2026-06-17) ──────────────
   // From the open receipt, find the charge(s) it backs — one 1:1, or several
   // that sum to the total (a split). Reuses link-doc/confirm-match + link-split.
+  // Cash / check purchases: turn the receipt into a standalone expense —
+  // no electronic charge will ever arrive to match it. (Owner 2026-10-01.)
+  window.docDetailLogExpense = async function () {
+    const uid = _docDetailUid;
+    if (!uid) return;
+    const status = document.getElementById('docDetailLogExpenseStatus');
+    if (!confirm('Log this receipt as a standalone expense?\n\nUse this when the purchase was cash / check / petty cash and no card or bank charge will ever appear to match it. The expense will show on the Actuals tab, ready to code to a budget line.')) return;
+    if (status) { status.textContent = 'Logging…'; status.style.color = ''; }
+    try {
+      const r = await fetch(`/docs/upload/${uid}/log-expense`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const d = await r.json();
+      if (!r.ok) { if (status) { status.textContent = (d && d.error) || ('Failed (' + r.status + ')'); status.style.color = '#e08080'; } return; }
+      if (status) {
+        status.textContent = d.already_activated
+          ? 'Already an expense — marked resolved (no charge to match).'
+          : '✓ Expense logged — code it to a line on the Actuals tab.';
+        status.style.color = '#74c69d';
+      }
+    } catch (e) {
+      if (status) { status.textContent = 'Failed: ' + e.message; status.style.color = '#e08080'; }
+    }
+  };
   window.docDetailFindTxns = async function () {
     const uid = _docDetailUid;
     if (!uid) return;
@@ -2025,6 +2048,10 @@
     insurance:      { vendor:'Insured / Carrier', amount:false, date:'Expiration Date', docnum:'Policy #', crew:false, location:true  },
     tax_form:       { vendor:'Entity / Filer', amount:false, date:'Tax Year / Date', docnum:'Tax ID (EIN/SSN)', crew:true, location:false },
     payroll:        { vendor:'Vendor / Employee', amount:true, date:'Pay Date',     docnum:'Check / Ref #', crew:true, location:false },
+    // Timecard was missing a spec entirely (fell through to misc →
+    // crew:false), so timecards could never be attached to the person
+    // they belong to. 2026-10-01.
+    timecard:       { vendor:'Employee',     amount:false, date:'Week Ending',     docnum:'Ref #',       crew:true,  location:false },
     legal:          { vendor:'Counterparty', amount:false, date:'Doc Date',        docnum:'Reference #', crew:false, location:false },
     release:        { vendor:'Talent / Location', amount:false, date:'Signed Date', docnum:null,         crew:true,  location:true  },
     // Employee/Vendor supporting docs (DTR, ID, W-9…): the PERSON is set via
