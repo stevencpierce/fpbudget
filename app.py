@@ -41116,8 +41116,19 @@ def _unhandled_exception(e):
     # the HTML page, so users saw a bare "Request failed (500)" with no ref
     # to report (live debugging 2026-08-18). JSON + the ERR ref instead.
     try:
-        if (request.path or '').startswith('/api/'):
-            return jsonify({"error": f"Server error — reference ERR-{ref}",
+        # JSON for anything machine-shaped, not just /api/: in-app fetch()
+        # calls (doc linking, call sheet saves, …) parse the response and
+        # alert `j.error` — the HTML page left users staring at a bare
+        # "failed: 500" with no ERR ref to report (owner 2026-10-07:
+        # "I click link and I get this error"). A request that SENT JSON
+        # or that prefers JSON back gets the ref inline.
+        _wants_json = ((request.path or '').startswith('/api/')
+                       or request.is_json
+                       or (request.accept_mimetypes
+                           and request.accept_mimetypes.best == 'application/json'))
+        if _wants_json:
+            return jsonify({"error": f"Server error — reference ERR-{ref} "
+                                     f"(details: /admin/errors)",
                             "err_ref": ref}), 500
     except Exception:
         pass
