@@ -4392,6 +4392,21 @@ __BJ["b03_CURRENT_USER_NAME"] = {{ (current_user.name or (current_user.email.spl
     .coa-item.coa-hl{ outline:2px solid var(--blue); outline-offset:-2px; }
     .coa-line.coa-hl{ background:#1a3a2a !important; border-color:#2a5a3a !important; color:var(--green) !important; }
   </style>
+  {# ── Missing & orphans triage panel (owner 2026-10-07) ──────────────
+     The reconciliation picture in three buckets: suggested matches to
+     confirm, charges missing receipts, orphaned receipts with actions.
+     Loads on demand via /actuals/reconcile.json. #}
+  <div id="ax-triage-panel" style="display:none;border:1px solid var(--border);border-radius:10px;background:var(--bg-2);padding:14px 16px;margin-bottom:14px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <strong style="font-size:.95rem">🧭 Missing &amp; orphans</strong>
+      <span id="ax-triage-stats" class="muted" style="font-size:.78rem"></span>
+      <button class="btn btn-xs btn-ghost" style="margin-left:auto" onclick="axTriageLoad()" title="Re-run matching and refresh">↻ Refresh</button>
+      <button class="btn btn-xs btn-ghost" onclick="document.getElementById('ax-triage-panel').style.display='none'">✕</button>
+    </div>
+    <div id="ax-triage-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px">
+      <div class="muted" style="font-size:.8rem">Loading…</div>
+    </div>
+  </div>
   {# ── Header bar with action buttons ── #}
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:8px">
     <div>
@@ -4437,6 +4452,10 @@ __BJ["b03_CURRENT_USER_NAME"] = {{ (current_user.name or (current_user.email.spl
       <button type="button" id="actualsReconcileBtn" class="btn btn-sm" onclick="openReconcile()"
               title="Reconcile: review every spend that has duplicate receipts, duplicate/phantom ledger rows, or the same spend coded twice — keep one and clean up the rest, all in one place.">
         🧹 Reconcile
+      </button>
+      <button type="button" id="actualsTriageBtn" class="btn btn-sm" onclick="axTriageLoad(this)"
+              title="The full picture: suggested receipt↔charge matches to confirm, charges still missing a receipt, and orphaned receipts no charge claims — with what to do about each.">
+        🧭 Missing &amp; orphans
       </button>
       <span style="width:1px;height:24px;background:var(--border);margin:0 2px;align-self:center"></span>
 

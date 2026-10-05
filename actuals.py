@@ -1161,6 +1161,52 @@ def _vendor_similarity(a, b):
     return best
 
 
+def ensure_doc_txns(project_id):
+    """Create the missing doc-born Transaction row for every receipt /
+    invoice DocUpload in the project (owner 2026-10-07: "lots of
+    transactions coming in that are not being matched that should
+    match"). The auto-matcher can only pair a charge with a receipt
+    that HAS a source='doc_upload' row — but several upload paths
+    historically never created one, so those receipts were invisible
+    to matching entirely. Idempotent: skips docs that already have any
+    Transaction, duplicates, trashed docs, and docs with no OCR'd
+    amount (nothing to match on). Returns the number created."""
+    created = 0
+    docs = (DocUpload.query
+            .filter(DocUpload.project_id == project_id,
+                    DocUpload.category.in_(('receipt', 'invoice')),
+                    DocUpload.amount.isnot(None))
+            .all())
+    if not docs:
+        return 0
+    have = {r[0] for r in db.session.query(Transaction.doc_upload_id)
+            .filter(Transaction.project_id == project_id,
+                    Transaction.doc_upload_id.isnot(None)).all()}
+    for d in docs:
+        if d.id in have:
+            continue
+        if getattr(d, 'is_duplicate', False) or (d.status or '') in ('duplicate', 'deleted'):
+            continue
+        try:
+            db.session.add(Transaction(
+                project_id=project_id, source='doc_upload', doc_upload_id=d.id,
+                vendor=d.vendor, amount=d.amount,
+                txn_date=d.doc_date.isoformat() if d.doc_date else None,
+                card_last4=getattr(d, 'card_last4', None),
+                is_expense=True, match_status='unmatched'))
+            created += 1
+        except Exception:
+            db.session.rollback()
+            return created
+    if created:
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            created = 0
+    return created
+
+
 def run_auto_match(project_id):
     """Find candidate doc-upload ↔ qbo-sync pairings within a project.
 
@@ -1184,6 +1230,13 @@ def run_auto_match(project_id):
     Returns summary dict.
     """
     import datetime as _dt
+    # Every receipt must exist as a matchable row first — see
+    # ensure_doc_txns (2026-10-07). Fail-open: matching still runs on
+    # whatever rows exist.
+    try:
+        ensure_doc_txns(project_id)
+    except Exception as _ee:
+        log.warning(f"[automatch] ensure_doc_txns failed: {_ee}")
     # Electronic bank-feed rows that want a receipt: QBO pulls AND bank/
     # credit-card CSV imports. (Previously qbo_sync only, so CSV-imported
     # charges never got matched to receipts — user 2026-06-02.)

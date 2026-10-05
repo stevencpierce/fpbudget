@@ -13922,6 +13922,104 @@ def actuals_run_auto_match(pid):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/projects/<int:pid>/actuals/reconcile.json", methods=["GET"])
+@login_required
+def actuals_reconcile_json(pid):
+    """Reconciliation triage (owner 2026-10-07: "upload all the receipts …
+    and the software tell me: if you're missing this, find where they
+    match up, find where they potentially match up, and find ones that
+    are orphaned").
+
+    Runs ensure_doc_txns + the auto-matcher, then returns three buckets:
+      suggested         — charge ↔ receipt pairs awaiting one-click
+                          Confirm / Not-a-match.
+      charges_no_receipt — imported charges (bank/QBO/CSV) with no
+                          receipt linked: the chase list.
+      orphan_receipts   — receipts/invoices no charge claims (and not
+                          logged as a cash expense): decide per receipt —
+                          match by hand, log as cash/check expense, or
+                          mark duplicate / not-project.
+    """
+    ProjectSheet.query.get_or_404(pid)
+    from actuals import run_auto_match
+    try:
+        run_auto_match(pid)   # also ensures every receipt is matchable
+    except Exception as _e:
+        logging.warning(f"[reconcile] auto-match failed (continuing): {_e}")
+
+    doc_name = {}
+    doc_rows = DocUpload.query.filter(
+        DocUpload.project_id == pid,
+        DocUpload.category.in_(('receipt', 'invoice'))).all()
+    live_docs = {d.id: d for d in doc_rows
+                 if not getattr(d, 'is_duplicate', False)
+                 and (d.status or '') not in ('duplicate', 'deleted')}
+    for d in doc_rows:
+        doc_name[d.id] = d.filed_filename or d.original_filename or f'Doc #{d.id}'
+
+    txns = Transaction.query.filter(
+        Transaction.project_id == pid,
+        Transaction.not_project_expense == False).all()
+
+    suggested, charges_no_receipt = [], []
+    claimed_docs = set()      # docs a charge points at (suggested or confirmed)
+    cash_logged_docs = set()  # docs whose doc-born row is an activated expense
+    for t in txns:
+        if t.source == 'doc_upload':
+            if t.doc_upload_id and getattr(t, 'activated_at', None):
+                cash_logged_docs.add(t.doc_upload_id)
+            continue
+        if t.source in ('qbo_sync', 'csv_import', 'reconciled', 'manual_entry'):
+            if t.doc_upload_id:
+                claimed_docs.add(t.doc_upload_id)
+            if t.match_status == 'suggested' and t.doc_upload_id:
+                d = live_docs.get(t.doc_upload_id)
+                suggested.append({
+                    "tid": t.id, "vendor": t.vendor or '',
+                    "amount": float(t.amount or 0), "date": t.txn_date or '',
+                    "confidence": float(t.match_confidence or 0),
+                    "doc_id": t.doc_upload_id,
+                    "doc_name": doc_name.get(t.doc_upload_id, ''),
+                    "doc_vendor": (d.vendor if d else '') or '',
+                    "doc_amount": (float(d.amount) if d and d.amount is not None else None),
+                })
+            elif t.doc_upload_id is None and bool(t.is_expense):
+                charges_no_receipt.append({
+                    "tid": t.id, "vendor": t.vendor or '',
+                    "amount": float(t.amount or 0), "date": t.txn_date or '',
+                    "card": t.card_last4 or '', "source": t.source,
+                    "coded": bool(t.budget_line_id or t.account_code),
+                })
+
+    orphan_receipts = []
+    for did, d in live_docs.items():
+        if did in claimed_docs or did in cash_logged_docs:
+            continue
+        orphan_receipts.append({
+            "doc_id": did, "name": doc_name.get(did, ''),
+            "vendor": d.vendor or '', "category": d.category or '',
+            "amount": float(d.amount) if d.amount is not None else None,
+            "date": d.doc_date.isoformat() if d.doc_date else '',
+        })
+
+    charges_no_receipt.sort(key=lambda r: (r["date"] or ''), reverse=True)
+    orphan_receipts.sort(key=lambda r: (r["date"] or ''), reverse=True)
+    suggested.sort(key=lambda r: -r["confidence"])
+    return jsonify({
+        "ok": True,
+        "suggested": suggested[:200],
+        "charges_no_receipt": charges_no_receipt[:300],
+        "orphan_receipts": orphan_receipts[:300],
+        "stats": {
+            "suggested_n": len(suggested),
+            "charges_no_receipt_n": len(charges_no_receipt),
+            "charges_no_receipt_total": round(sum(abs(r["amount"]) for r in charges_no_receipt), 2),
+            "orphan_receipts_n": len(orphan_receipts),
+            "orphan_receipts_total": round(sum(abs(r["amount"] or 0) for r in orphan_receipts), 2),
+        },
+    })
+
+
 @app.route("/projects/<int:pid>/actuals/scan-dup-transactions", methods=["GET", "POST"])
 @login_required
 def actuals_scan_dup_transactions(pid):

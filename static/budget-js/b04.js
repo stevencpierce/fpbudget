@@ -4777,3 +4777,98 @@
     };
   })();
   
+// ── 🧭 Missing & orphans triage (owner 2026-10-07) ─────────────────────────
+// "Upload all the receipts … and the software tell me: if you're missing
+// this, find where they match up, and find ones that are orphaned."
+// Three buckets from /actuals/reconcile.json with one-click actions.
+(function () {
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  const money = (n) => '$' + Number(n || 0).toLocaleString('en-US',
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  window.axTriageLoad = async function (btn) {
+    const panel = document.getElementById('ax-triage-panel');
+    const body  = document.getElementById('ax-triage-body');
+    const stats = document.getElementById('ax-triage-stats');
+    if (!panel || !body) return;
+    panel.style.display = '';
+    body.innerHTML = '<div class="muted" style="font-size:.8rem">Matching &amp; loading…</div>';
+    if (btn) { btn.disabled = true; }
+    try {
+      const r = await fetch(`/projects/${PROJ_ID}/actuals/reconcile.json`);
+      const d = await r.json();
+      if (!r.ok || !d.ok) { body.innerHTML = '<div style="color:#e08080;font-size:.8rem">' + esc((d && d.error) || ('Failed: ' + r.status)) + '</div>'; return; }
+      const s = d.stats || {};
+      stats.textContent = `${s.suggested_n || 0} suggested · ${s.charges_no_receipt_n || 0} charges missing receipts (${money(s.charges_no_receipt_total)}) · ${s.orphan_receipts_n || 0} orphaned receipts (${money(s.orphan_receipts_total)})`;
+
+      const sec = (title, hint, rowsHtml, emptyMsg) => `
+        <div style="border:1px solid var(--border);border-radius:8px;background:var(--bg);padding:10px 12px;min-width:0">
+          <div style="font-weight:600;font-size:.82rem;margin-bottom:2px">${title}</div>
+          <div class="muted" style="font-size:.7rem;margin-bottom:8px">${hint}</div>
+          <div style="max-height:340px;overflow-y:auto;display:flex;flex-direction:column;gap:6px">
+            ${rowsHtml || `<div class="muted" style="font-size:.75rem;font-style:italic">${emptyMsg}</div>`}
+          </div>
+        </div>`;
+
+      const sugRows = (d.suggested || []).map(m => `
+        <div class="ax-tri-row" id="ax-tri-s-${m.tid}" style="border:1px solid rgba(91,138,249,.4);border-radius:6px;padding:6px 8px;font-size:.73rem;line-height:1.45">
+          <div><strong>${money(m.amount)}</strong> ${esc(m.vendor)} <span class="muted">${esc(m.date)}</span></div>
+          <div class="muted">↔ ${esc(m.doc_name)}${m.doc_amount != null ? ' (' + money(m.doc_amount) + ')' : ''} · ${Math.round((m.confidence || 0) * 100)}%</div>
+          <div style="display:flex;gap:6px;margin-top:4px">
+            <button class="btn btn-xs btn-primary" onclick="axTriageConfirm(${m.tid})">✓ Confirm</button>
+            <button class="btn btn-xs btn-ghost" onclick="axTriageDismiss(${m.tid})">✕ Not a match</button>
+            <button class="btn btn-xs btn-ghost" onclick="openDocDetail(${m.doc_id})" title="Open the receipt">👁</button>
+          </div>
+        </div>`).join('');
+
+      const chgRows = (d.charges_no_receipt || []).map(c => `
+        <div class="ax-tri-row" id="ax-tri-c-${c.tid}" style="border:1px solid rgba(224,160,64,.35);border-radius:6px;padding:6px 8px;font-size:.73rem;line-height:1.45">
+          <div><strong>${money(c.amount)}</strong> ${esc(c.vendor || '—')} <span class="muted">${esc(c.date)}${c.card ? ' · ' + esc(c.card) : ''}${c.coded ? ' · coded' : ''}</span></div>
+          <div style="display:flex;gap:6px;margin-top:4px">
+            <button class="btn btn-xs btn-ghost" onclick="axTriageNotProject(${c.tid})" title="Not a project expense — remove from every rollup">🚫 Not project</button>
+          </div>
+        </div>`).join('');
+
+      const orpRows = (d.orphan_receipts || []).map(o => `
+        <div class="ax-tri-row" id="ax-tri-o-${o.doc_id}" style="border:1px solid rgba(224,120,120,.35);border-radius:6px;padding:6px 8px;font-size:.73rem;line-height:1.45">
+          <div><strong>${o.amount != null ? money(o.amount) : '—'}</strong> ${esc(o.vendor || o.name)} <span class="muted">${esc(o.date)} · ${esc(o.category)}</span></div>
+          <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
+            <button class="btn btn-xs btn-ghost" onclick="openDocDetail(${o.doc_id})" title="Open — find transactions / itemize / fix the amount">👁 Open</button>
+            <button class="btn btn-xs btn-ghost" onclick="axTriageLogExpense(${o.doc_id})" title="Cash / check purchase — no charge will ever arrive. Log it as a standalone expense.">💵 Log as cash expense</button>
+          </div>
+        </div>`).join('');
+
+      body.innerHTML =
+        sec('⚡ Suggested matches', 'The matcher paired these — confirm or reject each.', sugRows, 'Nothing waiting — all caught up.')
+        + sec('🏦 Charges missing receipts', 'Imported charges with no receipt yet: your chase list. Upload the receipt (drag it onto the row below) or mark it.', chgRows, 'Every charge has a receipt. 🎉')
+        + sec('🧾 Orphaned receipts', 'No charge claims these. Open to match by hand, or log as a cash/check expense.', orpRows, 'No orphans.');
+    } catch (e) {
+      body.innerHTML = '<div style="color:#e08080;font-size:.8rem">Error: ' + esc(e.message) + '</div>';
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  };
+
+  const _drop = (id) => { const el = document.getElementById(id); if (el) el.remove(); };
+  const _post = async (url) => {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { alert((d && d.error) || ('Failed: ' + r.status)); return null; }
+    return d;
+  };
+  window.axTriageConfirm = async function (tid) {
+    if (await _post(`/projects/${PROJ_ID}/actuals/transaction/${tid}/confirm-match`)) _drop('ax-tri-s-' + tid);
+  };
+  window.axTriageDismiss = async function (tid) {
+    if (await _post(`/projects/${PROJ_ID}/actuals/transaction/${tid}/dismiss-suggestion`)) _drop('ax-tri-s-' + tid);
+  };
+  window.axTriageNotProject = async function (tid) {
+    if (await _post(`/projects/${PROJ_ID}/actuals/transaction/${tid}/mark-not-project`)) _drop('ax-tri-c-' + tid);
+  };
+  window.axTriageLogExpense = async function (docId) {
+    if (!confirm('Log this receipt as a standalone expense?\n\nUse when the purchase was cash / check / petty cash and no card or bank charge will ever appear to match it.')) return;
+    if (await _post(`/docs/upload/${docId}/log-expense`)) _drop('ax-tri-o-' + docId);
+  };
+})();
