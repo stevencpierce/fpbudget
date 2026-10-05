@@ -37552,12 +37552,27 @@ def _itemize_apply(upload, parent, rows, main_line_raw, strict=True):
     # and no re-save could remove it, so 'nothing changes with the totals'.
     # Sweep by doc_upload_id OR parent id: one doc = one itemization, period.
     from sqlalchemy import or_ as _or_itm
-    for k in (Transaction.query
+    _old_children = (Transaction.query
               .filter(Transaction.project_id == pid,
                       Transaction.source == 'invoice_split',
                       _or_itm(Transaction.parent_transaction_id == parent.id,
-                              Transaction.doc_upload_id == upload.id)).all()):
-        db.session.delete(k)
+                              Transaction.doc_upload_id == upload.id)).all())
+    if _old_children:
+        _old_ids = [k.id for k in _old_children]
+        # Every child carries an ExpenseEvidence row (stamped 'itemized'
+        # at creation), so Postgres rejected this delete on EVERY re-save
+        # of an itemization — the first save worked, every edit after it
+        # 500'd (owner 2026-10-07: "trying to save the itemized lines and
+        # they are not saving … server error 500"; same FK family as the
+        # 2026-10-05 link-doc fix). Clear the evidence first; the new
+        # children get fresh evidence rows. Backup receipts attached to a
+        # replaced child are detached (their doc stays in Docs, ready to
+        # re-attach to the new line).
+        _delete_evidence_for_txns(_old_ids)
+        Transaction.query.filter(Transaction.backup_of_txn_id.in_(_old_ids)).update(
+            {Transaction.backup_of_txn_id: None}, synchronize_session=False)
+        for k in _old_children:
+            db.session.delete(k)
     db.session.flush()
 
     def _uncode_doc_siblings(keep_id):
