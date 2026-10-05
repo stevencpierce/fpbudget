@@ -860,6 +860,22 @@ except ImportError:
     _HAS_SOCKETIO = False
 
 _db_url = os.getenv("DATABASE_URL", "sqlite:///fp_budget.db").replace("postgres://", "postgresql://")
+# Make the Postgres DRIVER explicit (2026-10-07 deploy failure): a bare
+# postgresql:// URL means "SQLAlchemy's default DBAPI", and SQLAlchemy 2.1
+# changed that default from psycopg2 to psycopg (v3) — which we don't
+# install. Cold-cache Render builds that resolved 2.1 crashed at boot with
+# "No module named 'psycopg'". Name whichever driver is actually installed
+# so the URL's meaning can never drift under us again.
+if _db_url.startswith("postgresql://"):
+    try:
+        import psycopg2  # noqa: F401
+        _db_url = _db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    except ImportError:
+        try:
+            import psycopg  # noqa: F401
+            _db_url = _db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        except ImportError:
+            pass  # neither installed — let SQLAlchemy raise its own error
 if "postgresql" in _db_url:
     _sep = "&" if "?" in _db_url else "?"
     _db_url += f"{_sep}connect_timeout=10"

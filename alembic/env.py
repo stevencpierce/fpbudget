@@ -17,8 +17,22 @@ config = context.config
 
 _url = os.getenv("DATABASE_URL", "")
 if _url:
-    config.set_main_option(
-        "sqlalchemy.url", _url.replace("postgres://", "postgresql://", 1))
+    _url = _url.replace("postgres://", "postgresql://", 1)
+    # Driver made explicit — mirrors app.py (2026-10-07): SQLAlchemy 2.1
+    # changed the default DBAPI for bare postgresql:// to psycopg (v3),
+    # which isn't installed; a cold-cache build resolving 2.1 would fail
+    # the pre-deploy with "No module named 'psycopg'".
+    if _url.startswith("postgresql://"):
+        try:
+            import psycopg2  # noqa: F401
+            _url = _url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        except ImportError:
+            try:
+                import psycopg  # noqa: F401
+                _url = _url.replace("postgresql://", "postgresql+psycopg://", 1)
+            except ImportError:
+                pass
+    config.set_main_option("sqlalchemy.url", _url)
 elif os.getenv("RENDER"):
     # Found live 2026-08-18: with DATABASE_URL absent, alembic "succeeded"
     # against the sqlite fallback in alembic.ini — a throwaway file in the

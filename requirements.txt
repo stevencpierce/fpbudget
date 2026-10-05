@@ -8,6 +8,14 @@
 flask<4
 flask-login<1
 flask-sqlalchemy<4
+# SQLAlchemy was only a TRANSITIVE dependency (via flask-sqlalchemy /
+# alembic) and so was never ceiling-pinned. SQLAlchemy 2.1 changed the
+# default DBAPI for plain postgresql:// URLs to psycopg (v3), which we
+# don't install — any cold-cache Render build that resolved 2.1 crashed
+# at boot with "No module named 'psycopg'" (deploy failures 2026-09-25,
+# 2026-10-07). app.py/alembic/env.py now also force the driver
+# explicitly, but keep the ceiling so upgrades are deliberate.
+sqlalchemy<2.1
 python-dotenv<2
 gunicorn<24
 psycopg2-binary<3
