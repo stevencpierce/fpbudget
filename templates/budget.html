@@ -2027,13 +2027,23 @@
              user 2026-06-01), so they must never drive the Actual view. #}
           {% if is_actual_view %}
             {% set _actual = actual_line_totals_by_lid.get(ln.id, 0) %}
-          {% else %}
-            {# Post-migration (P2, 2026-07) every txn points DIRECTLY at this
-               working line, so by-lid is the exact per-line value — prefer it.
-               The desc/sort_order maps stay only as legacy fallbacks (they
-               collide for same-named lines; see comment above). #}
+          {% elif not actuals_frozen %}
+            {# CURRENT Working: post-P4 every txn points DIRECTLY at this
+               line (by-lid), and legacy Actual-peer codings resolve via
+               the EXACT source-link bridge (xb_act). The desc/positional
+               fallbacks must NOT run here: a line with no coded charge
+               fell through to by-desc and picked up a SIBLING's money
+               (owner 2026-10-07: one $280 agent-fee charge displayed on
+               every "Agent Fee (10%)" row). #}
             {% set _actual = actual_line_totals_by_lid.get(ln.id, none) %}
-            {% if _actual is none %}{% set _actual = actual_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}{% endif %}
+            {% if _actual is none %}{% set _actual = xb_act.get(ln.id, 0) %}{% endif %}
+          {% else %}
+            {# Superseded Working (frozen): legacy chain, with the by-desc
+               fallback claim-once guarded so same-named rows can't all
+               display one charge. #}
+            {% set _actual = actual_line_totals_by_lid.get(ln.id, none) %}
+            {% set _adk = (ln.account_code, (ln.description or '').strip().lower()) %}
+            {% if _actual is none and actual_desc_first_lid.get(_adk) == ln.id %}{% set _actual = actual_line_totals_by_desc.get(_adk, none) %}{% endif %}
             {% if _actual is none %}{% set _actual = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
           {% endif %}
           {% set _actual = (_actual or 0) | float %}
@@ -2124,7 +2134,15 @@
           {% if is_actual_view %}
             {% set _actual_e = actual_line_totals_by_lid.get(ln.id, 0) %}
           {% else %}
-            {% set _actual_e = actual_line_totals_by_desc.get((ln.account_code, (ln.description or '').strip().lower()), none) %}
+            {# Estimated view: ln can carry DIRECT-coded txns (no-Working
+               flow) — by-lid first, then the exact source-link bridge
+               (xb_act). Only then the cross-budget desc fallback,
+               claim-once guarded so same-named rows (six "Agent Fee
+               (10%)" lines) can't all display one charge. #}
+            {% set _actual_e = actual_line_totals_by_lid.get(ln.id, none) %}
+            {% if _actual_e is none %}{% set _actual_e = xb_act.get(ln.id, none) %}{% endif %}
+            {% set _aek = (ln.account_code, (ln.description or '').strip().lower()) %}
+            {% if _actual_e is none and actual_desc_first_lid.get(_aek) == ln.id %}{% set _actual_e = actual_line_totals_by_desc.get(_aek, none) %}{% endif %}
             {% if _actual_e is none %}{% set _actual_e = actual_line_totals.get((ln.account_code, ln.sort_order), 0) %}{% endif %}
           {% endif %}
           {% set _actual_e = (_actual_e or 0) | float %}

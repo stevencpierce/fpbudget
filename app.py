@@ -8242,6 +8242,16 @@ def budget_view(pid, bid):
     actual_line_totals = {}
     actual_line_totals_by_lid = {}  # by Actual line id (used in Actual view)
     actual_line_totals_by_desc = {}  # {(account_code, lower desc): total}
+    # Claim-once guard for the by-desc fallback (owner 2026-10-07: a $280
+    # agent-fee charge coded to ONE line displayed on EVERY row named
+    # "Agent Fee (10%)" — same-desc rows all resolved the same map entry).
+    # Only the FIRST viewed line with a given (code, desc) may use the
+    # desc-resolved value; the rest show — unless they have their own.
+    actual_desc_first_lid = {}
+    for _adl in sorted(lines, key=lambda l: (l.account_code or 0, l.sort_order or 0, l.id)):
+        _adk = (_adl.account_code, (_adl.description or '').strip().lower())
+        if _adk not in actual_desc_first_lid:
+            actual_desc_first_lid[_adk] = _adl.id
     # ANY coded spend on the project — even before a Working/Actual budget
     # exists (owner 2026-08-19: Estimated-only project with actuals coded).
     # Drives the Actual column's width/header so the JS-injected live
@@ -9100,6 +9110,7 @@ def budget_view(pid, bid):
         actual_line_totals=actual_line_totals,
         actual_line_totals_by_lid=actual_line_totals_by_lid,
         actual_line_totals_by_desc=actual_line_totals_by_desc,
+        actual_desc_first_lid=actual_desc_first_lid,
         has_line_actuals=_has_line_actuals,
         working_line_totals_by_desc=working_line_totals_by_desc,
         xb_est=xb_est, xb_work=xb_work, xb_act=xb_act,
