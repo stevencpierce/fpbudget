@@ -4782,6 +4782,11 @@
 // this, find where they match up, and find ones that are orphaned."
 // Three buckets from /actuals/reconcile.json with one-click actions.
 (function () {
+  // This block is its own closure — the PROJ_ID const at the top of this
+  // file lives in a different IIFE (live bug 2026-10-07: "PROJ_ID is not
+  // defined"). Resolve it from the same injected global, with the
+  // page-level PID var as fallback.
+  const PROJ_ID = (window.__BJ && window.__BJ["b04_PROJ_ID"]) || window.PID;
   const esc = (s) => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
