@@ -14781,9 +14781,17 @@ def actuals_link_existing_doc(pid, tid):
     if txn.source != 'doc_upload':
         try:
             from actuals import confirm_match
-            confirm_match(txn.id)
+            confirm_match(tid)
         except Exception as _e:
-            logging.warning(f"[link-doc] sister absorb failed txn {txn.id}: {_e}")
+            # Roll back FIRST: after a failed flush the session is poisoned
+            # and even reading txn.id re-raises — which is exactly how this
+            # warning itself became the 500 the user saw (ERR-D62E8221,
+            # 2026-10-05). Use the route arg, never the ORM object, here.
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            logging.warning(f"[link-doc] sister absorb failed txn {tid}: {_e}")
     try:
         _label = (txn.vendor or f'Txn #{txn.id}')[:80]
         _amt = float(txn.amount or 0)
@@ -35058,6 +35066,11 @@ def _apply_dup_resolution(upload, action, force=False, link_mode=None):
         # delete a bank charge (qbo_sync/csv_import) that was suggested-matched
         # to this receipt — that charge is real and must survive. (User 2026-06-02.)
         try:
+            # Evidence rows FK the doc-born txns — clear them first or
+            # Postgres rejects the delete (same FK as the 2026-10-05
+            # link-doc 500s).
+            _delete_evidence_for_txns([r[0] for r in db.session.query(Transaction.id)
+                                       .filter_by(doc_upload_id=upload.id, source='doc_upload').all()])
             Transaction.query.filter_by(doc_upload_id=upload.id, source='doc_upload').delete(synchronize_session=False)
             # Any electronic txn that was tentatively paired to this now-duplicate
             # receipt is unlinked (not deleted) so it returns to the unmatched pile.

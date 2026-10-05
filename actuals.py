@@ -1690,6 +1690,28 @@ def confirm_match(qbo_transaction_id):
             q.card_last4 = sister.card_last4
         if not (q.note or '').strip() and sister.note:
             q.note = sister.note
+        # The sister may carry ExpenseEvidence rows (stamped when the
+        # receipt was coded / activated as an expense) and may be the
+        # target of backup/parent links. Re-point them at the surviving
+        # bank row BEFORE the delete — Postgres rejects the delete
+        # otherwise (2026-10-05: every link-doc on an already-coded
+        # invoice 500'd with "expense_evidence_transaction_id_fkey …
+        # still referenced").
+        from models import ExpenseEvidence as _EE
+        _q_doc_ids = {e.doc_upload_id for e in
+                      _EE.query.filter_by(transaction_id=q.id).all()}
+        for _ev in _EE.query.filter_by(transaction_id=sister.id).all():
+            if _ev.doc_upload_id in _q_doc_ids:
+                db.session.delete(_ev)        # duplicate — drop
+            else:
+                _ev.transaction_id = q.id     # move onto the bank row
+        Transaction.query.filter_by(backup_of_txn_id=sister.id).update(
+            {Transaction.backup_of_txn_id: q.id}, synchronize_session=False)
+        Transaction.query.filter_by(parent_transaction_id=sister.id).update(
+            {Transaction.parent_transaction_id: q.id}, synchronize_session=False)
+        # Keep the explicit this-is-an-expense stamp from the receipt row.
+        if getattr(sister, 'activated_at', None) and not getattr(q, 'activated_at', None):
+            q.activated_at = sister.activated_at
         db.session.delete(sister)
     # Mark reconciled (not still 'qbo_sync') so the QBO-purge tool — which
     # deletes source='qbo_sync' rows — can never wipe a confirmed match. Mirrors
