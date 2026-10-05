@@ -1020,6 +1020,21 @@
         <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.payroll_fee_amount | currency }}{% else %}$0.00{% endif %}</td>
         <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
+      {% endif %}
+      {% if row.code == 6500 and (est_top_sheet.fringe_rollup_amount or top_sheet.fringe_rollup_amount) %}
+      {# Rolled-up labor fringes (owner 2026-10-05) — one budget-wide
+         amount; individual labor lines exclude fringe in this mode. #}
+      <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9)"
+          data-ts-section="6500"
+          title="Sum of all labor fringes — rolled up here instead of inflating each labor line's total (Settings → Roll fringes up to one line)">
+        <td class="col-code muted" style="font-size:.75rem"></td>
+        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Fringes (rolled up from labor lines)</td>
+        <td class="col-num muted" style="font-size:.85rem">{{ est_top_sheet.fringe_rollup_amount | currency }}</td>
+        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.fringe_rollup_amount | currency }}{% else %}$0.00{% endif %}</td>
+        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
+      </tr>
+      {% endif %}
+      {% if row.code == 6500 and (est_top_sheet.payroll_fee_amount or top_sheet.payroll_fee_amount) %}
       {# Debug / sanity-check row: the labor total that WC + Payroll Fee are
          both multiplied against. If this number looks wrong you'll know the
          WC / PF amounts above are wrong too. Appears under the 6500 section
@@ -1261,6 +1276,9 @@
   {% endif %}
   {% if sec.code == 6500 and top_sheet.payroll_fee_amount %}
     {% set ns.sec_total = ns.sec_total + top_sheet.payroll_fee_amount %}
+  {% endif %}
+  {% if sec.code == 6500 and top_sheet.fringe_rollup_amount %}
+    {% set ns.sec_total = ns.sec_total + top_sheet.fringe_rollup_amount %}
   {% endif %}
   {# Fee-exempt badge: read the exclusion list from top_sheet so the
      line-items header is kept in sync with the Top Sheet without each
@@ -2539,6 +2557,31 @@
           <td class="col-act"></td>
         </tr>
         {% endif %}
+        {% if sec.code == 6500 and top_sheet.fringe_rollup_amount > 0 %}
+        <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9)"
+            data-auto-amount="{{ top_sheet.fringe_rollup_amount | float }}"
+            title="Sum of all labor fringes — rolled up here instead of inflating each labor line's total. This is the number to reconcile payroll-company fringe invoices against. Code those costs to the 6500 section.">
+          <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
+            <span class="line-number">{{ sec.code }}-FR</span>
+            Payroll Fringes (rolled up from labor lines)
+          </td>
+          <td class="col-pc col-labor-only"></td>
+          <td class="col-qty"></td>
+          <td class="col-days"></td>
+          <td class="col-num"></td>
+          <td class="col-rt"></td>
+          <td class="col-num">{{ top_sheet.fringe_rollup_amount | currency }}</td>
+          <td class="col-num"></td>
+          <td class="col-fr"></td>
+          <td class="col-num"></td>
+          {% set _frr_fee = ((top_sheet.fringe_rollup_amount * _fee_eff_rate + 0.5) | int) if (budget.company_fee_dispersed and not _sec_fee_exempt and not top_sheet.company_fee_exclude_fringes) else 0 %}
+          <td class="col-num">{{ (top_sheet.fringe_rollup_amount + _frr_fee) | currency }}</td>
+          <td class="col-num col-working">{{ (top_sheet.fringe_rollup_amount + _frr_fee) | currency }}</td>
+          <td class="col-num col-actual"></td>
+          <td class="col-num col-variance"></td>
+          <td class="col-act"></td>
+        </tr>
+        {% endif %}
         {# ── Sister-budget ORPHAN rows (User 2026-07.) ──────────────────────
            Lines that exist in ONLY the sister version (Estimated OR Working)
            are surfaced here as dimmed, read-only "$0 / not in this version"
@@ -2620,6 +2663,9 @@
       {% endif %}
       {% if sec.code == 6500 and top_sheet.payroll_fee_amount %}
         {% set sec_working.total = sec_working.total + top_sheet.payroll_fee_amount %}
+      {% endif %}
+      {% if sec.code == 6500 and top_sheet.fringe_rollup_amount %}
+        {% set sec_working.total = sec_working.total + top_sheet.fringe_rollup_amount %}
       {% endif %}
       <tfoot>
         {# Per-category subtotals (kit / agent / section breakdowns) all align under their matching column. #}
@@ -6683,6 +6729,17 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
             <span>
               <strong style="font-weight:600">Exclude fringes from fee base</strong>
               <span class="muted" style="font-size:.8rem;margin-left:.4rem">(industry default — keeps the Prod Co Fee from compounding on P&amp;W / P/H/W fringes)</span>
+            </span>
+          </label>
+          {# Fringe-rollup mode (owner 2026-10-05): labor line totals exclude
+             fringe; the pot shows as one "Payroll Fringes" amount in 6500 so
+             lines reconcile 1:1 against payments. Project-wide. #}
+          <label style="display:flex;align-items:center;gap:.55rem;margin:0 0 .55rem;font-weight:400;cursor:pointer">
+            <input type="checkbox" id="set-fringe-rollup"
+                   {% if project.fringe_rollup %}checked{% endif %}>
+            <span>
+              <strong style="font-weight:600">Roll fringes up to one line</strong>
+              <span class="muted" style="font-size:.8rem;margin-left:.4rem">(labor line totals exclude fringe; the total shows as “Payroll Fringes” under 6500 Administrative — applies to every version of this project)</span>
             </span>
           </label>
           <div id="fee-excl-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:.35rem .9rem;padding:.6rem .8rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-2);max-height:260px;overflow-y:auto">
@@ -11303,6 +11360,7 @@ async function _saveSettingsInner() {
       document.querySelectorAll('#fee-excl-grid .fee-excl-check:checked')
     ).map(el => parseInt(el.value, 10)).filter(n => !isNaN(n)),
     fee_exclude_fringes: document.getElementById('set-fee-exclude-fringes')?.checked ?? true,
+    fringe_rollup: document.getElementById('set-fringe-rollup')?.checked ?? false,
   };
 
   await saveCompanySettings();

@@ -83,6 +83,11 @@ class ProjectSheet(db.Model):
     dropbox_folder = db.Column(db.String(300), nullable=True)   # relative slug under ops root
     client_name    = db.Column(db.String(200), nullable=True)   # used for slug + display
     status         = db.Column(db.String(20), default='active', nullable=False)  # active | wrapped | archived
+    # Fringe-rollup mode (owner 2026-10-05): when True, labor-line totals
+    # exclude fringe; the whole fringe pot shows as one "Payroll Fringes"
+    # amount in 6500 so individual lines reconcile 1:1 against payments.
+    # Project-wide (all budget versions) — read via get_fringe_configs.
+    fringe_rollup  = db.Column(db.Boolean, default=False, nullable=False)
 
     # ── QBO sync state (added 2026-04-30 cutover) ──────────────────────
     # Per-project subset of QBOConnection.enabled_account_ids. Empty

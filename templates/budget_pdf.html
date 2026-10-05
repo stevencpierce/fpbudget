@@ -461,6 +461,18 @@
       {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
     {% endif %}
+    {% if row.code == 6500 and top_sheet.fringe_rollup_amount %}
+    {# Rolled-up labor fringes (2026-10-05): one budget-wide amount —
+       labor detail lines exclude fringe in this mode. #}
+    <tr class="auto-line">
+      <td class="code"></td>
+      <td style="padding-left:22pt">↳ Payroll Fringes (on ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
+      {% if _col_est  %}<td class="num">{{ currency(top_sheet.fringe_rollup_amount) }}</td>{% endif %}
+      {% if _col_work %}<td class="num">{{ currency(top_sheet.fringe_rollup_amount) }}</td>{% endif %}
+      {% if _col_act  %}<td class="num">—</td>{% endif %}
+      {% if _show_var %}<td class="num">—</td>{% endif %}
+    </tr>
+    {% endif %}
     {% endfor %}
   </tbody>
   {# ── Top Sheet totals block ────────────────────────────────────────

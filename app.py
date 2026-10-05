@@ -7263,7 +7263,8 @@ def budget_view(pid, bid):
     # was already project-aware. Bug 2026-07-22: an override added on the
     # project Fringes page never showed up in the budget-line fringe dropdown
     # because this list was globals-only.
-    fringes      = sorted(get_fringe_configs(db.session, pid).values(),
+    fringes      = sorted((f for f in get_fringe_configs(db.session, pid).values()
+                           if not isinstance(f, bool)),  # skip __fringe_rollup__ sentinel
                           key=lambda f: f.fringe_type)
     # Full company roster — used ONLY for crew ASSIGNMENT (pick anyone onto a line).
     all_crew_members = CrewMember.query.filter(CrewMember.active.isnot(False)).order_by(CrewMember.name).all()  # NULL active = active (2026-09-16: legacy/imported rows carry NULL; != False also skips NULL in SQL)
@@ -7743,6 +7744,12 @@ def budget_view(pid, bid):
         working_by_section[COA_CODE_INSURANCE] = working_by_section.get(COA_CODE_INSURANCE, 0.0) + _pi_amount
     if _pf_pct:
         working_by_section[COA_CODE_ADMIN] = working_by_section.get(COA_CODE_ADMIN, 0.0) + round(working_gross_labor * _pf_pct, 2)
+    # Fringe-rollup mode (2026-10-05): line totals above exclude fringe;
+    # the whole pot lands in 6500 — mirrors calc_top_sheet.
+    _w_rollup = bool(fringe_cfgs.get('__fringe_rollup__'))
+    _w_fringe_total = round(sum(working_section_fringe.values()), 2) if _w_rollup else 0.0
+    if _w_fringe_total:
+        working_by_section[COA_CODE_ADMIN] = working_by_section.get(COA_CODE_ADMIN, 0.0) + _w_fringe_total
 
     # Disperse Production Company Fee across eligible sections. Mirrors
     # calc_top_sheet's dispersal logic — eligible base = (section total −
@@ -7753,6 +7760,15 @@ def budget_view(pid, bid):
     _wfee_mode = (getattr(budget, 'company_fee_mode', None) or 'pct').lower()
     _wfee_flat = float(getattr(budget, 'company_fee_flat', 0) or 0)
     _wfee_exclude_fringes = bool(getattr(budget, 'fee_exclude_fringes', True))
+    def _w_fringe_deduct(_sk):
+        """Labor fringe carried inside this section's working total — the
+        amount to subtract for a fringe-exempt fee base. In rollup mode
+        per-line totals exclude fringe; the whole pot sits in 6500."""
+        if not _wfee_exclude_fringes:
+            return 0.0
+        if _w_rollup:
+            return _w_fringe_total if _sk == COA_CODE_ADMIN else 0.0
+        return working_section_fringe.get(_sk, 0.0)
     import json as _json_wfee
     _wraw_excl = getattr(budget, 'fee_excluded_sections', None)
     try:
@@ -7772,7 +7788,7 @@ def budget_view(pid, bid):
         for _sk, _sv in working_by_section.items():
             if _sk in _wexcluded:
                 continue
-            _b = _sv - (working_section_fringe.get(_sk, 0.0) if _wfee_exclude_fringes else 0.0)
+            _b = _sv - _w_fringe_deduct(_sk)
             if _b > 0:
                 _wfee_base += _b
         if _wfee_mode == 'flat':
@@ -7810,7 +7826,8 @@ def budget_view(pid, bid):
                 _fee_total += _amt
             for _pamt, _psec in ((round(working_gross_labor * _wc_pct, 2), COA_CODE_INSURANCE),
                                  (_pi_amount, COA_CODE_INSURANCE),
-                                 (round(working_gross_labor * _pf_pct, 2), COA_CODE_ADMIN)):
+                                 (round(working_gross_labor * _pf_pct, 2), COA_CODE_ADMIN),
+                                 ((0.0 if _wfee_exclude_fringes else _w_fringe_total), COA_CODE_ADMIN)):
                 if _pamt and _psec not in _wexcluded:
                     _psh = float(int(_pamt * _w_eff_rate + 0.5))
                     if _psh:
@@ -7823,7 +7840,7 @@ def budget_view(pid, bid):
                 if _sk in _wexcluded:
                     continue
                 _raw = working_by_section[_sk]
-                _base = _raw - (working_section_fringe.get(_sk, 0.0) if _wfee_exclude_fringes else 0.0)
+                _base = _raw - _w_fringe_deduct(_sk)
                 if _base > 0:
                     working_by_section[_sk] = round(_raw + _base * _w_eff_rate, 2)
     else:
@@ -7832,7 +7849,7 @@ def budget_view(pid, bid):
         for _sk, _sv in working_by_section.items():
             if _sk in _wexcluded:
                 continue
-            _b = _sv - (working_section_fringe.get(_sk, 0.0) if _wfee_exclude_fringes else 0.0)
+            _b = _sv - _w_fringe_deduct(_sk)
             if _b > 0:
                 _wfee_base += _b
         if _wfee_mode == 'flat':
@@ -15747,7 +15764,12 @@ def export_pdf(pid, bid):
         # OT / Fringe: only show if a labor line actually has them.
         sec["has_ot"]       = any(float((line_results.get(_l.id) or {}).get("ot_amount", 0) or 0) > 0
                                    for _l in labor_lines)
-        sec["has_fringe"]   = any(float((line_results.get(_l.id) or {}).get("fringe_amount", 0) or 0) > 0
+        # Fringe-rollup mode: per-line fringes are NOT in line totals (the
+        # pot shows as one ↳ Payroll Fringes row on the Top Sheet), so the
+        # detail pages drop the Fringe column — printing it would invite
+        # adding Subtotal + Fringe to a Total that excludes it.
+        sec["has_fringe"]   = (not top_sheet.get("fringe_rollup")) and any(
+                                   float((line_results.get(_l.id) or {}).get("fringe_amount", 0) or 0) > 0
                                    for _l in labor_lines)
         # Agent% (labor) or Disc% (non-labor): show if any line has
         # a non-zero value.
@@ -17792,6 +17814,17 @@ def budget_settings(pid, bid):
         # Co Fee base. User can disable per-budget if their prodco does
         # charge fee on fringes (rare).
         budget.fee_exclude_fringes = bool(data.get("fee_exclude_fringes"))
+    if "fringe_rollup" in data:
+        # Fringe-rollup mode (owner 2026-10-05): PROJECT-wide — labor
+        # line totals exclude fringe; the pot shows as one "Payroll
+        # Fringes" amount in 6500. Stored on ProjectSheet so every
+        # version of this project computes the same way.
+        try:
+            _fr_proj = ProjectSheet.query.get(pid)
+            if _fr_proj is not None:
+                _fr_proj.fringe_rollup = bool(data.get("fringe_rollup"))
+        except Exception:
+            logging.warning("fringe_rollup save failed", exc_info=True)
     # Assumptions / exclusions / overall comments (2026-09-10) — saved from
     # the Assumptions tab; blank clears. assumptions/exclusions are one
     # item per line, overall_comments free prose.
@@ -31246,6 +31279,8 @@ def _web_worker_essential_columns():
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS payment_terms VARCHAR(300)",
                 # Hidden dept-group labels (2026-09-26, alembic 0016).
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS hidden_group_labels TEXT",
+                # Fringe rollup mode (2026-10-05, alembic 0017).
+                "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS fringe_rollup BOOLEAN DEFAULT FALSE NOT NULL",
                 """CREATE TABLE IF NOT EXISTS budget_lever (
                      id            SERIAL PRIMARY KEY,
                      budget_id     INTEGER NOT NULL REFERENCES budget(id) ON DELETE CASCADE,
