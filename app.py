@@ -1303,6 +1303,50 @@ def _copy_doc_to_crew_folder(doc):
         return None
 
 
+@app.route("/admin/crew-docs/backfill", methods=["POST"])
+@login_required
+def admin_crew_docs_backfill():
+    """One-time (re-runnable) backfill: copy EVERY person-linked document on
+    current + wrapped projects into the master Crew Database folder (owner
+    2026-10-08: "can you do that for all current and wrapped projects?").
+
+    Batched so a big library can't blow the request timeout — processes up
+    to `limit` docs per call and reports what's left. crew_dbx_path doubles
+    as the done-marker, so re-running never duplicates. The client (crew.html
+    "Sync all" button) keeps calling until copied == 0."""
+    if not current_user.is_authenticated or getattr(current_user, 'role', None) != 'super_admin':
+        return jsonify({"error": "super admin only"}), 403
+    try:
+        limit = max(1, min(int(request.args.get('limit', 100)), 300))
+    except Exception:
+        limit = 100
+    try:
+        after = int(request.args.get('after', 0))   # cursor: skip past docs
+    except Exception:                               # already tried this run
+        after = 0
+    base_q = (DocUpload.query
+              .join(ProjectSheet, ProjectSheet.id == DocUpload.project_id)
+              .filter(DocUpload.crew_member_id.isnot(None),
+                      DocUpload.crew_dbx_path.is_(None),
+                      DocUpload.status.notin_(('deleted', 'duplicate')),
+                      ProjectSheet.status.in_(('active', 'wrapped'))))
+    batch = (base_q.filter(DocUpload.id > after)
+             .order_by(DocUpload.id).limit(limit).all())
+    copied = skipped = 0
+    for doc in batch:
+        if _copy_doc_to_crew_folder(doc):
+            copied += 1
+        else:
+            skipped += 1      # not filed to Dropbox yet / person unnamed / Dropbox off
+    if copied:
+        db.session.commit()
+    last_id = batch[-1].id if batch else None
+    remaining = base_q.filter(DocUpload.id > last_id).count() if batch else 0
+    return jsonify({"ok": True, "copied": copied, "skipped": skipped,
+                    "remaining": remaining, "last_id": last_id,
+                    "done": not batch or remaining == 0})
+
+
 @app.route("/admin/dropbox/status")
 @login_required
 def admin_dropbox_status():
@@ -5081,10 +5125,252 @@ def project_duplicate_status(job_id):
     return jsonify(out)
 
 
+def _build_wrap_book_data(pid):
+    """Assemble the Wrap Book dataset (owner 2026-10-08: "sets it for IRS
+    backup and studio review … ties the lines of the budget to the backup
+    and proves everything in a nice, very clean manner").
+
+    Industry-standard wrap/audit shape, kept basic on purpose:
+      1. Final Cost Report — budget vs actual by COA section.
+      2. Line-by-line ledger — every budget line with its coded
+         transactions, each tied to its backup document (or flagged).
+      3. Exceptions — spend with no backup, uncoded spend, orphaned
+         receipts, and payees over the $600 1099 threshold with no tax
+         form on file. (State tax-credit schedules: future work.)
+    """
+    from budget_calc import section_for_code
+    project = ProjectSheet.query.get_or_404(pid)
+    # Canonical budget: current Working (same pick as the PO rollup).
+    budget = (Budget.query
+              .filter_by(project_id=pid, version_status='current', is_actual=False)
+              .filter(db.or_(Budget.budget_mode == 'working',
+                             db.and_(Budget.budget_mode == None,
+                                     Budget.parent_budget_id.isnot(None))))
+              .order_by(Budget.id.desc()).first())
+    if not budget:
+        budget = (Budget.query.filter_by(project_id=pid, version_status='current',
+                                         is_actual=False)
+                  .order_by(Budget.id.desc()).first())
+    if not budget:
+        budget = Budget.query.filter_by(project_id=pid).order_by(Budget.id.desc()).first()
+    lines = (BudgetLine.query.filter_by(budget_id=budget.id)
+             .order_by(BudgetLine.account_code, BudgetLine.sort_order, BudgetLine.id)
+             .all()) if budget else []
+    line_by_id = {l.id: l for l in lines}
+    fringe_cfgs = get_fringe_configs(db.session, pid)
+    profile  = budget.payroll_profile if budget else None
+    pw_start = (budget.payroll_week_start if (budget and budget.payroll_week_start is not None)
+                else (profile.payroll_week_start if profile else 6))
+    live = _po_live_line_totals(budget, lines, pid) if budget else {}
+
+    # Every real expense on the project (doc-born rows only once activated).
+    txns = (Transaction.query
+            .filter(Transaction.project_id == pid,
+                    Transaction.not_project_expense == False)
+            .all())
+    def _is_expense_row(t):
+        if t.source == 'doc_upload' and not getattr(t, 'activated_at', None):
+            return False
+        if getattr(t, 'backup_of_txn_id', None):
+            return False          # documentation riding on another txn
+        return bool(t.budget_line_id or t.account_code)
+    exp_rows = [t for t in txns if _is_expense_row(t)]
+    uncoded  = [t for t in txns
+                if (t.source != 'doc_upload' or getattr(t, 'activated_at', None))
+                and not getattr(t, 'backup_of_txn_id', None)
+                and not (t.budget_line_id or t.account_code)
+                and t.source in ('qbo_sync', 'csv_import', 'reconciled', 'manual_entry')]
+
+    doc_ids = {t.doc_upload_id for t in txns if t.doc_upload_id}
+    try:
+        from models import ExpenseEvidence as _EEw
+        _ev_by_txn = {}
+        for _e in _EEw.query.filter(_EEw.transaction_id.in_([t.id for t in exp_rows])).all() if exp_rows else []:
+            _ev_by_txn.setdefault(_e.transaction_id, set()).add(_e.doc_upload_id)
+            doc_ids.add(_e.doc_upload_id)
+    except Exception:
+        _ev_by_txn = {}
+    docs = {d.id: d for d in DocUpload.query.filter(DocUpload.id.in_(doc_ids)).all()} if doc_ids else {}
+
+    def _amt(t):
+        return float(t.amount or 0) * (1 if t.is_expense else 0)
+
+    # Group expenses by line / section-only.
+    by_line, sec_only = {}, {}
+    actuals_by_code = {}
+    for t in exp_rows:
+        if t.budget_line_id and t.budget_line_id in line_by_id:
+            by_line.setdefault(t.budget_line_id, []).append(t)
+            code = line_by_id[t.budget_line_id].account_code
+        else:
+            code = t.account_code
+            if t.budget_line_id and t.budget_line_id not in line_by_id:
+                # coded to another version's line — fold by its code
+                _ol = BudgetLine.query.get(t.budget_line_id)
+                code = _ol.account_code if _ol else t.account_code
+            sec_only.setdefault(section_for_code(int(code or 0)) or 0, []).append(t)
+        if code is not None:
+            actuals_by_code[int(code)] = actuals_by_code.get(int(code), 0.0) + _amt(t)
+
+    top_sheet = calc_top_sheet(budget, lines, fringe_cfgs, actuals_by_code,
+                               profile, pw_start) if budget else {"rows": []}
+
+    def _txn_view(t):
+        d = docs.get(t.doc_upload_id) if t.doc_upload_id else None
+        if d is None:
+            for _did in _ev_by_txn.get(t.id, ()):
+                d = docs.get(_did)
+                if d:
+                    break
+        return {
+            "date": (t.txn_date or '')[:10], "vendor": t.vendor or '—',
+            "amount": _amt(t), "source": t.source or '',
+            "backup": (d.filed_filename or d.original_filename) if d else None,
+        }
+
+    from budget_calc import FP_COA_SECTIONS as _WCOA
+    _sec_names = dict(_WCOA)
+    sections = []
+    for code, name in _WCOA:
+        rows = []
+        for ln in lines:
+            if section_for_code(ln.account_code) != code:
+                continue
+            if getattr(ln, 'line_tag', None) in ('header', 'spacer'):
+                continue
+            tx = sorted((_txn_view(t) for t in by_line.get(ln.id, [])),
+                        key=lambda r: r["date"])
+            w = float(live.get(ln.id, 0) or 0)
+            a = round(sum(r["amount"] for r in tx), 2)
+            if not tx and abs(w) < 0.005:
+                continue
+            rows.append({"desc": ln.description or ln.account_name or '',
+                         "code": ln.account_code, "working": w, "actual": a,
+                         "variance": round(w - a, 2), "txns": tx})
+        so = sorted((_txn_view(t) for t in sec_only.get(code, [])), key=lambda r: r["date"])
+        if not rows and not so:
+            continue
+        sections.append({
+            "code": code, "name": name, "lines": rows,
+            "section_only": so,
+            "working": round(sum(r["working"] for r in rows), 2),
+            "actual": round(sum(r["actual"] for r in rows)
+                            + sum(r["amount"] for r in so), 2),
+        })
+
+    missing_backup = [r for s in sections for r in
+                      ([t for ln_r in s["lines"] for t in ln_r["txns"] if not t["backup"]]
+                       + [t for t in s["section_only"] if not t["backup"]])]
+    orphan_receipts = []
+    for d in DocUpload.query.filter(
+            DocUpload.project_id == pid,
+            DocUpload.category.in_(('receipt', 'invoice')),
+            DocUpload.status.notin_(('deleted', 'duplicate'))).all():
+        if getattr(d, 'is_duplicate', False):
+            continue
+        _claimed = any(t.doc_upload_id == d.id and t.source != 'doc_upload' for t in txns) \
+                   or any(t.doc_upload_id == d.id and t.source == 'doc_upload'
+                          and getattr(t, 'activated_at', None) for t in txns)
+        if not _claimed:
+            orphan_receipts.append({
+                "name": d.filed_filename or d.original_filename or f'Doc #{d.id}',
+                "vendor": d.vendor or '', "amount": float(d.amount or 0),
+                "date": d.doc_date.isoformat() if d.doc_date else ''})
+
+    # 1099 advisory: people/vendors whose doc-linked spend ≥ $600 with no
+    # tax form on file ANYWHERE (tax forms live with the person, not the
+    # project — see the Crew Database vault).
+    tax_check = []
+    try:
+        _paid_by_cm = {}
+        _doc_cm = {d.id: d.crew_member_id for d in docs.values() if d.crew_member_id}
+        for t in exp_rows:
+            _cmid = _doc_cm.get(t.doc_upload_id)
+            if _cmid:
+                _paid_by_cm[_cmid] = _paid_by_cm.get(_cmid, 0.0) + _amt(t)
+        if _paid_by_cm:
+            _have_tax = {r[0] for r in db.session.query(DocUpload.crew_member_id)
+                         .filter(DocUpload.crew_member_id.in_(list(_paid_by_cm)),
+                                 DocUpload.category.in_(('tax_form', 'employee_vendor_doc')),
+                                 DocUpload.status.notin_(('deleted', 'duplicate'))).distinct()}
+            for _cm in CrewMember.query.filter(CrewMember.id.in_(list(_paid_by_cm))).all():
+                if _paid_by_cm[_cm.id] >= 600 and _cm.id not in _have_tax:
+                    tax_check.append({"name": _cm.name,
+                                      "paid": round(_paid_by_cm[_cm.id], 2)})
+    except Exception:
+        logging.warning("[wrap] 1099 check failed", exc_info=True)
+
+    n_txn = sum(len(r["txns"]) for s in sections for r in s["lines"]) \
+        + sum(len(s["section_only"]) for s in sections)
+    n_backed = n_txn - len(missing_backup)
+    dates = sorted([(t.txn_date or '')[:10] for t in exp_rows if t.txn_date])
+    return {
+        "project": project, "budget": budget, "top_sheet": top_sheet,
+        "sections": sections,
+        "total_working": round(sum(s["working"] for s in sections), 2),
+        "total_actual": round(sum(s["actual"] for s in sections), 2),
+        "exceptions": {
+            "missing_backup": missing_backup,
+            "missing_backup_total": round(sum(t["amount"] for t in missing_backup), 2),
+            "uncoded": sorted(({"date": (t.txn_date or '')[:10], "vendor": t.vendor or '—',
+                                "amount": _amt(t), "source": t.source or ''}
+                               for t in uncoded), key=lambda r: r["date"]),
+            "uncoded_total": round(sum(_amt(t) for t in uncoded), 2),
+            "orphan_receipts": orphan_receipts,
+            "tax_check": tax_check,
+        },
+        "txn_count": n_txn, "backed_count": n_backed,
+        "backup_pct": round(100.0 * n_backed / n_txn, 1) if n_txn else 100.0,
+        "date_range": (dates[0] if dates else '', dates[-1] if dates else ''),
+        "prepared_by": getattr(current_user, 'name', None) or getattr(current_user, 'email', ''),
+        "today": date.today(),
+    }
+
+
+@app.route("/projects/<int:pid>/wrap-review")
+@login_required
+def project_wrap_review(pid):
+    """Pre-wrap review: the Wrap Book data on screen — readiness checks,
+    exceptions to clean up, and the buttons to download the book or wrap."""
+    _require_project_role(pid, 'editor')
+    data = _build_wrap_book_data(pid)
+    return render_template("wrap_review.html", **data)
+
+
+@app.route("/projects/<int:pid>/wrap/book.pdf")
+@login_required
+def project_wrap_book_pdf(pid):
+    _require_project_role(pid, 'viewer')
+    data = _build_wrap_book_data(pid)
+    html_str = render_template("wrap_book.html", **data)
+    pdf_bytes = WeasyprintHTML(string=html_str, base_url=request.host_url).write_pdf()
+    fname = f"{data['project'].name} - Wrap Book {date.today().isoformat()}.pdf"
+    return Response(pdf_bytes, mimetype="application/pdf",
+                    headers={"Content-Disposition": _content_disposition_attachment(fname)})
+
+
 @app.route("/projects/<int:pid>/wrap", methods=["POST"])
 @login_required
 def project_wrap(pid):
     p = ProjectSheet.query.get_or_404(pid)
+    # Wrap ≠ archive (owner 2026-10-08): wrapping generates the Wrap Book
+    # (final cost report + line↔backup ledger + exceptions) and files it
+    # into the project's Dropbox folder BEFORE the folder moves to
+    # _WRAPPED PROJECTS, so the package travels with the project.
+    try:
+        data = _build_wrap_book_data(pid)
+        html_str = render_template("wrap_book.html", **data)
+        pdf_bytes = WeasyprintHTML(string=html_str, base_url=request.host_url).write_pdf()
+        if p.dropbox_folder:
+            stamp = date.today().strftime("%Y-%m-%d")
+            base = (f"/{p.dropbox_folder}" if _DBX_NAMESPACE_ID
+                    else f"{_DBX_OPS_ROOT}/{p.dropbox_folder}")
+            _dbx_client().files_upload(
+                pdf_bytes, f"{base}/01_ADMIN/WRAP BOOK/{stamp}_Wrap_Book.pdf",
+                autorename=True)
+            logging.info(f"[wrap] Wrap Book filed for project {pid}")
+    except Exception as _wbe:
+        logging.warning(f"[wrap] Wrap Book generation failed (wrapping anyway): {_wbe}")
     if p.dropbox_folder:
         try:
             dbx = _dbx_client()

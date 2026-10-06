@@ -4,9 +4,16 @@
 {% block content %}
 <div class="page-header">
   <h1>Crew Database</h1>
-  <button class="btn btn-primary" onclick="openAddCrew()">
-    + Add Crew Member
-  </button>
+  <div style="display:flex;gap:8px;align-items:center">
+    {% if current_user.role == 'super_admin' %}
+    <button class="btn btn-outline" id="crew-syncall-btn" onclick="crewDocsSyncAll()"
+            title="Copy every person-linked document on all current and wrapped projects into the master Crew Database folder in Dropbox. Safe to re-run — already-copied docs are skipped.">
+      ⬆ Sync all crew docs</button>
+    {% endif %}
+    <button class="btn btn-primary" onclick="openAddCrew()">
+      + Add Crew Member
+    </button>
+  </div>
 </div>
 
 {% if members %}
@@ -637,6 +644,39 @@ window.crewDocsSync = async function () {
     openCrewDocs(_crewDocsCid, document.getElementById('crew-docs-name').textContent);
   } catch (e) { st.textContent = 'Error: ' + e.message; }
   finally { btn.disabled = false; }
+};
+</script>
+{% endif %}
+{% if current_user.role == 'super_admin' %}
+<script>
+/* Global backfill (owner 2026-10-08: "can you do that for all current and
+   wrapped projects?") — loops the batched /admin/crew-docs/backfill endpoint
+   until every person-linked doc is copied, advancing an id cursor so docs
+   that can't copy yet (not filed to Dropbox) don't stall the run. */
+window.crewDocsSyncAll = async function () {
+  const btn = document.getElementById('crew-syncall-btn');
+  if (!btn || btn.disabled) return;
+  if (!confirm('Copy every person-linked document on all current and wrapped projects into the Crew Database folder in Dropbox?\n\nSafe to re-run — documents already copied are skipped.')) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  let copied = 0, skipped = 0, after = 0, rounds = 0;
+  try {
+    for (;;) {
+      btn.textContent = `⬆ Syncing… ${copied} copied`;
+      const r = await fetch(`/admin/crew-docs/backfill?limit=100&after=${after}`, { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) { alert((d && d.error) || ('Sync failed: ' + r.status)); break; }
+      copied += d.copied; skipped += d.skipped;
+      if (d.done || !d.last_id || ++rounds > 200) break;
+      after = d.last_id;
+    }
+    btn.textContent = `✓ ${copied} copied` + (skipped ? ` · ${skipped} skipped` : '');
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 6000);
+    if (skipped) console.log(`[crew-db] ${skipped} docs skipped (not filed to Dropbox yet, unnamed person, or Dropbox not configured) — re-run after they file.`);
+  } catch (e) {
+    alert('Sync error: ' + e.message);
+    btn.textContent = orig; btn.disabled = false;
+  }
 };
 </script>
 {% endif %}

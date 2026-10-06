@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ project.name }} — Wrap Book</title>
+<style>
+  @page {
+    size: letter portrait;
+    margin: 0.7in 0.65in 0.75in 0.65in;
+    @bottom-center {
+      content: "{{ project.name | replace('"', '\"') }} \B7 Wrap Book \B7 " counter(page) " of " counter(pages);
+      font-family: Arial, sans-serif;
+      font-size: 8pt;
+      color: #888;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 9pt; color: #1a1a1a; line-height: 1.4; }
+  h1 { font-size: 20pt; letter-spacing: -0.5px; }
+  h2 { font-size: 13pt; margin: 0 0 8pt; padding-bottom: 4pt; border-bottom: 2pt solid #1a1a1a; }
+  h3 { font-size: 10pt; margin: 12pt 0 4pt; }
+  .page-break { page-break-before: always; }
+  .muted { color: #666; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table { width: 100%; border-collapse: collapse; }
+  th { font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.4px; color: #555;
+       border-bottom: 1pt solid #999; padding: 3pt 5pt; text-align: left; }
+  td { padding: 3pt 5pt; border-bottom: 0.5pt solid #e2e2e2; vertical-align: top; }
+  tr.total-row td { border-top: 1.5pt solid #1a1a1a; border-bottom: none; font-weight: 700; }
+  tr.sub-row td { font-weight: 700; border-top: 1pt solid #999; }
+
+  /* ── Cover ── */
+  .cover { padding-top: 1.2in; }
+  .cover .kicker { font-size: 10pt; text-transform: uppercase; letter-spacing: 2px; color: #888; margin-bottom: 8pt; }
+  .cover .client { font-size: 12pt; color: #444; margin: 6pt 0 24pt; }
+  .cover-meta { margin-top: 30pt; border-top: 1pt solid #ccc; }
+  .cover-meta td { padding: 6pt 8pt; font-size: 9.5pt; border-bottom: 0.5pt solid #e2e2e2; }
+  .cover-meta td:first-child { color: #666; width: 2.2in; text-transform: uppercase; font-size: 7.5pt; letter-spacing: 0.5px; }
+  .cover-stat-ok   { color: #1b7f3b; font-weight: 700; }
+  .cover-stat-warn { color: #b0541a; font-weight: 700; }
+  .cover-note { margin-top: 28pt; font-size: 8pt; color: #777; line-height: 1.55; }
+
+  /* ── Ledger ── */
+  .sec-head td { background: #f0f0f0; font-weight: 700; font-size: 9.5pt;
+                 border-top: 1pt solid #999; border-bottom: 1pt solid #999; }
+  .line-row td { font-weight: 600; }
+  .txn-row td { font-size: 8pt; color: #333; border-bottom: 0.5pt dotted #ddd; }
+  .txn-row td:first-child { padding-left: 16pt; }
+  .no-backup { color: #b0261a; font-weight: 700; }
+  .backup-name { color: #1b5e8f; }
+  .badge-src { font-size: 6.5pt; text-transform: uppercase; letter-spacing: 0.3px; color: #888; }
+
+  /* ── Attestation ── */
+  .attest { margin-top: 36pt; }
+  .attest p { font-size: 9pt; margin-bottom: 18pt; line-height: 1.6; }
+  .sig-line { display: inline-block; width: 2.6in; border-bottom: 1pt solid #1a1a1a; margin-right: 18pt; height: 22pt; }
+  .sig-label { font-size: 7.5pt; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+  .sig-block { margin-top: 26pt; }
+</style>
+</head>
+<body>
+
+{# ════════ 1 · COVER ════════ #}
+<div class="cover">
+  <div class="kicker">Production Wrap Book</div>
+  <h1>{{ project.name }}</h1>
+  {% if project.client_name %}<div class="client">{{ project.client_name }}</div>{% endif %}
+
+  <table class="cover-meta">
+    <tr><td>Report date</td><td>{{ today.strftime('%B %-d, %Y') }}</td></tr>
+    <tr><td>Prepared by</td><td>{{ prepared_by or '—' }}</td></tr>
+    <tr><td>Activity period</td>
+        <td>{% if date_range[0] %}{{ date_range[0] }} &nbsp;to&nbsp; {{ date_range[1] }}{% else %}—{% endif %}</td></tr>
+    <tr><td>Working budget</td><td class="num" style="text-align:left">${{ '{:,.2f}'.format(total_working) }}</td></tr>
+    <tr><td>Actual cost</td><td class="num" style="text-align:left">${{ '{:,.2f}'.format(total_actual) }}</td></tr>
+    <tr><td>Variance (under / over)</td>
+        <td style="text-align:left" class="{{ 'cover-stat-ok' if total_working - total_actual >= 0 else 'cover-stat-warn' }}">
+          ${{ '{:,.2f}'.format(total_working - total_actual) }}</td></tr>
+    <tr><td>Transactions in ledger</td><td>{{ txn_count }}</td></tr>
+    <tr><td>Backup coverage</td>
+        <td class="{{ 'cover-stat-ok' if backup_pct >= 95 else 'cover-stat-warn' }}">
+          {{ backup_pct }}% &nbsp;({{ backed_count }} of {{ txn_count }} transactions tied to a source document)</td></tr>
+    <tr><td>Exceptions open</td>
+        <td>{{ exceptions.missing_backup | length }} missing backup &nbsp;·&nbsp;
+            {{ exceptions.uncoded | length }} uncoded &nbsp;·&nbsp;
+            {{ exceptions.orphan_receipts | length }} orphan documents &nbsp;·&nbsp;
+            {{ exceptions.tax_check | length }} 1099 flags</td></tr>
+  </table>
+
+  <div class="cover-note">
+    Contents: (1) Final Cost Report — budget vs. actual by chart-of-accounts section;
+    (2) Cost Ledger — every coded transaction under its budget line, each tied to its
+    source document (invoice, receipt, or timecard) on file; (3) Exception schedules —
+    spend without backup, uncoded spend, unmatched documents, and payees over the $600
+    IRS Form 1099 reporting threshold without a tax form on file; (4) Attestation.
+    Source documents are retained in the project's document repository and Dropbox folder.
+  </div>
+</div>
+
+{# ════════ 2 · FINAL COST REPORT ════════ #}
+<div class="page-break">
+  <h2>Final Cost Report</h2>
+  <table>
+    <thead>
+      <tr><th style="width:0.7in">Acct</th><th>Category</th>
+          <th class="num" style="width:1.1in">Working Budget</th>
+          <th class="num" style="width:1.1in">Actual</th>
+          <th class="num" style="width:1.1in">Variance</th></tr>
+    </thead>
+    <tbody>
+      {% for r in top_sheet.rows %}
+      <tr>
+        <td>{{ r.code }}</td><td>{{ r.account }}</td>
+        <td class="num">{{ '{:,.2f}'.format(r.estimated) }}</td>
+        <td class="num">{{ '{:,.2f}'.format(r.actual) }}</td>
+        <td class="num">{{ '{:,.2f}'.format(r.estimated - r.actual) }}</td>
+      </tr>
+      {% endfor %}
+      <tr class="sub-row">
+        <td></td><td>Subtotal</td>
+        <td class="num">{{ '{:,.2f}'.format(top_sheet.subtotal_estimated) }}</td>
+        <td class="num">{{ '{:,.2f}'.format(top_sheet.subtotal_actual) }}</td>
+        <td class="num">{{ '{:,.2f}'.format(top_sheet.subtotal_estimated - top_sheet.subtotal_actual) }}</td>
+      </tr>
+      {% if top_sheet.company_fee %}
+      <tr>
+        <td></td>
+        <td>Company fee{% if top_sheet.company_fee_mode != 'flat' %} ({{ top_sheet.company_fee_pct }}%){% endif %}{% if top_sheet.company_fee_dispersed %} — dispersed{% endif %}</td>
+        <td class="num">{{ '{:,.2f}'.format(top_sheet.company_fee) }}</td>
+        <td class="num">—</td><td class="num"></td>
+      </tr>
+      {% endif %}
+      <tr class="total-row">
+        <td></td><td>Grand total</td>
+        <td class="num">{{ '{:,.2f}'.format(top_sheet.grand_total_estimated) }}</td>
+        <td class="num">{{ '{:,.2f}'.format(top_sheet.grand_total_actual) }}</td>
+        <td class="num">{{ '{:,.2f}'.format(top_sheet.grand_total_estimated - top_sheet.grand_total_actual) }}</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="muted" style="margin-top:8pt; font-size:7.5pt">
+    "Working Budget" is the final approved working budget at wrap. "Actual" is the sum of
+    coded project expenses (bank/card charges, reconciled payments, and activated document
+    expenses). Variance is budget minus actual — positive is under budget.
+  </p>
+</div>
+
+{# ════════ 3 · COST LEDGER (line ↔ backup) ════════ #}
+<div class="page-break">
+  <h2>Cost Ledger — budget lines tied to backup</h2>
+  <table>
+    <thead>
+      <tr><th>Line / Transaction</th><th style="width:0.9in">Date</th>
+          <th style="width:1.7in">Backup document</th>
+          <th class="num" style="width:0.95in">Working</th>
+          <th class="num" style="width:0.95in">Actual</th></tr>
+    </thead>
+    <tbody>
+      {% for sec in sections %}
+      <tr class="sec-head">
+        <td>{{ sec.code }} — {{ sec.name }}</td><td></td><td></td>
+        <td class="num">{{ '{:,.2f}'.format(sec.working) }}</td>
+        <td class="num">{{ '{:,.2f}'.format(sec.actual) }}</td>
+      </tr>
+      {% for ln in sec.lines %}
+      <tr class="line-row">
+        <td>{{ ln.code }} · {{ ln.desc }}</td><td></td><td></td>
+        <td class="num">{{ '{:,.2f}'.format(ln.working) }}</td>
+        <td class="num">{{ '{:,.2f}'.format(ln.actual) }}</td>
+      </tr>
+      {% for t in ln.txns %}
+      <tr class="txn-row">
+        <td>{{ t.vendor }} <span class="badge-src">{{ t.source | replace('_',' ') }}</span></td>
+        <td>{{ t.date or '—' }}</td>
+        <td>{% if t.backup %}<span class="backup-name">{{ t.backup }}</span>{% else %}<span class="no-backup">⚠ NO BACKUP</span>{% endif %}</td>
+        <td></td>
+        <td class="num">{{ '{:,.2f}'.format(t.amount) }}</td>
+      </tr>
+      {% endfor %}
+      {% endfor %}
+      {% if sec.section_only %}
+      <tr class="line-row"><td colspan="5" class="muted">Coded to section (no specific line)</td></tr>
+      {% for t in sec.section_only %}
+      <tr class="txn-row">
+        <td>{{ t.vendor }} <span class="badge-src">{{ t.source | replace('_',' ') }}</span></td>
+        <td>{{ t.date or '—' }}</td>
+        <td>{% if t.backup %}<span class="backup-name">{{ t.backup }}</span>{% else %}<span class="no-backup">⚠ NO BACKUP</span>{% endif %}</td>
+        <td></td>
+        <td class="num">{{ '{:,.2f}'.format(t.amount) }}</td>
+      </tr>
+      {% endfor %}
+      {% endif %}
+      {% endfor %}
+      <tr class="total-row">
+        <td>Total</td><td></td><td></td>
+        <td class="num">{{ '{:,.2f}'.format(total_working) }}</td>
+        <td class="num">{{ '{:,.2f}'.format(total_actual) }}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+{# ════════ 4 · EXCEPTION SCHEDULES ════════ #}
+<div class="page-break">
+  <h2>Exception Schedules</h2>
+
+  <h3>A. Spend without backup — ${{ '{:,.2f}'.format(exceptions.missing_backup_total) }}
+      ({{ exceptions.missing_backup | length }} transaction{{ '' if exceptions.missing_backup|length == 1 else 's' }})</h3>
+  {% if exceptions.missing_backup %}
+  <table>
+    <thead><tr><th style="width:0.9in">Date</th><th>Vendor</th><th style="width:1in">Source</th>
+               <th class="num" style="width:1in">Amount</th></tr></thead>
+    <tbody>
+      {% for t in exceptions.missing_backup %}
+      <tr><td>{{ t.date or '—' }}</td><td>{{ t.vendor }}</td>
+          <td>{{ t.source | replace('_',' ') }}</td>
+          <td class="num">{{ '{:,.2f}'.format(t.amount) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="muted">None — every ledger transaction is tied to a source document. ✓</p>{% endif %}
+
+  <h3>B. Uncoded spend — ${{ '{:,.2f}'.format(exceptions.uncoded_total) }}
+      ({{ exceptions.uncoded | length }} transaction{{ '' if exceptions.uncoded|length == 1 else 's' }})</h3>
+  {% if exceptions.uncoded %}
+  <table>
+    <thead><tr><th style="width:0.9in">Date</th><th>Vendor</th><th style="width:1in">Source</th>
+               <th class="num" style="width:1in">Amount</th></tr></thead>
+    <tbody>
+      {% for t in exceptions.uncoded %}
+      <tr><td>{{ t.date or '—' }}</td><td>{{ t.vendor }}</td>
+          <td>{{ t.source | replace('_',' ') }}</td>
+          <td class="num">{{ '{:,.2f}'.format(t.amount) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="font-size:7.5pt; margin-top:4pt">Project charges not yet assigned
+    to a budget line or account — they are NOT included in the Final Cost Report actuals.</p>
+  {% else %}<p class="muted">None — all project charges are coded to the budget. ✓</p>{% endif %}
+
+  <h3>C. Documents without a matching charge ({{ exceptions.orphan_receipts | length }})</h3>
+  {% if exceptions.orphan_receipts %}
+  <table>
+    <thead><tr><th style="width:0.9in">Date</th><th>Document</th><th>Vendor</th>
+               <th class="num" style="width:1in">Amount</th></tr></thead>
+    <tbody>
+      {% for d in exceptions.orphan_receipts %}
+      <tr><td>{{ d.date or '—' }}</td><td>{{ d.name }}</td><td>{{ d.vendor }}</td>
+          <td class="num">{{ '{:,.2f}'.format(d.amount) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="font-size:7.5pt; margin-top:4pt">Receipts/invoices on file that are not
+    matched to any charge and not logged as standalone expenses.</p>
+  {% else %}<p class="muted">None — every receipt and invoice on file is matched or logged. ✓</p>{% endif %}
+
+  <h3>D. 1099 review — payees ≥ $600 without a tax form on file ({{ exceptions.tax_check | length }})</h3>
+  {% if exceptions.tax_check %}
+  <table>
+    <thead><tr><th>Payee</th><th class="num" style="width:1.2in">Paid (document-linked)</th></tr></thead>
+    <tbody>
+      {% for p in exceptions.tax_check %}
+      <tr><td>{{ p.name }}</td><td class="num">{{ '{:,.2f}'.format(p.paid) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="font-size:7.5pt; margin-top:4pt">Advisory only — totals reflect spend tied
+    to this project's documents for each person. Collect a W-9 (or confirm W-2 employee / corporate
+    vendor status) before filing information returns.</p>
+  {% else %}<p class="muted">None — all payees at or over $600 have a tax form on file. ✓</p>{% endif %}
+
+  {# ── Attestation ── #}
+  <div class="attest">
+    <h2 style="margin-top:24pt">Attestation</h2>
+    <p>
+      The Final Cost Report and Cost Ledger above present the production costs of
+      <strong>{{ project.name }}</strong>{% if project.client_name %} for {{ project.client_name }}{% endif %}
+      as recorded at wrap. Each ledger transaction is tied to its source document where noted;
+      exceptions are disclosed in Schedules A–D. Source documents are retained and available
+      for review.
+    </p>
+    <div class="sig-block">
+      <span class="sig-line"></span><span class="sig-line"></span><br>
+      <span class="sig-label" style="display:inline-block;width:2.6in;margin-right:18pt">Prepared by — {{ prepared_by or '' }}</span>
+      <span class="sig-label" style="display:inline-block;width:2.6in">Date</span>
+    </div>
+    <div class="sig-block">
+      <span class="sig-line"></span><span class="sig-line"></span><br>
+      <span class="sig-label" style="display:inline-block;width:2.6in;margin-right:18pt">Reviewed by</span>
+      <span class="sig-label" style="display:inline-block;width:2.6in">Date</span>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wrap Review — {{ project.name }}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         max-width: 1100px; margin: 32px auto; padding: 0 24px; color: #1a1a2e;
+         line-height: 1.5; background: #f8fafc; }
+  h1 { font-size: 22pt; margin: 0 0 2px; color: #0f172a; }
+  .meta { color: #64748b; font-size: 10pt; margin-bottom: 18px; }
+  a.back { color: #2563eb; text-decoration: none; font-size: 10pt; }
+  h2 { font-size: 13pt; color: #0f172a; margin: 28px 0 10px; }
+  .explain { background: #f1f5fb; border-left: 4px solid #2563eb; padding: 12px 16px;
+             border-radius: 0 6px 6px 0; margin: 14px 0 22px; font-size: 10.5pt; }
+  .explain b { color: #1e3a8a; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+           gap: 14px; margin: 18px 0; }
+  .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 10px;
+          padding: 14px 16px; }
+  .card .v { font-size: 18pt; font-weight: 700; }
+  .card .l { font-size: 9pt; color: #64748b; text-transform: uppercase; letter-spacing: .04em; }
+  .ok   { color: #15803d; }
+  .warn { color: #b45309; }
+  .bad  { color: #b91c1c; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 10pt; background: #fff;
+          border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }
+  th { background: #f1f5f9; text-align: left; padding: 6px 10px;
+       border-bottom: 1px solid #cbd5e1; font-size: 9pt;
+       text-transform: uppercase; letter-spacing: .03em; color: #475569; }
+  td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .muted { color: #94a3b8; }
+  .clean { background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d;
+           padding: 8px 14px; border-radius: 8px; font-size: 10pt; }
+
+  .actions { display: flex; gap: 14px; flex-wrap: wrap; margin: 30px 0 40px;
+             padding-top: 20px; border-top: 2px solid #e2e8f0; align-items: center; }
+  .btn { display: inline-block; padding: 11px 20px; border-radius: 8px; font-size: 11pt;
+         font-weight: 600; cursor: pointer; text-decoration: none; border: none; }
+  .btn-book { background: #1e3a8a; color: #fff; }
+  .btn-wrap { background: #15803d; color: #fff; }
+  .btn-book:hover { background: #1e40af; } .btn-wrap:hover { background: #166534; }
+</style>
+</head>
+<body>
+  <a class="back" href="{{ url_for('dashboard') }}">← Dashboard</a>
+  <h1>Wrap Review — {{ project.name }}</h1>
+  <div class="meta">
+    {% if project.client_name %}{{ project.client_name }} · {% endif %}
+    {% if date_range[0] %}Activity {{ date_range[0] }} → {{ date_range[1] }} · {% endif %}
+    Working ${{ '{:,.2f}'.format(total_working) }} · Actual ${{ '{:,.2f}'.format(total_actual) }}
+  </div>
+
+  <div class="explain">
+    <b>Wrapping ≠ archiving.</b> Wrapping prepares the project for IRS backup and
+    studio review: it generates the <b>Wrap Book</b> — the final cost report, a ledger
+    tying every budget line to its backup documents, and exception schedules — files a
+    PDF copy into the project's Dropbox folder, then moves the folder to
+    <b>_WRAPPED PROJECTS</b>. (Archiving just moves the folder to the archive — no
+    reports.) Clean up the exceptions below first for the most defensible package.
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <div class="v {{ 'ok' if backup_pct >= 95 else ('warn' if backup_pct >= 80 else 'bad') }}">{{ backup_pct }}%</div>
+      <div class="l">Backup coverage ({{ backed_count }}/{{ txn_count }} txns)</div>
+    </div>
+    <div class="card">
+      <div class="v {{ 'ok' if not exceptions.missing_backup else 'bad' }}">${{ '{:,.0f}'.format(exceptions.missing_backup_total) }}</div>
+      <div class="l">Spend without backup ({{ exceptions.missing_backup | length }})</div>
+    </div>
+    <div class="card">
+      <div class="v {{ 'ok' if not exceptions.uncoded else 'warn' }}">${{ '{:,.0f}'.format(exceptions.uncoded_total) }}</div>
+      <div class="l">Uncoded spend ({{ exceptions.uncoded | length }})</div>
+    </div>
+    <div class="card">
+      <div class="v {{ 'ok' if not exceptions.orphan_receipts else 'warn' }}">{{ exceptions.orphan_receipts | length }}</div>
+      <div class="l">Unmatched documents</div>
+    </div>
+    <div class="card">
+      <div class="v {{ 'ok' if not exceptions.tax_check else 'bad' }}">{{ exceptions.tax_check | length }}</div>
+      <div class="l">1099 flags (≥$600, no tax form)</div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <a class="btn btn-book" href="{{ url_for('project_wrap_book_pdf', pid=project.id) }}">📕 Download Wrap Book (PDF)</a>
+    <form method="POST" action="{{ url_for('project_wrap', pid=project.id) }}" style="margin:0"
+          onsubmit="return confirm('Wrap {{ project.name | e }}? The Wrap Book PDF will be generated and filed, then the Dropbox folder moves to _WRAPPED PROJECTS.')">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-wrap">✅ Wrap project</button>
+    </form>
+    <span class="muted" style="font-size:9.5pt">You can re-open the Wrap Book any time — wrapped
+      projects stay fully readable.</span>
+  </div>
+
+  <h2>A · Spend without backup
+    <span class="muted">— ${{ '{:,.2f}'.format(exceptions.missing_backup_total) }}</span></h2>
+  {% if exceptions.missing_backup %}
+  <table>
+    <thead><tr><th style="width:110px">Date</th><th>Vendor</th><th style="width:120px">Source</th>
+               <th style="width:110px;text-align:right">Amount</th></tr></thead>
+    <tbody>
+    {% for t in exceptions.missing_backup %}
+      <tr><td>{{ t.date or '—' }}</td><td>{{ t.vendor }}</td>
+          <td>{{ t.source | replace('_',' ') }}</td>
+          <td class="num">{{ '{:,.2f}'.format(t.amount) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="font-size:9.5pt">Fix: open the Actuals tab and link each charge to its
+    receipt or invoice (the 🧭 Missing &amp; orphans panel finds likely matches).</p>
+  {% else %}<div class="clean">✓ Every ledger transaction is tied to a source document.</div>{% endif %}
+
+  <h2>B · Uncoded spend
+    <span class="muted">— ${{ '{:,.2f}'.format(exceptions.uncoded_total) }}</span></h2>
+  {% if exceptions.uncoded %}
+  <table>
+    <thead><tr><th style="width:110px">Date</th><th>Vendor</th><th style="width:120px">Source</th>
+               <th style="width:110px;text-align:right">Amount</th></tr></thead>
+    <tbody>
+    {% for t in exceptions.uncoded %}
+      <tr><td>{{ t.date or '—' }}</td><td>{{ t.vendor }}</td>
+          <td>{{ t.source | replace('_',' ') }}</td>
+          <td class="num">{{ '{:,.2f}'.format(t.amount) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="font-size:9.5pt">Fix: code these to a budget line in Actuals (or mark
+    "not a project expense"). Uncoded charges are left OUT of the Final Cost Report.</p>
+  {% else %}<div class="clean">✓ All project charges are coded to the budget.</div>{% endif %}
+
+  <h2>C · Documents without a matching charge
+    <span class="muted">— {{ exceptions.orphan_receipts | length }}</span></h2>
+  {% if exceptions.orphan_receipts %}
+  <table>
+    <thead><tr><th style="width:110px">Date</th><th>Document</th><th>Vendor</th>
+               <th style="width:110px;text-align:right">Amount</th></tr></thead>
+    <tbody>
+    {% for d in exceptions.orphan_receipts %}
+      <tr><td>{{ d.date or '—' }}</td><td>{{ d.name }}</td><td>{{ d.vendor }}</td>
+          <td class="num">{{ '{:,.2f}'.format(d.amount) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="font-size:9.5pt">Fix: match each to its bank/card charge, log it as an
+    expense (💰 Log as expense), or mark it not-project.</p>
+  {% else %}<div class="clean">✓ Every receipt and invoice on file is matched or logged.</div>{% endif %}
+
+  <h2>D · 1099 review — paid ≥ $600, no tax form on file
+    <span class="muted">— {{ exceptions.tax_check | length }}</span></h2>
+  {% if exceptions.tax_check %}
+  <table>
+    <thead><tr><th>Payee</th><th style="width:160px;text-align:right">Paid (doc-linked)</th></tr></thead>
+    <tbody>
+    {% for p in exceptions.tax_check %}
+      <tr><td>{{ p.name }}</td><td class="num">{{ '{:,.2f}'.format(p.paid) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="font-size:9.5pt">Advisory: collect a W-9 (or confirm W-2 / corporate
+    vendor status) and attach it to the person in the Crew Database — it then counts for every
+    project, forever.</p>
+  {% else %}<div class="clean">✓ All payees at or over $600 have a tax form on file.</div>{% endif %}
+
+  <div style="height:40px"></div>
+</body>
+</html>

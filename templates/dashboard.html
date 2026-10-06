@@ -100,13 +100,13 @@
         </button>
         {% endif %}
 
-        <form method="POST" action="{{ url_for('project_wrap', pid=p.id) }}"
-              onsubmit="return confirm('Wrap {{ p.name | e }}? The Dropbox folder will be moved to _WRAPPED PROJECTS.')">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <button type="submit" class="proj-menu-item">Wrap Project</button>
-        </form>
+        {# Wrap goes through the review popup (owner 2026-10-08): wrapping
+           generates the IRS/studio-review Wrap Book, so the user first sees
+           readiness + exceptions instead of a blind confirm(). #}
+        <a href="{{ url_for('project_wrap_review', pid=p.id) }}" class="proj-menu-item"
+           style="display:block;text-decoration:none;color:inherit">Wrap Project…</a>
         <form method="POST" action="{{ url_for('project_archive', pid=p.id) }}"
-              onsubmit="return confirm('Archive {{ p.name | e }}? The Dropbox folder will be moved to _archived.')">
+              onsubmit="return confirm('Archive {{ p.name | e }}? This just moves the Dropbox folder to _archived — no reports are generated. (To prepare IRS backup + studio review, use Wrap Project instead.)')">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <button type="submit" class="proj-menu-item">Archive Project</button>
         </form>
@@ -139,6 +139,8 @@
     <div class="project-card-meta">Wrapped</div>
     <div class="project-card-actions">
       <a href="{{ url_for('project_budget_redirect', pid=p.id) }}" class="btn btn-sm btn-outline">View</a>
+      <a href="{{ url_for('project_wrap_book_pdf', pid=p.id) }}" class="btn btn-sm btn-outline"
+         title="Final cost report + backup ledger + exceptions">📕 Wrap Book</a>
       <form method="POST" action="{{ url_for('project_reactivate', pid=p.id) }}" style="display:inline">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" class="btn btn-sm btn-outline">Reactivate</button>
