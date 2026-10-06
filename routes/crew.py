@@ -271,3 +271,77 @@ def support_contact_delete(cid, sid):
     s.active = False
     db.session.commit()
     return jsonify({"ok": True})
+
+
+# ── Per-person document vault (owner 2026-10-08) ──────────────────────────
+# "I want to be able to access that through the crew database … super admin
+# only for now … let those documents live with them forever." Lists every
+# DocUpload linked to this person across ALL projects, grouped by year, and
+# syncs any missing Crew Database (Dropbox) duplicates.
+
+def _require_super_admin():
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
+
+
+@app.route("/crew/<int:cid>/docs.json", methods=["GET"])
+@login_required
+def crew_docs_json(cid):
+    _require_super_admin()
+    from models import DocUpload
+    cm = CrewMember.query.get_or_404(cid)
+    docs = (DocUpload.query
+            .filter(DocUpload.crew_member_id == cid,
+                    DocUpload.status.notin_(('deleted', 'duplicate')))
+            .all())
+    proj_names = {p.id: p.name for p in ProjectSheet.query.filter(
+        ProjectSheet.id.in_({d.project_id for d in docs if d.project_id})).all()} if docs else {}
+    by_year = {}
+    for d in docs:
+        yr = (d.doc_date.year if d.doc_date
+              else (d.created_at.year if getattr(d, 'created_at', None) else 0))
+        by_year.setdefault(str(yr or '—'), []).append({
+            "id": d.id,
+            "name": d.filed_filename or d.original_filename or f"Doc #{d.id}",
+            "category": d.category or '',
+            "project": proj_names.get(d.project_id, ''),
+            "project_id": d.project_id,
+            "amount": float(d.amount) if d.amount is not None else None,
+            "date": d.doc_date.isoformat() if d.doc_date else '',
+            "crew_dbx_path": getattr(d, 'crew_dbx_path', None),
+        })
+    years = sorted(by_year.keys(), reverse=True)
+    for y in years:
+        by_year[y].sort(key=lambda r: r["date"] or '', reverse=True)
+    return jsonify({"ok": True, "crew": {"id": cm.id, "name": cm.name},
+                    "years": years, "docs_by_year": by_year,
+                    "total": len(docs),
+                    "unsynced": sum(1 for y in years for r in by_year[y]
+                                    if not r["crew_dbx_path"])})
+
+
+@app.route("/crew/<int:cid>/docs/sync", methods=["POST"])
+@login_required
+def crew_docs_sync(cid):
+    """Copy every not-yet-duplicated doc for this person into their Crew
+    Database Dropbox folder (<OPS_ROOT>/Crew Database/<Name>/<Year>[/<Project>])."""
+    _require_super_admin()
+    from models import DocUpload
+    from app import _copy_doc_to_crew_folder
+    CrewMember.query.get_or_404(cid)
+    docs = (DocUpload.query
+            .filter(DocUpload.crew_member_id == cid,
+                    DocUpload.crew_dbx_path.is_(None),
+                    DocUpload.status.notin_(('deleted', 'duplicate')))
+            .all())
+    copied, skipped = 0, 0
+    for d in docs:
+        if _copy_doc_to_crew_folder(d):
+            copied += 1
+        else:
+            skipped += 1
+    if copied:
+        db.session.commit()
+    return jsonify({"ok": True, "copied": copied, "skipped": skipped,
+                    "note": ("skipped docs have no Dropbox file yet or "
+                             "Dropbox is unreachable" if skipped else "")})

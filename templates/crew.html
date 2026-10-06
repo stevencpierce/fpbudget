@@ -78,6 +78,10 @@
            for names like O'Brien. (Fix 2026-05-29.) #}
         <button class="btn btn-xs btn-outline"
                 onclick='openEditCrew({{ m.id }}, {{ {"name": m.name, "department": m.department or "", "company": m.company or "", "email": m.email or "", "phone": m.phone or "", "default_rate": m.default_rate | float if m.default_rate else 0, "default_rate_type": m.default_rate_type, "default_fringe": m.default_fringe, "default_agent_pct": m.default_agent_pct | float, "active": m.active} | tojson }})'>Edit</button>
+        {% if current_user.role == 'super_admin' %}
+        <button class="btn btn-xs btn-outline" onclick='openCrewDocs({{ m.id }}, {{ m.name | tojson }})'
+                title="This person's document vault — every W-9, ID, invoice, timecard ever attached to them, across all projects. Super-admin only.">📄 Docs</button>
+        {% endif %}
         <form method="POST" action="{{ url_for('crew_delete', cid=m.id) }}" style="display:inline"
               onsubmit="return confirm('Delete {{ m.name | e }}?')">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -567,4 +571,73 @@ function _esc(s) {
   });
 })();
 </script>
+
+{% if current_user.role == 'super_admin' %}
+<!-- Per-person document vault (super-admin only, owner 2026-10-08) -->
+<div id="crew-docs-modal" class="modal hidden">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box" style="max-width:680px;max-height:80vh;overflow-y:auto">
+    <h3 style="margin:0 0 .2rem">📄 <span id="crew-docs-name"></span> — Documents</h3>
+    <p class="muted" style="font-size:.76rem;margin:.1rem 0 .7rem">
+      Every document attached to this person, across all projects — they stay
+      on file here forever (a W-9 collected once covers future projects).
+      Copies file to Dropbox under <code>Crew Database/&lt;Name&gt;/&lt;Year&gt;</code>
+      (invoices &amp; timecards also by project).
+    </p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:.6rem">
+      <button class="btn btn-xs btn-primary" id="crew-docs-sync-btn" onclick="crewDocsSync()">⬆ Sync to Dropbox</button>
+      <span id="crew-docs-sync-status" class="muted" style="font-size:.75rem"></span>
+      <button class="btn btn-xs btn-ghost" style="margin-left:auto"
+              onclick="document.getElementById('crew-docs-modal').classList.add('hidden')">Close</button>
+    </div>
+    <div id="crew-docs-body"><span class="muted">Loading…</span></div>
+  </div>
+</div>
+<script>
+let _crewDocsCid = null;
+window.openCrewDocs = async function (cid, name) {
+  _crewDocsCid = cid;
+  document.getElementById('crew-docs-name').textContent = name;
+  document.getElementById('crew-docs-modal').classList.remove('hidden');
+  const body = document.getElementById('crew-docs-body');
+  body.innerHTML = '<span class="muted">Loading…</span>';
+  try {
+    const r = await fetch(`/crew/${cid}/docs.json`);
+    const d = await r.json();
+    if (!r.ok) { body.innerHTML = '<span style="color:#e08080">' + ((d && d.error) || ('Failed: ' + r.status)) + '</span>'; return; }
+    if (!d.total) { body.innerHTML = '<span class="muted" style="font-style:italic">No documents attached to this person yet. Attach them from any project’s Docs tab via the Person/Vendor picker.</span>'; return; }
+    const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    let html = '';
+    d.years.forEach(y => {
+      html += `<div style="font-weight:700;font-size:.82rem;margin:.6rem 0 .3rem;border-bottom:1px solid var(--border);padding-bottom:2px">${esc(y)}</div>`;
+      d.docs_by_year[y].forEach(doc => {
+        html += `<div style="display:flex;gap:8px;align-items:baseline;font-size:.78rem;padding:3px 0;flex-wrap:wrap">
+          <a href="/docs/upload/${doc.id}/raw" target="_blank" style="font-weight:500">${esc(doc.name)}</a>
+          <span class="muted">${esc(doc.category)}${doc.project ? ' · ' + esc(doc.project) : ''}${doc.amount != null ? ' · $' + Number(doc.amount).toLocaleString('en-US', {minimumFractionDigits: 2}) : ''}${doc.date ? ' · ' + esc(doc.date) : ''}</span>
+          <span title="${doc.crew_dbx_path ? 'In Dropbox: ' + esc(doc.crew_dbx_path) : 'Not yet copied to the Crew Database Dropbox folder — click Sync'}" style="font-size:.7rem">${doc.crew_dbx_path ? '☁ ✓' : '☁ —'}</span>
+        </div>`;
+      });
+    });
+    body.innerHTML = html;
+    const st = document.getElementById('crew-docs-sync-status');
+    st.textContent = d.unsynced ? `${d.unsynced} not yet in Dropbox` : 'All synced to Dropbox ✓';
+  } catch (e) { body.innerHTML = '<span style="color:#e08080">Error: ' + e.message + '</span>'; }
+};
+window.crewDocsSync = async function () {
+  if (!_crewDocsCid) return;
+  const btn = document.getElementById('crew-docs-sync-btn');
+  const st  = document.getElementById('crew-docs-sync-status');
+  btn.disabled = true; st.textContent = 'Copying…';
+  try {
+    const r = await fetch(`/crew/${_crewDocsCid}/docs/sync`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const d = await r.json();
+    if (!r.ok) { st.textContent = (d && d.error) || ('Failed: ' + r.status); return; }
+    st.textContent = `Copied ${d.copied}` + (d.skipped ? ` · ${d.skipped} skipped (${d.note})` : ' ✓');
+    openCrewDocs(_crewDocsCid, document.getElementById('crew-docs-name').textContent);
+  } catch (e) { st.textContent = 'Error: ' + e.message; }
+  finally { btn.disabled = false; }
+};
+</script>
+{% endif %}
 {% endblock %}

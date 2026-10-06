@@ -1239,6 +1239,70 @@ def _provision_dropbox_folder(dropbox_folder):
         return None
 
 
+_CREW_DB_FOLDER = os.getenv('DROPBOX_CREW_DB_FOLDER', 'Crew Database')
+# Doc categories tied to PROJECT WORK file under <Person>/<Year>/<Project>/;
+# everything else (W-9s, IDs, contracts, releases…) is personal and files
+# under <Person>/<Year>/ directly.
+_CREW_DOC_PROJECT_CATS = ('invoice', 'timecard', 'receipt', 'payroll')
+
+
+def _crew_db_root():
+    """Base path of the master Crew Database folder, namespace-aware."""
+    return (f"/{_CREW_DB_FOLDER}" if _DBX_NAMESPACE_ID
+            else f"{_DBX_OPS_ROOT}/{_CREW_DB_FOLDER}")
+
+
+def _copy_doc_to_crew_folder(doc):
+    """Duplicate a person-linked document into the master Crew Database
+    folder (owner 2026-10-08: "let those documents live with them forever
+    … duplicate those documents into a Dropbox folder … each person gets
+    their own folder, by year … invoices by year, by project").
+
+      <OPS_ROOT>/Crew Database/<Person>/<Year>/<file>              personal
+      <OPS_ROOT>/Crew Database/<Person>/<Year>/<Project>/<file>    project work
+
+    Server-side files_copy_v2 from the doc's filed Dropbox path — nothing
+    is re-uploaded. Fail-open (returns None on any problem); records
+    crew_dbx_path on success so the copy happens exactly once. Caller
+    commits."""
+    try:
+        if not doc or not doc.crew_member_id or getattr(doc, 'crew_dbx_path', None):
+            return None
+        src = doc.filed_dropbox_path or doc.source_archive_path
+        if not src:
+            return None     # not filed in Dropbox (yet) — retry on next sync
+        has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
+        if not has_refresh and not os.getenv('DROPBOX_ACCESS_TOKEN'):
+            return None
+        cm = CrewMember.query.get(doc.crew_member_id)
+        if not cm or not (cm.name or '').strip():
+            return None
+        _safe = lambda s: re.sub(r'[\\/:*?"<>|]+', '-', (s or '').strip())[:80] or 'Unknown'
+        person = _safe(cm.name)
+        if doc.doc_date:
+            year = str(doc.doc_date.year)
+        elif getattr(doc, 'created_at', None):
+            year = str(doc.created_at.year)
+        else:
+            year = str(date.today().year)
+        parts = [_crew_db_root(), person, year]
+        if (doc.category or '') in _CREW_DOC_PROJECT_CATS and doc.project_id:
+            proj = ProjectSheet.query.get(doc.project_id)
+            if proj and proj.name:
+                parts.append(_safe(proj.name))
+        fname = doc.filed_filename or doc.original_filename or f"doc_{doc.id}"
+        dest = "/".join(parts) + "/" + _safe(fname)[:120]
+        res = _dbx_client().files_copy_v2(src, dest, autorename=True)
+        final = getattr(getattr(res, 'metadata', None), 'path_display', None) or dest
+        doc.crew_dbx_path = final[:500]
+        logging.info(f"[crew-db] copied doc {doc.id} → {final}")
+        return final
+    except Exception as e:
+        logging.warning(f"[crew-db] copy failed for doc {getattr(doc, 'id', '?')}: "
+                        f"{type(e).__name__}: {e}")
+        return None
+
+
 @app.route("/admin/dropbox/status")
 @login_required
 def admin_dropbox_status():
@@ -31414,6 +31478,8 @@ def _web_worker_essential_columns():
                 "ALTER TABLE budget ADD COLUMN IF NOT EXISTS hidden_group_labels TEXT",
                 # Fringe rollup mode (2026-10-05, alembic 0017).
                 "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS fringe_rollup BOOLEAN DEFAULT FALSE NOT NULL",
+                # Crew Database doc duplicate path (2026-10-08, alembic 0018).
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS crew_dbx_path VARCHAR(500)",
                 """CREATE TABLE IF NOT EXISTS budget_lever (
                      id            SERIAL PRIMARY KEY,
                      budget_id     INTEGER NOT NULL REFERENCES budget(id) ON DELETE CASCADE,
@@ -40756,6 +40822,15 @@ def docs_upload_update(uid):
         logging.warning(f"[/update] person-doc dup check failed for upload {uid}: {_pde}")
 
     db.session.commit()
+    # Crew Database duplicate (owner 2026-10-08): a doc attached to a person
+    # gets copied into their master Dropbox folder once. Fail-open.
+    try:
+        if upload.crew_member_id and not getattr(upload, 'crew_dbx_path', None):
+            if _copy_doc_to_crew_folder(upload):
+                db.session.commit()
+    except Exception:
+        try: db.session.rollback()
+        except Exception: pass
     try:
         _act_after = {
             'vendor': upload.vendor, 'amount': float(upload.amount) if upload.amount else None,

@@ -1204,6 +1204,13 @@ class DocUpload(db.Model):
     # Filing to Dropbox
     filed_filename   = db.Column(db.String(300), nullable=True)   # renamed file
     filed_dropbox_path = db.Column(db.String(500), nullable=True) # full Dropbox path
+    # Crew Database duplicate (owner 2026-10-08): when a doc is attached to
+    # a person, a copy is filed under the master Crew Database folder —
+    # <OPS_ROOT>/Crew Database/<Person>/<Year>[/<Project>]/<file> — so the
+    # person's papers (W-9s, IDs, invoices, timecards) live with THEM
+    # forever, across projects. This records where the copy landed and
+    # doubles as the idempotence marker.
+    crew_dbx_path    = db.Column(db.String(500), nullable=True)
     filed_at         = db.Column(db.DateTime, nullable=True)
     is_duplicate     = db.Column(db.Boolean, default=False)
     # When an exact byte-identical match is detected on upload, this
