@@ -289,14 +289,24 @@ class ClaudeProvider(AIProvider):
             "You extract per-person payment rows from a PAYROLL PACKAGE document "
             "(e.g. a Wrapbook payroll summary covering many employees). The OCR "
             "text and any line items are provided. Return one row per PERSON with "
-            "their total amount in this document. Use the ROSTER of known crew "
+            "their total amount in this document. Payroll invoices usually split "
+            "each person's cost into GROSS WAGES (what the person earned — employee "
+            "tax withholding comes OUT of this, so it stays part of wages) and "
+            "EMPLOYER-paid fringes/fees (employer FICA, employer Medicare, FUTA/SUI "
+            "unemployment, workers compensation, platform/handling fees, PH&W). "
+            "Wrapbook's Fringe Report and Cost Code Report show both per person — "
+            "when the document separates them, fill wages and fringes per row so "
+            "the caller can book wages to the person's budget line and fringes to "
+            "the payroll-fringe bucket; amount stays the person's total "
+            "(wages + fringes). When only a single figure per person exists, set "
+            "wages/fringes to null. Use the ROSTER of known crew "
             "names to normalize spellings when a printed name clearly refers to a "
             "rostered person (return the roster spelling). Skip subtotal/header/"
             "tax-summary rows that aren't a person. Amounts are positive numbers. "
             "Reason only from the data given; do not invent people."
         )
         out = self._call(system, payload, _PEOPLE_TOOL,
-                         max_tokens=6000, timeout_s=45.0)
+                         max_tokens=8000, timeout_s=45.0)
         out["_provider"] = "claude"
         out["_model"] = _CLAUDE_MODEL
         return out
@@ -401,6 +411,23 @@ _PEOPLE_TOOL = {
                                                   "employer costs/fees when itemized "
                                                   "per person; the per-person total "
                                                   "column when one exists)"},
+                        "wages": {"type": ["number", "null"],
+                                  "description": "That person's GROSS WAGES / gross "
+                                                 "earnings ONLY (the amount the "
+                                                 "person earned, before employee tax "
+                                                 "withholding, EXCLUDING all "
+                                                 "employer-paid fringes and fees). "
+                                                 "Null when the document doesn't "
+                                                 "separate wages from employer costs."},
+                        "fringes": {"type": ["number", "null"],
+                                    "description": "The EMPLOYER-paid fringes and fees "
+                                                   "for that person: employer FICA/"
+                                                   "Medicare, FUTA/SUI unemployment, "
+                                                   "workers compensation, handling/"
+                                                   "platform fees, PH&W, etc. "
+                                                   "(wages + fringes should equal "
+                                                   "amount). Null when not shown "
+                                                   "per person."},
                     },
                     "required": ["name", "amount"],
                 },

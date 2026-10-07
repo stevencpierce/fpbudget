@@ -3014,6 +3014,7 @@
         st.style.color = unmatched ? '#e0a13a' : '#5fd0a0';
         st.textContent = `${j.total_rows} people parsed (${money(j.sum)}), ` +
           `${j.matched} matched to budget lines` +
+          (j.fringes_total ? ` — gross wages on each person's line, ${money(j.fringes_total)} employer fringes & fees split to 6500 Payroll Fringes` : '') +
           (unmatched ? ` — ${unmatched} need a line picked (amber)` : '') +
           '. Review, then Save itemization.';
       }

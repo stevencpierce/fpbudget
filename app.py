@@ -36546,6 +36546,7 @@ def docs_parse_people(uid):
         return None if best == 'AMBIG' else best
 
     out_rows, matched_n = [], 0
+    fringes_total = 0.0
     for r0 in rows_in[:200]:
         nm = (r0.get("name") or '').strip()
         try:
@@ -36554,15 +36555,44 @@ def docs_parse_people(uid):
             continue
         if not nm or amt <= 0:
             continue
+        # Wages/fringes split (owner 2026-10-07: "I need to know their gross
+        # earnings to go against their line, but I need the employer fringes
+        # to go against the fringes lines"). When the AI separated the two,
+        # the person's row carries GROSS WAGES only; the employer fringes &
+        # fees pool into one row coded to 6500 (where the Payroll Fringes
+        # rollup lives). Employee withholding stays inside wages — only
+        # EMPLOYER costs move. Sanity: accept the split only when it ties
+        # back to the person's total (±$1), otherwise keep the old behavior.
+        try:
+            wages = round(float(r0.get("wages")), 2)
+            frng  = round(float(r0.get("fringes")), 2)
+        except (TypeError, ValueError):
+            wages = frng = None
+        if (wages is not None and frng is not None and wages > 0 and frng >= 0
+                and abs((wages + frng) - amt) <= 1.0):
+            row_amt = wages
+            fringes_total = round(fringes_total + frng, 2)
+        else:
+            row_amt = amt
         mt = _match(nm)
         if mt:
             matched_n += 1
-        out_rows.append({"desc": f"{nm} — payroll", "amount": amt,
+        out_rows.append({"desc": f"{nm} — payroll", "amount": row_amt,
                          "line_id": (mt["value"] if mt else ""),
                          "line_label": (mt["label"] if mt else ""),
                          "matched": bool(mt)})
+    people_n = len(out_rows)
+    if fringes_total > 0:
+        out_rows.append({
+            "desc": "Employer fringes & payroll fees (FICA, unemployment, "
+                    "workers comp, platform)",
+            "amount": fringes_total,
+            "line_id": "section:6500",
+            "line_label": "6500 · Administrative (Payroll Fringes)",
+            "matched": True, "is_fringe": True})
     return jsonify({"ok": True, "rows": out_rows,
-                    "total_rows": len(out_rows), "matched": matched_n,
+                    "total_rows": people_n, "matched": matched_n,
+                    "fringes_total": fringes_total,
                     "ai": (not used_fallback
                            and res.get("_provider") not in (None, "none")),
                     "confidence": res.get("confidence"),
