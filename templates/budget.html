@@ -1483,7 +1483,13 @@
            still render with placeholder hint text but won't persist any
            text content unless the user types something. Skip the normal
            line render path entirely for these. #}
-        {% if ln.line_tag == 'spacer' %}
+        {% if ln.line_tag == 'fringe_rollup' %}
+        {# The real "Payroll Fringes" coding line ($0 budget — the working
+           number is computed from the labor lines). Its spend renders on
+           the 6500-FR auto row at the section footer, so no editable row
+           here; the line still feeds the section-actual accumulators and
+           every budget-line picker. (Owner 2026-10-07.) #}
+        {% elif ln.line_tag == 'spacer' %}
         <tr class="line-row spacer-row" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-tag="spacer">
           <td colspan="14" style="padding:0;position:relative">
             {# Drag handle on the left so spacers can be reordered. #}
@@ -2575,10 +2581,11 @@
           <td class="col-act"></td>
         </tr>
         {% endif %}
-        {% if sec.code == 6500 and top_sheet.fringe_rollup_amount > 0 %}
+        {% set _frr_act = (actual_by_line_id.get(fringe_rollup_line_id | default(none), 0) or 0) | float %}
+        {% if sec.code == 6500 and (top_sheet.fringe_rollup_amount > 0 or _frr_act) %}
         <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9)"
             data-auto-amount="{{ top_sheet.fringe_rollup_amount | float }}"
-            title="Sum of all labor fringes — rolled up here instead of inflating each labor line's total. This is the number to reconcile payroll-company fringe invoices against. Code those costs to the 6500 section.">
+            title="Sum of all labor fringes — rolled up here instead of inflating each labor line's total. Reconcile payroll-company fringe invoices against this number: code those costs to the '6500 · Payroll Fringes' line (the ⚡ payroll parser does it automatically) and the Actual shows right here.">
           <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
             <span class="line-number">{{ sec.code }}-FR</span>
             Payroll Fringes (rolled up from labor lines)
@@ -2595,8 +2602,18 @@
           {% set _frr_fee = ((top_sheet.fringe_rollup_amount * _fee_eff_rate + 0.5) | int) if (budget.company_fee_dispersed and not _sec_fee_exempt and not top_sheet.company_fee_exclude_fringes) else 0 %}
           <td class="col-num">{{ (top_sheet.fringe_rollup_amount + _frr_fee) | currency }}</td>
           <td class="col-num col-working">{{ (top_sheet.fringe_rollup_amount + _frr_fee) | currency }}</td>
-          <td class="col-num col-actual"></td>
+          {# Actual = spend coded to the real 'Payroll Fringes' line (the ⚡
+             payroll parser's employer-fringe row lands there). Variance
+             against the rolled-up working number, same red/green treatment
+             as normal lines. (Owner 2026-10-07: "see how that actualizes
+             against each other".) #}
+          <td class="col-num col-actual">{% if _frr_act %}{{ _frr_act | currency }}{% endif %}</td>
+          {% if _frr_act %}
+          {% set _frr_var = (top_sheet.fringe_rollup_amount + _frr_fee - _frr_act) %}
+          <td class="col-num col-variance" style="color:{% if _frr_var < 0 %}#fb7185{% else %}#5fd0a0{% endif %};font-style:normal">{{ _frr_var | currency }}</td>
+          {% else %}
           <td class="col-num col-variance"></td>
+          {% endif %}
           <td class="col-act"></td>
         </tr>
         {% endif %}

@@ -7202,6 +7202,52 @@ def budget_audit_json(pid, bid):
 # (pick_budget, groups). Each group is {code, name, lines}. Extracted from
 # budget_view's inline block verbatim so both render IDENTICAL options.
 # (User 2026-07 — standalone doc editor.)
+def _ensure_fringe_rollup_line(pid):
+    """The rolled-up fringe pot as a REAL budget line (owner 2026-10-07:
+    "fringes should just be one big lump category … boom, just drop it in
+    there and see how that actualizes against each other").
+
+    Lives on the project's canonical Working budget, tagged
+    line_tag='fringe_rollup', with $0 estimate — the BUDGET side of the
+    number stays computed from the labor lines (calc_top_sheet's
+    fringe_rollup_amount), so this line never double-counts. It exists so
+    payroll-fringe ACTUALS have a line to land on: it shows in every
+    budget-line picker ("6500 · Payroll Fringes") and its coded spend
+    renders on the 6500-FR auto row next to the rolled-up working number.
+    Idempotent; fail-open (returns None when there's nothing to attach to)."""
+    try:
+        bud = (Budget.query
+               .filter_by(project_id=pid, version_status='current', is_actual=False)
+               .filter(db.or_(Budget.budget_mode == 'working',
+                              db.and_(Budget.budget_mode == None,
+                                      Budget.parent_budget_id.isnot(None))))
+               .order_by(Budget.id.desc()).first())
+        if not bud:
+            bud = (Budget.query
+                   .filter_by(project_id=pid, version_status='current', is_actual=False)
+                   .order_by(Budget.id.desc()).first())
+        if not bud:
+            return None
+        ln = BudgetLine.query.filter_by(budget_id=bud.id,
+                                        line_tag='fringe_rollup').first()
+        if ln:
+            return ln
+        ln = BudgetLine(budget_id=bud.id, account_code=6500,
+                        account_name='Administrative',
+                        description='Payroll Fringes (all labor fringes)',
+                        line_tag='fringe_rollup', estimated_total=0,
+                        is_labor=False, sort_order=9999, sync_omit=True)
+        db.session.add(ln)
+        db.session.commit()
+        logging.info(f"[fringe-rollup] created Payroll Fringes line {ln.id} "
+                     f"on budget {bud.id} (project {pid})")
+        return ln
+    except Exception as e:
+        db.session.rollback()
+        logging.warning(f"[fringe-rollup] ensure line failed for project {pid}: {e}")
+        return None
+
+
 def _line_picker_groups(pid):
     # Prefer the project's current Working budget (has parent_budget_id);
     # fall back to the current Estimated if no Working exists yet — same
@@ -9107,6 +9153,14 @@ def budget_view(pid, bid):
     # Falls back to Estimated if no Working exists yet.
     # Refactored into _line_picker_groups() so the standalone doc-editor
     # page can render the IDENTICAL picker options. (User 2026-07.)
+    # Fringe-rollup projects get the real "Payroll Fringes" coding line
+    # BEFORE the picker reads the budget's lines, so it shows up in the
+    # pickers on the same render that created it. (Owner 2026-10-07.)
+    fringe_rollup_line_id = None
+    if getattr(project, 'fringe_rollup', False):
+        _frl = _ensure_fringe_rollup_line(pid)
+        if _frl is not None:
+            fringe_rollup_line_id = _frl.id
     actuals_pick_budget, actuals_pick_groups = _line_picker_groups(pid)
 
     # Per-line crew + PO badges for the Actuals "Chart of Accounts" sidebar
@@ -9525,6 +9579,7 @@ def budget_view(pid, bid):
         has_actual_budget=has_actual_budget,
         actual_budget_meta=actual_budget_meta,
         actuals_frozen=actuals_frozen,
+        fringe_rollup_line_id=fringe_rollup_line_id,
     )
 
 
@@ -36583,12 +36638,25 @@ def docs_parse_people(uid):
                          "matched": bool(mt)})
     people_n = len(out_rows)
     if fringes_total > 0:
+        # Land the pool on the REAL "Payroll Fringes" line when the project
+        # rolls fringes up (owner 2026-10-07: "one big lump category …
+        # boom, just drop it in there and see how that actualizes against
+        # each other") — its actuals render on the 6500-FR row right next
+        # to the rolled-up working number. Section-coded 6500 otherwise.
+        _frl = None
+        try:
+            if getattr(ProjectSheet.query.get(pid), 'fringe_rollup', False):
+                _frl = _ensure_fringe_rollup_line(pid)
+        except Exception:
+            _frl = None
+        _frl_pv = _picker_value_for_line(_frl) if _frl is not None else None
         out_rows.append({
             "desc": "Employer fringes & payroll fees (FICA, unemployment, "
                     "workers comp, platform)",
             "amount": fringes_total,
-            "line_id": "section:6500",
-            "line_label": "6500 · Administrative (Payroll Fringes)",
+            "line_id": (str(_frl_pv) if _frl_pv is not None else "section:6500"),
+            "line_label": ("6500 · Payroll Fringes" if _frl_pv is not None
+                           else "6500 · Administrative (Payroll Fringes)"),
             "matched": True, "is_fringe": True})
     return jsonify({"ok": True, "rows": out_rows,
                     "total_rows": people_n, "matched": matched_n,
@@ -37661,6 +37729,31 @@ def docs_upload_line_items(uid):
     if deny:
         return deny
     parent = _doc_parent_txn(uid)
+    # No transaction yet → the whole Itemize block (incl. ⚡ Parse payroll)
+    # was hidden, so the tools existed only when the doc was opened off a
+    # matched charge in Actuals (owner 2026-10-07: "when I go to the Docs
+    # tab, there is no payroll parse button … both should have the same
+    # tools"). Create the doc-born ledger row on demand — same shape as
+    # ensure_doc_txns — for expense-shaped docs with an amount. It stays
+    # un-activated (invisible to totals) until coded, and confirm_match
+    # migrates everything onto the bank charge if one matches later.
+    if (parent is None and upload.amount is not None
+            and (upload.category or '') in ('receipt', 'invoice', 'payroll', 'timecard')
+            and not getattr(upload, 'is_duplicate', False)
+            and (upload.status or '') not in ('duplicate', 'deleted')):
+        try:
+            parent = Transaction(
+                project_id=upload.project_id, source='doc_upload',
+                doc_upload_id=upload.id, vendor=upload.vendor,
+                amount=upload.amount,
+                txn_date=upload.doc_date.isoformat() if upload.doc_date else None,
+                card_last4=getattr(upload, 'card_last4', None),
+                is_expense=True, match_status='unmatched')
+            db.session.add(parent)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            parent = None
     total = None
     if parent is not None and parent.amount is not None:
         total = abs(float(parent.amount))
