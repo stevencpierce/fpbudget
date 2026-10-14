@@ -34194,19 +34194,48 @@ def _sweep_project_drop_folder(project, uploader=None):
     allowed = _UPLOAD_ALLOW['document']
     imported, skipped, errors = 0, 0, []
     remaining = 0
+
+    def _quarantine(entry, why):
+        """Move a file the sweep can never import into _INBOX/_skipped/ so
+        it stops clogging the queue AND the user can SEE it was rejected
+        (owner 2026-10-14: "receipts … all just been sitting there"). The
+        reason stays in the sweep result/log."""
+        try:
+            try:
+                dbx.files_move_v2(entry.path_display,
+                                  f"{path}/_skipped/{entry.name}", autorename=True)
+            except Exception:
+                dbx.files_create_folder_v2(f"{path}/_skipped")
+                dbx.files_move_v2(entry.path_display,
+                                  f"{path}/_skipped/{entry.name}", autorename=True)
+        except Exception as _qe:
+            logging.warning(f"[drop-sweep] quarantine failed for {entry.name}: {_qe}")
+        errors.append(f"{entry.name}: {why} → moved to _skipped")
+
+    # WEDGE FIX (owner 2026-10-14: "put a bunch of receipts in the inbox and
+    # they've all just been sitting there"): the per-sweep cap used to count
+    # SKIPPED files too, so once ~10 un-importable files (bad type, >25 MB,
+    # or files that 5xx in OCR every time) sat at the front of the folder
+    # listing, every cycle re-read the same ten, hit the cap, and never
+    # reached anything dropped after them. Now: pre-check rejects are
+    # quarantined to _skipped (free — no download), the cap applies to
+    # IMPORTS, and a separate attempts bound keeps repeated ingest failures
+    # from re-downloading a big folder forever.
+    attempts = 0
     for i, e in enumerate(files):
-        if imported + skipped >= _DROP_SWEEP_MAX_FILES:
+        if imported >= _DROP_SWEEP_MAX_FILES or attempts >= _DROP_SWEEP_MAX_FILES * 3:
             remaining = len(files) - i
             break
         ext = e.name.rsplit('.', 1)[-1].lower() if '.' in e.name else ''
         if ext not in allowed:
             skipped += 1
-            errors.append(f"{e.name}: type .{ext or '?'} not accepted")
+            _quarantine(e, f"type .{ext or '?'} not accepted")
             continue
         if (e.size or 0) > _DROP_SWEEP_MAX_BYTES:
             skipped += 1
-            errors.append(f"{e.name}: larger than 25 MB")
+            _quarantine(e, "larger than 25 MB")
             continue
+        attempts += 1
         try:
             _md, _resp = dbx.files_download(e.path_display)
             data = _resp.content
@@ -34433,13 +34462,36 @@ def admin_drop_sweep_status(pid=None):
     except Exception:
         pass
     provision = request.args.get('provision') == '1'
+    sweep_pid = request.args.get('sweep', type=int)
     rows = []
     try:
         dbx = _dbx_client()
     except Exception as _ce:
         return (f"<h2>Drop-sweep status</h2><p>Sweeper last ran: {last_run or 'never'}</p>"
                 f"<p style='color:#c00'>Dropbox client unavailable: {_ce}</p>"), 200
+    import html as _h
     import dropbox as _dbx_mod
+    # ?sweep=<pid> — run ONE project's sweep right now and show the verdict
+    # per file, so "receipts just sitting there" is diagnosable from the
+    # browser instead of the Render log. (Owner 2026-10-14.)
+    sweep_html = ''
+    if sweep_pid:
+        _sp = ProjectSheet.query.get(sweep_pid)
+        if _sp and _sp.dropbox_folder:
+            try:
+                _sr = _sweep_project_drop_folder(_sp, uploader=None)
+            except Exception as _se:
+                _sr = {"ok": False, "error": f"Dropbox unavailable: {_se}"}
+            _errs = ''.join(f"<li>{_h.escape(str(x))}</li>" for x in (_sr.get('errors') or []))
+            sweep_html = (
+                f"<div style='border:2px solid #36c;padding:10px 14px;border-radius:8px;margin:14px 0'>"
+                f"<b>Swept “{_h.escape(_sp.name)}” just now:</b> "
+                f"imported {_sr.get('imported', 0)}, skipped {_sr.get('skipped', 0)}"
+                + (f", {_sr.get('remaining')} not reached this pass" if _sr.get('remaining') else '')
+                + (f"<br><span style='color:#c00'>{_h.escape(str(_sr.get('error')))}</span>" if _sr.get('error') else '')
+                + (f"<ul style='margin:6px 0'>{_errs}</ul>" if _errs else '')
+                + "</div>")
+    allowed = _UPLOAD_ALLOW['document']
     for prj in ProjectSheet.query.order_by(ProjectSheet.name).all():
         status = getattr(prj, 'status', 'active') or 'active'
         if status != 'active':
@@ -34451,7 +34503,31 @@ def admin_drop_sweep_status(pid=None):
         path = _drop_folder_path(prj)
         try:
             dbx.files_get_metadata(path)
-            rows.append((prj.name, status, f'✓ {path}'))
+            # What's actually WAITING in the inbox, with each file's verdict —
+            # the question "why are my receipts just sitting there?" answered
+            # per file. (Owner 2026-10-14.)
+            try:
+                _entries = dbx.files_list_folder(path).entries
+                _waiting = [e for e in _entries if isinstance(e, _dbx_mod.files.FileMetadata)]
+                _verdicts = []
+                for _e in _waiting[:15]:
+                    _ext = _e.name.rsplit('.', 1)[-1].lower() if '.' in _e.name else ''
+                    if _ext not in allowed:
+                        _v = f'would be rejected (.{_ext or "?"})'
+                    elif (_e.size or 0) > _DROP_SWEEP_MAX_BYTES:
+                        _v = 'would be rejected (>25 MB)'
+                    else:
+                        _v = 'ready to import'
+                    _verdicts.append(f'{_e.name} — {_v}')
+                _msg = f'✓ {path} — {len(_waiting)} file(s) waiting'
+                if _waiting:
+                    _msg += ' | ' + ' ; '.join(_verdicts)
+                    if len(_waiting) > 15:
+                        _msg += f' ; …and {len(_waiting) - 15} more'
+                    _msg += f' | SWEEP_LINK:{prj.id}'
+                rows.append((prj.name, status, _msg))
+            except Exception as _lfe:
+                rows.append((prj.name, status, f'✓ {path} — but listing failed: {_lfe}'))
         except Exception:
             if provision:
                 try:
@@ -34465,17 +34541,27 @@ def admin_drop_sweep_status(pid=None):
                     rows.append((prj.name, status, f'✗ create failed: {_pe2}'))
             else:
                 rows.append((prj.name, status, f'✗ missing — expected at {path}'))
-    import html as _h
+
+    def _cell(msg):
+        # The SWEEP_LINK marker becomes a real link (everything else is escaped).
+        if ' | SWEEP_LINK:' in msg:
+            msg, _pid_s = msg.rsplit(' | SWEEP_LINK:', 1)
+            return (_h.escape(msg)
+                    + f" | <a href='?sweep={_h.escape(_pid_s)}'><b>Sweep now</b></a>")
+        return _h.escape(msg)
     body = ''.join(f"<tr><td>{_h.escape(n)}</td><td>{_h.escape(st)}</td>"
-                   f"<td>{_h.escape(msg)}</td></tr>" for n, st, msg in rows)
+                   f"<td>{_cell(msg)}</td></tr>" for n, st, msg in rows)
     _missing = sum(1 for _, _, m in rows if m.startswith('✗ missing'))
     return (f"<!doctype html><html><head><title>Drop-sweep status</title>"
-            f"<style>body{{font-family:system-ui,sans-serif;max-width:1000px;margin:40px auto;"
+            f"<style>body{{font-family:system-ui,sans-serif;max-width:1100px;margin:40px auto;"
             f"padding:0 20px}}table{{border-collapse:collapse;font-size:13px}}"
             f"td,th{{border:1px solid #ccc;padding:4px 8px}}</style></head><body>"
             f"<h1>Drop-folder sweep status</h1>"
             f"<p>Background sweeper last ran: <b>{last_run or 'never yet'}</b> (UTC). "
-            f"It runs ~every 10 minutes; only active projects are swept.</p>"
+            f"It runs ~every 10 minutes; only active projects are swept. Files that can "
+            f"never import (wrong type / too big) are moved to _INBOX/_skipped; files "
+            f"that fail OCR stay in place and retry.</p>"
+            + sweep_html
             + (f"<p><a href='?provision=1'><b>Create the {_missing} missing folder(s) now</b></a></p>"
                if _missing and not provision else '')
             + f"<table><tr><th>Project</th><th>Status</th><th>_INBOX</th></tr>{body}</table>"
