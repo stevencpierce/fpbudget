@@ -1430,6 +1430,37 @@ def admin_veryfi_status():
         "client_init": None,
         "test_call": None,
     }
+    # Recent OCR health (owner 2026-10-19: "nothing seems to be analyzing
+    # like it used to") — upload outcomes for the last 72h so one page shows
+    # WHEN analysis stopped working, not just whether creds are set now.
+    # Computed FIRST so it shows even when env vars are missing.
+    try:
+        from datetime import timedelta as _td
+        from sqlalchemy import func as _vf
+        _since = datetime.utcnow() - _td(hours=72)
+        out["last_72h"] = {
+            (st or '?'): n for st, n in
+            db.session.query(DocUpload.status, _vf.count(DocUpload.id))
+            .filter(DocUpload.uploaded_at >= _since)
+            .group_by(DocUpload.status).all()}
+        out["recent_problem_docs"] = [
+            {"id": d.id, "file": d.original_filename, "status": d.status,
+             "project_id": d.project_id,
+             "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None}
+            for d in (DocUpload.query
+                      .filter(DocUpload.uploaded_at >= _since,
+                              DocUpload.status.in_(('error', 'pending', 'processing')))
+                      .order_by(DocUpload.id.desc()).limit(10).all())]
+        _last_ok = (DocUpload.query
+                    .filter(DocUpload.status.in_(('done', 'review')),
+                            DocUpload.veryfi_data.isnot(None))
+                    .order_by(DocUpload.id.desc()).first())
+        out["last_successful_ocr"] = (
+            {"id": _last_ok.id,
+             "uploaded_at": _last_ok.uploaded_at.isoformat() if _last_ok.uploaded_at else None}
+            if _last_ok else None)
+    except Exception as _he:
+        out["last_72h"] = f"stats failed: {_he}"
     missing = [k for k, v in out["env"].items() if not v]
     if missing:
         out["client_init"] = f"MISSING ENV VARS: {', '.join(missing)}"
