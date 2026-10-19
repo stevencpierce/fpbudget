@@ -1443,9 +1443,15 @@ def admin_veryfi_status():
             db.session.query(DocUpload.status, _vf.count(DocUpload.id))
             .filter(DocUpload.uploaded_at >= _since)
             .group_by(DocUpload.status).all()}
+        def _stored_err(d):
+            try:
+                return (json.loads(d.veryfi_data) or {}).get("_analyzer_error") \
+                    if d.veryfi_data else None
+            except Exception:
+                return None
         out["recent_problem_docs"] = [
             {"id": d.id, "file": d.original_filename, "status": d.status,
-             "project_id": d.project_id,
+             "project_id": d.project_id, "error": _stored_err(d),
              "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None}
             for d in (DocUpload.query
                       .filter(DocUpload.uploaded_at >= _since,
@@ -1474,26 +1480,62 @@ def admin_veryfi_status():
             api_key=os.getenv("VERYFI_API_KEY"),
         )
         out["client_init"] = "ok"
-        # Hit a lightweight endpoint that doesn't cost a document credit.
-        # get_categories is a read-only listing call.
         try:
-            cats = client.get_categories()
-            # Some SDK versions return a list, others a dict. Normalize.
-            if isinstance(cats, list):
-                out["test_call"] = {
-                    "status": "ok",
-                    "category_count": len(cats),
-                    "sample": cats[:3],
-                }
-            elif isinstance(cats, dict):
-                out["test_call"] = {
-                    "status": "ok",
-                    "keys": list(cats.keys())[:10],
-                }
+            out["sdk_version"] = __import__('importlib.metadata', fromlist=['version']).version('veryfi')
+        except Exception:
+            out["sdk_version"] = None
+        # Hit a lightweight read endpoint that doesn't cost a document
+        # credit. get_categories was REMOVED in veryfi SDK 5.1.0 (found
+        # live 2026-10-19) — fall back to the documents listing.
+        try:
+            if hasattr(client, 'get_categories'):
+                cats = client.get_categories()
+                out["test_call"] = {"status": "ok", "call": "get_categories",
+                                    "type": str(type(cats).__name__)}
             else:
-                out["test_call"] = {"status": "ok", "type": str(type(cats))}
+                docs_resp = client.get_documents()
+                _keys = (list(docs_resp.keys())[:8] if isinstance(docs_resp, dict)
+                         else str(type(docs_resp).__name__))
+                out["test_call"] = {"status": "ok", "call": "get_documents",
+                                    "keys": _keys}
         except Exception as _te:
             out["test_call"] = f"{type(_te).__name__}: {_te}"
+        # ?ocr=1 — the DECISIVE probe: run one REAL document through the
+        # same client the pipeline uses and return the raw outcome or the
+        # full exception. Costs one Veryfi credit, so opt-in only.
+        if request.args.get('ocr') == '1':
+            import tempfile as _tf
+            # Minimal one-page PDF with a line of text — enough for OCR.
+            _pdf = (b"%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+                    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+                    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 100]"
+                    b"/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+                    b"4 0 obj<</Length 60>>stream\nBT /F1 14 Tf 20 50 Td "
+                    b"(FPBudget OCR test receipt $1.00) Tj ET\nendstream endobj\n"
+                    b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+                    b"trailer<</Root 1 0 R>>\n%%EOF")
+            try:
+                with _tf.NamedTemporaryFile(suffix='.pdf', delete=False) as _tfh:
+                    _tfh.write(_pdf)
+                    _tmp_path = _tfh.name
+                try:
+                    _ocr = client.process_document(file_path=_tmp_path,
+                                                   delete_after_processing=True)
+                    out["live_ocr_test"] = {
+                        "status": "ok",
+                        "got_keys": (list(_ocr.keys())[:12] if isinstance(_ocr, dict)
+                                     else str(type(_ocr).__name__)),
+                        "ocr_text_sample": (str((_ocr or {}).get('ocr_text'))[:120]
+                                            if isinstance(_ocr, dict) else None)}
+                finally:
+                    try:
+                        os.unlink(_tmp_path)
+                    except Exception:
+                        pass
+            except Exception as _oe:
+                out["live_ocr_test"] = f"{type(_oe).__name__}: {_oe}"
+        else:
+            out["live_ocr_test"] = "add ?ocr=1 to run a real 1-doc OCR test (uses one Veryfi credit)"
     except Exception as e:
         out["client_init"] = f"{type(e).__name__}: {e}"
     return jsonify(out)
@@ -33899,7 +33941,14 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
         content_type=content_type,
         file_hash=file_hash,
         status=upload_status,
-        veryfi_data=_json.dumps(vr) if vr else None,
+        # Error rows keep the Analyzer's failure message (owner 2026-10-19:
+        # "weird errors and nothing seems to be analyzing" — 2k error rows
+        # with no stored reason made the outage undiagnosable without the
+        # Render log). veryfi_data is unused on error rows, so it carries
+        # {"_analyzer_error": ...}; /admin/veryfi/status surfaces it.
+        veryfi_data=(_json.dumps(vr) if vr else
+                     (_json.dumps({"_analyzer_error": str(result.get("error"))[:2000]})
+                      if upload_status == 'error' and result.get("error") else None)),
         vendor=vendor_name,
         amount=amount,                       # USD (converted if foreign)
         original_amount=fx_original_amount,  # foreign figure, if any
