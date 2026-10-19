@@ -1426,10 +1426,46 @@ def admin_veryfi_status():
             "VERYFI_CLIENT_SECRET_set": bool(os.getenv('VERYFI_CLIENT_SECRET')),
             "VERYFI_USERNAME_set":      bool(os.getenv('VERYFI_USERNAME')),
             "VERYFI_API_KEY_set":       bool(os.getenv('VERYFI_API_KEY')),
+            "ANTHROPIC_API_KEY_set":    bool(os.getenv('ANTHROPIC_API_KEY')),
         },
         "client_init": None,
         "test_call": None,
     }
+    # Active OCR engine (Claude primary since 2026-10-19; Veryfi fallback).
+    try:
+        from fp_analyzer import _OCR_PROVIDER as _ocr_p, _CLAUDE_OCR_MODEL as _ocr_m
+        out["ocr_provider"] = {"primary": _ocr_p, "claude_model": _ocr_m,
+                               "fallback": ("veryfi" if _ocr_p == 'claude' else "claude")}
+    except Exception:
+        out["ocr_provider"] = None
+    # ?claude=1 — run the SAME tiny test document through the Claude OCR
+    # engine the pipeline now uses, returning the extracted fields or the
+    # full exception. (Pennies, not a Veryfi credit.)
+    if request.args.get('claude') == '1':
+        try:
+            import base64 as _b64
+            from fp_analyzer import _claude_ocr_extract as _coe
+            _pdf = (b"%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+                    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+                    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 100]"
+                    b"/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+                    b"4 0 obj<</Length 60>>stream\nBT /F1 14 Tf 20 50 Td "
+                    b"(FPBudget OCR test receipt $1.00) Tj ET\nendstream endobj\n"
+                    b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+                    b"trailer<</Root 1 0 R>>\n%%EOF")
+            _vr = _coe([{"type": "document",
+                         "source": {"type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": _b64.b64encode(_pdf).decode()}}])
+            out["claude_ocr_test"] = {
+                "status": "ok", "document_type": _vr.get("document_type"),
+                "total": _vr.get("total"),
+                "ocr_text_sample": (_vr.get("ocr_text") or '')[:120],
+                "model": (_vr.get("meta") or {}).get("model")}
+        except Exception as _cqe:
+            out["claude_ocr_test"] = f"{type(_cqe).__name__}: {_cqe}"
+    else:
+        out["claude_ocr_test"] = "add ?claude=1 to run a real test doc through Claude OCR"
     # Recent OCR health (owner 2026-10-19: "nothing seems to be analyzing
     # like it used to") — upload outcomes for the last 72h so one page shows
     # WHEN analysis stopped working, not just whether creds are set now.

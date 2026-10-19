@@ -816,7 +816,262 @@ def _normalize_w9(w9):
     }
 
 
-# ── Phase 1b: Analyze (Veryfi calls, parallel) ────────────────────────────────
+# ── Phase 1b: Analyze ─────────────────────────────────────────────────────────
+#
+# OCR PROVIDER (owner 2026-10-19: "why are we using Veryfi? Just do
+# Claude."): Claude reads the document directly (PDF/image via the
+# Anthropic API the app already uses for matching/cleanup) and returns
+# the SAME vr dict shape Veryfi did, so _infer_type / assess_confidence /
+# filing / app ingestion are untouched. Veryfi stays as an automatic
+# fallback only (and for docx/xlsx, which Claude OCR doesn't take).
+# Cost: fractions of a cent per page on Haiku vs Veryfi's ~$0.16/doc
+# on a $500/mo minimum.
+_OCR_PROVIDER = (os.getenv('OCR_PROVIDER') or 'claude').strip().lower()
+_CLAUDE_OCR_MODEL = (os.getenv('CLAUDE_OCR_MODEL')
+                     or os.getenv('ANTHROPIC_MODEL')
+                     or 'claude-haiku-4-5-20251001')
+_CLAUDE_OCR_TIMEOUT_S = 90
+
+_CLAUDE_OCR_SYSTEM = (
+    "You are the document reader for a film-production finance app. You "
+    "receive ONE business document (receipt, invoice, estimate/quote, "
+    "purchase order, contract/SOW, W-9 or other tax form, certificate of "
+    "insurance, talent/location release, payroll report, ID, or similar). "
+    "Extract its structured fields faithfully:\n"
+    "- Transcribe the document's full visible text into ocr_text (keep "
+    "reading order; abbreviate only past ~15,000 characters).\n"
+    "- NEVER invent a value — null anything not actually printed. A W-9 or "
+    "release has no 'total'; do not fabricate one.\n"
+    "- Dates as YYYY-MM-DD. Amounts as plain numbers in the document's own "
+    "currency (set currency_code).\n"
+    "- tax_id: EIN only (XX-XXXXXXX). NEVER return an SSN — if the taxpayer "
+    "ID is an SSN, leave tax_id null.\n"
+    "- document_type: pick the best fit from the enum; 'estimate' covers "
+    "quotes/proposals, 'contract' covers SOWs/agreements, 'tax_form' covers "
+    "W-9/W-8/1099/W-2, 'employee_vendor_doc' covers IDs/DTRs/personnel "
+    "paperwork, 'misc' when nothing fits.\n"
+    "- ocr_quality: how legible the source was (1.0 = crisp, 0.3 = barely "
+    "readable). type_confidence: how sure you are of document_type."
+)
+
+_CLAUDE_OCR_TOOL = {
+    "name": "extract_document",
+    "description": "Return the structured contents of the document.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "document_type": {"type": ["string", "null"],
+                              "enum": list(DOCUMENT_TYPES.keys()) + [None]},
+            "type_confidence": {"type": "number", "description": "0.0-1.0"},
+            "vendor_name": {"type": ["string", "null"],
+                            "description": "Issuer/merchant/payee legal or trade name "
+                                           "(for a W-9: the business or individual name)."},
+            "vendor_address": {"type": ["string", "null"]},
+            "vendor_phone": {"type": ["string", "null"]},
+            "bill_to_name": {"type": ["string", "null"]},
+            "total": {"type": ["number", "null"]},
+            "subtotal": {"type": ["number", "null"]},
+            "tax": {"type": ["number", "null"]},
+            "tip": {"type": ["number", "null"]},
+            "currency_code": {"type": ["string", "null"], "description": "ISO 4217, e.g. USD"},
+            "date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+            "due_date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+            "invoice_number": {"type": ["string", "null"]},
+            "purchase_order_number": {"type": ["string", "null"]},
+            "tax_id": {"type": ["string", "null"], "description": "EIN only — never an SSN."},
+            "card_last4": {"type": ["string", "null"],
+                           "description": "Last 4 digits of the payment card, if printed."},
+            "line_items": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"description": {"type": "string"},
+                               "total": {"type": ["number", "null"]}},
+                "required": ["description"]}},
+            "ocr_text": {"type": "string"},
+            "ocr_quality": {"type": "number", "description": "0.0-1.0"},
+        },
+        "required": ["document_type", "type_confidence", "ocr_text", "ocr_quality"],
+    },
+}
+
+
+def _claude_ocr_extract(content_blocks):
+    """Pure Claude call: document/image/text blocks in → Veryfi-shaped vr
+    dict out. Raises on failure (caller handles fallback)."""
+    import anthropic
+    key = os.getenv('ANTHROPIC_API_KEY')
+    if not key:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    client = anthropic.Anthropic(api_key=key, timeout=_CLAUDE_OCR_TIMEOUT_S)
+    msg = client.messages.create(
+        model=_CLAUDE_OCR_MODEL,
+        max_tokens=8000,
+        system=_CLAUDE_OCR_SYSTEM,
+        tools=[_CLAUDE_OCR_TOOL],
+        tool_choice={"type": "tool", "name": "extract_document"},
+        messages=[{"role": "user", "content":
+                   content_blocks + [{"type": "text",
+                                      "text": "Extract this document."}]}],
+    )
+    data = None
+    for b in msg.content:
+        if getattr(b, 'type', None) == 'tool_use':
+            data = dict(b.input)
+            break
+    if data is None:
+        raise ValueError("Claude returned no tool_use block")
+
+    def _num(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+    vendor = {}
+    if data.get('vendor_name'):
+        vendor = {"name": str(data['vendor_name'])[:200],
+                  "address": data.get('vendor_address'),
+                  "phone_number": data.get('vendor_phone')}
+    li = []
+    for x in (data.get('line_items') or [])[:200]:
+        if isinstance(x, dict) and (x.get('description') or x.get('total') is not None):
+            li.append({"description": str(x.get('description') or '')[:300],
+                       "total": _num(x.get('total'))})
+    vr = {
+        "document_type": data.get('document_type'),
+        "vendor": vendor,
+        "bill_to": {"name": data['bill_to_name']} if data.get('bill_to_name') else {},
+        "total": _num(data.get('total')),
+        "subtotal": _num(data.get('subtotal')),
+        "tax": _num(data.get('tax')),
+        "tip": _num(data.get('tip')),
+        "currency_code": data.get('currency_code'),
+        "date": data.get('date') or '',
+        "due_date": data.get('due_date'),
+        "invoice_number": data.get('invoice_number'),
+        "purchase_order_number": data.get('purchase_order_number'),
+        "tax_id": data.get('tax_id'),
+        "line_items": li,
+        "payment": ({"card_number": str(data['card_last4'])[-4:]}
+                    if data.get('card_last4') else {}),
+        "ocr_text": str(data.get('ocr_text') or '')[:120000],
+        "meta": {"ocr_score": max(0.0, min(1.0, _num(data.get('ocr_quality')) or 0.0)),
+                 "type_score": max(0.0, min(1.0, _num(data.get('type_confidence')) or 0.0)),
+                 "provider": "claude", "model": _CLAUDE_OCR_MODEL},
+    }
+    return vr
+
+
+# Types Claude reads directly from a Dropbox temporary link.
+_CLAUDE_URL_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+# Types we convert to JPEG locally first (Claude doesn't take these raw).
+_CLAUDE_CONVERT_EXTS = {'.heic', '.heif', '.tif', '.tiff', '.bmp'}
+_CLAUDE_TEXT_EXTS = {'.txt', '.csv', '.eml'}
+
+
+def _claude_blocks_for(item, dbx, link):
+    """Content blocks for the staged file, or (None, reason) when Claude
+    can't take this type (caller falls back to Veryfi)."""
+    ext = os.path.splitext(item['staged_path'])[1].lower()
+    if ext == '.pdf':
+        return [{"type": "document", "source": {"type": "url", "url": link}}], None
+    if ext in _CLAUDE_URL_IMAGE_EXTS:
+        return [{"type": "image", "source": {"type": "url", "url": link}}], None
+    if ext in _CLAUDE_CONVERT_EXTS:
+        import base64, io
+        _md, _resp = dbx.files_download(item['staged_path'])
+        try:
+            from PIL import Image
+            try:
+                import pillow_heif
+                pillow_heif.register_heif_opener()
+            except Exception:
+                pass
+            img = Image.open(io.BytesIO(_resp.content))
+            img = img.convert('RGB')
+            img.thumbnail((2000, 2000))
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=85)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            return [{"type": "image", "source": {"type": "base64",
+                                                 "media_type": "image/jpeg",
+                                                 "data": b64}}], None
+        except Exception as _cv:
+            return None, f"image conversion failed ({ext}): {_cv}"
+    if ext in _CLAUDE_TEXT_EXTS:
+        _md, _resp = dbx.files_download(item['staged_path'])
+        txt = _resp.content.decode('utf-8', errors='replace')[:60000]
+        return [{"type": "text", "text": f"FILE CONTENT ({ext}):\n{txt}"}], None
+    return None, f"type {ext} not supported by Claude OCR"
+
+
+def _call_claude_ocr(item):
+    """Claude counterpart of _call_veryfi: same item in/out contract."""
+    if not item.get("staged_path"):
+        item["error"] = "Claude OCR error: no staged Dropbox path"
+        return item
+    try:
+        dbx = get_dropbox_client()
+        link = dbx.files_get_temporary_link(item["staged_path"]).link
+        blocks, why_not = _claude_blocks_for(item, dbx, link)
+        if blocks is None:
+            item["error"] = f"Claude OCR error: {why_not}"
+            return item
+        vr = _claude_ocr_extract(blocks)
+        item["vr"] = vr
+        suggested, confidence, needs_review = assess_confidence(vr)
+        # Mirror the Veryfi classify-route behavior: non-spend paperwork is
+        # always confirmed by a human before filing.
+        if suggested in ('tax_form', 'contract', 'employee_vendor_doc',
+                         'misc', 'legal'):
+            needs_review = True
+        item["suggested_type"] = suggested
+        item["confidence"]     = confidence
+        item["needs_review"]   = needs_review
+        item["classify"] = {"value": vr.get("document_type"),
+                            "score": (vr.get("meta") or {}).get("type_score")}
+        log.info(f"Claude-OCR {item['original_filename']}: "
+                 f"type={suggested} conf={confidence} "
+                 f"({'REVIEW' if needs_review else 'AUTO'}) model={_CLAUDE_OCR_MODEL}")
+        return item
+    except Exception as e:
+        item["error"] = f"Claude OCR error: {type(e).__name__}: {e}"
+        log.error(f"Claude OCR failed for {item.get('original_filename')}: {e}",
+                  exc_info=True)
+        return item
+
+
+def _call_ocr(item):
+    """Provider switch + automatic fallback. OCR_PROVIDER env picks the
+    primary ('claude' is the default since 2026-10-19; 'veryfi' restores
+    the old behavior). Whichever primary fails, the other gets a shot —
+    so a Claude outage falls back to Veryfi (if its quota allows) and a
+    Veryfi outage (like the Oct 8 scan-limit) falls back to Claude."""
+    _has_veryfi = bool((os.getenv('VERYFI_CLIENT_ID') and os.getenv('VERYFI_API_KEY'))
+                       or os.getenv('VERYFI_USERNAME'))
+    _has_claude = bool(os.getenv('ANTHROPIC_API_KEY'))
+    if _OCR_PROVIDER == 'veryfi':
+        _call_veryfi(item)
+        if item.get("error") and _has_claude:
+            _pe = item["error"]
+            item["error"] = None
+            _call_claude_ocr(item)
+            if item.get("error"):
+                item["error"] = f"{_pe} | Claude fallback: {item['error']}"
+            else:
+                log.info(f"[ocr] Veryfi failed, Claude fallback succeeded "
+                         f"for {item.get('original_filename')}")
+        return item
+    _call_claude_ocr(item)
+    if item.get("error") and _has_veryfi and not _veryfi_quota_blocked():
+        _pe = item["error"]
+        item["error"] = None
+        _call_veryfi(item)
+        if item.get("error"):
+            item["error"] = f"{_pe} | Veryfi fallback: {item['error']}"
+        else:
+            log.info(f"[ocr] Claude failed, Veryfi fallback succeeded "
+                     f"for {item.get('original_filename')}")
+    return item
+
 
 # ── Veryfi quota circuit breaker ─────────────────────────────────────────
 # Marker file on the shared /tmp filesystem so ALL gunicorn workers back
@@ -1004,7 +1259,7 @@ def run_analysis(batch_token):
     errored = [it for it in items if it.get("error") or not it.get("staged_path")]
 
     for it in ready:
-        _call_veryfi(it)
+        _call_ocr(it)
 
     id_order = {it["id"]: idx for idx, it in enumerate(items)}
     result   = sorted(ready + errored, key=lambda it: id_order[it["id"]])
