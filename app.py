@@ -1484,6 +1484,19 @@ def admin_veryfi_status():
             out["sdk_version"] = __import__('importlib.metadata', fromlist=['version']).version('veryfi')
         except Exception:
             out["sdk_version"] = None
+        try:
+            from fp_analyzer import _veryfi_quota_blocked as _vqb, \
+                _VERYFI_QUOTA_MARKER as _vqm, _VERYFI_QUOTA_COOLDOWN_S as _vqc
+            if _vqb():
+                import time as _qt
+                _left = int(_vqc - (_qt.time() - os.path.getmtime(_vqm)))
+                out["quota_cooldown"] = (f"ACTIVE — scan-limit 403 seen; OCR attempts "
+                                         f"paused another ~{max(_left, 0) // 60} min "
+                                         f"(auto-clears on first successful scan)")
+            else:
+                out["quota_cooldown"] = "inactive"
+        except Exception:
+            out["quota_cooldown"] = None
         # Hit a lightweight read endpoint that doesn't cost a document
         # credit. get_categories was REMOVED in veryfi SDK 5.1.0 (found
         # live 2026-10-19) — fall back to the documents listing.

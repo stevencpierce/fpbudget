@@ -818,6 +818,37 @@ def _normalize_w9(w9):
 
 # ── Phase 1b: Analyze (Veryfi calls, parallel) ────────────────────────────────
 
+# ── Veryfi quota circuit breaker ─────────────────────────────────────────
+# Marker file on the shared /tmp filesystem so ALL gunicorn workers back
+# off together (same cross-worker pattern as the /admin/errors ring).
+_VERYFI_QUOTA_MARKER = "/tmp/fpb-veryfi-quota-hit"
+_VERYFI_QUOTA_COOLDOWN_S = 30 * 60
+
+
+def _veryfi_quota_blocked():
+    try:
+        import time as _t
+        age = _t.time() - os.path.getmtime(_VERYFI_QUOTA_MARKER)
+        return age < _VERYFI_QUOTA_COOLDOWN_S
+    except OSError:
+        return False     # no marker → not blocked
+
+
+def _veryfi_quota_trip():
+    try:
+        with open(_VERYFI_QUOTA_MARKER, 'w') as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _veryfi_quota_clear():
+    try:
+        os.unlink(_VERYFI_QUOTA_MARKER)
+    except OSError:
+        pass
+
+
 def _call_veryfi(item):
     """OCR a staged item via Veryfi's URL endpoint.
 
@@ -835,6 +866,17 @@ def _call_veryfi(item):
         # Legacy path — shouldn't happen after the refactor, but guard.
         item["error"] = "Veryfi error: no staged Dropbox path"
         log.error(f"_call_veryfi: missing staged_path for {item.get('original_filename')}")
+        return item
+
+    # Quota circuit breaker (found live 2026-10-19: the account's scan limit
+    # was exhausted and the retry machinery — 10-minute inbox sweeps + the
+    # re-OCR worker — kept hammering Veryfi, 2,000+ attempts in 3 days).
+    # After a scan-limit 403 we fail fast for 30 minutes instead of calling
+    # the API per file; any successful scan clears the marker, so service
+    # resumes by itself within half an hour of the plan being topped up.
+    if _veryfi_quota_blocked():
+        item["error"] = ("Veryfi error: scan limit reached (account quota) — "
+                         "paused for 30 min; will retry automatically")
         return item
 
     last_err = None
@@ -900,6 +942,7 @@ def _call_veryfi(item):
                 vr['vendor'] = {}
                 vr['payment'] = {}
 
+            _veryfi_quota_clear()
             item["vr"] = vr
             suggested, confidence, needs_review = assess_confidence(vr)
             # Classification is authoritative for NON-financial docs (it unlocks
@@ -939,6 +982,11 @@ def _call_veryfi(item):
                 _time.sleep(0.8)
                 continue
             break
+    _lmsg = str(last_err).lower()
+    if 'scan limit' in _lmsg or ('403' in _lmsg and 'limit' in _lmsg):
+        _veryfi_quota_trip()
+        log.error(f"[veryfi-quota] scan limit hit — pausing OCR attempts 30 min "
+                  f"(file: {item['original_filename']})")
     item["error"] = f"Veryfi error: {last_err}"
     log.error(f"Veryfi error for {item['original_filename']}: {last_err}", exc_info=True)
     return item
