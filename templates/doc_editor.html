@@ -53,130 +53,8 @@
   <!-- ═══ RIGHT: editable form ═══ -->
   <div style="flex:1;min-width:480px;border:1px solid var(--border);border-radius:10px;background:var(--bg-card);padding:16px 18px;overflow-y:auto">
 
-    <div class="field" style="margin-bottom:.6rem">
-      <label id="edVendorLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Vendor</label>
-      <input type="text" id="edVendor" placeholder="Vendor name…" style="width:100%"
-             value="{{ upload.vendor or '' }}">
-      {# Supporting docs use a controlled Document-Type list instead of the
-         free-text vendor input — same as the modal. (Parity 2026-10-20.) #}
-      <select id="edDocSubtype" style="width:100%;display:none">
-        <option value="">— choose document —</option>
-        <option>Driver's License</option>
-        <option>State / Photo ID</option>
-        <option>Passport</option>
-        <option>Social Security Card</option>
-        <option>W-9</option>
-        <option>W-4</option>
-        <option>I-9</option>
-        <option>Direct Deposit Authorization</option>
-        <option>Tax Credit Documents</option>
-        <option>Work Authorization / Visa</option>
-        <option>Miscellaneous</option>
-        <option>Other</option>
-      </select>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.6rem">
-      <div class="field" id="edAmountField" style="margin:0">
-        <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Amount (USD)</label>
-        <input type="text" id="edAmount" inputmode="decimal" placeholder="0.00" style="width:100%"
-               value="{{ '%.2f'|format(upload.amount|float) if (upload.amount is not none and upload.amount|float != 0) else '' }}">
-        <div style="font-size:10px;color:var(--text-muted);margin-top:2px">↩ Refund/credit? Enter a <b>negative</b> amount.</div>
-      </div>
-      <div class="field" style="margin:0">
-        <label id="edDocDateLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Date</label>
-        <input type="date" id="edDocDate" style="width:100%"
-               value="{{ upload.doc_date.isoformat() if upload.doc_date else '' }}">
-      </div>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.6rem">
-      <div class="field" style="margin:0">
-        <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Type</label>
-        {# SAME option list as budget.html's docDetailCategory. Pre-select the
-           saved category server-side (with the same quote→estimate / sow→
-           contract taxonomy aliases the modal applies) so the type — and the
-           detail-section heading derived from it — is correct on load. (User 2026-07.) #}
-        {% set _ed_cat = ({'quote':'estimate','sow':'contract'}).get(upload.category, upload.category) or '' %}
-        <select id="edCategory" style="width:100%">
-          <option value="" {{ 'selected' if _ed_cat == '' else '' }}>— unspecified —</option>
-          <option value="receipt" {{ 'selected' if _ed_cat == 'receipt' else '' }}>Receipt</option>
-          <option value="invoice" {{ 'selected' if _ed_cat == 'invoice' else '' }}>Invoice</option>
-          <option value="estimate" {{ 'selected' if _ed_cat == 'estimate' else '' }}>Estimate / Quote</option>
-          <option value="purchase_order" {{ 'selected' if _ed_cat == 'purchase_order' else '' }}>Purchase Order (PO)</option>
-          <option value="contract" {{ 'selected' if _ed_cat == 'contract' else '' }}>Contract / SOW</option>
-          <option value="insurance" {{ 'selected' if _ed_cat == 'insurance' else '' }}>Insurance / COI</option>
-          <option value="tax_form" {{ 'selected' if _ed_cat == 'tax_form' else '' }}>Tax Form (W-9, W-8, 1099)</option>
-          <option value="payroll" {{ 'selected' if _ed_cat == 'payroll' else '' }}>Payroll</option>
-          <option value="timecard" {{ 'selected' if _ed_cat == 'timecard' else '' }}>Timecard</option>
-          <option value="legal" {{ 'selected' if _ed_cat == 'legal' else '' }}>Legal</option>
-          <option value="release" {{ 'selected' if _ed_cat == 'release' else '' }}>Release (Talent / Location)</option>
-          <option value="employee_vendor_doc" {{ 'selected' if _ed_cat == 'employee_vendor_doc' else '' }}>Employee/Vendor Doc (DTR, ID, W-9…)</option>
-          <option value="misc" {{ 'selected' if _ed_cat == 'misc' else '' }}>Miscellaneous</option>
-        </select>
-      </div>
-      <div class="field" id="edCard4Field" style="margin:0">
-        <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Card / Acct (last 4)</label>
-        <input type="text" id="edCard4" inputmode="numeric" maxlength="4" placeholder="e.g. 1234" style="width:100%"
-               value="{{ upload.card_last4 or '' }}">
-      </div>
-    </div>
-
-    <div class="field" id="edDocNumField" style="margin-bottom:.6rem">
-      <label id="edDocNumLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Document #</label>
-      <input type="text" id="edDocNum" placeholder="invoice # / PO # …" style="width:100%"
-             value="{{ upload.doc_number or '' }}">
-    </div>
-
-    {# Person/Vendor + Location — parity with the in-page modal (owner
-       2026-10-20: "tax documents and invoices we were always going to
-       assign to an individual or a vendor … the pop-ups should be the
-       same"). Same optgroups: this project's people first, then the whole
-       Crew Database. #}
-    <div class="field" id="edCrewField" style="margin-bottom:.6rem;display:none">
-      <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Person / Vendor</label>
-      <select id="edCrewId" style="width:100%">
-        <option value="">— not linked —</option>
-        {% set _ed_proj_ids = (crew_members or []) | map(attribute='id') | list %}
-        {% if crew_members %}
-        <optgroup label="This project">
-        {% for cm in crew_members %}
-        <option value="{{ cm.id }}" {{ 'selected' if upload.crew_member_id == cm.id else '' }}>{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.is_vendor %} (vendor){% endif %}</option>
-        {% endfor %}
-        </optgroup>
-        {% endif %}
-        {% set _ed_rest = (all_crew_members or []) | rejectattr('id', 'in', _ed_proj_ids) | list %}
-        {% if _ed_rest %}
-        <optgroup label="{{ 'All people & vendors' if not crew_members else 'Everyone else' }}">
-        {% for cm in _ed_rest %}
-        <option value="{{ cm.id }}" {{ 'selected' if upload.crew_member_id == cm.id else '' }}>{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.is_vendor %} (vendor){% endif %}</option>
-        {% endfor %}
-        </optgroup>
-        {% endif %}
-      </select>
-      <div id="edCrewSuggest" style="display:none;margin-top:4px;font-size:11.5px"></div>
-      <a href="#" onclick="event.preventDefault();edNewCrewToggle(true)"
-         style="font-size:11px;color:#5b8af9;text-decoration:none;display:inline-block;margin-top:4px">+ New person / vendor</a>
-      <div id="edNewCrew" style="display:none;margin-top:6px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-input)">
-        <input type="text" id="edNewCrewName" placeholder="Name" style="width:100%;margin-bottom:6px">
-        <label style="font-size:11px"><input type="checkbox" id="edNewCrewVendor"> This is a vendor / company</label>
-        <div style="display:flex;gap:6px;margin-top:6px">
-          <button type="button" class="btn btn-xs btn-primary" onclick="edNewCrewSave()">Add &amp; select</button>
-          <button type="button" class="btn btn-xs btn-ghost" onclick="edNewCrewToggle(false)">Cancel</button>
-        </div>
-        <div id="edNewCrewStatus" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div>
-      </div>
-    </div>
-
-    <div class="field" id="edLocationField" style="margin-bottom:.6rem;display:none">
-      <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Location</label>
-      <select id="edLocationId" style="width:100%">
-        <option value="">— not linked —</option>
-        {% for loc in (project_locations or []) %}
-        <option value="{{ loc.id }}" {{ 'selected' if upload.location_id == loc.id else '' }}>{{ loc.name or ('Location #' ~ loc.id) }}{% if loc.address %} — {{ loc.address[:40] }}{% endif %}</option>
-        {% endfor %}
-      </select>
-    </div>
+    {% set du = upload %}
+    {% include "_doc_fields.html" %}
 
     <div class="field" style="margin-bottom:.6rem">
       <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Note</label>
@@ -186,21 +64,7 @@
 
     {# 🧾 Receipt detail (subtotal · tax · tip · address). Prefilled from
        /line-items on load (same as the modal). #}
-    {# Heading tracks the doc type — an invoice isn't a "receipt". Rendered
-       server-side from upload.category, and updated client-side when the Doc
-       Type select changes (see the edCategory wiring below). (User 2026-07 —
-       "'receipt details' is confusing because this is an invoice.") #}
-    {% set _ed_detail_label = 'Invoice detail' if _ed_cat == 'invoice' else ('Receipt detail' if _ed_cat == 'receipt' else 'Document detail') %}
-    <details id="edReceiptDetail" class="field" open style="margin-bottom:.6rem;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
-      <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">🧾 <span id="edReceiptDetailLabel">{{ _ed_detail_label }}</span> <span style="font-weight:400;text-transform:none">(subtotal · tax · tip · address)</span></summary>
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Subtotal</label><input type="text" id="edSubtotal" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
-        <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tax</label><input type="text" id="edTax" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
-        <div class="field" id="edTipWrap" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tip</label><input type="text" id="edTip" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
-      </div>
-      <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant address</label><input type="text" id="edMerchAddr" placeholder="street, city, state" style="width:100%"></div>
-      <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant phone</label><input type="text" id="edMerchPhone" placeholder="—" style="width:100%"></div>
-    </details>
+    {# receipt detail now rendered by _doc_fields.html above #}
 
     <div style="display:flex;gap:10px;align-items:center;margin:4px 0 14px;flex-wrap:wrap">
       <button type="button" id="edSaveBtn" class="btn btn-primary" style="padding:7px 18px">Save</button>
@@ -273,6 +137,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='doc-form.js') }}?v={{ APP_COMMIT | default('x') }}"></script>
 <script>
 (function () {
   'use strict';
@@ -541,24 +406,23 @@
     var btn = $('edSaveBtn'), st = $('edSaveStatus');
     // Supporting docs: the controlled Document-Type dropdown is the live
     // "vendor" value, same as the modal's _docDetailVendorValue.
-    var cat = ($('edCategory').value || '').toLowerCase();
-    var vendorVal = (cat === 'employee_vendor_doc' && $('edDocSubtype'))
-      ? ($('edDocSubtype').value || '') : $('edVendor').value;
     var payload = {
-      vendor:     vendorVal,
-      amount:     parseMoney($('edAmount').value),
-      doc_date:   $('edDocDate').value,
-      category:   $('edCategory').value,
+      vendor:     DocForm.vendorValue(),
+      original_amount:   parseMoney(($('docDetailOrigAmount') || {}).value || ''),
+      original_currency: ($('docDetailOrigCurrency') || {}).value || '',
+      amount:     parseMoney($('docDetailAmount').value),
+      doc_date:   $('docDetailDocDate').value,
+      category:   $('docDetailCategory').value,
       note:       $('edNote').value,
-      doc_number: $('edDocNum').value,
-      card_last4: $('edCard4').value,
-      subtotal:   parseMoney($('edSubtotal').value),
-      tax:        parseMoney($('edTax').value),
-      tip:        parseMoney($('edTip').value),
-      merchant_address: $('edMerchAddr').value,
-      merchant_phone:   $('edMerchPhone').value,
-      crew_member_id: ($('edCrewId') ? $('edCrewId').value : '') || null,
-      location_id:    ($('edLocationId') ? $('edLocationId').value : '') || null,
+      doc_number: $('docDetailDocNum').value,
+      card_last4: $('docDetailCard4').value,
+      subtotal:   parseMoney($('docDetailSubtotal').value),
+      tax:        parseMoney($('docDetailTax').value),
+      tip:        parseMoney($('docDetailTip').value),
+      merchant_address: $('docDetailMerchAddr').value,
+      merchant_phone:   $('docDetailMerchPhone').value,
+      crew_member_id: ($('docDetailCrewId') ? $('docDetailCrewId').value : '') || null,
+      location_id:    ($('docDetailLocationId') ? $('docDetailLocationId').value : '') || null,
     };
     btn.disabled = true; btn.textContent = 'Saving…';
     if (st) { st.textContent = ''; st.style.color = 'var(--text-muted)'; }
@@ -768,8 +632,8 @@
         // Receipt detail — populate regardless of whether the doc is itemizable.
         var rd = d.receipt_detail || {};
         var sv = function (id, v) { var el = $(id); if (el) el.value = (v != null ? v : ''); };
-        sv('edSubtotal', rd.subtotal); sv('edTax', rd.tax); sv('edTip', rd.tip);
-        sv('edMerchAddr', rd.merchant_address); sv('edMerchPhone', rd.merchant_phone);
+        sv('docDetailSubtotal', rd.subtotal); sv('docDetailTax', rd.tax); sv('docDetailTip', rd.tip);
+        sv('docDetailMerchAddr', rd.merchant_address); sv('docDetailMerchPhone', rd.merchant_phone);
         if (!d.ok || d.parent_txn_id == null) return;   // no transaction to itemize
         block.style.display = '';
         _itemDocTotal = d.doc_total; _itemVeryfi = d.veryfi_items || [];
@@ -844,7 +708,7 @@
 
   // ── amount field: strip commas on focus, format on blur (mirror the modal). ─
   (function wireAmount() {
-    var el = $('edAmount'); if (!el) return;
+    var el = $('docDetailAmount'); if (!el) return;
     el.addEventListener('focus', function () { el.value = String(el.value).replace(/,/g, ''); });
     el.addEventListener('blur',  function () { el.value = fmtMoney(el.value); });
   })();
@@ -857,122 +721,19 @@
   // _DOC_TYPE_FIELD_SPEC (owner 2026-10-20: "depending on the document
   // type it should change the fields available — you don't need
   // non-applicable fields").
-  var ED_FIELD_SPEC = {
-    receipt:        { vendor:'Vendor',       amount:true,  date:'Receipt Date',    docnum:null },
-    invoice:        { vendor:'Vendor',       amount:true,  date:'Invoice Date',    docnum:'Invoice #', crew:true },
-    estimate:       { vendor:'Vendor',       amount:true,  date:'Estimate Date',   docnum:'Estimate #' },
-    quote:          { vendor:'Vendor',       amount:true,  date:'Quote Date',      docnum:'Quote #' },
-    purchase_order: { vendor:'Vendor',       amount:true,  date:'PO Date',         docnum:'PO #' },
-    contract:       { vendor:'Counterparty', amount:false, date:'Effective Date',  docnum:'Contract #',  crew:true },
-    insurance:      { vendor:'Insured / Carrier', amount:false, date:'Expiration Date', docnum:'Policy #', location:true },
-    tax_form:       { vendor:'Entity / Filer', amount:false, date:'Tax Year / Date', docnum:'Tax ID (EIN/SSN)', crew:true },
-    payroll:        { vendor:'Vendor / Employee', amount:true, date:'Pay Date',    docnum:'Check / Ref #', crew:true },
-    timecard:       { vendor:'Employee',     amount:false, date:'Week Ending',     docnum:'Ref #',       crew:true },
-    legal:          { vendor:'Counterparty', amount:false, date:'Doc Date',        docnum:'Reference #' },
-    release:        { vendor:'Talent / Location', amount:false, date:'Signed Date', docnum:null,         crew:true, location:true },
-    employee_vendor_doc: { vendor:'Document Type', vendorPh:'e.g. Direct Deposit, W-9, ID, DTR…', amount:false, date:'Doc Date', docnum:'Doc # / ID', crew:true },
-    misc:           { vendor:'Vendor',       amount:true,  date:'Doc Date',        docnum:null },
-  };
+  // Field spec, type UI, subtype, person auto-suggest and quick-add all
+  // live in static/doc-form.js (window.DocForm) — 2026-10-20 unification.
   function edApplyCategoryUI() {
-    var cat = ($('edCategory').value || '').toLowerCase();
-    var spec = ED_FIELD_SPEC[cat] || ED_FIELD_SPEC.misc;
-    var lbl = $('edReceiptDetailLabel');
-    if (lbl) lbl.textContent = cat === 'invoice' ? 'Invoice detail'
-      : cat === 'receipt' ? 'Receipt detail'
-      : 'Document detail';
-    var tipWrap = $('edTipWrap');
-    if (tipWrap) tipWrap.style.display = (cat === 'invoice') ? 'none' : '';
-    var vL = $('edVendorLabel');
-    if (vL) vL.textContent = spec.vendor || 'Vendor';
-    if ($('edVendor')) $('edVendor').placeholder = spec.vendorPh || 'Vendor name…';
-    var isEvd = cat === 'employee_vendor_doc';
-    if ($('edDocSubtype') && $('edVendor')) {
-      $('edDocSubtype').style.display = isEvd ? '' : 'none';
-      $('edVendor').style.display     = isEvd ? 'none' : '';
-      if (isEvd && !$('edDocSubtype').value && $('edVendor').value) {
-        // Rehydrate legacy free-text value into the controlled list.
-        var s = $('edDocSubtype'), cur = $('edVendor').value;
-        var hit = Array.from(s.options).find(function (o) { return o.value === cur || o.text === cur; });
-        if (!hit) { var o = document.createElement('option'); o.text = cur; s.appendChild(o); }
-        s.value = cur;
-      }
-    }
-    if ($('edAmountField')) $('edAmountField').style.display = spec.amount ? '' : 'none';
-    if ($('edCard4Field'))  $('edCard4Field').style.display  = spec.amount ? '' : 'none';
-    var dL = $('edDocDateLabel');
-    if (dL) dL.textContent = spec.date || 'Doc Date';
-    if ($('edDocNumField')) $('edDocNumField').style.display = spec.docnum ? '' : 'none';
-    if ($('edDocNumLabel') && spec.docnum) $('edDocNumLabel').textContent = spec.docnum;
-    if ($('edCrewField'))     $('edCrewField').style.display     = spec.crew ? '' : 'none';
-    if ($('edLocationField')) $('edLocationField').style.display = spec.location ? '' : 'none';
-    if (spec.crew) edCrewSuggestLoad();
+    DocForm.applyTypeUI(($('docDetailCategory').value || ''), { uid: UID });
   }
-  if ($('edCategory')) $('edCategory').addEventListener('change', edApplyCategoryUI);
+  if ($('docDetailCategory')) $('docDetailCategory').addEventListener('change', edApplyCategoryUI);
   edApplyCategoryUI();
 
   // ── Person auto-suggest (owner 2026-10-20: "when it finds a name like
   // James Allerdyce … automatically suggest adding him, auto-populate,
   // and allow you to save"). Pre-selects on a confident match; the human
   // presses Save to persist. ──────────────────────────────────────────
-  var _edCrewSuggested = false;
-  function edCrewSuggestLoad() {
-    var sel = $('edCrewId'), box = $('edCrewSuggest');
-    if (!sel || !box || _edCrewSuggested || sel.value) return;
-    _edCrewSuggested = true;
-    fetch('/docs/upload/' + UID + '/crew-suggest', { credentials: 'same-origin' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (d) {
-        var s = d && d.suggestion;
-        if (!s || sel.value) return;
-        var opt = Array.from(sel.options).find(function (o) { return o.value === String(s.crew_member_id); });
-        if (!opt) return;
-        if (s.confidence >= 0.9) {
-          sel.value = String(s.crew_member_id);
-          box.innerHTML = '👤 Auto-matched <b>' + s.name.replace(/</g, '&lt;') + '</b> from the '
-            + (s.matched_on || 'document') + (s.on_project ? ' (on this project)' : '')
-            + ' — Save to confirm · <a href="#" style="color:#e0a13a">clear</a>';
-          box.querySelector('a').onclick = function (e) { e.preventDefault(); sel.value = ''; box.style.display = 'none'; };
-        } else {
-          box.innerHTML = '👤 Looks like <b>' + s.name.replace(/</g, '&lt;') + '</b>'
-            + (s.on_project ? ' (on this project)' : '') + ' — <a href="#" style="color:#5fd0a0">attach</a>';
-          box.querySelector('a').onclick = function (e) { e.preventDefault(); sel.value = String(s.crew_member_id); box.style.display = 'none'; };
-        }
-        box.style.color = 'var(--text-muted)';
-        box.style.display = '';
-      })
-      .catch(function () {});
-  }
-
-  // ── Quick-add person/vendor (same endpoint as the modal) ─────────────
-  window.edNewCrewToggle = function (show) {
-    var d = $('edNewCrew');
-    if (d) d.style.display = show ? '' : 'none';
-    if (show && $('edNewCrewName')) $('edNewCrewName').focus();
-  };
-  window.edNewCrewSave = function () {
-    var name = ($('edNewCrewName').value || '').trim();
-    var st = $('edNewCrewStatus');
-    if (!name) { st.textContent = 'Name required'; return; }
-    st.textContent = 'Adding…';
-    fetch('/crew/new?fmt=json', {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: name, is_vendor: $('edNewCrewVendor').checked }),
-    })
-      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
-      .then(function (res) {
-        if (!res.ok || !res.d.id) { st.textContent = 'Failed: ' + (res.d.error || 'error'); return; }
-        var sel = $('edCrewId');
-        var o = document.createElement('option');
-        o.value = String(res.d.id);
-        o.textContent = res.d.name + ($('edNewCrewVendor').checked ? ' (vendor)' : '');
-        sel.appendChild(o);
-        sel.value = String(res.d.id);
-        edNewCrewToggle(false);
-        st.textContent = '';
-      })
-      .catch(function (e) { st.textContent = 'Error: ' + e.message; });
-  };
+  // (suggest + quick-add now in DocForm)
 
   $('edSaveBtn').addEventListener('click', saveDoc);
   if ($('edSaveCloseBtn')) $('edSaveCloseBtn').addEventListener('click', saveAndClose);

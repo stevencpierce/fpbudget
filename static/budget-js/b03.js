@@ -2034,152 +2034,40 @@
   // server's /update endpoint doesn't need a separate per-type schema.
   // The "Document #" input is stored on the row's `note` field with a
   // type-prefix (e.g. "invoice#: 12345") so no schema change is needed.
-  const _DOC_TYPE_FIELD_SPEC = {
-    receipt:        { vendor:'Vendor',       amount:true,  date:'Receipt Date',    docnum:null },
-    invoice:        { vendor:'Vendor',       amount:true,  date:'Invoice Date',    docnum:'Invoice #', crew:true, location:false },
-    // Per-spec flags: crew = shows the Crew Member picker (tax forms,
-    // contracts, releases, payroll → backed by a person). location =
-    // shows the Location picker (COIs, location releases → backed by
-    // a place). Both nullable; user picks if relevant.
-    estimate:       { vendor:'Vendor',       amount:true,  date:'Estimate Date',   docnum:'Estimate #',  crew:false, location:false },
-    quote:          { vendor:'Vendor',       amount:true,  date:'Quote Date',      docnum:'Quote #',     crew:false, location:false },
-    purchase_order: { vendor:'Vendor',       amount:true,  date:'PO Date',         docnum:'PO #',        crew:false, location:false },
-    contract:       { vendor:'Counterparty', amount:false, date:'Effective Date',  docnum:'Contract #',  crew:true,  location:false },
-    insurance:      { vendor:'Insured / Carrier', amount:false, date:'Expiration Date', docnum:'Policy #', crew:false, location:true  },
-    tax_form:       { vendor:'Entity / Filer', amount:false, date:'Tax Year / Date', docnum:'Tax ID (EIN/SSN)', crew:true, location:false },
-    payroll:        { vendor:'Vendor / Employee', amount:true, date:'Pay Date',     docnum:'Check / Ref #', crew:true, location:false },
-    // Timecard was missing a spec entirely (fell through to misc →
-    // crew:false), so timecards could never be attached to the person
-    // they belong to. 2026-10-01.
-    timecard:       { vendor:'Employee',     amount:false, date:'Week Ending',     docnum:'Ref #',       crew:true,  location:false },
-    legal:          { vendor:'Counterparty', amount:false, date:'Doc Date',        docnum:'Reference #', crew:false, location:false },
-    release:        { vendor:'Talent / Location', amount:false, date:'Signed Date', docnum:null,         crew:true,  location:true  },
-    // Employee/Vendor supporting docs (DTR, ID, W-9…): the PERSON is set via
-    // the Crew Member dropdown, so the top text field describes the document
-    // itself (its kind/title) rather than a vendor. (2026-05-29.)
-    employee_vendor_doc: { vendor:'Document Type', vendorPh:'e.g. Direct Deposit, W-9, ID, DTR…', amount:false, date:'Doc Date', docnum:'Doc # / ID', crew:true, location:false },
-    misc:           { vendor:'Vendor',       amount:true,  date:'Doc Date',        docnum:null,          crew:false, location:false },
-  };
+  // Field spec + type UI + subtype + person-suggest + quick-add all
+  // live in static/doc-form.js (window.DocForm) since the 2026-10-20
+  // unification — ONE copy shared with the standalone doc editor.
+  const _DOC_TYPE_FIELD_SPEC = window.DocForm.FIELD_SPEC;
   // The "Document Type / Vendor" value comes from whichever control is live:
   // the controlled dropdown for supporting docs, else the free-text input.
-  function _docDetailVendorValue() {
-    const cat = (document.getElementById('docDetailCategory').value || '').toLowerCase();
-    if (cat === 'employee_vendor_doc') {
-      const s = document.getElementById('docDetailDocSubtype');
-      return s ? (s.value || '') : '';
-    }
-    const i = document.getElementById('docDetailVendor');
-    return i ? (i.value || '') : '';
-  }
+  function _docDetailVendorValue() { return window.DocForm.vendorValue(); }
+
   // Select the matching dropdown option for an existing supporting-doc value;
   // if it's legacy free-text that isn't in the list, inject it so it's kept.
-  function _docDetailSetSubtype(val) {
-    const s = document.getElementById('docDetailDocSubtype');
-    if (!s) return;
-    const v = (val || '').trim();
-    const inj = s.querySelector('option[data-injected="1"]');
-    if (inj) inj.remove();
-    let matched = false;
-    Array.from(s.options).forEach(o => {
-      if (o.value && o.value.toLowerCase() === v.toLowerCase()) matched = true;
-    });
-    if (v && !matched) {
-      const opt = document.createElement('option');
-      opt.textContent = v; opt.value = v; opt.dataset.injected = '1';
-      s.insertBefore(opt, s.options[1] || null);
-    }
-    s.value = v || '';
-  }
+  function _docDetailSetSubtype(val) { window.DocForm.setSubtype(val); }
   // ── Person auto-suggest (owner 2026-10-20: "when it finds a name like
   // James Allerdyce and he's assigned to a project or in the crew
   // database it should automatically suggest adding him … auto populate
   // fields and allow you to save"). One fetch per opened doc; a confident
   // match pre-selects the picker (Save persists it), a weaker one shows a
   // one-click chip. Never overrides a value already set. ───────────────
-  let _docDetailCrewSugUid = null;
   function _docDetailCrewSuggestLoad() {
-    const uid = _docDetailUid;
-    const sel = document.getElementById('docDetailCrewId');
-    const box = document.getElementById('docDetailCrewSuggest');
-    if (!uid || !sel || !box) return;
-    if (sel.value) { box.style.display = 'none'; return; }
-    if (_docDetailCrewSugUid === uid) return;
-    _docDetailCrewSugUid = uid;
-    fetch(`/docs/upload/${uid}/crew-suggest`, { credentials: 'same-origin' })
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => {
-        const s = d && d.suggestion;
-        if (!s || uid !== _docDetailUid || sel.value) return;
-        const esc = t => String(t).replace(/</g, '&lt;');
-        const opt = Array.from(sel.options).find(o => o.value === String(s.crew_member_id));
-        if (!opt) return;
-        if (s.confidence >= 0.9) {
-          sel.value = String(s.crew_member_id);
-          box.innerHTML = '👤 Auto-matched <b>' + esc(s.name) + '</b> from the '
-            + esc(s.matched_on || 'document') + (s.on_project ? ' (on this project)' : '')
-            + ' — Save to confirm · <a href="#" style="color:#e0a13a">clear</a>';
-          box.querySelector('a').onclick = e => { e.preventDefault(); sel.value = ''; box.style.display = 'none'; };
-          // The auto-pick is advisory: don't make the close-without-saving
-          // warning fire when the user changed nothing themselves.
-          _docDetailOpenSig = _docDetailSig();
-        } else {
-          box.innerHTML = '👤 Looks like <b>' + esc(s.name) + '</b>'
-            + (s.on_project ? ' (on this project)' : '')
-            + ' — <a href="#" style="color:#5fd0a0">attach</a>';
-          box.querySelector('a').onclick = e => { e.preventDefault(); sel.value = String(s.crew_member_id); box.style.display = 'none'; };
-        }
-        box.style.display = '';
-      })
-      .catch(() => {});
+    window.DocForm.crewSuggestLoad(_docDetailUid, {
+      uidStillCurrent: uid => uid === _docDetailUid,
+      // The auto-pick is advisory: don't make the close-without-saving
+      // warning fire when the user changed nothing themselves.
+      onAutoApplied: () => { _docDetailOpenSig = _docDetailSig(); },
+    });
   }
   function _docDetailApplyTypeUI(type) {
-    const spec = _DOC_TYPE_FIELD_SPEC[(type || '').toLowerCase()] || _DOC_TYPE_FIELD_SPEC.misc;
-    const vL = document.getElementById('docDetailVendorLabel');
-    if (vL) vL.textContent = spec.vendor || 'Vendor';
-    const vIn = document.getElementById('docDetailVendor');
-    if (vIn) vIn.placeholder = spec.vendorPh || 'Vendor name…';
-    // Supporting docs use a controlled Document-Type dropdown instead of the
-    // free-text vendor input. Toggle which control is visible. The visible
-    // one is the source of truth on save (see _docDetailVendorValue).
-    const subSel = document.getElementById('docDetailDocSubtype');
-    const isEvd = (type || '').toLowerCase() === 'employee_vendor_doc';
-    if (subSel && vIn) {
-      subSel.style.display = isEvd ? '' : 'none';
-      vIn.style.display    = isEvd ? 'none' : '';
-    }
-    const dL = document.getElementById('docDetailDocDateLabel');
-    if (dL) dL.textContent = spec.date || 'Doc Date';
-    const amtField = document.getElementById('docDetailAmountField');
-    if (amtField) amtField.style.display = spec.amount ? '' : 'none';
-    // Card/account last-4 tracks the amount field — a charge has a card.
-    const card4Field = document.getElementById('docDetailCard4Field');
-    if (card4Field) card4Field.style.display = spec.amount ? '' : 'none';
-    const dnField = document.getElementById('docDetailDocNumField');
-    const dnLabel = document.getElementById('docDetailDocNumLabel');
-    if (spec.docnum) {
-      if (dnField) dnField.style.display = '';
-      if (dnLabel) dnLabel.textContent = spec.docnum;
-    } else {
-      if (dnField) dnField.style.display = 'none';
-    }
-    // Crew + Location pickers — show only when this doc type backs a
-    // person or a place. Hidden by default for receipts / invoices.
-    const crewField = document.getElementById('docDetailCrewField');
-    if (crewField) crewField.style.display = spec.crew ? '' : 'none';
-    const locField  = document.getElementById('docDetailLocationField');
-    if (locField)  locField.style.display = spec.location ? '' : 'none';
-    // Person auto-suggest (owner 2026-10-20): when the field is relevant
-    // and empty, ask the server who this document looks like.
-    if (spec.crew) _docDetailCrewSuggestLoad();
-    else { const _sb = document.getElementById('docDetailCrewSuggest'); if (_sb) _sb.style.display = 'none'; }
-    // PO actions — the 2026-05-05 gate listed only estimate/quote/PO,
-    // so invoices and contracts/SOWs silently lost their PO buttons
-    // (owner 2026-09-25: "invoices, estimates or POs — I could create
-    // or add them to a PO but I don't see that anymore"). Now: any
-    // commitment-shaped doc (estimate / quote / contract / PO / invoice)
-    // can create OR join a PO; a receipt can only be attached to an
-    // existing PO (it backs a commitment that already exists — the PO
-    // rollup counts it in the receipts bucket).
+    const spec = window.DocForm.applyTypeUI(type, {
+      uid: _docDetailUid,
+      uidStillCurrent: uid => uid === _docDetailUid,
+      onAutoApplied: () => { _docDetailOpenSig = _docDetailSig(); },
+    });
+    // PO actions — modal-only (the standalone editor links back instead).
+    // Any commitment-shaped doc can create OR join a PO; a receipt can
+    // only be attached to an existing PO. (Owner 2026-09-25.)
     const poActions = document.getElementById('docDetailPoActions');
     if (poActions) {
       const _pt = (type || '').toLowerCase();
@@ -2189,19 +2077,6 @@
       const _createBtn = document.getElementById('docDetailCreatePoBtn');
       if (_createBtn) _createBtn.style.display = canCreatePo ? '' : 'none';
     }
-    // Detail-section heading tracks the doc type — an invoice isn't a
-    // "receipt". (User 2026-07 — "'receipt details' is confusing because this
-    // is an invoice.") Also hide the Tip field for invoices: tipping is a
-    // receipt concept, not an invoice one.
-    const _t = (type || '').toLowerCase();
-    const rdLabel = document.getElementById('docDetailReceiptDetailLabel');
-    if (rdLabel) {
-      rdLabel.textContent = _t === 'invoice' ? 'Invoice detail'
-        : _t === 'receipt' ? 'Receipt detail'
-        : 'Document detail';
-    }
-    const tipWrap = document.getElementById('docDetailTipWrap');
-    if (tipWrap) tipWrap.style.display = (_t === 'invoice') ? 'none' : '';
     _docDetailHighlightMissing(spec);
   }
   // Amount field helpers: display with thousand-separators (95,541.47)
@@ -2799,7 +2674,7 @@
     document.getElementById('docDetailDocNum').value   = row?.dataset?.docNum || '';
     document.getElementById('docDetailCard4').value    = row?.dataset?.sortCard4 || '';
     document.getElementById('docDetailCrewId').value     = row?.dataset?.crewMemberId || '';
-    if (typeof docDetailNewCrewHide === 'function') docDetailNewCrewHide();   // reset inline creator
+    if (window.DocForm) { DocForm.newCrewHide(); DocForm.resetSuggest(); }   // reset inline creator + suggest
     document.getElementById('docDetailLocationId').value = row?.dataset?.locationId || '';
     _docDetailApplyTypeUI(row?.dataset?.sortType || '');
     try { _docDetailLoadTravel(uid); } catch (e) {}
@@ -3380,45 +3255,7 @@
   // ── Create a new person / vendor from inside the doc popup ───────────
   // For when a doc arrives for someone not in the crew DB yet. Creates the
   // crew record (optionally a vendor), adds the option, and selects it.
-  window.docDetailNewCrewShow = function () {
-    const f = document.getElementById('docDetailNewCrew');
-    if (f) { f.style.display = 'block'; document.getElementById('docDetailNewCrewName').focus(); }
-  };
-  window.docDetailNewCrewHide = function () {
-    const f = document.getElementById('docDetailNewCrew');
-    if (!f) return;
-    f.style.display = 'none';
-    document.getElementById('docDetailNewCrewName').value = '';
-    document.getElementById('docDetailNewCrewVendor').checked = false;
-    document.getElementById('docDetailNewCrewStatus').textContent = '';
-  };
-  window.docDetailNewCrewSave = async function () {
-    const name = (document.getElementById('docDetailNewCrewName').value || '').trim();
-    const isVendor = document.getElementById('docDetailNewCrewVendor').checked;
-    const status = document.getElementById('docDetailNewCrewStatus');
-    if (!name) { status.textContent = 'Name required'; return; }
-    status.textContent = 'Adding…';
-    try {
-      const r = await fetch('/crew/new?fmt=json', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, is_vendor: isVendor }),
-      });
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok || !d.id) { status.textContent = 'Failed: ' + (d.error || r.status); return; }
-      const sel = document.getElementById('docDetailCrewId');
-      let opt = Array.from(sel.options).find(o => o.value === String(d.id));
-      if (!opt) {
-        opt = document.createElement('option');
-        opt.value = String(d.id);
-        opt.textContent = d.name + (isVendor ? ' (vendor)' : '');
-        sel.appendChild(opt);
-      }
-      sel.value = String(d.id);
-      docDetailNewCrewHide();
-    } catch (e) {
-      status.textContent = 'Error: ' + (e && e.message || e);
-    }
-  };
+  // (new person/vendor quick-add moved to DocForm — 2026-10-20 unification)
 
   // ── Delete the currently-open document ───────────────────────────────
   // Calls the existing /docs/upload/<uid>/delete endpoint, which trashes

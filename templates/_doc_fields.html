@@ -1,0 +1,165 @@
+{# ═══ SHARED document-metadata fields (owner 2026-10-20 unification) ═══
+   THE single copy of the doc form used by BOTH the budget-page doc-detail
+   modal (budget.html — passes no `du`; b03.js fills values client-side)
+   and the standalone doc editor (doc_editor.html — passes du=upload for
+   server-side prefill). Element ids are the docDetail* set; all behavior
+   lives in static/doc-form.js (window.DocForm) + each page's glue.
+   Context needed: crew_members, all_crew_members, project_locations
+   (both rendering routes pass them). #}
+{% set du = du if du is defined else None %}
+<div class="field" style="margin-bottom:.6rem">
+  <label id="docDetailVendorLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Vendor</label>
+  <input type="text" id="docDetailVendor" placeholder="Vendor name…" style="width:100%"
+         value="{{ (du.vendor or '') if du else '' }}">
+  {# For Employee/Vendor (supporting) docs the Document Type becomes a
+     controlled dropdown so it classifies precisely and drives the
+     People-tab badges. Shown/hidden in DocForm.applyTypeUI; its value is
+     saved into `vendor`. (User 2026-06-01.) #}
+  <select id="docDetailDocSubtype" style="width:100%;display:none">
+    <option value="">— choose document —</option>
+    <option>Driver's License</option>
+    <option>State / Photo ID</option>
+    <option>Passport</option>
+    <option>Social Security Card</option>
+    <option>W-9</option>
+    <option>W-4</option>
+    <option>I-9</option>
+    <option>Direct Deposit Authorization</option>
+    <option>Tax Credit Documents</option>
+    <option>Work Authorization / Visa</option>
+    <option>Miscellaneous</option>
+    <option>Other</option>
+  </select>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.6rem">
+  <div class="field" id="docDetailAmountField" style="margin:0">
+    <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Amount (USD)</label>
+    <input type="text" id="docDetailAmount" inputmode="decimal" placeholder="0.00" style="width:100%"
+           value="{{ '%.2f'|format(du.amount|float) if (du and du.amount is not none and du.amount|float != 0) else '' }}">
+    <div style="font-size:10px;color:var(--text-muted);margin-top:2px">↩ Refund/credit? Enter a <b>negative</b> amount, e.g. −50.00</div>
+  </div>
+  <div class="field" style="margin:0">
+    <label id="docDetailDocDateLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Date</label>
+    <input type="date" id="docDetailDocDate" style="width:100%"
+           value="{{ du.doc_date.isoformat() if (du and du.doc_date) else '' }}">
+  </div>
+</div>
+{# Foreign-currency original figure (user 2026-05-29). Amount (USD) above
+   is what reconciles against the bank charge + rolls into the budget;
+   this records the document's native amount for reference. #}
+<div style="display:grid;grid-template-columns:1fr 90px;gap:.5rem;margin-bottom:.6rem">
+  <div class="field" style="margin:0">
+    <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Original amount <span style="text-transform:none;opacity:.7">(if foreign)</span></label>
+    <input type="text" id="docDetailOrigAmount" inputmode="decimal" placeholder="e.g. 1500000" style="width:100%"
+           value="{{ ('%.2f'|format(du.original_amount|float)) if (du and du.original_amount is not none) else '' }}">
+  </div>
+  <div class="field" style="margin:0">
+    <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Currency</label>
+    <input type="text" id="docDetailOrigCurrency" maxlength="8" placeholder="KRW" style="width:100%;text-transform:uppercase"
+           list="docDetailCurrencyList" value="{{ (du.original_currency or '') if du else '' }}">
+    <datalist id="docDetailCurrencyList">
+      <option value="USD"></option><option value="KRW"></option><option value="CNY"></option>
+      <option value="JPY"></option><option value="EUR"></option><option value="GBP"></option>
+      <option value="HKD"></option><option value="TWD"></option>
+    </datalist>
+  </div>
+</div>
+{# Type-specific identifier — invoice#, PO#, tax ID, policy#, etc. The
+   label changes with the selected Doc Type. #}
+<div class="field" id="docDetailDocNumField" style="margin-bottom:.6rem;display:none">
+  <label id="docDetailDocNumLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Document #</label>
+  <input type="text" id="docDetailDocNum" placeholder="—" style="width:100%"
+         value="{{ (du.doc_number or '') if du else '' }}">
+</div>
+{# Card / account last-4 — which card or bank account this charge hit.
+   Shown for spend-type docs (mirrors the amount field). #}
+<div class="field" id="docDetailCard4Field" style="margin-bottom:.6rem;display:none">
+  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Card / Acct (last 4)</label>
+  <input type="text" id="docDetailCard4" inputmode="numeric" maxlength="4"
+         placeholder="e.g. 1234" style="width:100%" value="{{ (du.card_last4 or '') if du else '' }}">
+</div>
+{# 🧾 Receipt detail for tax-credit reporting (2026-07): subtotal / tax /
+   tip broken out (some credits disallow tip) + merchant address. #}
+<details id="docDetailReceiptDetail" class="field" {% if du %}open{% endif %} style="margin-bottom:.6rem;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
+  <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">🧾 <span id="docDetailReceiptDetailLabel">Receipt detail</span> <span style="font-weight:400;text-transform:none">(subtotal · tax · tip · address)</span></summary>
+  <div style="display:flex;gap:8px;margin-top:8px">
+    <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Subtotal</label><input type="text" id="docDetailSubtotal" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
+    <div class="field" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tax</label><input type="text" id="docDetailTax" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
+    <div class="field" id="docDetailTipWrap" style="flex:1;margin:0"><label style="font-size:10.5px;color:var(--text-muted)">Tip</label><input type="text" id="docDetailTip" inputmode="decimal" placeholder="0.00" style="width:100%"></div>
+  </div>
+  <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant address</label><input type="text" id="docDetailMerchAddr" placeholder="street, city, state" style="width:100%"></div>
+  <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant phone</label><input type="text" id="docDetailMerchPhone" placeholder="—" style="width:100%"></div>
+</details>
+{# Crew member picker — shown per field spec (tax_form / contract /
+   release / payroll / timecard / invoice / employee_vendor_doc). #}
+<div class="field" id="docDetailCrewField" style="margin-bottom:.6rem;display:none">
+  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Person / Vendor</label>
+  <select id="docDetailCrewId" style="width:100%">
+    <option value="">— not linked —</option>
+    {% set _dd_proj_ids = (crew_members or []) | map(attribute='id') | list %}
+    {% if crew_members %}
+    <optgroup label="This project">
+    {% for cm in crew_members %}
+    <option value="{{ cm.id }}" {{ 'selected' if (du and du.crew_member_id == cm.id) else '' }}>{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.is_vendor %} (vendor){% elif cm.role %} — {{ cm.role }}{% endif %}</option>
+    {% endfor %}
+    </optgroup>
+    {% endif %}
+    {# Everyone else (owner 2026-10-01): the full roster below the project
+       group; picking someone links them to the project from then on. #}
+    {% set _dd_rest = (all_crew_members or []) | rejectattr('id', 'in', _dd_proj_ids) | list %}
+    {% if _dd_rest %}
+    <optgroup label="{{ 'All people & vendors' if not crew_members else 'Everyone else' }}">
+    {% for cm in _dd_rest %}
+    <option value="{{ cm.id }}" {{ 'selected' if (du and du.crew_member_id == cm.id) else '' }}>{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.is_vendor %} (vendor){% elif cm.role %} — {{ cm.role }}{% endif %}</option>
+    {% endfor %}
+    </optgroup>
+    {% endif %}
+  </select>
+  {# Person auto-suggest chip (owner 2026-10-20) — filled by
+     DocForm.crewSuggestLoad from /docs/upload/<uid>/crew-suggest. #}
+  <div id="docDetailCrewSuggest" style="display:none;margin-top:4px;font-size:11.5px;color:var(--text-muted)"></div>
+  {# Create a new person/vendor without leaving the form. (User 2026-06-01.) #}
+  <a href="#" id="docDetailNewCrewLink" onclick="event.preventDefault();DocForm.newCrewShow()"
+     style="font-size:11px;color:#5b8af9;text-decoration:none;display:inline-block;margin-top:4px">+ New person / vendor</a>
+  <div id="docDetailNewCrew" style="display:none;margin-top:6px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-input)">
+    <input type="text" id="docDetailNewCrewName" placeholder="Name" style="width:100%;margin-bottom:6px">
+    <label class="checkbox-label" style="font-size:11px"><input type="checkbox" id="docDetailNewCrewVendor"> This is a vendor / company</label>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button type="button" class="btn btn-xs btn-primary" onclick="DocForm.newCrewSave()">Add &amp; select</button>
+      <button type="button" class="btn btn-xs btn-ghost" onclick="DocForm.newCrewHide()">Cancel</button>
+    </div>
+    <div id="docDetailNewCrewStatus" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div>
+  </div>
+</div>
+{# Location picker — shown for insurance/COI and location releases. #}
+<div class="field" id="docDetailLocationField" style="margin-bottom:.6rem;display:none">
+  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Location</label>
+  <select id="docDetailLocationId" style="width:100%">
+    <option value="">— not linked —</option>
+    {% for loc in (project_locations or []) %}
+    <option value="{{ loc.id }}" {{ 'selected' if (du and du.location_id == loc.id) else '' }}>{{ loc.name or ('Location #' ~ loc.id) }}{% if loc.address %} — {{ loc.address[:40] }}{% endif %}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="field" style="margin-bottom:.6rem">
+  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Doc Type</label>
+  {# 2026-05-11 taxonomy: Quote merged into Estimate; SOW merged into
+     Contract. Legacy 'quote'/'sow' rows aliased at value-set time. #}
+  {% set _dd_cat = (({'quote': 'estimate', 'sow': 'contract'}).get(du.category, du.category) or '') if du else '' %}
+  <select id="docDetailCategory" style="width:100%">
+    <option value="" {{ 'selected' if _dd_cat == '' else '' }}>— unspecified —</option>
+    <option value="receipt" {{ 'selected' if _dd_cat == 'receipt' else '' }}>Receipt</option>
+    <option value="invoice" {{ 'selected' if _dd_cat == 'invoice' else '' }}>Invoice</option>
+    <option value="estimate" {{ 'selected' if _dd_cat == 'estimate' else '' }}>Estimate / Quote</option>
+    <option value="purchase_order" {{ 'selected' if _dd_cat == 'purchase_order' else '' }}>Purchase Order (PO)</option>
+    <option value="contract" {{ 'selected' if _dd_cat == 'contract' else '' }}>Contract / SOW</option>
+    <option value="insurance" {{ 'selected' if _dd_cat == 'insurance' else '' }}>Insurance / COI</option>
+    <option value="tax_form" {{ 'selected' if _dd_cat == 'tax_form' else '' }}>Tax Form (W-9, W-8, 1099)</option>
+    <option value="payroll" {{ 'selected' if _dd_cat == 'payroll' else '' }}>Payroll</option>
+    <option value="timecard" {{ 'selected' if _dd_cat == 'timecard' else '' }}>Timecard</option>
+    <option value="legal" {{ 'selected' if _dd_cat == 'legal' else '' }}>Legal</option>
+    <option value="release" {{ 'selected' if _dd_cat == 'release' else '' }}>Release (Talent / Location)</option>
+    <option value="employee_vendor_doc" {{ 'selected' if _dd_cat == 'employee_vendor_doc' else '' }}>Employee/Vendor Doc (DTR, ID, W-9…)</option>
+    <option value="misc" {{ 'selected' if _dd_cat == 'misc' else '' }}>Miscellaneous</option>
+  </select>
+</div>

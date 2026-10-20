@@ -34570,6 +34570,50 @@ def admin_sub_budget_status():
             f"{''.join(rows_html)}</table></body></html>")
 
 
+@app.route("/admin/docs/find")
+@login_required
+def admin_docs_find():
+    """Find documents by filename fragment across ALL projects (owner
+    2026-10-20: "4 invoices imported into Grubhub yesterday … I see them
+    in the _imported folder, but I don't see them in the software").
+    Answers "where did my file actually land": which project, what
+    status, duplicate flags, who it's linked to. ?q=<fragment> or
+    ?pid=<project> (newest 50)."""
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
+    q = (request.args.get('q') or '').strip()
+    pid = request.args.get('pid', type=int)
+    if not q and not pid:
+        return jsonify({"usage": "?q=<filename fragment> and/or ?pid=<project id>"})
+    qry = DocUpload.query
+    if q:
+        like = f"%{q}%"
+        qry = qry.filter(db.or_(DocUpload.original_filename.ilike(like),
+                                DocUpload.filed_filename.ilike(like),
+                                DocUpload.vendor.ilike(like)))
+    if pid:
+        qry = qry.filter(DocUpload.project_id == pid)
+    rows = qry.order_by(DocUpload.id.desc()).limit(50).all()
+    proj_names = {p.id: p.name for p in ProjectSheet.query.filter(
+        ProjectSheet.id.in_({r.project_id for r in rows})).all()} if rows else {}
+    out = []
+    for d in rows:
+        out.append({
+            "id": d.id, "file": d.original_filename,
+            "filed_as": d.filed_filename,
+            "project": f"{d.project_id} · {proj_names.get(d.project_id, '?')}",
+            "status": d.status, "category": d.category,
+            "is_duplicate": bool(d.is_duplicate),
+            "duplicate_of_id": d.duplicate_of_id,
+            "vendor": d.vendor,
+            "amount": float(d.amount) if d.amount is not None else None,
+            "crew_member_id": d.crew_member_id,
+            "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None,
+            "filed_dropbox_path": d.filed_dropbox_path,
+        })
+    return jsonify({"count": len(out), "docs": out})
+
+
 @app.route("/admin/drop-sweep-status")
 @login_required
 def admin_drop_sweep_status(pid=None):
