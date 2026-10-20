@@ -35363,6 +35363,96 @@ def docs_upload_status(uid):
     })
 
 
+def _project_crew_pickers(pid):
+    """(all_crew_members, project_crew_members) for the Person/Vendor
+    pickers — same scoping as budget_view's (assignments on this project's
+    budget lines + people already on its docs, loan-out groups intact)."""
+    all_cm = (CrewMember.query.filter(CrewMember.active.isnot(False))
+              .order_by(CrewMember.name).all())
+    _pb_ids = [b.id for b in Budget.query.filter_by(project_id=pid).all()]
+    _cm_ids = set()
+    if _pb_ids:
+        _l_ids = [r[0] for r in db.session.query(BudgetLine.id)
+                  .filter(BudgetLine.budget_id.in_(_pb_ids)).all()]
+        if _l_ids:
+            for (cmid,) in (db.session.query(CrewAssignment.crew_member_id)
+                            .filter(CrewAssignment.budget_line_id.in_(_l_ids),
+                                    CrewAssignment.crew_member_id.isnot(None)).distinct()):
+                if cmid:
+                    _cm_ids.add(cmid)
+    for (cmid,) in (db.session.query(DocUpload.crew_member_id)
+                    .filter(DocUpload.project_id == pid,
+                            DocUpload.crew_member_id.isnot(None)).distinct()):
+        if cmid:
+            _cm_ids.add(cmid)
+    if _cm_ids:
+        for c in all_cm:
+            if c.id in _cm_ids and getattr(c, 'loan_out_vendor_id', None):
+                _cm_ids.add(c.loan_out_vendor_id)
+        for c in all_cm:
+            if getattr(c, 'loan_out_vendor_id', None) in _cm_ids:
+                _cm_ids.add(c.id)
+    return all_cm, [c for c in all_cm if c.id in _cm_ids]
+
+
+@app.route("/docs/upload/<int:uid>/crew-suggest")
+@login_required
+def docs_upload_crew_suggest(uid):
+    """Suggest the person/vendor a document belongs to (owner 2026-10-20:
+    "when [OCR] finds a name like James Allerdyce and he's assigned to a
+    project or in the crew database it should automatically suggest adding
+    him … auto populate fields and allow you to save"). Matches the doc's
+    OCR'd vendor + full text against the Crew Database; people already on
+    the doc's project rank first. Advisory only — the UI pre-selects, the
+    human saves."""
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+    if upload.crew_member_id:
+        return jsonify({"suggestion": None, "already_linked": upload.crew_member_id})
+    from actuals import _vendor_similarity
+    vendor = (upload.vendor or '').strip()
+    ocr = ''
+    try:
+        if upload.veryfi_data:
+            ocr = (json.loads(upload.veryfi_data) or {}).get('ocr_text') or ''
+    except Exception:
+        ocr = ''
+    ocr_l = ' ' + re.sub(r'\s+', ' ', ocr.lower()[:20000]) + ' '
+    all_cm, proj_cm = _project_crew_pickers(upload.project_id)
+    proj_ids = {c.id for c in proj_cm}
+    best, best_score, best_src = None, 0.0, None
+    for cm in all_cm:
+        nm = (cm.name or '').strip()
+        if len(nm) < 5 or ' ' not in nm:
+            continue          # single-word names false-positive too easily
+        score, src = 0.0, None
+        if vendor:
+            s = _vendor_similarity(vendor, nm)
+            if s > score:
+                score, src = s, 'vendor'
+        nml = nm.lower()
+        parts = nml.split()
+        if nml in ocr_l:
+            if 0.95 > score:
+                score, src = 0.95, 'document text'
+        elif len(parts) == 2 and f"{parts[1]}, {parts[0]}" in ocr_l:
+            if 0.93 > score:  # "Allerdyce, James" form
+                score, src = 0.93, 'document text'
+        if cm.id in proj_ids:
+            score = min(1.0, score + 0.05)
+        if score > best_score:
+            best, best_score, best_src = cm, score, src
+    if best is None or best_score < 0.80:
+        return jsonify({"suggestion": None})
+    return jsonify({"suggestion": {
+        "crew_member_id": best.id, "name": best.name,
+        "is_vendor": bool(getattr(best, 'is_vendor', False)),
+        "on_project": best.id in proj_ids,
+        "confidence": round(best_score, 3), "matched_on": best_src}})
+
+
 @app.route("/projects/<int:pid>/docs/<int:uid>/editor", methods=["GET"])
 @login_required
 def doc_editor_page(pid, uid):
@@ -35387,11 +35477,24 @@ def doc_editor_page(pid, uid):
     # Same section-grouped budget-line options the Actuals picker uses, so the
     # standalone editor's line/section coding is identical. (User 2026-07.)
     _pick_budget, pick_groups = _line_picker_groups(pid)
+    # Person/Vendor + Location pickers — parity with the in-page modal
+    # (owner 2026-10-20: "the actuals pop-up and the Docs pop-up are
+    # different — they should just be the same").
+    _ed_all_cm, _ed_proj_cm = _project_crew_pickers(pid)
+    _ed_locations = []
+    try:
+        _ed_locations = (Location.query.filter_by(project_id=pid, active=True)
+                         .order_by(Location.name).all())
+    except Exception:
+        pass
     return render_template(
         "doc_editor.html",
         project=project,
         upload=upload,
         actuals_pick_groups=pick_groups,
+        crew_members=_ed_proj_cm,
+        all_crew_members=_ed_all_cm,
+        project_locations=_ed_locations,
     )
 
 

@@ -2090,6 +2090,48 @@
     }
     s.value = v || '';
   }
+  // ── Person auto-suggest (owner 2026-10-20: "when it finds a name like
+  // James Allerdyce and he's assigned to a project or in the crew
+  // database it should automatically suggest adding him … auto populate
+  // fields and allow you to save"). One fetch per opened doc; a confident
+  // match pre-selects the picker (Save persists it), a weaker one shows a
+  // one-click chip. Never overrides a value already set. ───────────────
+  let _docDetailCrewSugUid = null;
+  function _docDetailCrewSuggestLoad() {
+    const uid = _docDetailUid;
+    const sel = document.getElementById('docDetailCrewId');
+    const box = document.getElementById('docDetailCrewSuggest');
+    if (!uid || !sel || !box) return;
+    if (sel.value) { box.style.display = 'none'; return; }
+    if (_docDetailCrewSugUid === uid) return;
+    _docDetailCrewSugUid = uid;
+    fetch(`/docs/upload/${uid}/crew-suggest`, { credentials: 'same-origin' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        const s = d && d.suggestion;
+        if (!s || uid !== _docDetailUid || sel.value) return;
+        const esc = t => String(t).replace(/</g, '&lt;');
+        const opt = Array.from(sel.options).find(o => o.value === String(s.crew_member_id));
+        if (!opt) return;
+        if (s.confidence >= 0.9) {
+          sel.value = String(s.crew_member_id);
+          box.innerHTML = '👤 Auto-matched <b>' + esc(s.name) + '</b> from the '
+            + esc(s.matched_on || 'document') + (s.on_project ? ' (on this project)' : '')
+            + ' — Save to confirm · <a href="#" style="color:#e0a13a">clear</a>';
+          box.querySelector('a').onclick = e => { e.preventDefault(); sel.value = ''; box.style.display = 'none'; };
+          // The auto-pick is advisory: don't make the close-without-saving
+          // warning fire when the user changed nothing themselves.
+          _docDetailOpenSig = _docDetailSig();
+        } else {
+          box.innerHTML = '👤 Looks like <b>' + esc(s.name) + '</b>'
+            + (s.on_project ? ' (on this project)' : '')
+            + ' — <a href="#" style="color:#5fd0a0">attach</a>';
+          box.querySelector('a').onclick = e => { e.preventDefault(); sel.value = String(s.crew_member_id); box.style.display = 'none'; };
+        }
+        box.style.display = '';
+      })
+      .catch(() => {});
+  }
   function _docDetailApplyTypeUI(type) {
     const spec = _DOC_TYPE_FIELD_SPEC[(type || '').toLowerCase()] || _DOC_TYPE_FIELD_SPEC.misc;
     const vL = document.getElementById('docDetailVendorLabel');
@@ -2126,6 +2168,10 @@
     if (crewField) crewField.style.display = spec.crew ? '' : 'none';
     const locField  = document.getElementById('docDetailLocationField');
     if (locField)  locField.style.display = spec.location ? '' : 'none';
+    // Person auto-suggest (owner 2026-10-20): when the field is relevant
+    // and empty, ask the server who this document looks like.
+    if (spec.crew) _docDetailCrewSuggestLoad();
+    else { const _sb = document.getElementById('docDetailCrewSuggest'); if (_sb) _sb.style.display = 'none'; }
     // PO actions — the 2026-05-05 gate listed only estimate/quote/PO,
     // so invoices and contracts/SOWs silently lost their PO buttons
     // (owner 2026-09-25: "invoices, estimates or POs — I could create

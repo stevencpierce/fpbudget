@@ -3896,6 +3896,9 @@
                 </optgroup>
                 {% endif %}
               </select>
+              {# Person auto-suggest chip (owner 2026-10-20) — filled by
+                 _docDetailCrewSuggestLoad from /docs/upload/<uid>/crew-suggest. #}
+              <div id="docDetailCrewSuggest" style="display:none;margin-top:4px;font-size:11.5px;color:var(--text-muted)"></div>
               {# Create a new person/vendor without leaving the doc popup —
                  for when a doc arrives for someone not in the system yet.
                  (User 2026-06-01.) #}
