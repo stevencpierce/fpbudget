@@ -1394,8 +1394,17 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         section_map[6000]["estimated"] += production_insurance_amount
     if payroll_fee_amount and 6500 in section_map:
         section_map[6500]["estimated"] += payroll_fee_amount
-    if fringe_rollup_amount and 6500 in section_map:
-        section_map[6500]["estimated"] += fringe_rollup_amount
+    # Per-SECTION fringe lumps (owner 2026-10-21: "fringes are a
+    # sub-calculation in the labor sections … assign fringes in those
+    # actual sections rather than Administrative — reconcile the fringe
+    # total for the whole individual section"). In rollup mode each labor
+    # section's fringe pot stays IN that section as its own lump (the
+    # <sec>-FR row / "Payroll Fringes — <Section>" line), instead of the
+    # old single pot under 6500 Administrative.
+    if _fringe_rollup:
+        for _frsec, _fr in section_fringe.items():
+            if _fr and _frsec in section_map:
+                section_map[_frsec]["estimated"] += _fr
 
     for code, actual_sum in actuals_by_code.items():
         if code is None:
@@ -1471,14 +1480,10 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
             return 0.0
         base = row["estimated"]
         if exclude_fringes:
-            if _fringe_rollup:
-                # Rollup mode: section totals no longer CONTAIN per-line
-                # fringe (it all sits in 6500 as fringe_rollup_amount), so
-                # only that injected amount must come out of the base.
-                if row["code"] == 6500:
-                    base -= fringe_rollup_amount
-            else:
-                base -= row["fringe_in_section"]
+            # Each section's total CONTAINS its labor fringe in both modes
+            # now (inside line totals normally; as the per-section lump in
+            # rollup mode) — one subtract covers both. (2026-10-21.)
+            base -= row["fringe_in_section"]
         return max(base, 0.0)
 
     # Fee base = sum of (eligible portion - fringes) across rows.
@@ -1548,12 +1553,14 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
             if sec is not None:
                 sec_fee_sums[sec] = sec_fee_sums.get(sec, 0.0) + amt
         # Auto-injected amounts (no BudgetLine): rounded auto share only.
-        for _amt, _sec in ((workers_comp_amount, 6000),
-                           (production_insurance_amount, 6000),
-                           (payroll_fee_amount, 6500),
-                           # Rolled-up fringes get a dispersed-fee share
-                           # only when the fee applies to fringes at all.
-                           ((0.0 if exclude_fringes else fringe_rollup_amount), 6500)):
+        _pseudo = [(workers_comp_amount, 6000),
+                   (production_insurance_amount, 6000),
+                   (payroll_fee_amount, 6500)]
+        if _fringe_rollup and not exclude_fringes:
+            # Rolled-up fringes get a dispersed-fee share only when the
+            # fee applies to fringes at all — one share per section now.
+            _pseudo += [(_fr, _frsec) for _frsec, _fr in section_fringe.items() if _fr]
+        for _amt, _sec in _pseudo:
             if _amt and _sec not in _excluded_codes:
                 _share = float(int(_amt * effective_rate + 0.5))
                 if _share:
@@ -1612,6 +1619,11 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         "workers_comp_pct":      workers_comp_pct,
         "fringe_rollup":         _fringe_rollup,
         "fringe_rollup_amount":  fringe_rollup_amount,
+        # {section_code: fringe $} — only labor sections with fringe, only
+        # in rollup mode (the per-section "Payroll Fringes" lumps).
+        "fringe_by_section":     ({_frsec: round(_fr, 2)
+                                   for _frsec, _fr in section_fringe.items() if _fr}
+                                  if _fringe_rollup else {}),
         "workers_comp_amount":   workers_comp_amount,
         "payroll_fee_pct":       payroll_fee_pct,
         "payroll_fee_amount":    payroll_fee_amount,

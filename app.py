@@ -7324,7 +7324,7 @@ def budget_audit_json(pid, bid):
 # (pick_budget, groups). Each group is {code, name, lines}. Extracted from
 # budget_view's inline block verbatim so both render IDENTICAL options.
 # (User 2026-07 — standalone doc editor.)
-def _ensure_fringe_rollup_line(pid):
+def _ensure_fringe_rollup_line(pid, section_code=6500):
     """The rolled-up fringe pot as a REAL budget line (owner 2026-10-07:
     "fringes should just be one big lump category … boom, just drop it in
     there and see how that actualizes against each other").
@@ -7351,17 +7351,20 @@ def _ensure_fringe_rollup_line(pid):
         if not bud:
             return None
         ln = BudgetLine.query.filter_by(budget_id=bud.id,
-                                        line_tag='fringe_rollup').first()
+                                        line_tag='fringe_rollup',
+                                        account_code=section_code).first()
         if ln:
             return ln
-        ln = BudgetLine(budget_id=bud.id, account_code=6500,
-                        account_name='Administrative',
-                        description='Payroll Fringes (all labor fringes)',
+        from budget_calc import FP_COA_NAMES as _FRN
+        _sec_name = _FRN.get(section_code, 'Administrative')
+        ln = BudgetLine(budget_id=bud.id, account_code=section_code,
+                        account_name=_sec_name[:100],
+                        description=f'Payroll Fringes — {_sec_name}'[:300],
                         line_tag='fringe_rollup', estimated_total=0,
                         is_labor=False, sort_order=9999, sync_omit=True)
         db.session.add(ln)
         db.session.commit()
-        logging.info(f"[fringe-rollup] created Payroll Fringes line {ln.id} "
+        logging.info(f"[fringe-rollup] created '{ln.description}' line {ln.id} "
                      f"on budget {bud.id} (project {pid})")
         return ln
     except Exception as e:
@@ -8278,12 +8281,15 @@ def budget_view(pid, bid):
         working_by_section[COA_CODE_INSURANCE] = working_by_section.get(COA_CODE_INSURANCE, 0.0) + _pi_amount
     if _pf_pct:
         working_by_section[COA_CODE_ADMIN] = working_by_section.get(COA_CODE_ADMIN, 0.0) + round(working_gross_labor * _pf_pct, 2)
-    # Fringe-rollup mode (2026-10-05): line totals above exclude fringe;
-    # the whole pot lands in 6500 — mirrors calc_top_sheet.
+    # Fringe-rollup mode (per-SECTION since 2026-10-21): line totals above
+    # exclude fringe; each labor section keeps its own fringe lump —
+    # mirrors calc_top_sheet's fringe_by_section.
     _w_rollup = bool(fringe_cfgs.get('__fringe_rollup__'))
     _w_fringe_total = round(sum(working_section_fringe.values()), 2) if _w_rollup else 0.0
-    if _w_fringe_total:
-        working_by_section[COA_CODE_ADMIN] = working_by_section.get(COA_CODE_ADMIN, 0.0) + _w_fringe_total
+    if _w_rollup:
+        for _wfs, _wfv in working_section_fringe.items():
+            if _wfv:
+                working_by_section[_wfs] = working_by_section.get(_wfs, 0.0) + round(_wfv, 2)
 
     # Disperse Production Company Fee across eligible sections. Mirrors
     # calc_top_sheet's dispersal logic — eligible base = (section total −
@@ -8300,8 +8306,8 @@ def budget_view(pid, bid):
         per-line totals exclude fringe; the whole pot sits in 6500."""
         if not _wfee_exclude_fringes:
             return 0.0
-        if _w_rollup:
-            return _w_fringe_total if _sk == COA_CODE_ADMIN else 0.0
+        # Sections contain their own fringe in both modes now (inside line
+        # totals normally; as the per-section lump in rollup). 2026-10-21.
         return working_section_fringe.get(_sk, 0.0)
     import json as _json_wfee
     _wraw_excl = getattr(budget, 'fee_excluded_sections', None)
@@ -8358,10 +8364,13 @@ def budget_view(pid, bid):
                 _sk = _section_for_code(_l.account_code)
                 working_by_section[_sk] = round(working_by_section.get(_sk, 0.0) + _amt, 2)
                 _fee_total += _amt
-            for _pamt, _psec in ((round(working_gross_labor * _wc_pct, 2), COA_CODE_INSURANCE),
-                                 (_pi_amount, COA_CODE_INSURANCE),
-                                 (round(working_gross_labor * _pf_pct, 2), COA_CODE_ADMIN),
-                                 ((0.0 if _wfee_exclude_fringes else _w_fringe_total), COA_CODE_ADMIN)):
+            _wpseudo = [(round(working_gross_labor * _wc_pct, 2), COA_CODE_INSURANCE),
+                        (_pi_amount, COA_CODE_INSURANCE),
+                        (round(working_gross_labor * _pf_pct, 2), COA_CODE_ADMIN)]
+            if _w_rollup and not _wfee_exclude_fringes:
+                _wpseudo += [(round(_wfv, 2), _wfs)
+                             for _wfs, _wfv in working_section_fringe.items() if _wfv]
+            for _pamt, _psec in _wpseudo:
                 if _pamt and _psec not in _wexcluded:
                     _psh = float(int(_pamt * _w_eff_rate + 0.5))
                     if _psh:
@@ -9278,11 +9287,23 @@ def budget_view(pid, bid):
     # Fringe-rollup projects get the real "Payroll Fringes" coding line
     # BEFORE the picker reads the budget's lines, so it shows up in the
     # pickers on the same render that created it. (Owner 2026-10-07.)
-    fringe_rollup_line_id = None
+    # {section_code: fringe line id} — one real coding line per labor
+    # section carrying fringe (owner 2026-10-21: "reconcile the fringe
+    # total for the whole individual section"), plus any legacy tagged
+    # lines (e.g. the old single 6500 pot) so their actuals stay visible.
+    fringe_rollup_line_ids = {}
     if getattr(project, 'fringe_rollup', False):
-        _frl = _ensure_fringe_rollup_line(pid)
-        if _frl is not None:
-            fringe_rollup_line_id = _frl.id
+        for _frsec in (top_sheet.get('fringe_by_section') or {}):
+            _frl = _ensure_fringe_rollup_line(pid, _frsec)
+            if _frl is not None:
+                fringe_rollup_line_ids[_frsec] = _frl.id
+    try:
+        for _lgl in BudgetLine.query.filter_by(line_tag='fringe_rollup').join(
+                Budget, Budget.id == BudgetLine.budget_id).filter(
+                Budget.project_id == pid).all():
+            fringe_rollup_line_ids.setdefault(_lgl.account_code, _lgl.id)
+    except Exception:
+        pass
     actuals_pick_budget, actuals_pick_groups = _line_picker_groups(pid)
 
     # Per-line crew + PO badges for the Actuals "Chart of Accounts" sidebar
@@ -9701,7 +9722,7 @@ def budget_view(pid, bid):
         has_actual_budget=has_actual_budget,
         actual_budget_meta=actual_budget_meta,
         actuals_frozen=actuals_frozen,
-        fringe_rollup_line_id=fringe_rollup_line_id,
+        fringe_rollup_line_ids=fringe_rollup_line_ids,
     )
 
 
@@ -36917,8 +36938,10 @@ def docs_parse_people(uid):
             if l.assigned_crew_id and _cm_names.get(l.assigned_crew_id):
                 names.append(_cm_names[l.assigned_crew_id])
             _pv = _picker_value_for_line(l)
+            from budget_calc import section_for_code as _sfc_pp
             roster.append({"value": str(_pv if _pv is not None else l.id),
                            "label": f"{l.account_code} · {(l.description or l.account_name or '')[:60]}",
+                           "sec": _sfc_pp(l.account_code),
                            "names": sorted({n for n in names if n}),
                            "desc": (l.description or '').strip()})
 
@@ -36964,6 +36987,7 @@ def docs_parse_people(uid):
 
     out_rows, matched_n = [], 0
     fringes_total = 0.0
+    person_fringes = []   # (name, employer fringes $, section of their line)
     for r0 in rows_in[:200]:
         nm = (r0.get("name") or '').strip()
         try:
@@ -36985,41 +37009,65 @@ def docs_parse_people(uid):
             frng  = round(float(r0.get("fringes")), 2)
         except (TypeError, ValueError):
             wages = frng = None
+        mt = _match(nm)
+        frng_val = None
         if (wages is not None and frng is not None and wages > 0 and frng >= 0
                 and abs((wages + frng) - amt) <= 1.0):
             row_amt = wages
+            frng_val = frng
             fringes_total = round(fringes_total + frng, 2)
         else:
             row_amt = amt
-        mt = _match(nm)
         if mt:
             matched_n += 1
         out_rows.append({"desc": f"{nm} — payroll", "amount": row_amt,
                          "line_id": (mt["value"] if mt else ""),
                          "line_label": (mt["label"] if mt else ""),
                          "matched": bool(mt)})
+        if frng_val:
+            person_fringes.append((nm, frng_val, (mt or {}).get("sec")))
     people_n = len(out_rows)
     if fringes_total > 0:
-        # Land the pool on the REAL "Payroll Fringes" line when the project
-        # rolls fringes up (owner 2026-10-07: "one big lump category …
-        # boom, just drop it in there and see how that actualizes against
-        # each other") — its actuals render on the 6500-FR row right next
-        # to the rolled-up working number. Section-coded 6500 otherwise.
-        _frl = None
+        # Employer fringes land IN the labor section they came from (owner
+        # 2026-10-21: "assign fringes in those actual sections rather than
+        # Administrative … reconcilable by person, or at least the fringe
+        # total for the whole individual section"). One row PER PERSON,
+        # coded to their section's "Payroll Fringes — <Section>" line, so
+        # expanding that line in Actuals reconciles fringe person by
+        # person. Unmatched people (no line → no section) fall back to the
+        # section most of the invoice's people live in, else 6500.
+        _rollup_on = False
         try:
-            if getattr(ProjectSheet.query.get(pid), 'fringe_rollup', False):
-                _frl = _ensure_fringe_rollup_line(pid)
+            _rollup_on = bool(getattr(ProjectSheet.query.get(pid), 'fringe_rollup', False))
         except Exception:
-            _frl = None
-        _frl_pv = _picker_value_for_line(_frl) if _frl is not None else None
-        out_rows.append({
-            "desc": "Employer fringes & payroll fees (FICA, unemployment, "
-                    "workers comp, platform)",
-            "amount": fringes_total,
-            "line_id": (str(_frl_pv) if _frl_pv is not None else "section:6500"),
-            "line_label": ("6500 · Payroll Fringes" if _frl_pv is not None
-                           else "6500 · Administrative (Payroll Fringes)"),
-            "matched": True, "is_fringe": True})
+            pass
+        _secs = [s for (_n, _f, s) in person_fringes if s]
+        _dominant = max(set(_secs), key=_secs.count) if _secs else None
+        _frl_cache = {}
+        def _fringe_target(sec):
+            if not _rollup_on:
+                return "section:6500", "6500 · Administrative (Payroll Fringes)"
+            sec = sec or _dominant or 6500
+            if sec not in _frl_cache:
+                _frl = _ensure_fringe_rollup_line(pid, sec)
+                _pv = _picker_value_for_line(_frl) if _frl is not None else None
+                _frl_cache[sec] = ((str(_pv), f"{sec} · Payroll Fringes") if _pv is not None
+                                   else (f"section:{sec}", f"{sec} · (Payroll Fringes)"))
+            return _frl_cache[sec]
+        if _rollup_on:
+            for _nm, _fr, _sec in person_fringes:
+                _lid, _lbl = _fringe_target(_sec)
+                out_rows.append({"desc": f"{_nm} — employer fringes",
+                                 "amount": _fr, "line_id": _lid,
+                                 "line_label": _lbl, "matched": True,
+                                 "is_fringe": True})
+        else:
+            _lid, _lbl = _fringe_target(None)
+            out_rows.append({
+                "desc": "Employer fringes & payroll fees (FICA, unemployment, "
+                        "workers comp, platform)",
+                "amount": fringes_total, "line_id": _lid, "line_label": _lbl,
+                "matched": True, "is_fringe": True})
     return jsonify({"ok": True, "rows": out_rows,
                     "total_rows": people_n, "matched": matched_n,
                     "fringes_total": fringes_total,

@@ -461,14 +461,15 @@
       {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>
     {% endif %}
-    {% if row.code == 6500 and top_sheet.fringe_rollup_amount %}
-    {# Rolled-up labor fringes (2026-10-05): one budget-wide amount —
-       labor detail lines exclude fringe in this mode. #}
+    {% set _fr_pdf = (top_sheet.fringe_by_section or {}).get(row.code, 0) %}
+    {% if _fr_pdf %}
+    {# Rolled-up labor fringes — per SECTION since 2026-10-21; labor
+       detail lines exclude fringe in this mode. #}
     <tr class="auto-line">
       <td class="code"></td>
-      <td style="padding-left:22pt">↳ Payroll Fringes (on ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
-      {% if _col_est  %}<td class="num">{{ currency(top_sheet.fringe_rollup_amount) }}</td>{% endif %}
-      {% if _col_work %}<td class="num">{{ currency(top_sheet.fringe_rollup_amount) }}</td>{% endif %}
+      <td style="padding-left:22pt">↳ Payroll Fringes — this section's labor</td>
+      {% if _col_est  %}<td class="num">{{ currency(_fr_pdf) }}</td>{% endif %}
+      {% if _col_work %}<td class="num">{{ currency(_fr_pdf) }}</td>{% endif %}
       {% if _col_act  %}<td class="num">—</td>{% endif %}
       {% if _show_var %}<td class="num">—</td>{% endif %}
     </tr>

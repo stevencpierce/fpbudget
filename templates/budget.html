@@ -1021,16 +1021,19 @@
         <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
-      {% if row.code == 6500 and (est_top_sheet.fringe_rollup_amount or top_sheet.fringe_rollup_amount) %}
-      {# Rolled-up labor fringes (owner 2026-10-05) — one budget-wide
-         amount; individual labor lines exclude fringe in this mode. #}
+      {% set _frts_est = (est_top_sheet.fringe_by_section or {}).get(row.code, 0) %}
+      {% set _frts_wrk = (top_sheet.fringe_by_section or {}).get(row.code, 0) %}
+      {% if _frts_est or _frts_wrk %}
+      {# Rolled-up labor fringes — per SECTION since 2026-10-21 ("fringes
+         are a sub-calculation in the labor sections"); this section's
+         labor lines exclude fringe, the lump shows here. #}
       <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9)"
-          data-ts-section="6500"
-          title="Sum of all labor fringes — rolled up here instead of inflating each labor line's total (Settings → Roll fringes up to one line)">
+          data-ts-section="{{ row.code }}"
+          title="This section's labor fringes — rolled up here instead of inflating each labor line's total (Settings → Roll fringes up to one line)">
         <td class="col-code muted" style="font-size:.75rem"></td>
-        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Fringes (rolled up from labor lines)</td>
-        <td class="col-num muted" style="font-size:.85rem">{{ est_top_sheet.fringe_rollup_amount | currency }}</td>
-        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.fringe_rollup_amount | currency }}{% else %}$0.00{% endif %}</td>
+        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Fringes (rolled up from this section's labor)</td>
+        <td class="col-num muted" style="font-size:.85rem">{{ _frts_est | currency }}</td>
+        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ _frts_wrk | currency }}{% else %}$0.00{% endif %}</td>
         <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
       </tr>
       {% endif %}
@@ -1277,8 +1280,9 @@
   {% if sec.code == 6500 and top_sheet.payroll_fee_amount %}
     {% set ns.sec_total = ns.sec_total + top_sheet.payroll_fee_amount %}
   {% endif %}
-  {% if sec.code == 6500 and top_sheet.fringe_rollup_amount %}
-    {% set ns.sec_total = ns.sec_total + top_sheet.fringe_rollup_amount %}
+  {% set _frst = (top_sheet.fringe_by_section or {}).get(sec.code, 0) %}
+  {% if _frst %}
+    {% set ns.sec_total = ns.sec_total + _frst %}
   {% endif %}
   {# Fee-exempt badge: read the exclusion list from top_sheet so the
      line-items header is kept in sync with the Top Sheet without each
@@ -2581,35 +2585,41 @@
           <td class="col-act"></td>
         </tr>
         {% endif %}
-        {% set _frr_act = (actual_by_line_id.get(fringe_rollup_line_id | default(none), 0) or 0) | float %}
-        {% if sec.code == 6500 and (top_sheet.fringe_rollup_amount > 0 or _frr_act) %}
+        {# Per-SECTION Payroll Fringes row (owner 2026-10-21: "assign
+           fringes in those actual sections rather than Administrative …
+           reconcile the fringe total for the whole individual section").
+           Working = this section's rolled-up labor fringe; Actual = spend
+           coded to this section's real "Payroll Fringes — <Section>" line
+           (the ⚡ payroll parser books each person's employer fringes
+           there, so expanding the line in Actuals reconciles by person).
+           Also renders for a legacy/emptied fringe line that still has
+           actuals (e.g. the old single 6500 pot) so dollars never hide. #}
+        {% set _frr_amt = ((top_sheet.fringe_by_section or {}).get(sec.code, 0) or 0) | float %}
+        {% set _frr_lid = (fringe_rollup_line_ids | default({})).get(sec.code) %}
+        {% set _frr_act = (actual_by_line_id.get(_frr_lid, 0) or 0) | float if _frr_lid else 0.0 %}
+        {% if _frr_amt > 0 or _frr_act %}
         <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9)"
-            data-auto-amount="{{ top_sheet.fringe_rollup_amount | float }}"
-            title="Sum of all labor fringes — rolled up here instead of inflating each labor line's total. Reconcile payroll-company fringe invoices against this number: code those costs to the '6500 · Payroll Fringes' line (the ⚡ payroll parser does it automatically) and the Actual shows right here.">
+            data-auto-amount="{{ _frr_amt | float }}"
+            title="This section's labor fringes — rolled up here instead of inflating each labor line's total. Reconcile payroll-company fringe invoices against this number: code those costs to the '{{ sec.code }} · Payroll Fringes' line (the ⚡ payroll parser does it per person automatically) and the Actual shows right here.">
           <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
             <span class="line-number">{{ sec.code }}-FR</span>
-            Payroll Fringes (rolled up from labor lines)
+            Payroll Fringes — {{ sec.name }}
           </td>
           <td class="col-pc col-labor-only"></td>
           <td class="col-qty"></td>
           <td class="col-days"></td>
           <td class="col-num"></td>
           <td class="col-rt"></td>
-          <td class="col-num">{{ top_sheet.fringe_rollup_amount | currency }}</td>
+          <td class="col-num">{{ _frr_amt | currency }}</td>
           <td class="col-num"></td>
           <td class="col-fr"></td>
           <td class="col-num"></td>
-          {% set _frr_fee = ((top_sheet.fringe_rollup_amount * _fee_eff_rate + 0.5) | int) if (budget.company_fee_dispersed and not _sec_fee_exempt and not top_sheet.company_fee_exclude_fringes) else 0 %}
-          <td class="col-num">{{ (top_sheet.fringe_rollup_amount + _frr_fee) | currency }}</td>
-          <td class="col-num col-working">{{ (top_sheet.fringe_rollup_amount + _frr_fee) | currency }}</td>
-          {# Actual = spend coded to the real 'Payroll Fringes' line (the ⚡
-             payroll parser's employer-fringe row lands there). Variance
-             against the rolled-up working number, same red/green treatment
-             as normal lines. (Owner 2026-10-07: "see how that actualizes
-             against each other".) #}
+          {% set _frr_fee = ((_frr_amt * _fee_eff_rate + 0.5) | int) if (budget.company_fee_dispersed and not _sec_fee_exempt and not top_sheet.company_fee_exclude_fringes) else 0 %}
+          <td class="col-num">{{ (_frr_amt + _frr_fee) | currency }}</td>
+          <td class="col-num col-working">{{ (_frr_amt + _frr_fee) | currency }}</td>
           <td class="col-num col-actual">{% if _frr_act %}{{ _frr_act | currency }}{% endif %}</td>
           {% if _frr_act %}
-          {% set _frr_var = (top_sheet.fringe_rollup_amount + _frr_fee - _frr_act) %}
+          {% set _frr_var = (_frr_amt + _frr_fee - _frr_act) %}
           <td class="col-num col-variance" style="color:{% if _frr_var < 0 %}#fb7185{% else %}#5fd0a0{% endif %};font-style:normal">{{ _frr_var | currency }}</td>
           {% else %}
           <td class="col-num col-variance"></td>
@@ -2699,8 +2709,9 @@
       {% if sec.code == 6500 and top_sheet.payroll_fee_amount %}
         {% set sec_working.total = sec_working.total + top_sheet.payroll_fee_amount %}
       {% endif %}
-      {% if sec.code == 6500 and top_sheet.fringe_rollup_amount %}
-        {% set sec_working.total = sec_working.total + top_sheet.fringe_rollup_amount %}
+      {% set _frsw = (top_sheet.fringe_by_section or {}).get(sec.code, 0) %}
+      {% if _frsw %}
+        {% set sec_working.total = sec_working.total + _frsw %}
       {% endif %}
       <tfoot>
         {# Per-category subtotals (kit / agent / section breakdowns) all align under their matching column. #}
