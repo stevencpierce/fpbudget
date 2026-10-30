@@ -14630,6 +14630,170 @@ def actuals_reconcile_json(pid):
     })
 
 
+@app.route("/projects/<int:pid>/reconcile/workspace.json")
+@login_required
+def reconcile_workspace_json(pid):
+    """THE two-pane Reconcile workspace dataset (owner 2026-10-30: "what I
+    really want is my QuickBooks transactions and then match them up with
+    a receipt … receipts land in the receipts bucket … viewable side by
+    side with the electronic transactions … if I click on a receipt, I
+    want to be able to very obviously create an expense").
+
+    Left pane  — charges: every electronic transaction (QBO/CSV), with
+                 its coding and its matched/suggested receipt.
+    Right pane — receipts: every OCR'd receipt/invoice still waiting
+                 (not matched to a charge, not activated as an expense).
+    Plus cash_expenses (receipts explicitly turned into expenses),
+    section_coded (dollars coded to a section with no line — the
+    "mystery $400" list, each with WHERE it came from), and stats.
+    Runs the heuristic + incremental AI matchers first, fail-open."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    from actuals import run_auto_match
+    try:
+        run_auto_match(pid)
+    except Exception as _e:
+        logging.warning(f"[workspace] auto-match failed (continuing): {_e}")
+    try:
+        _ai_match_batch(pid, limit=8)
+    except Exception as _ae:
+        logging.warning(f"[workspace] AI batch failed (continuing): {_ae}")
+
+    from budget_calc import FP_COA_NAMES as _WS_COA
+    docs = {d.id: d for d in DocUpload.query.filter(
+        DocUpload.project_id == pid,
+        DocUpload.status.notin_(('deleted',))).all()}
+    lines_by_id = {}
+    def _line_label(lid):
+        if lid not in lines_by_id:
+            _l = BudgetLine.query.get(lid)
+            lines_by_id[lid] = (f"{_l.account_code} · {(_l.description or _l.account_name or '')[:50]}"
+                                if _l else f"line #{lid}")
+        return lines_by_id[lid]
+    def _coding(t):
+        if t.budget_line_id:
+            return {"state": "line", "label": _line_label(t.budget_line_id)}
+        if t.account_code:
+            return {"state": "section",
+                    "label": f"\U0001f4c2 {t.account_code} · {_WS_COA.get(t.account_code, '')}"}
+        return {"state": "uncoded", "label": "uncoded"}
+    def _doc_brief(d):
+        return {"doc_id": d.id,
+                "name": (d.filed_filename or d.original_filename or f"Doc #{d.id}")[:120],
+                "vendor": d.vendor, "amount": float(d.amount) if d.amount is not None else None,
+                "date": d.doc_date.isoformat() if d.doc_date else None,
+                "dup_pending": bool(d.is_duplicate and (d.status or '') != 'duplicate'),
+                "thumb": f"/docs/upload/{d.id}/thumb"}
+
+    txns = (Transaction.query
+            .filter(Transaction.project_id == pid,
+                    Transaction.source.in_(('qbo_sync', 'csv_import', 'reconciled')),
+                    Transaction.backup_of_txn_id.is_(None))
+            .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
+            .all())
+    charges, matched_doc_ids, suggested_by_doc = [], set(), {}
+    np_count = 0
+    for t in txns:
+        if t.not_project_expense:
+            np_count += 1
+            continue
+        state = ('matched' if (t.doc_upload_id and t.match_status == 'confirmed')
+                 else 'suggested' if (t.doc_upload_id and t.match_status == 'suggested')
+                 else 'unmatched')
+        row = {"id": t.id, "date": (t.txn_date or '')[:10], "vendor": t.vendor or '—',
+               "amount": float(t.amount or 0) * (1 if t.is_expense else -1),
+               "source": t.source, "card": getattr(t, 'card_last4', None),
+               "state": state, "coding": _coding(t)}
+        if t.doc_upload_id and t.doc_upload_id in docs:
+            d = docs[t.doc_upload_id]
+            if state == 'matched':
+                matched_doc_ids.add(d.id)
+                row["doc"] = _doc_brief(d)
+            else:
+                suggested_by_doc[d.id] = t.id
+                row["suggestion"] = {**_doc_brief(d),
+                                     "confidence": float(t.match_confidence or 0)}
+        charges.append(row)
+
+    # Receipts bucket: proof docs not matched, whose own ledger row (if
+    # any) was never activated into an expense.
+    _doc_txns = {t.doc_upload_id: t for t in Transaction.query.filter(
+        Transaction.project_id == pid, Transaction.source == 'doc_upload',
+        Transaction.doc_upload_id.isnot(None)).all()}
+    receipts, cash_expenses = [], []
+    for d in docs.values():
+        if (d.category or '') not in ('receipt', 'invoice'):
+            continue
+        if (d.status or '') in ('duplicate',):
+            continue
+        dt = _doc_txns.get(d.id)
+        if dt is not None and dt.activated_at is not None:
+            if not dt.not_project_expense:
+                cash_expenses.append({**_doc_brief(d), "txn_id": dt.id,
+                                      "coding": _coding(dt)})
+            continue
+        if d.id in matched_doc_ids:
+            continue
+        if dt is not None and dt.not_project_expense:
+            continue
+        r = {**_doc_brief(d), "txn_id": (dt.id if dt is not None else None),
+             "status": d.status}
+        if d.id in suggested_by_doc:
+            r["suggested_charge_id"] = suggested_by_doc[d.id]
+        receipts.append(r)
+    receipts.sort(key=lambda r: (r.get("date") or ''), reverse=True)
+    cash_expenses.sort(key=lambda r: (r.get("date") or ''), reverse=True)
+
+    # Section-coded spend with no line — each with provenance so "there's
+    # $400 coded to the section but nothing assigned, I don't know what
+    # that's for" answers itself.
+    section_coded = []
+    for t in Transaction.query.filter(
+            Transaction.project_id == pid,
+            Transaction.budget_line_id.is_(None),
+            Transaction.account_code.isnot(None),
+            Transaction.not_project_expense == False).all():   # noqa: E712
+        if getattr(t, 'backup_of_txn_id', None):
+            continue
+        if t.source == 'doc_upload' and t.activated_at is None:
+            continue
+        _d = docs.get(t.doc_upload_id) if t.doc_upload_id else None
+        section_coded.append({
+            "txn_id": t.id, "vendor": t.vendor or '—',
+            "amount": float(t.amount or 0), "date": (t.txn_date or '')[:10],
+            "section": f"{t.account_code} · {_WS_COA.get(t.account_code, '')}",
+            "source": ("receipt-only expense" if t.source == 'doc_upload'
+                       else ("itemized split" if t.source == 'invoice_split' else t.source)),
+            "doc": ((_d.filed_filename or _d.original_filename) if _d else None),
+            "doc_id": (_d.id if _d else None)})
+    section_coded.sort(key=lambda r: r["section"])
+
+    n_unmatched = sum(1 for c in charges if c["state"] == 'unmatched')
+    n_suggested = sum(1 for c in charges if c["state"] == 'suggested')
+    return jsonify({
+        "ok": True,
+        "charges": charges, "receipts": receipts,
+        "cash_expenses": cash_expenses, "section_coded": section_coded,
+        "stats": {
+            "charges": len(charges), "charges_unmatched": n_unmatched,
+            "charges_suggested": n_suggested,
+            "charges_matched": len(charges) - n_unmatched - n_suggested,
+            "receipts_waiting": len(receipts),
+            "cash_expenses": len(cash_expenses),
+            "section_coded": len(section_coded),
+            "not_project": np_count,
+        }})
+
+
+@app.route("/projects/<int:pid>/reconcile")
+@login_required
+def reconcile_workspace_page(pid):
+    """The Reconcile workspace page — see reconcile_workspace_json."""
+    project = ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    return render_template("reconcile.html", project=project)
+
+
 @app.route("/projects/<int:pid>/actuals/scan-dup-transactions", methods=["GET", "POST"])
 @login_required
 def actuals_scan_dup_transactions(pid):

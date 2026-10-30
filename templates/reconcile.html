@@ -1,0 +1,317 @@
+{% extends "base.html" %}
+{% block title %}Reconcile — {{ project.name }}{% endblock %}
+
+{% block content %}
+{# ═══ RECONCILE WORKSPACE (owner 2026-10-30) ═══════════════════════════
+   "What I really want is my QuickBooks transactions and then match them
+   up with a receipt. Receipts come in, OCR, land in the receipts bucket
+   — viewable side by side with the electronic transactions."
+   LEFT = the ledger (every electronic charge). RIGHT = the receipts
+   bucket. Three verbs: Match, Create expense, Not project. #}
+<style>
+  .rw-wrap { display:flex; gap:14px; align-items:flex-start; }
+  .rw-pane { flex:1; min-width:380px; border:1px solid var(--border); border-radius:10px;
+             background:var(--bg-card); display:flex; flex-direction:column;
+             max-height:calc(100vh - 170px); }
+  .rw-head { padding:10px 14px; border-bottom:1px solid var(--border); display:flex;
+             gap:8px; align-items:center; flex-wrap:wrap; position:sticky; top:0; }
+  .rw-head h2 { margin:0; font-size:1rem; }
+  .rw-body { overflow-y:auto; padding:8px 10px; }
+  .rw-row { border:1px solid var(--border); border-radius:8px; padding:8px 10px;
+            margin-bottom:6px; cursor:pointer; background:var(--bg-input); }
+  .rw-row:hover { border-color:#4a6aa5; }
+  .rw-row.rw-selected { border-color:#5b8af9; box-shadow:0 0 0 1px #5b8af9; }
+  .rw-row.rw-matched { opacity:.75; }
+  .rw-row.rw-sug { border-color:#8a6d1f; background:rgba(224,161,58,.07); }
+  .rw-main { display:flex; gap:10px; align-items:baseline; }
+  .rw-vendor { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+               white-space:nowrap; font-weight:600; }
+  .rw-amt { font-variant-numeric:tabular-nums; font-weight:700; white-space:nowrap; }
+  .rw-sub { font-size:.74rem; color:var(--text-muted); margin-top:2px; display:flex;
+            gap:8px; flex-wrap:wrap; align-items:center; }
+  .rw-chip { font-size:.68rem; padding:1px 7px; border-radius:9px; white-space:nowrap; }
+  .rw-chip-match { background:#10311f; color:#5fd0a0; }
+  .rw-chip-sug { background:#3a2d10; color:#e0a13a; }
+  .rw-chip-un { background:#3a1515; color:#f08080; }
+  .rw-chip-dup { background:#3a2440; color:#c084fc; }
+  .rw-chip-coded { background:#15233a; color:#8fb4ff; }
+  .rw-actions { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
+  .rw-btn { font-size:.72rem; padding:3px 10px; border-radius:6px; cursor:pointer;
+            border:1px solid var(--border); background:var(--bg-card); color:var(--text); }
+  .rw-btn-go { background:#1f7a4d; border-color:#1f7a4d; color:#fff; font-weight:600; }
+  .rw-btn-link { background:#1a2540; border-color:#2d4070; color:#8fb4ff; font-weight:600; }
+  .rw-btn-warn { color:#e0a13a; }
+  .rw-filter { flex:1; min-width:120px; padding:5px 8px; font-size:.8rem; }
+  .rw-tabs { display:flex; gap:4px; }
+  .rw-tab { font-size:.72rem; padding:3px 9px; border-radius:12px; cursor:pointer;
+            border:1px solid var(--border); background:var(--bg-input); color:var(--text-muted); }
+  .rw-tab.on { background:#1a2540; border-color:#2d4070; color:#8fb4ff; }
+  .rw-thumb { width:44px; height:44px; object-fit:cover; border-radius:6px;
+              border:1px solid var(--border); flex-shrink:0; background:var(--bg-2); }
+  .rw-stat { font-size:.78rem; color:var(--text-muted); }
+  .rw-extras { margin-top:14px; }
+  details.rw-x { border:1px solid var(--border); border-radius:10px; padding:8px 12px;
+                 margin-bottom:10px; background:var(--bg-card); }
+  details.rw-x summary { cursor:pointer; font-weight:600; font-size:.85rem; }
+  .rw-x-row { display:flex; gap:10px; font-size:.78rem; padding:4px 0;
+              border-bottom:1px solid var(--border); align-items:baseline; flex-wrap:wrap; }
+  .rw-empty { color:var(--text-muted); font-style:italic; padding:14px; font-size:.85rem; }
+  #rw-linkbar { display:none; position:sticky; bottom:0; background:#15233a;
+                border:1px solid #2d4070; border-radius:8px; padding:8px 12px;
+                margin-top:6px; font-size:.8rem; }
+</style>
+
+<div class="page-header">
+  <h1>💳 Reconcile — {{ project.name }}</h1>
+  <div style="display:flex;gap:8px;align-items:center">
+    <span id="rw-stats" class="rw-stat"></span>
+    <a class="btn btn-outline" href="/projects/{{ project.id }}/budget?tab=actuals">← Actuals</a>
+  </div>
+</div>
+<p class="rw-stat" style="margin:-6px 0 12px">
+  Your money's record of truth is the <b>charges on the left</b> (QuickBooks / bank).
+  Receipts on the right are <b>backup waiting to attach</b> — they don't count as spend
+  until they're matched to a charge, or you explicitly press <b>Create expense</b>
+  (cash / check — no electronic charge will ever come).
+  To match by hand: click a charge, then click <b>Link</b> on the receipt.
+</p>
+
+<div class="rw-wrap">
+  <!-- ═══ LEFT: the ledger ═══ -->
+  <div class="rw-pane" id="rw-charges-pane">
+    <div class="rw-head">
+      <h2>💳 Charges</h2>
+      <div class="rw-tabs" id="rw-ctabs">
+        <span class="rw-tab on" data-f="needs">Needs receipt</span>
+        <span class="rw-tab" data-f="sug">Suggested</span>
+        <span class="rw-tab" data-f="matched">Matched</span>
+        <span class="rw-tab" data-f="all">All</span>
+      </div>
+      <input class="rw-filter" id="rw-cfilter" placeholder="filter vendor / $…">
+    </div>
+    <div class="rw-body" id="rw-charges"><div class="rw-empty">Loading…</div></div>
+    <div id="rw-linkbar"></div>
+  </div>
+
+  <!-- ═══ RIGHT: the receipts bucket ═══ -->
+  <div class="rw-pane" id="rw-receipts-pane">
+    <div class="rw-head">
+      <h2>🧾 Receipts</h2>
+      <span class="rw-stat" id="rw-rcount"></span>
+      <input class="rw-filter" id="rw-rfilter" placeholder="filter vendor / $…">
+    </div>
+    <div class="rw-body" id="rw-receipts"><div class="rw-empty">Loading…</div></div>
+  </div>
+</div>
+
+<div class="rw-extras">
+  <details class="rw-x" id="rw-cash-x">
+    <summary>💰 Expenses created from receipts (cash / check — no charge) <span id="rw-cash-n" class="rw-stat"></span></summary>
+    <div id="rw-cash"></div>
+  </details>
+  <details class="rw-x" id="rw-seccoded-x">
+    <summary>📂 Dollars coded to a section with no specific line <span id="rw-sec-n" class="rw-stat"></span></summary>
+    <p class="rw-stat">Each row says where the money came from — this is the list that answers
+      "there's $400 in a section and I don't know what that's for."</p>
+    <div id="rw-seccoded"></div>
+  </details>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  const PID = {{ project.id }};
+  const $ = id => document.getElementById(id);
+  const money = v => (v < 0 ? '-' : '') + '$' + Math.abs(Number(v || 0)).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let DATA = null, selectedCharge = null, ctab = 'needs';
+
+  async function post(url, body) {
+    const r = await fetch(url, { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    return d;
+  }
+
+  async function load() {
+    try {
+      const r = await fetch(`/projects/${PID}/reconcile/workspace.json`, { credentials: 'same-origin' });
+      DATA = await r.json();
+      if (!r.ok) throw new Error(DATA.error || r.status);
+      render();
+    } catch (e) {
+      $('rw-charges').innerHTML = `<div class="rw-empty">Failed to load: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function chargeRow(c) {
+    const stateChip = c.state === 'matched'
+      ? `<span class="rw-chip rw-chip-match">✓ ${esc(c.doc ? c.doc.name : 'receipt')}</span>`
+      : c.state === 'suggested'
+        ? `<span class="rw-chip rw-chip-sug">★ looks like: ${esc(c.suggestion.name)} (${Math.round((c.suggestion.confidence||0)*100)}%)</span>`
+        : `<span class="rw-chip rw-chip-un">needs receipt</span>`;
+    const codingChip = c.coding.state === 'uncoded'
+      ? `<span class="rw-chip rw-chip-un">uncoded</span>`
+      : `<span class="rw-chip rw-chip-coded">${esc(c.coding.label)}</span>`;
+    const sugActions = c.state === 'suggested'
+      ? `<div class="rw-actions">
+           <button class="rw-btn rw-btn-go" data-act="confirm" data-tid="${c.id}">✓ Confirm match</button>
+           <button class="rw-btn rw-btn-warn" data-act="notmatch" data-tid="${c.id}">✕ Not a match</button>
+         </div>` : '';
+    const unmatchBtn = c.state === 'matched'
+      ? `<div class="rw-actions"><button class="rw-btn" data-act="unmatch" data-tid="${c.id}">↩ Unlink receipt</button></div>` : '';
+    return `<div class="rw-row ${c.state === 'suggested' ? 'rw-sug' : ''} ${c.state === 'matched' ? 'rw-matched' : ''}"
+                 data-cid="${c.id}" id="rw-c-${c.id}">
+      <div class="rw-main"><span class="rw-vendor">${esc(c.vendor)}</span>
+        <span class="rw-amt">${money(c.amount)}</span></div>
+      <div class="rw-sub"><span>${esc(c.date || '—')}</span>
+        ${c.card ? `<span>•••${esc(c.card)}</span>` : ''}
+        <span>${esc(c.source)}</span>${codingChip}${stateChip}</div>
+      ${sugActions}${unmatchBtn}
+    </div>`;
+  }
+
+  function receiptRow(r) {
+    const sug = r.suggested_charge_id
+      ? `<span class="rw-chip rw-chip-sug" data-goto="${r.suggested_charge_id}" style="cursor:pointer">★ suggested ↔ a charge — view</span>` : '';
+    const dup = r.dup_pending ? `<span class="rw-chip rw-chip-dup">possible duplicate</span>` : '';
+    const linkBtn = selectedCharge
+      ? `<button class="rw-btn rw-btn-link" data-act="linksel" data-doc="${r.doc_id}">🔗 Link to selected charge</button>` : '';
+    return `<div class="rw-row" data-doc="${r.doc_id}">
+      <div style="display:flex;gap:10px">
+        <img class="rw-thumb" src="${esc(r.thumb)}" loading="lazy" onerror="this.style.visibility='hidden'">
+        <div style="flex:1;min-width:0">
+          <div class="rw-main"><span class="rw-vendor">${esc(r.vendor || r.name)}</span>
+            <span class="rw-amt">${r.amount != null ? money(r.amount) : '—'}</span></div>
+          <div class="rw-sub"><span>${esc(r.date || '—')}</span>
+            <a href="/docs/upload/${r.doc_id}/raw" target="_blank" onclick="event.stopPropagation()">${esc(r.name)}</a>
+            ${dup}${sug}</div>
+          <div class="rw-actions">
+            ${linkBtn}
+            <button class="rw-btn rw-btn-go" data-act="expense" data-doc="${r.doc_id}"
+                    title="No electronic charge will ever arrive for this (cash / check / petty cash) — turn the receipt itself into the expense">💰 Create expense</button>
+            <button class="rw-btn rw-btn-warn" data-act="docnp" data-doc="${r.doc_id}" data-txn="${r.txn_id || ''}">Not project</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function render() {
+    const s = DATA.stats;
+    $('rw-stats').textContent =
+      `${s.charges_unmatched} charges need a receipt · ${s.charges_suggested} suggested · ` +
+      `${s.charges_matched} matched · ${s.receipts_waiting} receipts waiting`;
+    const cf = ($('rw-cfilter').value || '').toLowerCase();
+    let cs = DATA.charges.filter(c =>
+      ctab === 'all' ? true
+      : ctab === 'needs' ? c.state === 'unmatched'
+      : ctab === 'sug' ? c.state === 'suggested'
+      : c.state === 'matched');
+    if (cf) cs = cs.filter(c => (c.vendor || '').toLowerCase().includes(cf)
+                             || String(Math.abs(c.amount).toFixed(2)).includes(cf));
+    $('rw-charges').innerHTML = cs.map(chargeRow).join('')
+      || `<div class="rw-empty">${ctab === 'needs' ? 'Every charge has a receipt 🎉' : 'Nothing here.'}</div>`;
+    const rf = ($('rw-rfilter').value || '').toLowerCase();
+    let rs = DATA.receipts;
+    if (rf) rs = rs.filter(r => ((r.vendor || '') + ' ' + (r.name || '')).toLowerCase().includes(rf)
+                             || (r.amount != null && String(Math.abs(r.amount).toFixed(2)).includes(rf)));
+    $('rw-rcount').textContent = `${rs.length} waiting`;
+    $('rw-receipts').innerHTML = rs.map(receiptRow).join('')
+      || '<div class="rw-empty">No receipts waiting — everything is matched or logged. 🎉</div>';
+    $('rw-cash-n').textContent = `· ${DATA.cash_expenses.length}`;
+    $('rw-cash').innerHTML = DATA.cash_expenses.map(x =>
+      `<div class="rw-x-row"><span style="flex:1">${esc(x.vendor || x.name)}</span>
+         <span>${esc(x.date || '')}</span><span class="rw-chip rw-chip-coded">${esc(x.coding.label)}</span>
+         <span class="rw-amt">${money(x.amount)}</span></div>`).join('')
+      || '<div class="rw-empty">None yet.</div>';
+    $('rw-sec-n').textContent = `· ${DATA.section_coded.length}`;
+    $('rw-seccoded').innerHTML = DATA.section_coded.map(x =>
+      `<div class="rw-x-row"><span style="flex:1">${esc(x.vendor)}</span>
+         <span>${esc(x.date || '')}</span><span>${esc(x.section)}</span>
+         <span class="rw-chip rw-chip-coded">${esc(x.source)}${x.doc ? ' · ' + esc(x.doc) : ''}</span>
+         <span class="rw-amt">${money(x.amount)}</span></div>`).join('')
+      || '<div class="rw-empty">None — everything is on a specific line.</div>';
+    renderLinkbar();
+  }
+
+  function renderLinkbar() {
+    const bar = $('rw-linkbar');
+    if (!selectedCharge) { bar.style.display = 'none'; return; }
+    const c = DATA.charges.find(x => x.id === selectedCharge);
+    if (!c) { bar.style.display = 'none'; return; }
+    bar.style.display = '';
+    bar.innerHTML = `Selected: <b>${esc(c.vendor)}</b> ${money(c.amount)} — now click
+      <b>🔗 Link</b> on the matching receipt →
+      <a href="#" id="rw-unselect" style="color:#e0a13a;margin-left:8px">cancel</a>`;
+    bar.querySelector('#rw-unselect').onclick = e => {
+      e.preventDefault(); selectedCharge = null;
+      document.querySelectorAll('.rw-selected').forEach(x => x.classList.remove('rw-selected'));
+      render();
+    };
+  }
+
+  async function act(fn, btn) {
+    const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = '…';
+    try { await fn(); await load(); }
+    catch (e) { alert(e.message); btn.disabled = false; btn.textContent = orig; }
+  }
+
+  document.addEventListener('click', e => {
+    const goto = e.target.closest('[data-goto]');
+    if (goto) {
+      ctab = 'sug'; document.querySelectorAll('#rw-ctabs .rw-tab').forEach(t =>
+        t.classList.toggle('on', t.dataset.f === 'sug'));
+      render();
+      const el = $('rw-c-' + goto.dataset.goto);
+      if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('rw-selected');
+                setTimeout(() => el.classList.remove('rw-selected'), 1600); }
+      return;
+    }
+    const btn = e.target.closest('[data-act]');
+    if (btn) {
+      const a = btn.dataset.act;
+      if (a === 'confirm') act(() => post(`/projects/${PID}/actuals/transaction/${btn.dataset.tid}/confirm-match`), btn);
+      else if (a === 'notmatch') act(() => post(`/projects/${PID}/actuals/transaction/${btn.dataset.tid}/dismiss-suggestion`, { remember: true }), btn);
+      else if (a === 'unmatch') act(() => post(`/projects/${PID}/actuals/transaction/${btn.dataset.tid}/unmatch`), btn);
+      else if (a === 'expense') {
+        if (!confirm('Create a standalone expense from this receipt?\\n\\nOnly do this when NO electronic charge will ever arrive (cash, check, petty cash). If a card/bank charge exists or is coming, match the receipt to it instead.')) return;
+        act(() => post(`/docs/upload/${btn.dataset.doc}/log-expense`), btn);
+      }
+      else if (a === 'docnp') {
+        const t = btn.dataset.txn;
+        if (!t) { alert('This receipt has no ledger row yet — open it in Docs and mark it there.'); return; }
+        act(() => post(`/projects/${PID}/actuals/transaction/${t}/mark-not-project`), btn);
+      }
+      else if (a === 'linksel') {
+        if (!selectedCharge) return;
+        act(() => post(`/projects/${PID}/actuals/transaction/${selectedCharge}/link-doc`,
+                       { doc_upload_id: parseInt(btn.dataset.doc) }).then(() => { selectedCharge = null; }), btn);
+      }
+      return;
+    }
+    const crow = e.target.closest('#rw-charges .rw-row');
+    if (crow) {
+      const cid = parseInt(crow.dataset.cid);
+      selectedCharge = (selectedCharge === cid) ? null : cid;
+      document.querySelectorAll('#rw-charges .rw-row').forEach(x =>
+        x.classList.toggle('rw-selected', parseInt(x.dataset.cid) === selectedCharge));
+      render();
+    }
+  });
+  $('rw-ctabs').addEventListener('click', e => {
+    const t = e.target.closest('.rw-tab');
+    if (!t) return;
+    ctab = t.dataset.f;
+    document.querySelectorAll('#rw-ctabs .rw-tab').forEach(x => x.classList.toggle('on', x === t));
+    render();
+  });
+  $('rw-cfilter').addEventListener('input', render);
+  $('rw-rfilter').addEventListener('input', render);
+  load();
+})();
+</script>
+{% endblock %}
