@@ -3,9 +3,11 @@
   BudgetLine (planned)  ←  Transaction (actual)  →  DocUpload (backup)
 
 This module owns:
-  • Cloning Working → Actual on first transaction link
-  • Finding the Actual equivalent of a Working line (and vice versa)
-  • Linking transactions to budget lines (with auto-clone)
+  • Linking transactions DIRECTLY to the current Working budget's lines
+    ("Phase 1", 2026-07 — no Working → Actual clone on this path; the
+    clone helpers below remain only for legacy Actual budgets)
+  • Translating a pick on an Estimated / legacy Actual line to its Working peer
+  • The one "counts as spend" predicate every rollup shares
   • Auto-match scaffolding (suggest, never silently write)
 
 Ingestion (pulling QBO bank txns into the Transaction table) lives
@@ -21,6 +23,53 @@ from models import (db, Budget, BudgetLine, Transaction, ProjectSheet, DocUpload
                     MatchRejection, CrewAssignment)
 
 log = logging.getLogger(__name__)
+
+
+# ── What counts as spend (one predicate for every rollup) ────────────────
+# Doc categories that are paperwork, not spend events — a txn riding on one
+# never counts toward Actual columns or PO Actualized totals. (2026-05-14;
+# moved here from app.py 2026-10-30.)
+NON_LEDGER_DOC_CATEGORIES = (
+    'tax_form', 'contract', 'release', 'legal', 'insurance', 'misc',
+    'estimate', 'quote', 'purchase_order',
+)
+
+
+def non_ledger_doc_clause():
+    """Clause keeping txns with no doc, or a doc that is a real spend event
+    (receipt / invoice), and dropping ones tied to estimates, quotes, POs and
+    other paperwork."""
+    from sqlalchemy import or_, select
+    bad_doc_ids = (select(DocUpload.id)
+                   .where(DocUpload.category.in_(NON_LEDGER_DOC_CATEGORIES)))
+    return or_(Transaction.doc_upload_id.is_(None),
+               Transaction.doc_upload_id.notin_(bad_doc_ids))
+
+
+def counts_as_spend():
+    """The ONE filter for "this transaction counts toward actuals". Splat into
+    a Transaction query alongside the rollup's own coding test (line / section).
+
+    Before 2026-10-30 the top sheet, the budget grid and line-totals.json each
+    hand-rolled this and disagreed: only some dropped estimate/quote/PO-linked
+    rows, so the top sheet and the grid could show different actuals.
+
+      • not_project_expense is False — covers user exclusions, rows claimed by
+        another project (_sync_claim_state) and receipts absorbed as backup
+        (_absorb_receipt_as_backup); all three set that flag.
+      • backup_of_txn_id is NULL — belt for the backup case.
+      • not tied to a non-ledger doc (estimate, quote, PO, paperwork).
+
+    Deliberately NOT here: activated_at. Doc-born rows can only be coded once
+    activated, so it adds nothing for coded rows — and the grandfather backfill
+    for pre-2026-07 coded rows lives only in Alembic 0003, which has never run
+    in production, so filtering on it would drop real legacy spend. Itemized
+    parents need no test either: _itemize_apply clears their coding.
+    """
+    from sqlalchemy import and_
+    return and_(Transaction.not_project_expense == False,  # noqa: E712
+                Transaction.backup_of_txn_id.is_(None),
+                non_ledger_doc_clause())
 
 
 # ── Learned vendor → COA mapping (2026-06-18 AI auto-coding) ──────────────
@@ -958,6 +1007,16 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     txn.updated_at        = datetime.utcnow()
     if user_id:
         txn.created_via_user_id = user_id
+    # Assigning a line is an explicit "this IS a project expense" — clear a
+    # prior Not-project mark, or the row stays excluded from every rollup
+    # (set-coa already did this; set-line did not — handoff 2026-10-30).
+    # not_project_expense ALSO marks a row claimed by ANOTHER project
+    # (_sync_claim_state); that cross-project lock is left alone.
+    if txn.claimed_by_project_id in (None, project_id):
+        txn.not_project_expense = False
+        for _col in ('excluded_at', 'excluded_by_user_id', 'excluded_reason'):
+            if hasattr(txn, _col):
+                setattr(txn, _col, None)
     # The row is now coded → drop any advisory AI suggestion, and reinforce the
     # learned vendor→category mapping so future uploads can short-circuit the
     # model. (2026-06-18 auto-coding.)
@@ -999,6 +1058,16 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     except Exception:
         log.info("[actuals/auto-assign] skipped (fail-open) for txn %s",
                  getattr(txn, 'id', None), exc_info=True)
+
+    # Cross-project claim: every caller must propagate it, so do it here
+    # rather than trust each route (several never did). Lazy import — app.py
+    # imports this module. Fail-open, like qbo_sync's call.
+    try:
+        from app import _sync_claim_state
+        _sync_claim_state(txn)
+    except Exception:
+        log.warning("[actuals] claim sync after link failed for txn %s",
+                    getattr(txn, 'id', None), exc_info=True)
 
     db.session.commit()
 

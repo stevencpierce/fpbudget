@@ -2458,7 +2458,7 @@
       };
       window._reconcileRender = async function() {
         try {
-          const r = await fetch(`/projects/${PID}/actuals/reconcile.json`);
+          const r = await fetch(`/projects/${PID}/actuals/reconcile-columns.json`);
           const j = await r.json();
           if (!r.ok) throw new Error(j.error || 'fetch failed');
           _recState.txns = j.transactions || [];

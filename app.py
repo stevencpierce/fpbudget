@@ -6060,8 +6060,7 @@ def _actual_by_working_line(bid):
             db.session.query(BudgetLine.id, func.sum(_signed_amount()))
             .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
             .filter(BudgetLine.budget_id == bid,
-                    Transaction.not_project_expense == False,
-                    _exclude_estimate_linked_txns_clause())
+                    _counts_as_spend())
             .group_by(BudgetLine.id)
             .all()
         ):
@@ -6962,10 +6961,18 @@ def _actuals_by_section_code(pid):
                 func.sum(_signed_amount()))
             .outerjoin(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
             .filter(Transaction.project_id == pid,
-                    Transaction.not_project_expense == False)
+                    _counts_as_spend())
             .group_by('code')
             .all())
     return {r[0]: float(r[1]) for r in rows if r[0] is not None}
+
+
+def _counts_as_spend():
+    """The shared "counts toward actuals" filter — see actuals.counts_as_spend.
+    Every actuals rollup uses this so the top sheet, the grid and
+    line-totals.json can't disagree again (2026-10-30)."""
+    from actuals import counts_as_spend
+    return counts_as_spend()
 
 
 def _signed_amount():
@@ -7921,7 +7928,7 @@ def budget_view(pid, bid):
         func.count(Transaction.id).label("count")
     ).filter(
         Transaction.project_id == pid,
-        Transaction.not_project_expense == False,
+        _counts_as_spend(),
         Transaction.account_code != None,
     ).group_by(Transaction.account_code, Transaction.account_code_name).all():
         actuals_by_code_full[r[0]] = {
@@ -7973,8 +7980,7 @@ def budget_view(pid, bid):
                 .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
                 .filter(BudgetLine.budget_id == _actual_budget.id,
                         BudgetLine.source_line_id.isnot(None),
-                        Transaction.not_project_expense == False,
-                        _exclude_estimate_linked_txns_clause())
+                        _counts_as_spend())
                 .group_by(BudgetLine.source_line_id)
                 .all()
             ):
@@ -7998,8 +8004,7 @@ def budget_view(pid, bid):
             .filter(Transaction.project_id == pid,
                     Transaction.budget_line_id.is_(None),
                     Transaction.account_code.isnot(None),
-                    Transaction.not_project_expense == False,
-                    _exclude_estimate_linked_txns_clause())
+                    _counts_as_spend())
             .group_by(Transaction.account_code)
             .all()
         ):
@@ -8106,8 +8111,7 @@ def budget_view(pid, bid):
                 db.session.query(BudgetLine.id, _dfunc.sum(_signed_amount()))  # credits contribute 0 (CR-3 revert)
                 .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
                 .filter(BudgetLine.budget_id.in_(_direct_bids),
-                        Transaction.not_project_expense == False,
-                        _exclude_estimate_linked_txns_clause())
+                        _counts_as_spend())
                 .group_by(BudgetLine.id)
                 .all()
             ):
@@ -8815,8 +8819,7 @@ def budget_view(pid, bid):
             _txns = (Transaction.query
                      .filter(Transaction.project_id == pid,
                              Transaction.budget_line_id.isnot(None),
-                             Transaction.not_project_expense == False,
-                             _exclude_estimate_linked_txns_clause())
+                             _counts_as_spend())
                      .all())
             for _tx in _txns:
                 _key = _alid_to_key.get(_tx.budget_line_id)
@@ -12063,7 +12066,7 @@ def actuals_line_totals_batch(pid):
                         Transaction.budget_line_id, func.sum(_signed_amount()))
                     .filter(Transaction.project_id == pid,
                             Transaction.budget_line_id.in_(list(all_sib_ids)),
-                            Transaction.not_project_expense == False)  # noqa: E712
+                            _counts_as_spend())
                     .group_by(Transaction.budget_line_id).all()):
                 sums_by_lid[lid] = float(amt or 0)
         for rl in req_lines:
@@ -12075,7 +12078,7 @@ def actuals_line_totals_batch(pid):
                 .filter(Transaction.project_id == pid,
                         Transaction.budget_line_id.is_(None),
                         Transaction.account_code.isnot(None),
-                        Transaction.not_project_expense == False)  # noqa: E712
+                        _counts_as_spend())
                 .group_by(Transaction.account_code).all()):
             sections[str(code)] = round(float(amt or 0), 2)
     except Exception as _lte:
@@ -15651,7 +15654,10 @@ def actuals_docs_list_for_picker(pid):
     return jsonify({"ok": True, "docs": out})
 
 
-@app.route("/projects/<int:pid>/actuals/reconcile.json", methods=["GET"])
+# Was a second handler on /actuals/reconcile.json — shadowed by
+# actuals_reconcile_json (first registration wins), so the legacy Reconcile
+# sub-tab (b04.js _reconcileRender) got the wrong shape. Own URL since 2026-10-30.
+@app.route("/projects/<int:pid>/actuals/reconcile-columns.json", methods=["GET"])
 @login_required
 def actuals_reconcile_data(pid):
     """Return the two columns for the Reconcile sub-tab:
@@ -16249,10 +16255,12 @@ def actuals_sync_now(pid):
         result = sync_project(project, conn, db,
                               start_date=start_date, end_date=end_date)
         try:
-            _added   = int(result.get('added')   or result.get('inserted')   or 0)
-            _updated = int(result.get('updated') or 0)
-            _skipped = int(result.get('skipped') or 0)
-            _claimed = int(result.get('already_claimed') or 0)
+            # Keys sync_project() actually returns (it never had 'added' /
+            # 'updated' / 'skipped' — the log read +0 new on every run).
+            _imported   = int(result.get('imported')      or 0)
+            _enriched   = int(result.get('enriched')      or 0)
+            _reconciled = int(result.get('reconciled')    or 0)
+            _cdc        = int(result.get('cdc_additions') or 0)
             _range   = ''
             if start_date or end_date:
                 _range = f' ({start_date or "…"} → {end_date or "…"})'
@@ -16260,10 +16268,10 @@ def actuals_sync_now(pid):
                 action='update', entity_type='qbo_sync',
                 entity_id=pid, entity_label=project.name or f'Project #{pid}',
                 project_id=pid,
-                after={'added': _added, 'updated': _updated,
-                       'skipped': _skipped, 'already_claimed': _claimed},
-                note=f'QBO sync{_range}: +{_added} new, {_updated} updated, '
-                     f'{_skipped} skipped, {_claimed} cross-project')
+                after={'imported': _imported, 'enriched': _enriched,
+                       'reconciled': _reconciled, 'cdc_additions': _cdc},
+                note=f'QBO sync{_range}: +{_imported} new ({_cdc} via CDC), '
+                     f'{_enriched} enriched, {_reconciled} matched to receipts')
         except Exception: pass
         # Phase 3: auto-refresh the review queue after ingestion (background).
         _bg_run_all_scans(pid)
@@ -23720,27 +23728,15 @@ def location_delete(pid, lid):
 # estimate-linked Transactions in the DB — defense-in-depth filter below
 # excludes them from every Actual / Actualized rollup so they never inflate
 # Actual columns or PO Actualized totals. 2026-05-14.
-_NON_LEDGER_DOC_CATEGORIES = (
-    'tax_form', 'contract', 'release', 'legal', 'insurance', 'misc',
-    'estimate', 'quote', 'purchase_order',
-)
+from actuals import NON_LEDGER_DOC_CATEGORIES as _NON_LEDGER_DOC_CATEGORIES
+
+
 def _exclude_estimate_linked_txns_clause():
-    """Returns a SQLAlchemy clause to splat into a Transaction filter that
-    keeps:
-      - Transactions with no doc attached (manual entry, QBO sync without
-        doc match) — always counted as real spend.
-      - Transactions linked to a doc whose category is NOT in the
-        non-ledger set (receipt/invoice/etc. — real spend events).
-    Excludes Transactions linked to a doc whose category IS in the
-    non-ledger set (estimates, quotes, POs, paperwork)."""
-    from sqlalchemy import or_ as _or_t
-    _bad_doc_ids = (db.session.query(DocUpload.id)
-                    .filter(DocUpload.category.in_(_NON_LEDGER_DOC_CATEGORIES))
-                    .subquery())
-    return _or_t(
-        Transaction.doc_upload_id.is_(None),
-        Transaction.doc_upload_id.notin_(_bad_doc_ids),
-    )
+    """Keep txns with no doc or a real spend-event doc; drop ones tied to
+    estimates, quotes, POs and other paperwork. Now lives in
+    actuals.non_ledger_doc_clause (part of actuals.counts_as_spend)."""
+    from actuals import non_ledger_doc_clause
+    return non_ledger_doc_clause()
 
 
 # ── Purchase Orders (per-project) ──────────────────────────────────────────────
@@ -23990,8 +23986,7 @@ def _po_to_dict(po, *, with_rollup=False, project_id=None):
                                      BudgetLine.po_id == po.id,
                                      BudgetLine.source_line_id.in_(_working_po_lines_sub),
                                  ),
-                                 Transaction.not_project_expense == False,
-                                 _exclude_estimate_linked_txns_clause()))
+                                 _counts_as_spend()))
             _billed = float(_billed_q.scalar() or 0)
         except Exception as _be:
             logging.warning(f"[po rollup] billed calc failed for po={po.id}: {_be}")
@@ -25093,8 +25088,7 @@ def _sub_budget_to_dict(sb, *, with_rollup=False, project_id=None,
                          .filter(_or_sb(BudgetLine.id.in_(_line_ids),
                                         BudgetLine.id.in_(_src_ids or [0]),
                                         BudgetLine.source_line_id.in_(_working_lines_sub)),
-                                 Transaction.not_project_expense == False,
-                                 _exclude_estimate_linked_txns_clause()))
+                                 _counts_as_spend()))
             billed = float(_billed_q.scalar() or 0)
     except Exception as _bbe:
         logging.warning(f"[sub_budget] billed calc failed for sub_budget={sb.id}: {_bbe}")
@@ -38139,7 +38133,7 @@ def person_profile(pid, cmid):
             actual = round(float(db.session.query(func.sum(_signed_amount()))
                            .filter(Transaction.project_id == pid,
                                    Transaction.budget_line_id.in_(_sib_ids),
-                                   Transaction.not_project_expense == False).scalar() or 0), 2)
+                                   _counts_as_spend()).scalar() or 0), 2)
             # Mismatch = the person's actuals OVER the budgeted amount for the line.
             _tol = max(50.0, abs(budgeted) * 0.05)
             mismatch = None
@@ -38549,7 +38543,7 @@ def budget_mismatches(pid, bid):
         sib.setdefault((ln.account_code, ln.description or ''), []).append(ln.id)
     rows = (db.session.query(Transaction.budget_line_id, func.sum(_signed_amount()))
             .filter(Transaction.project_id == pid,
-                    Transaction.not_project_expense == False,
+                    _counts_as_spend(),
                     Transaction.budget_line_id.isnot(None))
             .group_by(Transaction.budget_line_id).all())
     actual_by_line = {r[0]: float(r[1] or 0) for r in rows}

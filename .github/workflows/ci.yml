@@ -41,5 +41,7 @@ jobs:
         run: python scripts/js_check.py
       - name: Budget-math unit tests
         run: |
-          pip install pytest --quiet
+          # flask + sqlalchemy: test_actuals_rules runs the real models on
+          # in-memory SQLite (no app.py import, no Postgres, no secrets).
+          pip install pytest "flask<4" "flask-sqlalchemy<4" "sqlalchemy<2.1" --quiet
           python -m pytest tests/unit -q --confcutdir=tests/unit -o addopts=""
