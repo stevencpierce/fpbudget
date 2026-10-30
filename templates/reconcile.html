@@ -78,8 +78,8 @@
   <option value="">— assign budget line —</option>
   {% for grp in line_groups %}
   <optgroup label="{{ grp.code }} · {{ grp.name }}">
-    {% for ln in grp.lines %}
-    <option value="{{ ln.id }}">{{ ln.account_code }} · {{ (ln.description or ln.account_name or 'untitled')[:60] }}</option>
+    {% for o in grp.opts %}
+    <option value="{{ o.id }}">{{ o.label }}</option>
     {% endfor %}
   </optgroup>
   {% endfor %}

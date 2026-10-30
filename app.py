@@ -14871,12 +14871,46 @@ def reconcile_workspace_page(pid):
     _pick_budget, _pick_groups = _line_picker_groups(pid)
     # Lines ONLY (owner: "assign those things to the line" — section
     # parking is retired here; a Parked list re-homes old ones).
+    # Structure mirrors the budget (owner 2026-10-31: "can kit fees show
+    # up with a little arrow and indent? And fringes at the subsection
+    # bottom, indented — I need to put the fringes from a payroll charge
+    # against the fringes line"): child lines (kit fees, agent fees …)
+    # ride indented right under their parent; the section's Payroll
+    # Fringes line anchors the bottom of its group.
     line_groups = []
     for g in _pick_groups:
         _ls = [l for l in g["lines"]
                if (l.line_tag or '') not in ('header', 'spacer')]
-        if _ls:
-            line_groups.append({"code": g["code"], "name": g["name"], "lines": _ls})
+        if not _ls:
+            continue
+        _kids = {}
+        for l in _ls:
+            if l.parent_line_id:
+                _kids.setdefault(l.parent_line_id, []).append(l)
+        def _opt(l, kind):
+            _d = (l.description or l.account_name or 'untitled')[:60]
+            if kind == 'child':
+                label = f"\u2003↳ {l.account_code} · {_d}"
+            elif kind == 'fringe':
+                label = f"\u2003↳ 💰 {_d}"
+            else:
+                label = f"{l.account_code} · {_d}"
+            return {"id": l.id, "label": label}
+        ordered, seen = [], set()
+        for l in _ls:
+            if l.id in seen or l.parent_line_id or (l.line_tag or '') == 'fringe_rollup':
+                continue
+            ordered.append(_opt(l, 'top')); seen.add(l.id)
+            for k in _kids.get(l.id, []):
+                ordered.append(_opt(k, 'child')); seen.add(k.id)
+        for l in _ls:          # orphan children whose parent is elsewhere
+            if l.id not in seen and (l.line_tag or '') != 'fringe_rollup':
+                ordered.append(_opt(l, 'child' if l.parent_line_id else 'top'))
+                seen.add(l.id)
+        for l in _ls:          # fringes last, indented, unmistakable
+            if (l.line_tag or '') == 'fringe_rollup':
+                ordered.append(_opt(l, 'fringe'))
+        line_groups.append({"code": g["code"], "name": g["name"], "opts": ordered})
     return render_template("reconcile.html", project=project,
                            line_groups=line_groups,
                            legacy_bid=(_pick_budget.id if _pick_budget else None))
