@@ -804,7 +804,13 @@
        lazy-verify wiring (5456). #}
     <a class="tab-btn tab-link" href="/projects/{{ project.id }}/docs">Docs</a>
     <button class="tab-btn" data-tab="docs" style="display:none" aria-hidden="true" tabindex="-1"></button>
-    <button class="tab-btn" data-tab="actuals">Actuals</button>
+    {# Actuals now navigates to the standalone register (owner 2026-10-30
+       rebuild) — same pattern as the Docs tab above. The old in-page pane
+       stays reachable via ?tab=actuals deep-links and the register's
+       "legacy view" link; its hidden button is relied on by the URL tab
+       restore, so do NOT remove it. #}
+    <a class="tab-btn tab-link" href="/projects/{{ project.id }}/register">Actuals</a>
+    <button class="tab-btn" data-tab="actuals" style="display:none" aria-hidden="true" tabindex="-1"></button>
     <button class="tab-btn" data-tab="activity">Activity</button>
     <button class="tab-btn" data-tab="import-tools">Tools</button>
     {% if not dept_filter %}<button class="tab-btn" data-tab="settings">⚙ Settings</button>{% endif %}
@@ -4332,35 +4338,12 @@ __BJ["b03_CURRENT_USER_NAME"] = {{ (current_user.name or (current_user.email.spl
               title="Ask AI to suggest a budget category for every uncoded charge. Suggestions only — you click ✨ Accept on each row (or pick your own).">
         ✨ Suggest codes
       </button>
-      <button type="button" id="actualsCleanupBtn" class="btn btn-sm"
-              onclick="actualsCleanup(this)"
-              title="Tidy vendor names on receipts AND charges (e.g. 'SQ *BLUE BOTTLE' → 'Blue Bottle'). High-confidence fixes apply automatically; the rest land in the Dashboard review queue.">
-        ✨ Clean up
-      </button>
-      {# THE front door (owner 2026-10-30: "my QuickBooks transactions,
-         matched up with a receipt — side by side"). The older overlapping
-         tools below stay for now but this is the one to reach for. #}
-      <a href="{{ url_for('reconcile_workspace_page', pid=project.id) }}"
-         class="btn btn-sm btn-primary" style="font-weight:700"
-         title="The two-pane workspace: your QuickBooks/bank charges on the left, the receipts bucket on the right. Confirm suggested matches, link by hand, create cash expenses — all in one place.">
-        💳 Match receipts ⇄ charges
-      </a>
-      <button type="button" id="actualsReconcileBtn" class="btn btn-sm" onclick="openReconcile()"
-              title="Reconcile: review every spend that has duplicate receipts, duplicate/phantom ledger rows, or the same spend coded twice — keep one and clean up the rest, all in one place.">
-        🧹 Reconcile
-      </button>
-      <button type="button" id="actualsTriageBtn" class="btn btn-sm" onclick="axTriageLoad(this)"
-              title="The full picture: suggested receipt↔charge matches to confirm, charges still missing a receipt, and orphaned receipts no charge claims — with what to do about each.">
-        🧭 Missing &amp; orphans
-      </button>
+      {# 🧹/🧭/🎯/✨-cleanup buttons removed 2026-10-30 — superseded by the
+         standalone Actuals register (/projects/<pid>/register). Their JS +
+         panels remain dormant for the transition. #}
       <span style="width:1px;height:24px;background:var(--border);margin:0 2px;align-self:center"></span>
 
       <!-- Tools -->
-      <button type="button" id="actualsFindMatchBtn" class="btn btn-sm btn-ghost"
-              onclick="openMatchReview()"
-              title="Manually find a receipt match with adjustable amount / date / vendor criteria">
-        🎯 Match manually
-      </button>
       <button type="button" class="btn btn-sm btn-ghost" onclick="actualsUndoLastMatch()"
               title="Undo the most recent confirmed match — unlinks it and frees the receipt">
         ↩ Undo last match

@@ -11318,12 +11318,23 @@ def _guard_doc_expense(txn, data):
     nothing automated codes doc-born rows, so upload + AI suggestion alone
     still never creates spend — the doc stays $0 until a person codes it,
     matches it to an imported charge, or marks it as backup.
-    Returns None (never blocks); callers commit."""
+    RE-REWORKED 2026-10-30 (owner: "only transactions that have come
+    through QuickBooks can be actualized … there is a pathway where you
+    upload a receipt and say this receipt does not have an electronic
+    charge — make it an expense, flagged, and you should have to give a
+    reason"): silent activation-on-coding is OFF again. The ONLY way a
+    receipt becomes spend is the explicit Create-expense action
+    (doc_log_expense), which now REQUIRES a stated reason — or matching
+    it to a real charge. Coding attempts on a not-yet-activated
+    receipt row get a clear 400 pointing at those two paths."""
     if txn.source != 'doc_upload' or txn.activated_at is not None:
         return None
-    txn.activated_at = datetime.utcnow()
-    _add_evidence(txn.id, txn.doc_upload_id, 'primary')
-    return None
+    return jsonify({"error": "This is a receipt, not a charge — it doesn't "
+                             "count as spend yet. Match it to a QuickBooks "
+                             "transaction in the Actuals register, or use "
+                             "💰 Create expense (and give the reason: cash, "
+                             "check, another card…) if no electronic charge "
+                             "will ever arrive."}), 400
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/set-line", methods=["POST"])
@@ -14290,9 +14301,12 @@ def actuals_set_line_bulk(pid):
             if not txn:
                 failed += 1
                 continue
-            # Bulk-coding a doc-born row is an explicit create-expense act,
-            # same as single-row coding (see _guard_doc_expense, 2026-08-19).
-            _guard_doc_expense(txn, data)
+            # Receipts can't be bulk-coded into spend (2026-10-30 rule:
+            # only charges actualize) — skip them, count as failed.
+            _ge_bulk = _guard_doc_expense(txn, data)
+            if _ge_bulk is not None:
+                failed += 1
+                continue
             if line_id:
                 link_transaction_to_line(int(tid), int(line_id), user_id=current_user.id)
                 if line_label is None:
@@ -14691,11 +14705,33 @@ def reconcile_workspace_json(pid):
                     Transaction.backup_of_txn_id.is_(None))
             .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
             .all())
+    # Split children (itemized invoices) grouped under their parent.
+    _kids_by_parent = {}
+    for _k in Transaction.query.filter(
+            Transaction.project_id == pid,
+            Transaction.source == 'invoice_split').all():
+        if _k.parent_transaction_id:
+            _kids_by_parent.setdefault(_k.parent_transaction_id, []).append(_k)
+    _proj_names = {}
+    def _proj_name(_ppid):
+        if _ppid not in _proj_names:
+            _pp = ProjectSheet.query.get(_ppid)
+            _proj_names[_ppid] = _pp.name if _pp else f'project #{_ppid}'
+        return _proj_names[_ppid]
     charges, matched_doc_ids, suggested_by_doc = [], set(), {}
+    claimed_elsewhere = []
     np_count = 0
     for t in txns:
         if t.not_project_expense:
-            np_count += 1
+            _cl = getattr(t, 'claimed_by_project_id', None)
+            if _cl and _cl != pid:
+                claimed_elsewhere.append({
+                    "id": t.id, "vendor": t.vendor or '—',
+                    "amount": float(t.amount or 0),
+                    "date": (t.txn_date or '')[:10],
+                    "claimed_by": _proj_name(_cl)})
+            else:
+                np_count += 1
             continue
         state = ('matched' if (t.doc_upload_id and t.match_status == 'confirmed')
                  else 'suggested' if (t.doc_upload_id and t.match_status == 'suggested')
@@ -14703,7 +14739,14 @@ def reconcile_workspace_json(pid):
         row = {"id": t.id, "date": (t.txn_date or '')[:10], "vendor": t.vendor or '—',
                "amount": float(t.amount or 0) * (1 if t.is_expense else -1),
                "source": t.source, "card": getattr(t, 'card_last4', None),
+               "memo": (t.note or '')[:140] or (t.qbo_category or ''),
+               "qbo_category": t.qbo_category,
                "state": state, "coding": _coding(t)}
+        _kids = _kids_by_parent.get(t.id)
+        if _kids:
+            row["split"] = [{"desc": (k.note or '')[:90],
+                             "amount": float(k.amount or 0),
+                             "coding": _coding(k)} for k in _kids]
         if t.doc_upload_id and t.doc_upload_id in docs:
             d = docs[t.doc_upload_id]
             if state == 'matched':
@@ -14731,6 +14774,16 @@ def reconcile_workspace_json(pid):
             if not dt.not_project_expense:
                 cash_expenses.append({**_doc_brief(d), "txn_id": dt.id,
                                       "coding": _coding(dt)})
+                charges.append({
+                    "id": dt.id, "date": (dt.txn_date or '')[:10],
+                    "vendor": dt.vendor or d.vendor or '—',
+                    "amount": float(dt.amount or 0),
+                    "source": "cash", "card": getattr(dt, 'card_last4', None),
+                    "memo": (dt.note or '')[:140], "qbo_category": None,
+                    "state": "matched", "coding": _coding(dt),
+                    "cash_reason": (getattr(dt, 'no_charge_reason', None)
+                                    or 'no electronic charge'),
+                    "doc": _doc_brief(d)})
             continue
         if d.id in matched_doc_ids:
             continue
@@ -14768,11 +14821,31 @@ def reconcile_workspace_json(pid):
             "doc_id": (_d.id if _d else None)})
     section_coded.sort(key=lambda r: r["section"])
 
+    charges.sort(key=lambda c: (c.get("date") or ''), reverse=True)
     n_unmatched = sum(1 for c in charges if c["state"] == 'unmatched')
     n_suggested = sum(1 for c in charges if c["state"] == 'suggested')
+    _prj = ProjectSheet.query.get(pid)
+    import json as _json_ws
+    try:
+        _acct_n = len(_json_ws.loads(_prj.qbo_account_ids or '[]'))
+    except Exception:
+        _acct_n = 0
+    from models import QBOConnection as _WSQC
+    _qc = None
+    try:
+        _qc = _WSQC.query.first()
+    except Exception:
+        pass
     return jsonify({
         "ok": True,
         "charges": charges, "receipts": receipts,
+        "claimed_elsewhere": claimed_elsewhere,
+        "sync": {"connected": bool(_qc and _qc.refresh_token),
+                 "accounts": _acct_n,
+                 "last_synced": (_prj.last_synced.isoformat(timespec='minutes')
+                                 if _prj.last_synced else None),
+                 "sync_through": _prj.sync_through,
+                 "auto": "every 30 min"},
         "cash_expenses": cash_expenses, "section_coded": section_coded,
         "stats": {
             "charges": len(charges), "charges_unmatched": n_unmatched,
@@ -14781,17 +14854,32 @@ def reconcile_workspace_json(pid):
             "receipts_waiting": len(receipts),
             "cash_expenses": len(cash_expenses),
             "section_coded": len(section_coded),
+            "claimed_elsewhere": len(claimed_elsewhere),
             "not_project": np_count,
         }})
 
 
 @app.route("/projects/<int:pid>/reconcile")
+@app.route("/projects/<int:pid>/register")
 @login_required
 def reconcile_workspace_page(pid):
-    """The Reconcile workspace page — see reconcile_workspace_json."""
+    """THE Actuals register (owner 2026-10-30) — see
+    reconcile_workspace_json. The budget page's Actuals tab navigates
+    here; the legacy in-page tab stays reachable for deep links."""
     project = ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'viewer')
-    return render_template("reconcile.html", project=project)
+    _pick_budget, _pick_groups = _line_picker_groups(pid)
+    # Lines ONLY (owner: "assign those things to the line" — section
+    # parking is retired here; a Parked list re-homes old ones).
+    line_groups = []
+    for g in _pick_groups:
+        _ls = [l for l in g["lines"]
+               if (l.line_tag or '') not in ('header', 'spacer')]
+        if _ls:
+            line_groups.append({"code": g["code"], "name": g["name"], "lines": _ls})
+    return render_template("reconcile.html", project=project,
+                           line_groups=line_groups,
+                           legacy_bid=(_pick_budget.id if _pick_budget else None))
 
 
 @app.route("/projects/<int:pid>/actuals/scan-dup-transactions", methods=["GET", "POST"])
@@ -24268,6 +24356,25 @@ def doc_log_expense(uid):
     if (doc.category or '') not in ('receipt', 'invoice'):
         return jsonify({"error": "Only receipts and invoices can be logged "
                                  "as expenses."}), 400
+    # The stated reason is REQUIRED (owner 2026-10-30: "you should have
+    # to say this is a cash transaction, or identify a different employee
+    # card, or give a reason"). It becomes the row's permanent
+    # "missing electronic transaction" flag.
+    _body = request.get_json(silent=True) or {}
+    _kind = (_body.get('reason_kind') or '').strip().lower()
+    _detail = (_body.get('detail') or '').strip()
+    _kinds = {'cash': 'cash', 'check': 'check',
+              'other_card': 'other card', 'other': 'other'}
+    if _kind not in _kinds:
+        return jsonify({"error": "A reason is required: why is there no "
+                                 "electronic charge for this? (cash / check / "
+                                 "other_card / other)",
+                        "needs_reason": True}), 400
+    if _kind in ('other_card', 'other') and not _detail:
+        return jsonify({"error": "Add a short detail — which card, or what "
+                                 "the situation is.",
+                        "needs_reason": True}), 400
+    _reason = (_kinds[_kind] + (f" — {_detail}" if _detail else ""))[:300]
     txn = (Transaction.query
            .filter_by(doc_upload_id=uid, source='doc_upload')
            .order_by(Transaction.id).first())
@@ -24287,8 +24394,10 @@ def doc_log_expense(uid):
     if not already:
         txn.activated_at = datetime.utcnow()
         _add_evidence(txn.id, uid, 'primary')
-    # Resolved: no electronic charge is coming for this one.
+    # Resolved: no electronic charge is coming for this one. The reason
+    # is the permanent flag the register shows.
     txn.match_status = 'confirmed'
+    txn.no_charge_reason = _reason
     db.session.commit()
     try:
         _label = (doc.vendor or doc.filed_filename or f'Doc #{uid}')[:80]
@@ -32163,6 +32272,7 @@ def _web_worker_essential_columns():
                 "ALTER TABLE project_sheet ADD COLUMN IF NOT EXISTS fringe_rollup BOOLEAN DEFAULT FALSE NOT NULL",
                 # Crew Database doc duplicate path (2026-10-08, alembic 0018).
                 "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS crew_dbx_path VARCHAR(500)",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS no_charge_reason VARCHAR(300)",
                 """CREATE TABLE IF NOT EXISTS budget_lever (
                      id            SERIAL PRIMARY KEY,
                      budget_id     INTEGER NOT NULL REFERENCES budget(id) ON DELETE CASCADE,
@@ -34754,6 +34864,76 @@ import threading as _dropsweep_threading
 if not os.getenv('RUN_BOOT_TASKS'):
     _dst = _dropsweep_threading.Thread(target=_drop_sweep_loop, daemon=True)
     _dst.start()
+
+
+def _qbo_auto_sync_loop():
+    """Automatic QuickBooks pull (owner 2026-10-30: "we should
+    automatically pull in all QuickBooks charges into every project, as
+    long as that account is selected on the project"). Every ~30 minutes
+    one worker (system_task_log claim, same pattern as the drop sweep)
+    runs sync_project for every ACTIVE project that has QBO accounts
+    selected — watermark-driven, so each cycle only pulls what's new.
+    Cross-project claiming (_sync_claim_state) already guarantees a
+    charge coded in one project drops out of every other project's pile.
+    Fail-open everywhere."""
+    import time as _time
+    from sqlalchemy import text as _sql_text
+    _INTERVAL_S = 1800        # 30 minutes
+    _first = True
+    _CLAIM_SQL = (
+        "INSERT INTO system_task_log (task_name, last_run_at) "
+        "VALUES ('qbo_auto_sync', NOW()) "
+        "ON CONFLICT (task_name) DO UPDATE "
+        "  SET last_run_at = EXCLUDED.last_run_at "
+        "  WHERE system_task_log.last_run_at < NOW() - INTERVAL '25 minutes' "
+        "RETURNING task_name")
+    while True:
+        _time.sleep(300 if _first else _INTERVAL_S)
+        _first = False
+        try:
+            with app.app_context():
+                if 'postgresql' not in str(db.engine.url).lower():
+                    continue
+                try:
+                    with db.engine.connect() as conn:
+                        claimed = conn.execute(_sql_text(_CLAIM_SQL)).fetchone()
+                        conn.commit()
+                except Exception as _ce:
+                    logging.warning(f"[qbo-auto] claim failed: {_ce}")
+                    continue
+                if not claimed:
+                    continue
+                from models import QBOConnection
+                qconn = QBOConnection.query.first()
+                if not qconn or not qconn.refresh_token:
+                    continue       # QBO not connected — nothing to pull
+                import json as _json_qa
+                from qbo_sync import sync_project as _sp
+                n_proj = n_rows = n_err = 0
+                for prj in ProjectSheet.query.filter(
+                        ProjectSheet.status == 'active').all():
+                    try:
+                        if not _json_qa.loads(prj.qbo_account_ids or '[]'):
+                            continue
+                        n_proj += 1
+                        r = _sp(prj, qconn, db) or {}
+                        n_rows += int(r.get('imported', 0) or 0) + int(r.get('cdc_additions', 0) or 0)
+                    except Exception as _pe:
+                        n_err += 1
+                        logging.warning(f"[qbo-auto] project {prj.id} failed: {_pe}")
+                        try:
+                            db.session.rollback()
+                        except Exception:
+                            pass
+                logging.info(f"[qbo-auto] cycle done: projects={n_proj} "
+                             f"new_rows={n_rows} errors={n_err}")
+        except Exception as _le:
+            logging.warning(f"[qbo-auto] cycle aborted: {_le}")
+
+
+if not os.getenv('RUN_BOOT_TASKS'):
+    _qas = _dropsweep_threading.Thread(target=_qbo_auto_sync_loop, daemon=True)
+    _qas.start()
 
 
 @app.route("/admin/sub-budget-status")

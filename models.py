@@ -186,6 +186,12 @@ class Transaction(db.Model):
                                       db.ForeignKey("project_sheet.id"),
                                       nullable=True)
 
+    # Required stated reason when a receipt becomes a standalone expense
+    # with NO electronic charge behind it (owner 2026-10-30) — e.g.
+    # "cash", "check #1042", "other card •••4821 — Nahuel's Amex". Its
+    # presence IS the "missing electronic transaction" flag.
+    no_charge_reason      = db.Column(db.String(300), nullable=True)
+
     # ── AI auto-coding suggestion (2026-06-18) ─────────────────────────
     # Advisory only: ai_layer.categorize() (or a learned vendor→code mapping)
     # proposes a COA section for an UNCODED charge. Kept separate from
