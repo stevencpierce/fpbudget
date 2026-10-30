@@ -277,6 +277,7 @@
     $('rg-body').innerHTML = cs.map(chargeRows).join('')
       || `<tr><td colspan="6" class="rg-empty">${tab === 'needs' ? 'Every charge has a receipt 🎉' : 'Nothing here.'}</td></tr>`;
 
+    const selCharge = selected && DATA.charges.find(x => x.id === selected);
     const rf = ($('rg-rfilter').value || '').toLowerCase();
     let rs = DATA.receipts;
     if (rf) rs = rs.filter(r => ((r.vendor || '') + ' ' + (r.name || '')).toLowerCase().includes(rf)
@@ -295,7 +296,10 @@
               ${r.dup_pending ? '<span class="rg-chip c-dup">possible dup</span>' : ''}
               ${r.suggested_charge_id ? `<span class="rg-chip c-sug" data-goto="${r.suggested_charge_id}" style="cursor:pointer">★ suggested — view</span>` : ''}</div>
             <div style="display:flex;gap:5px;margin-top:5px;flex-wrap:wrap">
-              ${selected ? `<button class="rg-btn rg-btn-link" data-act="linksel" data-doc="${r.doc_id}">🔗 Link to selected</button>` : ''}
+              ${selCharge ? (selCharge.state === 'matched' || selCharge.source === 'cash'
+                ? `<button class="rg-btn rg-btn-link" data-act="backupsel" data-doc="${r.doc_id}" data-txn="${r.txn_id || ''}"
+                      title="The selected charge already carries the money (its invoice is attached) — this receipt is the underlying documentation for part of it. It will stop counting as spend and stop looking like a duplicate.">📎 Backup of selected</button>`
+                : `<button class="rg-btn rg-btn-link" data-act="linksel" data-doc="${r.doc_id}">🔗 Link to selected</button>`) : ''}
               <button class="rg-btn rg-btn-go" data-act="expense" data-doc="${r.doc_id}">💰 Create expense</button>
               <button class="rg-btn rg-btn-warn" data-act="docnp" data-doc="${r.doc_id}" data-txn="${r.txn_id || ''}">Not project</button>
             </div>
@@ -328,8 +332,10 @@
     const c = selected && DATA.charges.find(x => x.id === selected);
     if (!c) { bar.style.display = 'none'; return; }
     bar.style.display = '';
-    bar.innerHTML = `Selected: <b>${esc(c.vendor)}</b> ${money(c.amount)} — click
-      <b>🔗 Link to selected</b> on its receipt →
+    const verb = (c.state === 'matched' || c.source === 'cash')
+      ? 'this charge already has its invoice — click <b>📎 Backup of selected</b> on each underlying receipt (Sarah-sends-the-store-receipts case)'
+      : 'click <b>🔗 Link to selected</b> on the matching receipt';
+    bar.innerHTML = `Selected: <b>${esc(c.vendor)}</b> ${money(c.amount)} — ${verb} →
       <a href="#" id="rg-unsel" style="color:#e0a13a;margin-left:6px">cancel</a>`;
     bar.querySelector('#rg-unsel').onclick = e => { e.preventDefault(); selected = null; render(); };
   }
@@ -378,6 +384,16 @@
         const t = btn.dataset.txn;
         if (!t) { alert('Open this receipt in Docs and mark it there.'); return; }
         act(() => post(`/projects/${PID}/actuals/transaction/${t}/mark-not-project`), btn);
+      }
+      else if (a === 'backupsel') {
+        if (!selected) return;
+        const t = btn.dataset.txn;
+        if (!t) { alert('This receipt has no ledger row yet — open it from Docs and use its 📎 backup panel.'); return; }
+        const c = DATA.charges.find(x => x.id === selected);
+        act(() => post(`/projects/${PID}/actuals/transaction/${t}/mark-backup`,
+                       { target_txn_id: selected,
+                         backs_up: c ? `${c.vendor} · $${Math.abs(c.amount).toFixed(2)}` : '' })
+              .then(() => { selected = null; }), btn);
       }
       else if (a === 'linksel') {
         if (!selected) return;

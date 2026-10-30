@@ -242,12 +242,52 @@ def _extract_txn_fields(txn, entity, acct_ref, account_meta):
     amount     = float(txn.get("TotalAmt", 0))
     raw_date   = txn.get("TxnDate", "")  # YYYY-MM-DD
 
+    # Vendor: pull EVERY clue QBO offers before giving up (owner
+    # 2026-10-31: "items come in with no vendor and no account… no clue
+    # what something is — pull as much data from QuickBooks as we can").
+    # Chain: payee EntityRef → Deposit line payer → first line
+    # description → the raw bank text in PrivateNote (better than blank).
+    lines = txn.get("Line", []) or []
     vendor = (txn.get("EntityRef") or {}).get("name", "")
     if not vendor:
-        lines  = txn.get("Line", [])
+        for _l in lines:
+            _ent = (((_l.get("DepositLineDetail") or {}).get("Entity")) or {}).get("name")
+            if _ent:
+                vendor = _ent
+                break
+    if not vendor:
         vendor = lines[0].get("Description", "") if lines else ""
+    _pnote = (txn.get("PrivateNote") or "").strip()
+    if not vendor and _pnote:
+        import re as _re_v
+        vendor = _re_v.sub(r"\s+", " ", _pnote)[:48]
 
-    note = txn.get("PrivateNote", "") or txn.get("DocNumber", "")
+    # Note: everything useful, de-duplicated — bank memo, doc/ref number,
+    # payment type, check number, and the per-line breakdown (the WHO and
+    # WHAT of multi-line invoices).
+    _bits = []
+    if _pnote:
+        _bits.append(_pnote)
+    if txn.get("DocNumber"):
+        _bits.append(f"ref #{txn['DocNumber']}")
+    if txn.get("PaymentType"):
+        _bits.append(str(txn["PaymentType"]))
+    _chk = ((txn.get("CheckPayment") or {}).get("CheckNum"))
+    if _chk:
+        _bits.append(f"check #{_chk}")
+    _lb = []
+    for _l in lines[:5]:
+        _d = (_l.get("Description") or "").strip()
+        if not _d:
+            continue
+        try:
+            _a = float(_l.get("Amount") or 0)
+        except (TypeError, ValueError):
+            _a = 0
+        _lb.append(f"{_d} ${_a:,.2f}" if _a else _d)
+    if _lb and (len(_lb) > 1 or _lb[0] != vendor):
+        _bits.append(" + ".join(_lb)[:220])
+    note = " · ".join(dict.fromkeys(_bits))[:480]
 
     # Account-name display tag (Credit Card vs Bank, with last-4)
     meta = (account_meta or {}).get(acct_ref, {})
@@ -263,6 +303,9 @@ def _extract_txn_fields(txn, entity, acct_ref, account_meta):
     for line in txn.get("Line", []):
         detail   = line.get("AccountBasedExpenseLineDetail") or {}
         cat_name = (detail.get("AccountRef") or {}).get("name")
+        if not cat_name:   # item-based purchase lines carry an ItemRef instead
+            cat_name = (((line.get("ItemBasedExpenseLineDetail") or {})
+                         .get("ItemRef")) or {}).get("name")
         if cat_name:
             qbo_category = cat_name
             break
@@ -734,9 +777,13 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
         account_meta = {}
 
     # 5. Primary fetch — by TxnDate range with overlap.
+    # Fetch WITHOUT skipping known keys: rows we already imported flow
+    # through so blanks can be back-filled (a charge categorized or
+    # named in QBO AFTER our first pull now updates here — previously it
+    # was frozen at first sight forever). Inserts still dedupe below.
     rows = fetch_transactions(
         conn, db, account_ids, effective_start, safe_end,
-        skip_keys=skip_keys, account_meta=account_meta,
+        skip_keys=set(), account_meta=account_meta,
     )
     seen = {(r["qbo_txn_id"], r["qbo_txn_type"]) for r in rows}
 
@@ -755,7 +802,7 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             )
         cdc_rows, cdc_server_time = fetch_transactions_cdc(
             conn, db, account_ids, cdc_since,
-            skip_keys=skip_keys, account_meta=account_meta,
+            skip_keys=set(), account_meta=account_meta,
         )
         for r in cdc_rows:
             key = (r["qbo_txn_id"], r["qbo_txn_type"])
@@ -779,9 +826,39 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
     for cat, (code, name) in DEFAULT_QBO_MAPPINGS.items():
         mappings.setdefault(cat, (code, name))
 
+    _existing_map = {}
+    for _t in (Transaction.query
+               .filter(Transaction.project_id == project_sheet.id,
+                       Transaction.qbo_txn_id.isnot(None)).all()):
+        _existing_map[(_t.qbo_txn_id, _t.qbo_txn_type)] = _t
+
     imported = 0
     reconciled = 0
+    enriched = 0
+    _seen_this_run = set()
     for r in rows:
+        _key = (r["qbo_txn_id"], r["qbo_txn_type"])
+        if _key in _seen_this_run:
+            continue
+        _seen_this_run.add(_key)
+        _ex = _existing_map.get(_key)
+        if _ex is not None:
+            # Already imported — fill BLANKS only (never touch values the
+            # user, or an earlier pull, already set).
+            _f = False
+            if not (_ex.vendor or '').strip() and r["vendor"]:
+                _ex.vendor = r["vendor"]; _f = True
+            if not (_ex.note or '').strip() and r["note"]:
+                _ex.note = r["note"]; _f = True
+            if not _ex.qbo_category and r["qbo_category"]:
+                _ex.qbo_category = r["qbo_category"]; _f = True
+                if _ex.suggested_account_code is None and not _ex.account_code:
+                    _m = mappings.get(r["qbo_category"].lower())
+                    if _m:
+                        _ex.suggested_account_code = _m[0]
+            if _f:
+                enriched += 1
+            continue
         suggested_code = suggested_name = None
         if r.get("qbo_category"):
             mapping = mappings.get(r["qbo_category"].lower())
@@ -904,7 +981,7 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
 
     db.session.commit()
     log.info(f"[qbo {project_sheet.name}] imported {imported} txns "
-             f"(reconciled={reconciled}, cdc={cdc_count}); "
+             f"(reconciled={reconciled}, enriched={enriched}, cdc={cdc_count}); "
              f"watermark → {safe_end}")
     # Surface unmatched account refs — transactions QBO returned that
     # weren't on accounts the user selected for this project. Resolve
@@ -932,6 +1009,7 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
                 unmatched_named.append({"id": ref, "label": f"QBO account #{ref}"})
     return {
         "imported":        imported,
+        "enriched":        enriched,      # existing rows whose blanks got filled
         "reconciled":      reconciled,    # merged into existing doc Transactions
         "cdc_additions":   cdc_count,
         "sync_through":    safe_end,
