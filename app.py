@@ -6073,11 +6073,15 @@ def _actual_by_working_line(bid):
     """
     out = {}
     try:
+        from actuals import counts_as_spend as _cas_fz
+        _b = Budget.query.get(bid)
+        _pid = _b.project_id if _b else None
+        _parents = _split_parent_id_set(_pid) if _pid else None
         for _lid, _amt in (
             db.session.query(BudgetLine.id, func.sum(_signed_amount()))
             .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
             .filter(BudgetLine.budget_id == bid,
-                    Transaction.not_project_expense == False,
+                    _cas_fz(_parents),     # same predicate as budget_view (2026-10-30)
                     _exclude_estimate_linked_txns_clause())
             .group_by(BudgetLine.id)
             .all()
@@ -6973,36 +6977,41 @@ def _actuals_by_section_code(pid):
     that the user coded to a line/section now SUBTRACT instead of being
     excluded (net spend was permanently overstated after any refund).
     """
+    # ONE spend predicate (actuals.counts_as_spend, 2026-10-30): the three
+    # rollups used to filter differently (this one took un-activated receipt
+    # rows, backup rows and itemized parents at full value).
+    from actuals import counts_as_spend as _cas
     rows = (db.session.query(
                 func.coalesce(Transaction.account_code,
                               BudgetLine.account_code).label('code'),
                 func.sum(_signed_amount()))
             .outerjoin(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
             .filter(Transaction.project_id == pid,
-                    Transaction.not_project_expense == False)
+                    _cas(_split_parent_id_set(pid)))
             .group_by('code')
             .all())
     return {r[0]: float(r[1]) for r in rows if r[0] is not None}
 
 
 def _signed_amount():
-    """SQL expression for actuals rollups: expense amounts count, credits count
-    as ZERO (excluded).
+    """SQL expression for actuals rollups: an expense counts +amount, a credit
+    / refund counts -amount so it nets against the line it is coded to.
 
-    History: CR-3 (2026-06-04) made credits SUBTRACT (return -amount) so refunds
-    would net against spend. In practice that drove whole Top Sheet sections deep
-    NEGATIVE — credit-card payoffs, transfers, and rental-hold reversals are
-    is_expense=False but are NOT refunds of an in-section project cost, so netting
-    them produced nonsensical negative actuals (user report 2026-06-11). Reverted
-    to expense-only: credits no longer inflate actuals (they import as
-    is_expense=False and contribute 0) and no longer push sections negative. True
-    refund netting needs to distinguish refund-credits from payment/transfer
-    credits, which the data doesn't yet support — tracked for later.
+    History: CR-3 (2026-06-04) made credits subtract; 2026-06-11 reverted them
+    to zero because credit-card payoffs and transfers (is_expense=False, not
+    refunds) were pushing sections negative. Those rows are only a problem when
+    they are CODED to a line or section — an uncoded credit never reaches a
+    rollup — and since then every rollup also filters on counts_as_spend(), so
+    an unwanted credit is handled by marking it not-project, exactly like an
+    unwanted charge. Owner decision 2026-10-30 (ACTUALS_HANDOFF): credits act
+    as credits, as in QuickBooks. A refund coded to a line reduces that line's
+    actual; one coded to a section reduces the section.
 
-    Kept as a function (fresh expression per query) so all rollup call sites flip
+    actuals.signed_amount_value() is the pure-Python twin (unit-tested). Kept
+    as a function (fresh expression per query) so all rollup call sites flip
     with this one definition."""
     return sa_case((Transaction.is_expense == True, Transaction.amount),
-                   else_=0)
+                   else_=-Transaction.amount)
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/audit.json")
@@ -7954,6 +7963,17 @@ def budget_view(pid, bid):
     # BudgetLine (Actual) → source_line_id (Working). Result keyed by
     # the Working line id so the budget table (which renders Working
     # lines) can look up the actual amount inline.
+    #
+    # ONE spend predicate for every rollup on this page (actuals.counts_as_spend,
+    # ACTUALS_HANDOFF Phase 0, 2026-10-30): not-project excluded, doc-born rows
+    # only once activated, backup rows and itemized parents excluded. The split
+    # parent set is resolved once here and shared by the four queries below.
+    from actuals import (counts_as_spend as _counts_as_spend,
+                         signed_amount_value as _signed_amount_value)
+    try:
+        _split_parents_bv = _split_parent_id_set(pid)
+    except Exception:
+        _split_parents_bv = set()
     actual_by_line_id = {}
     actual_to_working = {}  # {actual_line_id: source_working_line_id}
     has_actual_budget = False
@@ -7990,7 +8010,7 @@ def budget_view(pid, bid):
                 .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
                 .filter(BudgetLine.budget_id == _actual_budget.id,
                         BudgetLine.source_line_id.isnot(None),
-                        Transaction.not_project_expense == False,
+                        _counts_as_spend(_split_parents_bv),
                         _exclude_estimate_linked_txns_clause())
                 .group_by(BudgetLine.source_line_id)
                 .all()
@@ -8015,7 +8035,7 @@ def budget_view(pid, bid):
             .filter(Transaction.project_id == pid,
                     Transaction.budget_line_id.is_(None),
                     Transaction.account_code.isnot(None),
-                    Transaction.not_project_expense == False,
+                    _counts_as_spend(_split_parents_bv),
                     _exclude_estimate_linked_txns_clause())
             .group_by(Transaction.account_code)
             .all()
@@ -8120,10 +8140,10 @@ def budget_view(pid, bid):
         try:
             from sqlalchemy import func as _dfunc
             for _wlid, _amt in (
-                db.session.query(BudgetLine.id, _dfunc.sum(_signed_amount()))  # credits contribute 0 (CR-3 revert)
+                db.session.query(BudgetLine.id, _dfunc.sum(_signed_amount()))  # credits net against the line
                 .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
                 .filter(BudgetLine.budget_id.in_(_direct_bids),
-                        Transaction.not_project_expense == False,
+                        _counts_as_spend(_split_parents_bv),
                         _exclude_estimate_linked_txns_clause())
                 .group_by(BudgetLine.id)
                 .all()
@@ -8832,16 +8852,16 @@ def budget_view(pid, bid):
             _txns = (Transaction.query
                      .filter(Transaction.project_id == pid,
                              Transaction.budget_line_id.isnot(None),
-                             Transaction.not_project_expense == False,
+                             _counts_as_spend(_split_parents_bv),
                              _exclude_estimate_linked_txns_clause())
                      .all())
             for _tx in _txns:
                 _key = _alid_to_key.get(_tx.budget_line_id)
                 if _key is None:
                     continue
-                # Expense-only: credits contribute 0 (see _signed_amount — CR-3's
-                # subtract-credits drove sections negative; 2026-06-11).
-                _amt = float(_tx.amount or 0) * (1 if _tx.is_expense else 0)
+                # Same signed rule as _signed_amount(): credits net against
+                # the line (owner 2026-10-30).
+                _amt = _signed_amount_value(_tx.amount, _tx.is_expense)
                 actual_line_totals[_key] = actual_line_totals.get(_key, 0.0) + _amt
                 actual_line_totals_by_lid[_tx.budget_line_id] = (
                     actual_line_totals_by_lid.get(_tx.budget_line_id, 0.0) + _amt)
@@ -12074,13 +12094,21 @@ def actuals_line_totals_batch(pid):
             k = (rl.account_code, (rl.description or '').strip().lower())
             key_by_req[rl.id] = k
             all_sib_ids |= sib_by_key.get(k, {rl.id})
+        # ONE spend predicate (actuals.counts_as_spend, 2026-10-30) so the
+        # live cell refresh agrees with the page-load rollup in budget_view —
+        # this endpoint used to count un-activated receipt rows, backup rows
+        # and itemized parents that budget_view excluded, so a cell could
+        # change value on refresh.
+        from actuals import counts_as_spend as _cas_lt
+        _cas_clause = _cas_lt(_split_parent_id_set(pid))
         sums_by_lid = {}
         if all_sib_ids:
             for lid, amt in (db.session.query(
                         Transaction.budget_line_id, func.sum(_signed_amount()))
                     .filter(Transaction.project_id == pid,
                             Transaction.budget_line_id.in_(list(all_sib_ids)),
-                            Transaction.not_project_expense == False)  # noqa: E712
+                            _cas_clause,
+                            _exclude_estimate_linked_txns_clause())
                     .group_by(Transaction.budget_line_id).all()):
                 sums_by_lid[lid] = float(amt or 0)
         for rl in req_lines:
@@ -12092,7 +12120,8 @@ def actuals_line_totals_batch(pid):
                 .filter(Transaction.project_id == pid,
                         Transaction.budget_line_id.is_(None),
                         Transaction.account_code.isnot(None),
-                        Transaction.not_project_expense == False)  # noqa: E712
+                        _cas_clause,
+                        _exclude_estimate_linked_txns_clause())
                 .group_by(Transaction.account_code).all()):
             sections[str(code)] = round(float(amt or 0), 2)
     except Exception as _lte:
@@ -15668,10 +15697,19 @@ def actuals_docs_list_for_picker(pid):
     return jsonify({"ok": True, "docs": out})
 
 
-@app.route("/projects/<int:pid>/actuals/reconcile.json", methods=["GET"])
+@app.route("/projects/<int:pid>/actuals/reconcile-columns.json", methods=["GET"])
 @login_required
 def actuals_reconcile_data(pid):
-    """Return the two columns for the Reconcile sub-tab:
+    """Return the two columns for the Reconcile sub-tab.
+
+    URL history (ACTUALS_HANDOFF Phase 0, 2026-10-30): this handler was
+    registered on the SAME url as actuals_reconcile_json above
+    (/actuals/reconcile.json). Flask serves the first registration, so this
+    one was dead and the Reconcile sub-tab (b04.js _reconcileRender) always
+    received the triage shape and rendered two empty columns. It now lives at
+    /actuals/reconcile-columns.json; the triage panel keeps
+    /actuals/reconcile.json. scripts/route_audit.py now fails on a duplicate
+    rule so this cannot recur.
 
       - transactions: ledger rows that need a receipt (no doc_upload_id,
         not flagged as not-a-project-expense, not already confirmed).
@@ -16266,10 +16304,14 @@ def actuals_sync_now(pid):
         result = sync_project(project, conn, db,
                               start_date=start_date, end_date=end_date)
         try:
-            _added   = int(result.get('added')   or result.get('inserted')   or 0)
-            _updated = int(result.get('updated') or 0)
-            _skipped = int(result.get('skipped') or 0)
-            _claimed = int(result.get('already_claimed') or 0)
+            # These are the keys sync_project() actually returns. The old
+            # read looked for 'added' / 'inserted' / 'updated' / 'skipped',
+            # none of which exist, so every log line said "+0 new".
+            # (ACTUALS_HANDOFF Phase 0, 2026-10-30.)
+            _imported   = int(result.get('imported') or 0)
+            _enriched   = int(result.get('enriched') or 0)
+            _reconciled = int(result.get('reconciled') or 0)
+            _cdc        = int(result.get('cdc_additions') or 0)
             _range   = ''
             if start_date or end_date:
                 _range = f' ({start_date or "…"} → {end_date or "…"})'
@@ -16277,10 +16319,11 @@ def actuals_sync_now(pid):
                 action='update', entity_type='qbo_sync',
                 entity_id=pid, entity_label=project.name or f'Project #{pid}',
                 project_id=pid,
-                after={'added': _added, 'updated': _updated,
-                       'skipped': _skipped, 'already_claimed': _claimed},
-                note=f'QBO sync{_range}: +{_added} new, {_updated} updated, '
-                     f'{_skipped} skipped, {_claimed} cross-project')
+                after={'imported': _imported, 'enriched': _enriched,
+                       'reconciled': _reconciled, 'cdc_additions': _cdc,
+                       'sync_through': str(result.get('sync_through') or '')},
+                note=f'QBO sync{_range}: +{_imported} new, {_enriched} enriched, '
+                     f'{_reconciled} reconciled to receipts, {_cdc} via change-capture')
         except Exception: pass
         # Phase 3: auto-refresh the review queue after ingestion (background).
         _bg_run_all_scans(pid)

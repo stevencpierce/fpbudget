@@ -913,23 +913,19 @@ def sync_project(project_sheet, conn, db, start_date=None, end_date=None):
             # the precedence here removes that step entirely.
             existing_doc_txn.vendor         = existing_doc_txn.vendor or r["vendor"]
             existing_doc_txn.txn_date       = r["txn_date"] or existing_doc_txn.txn_date
-            # Confirmed because the user manually placed the receipt
-            # against a budget line — they own the categorization.
-            if existing_doc_txn.budget_line_id or existing_doc_txn.account_code:
-                # Audit H3 (2026-07-20): only auto-confirm when the receipt and
-                # the bank charge agree to the cent. A fuzzy pairing whose
-                # amounts differ may be the WRONG receipt (two similar expenses
-                # within the ±$1/±5d window) — surface it for human review
-                # instead of silently promoting it to confirmed.
-                if _amt_delta <= 0.01:
-                    existing_doc_txn.match_status = 'confirmed'
-                else:
-                    existing_doc_txn.match_status = 'suggested'
-                    _dnote = (f"[QBO reconcile: bank amount differed from "
-                              f"receipt by ${_amt_delta:,.2f} — review]")
-                    if _dnote not in (existing_doc_txn.note or ''):
-                        existing_doc_txn.note = (((existing_doc_txn.note or '')
-                                                  + ' ' + _dnote).strip())[:500]
+            # Suggested, never confirmed (owner decision 2026-10-30: every
+            # receipt match, exact or near, waits for a click — Concur's
+            # "smart matching, confirmed by a person"). Audit H3 (2026-07-20)
+            # auto-confirmed exact-amount pairings; that branch is gone. The
+            # user's coding on the row is untouched either way; only the
+            # match state is left for them to confirm or unmatch.
+            existing_doc_txn.match_status = 'suggested'
+            if _amt_delta > 0.01:
+                _dnote = (f"[QBO reconcile: bank amount differed from "
+                          f"receipt by ${_amt_delta:,.2f} — review]")
+                if _dnote not in (existing_doc_txn.note or ''):
+                    existing_doc_txn.note = (((existing_doc_txn.note or '')
+                                              + ' ' + _dnote).strip())[:500]
             # Fire cross-project claim propagation: reconciliation
             # stamped a qbo_txn_id onto this doc row, which means QBO
             # siblings on other projects now share that id and should

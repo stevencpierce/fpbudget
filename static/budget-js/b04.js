@@ -2458,7 +2458,12 @@
       };
       window._reconcileRender = async function() {
         try {
-          const r = await fetch(`/projects/${PID}/actuals/reconcile.json`);
+          // Two-column shape {transactions, receipts}. Was fetched from
+          // /actuals/reconcile.json, which Flask resolved to the TRIAGE
+          // handler (same url registered twice) — so this always got
+          // {suggested, charges_no_receipt, ...} and drew two empty columns.
+          // (ACTUALS_HANDOFF Phase 0, 2026-10-30.)
+          const r = await fetch(`/projects/${PID}/actuals/reconcile-columns.json`);
           const j = await r.json();
           if (!r.ok) throw new Error(j.error || 'fetch failed');
           _recState.txns = j.transactions || [];
