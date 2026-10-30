@@ -13393,30 +13393,14 @@ def actuals_clear_suggestions(pid):
     return jsonify({"ok": True, "cleared": n})
 
 
-@app.route("/projects/<int:pid>/actuals/ai-match", methods=["POST"])
-@login_required
-def actuals_ai_match(pid):
-    """AI-driven matching: for each still-unmatched charge, feed its heuristic
-    candidate receipts to the AI to pick the best (or none) and write a SUGGESTED
-    match — which surfaces in the existing gold 'Suggested match' banner for
-    one-click Confirm. Batched (returns `remaining`); a per-charge watermark
-    (ai_match_checked_at) lets it resume and skip declined charges. A single
-    exact-amount + vendor candidate is taken without an AI call. (User 2026-06-18.)"""
-    ProjectSheet.query.get_or_404(pid)
-    _require_project_role(pid, 'editor')
-    body = request.get_json(silent=True) or {}
-    try:
-        limit = min(12, max(1, int(body.get('limit', 6))))
-    except (TypeError, ValueError):
-        limit = 6
-    force = bool(body.get('force'))
+def _ai_match_batch(pid, limit=6, force=False):
+    """Core of the AI matching pass — shared by the /actuals/ai-match
+    button and the 🧭 reconcile panel (which runs a small batch
+    automatically, so matching "just works" without a separate click).
+    Returns a summary dict; raises on candidate-build failure."""
     import ai_layer, time as _t
     from actuals import find_match_candidates
-    try:
-        cand = find_match_candidates(pid, amount_tol=3.0, date_window=None, use_vendor=False)
-    except Exception as e:
-        logging.exception("[ai-match] candidate build failed")
-        return jsonify({"error": str(e)}), 500
+    cand = find_match_candidates(pid, amount_tol=3.0, date_window=None, use_vendor=False)
     # find_match_candidates returns {results:[{charge, candidates, ...}], ...}.
     by_charge = {c["charge"]["id"]: c for c in (cand.get("results") or [])}
 
@@ -13427,7 +13411,23 @@ def actuals_ai_match(pid):
                  Transaction.doc_upload_id.is_(None),
                  Transaction.not_project_expense == False))   # noqa: E712
     if not force:
-        q = q.filter(Transaction.ai_match_checked_at.is_(None))
+        # STALE-WATERMARK FIX (owner 2026-10-30: "receipts and electronic
+        # transactions not finding each other"): a charge AI-checked while
+        # the receipt pool was empty (e.g. the whole Veryfi outage) was
+        # stamped and NEVER reconsidered — so receipts that imported later
+        # could never be suggested. A charge is re-checked whenever a
+        # newer proof document has arrived since its stamp.
+        from sqlalchemy import func as _wm_func
+        _newest_doc = (db.session.query(_wm_func.max(DocUpload.uploaded_at))
+                       .filter(DocUpload.project_id == pid,
+                               DocUpload.category.in_(('receipt', 'invoice')),
+                               DocUpload.status.notin_(('deleted', 'duplicate')))
+                       .scalar())
+        if _newest_doc is not None:
+            q = q.filter(db.or_(Transaction.ai_match_checked_at.is_(None),
+                                Transaction.ai_match_checked_at < _newest_doc))
+        else:
+            q = q.filter(Transaction.ai_match_checked_at.is_(None))
     total_remaining = q.count()
     rows = q.order_by(Transaction.id.desc()).limit(limit).all()
 
@@ -13484,8 +13484,31 @@ def actuals_ai_match(pid):
         db.session.commit()
     except Exception:
         db.session.rollback()
-    return jsonify({"ok": True, "processed": len(rows), "suggested": suggested,
-                    "ai_calls": ai_calls, "remaining": max(0, total_remaining - len(rows))})
+    return {"ok": True, "processed": len(rows), "suggested": suggested,
+            "ai_calls": ai_calls, "remaining": max(0, total_remaining - len(rows))}
+
+
+@app.route("/projects/<int:pid>/actuals/ai-match", methods=["POST"])
+@login_required
+def actuals_ai_match(pid):
+    """AI-driven matching: for each still-unmatched charge, feed its heuristic
+    candidate receipts to the AI to pick the best (or none) and write a SUGGESTED
+    match — surfaced in the gold 'Suggested match' banner for one-click Confirm.
+    Batched (returns `remaining`); the per-charge watermark re-opens whenever a
+    newer receipt arrives (2026-10-30). Core shared with the reconcile panel."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    body = request.get_json(silent=True) or {}
+    try:
+        limit = min(12, max(1, int(body.get('limit', 6))))
+    except (TypeError, ValueError):
+        limit = 6
+    force = bool(body.get('force'))
+    try:
+        return jsonify(_ai_match_batch(pid, limit=limit, force=force))
+    except Exception as e:
+        logging.exception("[ai-match] failed")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/projects/<int:pid>/actuals/clear-match-suggestions", methods=["POST"])
@@ -14521,6 +14544,18 @@ def actuals_reconcile_json(pid):
         run_auto_match(pid)   # also ensures every receipt is matchable
     except Exception as _e:
         logging.warning(f"[reconcile] auto-match failed (continuing): {_e}")
+    # Then a small AI batch over whatever the heuristics left (owner
+    # 2026-10-30: matching should "just work" from this panel, not need a
+    # separate button). The watermark keeps it incremental — once a charge
+    # is checked it's skipped until a NEWER receipt arrives — so repeat
+    # panel opens cost nothing when there's nothing new. Fail-open.
+    try:
+        _aim = _ai_match_batch(pid, limit=8)
+        if _aim.get('suggested'):
+            logging.info(f"[reconcile] AI batch suggested {_aim['suggested']} "
+                         f"(ai_calls={_aim.get('ai_calls')})")
+    except Exception as _ae:
+        logging.warning(f"[reconcile] AI match batch failed (continuing): {_ae}")
 
     doc_name = {}
     doc_rows = DocUpload.query.filter(
@@ -34001,6 +34036,44 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
             .first()
         )
 
+    # NEAR-duplicate check (owner 2026-10-30: "our duplicate finding is
+    # terrible"). The byte-hash only catches the identical file — the same
+    # receipt re-exported, photographed instead of PDF'd, or forwarded
+    # through email arrives with different bytes and sailed straight
+    # through. Same project + same amount (to the cent) + same/adjacent
+    # document date + similar vendor on a spend doc = flag for the
+    # existing duplicate-review flow (is_duplicate pending; the user
+    # decides Keep both vs It's a duplicate — nothing is auto-buried).
+    if (not duplicate_of and amount is not None
+            and (result.get("doc_type") or '') in ('receipt', 'invoice')):
+        try:
+            from actuals import _vendor_similarity as _nd_sim
+            import datetime as _nd_dt
+            _nd_cands = (DocUpload.query
+                         .filter(DocUpload.project_id == pid,
+                                 DocUpload.amount == amount,
+                                 DocUpload.status.in_(('done', 'review')),
+                                 DocUpload.is_duplicate == False,     # noqa: E712
+                                 DocUpload.filed_dropbox_path.isnot(None))
+                         .order_by(DocUpload.id.desc()).limit(25).all())
+            for _nd in _nd_cands:
+                _dates_ok = (doc_date and _nd.doc_date
+                             and abs((doc_date - _nd.doc_date).days) <= 1)
+                _vendor_ok = (vendor_name and _nd.vendor
+                              and _nd_sim(vendor_name, _nd.vendor) >= 0.55)
+                _name_ok = (filename and _nd.original_filename
+                            and filename.strip().lower() == _nd.original_filename.strip().lower())
+                if (_dates_ok and _vendor_ok) or (_name_ok and (_dates_ok or _vendor_ok)):
+                    duplicate_of = _nd
+                    logging.info(f"[dedupe] near-duplicate flag: new '{filename}' "
+                                 f"looks like doc #{_nd.id} ('{_nd.original_filename}') "
+                                 f"— same ${amount}, "
+                                 f"{'same date, ' if _dates_ok else ''}"
+                                 f"{'similar vendor' if _vendor_ok else 'same filename'}")
+                    break
+        except Exception as _nde:
+            logging.warning(f"[dedupe] near-dup check failed (continuing): {_nde}")
+
     # Persist the upload row with whatever we got back from the Analyzer.
     upload = DocUpload(
         project_id=pid,
@@ -34589,6 +34662,80 @@ def admin_sub_budget_status():
             f"<th>Memberships</th><th>Membership lines live on</th>"
             f"<th>Canonical budget</th><th>Resolved</th></tr>"
             f"{''.join(rows_html)}</table></body></html>")
+
+
+@app.route("/admin/docs/cleanup-errors", methods=["POST", "GET"])
+@login_required
+def admin_docs_cleanup_errors():
+    """Sweep up the OCR-outage wreckage (owner 2026-10-30: "many duplicates
+    … making it all messy"). Every failed sweep retry during the Veryfi
+    outage left a status='error' DocUpload row — the same file five, ten,
+    fifty times. Two conservative rules, soft-delete only (Trash,
+    restorable):
+      1. error rows whose file_hash ALSO has a healthy (done/review) row
+         in the same project — the file eventually imported; the error
+         rows are pure retry spam.
+      2. several error rows for the SAME (project, file_hash) — keep the
+         newest (it carries the latest failure reason), trash the rest.
+    GET = dry run (counts + samples). POST with ?apply=1 executes.
+    ?pid=<project> scopes to one project."""
+    if getattr(current_user, 'role', None) != 'super_admin':
+        abort(403)
+    apply_it = request.args.get('apply') == '1' and request.method == 'POST'
+    pid = request.args.get('pid', type=int)
+    q = DocUpload.query.filter(DocUpload.status == 'error')
+    if pid:
+        q = q.filter(DocUpload.project_id == pid)
+    err_rows = q.all()
+    healthy = {(r.project_id, r.file_hash) for r in
+               DocUpload.query.filter(DocUpload.status.in_(('done', 'review')),
+                                      DocUpload.file_hash.isnot(None)).all()}
+    to_trash, seen_newest = [], {}
+    for r in sorted(err_rows, key=lambda x: -(x.id or 0)):   # newest first
+        key = (r.project_id, r.file_hash)
+        if r.file_hash and key in healthy:
+            to_trash.append((r, 'imported successfully later'))
+        elif r.file_hash:
+            if key in seen_newest:
+                to_trash.append((r, 'older retry of the same failed file'))
+            else:
+                seen_newest[key] = r.id
+    out = {"error_rows_scanned": len(err_rows),
+           "would_trash": len(to_trash),
+           "kept_newest_failures": len(seen_newest),
+           "sample": [{"id": r.id, "file": r.original_filename,
+                       "project_id": r.project_id, "why": why}
+                      for r, why in to_trash[:15]],
+           "applied": False}
+    if apply_it and to_trash:
+        n = 0
+        for r, why in to_trash:
+            try:
+                # Drop any unactivated doc-born ledger rows riding on it.
+                _junk_txns = Transaction.query.filter(
+                    Transaction.doc_upload_id == r.id,
+                    Transaction.source == 'doc_upload',
+                    Transaction.budget_line_id.is_(None),
+                    Transaction.account_code.is_(None),
+                    Transaction.activated_at.is_(None)).all()
+                if _junk_txns:
+                    _delete_evidence_for_txns([t.id for t in _junk_txns])
+                    for _jt in _junk_txns:
+                        db.session.delete(_jt)
+                r.status = 'deleted'
+                r.deleted_at = datetime.utcnow()
+                r.trash_meta = json.dumps({"prior_status": "error",
+                                           "cleanup": why, "moves": []})
+                n += 1
+            except Exception as _ce:
+                db.session.rollback()
+                logging.warning(f"[cleanup-errors] doc {r.id} failed: {_ce}")
+        db.session.commit()
+        out["applied"] = True
+        out["trashed"] = n
+    elif not apply_it:
+        out["hint"] = "POST with ?apply=1 to execute (soft-delete to Trash, restorable)"
+    return jsonify(out)
 
 
 @app.route("/admin/docs/find")

@@ -1361,6 +1361,49 @@ def run_auto_match(project_id):
     # differ".)
     _pass(lambda v, g: v >= 0.50 and g <= 60, "amt+vendor-widedate")
 
+    # Pass 2c — UNIQUE exact amount, vendor-FREE, wide window (≤45d). The
+    # invoice-paid-on-terms class (owner 2026-10-30: "receipts and
+    # electronic transactions not finding each other"): an invoice dated
+    # the 1st, paid by ACH on the 20th, under a bank descriptor that looks
+    # nothing like the document's vendor ("TAKEONE NETWORK" vs "Wrapbook").
+    # Pass 2 caps at 5 days and 2b needs a vendor match, so these never
+    # paired. When EXACTLY ONE open charge and EXACTLY ONE open receipt in
+    # the whole project carry the same cent-amount, the pairing is
+    # unambiguous — suggest it regardless of vendor wording.
+    def _pass_unique_amount():
+        nonlocal suggestions, inspected
+        from collections import Counter
+        _q_left = [(q, qd) for q, qd in q_rows if q.match_status != 'suggested']
+        _d_left = [(d, dd) for d, dd in d_rows if d.doc_upload_id not in taken_docs]
+        _qc = Counter(round(abs(float(q.amount)), 2) for q, _ in _q_left)
+        _dc = Counter(round(abs(float(d.amount)), 2) for d, _ in _d_left)
+        for q, q_dt in _q_left:
+            amt = round(abs(float(q.amount)), 2)
+            if _qc[amt] != 1 or _dc.get(amt, 0) != 1:
+                continue          # ambiguous — leave for the AI pass
+            d, d_dt = next(((d, dd) for d, dd in _d_left
+                            if round(abs(float(d.amount)), 2) == amt), (None, None))
+            if d is None or d.doc_upload_id in taken_docs:
+                continue
+            if (q.id, d.doc_upload_id) in rejected_pairs:
+                continue
+            day_gap = abs((d_dt - q_dt).days)
+            if day_gap > 45:
+                continue
+            inspected += 1
+            # 0.52–0.68 band: real suggestion, sorts below vendor-backed ones.
+            score = 0.52 + 0.16 * max(0.0, 1.0 - day_gap / 45.0)
+            q.doc_upload_id    = d.doc_upload_id
+            q.match_status     = 'suggested'
+            q.match_confidence = round(score, 3)
+            q.updated_at       = datetime.utcnow()
+            taken_docs.add(d.doc_upload_id)
+            suggestions += 1
+            log.info(f"[actuals automatch:unique-amt] txn #{q.id} "
+                     f"({q.vendor!r}, ${q.amount}) → doc #{d.doc_upload_id} "
+                     f"(gap {day_gap}d), score={score:.3f}")
+    _pass_unique_amount()
+
     # Pass 3 — TIP-tolerant. A card charge routinely exceeds the receipt by a
     # tip (restaurants, rideshare): receipt $40.00 → card $48.00. Passes 1-2
     # gate amount to the exact penny and miss every one of these. Here the
