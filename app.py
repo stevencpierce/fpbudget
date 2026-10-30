@@ -104,7 +104,8 @@ from models import (db, User, ApiToken, ProjectAccess, ProjectSheet, Transaction
                     TravelDetail, CateringBill, ActivityLog,
                     SubBudget, SubBudgetLine, EstimateShare, FxRate,
                     TransactionDupDismissal, ProjectCrewMember, Timecard,
-                    ProjectClientContact, ProjectLogo, BudgetLever)
+                    ProjectClientContact, ProjectLogo, BudgetLever,
+                    TransactionSplit)
 from budget_calc import (calc_line, calc_line_from_schedule, calc_top_sheet,
                          get_fringe_configs, seed_fringes, seed_standard_template,
                          seed_catalog, seed_payroll_profiles, FP_COA_SECTIONS, DAY_TYPE_MULTIPLIERS,
@@ -11623,22 +11624,87 @@ def actuals_link_split(pid):
     return jsonify({"ok": True, "linked": linked, "folded": folded, "split_group": sg})
 
 
+def _txn_excluded_info(txn):
+    """The who / when / why of a Not-project exclusion, for JSON payloads.
+    None when the row is not excluded."""
+    if not getattr(txn, 'not_project_expense', False):
+        return None
+    _by = None
+    _uid = getattr(txn, 'excluded_by_user_id', None)
+    if _uid:
+        try:
+            _u = User.query.get(_uid)
+            _by = (_u.name or _u.email) if _u else None
+        except Exception:
+            _by = None
+    _at = getattr(txn, 'excluded_at', None)
+    return {"at": _at.isoformat(timespec='minutes') if _at else None,
+            "by_user_id": _uid, "by": _by,
+            "reason": getattr(txn, 'excluded_reason', None)}
+
+
+def _txn_state_json(txn):
+    """The coding / exclusion state of one row, returned by the Phase 1
+    mutation routes so the UI can repaint without a reload."""
+    return {"id": txn.id, "project_id": txn.project_id,
+            "vendor": txn.vendor, "amount": float(txn.amount or 0),
+            "is_expense": bool(txn.is_expense),
+            "date": (txn.txn_date or '')[:10],
+            "budget_line_id": txn.budget_line_id,
+            "account_code": txn.account_code,
+            "account_code_name": txn.account_code_name,
+            "match_status": txn.match_status,
+            "not_project_expense": bool(txn.not_project_expense),
+            "claimed_by_project_id": getattr(txn, 'claimed_by_project_id', None),
+            "excluded": _txn_excluded_info(txn)}
+
+
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/mark-not-project", methods=["POST"])
 @login_required
 def actuals_mark_not_project(pid, tid):
-    """Mark a transaction as 'not a project expense' — drops it from
-    Actuals rollup but keeps it on the row (greyed) for audit. Like
-    the old FPBudgetSync /confirm-suggestion 'Not Project' path."""
+    """Mark a transaction as 'not a project expense' — drops it from every
+    rollup and from the Unclaimed list, but keeps the row so it can be
+    RECOVERED (Phase 1, 2026-10-30): excluded_at / excluded_by_user_id /
+    excluded_reason record who, when and why; /recover clears them.
+
+    Works on any pool row — a QBO / CSV charge, a manual expense or a
+    receipt-born row (the old UI only offered the button on receipts; the
+    route never had a guard, so none is added — the one thing it refuses
+    is an itemized split CHILD, whose coding belongs to its parent).
+    Body (optional JSON): {reason: str}. Any coding and any transaction
+    splits are cleared; the before-state goes into the ActivityLog so the
+    action can be undone."""
     txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'editor')
+    if txn.source == 'invoice_split' and txn.parent_transaction_id:
+        return jsonify({"error": "This is one line of an itemized document — "
+                                 "mark the parent document not-project instead, "
+                                 "or clear the itemization first."}), 409
+    _body = request.get_json(silent=True) or {}
+    _reason = (_body.get('reason') or '').strip()[:300] or None
+    _old_splits = [{"budget_line_id": sp.budget_line_id,
+                    "amount": float(sp.amount or 0), "note": sp.note}
+                   for sp in TransactionSplit.query.filter_by(transaction_id=txn.id).all()]
     _before_npe = {'not_project_expense': bool(txn.not_project_expense),
                    'account_code': txn.account_code,
-                   'budget_line_id': txn.budget_line_id}
+                   'account_code_name': txn.account_code_name,
+                   'budget_line_id': txn.budget_line_id,
+                   'match_status': txn.match_status,
+                   'excluded_at': None, 'excluded_by_user_id': None,
+                   'excluded_reason': None,
+                   'splits': _old_splits}
+    _now = datetime.utcnow()
     txn.not_project_expense = True
+    txn.excluded_at         = _now
+    txn.excluded_by_user_id = current_user.id
+    txn.excluded_reason     = _reason
     txn.budget_line_id      = None
     txn.account_code        = None
     txn.account_code_name   = None
     txn.match_status        = 'unmatched'
-    txn.updated_at          = datetime.utcnow()
+    txn.updated_at          = _now
+    if _old_splits:
+        TransactionSplit.query.filter_by(transaction_id=txn.id).delete(synchronize_session=False)
     _sync_claim_state(txn)
     db.session.commit()
     try:
@@ -11650,10 +11716,113 @@ def actuals_mark_not_project(pid, tid):
             project_id=pid,
             before=_before_npe,
             after={'not_project_expense': True, 'account_code': None,
-                   'budget_line_id': None},
-            note=f'Marked ${_amt:,.2f} as not a project expense')
+                   'account_code_name': None, 'budget_line_id': None,
+                   'match_status': 'unmatched',
+                   'excluded_at': _now.isoformat(timespec='minutes'),
+                   'excluded_by_user_id': current_user.id,
+                   'excluded_reason': _reason, 'splits': []},
+            note=f'Marked ${_amt:,.2f} as not a project expense'
+                 + (f' — {_reason}' if _reason else ''))
     except Exception: pass
-    return jsonify({"ok": True, "transaction_id": tid})
+    return jsonify({"ok": True, "transaction_id": tid,
+                    "transaction": _txn_state_json(txn)})
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/recover", methods=["POST"])
+@login_required
+def actuals_recover_not_project(pid, tid):
+    """Undo a Not-project exclusion (Phase 1, 2026-10-30): clears
+    not_project_expense and the three excluded_* columns so the row returns
+    to the Unclaimed list, releases the cross-project claim through
+    _sync_claim_state, logs with an undo payload and returns the row's new
+    state. Refuses when the row is excluded because ANOTHER project claimed
+    it — that is their claim to release, not this project's."""
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'editor')
+    if not txn.not_project_expense:
+        return jsonify({"ok": True, "already": True,
+                        "transaction": _txn_state_json(txn)})
+    _cl = getattr(txn, 'claimed_by_project_id', None)
+    if _cl and _cl != pid:
+        _pp = ProjectSheet.query.get(_cl)
+        return jsonify({"error": "This charge is claimed by "
+                                 f"{(_pp.name if _pp else f'project #{_cl}')} — "
+                                 "unassign it there to release it.",
+                        "claimed_by_project_id": _cl}), 409
+    _before = {'not_project_expense': True,
+               'excluded_at': (txn.excluded_at.isoformat(timespec='minutes')
+                               if txn.excluded_at else None),
+               'excluded_by_user_id': txn.excluded_by_user_id,
+               'excluded_reason': txn.excluded_reason}
+    txn.not_project_expense = False
+    txn.excluded_at         = None
+    txn.excluded_by_user_id = None
+    txn.excluded_reason     = None
+    txn.updated_at          = datetime.utcnow()
+    _sync_claim_state(txn)
+    db.session.commit()
+    try:
+        _amt = float(txn.amount or 0)
+        _log_activity(
+            action='update', entity_type='transaction',
+            entity_id=txn.id,
+            entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
+            project_id=pid,
+            before=_before,
+            after={'not_project_expense': False, 'excluded_at': None,
+                   'excluded_by_user_id': None, 'excluded_reason': None},
+            note=f'Recovered ${_amt:,.2f} from Not project — back in Unclaimed')
+    except Exception: pass
+    return jsonify({"ok": True, "transaction_id": tid,
+                    "transaction": _txn_state_json(txn)})
+
+
+@app.route("/projects/<int:pid>/actuals/not-project.json", methods=["GET"])
+@login_required
+def actuals_not_project_json(pid):
+    """The recoverable Not-project list (Phase 1): rows this project excluded,
+    newest exclusion first, each with who / when / reason. Rows hidden here
+    only because ANOTHER project claimed them are listed separately under
+    claimed_elsewhere (project name only) — they are not this project's to
+    recover."""
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    rows = (Transaction.query
+            .filter(Transaction.project_id == pid,
+                    Transaction.not_project_expense == True,      # noqa: E712
+                    Transaction.backup_of_txn_id.is_(None))
+            .all())
+    _proj_names = {}
+    def _pname(_p):
+        if _p not in _proj_names:
+            _pp = ProjectSheet.query.get(_p)
+            _proj_names[_p] = _pp.name if _pp else f'project #{_p}'
+        return _proj_names[_p]
+    not_project, claimed_elsewhere = [], []
+    for t in rows:
+        _cl = getattr(t, 'claimed_by_project_id', None)
+        if _cl and _cl != pid:
+            claimed_elsewhere.append({
+                "id": t.id, "vendor": t.vendor or '—',
+                "amount": float(t.amount or 0) * (1 if t.is_expense else -1),
+                "date": (t.txn_date or '')[:10],
+                "claimed_by": _pname(_cl)})
+            continue
+        not_project.append({
+            "id": t.id, "date": (t.txn_date or '')[:10],
+            "vendor": t.vendor or '—',
+            "amount": float(t.amount or 0) * (1 if t.is_expense else -1),
+            "card_last4": getattr(t, 'card_last4', None),
+            "source": t.source,
+            "memo": (t.note or '')[:140] or (t.qbo_category or ''),
+            "excluded": _txn_excluded_info(t)})
+    not_project.sort(key=lambda r: ((r["excluded"] or {}).get("at") or '',
+                                    r["date"] or '', r["id"]), reverse=True)
+    claimed_elsewhere.sort(key=lambda r: (r["date"] or '', r["id"]), reverse=True)
+    return jsonify({"ok": True, "not_project": not_project,
+                    "claimed_elsewhere": claimed_elsewhere,
+                    "counts": {"not_project": len(not_project),
+                               "claimed_elsewhere": len(claimed_elsewhere)}})
 
 
 @app.route("/admin/cross-project-claim-backfill", methods=["GET", "POST"])
@@ -23462,13 +23631,28 @@ def activity_undo(pid, bid, aid):
             return jsonify({"ok": False, "error": "No saved state to restore for this action."}), 400
         for k in ('budget_line_id', 'account_code', 'account_code_name',
                   'doc_upload_id', 'match_status', 'match_confidence',
-                  'not_project_expense'):
+                  'not_project_expense',
+                  # Recoverable Not-project audit columns (Phase 1,
+                  # 2026-10-30): undoing a Recover puts the exclusion back
+                  # with its who / when / why; undoing a mark clears them.
+                  'excluded_by_user_id', 'excluded_reason'):
             if k in before:
                 try:
                     setattr(txn, k, before[k])
                 except Exception:
                     pass
+        if 'excluded_at' in before:
+            _xa = before.get('excluded_at')
+            try:
+                txn.excluded_at = (datetime.fromisoformat(_xa) if _xa else None)
+            except Exception:
+                txn.excluded_at = None
         txn.updated_at = datetime.utcnow()
+        # Coding / exclusion changed → re-propagate the cross-project claim.
+        try:
+            _sync_claim_state(txn)
+        except Exception:
+            pass
 
     elif row.entity_type == 'transaction_match':
         # A receipt↔charge pairing — reverse it (unlink the receipt, return it
@@ -32377,6 +32561,29 @@ def _web_worker_essential_columns():
                 # Crew Database doc duplicate path (2026-10-08, alembic 0018).
                 "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS crew_dbx_path VARCHAR(500)",
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS no_charge_reason VARCHAR(300)",
+                # Recoverable Not-project + payment method + splits
+                # (2026-10-30, alembic 0020 — mirrored here per CLAUDE.md:
+                # production may never have run Alembic).
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS excluded_at TIMESTAMP",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS excluded_by_user_id INTEGER",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS excluded_reason VARCHAR(300)",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20)",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS paid_by_crew_member_id INTEGER",
+                """CREATE TABLE IF NOT EXISTS transaction_split (
+                     id                 SERIAL PRIMARY KEY,
+                     transaction_id     INTEGER NOT NULL REFERENCES transaction(id),
+                     budget_line_id     INTEGER REFERENCES budget_line(id),
+                     project_id         INTEGER,
+                     amount             NUMERIC(12,2) NOT NULL,
+                     note               VARCHAR(300),
+                     created_at         TIMESTAMP,
+                     created_by_user_id INTEGER
+                   )""",
+                "CREATE INDEX IF NOT EXISTS ix_transaction_split_transaction_id "
+                "  ON transaction_split (transaction_id)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_transaction_qbo "
+                "  ON transaction (project_id, qbo_txn_id, qbo_txn_type) "
+                "  WHERE qbo_txn_id IS NOT NULL",
                 """CREATE TABLE IF NOT EXISTS budget_lever (
                      id            SERIAL PRIMARY KEY,
                      budget_id     INTEGER NOT NULL REFERENCES budget(id) ON DELETE CASCADE,

@@ -1111,6 +1111,12 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     # now given a line must come back into every total. set-coa already did
     # this; set-line did not (ACTUALS_HANDOFF Phase 0, 2026-10-30).
     txn.not_project_expense = False
+    # …and the recoverable-exclusion audit columns go with it (Phase 1): the
+    # row is back in the project, so "who excluded it and why" no longer
+    # applies. The ActivityLog keeps the history.
+    txn.excluded_at         = None
+    txn.excluded_by_user_id = None
+    txn.excluded_reason     = None
     txn.updated_at        = datetime.utcnow()
     if user_id:
         txn.created_via_user_id = user_id
