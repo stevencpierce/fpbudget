@@ -192,6 +192,19 @@ class Transaction(db.Model):
     # presence IS the "missing electronic transaction" flag.
     no_charge_reason      = db.Column(db.String(300), nullable=True)
 
+    # ── Recoverable Not-project (handoff 2026-10-30, Alembic 0020) ─────
+    # not_project_expense stays the fast filter, but it ALSO marks rows
+    # claimed by another project and receipts absorbed as backup. These
+    # columns are set ONLY by a user's Not-project click, so they identify
+    # the recoverable exclusions (the Not project tab) and who/when.
+    excluded_at           = db.Column(db.DateTime, nullable=True)
+    excluded_by_user_id   = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    excluded_reason       = db.Column(db.String(300), nullable=True)
+    # How a manual / receipt-born expense was paid, so it can be reimbursed
+    # and reconciled: company_card | cash | personal_card | check | ach | other.
+    payment_method        = db.Column(db.String(20), nullable=True)
+    paid_by_crew_member_id = db.Column(db.Integer, db.ForeignKey("crew_member.id"), nullable=True)
+
     # ── AI auto-coding suggestion (2026-06-18) ─────────────────────────
     # Advisory only: ai_layer.categorize() (or a learned vendor→code mapping)
     # proposes a COA section for an UNCODED charge. Kept separate from

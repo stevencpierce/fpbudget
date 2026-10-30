@@ -11594,8 +11594,14 @@ def actuals_link_split(pid):
 def actuals_mark_not_project(pid, tid):
     """Mark a transaction as 'not a project expense' — drops it from
     Actuals rollup but keeps it on the row (greyed) for audit. Like
-    the old FPBudgetSync /confirm-suggestion 'Not Project' path."""
+    the old FPBudgetSync /confirm-suggestion 'Not Project' path.
+
+    Works on any charge, not only receipts. Optional JSON body
+    {"reason": "..."}. Stamps excluded_at / excluded_by_user_id so the row
+    shows in the recoverable Not project list (not-project.json) and can be
+    put back with /recover. (Handoff 2026-10-30, Phase 1.)"""
     txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    _reason = ((request.get_json(silent=True) or {}).get('reason') or '').strip()[:300]
     _before_npe = {'not_project_expense': bool(txn.not_project_expense),
                    'account_code': txn.account_code,
                    'budget_line_id': txn.budget_line_id}
@@ -11605,6 +11611,9 @@ def actuals_mark_not_project(pid, tid):
     txn.account_code_name   = None
     txn.match_status        = 'unmatched'
     txn.updated_at          = datetime.utcnow()
+    txn.excluded_at         = datetime.utcnow()
+    txn.excluded_by_user_id = getattr(current_user, 'id', None)
+    txn.excluded_reason     = _reason or None
     _sync_claim_state(txn)
     db.session.commit()
     try:
@@ -11616,10 +11625,87 @@ def actuals_mark_not_project(pid, tid):
             project_id=pid,
             before=_before_npe,
             after={'not_project_expense': True, 'account_code': None,
-                   'budget_line_id': None},
-            note=f'Marked ${_amt:,.2f} as not a project expense')
+                   'budget_line_id': None, 'excluded_reason': _reason or None},
+            note=f'Marked ${_amt:,.2f} as not a project expense'
+                 + (f' — {_reason}' if _reason else ''))
     except Exception: pass
     return jsonify({"ok": True, "transaction_id": tid})
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/recover", methods=["POST"])
+@login_required
+def actuals_recover_not_project(pid, tid):
+    """Undo Not-project: clear the flag and the excluded_* stamp, return the
+    charge to Unclaimed (no line), and release the claim on its siblings in
+    other projects. Refuses rows whose flag means something else — claimed by
+    another project, or a receipt absorbed as backup — since recovering those
+    would double-count. (Handoff 2026-10-30, Phase 1.)"""
+    _require_project_role(pid, 'editor')
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    if not txn.not_project_expense:
+        return jsonify({"ok": True, "transaction_id": tid, "already": True})
+    if txn.claimed_by_project_id not in (None, pid):
+        return jsonify({"error": "This charge is claimed by another project — "
+                                 "recover it there."}), 409
+    if txn.backup_of_txn_id:
+        return jsonify({"error": "This receipt is attached as backup to another "
+                                 "charge — detach it instead."}), 409
+    _before = {'not_project_expense': True,
+               'excluded_at': txn.excluded_at.isoformat() if txn.excluded_at else None,
+               'excluded_reason': txn.excluded_reason}
+    txn.not_project_expense = False
+    txn.excluded_at = txn.excluded_by_user_id = txn.excluded_reason = None
+    txn.match_status = 'unmatched'
+    txn.updated_at   = datetime.utcnow()
+    _sync_claim_state(txn)
+    db.session.commit()
+    try:
+        _amt = float(txn.amount or 0)
+        _log_activity(
+            action='update', entity_type='transaction',
+            entity_id=txn.id,
+            entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
+            project_id=pid, before=_before,
+            after={'not_project_expense': False},
+            note=f'Recovered ${_amt:,.2f} — back in Unclaimed')
+    except Exception: pass
+    return jsonify({"ok": True, "transaction_id": tid})
+
+
+@app.route("/projects/<int:pid>/actuals/not-project.json", methods=["GET"])
+@login_required
+def actuals_not_project_json(pid):
+    """The recoverable Not project list: this project's user exclusions,
+    newest first, with who and when. Rows the flag hides for other reasons
+    (claimed by another project, absorbed backup receipts) are left out.
+    Legacy exclusions from before excluded_at existed sort last."""
+    _require_project_role(pid, 'viewer')
+    rows = (Transaction.query
+            .filter(Transaction.project_id == pid,
+                    Transaction.not_project_expense == True,  # noqa: E712
+                    db.or_(Transaction.claimed_by_project_id.is_(None),
+                           Transaction.claimed_by_project_id == pid),
+                    Transaction.backup_of_txn_id.is_(None))
+            .order_by(Transaction.excluded_at.desc().nullslast(),
+                      Transaction.updated_at.desc().nullslast(),
+                      Transaction.id.desc())
+            .limit(2000).all())
+    _uids = {t.excluded_by_user_id for t in rows if t.excluded_by_user_id}
+    _names = ({u.id: (u.name or u.email) for u in
+               User.query.filter(User.id.in_(_uids)).all()} if _uids else {})
+    return jsonify({"ok": True, "transactions": [{
+        "id": t.id,
+        "txn_date": t.txn_date,
+        "vendor": t.vendor,
+        "amount": float(t.amount or 0),
+        "is_expense": bool(t.is_expense),
+        "source": t.source,
+        "card_last4": t.card_last4,
+        "doc_upload_id": t.doc_upload_id,
+        "excluded_at": t.excluded_at.isoformat() if t.excluded_at else None,
+        "excluded_by": _names.get(t.excluded_by_user_id),
+        "excluded_reason": t.excluded_reason,
+    } for t in rows]})
 
 
 @app.route("/admin/cross-project-claim-backfill", methods=["GET", "POST"])
@@ -32310,6 +32396,12 @@ def _web_worker_essential_columns():
                 # Crew Database doc duplicate path (2026-10-08, alembic 0018).
                 "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS crew_dbx_path VARCHAR(500)",
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS no_charge_reason VARCHAR(300)",
+                # Recoverable Not-project + payment method (2026-10-30, alembic 0020).
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS excluded_at TIMESTAMP",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS excluded_by_user_id INTEGER REFERENCES users(id)",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS excluded_reason VARCHAR(300)",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20)",
+                "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS paid_by_crew_member_id INTEGER REFERENCES crew_member(id)",
                 """CREATE TABLE IF NOT EXISTS budget_lever (
                      id            SERIAL PRIMARY KEY,
                      budget_id     INTEGER NOT NULL REFERENCES budget(id) ON DELETE CASCADE,
