@@ -27,6 +27,18 @@ from app import (app, _absorb_receipt_as_backup, _actuals_vendor_suggestions, _a
 from models import (Budget, BudgetLine, DocUpload, ProjectAccess, ProjectSheet, Transaction, TransactionDupDismissal, TransactionSplit, User, db)
 
 
+def _split_parent_error(txn):
+    """The 409 text for coding a container row: a transaction_split parent
+    (Phase 2) is cleared with DELETE …/split; an itemized document from the
+    doc modal."""
+    if TransactionSplit.query.filter_by(transaction_id=txn.id).first() is not None:
+        return ("This transaction is split across lines — the splits carry the "
+                "coding. Remove the split to code it as one line.")
+    return ("This document is itemized into line items — the sublines carry "
+            "the coding. Open the doc and clear the itemization to code it as "
+            "one line.")
+
+
 def _guard_doc_expense(txn, data):
     """Actualizing 2.0 A1 (2026-07-20): a doc-born row is a DOCUMENT, not an
     expense until an explicit user action makes it one.
@@ -80,9 +92,7 @@ def actuals_set_line(pid, tid):
     # Itemized container: its coding lives on the sublines — re-coding it would
     # double-count the document. (Review fix 2026-07.)
     if raw and _txn_is_split_parent(txn):
-        return jsonify({"error": "This document is itemized into line items — the "
-                                 "sublines carry the coding. Open the doc and clear "
-                                 "the itemization to code it as one line."}), 409
+        return jsonify({"error": _split_parent_error(txn)}), 409
 
     # Empty string / None / 0 = clear the link.
     if not raw:
@@ -873,6 +883,12 @@ def actuals_line_totals_batch(pid):
                             _exclude_estimate_linked_txns_clause())
                     .group_by(Transaction.budget_line_id).all()):
                 sums_by_lid[lid] = float(amt or 0)
+            # Transaction splits (Phase 2, 2026-10-30): same shared helper as
+            # budget_view / _actuals_by_section_code, so a refreshed cell
+            # equals the page-load value.
+            from actuals import split_sums_by_line as _split_by_line_lt
+            for lid, amt in _split_by_line_lt(pid, list(all_sib_ids)).items():
+                sums_by_lid[lid] = sums_by_lid.get(lid, 0.0) + amt
         for rl in req_lines:
             sibs = sib_by_key.get(key_by_req[rl.id], {rl.id})
             out_lines[str(rl.id)] = round(sum(sums_by_lid.get(s, 0.0) for s in sibs), 2)
@@ -1397,9 +1413,7 @@ def actuals_set_coa(pid, tid):
     # Itemized container: sublines carry the coding — block re-coding (incl.
     # not_project) so the doc can't double-count. Clearing stays allowed.
     if code_raw and _txn_is_split_parent(txn):
-        return jsonify({"error": "This document is itemized into line items — the "
-                                 "sublines carry the coding. Open the doc and clear "
-                                 "the itemization to code it as one line."}), 409
+        return jsonify({"error": _split_parent_error(txn)}), 409
     _coa_before = {'account_code': txn.account_code,
                    'account_code_name': txn.account_code_name,
                    'not_project_expense': bool(txn.not_project_expense)}
@@ -3763,3 +3777,549 @@ def actuals_import_bank_csv(pid):
     return jsonify(report)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# ACTUALS_HANDOFF Phase 2 (2026-10-30): the new workspace payload, splits and
+# the hand-typed manual expense. Pure rules (split validation, manual-expense
+# validation, row flags, qbo_txn_id grouping) live in actuals.py and are
+# unit-tested; this file only wires them to the request and the database.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _ws_line_label(ln):
+    return f"{ln.account_code} · {(ln.description or ln.account_name or '')[:50]}"
+
+
+def _ws_working_budget_and_lines(pid):
+    """The current Working budget (falling back to the current Estimated,
+    like _line_picker_groups) and its lines keyed by id."""
+    budget, _groups = _line_picker_groups(pid)
+    if not budget:
+        return None, {}
+    return budget, {l.id: l for l in budget.lines}
+
+
+def _ws_line_estimates(budget, lines):
+    """Live estimate per line, same calc the budget grid uses (via
+    app._po_live_line_totals). Falls back to the stored column."""
+    try:
+        from app import _po_live_line_totals
+        return _po_live_line_totals(budget, list(lines), budget.project_id)
+    except Exception as _e:
+        logging.warning(f"[workspace] live estimates failed, using stored: {_e}")
+        return {l.id: float(l.estimated_total or 0) for l in lines}
+
+
+@app.route("/projects/<int:pid>/actuals/workspace.json", methods=["GET"])
+@login_required
+def actuals_workspace_json(pid):
+    """ONE payload for the new Actuals workspace (Phase 2, 2026-10-30), built
+    from the same reads as reconcile_workspace_json (which /register keeps
+    until Phase 3 retires it).
+
+      transactions      — every pool row of this project, one per QBO charge
+                          (sibling rows of the same qbo_txn_id collapse to
+                          one; see actuals.group_pool_rows), each with its
+                          suggested line, assigned line, splits, payee, the
+                          excluded info and every red / yellow flag computed
+                          server-side (actuals.compute_row_flags).
+      receipts          — DocUpload receipts / invoices with no transaction
+                          (the Available Receipts inbox).
+      not_project       — this project's excluded rows, newest first.
+      claimed_elsewhere — rows another project claimed (project name only).
+      sync              — QBO connection / window / last-sync status.
+      counts            — the six views: unclaimed, assigned, needs_backup,
+                          receipts, not_project, sync.
+      budget            — sections and lines of the current Working budget
+                          with estimate, actual (counts_as_spend + splits),
+                          variance and is_drop_target.
+    Runs the heuristic + incremental AI matchers first, fail-open, like the
+    register does — suggestions are shown, never applied."""
+    from actuals import (run_auto_match, counts_as_spend, signed_amount_value,
+                         split_sums_by_line, group_pool_rows, compute_row_flags)
+    from models import ExpenseEvidence
+    from budget_calc import FP_COA_NAMES as _WS_COA
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'viewer')
+    try:
+        run_auto_match(pid)
+    except Exception as _e:
+        logging.warning(f"[workspace.json] auto-match failed (continuing): {_e}")
+    try:
+        _ai_match_batch(pid, limit=8)
+    except Exception as _ae:
+        logging.warning(f"[workspace.json] AI batch failed (continuing): {_ae}")
+
+    budget, lines_by_id = _ws_working_budget_and_lines(pid)
+    _proj_names = {}
+    def _proj_name(_ppid):
+        if _ppid not in _proj_names:
+            _pp = ProjectSheet.query.get(_ppid)
+            _proj_names[_ppid] = _pp.name if _pp else f'project #{_ppid}'
+        return _proj_names[_ppid]
+    _any_line = {}
+    def _line_label_any(lid):
+        """Label for a line that may sit on an older budget."""
+        if lid in lines_by_id:
+            return _ws_line_label(lines_by_id[lid])
+        if lid not in _any_line:
+            _l = BudgetLine.query.get(lid)
+            _any_line[lid] = _ws_line_label(_l) if _l else f"line #{lid}"
+        return _any_line[lid]
+
+    docs = {d.id: d for d in DocUpload.query.filter(
+        DocUpload.project_id == pid,
+        DocUpload.status.notin_(('deleted',))).all()}
+    def _doc_brief(d):
+        return {"doc_id": d.id,
+                "name": (d.filed_filename or d.original_filename or f"Doc #{d.id}")[:120],
+                "vendor": d.vendor,
+                "amount": float(d.amount) if d.amount is not None else None,
+                "date": d.doc_date.isoformat() if d.doc_date else None,
+                "category": d.category,
+                "dup_pending": bool(d.is_duplicate and (d.status or '') != 'duplicate'),
+                "thumb": f"/docs/upload/{d.id}/thumb"}
+
+    # Every top-level money row (same selection as reconcile_workspace_json):
+    # electronic + hand-typed; doc-born rows only once activated; never
+    # split children or backup rows.
+    txns = (Transaction.query
+            .filter(Transaction.project_id == pid,
+                    db.or_(Transaction.source.is_(None),
+                           Transaction.source.notin_(('doc_upload', 'invoice_split'))),
+                    Transaction.backup_of_txn_id.is_(None))
+            .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
+            .all())
+    _activated_docs = (Transaction.query
+                       .filter(Transaction.project_id == pid,
+                               Transaction.source == 'doc_upload',
+                               Transaction.activated_at.isnot(None),
+                               Transaction.backup_of_txn_id.is_(None))
+                       .all())
+    txns = txns + _activated_docs
+    txn_ids = [t.id for t in txns]
+    # Splits, evidence, itemized children, crew names — bulk reads.
+    splits_by_txn = {}
+    if txn_ids:
+        for sp in TransactionSplit.query.filter(
+                TransactionSplit.transaction_id.in_(txn_ids)).all():
+            splits_by_txn.setdefault(sp.transaction_id, []).append(sp)
+    evidence_txn_ids = set()
+    if txn_ids:
+        evidence_txn_ids = {r[0] for r in db.session.query(ExpenseEvidence.transaction_id)
+                            .filter(ExpenseEvidence.transaction_id.in_(txn_ids)).all()}
+    kids_by_parent = {}
+    for k in Transaction.query.filter(Transaction.project_id == pid,
+                                      Transaction.source == 'invoice_split').all():
+        if k.parent_transaction_id:
+            kids_by_parent.setdefault(k.parent_transaction_id, []).append(k)
+    crew_names = {}
+    _crew_ids = {t.paid_by_crew_member_id for t in txns if getattr(t, 'paid_by_crew_member_id', None)}
+    if _crew_ids:
+        from models import CrewMember
+        crew_names = {c.id: c.name for c in CrewMember.query.filter(CrewMember.id.in_(list(_crew_ids))).all()}
+    # Possible duplicates: same |amount| + date + vendor + card, undismissed
+    # (the cheap tier of actuals_scan_dup_transactions).
+    import re as _re_ws
+    from collections import defaultdict as _dd_ws
+    dismissed = {d.dup_key for d in TransactionDupDismissal.query.filter_by(project_id=pid).all()}
+    _by_attr = _dd_ws(list)
+    for t in txns:
+        if t.amount is None or not t.txn_date or not t.vendor or not t.card_last4 or t.not_project_expense:
+            continue
+        akey = '%.2f|%s|%s|%s' % (abs(float(t.amount)), t.txn_date[:10],
+                                  _re_ws.sub(r'[^a-z0-9]', '', (t.vendor or '').lower())[:18],
+                                  t.card_last4)
+        _by_attr[akey].append(t)
+    dup_ids = set()
+    for akey, members in _by_attr.items():
+        if len(members) < 2 or ('attr:' + akey) in dismissed:
+            continue
+        if all(m.split_group for m in members) and len({m.split_group for m in members}) == 1:
+            continue
+        dup_ids.update(m.id for m in members)
+
+    for t in txns:
+        t.has_splits = bool(splits_by_txn.get(t.id))
+    grouped = group_pool_rows(txns)
+
+    transactions, not_project, claimed_elsewhere = [], [], []
+    matched_doc_ids = set()
+    for rep, members in grouped:
+        t = rep
+        _cl = getattr(t, 'claimed_by_project_id', None)
+        if t.not_project_expense and _cl and _cl != pid:
+            claimed_elsewhere.append({
+                "id": t.id, "vendor": t.vendor or '—',
+                "amount": signed_amount_value(t.amount, t.is_expense),
+                "date": (t.txn_date or '')[:10],
+                "claimed_by": _proj_name(_cl)})
+            continue
+        _sps = splits_by_txn.get(t.id, [])
+        splits = [{"id": sp.id, "budget_line_id": sp.budget_line_id,
+                   "label": _line_label_any(sp.budget_line_id) if sp.budget_line_id else None,
+                   "amount": float(sp.amount or 0), "note": sp.note} for sp in _sps]
+        _kids = kids_by_parent.get(t.id)
+        itemized = [{"id": k.id, "desc": (k.note or '')[:90],
+                     "amount": float(k.amount or 0),
+                     "budget_line_id": k.budget_line_id,
+                     "label": (_line_label_any(k.budget_line_id) if k.budget_line_id else None)}
+                    for k in _kids] if _kids else []
+        doc = docs.get(t.doc_upload_id) if t.doc_upload_id else None
+        receipt = None
+        suggestion_doc = None
+        if doc is not None:
+            if t.match_status == 'confirmed':
+                receipt = _doc_brief(doc)
+                matched_doc_ids.add(doc.id)
+            elif t.match_status == 'suggested':
+                suggestion_doc = {**_doc_brief(doc),
+                                  "confidence": float(t.match_confidence or 0)}
+        suggested_line = None
+        if getattr(t, 'suggested_budget_line_id', None):
+            suggested_line = {"id": t.suggested_budget_line_id,
+                              "label": _line_label_any(t.suggested_budget_line_id),
+                              "confidence": float(t.ai_code_confidence or t.match_confidence or 0),
+                              "reason": getattr(t, 'ai_code_reason', None)}
+        elif getattr(t, 'ai_suggested_code', None):
+            suggested_line = {"id": None, "section": t.ai_suggested_code,
+                              "label": f"{t.ai_suggested_code} · {t.ai_suggested_code_name or _WS_COA.get(t.ai_suggested_code, '')}",
+                              "confidence": float(t.ai_code_confidence or 0),
+                              "reason": getattr(t, 'ai_code_reason', None)}
+        assigned_line = None
+        if t.budget_line_id:
+            assigned_line = {"id": t.budget_line_id, "label": _line_label_any(t.budget_line_id)}
+        section_only = None
+        if not t.budget_line_id and t.account_code:
+            section_only = {"code": t.account_code,
+                            "label": f"{t.account_code} · {_WS_COA.get(t.account_code, '')}"}
+        has_backup = (t.id in evidence_txn_ids
+                      or bool(getattr(t, 'no_charge_reason', None))
+                      or (receipt is not None))
+        flag_input = {
+            "budget_line_id": t.budget_line_id,
+            # Section-only coding and an itemized parent count as assigned.
+            "assigned": bool(t.budget_line_id or splits or section_only or itemized),
+            "splits": splits, "split_sum_ok": None,
+            "amount": float(t.amount or 0), "is_expense": bool(t.is_expense),
+            "has_backup": has_backup,
+            "receipt_amount": (receipt or {}).get("amount"),
+            "receipt_date": (receipt or {}).get("date"),
+            "txn_date": (t.txn_date or '')[:10] or None,
+            "possible_duplicate": t.id in dup_ids,
+            "payment_method": getattr(t, 'payment_method', None),
+            "not_project_expense": bool(t.not_project_expense),
+        }
+        flags = compute_row_flags(flag_input)
+        excluded = _txn_excluded_info(t)
+        row = {
+            "id": t.id,
+            "sibling_ids": [m.id for m in members if m.id != t.id],
+            "qbo_txn_id": t.qbo_txn_id, "qbo_txn_type": t.qbo_txn_type,
+            "date": (t.txn_date or '')[:10],
+            "vendor": t.vendor or '—',
+            "amount": signed_amount_value(t.amount, t.is_expense),
+            "is_expense": bool(t.is_expense),
+            "card_last4": getattr(t, 'card_last4', None),
+            "source": ('receipt' if t.source == 'doc_upload' else (t.source or 'manual_entry')),
+            "memo": (t.note or '')[:140] or (t.qbo_category or ''),
+            "qbo_category": t.qbo_category,
+            "match_status": t.match_status,
+            "suggested_line": suggested_line,
+            "assigned_line": assigned_line,
+            "section_only": section_only,
+            "splits": splits,
+            "itemized": itemized,
+            "receipt": receipt,
+            "receipt_suggestion": suggestion_doc,
+            "has_backup": has_backup,
+            "no_charge_reason": getattr(t, 'no_charge_reason', None),
+            "payment_method": getattr(t, 'payment_method', None),
+            "payee": (crew_names.get(t.paid_by_crew_member_id)
+                      if getattr(t, 'paid_by_crew_member_id', None) else None),
+            "paid_by_crew_member_id": getattr(t, 'paid_by_crew_member_id', None),
+            "flags": flags,
+            "excluded": excluded,
+            "reviewed": bool(getattr(t, 'reviewed_at', None)),
+        }
+        if t.not_project_expense:
+            not_project.append(row)
+        else:
+            transactions.append(row)
+
+    # Receipts inbox: proof docs with NO transaction behind them — not
+    # matched to a charge and not activated into an expense. A doc whose
+    # row is claimed elsewhere is a conflict, shown with the project name.
+    _doc_txns = {}
+    for dt in Transaction.query.filter(Transaction.project_id == pid,
+                                       Transaction.source == 'doc_upload',
+                                       Transaction.doc_upload_id.isnot(None)).all():
+        _doc_txns.setdefault(dt.doc_upload_id, dt)
+    receipts = []
+    for d in docs.values():
+        if (d.category or '') not in ('receipt', 'invoice'):
+            continue
+        if (d.status or '') == 'duplicate' or d.id in matched_doc_ids:
+            continue
+        dt = _doc_txns.get(d.id)
+        if dt is not None and (dt.activated_at is not None or dt.not_project_expense):
+            continue
+        r = {**_doc_brief(d), "txn_id": (dt.id if dt is not None else None),
+             "status": d.status}
+        if dt is not None and dt.match_status == 'suggested' and dt.doc_upload_id == d.id:
+            r["suggested_charge_id"] = None
+        # A charge in this pool pointing at this doc as a suggestion.
+        for row in transactions:
+            if row.get("receipt_suggestion") and row["receipt_suggestion"]["doc_id"] == d.id:
+                r["suggested_charge_id"] = row["id"]
+                break
+        _cl = getattr(dt, 'claimed_by_project_id', None) if dt is not None else None
+        if _cl and _cl != pid:
+            r["conflict"] = {"claimed_by": _proj_name(_cl)}
+        receipts.append(r)
+    receipts.sort(key=lambda r: (r.get("date") or ''), reverse=True)
+    not_project.sort(key=lambda r: ((r["excluded"] or {}).get("at") or '',
+                                    r["date"] or '', r["id"]), reverse=True)
+    transactions.sort(key=lambda r: (r["date"] or '', r["id"]), reverse=True)
+
+    # Budget side — sections and lines of the current Working with estimate,
+    # actual (counts_as_spend direct sums + splits), variance.
+    sections = []
+    if budget:
+        _lines = list(lines_by_id.values())
+        _ests = _ws_line_estimates(budget, _lines)
+        _parents = _split_parent_id_set(pid)
+        direct = {}
+        try:
+            for lid, amt in (db.session.query(Transaction.budget_line_id, func.sum(_signed_amount()))
+                             .filter(Transaction.project_id == pid,
+                                     Transaction.budget_line_id.in_(list(lines_by_id.keys()) or [-1]),
+                                     counts_as_spend(_parents),
+                                     _exclude_estimate_linked_txns_clause())
+                             .group_by(Transaction.budget_line_id).all()):
+                direct[lid] = float(amt or 0)
+            for lid, amt in split_sums_by_line(pid, list(lines_by_id.keys())).items():
+                direct[lid] = direct.get(lid, 0.0) + amt
+        except Exception as _re:
+            logging.warning(f"[workspace.json] budget rollup failed: {_re}")
+        from app import _section_for_code
+        by_sec = {}
+        for ln in sorted(_lines, key=lambda l: (l.account_code or 0, l.sort_order or 0, l.id)):
+            try:
+                sec = _section_for_code(int(ln.account_code))
+            except (TypeError, ValueError):
+                sec = None
+            est = round(float(_ests.get(ln.id, 0) or 0), 2)
+            act = round(direct.get(ln.id, 0.0), 2)
+            by_sec.setdefault(sec, []).append({
+                "id": ln.id, "account_code": ln.account_code,
+                "label": _ws_line_label(ln),
+                "description": ln.description or ln.account_name or '',
+                "is_labor": bool(ln.is_labor),
+                "line_tag": ln.line_tag,
+                "estimate": est, "actual": act,
+                "variance": round(est - act, 2),
+                "is_drop_target": not bool(ln.sync_omit) and ln.line_tag not in ('fringe_rollup',),
+            })
+        _order = {code: i for i, (code, _n) in enumerate(FP_COA_SECTIONS)}
+        for sec in sorted(by_sec, key=lambda c: (_order.get(c, 9999), c or 0)):
+            rows = by_sec[sec]
+            sections.append({
+                "code": sec, "name": (_section_name(sec) if sec is not None else 'Other'),
+                "estimate": round(sum(r["estimate"] for r in rows), 2),
+                "actual": round(sum(r["actual"] for r in rows), 2),
+                "variance": round(sum(r["variance"] for r in rows), 2),
+                "is_drop_target": sec is not None,
+                "lines": rows})
+
+    _prj = ProjectSheet.query.get(pid)
+    import json as _json_ws
+    try:
+        _acct_n = len(_json_ws.loads(_prj.qbo_account_ids or '[]'))
+    except Exception:
+        _acct_n = 0
+    from models import QBOConnection as _WSQC
+    try:
+        _qc = _WSQC.query.first()
+    except Exception:
+        _qc = None
+    sync = {"connected": bool(_qc and _qc.refresh_token),
+            "accounts": _acct_n,
+            "last_synced": (_prj.last_synced.isoformat(timespec='minutes') if _prj.last_synced else None),
+            "last_cdc_sync": (_prj.last_cdc_sync.isoformat(timespec='minutes')
+                              if getattr(_prj, 'last_cdc_sync', None) else None),
+            "sync_through": _prj.sync_through,
+            "auto": "twice a day"}
+    n_unclaimed = sum(1 for r in transactions if 'no_line' in r["flags"]["red"])
+    n_assigned = len(transactions) - n_unclaimed
+    n_needs_backup = sum(1 for r in transactions if 'needs_backup' in r["flags"]["red"])
+    counts = {"unclaimed": n_unclaimed, "assigned": n_assigned,
+              "needs_backup": n_needs_backup, "receipts": len(receipts),
+              "not_project": len(not_project),
+              "sync": (0 if sync["connected"] else 1),
+              "claimed_elsewhere": len(claimed_elsewhere)}
+    return jsonify({"ok": True, "project_id": pid,
+                    "budget_id": (budget.id if budget else None),
+                    "transactions": transactions, "receipts": receipts,
+                    "not_project": not_project,
+                    "claimed_elsewhere": claimed_elsewhere,
+                    "sync": sync, "counts": counts,
+                    "budget": {"sections": sections}})
+
+
+@app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/split", methods=["POST", "DELETE"])
+@login_required
+def actuals_split_transaction(pid, tid):
+    """Allocate one transaction across several lines of this project's
+    current Working budget (Concur's Allocate; Phase 2, 2026-10-30).
+
+    POST body {splits: [{budget_line_id, amount, note?}, ...]}: every line
+    must be on the current Working budget, the amounts must sum to the
+    transaction amount to the cent (else 400 with the delta), and the save
+    REPLACES any existing splits. The transaction's own budget_line_id /
+    account_code go NULL — it is now a split parent that reaches rollups
+    only through its splits (actuals.split_sums_by_line). Claim-synced and
+    logged with an undo payload.
+
+    DELETE removes the splits; the transaction returns to Unclaimed."""
+    from actuals import validate_splits
+    txn = Transaction.query.filter_by(id=tid, project_id=pid).first_or_404()
+    _require_project_role(pid, 'editor')
+    _old = [{"budget_line_id": sp.budget_line_id, "amount": float(sp.amount or 0),
+             "note": sp.note} for sp in TransactionSplit.query.filter_by(transaction_id=tid).all()]
+    _before = {'budget_line_id': txn.budget_line_id, 'account_code': txn.account_code,
+               'account_code_name': txn.account_code_name,
+               'not_project_expense': bool(txn.not_project_expense), 'splits': _old}
+    _label = (txn.vendor or txn.note or f'Txn #{txn.id}')[:80]
+    _amt = float(txn.amount or 0)
+
+    if request.method == "DELETE":
+        if not _old:
+            return jsonify({"ok": True, "already": True, "transaction": _txn_state_json(txn)})
+        TransactionSplit.query.filter_by(transaction_id=tid).delete(synchronize_session=False)
+        txn.updated_at = datetime.utcnow()
+        _sync_claim_state(txn)
+        db.session.commit()
+        try:
+            _log_activity(action='update', entity_type='transaction', entity_id=txn.id,
+                          entity_label=_label, project_id=pid,
+                          before=_before, after={**_before, 'splits': []},
+                          note=f'Removed the split on ${_amt:,.2f} ({len(_old)} lines)')
+        except Exception: pass
+        return jsonify({"ok": True, "transaction": _txn_state_json(txn), "splits": []})
+
+    _ge = _guard_doc_expense(txn, {})
+    if _ge is not None:
+        return _ge
+    if txn.source == 'invoice_split' and txn.parent_transaction_id:
+        return jsonify({"error": "This is one line of an itemized document — "
+                                 "split the parent document instead."}), 409
+    if db.session.query(Transaction.id).filter_by(
+            parent_transaction_id=txn.id, source='invoice_split').first() is not None:
+        return jsonify({"error": "This document is itemized into line items — "
+                                 "clear the itemization before splitting it."}), 409
+    body = request.get_json(silent=True) or {}
+    budget, lines_by_id = _ws_working_budget_and_lines(pid)
+    if not budget:
+        return jsonify({"error": "This project has no current budget to split against."}), 400
+    clean, err = validate_splits(_amt, body.get('splits'), set(lines_by_id.keys()))
+    if err:
+        return jsonify({"error": err["error"], "delta": err["delta"],
+                        "transaction_amount": _amt}), 400
+    TransactionSplit.query.filter_by(transaction_id=tid).delete(synchronize_session=False)
+    _now = datetime.utcnow()
+    for row in clean:
+        db.session.add(TransactionSplit(
+            transaction_id=tid, budget_line_id=row["budget_line_id"],
+            project_id=pid, amount=row["amount"], note=row["note"],
+            created_at=_now, created_by_user_id=current_user.id))
+    txn.budget_line_id    = None
+    txn.account_code      = None
+    txn.account_code_name = None
+    txn.not_project_expense = False
+    txn.excluded_at = txn.excluded_by_user_id = txn.excluded_reason = None
+    txn.match_status = 'confirmed' if txn.doc_upload_id else txn.match_status
+    txn.updated_at = _now
+    _clear_ai_code_suggestion(txn)
+    _sync_claim_state(txn)
+    db.session.commit()
+    try:
+        _log_activity(action='update', entity_type='transaction', entity_id=txn.id,
+                      entity_label=_label, project_id=pid,
+                      before=_before,
+                      after={'budget_line_id': None, 'account_code': None,
+                             'account_code_name': None, 'not_project_expense': False,
+                             'splits': clean},
+                      note=f'Split ${_amt:,.2f} across {len(clean)} lines: '
+                           + ', '.join(f'{_ws_line_label(lines_by_id[r["budget_line_id"]])} ${r["amount"]:,.2f}'
+                                       for r in clean)[:400])
+    except Exception: pass
+    out = [{"id": sp.id, "budget_line_id": sp.budget_line_id,
+            "label": _ws_line_label(lines_by_id[sp.budget_line_id]),
+            "amount": float(sp.amount or 0), "note": sp.note}
+           for sp in TransactionSplit.query.filter_by(transaction_id=tid)
+                                           .order_by(TransactionSplit.id).all()]
+    return jsonify({"ok": True, "transaction": _txn_state_json(txn), "splits": out})
+
+
+@app.route("/projects/<int:pid>/actuals/manual-expense", methods=["POST"])
+@login_required
+def actuals_manual_expense(pid):
+    """Hand-typed manual expense with no receipt and no QBO charge (Phase 2,
+    2026-10-30 — the rare path). Body {vendor, amount, txn_date,
+    budget_line_id?, payment_method (required), paid_by_crew_member_id?,
+    note?, reason?}; reason is required when payment_method is cash
+    (actuals.validate_manual_expense holds the rules). Creates
+    source='manual_entry', activated_at=now, match_status='unmatched'
+    (a receipt may still arrive), assigns the line through
+    link_transaction_to_line when given, and returns the row. It lands in
+    Needs backup until a receipt is linked or the reason stands in."""
+    from actuals import validate_manual_expense, link_transaction_to_line
+    ProjectSheet.query.get_or_404(pid)
+    _require_project_role(pid, 'editor')
+    clean, err = validate_manual_expense(request.get_json(silent=True) or {})
+    if err:
+        return jsonify({"error": err}), 400
+    if clean["paid_by_crew_member_id"]:
+        from models import CrewMember
+        if CrewMember.query.get(clean["paid_by_crew_member_id"]) is None:
+            return jsonify({"error": "paid_by_crew_member_id: no such crew member."}), 400
+    if clean["budget_line_id"]:
+        _b, _lines = _ws_working_budget_and_lines(pid)
+        if clean["budget_line_id"] not in _lines:
+            return jsonify({"error": "budget_line_id is not on this project's "
+                                     "current Working budget."}), 400
+    _now = datetime.utcnow()
+    txn = Transaction(
+        project_id=pid, source='manual_entry',
+        vendor=clean["vendor"], amount=clean["amount"], is_expense=clean["is_expense"],
+        txn_date=clean["txn_date"], note=clean["note"],
+        payment_method=clean["payment_method"],
+        paid_by_crew_member_id=clean["paid_by_crew_member_id"],
+        no_charge_reason=clean["reason"],
+        activated_at=_now, match_status='unmatched',
+        created_via_user_id=current_user.id, created_at=_now, updated_at=_now)
+    db.session.add(txn)
+    db.session.commit()
+    try:
+        _log_activity(action='create', entity_type='transaction', entity_id=txn.id,
+                      entity_label=(txn.vendor or f'Txn #{txn.id}')[:80], project_id=pid,
+                      after={'vendor': txn.vendor, 'amount': float(txn.amount or 0),
+                             'txn_date': txn.txn_date, 'payment_method': txn.payment_method,
+                             'paid_by_crew_member_id': txn.paid_by_crew_member_id,
+                             'no_charge_reason': txn.no_charge_reason},
+                      note=f'Manual expense ${float(txn.amount or 0):,.2f} {txn.vendor} '
+                           f'({txn.payment_method}' + (f' — {txn.no_charge_reason}' if txn.no_charge_reason else '') + ')')
+    except Exception: pass
+    if clean["budget_line_id"]:
+        try:
+            link_transaction_to_line(txn.id, clean["budget_line_id"], user_id=current_user.id)
+            db.session.refresh(txn)
+        except Exception as e:
+            logging.exception(f"[manual-expense] link failed: {e}")
+            return jsonify({"ok": True, "created": True, "transaction": _txn_state_json(txn),
+                            "warning": f"Expense saved but the line could not be assigned: {e}"}), 201
+    out = _txn_state_json(txn)
+    out.update({"source": txn.source, "txn_date": txn.txn_date, "note": txn.note,
+                "payment_method": txn.payment_method,
+                "paid_by_crew_member_id": txn.paid_by_crew_member_id,
+                "no_charge_reason": txn.no_charge_reason})
+    return jsonify({"ok": True, "created": True, "transaction": out}), 201

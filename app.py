@@ -6088,6 +6088,14 @@ def _actual_by_working_line(bid):
             .all()
         ):
             out[_lid] = float(_amt or 0)
+        # Transaction splits reach their lines through the shared helper
+        # (Phase 2, 2026-10-30) — same family as budget_view.direct_by_wid.
+        if _pid:
+            from actuals import split_sums_by_line as _split_by_line_fz
+            _lids = [r[0] for r in db.session.query(BudgetLine.id)
+                     .filter(BudgetLine.budget_id == bid).all()]
+            for _lid, _amt in _split_by_line_fz(_pid, _lids).items():
+                out[_lid] = out.get(_lid, 0.0) + _amt
     except Exception as _e:
         logging.warning(f"[create-working/freeze] per-line actual query failed: {_e}")
     return out
@@ -6981,7 +6989,8 @@ def _actuals_by_section_code(pid):
     # ONE spend predicate (actuals.counts_as_spend, 2026-10-30): the three
     # rollups used to filter differently (this one took un-activated receipt
     # rows, backup rows and itemized parents at full value).
-    from actuals import counts_as_spend as _cas
+    from actuals import (counts_as_spend as _cas,
+                         split_sums_by_section_code as _split_by_code)
     rows = (db.session.query(
                 func.coalesce(Transaction.account_code,
                               BudgetLine.account_code).label('code'),
@@ -6991,7 +7000,17 @@ def _actuals_by_section_code(pid):
                     _cas(_split_parent_id_set(pid)))
             .group_by('code')
             .all())
-    return {r[0]: float(r[1]) for r in rows if r[0] is not None}
+    out = {r[0]: float(r[1]) for r in rows if r[0] is not None}
+    # Transaction splits (Phase 2, 2026-10-30): a split parent has no line
+    # and no account_code, so it is absent above; its pieces land on their
+    # lines' sections here. One helper shared with budget_view and
+    # line-totals.json so the three rollups agree.
+    try:
+        for _code, _amt in _split_by_code(pid).items():
+            out[_code] = out.get(_code, 0.0) + _amt
+    except Exception as _spe:
+        logging.warning(f"[actuals/section-rollup] split sums failed: {_spe}")
+    return out
 
 
 def _signed_amount():
@@ -8152,6 +8171,18 @@ def budget_view(pid, bid):
                 _f = float(_amt or 0)
                 direct_by_wid[_wlid] = _f
                 actual_by_line_id[_wlid] = actual_by_line_id.get(_wlid, 0.0) + _f
+            # Transaction splits (Phase 2, 2026-10-30): a split parent has
+            # budget_line_id NULL, so it is missing from the join above; its
+            # pieces reach their lines through the shared split helper.
+            try:
+                from actuals import split_sums_by_line as _split_by_line
+                _direct_lids = [r[0] for r in db.session.query(BudgetLine.id)
+                                .filter(BudgetLine.budget_id.in_(_direct_bids)).all()]
+                for _wlid, _f in _split_by_line(pid, _direct_lids).items():
+                    direct_by_wid[_wlid] = direct_by_wid.get(_wlid, 0.0) + _f
+                    actual_by_line_id[_wlid] = actual_by_line_id.get(_wlid, 0.0) + _f
+            except Exception as _dse:
+                logging.warning(f"[actuals/direct] split sums failed: {_dse}")
             if direct_by_wid:
                 # Direct-coded spend means "actuals exist" even with no Actual
                 # clone — the Working/Estimated Actual column is gated on this.
@@ -11279,20 +11310,36 @@ def _txn_is_split_parent(txn):
     again would double-count the document. (Review fix 2026-07.)"""
     if txn is None:
         return False
-    return db.session.query(Transaction.id).filter_by(
-        parent_transaction_id=txn.id, source='invoice_split').first() is not None
+    if db.session.query(Transaction.id).filter_by(
+            parent_transaction_id=txn.id, source='invoice_split').first() is not None:
+        return True
+    # A transaction_split parent (Phase 2, 2026-10-30) is a container too:
+    # its coding lives on its splits. Re-coding it to one line would double
+    # count; DELETE /split clears the allocation first.
+    return db.session.query(TransactionSplit.id).filter_by(
+        transaction_id=txn.id).first() is not None
 
 
 def _split_parent_id_set(pid):
-    """Ids of all itemized-container transactions on a project (parents that
-    have invoice_split children). Used to keep containers out of 'Needs coding'
-    surfaces + AI code-suggestion passes. (Review fix 2026-07.)"""
+    """Ids of all container transactions on a project: itemized parents
+    (invoice_split children) AND transaction_split parents (Phase 2). Both
+    carry their coding on children / splits, so counts_as_spend() excludes
+    them and the 'Needs coding' surfaces + AI code-suggestion passes skip
+    them. (Review fix 2026-07; splits 2026-10-30.)"""
     rows = (db.session.query(Transaction.parent_transaction_id)
             .filter(Transaction.project_id == pid,
                     Transaction.source == 'invoice_split',
                     Transaction.parent_transaction_id.isnot(None))
             .distinct().all())
-    return {r[0] for r in rows}
+    out = {r[0] for r in rows}
+    try:
+        for (_tid,) in (db.session.query(TransactionSplit.transaction_id)
+                        .join(Transaction, Transaction.id == TransactionSplit.transaction_id)
+                        .filter(Transaction.project_id == pid).distinct().all()):
+            out.add(_tid)
+    except Exception as _spe:
+        logging.warning(f"[split-parents] transaction_split lookup failed: {_spe}")
+    return out
 
 
 def _clear_ai_code_suggestion(txn):
@@ -21101,15 +21148,43 @@ def doc_log_expense(uid):
     _detail = (_body.get('detail') or '').strip()
     _kinds = {'cash': 'cash', 'check': 'check',
               'other_card': 'other card', 'other': 'other'}
+    # Phase 2 (2026-10-30): the modal now sends payment_method (company_card
+    # / cash / personal_card / check / ach / other) and, when someone other
+    # than the company paid, paid_by_crew_member_id. The older reason_kind
+    # shape keeps working: it maps cash→cash, check→check,
+    # other_card→personal_card, other→other when payment_method is absent.
+    from actuals import PAYMENT_METHODS as _PMS, REASON_KIND_TO_PAYMENT_METHOD as _RK2PM
+    _pm = (_body.get('payment_method') or '').strip().lower() or None
+    if _pm is not None and _pm not in _PMS:
+        return jsonify({"error": "payment_method must be one of: "
+                                 + ", ".join(_PMS), "needs_reason": True}), 400
+    if _pm is None and _kind in _RK2PM:
+        _pm = _RK2PM[_kind]
+    if not _kind and _pm:
+        # payment_method alone is a complete answer; derive the reason text.
+        _kind = {'cash': 'cash', 'check': 'check', 'personal_card': 'other_card',
+                 'company_card': 'other', 'ach': 'other', 'other': 'other'}[_pm]
+        if _pm in ('company_card', 'ach') and not _detail:
+            _detail = _pm.replace('_', ' ')
     if _kind not in _kinds:
         return jsonify({"error": "A reason is required: why is there no "
                                  "electronic charge for this? (cash / check / "
-                                 "other_card / other)",
+                                 "other_card / other, or a payment_method)",
                         "needs_reason": True}), 400
-    if _kind in ('other_card', 'other') and not _detail:
+    _who = _body.get('paid_by_crew_member_id')
+    try:
+        _who = int(_who) if _who not in (None, '', 0, '0') else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "paid_by_crew_member_id must be an integer."}), 400
+    if _who is not None and CrewMember.query.get(_who) is None:
+        return jsonify({"error": "paid_by_crew_member_id: no such crew member."}), 400
+    if _kind in ('other_card', 'other') and not _detail and _who is None:
         return jsonify({"error": "Add a short detail — which card, or what "
                                  "the situation is.",
                         "needs_reason": True}), 400
+    if _who is not None and not _detail:
+        _cmw = CrewMember.query.get(_who)
+        _detail = f"paid by {_cmw.name}" if _cmw else _detail
     _reason = (_kinds[_kind] + (f" — {_detail}" if _detail else ""))[:300]
     txn = (Transaction.query
            .filter_by(doc_upload_id=uid, source='doc_upload')
@@ -21134,20 +21209,30 @@ def doc_log_expense(uid):
     # is the permanent flag the register shows.
     txn.match_status = 'confirmed'
     txn.no_charge_reason = _reason
+    if _pm:
+        txn.payment_method = _pm
+    if _who is not None:
+        txn.paid_by_crew_member_id = _who
     db.session.commit()
     try:
         _label = (doc.vendor or doc.filed_filename or f'Doc #{uid}')[:80]
         _log_activity(action='update', entity_type='transaction',
                       entity_id=txn.id, entity_label=_label,
                       project_id=pid,
+                      after={'payment_method': txn.payment_method,
+                             'paid_by_crew_member_id': txn.paid_by_crew_member_id,
+                             'no_charge_reason': txn.no_charge_reason},
                       note=f'Logged {doc.category} as a standalone expense '
-                           f'(cash/check — no charge to match)'
+                           f'({txn.payment_method or "cash/check"} — no charge to match)'
                            + (' — expense row created' if created else ''))
     except Exception:
         pass
     return jsonify({"ok": True, "transaction_id": txn.id,
                     "created": created, "already_activated": already,
-                    "amount": float(txn.amount or 0)})
+                    "amount": float(txn.amount or 0),
+                    "payment_method": txn.payment_method,
+                    "paid_by_crew_member_id": txn.paid_by_crew_member_id,
+                    "no_charge_reason": txn.no_charge_reason})
 
 
 @app.route("/docs/upload/<int:uid>/create-po", methods=["POST"])
