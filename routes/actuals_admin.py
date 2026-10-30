@@ -13,7 +13,7 @@ from flask import (jsonify, redirect, render_template, request, url_for)
 from flask_login import (current_user, login_required)
 
 from app import (app, _NON_LEDGER_DOC_CATEGORIES, _log_activity, _sync_claim_state, admin_required, super_admin_required)
-from models import (DocUpload, ProjectSheet, Transaction, db)
+from models import (DocUpload, ProjectSheet, Transaction, TransactionSplit, db)
 
 
 @app.route("/admin/cross-project-claim-backfill", methods=["GET", "POST"])
@@ -479,3 +479,174 @@ def admin_cleanup_estimate_txns():
     return render_template_string(HTML, rows=rows)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# ACTUALS_HANDOFF Phase 2 (2026-10-30): the whole pool across projects.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _admin_pool_query_params():
+    """Parse the /admin/transactions filters once for both the page and the
+    JSON. Returns a dict; bad numbers fall back to defaults."""
+    a = request.args
+    def _int(k, default, lo=None, hi=None):
+        try:
+            v = int(a.get(k, default))
+        except (TypeError, ValueError):
+            v = default
+        if lo is not None: v = max(lo, v)
+        if hi is not None: v = min(hi, v)
+        return v
+    def _flag(k, default=False):
+        v = (a.get(k) or '').strip().lower()
+        if v == '':
+            return default
+        return v in ('1', 'true', 'yes', 'on')
+    return {"q": (a.get('q') or '').strip()[:120],
+            "project_id": _int('project_id', 0) or None,
+            "card": (a.get('card') or '').strip()[:8] or None,
+            "from": (a.get('from') or '').strip()[:10] or None,
+            "to": (a.get('to') or '').strip()[:10] or None,
+            "hide_claimed": _flag('hide_claimed', False),
+            "hide_not_project": _flag('hide_not_project', False),
+            "limit": _int('limit', 200, 1, 1000),
+            "offset": _int('offset', 0, 0)}
+
+
+def _admin_pool_rows(p):
+    """The pool, one row per QBO charge (manual / CSV rows by id), filtered
+    and paged. Returns (rows, total_groups, project_names)."""
+    from sqlalchemy import or_, and_
+    from actuals import group_pool_rows, signed_amount_value
+    from models import ExpenseEvidence
+    # Every top-level money row: electronic + hand-typed, plus receipt-born
+    # rows once activated into an expense; never split children or backup rows.
+    q = (Transaction.query
+         .filter(Transaction.backup_of_txn_id.is_(None),
+                 or_(Transaction.source.is_(None),
+                     Transaction.source.notin_(('doc_upload', 'invoice_split')),
+                     and_(Transaction.source == 'doc_upload',
+                          Transaction.activated_at.isnot(None)))))
+    if p["project_id"]:
+        q = q.filter(Transaction.project_id == p["project_id"])
+    if p["card"]:
+        q = q.filter(Transaction.card_last4 == p["card"])
+    if p["from"]:
+        q = q.filter(Transaction.txn_date >= p["from"])
+    if p["to"]:
+        q = q.filter(Transaction.txn_date <= p["to"])
+    if p["q"]:
+        like = f"%{p['q']}%"
+        conds = [Transaction.vendor.ilike(like), Transaction.note.ilike(like),
+                 Transaction.card_last4 == p["q"], Transaction.qbo_txn_id == p["q"]]
+        try:
+            from decimal import Decimal as _D
+            _amt = _D(p["q"].replace('$', '').replace(',', ''))
+            conds.append(Transaction.amount == _amt)
+        except Exception:
+            pass
+        if p["q"].isdigit():
+            conds.append(Transaction.id == int(p["q"]))
+        q = q.filter(or_(*conds))
+    txns = q.order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc()).all()
+    ids = [t.id for t in txns]
+    split_parent_ids = set()
+    if ids:
+        split_parent_ids = {r[0] for r in db.session.query(TransactionSplit.transaction_id)
+                            .filter(TransactionSplit.transaction_id.in_(ids)).distinct().all()}
+    for t in txns:
+        t.has_splits = t.id in split_parent_ids
+    evidence_ids = set()
+    if ids:
+        evidence_ids = {r[0] for r in db.session.query(ExpenseEvidence.transaction_id)
+                        .filter(ExpenseEvidence.transaction_id.in_(ids)).distinct().all()}
+    line_ids = {t.budget_line_id for t in txns if t.budget_line_id}
+    lines = {}
+    if line_ids:
+        from models import BudgetLine
+        lines = {l.id: l for l in BudgetLine.query.filter(BudgetLine.id.in_(list(line_ids))).all()}
+    project_names = {pp.id: pp.name for pp in ProjectSheet.query.all()}
+    from budget_calc import FP_COA_NAMES as _COA
+    rows = []
+    for rep, members in group_pool_rows(txns):
+        # The claiming project: the member that carries coding / splits, else
+        # the claimed_by_project_id any member points at, else none.
+        claimer = None
+        for m in members:
+            if m.budget_line_id or m.account_code or getattr(m, 'has_splits', False):
+                claimer = m.project_id
+                break
+        if claimer is None:
+            for m in members:
+                if getattr(m, 'claimed_by_project_id', None):
+                    claimer = m.claimed_by_project_id
+                    break
+        # Excluded: every member of the group is not-project and none is
+        # claimed by a project (an unclaimed sibling hidden by a claim is
+        # "claimed", not "excluded").
+        all_np = all(m.not_project_expense for m in members)
+        excluded = bool(all_np and claimer is None)
+        if p["hide_claimed"] and claimer is not None:
+            continue
+        if p["hide_not_project"] and excluded:
+            continue
+        t = rep
+        for m in members:
+            if m.project_id == claimer:
+                t = m
+                break
+        else:
+            # Unclaimed: show the sibling that carries the most detail.
+            t = max(members, key=lambda m: (bool(m.card_last4), bool(m.note), -m.id))
+        line_label = None
+        if t.budget_line_id and t.budget_line_id in lines:
+            l = lines[t.budget_line_id]
+            line_label = f"{l.account_code} · {(l.description or l.account_name or '')[:50]}"
+        elif getattr(t, 'has_splits', False):
+            line_label = "split"
+        elif t.account_code:
+            line_label = f"{t.account_code} · {_COA.get(t.account_code, '')} (section)"
+        backup = ('backup' if (t.id in evidence_ids or (t.doc_upload_id and t.match_status == 'confirmed'))
+                  else 'reason' if getattr(t, 'no_charge_reason', None)
+                  else 'none')
+        rows.append({
+            "id": t.id, "sibling_ids": [m.id for m in members if m.id != t.id],
+            "qbo_txn_id": t.qbo_txn_id, "qbo_txn_type": t.qbo_txn_type,
+            "date": (t.txn_date or '')[:10], "vendor": t.vendor or '—',
+            "amount": signed_amount_value(t.amount, t.is_expense),
+            "card_last4": t.card_last4,
+            "source": ('receipt' if t.source == 'doc_upload' else (t.source or 'manual_entry')),
+            "project_id": claimer, "project": (project_names.get(claimer) if claimer else None),
+            "seen_in": sorted({project_names.get(m.project_id, f'#{m.project_id}') for m in members}),
+            "line": line_label, "backup": backup, "excluded": excluded,
+            "payment_method": getattr(t, 'payment_method', None),
+        })
+    total = len(rows)
+    return rows[p["offset"]:p["offset"] + p["limit"]], total, project_names
+
+
+@app.route("/admin/transactions.json", methods=["GET"])
+@login_required
+@super_admin_required
+def admin_transactions_json():
+    """The whole transaction pool across projects (Phase 2, 2026-10-30): one
+    row per QBO charge (sibling rows of the same qbo_txn_id collapse; manual /
+    CSV rows by id) with the claiming project, line label, backup state,
+    excluded flag and source. Query params: q (vendor / memo / amount / last
+    four / id), project_id, card, from, to (YYYY-MM-DD), hide_claimed,
+    hide_not_project, limit (≤1000), offset."""
+    p = _admin_pool_query_params()
+    rows, total, _names = _admin_pool_rows(p)
+    return jsonify({"ok": True, "rows": rows, "total": total,
+                    "limit": p["limit"], "offset": p["offset"], "filters": p})
+
+
+@app.route("/admin/transactions", methods=["GET"])
+@login_required
+@super_admin_required
+def admin_transactions_page():
+    """Minimal super-admin pool page: a plain filterable table. The Phase 3
+    design pass replaces this template; the JSON above is the contract."""
+    p = _admin_pool_query_params()
+    rows, total, names = _admin_pool_rows(p)
+    projects = sorted(names.items(), key=lambda kv: (kv[1] or '').lower())
+    return render_template("admin_transactions.html", rows=rows, total=total,
+                           filters=p, projects=projects)

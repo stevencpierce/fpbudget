@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}All Transactions — FPBudget Admin{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:.4rem">
+  <a href="{{ url_for('admin_panel') }}" class="btn btn-xs btn-ghost">← Admin</a>
+  <h1 style="margin:0">All Transactions</h1>
+  <span class="muted" style="font-size:.85rem">{{ total }} charge{{ '' if total == 1 else 's' }}</span>
+</div>
+<p class="muted" style="font-size:.85rem;max-width:80ch;margin-bottom:.8rem">
+  The whole pool across projects, one row per QuickBooks charge. <em>Project</em> is the
+  project that claimed it; <em>Seen in</em> lists every project that synced it.
+  Minimal table for now — the Phase 3 design replaces this page; the JSON at
+  <code>/admin/transactions.json</code> is the contract.
+</p>
+
+<form method="get" style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:.8rem;font-size:.85rem">
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Vendor, amount, last 4, id" style="min-width:220px">
+  <select name="project_id">
+    <option value="">Any project</option>
+    {% for pid, name in projects %}
+    <option value="{{ pid }}" {{ 'selected' if filters.project_id == pid else '' }}>{{ name }}</option>
+    {% endfor %}
+  </select>
+  <input type="text" name="card" value="{{ filters.card or '' }}" placeholder="Card ••••" size="6">
+  <input type="date" name="from" value="{{ filters['from'] or '' }}">
+  <input type="date" name="to" value="{{ filters.to or '' }}">
+  <label><input type="checkbox" name="hide_claimed" value="1" {{ 'checked' if filters.hide_claimed else '' }}> Hide claimed</label>
+  <label><input type="checkbox" name="hide_not_project" value="1" {{ 'checked' if filters.hide_not_project else '' }}> Hide not-project</label>
+  <input type="hidden" name="limit" value="{{ filters.limit }}">
+  <button type="submit" class="btn btn-xs btn-primary">Filter</button>
+  <a href="{{ url_for('admin_transactions_page') }}" class="btn btn-xs btn-ghost">Reset</a>
+</form>
+
+<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;overflow:auto;max-height:78vh">
+<table style="width:100%;border-collapse:collapse;font-size:.84rem">
+  <thead>
+    <tr style="text-align:left;position:sticky;top:0;background:var(--bg-card)">
+      <th style="padding:6px 8px">Date</th>
+      <th style="padding:6px 8px">Vendor</th>
+      <th style="padding:6px 8px;text-align:right">Amount</th>
+      <th style="padding:6px 8px">Card</th>
+      <th style="padding:6px 8px">Source</th>
+      <th style="padding:6px 8px">Project</th>
+      <th style="padding:6px 8px">Line</th>
+      <th style="padding:6px 8px">Backup</th>
+      <th style="padding:6px 8px">Status</th>
+      <th style="padding:6px 8px">Seen in</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr style="border-top:1px solid var(--border)"
+        {% if r.project_id %}onclick="window.location='/projects/{{ r.project_id }}/register'" style="cursor:pointer"{% endif %}>
+      <td style="padding:5px 8px;white-space:nowrap">{{ r.date }}</td>
+      <td style="padding:5px 8px">{{ r.vendor }}</td>
+      <td style="padding:5px 8px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums">
+        {{ '-' if r.amount < 0 else '' }}${{ '{:,.2f}'.format(r.amount|abs) }}</td>
+      <td style="padding:5px 8px">{{ r.card_last4 or '' }}</td>
+      <td style="padding:5px 8px">{{ r.source }}</td>
+      <td style="padding:5px 8px">{% if r.project %}<a href="/projects/{{ r.project_id }}/register">{{ r.project }}</a>{% else %}<span class="muted">unclaimed</span>{% endif %}</td>
+      <td style="padding:5px 8px">{{ r.line or '' }}</td>
+      <td style="padding:5px 8px">{{ r.backup }}</td>
+      <td style="padding:5px 8px">{% if r.excluded %}not project{% elif r.project_id %}claimed{% else %}open{% endif %}</td>
+      <td style="padding:5px 8px" class="muted">{{ r.seen_in|join(', ') }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="10" class="muted" style="padding:14px 8px">No transactions match.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if total > filters.limit %}
+<p class="muted" style="font-size:.82rem;margin-top:.5rem">
+  Showing {{ filters.offset + 1 }}–{{ [filters.offset + filters.limit, total]|min }} of {{ total }}.
+  {% if filters.offset > 0 %}<a href="?{{ request.query_string.decode() | replace('offset=' ~ filters.offset, 'offset=' ~ ([filters.offset - filters.limit, 0]|max)) }}{% if 'offset=' not in request.query_string.decode() %}&offset={{ [filters.offset - filters.limit, 0]|max }}{% endif %}">← Previous</a>{% endif %}
+  {% if filters.offset + filters.limit < total %}<a href="?{{ request.query_string.decode() | replace('offset=' ~ filters.offset, 'offset=' ~ (filters.offset + filters.limit)) }}{% if 'offset=' not in request.query_string.decode() %}&offset={{ filters.offset + filters.limit }}{% endif %}">Next →</a>{% endif %}
+</p>
+{% endif %}
+{% endblock %}
