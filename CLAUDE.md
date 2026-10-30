@@ -7,7 +7,7 @@ Owner: Steven Pierce (steven@thefp.tv), non-programmer — live production syste
 ## Verify before every deploy (CI runs these too — .github/workflows/ci.yml)
 1. `python -m py_compile app.py models.py budget_calc.py actuals.py`
 2. Jinja-parse changed templates
-3. `python scripts/route_audit.py app.py`   (route-stealing guard)
+3. `python scripts/route_audit.py app.py routes/*.py`   (route-stealing + duplicate-URL guard)
 4. `python scripts/js_check.py`             (inline-JS syntax)
 5. `python -m pytest tests/unit -q --confcutdir=tests/unit -o addopts=""`
 
