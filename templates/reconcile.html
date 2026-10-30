@@ -205,7 +205,11 @@
       if (!r.ok) throw new Error(DATA.error || r.status);
       render();
     } catch (e) {
-      $('rg-body').innerHTML = `<tr><td colspan="6" class="rg-empty">Failed: ${esc(e.message)}</td></tr>`;
+      const msg = 'Could not load the register: ' + (e.message || e) +
+        ' — refresh to retry. If it keeps happening, tell Steven’s assistant the ERR code (if any).';
+      $('rg-body').innerHTML = `<tr><td colspan="6" class="rg-empty">⚠ ${esc(msg)}</td></tr>`;
+      $('rg-receipts').innerHTML = `<div class="rg-empty">⚠ ${esc(msg)}</div>`;
+      $('rg-stats').textContent = 'load failed';
     }
   }
 
@@ -232,9 +236,9 @@
   function receiptCell(c) {
     if (c.cash_reason) return `<span class="rg-chip c-cash" title="${esc(c.cash_reason)}">⚠ no charge — ${esc(c.cash_reason.split(' — ')[0])}</span>`
       + (c.doc ? ` <a href="/docs/upload/${c.doc.doc_id}/raw" target="_blank" style="font-size:.7rem">${esc(c.doc.name)}</a>` : '');
-    if (c.state === 'matched') return `<a class="rg-chip c-match" title="${esc(c.doc.name)}" href="/docs/upload/${c.doc.doc_id}/raw" target="_blank">✓ receipt</a>
+    if (c.state === 'matched' && c.doc) return `<a class="rg-chip c-match" title="${esc(c.doc.name)}" href="/docs/upload/${c.doc.doc_id}/raw" target="_blank">✓ receipt</a>
       <button class="rg-btn" data-act="unmatch" data-tid="${c.id}" title="unlink">↩</button>`;
-    if (c.state === 'suggested') return `<span class="rg-chip c-sug" title="${esc(c.suggestion.name)}">★ ${Math.round((c.suggestion.confidence||0)*100)}%</span>
+    if (c.state === 'suggested' && c.suggestion) return `<span class="rg-chip c-sug" title="${esc(c.suggestion.name)}">★ ${Math.round((c.suggestion.confidence||0)*100)}%</span>
       <button class="rg-btn rg-btn-go" data-act="confirm" data-tid="${c.id}">✓</button>
       <button class="rg-btn rg-btn-warn" data-act="notmatch" data-tid="${c.id}">✕</button>`;
     return `<span class="rg-chip c-un">needs receipt</span>`;
@@ -244,7 +248,7 @@
     const main = `<tr class="rg-row ${c.state === 'suggested' ? 'rg-sugrow' : ''} ${selected === c.id ? 'rg-selected' : ''}"
         data-cid="${c.id}" id="rg-c-${c.id}">
       <td>${esc(c.date || '—')}</td>
-      <td><b>${esc(c.vendor)}</b>${c.source === 'cash' ? ' <span class="rg-chip c-cash">CASH</span>' : ''}${c.card ? ` <span style="font-size:.68rem;color:var(--text-muted)">•••${esc(c.card)}</span>` : ''}</td>
+      <td><b>${esc(c.vendor)}</b>${c.source === 'cash' ? ' <span class="rg-chip c-cash">CASH</span>' : c.source === 'manual_entry' ? ' <span class="rg-chip c-cash" title="typed in by hand — not from QuickBooks">MANUAL</span>' : ''}${c.card ? ` <span style="font-size:.68rem;color:var(--text-muted)">•••${esc(c.card)}</span>` : ''}</td>
       <td class="rg-memo" title="${esc(c.memo)}">${esc(c.memo || '')}</td>
       <td class="rg-amt">${money(c.amount)}</td>
       <td>${receiptCell(c)}</td>
@@ -271,7 +275,7 @@
       : tab === 'needs' ? (c.state === 'unmatched' && c.source !== 'cash')
       : tab === 'sug' ? c.state === 'suggested'
       : tab === 'uncoded' ? (c.coding.state !== 'line' && !c.split)
-      : c.source === 'cash');
+      : (c.source === 'cash' || c.source === 'manual_entry'));
     if (f) cs = cs.filter(c => ((c.vendor || '') + ' ' + (c.memo || '')).toLowerCase().includes(f)
                             || String(Math.abs(c.amount).toFixed(2)).includes(f));
     $('rg-body').innerHTML = cs.map(chargeRows).join('')

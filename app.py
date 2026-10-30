@@ -14699,9 +14699,15 @@ def reconcile_workspace_json(pid):
                 "dup_pending": bool(d.is_duplicate and (d.status or '') != 'duplicate'),
                 "thumb": f"/docs/upload/{d.id}/thumb"}
 
+    # Every top-level money row: electronic (qbo/csv/reconciled) PLUS
+    # legacy hand-typed rows (source='manual_entry', the model default —
+    # owner 2026-10-31: "there are a couple in here that I added" and the
+    # register hid them). Only doc-born evidence rows and split children
+    # are excluded; NULL-source ancients ride along (notin_ drops NULLs).
     txns = (Transaction.query
             .filter(Transaction.project_id == pid,
-                    Transaction.source.in_(('qbo_sync', 'csv_import', 'reconciled')),
+                    db.or_(Transaction.source.is_(None),
+                           Transaction.source.notin_(('doc_upload', 'invoice_split'))),
                     Transaction.backup_of_txn_id.is_(None))
             .order_by(Transaction.txn_date.desc().nullslast(), Transaction.id.desc())
             .all())
@@ -14736,6 +14742,9 @@ def reconcile_workspace_json(pid):
         state = ('matched' if (t.doc_upload_id and t.match_status == 'confirmed')
                  else 'suggested' if (t.doc_upload_id and t.match_status == 'suggested')
                  else 'unmatched')
+        if state != 'unmatched' and t.doc_upload_id not in docs:
+            state = 'unmatched'   # its doc was deleted since — don't emit a
+                                  # matched/suggested row with no doc payload
         row = {"id": t.id, "date": (t.txn_date or '')[:10], "vendor": t.vendor or '—',
                "amount": float(t.amount or 0) * (1 if t.is_expense else -1),
                "source": t.source, "card": getattr(t, 'card_last4', None),
