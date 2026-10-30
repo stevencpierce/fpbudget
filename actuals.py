@@ -3,14 +3,24 @@
   BudgetLine (planned)  ←  Transaction (actual)  →  DocUpload (backup)
 
 This module owns:
-  • Cloning Working → Actual on first transaction link
-  • Finding the Actual equivalent of a Working line (and vice versa)
-  • Linking transactions to budget lines (with auto-clone)
+  • The ONE "counts as spend" predicate (counts_as_spend) and the ONE
+    document-class rule (doc_class / is_ledger_category) every rollup and
+    every upload path reads
+  • Linking transactions to budget lines — since Phase 1 (2026-07) a
+    transaction codes DIRECTLY to the current Working line; no Actual
+    budget is cloned on this path
+  • Estimated → Working initialisation (clone_estimated_to_working) and the
+    legacy Working → Actual helpers kept for projects that still carry an
+    Actual budget from before Phase 1
   • Auto-match scaffolding (suggest, never silently write)
 
 Ingestion (pulling QBO bank txns into the Transaction table) lives
 in `qbo_sync.py` — separate concern. This module is what happens
 *after* a Transaction exists, regardless of source.
+
+Convention: this module never imports `app` at module level. The one
+helper that lives in app.py and is needed here (_sync_claim_state) is
+imported lazily inside the function that calls it.
 """
 import logging
 import re as _re
@@ -21,6 +31,137 @@ from models import (db, Budget, BudgetLine, Transaction, ProjectSheet, DocUpload
                     MatchRejection, CrewAssignment)
 
 log = logging.getLogger(__name__)
+
+
+# ── Document classes (DOCUMENTS_HANDOFF Phase 0, 2026-10-30) ──────────────
+# One rule for which document types create a ledger Transaction. Replaces the
+# five hand-copied non-ledger lists that disagreed (app.py upload / update /
+# keep-duplicate / admin reconcile / rollup filter, and the JS copy in b03.js).
+#
+#   evidence    — backs a spend event: receipt, invoice, payroll, timecard.
+#                 Creates a source='doc_upload' Transaction that waits for a
+#                 bank match or a cash log. An unknown / blank category is
+#                 treated as evidence (the uploader has not classified it yet;
+#                 a receipt-shaped row is safer than a silently dropped one).
+#   paperwork   — lives with the person or vendor: tax forms, IDs, contracts,
+#                 COIs, releases, legal, misc. Never a Transaction.
+#   commitment  — a promise to spend, not spend: estimate, quote, PO. Never a
+#                 Transaction; the invoice that follows is the evidence.
+DOC_CLASS_EVIDENCE   = 'evidence'
+DOC_CLASS_PAPERWORK  = 'paperwork'
+DOC_CLASS_COMMITMENT = 'commitment'
+
+EVIDENCE_CATEGORIES   = frozenset({'receipt', 'invoice', 'payroll', 'timecard'})
+PAPERWORK_CATEGORIES  = frozenset({'tax_form', 'employee_vendor_doc', 'contract',
+                                   'insurance', 'release', 'legal', 'misc'})
+COMMITMENT_CATEGORIES = frozenset({'estimate', 'quote', 'purchase_order'})
+# Every category that must NOT create / keep a ledger Transaction.
+NON_LEDGER_CATEGORIES = frozenset(PAPERWORK_CATEGORIES | COMMITMENT_CATEGORIES)
+
+
+def doc_class(category):
+    """Classify a DocUpload.category → 'evidence' | 'paperwork' | 'commitment'.
+
+    Case-insensitive, whitespace-tolerant. None / '' / unknown → 'evidence'
+    (see the module note above: unclassified uploads behave like receipts
+    until someone sets a type)."""
+    c = (category or '').strip().lower()
+    if c in PAPERWORK_CATEGORIES:
+        return DOC_CLASS_PAPERWORK
+    if c in COMMITMENT_CATEGORIES:
+        return DOC_CLASS_COMMITMENT
+    return DOC_CLASS_EVIDENCE
+
+
+def is_ledger_category(category):
+    """True when a document of this category creates / keeps a Transaction
+    (its doc_class is 'evidence')."""
+    return doc_class(category) == DOC_CLASS_EVIDENCE
+
+
+def is_non_ledger_category(category):
+    """True for paperwork and commitments — doc types that never sit on the
+    actuals ledger. Exact inverse of is_ledger_category()."""
+    return not is_ledger_category(category)
+
+
+def non_ledger_categories():
+    """Sorted list of every non-ledger category — for SQL IN() filters and
+    for serving the rule to JavaScript (window.__BJ) so no hand copy of the
+    list lives in a .js file."""
+    return sorted(NON_LEDGER_CATEGORIES)
+
+
+# ── The one "counts as spend" predicate (ACTUALS_HANDOFF Phase 0) ─────────
+
+def counts_as_spend(split_parent_ids=None):
+    """Return ONE SQLAlchemy clause that says whether a Transaction row is
+    real project spend. Every rollup (section totals, per-line Actual column,
+    line-totals.json) must filter on this and nothing else, so the three
+    never disagree again.
+
+    A row counts when ALL of:
+      • not_project_expense is false (not excluded / not claimed elsewhere)
+      • it is an actual expense event: imported rows (qbo_sync, csv_import,
+        reconciled, manual_entry, invoice_split…) always are; a doc-born row
+        (source='doc_upload') only once the user has explicitly created an
+        expense from it (activated_at set) — documents are evidence, not spend
+      • backup_of_txn_id is NULL (a receipt row absorbed as backup for another
+        charge must not count twice)
+      • it is not an itemized / split container: the invoice_split children
+        carry the coding, so the parent's full amount must not count as well.
+        Pass `split_parent_ids` (from app._split_parent_id_set(pid)) to
+        exclude a known set of parent ids; when omitted the clause falls back
+        to a correlated NOT EXISTS over invoice_split children, which is
+        correct but one extra subquery per rollup.
+
+    Project scoping, line / section scoping and the signed-amount rule stay
+    with the caller — this is only the "is it spend at all" question."""
+    from sqlalchemy import and_, or_, not_, exists
+    clauses = [
+        Transaction.not_project_expense == False,            # noqa: E712
+        or_(Transaction.source != 'doc_upload',
+            Transaction.activated_at.isnot(None)),
+        Transaction.backup_of_txn_id.is_(None),
+    ]
+    if split_parent_ids is not None:
+        ids = [int(i) for i in split_parent_ids if i is not None]
+        if ids:
+            clauses.append(Transaction.id.notin_(ids))
+    else:
+        from sqlalchemy.orm import aliased
+        _Child = aliased(Transaction)
+        clauses.append(not_(exists().where(and_(
+            _Child.parent_transaction_id == Transaction.id,
+            _Child.source == 'invoice_split'))))
+    return and_(*clauses)
+
+
+def row_counts_as_spend(txn, split_parent_ids=None):
+    """Pure-Python twin of counts_as_spend() for code that already holds the
+    rows (and for unit tests). Same four rules, same answer."""
+    if getattr(txn, 'not_project_expense', False):
+        return False
+    if getattr(txn, 'source', None) == 'doc_upload' \
+            and getattr(txn, 'activated_at', None) is None:
+        return False
+    if getattr(txn, 'backup_of_txn_id', None) is not None:
+        return False
+    if split_parent_ids and getattr(txn, 'id', None) in split_parent_ids:
+        return False
+    return True
+
+
+def signed_amount_value(amount, is_expense):
+    """The signed-amount rule as a plain number: an expense counts positive,
+    a credit / refund counts NEGATIVE so it nets against its line (owner
+    decision 2026-10-30 — credits act as credits, as in QuickBooks). Mirrors
+    app._signed_amount(), which is the SQL form of the same rule."""
+    try:
+        a = float(amount or 0)
+    except (TypeError, ValueError):
+        a = 0.0
+    return a if is_expense else -a
 
 
 # ── Learned vendor → COA mapping (2026-06-18 AI auto-coding) ──────────────
@@ -348,7 +489,11 @@ def scan_duplicate_receipts(project_id):
     return out
 
 
-# ── Working → Actual cloning ──────────────────────────────────────────
+# ── Legacy Working → Actual helpers ──────────────────────────────────
+# Kept for projects that still carry an Actual budget from before the Phase 1
+# money-path migration (2026-07). Coding no longer clones an Actual; the
+# explicit route (app.py actuals_init_actual_budget) is the only caller of
+# clone_working_to_actual today.
 
 def get_current_actual_budget(project_id):
     """Return the project's current Actual budget, or None."""
@@ -832,17 +977,24 @@ def working_to_actual_line(working_line_id, actual_budget_id=None):
             .first())
 
 
-# ── Transaction linking (the auto-clone trigger lives here) ──────────
+# ── Transaction linking (codes straight to the current Working line) ──
 
 def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
-    """Atomic: link a Transaction to a budget line.
+    """Atomic: code a Transaction to a budget line.
 
-    PHASE 1 money-path migration (2026-07, owner decision): transactions now
-    code DIRECTLY to the current WORKING budget's line — the separate "Actual"
-    clone is no longer written on this path. We still auto-init Working from
-    Estimated (clone_estimated_to_working) when the user actualizes off an
-    Estimated line, and still translate an Estimated pick to its Working peer,
-    but we do NOT clone Working→Actual or materialize an Actual peer line here.
+    The transaction codes DIRECTLY to the current WORKING budget's line (Phase
+    1 money-path migration, 2026-07). No Actual budget is cloned and no Actual
+    peer line is materialized on this path. An Estimated pick is translated to
+    its Working peer when a current Working exists; when none exists the txn
+    codes to the Estimated line itself (owner decision 2026-09-01: no silent
+    Working init on first coding — the later "Initialize Working" button
+    carries the codings across).
+
+    Side effects on the row: budget_line_id / account_code / account_code_name
+    set, match_status → 'confirmed', not_project_expense → False (assigning a
+    line is a claim), AI suggestion cleared, vendor→COA mapping reinforced,
+    one-way line→person stamp on the doc, then _sync_claim_state() so sibling
+    rows of the same charge in other projects are hidden. Commits.
 
     Backward compat: if the PICKED line turns out to be on an ACTUAL budget
     (re-coding from the legacy Actual view / stale UI state), we translate it
@@ -874,9 +1026,9 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     if not project_id:
         raise ValueError(f"transaction {transaction_id} has no project")
 
-    # Detect whether the picked line is already on an Actual (user's
-    # second link in this project) vs on Working / Estimated (first
-    # link → triggers the auto-init / auto-clone chain).
+    # Which budget is the picked line on? A legacy ACTUAL line is translated
+    # back to its Working peer below; a Working / Estimated line is used as-is
+    # (or swapped for its Working peer when one exists).
     line_budget = Budget.query.get(working_line.budget_id)
     # Cross-project guard: a stale UI or crafted request must not code one
     # project's money to another project's budget line. (Code review 2026-06-04.)
@@ -955,6 +1107,10 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     txn.account_code      = working_line.account_code
     txn.account_code_name = working_line.account_name
     txn.match_status      = 'confirmed'
+    # Assigning a line IS a claim: a charge that was marked not-project and is
+    # now given a line must come back into every total. set-coa already did
+    # this; set-line did not (ACTUALS_HANDOFF Phase 0, 2026-10-30).
+    txn.not_project_expense = False
     txn.updated_at        = datetime.utcnow()
     if user_id:
         txn.created_via_user_id = user_id
@@ -999,6 +1155,19 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     except Exception:
         log.info("[actuals/auto-assign] skipped (fail-open) for txn %s",
                  getattr(txn, 'id', None), exc_info=True)
+
+    # Cross-project claim: this row now owns a budget line, so sibling rows of
+    # the same charge in other projects must be hidden. _sync_claim_state lives
+    # in app.py (it is the one place that knows the sibling channels), so it is
+    # imported lazily here — this module never imports app at load time. Must
+    # run BEFORE the commit below (the helper's own contract). Fail-open: a
+    # claim hiccup must never undo the coding that was just written.
+    try:
+        from app import _sync_claim_state as _scs
+        _scs(txn)
+    except Exception:
+        log.warning("[actuals/link] cross-project claim sync failed for txn %s "
+                    "(coding kept)", getattr(txn, 'id', None), exc_info=True)
 
     db.session.commit()
 
@@ -1856,11 +2025,6 @@ def dismiss_suggestion(transaction_id, remember=True, user_id=None):
     return {'transaction_id': t.id, 'rejected_doc_upload_id': rejected_doc if remember else None}
 
 
-_NON_LEDGER_DOC_TYPES = {'tax_form', 'contract', 'release', 'legal', 'insurance',
-                         'misc', 'employee_vendor_doc', 'estimate', 'quote',
-                         'purchase_order'}
-
-
 def unmatch_receipt(transaction_id):
     """Reverse a match (suggested OR confirmed): unlink the receipt from this
     bank charge and put the receipt BACK in the unlinked pool so it can be
@@ -1888,7 +2052,7 @@ def unmatch_receipt(transaction_id):
     t.updated_at       = datetime.utcnow()
     if doc_id:
         doc = DocUpload.query.get(doc_id)
-        if doc and (doc.category or '') not in _NON_LEDGER_DOC_TYPES:
+        if doc and is_ledger_category(doc.category):
             has_sister = (Transaction.query
                           .filter_by(doc_upload_id=doc_id, source='doc_upload')
                           .first())
@@ -1915,7 +2079,8 @@ def last_match_for_project(project_id):
             .first())
 
 
-# ── Working → Actual sync (additive only — deletions become orphans) ──
+# ── Legacy Working → Actual sync (additive only — deletions become orphans) ──
+# Only meaningful for pre-Phase-1 projects that still have an Actual budget.
 
 def sync_working_to_actual(project_id, user_id=None):
     """After Actual exists, structural changes in Working don't
