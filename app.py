@@ -14845,7 +14845,7 @@ def reconcile_workspace_json(pid):
                  "last_synced": (_prj.last_synced.isoformat(timespec='minutes')
                                  if _prj.last_synced else None),
                  "sync_through": _prj.sync_through,
-                 "auto": "every 30 min"},
+                 "auto": "twice a day"},
         "cash_expenses": cash_expenses, "section_coded": section_coded,
         "stats": {
             "charges": len(charges), "charges_unmatched": n_unmatched,
@@ -34692,7 +34692,14 @@ def _sweep_project_drop_folder(project, uploader=None):
     dbx = _dbx_client()
     path = _drop_folder_path(project)
     try:
-        entries = dbx.files_list_folder(path).entries
+        # Recursive (owner 2026-10-31: "if a subfolder gets added in
+        # there… it can also process those") — but never our own
+        # _imported/_skipped buckets. Cursor-paged for big drops.
+        _res = dbx.files_list_folder(path, recursive=True)
+        entries = list(_res.entries)
+        while getattr(_res, 'has_more', False):
+            _res = dbx.files_list_folder_continue(_res.cursor)
+            entries.extend(_res.entries)
     except Exception as _le:
         # First use — create the folder (and its _imported child) so the
         # user has somewhere to drop files. A create FAILURE must be LOUD
@@ -34721,7 +34728,10 @@ def _sweep_project_drop_folder(project, uploader=None):
                 "path": path,
                 "message": "Drop folder created — put files in it and sweep again."}
     import dropbox as _dbx_mod
-    files = [e for e in entries if isinstance(e, _dbx_mod.files.FileMetadata)]
+    files = [e for e in entries
+             if isinstance(e, _dbx_mod.files.FileMetadata)
+             and '/_imported/' not in (e.path_lower or '')
+             and '/_skipped/' not in (e.path_lower or '')]
     allowed = _UPLOAD_ALLOW['document']
     imported, skipped, errors = 0, 0, []
     remaining = 0
@@ -34758,6 +34768,63 @@ def _sweep_project_drop_folder(project, uploader=None):
             remaining = len(files) - i
             break
         ext = e.name.rsplit('.', 1)[-1].lower() if '.' in e.name else ''
+        if ext == 'zip':
+            # A dropped archive (owner 2026-10-31): extract in memory and
+            # run each allowed entry through the normal ingest. Bounded:
+            # zip ≤ 25 MB, ≤ 100 entries, each entry ≤ 25 MB.
+            if (e.size or 0) > _DROP_SWEEP_MAX_BYTES:
+                skipped += 1
+                _quarantine(e, "zip larger than 25 MB")
+                continue
+            attempts += 1
+            try:
+                import io as _zio, zipfile as _zf
+                _md, _resp = dbx.files_download(e.path_display)
+                _z = _zf.ZipFile(_zio.BytesIO(_resp.content))
+                _z_ok = _z_fail = _z_skip = 0
+                for _zi in _z.infolist()[:100]:
+                    if _zi.is_dir():
+                        continue
+                    _zname = os.path.basename(_zi.filename)
+                    if (not _zname or _zname.startswith('.')
+                            or '__MACOSX' in _zi.filename):
+                        continue
+                    _zext = _zname.rsplit('.', 1)[-1].lower() if '.' in _zname else ''
+                    if _zext not in allowed or _zi.file_size > _DROP_SWEEP_MAX_BYTES:
+                        _z_skip += 1
+                        continue
+                    _zdata = _z.read(_zi)
+                    _zct = mimetypes.guess_type(_zname)[0] or "application/octet-stream"
+                    _zp, _zc = _ingest_document_bytes(
+                        project.id, project, _zname, _zct, _zdata, uploader=uploader)
+                    del _zdata
+                    if _zc >= 500:
+                        _z_fail += 1
+                        errors.append(f"{e.name} → {_zname}: "
+                                      f"{(_zp or {}).get('error') or 'ingest failed'}")
+                    else:
+                        _z_ok += 1
+                        imported += 1
+                if _z_ok and not _z_fail:
+                    try:
+                        dbx.files_move_v2(e.path_display,
+                                          f"{path}/_imported/{e.name}", autorename=True)
+                    except Exception as _zmv:
+                        logging.warning(f"[drop-sweep] zip move failed: {_zmv}")
+                elif not _z_ok and not _z_fail:
+                    skipped += 1
+                    _quarantine(e, f"zip had no importable files ({_z_skip} unsupported)")
+                # _z_fail > 0 → zip stays for retry next cycle (succeeded
+                # entries re-dedupe by hash, flagged not re-imported).
+                if _z_skip:
+                    errors.append(f"{e.name}: {_z_skip} entr{'y' if _z_skip == 1 else 'ies'} skipped (unsupported type/size)")
+                logging.info(f"[drop-sweep] zip {e.name}: {_z_ok} imported, "
+                             f"{_z_fail} failed, {_z_skip} skipped")
+            except Exception as _ze:
+                db.session.rollback()
+                skipped += 1
+                _quarantine(e, f"unreadable zip ({type(_ze).__name__})")
+            continue
         if ext not in allowed:
             skipped += 1
             _quarantine(e, f"type .{ext or '?'} not accepted")
@@ -34907,19 +34974,21 @@ def _qbo_auto_sync_loop():
     one worker (system_task_log claim, same pattern as the drop sweep)
     runs sync_project for every ACTIVE project that has QBO accounts
     selected — watermark-driven, so each cycle only pulls what's new.
+    Twice a day (owner 2026-10-31: "QuickBooks can run twice a day — it
+    doesn't need to run every 30 minutes"); ⟳ Sync now covers urgency.
     Cross-project claiming (_sync_claim_state) already guarantees a
     charge coded in one project drops out of every other project's pile.
     Fail-open everywhere."""
     import time as _time
     from sqlalchemy import text as _sql_text
-    _INTERVAL_S = 1800        # 30 minutes
+    _INTERVAL_S = 12 * 3600   # twice a day (owner 2026-10-31)
     _first = True
     _CLAIM_SQL = (
         "INSERT INTO system_task_log (task_name, last_run_at) "
         "VALUES ('qbo_auto_sync', NOW()) "
         "ON CONFLICT (task_name) DO UPDATE "
         "  SET last_run_at = EXCLUDED.last_run_at "
-        "  WHERE system_task_log.last_run_at < NOW() - INTERVAL '25 minutes' "
+        "  WHERE system_task_log.last_run_at < NOW() - INTERVAL '11 hours' "
         "RETURNING task_name")
     while True:
         _time.sleep(300 if _first else _INTERVAL_S)
@@ -35226,12 +35295,23 @@ def admin_drop_sweep_status(pid=None):
             # the question "why are my receipts just sitting there?" answered
             # per file. (Owner 2026-10-14.)
             try:
-                _entries = dbx.files_list_folder(path).entries
-                _waiting = [e for e in _entries if isinstance(e, _dbx_mod.files.FileMetadata)]
+                _res = dbx.files_list_folder(path, recursive=True)
+                _entries = list(_res.entries)
+                while getattr(_res, 'has_more', False):
+                    _res = dbx.files_list_folder_continue(_res.cursor)
+                    _entries.extend(_res.entries)
+                _waiting = [e for e in _entries
+                            if isinstance(e, _dbx_mod.files.FileMetadata)
+                            and '/_imported/' not in (e.path_lower or '')
+                            and '/_skipped/' not in (e.path_lower or '')]
                 _verdicts = []
                 for _e in _waiting[:15]:
                     _ext = _e.name.rsplit('.', 1)[-1].lower() if '.' in _e.name else ''
-                    if _ext not in allowed:
+                    if _ext == 'zip':
+                        _v = ('will extract & import contents'
+                              if (_e.size or 0) <= _DROP_SWEEP_MAX_BYTES
+                              else 'would be rejected (zip >25 MB)')
+                    elif _ext not in allowed:
                         _v = f'would be rejected (.{_ext or "?"})'
                     elif (_e.size or 0) > _DROP_SWEEP_MAX_BYTES:
                         _v = 'would be rejected (>25 MB)'
