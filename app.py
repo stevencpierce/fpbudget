@@ -4762,6 +4762,12 @@ def project_delete(pid):
                 {"parent_transaction_id": None}, synchronize_session=False)
             db.session.flush()
             _delete_evidence_for_txns(_txn_ids)
+            # transaction_split (Phase 2) has no cascade either — drop the
+            # project's allocations before their parents go. (Found by the
+            # Phase 3 E2E run: orphan splits re-attached to a reused id.)
+            from models import TransactionSplit as _TS_del
+            _TS_del.query.filter(db.or_(_TS_del.project_id == pid,
+                                        _TS_del.transaction_id.in_(_txn_ids))).delete(synchronize_session=False)
             Transaction.query.filter_by(project_id=pid).delete(synchronize_session=False)
 
         # 4. Null parent_budget_id self-refs, then cascade-delete each budget.
@@ -20007,8 +20013,15 @@ def activity_undo(pid, bid, aid):
                                'schedule_day'):
         return jsonify({"ok": False, "error": "Undo isn't supported for this action yet"}), 400
 
-    # Visibility check — user must be allowed to see this row to undo it
-    if not _scoped_activity_query(budget_id=bid).filter(ActivityLog.id == aid).first():
+    # Visibility check — user must be allowed to see this row to undo it.
+    # Scoped by budget OR project, like the lookup above: transaction /
+    # match entries carry project_id only (budget_id None), and scoping
+    # by budget_id alone 403'd every one of them. (Found by the Phase 3
+    # workspace undo toast, 2026-11-01.)
+    if not (_scoped_activity_query()
+            .filter(ActivityLog.id == aid,
+                    _or_au(ActivityLog.budget_id == bid, ActivityLog.project_id == pid))
+            .first()):
         abort(403)
     # Permission (User 2026-06-16): admins/super-admins undo anything; everyone
     # else only their own actions.
@@ -20270,7 +20283,10 @@ def activity_undo_batch(pid, bid):
         if row.entity_type not in ('budget_line', 'transaction', 'transaction_match',
                                    'schedule_day'):
             failed.append({"id": aid, "error": "unsupported"}); continue
-        if not _scoped_activity_query(budget_id=bid).filter(ActivityLog.id == aid).first():
+        if not (_scoped_activity_query()
+                .filter(ActivityLog.id == aid,
+                        _or_ub(ActivityLog.budget_id == bid, ActivityLog.project_id == pid))
+                .first()):
             failed.append({"id": aid, "error": "forbidden"}); continue
         if not is_admin and row.user_id != current_user.id:
             failed.append({"id": aid, "error": "not yours"}); continue
