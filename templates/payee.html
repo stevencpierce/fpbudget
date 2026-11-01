@@ -180,6 +180,19 @@
         {% endfor %}
         {% endfor %}
         {% if not d.paperwork %}<div class="pay-empty">No tax forms, IDs, contracts or COIs on file. Use <b>Upload document</b> above — no project needed.</div>{% endif %}
+        {% if d.trashed %}
+        <details style="border-top:1px solid var(--border)">
+          <summary class="pay-grp" style="cursor:pointer;list-style:none">🗑 Trash · {{ d.trashed | length }}</summary>
+          {% for doc in d.trashed %}
+          <div class="pay-doc" style="opacity:.8">
+            <span class="pay-dot"></span>
+            <span class="nm" style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{% if doc.subtype %}{{ doc.subtype }} · {% endif %}{{ doc.name }}{% if doc.project_name %} <span class="pay-chip sq" style="margin-left:6px">{{ doc.project_name }}</span>{% endif %}</span>
+            <span class="dt pay-num">{% if doc.superseded_by_id %}replaced by #{{ doc.superseded_by_id }}{% elif doc.deleted_label %}trashed {{ doc.deleted_label }}{% endif %}</span>
+            <button type="button" class="btn btn-xs btn-outline" onclick="payeeRestoreDoc({{ doc.id }})">Restore</button>
+          </div>
+          {% endfor %}
+        </details>
+        {% endif %}
         <div class="pay-card-f">
           <span style="display:inline-flex;align-items:center;gap:6px" id="pp-sync-status"><span class="pay-dot {{ 'ok' if not d.paperwork_unsynced and d.paperwork else '' }}"></span>{% if not d.paperwork %}Nothing to sync{% elif d.paperwork_unsynced %}{{ d.paperwork_unsynced }} not yet in Dropbox{% else %}Synced to Dropbox{% endif %}</span>
           {% if current_user.role == 'super_admin' %}<button type="button" class="btn btn-xs btn-outline" id="pp-sync-btn" onclick="payeeSyncDocs({{ id.id }})">Sync to Dropbox</button>{% endif %}
@@ -303,6 +316,14 @@ window.payeeUploadFiles = async function(fileList){
     + (msgs.length ? ' — ' + msgs.join(' · ') : '') + (ok ? ' · refreshing…' : '');
   btn.disabled = false;
   if (ok) setTimeout(function(){ location.reload(); }, failed || dup ? 2500 : 900);
+};
+window.payeeRestoreDoc = async function(uid){
+  try {
+    var r = await fetch('/docs/upload/' + uid + '/restore', { method: 'POST', credentials: 'same-origin' });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { alert(d.error || ('Failed (' + r.status + ')')); return; }
+    location.reload();
+  } catch (e) { alert('Error: ' + e.message); }
 };
 /* Replace / Keep both for a flagged second W-9 or ID (the same
    /resolve-duplicate route the Docs Inbox uses). */

@@ -3103,6 +3103,7 @@ def w9_fallback_dates(payee_ids=None):
          .filter(db.or_(DocUpload.owner_payee_id.isnot(None),
                         DocUpload.crew_member_id.isnot(None)),
                  DocUpload.category == 'tax_form',
+                 DocUpload.is_duplicate == False,                  # noqa: E712 — pending dup ≠ on file
                  DocUpload.status.notin_(('deleted', 'duplicate'))))
     if payee_ids is not None:
         ids = list(payee_ids)

@@ -28,6 +28,7 @@ app object, imported at the bottom of app.py).
 """
 import csv
 import io
+import json
 from datetime import date, datetime
 
 from flask import (render_template, request, jsonify, flash, redirect,
@@ -551,6 +552,27 @@ def _payee_page_data(cm, year):
                         for k, lbl in PAPERWORK_GROUPS if paperwork[k]]
     unsynced = sum(1 for g in paperwork_groups for e in g["docs"] if not e["synced"])
 
+    # Trash: this payee's soft-deleted documents (a replaced W-9 lands here),
+    # newest first, restorable from the page — a project-less document is
+    # in no project's Trash view, so this is its only way back.
+    trashed = []
+    for d in (DocUpload.query.filter(_doc_owner_clause(cm.id), DocUpload.status == 'deleted')
+              .order_by(DocUpload.deleted_at.desc().nullslast(), DocUpload.id.desc()).limit(25).all()):
+        try:
+            _meta = json.loads(d.trash_meta) if d.trash_meta else {}
+        except Exception:
+            _meta = {}
+        trashed.append({
+            "id": d.id, "category": (d.category or '').lower(),
+            "name": d.filed_filename or d.original_filename or f"Doc #{d.id}",
+            "subtype": TAX_FORM_KIND_LABELS.get(d.tax_form_kind or '', d.doc_subtype)
+                       if (d.category or '') == 'tax_form' else d.doc_subtype,
+            "deleted_at": d.deleted_at.isoformat() if d.deleted_at else None,
+            "deleted_label": _fmt_date(d.deleted_at) if d.deleted_at else '',
+            "superseded_by_id": _meta.get('superseded_by_id'),
+            "project_name": pname_by_id.get(d.project_id) if d.project_id else None,
+        })
+
     # Vendor names: alias rows whose clean or raw name matches this payee.
     keys = {canon_vendor(x) for x in (cm.name, cm.legal_name, cm.company) if x}
     keys.discard('')
@@ -602,6 +624,7 @@ def _payee_page_data(cm, year):
         "evidence": evidence,
         "paperwork": paperwork_groups,
         "paperwork_unsynced": unsynced,
+        "trashed": trashed,
         "quickbooks": {
             "linked": bool(cm.qbo_vendor_id),
             "vendor_id": cm.qbo_vendor_id,

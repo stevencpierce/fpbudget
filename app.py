@@ -33006,6 +33006,12 @@ def docs_upload_retry_filing(uid):
         return jsonify({"ok": True, "already_filed": True,
                         "path": upload.filed_dropbox_path})
 
+    if upload.project_id is None:
+        # Payee-page paperwork files into the Crew Database tree at upload
+        # time; the per-person Sync button (/crew/<cid>/docs/sync) is the
+        # retry path for it. (Phase 2.)
+        return jsonify({"error": "This document has no project — it files to the payee's "
+                                 "Crew Database folder. Use Sync to Dropbox on the Payee page."}), 400
     project = ProjectSheet.query.get(upload.project_id)
     if not project or not project.dropbox_folder:
         return jsonify({"error": "Project has no Dropbox folder configured"}), 400
@@ -36556,6 +36562,7 @@ def docs_upload_line_items(uid):
     # un-activated (invisible to totals) until coded, and confirm_match
     # migrates everything onto the bank charge if one matches later.
     if (parent is None and upload.amount is not None
+            and upload.project_id is not None          # a Transaction needs a project (Phase 2)
             and (upload.category or '') in ('receipt', 'invoice', 'payroll', 'timecard')
             and not getattr(upload, 'is_duplicate', False)
             and (upload.status or '') not in ('duplicate', 'deleted')):

@@ -181,6 +181,8 @@ def test_second_w9_flagged_then_replace(ctx, monkeypatch_module):
     ctx["w9_b"] = j["upload_id"]
     pj = c.get(f"/payees/{ctx['theo']}.json").get_json()
     assert [e["id"] for e in pj["pending_duplicates"]] == [ctx["w9_b"]]
+    html = c.get(f"/payees/{ctx['theo']}").get_data(as_text=True)
+    assert "Possible duplicate" in html and "payeeResolveDup(" in html
     # the payee's pointer did NOT move to a pending duplicate
     with ctx["app"].app_context():
         assert CrewMember.query.get(ctx["theo"]).w9_doc_upload_id == ctx["w9_a"]
@@ -196,6 +198,7 @@ def test_second_w9_flagged_then_replace(ctx, monkeypatch_module):
     pj = c.get(f"/payees/{ctx['theo']}.json").get_json()
     tax = [e["id"] for g in pj["paperwork"] if g["key"] == "tax_form" for e in g["docs"]]
     assert tax == [ctx["w9_b"]]
+    assert [(t["id"], t["superseded_by_id"]) for t in pj["trashed"]] == [(ctx["w9_a"], ctx["w9_b"])]
 
 
 # ── 3. Inbox JSON: why_here + payee suggestion; bulk assign_payee ──────────
