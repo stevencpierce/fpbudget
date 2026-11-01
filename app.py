@@ -29164,6 +29164,12 @@ def _web_worker_essential_columns():
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS excluded_reason VARCHAR(300)",
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS payment_method VARCHAR(20)",
                 "ALTER TABLE transaction ADD COLUMN IF NOT EXISTS paid_by_crew_member_id INTEGER",
+                # Fringes to 6500 Administrative, per department + hidden
+                # auto-calc lines (2026-11-01, alembic 0023a_admin_fringe_lines).
+                "ALTER TABLE budget_line ADD COLUMN IF NOT EXISTS fringe_for_section INTEGER",
+                "ALTER TABLE budget_line ADD COLUMN IF NOT EXISTS auto_kind VARCHAR(12)",
+                "CREATE INDEX IF NOT EXISTS ix_budget_line_fringe_for_section "
+                "  ON budget_line (fringe_for_section)",
                 """CREATE TABLE IF NOT EXISTS transaction_split (
                      id                 SERIAL PRIMARY KEY,
                      transaction_id     INTEGER NOT NULL REFERENCES transaction(id),
