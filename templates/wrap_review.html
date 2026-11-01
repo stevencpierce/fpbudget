@@ -151,21 +151,21 @@
     expense (💰 Log as expense), or mark it not-project.</p>
   {% else %}<div class="clean">✓ Every receipt and invoice on file is matched or logged.</div>{% endif %}
 
-  <h2>D · 1099 review — paid ≥ $600, no tax form on file
+  <h2>D · 1099 review — non-card pay at or over the year's threshold, no W-9 on file
     <span class="muted">— {{ exceptions.tax_check | length }}</span></h2>
   {% if exceptions.tax_check %}
   <table>
-    <thead><tr><th>Payee</th><th style="width:160px;text-align:right">Paid (doc-linked)</th></tr></thead>
+    <thead><tr><th>Payee</th><th style="width:70px">Year</th><th style="width:160px;text-align:right">Non-card paid</th><th style="width:110px;text-align:right">Threshold</th></tr></thead>
     <tbody>
     {% for p in exceptions.tax_check %}
-      <tr><td>{{ p.name }}</td><td class="num">{{ '{:,.2f}'.format(p.paid) }}</td></tr>
+      <tr><td><a href="/payees/{{ p.payee_id }}">{{ p.name }}</a></td><td>{{ p.year }}</td><td class="num">{{ '{:,.2f}'.format(p.paid) }}</td><td class="num">{{ '{:,.0f}'.format(p.threshold) }}</td></tr>
     {% endfor %}
     </tbody>
   </table>
-  <p class="muted" style="font-size:9.5pt">Advisory: collect a W-9 (or confirm W-2 / corporate
-    vendor status) and attach it to the person in the Crew Database — it then counts for every
-    project, forever.</p>
-  {% else %}<div class="clean">✓ All payees at or over $600 have a tax form on file.</div>{% endif %}
+  <p class="muted" style="font-size:9.5pt">Advisory: collect a W-9 (or confirm W-2 employee status)
+    and attach it to the person on their Payee page — it then counts for every project, forever.
+    W-2 employees are excluded; card payments never count.</p>
+  {% else %}<div class="clean">✓ Every reportable payee has a W-9 on file.</div>{% endif %}
 
   <div style="height:40px"></div>
 </body>
