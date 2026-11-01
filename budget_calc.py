@@ -777,21 +777,37 @@ def get_fringe_configs(db_session, project_id=None):
     result = {}
     for r in sorted(rows, key=lambda x: (x.project_id is not None)):
         result[r.fringe_type] = r
-    # Fringe-rollup flag (owner 2026-10-05) rides along as a sentinel key
-    # so EVERY calc path — grid, PDF, PO rollups, cross-view maps — sees
-    # the same mode without threading a new parameter through dozens of
-    # call sites. Keys are ≤5-char fringe codes, so no collision.
-    # Fail-open: a DB missing the column just means rollup off.
-    try:
-        if project_id is not None:
-            from models import ProjectSheet
-            _ps = (db_session.query(ProjectSheet.fringe_rollup)
-                   .filter_by(id=project_id).first())
-            if _ps and bool(_ps[0]):
-                result['__fringe_rollup__'] = True
-    except Exception:
-        pass
+    # Phase 4 (Steven, Oct 30 2026): fringes always live apart from the
+    # labor line — one Payroll Fringes line per department in 6500
+    # Administrative. The old '__fringe_rollup__' sentinel and the
+    # ProjectSheet.fringe_rollup toggle are gone from the calc; the column
+    # stays in the model and is ignored.
     return result
+
+
+# Lines whose number is COMPUTED, not entered: the per-department Payroll
+# Fringes lines in 6500 and the hidden Workers' Comp / Production Insurance /
+# Payroll Service Fee / Production Company Fee lines. calc_line returns ZERO
+# for them — their estimate is injected by calc_top_sheet from the pots and
+# written through to BudgetLine.estimated_total for the register — so no
+# section / working / tax-credit accumulator can count a pot twice.
+COMPUTED_LINE_TAGS = ('fringe_rollup', 'auto_calc')
+
+# Where the pots land (2026-04 renumber: Insurance 6000, Administrative 6500).
+FRINGE_HOME_SECTION = 6500
+AUTO_KIND_SECTION = {'wc': 6000, 'ins': 6000, 'fee': 6500, 'pcf': 6500}
+AUTO_KIND_LABEL = {'wc': "Workers' Comp", 'ins': "Production Insurance",
+                   'fee': "Payroll Service Fee", 'pcf': "Production Company Fee"}
+
+
+def is_computed_line(line):
+    return (getattr(line, 'line_tag', None) or '') in COMPUTED_LINE_TAGS
+
+
+def _zero_result(line):
+    """calc result for a computed line: nothing on the line itself."""
+    return {"subtotal": 0.0, "fringe_amount": 0.0, "agent_amount": 0.0,
+            "total": 0.0, "est_total": 0.0}
 
 
 def calc_day_labor_hours(total_hours, daily_st, daily_dt):
@@ -844,7 +860,12 @@ def calc_line(line, fringe_configs):
     Calculate one BudgetLine.
     Returns dict: subtotal, fringe_amount, agent_amount, total, est_total
     For rate_type='week': rate is per-week, days column = number of weeks.
+    fringe_amount is ALWAYS reported separately and never inside total —
+    the fringe lands on the department's Payroll Fringes line in 6500
+    (Phase 4). Computed lines (fringe / auto-calc) return zero.
     """
+    if is_computed_line(line):
+        return _zero_result(line)
     if not line.is_labor:
         # Treat None / missing as ZERO, not 1.0. The old default-to-1
         # behavior masked user-cleared fields: a user who cleared
@@ -900,14 +921,10 @@ def calc_line(line, fringe_configs):
         fringe_amount = 0.0
 
     agent_amount = subtotal * _float(line.agent_pct)
-    if fringe_configs.get('__fringe_rollup__'):
-        # Fringe-rollup mode (owner 2026-10-05): fringes roll up to one
-        # budget-wide "Payroll Fringes" amount instead of inflating each
-        # labor line's total — per-line totals reconcile 1:1 against
-        # invoices/payments. fringe_amount is still reported per line.
-        total = subtotal + agent_amount
-    else:
-        total = subtotal + fringe_amount + agent_amount
+    # Fringe stays OUT of the line total (Phase 4, the only mode now): the
+    # line reconciles 1:1 against what the person is paid; fringe_amount
+    # is reported per line and pooled per department into 6500.
+    total = subtotal + agent_amount
 
     return {
         "subtotal":      round(subtotal, 2),
@@ -1136,6 +1153,8 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
     import math as _math
     from collections import defaultdict
 
+    if is_computed_line(line):
+        return _zero_result(line)
     rate = _float(line.rate)
     # Labor invariant: qty is always 1 per line (multi-person hires
     # split into separate rows). Defensive fallback against stale DB
@@ -1209,10 +1228,7 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
         else:
             fringe_amount = 0.0
         agent_amount = subtotal * _float(line.agent_pct)
-        if fringe_configs.get('__fringe_rollup__'):
-            total = subtotal + agent_amount   # fringe-rollup mode (see calc_line)
-        else:
-            total = subtotal + fringe_amount + agent_amount
+        total = subtotal + agent_amount   # fringe stays out of the line (see calc_line)
         return {
             "subtotal":      round(subtotal, 2),
             "st_amount":     round(base, 2),
@@ -1259,10 +1275,7 @@ def calc_line_from_schedule(line, schedule_days, fringe_configs,
         fringe_amount = 0.0
 
     agent_amount = subtotal * _float(line.agent_pct)
-    if fringe_configs.get('__fringe_rollup__'):
-        total = subtotal + agent_amount       # fringe-rollup mode (see calc_line)
-    else:
-        total = subtotal + fringe_amount + agent_amount
+    total = subtotal + agent_amount           # fringe stays out of the line (see calc_line)
 
     return {
         "subtotal":      round(subtotal, 2),
@@ -1338,15 +1351,14 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     # Gross labor wages = subtotals of all labor lines (base + OT, before fringe/agent)
     gross_labor_wages = sum(line_totals[ln.id]["subtotal"] for ln in lines if ln.is_labor)
 
-    # Fringe-rollup mode (owner 2026-10-05): per-line totals exclude
-    # fringe (see calc_line); the whole fringe pot instead lands as ONE
-    # auto amount in 6500 Administrative — same shape as the Payroll
-    # Service Fee inject — so individual labor lines reconcile 1:1
-    # against payments while the budget total is unchanged.
-    _fringe_rollup = bool(fringe_configs.get('__fringe_rollup__'))
-    fringe_rollup_amount = (round(sum(
+    # Fringes (Phase 4, Steven Oct 30 2026): per-line totals exclude
+    # fringe (see calc_line); each labor DEPARTMENT's fringe pot lands on
+    # its own "Payroll Fringes — <Department>" line in 6500 Administrative.
+    # fringe_rollup_amount is the whole pot; fringe_by_section the pot per
+    # labor section (the per-department lines' estimates).
+    fringe_rollup_amount = round(sum(
         float(line_totals[ln.id].get("fringe_amount", 0) or 0)
-        for ln in lines if ln.is_labor), 2) if _fringe_rollup else 0.0)
+        for ln in lines if ln.is_labor), 2)
 
     # Auto-calculated % line items
     workers_comp_pct = _float(getattr(budget, 'workers_comp_pct', 0) or 0)
@@ -1376,8 +1388,10 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     # section_for_code is module-level (shared with the mobile /api/v1
     # summary so app grouping can never drift from top-sheet grouping).
 
-    # Track per-section fringe totals separately so we can subtract them
-    # from the Prod Co Fee base when fee_exclude_fringes is on (default).
+    # Per-department fringe pots: keyed by the LABOR section the fringe
+    # came from (that is the department the 6500 line is named for).
+    # Computed lines (the fringe / auto-calc lines themselves) calc as
+    # zero, so summing every line here cannot double count the pots.
     section_fringe = {start: 0.0 for start, _ in FP_COA_SECTIONS}
     for ln in lines:
         sec = section_for_code(ln.account_code)
@@ -1386,7 +1400,7 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
             if ln.is_labor:
                 section_fringe[sec] += float(line_totals[ln.id].get("fringe_amount", 0) or 0)
 
-    # Inject auto-calculated amounts into their home sections.
+    # Inject the computed amounts into their home sections.
     # 2026-04 renumber: Insurance moved 14000 → 6000; Administrative 15000 → 6500.
     if workers_comp_amount and 6000 in section_map:
         section_map[6000]["estimated"] += workers_comp_amount
@@ -1394,17 +1408,11 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         section_map[6000]["estimated"] += production_insurance_amount
     if payroll_fee_amount and 6500 in section_map:
         section_map[6500]["estimated"] += payroll_fee_amount
-    # Per-SECTION fringe lumps (owner 2026-10-21: "fringes are a
-    # sub-calculation in the labor sections … assign fringes in those
-    # actual sections rather than Administrative — reconcile the fringe
-    # total for the whole individual section"). In rollup mode each labor
-    # section's fringe pot stays IN that section as its own lump (the
-    # <sec>-FR row / "Payroll Fringes — <Section>" line), instead of the
-    # old single pot under 6500 Administrative.
-    if _fringe_rollup:
-        for _frsec, _fr in section_fringe.items():
-            if _fr and _frsec in section_map:
-                section_map[_frsec]["estimated"] += _fr
+    # Every department's fringe pot lands in 6500 Administrative (Phase 4);
+    # the labor section itself carries wages only, so its variance does
+    # not move when fringes post.
+    if fringe_rollup_amount and FRINGE_HOME_SECTION in section_map:
+        section_map[FRINGE_HOME_SECTION]["estimated"] += fringe_rollup_amount
 
     for code, actual_sum in actuals_by_code.items():
         if code is None:
@@ -1463,9 +1471,12 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
     # `fringe_in_section` carries the labor-fringe portion of that
     # section's total so the fee-base math can subtract it without the
     # template needing to know how it was computed.
+    # The fringe sits in 6500 now, so that is the only row carrying a
+    # fringe portion to subtract from the fee base.
     for row in rows:
         row["fee_applies"] = row["code"] not in _excluded_codes
-        row["fringe_in_section"] = round(section_fringe.get(row["code"], 0.0), 2)
+        row["fringe_in_section"] = (round(fringe_rollup_amount, 2)
+                                    if row["code"] == FRINGE_HOME_SECTION else 0.0)
 
     # Industry-standard default: fringes (P&W, P/H/W, etc.) on labor
     # lines pass through without the Prod Co Fee marked up on them. The
@@ -1480,9 +1491,8 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
             return 0.0
         base = row["estimated"]
         if exclude_fringes:
-            # Each section's total CONTAINS its labor fringe in both modes
-            # now (inside line totals normally; as the per-section lump in
-            # rollup mode) — one subtract covers both. (2026-10-21.)
+            # 6500's total contains every department's fringe pot; take
+            # it out of the fee base when fringes are fee-exempt.
             base -= row["fringe_in_section"]
         return max(base, 0.0)
 
@@ -1524,10 +1534,7 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         for ln in lines:
             sec = section_for_code(ln.account_code)
             res = line_totals.get(ln.id) or {}
-            base = float(res.get("est_total", 0) or 0)
-            if exclude_fringes and ln.is_labor and not _fringe_rollup:
-                # (rollup mode: est_total already excludes fringe)
-                base -= float(res.get("fringe_amount", 0) or 0)
+            base = float(res.get("est_total", 0) or 0)   # excludes fringe (calc_line)
             # Section exemption beats everything — a section ticked exempt
             # in Settings gets NO fee, even on lines carrying a stored
             # per-line override (user 2026-09-09: "I select sections to not
@@ -1556,10 +1563,11 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         _pseudo = [(workers_comp_amount, 6000),
                    (production_insurance_amount, 6000),
                    (payroll_fee_amount, 6500)]
-        if _fringe_rollup and not exclude_fringes:
-            # Rolled-up fringes get a dispersed-fee share only when the
-            # fee applies to fringes at all — one share per section now.
-            _pseudo += [(_fr, _frsec) for _frsec, _fr in section_fringe.items() if _fr]
+        if not exclude_fringes:
+            # Fringes get a dispersed-fee share only when the fee applies
+            # to fringes at all — one share per department line, in 6500.
+            _pseudo += [(_fr, FRINGE_HOME_SECTION)
+                        for _frsec, _fr in section_fringe.items() if _fr]
         for _amt, _sec in _pseudo:
             if _amt and _sec not in _excluded_codes:
                 _share = float(int(_amt * effective_rate + 0.5))
@@ -1617,13 +1625,15 @@ def calc_top_sheet(budget, lines, fringe_configs, actuals_by_code, payroll_profi
         "grand_variance":        round(grand_variance, 2),
         "gross_labor_wages":     round(gross_labor_wages, 2),
         "workers_comp_pct":      workers_comp_pct,
-        "fringe_rollup":         _fringe_rollup,
+        # Always on since Phase 4 (kept for templates / API that read it).
+        "fringe_rollup":         True,
         "fringe_rollup_amount":  fringe_rollup_amount,
-        # {section_code: fringe $} — only labor sections with fringe, only
-        # in rollup mode (the per-section "Payroll Fringes" lumps).
-        "fringe_by_section":     ({_frsec: round(_fr, 2)
-                                   for _frsec, _fr in section_fringe.items() if _fr}
-                                  if _fringe_rollup else {}),
+        # {labor section_code: fringe $} — one entry per department with
+        # fringe; each is the estimate of that department's "Payroll
+        # Fringes — <Department>" line in 6500 Administrative.
+        "fringe_by_section":     {_frsec: round(_fr, 2)
+                                  for _frsec, _fr in section_fringe.items() if _fr},
+        "fringe_home_section":   FRINGE_HOME_SECTION,
         "workers_comp_amount":   workers_comp_amount,
         "payroll_fee_pct":       payroll_fee_pct,
         "payroll_fee_amount":    payroll_fee_amount,
