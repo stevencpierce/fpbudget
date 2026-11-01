@@ -1,0 +1,668 @@
+{% extends "base.html" %}
+{% block title %}Actuals — {{ project.name }}{% endblock %}
+{% block body_class %}aw-body{% endblock %}
+
+{% block content %}
+{# ═══ THE ACTUALS WORKSPACE (ACTUALS_HANDOFF Phase 3, 2026-11-01) ════════
+   One screen per project. Left: the transaction pool in six views
+   (Unclaimed, Assigned, Needs backup, Receipts, Not project, Sync).
+   Right: the current Working budget as drop targets with Est / Actual /
+   Var per line. Drag from left to right, or select and press A.
+   Data: GET /projects/<pid>/actuals/workspace.json (re-fetched after
+   every mutation). JS: static/actuals-js/a01.js (core + render),
+   a02.js (drag and drop + recent targets), a03.js (actions + modals).
+   Visual spec: the Claude Design artboards (Main / CreateExpense /
+   AdminTransactions / Components) rendered in the app's own CSS
+   variables so light and dark both work. No emoji, inline SVG only. #}
+<style>
+  .aw-body .main-content { padding: 0; }
+  .aw-body .flash-container { padding: .4rem 1.5rem 0; }
+  .aw {
+    --aw-text-2: color-mix(in srgb, var(--text) 72%, var(--text-muted));
+    --aw-row-border: color-mix(in srgb, var(--border) 45%, var(--bg-2));
+    --aw-accent-soft: color-mix(in srgb, var(--accent) 11%, var(--bg-2));
+    --aw-accent-soft-2: color-mix(in srgb, var(--accent) 16%, var(--bg-2));
+    --aw-red-soft: color-mix(in srgb, var(--red) 13%, var(--bg-2));
+    --aw-yellow-soft: color-mix(in srgb, var(--yellow) 14%, var(--bg-2));
+    --aw-green-soft: color-mix(in srgb, var(--green) 13%, var(--bg-2));
+    --aw-orange-soft: color-mix(in srgb, var(--orange) 14%, var(--bg-2));
+    --aw-bar-bg: var(--bg-3); --aw-bar-fg: var(--text);
+    --aw-bar-border: var(--border);
+    --aw-cols: 40px 86px minmax(180px, 1fr) 110px 74px 86px minmax(200px, 1fr) 150px 84px;
+    --aw-rcols: 56px 86px minmax(180px, 1.3fr) 110px minmax(200px, 1fr) 300px;
+    --aw-ncols: 40px 86px minmax(180px, 1fr) 110px 74px 86px minmax(220px, 1.2fr) 110px;
+    --aw-nums: 76px 76px 70px;
+    display: flex; flex-direction: column; height: calc(100vh - 54px);
+    min-height: 560px; background: var(--bg); color: var(--text);
+    font-family: var(--font); font-size: 14px; line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+  }
+  [data-theme="light"] .aw { --aw-bar-bg: var(--text); --aw-bar-fg: var(--bg-2);
+                             --aw-bar-border: transparent; }
+  .aw a { color: var(--accent); }
+  .aw a:hover { color: var(--accent-dim); text-decoration: none; }
+  .aw .num { font-variant-numeric: tabular-nums; }
+  .aw .muted { color: var(--text-muted); }
+  .aw .vis-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .aw button, .aw input, .aw select, .aw textarea { font: inherit; color: inherit; }
+  .aw svg { flex-shrink: 0; }
+
+  /* ── Buttons ── */
+  .aw-btn { height: 34px; padding: 0 14px; border-radius: 6px; border: 1px solid var(--border);
+            background: var(--bg-2); color: var(--text); font-size: 13px; font-weight: 500;
+            cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .aw-btn:hover { background: var(--bg-3); }
+  .aw-btn:focus-visible, .aw input:focus-visible, .aw select:focus-visible, .aw [tabindex]:focus-visible,
+  .aw-view:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .aw-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .aw-btn.primary:hover { background: var(--accent-dim); }
+  .aw-btn.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--border)); }
+  .aw-btn.danger:hover { background: var(--aw-red-soft); }
+  .aw-btn.sm { height: 26px; padding: 0 10px; font-size: 12px; }
+  .aw-btn.icon { width: 26px; padding: 0; justify-content: center; }
+  .aw-btn:disabled { opacity: .5; cursor: not-allowed; background: var(--bg-3); }
+  .aw-btn.lg { height: 40px; padding: 0 18px; }
+  .aw-pill { height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid var(--border);
+             background: var(--bg-2); font-size: 12px; color: var(--text); cursor: pointer;
+             display: inline-flex; align-items: center; gap: 6px; max-width: 260px; }
+  .aw-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .aw-pill:hover { background: var(--bg-3); }
+  .aw-pill.aw-hl { border: 2px dashed var(--accent); background: var(--aw-accent-soft); color: var(--accent-dim); }
+  .aw input[type="search"], .aw input[type="text"], .aw input[type="date"], .aw input[type="number"], .aw select, .aw textarea {
+    height: 34px; box-sizing: border-box; padding: 0 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg-2); font-size: 13px; color: var(--text); }
+  .aw textarea { height: auto; padding: 8px 10px; resize: vertical; }
+  .aw input::placeholder { color: var(--text-muted); }
+  .aw input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+  .aw input[type="radio"] { margin: 0; accent-color: var(--accent); }
+  .aw kbd { font: inherit; font-size: 11px; padding: 1px 5px; border: 1px solid var(--border);
+            border-radius: 4px; background: var(--bg-3); }
+
+  /* ── Header ── */
+  .aw-head { height: 56px; box-sizing: border-box; padding: 0 24px; display: flex; align-items: center;
+             justify-content: space-between; gap: 16px; background: var(--bg-2);
+             border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .aw-crumbs { display: flex; align-items: center; gap: 14px; min-width: 0; font-size: 14px; }
+  .aw-crumbs .brand { font-weight: 600; font-size: 15px; color: var(--text); }
+  .aw-crumbs .sep { color: var(--border); }
+  .aw-crumbs .proj { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 380px; }
+  .aw-crumbs .here { font-weight: 600; }
+  .aw-head-right { display: flex; align-items: center; gap: 12px; }
+  .aw-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+  .aw-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; }
+  .aw-dot.off { background: var(--yellow); }
+
+  /* ── Panes ── */
+  .aw-panes { flex: 1 1 auto; display: flex; min-height: 0; }
+  .aw-left { flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column;
+             border-right: 1px solid var(--border); background: var(--bg-2); position: relative; min-height: 0; }
+  .aw-right { flex: 1 1 480px; min-width: 360px; max-width: 560px; display: flex; flex-direction: column;
+              background: var(--bg); min-height: 0; }
+  @media (max-width: 1100px) {
+    .aw { height: auto; }
+    .aw-panes { flex-direction: column; }
+    .aw-left { border-right: 0; border-bottom: 1px solid var(--border); }
+    .aw-right { max-width: none; }
+    .aw-tablewrap, .aw-budget { max-height: 70vh; }
+  }
+
+  /* ── Left tools ── */
+  .aw-tools { padding: 16px 24px 0; display: flex; flex-direction: column; gap: 12px; flex-shrink: 0; }
+  .aw-views { display: flex; gap: 2px; padding: 3px; background: var(--bg-3); border-radius: 8px;
+              width: fit-content; max-width: 100%; flex-wrap: wrap; }
+  .aw-view { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
+             border-radius: 6px; border: 0; background: transparent; color: var(--text-muted);
+             font-size: 13px; font-weight: 500; cursor: pointer; }
+  .aw-view:hover { color: var(--text); }
+  .aw-view[aria-current="page"] { background: var(--bg-2); color: var(--text); font-weight: 600;
+                                  box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .aw-count { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+  .aw-count.accent { padding: 1px 6px; border-radius: 10px; background: var(--accent); color: #fff; }
+  .aw-count.red { padding: 1px 6px; border-radius: 10px; background: var(--aw-red-soft); color: var(--red); }
+  .aw-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .aw-filters input[type="search"] { width: 300px; max-width: 100%; }
+  .aw-filters .spacer { flex: 1 1 auto; }
+  .aw-summary { font-size: 12px; color: var(--text-muted); }
+  .aw-recent { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 26px; }
+  .aw-recent:empty { display: none; }
+  .aw-label { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
+  .aw-linefilter { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 9px;
+                   border-radius: 12px; background: var(--aw-accent-soft); color: var(--accent-dim);
+                   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--bg-2)); }
+  .aw-linefilter button { border: 0; background: transparent; cursor: pointer; color: inherit; padding: 0; display: inline-flex; }
+
+  /* ── Table ── */
+  .aw-tablewrap { margin-top: 12px; overflow: auto; flex: 1 1 auto; min-height: 0; padding-bottom: 84px; }
+  .aw-table { min-width: 900px; }
+  .aw-table.receipts { min-width: 860px; }
+  .aw-hrow, .aw-row { display: grid; grid-template-columns: var(--aw-cols); align-items: center; }
+  .aw-table.receipts .aw-hrow, .aw-table.receipts .aw-row { grid-template-columns: var(--aw-rcols); }
+  .aw-table.notproject .aw-hrow, .aw-table.notproject .aw-row { grid-template-columns: var(--aw-ncols); }
+  .aw-hrow { height: 32px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+             background: var(--bg); font-size: 11px; font-weight: 600; letter-spacing: .04em;
+             text-transform: uppercase; color: var(--text-muted); position: sticky; top: 0; z-index: 2; }
+  .aw-cell { padding: 0 12px; height: 36px; display: flex; align-items: center; white-space: nowrap;
+             overflow: hidden; text-overflow: ellipsis; font-size: 13px; gap: 6px; min-width: 0; }
+  .aw-hrow .aw-cell { height: 32px; }
+  .aw-cell.right { justify-content: flex-end; }
+  .aw-cell .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .aw-row { height: 36px; border-bottom: 1px solid var(--aw-row-border); background: var(--bg-2); cursor: default; }
+  .aw-row:hover { background: color-mix(in srgb, var(--bg-3) 50%, var(--bg-2)); }
+  .aw-row[aria-selected="true"] { background: var(--aw-accent-soft-2); box-shadow: inset 3px 0 0 var(--accent); }
+  .aw-row.dragging { opacity: .45; }
+  .aw-row.filehl { outline: 2px dashed var(--accent); outline-offset: -2px; }
+  .aw-row.focus-flash { animation: awflash 1.6s ease-out 1; }
+  @keyframes awflash { 0% { box-shadow: inset 0 0 0 2px var(--accent); } 100% { box-shadow: inset 3px 0 0 var(--accent); } }
+  .aw-row .vendor { font-weight: 500; }
+  .aw-row .sub { font-size: 11px; color: var(--text-muted); margin-left: 6px; overflow: hidden; text-overflow: ellipsis; }
+  .aw-row .amt { font-weight: 600; }
+  .aw-row .amt.credit { color: var(--green); }
+  .aw-rowacts { justify-content: flex-end; gap: 4px; visibility: hidden; padding-right: 8px; }
+  .aw-row:hover .aw-rowacts, .aw-row:focus-within .aw-rowacts, .aw-row[aria-selected="true"] .aw-rowacts { visibility: visible; }
+  .aw-grp { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px 0 12px;
+            background: var(--bg); border-bottom: 1px solid var(--aw-row-border); font-size: 12px; font-weight: 600;
+            position: sticky; top: 32px; z-index: 1; }
+  .aw-grp .code { color: var(--text-muted); }
+  .aw-grp .tot { margin-left: auto; font-weight: 500; color: var(--text-muted); }
+  .aw-grp.line { font-weight: 500; padding-left: 24px; background: var(--bg-2); top: auto; position: static; }
+  .aw-empty { margin: 14px 24px; font-size: 13px; color: var(--text-muted); }
+  .aw-hint { margin: 10px 24px 0; font-size: 12px; color: var(--text-muted); }
+  .aw-thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border);
+              background: var(--bg-3); display: block; }
+  .aw-table.receipts .aw-row { height: 44px; }
+  .aw-table.receipts .aw-cell { height: 44px; }
+  .aw-row.excluded .vendor { text-decoration: line-through; color: var(--text-muted); }
+  .aw-row.excluded { color: var(--text-muted); }
+
+  /* ── Chips ── */
+  .aw-src { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 4px; background: var(--bg-3); color: var(--aw-text-2); }
+  .aw-src.manual { background: var(--aw-orange-soft); color: var(--orange); }
+  .aw-src.receipt { background: var(--aw-green-soft); color: var(--green); }
+  .aw-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 9px; border-radius: 12px;
+             max-width: 100%; overflow: hidden; }
+  .aw-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .aw-chip.ghost { border: 1px dashed var(--border); color: var(--aw-text-2); background: var(--bg-2); cursor: pointer; }
+  .aw-chip.ghost:hover { border-color: var(--accent); color: var(--accent-dim); }
+  .aw-chip.ghost .conf { font-size: 11px; color: var(--text-muted); }
+  .aw-chip.solid { background: var(--bg-3); color: var(--text); font-weight: 500; }
+  .aw-chip.info { border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--bg-2)); color: var(--accent-dim); background: var(--aw-accent-soft); }
+  .aw-flag { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+  .aw-flag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .aw-flag.red { color: var(--red); } .aw-flag.red::before { background: var(--red); }
+  .aw-flag.yellow { color: var(--yellow); } .aw-flag.yellow::before { background: var(--yellow); }
+  .aw-flag.green { color: var(--green); } .aw-flag.green::before { background: var(--green); }
+  .aw-flag.none { color: var(--text-muted); } .aw-flag.none::before { display: none; }
+
+  /* ── Floating action bar ── */
+  .aw-actionbar { position: absolute; left: 24px; right: 24px; bottom: 20px; height: 52px; box-sizing: border-box;
+                  padding: 0 8px 0 16px; display: flex; align-items: center; gap: 8px; background: var(--aw-bar-bg);
+                  color: var(--aw-bar-fg); border: 1px solid var(--aw-bar-border); border-radius: 10px;
+                  box-shadow: 0 8px 24px rgba(0,0,0,.28); z-index: 5; }
+  .aw-actionbar[hidden] { display: none; }
+  .aw-actionbar .sel { font-size: 13px; font-weight: 600; }
+  .aw-actionbar .spacer { flex: 1 1 auto; }
+  .aw-actionbar .aw-btn { height: 36px; border-color: color-mix(in srgb, var(--aw-bar-fg) 22%, transparent);
+                          background: transparent; color: var(--aw-bar-fg); }
+  .aw-actionbar .aw-btn:hover { background: color-mix(in srgb, var(--aw-bar-fg) 10%, transparent); }
+  .aw-actionbar .aw-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .aw-actionbar .aw-btn.primary:hover { background: var(--accent-dim); }
+  .aw-actionbar .aw-btn.icon { width: 36px; border: 0; }
+
+  /* ── Budget pane ── */
+  .aw-bhead { padding: 16px 20px 10px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+              border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .aw-bhead h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .aw-bhead .hint { font-size: 12px; color: var(--text-muted); }
+  .aw-nums { display: grid; grid-template-columns: var(--aw-nums); gap: 8px; text-align: right; font-size: 12px; flex-shrink: 0; }
+  .aw-nums.head { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
+  .aw-budget { flex: 1 1 auto; overflow-y: auto; padding: 8px 12px 20px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .aw-sec { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .aw-sec-head { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; background: var(--bg-3);
+                 font-size: 13px; font-weight: 600; }
+  .aw-sec-head .code { color: var(--text-muted); }
+  .aw-sec-head .spacer { flex: 1 1 auto; }
+  .aw-sec-head[data-target] { cursor: copy; }
+  .aw-sec-head.aw-hl { margin: 4px; height: 38px; padding: 0 8px 0 12px; border-radius: 6px;
+                       border: 2px dashed var(--text-muted); background: var(--bg); color: var(--aw-text-2); }
+  .aw-dropbadge.quiet { background: transparent; color: var(--text-muted); font-weight: 500; padding: 0; }
+  .aw-line { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px 0 24px;
+             border-top: 1px solid var(--aw-row-border); font-size: 13px; cursor: pointer; }
+  .aw-line .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .aw-line .name .auto { font-size: 11px; color: var(--text-muted); margin-left: 6px; }
+  .aw-line .aw-nums { color: var(--aw-text-2); }
+  .aw-line:hover { background: color-mix(in srgb, var(--bg-3) 50%, var(--bg-2)); }
+  .aw-line.child { padding-left: 40px; }
+  .aw-line.child .name::before { content: "\2193"; color: var(--text-muted); margin-right: 6px; }
+  .aw-line.off { color: var(--text-muted); cursor: default; }
+  .aw-line.off:hover { background: transparent; }
+  .aw-line.fringe { height: 30px; border-top: 1px dashed var(--border); background: var(--bg); font-size: 12px;
+                    color: var(--text-muted); cursor: default; }
+  .aw-line.fringe .aw-nums { color: var(--text-muted); }
+  .aw-line.aw-hl { position: relative; height: 42px; margin: 4px; padding: 0 8px 0 20px; border-radius: 6px;
+                   border: 2px dashed var(--accent); background: var(--aw-accent-soft); font-weight: 600; color: var(--accent-dim); }
+  .aw-line.aw-hl .aw-nums { color: var(--accent-dim); }
+  .aw-dropbadge { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 12px; background: var(--accent); color: #fff; white-space: nowrap; }
+  .aw-line.sel { background: var(--aw-accent-soft); }
+  .var.pos { color: var(--green); } .var.neg { color: var(--red); font-weight: 600; }
+  .aw-bfoot { padding: 12px 20px; border-top: 1px solid var(--border); background: var(--bg-2); display: flex;
+              align-items: center; justify-content: space-between; gap: 12px; flex-shrink: 0; }
+  .aw-bfoot .aw-nums { font-size: 13px; font-weight: 600; }
+
+  /* ── Drag ghost ── */
+  .aw-ghost { position: fixed; top: -200px; left: -200px; z-index: 999; pointer-events: none;
+              height: 36px; padding: 0 14px; display: inline-flex; align-items: center; gap: 8px; border-radius: 18px;
+              background: var(--accent); color: #fff; font-size: 13px; font-weight: 600; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+
+  /* ── Toasts ── */
+  .aw-toasts { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
+  .aw-toast { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 8px; background: var(--aw-bar-bg);
+              color: var(--aw-bar-fg); border: 1px solid var(--aw-bar-border); font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.25);
+              max-width: 440px; }
+  .aw-toast.red { box-shadow: inset 3px 0 0 var(--red), 0 8px 24px rgba(0,0,0,.25); }
+  .aw-toast.yellow { box-shadow: inset 3px 0 0 var(--yellow), 0 8px 24px rgba(0,0,0,.25); }
+  .aw-toast .aw-btn { height: 28px; padding: 0 10px; font-size: 12px; border-color: color-mix(in srgb, var(--aw-bar-fg) 22%, transparent);
+                      background: transparent; color: var(--aw-bar-fg); }
+  .aw-toast .aw-btn.icon { width: 28px; border: 0; }
+
+  /* ── Dialogs ── */
+  .aw-dialog { border: 0; padding: 0; border-radius: 12px; background: var(--bg-2); color: var(--text);
+               box-shadow: 0 24px 64px rgba(0,0,0,.28); max-width: calc(100vw - 48px); max-height: calc(100vh - 48px);
+               font-family: var(--font); font-size: 14px; }
+  .aw-dialog::backdrop { background: rgba(26,29,46,.45); }
+  .aw-dialog form { margin: 0; }
+  .aw-dhead { height: 64px; padding: 0 28px; display: flex; align-items: center; justify-content: space-between;
+              border-bottom: 1px solid var(--aw-row-border); gap: 12px; }
+  .aw-dhead h2 { margin: 0; font-size: 17px; font-weight: 600; }
+  .aw-dhead .sub { font-size: 12px; color: var(--text-muted); }
+  .aw-dbody { padding: 24px 28px; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; max-height: calc(100vh - 48px - 64px - 68px); }
+  .aw-dfoot { height: 68px; padding: 0 28px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+              border-top: 1px solid var(--aw-row-border); }
+  .aw-dfoot .note { font-size: 12px; color: var(--text-muted); }
+  .aw-dfoot .acts { display: flex; gap: 8px; margin-left: auto; }
+  .aw-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .aw-field label, .aw-field .lbl { font-size: 13px; font-weight: 500; }
+  .aw-field .help { font-size: 12px; color: var(--text-muted); }
+  .aw-field input, .aw-field select { height: 40px; }
+  .aw-field .req { color: var(--text-muted); font-weight: 400; }
+  .aw-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .aw-grid3 { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 16px; }
+  .aw-err { font-size: 12px; color: var(--red); min-height: 16px; }
+  .aw-close { width: 36px; height: 36px; border-radius: 6px; border: 0; background: transparent; color: var(--text-muted);
+              cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+  .aw-close:hover { background: var(--bg-3); color: var(--text); }
+
+  /* Picker (A) */
+  #aw-picker { width: 520px; }
+  .aw-plist { border: 1px solid var(--border); border-radius: 6px; overflow: auto; max-height: 380px; background: var(--bg-2); }
+  .aw-pgrp { padding: 6px 10px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+             color: var(--text-muted); background: var(--bg); position: sticky; top: 0; }
+  .aw-popt { height: 36px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+             font-size: 13px; cursor: pointer; }
+  .aw-popt .l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .aw-popt .r { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+  .aw-popt.child { padding-left: 26px; }
+  .aw-popt:hover, .aw-popt[aria-selected="true"] { background: var(--aw-accent-soft); font-weight: 500; }
+  .aw-popt.section { font-weight: 600; }
+  .aw-popt.section .r { color: var(--text-muted); }
+
+  /* Split */
+  #aw-split { width: 640px; }
+  .aw-srow { display: grid; grid-template-columns: minmax(0, 1fr) 130px 36px; gap: 8px; align-items: center; }
+  .aw-srow select, .aw-srow input { height: 36px; }
+  .aw-remain { display: flex; justify-content: space-between; font-size: 13px; padding: 10px 12px; border-radius: 6px; background: var(--bg); }
+  .aw-remain.ok { color: var(--green); } .aw-remain.bad { color: var(--red); font-weight: 600; }
+
+  /* Create expense */
+  #aw-create { width: 1040px; }
+  #aw-create .aw-cwrap { display: flex; height: 700px; max-height: calc(100vh - 48px); }
+  .aw-preview { width: 440px; flex: 0 0 440px; background: var(--bg-3); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  .aw-preview .top { height: 48px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between;
+                     border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-muted); gap: 8px; }
+  .aw-preview .top span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .aw-preview .img { flex: 1 1 auto; padding: 24px; display: flex; align-items: flex-start; justify-content: center; overflow: auto; }
+  .aw-preview img { max-width: 100%; border: 1px solid var(--border); box-shadow: 0 2px 12px rgba(0,0,0,.08); background: #fff; }
+  .aw-preview .bot { height: 44px; padding: 0 16px; display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border);
+                     font-size: 12px; color: var(--text-muted); }
+  .aw-cform { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  .aw-cform .aw-dbody { flex: 1 1 auto; max-height: none; gap: 22px; }
+  .aw-pay { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+  .aw-pay label { height: 44px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--border);
+                  border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; background: var(--bg-2); }
+  .aw-pay label:has(input:checked) { border: 2px solid var(--accent); background: var(--aw-accent-soft); color: var(--accent-dim); font-weight: 600; }
+  .aw-pay input { position: absolute; opacity: 0; width: 0; height: 0; }
+  fieldset.aw-fs { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+  fieldset.aw-fs legend { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); padding: 0; margin-bottom: 8px; }
+  .aw-combo { position: relative; }
+  .aw-combo input { width: 100%; }
+  .aw-combo .aw-plist { position: absolute; left: 0; right: 0; top: 46px; z-index: 3; box-shadow: 0 8px 24px rgba(0,0,0,.12); display: none; max-height: 260px; }
+  .aw-combo.open .aw-plist { display: block; }
+
+  /* Attach */
+  #aw-attach { width: 560px; }
+  .aw-inbox { border: 1px solid var(--border); border-radius: 6px; max-height: 260px; overflow: auto; }
+  .aw-inbox label { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--aw-row-border); cursor: pointer; font-size: 13px; }
+  .aw-inbox label:hover { background: var(--bg); }
+  .aw-inbox .n { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .aw-drop { border: 2px dashed var(--border); border-radius: 8px; padding: 18px; text-align: center; font-size: 13px; color: var(--text-muted); }
+  .aw-drop.over { border-color: var(--accent); background: var(--aw-accent-soft); color: var(--accent-dim); }
+
+  #aw-reason, #aw-backup { width: 460px; }
+
+  /* Row menu */
+  .aw-menu { position: fixed; z-index: 70; min-width: 200px; padding: 4px; background: var(--bg-2); border: 1px solid var(--border);
+             border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.18); display: none; }
+  .aw-menu.open { display: block; }
+  .aw-menu button { display: flex; width: 100%; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border: 0; border-radius: 6px;
+                    background: transparent; font-size: 13px; text-align: left; cursor: pointer; color: var(--text); }
+  .aw-menu button:hover, .aw-menu button:focus-visible { background: var(--bg-3); }
+  .aw-menu button.danger { color: var(--red); }
+  .aw-menu hr { border: 0; border-top: 1px solid var(--aw-row-border); margin: 4px 0; }
+
+  /* Sync view */
+  .aw-sync { padding: 16px 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; max-width: 980px; }
+  .aw-card { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+  .aw-card h3 { margin: 0; font-size: 13px; font-weight: 600; }
+  .aw-kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 13px; }
+  .aw-kv dt { color: var(--text-muted); } .aw-kv dd { margin: 0; }
+  .aw-acct { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .aw-acct .n { flex: 1 1 auto; } .aw-acct .t { font-size: 11px; color: var(--text-muted); }
+</style>
+
+{# Budget-line options — LINES ONLY — the same shape /register's
+   #rg-line-opts had. Cloned into the split modal's selects and read by the
+   picker dialog (through window.__AJ.lineGroups). #}
+<template id="aw-line-opts">
+  <option value="">— assign budget line —</option>
+  {% for grp in line_groups %}
+  <optgroup label="{{ grp.code }} · {{ grp.name }}">
+    {% for o in grp.opts %}{% if o.kind != 'fringe' %}
+    <option value="{{ o.id }}" data-kind="{{ o.kind }}">{{ '    ' if o.kind == 'child' else '' }}{{ o.label }}</option>
+    {% endif %}{% endfor %}
+  </optgroup>
+  {% endfor %}
+</template>
+
+<div class="aw" id="aw">
+  <header class="aw-head">
+    <div class="aw-crumbs">
+      <a class="brand" href="{{ url_for('dashboard') }}">FPBudget</a>
+      <span class="sep" aria-hidden="true">/</span>
+      <a class="proj" href="{{ url_for('budget_view', pid=project.id, bid=budget_id) if budget_id else url_for('dashboard') }}">{{ project.name }}</a>
+      <span class="sep" aria-hidden="true">/</span>
+      <span class="here">Actuals</span>
+    </div>
+    <div class="aw-head-right">
+      <span class="aw-status" id="aw-syncstatus"><span class="aw-dot off" id="aw-syncdot" aria-hidden="true"></span><span id="aw-synctext">Loading</span></span>
+      <button type="button" class="aw-btn" id="aw-syncnow" data-act="sync-now">Sync now</button>
+      {% if budget_id %}<a class="aw-btn" href="{{ url_for('budget_view', pid=project.id, bid=budget_id) }}">Budget</a>{% endif %}
+    </div>
+  </header>
+
+  <div class="aw-panes">
+    <section class="aw-left" aria-label="Transactions">
+      <div class="aw-tools">
+        <nav class="aw-views" aria-label="Views" id="aw-views">
+          <button type="button" class="aw-view" data-view="unclaimed" aria-current="page">Unclaimed <span class="aw-count accent" data-count="unclaimed">0</span></button>
+          <button type="button" class="aw-view" data-view="assigned">Assigned <span class="aw-count" data-count="assigned">0</span></button>
+          <button type="button" class="aw-view" data-view="needs_backup">Needs backup <span class="aw-count red" data-count="needs_backup">0</span></button>
+          <button type="button" class="aw-view" data-view="receipts">Receipts <span class="aw-count" data-count="receipts">0</span></button>
+          <button type="button" class="aw-view" data-view="not_project">Not project <span class="aw-count" data-count="not_project">0</span></button>
+          <button type="button" class="aw-view" data-view="sync">Sync</button>
+        </nav>
+        <div class="aw-filters" id="aw-filters">
+          <label for="aw-q" class="vis-hidden">Search transactions</label>
+          <input id="aw-q" type="search" placeholder="Search vendor, amount, last four" autocomplete="off">
+          <label for="aw-card" class="vis-hidden">Card</label>
+          <select id="aw-card"><option value="">All cards</option></select>
+          <label for="aw-from" class="vis-hidden">From date</label>
+          <input id="aw-from" type="date" title="From date">
+          <label for="aw-to" class="vis-hidden">To date</label>
+          <input id="aw-to" type="date" title="To date">
+          <span class="spacer"></span>
+          <span class="aw-summary num" id="aw-summary"></span>
+        </div>
+        <div class="aw-recent" id="aw-recent"></div>
+      </div>
+
+      <div class="aw-tablewrap" id="aw-tablewrap">
+        <div role="table" class="aw-table" id="aw-table" aria-label="Transactions"></div>
+        <p class="aw-hint" id="aw-hint"></p>
+      </div>
+
+      <div role="toolbar" class="aw-actionbar" id="aw-actionbar" aria-label="Selected transactions" hidden>
+        <span class="sel num" id="aw-selinfo">0 selected</span>
+        <span class="spacer"></span>
+        <button type="button" class="aw-btn primary" data-act="assign">Assign to line</button>
+        <button type="button" class="aw-btn" data-act="split">Split</button>
+        <button type="button" class="aw-btn" data-act="attach">Attach receipt</button>
+        <button type="button" class="aw-btn" data-act="not-project">Not project</button>
+        <button type="button" class="aw-btn icon" data-act="clear" aria-label="Clear selection">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg>
+        </button>
+      </div>
+    </section>
+
+    <aside class="aw-right" aria-label="Budget lines">
+      <div class="aw-bhead">
+        <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+          <h2 id="aw-btitle">Working budget</h2>
+          <span class="hint">Drop a charge on a line or a section header</span>
+        </div>
+        <div class="aw-nums head" aria-hidden="true"><span>Est</span><span>Actual</span><span>Var</span></div>
+      </div>
+      <div class="aw-budget" id="aw-budget"><p class="aw-empty">Loading</p></div>
+      <div class="aw-bfoot">
+        <span style="font-size:13px;font-weight:600">Grand total</span>
+        <div class="aw-nums num" id="aw-grand"><span>0</span><span>0</span><span>0</span></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<div class="aw-ghost" id="aw-ghost" aria-hidden="true"></div>
+<div class="aw-toasts" id="aw-toasts" aria-live="polite"></div>
+<div class="aw-menu" id="aw-menu" role="menu"></div>
+<input type="file" id="aw-file" class="vis-hidden" accept="image/*,.pdf,application/pdf" aria-hidden="true" tabindex="-1">
+
+{# ── Line picker (A / Assign to line / Reassign) ── #}
+<dialog class="aw-dialog aw" id="aw-picker" aria-labelledby="aw-picker-title">
+  <form method="dialog">
+    <div class="aw-dhead">
+      <div><h2 id="aw-picker-title">Assign to line</h2><div class="sub" id="aw-picker-sub"></div></div>
+      <button type="button" class="aw-close" data-close aria-label="Close"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg></button>
+    </div>
+    <div class="aw-dbody" style="gap:10px">
+      <label for="aw-picker-q" class="vis-hidden">Find a budget line</label>
+      <input id="aw-picker-q" type="search" placeholder="Type a code or a line name" autocomplete="off" role="combobox" aria-expanded="true" aria-controls="aw-picker-list" aria-autocomplete="list">
+      <div class="aw-plist" id="aw-picker-list" role="listbox" aria-label="Budget lines"></div>
+      <div class="help" style="font-size:12px;color:var(--text-muted)">Arrow keys move, <kbd>Enter</kbd> assigns, <kbd>Esc</kbd> closes. A section header codes to the section with no line yet.</div>
+    </div>
+  </form>
+</dialog>
+
+{# ── Split ── #}
+<dialog class="aw-dialog aw" id="aw-split" aria-labelledby="aw-split-title">
+  <form method="dialog">
+    <div class="aw-dhead">
+      <div><h2 id="aw-split-title">Split across lines</h2><div class="sub" id="aw-split-sub"></div></div>
+      <button type="button" class="aw-close" data-close aria-label="Close"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg></button>
+    </div>
+    <div class="aw-dbody" style="gap:12px">
+      <div id="aw-split-rows" style="display:flex;flex-direction:column;gap:8px"></div>
+      <div><button type="button" class="aw-btn sm" id="aw-split-add">Add a line</button></div>
+      <div class="aw-remain num" id="aw-split-remain"><span>Remainder</span><span id="aw-split-remain-amt">$0.00</span></div>
+      <div class="aw-err" id="aw-split-err"></div>
+    </div>
+    <div class="aw-dfoot">
+      <span class="note">The amounts must add up to the charge before Save turns on.</span>
+      <div class="acts">
+        <button type="button" class="aw-btn lg" data-close>Cancel</button>
+        <button type="button" class="aw-btn lg primary" id="aw-split-save" disabled>Save split</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+{# ── Not project reason ── #}
+<dialog class="aw-dialog aw" id="aw-reason" aria-labelledby="aw-reason-title">
+  <form method="dialog">
+    <div class="aw-dhead">
+      <div><h2 id="aw-reason-title">Not a project expense</h2><div class="sub" id="aw-reason-sub"></div></div>
+      <button type="button" class="aw-close" data-close aria-label="Close"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg></button>
+    </div>
+    <div class="aw-dbody" style="gap:10px">
+      <div class="aw-field">
+        <label for="aw-reason-text">Reason <span class="req">(optional)</span></label>
+        <input id="aw-reason-text" type="text" maxlength="300" placeholder="Personal, another client, duplicate charge">
+        <span class="help">It leaves every view here and waits under Not project, where Recover puts it back.</span>
+      </div>
+      <div class="aw-err" id="aw-reason-err"></div>
+    </div>
+    <div class="aw-dfoot">
+      <span class="note"></span>
+      <div class="acts">
+        <button type="button" class="aw-btn lg" data-close>Cancel</button>
+        <button type="button" class="aw-btn lg primary" id="aw-reason-save">Mark not project</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+{# ── Missing-backup reason ── #}
+<dialog class="aw-dialog aw" id="aw-backup" aria-labelledby="aw-backup-title">
+  <form method="dialog">
+    <div class="aw-dhead">
+      <div><h2 id="aw-backup-title">No receipt, with a reason</h2><div class="sub" id="aw-backup-sub"></div></div>
+      <button type="button" class="aw-close" data-close aria-label="Close"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg></button>
+    </div>
+    <div class="aw-dbody" style="gap:10px">
+      <div class="aw-field">
+        <label for="aw-backup-text">Why there is no receipt</label>
+        <input id="aw-backup-text" type="text" maxlength="300" placeholder="Vendor does not issue receipts, lost on set, tip in cash" required>
+        <span class="help">Clears the red Needs backup flag and shows as a yellow chip. Attaching a receipt later replaces it.</span>
+      </div>
+      <div class="aw-err" id="aw-backup-err"></div>
+    </div>
+    <div class="aw-dfoot">
+      <span class="note"></span>
+      <div class="acts">
+        <button type="button" class="aw-btn lg" data-close>Cancel</button>
+        <button type="button" class="aw-btn lg primary" id="aw-backup-save">Save reason</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+{# ── Attach receipt ── #}
+<dialog class="aw-dialog aw" id="aw-attach" aria-labelledby="aw-attach-title">
+  <form method="dialog">
+    <div class="aw-dhead">
+      <div><h2 id="aw-attach-title">Attach a receipt</h2><div class="sub" id="aw-attach-sub"></div></div>
+      <button type="button" class="aw-close" data-close aria-label="Close"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg></button>
+    </div>
+    <div class="aw-dbody" style="gap:14px">
+      <div class="aw-drop" id="aw-attach-drop" tabindex="0" role="button" aria-label="Upload a file">
+        Drop a file here, or <button type="button" class="aw-btn sm" id="aw-attach-browse">choose a file</button>
+        <div class="help" style="margin-top:6px;font-size:12px">It is read with OCR and filed in the project's Dropbox.</div>
+      </div>
+      <div class="aw-field">
+        <span class="lbl">Or link one from the receipts inbox</span>
+        <div class="aw-inbox" id="aw-attach-inbox"></div>
+      </div>
+      <div class="aw-err" id="aw-attach-err"></div>
+    </div>
+    <div class="aw-dfoot">
+      <span class="note" id="aw-attach-note"></span>
+      <div class="acts">
+        <button type="button" class="aw-btn lg" data-close>Cancel</button>
+        <button type="button" class="aw-btn lg primary" id="aw-attach-link" disabled>Link receipt</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+{# ── Create expense from a receipt (CreateExpense.dc.html) ── #}
+<dialog class="aw-dialog aw" id="aw-create" aria-labelledby="aw-create-title">
+  <div class="aw-cwrap">
+    <div class="aw-preview">
+      <div class="top"><span id="aw-create-file"></span><a id="aw-create-open" href="#" target="_blank" rel="noopener">Open</a></div>
+      <div class="img"><img id="aw-create-img" alt="Receipt preview" src="" onerror="this.style.display='none'"></div>
+      <div class="bot"><span class="aw-flag green" id="aw-create-ocr">OCR read</span></div>
+    </div>
+    <form class="aw-cform" id="aw-create-form" method="dialog">
+      <div class="aw-dhead">
+        <div><h2 id="aw-create-title">Create expense from this receipt</h2><div class="sub">No QuickBooks charge matches it. Record how it was paid and where it lands.</div></div>
+        <button type="button" class="aw-close" data-close aria-label="Close"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 2l10 10M12 2L2 12"/></svg></button>
+      </div>
+      <div class="aw-dbody">
+        <fieldset class="aw-fs">
+          <legend>How was it paid?</legend>
+          <div class="aw-pay" id="aw-create-pay">
+            <label><input type="radio" name="aw-pay" value="company_card">Company card</label>
+            <label><input type="radio" name="aw-pay" value="cash" checked>Cash</label>
+            <label><input type="radio" name="aw-pay" value="personal_card">Personal card</label>
+            <label><input type="radio" name="aw-pay" value="check">Check</label>
+            <label><input type="radio" name="aw-pay" value="other">Other</label>
+          </div>
+        </fieldset>
+        <div class="aw-grid2">
+          <div class="aw-field" id="aw-create-who-wrap">
+            <label for="aw-create-who">Who paid</label>
+            <select id="aw-create-who">
+              <option value="">Not recorded</option>
+              {% for c in crew %}<option value="{{ c.id }}">{{ c.name }}{% if c.department %} — {{ c.department }}{% endif %}</option>{% endfor %}
+            </select>
+            <span class="help">Shows on the reimbursement report</span>
+          </div>
+          <div class="aw-field">
+            <label for="aw-create-why">Why no card <span class="req" id="aw-create-why-req">(required for cash)</span></label>
+            <input id="aw-create-why" type="text" maxlength="200" placeholder="Garage was cash only">
+          </div>
+        </div>
+        <div class="aw-grid3">
+          <div class="aw-field"><label for="aw-create-vendor">Vendor</label><input id="aw-create-vendor" type="text" maxlength="300"></div>
+          <div class="aw-field"><label for="aw-create-amount">Amount</label><input id="aw-create-amount" type="text" inputmode="decimal" class="num"></div>
+          <div class="aw-field"><label for="aw-create-date">Date</label><input id="aw-create-date" type="date"></div>
+        </div>
+        <div class="aw-field">
+          <label for="aw-create-line">Budget line</label>
+          <div class="aw-combo" id="aw-create-combo">
+            <input id="aw-create-line" type="text" placeholder="Type a code or a line name" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="aw-create-list" aria-autocomplete="list">
+            <div class="aw-plist" id="aw-create-list" role="listbox" aria-label="Budget lines"></div>
+          </div>
+          <span class="help" id="aw-create-linehelp">Optional now. Without a line it lands in Unclaimed.</span>
+        </div>
+        <div class="aw-err" id="aw-create-err"></div>
+      </div>
+      <div class="aw-dfoot">
+        <span class="note">The receipt becomes this expense's backup, so it lands in Assigned, not Needs backup.</span>
+        <div class="acts">
+          <button type="button" class="aw-btn lg" data-close>Cancel</button>
+          <button type="submit" class="aw-btn lg primary" id="aw-create-save">Create expense</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</dialog>
+
+<script>
+window.__AJ = window.__AJ || {};
+__AJ.pid = {{ project.id }};
+__AJ.bid = {{ budget_id|tojson }};
+__AJ.projectName = {{ project.name|tojson }};
+__AJ.lineGroups = {{ line_groups|tojson }};
+__AJ.crew = {{ crew|tojson }};
+__AJ.focusTxn = {{ focus_txn|tojson }};
+__AJ.initialView = {{ initial_view|tojson }};
+__AJ.canSync = {{ can_sync|tojson }};
+__AJ.urls = {
+  workspace: "{{ url_for('actuals_workspace_json', pid=project.id) }}",
+  oauth: "{{ url_for('qbo_oauth_start') }}",
+  docs: "{{ url_for('docs_project', pid=project.id) }}",
+  upload: "{{ url_for('mobile_upload') }}"
+};
+</script>
+<script src="{{ url_for('static', filename='actuals-js/a01.js') }}?v={{ APP_COMMIT }}"></script>
+<script src="{{ url_for('static', filename='actuals-js/a02.js') }}?v={{ APP_COMMIT }}"></script>
+<script src="{{ url_for('static', filename='actuals-js/a03.js') }}?v={{ APP_COMMIT }}"></script>
+{% endblock %}
