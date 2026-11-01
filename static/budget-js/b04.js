@@ -3255,6 +3255,13 @@
       });
     });
 
+    // TODO (ACTUALS_HANDOFF Phase 3 follow-up): LEGACY. Everything from here
+    // to the end of the COA drag-drop coding block (~530 lines: file-drop on
+    // a row, row → COA tree drag, _coaApplyDrop, _recordRecent / #coa-recent,
+    // _refreshRowAfterCode, COA → row drag) was ported to
+    // static/actuals-js/a02.js for the /projects/<pid>/actuals workspace on
+    // 2026-11-01. Delete it together with the hidden #tab-actuals pane in
+    // budget.html once the new screen has been used for a release.
     // ── Drop a file onto a transaction row → upload + link ────────────
     // For users who have a paper receipt or a manually-found PDF and
     // want to attach it to a specific transaction. Drops POST to

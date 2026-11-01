@@ -615,6 +615,9 @@ def _admin_pool_rows(p):
             "card_last4": t.card_last4,
             "source": ('receipt' if t.source == 'doc_upload' else (t.source or 'manual_entry')),
             "project_id": claimer, "project": (project_names.get(claimer) if claimer else None),
+            # The row's own project (the claimer's when claimed): where a
+            # click opens it, even when nobody has claimed it yet.
+            "row_project_id": t.project_id,
             "seen_in": sorted({project_names.get(m.project_id, f'#{m.project_id}') for m in members}),
             "line": line_label, "backup": backup, "excluded": excluded,
             "payment_method": getattr(t, 'payment_method', None),
@@ -639,14 +642,58 @@ def admin_transactions_json():
                     "limit": p["limit"], "offset": p["offset"], "filters": p})
 
 
+@app.route("/admin/transactions.csv", methods=["GET"])
+@login_required
+@super_admin_required
+def admin_transactions_csv():
+    """The pool as a CSV download with the SAME filters as the page and the
+    JSON (Phase 3, 2026-11-01). Ignores limit / offset: an export is the
+    whole filtered set (capped at 20,000 rows). Columns in
+    actuals.ADMIN_POOL_CSV_COLUMNS."""
+    from actuals import admin_pool_csv
+    from flask import Response
+    p = _admin_pool_query_params()
+    p["offset"], p["limit"] = 0, 20000
+    rows, total, _names = _admin_pool_rows(p)
+    body = admin_pool_csv(rows)
+    _stamp = datetime.utcnow().strftime('%Y-%m-%d')
+    return Response(body, mimetype="text/csv",
+                    headers={"Content-Disposition":
+                             f'attachment; filename="fpbudget-transactions-{_stamp}.csv"'})
+
+
 @app.route("/admin/transactions", methods=["GET"])
 @login_required
 @super_admin_required
 def admin_transactions_page():
-    """Minimal super-admin pool page: a plain filterable table. The Phase 3
-    design pass replaces this template; the JSON above is the contract."""
+    """The super-admin pool page (Phase 3 design, 2026-11-01): search,
+    project / card / date filters, Hide claimed and Hide not-project, one
+    row per charge with the claiming project, line, backup state and
+    source. A row click opens the charge in the claiming project's
+    workspace (?txn= selects and scrolls to it). The JSON above is the
+    contract; this page is a server-rendered read of the same rows."""
     p = _admin_pool_query_params()
     rows, total, names = _admin_pool_rows(p)
     projects = sorted(names.items(), key=lambda kv: (kv[1] or '').lower())
+    # Header line: how many projects sync QBO accounts, and the pool size
+    # (unfiltered) so the filtered count has a denominator.
+    try:
+        import json as _json_adm
+        syncing = sum(1 for pp in ProjectSheet.query.all()
+                      if pp.qbo_account_ids and _json_adm.loads(pp.qbo_account_ids or '[]'))
+    except Exception:
+        syncing = 0
+    net = round(sum(float(r.get("amount") or 0) for r in rows), 2)
+    cards = sorted({r["card_last4"] for r in rows if r.get("card_last4")})
+    _mon = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+    _this_year = str(datetime.utcnow().year)
+    for r in rows:
+        d = r.get("date") or ''
+        try:
+            r["date_short"] = (f"{_mon[int(d[5:7]) - 1]} {int(d[8:10])}"
+                               + ('' if d[:4] == _this_year else f" {d[2:4]}")) if len(d) >= 10 else d
+        except (ValueError, IndexError):
+            r["date_short"] = d
     return render_template("admin_transactions.html", rows=rows, total=total,
-                           filters=p, projects=projects)
+                           filters=p, projects=projects, syncing=syncing,
+                           net=net, cards=cards)

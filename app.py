@@ -4762,6 +4762,12 @@ def project_delete(pid):
                 {"parent_transaction_id": None}, synchronize_session=False)
             db.session.flush()
             _delete_evidence_for_txns(_txn_ids)
+            # transaction_split (Phase 2) has no cascade either — drop the
+            # project's allocations before their parents go. (Found by the
+            # Phase 3 E2E run: orphan splits re-attached to a reused id.)
+            from models import TransactionSplit as _TS_del
+            _TS_del.query.filter(db.or_(_TS_del.project_id == pid,
+                                        _TS_del.transaction_id.in_(_txn_ids))).delete(synchronize_session=False)
             Transaction.query.filter_by(project_id=pid).delete(synchronize_session=False)
 
         # 4. Null parent_budget_id self-refs, then cascade-delete each budget.
@@ -20007,8 +20013,15 @@ def activity_undo(pid, bid, aid):
                                'schedule_day'):
         return jsonify({"ok": False, "error": "Undo isn't supported for this action yet"}), 400
 
-    # Visibility check — user must be allowed to see this row to undo it
-    if not _scoped_activity_query(budget_id=bid).filter(ActivityLog.id == aid).first():
+    # Visibility check — user must be allowed to see this row to undo it.
+    # Scoped by budget OR project, like the lookup above: transaction /
+    # match entries carry project_id only (budget_id None), and scoping
+    # by budget_id alone 403'd every one of them. (Found by the Phase 3
+    # workspace undo toast, 2026-11-01.)
+    if not (_scoped_activity_query()
+            .filter(ActivityLog.id == aid,
+                    _or_au(ActivityLog.budget_id == bid, ActivityLog.project_id == pid))
+            .first()):
         abort(403)
     # Permission (User 2026-06-16): admins/super-admins undo anything; everyone
     # else only their own actions.
@@ -20180,6 +20193,26 @@ def activity_undo(pid, bid, aid):
                 txn.excluded_at = (datetime.fromisoformat(_xa) if _xa else None)
             except Exception:
                 txn.excluded_at = None
+        # Transaction splits (ACTUALS_HANDOFF Phase 3, 2026-11-01): a split
+        # / unsplit / mark-not-project entry snapshots the split rows under
+        # before['splits']; put exactly that set back so an undone split
+        # does not leave orphan allocations double-counting the line.
+        if 'splits' in before and isinstance(before.get('splits'), list):
+            try:
+                from models import TransactionSplit as _TS_u
+                _TS_u.query.filter_by(transaction_id=txn.id).delete(synchronize_session=False)
+                _now_u = datetime.utcnow()
+                for _sp in before['splits']:
+                    if not isinstance(_sp, dict) or not _sp.get('budget_line_id'):
+                        continue
+                    db.session.add(_TS_u(
+                        transaction_id=txn.id, budget_line_id=int(_sp['budget_line_id']),
+                        project_id=pid, amount=round(float(_sp.get('amount') or 0), 2),
+                        note=_sp.get('note'), created_at=_now_u,
+                        created_by_user_id=current_user.id))
+            except Exception as _spe:
+                db.session.rollback()
+                return jsonify({"ok": False, "error": f"Could not restore the split: {_spe}"}), 400
         txn.updated_at = datetime.utcnow()
         # Coding / exclusion changed → re-propagate the cross-project claim.
         try:
@@ -20250,7 +20283,10 @@ def activity_undo_batch(pid, bid):
         if row.entity_type not in ('budget_line', 'transaction', 'transaction_match',
                                    'schedule_day'):
             failed.append({"id": aid, "error": "unsupported"}); continue
-        if not _scoped_activity_query(budget_id=bid).filter(ActivityLog.id == aid).first():
+        if not (_scoped_activity_query()
+                .filter(ActivityLog.id == aid,
+                        _or_ub(ActivityLog.budget_id == bid, ActivityLog.project_id == pid))
+                .first()):
             failed.append({"id": aid, "error": "forbidden"}); continue
         if not is_admin and row.user_id != current_user.id:
             failed.append({"id": aid, "error": "not yours"}); continue
@@ -21243,6 +21279,31 @@ def doc_log_expense(uid):
     if not already:
         txn.activated_at = datetime.utcnow()
         _add_evidence(txn.id, uid, 'primary')
+    # Phase 3 (2026-11-01): the Create-expense modal prefills vendor /
+    # amount / date from OCR and lets the person correct them before
+    # saving, and picks the budget line in the same step. Corrections
+    # write to BOTH the row and the document so the two never disagree
+    # (same lockstep rule as actuals_edit_transaction).
+    if 'vendor' in _body:
+        _v = (_body.get('vendor') or '').strip()
+        if _v:
+            txn.vendor = _v[:300]
+            doc.vendor = _v[:300]
+    if 'amount' in _body and _body.get('amount') not in (None, ''):
+        try:
+            _a = round(float(str(_body.get('amount')).replace('$', '').replace(',', '')), 2)
+        except (TypeError, ValueError):
+            return jsonify({"error": "amount must be a number"}), 400
+        txn.amount = _a
+        doc.amount = _a
+    if 'txn_date' in _body and (_body.get('txn_date') or '').strip():
+        _d = (_body.get('txn_date') or '').strip()[:10]
+        try:
+            _dd = datetime.strptime(_d, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"error": "txn_date must be YYYY-MM-DD"}), 400
+        txn.txn_date = _d
+        doc.doc_date = _dd
     # Resolved: no electronic charge is coming for this one. The reason
     # is the permanent flag the register shows.
     txn.match_status = 'confirmed'
@@ -21252,25 +21313,54 @@ def doc_log_expense(uid):
     if _who is not None:
         txn.paid_by_crew_member_id = _who
     db.session.commit()
+    _act = None
     try:
         _label = (doc.vendor or doc.filed_filename or f'Doc #{uid}')[:80]
-        _log_activity(action='update', entity_type='transaction',
-                      entity_id=txn.id, entity_label=_label,
-                      project_id=pid,
-                      after={'payment_method': txn.payment_method,
-                             'paid_by_crew_member_id': txn.paid_by_crew_member_id,
-                             'no_charge_reason': txn.no_charge_reason},
-                      note=f'Logged {doc.category} as a standalone expense '
-                           f'({txn.payment_method or "cash/check"} — no charge to match)'
-                           + (' — expense row created' if created else ''))
+        _act = _log_activity(action='update', entity_type='transaction',
+                             entity_id=txn.id, entity_label=_label,
+                             project_id=pid,
+                             after={'payment_method': txn.payment_method,
+                                    'paid_by_crew_member_id': txn.paid_by_crew_member_id,
+                                    'no_charge_reason': txn.no_charge_reason},
+                             note=f'Logged {doc.category} as a standalone expense '
+                                  f'({txn.payment_method or "cash/check"} — no charge to match)'
+                                  + (' — expense row created' if created else ''))
     except Exception:
         pass
+    # Optional line in the same step (Phase 3). Validated against the
+    # current Working budget; failure to code is a warning, not a rollback
+    # — the expense exists and shows in Unclaimed.
+    _line_warning = None
+    _raw_line = _body.get('budget_line_id')
+    if _raw_line not in (None, '', 0, '0'):
+        try:
+            _lid = int(_raw_line)
+        except (TypeError, ValueError):
+            _lid = None
+            _line_warning = "budget_line_id must be an integer."
+        if _lid:
+            _pb, _pgroups = _line_picker_groups(pid)
+            _ok_ids = {l.id for g in _pgroups for l in g["lines"]} if _pb else set()
+            if _lid not in _ok_ids:
+                _line_warning = "That line is not on this project's current budget."
+            else:
+                try:
+                    from actuals import link_transaction_to_line as _ltl
+                    _ltl(txn.id, _lid, user_id=current_user.id)
+                    db.session.refresh(txn)
+                except Exception as _le:
+                    logging.exception(f"[log-expense] line assign failed: {_le}")
+                    _line_warning = f"Expense saved but the line could not be assigned: {_le}"
     return jsonify({"ok": True, "transaction_id": txn.id,
                     "created": created, "already_activated": already,
                     "amount": float(txn.amount or 0),
+                    "vendor": txn.vendor, "txn_date": txn.txn_date,
+                    "budget_line_id": txn.budget_line_id,
                     "payment_method": txn.payment_method,
                     "paid_by_crew_member_id": txn.paid_by_crew_member_id,
-                    "no_charge_reason": txn.no_charge_reason})
+                    "no_charge_reason": txn.no_charge_reason,
+                    "activity_id": (_act.id if _act else None),
+                    "warning": _line_warning})
 
 
 @app.route("/docs/upload/<int:uid>/create-po", methods=["POST"])

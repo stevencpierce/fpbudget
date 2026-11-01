@@ -1,80 +1,193 @@
 {% extends "base.html" %}
-{% block title %}All Transactions — FPBudget Admin{% endblock %}
+{% block title %}All transactions — FPBudget Admin{% endblock %}
+{% block body_class %}aw-body{% endblock %}
 
 {% block content %}
-<div style="display:flex;align-items:center;gap:10px;margin-bottom:.4rem">
-  <a href="{{ url_for('admin_panel') }}" class="btn btn-xs btn-ghost">← Admin</a>
-  <h1 style="margin:0">All Transactions</h1>
-  <span class="muted" style="font-size:.85rem">{{ total }} charge{{ '' if total == 1 else 's' }}</span>
-</div>
-<p class="muted" style="font-size:.85rem;max-width:80ch;margin-bottom:.8rem">
-  The whole pool across projects, one row per QuickBooks charge. <em>Project</em> is the
-  project that claimed it; <em>Seen in</em> lists every project that synced it.
-  Minimal table for now — the Phase 3 design replaces this page; the JSON at
-  <code>/admin/transactions.json</code> is the contract.
-</p>
+{# ═══ SUPER-ADMIN: ALL TRANSACTIONS (ACTUALS_HANDOFF Phase 3, 2026-11-01) ═══
+   The whole pool across projects, one row per QuickBooks charge, with the
+   claiming project, line, backup state and source. Server-rendered from
+   the same rows as /admin/transactions.json; the filters are a GET form.
+   A row click opens the charge in its project's Actuals workspace with
+   ?txn= so it is selected and scrolled to. Visual spec: the
+   AdminTransactions.dc.html artboard in the app's own CSS variables. #}
+<style>
+  .aw-body .main-content { padding: 0; }
+  .adm { --aw-text-2: color-mix(in srgb, var(--text) 72%, var(--text-muted));
+         --aw-row-border: color-mix(in srgb, var(--border) 45%, var(--bg-2));
+         --aw-accent-soft-2: color-mix(in srgb, var(--accent) 16%, var(--bg-2));
+         --aw-red-soft: color-mix(in srgb, var(--red) 13%, var(--bg-2));
+         --aw-green-soft: color-mix(in srgb, var(--green) 13%, var(--bg-2));
+         --aw-orange-soft: color-mix(in srgb, var(--orange) 14%, var(--bg-2));
+         min-height: calc(100vh - 54px); display: flex; flex-direction: column; background: var(--bg); color: var(--text);
+         font-family: var(--font); font-size: 14px; line-height: 1.4; -webkit-font-smoothing: antialiased; }
+  .adm a { color: var(--accent); } .adm a:hover { color: var(--accent-dim); text-decoration: none; }
+  .adm .num { font-variant-numeric: tabular-nums; }
+  .adm .muted { color: var(--text-muted); }
+  .adm button, .adm input, .adm select { font: inherit; color: inherit; }
+  .adm .vis-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .adm-head { height: 56px; box-sizing: border-box; padding: 0 24px; display: flex; align-items: center; justify-content: space-between;
+              gap: 16px; background: var(--bg-2); border-bottom: 1px solid var(--border); }
+  .adm-crumbs { display: flex; align-items: center; gap: 14px; font-size: 14px; }
+  .adm-crumbs .brand { font-weight: 600; font-size: 15px; color: var(--text); }
+  .adm-crumbs .sep { color: var(--border); } .adm-crumbs .here { font-weight: 600; }
+  .adm-tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; background: var(--bg-3); color: var(--aw-text-2); }
+  .adm-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+  .adm-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; }
+  .adm-wrap { padding: 20px 24px 32px; max-width: 1392px; width: 100%; box-sizing: border-box; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+  .adm-wrap > p { margin: 0; font-size: 13px; color: var(--text-muted); }
+  .adm-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .adm-filters input[type="search"], .adm-filters input[type="date"], .adm-filters select {
+    height: 36px; box-sizing: border-box; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-2); font-size: 13px; color: var(--text); }
+  .adm-filters input[type="search"] { width: 320px; max-width: 100%; }
+  .adm-filters select { width: auto; min-width: 130px; max-width: 260px; }
+  .adm-filters input[type="date"] { width: 150px; }
+  .adm-filters .spacer { flex: 1 1 auto; }
+  .adm-filters label.chk { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+  .adm-filters input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+  .adm-btn { height: 36px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-2); color: var(--text);
+             font-size: 13px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .adm-btn:hover { background: var(--bg-3); }
+  .adm-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .adm-btn.primary:hover { background: var(--accent-dim); }
+  .adm-btn:focus-visible, .adm input:focus-visible, .adm select:focus-visible, .adm [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .adm-card { background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .adm-scroll { overflow-x: auto; }
+  .adm-table { min-width: 1180px; }
+  .adm-row { display: grid; grid-template-columns: 90px minmax(200px, 1.2fr) 110px 76px 90px minmax(180px, 1fr) minmax(200px, 1.2fr) 130px 110px;
+             align-items: center; height: 36px; border-bottom: 1px solid var(--aw-row-border); }
+  .adm-row.head { border-bottom: 1px solid var(--border); background: var(--bg); font-size: 11px; font-weight: 600; letter-spacing: .04em;
+                  text-transform: uppercase; color: var(--text-muted); }
+  .adm-row.link { cursor: pointer; }
+  .adm-row.link:hover { background: color-mix(in srgb, var(--bg-3) 50%, var(--bg-2)); }
+  .adm-row.link:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .adm-row.excluded { color: var(--text-muted); }
+  .cell { padding: 0 12px; height: 36px; display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; gap: 6px; min-width: 0; }
+  .cell.right { justify-content: flex-end; }
+  .cell .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cell .vendor { font-weight: 500; } .cell .amt { font-weight: 600; } .cell .amt.credit { color: var(--green); }
+  .cell .note { font-size: 11px; color: var(--text-muted); margin-left: 6px; }
+  .src { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 4px; background: var(--bg-3); color: var(--aw-text-2); }
+  .src.manual { background: var(--aw-orange-soft); color: var(--orange); }
+  .src.receipt { background: var(--aw-green-soft); color: var(--green); }
+  .chip { font-size: 12px; font-weight: 500; padding: 3px 9px; border-radius: 12px; background: var(--bg-3); color: var(--aw-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .chip.open { background: var(--aw-orange-soft); color: var(--orange); }
+  .flag { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; }
+  .flag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .flag.green { color: var(--green); } .flag.green::before { background: var(--green); }
+  .flag.red { color: var(--red); } .flag.red::before { background: var(--red); }
+  .flag.yellow { color: var(--yellow); } .flag.yellow::before { background: var(--yellow); }
+  .flag.none { color: var(--text-muted); } .flag.none::before { display: none; }
+  .adm-foot { height: 44px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--border);
+              font-size: 12px; color: var(--text-muted); }
+  .adm-foot a { margin-left: 10px; }
+  .adm-empty { padding: 16px; font-size: 13px; color: var(--text-muted); }
+</style>
 
-<form method="get" style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:.8rem;font-size:.85rem">
-  <input type="search" name="q" value="{{ filters.q }}" placeholder="Vendor, amount, last 4, id" style="min-width:220px">
-  <select name="project_id">
-    <option value="">Any project</option>
-    {% for pid, name in projects %}
-    <option value="{{ pid }}" {{ 'selected' if filters.project_id == pid else '' }}>{{ name }}</option>
-    {% endfor %}
-  </select>
-  <input type="text" name="card" value="{{ filters.card or '' }}" placeholder="Card ••••" size="6">
-  <input type="date" name="from" value="{{ filters['from'] or '' }}">
-  <input type="date" name="to" value="{{ filters.to or '' }}">
-  <label><input type="checkbox" name="hide_claimed" value="1" {{ 'checked' if filters.hide_claimed else '' }}> Hide claimed</label>
-  <label><input type="checkbox" name="hide_not_project" value="1" {{ 'checked' if filters.hide_not_project else '' }}> Hide not-project</label>
-  <input type="hidden" name="limit" value="{{ filters.limit }}">
-  <button type="submit" class="btn btn-xs btn-primary">Filter</button>
-  <a href="{{ url_for('admin_transactions_page') }}" class="btn btn-xs btn-ghost">Reset</a>
-</form>
+<div class="adm">
+  <header class="adm-head">
+    <div class="adm-crumbs">
+      <a class="brand" href="{{ url_for('dashboard') }}">FPBudget</a>
+      <span class="sep" aria-hidden="true">/</span>
+      <a href="{{ url_for('admin_panel') }}" class="muted">Admin</a>
+      <span class="sep" aria-hidden="true">/</span>
+      <span class="here">All transactions</span>
+      <span class="adm-tag">Super-admin</span>
+    </div>
+    <span class="adm-status"><span class="adm-dot" aria-hidden="true"></span>Company pool · {{ syncing }} project{{ '' if syncing == 1 else 's' }} syncing · <span class="num">{{ total }}</span> charge{{ '' if total == 1 else 's' }}{% if filters.q or filters.project_id or filters.card or filters['from'] or filters.to or filters.hide_claimed or filters.hide_not_project %} match{% endif %}</span>
+  </header>
 
-<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;overflow:auto;max-height:78vh">
-<table style="width:100%;border-collapse:collapse;font-size:.84rem">
-  <thead>
-    <tr style="text-align:left;position:sticky;top:0;background:var(--bg-card)">
-      <th style="padding:6px 8px">Date</th>
-      <th style="padding:6px 8px">Vendor</th>
-      <th style="padding:6px 8px;text-align:right">Amount</th>
-      <th style="padding:6px 8px">Card</th>
-      <th style="padding:6px 8px">Source</th>
-      <th style="padding:6px 8px">Project</th>
-      <th style="padding:6px 8px">Line</th>
-      <th style="padding:6px 8px">Backup</th>
-      <th style="padding:6px 8px">Status</th>
-      <th style="padding:6px 8px">Seen in</th>
-    </tr>
-  </thead>
-  <tbody>
-  {% for r in rows %}
-    <tr style="border-top:1px solid var(--border)"
-        {% if r.project_id %}onclick="window.location='/projects/{{ r.project_id }}/register'" style="cursor:pointer"{% endif %}>
-      <td style="padding:5px 8px;white-space:nowrap">{{ r.date }}</td>
-      <td style="padding:5px 8px">{{ r.vendor }}</td>
-      <td style="padding:5px 8px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums">
-        {{ '-' if r.amount < 0 else '' }}${{ '{:,.2f}'.format(r.amount|abs) }}</td>
-      <td style="padding:5px 8px">{{ r.card_last4 or '' }}</td>
-      <td style="padding:5px 8px">{{ r.source }}</td>
-      <td style="padding:5px 8px">{% if r.project %}<a href="/projects/{{ r.project_id }}/register">{{ r.project }}</a>{% else %}<span class="muted">unclaimed</span>{% endif %}</td>
-      <td style="padding:5px 8px">{{ r.line or '' }}</td>
-      <td style="padding:5px 8px">{{ r.backup }}</td>
-      <td style="padding:5px 8px">{% if r.excluded %}not project{% elif r.project_id %}claimed{% else %}open{% endif %}</td>
-      <td style="padding:5px 8px" class="muted">{{ r.seen_in|join(', ') }}</td>
-    </tr>
-  {% else %}
-    <tr><td colspan="10" class="muted" style="padding:14px 8px">No transactions match.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
+  <div class="adm-wrap">
+    <p>Every QuickBooks charge once, whichever projects synced it. Use this to find which project claimed a charge, or to see what nobody has.</p>
+
+    <form method="get" class="adm-filters" id="adm-form">
+      <label for="adm-search" class="vis-hidden">Search transactions</label>
+      <input id="adm-search" type="search" name="q" value="{{ filters.q }}" placeholder="Search vendor, amount, last four, QBO id" autocomplete="off">
+      <label for="adm-project" class="vis-hidden">Project</label>
+      <select id="adm-project" name="project_id">
+        <option value="">All projects</option>
+        {% for pid, name in projects %}
+        <option value="{{ pid }}" {{ 'selected' if filters.project_id == pid else '' }}>{{ name }}</option>
+        {% endfor %}
+      </select>
+      <label for="adm-card" class="vis-hidden">Card</label>
+      <select id="adm-card" name="card">
+        <option value="">All cards</option>
+        {% for c in cards %}<option value="{{ c }}" {{ 'selected' if filters.card == c else '' }}>••{{ c }}</option>{% endfor %}
+        {% if filters.card and filters.card not in cards %}<option value="{{ filters.card }}" selected>••{{ filters.card }}</option>{% endif %}
+      </select>
+      <label for="adm-from" class="vis-hidden">From date</label>
+      <input id="adm-from" type="date" name="from" value="{{ filters['from'] or '' }}" title="From date">
+      <label for="adm-to" class="vis-hidden">To date</label>
+      <input id="adm-to" type="date" name="to" value="{{ filters.to or '' }}" title="To date">
+      <button type="submit" class="adm-btn primary">Filter</button>
+      <a href="{{ url_for('admin_transactions_page') }}" class="adm-btn">Reset</a>
+      <span class="spacer"></span>
+      <label class="chk"><input type="checkbox" name="hide_claimed" value="1" {{ 'checked' if filters.hide_claimed else '' }} onchange="this.form.submit()">Hide claimed</label>
+      <label class="chk"><input type="checkbox" name="hide_not_project" value="1" {{ 'checked' if filters.hide_not_project else '' }} onchange="this.form.submit()">Hide not-project</label>
+      <a class="adm-btn" href="{{ url_for('admin_transactions_csv') }}{% if request.query_string %}?{{ request.query_string.decode() }}{% endif %}">
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2v7M4 6.5L7 9.5l3-3M2.5 11.5h9"/></svg>Export CSV</a>
+    </form>
+
+    <div class="adm-card">
+      <div class="adm-scroll">
+        <div role="table" class="adm-table" aria-label="All transactions">
+          <div role="row" class="adm-row head">
+            <div class="cell">Date</div><div class="cell">Vendor</div><div class="cell right">Amount</div><div class="cell">Card</div>
+            <div class="cell">Source</div><div class="cell">Claimed by</div><div class="cell">Line</div><div class="cell">Backup</div><div class="cell">QBO id</div>
+          </div>
+          {% for r in rows %}
+          {% set open_pid = r.project_id or r.row_project_id %}
+          {% set href = ('/projects/%d/actuals?txn=%d' % (open_pid, r.id)) if open_pid else '' %}
+          <div role="row" class="adm-row {{ 'link' if href else '' }} {{ 'excluded' if r.excluded else '' }}"
+               {% if href %}tabindex="0" data-href="{{ href }}" aria-label="Open {{ r.vendor }} {{ '%.2f' % r.amount }} in its project"{% endif %}>
+            <div class="cell num muted" title="{{ r.date }}">{{ r.date_short or '—' }}</div>
+            <div class="cell"><span class="vendor ell">{{ r.vendor }}</span>{% if r.amount < 0 %}<span class="note">refund</span>{% endif %}</div>
+            <div class="cell num right"><span class="amt {{ 'credit' if r.amount < 0 else '' }}">{{ '-' if r.amount < 0 else '' }}${{ '{:,.2f}'.format(r.amount|abs) }}</span></div>
+            <div class="cell num muted">{% if r.card_last4 %}••{{ r.card_last4 }}{% elif r.payment_method %}{{ r.payment_method|replace('_', ' ')|capitalize }}{% elif r.qbo_txn_type == 'BillPayment' %}ACH{% endif %}</div>
+            <div class="cell">
+              {% if r.source == 'receipt' %}<span class="src receipt">Receipt</span>
+              {% elif r.source in ('qbo_sync', 'reconciled') %}<span class="src">QBO</span>
+              {% elif 'csv' in (r.source or '') %}<span class="src">CSV</span>
+              {% else %}<span class="src manual">Manual</span>{% endif %}
+            </div>
+            <div class="cell">
+              {% if r.excluded %}<span class="chip">Not a project expense</span>
+              {% elif r.project %}<a href="{{ href }}" style="font-weight:500" class="ell" onclick="event.stopPropagation()">{{ r.project }}</a>
+              {% else %}<span class="chip open">Unclaimed{% if r.seen_in|length > 1 %} · seen by {{ r.seen_in|length }} projects{% endif %}</span>{% endif %}
+            </div>
+            <div class="cell"><span class="ell {{ 'muted' if not r.line else '' }}">{{ r.line or '—' }}</span></div>
+            <div class="cell">
+              {% if r.excluded %}<span class="flag none">—</span>
+              {% elif r.amount < 0 and r.backup == 'none' %}<span class="flag none">Credit</span>
+              {% elif r.backup == 'backup' %}<span class="flag green">Receipt</span>
+              {% elif r.backup == 'reason' %}<span class="flag yellow">Reason</span>
+              {% elif r.project_id %}<span class="flag red">Needs backup</span>
+              {% else %}<span class="flag none">None</span>{% endif %}
+            </div>
+            <div class="cell num muted" style="font-size:12px">{{ r.qbo_txn_id or '' }}</div>
+          </div>
+          {% else %}
+          <div class="adm-empty">No transactions match. Clear a filter or sync a project.</div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="adm-foot">
+        <span class="num">
+          {% if total > filters.limit %}{{ filters.offset + 1 }}–{{ [filters.offset + filters.limit, total]|min }} of {{ total }} charges{% else %}{{ total }} charge{{ '' if total == 1 else 's' }}{% endif %}{% if filters.q %} match “{{ filters.q }}”{% endif %} · {{ '-' if net < 0 else '' }}${{ '{:,.2f}'.format(net|abs) }} net
+          {% if filters.offset > 0 %}<a href="?{{ request.query_string.decode() | replace('offset=' ~ filters.offset, 'offset=' ~ ([filters.offset - filters.limit, 0]|max)) }}{% if 'offset=' not in request.query_string.decode() %}&amp;offset={{ [filters.offset - filters.limit, 0]|max }}{% endif %}">Previous</a>{% endif %}
+          {% if filters.offset + filters.limit < total %}<a href="?{{ request.query_string.decode() | replace('offset=' ~ filters.offset, 'offset=' ~ (filters.offset + filters.limit)) }}{% if 'offset=' not in request.query_string.decode() %}&amp;offset={{ filters.offset + filters.limit }}{% endif %}">Next</a>{% endif %}
+        </span>
+        <span>Click a row to open it in its project</span>
+      </div>
+    </div>
+  </div>
 </div>
-{% if total > filters.limit %}
-<p class="muted" style="font-size:.82rem;margin-top:.5rem">
-  Showing {{ filters.offset + 1 }}–{{ [filters.offset + filters.limit, total]|min }} of {{ total }}.
-  {% if filters.offset > 0 %}<a href="?{{ request.query_string.decode() | replace('offset=' ~ filters.offset, 'offset=' ~ ([filters.offset - filters.limit, 0]|max)) }}{% if 'offset=' not in request.query_string.decode() %}&offset={{ [filters.offset - filters.limit, 0]|max }}{% endif %}">← Previous</a>{% endif %}
-  {% if filters.offset + filters.limit < total %}<a href="?{{ request.query_string.decode() | replace('offset=' ~ filters.offset, 'offset=' ~ (filters.offset + filters.limit)) }}{% if 'offset=' not in request.query_string.decode() %}&offset={{ filters.offset + filters.limit }}{% endif %}">Next →</a>{% endif %}
-</p>
-{% endif %}
+<script>
+(function () {
+  document.querySelectorAll('.adm-row[data-href]').forEach(function (row) {
+    row.addEventListener('click', function (e) { if (e.target.closest('a')) return; window.location = row.dataset.href; });
+    row.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); window.location = row.dataset.href; } });
+  });
+})();
+</script>
 {% endblock %}

@@ -460,6 +460,87 @@ def compute_row_flags(row, *, today=None, date_far_days=7):
     return {"red": red, "yellow": yellow}
 
 
+# ── Workspace screen helpers (ACTUALS_HANDOFF Phase 3, 2026-11-01) ────────
+
+def build_line_picker_options(groups):
+    """The ordered line-picker option structure the Actuals workspace and
+    its modals share (the shape /register's #rg-line-opts used). Pure:
+    `groups` is [{code, name, lines:[line-like]}] where a line-like has
+    id, account_code, description, account_name, parent_line_id, line_tag.
+
+    Rules (owner 2026-10-31): header / spacer rows are never targets;
+    child lines (kit fees, agent fees …) ride indented right under their
+    parent; a section's Payroll Fringes line anchors the bottom of its
+    group and is marked kind='fringe' so the screen can draw it read-only.
+    Returns [{code, name, opts:[{id, label, kind, parent_id}]}]."""
+    out = []
+    for g in groups or []:
+        raw_lines = g.get("lines") if isinstance(g, dict) else getattr(g, "lines", [])
+        lines = [l for l in (raw_lines or [])
+                 if (getattr(l, 'line_tag', None) or '') not in ('header', 'spacer')]
+        if not lines:
+            continue
+        kids = {}
+        for l in lines:
+            if getattr(l, 'parent_line_id', None):
+                kids.setdefault(l.parent_line_id, []).append(l)
+
+        def _opt(l, kind):
+            d = (getattr(l, 'description', None) or getattr(l, 'account_name', None) or 'untitled')[:60]
+            return {"id": l.id, "kind": kind,
+                    "parent_id": getattr(l, 'parent_line_id', None),
+                    "label": (d if kind == 'fringe' else f"{l.account_code} · {d}")}
+        ordered, seen = [], set()
+        for l in lines:
+            if l.id in seen or getattr(l, 'parent_line_id', None) or (getattr(l, 'line_tag', None) or '') == 'fringe_rollup':
+                continue
+            ordered.append(_opt(l, 'top')); seen.add(l.id)
+            for k in kids.get(l.id, []):
+                ordered.append(_opt(k, 'child')); seen.add(k.id)
+        for l in lines:          # orphan children whose parent is elsewhere
+            if l.id not in seen and (getattr(l, 'line_tag', None) or '') != 'fringe_rollup':
+                ordered.append(_opt(l, 'child' if getattr(l, 'parent_line_id', None) else 'top'))
+                seen.add(l.id)
+        for l in lines:          # fringes last, read-only on the screen
+            if (getattr(l, 'line_tag', None) or '') == 'fringe_rollup':
+                ordered.append(_opt(l, 'fringe'))
+        code = g.get("code") if isinstance(g, dict) else getattr(g, "code", None)
+        name = g.get("name") if isinstance(g, dict) else getattr(g, "name", None)
+        out.append({"code": code, "name": name, "opts": ordered})
+    return out
+
+
+ADMIN_POOL_CSV_COLUMNS = ("date", "vendor", "amount", "card_last4", "source",
+                          "project", "line", "backup", "status", "seen_in",
+                          "qbo_txn_id", "qbo_txn_type", "payment_method", "id")
+
+
+def admin_pool_csv(rows):
+    """The super-admin pool as CSV text (one row per charge, the same
+    columns the page shows plus the ids). Pure; `rows` is the list
+    _admin_pool_rows() builds. Status is 'not project' / 'claimed' / 'open'
+    exactly as the page labels it; seen_in joins with ' | '."""
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    w = _csv.writer(buf, lineterminator="\n")
+    w.writerow(ADMIN_POOL_CSV_COLUMNS)
+    for r in rows or []:
+        status = ('not project' if r.get("excluded")
+                  else 'claimed' if r.get("project_id") else 'open')
+        amt = r.get("amount")
+        w.writerow([
+            r.get("date") or '', r.get("vendor") or '',
+            ('' if amt is None else f"{float(amt):.2f}"),
+            r.get("card_last4") or '', r.get("source") or '',
+            r.get("project") or '', r.get("line") or '', r.get("backup") or '',
+            status, ' | '.join(r.get("seen_in") or []),
+            r.get("qbo_txn_id") or '', r.get("qbo_txn_type") or '',
+            r.get("payment_method") or '', r.get("id") or '',
+        ])
+    return buf.getvalue()
+
+
 # ── Learned vendor → COA mapping (2026-06-18 AI auto-coding) ──────────────
 def canon_vendor(v):
     """Normalize a vendor string into the learned-mapping key: lowercase,

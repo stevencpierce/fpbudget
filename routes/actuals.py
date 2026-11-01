@@ -107,8 +107,9 @@ def actuals_set_line(pid, tid):
             db.session.refresh(txn)
             _sync_claim_state(txn)
             db.session.commit()
+            _act = None
             try:
-                _log_activity(
+                _act = _log_activity(
                     action='update', entity_type='transaction',
                     entity_id=txn.id,
                     entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
@@ -118,7 +119,8 @@ def actuals_set_line(pid, tid):
                            'account_code_name': None},
                     note='Cleared coding')
             except Exception: pass
-            return jsonify({"ok": True, "cleared": True})
+            return jsonify({"ok": True, "cleared": True,
+                            "activity_id": (_act.id if _act else None)})
         except Exception as e:
             logging.exception(f"[actuals] unlink failed: {e}")
             return jsonify({"error": str(e)}), 500
@@ -146,11 +148,12 @@ def actuals_set_line(pid, tid):
         # in the popup / row chip / 'Codes to confirm' queue. (User 2026-06-22.)
         _clear_ai_code_suggestion(txn)
         db.session.commit()
+        _act = None
         try:
             _label = (txn.vendor or txn.note or f'Txn #{txn.id}')[:80]
             _amt = float(txn.amount or 0)
             _coa_name = txn.account_code_name or ''
-            _log_activity(
+            _act = _log_activity(
                 action='update', entity_type='transaction',
                 entity_id=txn.id, entity_label=_label,
                 project_id=pid,
@@ -164,6 +167,7 @@ def actuals_set_line(pid, tid):
         return jsonify({
             "ok":            True,
             "cleared":       False,
+            "activity_id":   (_act.id if _act else None),
             "transaction": {
                 "id":              txn.id,
                 "budget_line_id":  txn.budget_line_id,
@@ -405,9 +409,10 @@ def actuals_mark_not_project(pid, tid):
         TransactionSplit.query.filter_by(transaction_id=txn.id).delete(synchronize_session=False)
     _sync_claim_state(txn)
     db.session.commit()
+    _act = None
     try:
         _amt = float(txn.amount or 0)
-        _log_activity(
+        _act = _log_activity(
             action='update', entity_type='transaction',
             entity_id=txn.id,
             entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
@@ -423,6 +428,7 @@ def actuals_mark_not_project(pid, tid):
                  + (f' — {_reason}' if _reason else ''))
     except Exception: pass
     return jsonify({"ok": True, "transaction_id": tid,
+                    "activity_id": (_act.id if _act else None),
                     "transaction": _txn_state_json(txn)})
 
 
@@ -459,9 +465,10 @@ def actuals_recover_not_project(pid, tid):
     txn.updated_at          = datetime.utcnow()
     _sync_claim_state(txn)
     db.session.commit()
+    _act = None
     try:
         _amt = float(txn.amount or 0)
-        _log_activity(
+        _act = _log_activity(
             action='update', entity_type='transaction',
             entity_id=txn.id,
             entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
@@ -472,6 +479,7 @@ def actuals_recover_not_project(pid, tid):
             note=f'Recovered ${_amt:,.2f} from Not project — back in Unclaimed')
     except Exception: pass
     return jsonify({"ok": True, "transaction_id": tid,
+                    "activity_id": (_act.id if _act else None),
                     "transaction": _txn_state_json(txn)})
 
 
@@ -1476,6 +1484,7 @@ def actuals_set_coa(pid, tid):
         except Exception as _ve:
             logging.warning(f"[set-coa] vendor-cat record failed: {_ve}")
     db.session.commit()
+    _act = None
     try:
         _amt = float(txn.amount or 0)
         if txn.not_project_expense:
@@ -1484,7 +1493,7 @@ def actuals_set_coa(pid, tid):
             _note = f'Set section: ${_amt:,.2f} → {txn.account_code} {txn.account_code_name or ""}'.strip()
         else:
             _note = 'Cleared section coding'
-        _log_activity(
+        _act = _log_activity(
             action='update', entity_type='transaction',
             entity_id=txn.id,
             entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
@@ -1498,6 +1507,7 @@ def actuals_set_coa(pid, tid):
     return jsonify({
         "ok":              True,
         "transaction_id":  tid,
+        "activity_id":     (_act.id if _act else None),
         "account_code":    txn.account_code,
         "account_code_name": txn.account_code_name,
         "not_project_expense": txn.not_project_expense,
@@ -1528,6 +1538,10 @@ def actuals_set_line_bulk(pid):
 
     from actuals import link_transaction_to_line
     updated, failed, errors, line_label = 0, 0, [], None
+    # Phase 3 (2026-11-01): one ActivityLog row PER transaction with its
+    # before-state, so the workspace's undo toast can revert the whole drop
+    # through activity/undo-batch. The summary row at the end stays.
+    activity_ids = []
 
     # Section-only: ensure the section exists on the Working budget once (not
     # per row), mirroring set-coa.
@@ -1552,10 +1566,21 @@ def actuals_set_line_bulk(pid):
             if _ge_bulk is not None:
                 failed += 1
                 continue
+            if _txn_is_split_parent(txn):
+                failed += 1
+                if len(errors) < 10:
+                    errors.append(f"#{tid}: split or itemized parent")
+                continue
+            _row_before = {'budget_line_id': txn.budget_line_id,
+                           'account_code': txn.account_code,
+                           'account_code_name': txn.account_code_name,
+                           'not_project_expense': bool(txn.not_project_expense)}
+            _row_label = (txn.vendor or txn.note or f'Txn #{txn.id}')[:80]
+            _row_amt = float(txn.amount or 0)
             if line_id:
                 link_transaction_to_line(int(tid), int(line_id), user_id=current_user.id)
+                db.session.refresh(txn)     # it commits + claim-syncs itself
                 if line_label is None:
-                    db.session.refresh(txn)
                     line_label = txn.account_code_name or (str(txn.account_code) if txn.account_code else None)
             else:
                 code_int = int(account_code)
@@ -1566,10 +1591,26 @@ def actuals_set_line_bulk(pid):
                 txn.not_project_expense = False
                 txn.match_status = 'confirmed'
                 txn.updated_at = datetime.utcnow()
+                _sync_claim_state(txn)
                 db.session.commit()
                 if line_label is None:
                     line_label = (str(code_int) + ' ' + nm).strip()
             updated += 1
+            try:
+                _row_act = _log_activity(
+                    action='update', entity_type='transaction', entity_id=txn.id,
+                    entity_label=_row_label, project_id=pid,
+                    before=_row_before,
+                    after={'budget_line_id': txn.budget_line_id,
+                           'account_code': txn.account_code,
+                           'account_code_name': txn.account_code_name,
+                           'not_project_expense': False},
+                    dollar_delta=0,
+                    note=f'Coded ${_row_amt:,.2f} → {txn.account_code or ""} {txn.account_code_name or ""}'.strip())
+                if _row_act is not None:
+                    activity_ids.append(_row_act.id)
+            except Exception:
+                pass
         except Exception as e:
             db.session.rollback()
             failed += 1
@@ -1584,7 +1625,8 @@ def actuals_set_line_bulk(pid):
     except Exception:
         pass
     return jsonify({"ok": True, "updated": updated, "failed": failed,
-                    "errors": errors, "line_label": line_label})
+                    "errors": errors, "line_label": line_label,
+                    "activity_ids": activity_ids})
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/edit", methods=["POST"])
@@ -1599,7 +1641,8 @@ def actuals_edit_transaction(pid, tid):
     _edit_before = {'vendor': txn.vendor,
                     'amount': float(txn.amount) if txn.amount is not None else None,
                     'txn_date': txn.txn_date,
-                    'note': txn.note}
+                    'note': txn.note,
+                    'no_charge_reason': getattr(txn, 'no_charge_reason', None)}
 
     if "vendor" in data:
         v = (data.get("vendor") or "").strip()
@@ -1627,6 +1670,13 @@ def actuals_edit_transaction(pid, tid):
     if "note" in data:
         n = (data.get("note") or "").strip()
         txn.note = n[:500] if n else None
+    # Missing-backup reason (ACTUALS_HANDOFF Phase 3, 2026-11-01): Concur's
+    # Missing Receipt Declaration. A short reason stands in for a receipt
+    # the person cannot produce — it clears the red Needs-backup flag and
+    # shows as a yellow chip. Empty string clears it.
+    if "no_charge_reason" in data:
+        _ncr = (data.get("no_charge_reason") or "").strip()
+        txn.no_charge_reason = _ncr[:300] if _ncr else None
     txn.updated_at = datetime.utcnow()
 
     # Sync back to the linked DocUpload so the Docs tab reflects the
@@ -1659,25 +1709,30 @@ def actuals_edit_transaction(pid, tid):
             _vendor_prop = propagate_vendor_rename(pid, _old_v, txn.vendor, exclude_tid=txn.id)
 
     db.session.commit()
+    _act = None
     try:
         _edit_after = {'vendor': txn.vendor,
                        'amount': float(txn.amount) if txn.amount is not None else None,
                        'txn_date': txn.txn_date,
-                       'note': txn.note}
+                       'note': txn.note,
+                       'no_charge_reason': txn.no_charge_reason}
         _amt_b = _edit_before.get('amount') or 0
         _amt_a = _edit_after.get('amount') or 0
         _delta = float(_amt_a) - float(_amt_b)
-        _log_activity(
+        _act = _log_activity(
             action='update', entity_type='transaction',
             entity_id=txn.id,
             entity_label=(txn.vendor or txn.note or f'Txn #{txn.id}')[:80],
             project_id=pid,
             before=_edit_before, after=_edit_after,
             dollar_delta=_delta,
-            note='Edited transaction details')
+            note=('Added a missing-backup reason' if ("no_charge_reason" in data and len(data) == 1)
+                  else 'Edited transaction details'))
     except Exception: pass
     return jsonify({
         "ok":     True,
+        "activity_id": (_act.id if _act else None),
+        "no_charge_reason": txn.no_charge_reason,
         "vendor": txn.vendor,
         "amount": float(txn.amount) if txn.amount is not None else None,
         "txn_date": txn.txn_date,
@@ -1892,7 +1947,13 @@ def actuals_reconcile_json(pid):
 @app.route("/projects/<int:pid>/reconcile/workspace.json")
 @login_required
 def reconcile_workspace_json(pid):
-    """THE two-pane Reconcile workspace dataset (owner 2026-10-30: "what I
+    """DEPRECATED (ACTUALS_HANDOFF Phase 3, 2026-11-01): the /register page
+    that read this payload now redirects to /projects/<pid>/actuals, whose
+    data is actuals_workspace_json (workspace.json). Kept for ONE release
+    so a stale open tab keeps working; delete with the legacy #tab-actuals
+    cleanup.
+
+    THE two-pane Reconcile workspace dataset (owner 2026-10-30: "what I
     really want is my QuickBooks transactions and then match them up with
     a receipt … receipts land in the receipts bucket … viewable side by
     side with the electronic transactions … if I click on a receipt, I
@@ -2117,57 +2178,71 @@ def reconcile_workspace_json(pid):
 @app.route("/projects/<int:pid>/register")
 @login_required
 def reconcile_workspace_page(pid):
-    """THE Actuals register (owner 2026-10-30) — see
-    reconcile_workspace_json. The budget page's Actuals tab navigates
-    here; the legacy in-page tab stays reachable for deep links."""
+    """Retired (ACTUALS_HANDOFF Phase 3, 2026-11-01): the register and the
+    older /reconcile URL both 302 to the Actuals workspace. Endpoint name
+    kept so url_for('reconcile_workspace_page') in old links still
+    resolves. Query string (e.g. ?txn=) rides along."""
+    ProjectSheet.query.get_or_404(pid)
+    _qs = request.query_string.decode() if request.query_string else ''
+    return redirect(url_for('actuals_workspace_page', pid=pid)
+                    + (('?' + _qs) if _qs else ''), code=302)
+
+
+def _ws_crew_options(pid):
+    """Crew picker for Create expense / manual expense: active crew members,
+    the project's own roster first (those with a CrewAssignment on the
+    current Working budget), then everyone else alphabetically."""
+    from models import CrewMember, CrewAssignment
+    budget, lines = _ws_working_budget_and_lines(pid)
+    on_project = set()
+    if lines:
+        try:
+            on_project = {r[0] for r in db.session.query(CrewAssignment.crew_member_id)
+                          .filter(CrewAssignment.budget_line_id.in_(list(lines.keys()))).all()
+                          if r[0]}
+        except Exception:
+            on_project = set()
+    crew = CrewMember.query.filter(db.or_(CrewMember.active.is_(True),
+                                          CrewMember.active.is_(None))).all()
+    crew.sort(key=lambda c: (0 if c.id in on_project else 1, (c.name or '').lower()))
+    return [{"id": c.id, "name": c.name,
+             "department": c.department or '',
+             "on_project": c.id in on_project} for c in crew]
+
+
+@app.route("/projects/<int:pid>/actuals")
+@login_required
+def actuals_workspace_page(pid):
+    """THE Actuals workspace (ACTUALS_HANDOFF Phase 3, 2026-11-01): one
+    screen per project, two panes — the transaction pool on the left in
+    six views (Unclaimed, Assigned, Needs backup, Receipts, Not project,
+    Sync), the current Working budget on the right as drop targets.
+    Replaces the /register page and the legacy #tab-actuals on the budget
+    page. Data comes from actuals_workspace_json; the page only carries
+    what the JS needs before the first fetch (line-picker options, crew
+    picker, the budget id the undo route wants, and ?txn= to focus).
+
+    Editor or better: every action here is a mutation, and a viewer has
+    the budget page's read-only rollup."""
+    from actuals import build_line_picker_options
     project = ProjectSheet.query.get_or_404(pid)
-    _require_project_role(pid, 'viewer')
+    _require_project_role(pid, 'editor')
     _pick_budget, _pick_groups = _line_picker_groups(pid)
-    # Lines ONLY (owner: "assign those things to the line" — section
-    # parking is retired here; a Parked list re-homes old ones).
-    # Structure mirrors the budget (owner 2026-10-31: "can kit fees show
-    # up with a little arrow and indent? And fringes at the subsection
-    # bottom, indented — I need to put the fringes from a payroll charge
-    # against the fringes line"): child lines (kit fees, agent fees …)
-    # ride indented right under their parent; the section's Payroll
-    # Fringes line anchors the bottom of its group.
-    line_groups = []
-    for g in _pick_groups:
-        _ls = [l for l in g["lines"]
-               if (l.line_tag or '') not in ('header', 'spacer')]
-        if not _ls:
-            continue
-        _kids = {}
-        for l in _ls:
-            if l.parent_line_id:
-                _kids.setdefault(l.parent_line_id, []).append(l)
-        def _opt(l, kind):
-            _d = (l.description or l.account_name or 'untitled')[:60]
-            if kind == 'child':
-                label = f"\u2003↳ {l.account_code} · {_d}"
-            elif kind == 'fringe':
-                label = f"\u2003↳ 💰 {_d}"
-            else:
-                label = f"{l.account_code} · {_d}"
-            return {"id": l.id, "label": label}
-        ordered, seen = [], set()
-        for l in _ls:
-            if l.id in seen or l.parent_line_id or (l.line_tag or '') == 'fringe_rollup':
-                continue
-            ordered.append(_opt(l, 'top')); seen.add(l.id)
-            for k in _kids.get(l.id, []):
-                ordered.append(_opt(k, 'child')); seen.add(k.id)
-        for l in _ls:          # orphan children whose parent is elsewhere
-            if l.id not in seen and (l.line_tag or '') != 'fringe_rollup':
-                ordered.append(_opt(l, 'child' if l.parent_line_id else 'top'))
-                seen.add(l.id)
-        for l in _ls:          # fringes last, indented, unmistakable
-            if (l.line_tag or '') == 'fringe_rollup':
-                ordered.append(_opt(l, 'fringe'))
-        line_groups.append({"code": g["code"], "name": g["name"], "opts": ordered})
-    return render_template("reconcile.html", project=project,
+    line_groups = build_line_picker_options(_pick_groups)
+    try:
+        focus_txn = int(request.args.get('txn') or 0) or None
+    except (TypeError, ValueError):
+        focus_txn = None
+    view = (request.args.get('view') or '').strip().lower()
+    if view not in ('unclaimed', 'assigned', 'needs_backup', 'receipts', 'not_project', 'sync'):
+        view = ''
+    return render_template("actuals.html", project=project,
+                           budget=_pick_budget,
+                           budget_id=(_pick_budget.id if _pick_budget else None),
                            line_groups=line_groups,
-                           legacy_bid=(_pick_budget.id if _pick_budget else None))
+                           crew=_ws_crew_options(pid),
+                           focus_txn=focus_txn, initial_view=view,
+                           can_sync=bool(getattr(current_user, 'role', None) in ('super_admin', 'admin')))
 
 
 @app.route("/projects/<int:pid>/actuals/scan-dup-transactions", methods=["GET", "POST"])
@@ -2638,10 +2713,11 @@ def actuals_confirm_match(pid, tid):
     from actuals import confirm_match
     try:
         result = confirm_match(tid)
+        _act = None
         try:
             _label = (txn.vendor or f'Txn #{txn.id}')[:80]
             _amt = float(txn.amount or 0)
-            _log_activity(
+            _act = _log_activity(
                 action='update', entity_type='transaction_match',
                 entity_id=txn.id, entity_label=_label,
                 project_id=pid,
@@ -2649,7 +2725,7 @@ def actuals_confirm_match(pid, tid):
                        'doc_upload_id': txn.doc_upload_id},
                 note=f'Confirmed match: {_label} ${_amt:,.2f}')
         except Exception: pass
-        return jsonify({"ok": True, **result})
+        return jsonify({"ok": True, "activity_id": (_act.id if _act else None), **result})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
@@ -2669,9 +2745,10 @@ def actuals_dismiss_suggestion(pid, tid):
     from actuals import dismiss_suggestion
     try:
         result = dismiss_suggestion(tid, remember=remember, user_id=current_user.id)
+        _act = None
         try:
             _label = (txn.vendor or f'Txn #{txn.id}')[:80]
-            _log_activity(
+            _act = _log_activity(
                 action='update', entity_type='transaction_match',
                 entity_id=txn.id, entity_label=_label,
                 project_id=pid,
@@ -2679,7 +2756,7 @@ def actuals_dismiss_suggestion(pid, tid):
                 note=(f'Not a match: {_label} — won\'t be re-suggested' if remember
                       else f'Dismissed suggested match for {_label}'))
         except Exception: pass
-        return jsonify({"ok": True, **result})
+        return jsonify({"ok": True, "activity_id": (_act.id if _act else None), **result})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
@@ -2695,14 +2772,15 @@ def actuals_unmatch(pid, tid):
     from actuals import unmatch_receipt
     try:
         info = unmatch_receipt(tid)
+        _act = None
         try:
-            _log_activity(action='update', entity_type='transaction_match',
-                          entity_id=tid, entity_label=(txn.vendor or f'Txn #{tid}')[:80],
-                          project_id=pid, after={'match_status': 'unmatched'},
-                          note=f'Unmatched receipt from {(txn.vendor or "charge")[:60]}')
+            _act = _log_activity(action='update', entity_type='transaction_match',
+                                 entity_id=tid, entity_label=(txn.vendor or f'Txn #{tid}')[:80],
+                                 project_id=pid, after={'match_status': 'unmatched'},
+                                 note=f'Unmatched receipt from {(txn.vendor or "charge")[:60]}')
         except Exception:
             pass
-        return jsonify({"ok": True, **info})
+        return jsonify({"ok": True, "activity_id": (_act.id if _act else None), **info})
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
@@ -3049,11 +3127,12 @@ def actuals_link_existing_doc(pid, tid):
             except Exception:
                 pass
             logging.warning(f"[link-doc] sister absorb failed txn {tid}: {_e}")
+    _act = None
     try:
         _label = (txn.vendor or f'Txn #{txn.id}')[:80]
         _amt = float(txn.amount or 0)
         _doc_label = doc.filed_filename or doc.original_filename or f'Doc #{doc.id}'
-        _log_activity(
+        _act = _log_activity(
             action='update', entity_type='transaction_match',
             entity_id=txn.id, entity_label=_label,
             project_id=pid,
@@ -3065,6 +3144,7 @@ def actuals_link_existing_doc(pid, tid):
         "transaction_id":  txn.id,
         "doc_upload_id":   doc.id,
         "filed_filename":  doc.filed_filename or doc.original_filename,
+        "activity_id":     (_act.id if _act else None),
     })
 
 
@@ -4115,9 +4195,13 @@ def actuals_workspace_json(pid):
                 "description": ln.description or ln.account_name or '',
                 "is_labor": bool(ln.is_labor),
                 "line_tag": ln.line_tag,
+                "parent_line_id": ln.parent_line_id,
                 "estimate": est, "actual": act,
                 "variance": round(est - act, 2),
-                "is_drop_target": not bool(ln.sync_omit) and ln.line_tag not in ('fringe_rollup',),
+                # Header / spacer rows and the section's fringe summary are
+                # never targets (Phase 3: the fringe row is read-only).
+                "is_drop_target": (not bool(ln.sync_omit)
+                                   and (ln.line_tag or '') not in ('fringe_rollup', 'header', 'spacer')),
             })
         _order = {code: i for i, (code, _n) in enumerate(FP_COA_SECTIONS)}
         for sec in sorted(by_sec, key=lambda c: (_order.get(c, 9999), c or 0)):
@@ -4162,7 +4246,9 @@ def actuals_workspace_json(pid):
                     "not_project": not_project,
                     "claimed_elsewhere": claimed_elsewhere,
                     "sync": sync, "counts": counts,
-                    "budget": {"sections": sections}})
+                    "budget": {"sections": sections,
+                               "name": (budget.name if budget else None),
+                               "mode": (getattr(budget, 'budget_mode', None) if budget else None)}})
 
 
 @app.route("/projects/<int:pid>/actuals/transaction/<int:tid>/split", methods=["POST", "DELETE"])
@@ -4198,13 +4284,15 @@ def actuals_split_transaction(pid, tid):
         txn.updated_at = datetime.utcnow()
         _sync_claim_state(txn)
         db.session.commit()
+        _act = None
         try:
-            _log_activity(action='update', entity_type='transaction', entity_id=txn.id,
-                          entity_label=_label, project_id=pid,
-                          before=_before, after={**_before, 'splits': []},
-                          note=f'Removed the split on ${_amt:,.2f} ({len(_old)} lines)')
+            _act = _log_activity(action='update', entity_type='transaction', entity_id=txn.id,
+                                 entity_label=_label, project_id=pid,
+                                 before=_before, after={**_before, 'splits': []},
+                                 note=f'Removed the split on ${_amt:,.2f} ({len(_old)} lines)')
         except Exception: pass
-        return jsonify({"ok": True, "transaction": _txn_state_json(txn), "splits": []})
+        return jsonify({"ok": True, "transaction": _txn_state_json(txn), "splits": [],
+                        "activity_id": (_act.id if _act else None)})
 
     _ge = _guard_doc_expense(txn, {})
     if _ge is not None:
@@ -4241,13 +4329,14 @@ def actuals_split_transaction(pid, tid):
     _clear_ai_code_suggestion(txn)
     _sync_claim_state(txn)
     db.session.commit()
+    _act = None
     try:
-        _log_activity(action='update', entity_type='transaction', entity_id=txn.id,
-                      entity_label=_label, project_id=pid,
-                      before=_before,
-                      after={'budget_line_id': None, 'account_code': None,
-                             'account_code_name': None, 'not_project_expense': False,
-                             'splits': clean},
+        _act = _log_activity(action='update', entity_type='transaction', entity_id=txn.id,
+                             entity_label=_label, project_id=pid,
+                             before=_before,
+                             after={'budget_line_id': None, 'account_code': None,
+                                    'account_code_name': None, 'not_project_expense': False,
+                                    'splits': clean},
                       note=f'Split ${_amt:,.2f} across {len(clean)} lines: '
                            + ', '.join(f'{_ws_line_label(lines_by_id[r["budget_line_id"]])} ${r["amount"]:,.2f}'
                                        for r in clean)[:400])
@@ -4257,7 +4346,8 @@ def actuals_split_transaction(pid, tid):
             "amount": float(sp.amount or 0), "note": sp.note}
            for sp in TransactionSplit.query.filter_by(transaction_id=tid)
                                            .order_by(TransactionSplit.id).all()]
-    return jsonify({"ok": True, "transaction": _txn_state_json(txn), "splits": out})
+    return jsonify({"ok": True, "transaction": _txn_state_json(txn), "splits": out,
+                    "activity_id": (_act.id if _act else None)})
 
 
 @app.route("/projects/<int:pid>/actuals/manual-expense", methods=["POST"])
