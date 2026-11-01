@@ -39,7 +39,10 @@ jobs:
         run: python scripts/route_audit.py app.py routes/*.py
       - name: Inline JS syntax check
         run: python scripts/js_check.py
-      - name: Budget-math unit tests
+      - name: Unit tests
+        # tests/unit imports actuals.py and qbo_sync.py, which import SQLAlchemy, Flask-Login,
+        # Flask-SQLAlchemy (via models.py) and requests at module level. Install
+        # just those, pinned like requirements.txt, so the step stays fast.
         run: |
-          pip install pytest --quiet
+          pip install --quiet pytest "flask<4" "flask-login<1" "flask-sqlalchemy<4" "sqlalchemy<2.1" "requests<3"
           python -m pytest tests/unit -q --confcutdir=tests/unit -o addopts=""
