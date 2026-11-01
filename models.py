@@ -559,6 +559,51 @@ class CrewMember(db.Model):
                                           lazy=True, cascade="all, delete-orphan",
                                           foreign_keys="SupportContact.crew_member_id")
 
+    # ── Payee record (DOCUMENTS_HANDOFF Phase 1, 2026-11-01; alembic 0022) ──
+    # CrewMember IS the Payee: anyone the company pays, person or vendor, and
+    # the read-only mirror of a QuickBooks Vendor. NO tax identification
+    # number is stored anywhere in FPBudget — QuickBooks holds the TIN and
+    # prints the 1099; FPBudget holds the W-9 PDF and the date received.
+    kind                = db.Column(db.String(12), default='person')   # person | loan_out | vendor
+    # QuickBooks Vendor mirror (QuickBooks → FPBudget only; never written back).
+    qbo_vendor_id       = db.Column(db.String(40), nullable=True)
+    qbo_sync_token      = db.Column(db.String(20), nullable=True)
+    qbo_synced_at       = db.Column(db.DateTime, nullable=True)
+    qbo_vendor_1099     = db.Column(db.Boolean, nullable=True)   # QBO "Track payments for 1099"
+    # 'qbo' = first seen by the mirror; 'fpbudget' = created in QuickBooks
+    # from this Payee (Steven, Nov 1: FPBudget may CREATE a vendor or
+    # loan-out there, never update or overwrite one that exists).
+    qbo_origin          = db.Column(db.String(12), nullable=True)
+    legal_name          = db.Column(db.String(200), nullable=True)   # name on the W-9
+    address_line1       = db.Column(db.String(200), nullable=True)
+    address_line2       = db.Column(db.String(200), nullable=True)
+    city                = db.Column(db.String(120), nullable=True)
+    state               = db.Column(db.String(40), nullable=True)
+    postal_code         = db.Column(db.String(20), nullable=True)
+    # "W-9 on file" means exactly one thing: this date is set (Phase 2 ties
+    # it to a tax_form DocUpload with tax_form_kind='w9'). Read it through
+    # actuals.payee_w9_status(), never directly in a view.
+    w9_received_on      = db.Column(db.Date, nullable=True)
+    w9_doc_upload_id    = db.Column(db.Integer, nullable=True)
+    # On Wrapbook payroll → W-2; left out of vendor (1099) reporting.
+    is_w2_employee      = db.Column(db.Boolean, default=False)
+    wrapbook_worker_id  = db.Column(db.String(60), nullable=True)
+    notes               = db.Column(db.Text, nullable=True)
+
+
+class ReportingThreshold(db.Model):
+    """The 1099-NEC reporting floor per calendar year (DOCUMENTS_HANDOFF
+    Phase 1). $600 through 2025; $2,000 from 2026 (One Big Beautiful Bill
+    Act), inflation-indexed after — so it is a per-year row, never a
+    constant. Seeded by alembic 0022 / the essential-columns pass; later
+    years are added by a super-admin. Read through
+    actuals.threshold_for_year(), which falls back to 600 / 2000 when a year
+    has no row."""
+    __tablename__ = "reporting_threshold"
+    tax_year = db.Column(db.Integer, primary_key=True)
+    amount   = db.Column(db.Numeric(12, 2), nullable=False)
+    source   = db.Column(db.String(200), nullable=True)
+
 
 class CrewAssignment(db.Model):
     __tablename__ = "crew_assignment"

@@ -29272,6 +29272,56 @@ def _web_worker_essential_columns():
                 "  ON doc_upload (crew_member_id)",
                 "CREATE INDEX IF NOT EXISTS ix_doc_upload_location "
                 "  ON doc_upload (location_id)",
+                # ── Payee record (DOCUMENTS_HANDOFF Phase 1, 2026-11-01,
+                # alembic 0022 — mirrored here per CLAUDE.md). CrewMember is
+                # the Payee + the QuickBooks Vendor mirror. NO TIN column
+                # exists or may be added: QuickBooks holds it.
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS kind VARCHAR(12)",
+                "UPDATE crew_member SET kind = CASE WHEN is_vendor THEN 'vendor' "
+                "  ELSE 'person' END WHERE kind IS NULL",
+                "ALTER TABLE crew_member ALTER COLUMN kind SET DEFAULT 'person'",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS qbo_vendor_id VARCHAR(40)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_crew_member_qbo_vendor "
+                "  ON crew_member (qbo_vendor_id) WHERE qbo_vendor_id IS NOT NULL",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS qbo_sync_token VARCHAR(20)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS qbo_synced_at TIMESTAMP",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS qbo_vendor_1099 BOOLEAN",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS qbo_origin VARCHAR(12)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS legal_name VARCHAR(200)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS address_line1 VARCHAR(200)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS address_line2 VARCHAR(200)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS city VARCHAR(120)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS state VARCHAR(40)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS postal_code VARCHAR(20)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS w9_received_on DATE",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS w9_doc_upload_id INTEGER",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS is_w2_employee BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS wrapbook_worker_id VARCHAR(60)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS notes TEXT",
+                # One-time W-9 backfill from tax_form docs already attached
+                # to the person (sub-type / filename says W-9 or W-8). Only
+                # fills rows still NULL; Phase 2's tax_form_kind replaces it.
+                "UPDATE crew_member cm SET w9_received_on = sub.d, w9_doc_upload_id = sub.id "
+                "  FROM (SELECT DISTINCT ON (crew_member_id) crew_member_id, id, "
+                "               COALESCE(doc_date, uploaded_at::date) AS d "
+                "          FROM doc_upload "
+                "         WHERE crew_member_id IS NOT NULL AND category = 'tax_form' "
+                "           AND (status IS NULL OR status NOT IN ('deleted', 'duplicate')) "
+                "           AND LOWER(COALESCE(vendor,'') || ' ' || COALESCE(filed_filename,'') "
+                "                     || ' ' || COALESCE(original_filename,'')) ~ 'w-?[89]' "
+                "         ORDER BY crew_member_id, doc_date DESC NULLS LAST, id DESC) sub "
+                " WHERE sub.crew_member_id = cm.id AND cm.w9_received_on IS NULL "
+                "   AND sub.d IS NOT NULL",
+                """CREATE TABLE IF NOT EXISTS reporting_threshold (
+                     tax_year INTEGER PRIMARY KEY,
+                     amount   NUMERIC(12,2) NOT NULL,
+                     source   VARCHAR(200)
+                   )""",
+                "INSERT INTO reporting_threshold (tax_year, amount, source) "
+                "  VALUES (2025, 600.00, 'IRS, pre-OBBBA') ON CONFLICT (tax_year) DO NOTHING",
+                "INSERT INTO reporting_threshold (tax_year, amount, source) "
+                "  VALUES (2026, 2000.00, 'One Big Beautiful Bill Act; indexed from 2027') "
+                "  ON CONFLICT (tax_year) DO NOTHING",
                 # 2026-05-01 Veryfi expense category (free-text, e.g.
                 # "Meals & Entertainment", "Office Supplies & Software").
                 # Denormalized off veryfi_data so the Docs tab can render
