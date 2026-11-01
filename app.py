@@ -7158,10 +7158,12 @@ def budget_audit_json(pid, bid):
 
         # ── Arithmetic assembly check ────────────────────────────────
         # calc_line_from_schedule and labor calc_line assemble
-        # total = subtotal + fringe + agent. Flat NON-labor calc_line
-        # instead treats agent_pct as a DISCOUNT: total = subtotal - agent.
+        # total = subtotal + agent — fringe is reported per line but lives
+        # on the department's Payroll Fringes line in 6500 (Phase 4, Oct 30
+        # 2026). Flat NON-labor calc_line instead treats agent_pct as a
+        # DISCOUNT: total = subtotal - agent.
         if used_schedule or ln.is_labor:
-            exp_total = round(subtotal + fringe + agent, 2)
+            exp_total = round(subtotal + agent, 2)
         else:
             exp_total = round(subtotal - agent, 2)
         checks.append({"name": "arithmetic", "label": "Total = parts",
@@ -7321,6 +7323,11 @@ def budget_audit_json(pid, bid):
         indep_section[6000] = indep_section.get(6000, 0.0) + pi
     if pf:
         indep_section[6500] = indep_section.get(6500, 0.0) + pf
+    # Every department's fringe pot lands in 6500 (Phase 4): rebuild it
+    # independently from the per-line fringe amounts above.
+    _indep_fringe = round(sum(_f(l.get("fringe_amount")) for l in out_lines if l.get("is_labor")), 2)
+    if _indep_fringe:
+        indep_section[6500] = indep_section.get(6500, 0.0) + _indep_fringe
 
     section_rows = []
     section_errors = 0
@@ -7440,24 +7447,22 @@ def _ensure_fringe_rollup_line(pid, section_code, budget=None, commit=True):
         bud = budget or _fringe_target_budget(pid)
         if not bud:
             return None
-        ln = BudgetLine.query.filter_by(budget_id=bud.id, line_tag='fringe_rollup',
-                                        fringe_for_section=section_code).first()
+        from actuals import resolve_fringe_line as _rfl
+        _cands = BudgetLine.query.filter_by(budget_id=bud.id, line_tag='fringe_rollup').all()
+        ln, _legacy = _rfl(_cands, section_code)
         _sec_name = _FRN.get(section_code, str(section_code))
         _desc = f'Payroll Fringes — {_sec_name}'[:300]
-        if ln is None and section_code != _FRH:
-            # Legacy per-section line (Oct 21 shape) → adopt into 6500.
-            ln = BudgetLine.query.filter_by(budget_id=bud.id, line_tag='fringe_rollup',
-                                            account_code=section_code,
-                                            fringe_for_section=None).first()
-            if ln is not None:
-                ln.account_code = _FRH
-                ln.account_name = (_FRN.get(_FRH, 'Administrative'))[:100]
-                ln.fringe_for_section = section_code
-                ln.description = _desc
-                ln.is_labor = False
-                ln.sync_omit = True
-                logging.info(f"[fringe-6500] adopted legacy line {ln.id} "
-                             f"({section_code} → 6500) on budget {bud.id}")
+        if ln is not None and _legacy:
+            # Legacy per-section line (Oct 21 shape) → adopt into 6500,
+            # keeping its id so its coded actuals follow.
+            ln.account_code = _FRH
+            ln.account_name = (_FRN.get(_FRH, 'Administrative'))[:100]
+            ln.fringe_for_section = section_code
+            ln.description = _desc
+            ln.is_labor = False
+            ln.sync_omit = True
+            logging.info(f"[fringe-6500] adopted legacy line {ln.id} "
+                         f"({section_code} → 6500) on budget {bud.id}")
         if ln is None:
             ln = BudgetLine(budget_id=bud.id, account_code=_FRH,
                             account_name=(_FRN.get(_FRH, 'Administrative'))[:100],
@@ -34739,38 +34744,6 @@ def _picker_value_for_line(bl):
     return bl.id
 
 
-def _parse_people_split(amount, wages, fringes, workers_comp=0.0, platform_fee=0.0):
-    """Tie-out rule for one parsed payroll row (pure; unit-tested in
-    tests/unit/test_fringe_lines.py).
-
-    amount is the person's total on the document. When the AI separated the
-    parts, the split is used as given; the difference between amount and
-    (wages + fringes + workers_comp + platform_fee) is booked to the
-    person's line (wages) and returned as `delta` when it exceeds $1 so the
-    UI can flag it, instead of silently merging everything back into one
-    row. When no split exists (wages missing) the whole amount is wages.
-    Returns {wages, fringes, workers_comp, platform_fee, delta}."""
-    def _f(v):
-        try:
-            return round(float(v), 2)
-        except (TypeError, ValueError):
-            return None
-    amount = _f(amount) or 0.0
-    wages, fringes = _f(wages), _f(fringes)
-    wc = _f(workers_comp) or 0.0
-    fee = _f(platform_fee) or 0.0
-    if wages is None or wages < 0:
-        return {"wages": amount, "fringes": 0.0, "workers_comp": 0.0,
-                "platform_fee": 0.0, "delta": 0.0}
-    fringes = fringes if (fringes is not None and fringes >= 0) else 0.0
-    wc = max(wc, 0.0)
-    fee = max(fee, 0.0)
-    diff = round(amount - (wages + fringes + wc + fee), 2)
-    delta = diff if abs(diff) > 1.0 else 0.0
-    return {"wages": round(wages + diff, 2), "fringes": fringes,
-            "workers_comp": wc, "platform_fee": fee, "delta": delta}
-
-
 @app.route("/docs/upload/<int:uid>/parse-people", methods=["POST"])
 @login_required
 def docs_parse_people(uid):
@@ -34901,7 +34874,8 @@ def docs_parse_people(uid):
         wc    = _num(r0.get("workers_comp")) or 0.0
         pfee  = _num(r0.get("platform_fee")) or 0.0
         mt = _match(nm)
-        split = _parse_people_split(amt, wages, frng, wc, pfee)
+        from actuals import parse_people_split as _pps
+        split = _pps(amt, wages, frng, wc, pfee)
         row_amt = split["wages"]
         if split["delta"]:
             deltas.append({"name": nm, "delta": split["delta"]})

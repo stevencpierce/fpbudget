@@ -460,6 +460,76 @@ def compute_row_flags(row, *, today=None, date_far_days=7):
     return {"red": red, "yellow": yellow}
 
 
+# ── Fringes to 6500 Administrative (ACTUALS_HANDOFF Phase 4, 2026-11-01) ──
+
+FRINGE_HOME_SECTION = 6500
+
+
+def resolve_fringe_line(lines, section, home=FRINGE_HOME_SECTION):
+    """Find a labor DEPARTMENT's Payroll Fringes line among line-likes
+    (id, line_tag, account_code, fringe_for_section). Pure; app.
+    _ensure_fringe_rollup_line uses it so the register, the parser and the
+    grid resolve the same line.
+
+    Returns (line, is_legacy):
+      * the line tagged fringe_rollup whose fringe_for_section == section
+        (the Phase 4 shape, in 6500) → (line, False);
+      * else the pre-Phase-4 per-section line (fringe_rollup, account_code
+        == section, fringe_for_section NULL) → (line, True) so the caller
+        adopts it into 6500 keeping its id and its coded actuals;
+      * else (None, False). The old single 6500 pot (account_code == home,
+        no department) is never a department's line."""
+    try:
+        section = int(section)
+    except (TypeError, ValueError):
+        return None, False
+    for l in lines or []:
+        if (getattr(l, 'line_tag', None) or '') != 'fringe_rollup':
+            continue
+        if getattr(l, 'fringe_for_section', None) == section:
+            return l, False
+    if section == home:
+        return None, False
+    for l in lines or []:
+        if ((getattr(l, 'line_tag', None) or '') == 'fringe_rollup'
+                and getattr(l, 'fringe_for_section', None) is None
+                and getattr(l, 'account_code', None) == section):
+            return l, True
+    return None, False
+
+
+def parse_people_split(amount, wages, fringes, workers_comp=0.0, platform_fee=0.0):
+    """Tie-out rule for one parsed payroll row (Phase 4; pure, unit-tested
+    in tests/unit/test_fringe_lines.py; app.docs_parse_people calls it).
+
+    amount is the person's total on the document. When the AI separated the
+    parts, the split is used as given; the difference between amount and
+    (wages + fringes + workers_comp + platform_fee) is booked to the
+    person's line (wages) and returned as `delta` when it exceeds $1 so the
+    UI can flag it, instead of silently merging everything back into one
+    row. When no split exists (wages missing) the whole amount is wages.
+    Returns {wages, fringes, workers_comp, platform_fee, delta}."""
+    def _f(v):
+        try:
+            return round(float(v), 2)
+        except (TypeError, ValueError):
+            return None
+    amount = _f(amount) or 0.0
+    wages, fringes = _f(wages), _f(fringes)
+    wc = _f(workers_comp) or 0.0
+    fee = _f(platform_fee) or 0.0
+    if wages is None or wages < 0:
+        return {"wages": amount, "fringes": 0.0, "workers_comp": 0.0,
+                "platform_fee": 0.0, "delta": 0.0}
+    fringes = fringes if (fringes is not None and fringes >= 0) else 0.0
+    wc = max(wc, 0.0)
+    fee = max(fee, 0.0)
+    diff = round(amount - (wages + fringes + wc + fee), 2)
+    delta = diff if abs(diff) > 1.0 else 0.0
+    return {"wages": round(wages + diff, 2), "fringes": fringes,
+            "workers_comp": wc, "platform_fee": fee, "delta": delta}
+
+
 # ── Workspace screen helpers (ACTUALS_HANDOFF Phase 3, 2026-11-01) ────────
 
 def build_line_picker_options(groups):
