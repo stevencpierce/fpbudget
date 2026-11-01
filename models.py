@@ -1265,7 +1265,14 @@ class DocUpload(db.Model):
     """A single document/receipt uploaded through the Docs module."""
     __tablename__ = "doc_upload"
     id               = db.Column(db.Integer, primary_key=True)
-    project_id       = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=False)
+    # Nullable since DOCUMENTS_HANDOFF Phase 2 (alembic 0023, 2026-11-01): a
+    # document has an owner (owner_payee_id) or a project, usually both. A
+    # W-9 uploaded from the Payee page has no project; a receipt has a
+    # project and usually no owner; an invoice has both. Every project-
+    # scoped query filters on project_id == pid and so simply skips
+    # project-less paperwork; per-doc routes resolve access through
+    # _docs_check_row_access, which treats a null project as admin-only.
+    project_id       = db.Column(db.Integer, db.ForeignKey("project_sheet.id"), nullable=True)
     # nullable since 2026-09-08: the background drop-folder sweep imports
     # documents with no human uploader (shown as blank in the Docs list).
     uploader_id      = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
@@ -1394,11 +1401,47 @@ class DocUpload(db.Model):
     location_id    = db.Column(db.Integer, db.ForeignKey("location.id"),
                                 nullable=True)
 
+    # ── Document ownership (DOCUMENTS_HANDOFF Phase 2, alembic 0023) ─────
+    # owner_payee_id is THE person-or-vendor a document belongs to; it
+    # replaces the meaning of crew_member_id, which stays as an ALIAS column
+    # until the UI stops reading it: every write goes through
+    # set_doc_owner() so the two never disagree. Paperwork (tax forms, IDs,
+    # contracts, COIs, releases, legal) lives with its owner and is reused
+    # across projects; evidence (receipts, invoices, payroll, timecards)
+    # lives with the project and names its owner for attribution.
+    owner_payee_id = db.Column(db.Integer, db.ForeignKey("crew_member.id"),
+                                nullable=True, index=True)
+    # tax_form only: w9 | w8ben | w8bene | w4 | i9 | other. "W-9 on file"
+    # means a tax_form owned by the Payee with kind w9/w8ben/w8bene and a
+    # received_on date — the ONE rule (actuals.payee_w9_status).
+    tax_form_kind  = db.Column(db.String(12), nullable=True)
+    # employee_vendor_doc sub-type ("Driver's License", "Passport", …). This
+    # used to be stored in `vendor`, which made "W-9" look like a vendor
+    # name in filenames, rollups and alias logic; 0023 moved it here.
+    doc_subtype    = db.Column(db.String(40), nullable=True)
+    received_on    = db.Column(db.Date, nullable=True)   # tax forms
+    expires_on     = db.Column(db.Date, nullable=True)   # COIs
+
     # User note
     note             = db.Column(db.String(500), nullable=True)
 
     uploader  = db.relationship("User",         foreign_keys=[uploader_id])
     project   = db.relationship("ProjectSheet", foreign_keys=[project_id])
+
+    def set_owner(self, payee_id):
+        """Write the owner through ONE door so owner_payee_id and the alias
+        column crew_member_id always agree (Phase 2; the alias goes away in
+        the follow-up that moves the last readers)."""
+        pid = int(payee_id) if payee_id not in (None, '', 0, '0') else None
+        self.owner_payee_id = pid
+        self.crew_member_id = pid
+        return pid
+
+    @property
+    def owner_id(self):
+        """The owner, reading the new column first and the alias as a
+        fallback for rows the data step has not touched yet."""
+        return self.owner_payee_id or self.crew_member_id
 
 
 class ActivityLog(db.Model):

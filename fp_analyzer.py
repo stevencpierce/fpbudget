@@ -103,7 +103,6 @@ TOKEN_FIELDS = {
     "category":       lambda r: r.get("category", "Unknown"),
     "invoice_number": lambda r: r.get("invoice_number") or "Unknown",
     "po_number":      lambda r: r.get("purchase_order_number") or "Unknown",
-    "tax_id":         lambda r: r.get("tax_id") or r.get("ein") or "Unknown",
 }
 
 DEFAULT_ORDER = ["date", "category", "vendor", "total"]
@@ -589,7 +588,8 @@ def _safe_for_path(s: str, max_len: int = 60) -> str:
 
 def _staged_path(batch_token: str, item_id: str, ext: str,
                  original_filename: str = "",
-                 project_name: str = "") -> str:
+                 project_name: str = "",
+                 archive_base: str = "") -> str:
     """Build the Dropbox path where a file lives in the source archive.
 
     With project_name (the normal case for FPBudget):
@@ -599,6 +599,10 @@ def _staged_path(batch_token: str, item_id: str, ext: str,
     Without project_name (legacy / standalone batch mode):
       `{ops}/_SOURCE_ARCHIVE/<YYYY-MM>/<batch>/<orig>__<id><ext>`
 
+    With archive_base (DOCUMENTS_HANDOFF Phase 2 — a Payee-page upload has
+    no project): that absolute Dropbox folder is the archive root, e.g.
+      `{ops}/Crew Database/_SOURCE_ARCHIVE/<YYYY-MM>/<batch>/<orig>__<id><ext>`
+
     The processed copy is written via files_copy_v2 from this path on
     success; this path itself is never deleted by the app."""
     from datetime import datetime as _dt
@@ -606,7 +610,9 @@ def _staged_path(batch_token: str, item_id: str, ext: str,
     bucket = _dt.utcnow().strftime("%Y-%m")
     safe_orig = _safe_for_path(os.path.splitext(original_filename or "")[0])
     fname = f"{safe_orig}__{item_id}{ext}" if safe_orig else f"{item_id}{ext}"
-    if project_name:
+    if archive_base:
+        base = archive_base.rstrip("/")
+    elif project_name:
         base = f"{ops}/{project_name}/{_ARCHIVE_PARENT}" if ops else f"/{project_name}/{_ARCHIVE_PARENT}"
     else:
         base = f"{ops}/{_LEGACY_STAGING_FOLDER}" if ops else f"/{_LEGACY_STAGING_FOLDER}"
@@ -624,7 +630,8 @@ def _stage_to_dropbox(dbx, ocr_bytes: bytes, dest_path: str) -> str:
     return meta.path_display
 
 
-def prepare_files(file_storages, batch_token=None, project_name=""):
+def prepare_files(file_storages, batch_token=None, project_name="",
+                  archive_base=""):
     """
     Stage uploaded files directly to Dropbox into the project's source
     archive folder and record their staged paths. NO local temp PDFs,
@@ -691,7 +698,8 @@ def prepare_files(file_storages, batch_token=None, project_name=""):
                 dbx = get_dropbox_client()
             dest_path = _staged_path(batch_token, item["id"], ocr_ext,
                                      original_filename=fs.filename,
-                                     project_name=project_name)
+                                     project_name=project_name,
+                                     archive_base=archive_base)
             staged = _stage_to_dropbox(dbx, ocr_bytes, dest_path)
             del ocr_bytes  # bytes are now in Dropbox; release worker memory
 
@@ -707,7 +715,8 @@ def prepare_files(file_storages, batch_token=None, project_name=""):
                     orig_ext = os.path.splitext(fs.filename)[1].lower() or ext
                     orig_dest = _staged_path(batch_token, item["id"], orig_ext,
                                              original_filename=fs.filename,
-                                             project_name=project_name)
+                                             project_name=project_name,
+                                             archive_base=archive_base)
                     orig_staged = _stage_to_dropbox(dbx, original_bytes, orig_dest)
                     item["original_source_path"] = orig_staged
                     log.info(f"Preserved original {fs.filename} → {orig_staged}")
@@ -814,7 +823,7 @@ def _normalize_w9(w9):
         'vendor':  {'name': name} if name else {},
         'total':   None,
         'date':    w9.get('signature_date') or '',
-        'tax_id':  (w9.get('ein') or None),   # EIN only — skip SSN
+        'tax_id':  None,   # no TIN stored, EIN included (DOCUMENTS Phase 2)
         'ocr_text': w9.get('ocr_text') or '',
         'meta':    w9.get('meta') or {},
         '_veryfi_route': 'w9',
@@ -953,7 +962,10 @@ def _claude_ocr_extract(content_blocks):
         "due_date": data.get('due_date'),
         "invoice_number": data.get('invoice_number'),
         "purchase_order_number": data.get('purchase_order_number'),
-        "tax_id": data.get('tax_id'),
+        # No tax identification number is stored anywhere in FPBudget
+        # (DOCUMENTS_HANDOFF Phase 2): QuickBooks holds the TIN. The OCR
+        # tool may still read one off the page; it is dropped here.
+        "tax_id": None,
         "line_items": li,
         "payment": ({"card_number": str(data['card_last4'])[-4:]}
                     if data.get('card_last4') else {}),
@@ -1417,10 +1429,17 @@ def mark_known_dupes(batch_token, known_hashes, project_name, user_name):
     return len(discard_ids)
 
 
-def auto_file_high_confidence(batch_token, project_name, user_name):
+def auto_file_high_confidence(batch_token, project_name, user_name,
+                              dest_folder=None):
     """
     File all items whose needs_review=False directly to Dropbox without review.
     Returns number of items filed.
+
+    dest_folder (DOCUMENTS_HANDOFF Phase 2): an absolute Dropbox folder that
+    REPLACES the project / type / uploader layout — used by Payee-page
+    uploads, which have no project and file straight into
+    `<OPS>/Crew Database/<Payee>/<Year>/`. A literal `{year}` in it is
+    filled from the document's OCR date (else the upload year).
     """
     items     = _pending.get(batch_token, [])
     auto_ids  = {
@@ -1451,7 +1470,13 @@ def auto_file_high_confidence(batch_token, project_name, user_name):
         # an extra vendor subfolder. Mirrors the layout used by
         # file_confirmed below.
         user_folder = safe(user_name)
-        if doc_type in ("invoice", "contract", "purchase_order", "insurance"):
+        if dest_folder:
+            _year = ((item["vr"].get("date") or "")[:4] or "").strip()
+            if not (_year.isdigit() and len(_year) == 4):
+                from datetime import datetime as _dt_y
+                _year = str(_dt_y.utcnow().year)
+            processed_path = f"{dest_folder.rstrip('/').replace('{year}', _year)}/{new_name}"
+        elif doc_type in ("invoice", "contract", "purchase_order", "insurance"):
             vendor_folder  = safe((item["vr"].get("vendor") or {}).get("name") or "Unknown_Vendor")
             processed_path = f"{base}/{user_folder}/{vendor_folder}/{new_name}"
         else:
@@ -1608,7 +1633,9 @@ class _InMemoryFileStorage:
 
 
 def analyze_and_file_single(file_bytes: bytes, filename: str,
-                            project_name: str, user_name: str) -> dict:
+                            project_name: str, user_name: str,
+                            dest_folder: str = None,
+                            archive_base: str = "") -> dict:
     """Run the Analyzer pipeline on ONE file, synchronously. Returns:
 
         {
@@ -1626,11 +1653,17 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
     On 'needs_review' status, no Dropbox write happens — FPBudget should
     stash the file bytes + OCR result locally so the user can finish
     filing via a review UI.
+
+    dest_folder / archive_base (DOCUMENTS_HANDOFF Phase 2): a Payee-page
+    upload has no project — the processed copy files into dest_folder
+    (see auto_file_high_confidence) and the source archive under
+    archive_base, both absolute Dropbox folders.
     """
     fs = _InMemoryFileStorage(file_bytes, filename)
 
     # Phase 1: stage to the project's source archive folder.
-    batch_token, _total, errs = prepare_files([fs], project_name=project_name)
+    batch_token, _total, errs = prepare_files([fs], project_name=project_name,
+                                              archive_base=archive_base)
     if errs:
         return {
             "status":            "error",
@@ -1690,7 +1723,8 @@ def analyze_and_file_single(file_bytes: bytes, filename: str,
     # auto_file_high_confidence handles the filing + duplicate-rename.
     if not needs_rev:
         try:
-            auto_file_high_confidence(batch_token, project_name, user_name)
+            auto_file_high_confidence(batch_token, project_name, user_name,
+                                      dest_folder=dest_folder)
         except Exception as e:
             log.error(f"auto_file_high_confidence error: {e}", exc_info=True)
             # fall through to 'needs_review' return below
@@ -1839,11 +1873,13 @@ file_confirmed            = _durable_batch(file_confirmed)
 _orig_prepare_files = prepare_files
 
 
-def prepare_files(file_storages, batch_token=None, project_name=""):
+def prepare_files(file_storages, batch_token=None, project_name="",
+                  archive_base=""):
     if batch_token:
         _hydrate_batch(batch_token)
     res = _orig_prepare_files(file_storages, batch_token=batch_token,
-                              project_name=project_name)
+                              project_name=project_name,
+                              archive_base=archive_base)
     try:
         _persist_batch(res[0])
     except Exception:
