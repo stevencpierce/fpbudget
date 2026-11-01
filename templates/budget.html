@@ -804,12 +804,13 @@
        lazy-verify wiring (5456). #}
     <a class="tab-btn tab-link" href="/projects/{{ project.id }}/docs">Docs</a>
     <button class="tab-btn" data-tab="docs" style="display:none" aria-hidden="true" tabindex="-1"></button>
-    {# Actuals now navigates to the standalone register (owner 2026-10-30
-       rebuild) — same pattern as the Docs tab above. The old in-page pane
-       stays reachable via ?tab=actuals deep-links and the register's
-       "legacy view" link; its hidden button is relied on by the URL tab
-       restore, so do NOT remove it. #}
-    <a class="tab-btn tab-link" href="/projects/{{ project.id }}/register">Actuals</a>
+    {# Actuals navigates to the Actuals workspace (ACTUALS_HANDOFF Phase 3,
+       2026-11-01: /projects/<pid>/actuals replaces /register, which now
+       redirects) — same pattern as the Docs tab above. The old in-page
+       pane stays reachable via ?tab=actuals deep-links; its hidden button
+       is relied on by the URL tab restore, so do NOT remove it until the
+       legacy-tab cleanup. #}
+    <a class="tab-btn tab-link" href="/projects/{{ project.id }}/actuals">Actuals</a>
     <button class="tab-btn" data-tab="actuals" style="display:none" aria-hidden="true" tabindex="-1"></button>
     <button class="tab-btn" data-tab="activity">Activity</button>
     <button class="tab-btn" data-tab="import-tools">Tools</button>
@@ -4184,7 +4185,14 @@ __BJ["b03_NON_LEDGER_CATS"] = {{ NON_LEDGER_DOC_CATEGORIES|tojson }};
 <script src="{{ url_for('static', filename='budget-js/b03.js') }}?v={{ APP_COMMIT }}"></script>
 
 <!-- ═══ ACTUALS ════════════════════════════════════════════════════════════ -->
-{# Ported from FPBudgetSync project_detail.html — the matching workspace
+{# TODO (ACTUALS_HANDOFF Phase 3 follow-up): LEGACY. The Actuals workspace
+   at /projects/<pid>/actuals (templates/actuals.html + static/actuals-js)
+   replaced this hidden pane on 2026-11-01. Delete this whole #tab-actuals
+   block, its CSS, and the b04.js drag/drop + recent-targets code
+   (static/budget-js/b04.js ~3260-3790) once the new screen has been used
+   for a release. Until then it stays reachable only via ?tab=actuals.
+
+   Ported from FPBudgetSync project_detail.html — the matching workspace
    formerly hosted on the standalone Actualizer site. Slice 1 (this
    commit): structure + click-to-code + Sync button. Slice 2 adds
    drag-drop and modals. #}
