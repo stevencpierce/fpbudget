@@ -31652,7 +31652,24 @@ def docs_inbox_page(pid):
     (User 2026-07.)"""
     project = ProjectSheet.query.get_or_404(pid)
     _require_project_role(pid, 'viewer')
-    return render_template("docs_inbox.html", project=project)
+    # The grouped type picker (Evidence / Paperwork / Commitment) comes from
+    # the ONE class rule, actuals.doc_class — no hand copy in the template.
+    from actuals import doc_class as _dc
+    _type_labels = [
+        ('receipt', 'Receipt'), ('invoice', 'Invoice'), ('payroll', 'Payroll package'),
+        ('timecard', 'Timecard'), ('tax_form', 'Tax form (W-9, W-8)'),
+        ('contract', 'Contract / deal memo'), ('insurance', 'Insurance / COI'),
+        ('release', 'Release'), ('employee_vendor_doc', 'ID / onboarding'), ('legal', 'Legal'),
+        ('estimate', 'Estimate / quote'), ('purchase_order', 'Purchase order'), ('misc', 'Misc'),
+    ]
+    type_groups = {
+        'evidence':   {"label": "Evidence",   "blurb": "Backs a charge. Creates a ledger row.", "types": []},
+        'paperwork':  {"label": "Paperwork",  "blurb": "Lives with the payee. No ledger row.", "types": []},
+        'commitment': {"label": "Commitment", "blurb": "Not spend. Attaches to a PO.", "types": []},
+    }
+    for key, label in _type_labels:
+        type_groups[_dc(key)]["types"].append({"key": key, "label": label})
+    return render_template("docs_inbox.html", project=project, type_groups=type_groups)
 
 
 @app.route("/upload", methods=["GET"])
