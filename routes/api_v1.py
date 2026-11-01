@@ -158,7 +158,46 @@ def api_me():
 @app.route("/api/v1/projects/<int:pid>/docs/upload", methods=["POST"])
 @api_auth_required
 def api_docs_upload(pid):
+    """multipart: file, and optionally payee_id (DOCUMENTS_HANDOFF Phase 2) —
+    the person or vendor the document belongs to, from GET /api/v1/payees.
+    Writes owner_payee_id (+ the alias crew_member_id) and runs the
+    paperwork rules (W-9 date, per-payee duplicate, Crew Database copy)."""
     return docs_upload_post(pid)
+
+
+@app.route("/api/v1/payees", methods=["GET"])
+@api_auth_required
+def api_payees():
+    """The payee roster for the app's Payee picker: id, name, kind (person /
+    loan_out / vendor). Active payees only, sorted by name. ?q= narrows by
+    name (case-insensitive substring); ?project_id= puts that project's
+    people first (on_project=true). Read-only; any authenticated app user
+    may list it (the same roster every doc picker on the website shows)."""
+    from app import _project_crew_pickers
+    from models import CrewMember
+    q = (request.args.get("q") or "").strip().lower()
+    pid = request.args.get("project_id", type=int)
+    on_project = set()
+    if pid:
+        try:
+            _all, _proj = _project_crew_pickers(pid)
+            on_project = {c.id for c in _proj}
+        except Exception:
+            on_project = set()
+    rows = (CrewMember.query.filter(CrewMember.active.isnot(False))
+            .order_by(CrewMember.name).all())
+    out = []
+    for c in rows:
+        if q and q not in (c.name or "").lower():
+            continue
+        out.append({
+            "id": c.id,
+            "name": c.name,
+            "kind": (getattr(c, "kind", None) or ("vendor" if c.is_vendor else "person")),
+            "on_project": c.id in on_project,
+        })
+    out.sort(key=lambda r: (not r["on_project"], (r["name"] or "").lower()))
+    return jsonify({"payees": out})
 
 
 @app.route("/api/v1/docs/<int:uid>/status", methods=["GET"])

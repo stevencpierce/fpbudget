@@ -1265,6 +1265,27 @@ def _crew_db_root():
             else f"{_DBX_OPS_ROOT}/{_CREW_DB_FOLDER}")
 
 
+def _crew_folder_for(cm, doc=None, year=None):
+    """<OPS>/Crew Database/<Person>/<Year>[/<Project>] for a payee — the
+    folder a payee's paperwork lives in. `year` comes from the document
+    (doc_date, else upload day) or is passed explicitly; a `{year}`
+    placeholder is returned when neither is known so the analyzer can
+    fill it from the OCR date (DOCUMENTS_HANDOFF Phase 2)."""
+    _safe = lambda s: re.sub(r'[\\/:*?"<>|]+', '-', (s or '').strip())[:80] or 'Unknown'
+    person = _safe(getattr(cm, 'name', None))
+    if year is None and doc is not None:
+        if getattr(doc, 'doc_date', None):
+            year = str(doc.doc_date.year)
+        elif getattr(doc, 'uploaded_at', None):
+            year = str(doc.uploaded_at.year)
+    parts = [_crew_db_root(), person, str(year) if year else '{year}']
+    if doc is not None and (doc.category or '') in _CREW_DOC_PROJECT_CATS and doc.project_id:
+        proj = ProjectSheet.query.get(doc.project_id)
+        if proj and proj.name:
+            parts.append(_safe(proj.name))
+    return "/".join(parts)
+
+
 def _copy_doc_to_crew_folder(doc):
     """Duplicate a person-linked document into the master Crew Database
     folder (owner 2026-10-08: "let those documents live with them forever
@@ -1277,21 +1298,33 @@ def _copy_doc_to_crew_folder(doc):
     Server-side files_copy_v2 from the doc's filed Dropbox path — nothing
     is re-uploaded. Fail-open (returns None on any problem); records
     crew_dbx_path on success so the copy happens exactly once. Caller
-    commits."""
+    commits.
+
+    Phase 2 (2026-11-01): reads the owner through doc_owner_id (owner_payee_id,
+    alias crew_member_id), tolerates a document with NO project (Payee-page
+    uploads), and recognises a document the analyzer already filed straight
+    into the Crew Database tree — then the filed copy IS the crew copy and
+    nothing is duplicated."""
     try:
-        if not doc or not doc.crew_member_id or getattr(doc, 'crew_dbx_path', None):
+        from actuals import doc_owner_id as _owner_of
+        owner = _owner_of(doc) if doc else None
+        if not doc or not owner or getattr(doc, 'crew_dbx_path', None):
             return None
         src = doc.filed_dropbox_path or doc.source_archive_path
         if not src:
             return None     # not filed in Dropbox (yet) — retry on next sync
+        root = _crew_db_root().rstrip('/') + '/'
+        if doc.filed_dropbox_path and doc.filed_dropbox_path.lower().startswith(root.lower()) \
+                and '/_SOURCE_ARCHIVE/' not in doc.filed_dropbox_path:
+            doc.crew_dbx_path = doc.filed_dropbox_path[:500]   # already lives there
+            return doc.crew_dbx_path
         has_refresh = os.getenv('DROPBOX_REFRESH_TOKEN') and os.getenv('DROPBOX_APP_KEY')
         if not has_refresh and not os.getenv('DROPBOX_ACCESS_TOKEN'):
             return None
-        cm = CrewMember.query.get(doc.crew_member_id)
+        cm = CrewMember.query.get(owner)
         if not cm or not (cm.name or '').strip():
             return None
         _safe = lambda s: re.sub(r'[\\/:*?"<>|]+', '-', (s or '').strip())[:80] or 'Unknown'
-        person = _safe(cm.name)
         # DocUpload has no created_at (the column is uploaded_at) — the old
         # getattr always missed, so undated docs filed under the CURRENT
         # year. (DOCUMENTS_HANDOFF Phase 0, 2026-10-30.)
@@ -1301,13 +1334,9 @@ def _copy_doc_to_crew_folder(doc):
             year = str(doc.uploaded_at.year)
         else:
             year = str(date.today().year)
-        parts = [_crew_db_root(), person, year]
-        if (doc.category or '') in _CREW_DOC_PROJECT_CATS and doc.project_id:
-            proj = ProjectSheet.query.get(doc.project_id)
-            if proj and proj.name:
-                parts.append(_safe(proj.name))
+        folder = _crew_folder_for(cm, doc, year=year)
         fname = doc.filed_filename or doc.original_filename or f"doc_{doc.id}"
-        dest = "/".join(parts) + "/" + _safe(fname)[:120]
+        dest = folder + "/" + _safe(fname)[:120]
         res = _dbx_client().files_copy_v2(src, dest, autorename=True)
         final = getattr(getattr(res, 'metadata', None), 'path_display', None) or dest
         doc.crew_dbx_path = final[:500]
@@ -2548,7 +2577,7 @@ def admin_docs_source_import(pid):
             except Exception:
                 doc_date = None
             doc_number = (vr.get("invoice_number") or vr.get("purchase_order_number")
-                          or vr.get("tax_id") or vr.get("ein") or None)
+                          or None)   # never a tax id (no TIN in FPBudget)
             if doc_number:
                 doc_number = str(doc_number)[:100]
         status_map = {"filed": "done", "needs_review": "review", "error": "error"}
@@ -2732,7 +2761,7 @@ def _source_drain_worker(flask_app, pid, src_path, user_id, include_amt):
                             doc_date = _dt.strptime(_d[:10], "%Y-%m-%d").date() if _d else None
                         except Exception: doc_date = None
                         doc_number = (vr.get("invoice_number") or vr.get("purchase_order_number")
-                                      or vr.get("tax_id") or vr.get("ein") or None)
+                                      or None)   # never a tax id (no TIN in FPBudget)
                         if doc_number:
                             doc_number = str(doc_number)[:100]
                     _fn = _source_drain_amounts_in_name(nm)
@@ -12382,8 +12411,9 @@ def _ai_extract_travel(upload, force=False):
         if match:
             keep['matched_person'] = match
             _cmid = match.get('crew_member_id')
-            if _cmid and not getattr(upload, 'crew_member_id', None):
-                upload.crew_member_id = _cmid
+            if _cmid and not (getattr(upload, 'owner_payee_id', None)
+                              or getattr(upload, 'crew_member_id', None)):
+                upload.set_owner(_cmid)      # owner + alias (Phase 2)
     except Exception as _tme:
         logging.warning("[travel] traveler→person match failed for #%s: %s", upload.id, _tme)
     upload.travel_json = _j.dumps(keep)
@@ -13092,7 +13122,7 @@ def anomaly_resolve(pid, fid):
                 if tx and tx.doc_upload_id and cid:
                     doc = db.session.get(DocUpload, tx.doc_upload_id)
                     if doc:
-                        doc.crew_member_id = int(cid)
+                        doc.set_owner(int(cid))      # owner + alias (Phase 2)
                 applied = (f'coded to {payload.get("line_label") or "line"}'
                            + (f' + attached {payload.get("crew_name")}' if cid else ''))
         elif action == 'accept_amount' and f.doc_upload_id:
@@ -29630,6 +29660,69 @@ def _web_worker_essential_columns():
                 "INSERT INTO reporting_threshold (tax_year, amount, source) "
                 "  VALUES (2026, 2000.00, 'One Big Beautiful Bill Act; indexed from 2027') "
                 "  ON CONFLICT (tax_year) DO NOTHING",
+                # ── Documents follow the Payee (DOCUMENTS_HANDOFF Phase 2,
+                # 2026-11-01, alembic 0023 — mirrored here per CLAUDE.md).
+                # A document has an owner or a project, usually both; the
+                # sub-type leaves the `vendor` column. Every statement only
+                # touches rows still NULL, so this pass is idempotent and
+                # safe whether or not 0023 ran first.
+                "ALTER TABLE doc_upload ALTER COLUMN project_id DROP NOT NULL",
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS owner_payee_id INTEGER REFERENCES crew_member(id)",
+                "CREATE INDEX IF NOT EXISTS ix_doc_upload_owner_payee_id ON doc_upload (owner_payee_id)",
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS tax_form_kind VARCHAR(12)",
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS doc_subtype VARCHAR(40)",
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS received_on DATE",
+                "ALTER TABLE doc_upload ADD COLUMN IF NOT EXISTS expires_on DATE",
+                # 1. owner from the alias column
+                "UPDATE doc_upload SET owner_payee_id = crew_member_id "
+                " WHERE owner_payee_id IS NULL AND crew_member_id IS NOT NULL",
+                # 2. employee_vendor_doc sub-type out of `vendor`; W-9 / W-8
+                #    ones become tax_form with their kind; W-4 / I-9 keep
+                #    the category and take the kind; vendor is cleared.
+                "UPDATE doc_upload SET doc_subtype = LEFT(TRIM(vendor), 40) "
+                " WHERE category = 'employee_vendor_doc' AND doc_subtype IS NULL "
+                "   AND vendor IS NOT NULL AND TRIM(vendor) <> ''",
+                "UPDATE doc_upload SET tax_form_kind = CASE "
+                "   WHEN doc_subtype ~* 'w-?8\\s*ben-?\\s*e([^a-z]|$)' THEN 'w8bene' "
+                "   WHEN doc_subtype ~* 'w-?8' THEN 'w8ben' "
+                "   WHEN doc_subtype ~* 'w-?9' THEN 'w9' "
+                "   WHEN doc_subtype ~* '\\mw-?4\\M' THEN 'w4' "
+                "   WHEN doc_subtype ~* '\\mi-?9\\M' THEN 'i9' END "
+                " WHERE category = 'employee_vendor_doc' AND tax_form_kind IS NULL "
+                "   AND doc_subtype IS NOT NULL",
+                "UPDATE doc_upload SET category = 'tax_form' "
+                " WHERE category = 'employee_vendor_doc' "
+                "   AND tax_form_kind IN ('w9', 'w8ben', 'w8bene')",
+                "UPDATE doc_upload SET vendor = NULL "
+                " WHERE category IN ('employee_vendor_doc', 'tax_form') "
+                "   AND doc_subtype IS NOT NULL AND vendor IS NOT NULL "
+                "   AND LOWER(TRIM(vendor)) = LOWER(doc_subtype)",
+                # 3. tax_form rows that name a W-9 / W-8: kind + received_on
+                "UPDATE doc_upload SET tax_form_kind = CASE "
+                "   WHEN h ~* 'w-?8\\s*ben-?\\s*e([^a-z]|$)' THEN 'w8bene' "
+                "   WHEN h ~* 'w-?8' THEN 'w8ben' "
+                "   WHEN h ~* 'w-?9' THEN 'w9' END "
+                "  FROM (SELECT id AS hid, COALESCE(doc_subtype,'') || ' ' || COALESCE(vendor,'') "
+                "               || ' ' || COALESCE(filed_filename,'') || ' ' "
+                "               || COALESCE(original_filename,'') AS h "
+                "          FROM doc_upload WHERE category = 'tax_form' AND tax_form_kind IS NULL) sub "
+                " WHERE doc_upload.id = sub.hid AND sub.h ~* 'w-?[89]'",
+                "UPDATE doc_upload SET received_on = COALESCE(doc_date, uploaded_at::date) "
+                " WHERE category = 'tax_form' AND received_on IS NULL "
+                "   AND tax_form_kind IN ('w9', 'w8ben', 'w8bene') "
+                "   AND COALESCE(doc_date, uploaded_at::date) IS NOT NULL",
+                # 4. the Payee's W-9 pointer from the newest owned W-9 / W-8
+                "UPDATE crew_member cm SET w9_received_on = sub.d, w9_doc_upload_id = sub.id "
+                "  FROM (SELECT DISTINCT ON (owner_payee_id) owner_payee_id, id, "
+                "               COALESCE(received_on, doc_date, uploaded_at::date) AS d "
+                "          FROM doc_upload "
+                "         WHERE owner_payee_id IS NOT NULL AND category = 'tax_form' "
+                "           AND tax_form_kind IN ('w9', 'w8ben', 'w8bene') "
+                "           AND (status IS NULL OR status NOT IN ('deleted', 'duplicate')) "
+                "         ORDER BY owner_payee_id, COALESCE(received_on, doc_date, uploaded_at::date) "
+                "                  DESC NULLS LAST, id DESC) sub "
+                " WHERE sub.owner_payee_id = cm.id AND cm.w9_received_on IS NULL "
+                "   AND sub.d IS NOT NULL",
                 # 2026-05-01 Veryfi expense category (free-text, e.g.
                 # "Meals & Entertainment", "Office Supplies & Software").
                 # Denormalized off veryfi_data so the Docs tab can render
@@ -31081,12 +31174,46 @@ def docs_inbox_json(pid):
             txns_by_doc.setdefault(t.doc_upload_id, []).append(t)
             all_txns.append(t)
 
-    # ── Bulk map: crew_member_id → name ─────────────────────────────────
-    crew_ids = {d.crew_member_id for d in docs if d.crew_member_id}
+    # ── Bulk map: owner (owner_payee_id, alias crew_member_id) → name ──
+    from actuals import (doc_owner_id as _owner_of, doc_review_reason as _why,
+                         REVIEW_REASON_LABELS as _why_labels, doc_class as _doc_class_of,
+                         DOC_CLASS_PAPERWORK as _PAPERWORK)
+    crew_ids = {_owner_of(d) for d in docs if _owner_of(d)}
     crew_names = {}
     if crew_ids:
         for cm in CrewMember.query.filter(CrewMember.id.in_(crew_ids)).all():
             crew_names[cm.id] = cm.name
+
+    # ── Payee suggestion (the ghost chip, Phase 2) ─────────────────────
+    # For every doc that needs an owner and has none — paperwork, and the
+    # evidence types that name a person (invoice / payroll / timecard) —
+    # run the same scoring crew-suggest uses, in ONE pass over the loaded
+    # payee roster, with the OCR text fetched for just those rows (the
+    # veryfi_data blob is deferred for everything else). Newest 300.
+    _sugg_by_doc = {}
+    try:
+        def _needs_owner(cat):
+            c = (cat or '').lower()
+            return (_doc_class_of(c) == _PAPERWORK and c != 'misc') \
+                or c in ('invoice', 'payroll', 'timecard')
+        _cands = [d for d in docs if not _owner_of(d) and _needs_owner(d.category)
+                  and d.status != 'duplicate'][:300]
+        if _cands:
+            _all_cm, _proj_cm = _project_crew_pickers(pid)
+            _proj_ids = {c.id for c in _proj_cm}
+            _ocr_by_id = {}
+            for _did, _vd in (db.session.query(DocUpload.id, DocUpload.veryfi_data)
+                              .filter(DocUpload.id.in_([d.id for d in _cands])).all()):
+                try:
+                    _ocr_by_id[_did] = ((json.loads(_vd) or {}).get('ocr_text') or '') if _vd else ''
+                except Exception:
+                    _ocr_by_id[_did] = ''
+            for d in _cands:
+                _sg = _crew_suggest_for(d, _all_cm, _proj_ids, ocr_text=_ocr_by_id.get(d.id, ''))
+                if _sg:
+                    _sugg_by_doc[d.id] = _sg
+    except Exception as _se:
+        logging.warning(f"[docs/inbox] payee suggestions skipped: {_se}")
 
     # ── Split-parent ids (itemized containers coded via children) ───────
     split_parent_ids = _split_parent_id_set(pid)
@@ -31247,9 +31374,23 @@ def docs_inbox_json(pid):
         cat = d.category or None
         if cat:
             cat_counts[cat] = cat_counts.get(cat, 0) + 1
-        pname = crew_names.get(d.crew_member_id) if d.crew_member_id else None
+        _owner_id = _owner_of(d)
+        pname = crew_names.get(_owner_id) if _owner_id else None
         if pname:
             person_counts[pname] = person_counts.get(pname, 0) + 1
+        # ── Why here (server-side review reason, Phase 2) ───────────────
+        _sugg = _sugg_by_doc.get(d.id)
+        why = None
+        if state == 'needs_review':
+            why = _why(d, txn=txn, suggestion=_sugg) or 'type_unclear'
+        elif state == 'needs_coding':
+            why = 'no_line'
+        elif state == 'needs_match' and _sugg and not _owner_id:
+            why = 'confirm_payee'
+        if why is None and _sugg and not _owner_id and state not in ('duplicate', 'excluded'):
+            why = 'confirm_payee'
+        if why is None and (cat or '') == 'insurance' and not d.expires_on and state != 'duplicate':
+            why = 'expiry_missing'
         if d.doc_date:
             iso = d.doc_date.isoformat()
             if date_min is None or iso < date_min:
@@ -31267,10 +31408,23 @@ def docs_inbox_json(pid):
             "amount":         float(d.amount) if d.amount is not None else None,
             "doc_date":       d.doc_date.isoformat() if d.doc_date else None,
             "uploaded_at":    d.uploaded_at.isoformat() if d.uploaded_at else None,
-            "crew_member_id": d.crew_member_id,
+            "crew_member_id": _owner_id,
+            "owner_payee_id": _owner_id,
             "person_name":    pname,
+            "payee_name":     pname,
+            "payee_suggestion": _sugg,
+            "doc_class":      _doc_class_of(cat),
+            "tax_form_kind":  d.tax_form_kind,
+            "doc_subtype":    d.doc_subtype,
+            "received_on":    d.received_on.isoformat() if d.received_on else None,
+            "expires_on":     d.expires_on.isoformat() if d.expires_on else None,
+            "confidence":     float(d.confidence) if d.confidence is not None else None,
+            "status":         d.status,
+            "duplicate_of_id": d.duplicate_of_id,
             "filed":          filed,
             "dup_pending":    dup_pending,
+            "why_here":       why,
+            "why_label":      _why_labels.get(why) if why else None,
             "thumb_url":      f"/docs/upload/{d.id}/thumb",
             "is_pdf":         _ext == '.pdf',
             "txn":            txn_obj,
@@ -31285,11 +31439,28 @@ def docs_inbox_json(pid):
         "doc_date_min": date_min,
         "doc_date_max": date_max,
     }
+    try:
+        counts['trash'] = (db.session.query(func.count(DocUpload.id))
+                           .filter(DocUpload.project_id == pid,
+                                   DocUpload.status == 'deleted').scalar() or 0)
+    except Exception:
+        counts['trash'] = 0
+    # The payee roster for the Assign-payee picker and the ghost chip's
+    # confirm: id, name, kind — active payees, project people first.
+    try:
+        _all_cm, _proj_cm = _project_crew_pickers(pid)
+        _proj_set = {c.id for c in _proj_cm}
+        payees = [{"id": c.id, "name": c.name,
+                   "kind": (getattr(c, 'kind', None) or ('vendor' if c.is_vendor else 'person')),
+                   "on_project": c.id in _proj_set} for c in _all_cm]
+    except Exception:
+        payees = []
     return jsonify({
         "ok":           True,
         "docs":         rows,
         "counts":       counts,
         "facets":       facets,
+        "payees":       payees,
         "generated_at": datetime.utcnow().isoformat(),
     })
 
@@ -31307,6 +31478,11 @@ def docs_inbox_batch(pid):
         vocabulary; set DocUpload.category.
       • 'not_project' — mark each doc's representative txn not_project_expense
         via the SAME write path as /mark-not-project.
+      • 'assign_payee' + {payee_id} (DOCUMENTS_HANDOFF Phase 2) — set the
+        owner (owner_payee_id + alias crew_member_id) on each doc through
+        the same rules a single save runs: the W-9 date rule, the global
+        per-payee duplicate guard, the Crew Database copy. payee_id null
+        clears the owner.
 
     Per-item try/except: one failure never aborts the batch.
     Returns {ok, done, skipped:[{id, reason}]}. (User 2026-07.)
@@ -31324,8 +31500,19 @@ def docs_inbox_batch(pid):
     except (TypeError, ValueError):
         return jsonify({"error": "ids must be integers"}), 400
 
-    if action not in ('confirm_match', 'set_category', 'not_project'):
+    if action not in ('confirm_match', 'set_category', 'not_project', 'assign_payee'):
         return jsonify({"error": f"unknown action '{action}'"}), 400
+
+    payee = None
+    if action == 'assign_payee':
+        _pid_raw = body.get('payee_id')
+        if _pid_raw not in (None, '', 'null', 0, '0'):
+            try:
+                payee = CrewMember.query.get(int(_pid_raw))
+            except (TypeError, ValueError):
+                return jsonify({"error": "payee_id must be an integer"}), 400
+            if payee is None:
+                return jsonify({"error": "That payee does not exist."}), 400
 
     # Validate set_category up front — a bad category is a whole-request error,
     # not a per-item skip.
@@ -31395,6 +31582,33 @@ def docs_inbox_batch(pid):
                     pass
                 done += 1
 
+            elif action == 'assign_payee':
+                from actuals import doc_owner_id as _owner_of_b
+                _before_owner = _owner_of_b(d)
+                d.set_owner(payee.id if payee else None)
+                if payee:
+                    _flag_person_doc_duplicate(d)
+                    _apply_w9_date_rule(d)
+                db.session.commit()
+                if payee:
+                    try:
+                        if _copy_doc_to_crew_folder(d):
+                            db.session.commit()
+                    except Exception:
+                        db.session.rollback()
+                try:
+                    _log_activity(
+                        action='update', entity_type='doc_upload',
+                        entity_id=d.id,
+                        entity_label=(d.filed_filename or d.original_filename or f'Doc #{d.id}')[:80],
+                        project_id=pid, before={'owner_payee_id': _before_owner},
+                        after={'owner_payee_id': (payee.id if payee else None)},
+                        note=(f'Inbox assigned payee → {payee.name}' if payee
+                              else 'Inbox cleared payee'))
+                except Exception:
+                    pass
+                done += 1
+
             elif action == 'not_project':
                 txn = _doc_txn_for(did)
                 if txn is None:
@@ -31448,16 +31662,32 @@ def mobile_upload():
     return render_template("mobile_upload.html", projects=projects)
 
 
-def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=None):
+def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=None,
+                           owner_payee=None):
     """Full document-ingest pipeline for RAW BYTES — extracted verbatim from
     docs_upload_post (2026-09-01) so the Dropbox drop-folder sweep can push
     files through the IDENTICAL path as a web upload: Veryfi OCR -> type
     detection -> auto-file -> DocUpload row -> AI cleanup -> travel extract ->
     auto-Transaction -> claim sync. Returns (payload_dict, http_status);
     callers jsonify. uploader is REQUIRED in practice (DocUpload.uploader_id
-    is NOT NULL) — the drop-folder sweep passes the sweeping user."""
+    is NOT NULL) — the drop-folder sweep passes the sweeping user.
+
+    owner_payee (DOCUMENTS_HANDOFF Phase 2, 2026-11-01): a CrewMember when
+    the upload comes from the Payee page. With pid/project None the
+    document is PAPERWORK owned by that payee and no project: it files
+    straight into <OPS>/Crew Database/<Payee>/<Year>/ (the analyzer's
+    dest_folder), its source archive lives under Crew Database/_SOURCE_ARCHIVE,
+    its category defaults to tax_form (+ tax_form_kind, received_on) when the
+    OCR / filename names a W-9 / W-8 and employee_vendor_doc otherwise, no
+    Transaction is created, and the byte-hash duplicate check runs per
+    payee instead of per project. With a project AND an owner (mobile
+    upload with payee_id) the normal project pipeline runs and the owner
+    is simply recorded."""
     import hashlib, uuid as _uuid
     file_hash = hashlib.sha256(data).hexdigest()
+    payee_mode = (project is None and owner_payee is not None)
+    if project is None and owner_payee is None:
+        return {"error": "A document needs a project or a payee to belong to."}, 400
 
     # Duplicate detection: hash match against an existing row in this
     # project that actually has a file in Dropbox. The strict rule —
@@ -31470,30 +31700,37 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
     #      gets flagged Duplicate against a phantom row.
     # `is_duplicate_of` carries the original upload id so the UI can
     # link back to the master copy.
-    duplicate_of = (
-        DocUpload.query
-        .filter_by(project_id=pid, file_hash=file_hash)
-        .filter(DocUpload.filed_dropbox_path.isnot(None))
-        # Exclude review rows: they point at _UPLOADS_PENDING/, not a
-        # real processed location. We don't want a not-yet-confirmed
-        # upload to ghost-flag a fresh retry as a duplicate.
-        .filter(DocUpload.status != 'review')
-               .filter(DocUpload.status != 'deleted')
-        .first()
-    )
+    def _hash_dup_query():
+        """Byte-hash duplicate scope: this project, or (Payee-page upload)
+        this payee's own documents across every project."""
+        q = DocUpload.query.filter(DocUpload.file_hash == file_hash)
+        if payee_mode:
+            q = q.filter(db.or_(DocUpload.owner_payee_id == owner_payee.id,
+                                DocUpload.crew_member_id == owner_payee.id))
+        else:
+            q = q.filter(DocUpload.project_id == pid)
+        return (q.filter(DocUpload.filed_dropbox_path.isnot(None))
+                 # Exclude review rows: they point at _UPLOADS_PENDING/, not a
+                 # real processed location. We don't want a not-yet-confirmed
+                 # upload to ghost-flag a fresh retry as a duplicate.
+                 .filter(DocUpload.status != 'review')
+                 .filter(DocUpload.status != 'deleted'))
+
+    duplicate_of = _hash_dup_query().first()
 
     content_type = content_type or "application/octet-stream"
     ext = os.path.splitext(filename)[1].lower() if filename else ""
     # r2_key kept as a unique filing id (for DocUpload.r2_key column).
     # The actual R2 upload was removed — source of truth is Dropbox.
-    r2_key = f"docs/{pid}/{_uuid.uuid4().hex}{ext}"
+    r2_key = (f"docs/payee-{owner_payee.id}/{_uuid.uuid4().hex}{ext}" if payee_mode
+              else f"docs/{pid}/{_uuid.uuid4().hex}{ext}")
 
     # Project must have a Dropbox folder set up for the Analyzer to file
     # to. If it doesn't, bail early so we don't save a ghost upload row.
-    if not project.dropbox_folder:
-        return jsonify({
+    if not payee_mode and not project.dropbox_folder:
+        return {
             "error": "Project has no Dropbox folder configured — cannot file."
-        }), 500
+        }, 500
 
     # ── FP Document Analyzer integration (2026-04-20) ────────────────────
     # Route every upload through the embedded fp_analyzer: Veryfi OCR →
@@ -31517,12 +31754,24 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
     _data_size = len(data)
 
     try:
-        result = analyze_and_file_single(
-            file_bytes=data,
-            filename=filename,
-            project_name=project.dropbox_folder,   # Analyzer files under /{ops_root}/{project_name}/...
-            user_name=_safe_user,
-        )
+        if payee_mode:
+            # No project: file into the payee's Crew Database folder and
+            # archive the source under Crew Database/_SOURCE_ARCHIVE.
+            result = analyze_and_file_single(
+                file_bytes=data,
+                filename=filename,
+                project_name=_CREW_DB_FOLDER,
+                user_name=_safe_user,
+                dest_folder=_crew_folder_for(owner_payee),       # …/<Payee>/{year}
+                archive_base=f"{_crew_db_root()}/_SOURCE_ARCHIVE",
+            )
+        else:
+            result = analyze_and_file_single(
+                file_bytes=data,
+                filename=filename,
+                project_name=project.dropbox_folder,   # Analyzer files under /{ops_root}/{project_name}/...
+                user_name=_safe_user,
+            )
     except Exception as _ae:
         logging.exception("Analyzer pipeline crashed")
         return {"error": f"Analyzer failed: {_ae}"}, 500
@@ -31574,11 +31823,11 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
         # Pull whichever doc-number-style field Veryfi extracted. We
         # don't yet know the user-confirmed type at this point so we
         # take the first available one — the modal will show it under
-        # the right label depending on the doc type.
+        # the right label depending on the doc type. NEVER a tax id /
+        # EIN: no TIN is stored anywhere in FPBudget (DOCUMENTS_HANDOFF
+        # Phase 2; QuickBooks holds it).
         doc_number = (vr.get("invoice_number")
                       or vr.get("purchase_order_number")
-                      or vr.get("tax_id")
-                      or vr.get("ein")
                       or None)
         if doc_number:
             doc_number = str(doc_number)[:100]
@@ -31630,14 +31879,7 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
     # filed file then gets routed to /_DUPLICATES/ below, instead of
     # silently producing two clean copies.
     if not duplicate_of:
-        duplicate_of = (
-            DocUpload.query
-            .filter_by(project_id=pid, file_hash=file_hash)
-            .filter(DocUpload.filed_dropbox_path.isnot(None))
-            .filter(DocUpload.status != 'review')
-               .filter(DocUpload.status != 'deleted')
-            .first()
-        )
+        duplicate_of = _hash_dup_query().first()
 
     # NEAR-duplicate check (owner 2026-10-30: "our duplicate finding is
     # terrible"). The byte-hash only catches the identical file — the same
@@ -31647,7 +31889,7 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
     # document date + similar vendor on a spend doc = flag for the
     # existing duplicate-review flow (is_duplicate pending; the user
     # decides Keep both vs It's a duplicate — nothing is auto-buried).
-    if (not duplicate_of and amount is not None
+    if (not payee_mode and not duplicate_of and amount is not None
             and (result.get("doc_type") or '') in ('receipt', 'invoice')):
         try:
             from actuals import _vendor_similarity as _nd_sim
@@ -31676,6 +31918,35 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
                     break
         except Exception as _nde:
             logging.warning(f"[dedupe] near-dup check failed (continuing): {_nde}")
+
+    # Payee-page upload: the document is paperwork owned by the payee. A
+    # W-9 / W-8 (analyzer type tax_form, or the OCR text / filename names
+    # one) is a tax_form with its kind and received date; a type the
+    # analyzer is sure is other paperwork (COI, contract, release, legal)
+    # keeps that type; everything else is an employee/vendor document.
+    _doc_category = result.get("doc_type")
+    _tax_kind = None
+    _received_on = None
+    if payee_mode:
+        from actuals import tax_form_kind_from_text as _kind_of, W9_KINDS as _W9K
+        _ocr_hay = " ".join(str(x or '') for x in (
+            filename, result.get("new_filename"),
+            (vr.get("vendor") or {}).get("name") if vr else '',
+            (vr.get("ocr_text") or '')[:4000] if vr else '',
+            (vr.get("document_type") or '') if vr else ''))
+        _k = _kind_of(_ocr_hay)
+        if _doc_category == 'tax_form' and _k is None:
+            _k = 'other'
+        if _k in _W9K or _doc_category == 'tax_form':
+            _doc_category = 'tax_form'
+            _tax_kind = _k or 'other'
+            _received_on = doc_date or date.today()
+        elif _doc_category in ('insurance', 'contract', 'release', 'legal'):
+            pass
+        else:
+            _doc_category = 'employee_vendor_doc'
+            if _k in ('w4', 'i9'):
+                _tax_kind = _k
 
     # Persist the upload row with whatever we got back from the Analyzer.
     upload = DocUpload(
@@ -31707,7 +31978,9 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
         merchant_address=r_maddr, merchant_phone=r_mphone,
         # confidence column is 0-100; Analyzer returns 0-1
         confidence=round(float(result.get("confidence") or 0) * 100, 2),
-        category=result.get("doc_type"),
+        category=_doc_category,
+        tax_form_kind=_tax_kind,
+        received_on=_received_on,
         veryfi_category=(vr.get("category") if vr else None),
         filed_filename=result.get("new_filename") or None,
         # For status='done': filed_path is the final processed location.
@@ -31734,15 +32007,32 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
         # collision signal (result['duplicate']) has no specific peer.
         duplicate_of_id=duplicate_of.id if duplicate_of else None,
     )
+    if owner_payee is not None:
+        upload.set_owner(owner_payee.id)      # owner_payee_id + alias crew_member_id
     db.session.add(upload)
     db.session.commit()
+
+    if owner_payee is not None:
+        # An owned document (Payee-page upload, or a mobile upload tagged
+        # with a payee): the Crew Database copy, the W-9 date rule and the
+        # global per-payee duplicate rule run exactly as they do on a save
+        # from the editor. In payee mode the filed copy IS the crew copy.
+        try:
+            _copy_doc_to_crew_folder(upload)
+            _flag_person_doc_duplicate(upload)     # a pending duplicate is not "on file"
+            _apply_w9_date_rule(upload)            # …so the W-9 pointer waits for Replace / Keep both
+            db.session.commit()
+        except Exception as _pe:
+            logging.warning(f"[docs/upload] payee post-steps failed for upload #{upload.id}: {_pe}")
+            db.session.rollback()
 
     # AI data cleanup (vendor normalization + extraction sanity). Advisory and
     # fail-open; runs BEFORE the auto-Transaction so the charge inherits the
     # clean vendor name. Auto-applies ≥0.70, else queues a review flag. (2026-06-18.)
     try:
-        _ai_clean_document(upload)
-        db.session.commit()
+        if not payee_mode:
+            _ai_clean_document(upload)
+            db.session.commit()
     except Exception as _cle:
         logging.warning(f"[docs/upload] ai cleanup failed for upload #{upload.id}: {_cle}")
         db.session.rollback()
@@ -31752,7 +32042,7 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
     # applies it to a person + travel day in the doc-detail Travel panel). Advisory
     # and fail-open. (User 2026-06-22.)
     try:
-        if _looks_like_travel(upload):
+        if not payee_mode and _looks_like_travel(upload):
             _ai_extract_travel(upload)
             db.session.commit()
     except Exception as _tle:
@@ -31784,7 +32074,8 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
     # evidence creates a row; paperwork and commitments never do.
     from actuals import is_ledger_category as _is_ledger_upload
     auto_txn = None
-    if (upload.status in ('done', 'review')
+    if (pid is not None
+            and upload.status in ('done', 'review')
             and not upload.is_duplicate
             and _is_ledger_upload(upload.category)):
         try:
@@ -31893,6 +32184,12 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
         "amount":     float(upload.amount) if upload.amount is not None else None,
         "doc_date":   upload.doc_date.isoformat() if upload.doc_date else None,
         "doc_number": upload.doc_number,
+        "category":   upload.category,
+        "owner_payee_id": upload.owner_payee_id,
+        "tax_form_kind":  upload.tax_form_kind,
+        "received_on":    upload.received_on.isoformat() if upload.received_on else None,
+        "is_duplicate":   bool(upload.is_duplicate),
+        "duplicate_of_id": upload.duplicate_of_id,
     }
     if result.get("status") == "filed":
         _is_dup = bool(duplicate_of)
@@ -31951,11 +32248,24 @@ def docs_upload_post(pid):
     _upl_err = _validate_upload_file(f, 'document') if f else None
     if _upl_err:
         return jsonify({"error": _upl_err}), 400
+    # Optional owner (Phase 2 — the mobile app's Payee picker, or any client
+    # that knows whose document this is): recorded as owner_payee_id (+ the
+    # alias crew_member_id) and the paperwork rules run at upload time.
+    owner = None
+    _pid_raw = (request.form.get("payee_id") or "").strip()
+    if _pid_raw:
+        try:
+            owner = CrewMember.query.get(int(_pid_raw))
+        except (TypeError, ValueError):
+            return jsonify({"error": "payee_id must be an integer"}), 400
+        if owner is None:
+            return jsonify({"error": "That payee does not exist."}), 400
 
     data = f.read()
     payload, code = _ingest_document_bytes(pid, project, f.filename,
                                            f.content_type, data,
-                                           uploader=current_user)
+                                           uploader=current_user,
+                                           owner_payee=owner)
     return jsonify(payload), code
 
 
@@ -33043,7 +33353,7 @@ def docs_reset_person_invoices(pid):
                 t.reviewed_at = None
                 t.reviewed_by = None
                 t.updated_at = datetime.utcnow()
-            doc.crew_member_id = None
+            doc.set_owner(None)      # owner + alias (Phase 2)
             db.session.commit()
             reset_ids.append(doc.id)
         except Exception as e:
@@ -33250,14 +33560,30 @@ def docs_split_integrity():
 @login_required
 def docs_upload_status(uid):
     upload = DocUpload.query.get_or_404(uid)
-    if current_user.role not in ('super_admin', 'admin'):
-        access = ProjectAccess.query.filter_by(
-            project_id=upload.project_id, user_id=current_user.id).first()
-        if not access:
-            return jsonify({"error": "Forbidden"}), 403
+    deny = _docs_check_row_access(upload)
+    if deny:
+        return deny
+    from actuals import doc_owner_id as _owner_of, doc_class as _doc_class
+    _owner = _owner_of(upload)
+    _owner_name = None
+    if _owner:
+        _ocm = CrewMember.query.get(_owner)
+        _owner_name = _ocm.name if _ocm else None
     return jsonify({
         "id": upload.id,
+        "project_id": upload.project_id,
         "status": upload.status,
+        "doc_class": _doc_class(upload.category),
+        "owner_payee_id": _owner,
+        "owner_name": _owner_name,
+        "tax_form_kind": upload.tax_form_kind,
+        "doc_subtype": upload.doc_subtype,
+        "received_on": upload.received_on.isoformat() if upload.received_on else None,
+        "expires_on": upload.expires_on.isoformat() if upload.expires_on else None,
+        "original_amount": float(upload.original_amount) if upload.original_amount is not None else None,
+        "original_currency": upload.original_currency,
+        "duplicate_of_id": upload.duplicate_of_id,
+        "dup_pending": bool(upload.is_duplicate) and upload.status != 'duplicate',
         "original_filename": upload.original_filename,
         "filed_filename":    upload.filed_filename,
         "vendor": upload.vendor,
@@ -33280,9 +33606,13 @@ def docs_upload_status(uid):
 def _project_crew_pickers(pid):
     """(all_crew_members, project_crew_members) for the Person/Vendor
     pickers — same scoping as budget_view's (assignments on this project's
-    budget lines + people already on its docs, loan-out groups intact)."""
+    budget lines + people already on its docs, loan-out groups intact).
+    pid None (a project-less document, Phase 2) → every active payee, no
+    project group."""
     all_cm = (CrewMember.query.filter(CrewMember.active.isnot(False))
               .order_by(CrewMember.name).all())
+    if pid is None:
+        return all_cm, []
     _pb_ids = [b.id for b in Budget.query.filter_by(project_id=pid).all()]
     _cm_ids = set()
     if _pb_ids:
@@ -33294,9 +33624,11 @@ def _project_crew_pickers(pid):
                                     CrewAssignment.crew_member_id.isnot(None)).distinct()):
                 if cmid:
                     _cm_ids.add(cmid)
-    for (cmid,) in (db.session.query(DocUpload.crew_member_id)
+    for (cmid,) in (db.session.query(func.coalesce(DocUpload.owner_payee_id,
+                                                   DocUpload.crew_member_id))
                     .filter(DocUpload.project_id == pid,
-                            DocUpload.crew_member_id.isnot(None)).distinct()):
+                            db.or_(DocUpload.owner_payee_id.isnot(None),
+                                   DocUpload.crew_member_id.isnot(None))).distinct()):
         if cmid:
             _cm_ids.add(cmid)
     if _cm_ids:
@@ -33307,6 +33639,55 @@ def _project_crew_pickers(pid):
             if getattr(c, 'loan_out_vendor_id', None) in _cm_ids:
                 _cm_ids.add(c.id)
     return all_cm, [c for c in all_cm if c.id in _cm_ids]
+
+
+def _crew_suggest_for(upload, all_cm, proj_ids, ocr_text=None):
+    """Score every payee against a document's OCR vendor + full text and
+    return the best {crew_member_id, name, is_vendor, on_project,
+    confidence, matched_on} at >= 0.80, else None. Pure scoring over
+    already-loaded rows so the Docs Inbox can run it for a whole page in
+    one pass (DOCUMENTS_HANDOFF Phase 2 — the Payee column's ghost chip).
+    `ocr_text` is the OCR text when the caller already has it; None means
+    read it from the row's veryfi_data."""
+    from actuals import _vendor_similarity
+    vendor = (upload.vendor or '').strip()
+    ocr = ocr_text
+    if ocr is None:
+        ocr = ''
+        try:
+            if upload.veryfi_data:
+                ocr = (json.loads(upload.veryfi_data) or {}).get('ocr_text') or ''
+        except Exception:
+            ocr = ''
+    ocr_l = ' ' + re.sub(r'\s+', ' ', (ocr or '').lower()[:20000]) + ' '
+    best, best_score, best_src = None, 0.0, None
+    for cm in all_cm:
+        nm = (cm.name or '').strip()
+        if len(nm) < 5 or ' ' not in nm:
+            continue          # single-word names false-positive too easily
+        score, src = 0.0, None
+        if vendor:
+            s_ = _vendor_similarity(vendor, nm)
+            if s_ > score:
+                score, src = s_, 'vendor'
+        nml = nm.lower()
+        parts = nml.split()
+        if nml in ocr_l:
+            if 0.95 > score:
+                score, src = 0.95, 'document text'
+        elif len(parts) == 2 and f"{parts[1]}, {parts[0]}" in ocr_l:
+            if 0.93 > score:  # "Allerdyce, James" form
+                score, src = 0.93, 'document text'
+        if cm.id in proj_ids:
+            score = min(1.0, score + 0.05)
+        if score > best_score:
+            best, best_score, best_src = cm, score, src
+    if best is None or best_score < 0.80:
+        return None
+    return {"crew_member_id": best.id, "name": best.name,
+            "is_vendor": bool(getattr(best, 'is_vendor', False)),
+            "on_project": best.id in proj_ids,
+            "confidence": round(best_score, 3), "matched_on": best_src}
 
 
 @app.route("/docs/upload/<int:uid>/crew-suggest")
@@ -33323,48 +33704,12 @@ def docs_upload_crew_suggest(uid):
     deny = _docs_check_row_access(upload)
     if deny:
         return deny
-    if upload.crew_member_id:
-        return jsonify({"suggestion": None, "already_linked": upload.crew_member_id})
-    from actuals import _vendor_similarity
-    vendor = (upload.vendor or '').strip()
-    ocr = ''
-    try:
-        if upload.veryfi_data:
-            ocr = (json.loads(upload.veryfi_data) or {}).get('ocr_text') or ''
-    except Exception:
-        ocr = ''
-    ocr_l = ' ' + re.sub(r'\s+', ' ', ocr.lower()[:20000]) + ' '
+    from actuals import doc_owner_id as _owner_of
+    if _owner_of(upload):
+        return jsonify({"suggestion": None, "already_linked": _owner_of(upload)})
     all_cm, proj_cm = _project_crew_pickers(upload.project_id)
     proj_ids = {c.id for c in proj_cm}
-    best, best_score, best_src = None, 0.0, None
-    for cm in all_cm:
-        nm = (cm.name or '').strip()
-        if len(nm) < 5 or ' ' not in nm:
-            continue          # single-word names false-positive too easily
-        score, src = 0.0, None
-        if vendor:
-            s = _vendor_similarity(vendor, nm)
-            if s > score:
-                score, src = s, 'vendor'
-        nml = nm.lower()
-        parts = nml.split()
-        if nml in ocr_l:
-            if 0.95 > score:
-                score, src = 0.95, 'document text'
-        elif len(parts) == 2 and f"{parts[1]}, {parts[0]}" in ocr_l:
-            if 0.93 > score:  # "Allerdyce, James" form
-                score, src = 0.93, 'document text'
-        if cm.id in proj_ids:
-            score = min(1.0, score + 0.05)
-        if score > best_score:
-            best, best_score, best_src = cm, score, src
-    if best is None or best_score < 0.80:
-        return jsonify({"suggestion": None})
-    return jsonify({"suggestion": {
-        "crew_member_id": best.id, "name": best.name,
-        "is_vendor": bool(getattr(best, 'is_vendor', False)),
-        "on_project": best.id in proj_ids,
-        "confidence": round(best_score, 3), "matched_on": best_src}})
+    return jsonify({"suggestion": _crew_suggest_for(upload, all_cm, proj_ids)})
 
 
 @app.route("/projects/<int:pid>/docs/<int:uid>/editor", methods=["GET"])
@@ -33378,6 +33723,10 @@ def doc_editor_page(pid, uid):
     existing doc endpoints (/docs/upload/<uid>/status|raw|update|coding|
     line-items|itemize). We only build the picker-option context here — nothing
     else server-side. (User 2026-07.)
+
+    Since DOCUMENTS_HANDOFF Phase 2 the form itself is ONE include
+    (templates/_doc_editor.html + static/doc-editor.js) shared with the budget
+    page's modal, so nothing depends on which door the person came in through.
     """
     _require_project_role(pid, 'viewer')
     upload = DocUpload.query.get_or_404(uid)
@@ -33388,23 +33737,52 @@ def doc_editor_page(pid, uid):
         # _docs_check_row_access returns a JSON 403 tuple; for a page we abort.
         abort(403)
     project = ProjectSheet.query.get_or_404(pid)
-    # Same section-grouped budget-line options the Actuals picker uses, so the
-    # standalone editor's line/section coding is identical. (User 2026-07.)
-    _pick_budget, pick_groups = _line_picker_groups(pid)
+    return _render_doc_editor(project, upload)
+
+
+@app.route("/docs/<int:uid>/editor", methods=["GET"])
+@login_required
+def doc_editor_page_global(uid):
+    """The same editor for a document with NO project — paperwork uploaded
+    from a Payee page (Phase 2). Admin-only through _docs_check_row_access;
+    Back returns to the owner's Payee page. A project document opened here
+    redirects to its project editor so there is one URL per door."""
+    upload = DocUpload.query.get_or_404(uid)
+    deny = _docs_check_row_access(upload)
+    if deny:
+        abort(403)
+    if upload.project_id:
+        return redirect(url_for('doc_editor_page', pid=upload.project_id, uid=uid))
+    return _render_doc_editor(None, upload)
+
+
+def _render_doc_editor(project, upload):
+    """Render doc_editor.html for a document with or without a project:
+    the budget-line picker groups and the Location picker exist only with
+    a project; the Person/Vendor picker always does."""
+    from actuals import doc_owner_id as _owner_of
+    pick_groups, _ed_locations = [], []
+    if project is not None:
+        # Same section-grouped budget-line options the Actuals picker uses, so
+        # the standalone editor's line/section coding is identical. (User 2026-07.)
+        _pick_budget, pick_groups = _line_picker_groups(project.id)
+        try:
+            _ed_locations = (Location.query.filter_by(project_id=project.id, active=True)
+                             .order_by(Location.name).all())
+        except Exception:
+            pass
     # Person/Vendor + Location pickers — parity with the in-page modal
     # (owner 2026-10-20: "the actuals pop-up and the Docs pop-up are
     # different — they should just be the same").
-    _ed_all_cm, _ed_proj_cm = _project_crew_pickers(pid)
-    _ed_locations = []
-    try:
-        _ed_locations = (Location.query.filter_by(project_id=pid, active=True)
-                         .order_by(Location.name).all())
-    except Exception:
-        pass
+    _ed_all_cm, _ed_proj_cm = _project_crew_pickers(project.id if project else None)
+    owner = None
+    if _owner_of(upload):
+        owner = CrewMember.query.get(_owner_of(upload))
     return render_template(
         "doc_editor.html",
         project=project,
         upload=upload,
+        owner=owner,
         actuals_pick_groups=pick_groups,
         crew_members=_ed_proj_cm,
         all_crew_members=_ed_all_cm,
@@ -33531,34 +33909,63 @@ def _trash_dropbox_paths(paths, moves_out=None):
     return moved
 
 
+def _apply_w9_date_rule(upload):
+    """The ONE W-9 date rule (DOCUMENTS_HANDOFF Phase 2): when a tax_form
+    with tax_form_kind in (w9, w8ben, w8bene) is saved with an owner, the
+    owner's w9_received_on / w9_doc_upload_id move to it if it is newer
+    (actuals.w9_update_for decides). Does not commit. Returns the update
+    dict applied, or None."""
+    from actuals import w9_update_for, doc_owner_id as _owner_of
+    owner = _owner_of(upload)
+    if not owner or (upload.status or '') in ('deleted', 'duplicate') or upload.is_duplicate:
+        return None          # a pending duplicate becomes "on file" only once resolved
+    cm = CrewMember.query.get(owner)
+    if cm is None:
+        return None
+    upd = w9_update_for(cm, upload)
+    if upd:
+        cm.w9_received_on = upd["w9_received_on"]
+        cm.w9_doc_upload_id = upd["w9_doc_upload_id"]
+    return upd
+
+
 def _flag_person_doc_duplicate(upload):
-    """If this employee/vendor person-doc (W-9, ID, driver's license, etc.)
-    duplicates one the SAME person already has of the SAME sub-type, flag the
-    newer copy is_duplicate + duplicate_of_id so it enters the compare/dup
-    review (instead of silently piling up). Sub-type is stored in `vendor`.
-    Returns the original's id if flagged, else None. (User 2026-06-02.)"""
-    if (upload.category or '') != 'employee_vendor_doc':
+    """If this person document (a W-9, an ID, a driver's licence…) repeats
+    one the SAME payee already has of the SAME kind, flag the NEWER copy
+    is_duplicate + duplicate_of_id so it enters the duplicate review
+    (Replace / Keep both) instead of silently piling up.
+
+    GLOBAL per (owner, kind) since DOCUMENTS_HANDOFF Phase 2 — the project
+    is not part of the identity, so a W-9 collected again on another
+    project IS recognised (the Phase 0 finding). The key is
+    actuals.doc_dup_key: a tax form's tax_form_kind, an employee/vendor
+    doc's sub-type. Returns the original's id if flagged, else None."""
+    from actuals import doc_dup_key, pick_dup_pair, doc_owner_id as _owner_of
+    key = doc_dup_key(upload)
+    if key is None:
         return None
-    if not upload.crew_member_id or not (upload.vendor or '').strip():
+    if upload.is_duplicate or upload.status in ('duplicate', 'deleted'):
         return None
-    if upload.is_duplicate or upload.status == 'duplicate':
-        return None
-    sub = upload.vendor.strip().lower()
+    owner = _owner_of(upload)
     peers = (DocUpload.query
-             .filter(DocUpload.project_id == upload.project_id,
-                     DocUpload.crew_member_id == upload.crew_member_id,
-                     DocUpload.category == 'employee_vendor_doc',
+             .filter(db.or_(DocUpload.owner_payee_id == owner,
+                            DocUpload.crew_member_id == owner),
+                     DocUpload.category == upload.category,
                      DocUpload.id != upload.id,
                      DocUpload.is_duplicate == False,           # noqa: E712
-                     DocUpload.status != 'duplicate')
+                     DocUpload.status.notin_(('duplicate', 'deleted')))
              .all())
-    match = next((d for d in peers if (d.vendor or '').strip().lower() == sub), None)
+    match = next((d for d in peers if doc_dup_key(d) == key), None)
     if not match:
         return None
-    # Lower id = the original; flag the newer as the duplicate.
-    orig, dup = (match, upload) if match.id < upload.id else (upload, match)
+    orig, dup = pick_dup_pair(match, upload)
     dup.is_duplicate    = True
     dup.duplicate_of_id = orig.id
+    from actuals import TAX_FORM_KIND_LABELS as _tk_labels
+    _what = (_tk_labels.get(upload.tax_form_kind or '', 'tax form') if upload.category == 'tax_form'
+             else (upload.doc_subtype or 'document'))
+    dup.note = (f"Possible duplicate: this payee already has a {_what} on file "
+                f"(#{orig.id}). Replace it, or keep both.")
     return orig.id
 
 
@@ -33573,18 +33980,33 @@ def docs_scan_person_duplicates(pid):
     ProjectSheet.query.get_or_404(pid)
     body = request.get_json(silent=True) or {}
     apply = (request.args.get('apply') == '1') or bool(body.get('apply'))
+    # The identity is actuals.doc_dup_key — GLOBAL per (owner, kind) since
+    # Phase 2 — applied here to the paperwork on this project PLUS every
+    # other document those same payees own (so a W-9 collected again here
+    # is caught against the one collected on another show).
+    from actuals import doc_dup_key as _dup_key, doc_owner_id as _owner_of_s
     rows = (DocUpload.query
             .filter(DocUpload.project_id == pid,
-                    DocUpload.category == 'employee_vendor_doc',
-                    DocUpload.crew_member_id.isnot(None),
-                    DocUpload.status != 'duplicate')
+                    DocUpload.category.in_(('employee_vendor_doc', 'tax_form')),
+                    db.or_(DocUpload.owner_payee_id.isnot(None),
+                           DocUpload.crew_member_id.isnot(None)),
+                    DocUpload.status.notin_(('duplicate', 'deleted')))
             .all())
+    _owners = {_owner_of_s(d) for d in rows if _owner_of_s(d)}
+    if _owners:
+        rows += (DocUpload.query
+                 .filter(db.or_(DocUpload.project_id != pid, DocUpload.project_id.is_(None)),
+                         DocUpload.category.in_(('employee_vendor_doc', 'tax_form')),
+                         db.or_(DocUpload.owner_payee_id.in_(_owners),
+                                DocUpload.crew_member_id.in_(_owners)),
+                         DocUpload.status.notin_(('duplicate', 'deleted')))
+                 .all())
     groups = {}
     for d in rows:
-        sub = (d.vendor or '').strip().lower()
-        if not sub:
+        key = _dup_key(d)
+        if key is None:
             continue
-        groups.setdefault((d.crew_member_id, sub), []).append(d)
+        groups.setdefault(key, []).append(d)
     flagged = []
     for grp in groups.values():
         if len(grp) <= 1:
@@ -33595,7 +34017,8 @@ def docs_scan_person_duplicates(pid):
             if d.is_duplicate:
                 continue
             flagged.append({"id": d.id, "duplicate_of": orig.id,
-                            "crew_member_id": d.crew_member_id, "sub_type": d.vendor})
+                            "crew_member_id": _owner_of_s(d),
+                            "sub_type": d.tax_form_kind or d.doc_subtype})
             if apply:
                 d.is_duplicate = True
                 d.duplicate_of_id = orig.id
@@ -33702,13 +34125,53 @@ def _apply_dup_resolution(upload, action, force=False, link_mode=None):
     confirms the coded-doc warning): bury even an assigned duplicate. Its own
     phantom doc_upload transaction is deleted (de-double-counts the ledger);
     any electronic charge matched to it is unlinked but keeps its own coding.
-    (User 2026-06-17.)"""
+    (User 2026-06-17.)
+
+    action='replace' (DOCUMENTS_HANDOFF Phase 2 — a second W-9 / ID for the
+    same payee): the NEWER copy (this one) supersedes the older original it
+    was flagged against. The older goes to the Trash through the one soft-
+    delete path with trash_meta.superseded_by_id = this id (DocUpload has no
+    superseded_by column; the Trash record is the audit trail), this copy
+    is un-flagged, and the W-9 date rule moves the payee's pointer here."""
     _peer = upload.duplicate_of_id
+    if action == "replace":
+        older = DocUpload.query.get(_peer) if _peer else None
+        if older is None or older.id == upload.id:
+            return False, {}, "Nothing to replace — this copy is not flagged against an earlier document."
+        if older.status != 'deleted':
+            _soft_delete_doc_upload(older)
+            try:
+                import json as _json_r
+                _meta = _json_r.loads(older.trash_meta) if older.trash_meta else {}
+            except Exception:
+                _meta = {}
+            _meta["superseded_by_id"] = upload.id
+            _meta["superseded_at"] = datetime.utcnow().isoformat()
+            older.trash_meta = _json_r.dumps(_meta)
+            older.note = f"Superseded by #{upload.id} (Replace). In the Trash; restorable."
+        # The payee's W-9 pointer must not dangle on the trashed form.
+        try:
+            from actuals import doc_owner_id as _owner_of_r
+            _own = _owner_of_r(older)
+            if _own:
+                _cm = CrewMember.query.get(_own)
+                if _cm and _cm.w9_doc_upload_id == older.id:
+                    _cm.w9_received_on = None
+                    _cm.w9_doc_upload_id = None
+        except Exception:
+            pass
+        upload.is_duplicate    = False
+        upload.duplicate_of_id = None
+        upload.note = f"Replaced #{older.id} (now in the Trash)."
+        _apply_w9_date_rule(upload)
+        return True, {"resolved": "replace", "upload_id": upload.id,
+                      "superseded_id": older.id}, None
     if action == "keep":
         upload.is_duplicate    = False
         upload.duplicate_of_id = None
         upload.note = (f"Reviewed — confirmed distinct from #{_peer}. Kept."
                        if _peer else "Reviewed — kept.")
+        _apply_w9_date_rule(upload)
         # Create the deferred Actuals Transaction for ledger doc types so a
         # genuinely-separate spend shows up in Actuals.
         from actuals import is_ledger_category as _is_ledger_keep
@@ -33846,14 +34309,16 @@ def _apply_dup_resolution(upload, action, force=False, link_mode=None):
                       "transferred_charges": transferred,
                       "transferred_to": (keeper.id if transferred else None)}, None
 
-    return False, {}, "action must be 'keep' or 'confirm'"
+    return False, {}, "action must be 'keep', 'confirm' or 'replace'"
 
 
 @app.route("/docs/upload/<int:uid>/resolve-duplicate", methods=["POST"])
 @login_required
 def docs_resolve_duplicate(uid):
     """Resolve ONE doc flagged as a possible duplicate.
-    Body: {"action": "keep" | "confirm"}."""
+    Body: {"action": "keep" | "confirm" | "replace"} — keep = Keep both,
+    confirm = It's a duplicate (bury this copy), replace = this newer copy
+    supersedes the original (Phase 2 paperwork: a fresh W-9 or ID)."""
     upload = DocUpload.query.get_or_404(uid)
     if current_user.role not in ('super_admin', 'admin'):
         if upload.uploader_id != current_user.id:
@@ -33869,6 +34334,16 @@ def docs_resolve_duplicate(uid):
         return jsonify({"error": err, **(info or {})}), (409 if (info or {}).get("needs_force") else 400)
     db.session.commit()
     logging.info(f"[DOCS] upload #{upload.id}: duplicate review → {action.upper()}")
+    try:
+        _log_activity(action='update', entity_type='doc_upload', entity_id=upload.id,
+                      entity_label=(upload.filed_filename or upload.original_filename
+                                    or f'Upload #{upload.id}'),
+                      project_id=upload.project_id, before=None,
+                      after={'duplicate_resolution': action, **{k: v for k, v in info.items()
+                                                                 if k in ('superseded_id', 'moved_to')}},
+                      note=f'Duplicate review: {action}')
+    except Exception:
+        pass
     info["ok"] = True
     return jsonify(info)
 
@@ -34062,13 +34537,26 @@ def docs_trash_list(pid):
             return jsonify({"error": "Forbidden"}), 403
     rows = (DocUpload.query.filter_by(project_id=pid, status='deleted')
             .order_by(DocUpload.deleted_at.desc().nullslast()).limit(300).all())
-    out = [{"id": u.id,
-            "filename": u.filed_filename or u.original_filename,
-            "vendor": u.vendor, "category": u.category,
-            "amount": float(u.amount) if u.amount is not None else None,
-            "doc_date": u.doc_date.isoformat() if u.doc_date else None,
-            "deleted_at": (u.deleted_at.isoformat() + 'Z') if u.deleted_at else None}
-           for u in rows]
+    from actuals import doc_owner_id as _owner_of_t
+    _oid = {_owner_of_t(u) for u in rows if _owner_of_t(u)}
+    _onames = ({c.id: c.name for c in CrewMember.query.filter(CrewMember.id.in_(_oid)).all()}
+               if _oid else {})
+    out = []
+    for u in rows:
+        _sup = None
+        try:
+            _sup = (json.loads(u.trash_meta) if u.trash_meta else {}).get('superseded_by_id')
+        except Exception:
+            _sup = None
+        out.append({"id": u.id,
+                    "filename": u.filed_filename or u.original_filename,
+                    "vendor": u.vendor, "category": u.category,
+                    "payee_name": _onames.get(_owner_of_t(u)),
+                    "owner_payee_id": _owner_of_t(u),
+                    "superseded_by_id": _sup,
+                    "amount": float(u.amount) if u.amount is not None else None,
+                    "doc_date": u.doc_date.isoformat() if u.doc_date else None,
+                    "deleted_at": (u.deleted_at.isoformat() + 'Z') if u.deleted_at else None})
     return jsonify({"trash": out, "count": len(out)})
 
 
@@ -34318,12 +34806,20 @@ def docs_export_csv(pid):
     if status_param:
         q = q.filter(DocUpload.status.in_(status_param.split(",")))
     rows = q.order_by(DocUpload.uploaded_at.desc()).all()
+    # Payee column (Phase 2): the owner's name, one bulk lookup. The export
+    # stays project-scoped, so project-less paperwork is not in it — the
+    # Payee page lists that.
+    from actuals import doc_owner_id as _owner_of_csv, doc_class as _class_csv
+    _owner_ids = {_owner_of_csv(u) for u in rows if _owner_of_csv(u)}
+    _owner_names = ({c.id: c.name for c in CrewMember.query.filter(CrewMember.id.in_(_owner_ids)).all()}
+                    if _owner_ids else {})
     import io as _io_d, csv as _csv_d
     out = _io_d.StringIO()
     w = _csv_d.writer(out)
     w.writerow([
         "ID", "Uploaded", "Uploader", "Original Filename", "Filed Filename",
-        "Status", "Doc Type", "Vendor", "Amount", "Doc Date",
+        "Status", "Doc Type", "Class", "Vendor", "Payee", "Sub-type", "Tax form",
+        "Received", "Expires", "Amount", "Doc Date",
         "Confidence %", "Is Duplicate", "Dropbox Path", "Note", "File Size (KB)",
     ])
     for u in rows:
@@ -34338,7 +34834,13 @@ def docs_export_csv(pid):
             u.filed_filename or '',
             u.status or '',
             u.category or '',
+            _class_csv(u.category) if u.category else '',
             u.vendor or '',
+            _owner_names.get(_owner_of_csv(u), '') if _owner_of_csv(u) else '',
+            u.doc_subtype or '',
+            u.tax_form_kind or '',
+            u.received_on.isoformat() if u.received_on else '',
+            u.expires_on.isoformat() if u.expires_on else '',
             f'{float(u.amount):.2f}' if u.amount else '',
             u.doc_date.isoformat() if u.doc_date else '',
             f'{float(u.confidence):.1f}' if u.confidence is not None else '',
@@ -34462,9 +34964,13 @@ def docs_upload_rename(uid):
 
 def _docs_check_row_access(upload):
     """Return None if current user may see/edit this upload, else a Flask
-    response ready to be returned. Mirrors the pattern in upload_post."""
+    response ready to be returned. Mirrors the pattern in upload_post.
+    A document with no project (Payee-page paperwork, Phase 2) is reachable
+    by admins only — the Payee pages are admin-only by decision."""
     if current_user.role in ('super_admin', 'admin'):
         return None
+    if upload.project_id is None:
+        return jsonify({"error": "Forbidden"}), 403
     access = ProjectAccess.query.filter_by(
         project_id=upload.project_id, user_id=current_user.id).first()
     if not access:
@@ -36891,23 +37397,35 @@ def _doc_intended_path(upload):
       {ops}/{project}/{TYPE_FOLDER}/{uploader}[/{vendor}]/{date_TYPE_…_amount.pdf}
     Built from the row's own fields (not the original OCR), so vendor / type
     / date / amount / doc-number edits all reflect. Returns None if it can't
-    resolve (no project folder / type). 2026-05-29."""
+    resolve (no project folder / type). 2026-05-29.
+
+    DOCUMENTS_HANDOFF Phase 2 (2026-11-01) — paperwork follows the Payee:
+      • a paperwork-class document (actuals.doc_class) with an owner files
+        under {TYPE_FOLDER}/{Payee name}/, never under the uploader
+        (actuals.doc_folder_segments is the one path rule);
+      • a document with NO project (Payee-page upload) lives in
+        <OPS>/Crew Database/<Payee>/<Year>/ and that IS its intended path;
+      • evidence stays under the project exactly as before."""
     from fp_analyzer import DOCUMENT_TYPES, build_name, safe as _ana_safe, _ops_prefix
-    proj = ProjectSheet.query.get(upload.project_id)
-    proj_name = (proj.dropbox_folder or '').strip('/') if proj else ''
+    from actuals import doc_folder_segments, doc_owner_id as _owner_of, doc_class as _doc_class
     doc_type = (upload.category or 'misc').lower()
-    type_folder = DOCUMENT_TYPES.get(doc_type, DOCUMENT_TYPES['misc'])
-    if not proj_name or not type_folder:
-        return None
+    owner = _owner_of(upload)
+    cm = CrewMember.query.get(owner) if owner else None
+    payee_name = _ana_safe(cm.name.strip()) if (cm and (cm.name or '').strip()) else None
     # Synthetic Veryfi-shaped dict so build_name applies the correct
     # per-type token order (e.g. invoice → date_vendor_invoice#_total).
+    # Paperwork with an owner names the PAYEE, not the OCR vendor (the
+    # sub-type used to sit in `vendor`, so "W-9" became a vendor name).
+    _name_vendor = upload.vendor or "Unknown"
+    if _doc_class(doc_type) == 'paperwork' and cm and (cm.name or '').strip():
+        _name_vendor = cm.name.strip()
     vr = {
-        "date":   upload.doc_date.isoformat() if upload.doc_date else "",
-        "vendor": {"name": upload.vendor or "Unknown"},
+        "date":   (upload.received_on or upload.doc_date).isoformat()
+                  if (upload.received_on or upload.doc_date) else "",
+        "vendor": {"name": _name_vendor},
         "total":  float(upload.amount) if upload.amount is not None else None,
         "invoice_number":        upload.doc_number or None,
         "purchase_order_number": upload.doc_number or None,
-        "tax_id":                upload.doc_number or None,
     }
     # True extension: the source archive carries the real format (JPEG phone
     # photos stay .jpg, not a mislabeled .pdf). Fall back to the filed name's
@@ -36916,6 +37434,16 @@ def _doc_intended_path(upload):
                  or os.path.splitext(upload.filed_filename or '')[1]
                  or '.pdf').lower()
     fname = build_name(vr, doc_type, ext=_true_ext)
+    if upload.project_id is None:
+        # No project: the Crew Database folder is home.
+        if cm is None:
+            return None
+        return f"{_crew_folder_for(cm, upload)}/{fname}"
+    proj = ProjectSheet.query.get(upload.project_id)
+    proj_name = (proj.dropbox_folder or '').strip('/') if proj else ''
+    type_folder = DOCUMENT_TYPES.get(doc_type, DOCUMENT_TYPES['misc'])
+    if not proj_name or not type_folder:
+        return None
     ops  = _ops_prefix()
     base = f"{ops}/{proj_name}/{type_folder}" if ops else f"/{proj_name}/{type_folder}"
     up = upload.uploader
@@ -36923,22 +37451,9 @@ def _doc_intended_path(upload):
            (up.email.split('@')[0] if (up and up.email) else 'unknown'))
     raw = re.sub(r"[^\w\- ]", "", raw) or "unknown"   # matches upload-time _safe_user
     user_folder = _ana_safe(raw)
-    if doc_type in ('invoice', 'contract', 'purchase_order', 'insurance'):
-        return f"{base}/{user_folder}/{_ana_safe(upload.vendor or 'Unknown_Vendor')}/{fname}"
-    # Employee/Vendor supporting docs are organised by the PERSON they're
-    # attached to (the crew dropdown), not the uploader — so every doc for a
-    # given person lands in one packet folder:
-    #   …/EMPLOYEE_VENDOR_DOCS/<Person>/<date>_EMPDOC_<doctype>.pdf
-    # Falls back to the uploader folder when no crew member is linked yet.
-    # (User 2026-05-30.)
-    if doc_type == 'employee_vendor_doc':
-        person_folder = None
-        if upload.crew_member_id:
-            cm = CrewMember.query.get(upload.crew_member_id)
-            if cm and (cm.name or '').strip():
-                person_folder = _ana_safe(cm.name.strip())
-        return f"{base}/{person_folder or user_folder}/{fname}"
-    return f"{base}/{user_folder}/{fname}"
+    segs = doc_folder_segments(upload, payee_name=payee_name, uploader_folder=user_folder)
+    segs = [segs[0]] + [_ana_safe(x) for x in segs[1:]]
+    return "/".join([base] + segs + [fname])
 
 
 def _filing_matches(cur_path, intended_path):
@@ -36959,7 +37474,12 @@ def _refile_doc(upload, dry=False):
     """Move a filed doc's Dropbox copy to match its current fields. Skips
     review/unfiled rows and special folders (_DUPLICATES / _SOURCE_ARCHIVE /
     _UPLOADS_PENDING). Returns {changed, from, to, error?}. On a real run it
-    updates filed_dropbox_path / filed_filename (caller commits)."""
+    updates filed_dropbox_path / filed_filename (caller commits).
+
+    Phase 2: paperwork moves under its Payee folder only when a document is
+    EXPLICITLY re-filed (a save in the editor, /refile) — never in a mass
+    move at boot. A project-less document is re-filed within the Crew
+    Database tree, and the Crew Database copy pointer follows it."""
     cur = upload.filed_dropbox_path
     if not cur or upload.status not in ('done', 'filed'):
         return {"changed": False, "reason": "not filed"}
@@ -36970,6 +37490,7 @@ def _refile_doc(upload, dry=False):
         return {"changed": False, "reason": "unresolved"}
     if _filing_matches(cur, intended):
         return {"changed": False, "reason": "already correct"}
+    _was_crew_copy = (getattr(upload, 'crew_dbx_path', None) == cur)
     if dry:
         return {"changed": True, "dry": True, "from": cur, "to": intended,
                 "id": upload.id, "name": upload.filed_filename or upload.original_filename}
@@ -36981,6 +37502,8 @@ def _refile_doc(upload, dry=False):
         final = meta.metadata.path_display
         upload.filed_dropbox_path = final
         upload.filed_filename     = os.path.basename(final)
+        if _was_crew_copy:
+            upload.crew_dbx_path = final[:500]
         logging.info(f"[refile] upload #{upload.id}: {cur} → {final}")
         return {"changed": True, "from": cur, "to": final, "id": upload.id}
     except Exception as e:
@@ -38815,11 +39338,33 @@ def docs_upload_update(uid):
     from datetime import datetime as _dt
 
     data = request.get_json(force=True) or {}
+    from actuals import (doc_owner_id as _owner_of, is_ledger_category as _is_ledger_cat,
+                         TAX_FORM_KINDS as _TAX_KINDS, doc_class as _doc_class_of)
+    _owner_before = _owner_of(upload)
     _act_before = {
         'vendor': upload.vendor, 'amount': float(upload.amount) if upload.amount else None,
         'doc_date': upload.doc_date.isoformat() if upload.doc_date else None,
         'category': upload.category, 'note': upload.note,
+        'owner_payee_id': _owner_before, 'tax_form_kind': upload.tax_form_kind,
+        'doc_subtype': upload.doc_subtype,
+        'received_on': upload.received_on.isoformat() if upload.received_on else None,
+        'expires_on': upload.expires_on.isoformat() if upload.expires_on else None,
     }
+    # A document with no project cannot become evidence: evidence creates a
+    # ledger Transaction, and a Transaction belongs to a project. Attach the
+    # document to a project first. (Phase 2 — project_id is nullable now.)
+    if "category" in data and upload.project_id is None:
+        _nc = (data.get("category") or "").strip().lower()
+        if _nc and _is_ledger_cat(_nc):
+            return jsonify({"error": "This document has no project. Receipts, invoices, "
+                                     "payroll and timecards are evidence of project spend — "
+                                     "upload them from the project's Docs tab instead."}), 400
+    # Sub-type for employee/vendor docs: Phase 2 stores it in doc_subtype.
+    # Older clients still send it as `vendor`; accept that and route it.
+    _cat_in = (data.get("category") or upload.category or "").strip().lower()
+    if _cat_in == 'employee_vendor_doc' and "vendor" in data and "doc_subtype" not in data:
+        data["doc_subtype"] = data.pop("vendor")
+        data["vendor"] = ""
     if "vendor" in data:
         v = (data.get("vendor") or "").strip()
         upload.vendor = v[:200] if v else None
@@ -38895,16 +39440,50 @@ def docs_upload_update(uid):
     if "merchant_phone" in data:
         _mp = (data.get("merchant_phone") or "").strip()
         upload.merchant_phone = _mp[:40] if _mp else None
-    # Crew / location linkage. Empty / null clears.
-    if "crew_member_id" in data:
-        cm = data.get("crew_member_id")
+    # ── Ownership + paperwork fields (DOCUMENTS_HANDOFF Phase 2) ────────
+    # owner_payee_id is THE owner; crew_member_id is accepted as an alias
+    # and both columns are written through DocUpload.set_owner.
+    _owner_key = next((k for k in ("owner_payee_id", "payee_id", "crew_member_id") if k in data), None)
+    if _owner_key:
+        cm = data.get(_owner_key)
         if cm in (None, "", "null", "0", 0):
-            upload.crew_member_id = None
+            upload.set_owner(None)
         else:
             try:
-                upload.crew_member_id = int(cm)
+                _cm_id = int(cm)
             except (TypeError, ValueError):
-                return jsonify({"error": "crew_member_id must be int"}), 400
+                return jsonify({"error": f"{_owner_key} must be int"}), 400
+            if CrewMember.query.get(_cm_id) is None:
+                return jsonify({"error": "That payee does not exist."}), 400
+            upload.set_owner(_cm_id)
+    if "tax_form_kind" in data:
+        k = (data.get("tax_form_kind") or "").strip().lower()
+        if k and k not in _TAX_KINDS:
+            return jsonify({"error": f"tax_form_kind must be one of {', '.join(_TAX_KINDS)}"}), 400
+        upload.tax_form_kind = k or None
+    if "doc_subtype" in data:
+        st_ = (data.get("doc_subtype") or "").strip()
+        upload.doc_subtype = st_[:40] if st_ else None
+    for _dfld in ("received_on", "expires_on"):
+        if _dfld in data:
+            _dv = (data.get(_dfld) or "").strip()
+            if not _dv:
+                setattr(upload, _dfld, None)
+            else:
+                try:
+                    from datetime import datetime as _dt_own
+                    setattr(upload, _dfld, _dt_own.strptime(_dv[:10], "%Y-%m-%d").date())
+                except Exception:
+                    return jsonify({"error": f"{_dfld} must be YYYY-MM-DD"}), 400
+    # A tax form saved without a kind but whose sub-type / filename names
+    # one gets it (keeps the one W-9 rule honest for older rows).
+    if (upload.category or '').lower() == 'tax_form' and not upload.tax_form_kind:
+        from actuals import tax_form_kind_from_text as _kind_from
+        upload.tax_form_kind = _kind_from(" ".join(str(x or '') for x in (
+            upload.doc_subtype, upload.filed_filename, upload.original_filename)))
+    if ((upload.category or '').lower() == 'tax_form' and upload.tax_form_kind
+            and not upload.received_on):
+        upload.received_on = upload.doc_date or (upload.uploaded_at.date() if upload.uploaded_at else None)
     if "location_id" in data:
         lc = data.get("location_id")
         if lc in (None, "", "null", "0", 0):
@@ -38977,20 +39556,35 @@ def docs_upload_update(uid):
                     else:
                         fname = f"{date_str}_{prefix}_{vendor}_{amount}.pdf"
                 base = f"{ops}/{proj_name}/{new_type_folder}" if ops else f"/{proj_name}/{new_type_folder}"
-                if upload.category in ('invoice', 'contract', 'purchase_order', 'insurance'):
-                    vendor_folder = _ana_safe(upload.vendor or 'Unknown_Vendor')
-                    return f"{base}/{user_folder}/{vendor_folder}/{fname}", fname
-                # Employee/Vendor docs → per-person packet folder (crew link),
-                # falling back to the uploader folder. Mirrors
-                # _doc_intended_path. (User 2026-05-30.)
-                if upload.category == 'employee_vendor_doc' and upload.crew_member_id:
-                    _cm = CrewMember.query.get(upload.crew_member_id)
-                    if _cm and (_cm.name or '').strip():
-                        return f"{base}/{_ana_safe(_cm.name.strip())}/{fname}", fname
-                return f"{base}/{user_folder}/{fname}", fname
+                # ONE path rule (actuals.doc_folder_segments, Phase 2):
+                # paperwork with an owner files under the Payee, AP evidence
+                # under uploader/vendor, everything else under the uploader.
+                from actuals import doc_folder_segments as _segs_for
+                _pname = None
+                if _owner_of(upload):
+                    _ocm = CrewMember.query.get(_owner_of(upload))
+                    if _ocm and (_ocm.name or '').strip():
+                        _pname = _ana_safe(_ocm.name.strip())
+                _segs = _segs_for(upload, payee_name=_pname, uploader_folder=user_folder)
+                _segs = [_segs[0]] + [_ana_safe(x) for x in _segs[1:]]
+                return "/".join([base] + _segs + [fname]), fname
 
             # Case A — review confirmation (file not yet processed)
-            if upload.status == 'review' or not upload.filed_at:
+            if upload.project_id is None:
+                # Payee-page paperwork: the Crew Database copy made at upload
+                # time IS the filed copy; confirming a type just marks it done.
+                if (upload.status == 'review' or not upload.filed_at) \
+                        and getattr(upload, 'crew_dbx_path', None):
+                    upload.filed_dropbox_path = upload.crew_dbx_path
+                    upload.filed_filename = os.path.basename(upload.crew_dbx_path)
+                    upload.filed_at = _dt.utcnow()
+                    upload.status = 'done'
+                    refile_info = {'action': 'filed_from_review', 'to': upload.crew_dbx_path}
+                elif upload.status in ('done', 'filed'):
+                    _r = _refile_doc(upload)
+                    if _r.get("changed"):
+                        refile_info = {'action': 'refiled', 'from': _r.get('from'), 'to': _r.get('to')}
+            elif upload.status == 'review' or not upload.filed_at:
                 if new_type_folder:
                     dest_path, dest_name = _build_processed_path()
                     if dest_path:
@@ -39106,20 +39700,26 @@ def docs_upload_update(uid):
     except Exception as _se:
         logging.warning(f"[/update] could not sync to linked txns for upload {uid}: {_se}")
 
-    # Person-doc duplicate guard: if this is an employee/vendor doc (W-9, ID,
-    # etc.) for a person who already has the SAME sub-type, flag it for review
-    # so it lands in the compare/dup workflow instead of silently duplicating.
+    # Person-doc duplicate guard: a W-9 / ID the SAME payee already has of
+    # the SAME kind (global, any project — Phase 2) is flagged for the
+    # Replace / Keep both review instead of silently duplicating.
     _dup_orig = None
     try:
         _dup_orig = _flag_person_doc_duplicate(upload)
     except Exception as _pde:
         logging.warning(f"[/update] person-doc dup check failed for upload {uid}: {_pde}")
+    # The one W-9 date rule: a W-9 / W-8 saved with an owner moves the
+    # owner's w9_received_on / w9_doc_upload_id to it when newer.
+    try:
+        _apply_w9_date_rule(upload)
+    except Exception as _w9e:
+        logging.warning(f"[/update] W-9 date rule failed for upload {uid}: {_w9e}")
 
     db.session.commit()
     # Crew Database duplicate (owner 2026-10-08): a doc attached to a person
     # gets copied into their master Dropbox folder once. Fail-open.
     try:
-        if upload.crew_member_id and not getattr(upload, 'crew_dbx_path', None):
+        if _owner_of(upload) and not getattr(upload, 'crew_dbx_path', None):
             if _copy_doc_to_crew_folder(upload):
                 db.session.commit()
     except Exception:
@@ -39130,6 +39730,10 @@ def docs_upload_update(uid):
             'vendor': upload.vendor, 'amount': float(upload.amount) if upload.amount else None,
             'doc_date': upload.doc_date.isoformat() if upload.doc_date else None,
             'category': upload.category, 'note': upload.note,
+            'owner_payee_id': _owner_of(upload), 'tax_form_kind': upload.tax_form_kind,
+            'doc_subtype': upload.doc_subtype,
+            'received_on': upload.received_on.isoformat() if upload.received_on else None,
+            'expires_on': upload.expires_on.isoformat() if upload.expires_on else None,
         }
         if _act_before != _act_after:
             _label = upload.filed_filename or upload.original_filename or f'Upload #{uid}'
@@ -39153,6 +39757,15 @@ def docs_upload_update(uid):
         "status":      upload.status,
         "filed_path":  upload.filed_dropbox_path,
         "refile":      refile_info,
+        "owner_payee_id": _owner_of(upload),
+        "crew_member_id": _owner_of(upload),
+        "tax_form_kind":  upload.tax_form_kind,
+        "doc_subtype":    upload.doc_subtype,
+        "received_on":    upload.received_on.isoformat() if upload.received_on else None,
+        "expires_on":     upload.expires_on.isoformat() if upload.expires_on else None,
+        "doc_class":      _doc_class_of(upload.category),
+        "dup_pending":    bool(upload.is_duplicate) and upload.status != 'duplicate',
+        "duplicate_of_id": upload.duplicate_of_id,
     })
 
 

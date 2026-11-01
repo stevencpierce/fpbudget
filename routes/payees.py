@@ -15,6 +15,11 @@ Routes (all admin + super-admin only, per the Oct 30 decision):
   POST /payees/<id>/update     legal name, address, kind, W-2 flag, notes,
                                Wrapbook id, W-9 received date. The qbo_*
                                fields are mirror-only and never accepted.
+  POST /payees/<id>/docs/upload  (Phase 2) a document with NO project, owned
+                               by the payee: runs the one ingest pipeline
+                               (OCR, type, W-9 kind + received date, the
+                               global duplicate rule) and files to
+                               <OPS>/Crew Database/<Payee>/<Year>/.
 
 Numbers come from ONE helper, actuals.paid_by_payee(); the W-9 answer from
 ONE rule, actuals.payee_w9_status(); the 1099 chip from actuals.flag_1099().
@@ -30,20 +35,23 @@ from flask import (render_template, request, jsonify, flash, redirect,
 from flask_login import login_required, current_user
 from sqlalchemy import func, or_
 
-from app import app, admin_required, _log_activity, _line_budget_total, _RATE_TYPE_LABELS
+from app import (app, admin_required, _log_activity, _line_budget_total, _RATE_TYPE_LABELS,
+                 _ingest_document_bytes, _validate_upload_file)
 from models import (db, CrewMember, CrewAssignment, Budget, BudgetLine, ProjectSheet,
                     DocUpload, Transaction, VendorAlias, ScheduleDay, ProjectCrewMember)
 import actuals
 from actuals import (paid_by_payee, w9_status_for, w9_fallback_dates, flag_1099,
                      qbo_matches_w9, threshold_for_year, reporting_threshold_rows,
-                     canon_vendor, doc_class, PAYEE_KINDS, SHARED_LINE,
+                     canon_vendor, doc_class, doc_owner_id, expiry_state,
+                     TAX_FORM_KIND_LABELS, PAYEE_KINDS, SHARED_LINE,
                      W9_ON_FILE, W9_MISSING, W9_NOT_REQUIRED, W9_UNDER_THRESHOLD)
 
 
 KIND_LABELS = {'person': 'Person', 'loan_out': 'Loan-out', 'vendor': 'Vendor'}
 
 # Paperwork groups on the Payee page, in display order. 'employee_vendor_doc'
-# holds IDs today (its sub-type lives in DocUpload.vendor until Phase 2).
+# holds IDs and onboarding forms; its sub-type lives in DocUpload.doc_subtype
+# (Phase 2), tax forms carry tax_form_kind + received_on, COIs expires_on.
 PAPERWORK_GROUPS = (
     ('tax_form',            'Tax forms'),
     ('insurance',           'Insurance'),
@@ -54,7 +62,13 @@ PAPERWORK_GROUPS = (
     ('misc',                'Other'),
 )
 
-COI_WARN_DAYS = 60
+COI_WARN_DAYS = actuals.COI_WARN_DAYS
+
+
+def _doc_owner_clause(cm_id):
+    """SQL for "this document belongs to payee cm_id": the Phase 2 owner
+    column OR the alias column (rows the 0023 data step has not touched)."""
+    return or_(DocUpload.owner_payee_id == cm_id, DocUpload.crew_member_id == cm_id)
 
 # Fields POST /payees/<id>/update (and the crew edit form) may write. The
 # QuickBooks mirror fields are deliberately absent: QuickBooks → FPBudget only.
@@ -145,20 +159,22 @@ def _qbo_cell(cm, w9, reportable):
 
 
 def _coi_state(doc, today=None):
-    """COI expiry chip. Phase 2 adds DocUpload.expires_on; until then a COI
-    shows the date it was issued (doc_date) with no expiry state."""
+    """COI expiry chip from DocUpload.expires_on (Phase 2): red when past,
+    amber within COI_WARN_DAYS, green otherwise; a COI with no expiry date
+    shows the date it was issued, muted, and the inbox asks for the date."""
     today = today or date.today()
     exp = getattr(doc, 'expires_on', None)
-    if exp:
-        if exp < today:
-            return {"state": "bad", "text": f"expired {exp.strftime('%b')} {exp.day}",
-                    "date": _iso(exp)}
-        if (exp - today).days <= COI_WARN_DAYS:
-            return {"state": "warn", "text": f"expires {exp.strftime('%b')} {exp.day}",
-                    "date": _iso(exp)}
-        return {"state": "ok", "text": f"{exp.strftime('%b')} {exp.year}", "date": _iso(exp)}
+    st = expiry_state(exp, today, COI_WARN_DAYS)
+    if st == 'bad':
+        return {"state": "bad", "text": f"expired {exp.strftime('%b')} {exp.day}, {exp.year}",
+                "date": _iso(exp)}
+    if st == 'warn':
+        return {"state": "warn", "text": f"expires {exp.strftime('%b')} {exp.day}",
+                "date": _iso(exp)}
+    if st == 'ok':
+        return {"state": "ok", "text": f"expires {exp.strftime('%b')} {exp.year}", "date": _iso(exp)}
     d = doc.doc_date or (doc.uploaded_at.date() if doc.uploaded_at else None)
-    return {"state": "muted", "text": (f"on file {_fmt_date(d)}" if d else "on file"),
+    return {"state": "muted", "text": (f"no expiry · on file {_fmt_date(d)}" if d else "no expiry"),
             "date": _iso(d)}
 
 
@@ -183,15 +199,16 @@ def _projects_by_payee(payee_ids=None):
           .join(Budget, Budget.id == BudgetLine.budget_id)
           .join(ProjectSheet, ProjectSheet.id == Budget.project_id)
           .filter(BudgetLine.assigned_crew_id.isnot(None)))
-    q3 = (db.session.query(DocUpload.crew_member_id, ProjectSheet.id, ProjectSheet.name)
+    _owner_col = func.coalesce(DocUpload.owner_payee_id, DocUpload.crew_member_id)
+    q3 = (db.session.query(_owner_col, ProjectSheet.id, ProjectSheet.name)
           .join(ProjectSheet, ProjectSheet.id == DocUpload.project_id)
-          .filter(DocUpload.crew_member_id.isnot(None),
+          .filter(or_(DocUpload.owner_payee_id.isnot(None), DocUpload.crew_member_id.isnot(None)),
                   DocUpload.status.notin_(('deleted', 'duplicate'))))
     if payee_ids is not None:
         ids = list(payee_ids) or [0]
         q1 = q1.filter(CrewAssignment.crew_member_id.in_(ids))
         q2 = q2.filter(BudgetLine.assigned_crew_id.in_(ids))
-        q3 = q3.filter(DocUpload.crew_member_id.in_(ids))
+        q3 = q3.filter(or_(DocUpload.owner_payee_id.in_(ids), DocUpload.crew_member_id.in_(ids)))
     for q in (q1, q2, q3):
         for cid, pid, pname in q.distinct().all():
             _add(cid, pid, pname)
@@ -232,11 +249,12 @@ def _directory_data(year):
     fallback_w9 = w9_fallback_dates()
     coi_by_payee = {}
     for d in (DocUpload.query
-              .filter(DocUpload.crew_member_id.isnot(None),
+              .filter(or_(DocUpload.owner_payee_id.isnot(None), DocUpload.crew_member_id.isnot(None)),
                       DocUpload.category == 'insurance',
                       DocUpload.status.notin_(('deleted', 'duplicate')))
-              .order_by(DocUpload.doc_date.desc().nullslast(), DocUpload.id.desc()).all()):
-        coi_by_payee.setdefault(d.crew_member_id, d)
+              .order_by(DocUpload.expires_on.desc().nullslast(),
+                        DocUpload.doc_date.desc().nullslast(), DocUpload.id.desc()).all()):
+        coi_by_payee.setdefault(doc_owner_id(d), d)
 
     rows, counts = [], {"all": 0, "person": 0, "loan_out": 0, "vendor": 0,
                         "needs_attention": 0}
@@ -459,8 +477,10 @@ def _payee_page_data(cm, year):
         r.pop("_sort", None)
     active_count = sum(1 for r in project_rows if r["status"] == 'active')
 
-    # Documents: every non-deleted doc attached to this person, split by class.
-    docs = (DocUpload.query.filter(DocUpload.crew_member_id == cm.id,
+    # Documents: every non-deleted doc this payee owns, split by class. A
+    # pending duplicate (a second W-9 awaiting Replace / Keep both) is
+    # listed with its flag so the page can offer the resolution.
+    docs = (DocUpload.query.filter(_doc_owner_clause(cm.id),
                                    DocUpload.status.notin_(('deleted', 'duplicate')))
             .order_by(DocUpload.doc_date.desc().nullslast(),
                       DocUpload.uploaded_at.desc().nullslast(), DocUpload.id.desc()).all())
@@ -493,16 +513,30 @@ def _payee_page_data(cm, year):
     evidence, paperwork = [], {k: [] for k, _ in PAPERWORK_GROUPS}
     for d in docs:
         cat = (d.category or '').lower()
+        _shown_date = (d.received_on if cat == 'tax_form' else None) or d.doc_date \
+            or (d.uploaded_at.date() if d.uploaded_at else None)
+        _subtype = d.doc_subtype
+        if cat == 'tax_form':
+            _subtype = TAX_FORM_KIND_LABELS.get(d.tax_form_kind or '', d.doc_subtype)
         entry = {
             "id": d.id, "category": cat,
             "name": d.filed_filename or d.original_filename or f"Doc #{d.id}",
-            "subtype": (d.vendor if cat == 'employee_vendor_doc' else None),
-            "date": _iso(d.doc_date or (d.uploaded_at.date() if d.uploaded_at else None)),
-            "date_label": _fmt_date(d.doc_date or (d.uploaded_at.date() if d.uploaded_at else None)),
+            "subtype": _subtype,
+            "tax_form_kind": d.tax_form_kind,
+            "received_on": _iso(d.received_on),
+            "expires_on": _iso(d.expires_on),
+            "expiry_state": expiry_state(d.expires_on),
+            "date": _iso(_shown_date),
+            "date_label": _fmt_date(_shown_date),
             "project_id": d.project_id, "project_name": pname_by_id.get(d.project_id),
             "amount": float(d.amount) if d.amount is not None else None,
             "synced": bool(getattr(d, 'crew_dbx_path', None)),
+            "status": d.status,
+            "dup_pending": bool(d.is_duplicate) and d.status != 'duplicate',
+            "duplicate_of_id": d.duplicate_of_id,
             "url": f"/docs/upload/{d.id}/raw",
+            "editor_url": (url_for('doc_editor_page', pid=d.project_id, uid=d.id)
+                           if d.project_id else url_for('doc_editor_page_global', uid=d.id)),
         }
         if doc_class(cat) == 'evidence' and cat:
             entry["charge"] = _charge_cell(charge_by_doc.get(d.id))
@@ -580,6 +614,8 @@ def _payee_page_data(cm, year):
         },
         "vendor_names": aliases,
         "edit_url": url_for('crew_edit', cid=cm.id),
+        "upload_url": url_for('payee_docs_upload', payee_id=cm.id),
+        "pending_duplicates": [e for g in paperwork_groups for e in g["docs"] if e["dup_pending"]],
     }
 
 
@@ -676,3 +712,46 @@ def payee_update(payee_id):
         return jsonify({"ok": True, "id": cm.id, "changed": sorted(changes)})
     flash(f"Updated {cm.name}.", "success")
     return redirect(url_for('payee_page', payee_id=payee_id))
+
+
+# ── Upload from the Payee page (DOCUMENTS_HANDOFF Phase 2) ─────────────────
+
+@app.route("/payees/<int:payee_id>/docs/upload", methods=["POST"])
+@login_required
+@admin_required
+def payee_docs_upload(payee_id):
+    """Upload a document that belongs to this payee and to NO project.
+
+    Runs the one ingest pipeline (app._ingest_document_bytes) in payee mode:
+    OCR, type detection (a W-9 / W-8 becomes tax_form with its kind and the
+    received date; anything else an employee/vendor document unless the
+    analyzer is sure it is a COI / contract / release), the global
+    per-payee duplicate rule (a second W-9 is flagged for Replace / Keep
+    both), the W-9 date rule, and filing straight into
+    <OPS>/Crew Database/<Payee>/<Year>/. No Transaction is ever created.
+    Returns the same JSON shape as the project upload (201 filed, 202 needs
+    review, 4xx/5xx {error})."""
+    cm = CrewMember.query.get_or_404(payee_id)
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "No file provided"}), 400
+    _err = _validate_upload_file(f, 'document')
+    if _err:
+        return jsonify({"error": _err}), 400
+    data = f.read()
+    payload, code = _ingest_document_bytes(None, None, f.filename, f.content_type, data,
+                                           uploader=current_user, owner_payee=cm)
+    if code in (201, 202):
+        try:
+            _log_activity(action='create', entity_type='payee_doc', entity_id=payload.get('upload_id'),
+                          entity_label=(payload.get('new_filename') or f.filename)[:300],
+                          project_id=None, before=None,
+                          after={'owner_payee_id': cm.id, 'category': payload.get('category'),
+                                 'tax_form_kind': payload.get('tax_form_kind'),
+                                 'status': payload.get('status')},
+                          note=f'Uploaded "{f.filename}" to {cm.name} (no project)')
+        except Exception:
+            pass
+    payload = dict(payload)
+    payload["payee_id"] = cm.id
+    return jsonify(payload), code
