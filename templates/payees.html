@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}Payees — FPBudget{% endblock %}
+
+{# ══════════════════════════════════════════════════════════════════════════
+   Payee directory (DOCUMENTS_HANDOFF Phase 1, 2026-11-01). Replaces /crew.
+   One table of people and vendors with a kind filter, search, tax-year
+   picker (the threshold in force beside it), a Needs-attention toggle and
+   Export CSV. Rows render server-side from routes/payees._directory_data;
+   kind / search / needs-attention filter client-side on data attributes;
+   changing the year reloads (?year=). Layout per the Directory artboard.
+   ══════════════════════════════════════════════════════════════════════ #}
+{% block content %}
+{% set c = d.counts %}
+<div class="pay-page">
+  <div class="pay-head">
+    <div class="pay-crumbs">
+      <a href="{{ url_for('dashboard') }}">FPBudget</a><span class="sep">/</span>
+      <span class="cur">Payees</span>
+      <span class="pay-chip">Admin</span>
+    </div>
+    <div class="pay-actions">
+      <span class="pay-sync" title="QuickBooks vendor mirror arrives with Documents Phase 3"><span class="pay-dot"></span>QuickBooks vendors: not yet synced</span>
+      {% if current_user.role == 'super_admin' %}
+      <button type="button" class="pay-btn" id="pay-syncall-btn" onclick="payeesSyncAllDocs()"
+              title="Copy every person-linked document on all current and wrapped projects into the Crew Database folder in Dropbox. Safe to re-run.">Sync crew docs</button>
+      {% endif %}
+      <a class="pay-btn" id="pay-export" href="{{ url_for('payees_report_csv', year=d.year) }}">Export CSV</a>
+      <button type="button" class="pay-btn primary" onclick="openAddPayee()">New payee</button>
+    </div>
+  </div>
+
+  <div class="pay-toolbar">
+    <nav class="pay-seg" aria-label="Kind" id="pay-kind">
+      <button type="button" data-kind="all" aria-current="page">All <span class="n pay-num">{{ c.all }}</span></button>
+      <button type="button" data-kind="person">People <span class="n pay-num">{{ c.person }}</span></button>
+      <button type="button" data-kind="loan_out">Loan-outs <span class="n pay-num">{{ c.loan_out }}</span></button>
+      <button type="button" data-kind="vendor">Vendors <span class="n pay-num">{{ c.vendor }}</span></button>
+    </nav>
+    <label for="pay-search" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Search payees</label>
+    <input id="pay-search" class="pay-search" type="search" placeholder="Search name, company, email" autocomplete="off">
+    <span class="pay-spacer"></span>
+    <label for="pay-year">Tax year</label>
+    <select id="pay-year" class="pay-select" onchange="location.href='{{ url_for('payees_directory') }}?year='+this.value">
+      {% for y in d.years %}<option value="{{ y }}" {% if y == d.year %}selected{% endif %}>{{ y }}</option>{% endfor %}
+    </select>
+    <span class="pay-threshold">threshold ${{ '{:,.0f}'.format(d.threshold) }} · non-card</span>
+    <button type="button" class="pay-btn toggle" id="pay-attn" aria-pressed="false">Needs attention <span class="count pay-num">{{ c.needs_attention }}</span></button>
+  </div>
+
+  <div class="pay-card">
+    <div class="pay-scroll">
+      <div class="pay-table" role="table" aria-label="Payees" style="min-width:1240px" id="pay-table">
+        {% set cols = "minmax(200px,1.3fr) 90px minmax(120px,1fr) 90px 110px 110px 150px 160px 130px" %}
+        <div class="pay-row head" role="row" style="grid-template-columns:{{ cols }}">
+          <div class="pay-row-cell">Name</div><div class="pay-row-cell">Kind</div><div class="pay-row-cell">Dept / category</div>
+          <div class="pay-row-cell r">Projects</div><div class="pay-row-cell r">Paid {{ d.year }}</div><div class="pay-row-cell r">All time</div>
+          <div class="pay-row-cell">W-9</div><div class="pay-row-cell">QuickBooks</div><div class="pay-row-cell">COI</div>
+        </div>
+        {% for r in d.rows %}
+        <div class="pay-row{% if r.needs_attention %} flag{% endif %}{% if not r.active %} inactive{% endif %}" role="row"
+             style="grid-template-columns:{{ cols }}"
+             data-kind="{{ r.kind }}" data-attn="{{ 1 if r.needs_attention else 0 }}"
+             data-q="{{ (r.name ~ ' ' ~ (r.legal_name or '') ~ ' ' ~ (r.company or '') ~ ' ' ~ (r.email or '') ~ ' ' ~ r.department ~ ' ' ~ (r.pays_as or '')) | lower }}">
+          <div class="pay-row-cell"><a class="name" href="{{ r.url }}">{{ r.name }}</a>{% if r.pays_as %}<span class="sub">pays as {{ r.pays_as }}</span>{% elif r.legal_name and r.legal_name != r.name %}<span class="sub">{{ r.legal_name }}</span>{% endif %}</div>
+          <div class="pay-row-cell">{% if r.is_w2_employee %}<span class="pay-chip sq w2">W-2</span>{% else %}<span class="pay-chip sq {{ r.kind }}">{{ r.kind_label }}</span>{% endif %}</div>
+          <div class="pay-row-cell">{{ r.department or '—' }}</div>
+          <div class="pay-row-cell r pay-num">{{ r.projects }}</div>
+          <div class="pay-row-cell r b pay-num{% if r.is_w2_employee %} m{% endif %}">{% if r.is_w2_employee and not r.paid_year %}payroll{% else %}{{ r.paid_year | money0 }}{% endif %}</div>
+          <div class="pay-row-cell r pay-num{% if r.is_w2_employee %} m{% endif %}">{% if r.is_w2_employee and not r.paid_all_time %}payroll{% else %}{{ r.paid_all_time | money0 }}{% endif %}</div>
+          <div class="pay-row-cell"><span class="pay-st {{ r.w9_cell.state }}">{{ r.w9_cell.text }}</span></div>
+          <div class="pay-row-cell"><span class="pay-st {{ r.qbo.state }}">{{ r.qbo.text }}</span></div>
+          <div class="pay-row-cell">{% if r.coi %}<span class="pay-st {{ r.coi.state }} pay-num">{{ r.coi.text }}</span>{% else %}<span class="pay-st muted">—</span>{% endif %}</div>
+        </div>
+        {% endfor %}
+        {% if not d.rows %}
+        <div class="pay-empty">No payees yet. Add the first person or vendor with New payee.</div>
+        {% endif %}
+        <div class="pay-empty" id="pay-none" style="display:none">No payees match.</div>
+      </div>
+    </div>
+    <div class="pay-card-f">
+      <span class="pay-num" id="pay-foot">{{ c.all }} payee{{ '' if c.all == 1 else 's' }} · {{ c.needs_attention }} need{{ 's' if c.needs_attention == 1 else '' }} attention before year end</span>
+      <span>Red = will be reportable and QuickBooks cannot file it yet. Amber = check in QuickBooks.</span>
+    </div>
+  </div>
+  {% if d.shared_line_year and d.shared_line_year.total %}
+  <p class="muted" style="font-size:.78rem;margin-top:10px">{{ d.shared_line_year.total | money0 }} paid in {{ d.year }} through budget lines shared by more than one person is not attributed to anyone above. Assigning one person per line, or the Phase 3 payee link on each transaction, places it.</p>
+  {% endif %}
+</div>
+
+<!-- New payee modal: the crew add form plus the Payee fields; posts to /crew/new -->
+<div id="add-payee-modal" class="modal hidden pay-modal">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box">
+    <h2>New payee</h2>
+    <form method="POST" action="{{ url_for('crew_new') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="next" value="{{ url_for('payees_directory') }}">
+      {% include "_crew_fields.html" %}
+      {% include "_payee_fields.html" %}
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="document.getElementById('add-payee-modal').classList.add('hidden')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  const rows = Array.from(document.querySelectorAll('#pay-table .pay-row[data-kind]'));
+  const seg = document.getElementById('pay-kind');
+  const search = document.getElementById('pay-search');
+  const attn = document.getElementById('pay-attn');
+  const foot = document.getElementById('pay-foot');
+  const none = document.getElementById('pay-none');
+  const TOTAL = rows.length;
+  const TOTAL_ATTN = rows.filter(r => r.dataset.attn === '1').length;
+  let kind = 'all', q = '', onlyAttn = false;
+  try { kind = localStorage.getItem('fpb-payees-kind') || 'all'; } catch (e) {}
+
+  function apply(){
+    let shown = 0, shownAttn = 0;
+    rows.forEach(r => {
+      const ok = (kind === 'all' || r.dataset.kind === kind)
+        && (!q || r.dataset.q.includes(q))
+        && (!onlyAttn || r.dataset.attn === '1');
+      r.style.display = ok ? '' : 'none';
+      if (ok) { shown++; if (r.dataset.attn === '1') shownAttn++; }
+    });
+    none.style.display = (TOTAL && !shown) ? '' : 'none';
+    foot.textContent = (shown === TOTAL ? TOTAL : shown + ' of ' + TOTAL) + ' payee' + (TOTAL === 1 ? '' : 's')
+      + ' · ' + (onlyAttn || kind !== 'all' || q ? shownAttn : TOTAL_ATTN) + ' need' + (shownAttn === 1 ? 's' : '') + ' attention before year end';
+    seg.querySelectorAll('button').forEach(b => {
+      if (b.dataset.kind === kind) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
+    attn.setAttribute('aria-pressed', onlyAttn ? 'true' : 'false');
+  }
+  seg.addEventListener('click', e => {
+    const b = e.target.closest('button[data-kind]'); if (!b) return;
+    kind = b.dataset.kind;
+    try { localStorage.setItem('fpb-payees-kind', kind); } catch (err) {}
+    apply();
+  });
+  search.addEventListener('input', () => { q = search.value.trim().toLowerCase(); apply(); });
+  attn.addEventListener('click', () => { onlyAttn = !onlyAttn; apply(); });
+  apply();
+})();
+
+function openAddPayee(){
+  const m = document.getElementById('add-payee-modal');
+  const f = m.querySelector('form'); if (f) f.reset();
+  m.classList.remove('hidden');
+  const n = f && f.querySelector('[name="name"]'); if (n) n.focus();
+}
+
+{% if current_user.role == 'super_admin' %}
+/* Global Crew Database sync (carried over from the Crew page): loops the
+   batched /admin/crew-docs/backfill endpoint until every person-linked
+   doc is copied to Dropbox. */
+window.payeesSyncAllDocs = async function(){
+  const btn = document.getElementById('pay-syncall-btn');
+  if (!btn || btn.disabled) return;
+  if (!confirm('Copy every person-linked document on all current and wrapped projects into the Crew Database folder in Dropbox?\n\nSafe to re-run — documents already copied are skipped.')) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  let copied = 0, skipped = 0, after = 0, rounds = 0;
+  try {
+    for (;;) {
+      btn.textContent = 'Syncing… ' + copied + ' copied';
+      const r = await fetch('/admin/crew-docs/backfill?limit=100&after=' + after, { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) { alert((d && d.error) || ('Sync failed: ' + r.status)); break; }
+      copied += d.copied; skipped += d.skipped;
+      if (d.done || !d.last_id || ++rounds > 200) break;
+      after = d.last_id;
+    }
+    btn.textContent = copied + ' copied' + (skipped ? ' · ' + skipped + ' skipped' : '');
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 6000);
+  } catch (e) {
+    alert('Sync error: ' + e.message);
+    btn.textContent = orig; btn.disabled = false;
+  }
+};
+{% endif %}
+</script>
+{% endblock %}

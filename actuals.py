@@ -2598,7 +2598,7 @@ def aggregate_paid(rows):
     return out
 
 
-def paid_by_payee(payee_id=None, year=None):
+def paid_by_payee(payee_id=None, year=None, by='year'):
     """Paid per (payee, calendar year), split card / non-card — the ONE
     reporting query behind the Payee directory, the Payee page, the CSV
     and the Wrap Book 1099 check.
@@ -2614,7 +2614,9 @@ def paid_by_payee(payee_id=None, year=None):
 
     Returns {payee_id_or_SHARED_LINE: {year: {card, non_card, total, n}}}
     filtered to `payee_id` / `year` when given (year None = every year;
-    undated rows sit under year None).
+    undated rows sit under year None). With by='project' the inner key is
+    the transaction's project_id instead of the year (the Payee page's
+    Projects table) — same rows, same attribution.
 
     Transaction.payee_id does not exist yet (Documents Phase 3). When it
     lands, attribute_payee() returns txn.payee_id and everything above it
@@ -2652,13 +2654,13 @@ def paid_by_payee(payee_id=None, year=None):
             return {}
         q = q.filter(or_(*conds))
 
+    _key = (lambda t: t.project_id) if by == 'project' else txn_year
     rows = []
-    split_parent_ids = set()
     for t in q.all():
         who = attribute_payee(t, doc_owner, line_owners)
         if who is None:
             continue
-        rows.append((who, txn_year(t),
+        rows.append((who, _key(t),
                      signed_amount_value(t.amount, t.is_expense), is_card_payment(t)))
 
     # Split pieces (parents are excluded by counts_as_spend).
@@ -2675,7 +2677,7 @@ def paid_by_payee(payee_id=None, year=None):
                    else (SHARED_LINE if owners else None))
             if who is None or (payee_id is not None and who != payee_id):
                 continue
-            rows.append((who, txn_year(t),
+            rows.append((who, _key(t),
                          signed_amount_value(sp.amount, t.is_expense), is_card_payment(t)))
     except Exception as _e:
         log.warning("[payees] split attribution skipped: %s", _e)

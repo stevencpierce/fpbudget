@@ -13,37 +13,29 @@ from app import app, _require_global_editor, _normalize_phone, _validate_email
 from models import (db, CrewMember, SupportContact, CrewAssignment, Budget,
                     BudgetLine, BudgetDirectContact, ProjectSheet)
 
+# Payee fields the crew forms may carry (DOCUMENTS_HANDOFF Phase 1). Kept
+# as a literal here so this module never imports routes.payees at load
+# time (that module imports app, which imports this one last).
+_PAYEE_FIELDS = ('kind', 'is_w2_employee', 'w9_received_on', 'legal_name',
+                 'address_line1', 'address_line2', 'city', 'state',
+                 'postal_code', 'wrapbook_worker_id', 'notes')
+
+def _payee_next():
+    """Where a crew edit returns to: a /payees/... path when the Payee page's
+    modal sent one (never an off-site URL), else the directory."""
+    nxt = (request.form.get("next") or request.args.get("next") or "").strip()
+    if nxt.startswith("/payees") and "//" not in nxt:
+        return nxt
+    return url_for("crew_list")
+
+
 @app.route("/crew")
 @login_required
 def crew_list():
-    members = CrewMember.query.order_by(CrewMember.department, CrewMember.name).all()
-    # Build {crew_member_id: [project_name, ...]} via CrewAssignment and assigned_crew_id
-    crew_projects = {}
-    rows = (db.session.query(CrewAssignment.crew_member_id, ProjectSheet.name)
-            .join(BudgetLine, BudgetLine.id == CrewAssignment.budget_line_id)
-            .join(Budget, Budget.id == BudgetLine.budget_id)
-            .join(ProjectSheet, ProjectSheet.id == Budget.project_id)
-            .filter(CrewAssignment.crew_member_id.isnot(None))
-            .distinct().all())
-    for crew_id, proj_name in rows:
-        crew_projects.setdefault(crew_id, set()).add(proj_name)
-    rows2 = (db.session.query(BudgetLine.assigned_crew_id, ProjectSheet.name)
-             .join(Budget, Budget.id == BudgetLine.budget_id)
-             .join(ProjectSheet, ProjectSheet.id == Budget.project_id)
-             .filter(BudgetLine.assigned_crew_id.isnot(None))
-             .distinct().all())
-    for crew_id, proj_name in rows2:
-        crew_projects.setdefault(crew_id, set()).add(proj_name)
-    crew_projects = {k: sorted(v) for k, v in crew_projects.items()}
-    # Primary agent per crew member (role_type='agent', active)
-    agent_rows = SupportContact.query.filter_by(role_type='agent', active=True).all()
-    agent_map = {}  # crew_member_id → first agent SupportContact
-    for ag in agent_rows:
-        if ag.crew_member_id not in agent_map:
-            agent_map[ag.crew_member_id] = ag
-    return render_template("crew.html", members=members, crew_projects=crew_projects,
-                           agent_map=agent_map)
-
+    """The Crew Database is now the Payee directory (DOCUMENTS_HANDOFF
+    Phase 1, 2026-11-01): /crew is a redirect so every old link and the
+    nav keep working. The endpoint name stays `crew_list` for url_for."""
+    return redirect(url_for("payees_directory"), code=302)
 
 
 @app.route("/crew/new", methods=["POST"])
@@ -107,6 +99,17 @@ def crew_new():
         m.required_docs = ",".join(str(x).strip() for x in _rd if str(x).strip()) or None
     elif _rd:
         m.required_docs = str(_rd).strip() or None
+    # Payee fields (kind, legal name, address, W-2 flag…) when the form
+    # carries them — the Payee directory's New payee modal does.
+    if any(k in _rd_new for k in _PAYEE_FIELDS) if _rd_new else False:
+        from routes.payees import apply_payee_fields
+        try:
+            apply_payee_fields(m, _rd_new)
+        except ValueError as _pe:
+            if want_json:
+                return jsonify({"error": str(_pe)}), 400
+            flash(str(_pe), "error")
+            return redirect(_payee_next())
     db.session.add(m)
     db.session.commit()
 
@@ -114,7 +117,7 @@ def crew_new():
         return jsonify({"ok": True, "id": m.id, "name": m.name,
                         "department": m.department or "", "company": m.company or ""})
     flash(f"Added {m.name}.", "success")
-    return redirect(url_for("crew_list"))
+    return redirect(_payee_next())
 
 
 @app.route("/crew/<int:cid>/edit", methods=["POST"])
@@ -158,11 +161,29 @@ def crew_edit(cid):
             m.required_docs = (str(_rd).strip() or None) if _rd else None
     if not want_json:
         m.active = request.form.get("active") == "1"
+    # Payee fields (DOCUMENTS_HANDOFF Phase 1): the Payee page's Edit modal
+    # posts them in the same form. The QuickBooks mirror fields are never
+    # accepted here (apply_payee_fields ignores them).
+    _changes = {}
+    if _src is not None and any(k in _src for k in _PAYEE_FIELDS):
+        from routes.payees import apply_payee_fields
+        try:
+            _changes = apply_payee_fields(m, _src)
+        except ValueError as _pe:
+            if want_json:
+                return jsonify({"error": str(_pe)}), 400
+            flash(str(_pe), "error")
+            return redirect(_payee_next())
     db.session.commit()
+    if _changes:
+        from app import _log_activity
+        _log_activity(action='update', entity_type='payee', entity_id=m.id,
+                      entity_label=m.name, field_changes=_changes,
+                      note="Payee record updated (crew edit)")
     if want_json:
         return jsonify({"ok": True, "id": m.id, "name": m.name})
     flash(f"Updated {m.name}.", "success")
-    return redirect(url_for("crew_list"))
+    return redirect(_payee_next())
 
 
 @app.route("/crew/<int:cid>/json", methods=["GET"])
@@ -180,6 +201,17 @@ def crew_get_json(cid):
         "is_vendor": bool(getattr(m, 'is_vendor', False)),
         "loan_out_vendor_id": getattr(m, 'loan_out_vendor_id', None),
         "required_docs": getattr(m, 'required_docs', None) or "",
+        "active": bool(m.active),
+        # Payee fields (Phase 1). qbo_* are read-only mirror values.
+        "kind": getattr(m, 'kind', None) or ('vendor' if m.is_vendor else 'person'),
+        "legal_name": m.legal_name or "", "address_line1": m.address_line1 or "",
+        "address_line2": m.address_line2 or "", "city": m.city or "",
+        "state": m.state or "", "postal_code": m.postal_code or "",
+        "w9_received_on": m.w9_received_on.isoformat() if m.w9_received_on else "",
+        "is_w2_employee": bool(m.is_w2_employee),
+        "wrapbook_worker_id": m.wrapbook_worker_id or "", "notes": m.notes or "",
+        "qbo_vendor_id": m.qbo_vendor_id, "qbo_vendor_1099": m.qbo_vendor_1099,
+        "qbo_origin": m.qbo_origin,
     })
 
 
