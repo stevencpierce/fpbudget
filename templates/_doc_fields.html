@@ -7,29 +7,110 @@
    Context needed: crew_members, all_crew_members, project_locations
    (both rendering routes pass them). #}
 {% set du = du if du is defined else None %}
-<div class="field" style="margin-bottom:.6rem">
+{% set _dd_owner = (du.owner_payee_id or du.crew_member_id) if du else None %}
+<style>
+  .doc-payee-ghost{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:2px 9px;border-radius:12px;
+    border:1px dashed var(--text-muted);color:var(--text);background:transparent;text-decoration:none;cursor:pointer}
+  .doc-payee-ghost:hover{border-style:solid;border-color:var(--accent,#5b8af9)}
+  .doc-payee-ghost .pct{font-size:10.5px;color:var(--text-muted)}
+</style>
+{# Payee — THE owner of the document, shown for EVERY type (DOCUMENTS_HANDOFF
+   Phase 2): paperwork lives with its payee across projects; evidence names
+   its payee for attribution. Writes owner_payee_id (+ alias crew_member_id). #}
+<div class="field" id="docDetailCrewField" style="margin-bottom:.6rem">
+  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Payee <span id="docDetailPayeeHint" style="text-transform:none;letter-spacing:0;opacity:.75"></span></label>
+  <select id="docDetailCrewId" style="width:100%">
+    <option value="">— not linked —</option>
+    {% set _dd_proj_ids = (crew_members or []) | map(attribute='id') | list %}
+    {% if crew_members %}
+    <optgroup label="This project">
+    {% for cm in crew_members %}
+    <option value="{{ cm.id }}" {{ 'selected' if (_dd_owner == cm.id) else '' }}>{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.is_vendor %} (vendor){% elif cm.role %} — {{ cm.role }}{% endif %}</option>
+    {% endfor %}
+    </optgroup>
+    {% endif %}
+    {# Everyone else (owner 2026-10-01): the full roster below the project
+       group; picking someone links them to the project from then on. #}
+    {% set _dd_rest = (all_crew_members or []) | rejectattr('id', 'in', _dd_proj_ids) | list %}
+    {% if _dd_rest %}
+    <optgroup label="{{ 'All people & vendors' if not crew_members else 'Everyone else' }}">
+    {% for cm in _dd_rest %}
+    <option value="{{ cm.id }}" {{ 'selected' if (_dd_owner == cm.id) else '' }}>{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.is_vendor %} (vendor){% elif cm.role %} — {{ cm.role }}{% endif %}</option>
+    {% endfor %}
+    </optgroup>
+    {% endif %}
+  </select>
+  {# Payee suggestion ghost chip (owner 2026-10-20; Phase 2 artboard) —
+     filled by DocForm.crewSuggestLoad from /docs/upload/<uid>/crew-suggest. #}
+  <div id="docDetailCrewSuggest" style="display:none;margin-top:4px;font-size:11.5px;color:var(--text-muted)"></div>
+  {# Create a new person/vendor without leaving the form. (User 2026-06-01.) #}
+  <a href="#" id="docDetailNewCrewLink" onclick="event.preventDefault();DocForm.newCrewShow()"
+     style="font-size:11px;color:#5b8af9;text-decoration:none;display:inline-block;margin-top:4px">+ New person / vendor</a>
+  <div id="docDetailNewCrew" style="display:none;margin-top:6px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-input)">
+    <input type="text" id="docDetailNewCrewName" placeholder="Name" style="width:100%;margin-bottom:6px">
+    <label class="checkbox-label" style="font-size:11px"><input type="checkbox" id="docDetailNewCrewVendor"> This is a vendor / company</label>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button type="button" class="btn btn-xs btn-primary" onclick="DocForm.newCrewSave()">Add &amp; select</button>
+      <button type="button" class="btn btn-xs btn-ghost" onclick="DocForm.newCrewHide()">Cancel</button>
+    </div>
+    <div id="docDetailNewCrewStatus" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div>
+  </div>
+</div>
+<div class="field" id="docDetailVendorField" style="margin-bottom:.6rem">
   <label id="docDetailVendorLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Vendor</label>
   <input type="text" id="docDetailVendor" placeholder="Vendor name…" style="width:100%"
          value="{{ (du.vendor or '') if du else '' }}">
-  {# For Employee/Vendor (supporting) docs the Document Type becomes a
-     controlled dropdown so it classifies precisely and drives the
-     People-tab badges. Shown/hidden in DocForm.applyTypeUI; its value is
-     saved into `vendor`. (User 2026-06-01.) #}
-  <select id="docDetailDocSubtype" style="width:100%;display:none">
+</div>
+{# Employee/Vendor docs: the controlled sub-type (Driver's License, Passport…)
+   is its OWN field, saved as doc_subtype — never into `vendor` (Phase 2).
+   Tax forms are their own type below. (User 2026-06-01 / 2026-11-01.) #}
+<div class="field" id="docDetailSubtypeField" style="margin-bottom:.6rem;display:none">
+  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Document sub-type</label>
+  <select id="docDetailDocSubtype" style="width:100%">
     <option value="">— choose document —</option>
-    <option>Driver's License</option>
-    <option>State / Photo ID</option>
-    <option>Passport</option>
-    <option>Social Security Card</option>
-    <option>W-9</option>
-    <option>W-4</option>
-    <option>I-9</option>
-    <option>Direct Deposit Authorization</option>
-    <option>Tax Credit Documents</option>
-    <option>Work Authorization / Visa</option>
-    <option>Miscellaneous</option>
-    <option>Other</option>
+    {% if du and du.doc_subtype and du.doc_subtype not in ["Driver's License","State / Photo ID","Passport","Social Security Card","W-4","I-9","Direct Deposit Authorization","Tax Credit Documents","Work Authorization / Visa","Miscellaneous","Other"] %}
+    <option selected data-injected="1">{{ du.doc_subtype }}</option>
+    {% endif %}
+    <option {{ 'selected' if (du and du.doc_subtype == "Driver's License") else '' }}>Driver's License</option>
+    <option {{ 'selected' if (du and du.doc_subtype == "State / Photo ID") else '' }}>State / Photo ID</option>
+    <option {{ 'selected' if (du and du.doc_subtype == "Passport") else '' }}>Passport</option>
+    <option {{ 'selected' if (du and du.doc_subtype == "Social Security Card") else '' }}>Social Security Card</option>
+    <option {{ 'selected' if (du and du.doc_subtype == "W-4") else '' }}>W-4</option>
+    <option {{ 'selected' if (du and du.doc_subtype == "I-9") else '' }}>I-9</option>
+    <option {{ 'selected' if (du and du.doc_subtype == "Direct Deposit Authorization") else '' }}>Direct Deposit Authorization</option>
+    <option {{ 'selected' if (du and du.doc_subtype == "Tax Credit Documents") else '' }}>Tax Credit Documents</option>
+    <option {{ 'selected' if (du and du.doc_subtype == "Work Authorization / Visa") else '' }}>Work Authorization / Visa</option>
+    <option {{ 'selected' if (du and du.doc_subtype == "Miscellaneous") else '' }}>Miscellaneous</option>
+    <option {{ 'selected' if (du and du.doc_subtype == "Other") else '' }}>Other</option>
   </select>
+  <div style="font-size:10.5px;color:var(--text-muted);margin-top:2px">A W-9 or W-8 is a <b>Tax form</b> — pick that type instead.</div>
+</div>
+{# Tax forms: kind + date received. NO tax-ID field anywhere — QuickBooks
+   holds the TIN; FPBudget holds the PDF, its kind and the date. (Phase 2.) #}
+<div id="docDetailTaxFormField" style="display:none;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.6rem">
+  <div class="field" style="margin:0">
+    <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Tax form</label>
+    <select id="docDetailTaxKind" style="width:100%">
+      <option value="">— kind —</option>
+      <option value="w9" {{ 'selected' if (du and du.tax_form_kind == 'w9') else '' }}>W-9</option>
+      <option value="w8ben" {{ 'selected' if (du and du.tax_form_kind == 'w8ben') else '' }}>W-8BEN</option>
+      <option value="w8bene" {{ 'selected' if (du and du.tax_form_kind == 'w8bene') else '' }}>W-8BEN-E</option>
+      <option value="w4" {{ 'selected' if (du and du.tax_form_kind == 'w4') else '' }}>W-4</option>
+      <option value="i9" {{ 'selected' if (du and du.tax_form_kind == 'i9') else '' }}>I-9</option>
+      <option value="other" {{ 'selected' if (du and du.tax_form_kind == 'other') else '' }}>Other</option>
+    </select>
+  </div>
+  <div class="field" style="margin:0">
+    <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Received on</label>
+    <input type="date" id="docDetailReceivedOn" style="width:100%"
+           value="{{ du.received_on.isoformat() if (du and du.received_on) else '' }}">
+  </div>
+</div>
+{# COI: the expiry date — red on the Payee page when past, amber within 60 days. #}
+<div class="field" id="docDetailExpiresField" style="margin-bottom:.6rem;display:none">
+  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Expires on</label>
+  <input type="date" id="docDetailExpiresOn" style="width:100%"
+         value="{{ du.expires_on.isoformat() if (du and du.expires_on) else '' }}">
 </div>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-bottom:.6rem">
   <div class="field" id="docDetailAmountField" style="margin:0">
@@ -64,8 +145,8 @@
     </datalist>
   </div>
 </div>
-{# Type-specific identifier — invoice#, PO#, tax ID, policy#, etc. The
-   label changes with the selected Doc Type. #}
+{# Type-specific identifier — invoice#, PO#, policy#, etc. (never a tax
+   id). The label changes with the selected Doc Type. #}
 <div class="field" id="docDetailDocNumField" style="margin-bottom:.6rem;display:none">
   <label id="docDetailDocNumLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Document #</label>
   <input type="text" id="docDetailDocNum" placeholder="—" style="width:100%"
@@ -90,47 +171,6 @@
   <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant address</label><input type="text" id="docDetailMerchAddr" placeholder="street, city, state" style="width:100%"></div>
   <div class="field" style="margin:8px 0 0"><label style="font-size:10.5px;color:var(--text-muted)">Merchant phone</label><input type="text" id="docDetailMerchPhone" placeholder="—" style="width:100%"></div>
 </details>
-{# Crew member picker — shown per field spec (tax_form / contract /
-   release / payroll / timecard / invoice / employee_vendor_doc). #}
-<div class="field" id="docDetailCrewField" style="margin-bottom:.6rem;display:none">
-  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Person / Vendor</label>
-  <select id="docDetailCrewId" style="width:100%">
-    <option value="">— not linked —</option>
-    {% set _dd_proj_ids = (crew_members or []) | map(attribute='id') | list %}
-    {% if crew_members %}
-    <optgroup label="This project">
-    {% for cm in crew_members %}
-    <option value="{{ cm.id }}" {{ 'selected' if (du and du.crew_member_id == cm.id) else '' }}>{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.is_vendor %} (vendor){% elif cm.role %} — {{ cm.role }}{% endif %}</option>
-    {% endfor %}
-    </optgroup>
-    {% endif %}
-    {# Everyone else (owner 2026-10-01): the full roster below the project
-       group; picking someone links them to the project from then on. #}
-    {% set _dd_rest = (all_crew_members or []) | rejectattr('id', 'in', _dd_proj_ids) | list %}
-    {% if _dd_rest %}
-    <optgroup label="{{ 'All people & vendors' if not crew_members else 'Everyone else' }}">
-    {% for cm in _dd_rest %}
-    <option value="{{ cm.id }}" {{ 'selected' if (du and du.crew_member_id == cm.id) else '' }}>{{ cm.name or cm.email or ('Crew #' ~ cm.id) }}{% if cm.is_vendor %} (vendor){% elif cm.role %} — {{ cm.role }}{% endif %}</option>
-    {% endfor %}
-    </optgroup>
-    {% endif %}
-  </select>
-  {# Person auto-suggest chip (owner 2026-10-20) — filled by
-     DocForm.crewSuggestLoad from /docs/upload/<uid>/crew-suggest. #}
-  <div id="docDetailCrewSuggest" style="display:none;margin-top:4px;font-size:11.5px;color:var(--text-muted)"></div>
-  {# Create a new person/vendor without leaving the form. (User 2026-06-01.) #}
-  <a href="#" id="docDetailNewCrewLink" onclick="event.preventDefault();DocForm.newCrewShow()"
-     style="font-size:11px;color:#5b8af9;text-decoration:none;display:inline-block;margin-top:4px">+ New person / vendor</a>
-  <div id="docDetailNewCrew" style="display:none;margin-top:6px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-input)">
-    <input type="text" id="docDetailNewCrewName" placeholder="Name" style="width:100%;margin-bottom:6px">
-    <label class="checkbox-label" style="font-size:11px"><input type="checkbox" id="docDetailNewCrewVendor"> This is a vendor / company</label>
-    <div style="display:flex;gap:6px;margin-top:6px">
-      <button type="button" class="btn btn-xs btn-primary" onclick="DocForm.newCrewSave()">Add &amp; select</button>
-      <button type="button" class="btn btn-xs btn-ghost" onclick="DocForm.newCrewHide()">Cancel</button>
-    </div>
-    <div id="docDetailNewCrewStatus" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div>
-  </div>
-</div>
 {# Location picker — shown for insurance/COI and location releases. #}
 <div class="field" id="docDetailLocationField" style="margin-bottom:.6rem;display:none">
   <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Location</label>
@@ -159,7 +199,7 @@
     <option value="timecard" {{ 'selected' if _dd_cat == 'timecard' else '' }}>Timecard</option>
     <option value="legal" {{ 'selected' if _dd_cat == 'legal' else '' }}>Legal</option>
     <option value="release" {{ 'selected' if _dd_cat == 'release' else '' }}>Release (Talent / Location)</option>
-    <option value="employee_vendor_doc" {{ 'selected' if _dd_cat == 'employee_vendor_doc' else '' }}>Employee/Vendor Doc (DTR, ID, W-9…)</option>
+    <option value="employee_vendor_doc" {{ 'selected' if _dd_cat == 'employee_vendor_doc' else '' }}>Employee/Vendor Doc (ID, DTR, onboarding)</option>
     <option value="misc" {{ 'selected' if _dd_cat == 'misc' else '' }}>Miscellaneous</option>
   </select>
 </div>

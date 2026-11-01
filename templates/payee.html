@@ -25,7 +25,13 @@
         {% for y in d.years %}<option value="{{ y }}" {% if y == d.year %}selected{% endif %}>{{ y }}</option>{% endfor %}
       </select>
       <button type="button" class="pay-btn" onclick="openEditPayee()">Edit</button>
-      <button type="button" class="pay-btn primary" disabled title="Upload from the Payee page arrives with Documents Phase 2. Until then attach documents from a project's Docs tab with the Person/Vendor picker.">Upload document</button>
+      {# Upload paperwork straight to this payee — no project (Documents
+         Phase 2). POST /payees/<id>/docs/upload runs the one ingest
+         pipeline and files to <OPS>/Crew Database/<Payee>/<Year>/. #}
+      <button type="button" class="pay-btn primary" id="pp-upload-btn" onclick="document.getElementById('pp-upload-file').click()"
+              title="Upload a W-9, COI, ID or contract that belongs to this payee. It files to the Crew Database folder and needs no project.">Upload document</button>
+      <input type="file" id="pp-upload-file" multiple accept="image/*,application/pdf,.heic,.heif" style="display:none"
+             onchange="payeeUploadFiles(this.files); this.value='';">
     </div>
   </div>
 
@@ -155,17 +161,25 @@
 
       <section class="pay-card" aria-label="Documents on file">
         <div class="pay-card-h"><span>Documents on file</span><span class="sub">Crew Database · Dropbox</span></div>
+        <div id="pp-upload-status" style="display:none;font-size:.8rem;color:var(--text-muted);padding:8px 16px;border-bottom:1px solid var(--border)"></div>
         {% for g in d.paperwork %}
         <div class="pay-grp">{{ g.label }}</div>
         {% for doc in g.docs %}
-        <div class="pay-doc{% if doc.coi %} {{ doc.coi.state if doc.coi.state in ('warn','bad') else '' }}{% endif %}">
+        <div class="pay-doc{% if doc.coi and doc.coi.state in ('warn','bad') %} {{ doc.coi.state }}{% elif doc.dup_pending %} warn{% endif %}">
           <span class="pay-dot {{ 'ok' if doc.synced else '' }}" title="{{ 'In the Crew Database folder' if doc.synced else 'Not yet copied to Dropbox' }}"></span>
-          <a class="nm" href="{{ doc.url }}" target="_blank" rel="noopener" title="{{ doc.name }}">{% if doc.subtype %}{{ doc.subtype }} · {% endif %}{{ doc.name }}{% if doc.project_name %} <span class="pay-chip sq" style="margin-left:6px">{{ doc.project_name }}</span>{% endif %}</a>
-          {% if doc.coi %}<span class="dt {{ doc.coi.state }} pay-num">{{ doc.coi.text }}</span>{% else %}<span class="dt pay-num">{{ doc.date_label }}</span>{% endif %}
+          <a class="nm" href="{{ doc.editor_url }}" title="{{ doc.name }} — open in the editor">{% if doc.subtype %}{{ doc.subtype }} · {% endif %}{{ doc.name }}{% if doc.project_name %} <span class="pay-chip sq" style="margin-left:6px">{{ doc.project_name }}</span>{% endif %}</a>
+          <a href="{{ doc.url }}" target="_blank" rel="noopener" title="Open the file" style="font-size:.78rem;color:var(--text-muted);text-decoration:none">↗</a>
+          {% if doc.dup_pending %}
+          <span class="dt warn">Possible duplicate{% if doc.duplicate_of_id %} of #{{ doc.duplicate_of_id }}{% endif %}</span>
+          <button type="button" class="btn btn-xs btn-primary" onclick="payeeResolveDup({{ doc.id }}, 'replace')" title="This newer copy replaces the older one (it moves to the Trash)">Replace</button>
+          <button type="button" class="btn btn-xs btn-outline" onclick="payeeResolveDup({{ doc.id }}, 'keep')" title="Keep both on file">Keep both</button>
+          {% elif doc.coi %}<span class="dt {{ doc.coi.state }} pay-num" title="COI expiry">{{ doc.coi.text }}</span>
+          {% elif doc.category == 'tax_form' and doc.received_on %}<span class="dt pay-num" title="Received">received {{ doc.received_on | fmtdate }}</span>
+          {% else %}<span class="dt pay-num">{{ doc.date_label }}</span>{% endif %}
         </div>
         {% endfor %}
         {% endfor %}
-        {% if not d.paperwork %}<div class="pay-empty">No tax forms, IDs, contracts or COIs on file.</div>{% endif %}
+        {% if not d.paperwork %}<div class="pay-empty">No tax forms, IDs, contracts or COIs on file. Use <b>Upload document</b> above — no project needed.</div>{% endif %}
         <div class="pay-card-f">
           <span style="display:inline-flex;align-items:center;gap:6px" id="pp-sync-status"><span class="pay-dot {{ 'ok' if not d.paperwork_unsynced and d.paperwork else '' }}"></span>{% if not d.paperwork %}Nothing to sync{% elif d.paperwork_unsynced %}{{ d.paperwork_unsynced }} not yet in Dropbox{% else %}Synced to Dropbox{% endif %}</span>
           {% if current_user.role == 'super_admin' %}<button type="button" class="btn btn-xs btn-outline" id="pp-sync-btn" onclick="payeeSyncDocs({{ id.id }})">Sync to Dropbox</button>{% endif %}
@@ -260,6 +274,48 @@ function openEditPayee(){
   m.classList.remove('hidden');
 }
 document.addEventListener('keydown', function(e){ if (e.key === 'Escape') document.getElementById('edit-payee-modal').classList.add('hidden'); });
+
+/* Upload paperwork to this payee (Documents Phase 2): sequential, fail-open
+   per file, then reload so the Documents-on-file card and the W-9 tile
+   reflect the new state. Same response codes as the project upload. */
+var PAYEE_UPLOAD_URL = {{ d.upload_url | tojson }};
+window.payeeUploadFiles = async function(fileList){
+  var files = Array.prototype.slice.call(fileList || []).filter(function(f){ return f && f.name; });
+  if (!files.length) return;
+  var btn = document.getElementById('pp-upload-btn'), st = document.getElementById('pp-upload-status');
+  btn.disabled = true; st.style.display = 'block';
+  var ok = 0, failed = 0, dup = 0, msgs = [];
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i];
+    st.textContent = 'Uploading ' + f.name + '… (' + (i + 1) + '/' + files.length + ')';
+    try {
+      var fd = new FormData(); fd.append('file', f);
+      var r = await fetch(PAYEE_UPLOAD_URL, { method: 'POST', body: fd, credentials: 'same-origin' });
+      var d = await r.json().catch(function(){ return {}; });
+      if (r.status === 201 || r.status === 202) {
+        ok++;
+        if (d.is_duplicate) { dup++; msgs.push(f.name + ': possible duplicate — Replace or Keep both below'); }
+        else if (r.status === 202) msgs.push(f.name + ': uploaded, needs a type — open it to finish');
+      } else { failed++; msgs.push(f.name + ': ' + (d.error || ('HTTP ' + r.status))); }
+    } catch (e) { failed++; msgs.push(f.name + ': network error'); }
+  }
+  st.textContent = ok + ' uploaded' + (failed ? ', ' + failed + ' failed' : '') + (dup ? ', ' + dup + ' flagged as a possible duplicate' : '')
+    + (msgs.length ? ' — ' + msgs.join(' · ') : '') + (ok ? ' · refreshing…' : '');
+  btn.disabled = false;
+  if (ok) setTimeout(function(){ location.reload(); }, failed || dup ? 2500 : 900);
+};
+/* Replace / Keep both for a flagged second W-9 or ID (the same
+   /resolve-duplicate route the Docs Inbox uses). */
+window.payeeResolveDup = async function(uid, action){
+  if (action === 'replace' && !confirm('Replace the older document with this one? The older copy moves to the Trash (restorable).')) return;
+  try {
+    var r = await fetch('/docs/upload/' + uid + '/resolve-duplicate', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: action }) });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok) { alert(d.error || ('Failed (' + r.status + ')')); return; }
+    location.reload();
+  } catch (e) { alert('Error: ' + e.message); }
+};
 
 {% if current_user.role == 'super_admin' %}
 window.payeeSyncDocs = async function(cid){

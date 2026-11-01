@@ -4,124 +4,72 @@
 {# ═══════════════════════════════════════════════════════════════════════════
    STANDALONE doc editor (User 2026-07). A fast, dedicated screen so the user
    doesn't pay the ~6.5MB budget-page cost just to tweak a receipt. Big preview
-   on the LEFT (~57%), editable form + itemization grid on the RIGHT.
+   on the LEFT (~57%), the editor on the RIGHT.
 
-   Everything here is SELF-CONTAINED: the JS below is a faithful, renamed copy
-   (ed*/_ed* prefixes) of the budget.html doc-detail logic. It talks ONLY to the
-   EXISTING doc endpoints — no new server code except this page's route.
-
-   The budget-line picker options are rendered server-side into #edLineOptsTpl
-   using the SAME Jinja loop as actualsLineOptsTpl (actuals_pick_groups), then
-   cloned into each <select> on demand. Keep this page LEAN. ══════════════════ #}
+   Since DOCUMENTS_HANDOFF Phase 2 the editor is ONE include —
+   templates/_doc_editor.html driven by static/doc-editor.js — shared with the
+   budget page's modal, so every action (itemize, parse payroll, backups,
+   travel, match, log expense, payee, duplicate review) is here too. This
+   page only supplies the glue: the budget-line option template, generic
+   set-line, Back / Save & close, the inbox's ‹ Prev / Next › list, delete
+   navigation. It also serves a document with NO project (Payee-page
+   paperwork): then there is no tab strip, no line picker, and Back returns
+   to the owner's Payee page. ════════════════════════════════════════════ #}
 
 {% block content %}
+{% if project %}
 {# Shared project tab strip so this standalone editor keeps the SAME nav chrome
    as the budget page — user can jump anywhere without a different interface. #}
 {% include "_project_tabs.html" with context %}
-{# PID / UID are available to the inline JS via these server-baked constants. #}
+{% endif %}
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
-  <a id="edBackLink" href="/projects/{{ project.id }}/budget?tab=docs"
-     style="font-size:13px;padding:5px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;text-decoration:none">← Back to docs</a>
-  <h1 id="edDocTitle" style="margin:0;font-size:1.05rem;line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+  <a id="edBackLink" href="{% if project %}/projects/{{ project.id }}/budget?tab=docs{% elif owner %}{{ url_for('payee_page', payee_id=owner.id) }}{% else %}{{ url_for('payees_directory') }}{% endif %}"
+     style="font-size:13px;padding:5px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;text-decoration:none">← {% if project %}Back to docs{% elif owner %}Back to {{ owner.name }}{% else %}Back to payees{% endif %}</a>
+  <h1 id="docDetailTitle" style="margin:0;font-size:1.05rem;line-height:1.2;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
     {{ upload.filed_filename or upload.original_filename or 'Document' }}
   </h1>
+  {% if not project and owner %}
+  <span style="font-size:12px;color:var(--text-muted)">Paperwork · <a href="{{ url_for('payee_page', payee_id=owner.id) }}">{{ owner.name }}</a></span>
+  {% endif %}
+  <a id="docDetailArchiveLink" href="#" target="_blank"
+     style="font-size:12px;padding:5px 12px;border-radius:6px;background:#1a2a1e;color:#22c55e;border:1px solid #1a4228;text-decoration:none;display:none"
+     title="Download the original uploaded file from the durable source archive">📎 Source</a>
   {# Force-download the raw file with its proper filed name so the user can
      hand off the document. ?download=1 → attachment disposition (app.py). #}
   <a id="edDownloadLink" href="/docs/upload/{{ upload.id }}/raw?download=1" download
      style="font-size:12px;padding:5px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;text-decoration:none">⬇ Download</a>
-  <a id="edDropboxLink" href="#" target="_blank"
+  <a id="docDetailDropboxLink" href="#" target="_blank"
      style="font-size:12px;padding:5px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#5b8af9;text-decoration:none">Open in Dropbox ↗</a>
-  <button type="button" id="edDeleteBtn" title="Move this document to Trash (restorable from Docs Trash)"
-          style="font-size:12px;padding:5px 12px;border-radius:6px;background:#2a1618;border:1px solid #6f2f34;color:#e88;cursor:pointer">🗑 Delete</button>
 </div>
 
 <div style="display:flex;gap:16px;align-items:stretch;min-height:70vh">
   <!-- ═══ LEFT: preview (big + readable) ═══ -->
   <div style="flex:0 0 57%;max-width:57%;background:#0a0d12;border:1px solid var(--border);border-radius:10px;display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden">
-    <div id="edZoomBar" style="display:none;gap:4px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--border);flex-shrink:0">
-      <button type="button" id="edZoomOut"  title="Zoom out"  style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;width:30px;height:28px;border-radius:5px;cursor:pointer;font-size:15px">−</button>
-      <span id="edZoomLabel" style="font-size:11px;color:var(--text-muted);min-width:44px;text-align:center">Fit</span>
-      <button type="button" id="edZoomIn"   title="Zoom in"   style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;width:30px;height:28px;border-radius:5px;cursor:pointer;font-size:15px">+</button>
-      <button type="button" id="edZoomFit"  title="Fit to window" style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;height:28px;padding:0 10px;border-radius:5px;cursor:pointer;font-size:11px">Fit</button>
-      <button type="button" id="edZoom100"  title="Actual size" style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;height:28px;padding:0 10px;border-radius:5px;cursor:pointer;font-size:11px">1:1</button>
+    <div id="docDetailZoomBar" style="display:none;gap:4px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--border);flex-shrink:0">
+      <button type="button" id="docDetailZoomOut"  title="Zoom out"  style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;width:30px;height:28px;border-radius:5px;cursor:pointer;font-size:15px">−</button>
+      <span id="docDetailZoomLabel" style="font-size:11px;color:var(--text-muted);min-width:44px;text-align:center">Fit</span>
+      <button type="button" id="docDetailZoomIn"   title="Zoom in"   style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;width:30px;height:28px;border-radius:5px;cursor:pointer;font-size:15px">+</button>
+      <button type="button" id="docDetailZoomFit"  title="Fit to window" style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;height:28px;padding:0 10px;border-radius:5px;cursor:pointer;font-size:11px">Fit</button>
+      <button type="button" id="docDetailZoom100"  title="Actual size" style="background:#1a1f2a;border:1px solid var(--border);color:#cbd5e1;height:28px;padding:0 10px;border-radius:5px;cursor:pointer;font-size:11px">1:1</button>
     </div>
-    <div id="edPreview" style="flex:1;display:flex;align-items:center;justify-content:center;min-height:420px;overflow:auto;position:relative">
+    <div id="docDetailPreview" style="flex:1;display:flex;align-items:center;justify-content:center;min-height:420px;overflow:auto;position:relative">
       <p class="muted" style="padding:1rem">Loading preview…</p>
     </div>
   </div>
 
-  <!-- ═══ RIGHT: editable form ═══ -->
+  <!-- ═══ RIGHT: THE editor ═══ -->
   <div style="flex:1;min-width:480px;border:1px solid var(--border);border-radius:10px;background:var(--bg-card);padding:16px 18px;overflow-y:auto">
-
     {% set du = upload %}
-    {% include "_doc_fields.html" %}
-
-    <div class="field" style="margin-bottom:.6rem">
-      <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Note</label>
-      <input type="text" id="edNote" placeholder="—" style="width:100%"
-             value="{{ upload.note or '' }}">
-    </div>
-
-    {# 🧾 Receipt detail (subtotal · tax · tip · address). Prefilled from
-       /line-items on load (same as the modal). #}
-    {# receipt detail now rendered by _doc_fields.html above #}
-
-    <div style="display:flex;gap:10px;align-items:center;margin:4px 0 14px;flex-wrap:wrap">
-      <button type="button" id="edSaveBtn" class="btn btn-primary" style="padding:7px 18px">Save</button>
-      <button type="button" id="edSaveCloseBtn" class="btn" style="padding:7px 18px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff">Save &amp; close</button>
-      <span id="edSaveStatus" style="font-size:12px;color:var(--text-muted)"></span>
-      {# ‹ Prev / Next › across the INBOX'S FILTERED list (fpInboxNav) — saves
-         the doc (and any dirty itemization) before advancing. Hidden unless we
-         arrived from the inbox with a nav list. (User 2026-07.) #}
-      <span id="edNavWrap" style="display:none;margin-left:auto;align-items:center;gap:6px">
-        <button type="button" id="edPrevBtn" class="btn" style="padding:7px 12px;background:var(--bg-input);border:1px solid var(--border);color:var(--text)">‹ Save + Prev</button>
-        <span id="edNavPos" style="font-size:11.5px;color:var(--text-muted);white-space:nowrap"></span>
-        <button type="button" id="edNextBtn" class="btn" style="padding:7px 12px;background:#10231a;border:1px solid #1f6f4a;color:#5fd0a0">Save + Next ›</button>
-      </span>
-    </div>
-
-    {# ── Budget-line coding ── #}
-    <div id="edCodingBlock" class="field" style="margin-bottom:.6rem;display:none">
-      <label id="edCodingLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Main budget line</label>
-      <div id="edSuggest" style="margin:2px 0 5px;display:none"></div>
-      <select id="edLinePicker" data-tid="" data-current="" data-populated="0"
-              style="width:100%;font-size:12.5px;padding:5px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:6px">
-        <option value="">— pick budget line —</option>
-      </select>
-      <div id="edCodingStatus" style="font-size:10.5px;color:var(--text-muted);margin-top:3px"></div>
-    </div>
-
-    {# ── 🧾 Itemize into budget lines ── #}
-    <details id="edItemizeBlock" class="field" style="margin-bottom:.6rem;display:none;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
-      <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">
-        🧾 Itemize into budget lines <span id="edItemizeCount" style="color:#5fd0a0"></span>
-      </summary>
-      <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Peel off parts of this document to other budget lines. Whatever you don't itemize stays on the <b>main line</b> (the picker above). The main line's amount updates automatically as you add sublines.</div>
-      <div id="edItemizeHdr" style="display:none;gap:6px;align-items:center;margin-bottom:4px;font-size:9.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)">
-        <span style="flex:1.5;min-width:0">Description</span>
-        <span style="width:88px;text-align:right">Amount</span>
-        <span style="flex:1.3;min-width:0">Budget line</span>
-        <span style="width:18px"></span>
-      </div>
-      <div id="edItemizeRows"></div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
-        <button type="button" id="edItemAddBtn" style="padding:5px 10px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;font-size:12px;cursor:pointer">+ Add line</button>
-        <button type="button" id="edItemizePullBtn" style="padding:5px 10px;border-radius:6px;background:#10231a;border:1px solid #1f5140;color:#5fd0a0;font-size:12px;cursor:pointer">⤓ Pull items from OCR</button>
-        <span style="flex:1"></span>
-        <span id="edItemizeTotal" style="font-size:12px;color:var(--text-muted)"></span>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-        <button type="button" id="edItemizeSaveBtn" style="padding:6px 14px;border-radius:6px;background:#1f7a4d;border:none;color:#fff;font-size:12px;cursor:pointer;font-weight:600">Save itemization</button>
-        <span id="edItemizeStatus" style="font-size:11px;color:var(--text-muted)"></span>
-      </div>
-    </details>
+    {% set editor_mode = 'page' %}
+    {% include "_doc_editor.html" %}
   </div>
 </div>
 
-{# Shared budget-line options — rendered ONCE, cloned into each picker lazily.
-   IDENTICAL Jinja loop to actualsLineOptsTpl in budget.html (same context var
-   actuals_pick_groups). (User 2026-07.) #}
-<select id="edLineOptsTpl" style="display:none" aria-hidden="true" tabindex="-1">
+{% if project %}
+{# Shared budget-line options — rendered ONCE, cloned into each picker lazily
+   by DocEditor.fillPickerFromTemplate. IDENTICAL Jinja loop to
+   actualsLineOptsTpl in budget.html (same context var actuals_pick_groups). #}
+<select id="docDetailLineOptsTpl" style="display:none" aria-hidden="true" tabindex="-1">
   <option value="">— pick budget line —</option>
   <option value="not_project" style="color:#e0a060">🚫 Not a project expense</option>
   <option value="__clear__" style="color:#e08080">✕ Clear assignment</option>
@@ -134,62 +82,43 @@
   </optgroup>
   {% endfor %}
 </select>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='doc-form.js') }}?v={{ APP_COMMIT | default('x') }}"></script>
+<script src="{{ url_for('static', filename='doc-editor.js') }}?v={{ APP_COMMIT | default('x') }}"></script>
 <script>
 (function () {
   'use strict';
   // Server-baked identifiers (this page's own scope — nothing derived from the
-  // budget page globals). (User 2026-07.)
-  var PID = {{ project.id }};
+  // budget page globals). PID is null for project-less paperwork.
+  var PID = {{ project.id if project else 'null' }};
   var UID = {{ upload.id }};
-
-  // ── tiny helpers ──────────────────────────────────────────────────────────
   function $(id) { return document.getElementById(id); }
-  function esc(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-  function parseMoney(v) {
-    if (v == null) return null;
-    var s = String(v).replace(/[$,\s]/g, '');
-    if (s === '' || s === '-') return null;
-    var n = parseFloat(s);
-    return isFinite(n) ? n : null;
-  }
-  function fmtMoney(v) {
-    var n = parseMoney(v);
-    if (n == null) return '';
-    return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
 
   // ── Back / close destination: the docs list, with ?tab=docs so the budget
-  // page restores the exact list state (filter/sort/scroll) the user left.
-  // (User 2026-07 — "when I close this window out or click save, it should take
-  // me back to exactly where I was in the list before with the same filtering.")
-  // When we arrive from the Docs Inbox (?from=inbox), Back returns to the inbox
-  // list (which restores its own fpInboxState); otherwise the budget docs tab.
+  // page restores the exact list state the user left (user 2026-07). From
+  // the Docs Inbox (?from=inbox) Back returns to the inbox; a project-less
+  // document returns to its owner's Payee page.
   var _fromInbox = (new URLSearchParams(location.search).get('from') === 'inbox');
-  var BACK_URL = _fromInbox
-    ? ('/projects/' + PID + '/docs')
-    : ('/projects/' + PID + '/budget?tab=docs');
+  var BACK_URL = !PID ? $('edBackLink').getAttribute('href')
+    : (_fromInbox ? ('/projects/' + PID + '/docs') : ('/projects/' + PID + '/budget?tab=docs'));
   $('edBackLink').href = BACK_URL;
   function goBack() {
     // Unsaved itemization rows must never vanish silently (2026-07).
-    if (typeof _itemDirty !== 'undefined' && _itemDirty &&
-        !confirm('You have UNSAVED itemization changes — leave without saving them?')) return;
+    if (window._docItemizeDirty && !confirm('You have UNSAVED itemization changes — leave without saving them?')) return;
+    window._docItemizeDirty = false;
     location.href = BACK_URL;
   }
+  window.addEventListener('beforeunload', function (e) {
+    if (window._docItemizeDirty) { e.preventDefault(); e.returnValue = ''; }
+  });
 
   // ── ‹ Prev / Next › across the inbox's FILTERED list (User 2026-07:
   // "next and previous that saves items as well and obeys the filter").
-  // fpInboxNav is stashed by the inbox on row-open: the ordered ids of exactly
-  // what the user's chip/facets/search were showing. Saving happens BEFORE the
-  // move — doc fields always, itemization only when dirty — and a failed save
-  // keeps you on the page (the loud alerts already fire).
+  // fpInboxNav is stashed by the inbox on row-open. Saving happens BEFORE
+  // the move — doc fields always, itemization only when dirty.
   var _nav = null;
   try {
     if (_fromInbox) {
@@ -207,23 +136,21 @@
     if (!_nav) return;
     var target = _nav.ids[_nav.idx + dir];
     if (target === undefined) return;
-    var pBtn = $('edPrevBtn'), nBtn = $('edNextBtn');
+    var pBtn = $('docDetailPrevBtn'), nBtn = $('docDetailNextBtn');
     if (pBtn) pBtn.disabled = true;
     if (nBtn) { nBtn.disabled = true; nBtn.textContent = 'Saving…'; }
     var chain = Promise.resolve(true);
-    // Itemization first (it may re-code the doc), then the metadata save.
-    if (typeof _itemDirty !== 'undefined' && _itemDirty) {
-      chain = chain.then(function () { return itemizeSave(); })
-                   .then(function () { return !_itemDirty; });   // success clears the flag
+    if (window._docItemizeDirty) {
+      chain = chain.then(function () { return window.DocEditor.itemizeSave(); });
     }
     chain.then(function (okSoFar) {
       if (okSoFar === false) return false;
-      return saveDoc();   // resolves true/false
+      return window.DocEditor.save().then(function (d) { return !!d; });
     }).then(function (ok) {
       if (ok === false) {
         if (pBtn) pBtn.disabled = false;
         if (nBtn) { nBtn.disabled = false; nBtn.textContent = 'Save + Next ›'; }
-        return;   // save failed — alerts already shown; stay put
+        return;   // save failed — stay put
       }
       location.href = '/projects/' + PID + '/docs/' + target + '/editor?from=inbox';
     }).catch(function () {
@@ -232,16 +159,15 @@
     });
   }
   if (_nav) {
-    var _wrap = $('edNavWrap');
+    var _wrap = $('docDetailNavWrap');
     if (_wrap) {
       _wrap.style.display = 'inline-flex';
-      var _pos = $('edNavPos');
+      var _pos = $('docDetailNavPos');
       if (_pos) _pos.textContent = (_nav.idx + 1) + ' of ' + _nav.ids.length;
-      if (_nav.idx === 0) $('edPrevBtn').disabled = true;
-      if (_nav.idx === _nav.ids.length - 1) $('edNextBtn').disabled = true;
-      $('edPrevBtn').addEventListener('click', function () { _navGo(-1); });
-      $('edNextBtn').addEventListener('click', function () { _navGo(1); });
-      // ←/→ keys navigate too, unless the user is typing in a field.
+      if (_nav.idx === 0) $('docDetailPrevBtn').disabled = true;
+      if (_nav.idx === _nav.ids.length - 1) $('docDetailNextBtn').disabled = true;
+      $('docDetailPrevBtn').addEventListener('click', function () { _navGo(-1); });
+      $('docDetailNextBtn').addEventListener('click', function () { _navGo(1); });
       document.addEventListener('keydown', function (e) {
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
         var t = e.target;
@@ -254,498 +180,50 @@
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
       var t = e.target;
-      // Don't hijack Escape while the user is mid-edit in a field.
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) { t.blur(); return; }
       goBack();
     }
   });
 
-  // ── 🗑 Delete → soft-delete to the Docs Trash (User 2026-07-08: "no way to
-  // delete documents from the full doc editor"). Server semantics
-  // (docs_upload_delete): restorable from Docs Trash, Dropbox copies →
-  // /_TRASH/, matched bank charges are UNLINKED, never deleted. After the
-  // delete, continue to the next doc in the inbox's filtered list when there
-  // is one (prev as fallback), else back to the list; the stashed nav ids are
-  // pruned so 'N of M' stays honest.
-  var _delBtn = $('edDeleteBtn');
-  if (_delBtn) _delBtn.addEventListener('click', function () {
-    if (!confirm('Move this document to Trash?\n\nIt can be restored from the Docs Trash. A matched bank charge is unlinked, not deleted.')) return;
-    _delBtn.disabled = true; _delBtn.textContent = 'Deleting…';
-    fetch('/docs/upload/' + UID + '/delete', { method: 'POST', credentials: 'same-origin' })
-      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
-      .then(function (res) {
-        if (!res.ok || (res.d && res.d.error)) throw new Error((res.d && res.d.error) || 'delete failed');
-        var target = null;
-        if (_nav) {
-          target = (_nav.ids[_nav.idx + 1] !== undefined) ? _nav.ids[_nav.idx + 1]
-                 : ((_nav.ids[_nav.idx - 1] !== undefined) ? _nav.ids[_nav.idx - 1] : null);
-          try {
-            var rawN = sessionStorage.getItem('fpInboxNav');
-            if (rawN) {
-              var nv = JSON.parse(rawN);
-              nv.ids = (nv.ids || []).filter(function (i) { return i !== UID; });
-              sessionStorage.setItem('fpInboxNav', JSON.stringify(nv));
-            }
-          } catch (e2) {}
-        }
-        // Doc is gone — clear the unsaved-itemization guard so navigation
-        // isn't blocked by a beforeunload prompt about a deleted doc.
-        try { _itemDirty = false; } catch (e3) {}
-        location.href = (target != null)
-          ? '/projects/' + PID + '/docs/' + target + '/editor?from=inbox'
-          : BACK_URL;
-      })
-      .catch(function (e) {
-        alert('Could not delete: ' + e.message);
-        _delBtn.disabled = false; _delBtn.textContent = '🗑 Delete';
-      });
+  // Save & close: save, then (only on success) return to the list.
+  var cbtn = $('docDetailSaveCloseBtn');
+  if (cbtn) cbtn.addEventListener('click', function () {
+    cbtn.disabled = true; cbtn.textContent = 'Saving…';
+    window.DocEditor.save().then(function (d) {
+      if (d) { goBack(); return; }
+      cbtn.disabled = false; cbtn.textContent = 'Save & close';
+    });
   });
 
-  // ── Fill a <select> from the shared options template (lazy clone). ──────────
-  function fillPicker(sel) {
-    if (!sel || sel.dataset.populated === '1') return;
-    var tpl = $('edLineOptsTpl');
-    if (!tpl) return;
-    sel.innerHTML = tpl.innerHTML;
-    sel.dataset.populated = '1';
-    sel.value = sel.dataset.current || '';
-  }
-
-  // ══ PREVIEW (image zoom / pan + PDF iframe) ════════════════════════════════
-  var _zoom = 1, _fit = true, _img = null;
-  function applyZoom() {
-    if (!_img) return;
-    _img.style.transform = 'scale(' + _zoom + ')';
-    var lbl = $('edZoomLabel');
-    if (lbl) lbl.textContent = _fit ? 'Fit' : Math.round(_zoom * 100) + '%';
-  }
-  function fitImage() {
-    if (!_img) return;
-    var wrap = $('edPreview');
-    var nw = _img.naturalWidth || _img.width, nh = _img.naturalHeight || _img.height;
-    if (!nw || !nh) { _zoom = 1; _fit = true; applyZoom(); return; }
-    var sw = (wrap.clientWidth - 16) / nw, sh = (wrap.clientHeight - 16) / nh;
-    _zoom = Math.min(sw, sh, 1) || 1;
-    _fit = true; applyZoom();
-  }
-  function setZoom(z) { _zoom = Math.max(0.1, Math.min(z, 8)); _fit = false; applyZoom(); }
-  function initImageControls() {
-    var bar = $('edZoomBar'); if (bar) bar.style.display = 'flex';
-    $('edZoomOut').onclick  = function () { setZoom(_zoom * 0.8); };
-    $('edZoomIn').onclick   = function () { setZoom(_zoom * 1.25); };
-    $('edZoomFit').onclick  = function () { fitImage(); };
-    $('edZoom100').onclick  = function () { setZoom(1); };
-    // Drag-to-pan (the parent scrolls via overflow:auto).
-    var wrap = $('edPreview'), down = false, sx = 0, sy = 0, sl = 0, st = 0;
-    if (_img) {
-      _img.addEventListener('mousedown', function (e) {
-        down = true; sx = e.clientX; sy = e.clientY; sl = wrap.scrollLeft; st = wrap.scrollTop;
-        _img.style.cursor = 'grabbing'; e.preventDefault();
-      });
+  // After a delete: continue to the next doc in the inbox's filtered list
+  // when there is one (prev as fallback), else back to the list; the
+  // stashed nav ids are pruned so 'N of M' stays honest. (User 2026-07-08.)
+  function afterDelete(uid) {
+    var target = null;
+    if (_nav) {
+      target = (_nav.ids[_nav.idx + 1] !== undefined) ? _nav.ids[_nav.idx + 1]
+             : ((_nav.ids[_nav.idx - 1] !== undefined) ? _nav.ids[_nav.idx - 1] : null);
+      try {
+        var rawN = sessionStorage.getItem('fpInboxNav');
+        if (rawN) {
+          var nv = JSON.parse(rawN);
+          nv.ids = (nv.ids || []).filter(function (i) { return i !== uid; });
+          sessionStorage.setItem('fpInboxNav', JSON.stringify(nv));
+        }
+      } catch (e2) {}
     }
-    window.addEventListener('mouseup', function () { down = false; if (_img) _img.style.cursor = 'grab'; });
-    window.addEventListener('mousemove', function (e) {
-      if (!down) return;
-      wrap.scrollLeft = sl - (e.clientX - sx);
-      wrap.scrollTop  = st - (e.clientY - sy);
-    });
-  }
-  function loadPreview() {
-    var previewEl = $('edPreview');
-    var rawUrl = '/docs/upload/' + UID + '/raw';
-    // Determine type from /preview-link (content_type + filename) as the modal does.
-    fetch('/docs/upload/' + UID + '/preview-link', { credentials: 'same-origin' })
-      .then(function (r) { return r.json().catch(function () { return null; }); })
-      .then(function (linkData) {
-        var fn = (linkData && linkData.filename ? linkData.filename : '').toLowerCase();
-        var ct = (linkData && linkData.content_type ? linkData.content_type : '').toLowerCase();
-        var isPdf   = ct.indexOf('pdf') !== -1 || /\.pdf$/.test(fn);
-        var isImage = ct.indexOf('image/') === 0 || /\.(jpe?g|png|gif|heic|heif|webp|bmp|tiff?)$/i.test(fn);
-        if (isImage) {
-          previewEl.style.alignItems = 'flex-start';
-          previewEl.style.justifyContent = 'flex-start';
-          previewEl.innerHTML =
-            '<img id="edImg" src="' + rawUrl + '" alt="preview" ' +
-            'style="display:block;max-width:none;max-height:none;transform-origin:0 0;' +
-            'transition:transform .08s linear;user-select:none;-webkit-user-drag:none;cursor:grab">';
-          _img = $('edImg');
-          _img.addEventListener('load', function () { fitImage(); });
-          initImageControls();
-        } else {
-          previewEl.style.alignItems = 'stretch';
-          previewEl.style.justifyContent = 'stretch';
-          previewEl.innerHTML =
-            '<iframe src="' + rawUrl + '" title="document preview" ' +
-            'style="border:0;width:100%;height:100%;min-height:560px;display:block;background:#fff"></iframe>' +
-            '<a href="' + rawUrl + '" target="_blank" rel="noopener" ' +
-            'style="position:absolute;top:8px;right:8px;font-size:11px;background:#1a2540;' +
-            'border:1px solid #2d4070;color:#8fb4ff;padding:3px 9px;border-radius:5px;text-decoration:none">↗ Open in new tab</a>';
-        }
-      })
-      .catch(function () {
-        // Fall open: assume image-ish; the browser will do its best with /raw.
-        previewEl.innerHTML =
-          '<iframe src="' + rawUrl + '" title="document preview" ' +
-          'style="border:0;width:100%;height:100%;min-height:560px;display:block;background:#fff"></iframe>';
-      });
-    // Dropbox share link for the header button (same endpoint as the modal).
-    var dbxBtn = $('edDropboxLink');
-    dbxBtn.style.opacity = '0.5'; dbxBtn.textContent = 'Loading link…';
-    fetch('/docs/upload/' + UID + '/dropbox-link', { credentials: 'same-origin' })
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (d && d.ok && d.url) { dbxBtn.href = d.url; dbxBtn.style.opacity = '1'; dbxBtn.textContent = 'Open in Dropbox ↗'; }
-        else { dbxBtn.style.opacity = '0.4'; dbxBtn.textContent = 'Open in Dropbox (unavailable)'; }
-      })
-      .catch(function () { dbxBtn.style.opacity = '0.4'; dbxBtn.textContent = 'Open in Dropbox (network error)'; });
+    window._docItemizeDirty = false;
+    location.href = (target != null && PID) ? '/projects/' + PID + '/docs/' + target + '/editor?from=inbox' : BACK_URL;
   }
 
-  // ══ SAVE (metadata → /docs/upload/<uid>/update) ════════════════════════════
-  // Same JSON keys the modal's _docDetailCommit sends (subset relevant here).
-  function saveDoc() {
-    var btn = $('edSaveBtn'), st = $('edSaveStatus');
-    // Supporting docs: the controlled Document-Type dropdown is the live
-    // "vendor" value, same as the modal's _docDetailVendorValue.
-    var payload = {
-      vendor:     DocForm.vendorValue(),
-      original_amount:   parseMoney(($('docDetailOrigAmount') || {}).value || ''),
-      original_currency: ($('docDetailOrigCurrency') || {}).value || '',
-      amount:     parseMoney($('docDetailAmount').value),
-      doc_date:   $('docDetailDocDate').value,
-      category:   $('docDetailCategory').value,
-      note:       $('edNote').value,
-      doc_number: $('docDetailDocNum').value,
-      card_last4: $('docDetailCard4').value,
-      subtotal:   parseMoney($('docDetailSubtotal').value),
-      tax:        parseMoney($('docDetailTax').value),
-      tip:        parseMoney($('docDetailTip').value),
-      merchant_address: $('docDetailMerchAddr').value,
-      merchant_phone:   $('docDetailMerchPhone').value,
-      crew_member_id: ($('docDetailCrewId') ? $('docDetailCrewId').value : '') || null,
-      location_id:    ($('docDetailLocationId') ? $('docDetailLocationId').value : '') || null,
-    };
-    btn.disabled = true; btn.textContent = 'Saving…';
-    if (st) { st.textContent = ''; st.style.color = 'var(--text-muted)'; }
-    // Return the promise so "Save & close" can await a successful save before
-    // navigating back. Resolves to true on success, false otherwise. (User 2026-07.)
-    return fetch('/docs/upload/' + UID + '/update', {
-      method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
-      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
-      .then(function (res) {
-        if (res.ok) { if (st) { st.textContent = '✓ Saved'; st.style.color = '#5fd0a0'; } return true; }
-        if (st) { st.textContent = 'Save failed: ' + (res.d.error || res.status); st.style.color = '#e0a13a'; }
-        return false;
-      })
-      .catch(function (e) { if (st) { st.textContent = 'Error: ' + e.message; st.style.color = '#e0a13a'; } return false; })
-      .finally(function () { btn.disabled = false; btn.textContent = 'Save'; });
-  }
-
-  // Save, then (only on success) return to the docs list. (User 2026-07.)
-  function saveAndClose() {
-    var cbtn = $('edSaveCloseBtn');
-    if (cbtn) { cbtn.disabled = true; cbtn.textContent = 'Saving…'; }
-    Promise.resolve(saveDoc()).then(function (ok) {
-      if (ok) { goBack(); return; }
-      if (cbtn) { cbtn.disabled = false; cbtn.textContent = 'Save & close'; }
-    });
-  }
-
-  // ══ CODING (budget-line picker) ════════════════════════════════════════════
-  // On change: line id → /set-line; 'section:N' → /set-coa; 'not_project' →
-  // /set-coa {not_project}; '__clear__' → /set-line {null}. Mirrors actualsSetLine.
-  function edSetLine(selectEl) {
-    var tid = parseInt(selectEl.dataset.tid);
-    var value = selectEl.value;
-    var st = $('edCodingStatus');
-    if (!value) return;
-    // OPTIMISTIC: never disable the select while saving — locking it made the
-    // pick feel like it took the whole server round-trip (user 2026-07: "takes
-    // 3-4 seconds to actually select"). The chosen value shows instantly;
-    // on failure we revert to the previous value and show the error.
-    var prevValue = selectEl.dataset.current || '';
-    var url, body;
-    if (value === '__clear__') {
-      url = '/projects/' + PID + '/actuals/transaction/' + tid + '/set-line';
-      body = JSON.stringify({ budget_line_id: null });
-    } else if (value.indexOf('section:') === 0) {
-      url = '/projects/' + PID + '/actuals/transaction/' + tid + '/set-coa';
-      body = JSON.stringify({ account_code: value.slice(8) });
-    } else if (value === 'not_project') {
-      url = '/projects/' + PID + '/actuals/transaction/' + tid + '/set-coa';
-      body = JSON.stringify({ account_code: 'not_project' });
-    } else {
-      url = '/projects/' + PID + '/actuals/transaction/' + tid + '/set-line';
-      body = JSON.stringify({ budget_line_id: value });
-    }
-    if (st) { st.textContent = 'Saving…'; st.style.color = 'var(--text-muted)'; }
-    fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: body })
-      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
-      .then(function (res) {
-        if (!res.ok) {
-          // 409 = itemized container can't be recoded directly; show its message.
-          // Revert the optimistic pick so the UI matches the server.
-          selectEl.value = prevValue;
-          if (st) { st.textContent = (res.d.error || ('Could not save: ' + res.status)); st.style.color = '#e0a13a'; }
-          return;
-        }
-        selectEl.dataset.current = (value === '__clear__' || value === 'not_project') ? '' : value;
-        if (st) {
-          var sel = selectEl.options[selectEl.selectedIndex];
-          st.textContent = (value === '__clear__') ? '✓ Cleared.'
-            : (value === 'not_project') ? '✓ Marked “not a project expense.”'
-            : ('✓ Saved — ' + (sel ? sel.text.trim() : value));
-          st.style.color = '#5fd0a0';
-        }
-        if (value === '__clear__' || value === 'not_project') selectEl.value = '';
-        edUpdateTotal();
-      })
-      .catch(function (e) {
-        selectEl.value = prevValue;   // network failure → revert optimistic pick
-        if (st) { st.textContent = 'Save failed: ' + e.message; st.style.color = '#e0a13a'; }
-      });
-  }
-
-  function loadCoding() {
-    var block = $('edCodingBlock'), picker = $('edLinePicker'), sugEl = $('edSuggest'), statusEl = $('edCodingStatus');
-    if (!block || !picker) return;
-    block.style.display = 'none'; sugEl.style.display = 'none'; sugEl.innerHTML = '';
-    picker.dataset.populated = '0';
-    picker.innerHTML = '<option value="">— pick budget line —</option>';
-    picker.dataset.tid = ''; picker.dataset.current = ''; statusEl.textContent = '';
-    fetch('/docs/upload/' + UID + '/coding', { credentials: 'same-origin' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (d) {
-        if (!d || !d.txn_id) return;   // non-ledger doc — no line coding
-        picker.dataset.tid = d.txn_id;
-        picker.dataset.current = d.current || '';
-        fillPicker(picker);
-        block.style.display = '';
-        if (d.not_project) { picker.disabled = true; statusEl.textContent = 'Marked “not a project expense.”'; return; }
-        var sel = picker.options[picker.selectedIndex];
-        statusEl.textContent = (d.current && sel) ? ('Currently: ' + sel.text.trim()) : 'Not yet coded.';
-        // Smart suggestion chip — only when not already coded.
-        if (d.suggestion && !d.current) {
-          var s = d.suggestion;
-          sugEl.style.display = '';
-          sugEl.innerHTML = '<button type="button" id="edSuggestBtn" ' +
-            'style="font-size:11.5px;padding:4px 9px;background:#10231a;border:1px solid #1f6f4a;' +
-            'border-radius:5px;color:#5fd0a0;cursor:pointer;max-width:100%;white-space:normal;text-align:left;line-height:1.3">' +
-            '💡 Suggested: ' + esc(String(s.code)) + ' · ' + esc(String(s.label)) + '</button>';
-          $('edSuggestBtn').onclick = function () {
-            picker.value = String(s.line_id);
-            if (picker.value === String(s.line_id)) { sugEl.style.display = 'none'; edSetLine(picker); }
-          };
-        }
-      })
-      .catch(function () { /* coding is best-effort */ });
-  }
-
-  // ══ ITEMIZE grid ═══════════════════════════════════════════════════════════
-  var _itemDocTotal = null, _itemVeryfi = [];
-  // Unsaved-changes guard (2026-07: a re-itemization was lost — the failure
-  // status is easy to miss and nothing stopped navigation with unsaved rows).
-  var _itemDirty = false;
-  function _markItemDirty() { _itemDirty = true; }
-  window.addEventListener('beforeunload', function (e) {
-    if (_itemDirty) { e.preventDefault(); e.returnValue = ''; }
+  // Mount THE editor: line picker from the options template above, generic
+  // set-line/set-coa commits, no PO modals on this page.
+  window.DocEditor.init({
+    pid: PID,
+    onDeleted: afterDelete,
+    afterSave: function () { /* stay on the page; the status line says Saved */ },
   });
-
-  function itemAddRow(desc, amount, lineId) {
-    var host = $('edItemizeRows'); if (!host) return;
-    var row = document.createElement('div');
-    row.className = 'editem-row';
-    row.style.cssText = 'display:flex;gap:6px;margin-bottom:5px;align-items:center';
-    row.innerHTML =
-      '<input class="editem-desc" placeholder="description" value="' + esc(desc || '') + '" style="flex:1.5;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px">' +
-      '<input class="editem-amt" type="number" step="0.01" placeholder="0.00" value="' + (amount != null && amount !== '' ? amount : '') + '" style="width:88px;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px;text-align:right">' +
-      '<select class="editem-line" style="flex:1.3;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px"><option value="">— budget line —</option></select>' +
-      '<button type="button" class="editem-rm" title="Remove line" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px">✕</button>';
-    host.appendChild(row);
-    var amtEl = row.querySelector('.editem-amt');
-    amtEl.addEventListener('input', function () { _markItemDirty(); edUpdateTotal(); });
-    row.querySelector('.editem-desc').addEventListener('input', _markItemDirty);
-    var sel = row.querySelector('.editem-line');
-    // Populate at CREATION, not lazily on focus — mutating 300+ options while
-    // the native dropdown is opening stalled/cancelled the first pick (user
-    // 2026-07: "dropdowns take 3-4 seconds to actually select"). The template
-    // innerHTML copy is cheap and rows are few. (Review fix 2026-07.)
-    if (lineId) sel.dataset.current = String(lineId);
-    fillPicker(sel);
-    sel.addEventListener('change', _markItemDirty);
-    row.querySelector('.editem-rm').addEventListener('click', function () {
-      row.remove(); _markItemDirty(); edUpdateTotal();
-    });
-    edUpdateTotal();
-  }
-
-  function edUpdateTotal() {
-    var rows = document.querySelectorAll('#edItemizeRows .editem-row');
-    var hdr = $('edItemizeHdr'); if (hdr) hdr.style.display = rows.length ? 'flex' : 'none';
-    var sub = 0;
-    document.querySelectorAll('#edItemizeRows .editem-amt').forEach(function (i) { sub += parseFloat(i.value || 0) || 0; });
-    sub = Math.round(sub * 100) / 100;
-    var el = $('edItemizeTotal'); if (!el) return;
-    var tot = _itemDocTotal;
-    var fmt = function (v) { return '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
-    var mainLabel = 'main line';
-    var mp = $('edLinePicker');
-    if (mp && mp.value && mp.selectedIndex >= 0 && mp.options[mp.selectedIndex]) {
-      var t = (mp.options[mp.selectedIndex].text || '').trim();
-      if (t && t !== '— pick budget line —') mainLabel = t.length > 30 ? t.slice(0, 30) + '…' : t;
-    }
-    if (tot != null) {
-      var remainder = Math.round((tot - sub) * 100) / 100;
-      var over = remainder < -0.01;
-      el.innerHTML = 'Sublines <b>' + fmt(sub) + '</b> · ' +
-        (over
-          ? '<span style="color:#e0a13a">⚠ ' + fmt(-remainder) + ' over the doc total</span>'
-          : '→ <b style="color:#5fd0a0">' + fmt(remainder) + '</b> to ' + (mp && mp.value ? '<b>' + mainLabel + '</b>' : '<span style="color:#e0a13a">main line (pick one above)</span>'));
-    } else { el.innerHTML = 'Sublines: <b>' + fmt(sub) + '</b>'; }
-  }
-
-  function itemSetOverride(n) {
-    var label = $('edCodingLabel'), status = $('edCodingStatus');
-    if (label) label.textContent = n > 0 ? 'Main budget line (gets the remainder)' : 'Budget line (Actuals)';
-    if (n > 0 && status) { status.innerHTML = '↳ plus ' + n + ' subline' + (n !== 1 ? 's' : '') + ' peeled off to other lines (below).'; status.style.color = 'var(--text-muted)'; }
-    edUpdateTotal();
-  }
-
-  function itemizePull() {
-    if (!_itemVeryfi.length) { $('edItemizeStatus').textContent = 'No OCR line items found on this document.'; return; }
-    $('edItemizeRows').innerHTML = '';
-    _itemVeryfi.forEach(function (it) { itemAddRow(it.description, it.amount, ''); });
-    _markItemDirty();   // pulled rows are unsaved until Save (2026-07)
-  }
-
-  function loadItemize() {
-    _itemDocTotal = null; _itemVeryfi = [];
-    var block = $('edItemizeBlock'), rows = $('edItemizeRows'), st = $('edItemizeStatus'), cnt = $('edItemizeCount');
-    if (!block || !rows) return;
-    block.style.display = 'none'; rows.innerHTML = ''; if (st) st.textContent = ''; if (cnt) cnt.textContent = '';
-    fetch('/docs/upload/' + UID + '/line-items', { credentials: 'same-origin' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (d) {
-        if (!d) return;
-        // Receipt detail — populate regardless of whether the doc is itemizable.
-        var rd = d.receipt_detail || {};
-        var sv = function (id, v) { var el = $(id); if (el) el.value = (v != null ? v : ''); };
-        sv('docDetailSubtotal', rd.subtotal); sv('docDetailTax', rd.tax); sv('docDetailTip', rd.tip);
-        sv('docDetailMerchAddr', rd.merchant_address); sv('docDetailMerchPhone', rd.merchant_phone);
-        if (!d.ok || d.parent_txn_id == null) return;   // no transaction to itemize
-        block.style.display = '';
-        _itemDocTotal = d.doc_total; _itemVeryfi = d.veryfi_items || [];
-        var pullBtn = $('edItemizePullBtn');
-        if (pullBtn) pullBtn.style.display = (_itemVeryfi.length ? '' : 'none');
-        if (d.main_line_id) {
-          var mp = $('edLinePicker');
-          if (mp) { mp.dataset.current = String(d.main_line_id); fillPicker(mp); mp.value = String(d.main_line_id); }
-        }
-        if (d.existing && d.existing.length) {
-          block.open = true;
-          cnt.textContent = '· ' + d.existing.length + ' subline' + (d.existing.length !== 1 ? 's' : '');
-          d.existing.forEach(function (x) { itemAddRow(x.description, x.amount, x.budget_line_id); });
-        } else {
-          edUpdateTotal();
-        }
-        itemSetOverride(d.existing ? d.existing.length : 0);
-      })
-      .catch(function () { /* silent */ });
-  }
-
-  function itemizeSave() {
-    var st = $('edItemizeStatus'), btn = $('edItemizeSaveBtn');
-    var rows = [];
-    document.querySelectorAll('#edItemizeRows .editem-row').forEach(function (r) {
-      var amt = parseFloat((r.querySelector('.editem-amt') || {}).value || 0);
-      var line = (r.querySelector('.editem-line') || {}).value || '';
-      var desc = (r.querySelector('.editem-desc') || {}).value || '';
-      if (amt) rows.push({ amount: amt, budget_line_id: line, description: desc });
-    });
-    var mainLine = ($('edLinePicker') || {}).value || '';
-    if (!rows.length && !mainLine) {
-      if (st) { st.textContent = 'Nothing to save — add sublines or pick a main budget line above.'; st.style.color = '#e0a13a'; }
-      return;
-    }
-    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
-    return fetch('/docs/upload/' + UID + '/itemize', {
-      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rows: rows, main_line_id: mainLine }),
-    })
-      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, status: r.status, d: d }; }); })
-      .then(function (res) {
-        var d = res.d;
-        if (res.ok && d.ok) {
-          if (st) {
-            var money = function (v) { return '$' + Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
-            if (d.cleared) st.textContent = 'Itemization cleared.';
-            else if (d.over) st.textContent = '⚠ Saved, but sublines are ' + money(-d.remainder) + ' over the doc total — check the amounts.';
-            else st.textContent = '✓ Saved — ' + money(d.sublines_total) + ' peeled off, ' + money(d.main_line_amount) + ' stays on the main line.';
-            st.style.color = d.over ? '#e0a13a' : '#5fd0a0';
-          }
-          var nsub = rows.filter(function (x) { return x.amount; }).length;
-          var cnt = $('edItemizeCount');
-          if (cnt) cnt.textContent = nsub ? ('· ' + nsub + ' subline' + (nsub !== 1 ? 's' : '')) : '';
-          itemSetOverride(nsub);
-          _itemDirty = false;   // persisted — safe to navigate
-        } else {
-          // LOUD failure — the small status line was missed once and a whole
-          // re-itemization was lost (user 2026-07). Keep the rows; alert too.
-          var msg = 'Itemization NOT saved: ' + (d.error || ('server error ' + res.status));
-          if (st) { st.textContent = msg; st.style.color = '#fb7185'; }
-          alert(msg + '\n\nYour rows are still here — fix the issue and press Save again.');
-        }
-      })
-      .catch(function (e) {
-        var msg = 'Itemization NOT saved (network): ' + e.message;
-        if (st) { st.textContent = msg; st.style.color = '#fb7185'; }
-        alert(msg + '\n\nYour rows are still here — check your connection and press Save again.');
-      })
-      .finally(function () { if (btn) { btn.disabled = false; btn.textContent = 'Save itemization'; } });
-  }
-
-  // ── amount field: strip commas on focus, format on blur (mirror the modal). ─
-  (function wireAmount() {
-    var el = $('docDetailAmount'); if (!el) return;
-    el.addEventListener('focus', function () { el.value = String(el.value).replace(/,/g, ''); });
-    el.addEventListener('blur',  function () { el.value = fmtMoney(el.value); });
-  })();
-
-  // ── wire events + kick off loads ──────────────────────────────────────────
-  // Detail-section heading + Tip visibility track the Doc Type select, live.
-  // Invoice → "Invoice detail" & hide Tip (a receipt concept); receipt →
-  // "Receipt detail"; anything else → "Document detail". (User 2026-07.)
-  // Type-driven field visibility — SAME spec as the modal's
-  // _DOC_TYPE_FIELD_SPEC (owner 2026-10-20: "depending on the document
-  // type it should change the fields available — you don't need
-  // non-applicable fields").
-  // Field spec, type UI, subtype, person auto-suggest and quick-add all
-  // live in static/doc-form.js (window.DocForm) — 2026-10-20 unification.
-  function edApplyCategoryUI() {
-    DocForm.applyTypeUI(($('docDetailCategory').value || ''), { uid: UID });
-  }
-  if ($('docDetailCategory')) $('docDetailCategory').addEventListener('change', edApplyCategoryUI);
-  edApplyCategoryUI();
-
-  // ── Person auto-suggest (owner 2026-10-20: "when it finds a name like
-  // James Allerdyce … automatically suggest adding him, auto-populate,
-  // and allow you to save"). Pre-selects on a confident match; the human
-  // presses Save to persist. ──────────────────────────────────────────
-  // (suggest + quick-add now in DocForm)
-
-  $('edSaveBtn').addEventListener('click', saveDoc);
-  if ($('edSaveCloseBtn')) $('edSaveCloseBtn').addEventListener('click', saveAndClose);
-  $('edLinePicker').addEventListener('focus', function () { fillPicker(this); });
-  $('edLinePicker').addEventListener('change', function () { edSetLine(this); edUpdateTotal(); });
-  $('edItemAddBtn').addEventListener('click', function () { itemAddRow('', '', ''); });
-  $('edItemizePullBtn').addEventListener('click', itemizePull);
-  $('edItemizeSaveBtn').addEventListener('click', itemizeSave);
-
-  loadPreview();
-  loadCoding();
-  loadItemize();
+  window.DocEditor.open(UID, null);
 })();
 </script>
 {% endblock %}

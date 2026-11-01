@@ -1826,178 +1826,9 @@
   // Dropbox temporary link and the editable metadata.
   let _docDetailUid = null;
 
-  // ── Receipt-side transaction matcher (User 2026-06-17) ──────────────
-  // From the open receipt, find the charge(s) it backs — one 1:1, or several
-  // that sum to the total (a split). Reuses link-doc/confirm-match + link-split.
-  // Cash / check purchases: turn the receipt into a standalone expense —
-  // no electronic charge will ever arrive to match it. (Owner 2026-10-01.)
-  window.docDetailLogExpense = async function () {
-    const uid = _docDetailUid;
-    if (!uid) return;
-    const status = document.getElementById('docDetailLogExpenseStatus');
-    if (!confirm('Log this receipt as a standalone expense?\n\nUse this when the purchase was cash / check / petty cash and no card or bank charge will ever appear to match it. The expense will show on the Actuals tab, ready to code to a budget line.')) return;
-    if (status) { status.textContent = 'Logging…'; status.style.color = ''; }
-    try {
-      const r = await fetch(`/docs/upload/${uid}/log-expense`, { method: 'POST',
-        headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      const d = await r.json();
-      if (!r.ok) { if (status) { status.textContent = (d && d.error) || ('Failed (' + r.status + ')'); status.style.color = '#e08080'; } return; }
-      if (status) {
-        status.textContent = d.already_activated
-          ? 'Already an expense — marked resolved (no charge to match).'
-          : '✓ Expense logged — code it to a line on the Actuals tab.';
-        status.style.color = '#74c69d';
-      }
-    } catch (e) {
-      if (status) { status.textContent = 'Failed: ' + e.message; status.style.color = '#e08080'; }
-    }
-  };
-  window.docDetailFindTxns = async function () {
-    const uid = _docDetailUid;
-    if (!uid) return;
-    const host = document.getElementById('docDetailTxnResults');
-    const inclMatched = document.getElementById('docDetailInclMatched').checked;
-    host.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">Searching…</div>';
-    try {
-      const d = await (await fetch(`/projects/${PROJ_ID}/docs/upload/${uid}/transaction-candidates?include_matched=${inclMatched ? 1 : 0}`)).json();
-      window._ddTxnDoc = d.doc || {}; window._ddTxnCands = d.candidates || [];
-      ddRenderTxns();
-    } catch (e) { host.innerHTML = '<div style="color:#e08080;font-size:11px">Error: ' + e.message + '</div>'; }
-  };
-  function ddRenderTxns() {
-    const host = document.getElementById('docDetailTxnResults');
-    const cands = window._ddTxnCands || [];
-    const doc = window._ddTxnDoc || {};
-    const esc = s => (s || '').toString().replace(/</g, '&lt;');
-    // Signed display: refund/credit (negative) shows green "+$x · refund",
-    // a charge (positive) shows "−$x · charge", so the user can verify they're
-    // matching a refund to a refund (not a refund receipt to a positive charge).
-    const moneyAbs = a => '$' + Math.abs(Number(a)).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-    const signTag = a => {
-      const n = Number(a);
-      if (!isFinite(n)) return '<span style="color:var(--text-muted)">$?</span>';
-      return n < 0
-        ? '<span style="color:#5fd0a0;font-weight:600">+' + moneyAbs(n) + '</span> <span style="color:#5fd0a0">refund</span>'
-        : '<span style="font-weight:600">−' + moneyAbs(n) + '</span> <span style="color:var(--text-muted)">charge</span>';
-    };
-    if (!cands.length) {
-      host.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">No candidate charges' +
-        (document.getElementById('docDetailInclMatched').checked ? '' : ' — try “include already-matched”') + '.</div>';
-      return;
-    }
-    // This receipt's own sign — refund (<0) vs charge (>0) — to flag mismatches.
-    const docSign = (doc.total_signed != null && Number(doc.total_signed) !== 0)
-      ? Math.sign(Number(doc.total_signed)) : 0;
-    const docKind = docSign < 0 ? 'refund' : (docSign > 0 ? 'charge' : null);
-    const rows = cands.map((c, i) => {
-      const cSign = (c.amount != null && Number(c.amount) !== 0) ? Math.sign(Number(c.amount)) : 0;
-      const mismatch = (docSign !== 0 && cSign !== 0 && docSign !== cSign);
-      const matched = (c.match_status !== 'unmatched' || c.doc_upload_id);
-      const details =
-        '<div id="dd-txn-det-' + i + '" style="display:none;margin-top:5px;padding:6px 8px;background:var(--bg-subtle,rgba(255,255,255,.03));border-radius:6px;font-size:11px;line-height:1.6;color:var(--text-muted)">'
-        + '<div><b style="color:var(--text)">' + (esc(c.vendor) || 'charge') + '</b></div>'
-        + '<div>Amount: ' + signTag(c.amount) + ' &nbsp;<span style="opacity:.7">(raw ' + Number(c.amount).toFixed(2) + ')</span></div>'
-        + '<div>Date: ' + (c.date || '—') + (c.day_gap != null ? ' · ' + c.day_gap + 'd from receipt' : '') + '</div>'
-        + '<div>Card: ' + (c.card ? ('••' + c.card) : '—') + (c.same_card ? ' <span style="color:#5fd0a0">· same card ✓</span>' : '') + '</div>'
-        + '<div>Coded: ' + (c.coded ? esc(c.coded) : '<span style="opacity:.7">uncoded</span>') + '</div>'
-        + '<div>Vendor match: ' + (c.vendor_match ? '<span style="color:#5fd0a0">yes</span>' : 'weak') + ' · Kind: ' + c.kind + '</div>'
-        + '<div>Status: ' + esc(c.match_status || 'unmatched') + (matched ? ' <span style="color:#e0c060">· already linked to a receipt</span>' : '') + '</div>'
-        + (mismatch ? '<div style="color:#e08a6a;margin-top:3px">⚠ This is a <b>' + (cSign < 0 ? 'refund' : 'charge') + '</b> but the receipt is a <b>' + docKind + '</b> — signs disagree.</div>' : '')
-        + '</div>';
-      return `
-      <div style="border:1px solid ${mismatch ? '#7a4a3a' : 'var(--border)'};border-radius:6px;margin-bottom:5px;padding:6px 8px;font-size:11.5px">
-        <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer">
-          <input type="checkbox" class="dd-txn-cb" value="${c.tid}" data-amt="${c.amount}" onchange="ddTxnSelChanged()" style="margin-top:2px">
-          <span style="flex:1;min-width:0">
-            <span style="font-weight:600">${esc(c.vendor) || 'charge'}</span>
-            ${c.kind === 'exact' ? '<span style="color:#5fd0a0;margin-left:5px">exact</span>' : '<span style="color:var(--text-muted);margin-left:5px">part</span>'}
-            ${matched ? '<span style="color:#e0c060;margin-left:5px" title="already linked to a receipt">matched</span>' : ''}
-            ${mismatch ? '<span style="color:#e08a6a;margin-left:5px" title="sign mismatch">⚠ sign</span>' : ''}
-            <br>
-            <span style="display:inline-block;margin-top:2px">${signTag(c.amount)}<span style="color:var(--text-muted)"> · ${c.date || '—'}${c.card ? (' · ••' + c.card) : ''}${c.coded ? (' · ' + esc(c.coded)) : ''}</span></span>
-          </span>
-          <button type="button" onclick="event.preventDefault();event.stopPropagation();ddTxnToggleDet(${i})" style="flex:none;padding:1px 7px;border:1px solid var(--border);border-radius:5px;background:transparent;color:var(--text-muted);font-size:11px;cursor:pointer">details</button>
-        </label>
-        ${details}
-      </div>`;
-    }).join('');
-    const docHdr = docKind
-      ? '<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">This receipt is a <b style="color:' + (docSign < 0 ? '#5fd0a0' : 'var(--text)') + '">' + docKind + '</b> for ' + moneyAbs(doc.total_signed) + '. Matching charges should also be a <b>' + docKind + '</b>.</div>'
-      : '';
-    host.innerHTML = docHdr + rows
-      + '<div id="dd-txn-sum" style="font-size:11px;color:var(--text-muted);margin:4px 0"></div>'
-      + '<button type="button" id="dd-txn-link" onclick="ddLinkTxns()" disabled style="padding:5px 11px;border-radius:6px;background:#1f6f4a;border:1px solid #2a8a5e;color:#fff;font-size:12px;cursor:pointer;opacity:.5">Link selected</button>';
-    ddTxnSelChanged();
-  }
-  window.ddTxnToggleDet = function (i) {
-    const el = document.getElementById('dd-txn-det-' + i);
-    if (el) el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
-  };
-  window.ddTxnSelChanged = function () {
-    const cbs = [...document.querySelectorAll('.dd-txn-cb:checked')];
-    const sum = cbs.reduce((a, cb) => a + Math.abs(parseFloat(cb.dataset.amt) || 0), 0);
-    const total = Math.abs((window._ddTxnDoc || {}).total || 0);
-    const sumEl = document.getElementById('dd-txn-sum');
-    const btn = document.getElementById('dd-txn-link');
-    if (!cbs.length) { if (sumEl) sumEl.textContent = ''; if (btn) { btn.disabled = true; btn.style.opacity = '.5'; btn.textContent = 'Link selected'; } return; }
-    const match = total && Math.abs(sum - total) <= 0.02;
-    if (sumEl) sumEl.innerHTML = cbs.length + ' selected · sum $' + sum.toFixed(2) + ' / receipt $' + total.toFixed(2) +
-      (match ? ' <span style="color:#5fd0a0">✓ matches</span>' : ' <span style="color:#e0c060">≠ total</span>');
-    if (btn) {
-      const ok = (cbs.length === 1) || match;   // single = 1:1; multiple must sum to the total
-      btn.disabled = !ok; btn.style.opacity = ok ? '1' : '.5';
-      btn.textContent = cbs.length >= 2 ? ('Link as split (' + cbs.length + ')') : 'Link selected';
-    }
-  };
-  window.ddLinkTxns = async function () {
-    const uid = _docDetailUid;
-    const tids = [...document.querySelectorAll('.dd-txn-cb:checked')].map(cb => parseInt(cb.value));
-    if (!uid || !tids.length) return;
-    const btn = document.getElementById('dd-txn-link'); if (btn) { btn.disabled = true; btn.textContent = '…'; }
-    try {
-      if (tids.length >= 2) {
-        const r = await fetch(`/projects/${PROJ_ID}/actuals/link-split`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keeper_doc_id: parseInt(uid), charge_tids: tids})});
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) { alert('Split link failed: ' + (j.error || r.status)); if (btn) { btn.disabled = false; } return; }
-        alert('Linked this receipt to ' + (j.linked || tids.length) + ' charges as a split ✓');
-      } else {
-        const tid = tids[0];
-        let r = await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/link-doc`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({doc_upload_id: parseInt(uid)})});
-        if (!r.ok) { const j = await r.json().catch(() => ({})); alert('Link failed: ' + (j.error || r.status)); if (btn) { btn.disabled = false; } return; }
-        await fetch(`/projects/${PROJ_ID}/actuals/transaction/${tid}/confirm-match`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
-        alert('Linked ✓');
-      }
-      docDetailFindTxns();   // refresh the candidate list
-    } catch (e) { alert('Error: ' + e.message); if (btn) { btn.disabled = false; } }
-  };
-
-  // Re-run OCR on the open document on demand — re-reads vendor/amount/date/
-  // currency (incl. foreign → USD) and FILLS the fields for review. Does NOT
-  // save; the user clicks Save to keep them. (User 2026-06-17.)
-  window.docDetailReocr = async function () {
-    const uid = _docDetailUid; if (!uid) return;
-    const btn = document.getElementById('docDetailReocrBtn');
-    const st  = document.getElementById('docDetailReocrStatus');
-    if (btn) { btn.disabled = true; btn.textContent = '🔄 Re-reading…'; }
-    if (st)  { st.textContent = 'Sending to OCR…'; st.style.color = 'var(--text-muted)'; }
-    try {
-      const r = await fetch('/docs/upload/' + uid + '/reocr', {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
-      const d = await r.json().catch(() => ({}));
-      if (!r.ok) { if (st) { st.textContent = '✕ ' + (d.error || ('HTTP ' + r.status)); st.style.color = '#e08080'; } return; }
-      const setIf = (id, val) => { if (val != null && val !== '') { const el = document.getElementById(id); if (el) el.value = val; } };
-      if (d.vendor) setIf('docDetailVendor', d.vendor);
-      if (d.amount != null) { const el = document.getElementById('docDetailAmount'); if (el) el.value = _fmtMoney(d.amount); }
-      if (d.original_amount != null) { const el = document.getElementById('docDetailOrigAmount'); if (el) el.value = _fmtMoney(d.original_amount); }
-      setIf('docDetailOrigCurrency', d.original_currency);
-      setIf('docDetailDocDate', d.doc_date);
-      setIf('docDetailCard4', d.card_last4);
-      if (st) {
-        st.textContent = d.fx_note ? ('✓ ' + d.fx_note + ' — review & Save') : '✓ Re-read — review the fields, then Save';
-        st.style.color = '#5fd0a0';
-      }
-    } catch (e) { if (st) { st.textContent = '✕ ' + e.message; st.style.color = '#e08080'; } }
-    finally { if (btn) { btn.disabled = false; btn.textContent = '🔄 Re-run OCR'; } }
-  };
+  // Receipt-side transaction matcher, log-expense and re-OCR now live in
+  // static/doc-editor.js (window.DocEditor) — ONE editor for both doors
+  // (DOCUMENTS_HANDOFF Phase 2). This file keeps the budget-page glue only.
 
   // Which list the modal was opened from — drives prev/next paging and
   // which row(s) get patched on save ('docs' = Docs tab, 'actuals' =
@@ -2020,75 +1851,13 @@
       ? window.__BJ["b03_NON_LEDGER_CATS"]
       : ['tax_form','contract','release','legal','insurance','misc',
          'employee_vendor_doc','estimate','quote','purchase_order']);
-  // Snapshot of the editable fields when the modal opened — lets prev/next
-  // auto-save only when something actually changed.
-  let _docDetailOpenSig = '';
-  function _docDetailSig() {
-    return ['docDetailVendor','docDetailDocSubtype','docDetailAmount','docDetailOrigAmount',
-            'docDetailOrigCurrency','docDetailDocDate','docDetailCategory',
-            'docDetailNote','docDetailDocNum','docDetailCard4','docDetailCrewId','docDetailLocationId']
-      .map(id => (document.getElementById(id)?.value || '')).join('');
-  }
-  function _docDetailDirty() { return _docDetailSig() !== _docDetailOpenSig; }
+  // Dirty tracking lives in DocEditor (the open-time signature); these
+  // wrappers keep the nav code below readable.
+  function _docDetailDirty() { return window.DocEditor.dirty(); }
 
-  function _docDetailFmtSize(b) { if (!b) return ''; return b<1048576?(b/1024).toFixed(1)+' KB':(b/1048576).toFixed(1)+' MB'; }
-
-  // Per-type field set: different docs need different metadata. Tax
-  // forms have no amount; COIs care about policy# + expiration; AP
-  // docs have invoice/PO numbers. We swap labels and toggle visibility
-  // on the same physical inputs so the modal stays compact and the
-  // server's /update endpoint doesn't need a separate per-type schema.
-  // The "Document #" input is stored on the row's `note` field with a
-  // type-prefix (e.g. "invoice#: 12345") so no schema change is needed.
-  // Field spec + type UI + subtype + person-suggest + quick-add all
-  // live in static/doc-form.js (window.DocForm) since the 2026-10-20
-  // unification — ONE copy shared with the standalone doc editor.
-  const _DOC_TYPE_FIELD_SPEC = window.DocForm.FIELD_SPEC;
-  // The "Document Type / Vendor" value comes from whichever control is live:
-  // the controlled dropdown for supporting docs, else the free-text input.
-  function _docDetailVendorValue() { return window.DocForm.vendorValue(); }
-
-  // Select the matching dropdown option for an existing supporting-doc value;
-  // if it's legacy free-text that isn't in the list, inject it so it's kept.
-  function _docDetailSetSubtype(val) { window.DocForm.setSubtype(val); }
-  // ── Person auto-suggest (owner 2026-10-20: "when it finds a name like
-  // James Allerdyce and he's assigned to a project or in the crew
-  // database it should automatically suggest adding him … auto populate
-  // fields and allow you to save"). One fetch per opened doc; a confident
-  // match pre-selects the picker (Save persists it), a weaker one shows a
-  // one-click chip. Never overrides a value already set. ───────────────
-  function _docDetailCrewSuggestLoad() {
-    window.DocForm.crewSuggestLoad(_docDetailUid, {
-      uidStillCurrent: uid => uid === _docDetailUid,
-      // The auto-pick is advisory: don't make the close-without-saving
-      // warning fire when the user changed nothing themselves.
-      onAutoApplied: () => { _docDetailOpenSig = _docDetailSig(); },
-    });
-  }
-  function _docDetailApplyTypeUI(type) {
-    const spec = window.DocForm.applyTypeUI(type, {
-      uid: _docDetailUid,
-      uidStillCurrent: uid => uid === _docDetailUid,
-      onAutoApplied: () => { _docDetailOpenSig = _docDetailSig(); },
-    });
-    // PO actions — modal-only (the standalone editor links back instead).
-    // Any commitment-shaped doc can create OR join a PO; a receipt can
-    // only be attached to an existing PO. (Owner 2026-09-25.)
-    const poActions = document.getElementById('docDetailPoActions');
-    if (poActions) {
-      const _pt = (type || '').toLowerCase();
-      const canCreatePo = ['estimate', 'quote', 'contract', 'sow', 'purchase_order', 'invoice'].includes(_pt);
-      const canAttachPo = canCreatePo || _pt === 'receipt';
-      poActions.style.display = canAttachPo ? '' : 'none';
-      const _createBtn = document.getElementById('docDetailCreatePoBtn');
-      if (_createBtn) _createBtn.style.display = canCreatePo ? '' : 'none';
-    }
-    _docDetailHighlightMissing(spec);
-  }
   // Amount field helpers: display with thousand-separators (95,541.47)
-  // while keeping the bound value parseable. Stripped on focus so the
-  // user can edit the raw number; reformatted on blur. All reads of
-  // .value go through _parseMoney before being sent to the server.
+  // while keeping the bound value parseable. All reads of .value go
+  // through _parseMoney before being sent to the server.
   function _fmtMoney(v) {
     if (v === '' || v == null) return '';
     const n = parseFloat(String(v).replace(/,/g, ''));
@@ -2102,196 +1871,20 @@
     const n = parseFloat(cleaned);
     return isFinite(n) ? String(n) : '';
   }
-  (function _wireAmountFormatting() {
-    const el = document.getElementById('docDetailAmount');
-    if (!el) return;
-    el.addEventListener('focus', () => { el.value = String(el.value).replace(/,/g, ''); });
-    el.addEventListener('blur',  () => { el.value = _fmtMoney(el.value); });
-  })();
-  // Find the currently-open detail row and route through the existing
-  // openCreatePoFromDoc / openAddToPoFromDoc handlers using a synthesized
-  // button element with the row's data attributes.
-  window.docDetailCreatePo = async function() {
-    const uid = window._docDetailCurrentUid;
-    if (!uid) { alert('No document loaded'); return; }
-    // Persist any pending edits in the modal (vendor / amount / date /
-    // category / note) BEFORE opening the create-PO flow, so manual
-    // category changes (e.g. user just switched type from "invoice" to
-    // "estimate") survive the trip and the file gets re-filed to the
-    // right Dropbox folder. Without this, clicking "Create PO" would
-    // open the next modal while the doc is still saved as an invoice.
-    try {
-      const payload = {
-        vendor:     document.getElementById('docDetailVendor').value,
-        amount:     _parseMoney(document.getElementById('docDetailAmount').value),
-        doc_date:   document.getElementById('docDetailDocDate').value,
-        category:   document.getElementById('docDetailCategory').value,
-        note:       document.getElementById('docDetailNote').value,
-        doc_number: document.getElementById('docDetailDocNum').value,
-      };
-      const r = await fetch('/docs/upload/' + uid + '/update', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!r.ok) {
-        const d = await r.json().catch(() => ({}));
-        alert('Could not save document changes: ' + (d.error || r.status));
-        return;
-      }
-    } catch (e) {
-      // Non-fatal — proceed to PO modal even if the save fails so the
-      // user isn't stuck. They'll see the error in the console.
-      console.warn('[docDetailCreatePo] pre-save failed', e);
-    }
-    const fakeBtn = {
-      dataset: {
-        uid:     String(uid),
-        vendor:  document.getElementById('docDetailVendor').value || '',
-        amount:  _parseMoney(document.getElementById('docDetailAmount').value) || '',
-        filename: document.getElementById('docDetailTitle')?.textContent || '',
-        docDate: document.getElementById('docDetailDocDate').value || '',
-      }
-    };
+  // PO actions: DocEditor pre-saves the document and hands us the
+  // context; we close the modal and open the existing PO flows with a
+  // synthesized button element carrying the row's data attributes.
+  function _docPoCreateGlue(ctx) {
+    const fakeBtn = { dataset: { uid: String(ctx.uid), vendor: ctx.vendor || '', amount: ctx.amount || '',
+                                 filename: ctx.filename || '', docDate: ctx.docDate || '' } };
     closeDocDetail();
-    if (typeof window.openCreatePoFromDoc === 'function') {
-      window.openCreatePoFromDoc(fakeBtn);
-    }
-  };
-  window.docDetailAddToPo = function() {
-    const uid = window._docDetailCurrentUid;
-    if (!uid) { alert('No document loaded'); return; }
-    const fakeBtn = {
-      dataset: {
-        uid:     String(uid),
-        vendor:  document.getElementById('docDetailVendor').value || '',
-        amount:  _parseMoney(document.getElementById('docDetailAmount').value) || '',
-        filename: document.getElementById('docDetailTitle')?.textContent || '',
-      }
-    };
-    closeDocDetail();
-    if (typeof window.openAddToPoFromDoc === 'function') {
-      window.openAddToPoFromDoc(fakeBtn);
-    }
-  };
-
-  // For a row that's still in Review status, highlight the required
-  // fields that are blank so the user knows what to fill in to push it
-  // out of Review. Required = the fields the spec says this type uses
-  // (vendor + date always; amount when applicable).
-  function _docDetailHighlightMissing(spec) {
-    if (!spec) return;
-    const row = document.querySelector('.doc-row[data-upload-id="' + _docDetailUid + '"]');
-    const isReview = row && row.dataset.status === 'review';
-    const yellow = '1px solid #d97706';
-    const normal = '';
-    const _hl = (id, needed) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      const empty = !((el.value || '').trim());
-      el.style.outline = (isReview && needed && empty) ? yellow : normal;
-      el.style.outlineOffset = (isReview && needed && empty) ? '2px' : '';
-    };
-    _hl('docDetailVendor', true);
-    _hl('docDetailDocDate', true);
-    _hl('docDetailAmount', !!spec.amount);
-    _hl('docDetailDocNum', !!spec.docnum);
+    if (typeof window.openCreatePoFromDoc === 'function') window.openCreatePoFromDoc(fakeBtn);
   }
-
-  // ── Image preview zoom + pan ───────────────────────────────────────
-  // Receipts are unreadable when shrunk to fit a sidebar — this gives
-  // the user real zoom controls (− / + / Fit / 1:1), wheel-zoom anchored
-  // at the cursor, and click-drag panning when zoomed in. State lives
-  // on a single _imgZoom object that's reset every modal open.
-  let _imgZoom = null;
-  function _initImagePreviewControls() {
-    const wrap = document.getElementById('docDetailPreview');
-    const img  = document.getElementById('docDetailImg');
-    const lbl  = document.getElementById('docDetailZoomLabel');
-    if (!wrap || !img) return;
-    _imgZoom = { scale: 1, fitScale: 1, naturalW: 0, naturalH: 0 };
-
-    function applyScale() {
-      img.style.transform = 'scale(' + _imgZoom.scale + ')';
-      img.style.width  = _imgZoom.naturalW + 'px';
-      img.style.height = _imgZoom.naturalH + 'px';
-      if (lbl) lbl.textContent = Math.round(_imgZoom.scale * 100) + '%';
-      img.style.cursor = _imgZoom.scale > _imgZoom.fitScale + 0.001 ? 'grab' : 'default';
-    }
-
-    function fit() {
-      const cw = wrap.clientWidth, ch = wrap.clientHeight;
-      if (!_imgZoom.naturalW || !_imgZoom.naturalH || !cw || !ch) return;
-      const sx = cw / _imgZoom.naturalW, sy = ch / _imgZoom.naturalH;
-      _imgZoom.fitScale = Math.min(sx, sy, 1);  // never upscale on fit
-      _imgZoom.scale = _imgZoom.fitScale;
-      applyScale();
-    }
-
-    img.onload = function () {
-      _imgZoom.naturalW = img.naturalWidth;
-      _imgZoom.naturalH = img.naturalHeight;
-      fit();
-    };
-    if (img.complete && img.naturalWidth) {
-      _imgZoom.naturalW = img.naturalWidth;
-      _imgZoom.naturalH = img.naturalHeight;
-      fit();
-    }
-
-    // Toolbar buttons.
-    function zoomBy(factor, anchor) {
-      const before = _imgZoom.scale;
-      const after  = Math.max(0.1, Math.min(8, before * factor));
-      if (after === before) return;
-      // Anchor zoom at the cursor (or center if not provided) so the
-      // pixel under the mouse stays put.
-      const sl = wrap.scrollLeft, st = wrap.scrollTop;
-      const ax = anchor ? anchor.x : wrap.clientWidth / 2;
-      const ay = anchor ? anchor.y : wrap.clientHeight / 2;
-      _imgZoom.scale = after;
-      applyScale();
-      const ratio = after / before;
-      wrap.scrollLeft = (sl + ax) * ratio - ax;
-      wrap.scrollTop  = (st + ay) * ratio - ay;
-    }
-    document.getElementById('docDetailZoomIn').onclick   = () => zoomBy(1.25);
-    document.getElementById('docDetailZoomOut').onclick  = () => zoomBy(1/1.25);
-    document.getElementById('docDetailZoomFit').onclick  = () => fit();
-    document.getElementById('docDetailZoom100').onclick  = () => {
-      _imgZoom.scale = 1; applyScale();
-    };
-
-    // Wheel-zoom (Ctrl/Cmd+wheel, or pinch on trackpads — both surface
-    // as wheel events with ctrlKey set on macOS).
-    wrap.onwheel = function (e) {
-      if (!(e.ctrlKey || e.metaKey)) return;  // let plain wheel scroll
-      e.preventDefault();
-      const rect = wrap.getBoundingClientRect();
-      const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-      zoomBy(e.deltaY < 0 ? 1.1 : 1/1.1, anchor);
-    };
-
-    // Click-drag panning when zoomed in beyond fit-scale.
-    let dragging = false, startX = 0, startY = 0, startSL = 0, startST = 0;
-    img.onmousedown = function (e) {
-      if (_imgZoom.scale <= _imgZoom.fitScale + 0.001) return;
-      dragging = true;
-      startX = e.clientX; startY = e.clientY;
-      startSL = wrap.scrollLeft; startST = wrap.scrollTop;
-      img.style.cursor = 'grabbing';
-      e.preventDefault();
-    };
-    window.addEventListener('mousemove', function (e) {
-      if (!dragging) return;
-      wrap.scrollLeft = startSL - (e.clientX - startX);
-      wrap.scrollTop  = startST - (e.clientY - startY);
-    });
-    window.addEventListener('mouseup', function () {
-      if (!dragging) return;
-      dragging = false;
-      img.style.cursor = _imgZoom.scale > _imgZoom.fitScale + 0.001 ? 'grab' : 'default';
-    });
+  function _docPoAddToGlue(ctx) {
+    const fakeBtn = { dataset: { uid: String(ctx.uid), vendor: ctx.vendor || '', amount: ctx.amount || '',
+                                 filename: ctx.filename || '' } };
+    closeDocDetail();
+    if (typeof window.openAddToPoFromDoc === 'function') window.openAddToPoFromDoc(fakeBtn);
   }
 
   // ── Modal prev/next navigation ───────────────────────────────────────
@@ -2390,195 +1983,7 @@
     else if (e.key === 'Escape')    { closeDocDetail(); }
   });
 
-  // ── ✈️ Travel intelligence in the doc-detail modal (2026-06-22) ──────────
-  let _ddTravel = { uid: null, data: null, people: [], bid: null };
-
-  function _ddTravelCollect() {
-    // Pull whatever travel inputs are currently rendered into _ddTravel.data.
-    const g = id => { const el = document.getElementById(id); return el ? (el.value || '').trim() : undefined; };
-    const d = Object.assign({}, _ddTravel.data || {});
-    const k = g('ddTrvKind'); if (k !== undefined) d.kind = k;
-    const conf = g('ddTrvConf'); if (conf !== undefined) d.confirmation_no = conf;
-    if (g('ddTrvAirline')  !== undefined) d.airline        = g('ddTrvAirline');
-    if (g('ddTrvFlightNo') !== undefined) d.flight_no      = g('ddTrvFlightNo');
-    if (g('ddTrvDepAir')   !== undefined) d.depart_airport = g('ddTrvDepAir');
-    if (g('ddTrvArrAir')   !== undefined) d.arrive_airport = g('ddTrvArrAir');
-    if (g('ddTrvHotel')    !== undefined) d.hotel_name     = g('ddTrvHotel');
-    if (g('ddTrvCheckIn')  !== undefined) d.check_in       = g('ddTrvCheckIn');
-    if (g('ddTrvCheckOut') !== undefined) d.check_out      = g('ddTrvCheckOut');
-    if (g('ddTrvRoom')     !== undefined) d.room_type      = g('ddTrvRoom');
-    if (g('ddTrvRental')   !== undefined) d.rental_co      = g('ddTrvRental');
-    if (g('ddTrvPickup')   !== undefined) d.pickup_location = g('ddTrvPickup');
-    if (g('ddTrvDropoff')  !== undefined) d.dropoff_location = g('ddTrvDropoff');
-    if (g('ddTrvPhone')    !== undefined) d.contact_phone   = g('ddTrvPhone');
-    _ddTravel.data = d;
-    return d;
-  }
-
-  function _ddTravelRenderFields() {
-    const t = _ddTravel.data || {};
-    const f = document.getElementById('docDetailTravelFields');
-    if (!f) return;
-    const kind = t.kind || 'flight';
-    const row = (id, label, val) =>
-      `<div style="margin-bottom:5px"><label style="font-size:10px;color:var(--text-muted)">${label}</label>` +
-      `<input id="${id}" value="${_esc(val || '')}" style="width:100%;font-size:12px"></div>`;
-    let html = '';
-    if (!t.confirmation_no && !t.kind) {
-      html += '<div style="color:var(--text-muted);font-size:11px;margin-bottom:6px">No travel details yet — click <b>Re-extract</b> to read this document.</div>';
-    }
-    html += `<div style="margin-bottom:5px"><label style="font-size:10px;color:var(--text-muted)">Type</label>` +
-      `<select id="ddTrvKind" style="width:100%;font-size:12px">` +
-      `<option value="flight"${kind==='flight'?' selected':''}>✈️ Flight</option>` +
-      `<option value="hotel"${kind==='hotel'?' selected':''}>🏨 Hotel</option>` +
-      `<option value="car_rental"${kind==='car_rental'?' selected':''}>🚗 Car rental</option>` +
-      `<option value="car_service"${kind==='car_service'?' selected':''}>🚐 Car service</option></select></div>`;
-    html += row('ddTrvConf', 'Confirmation #', t.confirmation_no);
-    if (kind === 'flight') {
-      html += row('ddTrvAirline','Airline',t.airline) + row('ddTrvFlightNo','Flight #',t.flight_no) +
-              row('ddTrvDepAir','From (IATA)',t.depart_airport) + row('ddTrvArrAir','To (IATA)',t.arrive_airport);
-    } else if (kind === 'hotel') {
-      html += row('ddTrvHotel','Hotel',t.hotel_name) + row('ddTrvCheckIn','Check-in (YYYY-MM-DD)',t.check_in) +
-              row('ddTrvCheckOut','Check-out (YYYY-MM-DD)',t.check_out) + row('ddTrvRoom','Room type',t.room_type);
-    } else if (kind === 'car_rental') {
-      html += row('ddTrvRental','Rental company',t.rental_co) + row('ddTrvPickup','Pickup location',t.pickup_location);
-    } else if (kind === 'car_service') {
-      html += row('ddTrvRental','Company',t.rental_co) + row('ddTrvPickup','Pickup location',t.pickup_location) +
-              row('ddTrvDropoff','Drop-off location',t.dropoff_location) + row('ddTrvPhone','Contact phone',t.contact_phone);
-    }
-    f.innerHTML = html;
-    const ks = document.getElementById('ddTrvKind');
-    if (ks) ks.onchange = () => { _ddTravelCollect(); _ddTravelRenderFields(); };
-  }
-
-  async function _docDetailLoadTravel(uid) {
-    const block = document.getElementById('docDetailTravelBlock');
-    if (!block) return;
-    _ddTravel = { uid, data: null, people: [], bid: null };
-    document.getElementById('docDetailTravelStatus').textContent = '';
-    let d = {};
-    try { d = await (await fetch(`/docs/upload/${uid}/status`, {credentials:'same-origin'})).json(); } catch (e) {}
-    const t = d.travel;
-    const cat = (document.getElementById('docDetailCategory').value || '').toLowerCase();
-    const vendor = (document.getElementById('docDetailVendor').value || '').toLowerCase();
-    const looksTravel = /hotel|air|flight|travel|lodging|car ?rental|rental/.test(cat + ' ' + vendor);
-    const suspected = (t && t.is_travel) || looksTravel;
-    // The panel is ALWAYS present now — auto-open when we suspect travel, otherwise
-    // collapsed so the user can expand it and Pull on demand. (User 2026-06-22.)
-    block.open = !!suspected;
-    const hint = document.getElementById('docDetailTravelHint');
-    if (hint) hint.textContent = (t && t.is_travel)
-      ? '· extracted ✓'
-      : (suspected ? '· looks like travel — Pull to read' : '· not detected — expand to Pull');
-    _ddTravel.data = (t && t.is_travel) ? t : {};
-    _ddTravelRenderFields();
-    // Person roster + the budget the schedule lives on (cached per page load —
-    // the panel now loads on every doc open, so don't refetch each time).
-    try {
-      if (!window._ddRosterCache) {
-        window._ddRosterCache = await (await fetch(`/projects/${PROJ_ID}/travel/people`, {credentials:'same-origin'})).json();
-      }
-      const pr = window._ddRosterCache;
-      _ddTravel.people = pr.people || []; _ddTravel.bid = pr.bid;
-      const sel = document.getElementById('docDetailTravelPerson');
-      sel.innerHTML = '<option value="">— pick person —</option>' +
-        _ddTravel.people.map((p,i) => `<option value="${i}">${_esc(p.person)}${p.role?(' — '+_esc(p.role)):''}</option>`).join('');
-      // Pre-select the traveler. Prefer the server's robust traveler→person
-      // match (handles "ROE/ELIZABETH", middle names, etc.); fall back to a
-      // token overlap on the name. (User 2026-06-26.)
-      let _pidx = -1;
-      const _mp = t && t.matched_person;
-      if (_mp && _mp.line_id != null) {
-        _pidx = _ddTravel.people.findIndex(p =>
-          p.line_id === _mp.line_id && (p.instance||1) === (_mp.instance||1));
-      }
-      if (_pidx < 0 && t && t.traveler_name) {
-        const nm = t.traveler_name.toLowerCase();
-        const toks = nm.split(/[^a-z]+/).filter(x => x.length > 1);
-        _pidx = _ddTravel.people.findIndex(p => {
-          const pn = (p.person||'').toLowerCase();
-          if (!pn) return false;
-          if (pn.includes(nm) || nm.includes(pn)) return true;
-          const pt = pn.split(/[^a-z]+/).filter(x => x.length > 1);
-          const shared = toks.filter(x => pt.includes(x)).length;
-          return shared >= 2 || (shared >= 1 && (toks.every(x=>pt.includes(x)) || pt.every(x=>toks.includes(x))));
-        });
-      }
-      if (_pidx >= 0) {
-        sel.value = String(_pidx);
-        const _stp = document.getElementById('docDetailTravelStatus');
-        if (_stp) _stp.textContent = '✓ Auto-matched to ' + (_ddTravel.people[_pidx].person || 'a crew member') + ' — pick the day and Apply.';
-      }
-      if (!_ddTravel.bid) document.getElementById('docDetailTravelStatus').textContent =
-        'No Working/Estimated budget found to attach travel to.';
-    } catch (e) {}
-    // Prefill the travel day from check-in / departure / doc date.
-    const di = document.getElementById('docDetailTravelDate');
-    const pre = (t && (t.check_in || (t.depart_at || '').slice(0,10))) ||
-                document.getElementById('docDetailDocDate').value || '';
-    di.value = (pre || '').slice(0,10);
-  }
-
-  window.docDetailExtractTravel = async function () {
-    const uid = _ddTravel.uid; if (!uid) return;
-    const btn = document.getElementById('docDetailTravelExtractBtn');
-    const st = document.getElementById('docDetailTravelStatus');
-    if (btn) { btn.disabled = true; btn.textContent = 'Reading…'; }
-    if (st) st.textContent = 'Reading the document…';
-    try {
-      const r = await fetch(`/docs/upload/${uid}/extract-travel`, {method:'POST', credentials:'same-origin'});
-      const d = await r.json();
-      if (r.ok && d.travel) {
-        _ddTravel.data = d.travel.is_travel ? d.travel : (d.travel || {});
-        _ddTravelRenderFields();
-        const hint = document.getElementById('docDetailTravelHint');
-        if (hint) hint.textContent = d.travel.is_travel ? '· extracted ✓' : '· no travel details found';
-        if (st) st.textContent = d.travel.is_travel ? 'Extracted ✓ — review and Apply.' : 'No travel details found in this document.';
-        // Auto-select the matched traveler (server resolved it during extract).
-        const _mp = d.travel && d.travel.matched_person;
-        const _sel = document.getElementById('docDetailTravelPerson');
-        if (_mp && _mp.line_id != null && _sel && _ddTravel.people) {
-          const _i = _ddTravel.people.findIndex(p => p.line_id === _mp.line_id && (p.instance||1) === (_mp.instance||1));
-          if (_i >= 0) { _sel.value = String(_i);
-            if (st) st.textContent = '✓ Auto-matched to ' + (_ddTravel.people[_i].person||'a crew member') + ' — pick the day and Apply.'; }
-        }
-      } else { if (st) st.textContent = 'Extract failed.'; }
-    } catch (e) { if (st) st.textContent = 'Extract error: ' + e.message; }
-    finally { if (btn) { btn.disabled = false; btn.textContent = '⤓ Pull from document'; } }
-  };
-
-  window.docDetailApplyTravel = async function () {
-    const uid = _ddTravel.uid; if (!uid) return;
-    const st = document.getElementById('docDetailTravelStatus');
-    const pidx = document.getElementById('docDetailTravelPerson').value;
-    const date = document.getElementById('docDetailTravelDate').value;
-    if (pidx === '' || !_ddTravel.people[pidx]) { if (st) st.textContent = 'Pick a person first.'; return; }
-    if (!date) { if (st) st.textContent = 'Pick a travel day.'; return; }
-    if (!_ddTravel.bid) { if (st) st.textContent = 'No budget to attach travel to.'; return; }
-    const person = _ddTravel.people[pidx];
-    const t = _ddTravelCollect();
-    const payload = Object.assign({
-      doc_upload_id: uid, line_id: person.line_id, instance: person.instance,
-      date, kind: t.kind || 'flight',
-    }, t);
-    const btn = document.getElementById('docDetailTravelApplyBtn');
-    if (btn) { btn.disabled = true; btn.textContent = 'Applying…'; }
-    try {
-      const r = await fetch(`/projects/${PROJ_ID}/budget/${_ddTravel.bid}/travel/apply-doc`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        credentials:'same-origin', body: JSON.stringify(payload)});
-      const d = await r.json();
-      if (r.ok && d.ok) {
-        if (st) st.textContent = `✓ Added to ${_esc(person.person)}'s travel (${d.kind}).`;
-        // Reflect the crew link in the person picker above.
-        if (person.crew_member_id) {
-          const cs = document.getElementById('docDetailCrewId');
-          if (cs) cs.value = String(person.crew_member_id);
-        }
-      } else { if (st) st.textContent = 'Apply failed: ' + (d.error || r.status); }
-    } catch (e) { if (st) st.textContent = 'Apply error: ' + e.message; }
-    finally { if (btn) { btn.disabled = false; btn.textContent = 'Apply to Travel tab'; } }
-  };
+  // ✈️ Travel panel: DocEditor.loadTravel / extractTravel / applyTravel.
 
   window.openDocDetail = async function (uid, row, internalNav) {
     // Tolerate the legacy (null, docId) call order used by a few inline
@@ -2586,11 +1991,6 @@
     if ((uid == null) && (typeof row === 'number')) { uid = row; row = null; }
     _docDetailUid = uid;
     window._docDetailCurrentUid = uid;
-    // Reset the receipt-side transaction search for the newly-opened doc.
-    const _ddTxnRes = document.getElementById('docDetailTxnResults');
-    if (_ddTxnRes) _ddTxnRes.innerHTML = '';
-    const _ddIncl = document.getElementById('docDetailInclMatched');
-    if (_ddIncl) _ddIncl.checked = false;
     // Decide which list we're paging/patching against from the active tab.
     const _actPanel = document.getElementById('tab-actuals');
     _docDetailContext = (_actPanel && _actPanel.classList.contains('active')) ? 'actuals' : 'docs';
@@ -2602,296 +2002,31 @@
     // Hoist the modal out of the Docs tab panel on first open so the
     // user can open it from any tab (Actuals, etc.) — without this,
     // the parent tab-docs div's display:none cascades and hides the
-    // modal even though its own display is :flex. Idempotent: once
-    // moved to body, subsequent opens just toggle visibility.
+    // modal even though its own display is :flex. Idempotent.
     const overlay = document.getElementById('docDetailOverlay');
     if (overlay && overlay.parentElement !== document.body) {
       document.body.appendChild(overlay);
     }
     overlay.style.display = 'flex';
-    // Point the ⧉ Full editor link at the standalone editor for THIS doc.
-    // PROJ_ID is in scope in this script block. (User 2026-07.)
-    { const _fe = document.getElementById('docDetailFullEditor'); if (_fe) _fe.href = '/projects/' + PROJ_ID + '/docs/' + uid + '/editor'; }
-    // Clear transient state from the previously-viewed doc (covers prev/next nav,
-    // which reuses the open overlay): stale re-OCR conversion note + button text.
-    // (User 2026-06-22.)
-    const _reocrSt0 = document.getElementById('docDetailReocrStatus');
-    if (_reocrSt0) { _reocrSt0.textContent = ''; _reocrSt0.style.color = 'var(--text-muted)'; }
-    const _delBtn0 = document.getElementById('docDetailDeleteBtn');
-    if (_delBtn0) { _delBtn0.disabled = false; _delBtn0.textContent = '🗑 Delete document'; }
-    const _reocrBtn0 = document.getElementById('docDetailReocrBtn');
-    if (_reocrBtn0) { _reocrBtn0.disabled = false; _reocrBtn0.textContent = '🔄 Re-run OCR'; }
-    // When called from a tab that doesn't have the Docs row dataset
-    // (e.g. Actuals tab), `row` is null and the field-prepopulate
-    // below would leave everything blank. Fetch the canonical
-    // metadata from the server and synthesize a row-like dataset
-    // proxy so the rest of this function still works unchanged.
-    if (!row) {
-      try {
-        const r = await fetch(`/docs/upload/${uid}/status`, { credentials: 'same-origin' });
-        const d = r.ok ? await r.json() : {};
-        row = { dataset: {
-          sortFilename: d.filed_filename || d.original_filename || '',
-          sortVendor:   d.vendor || '',
-          sortAmount:   d.amount != null ? String(d.amount) : '',
-          sortType:     (d.category || '').toLowerCase(),
-          docDate:      d.doc_date || '',
-          docNum:       d.doc_number || '',
-          sortCard4:    d.card_last4 || '',
-          note:         d.note || '',
-          crewMemberId: d.crew_member_id != null ? String(d.crew_member_id) : '',
-          locationId:   d.location_id != null ? String(d.location_id) : '',
-        } };
-      } catch (e) {
-        row = { dataset: {} };
-      }
-    }
-    document.getElementById('docDetailTitle').textContent =
-      row?.dataset?.sortFilename ? row.dataset.sortFilename : 'Document';
-    // Reset form fields to whatever the row's dataset carries — server
-    // will overwrite when /preview-link comes back, but this avoids
-    // a flash of stale data from a previous open.
-    // Pre-populate from the row's dataset so the form shows the OCR-
-    // extracted vendor/amount/doc_date/category immediately on open
-    // (no flash of empty fields while /verify and /preview-link load).
-    // The dataset uses lowercase HTML attribute names — note the
-    // camelCase access (data-doc-date → dataset.docDate).
-    document.getElementById('docDetailVendor').value   = row?.dataset?.sortVendor || '';
-    _docDetailSetSubtype(row?.dataset?.sortVendor || '');   // supporting-doc dropdown
-    // Amount of "0" is meaningless to a user — leave blank so they see the
-    // placeholder. But a REFUND is stored as a negative amount, so show any
-    // non-zero value (was `> 0`, which blanked refunds on reopen and made it
-    // look like the edit didn't save). (User 2026-06-17.)
-    const _amt = parseFloat(row?.dataset?.sortAmount || 0);
-    document.getElementById('docDetailAmount').value   = (Number.isFinite(_amt) && _amt !== 0) ? _fmtMoney(_amt) : '';
-    // Foreign-currency original figure (blank unless previously set).
-    const _oamt = parseFloat(row?.dataset?.originalAmount || 0);
-    document.getElementById('docDetailOrigAmount').value   = (Number.isFinite(_oamt) && _oamt !== 0) ? _fmtMoney(_oamt) : '';
-    document.getElementById('docDetailOrigCurrency').value = row?.dataset?.originalCurrency || '';
-    document.getElementById('docDetailDocDate').value  = row?.dataset?.docDate || '';
-    // Category alias for the 2026-05-11 taxonomy collapse: legacy rows
-    // tagged 'quote' or 'sow' have no matching <option> after the merge,
-    // so map them to the merged keys before assigning. A subsequent Save
-    // by the user will rewrite the row to the merged key.
-    const _categoryAlias = { quote: 'estimate', sow: 'contract' };
-    const _rawCat = (row?.dataset?.sortType || '').toLowerCase();
-    document.getElementById('docDetailCategory').value = _categoryAlias[_rawCat] || _rawCat;
-    document.getElementById('docDetailNote').value     = row?.dataset?.note || '';
-    document.getElementById('docDetailDocNum').value   = row?.dataset?.docNum || '';
-    document.getElementById('docDetailCard4').value    = row?.dataset?.sortCard4 || '';
-    document.getElementById('docDetailCrewId').value     = row?.dataset?.crewMemberId || '';
-    if (window.DocForm) { DocForm.newCrewHide(); DocForm.resetSuggest(); }   // reset inline creator + suggest
-    document.getElementById('docDetailLocationId').value = row?.dataset?.locationId || '';
-    _docDetailApplyTypeUI(row?.dataset?.sortType || '');
-    try { _docDetailLoadTravel(uid); } catch (e) {}
-    // Re-apply when the user changes the type dropdown so labels /
-    // field visibility track the selection live.
-    document.getElementById('docDetailCategory').onchange = (e) =>
-      _docDetailApplyTypeUI((e.target.value || '').toLowerCase());
-    // Re-evaluate the missing-field highlight on every keystroke so the
-    // yellow outline clears as soon as the user fills the field in.
-    ['docDetailVendor','docDetailAmount','docDetailDocDate','docDetailDocNum']
-      .forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.oninput = () => _docDetailApplyTypeUI(
-          (document.getElementById('docDetailCategory').value || '').toLowerCase());
-      });
-    // Snapshot the just-populated fields so prev/next can tell whether the
-    // user changed anything (→ auto-save) vs. just browsed (→ skip save).
-    _docDetailOpenSig = _docDetailSig();
-    document.getElementById('docDetailVerify').style.display = 'none';
-    const previewEl = document.getElementById('docDetailPreview');
-    previewEl.innerHTML = '<p class="muted" style="padding:1rem">Loading preview…</p>';
-
-    // Pull doc metadata in parallel with the verify check. The actual
-    // file bytes are streamed by the browser when it loads the
-    // /raw URL we set as the img/iframe src — no AJAX needed for
-    // those, since the proxy endpoint sets the correct Content-Type
-    // and inline disposition for the browser to render directly.
-    let verifyData = null, linkData = null;
-    try {
-      const [verifyR, linkR] = await Promise.all([
-        fetch('/docs/upload/' + uid + '/verify',       { credentials: 'same-origin' }),
-        fetch('/docs/upload/' + uid + '/preview-link', { credentials: 'same-origin' }),
-      ]);
-      verifyData = await verifyR.json().catch(() => null);
-      linkData   = await linkR.json().catch(() => null);
-    } catch (e) { /* fall through */ }
-
-    // Use OUR /raw proxy URL — Dropbox content URLs send
-    // X-Frame-Options: DENY (breaks iframe) and Content-Disposition:
-    // attachment (download instead of preview). Routing through the
-    // server lets us serve the bytes inline with the right Content-Type.
-    const rawUrl = '/docs/upload/' + uid + '/raw';
-    const fn = (linkData && linkData.filename ? linkData.filename : '').toLowerCase();
-    const ct = (linkData && linkData.content_type ? linkData.content_type : '').toLowerCase();
-    const isPdf   = ct.includes('pdf')   || fn.endsWith('.pdf');
-    const isImage = ct.startsWith('image/')
-                    || /\.(jpe?g|png|gif|heic|heif|webp|bmp|tiff?)$/i.test(fn);
-
-    // Reset zoom toolbar visibility — only images get it.
-    const zoomBar = document.getElementById('docDetailZoomBar');
-    if (zoomBar) zoomBar.style.display = isImage ? 'flex' : 'none';
-
-    if (isImage) {
-      // Image preview: large by default (fit-to-window), with zoom + pan.
-      // Wraps in a positioned container so we can transform the <img>
-      // and let the parent's overflow:auto provide the panning behavior.
-      previewEl.style.alignItems = 'flex-start';
-      previewEl.style.justifyContent = 'flex-start';
-      previewEl.innerHTML =
-        '<img id="docDetailImg" src="' + rawUrl + '" alt="preview" ' +
-              'style="display:block;max-width:none;max-height:none;' +
-              'transform-origin:0 0;transition:transform .08s linear;' +
-              'user-select:none;-webkit-user-drag:none;cursor:grab;">';
-      _initImagePreviewControls();
-    } else {
-      // Everything that isn't a confident image (real PDFs, AND images that
-      // were misnamed ".pdf" by the filing pipeline) renders in an <iframe>
-      // pointed at /raw. /raw now sniffs the real bytes and serves the
-      // correct Content-Type, so the browser shows a PDF as a PDF and a
-      // JPEG-named-".pdf" as an image — instead of the PDF viewer throwing
-      // "Failed to load PDF document" on image bytes. (User 2026-06-01.)
-      // An iframe (vs <embed type="application/pdf">) honours whatever type
-      // the server sends, which is the whole point. Same-origin, so no
-      // X-Frame-Options issue. A small "open in new tab" link covers any
-      // exotic type the browser still can't render inline.
-      previewEl.style.alignItems = 'stretch';
-      previewEl.style.justifyContent = 'stretch';
-      previewEl.style.position = 'relative';
-      previewEl.innerHTML =
-        '<iframe src="' + rawUrl + '" title="document preview" ' +
-                'style="border:0;width:100%;height:100%;min-height:540px;display:block;background:#fff"></iframe>' +
-        '<a href="' + rawUrl + '" target="_blank" rel="noopener" ' +
-           'style="position:absolute;top:8px;right:8px;font-size:11px;background:#1a2540;' +
-           'border:1px solid #2d4070;color:#8fb4ff;padding:3px 9px;border-radius:5px;text-decoration:none">↗ Open in new tab</a>';
-    }
-
-    // Verification banner — green on success, red if Dropbox doesn't
-    // have the file. Mirrors what the row badge says, but inside the
-    // modal it's much harder to miss.
-    const vEl = document.getElementById('docDetailVerify');
-    if (verifyData && verifyData.ok && verifyData.verified) {
-      vEl.style.cssText = 'font-size:11px;padding:6px 9px;border-radius:6px;margin-bottom:12px;background:#14291e;color:#22c55e;border:1px solid #1a4228;';
-      vEl.textContent = '✓ Verified in Dropbox' +
-        (verifyData.size ? (' · ' + _docDetailFmtSize(verifyData.size)) : '');
-      vEl.style.display = 'block';
-    } else if (verifyData && verifyData.ok && verifyData.verified === false) {
-      vEl.style.cssText = 'font-size:11px;padding:6px 9px;border-radius:6px;margin-bottom:12px;background:#2a1414;color:#ef4444;border:1px solid #4a2020;font-weight:600;';
-      vEl.textContent = '⚠ MISSING from Dropbox — ' + (verifyData.reason || 'file not found');
-      vEl.style.display = 'block';
-    }
-
-    // Fetch a REAL Dropbox shared-link URL for the "Open in Dropbox"
-    // button. The temp link from /preview-link is a content URL that
-    // browsers download instead of preview, so we hit /dropbox-link
-    // which calls sharing_create_shared_link_with_settings to produce
-    // a dropbox.com URL that opens the web preview. Done in parallel
-    // with the temp link, but exposed via a separate button so the
-    // image/iframe doesn't have to wait on the shared-link round-trip.
-    const dbxBtn = document.getElementById('docDetailDropboxLink');
-    dbxBtn.href = '#';
-    dbxBtn.style.opacity = '0.5';
-    dbxBtn.textContent = 'Loading link…';
-    fetch('/docs/upload/' + uid + '/dropbox-link', { credentials: 'same-origin' })
-      .then(r => r.json())
-      .then(d => {
-        if (d && d.ok && d.url) {
-          dbxBtn.href = d.url;
-          dbxBtn.style.opacity = '1';
-          dbxBtn.textContent = 'Open in Dropbox ↗';
-        } else {
-          dbxBtn.style.opacity = '0.4';
-          dbxBtn.textContent = 'Open in Dropbox (unavailable)';
-          dbxBtn.title = (d && d.error) || 'Could not generate link';
-        }
-        // The /dropbox-link endpoint also reports whether a separate
-        // source archive copy exists. If yes, expose a download link
-        // so the user can grab the original uploaded bytes regardless
-        // of what happened to the processed copy.
-        const srcBtn = document.getElementById('docDetailArchiveLink');
-        if (srcBtn) {
-          if (d && d.archive_url) {
-            srcBtn.href = d.archive_url;
-            srcBtn.style.display = 'inline-block';
-            srcBtn.title = 'Source archive: ' + (d.archive_path || '');
-          } else {
-            srcBtn.style.display = 'none';
-          }
-        }
-      })
-      .catch(() => {
-        dbxBtn.style.opacity = '0.4';
-        dbxBtn.textContent = 'Open in Dropbox (network error)';
-      });
-
-    // Pull the saved metadata (vendor / amount / doc_date / category /
-    // note) by hitting /update with no body — actually safer to re-pull
-    // via /verify since it carries the row, OR ask the server. Easiest:
-    // pre-populate from dataset, let /verify add path; for full fields
-    // we already have them server-rendered in dataset attrs. The
-    // detail modal is editing in-place — a no-op load is fine.
-    document.getElementById('docDetailMeta').textContent =
-      'Upload ID #' + uid;
-    _docDetailLoadCoding(uid);
-    docItemizeLoad(uid);
-    docBackupsLoad(uid);
+    // Instant fill from the Docs-row dataset (no flash of empty fields);
+    // DocEditor then fetches /status for the authoritative row — owner,
+    // paperwork fields, duplicate state — and fills again.
+    const ds = (row && row.dataset) ? row.dataset : null;
+    const seed = ds ? {
+      filed_filename: ds.sortFilename || '', vendor: ds.sortVendor || '',
+      amount: ds.sortAmount || '', original_amount: ds.originalAmount || '',
+      original_currency: ds.originalCurrency || '', doc_date: ds.docDate || '',
+      category: (ds.sortType || '').toLowerCase(), note: ds.note || '',
+      doc_number: ds.docNum || '', card_last4: ds.sortCard4 || '',
+      owner_payee_id: ds.crewMemberId || '', location_id: ds.locationId || '',
+    } : null;
+    await window.DocEditor.open(uid, seed);
   };
 
-  // ── Itemize into budget lines (QuickBooks-style line-item split) ──────────
-  let _itemUid = null, _itemDocTotal = null;
-  window._itemAddRow = function (desc, amount, lineId) {
-    const host = document.getElementById('docItemizeRows');
-    if (!host) return;
-    const row = document.createElement('div');
-    row.className = 'ditem-row';
-    row.style.cssText = 'display:flex;gap:6px;margin-bottom:5px;align-items:center';
-    row.innerHTML =
-      '<input class="ditem-desc" placeholder="description" value="' + _esc(desc || '') + '" oninput="window._docItemizeDirty=true" style="flex:1.5;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px">' +
-      '<input class="ditem-amt" type="number" step="0.01" placeholder="0.00" value="' + (amount != null && amount !== '' ? amount : '') + '" oninput="_itemUpdateTotal();window._docItemizeDirty=true" style="width:88px;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px;text-align:right">' +
-      '<select class="ditem-line actuals-line-picker" onfocus="_actualsFillPicker(this)" onchange="_ditemLineChanged(this)" style="flex:1.3;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px"><option value="">— budget line —</option></select>' +
-      '<button type="button" title="Remove line" onclick="this.closest(\'.ditem-row\').remove();_itemUpdateTotal();window._docItemizeDirty=true" style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px">✕</button>';
-    host.appendChild(row);
-    if (lineId) { const sel = row.querySelector('.ditem-line'); sel.dataset.current = String(lineId); if (typeof window._actualsFillPicker === 'function') window._actualsFillPicker(sel); }
-    _itemUpdateTotal();
-  };
-  window._itemUpdateTotal = function () {
-    const _n = document.querySelectorAll('#docItemizeRows .ditem-row').length;
-    const _hdr = document.getElementById('docItemizeHdr'); if (_hdr) _hdr.style.display = _n ? 'flex' : 'none';
-    // Only lines WITH a budget line peel off; lines with an amount but no line
-    // stay on the main line (amber border flags them). (User 2026-07-20.)
-    let sub = 0, uncSub = 0, uncN = 0;
-    document.querySelectorAll('#docItemizeRows .ditem-row').forEach(r => {
-      const a = parseFloat((r.querySelector('.ditem-amt') || {}).value || 0) || 0;
-      const sel = r.querySelector('.ditem-line');
-      const hasLine = !!(sel && sel.value);
-      if (a && !hasLine) { uncSub += a; uncN++; if (sel) sel.style.borderColor = '#e0a13a'; }
-      else { sub += a; if (sel) sel.style.borderColor = ''; }
-    });
-    sub = Math.round(sub * 100) / 100; uncSub = Math.round(uncSub * 100) / 100;
-    window._itemUncodedN = uncN; window._itemUncodedSub = uncSub;
-    const el = document.getElementById('docItemizeTotal'); if (!el) return;
-    const tot = _itemDocTotal;
-    const fmt = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
-    // Main-line label (the whole-doc coding picker above).
-    let mainLabel = 'main line';
-    const mp = document.getElementById('docDetailLinePicker');
-    if (mp && mp.value && mp.selectedIndex >= 0 && mp.options[mp.selectedIndex]) {
-      const t = (mp.options[mp.selectedIndex].text || '').trim();
-      if (t && t !== '— pick budget line —') mainLabel = t.length > 30 ? t.slice(0,30)+'…' : t;
-    }
-    if (tot != null) {
-      const remainder = Math.round((tot - sub) * 100) / 100;
-      const over = remainder < -0.01;
-      const uncNote = uncN
-        ? ' <span style="color:#e0a13a">(incl. ' + fmt(uncSub) + ' from ' + uncN + ' line' + (uncN !== 1 ? 's' : '') + ' with no budget line)</span>'
-        : '';
-      el.innerHTML = 'Peeling off <b>' + fmt(sub) + '</b> · ' +
-        (over
-          ? '<span style="color:#e0a13a">⚠ ' + fmt(-remainder) + ' over the doc total</span>'
-          : '→ <b style="color:#5fd0a0">' + fmt(remainder) + '</b> to ' + (mp && mp.value ? '<b>'+mainLabel+'</b>' : '<span style="color:#e0a13a">main line (pick one above)</span>') + uncNote);
-    } else { el.innerHTML = 'Sublines: <b>' + fmt(sub) + '</b>'; }
-  };
+  // ── Itemize into budget lines ─────────────────────────────────────────────
+  // The grid (_itemAddRow / _itemUpdateTotal / load / pull / save) lives in
+  // DocEditor; the budget page only overrides the subline pick below (it
+  // knows the ＋ New-line flow) and keeps the payroll parse handler.
   // Subline budget-line pick: handles the ＋ New-line option, marks dirty, and
   // refreshes the peel-off math (coded vs uncoded). (2026-07-20.)
   window._ditemLineChanged = function (sel) {
@@ -2977,288 +2112,8 @@
     }
   };
 
-  window.docItemizePull = function () {
-    const items = window._itemVeryfi || [];
-    if (!items.length) { document.getElementById('docItemizeStatus').textContent = 'No OCR line items found on this document.'; return; }
-    document.getElementById('docItemizeRows').innerHTML = '';
-    items.forEach(it => _itemAddRow(it.description, it.amount, ''));
-    window._docItemizeDirty = true;
-  };
-  window.docItemizeLoad = async function (uid) {
-    _itemUid = uid; _itemDocTotal = null; window._itemVeryfi = [];
-    const block = document.getElementById('docDetailItemizeBlock');
-    const rows = document.getElementById('docItemizeRows');
-    const st = document.getElementById('docItemizeStatus');
-    const cnt = document.getElementById('docItemizeCount');
-    if (!block || !rows) return;
-    block.style.display = 'none'; rows.innerHTML = ''; if (st) st.textContent = ''; if (cnt) cnt.textContent = '';
-    try {
-      const r = await fetch('/docs/upload/' + uid + '/line-items', { credentials:'same-origin' });
-      if (!r.ok) return;
-      const d = await r.json();
-      // Receipt detail (subtotal/tax/tip/address) — populate regardless of whether
-      // the doc has a transaction to itemize.
-      const rd = d.receipt_detail || {};
-      const _sv = (id, v) => { const el = document.getElementById(id); if (el) el.value = (v != null ? v : ''); };
-      _sv('docDetailSubtotal', rd.subtotal); _sv('docDetailTax', rd.tax); _sv('docDetailTip', rd.tip);
-      _sv('docDetailMerchAddr', rd.merchant_address); _sv('docDetailMerchPhone', rd.merchant_phone);
-      if (!d.ok || d.parent_txn_id == null) return;      // no transaction to itemize
-      block.style.display = '';
-      _itemDocTotal = d.doc_total; window._itemVeryfi = d.veryfi_items || [];
-      const pullBtn = document.getElementById('docItemizePullBtn');
-      if (pullBtn) pullBtn.style.display = (window._itemVeryfi.length ? '' : 'none');
-      // Reflect the saved main line on the picker (the remainder child's line).
-      if (d.main_line_id) {
-        const mp = document.getElementById('docDetailLinePicker');
-        if (mp) { mp.dataset.current = String(d.main_line_id); if (window._actualsFillPicker) window._actualsFillPicker(mp); mp.value = String(d.main_line_id); }
-      }
-      if (d.existing && d.existing.length) {
-        block.open = true;
-        cnt.textContent = '· ' + d.existing.length + ' subline' + (d.existing.length!==1?'s':'');
-        d.existing.forEach(x => _itemAddRow(x.description, x.amount, x.budget_line_id));
-      } else {
-        _itemUpdateTotal();
-      }
-      _itemSetOverride(d.existing ? d.existing.length : 0);
-      window._docItemizeDirty = false;
-    } catch (e) {}
-  };
-  // When a doc is itemized, the whole-document (single line) coding is OVERRIDDEN
-  // by the line items — reflect that on the picker so it's not ambiguous. (User 2026-07.)
-  window._itemSetOverride = function (n) {
-    // n = number of sublines (peel-offs). The picker stays enabled as the MAIN
-    // line; when split, it just receives the remainder. (User 2026-07.)
-    const label = document.querySelector('#docDetailCodingBlock label');
-    const status = document.getElementById('docDetailCodingStatus');
-    if (label) label.textContent = n > 0 ? 'Main budget line (gets the remainder)' : 'Budget line (Actuals)';
-    if (n > 0 && status) { status.innerHTML = '↳ plus ' + n + ' subline' + (n !== 1 ? 's' : '') + ' peeled off to other lines (below).'; status.style.color = 'var(--text-muted)'; }
-    else if (status) { status.style.color = ''; }
-    _itemUpdateTotal();
-  };
-  window.docItemizeSave = async function () {
-    if (!_itemUid) return;
-    const st = document.getElementById('docItemizeStatus');
-    const btn = document.getElementById('docItemizeSaveBtn');
-    // Only rows WITH a budget line peel off; rows without one stay on the main
-    // line (their dollars ride the remainder). (User 2026-07-20.)
-    const rows = []; let uncoded = 0, uncodedAmt = 0;
-    document.querySelectorAll('#docItemizeRows .ditem-row').forEach(r => {
-      const amt = parseFloat((r.querySelector('.ditem-amt')||{}).value || 0);
-      const line = (r.querySelector('.ditem-line')||{}).value || '';
-      const desc = (r.querySelector('.ditem-desc')||{}).value || '';
-      if (amt && line) rows.push({ amount: amt, budget_line_id: line, description: desc });
-      else if (amt) { uncoded++; uncodedAmt += amt; }
-    });
-    const mainLine = (document.getElementById('docDetailLinePicker')||{}).value || '';
-    // Guard: no sublines AND no main line would silently UN-code the doc — make
-    // the user pick something instead of losing coding on a stray click. (2026-07.)
-    if (!rows.length && !mainLine) {
-      if (st) { st.textContent = uncoded
-        ? 'No line has a budget line yet — pick budget lines on the rows, or pick a main budget line above.'
-        : 'Nothing to save — add sublines or pick a main budget line above.'; st.style.color = '#e0a13a'; }
-      return;
-    }
-    // Uncoded rows need a main line to land on — otherwise their dollars vanish.
-    if (uncoded && !mainLine) {
-      if (st) {
-        const money = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-        st.textContent = uncoded + ' line' + (uncoded!==1?'s have':' has') + ' no budget line ('
-          + money(uncodedAmt) + ') — pick lines for them, or pick a main budget line above to receive that amount.';
-        st.style.color = '#e0a13a';
-      }
-      return;
-    }
-    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
-    try {
-      const r = await fetch('/docs/upload/' + _itemUid + '/itemize', {
-        method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ rows, main_line_id: mainLine })
-      });
-      const d = await r.json();
-      if (r.ok && d.ok) {
-        if (st) {
-          const money = v => '$'+Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-          if (d.cleared) st.textContent = 'Itemization cleared.';
-          else if (d.over) st.textContent = '⚠ Saved, but sublines are '+money(-d.remainder)+' over the doc total — check the amounts.';
-          else st.textContent = '✓ Saved — '+money(d.sublines_total)+' peeled off, '+money(d.main_line_amount)+' stays on the main line'
-            + (d.uncoded_n ? ' (incl. '+money(d.uncoded_total)+' from '+d.uncoded_n+' line'+(d.uncoded_n!==1?'s':'')+' without a budget line)' : '') + '.';
-          st.style.color = d.over ? '#e0a13a' : '';
-        }
-        const nsub = rows.filter(x=>x.amount).length;
-        const cnt = document.getElementById('docItemizeCount');
-        if (cnt) cnt.textContent = nsub ? ('· '+nsub+' subline'+(nsub!==1?'s':'')) : '';
-        _itemSetOverride(nsub);
-        window._docItemizeDirty = false;
-      } else { if (st) st.textContent = 'Save failed: ' + (d.error || r.status); }
-    } catch (e) { if (st) st.textContent = 'Error: ' + e.message; }
-    finally { if (btn) { btn.disabled = false; btn.textContent = 'Save itemization'; } }
-  };
-
-  // ── 📎 Invoice-side backups (2026-07-22) ──────────────────────────────────
-  // View + attach backup documents FROM the invoice: for the invoice total or
-  // any itemized subline. Mirror of the receipt-side mark-backup flow.
-  let _bkUid = null, _bkData = null;
-  const _bkMoney = v => v == null ? '—' :
-    '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  window.docBackupsLoad = async function (uid) {
-    _bkUid = uid; _bkData = null;
-    const block = document.getElementById('docDetailBackupsBlock');
-    if (!block) return;
-    block.style.display = 'none';
-    const list = document.getElementById('docBackupsList');
-    const cand = document.getElementById('docBackupsCandidates');
-    const st = document.getElementById('docBackupsStatus');
-    const cnt = document.getElementById('docBackupsCount');
-    if (list) list.innerHTML = '';
-    if (cand) { cand.style.display = 'none'; cand.innerHTML = ''; }
-    if (st) st.textContent = '';
-    if (cnt) cnt.textContent = '';
-    try {
-      const r = await fetch('/docs/upload/' + uid + '/backups', { credentials: 'same-origin' });
-      if (!r.ok) return;
-      const d = await r.json();
-      if (!d.ok || !d.targets || !d.targets.length) return;   // no expense yet — panel hidden
-      _bkData = d;
-      block.style.display = '';
-      const sel = document.getElementById('docBackupsTarget');
-      if (sel) sel.innerHTML = d.targets.map(t =>
-        '<option value="' + t.txn_id + '">' + (t.is_parent ? '' : '↳ ') + _esc(t.label)
-        + (t.amount != null ? ' · ' + _bkMoney(t.amount) : '') + '</option>').join('');
-      let n = 0, html = '';
-      d.targets.forEach(t => {
-        const bs = d.backups[String(t.txn_id)] || [];
-        if (!bs.length) return;
-        html += '<div style="margin-top:6px;font-size:10.5px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">'
-          + (t.is_parent ? '' : '↳ ') + _esc(t.label)
-          + (t.amount != null ? ' · ' + _bkMoney(t.amount) : '') + '</div>';
-        bs.forEach(b => {
-          n++;
-          html += '<div style="display:flex;gap:8px;align-items:center;padding:4px 6px;border:1px solid var(--border);border-radius:6px;margin-top:3px">'
-            + '<a href="#" onclick="openDocDetail(' + b.doc_id + ', null);return false" '
-            + 'style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8fb4ff;text-decoration:none" '
-            + 'title="Open this backup document">📎 ' + _esc(b.vendor || b.filename) + '</a>'
-            + '<span style="color:var(--text-muted);font-size:.78rem;white-space:nowrap">' + _esc(b.doc_date || '') + '</span>'
-            + '<b style="white-space:nowrap">' + _bkMoney(b.amount) + '</b>'
-            + '<button type="button" title="Detach this backup" onclick="docBackupsDetach(' + b.doc_id + ',' + t.txn_id + ')" '
-            + 'style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:13px">✕</button>'
-            + '</div>';
-        });
-      });
-      if (list) list.innerHTML = html ||
-        '<div style="color:var(--text-muted)">No backups attached yet — use <b>+ Attach backup…</b> below, or open a receipt in the Actuals queue and mark it 📎 Backup from there.</div>';
-      if (cnt) cnt.textContent = n ? ('· ' + n) : '';
-      if (n) block.open = true;
-    } catch (e) {}
-  };
-  window.docBackupsShowCandidates = function () {
-    const cand = document.getElementById('docBackupsCandidates');
-    if (!cand || !_bkData) return;
-    if (cand.style.display !== 'none') { cand.style.display = 'none'; return; }
-    const cs = _bkData.candidates || [];
-    cand.innerHTML = cs.length
-      ? ('<div style="font-size:10.5px;color:var(--text-muted);margin-bottom:4px">Pick the document that backs up the target chosen above (closest amounts first):</div>'
-        + cs.map(c =>
-          '<div style="display:flex;gap:8px;align-items:center;padding:4px 6px;border:1px solid var(--border);border-radius:6px;margin-top:3px">'
-          + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + _esc(c.vendor || c.filename)
-          + (c.category ? ' <span style="color:var(--text-muted);font-size:.75rem">' + _esc(c.category) + '</span>' : '') + '</span>'
-          + '<span style="color:var(--text-muted);font-size:.78rem;white-space:nowrap">' + _esc(c.doc_date || '') + '</span>'
-          + '<b style="white-space:nowrap">' + _bkMoney(c.amount) + '</b>'
-          + '<button type="button" onclick="docBackupsAttach(' + c.doc_id + ')" '
-          + 'title="' + (c.will_absorb ? 'Attach — its own charge stops counting (it becomes documentation)' : 'Attach as backup documentation') + '" '
-          + 'style="padding:3px 10px;border-radius:5px;background:#1f7a4d;border:none;color:#fff;font-size:11px;cursor:pointer">Attach</button>'
-          + '</div>').join(''))
-      : '<div style="color:var(--text-muted);font-size:.85rem">No other documents on this project to attach.</div>';
-    cand.style.display = '';
-  };
-  window.docBackupsAttach = async function (docId) {
-    if (!_bkUid) return;
-    const sel = document.getElementById('docBackupsTarget');
-    const st = document.getElementById('docBackupsStatus');
-    const target = sel ? parseInt(sel.value) : null;
-    if (!target) return;
-    if (st) { st.style.color = 'var(--text-muted)'; st.textContent = 'Attaching…'; }
-    try {
-      const r = await fetch('/docs/upload/' + _bkUid + '/attach-backup', {
-        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_id: docId, target_txn_id: target }) });
-      const j = await r.json();
-      if (r.ok && j.ok) {
-        if (st) { st.style.color = '#5fd0a0'; st.textContent = j.absorbed
-          ? '📎 Attached — that document’s own charge no longer counts.'
-          : '📎 Attached as backup documentation.'; }
-        docBackupsLoad(_bkUid);
-      } else if (st) { st.style.color = '#e0a13a'; st.textContent = j.error || ('Failed (' + r.status + ')'); }
-    } catch (e) { if (st) { st.style.color = '#e0a13a'; st.textContent = 'Error: ' + e.message; } }
-  };
-  window.docBackupsDetach = async function (docId, targetId) {
-    if (!_bkUid) return;
-    const st = document.getElementById('docBackupsStatus');
-    try {
-      const r = await fetch('/docs/upload/' + _bkUid + '/detach-backup', {
-        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_id: docId, target_txn_id: targetId }) });
-      const j = await r.json();
-      if (r.ok && j.ok) {
-        if (st) { st.style.color = 'var(--text-muted)'; st.textContent = j.restored
-          ? 'Detached — the document’s charge is back in the queue.' : 'Detached.'; }
-        docBackupsLoad(_bkUid);
-      } else if (st) { st.style.color = '#e0a13a'; st.textContent = j.error || ('Failed (' + r.status + ')'); }
-    } catch (e) { if (st) { st.style.color = '#e0a13a'; st.textContent = 'Error: ' + e.message; } }
-  };
-
-  // Load the budget-line coding context for the open doc and wire the
-  // in-modal picker + smart suggestion. Reuses the Actuals machinery
-  // (window.actualsSetLine / window._actualsFillPicker). 2026-05-29.
-  async function _docDetailLoadCoding(uid) {
-    const block  = document.getElementById('docDetailCodingBlock');
-    const picker = document.getElementById('docDetailLinePicker');
-    const sugEl  = document.getElementById('docDetailSuggest');
-    const statusEl = document.getElementById('docDetailCodingStatus');
-    if (!block || !picker) return;
-    // reset
-    block.style.display = 'none';
-    sugEl.style.display = 'none'; sugEl.innerHTML = '';
-    picker.dataset.populated = '0';
-    picker.innerHTML = '<option value="">— pick budget line —</option>';
-    picker.dataset.tid = ''; picker.dataset.current = ''; statusEl.textContent = '';
-    if (typeof window._actualsFillPicker !== 'function') return;
-    try {
-      const r = await fetch('/docs/upload/' + uid + '/coding', { credentials: 'same-origin' });
-      if (!r.ok) return;
-      const d = await r.json();
-      if (!d.txn_id) return;                 // non-ledger doc — no line coding
-      picker.dataset.tid = d.txn_id;
-      picker.dataset.current = d.current || '';
-      window._actualsFillPicker(picker);      // clone options + select current
-      block.style.display = '';
-      if (d.not_project) { picker.disabled = true; statusEl.textContent = 'Marked “not a project expense.”'; return; }
-      const sel = picker.options[picker.selectedIndex];
-      // Same language as the Actuals row (2026-08-19 parity pass): picking a
-      // line on an uncoded document IS the create-expense step.
-      const _ph = Array.from(picker.options).find(o => o.value === '');
-      if (_ph) _ph.text = d.current ? 'Change budget line' : '＋ Create expense — pick budget line';
-      statusEl.textContent = d.current && sel
-        ? ('Currently: ' + sel.text.trim())
-        : 'Not an expense yet — picking a line creates it (the doc rides along as backup).';
-      // Smart suggestion chip — only when not already coded.
-      if (d.suggestion && !d.current) {
-        const s = d.suggestion;
-        sugEl.style.display = '';
-        sugEl.innerHTML = '<button type="button" id="docDetailSuggestBtn" '
-          + 'style="font-size:11.5px;padding:4px 9px;background:#10231a;border:1px solid #1f6f4a;'
-          + 'border-radius:5px;color:#5fd0a0;cursor:pointer;max-width:100%;white-space:normal;text-align:left;line-height:1.3">'
-          + '💡 Suggested: ' + _esc(String(s.code)) + ' · ' + _esc(String(s.label)) + '</button>';
-        document.getElementById('docDetailSuggestBtn').onclick = () => {
-          picker.value = String(s.line_id);
-          if (picker.value === String(s.line_id)) {
-            sugEl.style.display = 'none';
-            statusEl.textContent = 'Coding…';
-            actualsSetLine(picker);
-          }
-        };
-      }
-    } catch (e) { /* silent — coding is best-effort */ }
-  }
+  // 📎 Backups and budget-line coding: DocEditor.backupsLoad / loadCoding
+  // (the main-line pick commits through actualsSetLine via init()).
 
   window.closeDocDetail = function (ev) {
     if (ev && ev.target && ev.target.id !== 'docDetailOverlay') return;   // click inside the panel
@@ -3272,6 +2127,7 @@
     window._docItemizeDirty = false;
     document.getElementById('docDetailOverlay').style.display = 'none';
     _docDetailUid = null;
+    window.DocEditor.reset();
     // Reset transient state so a stale message/button doesn't carry into the
     // next doc the user opens. (User 2026-06-22: the re-OCR conversion note and
     // the 'Deleting…' button persisted until a page refresh.)
@@ -3283,65 +2139,23 @@
     if (_reocrBtn) { _reocrBtn.disabled = false; _reocrBtn.textContent = '🔄 Re-run OCR'; }
   };
 
-  // ── Create a new person / vendor from inside the doc popup ───────────
-  // For when a doc arrives for someone not in the crew DB yet. Creates the
-  // crew record (optionally a vendor), adds the option, and selects it.
-  // (new person/vendor quick-add moved to DocForm — 2026-10-20 unification)
-
-  // ── Delete the currently-open document ───────────────────────────────
-  // Calls the existing /docs/upload/<uid>/delete endpoint, which trashes
-  // both Dropbox copies, unlinks PO source-doc + attachments, and
-  // cascades delete to the linked Transaction row(s). Reloads on
-  // success so the Actuals tab / Docs tab refresh. Per user 2026-05-14.
-  window.docDetailDelete = async function () {
-    const uid = _docDetailUid || window._docDetailCurrentUid;
-    if (!uid) return;
-    const titleEl = document.getElementById('docDetailTitle');
-    const name = (titleEl && titleEl.textContent) ? titleEl.textContent.trim() : `Upload #${uid}`;
-    if (!confirm(
-      `Move "${name}" to the Trash?\n\n` +
-      `This will:\n` +
-      `  • Remove it from the Docs list and Actuals\n` +
-      `  • Unlink it from any matched bank charge (the charge keeps its coding)\n` +
-      `  • Move the Dropbox copies to /_TRASH/\n\n` +
-      `You can restore it from Docs → 🗑 Trash (files auto-purge after 30 days).`
-    )) return;
-    const btn = document.getElementById('docDetailDeleteBtn');
-    if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
-    try {
-      const r = await fetch(`/docs/upload/${uid}/delete`, {
-        method: 'POST', credentials: 'same-origin',
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        alert('Delete failed: ' + (j.error || r.status));
-        if (btn) { btn.disabled = false; btn.textContent = '🗑 Delete document'; }
-        return;
-      }
-      // Remove the row IN PLACE (no reload) so the user keeps their
-      // subtab / search / sort / scroll. Fade it out so it's obvious the
-      // delete worked (user 2026-05-29: "it reloads… I don't know if it
-      // deleted or not").
-      const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
-      closeDocDetail();
-      if (row) {
-        row.style.transition = 'opacity .3s';
-        row.style.opacity = '0';
-        setTimeout(() => {
-          row.remove();
-          if (typeof _docsApplyView === 'function') _docsApplyView();
-        }, 300);
-      } else if (typeof _docsApplyView === 'function') {
-        _docsApplyView();
-      }
-      // Also update the ACTUALS tab in place — the doc's own row disappears,
-      // a matched bank row reverts to "needs receipt". (User 2026-06-11.)
-      _docRemoveActualsRowsForDoc(uid);
-    } catch (e) {
-      alert('Delete failed: ' + e.message);
-      if (btn) { btn.disabled = false; btn.textContent = '🗑 Delete document'; }
+  // ── After a delete (DocEditor.delete → onDeleted) ─────────────────────
+  // Remove the row IN PLACE (no reload) so the user keeps their subtab /
+  // search / sort / scroll; fade it so the delete is visible (user
+  // 2026-05-29). The Actuals tab is patched too: the doc's own row goes,
+  // a matched bank row reverts to "needs receipt". (User 2026-06-11.)
+  function _docDeletedGlue(uid) {
+    const row = document.querySelector('.doc-row[data-upload-id="' + uid + '"]');
+    closeDocDetail();
+    if (row) {
+      row.style.transition = 'opacity .3s';
+      row.style.opacity = '0';
+      setTimeout(() => { row.remove(); if (typeof _docsApplyView === 'function') _docsApplyView(); }, 300);
+    } else if (typeof _docsApplyView === 'function') {
+      _docsApplyView();
     }
-  };
+    _docRemoveActualsRowsForDoc(uid);
+  }
 
   // Patch the matching Docs-tab row IN PLACE from a /update response so
   // the list reflects the edit without a full reload (preserves subtab /
@@ -3544,66 +2358,42 @@
 
   // Persist the current modal's edits and patch the affected list row(s)
   // in place. Returns the /update response (or null on failure). Shared by
-  // the Save button AND prev/next auto-save. Does NOT close the modal —
-  // callers decide. 2026-05-30.
+  // prev/next auto-save; the Save button is bound by DocEditor (afterSave
+  // closes the modal). Does NOT close the modal — callers decide.
   window._docDetailCommit = async function () {
     if (!_docDetailUid) return null;
-    const uid = _docDetailUid;   // capture — nav may change _docDetailUid after
-    const payload = {
-      vendor:   _docDetailVendorValue(),
-      amount:   _parseMoney(document.getElementById('docDetailAmount').value),
-      original_amount:   _parseMoney(document.getElementById('docDetailOrigAmount').value),
-      original_currency: document.getElementById('docDetailOrigCurrency').value,
-      doc_date: document.getElementById('docDetailDocDate').value,
-      category: document.getElementById('docDetailCategory').value,
-      note:     document.getElementById('docDetailNote').value,
-      doc_number: document.getElementById('docDetailDocNum').value,
-      card_last4: document.getElementById('docDetailCard4').value,
-      subtotal: _parseMoney(document.getElementById('docDetailSubtotal').value),
-      tax:      _parseMoney(document.getElementById('docDetailTax').value),
-      tip:      _parseMoney(document.getElementById('docDetailTip').value),
-      merchant_address: document.getElementById('docDetailMerchAddr').value,
-      merchant_phone:   document.getElementById('docDetailMerchPhone').value,
-      crew_member_id: document.getElementById('docDetailCrewId').value || null,
-      location_id:    document.getElementById('docDetailLocationId').value || null,
-    };
-    const r = await fetch('/docs/upload/' + uid + '/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(payload),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) { alert('Save failed: ' + (d.error || r.status)); return null; }
-    // Mark the form clean (so an immediate prev/next won't re-save).
-    if (uid === _docDetailUid) _docDetailOpenSig = _docDetailSig();
+    return await window.DocEditor.save();
+  };
+  // After any successful save (Save button, prev/next, duplicate review):
+  // re-file the edited row under the CURRENT subtab/search/sort and keep
+  // the People-tab packet completeness in lockstep — without a reload.
+  function _docSavedGlue(uid, d) {
     _docPatchDocsRow(uid, d);
     _docPatchActualsRows(uid, d);
-    // Re-apply Docs view + sort so the edited row re-files into the right
-    // place under the CURRENT subtab/search/sort — without a reload.
     if (typeof _docsApplyView === 'function') _docsApplyView();
     if (typeof _docsSort === 'function') _docsSort();
-    // Keep the People-tab packet completeness in lockstep (crew link / type
-    // changes can complete or break a packet). (User 2026-06-01.)
     if (typeof _buildPacketView === 'function') _buildPacketView();
     if (typeof _buildPeopleSummary === 'function') _buildPeopleSummary().catch(()=>{});
     if (typeof _buildLocationDocs === 'function') _buildLocationDocs();
     if (typeof _buildVendorView === 'function') _buildVendorView();
-    return d;
-  };
+  }
 
-  document.getElementById('docDetailSaveBtn')?.addEventListener('click', async () => {
-    if (!_docDetailUid) return;
-    const btn = document.getElementById('docDetailSaveBtn');
-    btn.disabled = true; btn.textContent = 'Saving…';
-    try {
-      const d = await _docDetailCommit();
-      if (d) closeDocDetail();
-    } catch (e) {
-      alert('Save error: ' + e.message);
-    } finally {
-      btn.disabled = false; btn.textContent = 'Save';
-    }
-  });
+  // Mount THE editor on this page: the line picker fills from the Actuals
+  // options template and commits through actualsSetLine; PO actions open
+  // the page's PO modals; a save patches the list rows; a delete fades the
+  // row. (DOCUMENTS_HANDOFF Phase 2.)
+  if (window.DocEditor) {
+    window.DocEditor.init({
+      pid: (typeof PROJ_ID !== 'undefined' ? PROJ_ID : null),
+      fillPicker: sel => { if (typeof window._actualsFillPicker === 'function') window._actualsFillPicker(sel); },
+      setLine: sel => { if (typeof window.actualsSetLine === 'function') window.actualsSetLine(sel); },
+      onSaved: _docSavedGlue,
+      onDeleted: _docDeletedGlue,
+      afterSave: () => closeDocDetail(),
+      poCreate: _docPoCreateGlue,
+      poAddTo: _docPoAddToGlue,
+    });
+  }
 
   // Render the two-line "Mon D / YYYY" date cell (or em-dash) from an
   // ISO yyyy-mm-dd string, parsed as a local date to avoid TZ drift.

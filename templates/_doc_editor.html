@@ -1,0 +1,196 @@
+{# ═══ THE document editor (DOCUMENTS_HANDOFF Phase 2, 2026-11-01) ═══
+   ONE form for both doors: the budget page's doc-detail modal (budget.html
+   wraps it in the overlay + preview pane) and the standalone editor page
+   (doc_editor.html, also the project-less /docs/<uid>/editor). Every action
+   is here — fields (with the Payee and its suggestion), the duplicate
+   Replace / Keep both review, budget-line coding, itemize + Parse payroll,
+   backups, travel, PO actions, match to transactions, log expense, re-OCR,
+   delete, save — and static/doc-editor.js (window.DocEditor) drives all of
+   it. Page glue (prev/next, row patching, PO modals) is in b03.js /
+   doc_editor.html and handed to DocEditor.init().
+
+   Context:
+     editor_mode   'modal' (default) | 'page'  — footer / nav shape
+     project       ProjectSheet or None (project-less paperwork hides the
+                   project-bound blocks)
+     du            DocUpload for server-side prefill (page) or undefined
+     crew_members, all_crew_members, project_locations  (the pickers)
+   Element ids are the docDetail* set — keep them stable; both the JS and
+   the Actuals picker machinery (actuals-line-picker) key on them. #}
+{% set editor_mode = editor_mode if editor_mode is defined else 'modal' %}
+{% set du = du if du is defined else None %}
+<div id="docDetailVerify" style="font-size:11px;padding:6px 9px;border-radius:6px;margin-bottom:12px;display:none;"></div>
+{# Duplicate review: Replace the older / Keep both / It's a duplicate.
+   Filled by DocEditor.renderDupBanner from the document's status. #}
+<div id="docDetailDupBanner" style="display:none;margin-bottom:.7rem;padding:8px 10px;border:1px solid #6f5a2f;background:#2a2416;border-radius:8px;font-size:12px;color:#e0b84a"></div>
+{% include "_doc_fields.html" %}
+<div class="field" style="margin-bottom:.6rem">
+  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Note</label>
+  <textarea id="docDetailNote" rows="2" placeholder="Optional note…" style="width:100%;resize:vertical">{{ (du.note or '') if du else '' }}</textarea>
+</div>
+{% if editor_mode == 'page' %}
+<div style="display:flex;gap:10px;align-items:center;margin:4px 0 14px;flex-wrap:wrap">
+  <button type="button" id="docDetailSaveBtn" class="btn btn-primary" style="padding:7px 18px">Save</button>
+  <button type="button" id="docDetailSaveCloseBtn" class="btn" style="padding:7px 18px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff">Save &amp; close</button>
+  <span id="docDetailSaveStatus" style="font-size:12px;color:var(--text-muted)"></span>
+  {# ‹ Prev / Next › across the INBOX'S FILTERED list (fpInboxNav) — saves
+     the doc (and any dirty itemization) before advancing. Hidden unless we
+     arrived from the inbox with a nav list. (User 2026-07.) #}
+  <span id="docDetailNavWrap" style="display:none;margin-left:auto;align-items:center;gap:6px">
+    <button type="button" id="docDetailPrevBtn" class="btn" style="padding:7px 12px;background:var(--bg-input);border:1px solid var(--border);color:var(--text)">‹ Save + Prev</button>
+    <span id="docDetailNavPos" style="font-size:11.5px;color:var(--text-muted);white-space:nowrap"></span>
+    <button type="button" id="docDetailNextBtn" class="btn" style="padding:7px 12px;background:#10231a;border:1px solid #1f6f4a;color:#5fd0a0">Save + Next ›</button>
+  </span>
+</div>
+{% endif %}
+{# Budget-line coding — assign this doc's transaction to a budget line
+   right here, with the smart vendor→line suggestion. Shown only when the
+   doc has a linked Actuals transaction. The picker fills from the page's
+   option template through DocEditor.fillPicker; the pick commits through
+   DocEditor.setLine (actualsSetLine on the budget page). 2026-05-29. #}
+<div id="docDetailCodingBlock" class="field" style="margin-bottom:.6rem;display:none">
+  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Budget line (Actuals)</label>
+  <div id="docDetailSuggest" style="margin:2px 0 5px;display:none"></div>
+  <select id="docDetailLinePicker" class="actuals-line-picker"
+          data-tid="" data-current="" data-populated="0"
+          onfocus="DocEditor.fillPicker(this)" onchange="DocEditor.setLine(this);_itemUpdateTotal()"
+          style="width:100%;font-size:12.5px;padding:5px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:6px">
+    <option value="">— pick budget line —</option>
+  </select>
+  <div id="docDetailCodingStatus" style="font-size:10.5px;color:var(--text-muted);margin-top:3px"></div>
+</div>
+{# 🧾 Itemize into budget lines (2026-07): split one invoice/receipt into
+   several line items, each coded to its OWN budget line — QuickBooks-style.
+   Prefilled from the OCR'd line items; children roll up, parent is a container. #}
+<details id="docDetailItemizeBlock" class="field" style="margin-bottom:.6rem;display:none;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
+  <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">
+    🧾 Itemize into budget lines <span id="docItemizeCount" style="color:#5fd0a0"></span>
+  </summary>
+  <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Peel off parts of this document to other budget lines. Whatever you don't itemize stays on the <b>main line</b> (the budget-line picker above). The main line's amount updates automatically as you add sublines.</div>
+  <div id="docItemizeHdr" style="display:none;gap:6px;align-items:center;margin-bottom:4px;font-size:9.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted)">
+    <span style="flex:1.5;min-width:0">Description</span>
+    <span style="width:88px;text-align:right">Amount</span>
+    <span style="flex:1.3;min-width:0">Budget line</span>
+    <span style="width:18px"></span>
+  </div>
+  <div id="docItemizeRows"></div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+    <button type="button" onclick="_itemAddRow('','', '');window._docItemizeDirty=true" style="padding:5px 10px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;font-size:12px;cursor:pointer">+ Add line</button>
+    <button type="button" id="docItemizePullBtn" onclick="docItemizePull()" style="padding:5px 10px;border-radius:6px;background:#10231a;border:1px solid #1f5140;color:#5fd0a0;font-size:12px;cursor:pointer">⤓ Pull items from OCR</button>
+    <button type="button" id="docItemizePeopleBtn" onclick="docItemizeParsePeople()"
+            title="For payroll packages (e.g. a Wrapbook summary covering many people): AI extracts one row per person and pre-selects each person's budget line from your crew assignments — review, then Save."
+            style="padding:5px 10px;border-radius:6px;background:#241a3a;border:1px solid #4a2d70;color:#c0a0ff;font-size:12px;cursor:pointer">⚡ Parse payroll package</button>
+    <span style="flex:1"></span>
+    <span id="docItemizeTotal" style="font-size:12px;color:var(--text-muted)"></span>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+    <button type="button" id="docItemizeSaveBtn" onclick="docItemizeSave()" style="padding:6px 14px;border-radius:6px;background:#1f7a4d;border:none;color:#fff;font-size:12px;cursor:pointer;font-weight:600">Save itemization</button>
+    <span id="docItemizeStatus" style="font-size:11px;color:var(--text-muted)"></span>
+  </div>
+</details>
+{# 📎 Backup documents (2026-07-22): invoice-side view + attach of backup
+   docs — for the invoice total or any itemized subline. #}
+<details id="docDetailBackupsBlock" class="field" style="margin-bottom:.6rem;display:none;border:1px solid var(--border);border-radius:8px;padding:8px 10px">
+  <summary style="cursor:pointer;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600">
+    📎 Backup documents <span id="docBackupsCount" style="color:#5fd0a0"></span>
+  </summary>
+  <div style="font-size:11px;color:var(--text-muted);margin:6px 0">Receipts and supporting docs attached as backup for this expense — the whole invoice, or a specific itemized subline.</div>
+  <div id="docBackupsList" style="font-size:12px"></div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+    <select id="docBackupsTarget" style="flex:1;min-width:180px;font-size:12px;padding:5px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:6px"></select>
+    <button type="button" onclick="docBackupsShowCandidates()" style="padding:5px 10px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;font-size:12px;cursor:pointer">+ Attach backup…</button>
+  </div>
+  <div id="docBackupsCandidates" style="display:none;margin-top:8px;max-height:260px;overflow:auto;border-top:1px solid var(--border);padding-top:8px"></div>
+  <div id="docBackupsStatus" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div>
+</details>
+{% if project %}
+{# ✈️ Travel intelligence (2026-06-22): a PERSISTENT collapsible panel on
+   every project doc. Auto-opens when the doc looks like a flight/hotel/car. #}
+<style>#docDetailTravelBlock>summary::-webkit-details-marker{display:none}
+  #docDetailTravelBlock>summary::marker{content:''}</style>
+<details id="docDetailTravelBlock" class="field" style="margin-bottom:.6rem;border:1px solid #2a3a55;border-radius:8px;background:#10192b">
+  <summary style="cursor:pointer;list-style:none;padding:8px 10px;display:flex;align-items:center;gap:8px;font-size:11px;color:#8fb4ff;text-transform:uppercase;letter-spacing:.5px">
+    <span>✈️ Travel details</span>
+    <span id="docDetailTravelHint" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-muted);font-size:10.5px"></span>
+    <span style="margin-left:auto;color:var(--text-muted);font-size:.78rem">▾</span>
+  </summary>
+  <div style="padding:0 10px 10px">
+    <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+      <button type="button" id="docDetailTravelExtractBtn" onclick="docDetailExtractTravel()"
+              style="background:none;border:1px solid #2a3a55;color:#8fb4ff;border-radius:5px;font-size:10.5px;padding:3px 10px;cursor:pointer">⤓ Pull from document</button>
+    </div>
+    <div id="docDetailTravelFields" style="font-size:12px"></div>
+    <div style="display:grid;grid-template-columns:1fr;gap:6px;margin-top:8px">
+      <div>
+        <label style="font-size:10.5px;color:var(--text-muted)">Assign to person</label>
+        <select id="docDetailTravelPerson" style="width:100%;font-size:12px"><option value="">— pick person —</option></select>
+      </div>
+      <div>
+        <label style="font-size:10.5px;color:var(--text-muted)">Travel day</label>
+        <input type="date" id="docDetailTravelDate" style="width:100%;font-size:12px">
+      </div>
+    </div>
+    <button type="button" id="docDetailTravelApplyBtn" onclick="docDetailApplyTravel()"
+            style="width:100%;margin-top:8px;padding:7px;border-radius:6px;background:#1a2f4d;border:1px solid #2f5184;color:#bcd4ff;font-size:12.5px;cursor:pointer">Apply to Travel tab</button>
+    <div id="docDetailTravelStatus" style="font-size:10.5px;color:var(--text-muted);margin-top:5px"></div>
+  </div>
+</details>
+{# Per user 2026-05-05: when the doc type is estimate / quote / SOW / PO,
+   expose Create-PO + Add-to-PO actions inline. Shown by DocEditor.applyTypeUI
+   when the page can open the PO modals (the budget page). #}
+<div id="docDetailPoActions" class="field" style="margin-bottom:.6rem;display:none">
+  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Purchase Order</label>
+  <div style="display:flex;gap:6px;flex-wrap:wrap">
+    <button type="button" id="docDetailCreatePoBtn" onclick="docDetailCreatePo()"
+            style="flex:1;min-width:120px;padding:6px 12px;border-radius:6px;background:#1a3a2a;border:1px solid #2a5a3a;color:#74c69d;font-size:12px;cursor:pointer">📋 Create PO from this</button>
+    <button type="button" id="docDetailAddToPoBtn" onclick="docDetailAddToPo()"
+            style="flex:1;min-width:120px;padding:6px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#5b8af9;font-size:12px;cursor:pointer">📎 Add to existing PO</button>
+  </div>
+</div>
+{# Receipt-side matcher (User 2026-06-17): find the charge(s) that back
+   THIS receipt — one 1:1, or several that sum to the total (a split). #}
+<div class="field" id="docDetailTxnFind" style="margin-bottom:.6rem">
+  <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Match to transaction(s)</label>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <button type="button" id="docDetailFindTxnBtn" onclick="docDetailFindTxns()"
+            style="padding:6px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#5b8af9;font-size:12px;cursor:pointer">🔗 Find transactions for this receipt</button>
+    <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted);cursor:pointer">
+      <input type="checkbox" id="docDetailInclMatched" onchange="if(document.getElementById('docDetailTxnResults').innerHTML)docDetailFindTxns()"> include already-matched</label>
+  </div>
+  {# Cash / check purchases have no card charge to match — log the receipt
+     as a standalone expense instead. (Owner 2026-10-01.) #}
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+    <button type="button" id="docDetailLogExpenseBtn" onclick="docDetailLogExpense()"
+            title="For cash / check / petty-cash purchases with no electronic charge coming: creates the expense from this receipt so it counts in Actuals. Code it to a budget line on the Actuals tab."
+            style="padding:6px 12px;border-radius:6px;background:#1a3a2a;border:1px solid #2a5a3a;color:#74c69d;font-size:12px;cursor:pointer">💵 Log as expense (no charge to match)</button>
+    <span id="docDetailLogExpenseStatus" style="font-size:11px;color:var(--text-muted)"></span>
+  </div>
+  <div id="docDetailTxnResults" style="margin-top:7px"></div>
+</div>
+{% else %}
+<div class="field" style="margin-bottom:.6rem;font-size:11.5px;color:var(--text-muted);padding:8px 10px;border:1px dashed var(--border);border-radius:8px">
+  This document belongs to a payee, not a project. It is paperwork — it never creates an expense. To attach a receipt or invoice to a show, upload it from that project's Docs tab.
+</div>
+{% endif %}
+<div id="docDetailMeta" style="font-size:11px;color:var(--text-muted);margin:8px 0 12px;line-height:1.5"></div>
+{# Re-read the file with OCR on demand. Fills the fields for review; the
+   user Saves to keep them. (User 2026-06-17.) #}
+<div style="display:flex;align-items:center;gap:8px;margin:0 0 12px;flex-wrap:wrap">
+  <button type="button" id="docDetailReocrBtn" onclick="docDetailReocr()"
+          title="Re-read this file with OCR and pull in vendor / amount / date / currency again. Review the fields, then Save."
+          style="padding:6px 12px;border-radius:6px;background:#1a2540;border:1px solid #2d4070;color:#8fb4ff;font-size:12px;cursor:pointer">🔄 Re-run OCR</button>
+  <span id="docDetailReocrStatus" style="font-size:11px;color:var(--text-muted)"></span>
+</div>
+<div style="display:flex;gap:6px;justify-content:space-between;align-items:center;">
+  {# Destructive action — soft-delete to the Docs Trash; matched bank
+     charges are unlinked, never deleted. Per user 2026-05-14. #}
+  <button type="button" id="docDetailDeleteBtn" onclick="docDetailDelete()"
+          title="Move this document to the Trash (restorable); Dropbox copies go to /_TRASH/"
+          style="padding:6px 12px;border-radius:6px;background:#2a1414;border:1px solid #4a2020;color:#ef4444;font-size:12px;cursor:pointer">🗑 Delete document</button>
+  {% if editor_mode == 'modal' %}
+  <div style="display:flex;gap:6px">
+    <button type="button" class="btn btn-sm" onclick="closeDocDetail()">Cancel</button>
+    <button type="button" class="btn btn-sm btn-primary" id="docDetailSaveBtn">Save</button>
+  </div>
+  {% endif %}
+</div>
