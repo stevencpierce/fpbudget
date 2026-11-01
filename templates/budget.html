@@ -4178,6 +4178,7 @@ window.__BJ = window.__BJ || {};
 __BJ["b03_PROJ_ID"] = {{ project.id }};
 __BJ["b03_UPLOAD_URL"] = "{{ url_for('docs_upload_post', pid=project.id) }}";
 __BJ["b03_CURRENT_USER_NAME"] = {{ (current_user.name or (current_user.email.split('@')[0] if current_user.email else 'you'))|tojson }};
+__BJ["b03_NON_LEDGER_CATS"] = {{ NON_LEDGER_DOC_CATEGORIES|tojson }};
 </script>
 <script src="{{ url_for('static', filename='doc-form.js') }}?v={{ APP_COMMIT }}"></script>
 <script src="{{ url_for('static', filename='budget-js/b03.js') }}?v={{ APP_COMMIT }}"></script>

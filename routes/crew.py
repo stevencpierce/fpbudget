@@ -183,11 +183,51 @@ def crew_get_json(cid):
     })
 
 
+def _crew_delete_blockers(cid):
+    """Everything that still references a CrewMember and would either FK-fail
+    the delete (Timecard, ProjectCrewMember) or silently orphan records
+    (DocUpload, ScheduleDay, loan-out links). Returns {label: count} for the
+    non-zero ones. (DOCUMENTS_HANDOFF Phase 0, 2026-10-30.)"""
+    from models import DocUpload, Timecard, ScheduleDay, ProjectCrewMember
+    checks = {
+        "document":           DocUpload.query.filter(
+                                  DocUpload.crew_member_id == cid,
+                                  DocUpload.status != 'deleted').count(),
+        "timecard":           Timecard.query.filter_by(crew_member_id=cid).count(),
+        "schedule day":       ScheduleDay.query.filter_by(crew_member_id=cid).count(),
+        "project roster row": ProjectCrewMember.query.filter_by(crew_member_id=cid).count(),
+        "loan-out link":      (CrewMember.query.filter_by(loan_out_vendor_id=cid).count()
+                               + ProjectCrewMember.query.filter_by(loan_out_vendor_id=cid).count()),
+    }
+    return {k: v for k, v in checks.items() if v}
+
+
 @app.route("/crew/<int:cid>/delete", methods=["POST"])
 @login_required
 def crew_delete(cid):
     _require_global_editor()
     m = CrewMember.query.get_or_404(cid)
+    # Refuse while anything still points at this person: documents, timecards,
+    # schedule days, per-project roster rows or loan-out links. The old code
+    # nulled BudgetLine / CrewAssignment only, so anyone with paperwork either
+    # FK-errored (500) or lost their document history. Deactivate instead.
+    blockers = _crew_delete_blockers(cid)
+    if blockers:
+        parts = [f"{n} {lbl}{'s' if n != 1 else ''}" for lbl, n in blockers.items()]
+        msg = (f"Can't delete {m.name}: still referenced by "
+               + ", ".join(parts)
+               + ". Deactivate the person instead (Edit → Active off) so the "
+                 "history stays intact.")
+        wants_json = (request.is_json
+                      or 'application/json' in (request.headers.get('Accept') or ''))
+        if wants_json:
+            return jsonify({"error": msg, "blockers": blockers,
+                            "suggest": "deactivate"}), 400
+        # The crew.html form posts here as a plain form submit: a 400 body
+        # would strand the browser on a blank page, so refuse with a flash
+        # and bounce back to the list (the JSON branch above is the 400).
+        flash(msg, "error")
+        return redirect(url_for("crew_list"))
     # Null out FK references so the delete doesn't fail on constraint violations
     BudgetLine.query.filter_by(assigned_crew_id=cid).update({"assigned_crew_id": None},
                                                              synchronize_session=False)
@@ -298,8 +338,10 @@ def crew_docs_json(cid):
         ProjectSheet.id.in_({d.project_id for d in docs if d.project_id})).all()} if docs else {}
     by_year = {}
     for d in docs:
+        # DocUpload's timestamp column is uploaded_at (no created_at exists);
+        # the old getattr never matched, so undated docs bucketed under "—".
         yr = (d.doc_date.year if d.doc_date
-              else (d.created_at.year if getattr(d, 'created_at', None) else 0))
+              else (d.uploaded_at.year if getattr(d, 'uploaded_at', None) else 0))
         by_year.setdefault(str(yr or '—'), []).append({
             "id": d.id,
             "name": d.filed_filename or d.original_filename or f"Doc #{d.id}",

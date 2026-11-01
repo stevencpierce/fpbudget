@@ -1041,7 +1041,19 @@ def inject_globals():
             "DAY_TYPES": DAY_TYPES,
             "DAY_TYPE_PICKER": DAY_TYPE_PICKER,
             "location_type_meta": location_type_meta,
-            "day_type_meta": day_type_meta}
+            "day_type_meta": day_type_meta,
+            # Doc categories that never sit on the actuals ledger — served to
+            # JS (budget.html → window.__BJ) so b03.js carries no hand copy of
+            # the rule. One definition: actuals.doc_class. (2026-10-30.)
+            "NON_LEDGER_DOC_CATEGORIES": _non_ledger_doc_categories_for_js()}
+
+
+def _non_ledger_doc_categories_for_js():
+    try:
+        from actuals import non_ledger_categories
+        return non_ledger_categories()
+    except Exception:
+        return []
 
 
 def _fmt_local(dt, tz_name=None):
@@ -1279,10 +1291,13 @@ def _copy_doc_to_crew_folder(doc):
             return None
         _safe = lambda s: re.sub(r'[\\/:*?"<>|]+', '-', (s or '').strip())[:80] or 'Unknown'
         person = _safe(cm.name)
+        # DocUpload has no created_at (the column is uploaded_at) — the old
+        # getattr always missed, so undated docs filed under the CURRENT
+        # year. (DOCUMENTS_HANDOFF Phase 0, 2026-10-30.)
         if doc.doc_date:
             year = str(doc.doc_date.year)
-        elif getattr(doc, 'created_at', None):
-            year = str(doc.created_at.year)
+        elif getattr(doc, 'uploaded_at', None):
+            year = str(doc.uploaded_at.year)
         else:
             year = str(date.today().year)
         parts = [_crew_db_root(), person, year]
@@ -3101,8 +3116,10 @@ def admin_docs_reconcile_project(pid):
     # contracts, releases, etc.) — same rule as the upload path.
     txns_created = 0
     if created:
-        _NON_LEDGER_TYPES = {'tax_form', 'contract', 'release', 'legal',
-                              'insurance', 'misc', 'employee_vendor_doc'}
+        # Same rule as every other path (actuals.doc_class): this list used
+        # to omit estimate / quote / purchase_order, so a Dropbox reconcile
+        # created ledger rows for estimates and POs. 2026-10-30.
+        from actuals import is_non_ledger_category as _is_non_ledger_rc
         # Re-fetch the new rows by note marker (we tagged them with
         # "Reconciled from Dropbox scan"). Faster than re-checking each
         # path against existing_full.
@@ -3111,7 +3128,7 @@ def admin_docs_reconcile_project(pid):
                        .filter(DocUpload.note == "Reconciled from Dropbox scan")
                        .all())
         for u in new_uploads:
-            if (u.category or '') in _NON_LEDGER_TYPES:
+            if _is_non_ledger_rc(u.category):
                 continue
             # Skip if a Transaction already references this doc — covers
             # repeated reconcile runs.
@@ -6056,11 +6073,15 @@ def _actual_by_working_line(bid):
     """
     out = {}
     try:
+        from actuals import counts_as_spend as _cas_fz
+        _b = Budget.query.get(bid)
+        _pid = _b.project_id if _b else None
+        _parents = _split_parent_id_set(_pid) if _pid else None
         for _lid, _amt in (
             db.session.query(BudgetLine.id, func.sum(_signed_amount()))
             .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
             .filter(BudgetLine.budget_id == bid,
-                    Transaction.not_project_expense == False,
+                    _cas_fz(_parents),     # same predicate as budget_view (2026-10-30)
                     _exclude_estimate_linked_txns_clause())
             .group_by(BudgetLine.id)
             .all()
@@ -6956,36 +6977,41 @@ def _actuals_by_section_code(pid):
     that the user coded to a line/section now SUBTRACT instead of being
     excluded (net spend was permanently overstated after any refund).
     """
+    # ONE spend predicate (actuals.counts_as_spend, 2026-10-30): the three
+    # rollups used to filter differently (this one took un-activated receipt
+    # rows, backup rows and itemized parents at full value).
+    from actuals import counts_as_spend as _cas
     rows = (db.session.query(
                 func.coalesce(Transaction.account_code,
                               BudgetLine.account_code).label('code'),
                 func.sum(_signed_amount()))
             .outerjoin(BudgetLine, BudgetLine.id == Transaction.budget_line_id)
             .filter(Transaction.project_id == pid,
-                    Transaction.not_project_expense == False)
+                    _cas(_split_parent_id_set(pid)))
             .group_by('code')
             .all())
     return {r[0]: float(r[1]) for r in rows if r[0] is not None}
 
 
 def _signed_amount():
-    """SQL expression for actuals rollups: expense amounts count, credits count
-    as ZERO (excluded).
+    """SQL expression for actuals rollups: an expense counts +amount, a credit
+    / refund counts -amount so it nets against the line it is coded to.
 
-    History: CR-3 (2026-06-04) made credits SUBTRACT (return -amount) so refunds
-    would net against spend. In practice that drove whole Top Sheet sections deep
-    NEGATIVE — credit-card payoffs, transfers, and rental-hold reversals are
-    is_expense=False but are NOT refunds of an in-section project cost, so netting
-    them produced nonsensical negative actuals (user report 2026-06-11). Reverted
-    to expense-only: credits no longer inflate actuals (they import as
-    is_expense=False and contribute 0) and no longer push sections negative. True
-    refund netting needs to distinguish refund-credits from payment/transfer
-    credits, which the data doesn't yet support — tracked for later.
+    History: CR-3 (2026-06-04) made credits subtract; 2026-06-11 reverted them
+    to zero because credit-card payoffs and transfers (is_expense=False, not
+    refunds) were pushing sections negative. Those rows are only a problem when
+    they are CODED to a line or section — an uncoded credit never reaches a
+    rollup — and since then every rollup also filters on counts_as_spend(), so
+    an unwanted credit is handled by marking it not-project, exactly like an
+    unwanted charge. Owner decision 2026-10-30 (ACTUALS_HANDOFF): credits act
+    as credits, as in QuickBooks. A refund coded to a line reduces that line's
+    actual; one coded to a section reduces the section.
 
-    Kept as a function (fresh expression per query) so all rollup call sites flip
+    actuals.signed_amount_value() is the pure-Python twin (unit-tested). Kept
+    as a function (fresh expression per query) so all rollup call sites flip
     with this one definition."""
     return sa_case((Transaction.is_expense == True, Transaction.amount),
-                   else_=0)
+                   else_=-Transaction.amount)
 
 
 @app.route("/projects/<int:pid>/budget/<int:bid>/audit.json")
@@ -7937,6 +7963,17 @@ def budget_view(pid, bid):
     # BudgetLine (Actual) → source_line_id (Working). Result keyed by
     # the Working line id so the budget table (which renders Working
     # lines) can look up the actual amount inline.
+    #
+    # ONE spend predicate for every rollup on this page (actuals.counts_as_spend,
+    # ACTUALS_HANDOFF Phase 0, 2026-10-30): not-project excluded, doc-born rows
+    # only once activated, backup rows and itemized parents excluded. The split
+    # parent set is resolved once here and shared by the four queries below.
+    from actuals import (counts_as_spend as _counts_as_spend,
+                         signed_amount_value as _signed_amount_value)
+    try:
+        _split_parents_bv = _split_parent_id_set(pid)
+    except Exception:
+        _split_parents_bv = set()
     actual_by_line_id = {}
     actual_to_working = {}  # {actual_line_id: source_working_line_id}
     has_actual_budget = False
@@ -7973,7 +8010,7 @@ def budget_view(pid, bid):
                 .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
                 .filter(BudgetLine.budget_id == _actual_budget.id,
                         BudgetLine.source_line_id.isnot(None),
-                        Transaction.not_project_expense == False,
+                        _counts_as_spend(_split_parents_bv),
                         _exclude_estimate_linked_txns_clause())
                 .group_by(BudgetLine.source_line_id)
                 .all()
@@ -7998,7 +8035,7 @@ def budget_view(pid, bid):
             .filter(Transaction.project_id == pid,
                     Transaction.budget_line_id.is_(None),
                     Transaction.account_code.isnot(None),
-                    Transaction.not_project_expense == False,
+                    _counts_as_spend(_split_parents_bv),
                     _exclude_estimate_linked_txns_clause())
             .group_by(Transaction.account_code)
             .all()
@@ -8103,10 +8140,10 @@ def budget_view(pid, bid):
         try:
             from sqlalchemy import func as _dfunc
             for _wlid, _amt in (
-                db.session.query(BudgetLine.id, _dfunc.sum(_signed_amount()))  # credits contribute 0 (CR-3 revert)
+                db.session.query(BudgetLine.id, _dfunc.sum(_signed_amount()))  # credits net against the line
                 .join(Transaction, Transaction.budget_line_id == BudgetLine.id)
                 .filter(BudgetLine.budget_id.in_(_direct_bids),
-                        Transaction.not_project_expense == False,
+                        _counts_as_spend(_split_parents_bv),
                         _exclude_estimate_linked_txns_clause())
                 .group_by(BudgetLine.id)
                 .all()
@@ -8815,16 +8852,16 @@ def budget_view(pid, bid):
             _txns = (Transaction.query
                      .filter(Transaction.project_id == pid,
                              Transaction.budget_line_id.isnot(None),
-                             Transaction.not_project_expense == False,
+                             _counts_as_spend(_split_parents_bv),
                              _exclude_estimate_linked_txns_clause())
                      .all())
             for _tx in _txns:
                 _key = _alid_to_key.get(_tx.budget_line_id)
                 if _key is None:
                     continue
-                # Expense-only: credits contribute 0 (see _signed_amount — CR-3's
-                # subtract-credits drove sections negative; 2026-06-11).
-                _amt = float(_tx.amount or 0) * (1 if _tx.is_expense else 0)
+                # Same signed rule as _signed_amount(): credits net against
+                # the line (owner 2026-10-30).
+                _amt = _signed_amount_value(_tx.amount, _tx.is_expense)
                 actual_line_totals[_key] = actual_line_totals.get(_key, 0.0) + _amt
                 actual_line_totals_by_lid[_tx.budget_line_id] = (
                     actual_line_totals_by_lid.get(_tx.budget_line_id, 0.0) + _amt)
@@ -12057,13 +12094,21 @@ def actuals_line_totals_batch(pid):
             k = (rl.account_code, (rl.description or '').strip().lower())
             key_by_req[rl.id] = k
             all_sib_ids |= sib_by_key.get(k, {rl.id})
+        # ONE spend predicate (actuals.counts_as_spend, 2026-10-30) so the
+        # live cell refresh agrees with the page-load rollup in budget_view —
+        # this endpoint used to count un-activated receipt rows, backup rows
+        # and itemized parents that budget_view excluded, so a cell could
+        # change value on refresh.
+        from actuals import counts_as_spend as _cas_lt
+        _cas_clause = _cas_lt(_split_parent_id_set(pid))
         sums_by_lid = {}
         if all_sib_ids:
             for lid, amt in (db.session.query(
                         Transaction.budget_line_id, func.sum(_signed_amount()))
                     .filter(Transaction.project_id == pid,
                             Transaction.budget_line_id.in_(list(all_sib_ids)),
-                            Transaction.not_project_expense == False)  # noqa: E712
+                            _cas_clause,
+                            _exclude_estimate_linked_txns_clause())
                     .group_by(Transaction.budget_line_id).all()):
                 sums_by_lid[lid] = float(amt or 0)
         for rl in req_lines:
@@ -12075,7 +12120,8 @@ def actuals_line_totals_batch(pid):
                 .filter(Transaction.project_id == pid,
                         Transaction.budget_line_id.is_(None),
                         Transaction.account_code.isnot(None),
-                        Transaction.not_project_expense == False)  # noqa: E712
+                        _cas_clause,
+                        _exclude_estimate_linked_txns_clause())
                 .group_by(Transaction.account_code).all()):
             sections[str(code)] = round(float(amt or 0), 2)
     except Exception as _lte:
@@ -15651,10 +15697,19 @@ def actuals_docs_list_for_picker(pid):
     return jsonify({"ok": True, "docs": out})
 
 
-@app.route("/projects/<int:pid>/actuals/reconcile.json", methods=["GET"])
+@app.route("/projects/<int:pid>/actuals/reconcile-columns.json", methods=["GET"])
 @login_required
 def actuals_reconcile_data(pid):
-    """Return the two columns for the Reconcile sub-tab:
+    """Return the two columns for the Reconcile sub-tab.
+
+    URL history (ACTUALS_HANDOFF Phase 0, 2026-10-30): this handler was
+    registered on the SAME url as actuals_reconcile_json above
+    (/actuals/reconcile.json). Flask serves the first registration, so this
+    one was dead and the Reconcile sub-tab (b04.js _reconcileRender) always
+    received the triage shape and rendered two empty columns. It now lives at
+    /actuals/reconcile-columns.json; the triage panel keeps
+    /actuals/reconcile.json. scripts/route_audit.py now fails on a duplicate
+    rule so this cannot recur.
 
       - transactions: ledger rows that need a receipt (no doc_upload_id,
         not flagged as not-a-project-expense, not already confirmed).
@@ -16249,10 +16304,14 @@ def actuals_sync_now(pid):
         result = sync_project(project, conn, db,
                               start_date=start_date, end_date=end_date)
         try:
-            _added   = int(result.get('added')   or result.get('inserted')   or 0)
-            _updated = int(result.get('updated') or 0)
-            _skipped = int(result.get('skipped') or 0)
-            _claimed = int(result.get('already_claimed') or 0)
+            # These are the keys sync_project() actually returns. The old
+            # read looked for 'added' / 'inserted' / 'updated' / 'skipped',
+            # none of which exist, so every log line said "+0 new".
+            # (ACTUALS_HANDOFF Phase 0, 2026-10-30.)
+            _imported   = int(result.get('imported') or 0)
+            _enriched   = int(result.get('enriched') or 0)
+            _reconciled = int(result.get('reconciled') or 0)
+            _cdc        = int(result.get('cdc_additions') or 0)
             _range   = ''
             if start_date or end_date:
                 _range = f' ({start_date or "…"} → {end_date or "…"})'
@@ -16260,10 +16319,11 @@ def actuals_sync_now(pid):
                 action='update', entity_type='qbo_sync',
                 entity_id=pid, entity_label=project.name or f'Project #{pid}',
                 project_id=pid,
-                after={'added': _added, 'updated': _updated,
-                       'skipped': _skipped, 'already_claimed': _claimed},
-                note=f'QBO sync{_range}: +{_added} new, {_updated} updated, '
-                     f'{_skipped} skipped, {_claimed} cross-project')
+                after={'imported': _imported, 'enriched': _enriched,
+                       'reconciled': _reconciled, 'cdc_additions': _cdc,
+                       'sync_through': str(result.get('sync_through') or '')},
+                note=f'QBO sync{_range}: +{_imported} new, {_enriched} enriched, '
+                     f'{_reconciled} reconciled to receipts, {_cdc} via change-capture')
         except Exception: pass
         # Phase 3: auto-refresh the review queue after ingestion (background).
         _bg_run_all_scans(pid)
@@ -23720,10 +23780,11 @@ def location_delete(pid, lid):
 # estimate-linked Transactions in the DB — defense-in-depth filter below
 # excludes them from every Actual / Actualized rollup so they never inflate
 # Actual columns or PO Actualized totals. 2026-05-14.
-_NON_LEDGER_DOC_CATEGORIES = (
-    'tax_form', 'contract', 'release', 'legal', 'insurance', 'misc',
-    'estimate', 'quote', 'purchase_order',
-)
+# 2026-10-30: this tuple used to be a fifth hand copy of the rule (and
+# omitted employee_vendor_doc). It now reads the one definition in
+# actuals.doc_class so every filter agrees.
+from actuals import non_ledger_categories as _non_ledger_categories
+_NON_LEDGER_DOC_CATEGORIES = tuple(_non_ledger_categories())
 def _exclude_estimate_linked_txns_clause():
     """Returns a SQLAlchemy clause to splat into a Transaction filter that
     keeps:
@@ -33940,7 +34001,12 @@ def docs_inbox_json(pid):
         # never appear in the default views or the prev/next nav list.
         # (dup_pending — an UNconfirmed possible dup — still surfaces as
         # needs_review; that's an action item, not an archive.)
-        if d.is_duplicate or d.status == 'duplicate':
+        # Only a CONFIRMED duplicate (status='duplicate') is buried. A
+        # pending one (is_duplicate=True, status != 'duplicate') is an action
+        # item and lands in needs_review — the old first test matched both,
+        # so the dup_pending branch below could never run. (DOCUMENTS_HANDOFF
+        # Phase 0, 2026-10-30.)
+        if d.status == 'duplicate':
             state = 'duplicate'
         elif coded == 'excluded':
             state = 'excluded'
@@ -34494,13 +34560,13 @@ def _ingest_document_bytes(pid, project, filename, content_type, data, uploader=
     #     so the user can turn an estimate into a budgeted line item
     #     with the doc as backing paper. Until then they live as
     #     reference docs only.
-    _NON_LEDGER_TYPES = {'tax_form', 'contract', 'release', 'legal',
-                         'insurance', 'misc', 'employee_vendor_doc',
-                         'estimate', 'quote', 'purchase_order'}
+    # The list above is now ONE rule in actuals.doc_class (2026-10-30):
+    # evidence creates a row; paperwork and commitments never do.
+    from actuals import is_ledger_category as _is_ledger_upload
     auto_txn = None
     if (upload.status in ('done', 'review')
             and not upload.is_duplicate
-            and (upload.category or '') not in _NON_LEDGER_TYPES):
+            and _is_ledger_upload(upload.category)):
         try:
             from datetime import datetime as _dt_mod
             _txn_date = upload.doc_date.isoformat() if upload.doc_date else None
@@ -36476,12 +36542,10 @@ def _apply_dup_resolution(upload, action, force=False, link_mode=None):
                        if _peer else "Reviewed — kept.")
         # Create the deferred Actuals Transaction for ledger doc types so a
         # genuinely-separate spend shows up in Actuals.
-        _NON_LEDGER_TYPES = {'tax_form', 'contract', 'release', 'legal',
-                             'insurance', 'misc', 'employee_vendor_doc',
-                             'estimate', 'quote', 'purchase_order'}
+        from actuals import is_ledger_category as _is_ledger_keep
         made_txn = None
         if (upload.status in ('done', 'review')
-                and (upload.category or '') not in _NON_LEDGER_TYPES):
+                and _is_ledger_keep(upload.category)):
             if not Transaction.query.filter_by(doc_upload_id=upload.id).first():
                 try:
                     made_txn = Transaction(
@@ -36726,6 +36790,56 @@ def docs_resolve_duplicates_batch(pid):
                     "kept": len(keep_ids), "confirmed": len(confirm_ids)})
 
 
+def _soft_delete_doc_upload(upload):
+    """Move ONE DocUpload to the Trash — the shared write path for the single
+    delete, bulk delete and ghost purge (DOCUMENTS_HANDOFF Phase 0,
+    2026-10-30; the bulk paths used to hard-DELETE rows and bank charges).
+
+    Does NOT commit and does NOT log — the caller does both, so a bulk call
+    commits once and logs once.
+
+      • Dropbox: filed copy + source archive move to /_TRASH/, the moves
+        recorded in trash_meta so /restore can move them back.
+      • Transactions: the doc's OWN ledger row(s) (source='doc_upload') are
+        deleted (restore recreates one for ledger types); a MATCHED BANK ROW
+        (qbo_sync / csv_import / reconciled / manual) is only UNLINKED — its
+        coding survives. Evidence rows for the doomed txns and for this doc
+        go first (expense_evidence has no FK cascade).
+      • DocUpload: status='deleted', deleted_at stamped, trash_meta written.
+        Never db.session.delete() — hard removal is /purge from the Trash.
+
+    Returns {"trashed_files", "removed_doc_txns", "unlinked_bank"}."""
+    paths_to_trash = []
+    if upload.filed_dropbox_path:
+        paths_to_trash.append(upload.filed_dropbox_path)
+    if upload.source_archive_path and upload.source_archive_path != upload.filed_dropbox_path:
+        paths_to_trash.append(upload.source_archive_path)
+    _moves = []
+    trashed = _trash_dropbox_paths(paths_to_trash, moves_out=_moves)
+    _doomed_ids = [r[0] for r in db.session.query(Transaction.id)
+                   .filter_by(doc_upload_id=upload.id, source='doc_upload').all()]
+    _delete_evidence_for_txns(_doomed_ids)
+    try:
+        from models import ExpenseEvidence as _EE_del
+        _EE_del.query.filter_by(doc_upload_id=upload.id).delete(synchronize_session=False)
+    except Exception:
+        pass
+    removed_doc_txns = (Transaction.query
+                        .filter_by(doc_upload_id=upload.id, source='doc_upload')
+                        .delete(synchronize_session=False))
+    unlinked_bank = (Transaction.query
+                     .filter(Transaction.doc_upload_id == upload.id,
+                             Transaction.source != 'doc_upload')
+                     .update({"doc_upload_id": None, "match_status": "unmatched",
+                              "match_confidence": None}, synchronize_session=False))
+    import json as _json
+    upload.trash_meta = _json.dumps({"prior_status": upload.status, "moves": _moves})
+    upload.status     = 'deleted'
+    upload.deleted_at = datetime.utcnow()
+    return {"trashed_files": trashed, "removed_doc_txns": removed_doc_txns,
+            "unlinked_bank": unlinked_bank}
+
+
 @app.route("/docs/upload/<int:uid>/delete", methods=["POST"])
 @login_required
 def docs_upload_delete(uid):
@@ -36748,38 +36862,12 @@ def docs_upload_delete(uid):
     _act_label  = upload.filed_filename or upload.original_filename or f'Upload #{uid}'
     _act_vendor = upload.vendor
     _act_amount = float(upload.amount or 0)
-    # Move BOTH the filed copy AND the source archive copy to /_TRASH/,
-    # recording the real destinations so /restore can move them back.
-    paths_to_trash = []
-    if upload.filed_dropbox_path:
-        paths_to_trash.append(upload.filed_dropbox_path)
-    if upload.source_archive_path and upload.source_archive_path != upload.filed_dropbox_path:
-        paths_to_trash.append(upload.source_archive_path)
-    _moves = []
-    trashed = _trash_dropbox_paths(paths_to_trash, moves_out=_moves)
-    # The doc's own ledger row(s) go (restore recreates); matched bank rows are
-    # UNLINKED, never deleted — their coding survives. Evidence rows for the
-    # doomed txns AND for this doc must go first (no FK cascade — 2026-09-08).
-    _doomed_ids = [r[0] for r in db.session.query(Transaction.id)
-                   .filter_by(doc_upload_id=upload.id, source='doc_upload').all()]
-    _delete_evidence_for_txns(_doomed_ids)
-    try:
-        from models import ExpenseEvidence as _EE_del
-        _EE_del.query.filter_by(doc_upload_id=upload.id).delete(synchronize_session=False)
-    except Exception:
-        pass
-    removed_doc_txns = (Transaction.query
-                        .filter_by(doc_upload_id=upload.id, source='doc_upload')
-                        .delete(synchronize_session=False))
-    unlinked_bank = (Transaction.query
-                     .filter(Transaction.doc_upload_id == upload.id,
-                             Transaction.source != 'doc_upload')
-                     .update({"doc_upload_id": None, "match_status": "unmatched",
-                              "match_confidence": None}, synchronize_session=False))
-    import json as _json
-    upload.trash_meta = _json.dumps({"prior_status": upload.status, "moves": _moves})
-    upload.status     = 'deleted'
-    upload.deleted_at = datetime.utcnow()
+    # One write path for single / bulk / ghost deletes (2026-10-30): see
+    # _soft_delete_doc_upload for what moves, what goes and what is unlinked.
+    _res = _soft_delete_doc_upload(upload)
+    trashed          = _res['trashed_files']
+    removed_doc_txns = _res['removed_doc_txns']
+    unlinked_bank    = _res['unlinked_bank']
     db.session.commit()
     try:
         _log_activity(action='delete', entity_type='doc_upload',
@@ -36850,8 +36938,12 @@ def docs_upload_restore(uid):
     upload.trash_meta = None
     db.session.commit()
     # Recreate the Actuals row for ledger doc types (mirrors unmatch_receipt).
+    # Ledger = evidence class (receipt / invoice / payroll / timecard) — one
+    # rule in actuals.doc_class; this used to list receipt + invoice only, so
+    # a restored payroll package or timecard came back with no row. 2026-10-30.
+    from actuals import is_ledger_category as _is_ledger_restore
     txn_recreated = False
-    if ((upload.category or '') in ('receipt', 'invoice')
+    if (_is_ledger_restore(upload.category)
             and not upload.is_duplicate
             and upload.status in ('done', 'review')
             and not Transaction.query.filter_by(doc_upload_id=upload.id,
@@ -36946,73 +37038,48 @@ def docs_bulk_delete(pid):
     is_admin = current_user.role in ('super_admin', 'admin')
     rows = DocUpload.query.filter(DocUpload.id.in_(ids),
                                   DocUpload.project_id == pid).all()
-    deleted, skipped, labels = 0, 0, []
-    paths_to_trash = []
-    upload_ids_to_delete = []
+    deleted, skipped, labels, done_ids = 0, 0, [], []
+    removed_doc_txns = unlinked_bank = 0
+    trashed = 0
     for u in rows:
         if not is_admin and u.uploader_id != current_user.id:
             skipped += 1
             continue
+        if u.status == 'deleted':
+            continue   # already in the Trash — nothing to do
         labels.append(u.filed_filename or u.original_filename or f'Upload #{u.id}')
-        # Collect both filed + archive paths for batched Dropbox-trash.
-        if u.filed_dropbox_path:
-            paths_to_trash.append(u.filed_dropbox_path)
-        if u.source_archive_path and u.source_archive_path != u.filed_dropbox_path:
-            paths_to_trash.append(u.source_archive_path)
-        try:
-            _r2_client().delete_object(Bucket=_R2_BUCKET, Key=u.r2_key)
-        except Exception:
-            pass
-        upload_ids_to_delete.append(u.id)
+        # SOFT delete, row by row, exactly like docs_upload_delete
+        # (DOCUMENTS_HANDOFF Phase 0, 2026-10-30 — this path used to hard
+        # DELETE the DocUpload rows AND every linked Transaction, bank rows
+        # included; nothing was recoverable). The DocUpload stays with
+        # status='deleted' / deleted_at / trash_meta so the Docs Trash can
+        # restore it; its Dropbox copies move to /_TRASH/ with the moves
+        # recorded; the doc's OWN ledger row(s) go; matched bank charges are
+        # UNLINKED and keep their coding. The R2 copy is kept (restore needs
+        # it; /purge from the Trash removes it).
+        _res = _soft_delete_doc_upload(u)
+        removed_doc_txns += _res['removed_doc_txns']
+        unlinked_bank    += _res['unlinked_bank']
+        trashed          += _res['trashed_files']
+        done_ids.append(u.id)
         deleted += 1
-    # Delete child Transaction rows first (FK constraint). One bulk
-    # delete is faster than per-upload, and synchronize_session=False
-    # is fine because we're about to delete the parents in the same
-    # transaction anyway.
-    if upload_ids_to_delete:
-        Transaction.query.filter(
-            Transaction.doc_upload_id.in_(upload_ids_to_delete)
-        ).delete(synchronize_session=False)
-        # Detach PO source-doc references and remove po_doc_attachment
-        # rows so the doc_upload deletes don't trip FK constraints.
-        try:
-            db.session.execute(
-                text("UPDATE purchase_order SET source_doc_upload_id=NULL "
-                     "WHERE source_doc_upload_id = ANY(:ids)"),
-                {"ids": upload_ids_to_delete},
-            )
-            db.session.execute(
-                text("DELETE FROM po_doc_attachment "
-                     "WHERE doc_upload_id = ANY(:ids)"),
-                {"ids": upload_ids_to_delete},
-            )
-        except Exception:
-            db.session.rollback()
-        # Clear self-referential duplicate_of_id pointers into the deleted set
-        # (FK: doc_upload_duplicate_of_id_fkey). (User 2026-06-01.)
-        DocUpload.query.filter(
-            DocUpload.duplicate_of_id.in_(upload_ids_to_delete)
-        ).update({"duplicate_of_id": None, "is_duplicate": False}, synchronize_session=False)
-        DocUpload.query.filter(
-            DocUpload.id.in_(upload_ids_to_delete)
-        ).delete(synchronize_session=False)
     db.session.commit()
-    # Move all the Dropbox files to /_TRASH/ in one go (best-effort,
-    # never fails the request — DB rows are already gone).
-    trashed = _trash_dropbox_paths(paths_to_trash)
     try:
         if deleted:
             _log_activity(action='delete', entity_type='doc_upload_bulk',
                           entity_id=None,
                           entity_label=f'Bulk delete — {deleted} document{"s" if deleted != 1 else ""}',
                           project_id=pid,
-                          before=None, after={'deleted_ids': ids[:deleted]},
-                          note=f'Bulk-deleted {deleted} document{"s" if deleted != 1 else ""}: '
+                          before=None, after={'deleted_ids': done_ids},
+                          note=f'Moved {deleted} document{"s" if deleted != 1 else ""} to Trash '
+                               '(restorable; Dropbox copies in /_TRASH/): '
                                + ", ".join(labels[:5])
                                + (f' (+{len(labels)-5} more)' if len(labels) > 5 else ''))
     except Exception: pass
     return jsonify({"status": "ok", "deleted": deleted, "skipped": skipped,
-                    "trashed_files": trashed})
+                    "soft": True, "trashed_files": trashed,
+                    "removed_doc_txns": removed_doc_txns,
+                    "unlinked_bank_rows": unlinked_bank})
 
 
 @app.route("/docs/<int:pid>/purge-ghosts", methods=["POST"])
@@ -37033,19 +37100,23 @@ def docs_purge_ghosts(pid):
     # Ghost = no Dropbox file behind the row. Review rows now point at
     # _UPLOADS_PENDING/ so they have a path; only error/legacy rows with
     # NULL path qualify as ghosts.
-    rows = DocUpload.query.filter_by(project_id=pid).filter(
-        DocUpload.filed_dropbox_path.is_(None)
-    ).all()
+    rows = (DocUpload.query.filter_by(project_id=pid)
+            .filter(DocUpload.filed_dropbox_path.is_(None),
+                    DocUpload.status != 'deleted')
+            .all())
     ids, labels = [], []
+    removed_doc_txns = unlinked_bank = 0
     for u in rows:
         ids.append(u.id)
         labels.append(u.filed_filename or u.original_filename or f'Upload #{u.id}')
-    # Drop child Transaction rows first (FK constraint).
-    if ids:
-        Transaction.query.filter(
-            Transaction.doc_upload_id.in_(ids)
-        ).delete(synchronize_session=False)
-        DocUpload.query.filter(DocUpload.id.in_(ids)).delete(synchronize_session=False)
+        # SOFT delete through the same helper as the single delete
+        # (DOCUMENTS_HANDOFF Phase 0, 2026-10-30): the ghost row goes to
+        # the Trash instead of being hard-DELETEd, its own ledger row goes,
+        # and a bank charge that happened to be matched to it is UNLINKED,
+        # never deleted. A ghost has no Dropbox path, so nothing moves.
+        _res = _soft_delete_doc_upload(u)
+        removed_doc_txns += _res['removed_doc_txns']
+        unlinked_bank    += _res['unlinked_bank']
     db.session.commit()
     try:
         if ids:
@@ -37054,12 +37125,14 @@ def docs_purge_ghosts(pid):
                           entity_label=f'Ghost purge — {len(ids)} row{"s" if len(ids) != 1 else ""}',
                           project_id=pid,
                           before=None, after={'deleted_ids': ids},
-                          note=f'Purged {len(ids)} ghost upload row{"s" if len(ids) != 1 else ""} '
-                               'with no Dropbox file: '
+                          note=f'Moved {len(ids)} ghost upload row{"s" if len(ids) != 1 else ""} '
+                               'with no Dropbox file to Trash: '
                                + ", ".join(labels[:5])
                                + (f' (+{len(labels)-5} more)' if len(labels) > 5 else ''))
     except Exception: pass
-    return jsonify({"status": "ok", "deleted": len(ids), "ids": ids})
+    return jsonify({"status": "ok", "deleted": len(ids), "ids": ids, "soft": True,
+                    "removed_doc_txns": removed_doc_txns,
+                    "unlinked_bank_rows": unlinked_bank})
 
 
 @app.route("/docs/<int:pid>/export.csv")
@@ -42208,22 +42281,44 @@ def docs_upload_update(uid):
     # not spend events, so they shouldn't sit on the actuals ledger.
     # 2026-05-06 — fixes "PO and estimate docs still showing up in the
     # Actuals tab after I corrected the doc type from invoice".
-    _NON_LEDGER_CATS = {'tax_form', 'contract', 'release', 'legal',
-                        'insurance', 'misc', 'employee_vendor_doc',
-                        'estimate', 'quote', 'purchase_order'}
+    # Which categories are non-ledger is ONE rule now: actuals.doc_class
+    # (DOCUMENTS_HANDOFF Phase 0). And the delete only ever touches the
+    # doc's OWN row(s) — a matched bank charge (qbo_sync / csv_import /
+    # reconciled / manual) is UNLINKED, never deleted. The old code deleted
+    # every linked Transaction, bank rows included, so retyping a matched
+    # invoice as a contract silently destroyed the bank charge. Mirrors the
+    # single-delete path (docs_upload_delete). 2026-10-30.
+    from actuals import is_non_ledger_category as _is_non_ledger
     try:
-        if (upload.category or '') in _NON_LEDGER_CATS:
-            # Pull Transaction ids first so we can clean up child FK rows
-            # (qbo_account_map is fine; budget_line stays — it just
-            # loses any actual_amount contribution from these txns).
-            _txn_ids = [t.id for t in
-                        Transaction.query.filter_by(doc_upload_id=upload.id).all()]
-            if _txn_ids:
-                Transaction.query.filter(Transaction.id.in_(_txn_ids)) \
-                    .delete(synchronize_session=False)
+        if _is_non_ledger(upload.category):
+            _doomed_ids = [r[0] for r in db.session.query(Transaction.id)
+                           .filter_by(doc_upload_id=upload.id, source='doc_upload')
+                           .all()]
+            # Evidence rows point at the doomed txns AND at this doc — no FK
+            # cascade, so they go first (same as the single-delete path).
+            _delete_evidence_for_txns(_doomed_ids)
+            try:
+                from models import ExpenseEvidence as _EE_upd
+                _EE_upd.query.filter_by(doc_upload_id=upload.id).delete(synchronize_session=False)
+            except Exception:
+                pass
+            _removed = 0
+            if _doomed_ids:
+                _removed = (Transaction.query
+                            .filter(Transaction.id.in_(_doomed_ids))
+                            .delete(synchronize_session=False))
+            _unlinked = (Transaction.query
+                         .filter(Transaction.doc_upload_id == upload.id,
+                                 Transaction.source != 'doc_upload')
+                         .update({"doc_upload_id": None,
+                                  "match_status": "unmatched",
+                                  "match_confidence": None},
+                                 synchronize_session=False))
+            if _removed or _unlinked:
                 logging.info(f"[/update] doc {uid} switched to non-ledger "
-                             f"category '{upload.category}' — deleted "
-                             f"{len(_txn_ids)} linked Transaction row(s)")
+                             f"category '{upload.category}' — removed "
+                             f"{_removed} doc-born row(s), unlinked "
+                             f"{_unlinked} bank row(s)")
         else:
             # NEVER sync onto invoice_split children: their amount is the
             # SUBLINE amount and their note is the subline description — the

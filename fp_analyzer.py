@@ -64,6 +64,10 @@ DOCUMENT_TYPES = {
     "insurance":       "01_ADMIN/PROCESSED DOCUMENTS/INSURANCE_COIs",
     "tax_form":        "01_ADMIN/PROCESSED DOCUMENTS/TAX_FORMS",
     "payroll":         "01_ADMIN/PROCESSED DOCUMENTS/PAYROLL",
+    # Timecards were in every UI type list but not here, so bulk Set type →
+    # Timecard returned 400 and timecards filed into MISC with a DOC prefix
+    # (DOCUMENTS_HANDOFF Phase 0, 2026-10-30).
+    "timecard":        "01_ADMIN/PROCESSED DOCUMENTS/TIMECARDS",
     "legal":           "01_ADMIN/PROCESSED DOCUMENTS/LEGAL",
     # Releases live under their pre-production parent — not nested under
     # PROCESSED DOCUMENTS, since they belong to the talent / locations
@@ -85,6 +89,7 @@ DOC_PREFIXES = {
     "insurance":       "COI",
     "tax_form":        "TAX",
     "payroll":         "PAYROLL",
+    "timecard":        "TIMECARD",
     "legal":           "LEGAL",
     "release":         "RELEASE",
     "employee_vendor_doc": "EMPDOC",

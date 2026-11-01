@@ -2010,10 +2010,16 @@
   let _docNavSeq = [];   // [{uid, row}] in the on-screen order at open time
   let _docNavIdx = -1;
   // Doc categories that are NOT spend events — switching to one of these
-  // deletes the linked Actuals transaction server-side, so the row must
-  // drop out of the Actuals list on save. Mirrors app.py _NON_LEDGER_CATS.
-  const _DOC_NON_LEDGER_CATS = new Set(['tax_form','contract','release','legal',
-    'insurance','misc','employee_vendor_doc','estimate','quote','purchase_order']);
+  // removes the doc's own Actuals row server-side, so the row must drop out
+  // of the Actuals list on save. The list is SERVED by the server
+  // (actuals.doc_class → inject_globals → budget.html → __BJ) so this file
+  // holds no hand copy of the rule; the literal is only a fallback if the
+  // template did not inject it. (2026-10-30.)
+  const _DOC_NON_LEDGER_CATS = new Set(
+    (window.__BJ && Array.isArray(window.__BJ["b03_NON_LEDGER_CATS"]) && window.__BJ["b03_NON_LEDGER_CATS"].length)
+      ? window.__BJ["b03_NON_LEDGER_CATS"]
+      : ['tax_form','contract','release','legal','insurance','misc',
+         'employee_vendor_doc','estimate','quote','purchase_order']);
   // Snapshot of the editable fields when the modal opened — lets prev/next
   // auto-save only when something actually changed.
   let _docDetailOpenSig = '';
