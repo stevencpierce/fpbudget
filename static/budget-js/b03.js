@@ -2931,18 +2931,43 @@
         if (st) { st.style.color = '#e0a13a'; st.textContent = 'No per-person rows found in this document.'; }
         return;
       }
-      j.rows.forEach(row => _itemAddRow(row.desc, row.amount, row.line_id || ''));
+      const money = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      j.rows.forEach(row => {
+        _itemAddRow(row.desc, row.amount, row.line_id || '');
+        // Tie-out delta (Phase 4): the parts did not sum to the person's
+        // total; the difference sits on this row — yellow flag, never a
+        // silent merge.
+        if (row.delta) {
+          const last = document.querySelector('#docItemizeRows .ditem-row:last-child');
+          const inp = last && last.querySelector('.ditem-amt');
+          if (inp) {
+            inp.style.borderColor = '#e0a13a';
+            inp.title = 'Document parts did not tie out by ' + money(Math.abs(row.delta)) +
+              ' — the difference is booked here. Check the person\'s wages.';
+          }
+        }
+      });
       window._docItemizeDirty = true;
       const blk = document.getElementById('docDetailItemizeBlock');
       if (blk) blk.open = true;
       const unmatched = j.total_rows - j.matched;
-      const money = v => '$' + Number(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+      const nDelta = (j.deltas || []).length;
       if (st) {
-        st.style.color = unmatched ? '#e0a13a' : '#5fd0a0';
+        st.style.color = (unmatched || nDelta) ? '#e0a13a' : '#5fd0a0';
+        // Name where every part went — the fringe lines are per
+        // department in 6500 ("Payroll Fringes — Production Staff"), WC
+        // goes to 6000 Workers' Comp, the platform fee to 6500 Payroll
+        // Service Fee. (Phase 4; the old text always claimed 6500.)
+        const where = [];
+        if (j.fringes_total) where.push(money(j.fringes_total) + ' employer fringes → ' +
+          ((j.fringe_lines && j.fringe_lines.length) ? j.fringe_lines.join(', ') : '6500 Payroll Fringes'));
+        if (j.workers_comp_total) where.push(money(j.workers_comp_total) + " workers' comp → 6000 Workers' Comp");
+        if (j.platform_fee_total) where.push(money(j.platform_fee_total) + ' platform fee → 6500 Payroll Service Fee');
         st.textContent = `${j.total_rows} people parsed (${money(j.sum)}), ` +
           `${j.matched} matched to budget lines` +
-          (j.fringes_total ? ` — gross wages on each person's line, ${money(j.fringes_total)} employer fringes & fees split to 6500 Payroll Fringes` : '') +
+          (where.length ? ` — gross wages on each person's line; ${where.join('; ')}` : '') +
           (unmatched ? ` — ${unmatched} need a line picked (amber)` : '') +
+          (nDelta ? ` — ${nDelta} row${nDelta !== 1 ? 's' : ''} did not tie out (yellow amount; the difference is on the person's line)` : '') +
           '. Review, then Save itemization.';
       }
     } catch (e) {

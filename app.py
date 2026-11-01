@@ -4706,6 +4706,7 @@ def _archive_project_dropbox(p):
                     fee_m = (1 + float(b.company_fee_pct)) if dispersed else 1.0
                     html_str = render_template("budget_pdf.html",
                         project=p, budget=b, top_sheet=top_sheet,
+                        coa_sections=FP_COA_SECTIONS,
                         detail_mode=False, dispersed=dispersed,
                         company_settings=company_settings,
                         is_working_view=b.budget_mode in ('working', 'actual'),
@@ -7400,53 +7401,218 @@ def budget_audit_json(pid, bid):
 # (pick_budget, groups). Each group is {code, name, lines}. Extracted from
 # budget_view's inline block verbatim so both render IDENTICAL options.
 # (User 2026-07 — standalone doc editor.)
-def _ensure_fringe_rollup_line(pid, section_code=6500):
-    """The rolled-up fringe pot as a REAL budget line (owner 2026-10-07:
-    "fringes should just be one big lump category … boom, just drop it in
-    there and see how that actualizes against each other").
-
-    Lives on the project's canonical Working budget, tagged
-    line_tag='fringe_rollup', with $0 estimate — the BUDGET side of the
-    number stays computed from the labor lines (calc_top_sheet's
-    fringe_rollup_amount), so this line never double-counts. It exists so
-    payroll-fringe ACTUALS have a line to land on: it shows in every
-    budget-line picker ("6500 · Payroll Fringes") and its coded spend
-    renders on the 6500-FR auto row next to the rolled-up working number.
-    Idempotent; fail-open (returns None when there's nothing to attach to)."""
-    try:
+def _fringe_target_budget(pid):
+    """The budget the computed lines live on: the project's current Working
+    budget, else its current Estimated (the same pick _line_picker_groups
+    makes, so the register and the grid agree). None when the project has
+    no budget yet."""
+    bud = (Budget.query
+           .filter_by(project_id=pid, version_status='current', is_actual=False)
+           .filter(db.or_(Budget.budget_mode == 'working',
+                          db.and_(Budget.budget_mode == None,
+                                  Budget.parent_budget_id.isnot(None))))
+           .order_by(Budget.id.desc()).first())
+    if not bud:
         bud = (Budget.query
                .filter_by(project_id=pid, version_status='current', is_actual=False)
-               .filter(db.or_(Budget.budget_mode == 'working',
-                              db.and_(Budget.budget_mode == None,
-                                      Budget.parent_budget_id.isnot(None))))
                .order_by(Budget.id.desc()).first())
-        if not bud:
-            bud = (Budget.query
-                   .filter_by(project_id=pid, version_status='current', is_actual=False)
-                   .order_by(Budget.id.desc()).first())
+    return bud
+
+
+def _ensure_fringe_rollup_line(pid, section_code, budget=None, commit=True):
+    """One REAL budget line per labor DEPARTMENT carrying that department's
+    fringe pot, always in 6500 Administrative (Steven, Oct 30 2026:
+    "fringes live in 6500 Administrative, one line per department that has
+    labor"). Keyed by (budget_id, fringe_for_section=section_code);
+    line_tag='fringe_rollup', sync_omit, is_labor=False. Its estimate is
+    written through by _sync_fringe_lines on every render; calc_line
+    returns zero for it (budget_calc.COMPUTED_LINE_TAGS) so the pot is
+    never counted twice. Idempotent; fail-open (None when there is no
+    budget to attach to).
+
+    Adopts a legacy line on the way: the pre-Phase-4 per-section line
+    (line_tag='fringe_rollup', account_code == section_code,
+    fringe_for_section NULL) becomes this department's 6500 line, keeping
+    its id so its coded actuals follow."""
+    from budget_calc import FP_COA_NAMES as _FRN, FRINGE_HOME_SECTION as _FRH
+    try:
+        section_code = int(section_code)
+        bud = budget or _fringe_target_budget(pid)
         if not bud:
             return None
-        ln = BudgetLine.query.filter_by(budget_id=bud.id,
-                                        line_tag='fringe_rollup',
-                                        account_code=section_code).first()
-        if ln:
-            return ln
-        from budget_calc import FP_COA_NAMES as _FRN
-        _sec_name = _FRN.get(section_code, 'Administrative')
-        ln = BudgetLine(budget_id=bud.id, account_code=section_code,
-                        account_name=_sec_name[:100],
-                        description=f'Payroll Fringes — {_sec_name}'[:300],
-                        line_tag='fringe_rollup', estimated_total=0,
-                        is_labor=False, sort_order=9999, sync_omit=True)
-        db.session.add(ln)
-        db.session.commit()
-        logging.info(f"[fringe-rollup] created '{ln.description}' line {ln.id} "
-                     f"on budget {bud.id} (project {pid})")
+        ln = BudgetLine.query.filter_by(budget_id=bud.id, line_tag='fringe_rollup',
+                                        fringe_for_section=section_code).first()
+        _sec_name = _FRN.get(section_code, str(section_code))
+        _desc = f'Payroll Fringes — {_sec_name}'[:300]
+        if ln is None and section_code != _FRH:
+            # Legacy per-section line (Oct 21 shape) → adopt into 6500.
+            ln = BudgetLine.query.filter_by(budget_id=bud.id, line_tag='fringe_rollup',
+                                            account_code=section_code,
+                                            fringe_for_section=None).first()
+            if ln is not None:
+                ln.account_code = _FRH
+                ln.account_name = (_FRN.get(_FRH, 'Administrative'))[:100]
+                ln.fringe_for_section = section_code
+                ln.description = _desc
+                ln.is_labor = False
+                ln.sync_omit = True
+                logging.info(f"[fringe-6500] adopted legacy line {ln.id} "
+                             f"({section_code} → 6500) on budget {bud.id}")
+        if ln is None:
+            ln = BudgetLine(budget_id=bud.id, account_code=_FRH,
+                            account_name=(_FRN.get(_FRH, 'Administrative'))[:100],
+                            description=_desc, line_tag='fringe_rollup',
+                            fringe_for_section=section_code, estimated_total=0,
+                            is_labor=False, sort_order=9000 + (section_code // 100),
+                            sync_omit=True)
+            db.session.add(ln)
+            logging.info(f"[fringe-6500] created '{ln.description}' on budget "
+                         f"{bud.id} (project {pid})")
+        if commit:
+            db.session.commit()
+        else:
+            db.session.flush()
         return ln
     except Exception as e:
         db.session.rollback()
-        logging.warning(f"[fringe-rollup] ensure line failed for project {pid}: {e}")
+        logging.warning(f"[fringe-6500] ensure line failed for project {pid} "
+                        f"section {section_code}: {e}")
         return None
+
+
+def _ensure_auto_calc_line(pid, kind, budget=None, commit=True):
+    """The hidden real line behind an auto-calculated amount — 'wc' Workers'
+    Comp and 'ins' Production Insurance in 6000, 'fee' Payroll Service Fee
+    and 'pcf' Production Company Fee in 6500 — so actuals have a line to
+    land on and the auto row can show an Actual column. line_tag=
+    'auto_calc', auto_kind=kind, sync_omit, is_labor=False, estimate
+    written through from the calc. Idempotent; fail-open."""
+    from budget_calc import (FP_COA_NAMES as _FRN, AUTO_KIND_SECTION as _AKS,
+                             AUTO_KIND_LABEL as _AKL)
+    if kind not in _AKS:
+        return None
+    try:
+        bud = budget or _fringe_target_budget(pid)
+        if not bud:
+            return None
+        ln = BudgetLine.query.filter_by(budget_id=bud.id, line_tag='auto_calc',
+                                        auto_kind=kind).first()
+        if ln is None:
+            sec = _AKS[kind]
+            ln = BudgetLine(budget_id=bud.id, account_code=sec,
+                            account_name=(_FRN.get(sec, ''))[:100],
+                            description=_AKL[kind][:300], line_tag='auto_calc',
+                            auto_kind=kind, estimated_total=0, is_labor=False,
+                            sort_order=9900 + list(_AKS).index(kind), sync_omit=True)
+            db.session.add(ln)
+            logging.info(f"[auto-calc] created '{ln.description}' on budget {bud.id} "
+                         f"(project {pid})")
+        if commit:
+            db.session.commit()
+        else:
+            db.session.flush()
+        return ln
+    except Exception as e:
+        db.session.rollback()
+        logging.warning(f"[auto-calc] ensure line failed for project {pid} "
+                        f"kind {kind}: {e}")
+        return None
+
+
+def _labor_sections_of(lines):
+    """Set of COA section codes that have at least one real labor line."""
+    out = set()
+    for ln in lines:
+        if ln.is_labor and not (ln.line_tag or '') and ln.account_code is not None:
+            sec = _section_for_code(ln.account_code)
+            if sec is not None:
+                out.add(sec)
+    return out
+
+
+def _sync_fringe_lines(pid, budget, top_sheet, lines):
+    """Write-through for the computed lines of ONE budget, run on every
+    budget render:
+
+      * every labor department (a section with ≥1 labor line) has its
+        'Payroll Fringes — <Department>' line in 6500 and its
+        estimated_total is that department's fringe pot;
+      * the four auto-calc lines exist and carry the calc's amounts;
+      * a department line whose department has NO labor lines any more is
+        deleted when nothing is coded to it, else kept and flagged.
+
+    Only the project's target budget (Working, else Estimated) gets lines;
+    viewing the other version leaves the DB alone. Returns
+    {'fringe_line_ids': {section: line_id}, 'auto_line_ids': {kind: line_id},
+     'orphans': {section: line_id}, 'orphan_actuals': {line_id: True}}.
+    Never raises (the page must render whatever happens here)."""
+    out = {'fringe_line_ids': {}, 'auto_line_ids': {}, 'orphans': {}}
+    try:
+        target = _fringe_target_budget(pid)
+        if not target or budget is None or target.id != budget.id:
+            return out
+        pots = dict(top_sheet.get('fringe_by_section') or {})
+        labor_secs = _labor_sections_of(lines)
+        changed = False
+        for sec in sorted(labor_secs | set(pots)):
+            ln = _ensure_fringe_rollup_line(pid, sec, budget=target, commit=False)
+            if ln is None:
+                continue
+            est = round(float(pots.get(sec, 0) or 0), 2)
+            if float(ln.estimated_total or 0) != est:
+                ln.estimated_total = est
+                changed = True
+            out['fringe_line_ids'][sec] = ln.id
+        # Removal side: lines for departments that no longer have labor.
+        stale = (BudgetLine.query
+                 .filter_by(budget_id=target.id, line_tag='fringe_rollup')
+                 .filter(BudgetLine.fringe_for_section.isnot(None)).all())
+        for ln in stale:
+            if ln.fringe_for_section in out['fringe_line_ids']:
+                continue
+            has_txn = (db.session.query(Transaction.id)
+                       .filter(Transaction.budget_line_id == ln.id).first() is not None)
+            if not has_txn:
+                try:
+                    from models import TransactionSplit as _TS
+                    has_txn = (db.session.query(_TS.id)
+                               .filter(_TS.budget_line_id == ln.id).first() is not None)
+                except Exception:
+                    pass
+            if has_txn:
+                # Keep it — dollars are coded here — but say why it lingers.
+                out['orphans'][ln.fringe_for_section] = ln.id
+                out['fringe_line_ids'][ln.fringe_for_section] = ln.id
+                if float(ln.estimated_total or 0) != 0.0:
+                    ln.estimated_total = 0
+                    changed = True
+            else:
+                logging.info(f"[fringe-6500] removing '{ln.description}' line {ln.id}: "
+                             f"department {ln.fringe_for_section} has no labor")
+                db.session.delete(ln)
+                changed = True
+        amounts = {'wc':  float(top_sheet.get('workers_comp_amount') or 0),
+                   'ins': float(top_sheet.get('production_insurance_amount') or 0),
+                   'fee': float(top_sheet.get('payroll_fee_amount') or 0),
+                   'pcf': (0.0 if top_sheet.get('company_fee_dispersed')
+                           else float(top_sheet.get('company_fee') or 0))}
+        for kind, amt in amounts.items():
+            ln = _ensure_auto_calc_line(pid, kind, budget=target, commit=False)
+            if ln is None:
+                continue
+            amt = round(amt, 2)
+            if float(ln.estimated_total or 0) != amt:
+                ln.estimated_total = amt
+                changed = True
+            out['auto_line_ids'][kind] = ln.id
+        if changed:
+            db.session.commit()
+        else:
+            db.session.flush()
+    except Exception as e:
+        db.session.rollback()
+        logging.warning(f"[fringe-6500] sync failed for project {pid}: {e}")
+    return out
 
 
 def _line_picker_groups(pid):
@@ -7775,8 +7941,9 @@ def budget_view(pid, bid):
     if (top_sheet.get("workers_comp_amount") or 0) > 0 \
             or (top_sheet.get("production_insurance_amount") or 0) > 0:
         _ensure_section(6000)
-    if (top_sheet.get("payroll_fee_amount") or 0) > 0:
-        _ensure_section(6500)
+    if (top_sheet.get("payroll_fee_amount") or 0) > 0 \
+            or (top_sheet.get("fringe_rollup_amount") or 0) > 0:
+        _ensure_section(6500)   # Phase 4: the per-department fringe rows live here
 
     # Assigned-location lookup for Locations (3300) lines. Location has a
     # budget_line_id FK; we pull the reverse relation in one query so the
@@ -8394,15 +8561,11 @@ def budget_view(pid, bid):
         working_by_section[COA_CODE_INSURANCE] = working_by_section.get(COA_CODE_INSURANCE, 0.0) + _pi_amount
     if _pf_pct:
         working_by_section[COA_CODE_ADMIN] = working_by_section.get(COA_CODE_ADMIN, 0.0) + round(working_gross_labor * _pf_pct, 2)
-    # Fringe-rollup mode (per-SECTION since 2026-10-21): line totals above
-    # exclude fringe; each labor section keeps its own fringe lump —
-    # mirrors calc_top_sheet's fringe_by_section.
-    _w_rollup = bool(fringe_cfgs.get('__fringe_rollup__'))
-    _w_fringe_total = round(sum(working_section_fringe.values()), 2) if _w_rollup else 0.0
-    if _w_rollup:
-        for _wfs, _wfv in working_section_fringe.items():
-            if _wfv:
-                working_by_section[_wfs] = working_by_section.get(_wfs, 0.0) + round(_wfv, 2)
+    # Phase 4: line totals above exclude fringe; every department's fringe
+    # pot lands in 6500 Administrative — mirrors calc_top_sheet.
+    _w_fringe_total = round(sum(working_section_fringe.values()), 2)
+    if _w_fringe_total:
+        working_by_section[COA_CODE_ADMIN] = working_by_section.get(COA_CODE_ADMIN, 0.0) + _w_fringe_total
 
     # Disperse Production Company Fee across eligible sections. Mirrors
     # calc_top_sheet's dispersal logic — eligible base = (section total −
@@ -8415,13 +8578,12 @@ def budget_view(pid, bid):
     _wfee_exclude_fringes = bool(getattr(budget, 'fee_exclude_fringes', True))
     def _w_fringe_deduct(_sk):
         """Labor fringe carried inside this section's working total — the
-        amount to subtract for a fringe-exempt fee base. In rollup mode
-        per-line totals exclude fringe; the whole pot sits in 6500."""
+        amount to subtract for a fringe-exempt fee base. Since Phase 4 the
+        whole pot sits in 6500 Administrative (mirrors calc_top_sheet's
+        fringe_in_section)."""
         if not _wfee_exclude_fringes:
             return 0.0
-        # Sections contain their own fringe in both modes now (inside line
-        # totals normally; as the per-section lump in rollup). 2026-10-21.
-        return working_section_fringe.get(_sk, 0.0)
+        return _w_fringe_total if _sk == COA_CODE_ADMIN else 0.0
     import json as _json_wfee
     _wraw_excl = getattr(budget, 'fee_excluded_sections', None)
     try:
@@ -9397,26 +9559,32 @@ def budget_view(pid, bid):
     # Falls back to Estimated if no Working exists yet.
     # Refactored into _line_picker_groups() so the standalone doc-editor
     # page can render the IDENTICAL picker options. (User 2026-07.)
-    # Fringe-rollup projects get the real "Payroll Fringes" coding line
-    # BEFORE the picker reads the budget's lines, so it shows up in the
-    # pickers on the same render that created it. (Owner 2026-10-07.)
-    # {section_code: fringe line id} — one real coding line per labor
-    # section carrying fringe (owner 2026-10-21: "reconcile the fringe
-    # total for the whole individual section"), plus any legacy tagged
-    # lines (e.g. the old single 6500 pot) so their actuals stay visible.
-    fringe_rollup_line_ids = {}
-    if getattr(project, 'fringe_rollup', False):
-        for _frsec in (top_sheet.get('fringe_by_section') or {}):
-            _frl = _ensure_fringe_rollup_line(pid, _frsec)
-            if _frl is not None:
-                fringe_rollup_line_ids[_frsec] = _frl.id
-    try:
-        for _lgl in BudgetLine.query.filter_by(line_tag='fringe_rollup').join(
-                Budget, Budget.id == BudgetLine.budget_id).filter(
-                Budget.project_id == pid).all():
-            fringe_rollup_line_ids.setdefault(_lgl.account_code, _lgl.id)
-    except Exception:
-        pass
+    # Phase 4 (Steven, Oct 30 2026): the per-department "Payroll Fringes —
+    # <Department>" lines in 6500 and the hidden auto-calc lines are
+    # written through BEFORE the picker reads the budget's lines, so they
+    # show up in the pickers on the same render that created them.
+    # fringe_rollup_line_ids: {labor section: 6500 line id};
+    # auto_line_ids: {'wc'|'ins'|'fee'|'pcf': line id};
+    # fringe_orphans: {labor section: line id} — departments with no labor
+    # left whose line stays because dollars are coded to it.
+    _frsync = _sync_fringe_lines(pid, budget, top_sheet, lines)
+    fringe_rollup_line_ids = dict(_frsync.get('fringe_line_ids') or {})
+    auto_line_ids = dict(_frsync.get('auto_line_ids') or {})
+    fringe_orphans = dict(_frsync.get('orphans') or {})
+    if not fringe_rollup_line_ids or not auto_line_ids:
+        # Viewing the non-target version (e.g. Estimated beside a Working):
+        # read the target budget's lines so the summary rows still link.
+        try:
+            _frt = _fringe_target_budget(pid)
+            if _frt:
+                for _lgl in BudgetLine.query.filter_by(budget_id=_frt.id).filter(
+                        BudgetLine.line_tag.in_(('fringe_rollup', 'auto_calc'))).all():
+                    if _lgl.line_tag == 'fringe_rollup' and _lgl.fringe_for_section:
+                        fringe_rollup_line_ids.setdefault(_lgl.fringe_for_section, _lgl.id)
+                    elif _lgl.line_tag == 'auto_calc' and _lgl.auto_kind:
+                        auto_line_ids.setdefault(_lgl.auto_kind, _lgl.id)
+        except Exception:
+            pass
     actuals_pick_budget, actuals_pick_groups = _line_picker_groups(pid)
 
     # Per-line crew + PO badges for the Actuals "Chart of Accounts" sidebar
@@ -9836,6 +10004,8 @@ def budget_view(pid, bid):
         actual_budget_meta=actual_budget_meta,
         actuals_frozen=actuals_frozen,
         fringe_rollup_line_ids=fringe_rollup_line_ids,
+        auto_line_ids=auto_line_ids,
+        fringe_orphans=fringe_orphans,
     )
 
 
@@ -13576,13 +13746,12 @@ def export_pdf(pid, bid):
         # OT / Fringe: only show if a labor line actually has them.
         sec["has_ot"]       = any(float((line_results.get(_l.id) or {}).get("ot_amount", 0) or 0) > 0
                                    for _l in labor_lines)
-        # Fringe-rollup mode: per-line fringes are NOT in line totals (the
-        # pot shows as one ↳ Payroll Fringes row on the Top Sheet), so the
-        # detail pages drop the Fringe column — printing it would invite
-        # adding Subtotal + Fringe to a Total that excludes it.
-        sec["has_fringe"]   = (not top_sheet.get("fringe_rollup")) and any(
-                                   float((line_results.get(_l.id) or {}).get("fringe_amount", 0) or 0) > 0
-                                   for _l in labor_lines)
+        # Per-line fringes are NOT in line totals (Phase 4: the pot shows
+        # as the per-department ↳ Payroll Fringes rows under 6500 on the
+        # Top Sheet), so the detail pages drop the Fringe column —
+        # printing it would invite adding Subtotal + Fringe to a Total
+        # that excludes it.
+        sec["has_fringe"]   = False
         # Agent% (labor) or Disc% (non-labor): show if any line has
         # a non-zero value.
         sec["has_agent"]    = any(float(_l.agent_pct or 0) for _l in labor_lines)
@@ -13858,6 +14027,7 @@ def export_pdf(pid, bid):
         project=project,
         budget=budget,
         top_sheet=top_sheet,
+        coa_sections=FP_COA_SECTIONS,
         est_top_sheet=est_top_sheet,
         est_section_lookup=est_section_lookup,
         detail_mode=detail_mode,
@@ -15593,17 +15763,9 @@ def budget_settings(pid, bid):
         # Co Fee base. User can disable per-budget if their prodco does
         # charge fee on fringes (rare).
         budget.fee_exclude_fringes = bool(data.get("fee_exclude_fringes"))
-    if "fringe_rollup" in data:
-        # Fringe-rollup mode (owner 2026-10-05): PROJECT-wide — labor
-        # line totals exclude fringe; the pot shows as one "Payroll
-        # Fringes" amount in 6500. Stored on ProjectSheet so every
-        # version of this project computes the same way.
-        try:
-            _fr_proj = ProjectSheet.query.get(pid)
-            if _fr_proj is not None:
-                _fr_proj.fringe_rollup = bool(data.get("fringe_rollup"))
-        except Exception:
-            logging.warning("fringe_rollup save failed", exc_info=True)
+    # "fringe_rollup" (the Oct 5 toggle) is retired since Phase 4: fringes
+    # always sit on the per-department lines in 6500. The column stays on
+    # ProjectSheet and is ignored; a payload that still sends it is a no-op.
     # Assumptions / exclusions / overall comments (2026-09-10) — saved from
     # the Assumptions tab; blank clears. assumptions/exclusions are one
     # item per line, overall_comments free prose.
@@ -20579,9 +20741,16 @@ def _po_live_line_totals(budget, po_lines, pid):
                else (profile.payroll_week_start if profile else 6))
     smode   = ('working' if (budget.budget_mode in ('working', 'actual'))
                else 'estimated')
+    from budget_calc import is_computed_line as _is_computed
     live = {}
     for l in po_lines:
         try:
+            if _is_computed(l):
+                # Payroll Fringes / auto-calc lines: the calc returns zero
+                # for them by design; their number IS the written-through
+                # stored estimate (app._sync_fringe_lines).
+                live[l.id] = float(l.estimated_total or 0)
+                continue
             if l.use_schedule:
                 sd_rows = ScheduleDay.query.filter(
                     ScheduleDay.budget_line_id == l.id,
@@ -30357,6 +30526,194 @@ with app.app_context():
     _import_minutecon26_budget()
 
 
+# ── Phase 4 data migration: fringes to 6500 Administrative, per department ──
+# (Steven, Oct 30 2026.) One-time, marker + advisory lock per CLAUDE.md,
+# idempotent — re-running changes nothing. Schema (alembic 0023a + the
+# essential pass) must already be in place. The body is a plain function
+# so the sqlite test client can exercise it (the lock is Postgres-only).
+_FRINGE_ADMIN_MARKER = 'migrate_fringes_to_admin_2026_11'
+_FRINGE_ADMIN_LOCK_KEY = 20261101
+
+
+def _migrate_fringes_to_admin_body():
+    """For every project's target budget (current Working, else current
+    Estimated): one 'Payroll Fringes — <Department>' line in 6500 per labor
+    department (adopting the Oct 21 per-section lines), the four hidden
+    auto-calc lines, and the old fringe actuals moved onto the new lines:
+
+      * transactions on a legacy per-section fringe_rollup line follow the
+        line (it is adopted, id kept) — nothing to move;
+      * transactions on the legacy single 6500 pot line and transactions
+        coded 'section:6500' with no line that came from the payroll parse
+        (note contains 'employer fringes') are re-pointed to the matching
+        department's 6500 line when the person's department resolves from
+        the sibling '<name> — payroll' row; the rest stay and are counted.
+      * legacy fringe lines left empty are deleted.
+
+    Returns a summary string for the task log."""
+    from budget_calc import FRINGE_HOME_SECTION as _FRH, FP_COA_NAMES as _FRN
+    n_proj = n_lines = n_auto = n_moved = n_unresolved = n_deleted = 0
+    for proj in ProjectSheet.query.order_by(ProjectSheet.id).all():
+        pid = proj.id
+        try:
+            target = _fringe_target_budget(pid)
+            if not target:
+                continue
+            n_proj += 1
+            lines = list(target.lines)
+            # 1. one line per labor department (adopts legacy per-section lines)
+            by_sec = {}
+            for sec in sorted(_labor_sections_of(lines)):
+                ln = _ensure_fringe_rollup_line(pid, sec, budget=target, commit=False)
+                if ln is not None:
+                    by_sec[sec] = ln
+                    n_lines += 1
+            # legacy per-section lines for departments with no labor now:
+            # adopt them too (they will be flagged, never silently dropped)
+            for lg in (BudgetLine.query.filter_by(budget_id=target.id, line_tag='fringe_rollup',
+                                                  fringe_for_section=None)
+                       .filter(BudgetLine.account_code != _FRH).all()):
+                ln = _ensure_fringe_rollup_line(pid, lg.account_code, budget=target, commit=False)
+                if ln is not None:
+                    by_sec[lg.account_code] = ln
+            # 2. the hidden auto-calc lines
+            for kind in ('wc', 'ins', 'fee', 'pcf'):
+                if _ensure_auto_calc_line(pid, kind, budget=target, commit=False) is not None:
+                    n_auto += 1
+            db.session.flush()
+
+            def _dept_line_for(txn):
+                """The 6500 line of the department of the person a parsed
+                fringe row belongs to, from its sibling '<name> — payroll'
+                row; None when it cannot be resolved."""
+                note = (txn.note or '')
+                if '—' not in note:
+                    return None
+                name = note.split('—', 1)[0].strip()
+                if not name:
+                    return None
+                sib_q = Transaction.query.filter(Transaction.project_id == pid,
+                                                 Transaction.budget_line_id.isnot(None),
+                                                 Transaction.note.ilike(f"{name} — payroll%"))
+                if txn.doc_upload_id:
+                    sib = sib_q.filter(Transaction.doc_upload_id == txn.doc_upload_id).first()
+                elif txn.parent_transaction_id:
+                    sib = sib_q.filter(Transaction.parent_transaction_id == txn.parent_transaction_id).first()
+                else:
+                    sib = None
+                if sib is None:
+                    return None
+                sl = BudgetLine.query.get(sib.budget_line_id)
+                if sl is None or sl.account_code is None:
+                    return None
+                sec = _section_for_code(sl.account_code)
+                if sec is None:
+                    return None
+                if sec not in by_sec:
+                    ln = _ensure_fringe_rollup_line(pid, sec, budget=target, commit=False)
+                    if ln is None:
+                        return None
+                    by_sec[sec] = ln
+                return by_sec[sec]
+
+            # 3. parked section:6500 fringe rows + rows on a legacy 6500 pot line
+            legacy_pot_ids = [r[0] for r in db.session.query(BudgetLine.id)
+                              .join(Budget, Budget.id == BudgetLine.budget_id)
+                              .filter(Budget.project_id == pid,
+                                      BudgetLine.line_tag == 'fringe_rollup',
+                                      BudgetLine.fringe_for_section.is_(None),
+                                      BudgetLine.account_code == _FRH).all()]
+            cands = (Transaction.query
+                     .filter(Transaction.project_id == pid,
+                             Transaction.note.ilike('%employer fringes%'),
+                             db.or_(db.and_(Transaction.budget_line_id.is_(None),
+                                            Transaction.account_code == _FRH),
+                                    Transaction.budget_line_id.in_(legacy_pot_ids or [-1])))
+                     .all())
+            for t in cands:
+                dl = _dept_line_for(t)
+                if dl is None:
+                    n_unresolved += 1
+                    continue
+                t.budget_line_id = dl.id
+                t.account_code = _FRH
+                t.account_code_name = (_FRN.get(_FRH, 'Administrative'))[:100]
+                n_moved += 1
+            db.session.flush()
+            # 4. legacy fringe lines left with nothing on them go away
+            for lg in (BudgetLine.query.join(Budget, Budget.id == BudgetLine.budget_id)
+                       .filter(Budget.project_id == pid,
+                               BudgetLine.line_tag == 'fringe_rollup',
+                               BudgetLine.fringe_for_section.is_(None)).all()):
+                if (db.session.query(Transaction.id)
+                        .filter(Transaction.budget_line_id == lg.id).first() is None
+                        and db.session.query(TransactionSplit.id)
+                        .filter(TransactionSplit.budget_line_id == lg.id).first() is None):
+                    db.session.delete(lg)
+                    n_deleted += 1
+            db.session.commit()
+        except Exception as _pe:
+            db.session.rollback()
+            logging.warning(f"[fringe-6500 migrate] project {pid} failed: {_pe}")
+    summary = (f"projects {n_proj}; fringe lines {n_lines}; auto lines {n_auto}; "
+               f"fringe rows moved {n_moved}; unresolved (left in place) {n_unresolved}; "
+               f"legacy lines deleted {n_deleted}")
+    logging.info(f"[fringe-6500 migrate] {summary}")
+    return summary
+
+
+def _migrate_fringes_to_admin():
+    """Marker + advisory-lock wrapper around _migrate_fringes_to_admin_body."""
+    try:
+        with app.app_context():
+            is_pg = 'postgresql' in str(db.engine.url).lower()
+            with db.engine.connect() as conn:
+                try:
+                    conn.execute(text(
+                        "CREATE TABLE IF NOT EXISTS system_task_log ("
+                        " task_name VARCHAR(80) PRIMARY KEY,"
+                        " last_run_at TIMESTAMP NOT NULL,"
+                        " last_result TEXT)"))
+                    conn.commit()
+                except Exception:
+                    pass
+                if conn.execute(text("SELECT 1 FROM system_task_log WHERE task_name = :t"),
+                                {'t': _FRINGE_ADMIN_MARKER}).fetchone():
+                    return
+            with db.engine.connect() as conn:
+                if is_pg and not conn.execute(text("SELECT pg_try_advisory_lock(:k)"),
+                                              {'k': _FRINGE_ADMIN_LOCK_KEY}).scalar():
+                    logging.info("[fringe-6500 migrate] another worker holds the lock, skipping")
+                    return
+                try:
+                    if conn.execute(text("SELECT 1 FROM system_task_log WHERE task_name = :t"),
+                                    {'t': _FRINGE_ADMIN_MARKER}).fetchone():
+                        return
+                    summary = _migrate_fringes_to_admin_body()
+                    conn.execute(text(
+                        "INSERT INTO system_task_log (task_name, last_run_at, last_result) "
+                        "VALUES (:t, CURRENT_TIMESTAMP, :r) ON CONFLICT (task_name) DO NOTHING"),
+                        {'t': _FRINGE_ADMIN_MARKER, 'r': summary[:2000]})
+                    conn.commit()
+                except Exception as _e:
+                    db.session.rollback()
+                    logging.error(f"[fringe-6500 migrate] failed: {_e}")
+                finally:
+                    if is_pg:
+                        try:
+                            conn.execute(text("SELECT pg_advisory_unlock(:k)"),
+                                         {'k': _FRINGE_ADMIN_LOCK_KEY})
+                            conn.commit()
+                        except Exception:
+                            pass
+    except Exception as _e:
+        logging.warning(f"[fringe-6500 migrate] aborted: {_e}")
+
+
+with app.app_context():
+    _migrate_fringes_to_admin()
+
+
 # ── Daily trash purge — soft-deleted Dropbox files >30 days hard-deleted ──
 # Runs once per worker boot if it's been >24h since the last successful run.
 # Multiple gunicorn workers booting at once: an advisory lock + UPSERT on a
@@ -34382,6 +34739,38 @@ def _picker_value_for_line(bl):
     return bl.id
 
 
+def _parse_people_split(amount, wages, fringes, workers_comp=0.0, platform_fee=0.0):
+    """Tie-out rule for one parsed payroll row (pure; unit-tested in
+    tests/unit/test_fringe_lines.py).
+
+    amount is the person's total on the document. When the AI separated the
+    parts, the split is used as given; the difference between amount and
+    (wages + fringes + workers_comp + platform_fee) is booked to the
+    person's line (wages) and returned as `delta` when it exceeds $1 so the
+    UI can flag it, instead of silently merging everything back into one
+    row. When no split exists (wages missing) the whole amount is wages.
+    Returns {wages, fringes, workers_comp, platform_fee, delta}."""
+    def _f(v):
+        try:
+            return round(float(v), 2)
+        except (TypeError, ValueError):
+            return None
+    amount = _f(amount) or 0.0
+    wages, fringes = _f(wages), _f(fringes)
+    wc = _f(workers_comp) or 0.0
+    fee = _f(platform_fee) or 0.0
+    if wages is None or wages < 0:
+        return {"wages": amount, "fringes": 0.0, "workers_comp": 0.0,
+                "platform_fee": 0.0, "delta": 0.0}
+    fringes = fringes if (fringes is not None and fringes >= 0) else 0.0
+    wc = max(wc, 0.0)
+    fee = max(fee, 0.0)
+    diff = round(amount - (wages + fringes + wc + fee), 2)
+    delta = diff if abs(diff) > 1.0 else 0.0
+    return {"wages": round(wages + diff, 2), "fringes": fringes,
+            "workers_comp": wc, "platform_fee": fee, "delta": delta}
+
+
 @app.route("/docs/upload/<int:uid>/parse-people", methods=["POST"])
 @login_required
 def docs_parse_people(uid):
@@ -34480,91 +34869,108 @@ def docs_parse_people(uid):
         return None if best == 'AMBIG' else best
 
     out_rows, matched_n = [], 0
-    fringes_total = 0.0
-    person_fringes = []   # (name, employer fringes $, section of their line)
+    fringes_total = wc_total = fee_total = 0.0
+    deltas = []            # [{name, delta}] — rows whose split did not tie out
+    person_fringes = []    # (name, employer fringes $, section of their line)
+
+    def _num(v):
+        try:
+            return round(float(v), 2)
+        except (TypeError, ValueError):
+            return None
+
     for r0 in rows_in[:200]:
         nm = (r0.get("name") or '').strip()
-        try:
-            amt = round(float(r0.get("amount")), 2)
-        except (TypeError, ValueError):
+        amt = _num(r0.get("amount"))
+        if not nm or amt is None or amt <= 0:
             continue
-        if not nm or amt <= 0:
-            continue
-        # Wages/fringes split (owner 2026-10-07: "I need to know their gross
+        # Wages / fringes split (owner 2026-10-07: "I need to know their gross
         # earnings to go against their line, but I need the employer fringes
-        # to go against the fringes lines"). When the AI separated the two,
-        # the person's row carries GROSS WAGES only; the employer fringes &
-        # fees pool into one row coded to 6500 (where the Payroll Fringes
-        # rollup lives). Employee withholding stays inside wages — only
-        # EMPLOYER costs move. Sanity: accept the split only when it ties
-        # back to the person's total (±$1), otherwise keep the old behavior.
-        try:
-            wages = round(float(r0.get("wages")), 2)
-            frng  = round(float(r0.get("fringes")), 2)
-        except (TypeError, ValueError):
-            wages = frng = None
+        # to go against the fringes lines"). Phase 4 (Steven, Oct 30): the
+        # person's row carries GROSS WAGES; employer FICA / Medicare / FUTA /
+        # SUI go to the department's "Payroll Fringes — <Department>" line in
+        # 6500; workers' comp to the hidden Workers' Comp line in 6000; the
+        # platform / handling fee to the Payroll Service Fee line in 6500.
+        # Employee withholding stays inside wages — only EMPLOYER costs move.
+        # Tie-out: when wages + fringes + wc + fee misses amount by more than
+        # $1 the split is KEPT, the difference is booked to the person's
+        # line and reported as a delta the UI flags in yellow (never a
+        # silent merge).
+        wages = _num(r0.get("wages"))
+        frng  = _num(r0.get("fringes"))
+        wc    = _num(r0.get("workers_comp")) or 0.0
+        pfee  = _num(r0.get("platform_fee")) or 0.0
         mt = _match(nm)
-        frng_val = None
-        if (wages is not None and frng is not None and wages > 0 and frng >= 0
-                and abs((wages + frng) - amt) <= 1.0):
-            row_amt = wages
-            frng_val = frng
-            fringes_total = round(fringes_total + frng, 2)
-        else:
-            row_amt = amt
+        split = _parse_people_split(amt, wages, frng, wc, pfee)
+        row_amt = split["wages"]
+        if split["delta"]:
+            deltas.append({"name": nm, "delta": split["delta"]})
         if mt:
             matched_n += 1
         out_rows.append({"desc": f"{nm} — payroll", "amount": row_amt,
                          "line_id": (mt["value"] if mt else ""),
                          "line_label": (mt["label"] if mt else ""),
-                         "matched": bool(mt)})
-        if frng_val:
-            person_fringes.append((nm, frng_val, (mt or {}).get("sec")))
+                         "matched": bool(mt),
+                         "delta": split["delta"]})
+        if split["fringes"]:
+            fringes_total = round(fringes_total + split["fringes"], 2)
+            person_fringes.append((nm, split["fringes"], (mt or {}).get("sec")))
+        wc_total = round(wc_total + split["workers_comp"], 2)
+        fee_total = round(fee_total + split["platform_fee"], 2)
     people_n = len(out_rows)
-    if fringes_total > 0:
-        # Employer fringes land IN the labor section they came from (owner
-        # 2026-10-21: "assign fringes in those actual sections rather than
-        # Administrative … reconcilable by person, or at least the fringe
-        # total for the whole individual section"). One row PER PERSON,
-        # coded to their section's "Payroll Fringes — <Section>" line, so
-        # expanding that line in Actuals reconciles fringe person by
-        # person. Unmatched people (no line → no section) fall back to the
-        # section most of the invoice's people live in, else 6500.
-        _rollup_on = False
-        try:
-            _rollup_on = bool(getattr(ProjectSheet.query.get(pid), 'fringe_rollup', False))
-        except Exception:
-            pass
-        _secs = [s for (_n, _f, s) in person_fringes if s]
-        _dominant = max(set(_secs), key=_secs.count) if _secs else None
-        _frl_cache = {}
-        def _fringe_target(sec):
-            if not _rollup_on:
-                return "section:6500", "6500 · Administrative (Payroll Fringes)"
-            sec = sec or _dominant or 6500
-            if sec not in _frl_cache:
-                _frl = _ensure_fringe_rollup_line(pid, sec)
-                _pv = _picker_value_for_line(_frl) if _frl is not None else None
-                _frl_cache[sec] = ((str(_pv), f"{sec} · Payroll Fringes") if _pv is not None
-                                   else (f"section:{sec}", f"{sec} · (Payroll Fringes)"))
-            return _frl_cache[sec]
-        if _rollup_on:
-            for _nm, _fr, _sec in person_fringes:
-                _lid, _lbl = _fringe_target(_sec)
-                out_rows.append({"desc": f"{_nm} — employer fringes",
-                                 "amount": _fr, "line_id": _lid,
-                                 "line_label": _lbl, "matched": True,
-                                 "is_fringe": True})
-        else:
-            _lid, _lbl = _fringe_target(None)
-            out_rows.append({
-                "desc": "Employer fringes & payroll fees (FICA, unemployment, "
-                        "workers comp, platform)",
-                "amount": fringes_total, "line_id": _lid, "line_label": _lbl,
-                "matched": True, "is_fringe": True})
+
+    _secs = [s for (_n, _f, s) in person_fringes if s]
+    _dominant = max(set(_secs), key=_secs.count) if _secs else None
+    _frl_cache = {}
+    def _fringe_target(sec):
+        """Picker value + label of the 6500 Payroll Fringes line for a labor
+        department. Unmatched people (no line → no department) fall back to
+        the department most of the invoice's people live in, else the
+        6500 section itself."""
+        sec = sec or _dominant
+        if sec is None:
+            return "section:6500", "6500 · Administrative (Payroll Fringes)"
+        if sec not in _frl_cache:
+            _frl = _ensure_fringe_rollup_line(pid, sec)
+            _pv = _picker_value_for_line(_frl) if _frl is not None else None
+            _frl_cache[sec] = ((str(_pv), f"6500 · {(_frl.description or 'Payroll Fringes')[:60]}")
+                               if _pv is not None
+                               else ("section:6500", "6500 · Administrative (Payroll Fringes)"))
+        return _frl_cache[sec]
+
+    def _auto_target(kind, fallback_sec, fallback_label):
+        _al = _ensure_auto_calc_line(pid, kind)
+        _pv = _picker_value_for_line(_al) if _al is not None else None
+        if _pv is not None:
+            return str(_pv), f"{_al.account_code} · {_al.description}"
+        return f"section:{fallback_sec}", fallback_label
+
+    fringe_where = []
+    for _nm, _fr, _sec in person_fringes:
+        _lid, _lbl = _fringe_target(_sec)
+        if _lbl not in fringe_where:
+            fringe_where.append(_lbl)
+        out_rows.append({"desc": f"{_nm} — employer fringes",
+                         "amount": _fr, "line_id": _lid,
+                         "line_label": _lbl, "matched": True,
+                         "is_fringe": True})
+    if wc_total > 0:
+        _lid, _lbl = _auto_target('wc', 6000, "6000 · Insurance (Workers' Comp)")
+        out_rows.append({"desc": "Workers' compensation (employer)",
+                         "amount": wc_total, "line_id": _lid, "line_label": _lbl,
+                         "matched": True, "is_fringe": True})
+    if fee_total > 0:
+        _lid, _lbl = _auto_target('fee', 6500, "6500 · Administrative (Payroll Service Fee)")
+        out_rows.append({"desc": "Payroll platform / handling fee",
+                         "amount": fee_total, "line_id": _lid, "line_label": _lbl,
+                         "matched": True, "is_fringe": True})
     return jsonify({"ok": True, "rows": out_rows,
                     "total_rows": people_n, "matched": matched_n,
                     "fringes_total": fringes_total,
+                    "workers_comp_total": wc_total,
+                    "platform_fee_total": fee_total,
+                    "fringe_lines": fringe_where,
+                    "deltas": deltas,
                     "ai": (not used_fallback
                            and res.get("_provider") not in (None, "none")),
                     "confidence": res.get("confidence"),

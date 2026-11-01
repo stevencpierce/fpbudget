@@ -470,9 +470,15 @@ def build_line_picker_options(groups):
 
     Rules (owner 2026-10-31): header / spacer rows are never targets;
     child lines (kit fees, agent fees …) ride indented right under their
-    parent; a section's Payroll Fringes line anchors the bottom of its
-    group and is marked kind='fringe' so the screen can draw it read-only.
+    parent. Since Phase 4 (Steven, Oct 30) the per-department Payroll
+    Fringes lines live in 6500 Administrative — they anchor the bottom of
+    the 6500 group as kind='fringe' with their department name, and ARE
+    coding targets (the payroll parser codes each person's employer
+    fringes there). The hidden auto-calc lines (Workers' Comp, Production
+    Insurance, Payroll Service Fee, Production Company Fee) list the same
+    way as kind='auto'. A labor section never offers a fringe target.
     Returns [{code, name, opts:[{id, label, kind, parent_id}]}]."""
+    _COMPUTED = ('fringe_rollup', 'auto_calc')
     out = []
     for g in groups or []:
         raw_lines = g.get("lines") if isinstance(g, dict) else getattr(g, "lines", [])
@@ -489,21 +495,26 @@ def build_line_picker_options(groups):
             d = (getattr(l, 'description', None) or getattr(l, 'account_name', None) or 'untitled')[:60]
             return {"id": l.id, "kind": kind,
                     "parent_id": getattr(l, 'parent_line_id', None),
-                    "label": (d if kind == 'fringe' else f"{l.account_code} · {d}")}
+                    "label": (d if kind in ('fringe', 'auto') else f"{l.account_code} · {d}")}
+        def _tag(l):
+            return getattr(l, 'line_tag', None) or ''
         ordered, seen = [], set()
         for l in lines:
-            if l.id in seen or getattr(l, 'parent_line_id', None) or (getattr(l, 'line_tag', None) or '') == 'fringe_rollup':
+            if l.id in seen or getattr(l, 'parent_line_id', None) or _tag(l) in _COMPUTED:
                 continue
             ordered.append(_opt(l, 'top')); seen.add(l.id)
             for k in kids.get(l.id, []):
                 ordered.append(_opt(k, 'child')); seen.add(k.id)
         for l in lines:          # orphan children whose parent is elsewhere
-            if l.id not in seen and (getattr(l, 'line_tag', None) or '') != 'fringe_rollup':
+            if l.id not in seen and _tag(l) not in _COMPUTED:
                 ordered.append(_opt(l, 'child' if getattr(l, 'parent_line_id', None) else 'top'))
                 seen.add(l.id)
-        for l in lines:          # fringes last, read-only on the screen
-            if (getattr(l, 'line_tag', None) or '') == 'fringe_rollup':
+        for l in lines:          # computed lines last (fringes by department, then autos)
+            if _tag(l) == 'fringe_rollup':
                 ordered.append(_opt(l, 'fringe'))
+        for l in lines:
+            if _tag(l) == 'auto_calc':
+                ordered.append(_opt(l, 'auto'))
         code = g.get("code") if isinstance(g, dict) else getattr(g, "code", None)
         name = g.get("name") if isinstance(g, dict) else getattr(g, "name", None)
         out.append({"code": code, "name": name, "opts": ordered})

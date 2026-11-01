@@ -989,21 +989,36 @@
          pct / labor stays reflected. The label keeps using top_sheet
          for the percentage/mode (it's still the active budget's
          configuration the user is editing). #}
+      {# Phase 4 (Steven, Oct 30 2026): every auto row is backed by a hidden
+         real line (auto_line_ids) so its Actual is what was coded there;
+         ✎ or right-click edits the setting in place through the same
+         Settings POST. The per-department Payroll Fringes rows sit under
+         6500 Administrative. #}
+      {% set _ts_auto = auto_line_ids | default({}) %}
+      {% set _ts_frids = fringe_rollup_line_ids | default({}) %}
+      {% macro _ts_act_cells(est, wrk, lid, wx) -%}
+        {% set _a = (actual_by_line_id.get(lid, 0) or 0) | float if lid else 0.0 %}
+        <td class="col-num muted" style="font-size:.85rem">{{ est | currency }}</td>
+        <td class="col-num muted" style="font-size:.85rem">{% if wx %}{{ wrk | currency }}{% else %}$0.00{% endif %}</td>
+        <td class="col-num muted">{{ _a | currency }}</td>
+        {% set _v = (wrk if wx else est) - _a %}
+        <td class="col-num muted"><span class="{{ 'over' if _v < 0 else 'under' if _v > 0 else '' }}">{{ _v | currency }}</span></td>
+      {%- endmacro %}
       {% if row.code == 6000 and (est_top_sheet.workers_comp_amount or top_sheet.workers_comp_amount) %}
       <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
           data-ts-section="6000"
-          oncontextmenu="editAutoLinePct(event, 'workers_comp')" title="Right-click to edit %">
+          oncontextmenu="editAutoLinePct(event, 'workers_comp')" title="Click ✎ or right-click to edit the %">
         <td class="col-code muted" style="font-size:.75rem"></td>
-        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
-        <td class="col-num muted" style="font-size:.85rem">{{ est_top_sheet.workers_comp_amount | currency }}</td>
-        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.workers_comp_amount | currency }}{% else %}$0.00{% endif %}</td>
-        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
+        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)
+          <button class="btn btn-xs btn-ghost" style="font-size:.68rem;padding:0 5px;margin-left:.3rem;opacity:.7" title="Edit the Workers' Comp %" onclick="editAutoLinePct(event, 'workers_comp')">✎</button></td>
+        {{ _ts_act_cells(est_top_sheet.workers_comp_amount, top_sheet.workers_comp_amount, _ts_auto.get('wc'), working_exists) }}
       </tr>
       {% endif %}
       {% if row.code == 6000 and (est_top_sheet.production_insurance_amount or top_sheet.production_insurance_amount) %}
-      <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9)"
+      <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
           data-ts-section="6000"
-          title="Edit in Settings → Production Insurance">
+          oncontextmenu="editAutoLinePct(event, 'production_insurance')"
+          title="Click ✎ or right-click to change the mode / % / amount">
         <td class="col-code muted" style="font-size:.75rem"></td>
         <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Production Liability Insurance
           {% if top_sheet.production_insurance_mode == 'pct' %}
@@ -1011,38 +1026,39 @@
           {% elif top_sheet.production_insurance_mode == 'flat' %}
             (flat amount)
           {% endif %}
+          <button class="btn btn-xs btn-ghost" style="font-size:.68rem;padding:0 5px;margin-left:.3rem;opacity:.7" title="Edit Production Insurance" onclick="editAutoLinePct(event, 'production_insurance')">✎</button>
         </td>
-        <td class="col-num muted" style="font-size:.85rem">{{ est_top_sheet.production_insurance_amount | currency }}</td>
-        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.production_insurance_amount | currency }}{% else %}$0.00{% endif %}</td>
-        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
+        {{ _ts_act_cells(est_top_sheet.production_insurance_amount, top_sheet.production_insurance_amount, _ts_auto.get('ins'), working_exists) }}
       </tr>
       {% endif %}
       {% if row.code == 6500 and (est_top_sheet.payroll_fee_amount or top_sheet.payroll_fee_amount) %}
       <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
           data-ts-section="6500"
-          oncontextmenu="editAutoLinePct(event, 'payroll_fee')" title="Right-click to edit %">
+          oncontextmenu="editAutoLinePct(event, 'payroll_fee')" title="Click ✎ or right-click to edit the %">
         <td class="col-code muted" style="font-size:.75rem"></td>
-        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)</td>
-        <td class="col-num muted" style="font-size:.85rem">{{ est_top_sheet.payroll_fee_amount | currency }}</td>
-        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ top_sheet.payroll_fee_amount | currency }}{% else %}$0.00{% endif %}</td>
-        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
+        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)
+          <button class="btn btn-xs btn-ghost" style="font-size:.68rem;padding:0 5px;margin-left:.3rem;opacity:.7" title="Edit the Payroll Service Fee %" onclick="editAutoLinePct(event, 'payroll_fee')">✎</button></td>
+        {{ _ts_act_cells(est_top_sheet.payroll_fee_amount, top_sheet.payroll_fee_amount, _ts_auto.get('fee'), working_exists) }}
       </tr>
       {% endif %}
-      {% set _frts_est = (est_top_sheet.fringe_by_section or {}).get(row.code, 0) %}
-      {% set _frts_wrk = (top_sheet.fringe_by_section or {}).get(row.code, 0) %}
-      {% if _frts_est or _frts_wrk %}
-      {# Rolled-up labor fringes — per SECTION since 2026-10-21 ("fringes
-         are a sub-calculation in the labor sections"); this section's
-         labor lines exclude fringe, the lump shows here. #}
-      <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9)"
-          data-ts-section="{{ row.code }}"
-          title="This section's labor fringes — rolled up here instead of inflating each labor line's total (Settings → Roll fringes up to one line)">
-        <td class="col-code muted" style="font-size:.75rem"></td>
-        <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Fringes (rolled up from this section's labor)</td>
-        <td class="col-num muted" style="font-size:.85rem">{{ _frts_est | currency }}</td>
-        <td class="col-num muted" style="font-size:.85rem">{% if working_exists %}{{ _frts_wrk | currency }}{% else %}$0.00{% endif %}</td>
-        <td class="col-num muted">$0.00</td><td class="col-num muted">$0.00</td>
-      </tr>
+      {% if row.code == 6500 %}
+      {# One row per labor department (fringe_by_section is keyed by the
+         labor section; the money is in 6500). Actual = spend coded to the
+         department's "Payroll Fringes — <Department>" line. #}
+      {% for _fc, _fname in coa_sections %}
+        {% set _frts_est = (est_top_sheet.fringe_by_section or {}).get(_fc, 0) or 0 %}
+        {% set _frts_wrk = (top_sheet.fringe_by_section or {}).get(_fc, 0) or 0 %}
+        {% set _frts_lid = _ts_frids.get(_fc) %}
+        {% if _frts_est or _frts_wrk or (_frts_lid and actual_by_line_id.get(_frts_lid)) %}
+        <tr class="auto-line-row" style="background:var(--bg-2,#f7f7f9);cursor:pointer"
+            data-ts-section="6500" ondblclick="event.stopPropagation(); goToFringeRow({{ _fc }})"
+            title="Employer fringes for {{ _fname }} labor, pooled here in Administrative. Double-click to open the row in the budget.">
+          <td class="col-code muted" style="font-size:.75rem"></td>
+          <td class="muted" style="font-size:.8rem;padding-left:1.75rem">↳ Payroll Fringes — {{ _fname }}</td>
+          {{ _ts_act_cells(_frts_est, _frts_wrk, _frts_lid, working_exists) }}
+        </tr>
+        {% endif %}
+      {% endfor %}
       {% endif %}
       {% if row.code == 6500 and (est_top_sheet.payroll_fee_amount or top_sheet.payroll_fee_amount) %}
       {# Debug / sanity-check row: the labor total that WC + Payroll Fee are
@@ -1217,6 +1233,41 @@
     </div>
   </div>
 
+  {# Computed row (Phase 4): one 15-column auto row. edit_js is an
+     inline handler for both the ✎ button and right-click ('' = none);
+     line_id is the hidden BudgetLine the Actual is read from. #}
+  {% macro _auto_row(sec_code, suffix, label, amount, actual, fee_share, edit_js, line_id, title, row_id='', orphan=false) -%}
+        <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9){% if edit_js %};cursor:context-menu{% endif %}{% if orphan %};outline:1px dashed #e0a13a{% endif %}"
+            {% if row_id %}id="{{ row_id }}"{% endif %}
+            data-auto-amount="{{ amount | float }}" {% if line_id %}data-line-id="{{ line_id }}"{% endif %}
+            {% if edit_js %}oncontextmenu="{{ edit_js }}"{% endif %}
+            title="{{ title }}">
+          <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
+            <span class="line-number">{{ sec_code }}-{{ suffix }}</span>
+            {{ label }}
+            {% if edit_js %}<button class="btn btn-xs btn-ghost" style="font-style:normal;font-size:.68rem;padding:0 5px;margin-left:.3rem;opacity:.7" title="Edit this setting" onclick="{{ edit_js }}">✎</button>{% endif %}
+          </td>
+          <td class="col-pc col-labor-only"></td>
+          <td class="col-qty"></td>
+          <td class="col-days"></td>
+          <td class="col-num"></td>
+          <td class="col-rt"></td>
+          <td class="col-num">{{ amount | currency }}</td>
+          <td class="col-num"></td>
+          <td class="col-fr"></td>
+          <td class="col-num"></td>
+          <td class="col-num">{{ (amount + fee_share) | currency }}</td>
+          <td class="col-num col-working">{{ (amount + fee_share) | currency }}</td>
+          <td class="col-num col-actual">{% if actual %}{{ actual | currency }}{% endif %}</td>
+          {% if actual %}
+          {% set _v = (amount + fee_share - actual) %}
+          <td class="col-num col-variance" style="color:{% if _v < 0 %}#fb7185{% else %}#5fd0a0{% endif %};font-style:normal">{{ _v | currency }}</td>
+          {% else %}
+          <td class="col-num col-variance"></td>
+          {% endif %}
+          <td class="col-act"></td>
+        </tr>
+  {%- endmacro %}
   <div id="working-budget-wrap">
   {% for sec in sections %}
   {% set ns = namespace(sec_subtotal=0, sec_ot=0, sec_fringe=0, sec_total=0, has_labor=false, has_agent_or_disc=false, line_counter=0, kit_total=0, kit_working=0, sec_agent=0, sec_disc=0, prev_sub_group=None) %}
@@ -1287,9 +1338,10 @@
   {% if sec.code == 6500 and top_sheet.payroll_fee_amount %}
     {% set ns.sec_total = ns.sec_total + top_sheet.payroll_fee_amount %}
   {% endif %}
-  {% set _frst = (top_sheet.fringe_by_section or {}).get(sec.code, 0) %}
-  {% if _frst %}
-    {% set ns.sec_total = ns.sec_total + _frst %}
+  {# Phase 4 (Steven, Oct 30 2026): every department's fringe pot lives in
+     6500 Administrative — the labor section carries wages only. #}
+  {% if sec.code == 6500 and top_sheet.fringe_rollup_amount %}
+    {% set ns.sec_total = ns.sec_total + top_sheet.fringe_rollup_amount %}
   {% endif %}
   {# Fee-exempt badge: read the exclusion list from top_sheet so the
      line-items header is kept in sync with the Top Sheet without each
@@ -1494,12 +1546,15 @@
            still render with placeholder hint text but won't persist any
            text content unless the user types something. Skip the normal
            line render path entirely for these. #}
-        {% if ln.line_tag == 'fringe_rollup' %}
-        {# The real "Payroll Fringes" coding line ($0 budget — the working
-           number is computed from the labor lines). Its spend renders on
-           the 6500-FR auto row at the section footer, so no editable row
-           here; the line still feeds the section-actual accumulators and
-           every budget-line picker. (Owner 2026-10-07.) #}
+        {% if ln.line_tag in ('fringe_rollup', 'auto_calc') %}
+        {# Computed lines (Phase 4): the per-department "Payroll Fringes —
+           <Department>" lines in 6500 and the hidden Workers' Comp /
+           Production Insurance / Payroll Service Fee / Production Company
+           Fee lines. calc_line returns zero for them; their number is
+           written through to estimated_total from the calc. They render
+           as the auto rows at the section foot (with the Actual coded to
+           them), so no editable row here; the line still feeds the
+           section-actual accumulators and every budget-line picker. #}
         {% elif ln.line_tag == 'spacer' %}
         <tr class="line-row spacer-row" data-id="{{ ln.id }}" data-code="{{ ln.account_code }}" data-tag="spacer">
           <td colspan="14" style="padding:0;position:relative">
@@ -2497,142 +2552,132 @@
         {% endif %}
         {% endif %}{# /spacer-elif-header-else block #}
         {% endfor %}
-        {# Auto-calc display rows under the last real line in sections
-           6000 (Insurance → Workers' Comp) and 6500 (Administrative →
-           Payroll Service Fee). These are not BudgetLines — they live in
-           the Budget row itself as percentages and are computed in
-           calc_top_sheet. We render them here so the line-by-line view
-           mirrors the Top Sheet one-to-one. Right-click opens the same
-           % editor used on the Top Sheet auto-rows. #}
-        {% if sec.code == 6000 and top_sheet.workers_comp_amount > 0 %}
-        <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
-            data-auto-amount="{{ top_sheet.workers_comp_amount | float }}"
-            oncontextmenu="editAutoLinePct(event, 'workers_comp')"
-            title="Right-click to edit the Workers' Comp %. This line is computed from gross labor wages; it isn't a Budget Line row.">
-          <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
-            <span class="line-number">{{ sec.code }}-WC</span>
-            Workers' Comp ({{ (top_sheet.workers_comp_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)
-          </td>
-          <td class="col-pc col-labor-only"></td>
-          <td class="col-qty"></td>
-          <td class="col-days"></td>
-          <td class="col-num"></td>
-          <td class="col-rt"></td>
-          <td class="col-num">{{ top_sheet.workers_comp_amount | currency }}</td>
-          <td class="col-num"></td>
-          <td class="col-fr"></td>
-          <td class="col-num"></td>
-          {% set _wc_fee = ((top_sheet.workers_comp_amount * _fee_eff_rate + 0.5) | int) if (budget.company_fee_dispersed and not _sec_fee_exempt) else 0 %}
-          <td class="col-num">{{ (top_sheet.workers_comp_amount + _wc_fee) | currency }}</td>
-          <td class="col-num col-working">{{ (top_sheet.workers_comp_amount + _wc_fee) | currency }}</td>
-          <td class="col-num col-actual"></td>
-          <td class="col-num col-variance"></td>
-          <td class="col-act"></td>
-        </tr>
-        {% endif %}
-        {# Production Insurance — same shape as Workers' Comp, modes
-           are 'pct' (% of labor) or 'flat' ($ amount). Mode label
-           follows the line so the user can tell at a glance how it's
-           being computed. Right-click opens the Settings panel rather
-           than a quick % editor since the mode picker has more state. #}
-        {% if sec.code == 6000 and top_sheet.production_insurance_amount > 0 %}
-        <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
-            data-auto-amount="{{ top_sheet.production_insurance_amount | float }}"
-            oncontextmenu="event.preventDefault(); window.location.hash='settings'; document.querySelector('[data-tab=\'settings\']')?.click();"
-            title="Open Settings to change Production Liability Insurance mode / value. This line is computed from the Budget settings; it isn't a Budget Line row.">
-          <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
-            <span class="line-number">{{ sec.code }}-PLI</span>
-            Production Liability Insurance
-            {% if top_sheet.production_insurance_mode == 'pct' %}
-              ({{ (top_sheet.production_insurance_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)
-            {% elif top_sheet.production_insurance_mode == 'flat' %}
-              (flat amount)
-            {% endif %}
-          </td>
-          <td class="col-pc col-labor-only"></td>
-          <td class="col-qty"></td>
-          <td class="col-days"></td>
-          <td class="col-num"></td>
-          <td class="col-rt"></td>
-          <td class="col-num">{{ top_sheet.production_insurance_amount | currency }}</td>
-          <td class="col-num"></td>
-          <td class="col-fr"></td>
-          <td class="col-num"></td>
-          {% set _pi_fee = ((top_sheet.production_insurance_amount * _fee_eff_rate + 0.5) | int) if (budget.company_fee_dispersed and not _sec_fee_exempt) else 0 %}
-          <td class="col-num">{{ (top_sheet.production_insurance_amount + _pi_fee) | currency }}</td>
-          <td class="col-num col-working">{{ (top_sheet.production_insurance_amount + _pi_fee) | currency }}</td>
-          <td class="col-num col-actual"></td>
-          <td class="col-num col-variance"></td>
-          <td class="col-act"></td>
-        </tr>
-        {% endif %}
-        {% if sec.code == 6500 and top_sheet.payroll_fee_amount > 0 %}
-        <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9);cursor:context-menu"
-            data-auto-amount="{{ top_sheet.payroll_fee_amount | float }}"
-            oncontextmenu="editAutoLinePct(event, 'payroll_fee')"
-            title="Right-click to edit the Payroll Service Fee %. This line is computed from gross labor wages; it isn't a Budget Line row.">
-          <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
-            <span class="line-number">{{ sec.code }}-PF</span>
-            Payroll Service Fee ({{ (top_sheet.payroll_fee_pct * 100) | round(2) }}% of ${{ "{:,.0f}".format(top_sheet.gross_labor_wages) }} labor)
-          </td>
-          <td class="col-pc col-labor-only"></td>
-          <td class="col-qty"></td>
-          <td class="col-days"></td>
-          <td class="col-num"></td>
-          <td class="col-rt"></td>
-          <td class="col-num">{{ top_sheet.payroll_fee_amount | currency }}</td>
-          <td class="col-num"></td>
-          <td class="col-fr"></td>
-          <td class="col-num"></td>
-          {% set _pf_fee = ((top_sheet.payroll_fee_amount * _fee_eff_rate + 0.5) | int) if (budget.company_fee_dispersed and not _sec_fee_exempt) else 0 %}
-          <td class="col-num">{{ (top_sheet.payroll_fee_amount + _pf_fee) | currency }}</td>
-          <td class="col-num col-working">{{ (top_sheet.payroll_fee_amount + _pf_fee) | currency }}</td>
-          <td class="col-num col-actual"></td>
-          <td class="col-num col-variance"></td>
-          <td class="col-act"></td>
-        </tr>
-        {% endif %}
-        {# Per-SECTION Payroll Fringes row (owner 2026-10-21: "assign
-           fringes in those actual sections rather than Administrative …
-           reconcile the fringe total for the whole individual section").
-           Working = this section's rolled-up labor fringe; Actual = spend
-           coded to this section's real "Payroll Fringes — <Section>" line
-           (the ⚡ payroll parser books each person's employer fringes
-           there, so expanding the line in Actuals reconciles by person).
-           Also renders for a legacy/emptied fringe line that still has
-           actuals (e.g. the old single 6500 pot) so dollars never hide. #}
-        {% set _frr_amt = ((top_sheet.fringe_by_section or {}).get(sec.code, 0) or 0) | float %}
-        {% set _frr_lid = (fringe_rollup_line_ids | default({})).get(sec.code) %}
-        {% set _frr_act = (actual_by_line_id.get(_frr_lid, 0) or 0) | float if _frr_lid else 0.0 %}
-        {% if _frr_amt > 0 or _frr_act %}
-        <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9)"
-            data-auto-amount="{{ _frr_amt | float }}"
-            title="This section's labor fringes — rolled up here instead of inflating each labor line's total. Reconcile payroll-company fringe invoices against this number: code those costs to the '{{ sec.code }} · Payroll Fringes' line (the ⚡ payroll parser does it per person automatically) and the Actual shows right here.">
-          <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
-            <span class="line-number">{{ sec.code }}-FR</span>
-            Payroll Fringes — {{ sec.name }}
-          </td>
-          <td class="col-pc col-labor-only"></td>
-          <td class="col-qty"></td>
-          <td class="col-days"></td>
-          <td class="col-num"></td>
-          <td class="col-rt"></td>
-          <td class="col-num">{{ _frr_amt | currency }}</td>
-          <td class="col-num"></td>
-          <td class="col-fr"></td>
-          <td class="col-num"></td>
-          {% set _frr_fee = ((_frr_amt * _fee_eff_rate + 0.5) | int) if (budget.company_fee_dispersed and not _sec_fee_exempt and not top_sheet.company_fee_exclude_fringes) else 0 %}
-          <td class="col-num">{{ (_frr_amt + _frr_fee) | currency }}</td>
-          <td class="col-num col-working">{{ (_frr_amt + _frr_fee) | currency }}</td>
-          <td class="col-num col-actual">{% if _frr_act %}{{ _frr_act | currency }}{% endif %}</td>
-          {% if _frr_act %}
-          {% set _frr_var = (_frr_amt + _frr_fee - _frr_act) %}
-          <td class="col-num col-variance" style="color:{% if _frr_var < 0 %}#fb7185{% else %}#5fd0a0{% endif %};font-style:normal">{{ _frr_var | currency }}</td>
-          {% else %}
-          <td class="col-num col-variance"></td>
+        {# ── Computed rows at the section foot (Phase 4, Steven Oct 30 2026) ──
+           Workers' Comp + Production Insurance under 6000; Payroll Service
+           Fee, Production Company Fee and one "Payroll Fringes — <Dept>"
+           row per labor department under 6500. Each is backed by a hidden
+           real BudgetLine (auto_line_ids / fringe_rollup_line_ids) so the
+           Actual column shows what was coded to it. The % / flat settings
+           edit in place (✎ or right-click) through the same Settings POST.
+           Labor sections get ONE read-only summary row for their fringes
+           that links to the 6500 row — not a drop target, not in the
+           section's totals (the money sits in 6500). #}
+        {% set _auto_ids = auto_line_ids | default({}) %}
+        {% set _fr_ids = fringe_rollup_line_ids | default({}) %}
+        {% set _fr_orph = fringe_orphans | default({}) %}
+        {% set _disp = budget.company_fee_dispersed and not _sec_fee_exempt %}
+        {% if sec.code == 6000 %}
+          {% set _wc_act = (actual_by_line_id.get(_auto_ids.get('wc'), 0) or 0) | float if _auto_ids.get('wc') else 0.0 %}
+          {% if top_sheet.workers_comp_amount > 0 or _wc_act %}
+          {{ _auto_row(sec.code, 'WC', "Workers' Comp (" ~ ((top_sheet.workers_comp_pct * 100) | round(2)) ~ "% of $" ~ "{:,.0f}".format(top_sheet.gross_labor_wages) ~ " labor)",
+                       top_sheet.workers_comp_amount, _wc_act,
+                       ((top_sheet.workers_comp_amount * _fee_eff_rate + 0.5) | int) if _disp else 0,
+                       "editAutoLinePct(event, 'workers_comp')", _auto_ids.get('wc'),
+                       "Workers' Comp — computed from gross labor wages. Click ✎ (or right-click) to change the %. Actual = spend coded to the hidden Workers' Comp line.") }}
           {% endif %}
-          <td class="col-act"></td>
-        </tr>
+          {% set _pi_act = (actual_by_line_id.get(_auto_ids.get('ins'), 0) or 0) | float if _auto_ids.get('ins') else 0.0 %}
+          {% if top_sheet.production_insurance_amount > 0 or _pi_act %}
+          {% if top_sheet.production_insurance_mode == 'pct' %}
+            {% set _pi_lbl = "Production Liability Insurance (" ~ ((top_sheet.production_insurance_pct * 100) | round(2)) ~ "% of $" ~ "{:,.0f}".format(top_sheet.gross_labor_wages) ~ " labor)" %}
+          {% elif top_sheet.production_insurance_mode == 'flat' %}
+            {% set _pi_lbl = "Production Liability Insurance (flat amount)" %}
+          {% else %}
+            {% set _pi_lbl = "Production Liability Insurance (off)" %}
+          {% endif %}
+          {{ _auto_row(sec.code, 'PLI', _pi_lbl, top_sheet.production_insurance_amount, _pi_act,
+                       ((top_sheet.production_insurance_amount * _fee_eff_rate + 0.5) | int) if _disp else 0,
+                       "editAutoLinePct(event, 'production_insurance')", _auto_ids.get('ins'),
+                       "Production Liability Insurance — off, % of labor, or a flat amount. Click ✎ (or right-click) to change it. Actual = spend coded to the hidden Production Insurance line.") }}
+          {% endif %}
+        {% endif %}
+        {% if sec.code == 6500 %}
+          {% set _pf_act = (actual_by_line_id.get(_auto_ids.get('fee'), 0) or 0) | float if _auto_ids.get('fee') else 0.0 %}
+          {% if top_sheet.payroll_fee_amount > 0 or _pf_act %}
+          {{ _auto_row(sec.code, 'PF', "Payroll Service Fee (" ~ ((top_sheet.payroll_fee_pct * 100) | round(2)) ~ "% of $" ~ "{:,.0f}".format(top_sheet.gross_labor_wages) ~ " labor)",
+                       top_sheet.payroll_fee_amount, _pf_act,
+                       ((top_sheet.payroll_fee_amount * _fee_eff_rate + 0.5) | int) if _disp else 0,
+                       "editAutoLinePct(event, 'payroll_fee')", _auto_ids.get('fee'),
+                       "Payroll Service Fee — computed from gross labor wages. Click ✎ (or right-click) to change the %. Actual = spend coded to the hidden Payroll Service Fee line (the payroll parser books the platform fee here).") }}
+          {% endif %}
+          {# Production Company Fee: the fee itself sits below the subtotal
+             on the Top Sheet (6800 is always fee-exempt), so this row is
+             display + Actual only — its estimate is NOT added to 6500's
+             total. Shown when the fee is a separate line (not dispersed)
+             or when something was coded to its hidden line. #}
+          {% set _pcf_act = (actual_by_line_id.get(_auto_ids.get('pcf'), 0) or 0) | float if _auto_ids.get('pcf') else 0.0 %}
+          {% if (not top_sheet.company_fee_dispersed and top_sheet.company_fee > 0) or _pcf_act %}
+          {% if top_sheet.company_fee_mode == 'flat' %}
+            {% set _pcf_lbl = "Production Company Fee (flat — see Top Sheet)" %}
+          {% else %}
+            {% set _pcf_lbl = "Production Company Fee (" ~ ((top_sheet.company_fee_pct * 100) | round(2)) ~ "% — see Top Sheet)" %}
+          {% endif %}
+          {{ _auto_row(sec.code, 'PCF', _pcf_lbl, (0 if top_sheet.company_fee_dispersed else top_sheet.company_fee), _pcf_act, 0,
+                       "feeEditMenu(event)", _auto_ids.get('pcf'),
+                       "Production Company Fee — the fee line under the Top Sheet subtotal. Click ✎ (or right-click) to change mode / % / $ / dispersal. Not counted in this section's total; Actual = spend coded to its hidden line.") }}
+          {% endif %}
+          {# One row per labor department: estimate = that department's
+             fringe pot (calc_top_sheet.fringe_by_section), actual = spend
+             coded to its "Payroll Fringes — <Department>" line (the ⚡
+             payroll parser books each person's employer fringes there). A
+             department with no labor left keeps its row only while dollars
+             are coded to it, flagged. #}
+          {% set _fr_secs = [] %}
+          {% for _c in coa_sections %}
+            {% if ((top_sheet.fringe_by_section or {}).get(_c[0], 0) or 0) or _fr_ids.get(_c[0]) %}
+              {% set _ = _fr_secs.append(_c) %}
+            {% endif %}
+          {% endfor %}
+          {% for _fc, _fname in _fr_secs %}
+            {% set _fr_amt = ((top_sheet.fringe_by_section or {}).get(_fc, 0) or 0) | float %}
+            {% set _fr_lid = _fr_ids.get(_fc) %}
+            {% set _fr_act = (actual_by_line_id.get(_fr_lid, 0) or 0) | float if _fr_lid else 0.0 %}
+            {% if _fr_amt > 0 or _fr_act or _fr_orph.get(_fc) %}
+            {% set _fr_fee = ((_fr_amt * _fee_eff_rate + 0.5) | int) if (_disp and not top_sheet.company_fee_exclude_fringes) else 0 %}
+            {{ _auto_row(sec.code, 'FR', ("Payroll Fringes — " ~ _fname) ~ (" (no labor left in this department — keep or re-code its actuals)" if _fr_orph.get(_fc) else ""),
+                         _fr_amt, _fr_act, _fr_fee, "", _fr_lid,
+                         "Employer fringes for " ~ _fname ~ " labor, pooled here in Administrative. Reconcile payroll-company fringe invoices against this number: code those costs to this line (the ⚡ payroll parser does it per person).",
+                         'fr-6500-' ~ _fc, _fr_orph.get(_fc)) }}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {# Labor-section fringe SUMMARY (read-only): what this department's
+           fringes are, with actual + variance, read from its 6500 line.
+           Click jumps to that row in 6500. #}
+        {% if sec.code != 6500 and (((top_sheet.fringe_by_section or {}).get(sec.code, 0) or 0) or _fr_ids.get(sec.code)) %}
+          {% set _frs_amt = ((top_sheet.fringe_by_section or {}).get(sec.code, 0) or 0) | float %}
+          {% set _frs_lid = _fr_ids.get(sec.code) %}
+          {% set _frs_act = (actual_by_line_id.get(_frs_lid, 0) or 0) | float if _frs_lid else 0.0 %}
+          {% if _frs_amt > 0 or _frs_act %}
+          <tr class="line-row auto-calc-line fringe-summary-row" style="background:var(--bg-2,#f7f7f9);cursor:pointer;opacity:.85"
+              data-auto-amount="0" data-fringe-for="{{ sec.code }}"
+              onclick="goToFringeRow({{ sec.code }})"
+              title="This department's payroll fringes sit in 6500 Administrative (one line per department). Summary only — the money is counted there, not here. Click to jump to it.">
+            <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
+              <span class="line-number">{{ sec.code }}-FR</span>
+              Payroll Fringes — {{ sec.name }}
+              <span style="margin-left:.4rem;font-size:.68rem;font-style:normal;padding:1px 6px;border-radius:8px;background:var(--bg-3,#e8e8ee);color:var(--text-muted);white-space:nowrap">in 6500 ↗</span>
+            </td>
+            <td class="col-pc col-labor-only"></td>
+            <td class="col-qty"></td>
+            <td class="col-days"></td>
+            <td class="col-num"></td>
+            <td class="col-rt"></td>
+            <td class="col-num" style="color:var(--text-muted)">{{ _frs_amt | currency }}</td>
+            <td class="col-num"></td>
+            <td class="col-fr"></td>
+            <td class="col-num"></td>
+            <td class="col-num" style="color:var(--text-muted)">{{ _frs_amt | currency }}</td>
+            <td class="col-num col-working" style="color:var(--text-muted)">{{ _frs_amt | currency }}</td>
+            <td class="col-num col-actual">{% if _frs_act %}{{ _frs_act | currency }}{% endif %}</td>
+            {% if _frs_act %}
+            {% set _frs_var = _frs_amt - _frs_act %}
+            <td class="col-num col-variance" style="color:{% if _frs_var < 0 %}#fb7185{% else %}#5fd0a0{% endif %};font-style:normal">{{ _frs_var | currency }}</td>
+            {% else %}
+            <td class="col-num col-variance"></td>
+            {% endif %}
+            <td class="col-act"></td>
+          </tr>
+          {% endif %}
         {% endif %}
         {# ── Sister-budget ORPHAN rows (User 2026-07.) ──────────────────────
            Lines that exist in ONLY the sister version (Estimated OR Working)
@@ -2716,9 +2761,8 @@
       {% if sec.code == 6500 and top_sheet.payroll_fee_amount %}
         {% set sec_working.total = sec_working.total + top_sheet.payroll_fee_amount %}
       {% endif %}
-      {% set _frsw = (top_sheet.fringe_by_section or {}).get(sec.code, 0) %}
-      {% if _frsw %}
-        {% set sec_working.total = sec_working.total + _frsw %}
+      {% if sec.code == 6500 and top_sheet.fringe_rollup_amount %}
+        {% set sec_working.total = sec_working.total + top_sheet.fringe_rollup_amount %}
       {% endif %}
       <tfoot>
         {# Per-category subtotals (kit / agent / section breakdowns) all align under their matching column. #}
@@ -6651,17 +6695,14 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
               <span class="muted" style="font-size:.8rem;margin-left:.4rem">(industry default — keeps the Prod Co Fee from compounding on P&amp;W / P/H/W fringes)</span>
             </span>
           </label>
-          {# Fringe-rollup mode (owner 2026-10-05): labor line totals exclude
-             fringe; the pot shows as one "Payroll Fringes" amount in 6500 so
-             lines reconcile 1:1 against payments. Project-wide. #}
-          <label style="display:flex;align-items:center;gap:.55rem;margin:0 0 .55rem;font-weight:400;cursor:pointer">
-            <input type="checkbox" id="set-fringe-rollup"
-                   {% if project.fringe_rollup %}checked{% endif %}>
-            <span>
-              <strong style="font-weight:600">Roll fringes up to one line</strong>
-              <span class="muted" style="font-size:.8rem;margin-left:.4rem">(labor line totals exclude fringe; the total shows as “Payroll Fringes” under 6500 Administrative — applies to every version of this project)</span>
-            </span>
-          </label>
+          {# Phase 4 (Steven, Oct 30 2026): fringes always sit apart from the
+             labor lines — one "Payroll Fringes — <Department>" line per labor
+             department in 6500 Administrative. The Oct 5 "Roll fringes up"
+             toggle is retired (ProjectSheet.fringe_rollup stays, ignored). #}
+          <div class="muted" style="font-size:.8rem;margin:0 0 .55rem">
+            Payroll fringes are pooled in <strong>6500 Administrative</strong>, one line per department with labor
+            (labor line totals are wages only; each labor section shows a read-only fringe summary at its foot).
+          </div>
           <div id="fee-excl-grid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(220px, 1fr));gap:.35rem .9rem;padding:.6rem .8rem;border:1px solid var(--border);border-radius:6px;background:var(--bg-2);max-height:260px;overflow-y:auto">
             {% set excluded_codes = top_sheet.company_fee_excluded_codes or [] %}
             {% for sec_code, sec_name in coa_sections %}
@@ -10825,6 +10866,19 @@ function goToSection(code) {
   }
 }
 
+// Labor-section fringe summary → its "Payroll Fringes — <Dept>" row in
+// 6500 Administrative (Phase 4). Falls back to the 6500 section header.
+function goToFringeRow(secCode) {
+  const row = document.getElementById('fr-6500-' + secCode);
+  if (!row) { goToSection(6500); return; }
+  goToSection(6500);
+  setTimeout(() => {
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.classList.add('section-pulse');
+    setTimeout(() => row.classList.remove('section-pulse'), 1200);
+  }, 350);
+}
+
 // ── Tax Credits (Feature 4) ─────────────────────────────────────────────────
 const TC_URL = `/projects/${PID}/budget/${BID}/tax-credit`;
 
@@ -11280,7 +11334,6 @@ async function _saveSettingsInner() {
       document.querySelectorAll('#fee-excl-grid .fee-excl-check:checked')
     ).map(el => parseInt(el.value, 10)).filter(n => !isNaN(n)),
     fee_exclude_fringes: document.getElementById('set-fee-exclude-fringes')?.checked ?? true,
-    fringe_rollup: document.getElementById('set-fringe-rollup')?.checked ?? false,
   };
 
   await saveCompanySettings();
@@ -13411,10 +13464,19 @@ function normalizePhone(v) {
 {# ── % Edit Popup (top sheet quick edit) ── #}
 <div id="pct-edit-popup" class="pct-edit-popup hidden">
   <div class="pct-edit-label" id="pct-edit-label"></div>
-  <div style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
+  {# Mode picker — only for Production Insurance (off / % of labor / flat $).
+     Phase 4: every auto-calc setting edits in place from the budget page
+     and the Top Sheet; all of them save through the same Settings POST. #}
+  <select id="pct-edit-mode" style="display:none;margin-top:.4rem;width:140px" onchange="pctPopModeSwap()">
+    <option value="off">Off</option>
+    <option value="pct">% of labor</option>
+    <option value="flat">Flat amount</option>
+  </select>
+  <div style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem" id="pct-edit-row">
+    <span id="pct-edit-prefix" style="display:none">$</span>
     <input type="number" id="pct-edit-value" min="0" max="100" step="0.01" style="width:80px"
            onkeydown="if(event.key==='Enter'){savePctEdit()}if(event.key==='Escape'){closePctPopup()}">
-    <span>%</span>
+    <span id="pct-edit-suffix">%</span>
     <button class="btn btn-xs btn-primary" onclick="savePctEdit()">✓</button>
     <button class="btn btn-xs btn-ghost" onclick="closePctPopup()">✕</button>
   </div>
