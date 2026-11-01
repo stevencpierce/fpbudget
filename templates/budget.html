@@ -1236,10 +1236,10 @@
   {# Computed row (Phase 4): one 15-column auto row. edit_js is an
      inline handler for both the ✎ button and right-click ('' = none);
      line_id is the hidden BudgetLine the Actual is read from. #}
-  {% macro _auto_row(sec_code, suffix, label, amount, actual, fee_share, edit_js, line_id, title, row_id='', orphan=false) -%}
+  {% macro _auto_row(sec_code, suffix, label, amount, actual, fee_share, edit_js, line_id, title, row_id='', orphan=false, counted=true) -%}
         <tr class="line-row auto-calc-line" style="background:var(--bg-2,#f7f7f9){% if edit_js %};cursor:context-menu{% endif %}{% if orphan %};outline:1px dashed #e0a13a{% endif %}"
             {% if row_id %}id="{{ row_id }}"{% endif %}
-            data-auto-amount="{{ amount | float }}" {% if line_id %}data-line-id="{{ line_id }}"{% endif %}
+            data-auto-amount="{{ (amount | float) if counted else 0 }}" {% if line_id %}data-line-id="{{ line_id }}"{% endif %}
             {% if edit_js %}oncontextmenu="{{ edit_js }}"{% endif %}
             title="{{ title }}">
           <td class="col-desc" style="font-style:italic;color:var(--text-muted)">
@@ -2613,7 +2613,8 @@
           {% endif %}
           {{ _auto_row(sec.code, 'PCF', _pcf_lbl, (0 if top_sheet.company_fee_dispersed else top_sheet.company_fee), _pcf_act, 0,
                        "feeEditMenu(event)", _auto_ids.get('pcf'),
-                       "Production Company Fee — the fee line under the Top Sheet subtotal. Click ✎ (or right-click) to change mode / % / $ / dispersal. Not counted in this section's total; Actual = spend coded to its hidden line.") }}
+                       "Production Company Fee — the fee line under the Top Sheet subtotal. Click ✎ (or right-click) to change mode / % / $ / dispersal. Not counted in this section's total; Actual = spend coded to its hidden line.",
+                       '', false, false) }}
           {% endif %}
           {# One row per labor department: estimate = that department's
              fringe pot (calc_top_sheet.fringe_by_section), actual = spend
@@ -2807,7 +2808,7 @@
           <td class="col-num muted"></td>
           <td class="col-num muted" style="font-size:.8rem">{{ ns.sec_subtotal | currency if ns.sec_subtotal else '' }}</td>
           <td class="col-num muted" style="font-size:.8rem">{{ ns.sec_ot | currency if ns.sec_ot else '' }}</td>
-          <td class="col-num muted" style="font-size:.8rem">{{ ns.sec_fringe | currency if ns.sec_fringe else '' }}</td>
+          <td class="col-num muted" style="font-size:.8rem" title="Fringe computed on this section's labor — pooled on the department's Payroll Fringes line in 6500 Administrative, not in this section's total">{{ ns.sec_fringe | currency if ns.sec_fringe else '' }}</td>
           <td class="col-num muted"></td>
           {# Section ACTUAL total = (a) sum of actual_by_line_id for
              every line in this section that has matching transactions
