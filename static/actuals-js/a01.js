@@ -254,20 +254,18 @@
       <div class="aw-cell num muted">${cardCell(t)}</div>
       <div class="aw-cell">${sourceChip(t)}</div>
       <div class="aw-cell">${lineCell(t, view)}</div>
-      <div class="aw-cell">${flagChip(t)}</div>
-      <div class="aw-cell aw-rowacts">
+      <div class="aw-cell flagcell">${flagChip(t)}<span class="aw-rowacts">
         <button type="button" class="aw-btn sm" data-act="assign-one" data-tid="${t.id}" ${container ? 'disabled title="Split or itemized rows carry their coding on the sublines"' : ''}>${AW.isAssigned(t) ? 'Move' : 'Assign'}</button>
         <button type="button" class="aw-btn sm icon" data-act="menu" data-tid="${t.id}" aria-label="More actions for ${esc(t.vendor)}" aria-haspopup="menu">
           <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><circle cx="2" cy="6" r="1.3"/><circle cx="6" cy="6" r="1.3"/><circle cx="10" cy="6" r="1.3"/></svg>
-        </button>
-      </div>
+        </button></span></div>
     </div>`;
   }
   const HEAD = (lineHead) => `<div role="row" class="aw-hrow">
       <div class="aw-cell"><input type="checkbox" id="aw-selall" aria-label="Select all"></div>
       <div class="aw-cell">Date</div><div class="aw-cell">Vendor</div><div class="aw-cell right">Amount</div>
       <div class="aw-cell">Card</div><div class="aw-cell">Source</div><div class="aw-cell">${lineHead}</div>
-      <div class="aw-cell">Flag</div><div class="aw-cell"></div></div>`;
+      <div class="aw-cell">Flag</div></div>`;
 
   function renderTable() {
     const d = S.data, host = $('aw-table'), hint = $('aw-hint');
@@ -275,6 +273,7 @@
     S.rows = [];
     hint.innerHTML = '';
     const summary = $('aw-summary');
+    $('aw-filters').hidden = (S.view === 'sync');
     if (S.view === 'sync') { host.setAttribute('aria-label', 'Sync'); host.innerHTML = renderSync(); summary.textContent = ''; return; }
     let rows = AW.viewRows(S.view).filter(matchesFilters);
     if (S.view === 'receipts') {
@@ -568,7 +567,7 @@
     if (v !== 'assigned') S.lineFilter = null;
     S.lastIdx = null;
     AW.render();
-    if (v === 'sync' && AW.actions && AW.actions['accts-load']) AW.actions['accts-load']();
+    if (v === 'sync' && S.data && (S.data.sync || {}).connected && AW.actions && AW.actions['accts-load']) AW.actions['accts-load']();
     try { history.replaceState(null, '', location.pathname + (v === 'unclaimed' ? '' : '?view=' + v)); } catch (e) {}
   };
 

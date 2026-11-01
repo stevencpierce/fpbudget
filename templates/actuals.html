@@ -28,22 +28,22 @@
     --aw-orange-soft: color-mix(in srgb, var(--orange) 14%, var(--bg-2));
     --aw-bar-bg: var(--bg-3); --aw-bar-fg: var(--text);
     --aw-bar-border: var(--border);
-    --aw-cols: 40px 86px minmax(180px, 1fr) 110px 74px 86px minmax(200px, 1fr) 150px 84px;
-    --aw-rcols: 56px 86px minmax(180px, 1.3fr) 110px minmax(200px, 1fr) 300px;
-    --aw-ncols: 40px 86px minmax(180px, 1fr) 110px 74px 86px minmax(220px, 1.2fr) 110px;
+    --aw-cols: 40px 84px minmax(180px, 1fr) 110px 74px 80px minmax(200px, 1fr) 160px;
+    --aw-rcols: 48px 80px minmax(170px, 1.2fr) 100px minmax(170px, 1fr) 340px;
+    --aw-ncols: 40px 84px minmax(180px, 1fr) 110px 74px 80px minmax(220px, 1.2fr) 110px;
     --aw-nums: 76px 76px 70px;
-    display: flex; flex-direction: column; height: calc(100vh - 54px);
-    min-height: 560px; background: var(--bg); color: var(--text);
-    font-family: var(--font); font-size: 14px; line-height: 1.4;
+    color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.4;
     -webkit-font-smoothing: antialiased;
   }
+  .aw-root { display: flex; flex-direction: column; height: calc(100vh - 54px);
+             min-height: 560px; background: var(--bg); }
+  .vis-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   [data-theme="light"] .aw { --aw-bar-bg: var(--text); --aw-bar-fg: var(--bg-2);
                              --aw-bar-border: transparent; }
   .aw a { color: var(--accent); }
   .aw a:hover { color: var(--accent-dim); text-decoration: none; }
   .aw .num { font-variant-numeric: tabular-nums; }
   .aw .muted { color: var(--text-muted); }
-  .aw .vis-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .aw button, .aw input, .aw select, .aw textarea { font: inherit; color: inherit; }
   .aw svg { flex-shrink: 0; }
 
@@ -99,7 +99,7 @@
   .aw-right { flex: 1 1 480px; min-width: 360px; max-width: 560px; display: flex; flex-direction: column;
               background: var(--bg); min-height: 0; }
   @media (max-width: 1100px) {
-    .aw { height: auto; }
+    .aw-root { height: auto; }
     .aw-panes { flex-direction: column; }
     .aw-left { border-right: 0; border-bottom: 1px solid var(--border); }
     .aw-right { max-width: none; }
@@ -121,6 +121,9 @@
   .aw-count.red { padding: 1px 6px; border-radius: 10px; background: var(--aw-red-soft); color: var(--red); }
   .aw-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .aw-filters input[type="search"] { width: 300px; max-width: 100%; }
+  .aw-filters select { width: auto; min-width: 120px; }
+  .aw-filters input[type="date"] { width: 150px; }
+  .aw-filters[hidden] { display: none; }
   .aw-filters .spacer { flex: 1 1 auto; }
   .aw-summary { font-size: 12px; color: var(--text-muted); }
   .aw-recent { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 26px; }
@@ -153,12 +156,15 @@
   .aw-row.filehl { outline: 2px dashed var(--accent); outline-offset: -2px; }
   .aw-row.focus-flash { animation: awflash 1.6s ease-out 1; }
   @keyframes awflash { 0% { box-shadow: inset 0 0 0 2px var(--accent); } 100% { box-shadow: inset 3px 0 0 var(--accent); } }
-  .aw-row .vendor { font-weight: 500; }
-  .aw-row .sub { font-size: 11px; color: var(--text-muted); margin-left: 6px; overflow: hidden; text-overflow: ellipsis; }
+  .aw-row .vendor { font-weight: 500; flex: 0 1 auto; min-width: 0; }
+  .aw-row .sub { font-size: 11px; color: var(--text-muted); margin-left: 6px; overflow: hidden; text-overflow: ellipsis; flex: 0 100 auto; min-width: 0; }
   .aw-row .amt { font-weight: 600; }
   .aw-row .amt.credit { color: var(--green); }
-  .aw-rowacts { justify-content: flex-end; gap: 4px; visibility: hidden; padding-right: 8px; }
-  .aw-row:hover .aw-rowacts, .aw-row:focus-within .aw-rowacts, .aw-row[aria-selected="true"] .aw-rowacts { visibility: visible; }
+  .aw-row { position: relative; }
+  .aw-cell.flagcell { justify-content: space-between; overflow: visible; }
+  .aw-rowacts { display: inline-flex; align-items: center; gap: 4px; visibility: hidden; margin-left: auto; flex-shrink: 0; }
+  .aw-row:hover .aw-rowacts, .aw-row:focus-within .aw-rowacts { visibility: visible; }
+  .aw-row:hover .flagcell .aw-flag, .aw-row:focus-within .flagcell .aw-flag { display: none; }
   .aw-grp { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px 0 12px;
             background: var(--bg); border-bottom: 1px solid var(--aw-row-border); font-size: 12px; font-weight: 600;
             position: sticky; top: 32px; z-index: 1; }
@@ -265,7 +271,7 @@
   .aw-toast .aw-btn.icon { width: 28px; border: 0; }
 
   /* ── Dialogs ── */
-  .aw-dialog { border: 0; padding: 0; border-radius: 12px; background: var(--bg-2); color: var(--text);
+  .aw-dialog { margin: auto; border: 0; padding: 0; border-radius: 12px; background: var(--bg-2); color: var(--text);
                box-shadow: 0 24px 64px rgba(0,0,0,.28); max-width: calc(100vw - 48px); max-height: calc(100vh - 48px);
                font-family: var(--font); font-size: 14px; }
   .aw-dialog::backdrop { background: rgba(26,29,46,.45); }
@@ -382,7 +388,7 @@
   {% endfor %}
 </template>
 
-<div class="aw" id="aw">
+<div class="aw aw-root" id="aw">
   <header class="aw-head">
     <div class="aw-crumbs">
       <a class="brand" href="{{ url_for('dashboard') }}">FPBudget</a>

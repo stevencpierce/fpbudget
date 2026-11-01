@@ -685,6 +685,15 @@ def admin_transactions_page():
         syncing = 0
     net = round(sum(float(r.get("amount") or 0) for r in rows), 2)
     cards = sorted({r["card_last4"] for r in rows if r.get("card_last4")})
+    _mon = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+    _this_year = str(datetime.utcnow().year)
+    for r in rows:
+        d = r.get("date") or ''
+        try:
+            r["date_short"] = (f"{_mon[int(d[5:7]) - 1]} {int(d[8:10])}"
+                               + ('' if d[:4] == _this_year else f" {d[2:4]}")) if len(d) >= 10 else d
+        except (ValueError, IndexError):
+            r["date_short"] = d
     return render_template("admin_transactions.html", rows=rows, total=total,
                            filters=p, projects=projects, syncing=syncing,
                            net=net, cards=cards)

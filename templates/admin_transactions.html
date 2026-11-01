@@ -39,6 +39,8 @@
   .adm-filters input[type="search"], .adm-filters input[type="date"], .adm-filters select {
     height: 36px; box-sizing: border-box; padding: 0 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-2); font-size: 13px; color: var(--text); }
   .adm-filters input[type="search"] { width: 320px; max-width: 100%; }
+  .adm-filters select { width: auto; min-width: 130px; max-width: 260px; }
+  .adm-filters input[type="date"] { width: 150px; }
   .adm-filters .spacer { flex: 1 1 auto; }
   .adm-filters label.chk { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
   .adm-filters input[type="checkbox"] { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
@@ -138,7 +140,7 @@
           {% set href = ('/projects/%d/actuals?txn=%d' % (open_pid, r.id)) if open_pid else '' %}
           <div role="row" class="adm-row {{ 'link' if href else '' }} {{ 'excluded' if r.excluded else '' }}"
                {% if href %}tabindex="0" data-href="{{ href }}" aria-label="Open {{ r.vendor }} {{ '%.2f' % r.amount }} in its project"{% endif %}>
-            <div class="cell num muted">{{ r.date or '—' }}</div>
+            <div class="cell num muted" title="{{ r.date }}">{{ r.date_short or '—' }}</div>
             <div class="cell"><span class="vendor ell">{{ r.vendor }}</span>{% if r.amount < 0 %}<span class="note">refund</span>{% endif %}</div>
             <div class="cell num right"><span class="amt {{ 'credit' if r.amount < 0 else '' }}">{{ '-' if r.amount < 0 else '' }}${{ '{:,.2f}'.format(r.amount|abs) }}</span></div>
             <div class="cell num muted">{% if r.card_last4 %}••{{ r.card_last4 }}{% elif r.payment_method %}{{ r.payment_method|replace('_', ' ')|capitalize }}{% elif r.qbo_txn_type == 'BillPayment' %}ACH{% endif %}</div>
