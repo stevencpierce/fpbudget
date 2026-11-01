@@ -5417,26 +5417,50 @@ def _build_wrap_book_data(pid):
                 "vendor": d.vendor or '', "amount": float(d.amount or 0),
                 "date": d.doc_date.isoformat() if d.doc_date else ''})
 
-    # 1099 advisory: people/vendors whose doc-linked spend ≥ $600 with no
-    # tax form on file ANYWHERE (tax forms live with the person, not the
-    # project — see the Crew Database vault).
+    # 1099 advisory (DOCUMENTS_HANDOFF Phase 1): payees on this project whose
+    # NON-CARD pay in a calendar year reaches that year's reporting threshold
+    # (reporting_threshold table: $600 through 2025, $2,000 from 2026) with
+    # no W-9 on file by the ONE rule (actuals.payee_w9_status). W-2 employees
+    # are excluded; card payments never count (the card network reports
+    # them). Amounts come from actuals.paid_by_payee, scoped here to this
+    # project's payees, per year.
     tax_check = []
     try:
-        _paid_by_cm = {}
+        from actuals import (paid_by_payee as _pbp, w9_status_for as _w9_for,
+                             w9_fallback_dates as _w9_fb, reporting_threshold_rows as _thr_rows,
+                             threshold_for_year as _thr_for, SHARED_LINE as _SHARED)
         _doc_cm = {d.id: d.crew_member_id for d in docs.values() if d.crew_member_id}
-        for t in exp_rows:
-            _cmid = _doc_cm.get(t.doc_upload_id)
-            if _cmid:
-                _paid_by_cm[_cmid] = _paid_by_cm.get(_cmid, 0.0) + _amt(t)
-        if _paid_by_cm:
-            _have_tax = {r[0] for r in db.session.query(DocUpload.crew_member_id)
-                         .filter(DocUpload.crew_member_id.in_(list(_paid_by_cm)),
-                                 DocUpload.category.in_(('tax_form', 'employee_vendor_doc')),
-                                 DocUpload.status.notin_(('deleted', 'duplicate'))).distinct()}
-            for _cm in CrewMember.query.filter(CrewMember.id.in_(list(_paid_by_cm))).all():
-                if _paid_by_cm[_cm.id] >= 600 and _cm.id not in _have_tax:
-                    tax_check.append({"name": _cm.name,
-                                      "paid": round(_paid_by_cm[_cm.id], 2)})
+        _proj_payees = {_doc_cm[t.doc_upload_id] for t in exp_rows if _doc_cm.get(t.doc_upload_id)}
+        for _ln in lines:
+            if _ln.assigned_crew_id:
+                _proj_payees.add(_ln.assigned_crew_id)
+        for (_cmid,) in (db.session.query(CrewAssignment.crew_member_id)
+                         .filter(CrewAssignment.budget_line_id.in_([l.id for l in lines] or [0]),
+                                 CrewAssignment.crew_member_id.isnot(None)).distinct()):
+            _proj_payees.add(_cmid)
+        _proj_payees.discard(_SHARED)
+        if _proj_payees:
+            _paid = _pbp()
+            _thr = _thr_rows()
+            _fb = _w9_fb(list(_proj_payees))
+            for _cm in (CrewMember.query.filter(CrewMember.id.in_(list(_proj_payees)))
+                        .order_by(CrewMember.name).all()):
+                if getattr(_cm, 'is_w2_employee', False):
+                    continue
+                for _yr, _b in sorted((_paid.get(_cm.id) or {}).items(),
+                                      key=lambda kv: (kv[0] is None, kv[0]), reverse=True):
+                    if _yr is None:
+                        continue
+                    _th = _thr_for(_yr, _thr)
+                    _w9 = _w9_for(_cm, non_card=_b["non_card"], threshold=_th,
+                                  fallback_date=_fb.get(_cm.id))
+                    if _b["non_card"] >= _th and _w9["status"] != 'on_file':
+                        tax_check.append({"name": _cm.name, "year": _yr,
+                                          "paid": round(_b["non_card"], 2),
+                                          "threshold": _th,
+                                          "payee_id": _cm.id,
+                                          "qbo_linked": bool(getattr(_cm, 'qbo_vendor_id', None)),
+                                          "qbo_vendor_1099": getattr(_cm, 'qbo_vendor_1099', None)})
     except Exception:
         logging.warning("[wrap] 1099 check failed", exc_info=True)
 
@@ -7943,6 +7967,15 @@ def budget_view(pid, bid):
             if getattr(c, 'is_vendor', False):
                 _vendor_people.setdefault(c.id, set())
         # (e) alphabetical vendor groups; people inside sorted by name.
+        # W-9 per vendor from the ONE rule (actuals.payee_w9_status; DOCUMENTS
+        # Phase 1). Served alongside so the People tab's vendor badge can
+        # read it instead of the client-side /w-?9/ regex (budget.html
+        # ~12376 still uses the regex — swapping the JS is a follow-up).
+        try:
+            from actuals import w9_status_for as _w9_for, w9_fallback_dates as _w9_fb
+            _w9_fallback = _w9_fb(list(_vendor_people.keys())) if _vendor_people else {}
+        except Exception:
+            _w9_for, _w9_fallback = None, {}
         for _vid, _cmids in _vendor_people.items():
             _vname = cm_name_by_id.get(_vid)
             if not _vname:
@@ -7950,8 +7983,13 @@ def budget_view(pid, bid):
                 _vname = _v.name if _v else ("Vendor #%d" % _vid)
                 cm_name_by_id[_vid] = _vname
             _people = sorted(_cmids, key=lambda i: (cm_name_by_id.get(i) or '').lower())
+            _vrow = _cm_by_id.get(_vid) or CrewMember.query.get(_vid)
+            _vw9 = (_w9_for(_vrow, fallback_date=_w9_fallback.get(_vid))
+                    if (_w9_for and _vrow) else {"status": "missing", "date": None})
             vendor_groups.append({"vendor_id": _vid, "vendor_name": _vname,
-                                  "people": _people})
+                                  "people": _people,
+                                  "w9_status": _vw9["status"],
+                                  "w9_received_on": _vw9.get("date")})
         vendor_groups.sort(key=lambda g: (g["vendor_name"] or '').lower())
     except Exception:
         person_vendor, vendor_groups, cm_name_by_id = {}, [], {}
@@ -29272,6 +29310,56 @@ def _web_worker_essential_columns():
                 "  ON doc_upload (crew_member_id)",
                 "CREATE INDEX IF NOT EXISTS ix_doc_upload_location "
                 "  ON doc_upload (location_id)",
+                # ── Payee record (DOCUMENTS_HANDOFF Phase 1, 2026-11-01,
+                # alembic 0022 — mirrored here per CLAUDE.md). CrewMember is
+                # the Payee + the QuickBooks Vendor mirror. NO TIN column
+                # exists or may be added: QuickBooks holds it.
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS kind VARCHAR(12)",
+                "UPDATE crew_member SET kind = CASE WHEN is_vendor THEN 'vendor' "
+                "  ELSE 'person' END WHERE kind IS NULL",
+                "ALTER TABLE crew_member ALTER COLUMN kind SET DEFAULT 'person'",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS qbo_vendor_id VARCHAR(40)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_crew_member_qbo_vendor "
+                "  ON crew_member (qbo_vendor_id) WHERE qbo_vendor_id IS NOT NULL",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS qbo_sync_token VARCHAR(20)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS qbo_synced_at TIMESTAMP",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS qbo_vendor_1099 BOOLEAN",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS qbo_origin VARCHAR(12)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS legal_name VARCHAR(200)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS address_line1 VARCHAR(200)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS address_line2 VARCHAR(200)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS city VARCHAR(120)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS state VARCHAR(40)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS postal_code VARCHAR(20)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS w9_received_on DATE",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS w9_doc_upload_id INTEGER",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS is_w2_employee BOOLEAN DEFAULT FALSE",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS wrapbook_worker_id VARCHAR(60)",
+                "ALTER TABLE crew_member ADD COLUMN IF NOT EXISTS notes TEXT",
+                # One-time W-9 backfill from tax_form docs already attached
+                # to the person (sub-type / filename says W-9 or W-8). Only
+                # fills rows still NULL; Phase 2's tax_form_kind replaces it.
+                "UPDATE crew_member cm SET w9_received_on = sub.d, w9_doc_upload_id = sub.id "
+                "  FROM (SELECT DISTINCT ON (crew_member_id) crew_member_id, id, "
+                "               COALESCE(doc_date, uploaded_at::date) AS d "
+                "          FROM doc_upload "
+                "         WHERE crew_member_id IS NOT NULL AND category = 'tax_form' "
+                "           AND (status IS NULL OR status NOT IN ('deleted', 'duplicate')) "
+                "           AND LOWER(COALESCE(vendor,'') || ' ' || COALESCE(filed_filename,'') "
+                "                     || ' ' || COALESCE(original_filename,'')) ~ 'w-?[89]' "
+                "         ORDER BY crew_member_id, doc_date DESC NULLS LAST, id DESC) sub "
+                " WHERE sub.crew_member_id = cm.id AND cm.w9_received_on IS NULL "
+                "   AND sub.d IS NOT NULL",
+                """CREATE TABLE IF NOT EXISTS reporting_threshold (
+                     tax_year INTEGER PRIMARY KEY,
+                     amount   NUMERIC(12,2) NOT NULL,
+                     source   VARCHAR(200)
+                   )""",
+                "INSERT INTO reporting_threshold (tax_year, amount, source) "
+                "  VALUES (2025, 600.00, 'IRS, pre-OBBBA') ON CONFLICT (tax_year) DO NOTHING",
+                "INSERT INTO reporting_threshold (tax_year, amount, source) "
+                "  VALUES (2026, 2000.00, 'One Big Beautiful Bill Act; indexed from 2027') "
+                "  ON CONFLICT (tax_year) DO NOTHING",
                 # 2026-05-01 Veryfi expense category (free-text, e.g.
                 # "Meals & Entertainment", "Office Supplies & Software").
                 # Denormalized off veryfi_data so the Docs tab can render
@@ -34997,14 +35085,25 @@ def crew_profile_json(cid):
 
     # ── completeness: same keys/logic as person_profile (global doc set) ────
     # 'employee_vendor_doc' counts toward photo_id (matches person_profile).
+    # tax_form is now the ONE W-9 rule (actuals.payee_w9_status, DOCUMENTS
+    # Phase 1): on_file counts, a W-4 or an ID does not; the status and
+    # date ride along so the drawer can show them.
     _cats = {(d.category or '').lower() for d in docs}
     _has = lambda *ks: any(k in _cats for k in ks)
+    try:
+        from actuals import payee_w9_status as _w9_rule
+        _w9 = _w9_rule(cm)
+    except Exception:
+        _w9 = {"status": ('on_file' if _has('tax_form') else 'missing'), "date": None}
     completeness = {
         "contract":  _has('contract', 'release', 'legal'),
-        "tax_form":  _has('tax_form'),
+        "tax_form":  _w9["status"] in ('on_file', 'not_required'),
         "photo_id":  _has('id', 'photo_id', 'employee_vendor_doc'),
         "invoice":   _has('invoice'),
     }
+    identity["w9_status"] = _w9["status"]
+    identity["w9_received_on"] = _w9.get("date")
+    identity["payee_url"] = url_for('payee_page', payee_id=cm.id)
 
     # ── engagements: one card per project where the person has assignments OR
     # docs. Discover the project set via three cross-project queries (all bulk),
@@ -39038,6 +39137,7 @@ import routes.api_v1  # noqa: E402,F401
 import routes.mobile_web  # noqa: E402,F401
 import routes.actuals  # noqa: E402,F401
 import routes.actuals_admin  # noqa: E402,F401
+import routes.payees  # noqa: E402,F401
 
 if __name__ == "__main__":
     if _HAS_SOCKETIO:

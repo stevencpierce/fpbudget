@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+{% block title %}{{ d.identity.name }} — Payees — FPBudget{% endblock %}
+
+{# ══════════════════════════════════════════════════════════════════════════
+   Payee page (DOCUMENTS_HANDOFF Phase 1, 2026-11-01): the global profile
+   drawer promoted to a page. Identity band + four stat tiles; left column
+   Paid by year, Projects, Evidence trail; right column Documents on file,
+   QuickBooks (read-only mirror), Vendor names. Rendered server-side from
+   routes/payees._payee_page_data (the same dict /payees/<id>.json returns).
+   Layout per the Main artboard. The Edit modal reuses the crew edit form
+   (_crew_fields + _payee_fields) and posts to /crew/<cid>/edit.
+   ══════════════════════════════════════════════════════════════════════ #}
+{% block content %}
+{% set id = d.identity %}{% set st = d.stats %}{% set qb = d.quickbooks %}
+<div class="pay-page">
+  <div class="pay-head">
+    <div class="pay-crumbs">
+      <a href="{{ url_for('dashboard') }}">FPBudget</a><span class="sep">/</span>
+      <a href="{{ url_for('payees_directory', year=d.year) }}">Payees</a><span class="sep">/</span>
+      <span class="cur">{{ id.name }}</span>
+    </div>
+    <div class="pay-actions">
+      <label for="pp-year" style="font-size:.78rem;color:var(--text-muted)">Tax year</label>
+      <select id="pp-year" class="pay-select" onchange="location.href='{{ url_for('payee_page', payee_id=id.id) }}?year='+this.value">
+        {% for y in d.years %}<option value="{{ y }}" {% if y == d.year %}selected{% endif %}>{{ y }}</option>{% endfor %}
+      </select>
+      <button type="button" class="pay-btn" onclick="openEditPayee()">Edit</button>
+      <button type="button" class="pay-btn primary" disabled title="Upload from the Payee page arrives with Documents Phase 2. Until then attach documents from a project's Docs tab with the Person/Vendor picker.">Upload document</button>
+    </div>
+  </div>
+
+  <section class="pay-band" aria-label="Payee identity">
+    <div class="pay-band-in">
+      <div class="pay-ident">
+        <div class="title">
+          <h1>{{ id.name }}</h1>
+          {% if id.is_w2_employee %}<span class="pay-chip w2">W-2</span>{% endif %}
+          <span class="pay-chip {{ id.kind }}">{{ id.kind_label }}</span>
+          {% if id.department %}<span class="pay-chip">{{ id.department }}</span>{% endif %}
+          {% if not id.active %}<span class="pay-chip">Inactive</span>{% endif %}
+          {% if id.is_w2_employee %}
+            <span class="pay-chip">Wrapbook payroll</span>
+          {% elif qb.linked %}
+            <span class="pay-chip {{ 'ok' if qb.vendor_1099 else 'warn' }}"><span class="pay-dot {{ 'ok' if qb.vendor_1099 else 'warn' }}"></span>QuickBooks · 1099 {{ 'on' if qb.vendor_1099 else 'off' }}</span>
+          {% else %}
+            <span class="pay-chip {{ 'warn' if st.w9.status != 'under_threshold' and st.paid_year_non_card >= d.threshold else '' }}">Not in QuickBooks</span>
+          {% endif %}
+        </div>
+        <div class="meta">
+          {% if id.loan_out_vendor %}<span>Pays as <b>{{ id.loan_out_vendor.name }}</b> <a href="{{ url_for('payee_page', payee_id=id.loan_out_vendor.id) }}" style="font-size:.78rem">loan-out</a></span>
+          {% elif id.legal_name and id.legal_name != id.name %}<span>Pays as <b>{{ id.legal_name }}</b></span>{% endif %}
+          {% if id.company and id.company != id.name and not id.loan_out_vendor %}<span>{{ id.company }}</span>{% endif %}
+          {% if id.address %}<span>{{ id.address }}</span>{% endif %}
+          {% if id.email %}<span><a href="mailto:{{ id.email }}" style="color:inherit">{{ id.email }}</a></span>{% endif %}
+          {% if id.phone %}<span>{{ id.phone }}</span>{% endif %}
+          {% if id.default_rate is not none %}<span>Default rate <b class="pay-num">{{ id.default_rate | money0 }}</b> <span>{{ id.default_rate_label }}</span></span>{% endif %}
+          {% if id.loan_outs_through %}<span>Loan-out for {% for p in id.loan_outs_through %}<a href="{{ url_for('payee_page', payee_id=p.id) }}">{{ p.name }}</a>{{ ', ' if not loop.last }}{% endfor %}</span>{% endif %}
+        </div>
+      </div>
+      <div class="pay-tiles">
+        <div class="pay-tile"><span class="k">Paid {{ d.year }}</span><span class="v">{{ st.paid_year_non_card | money0 }}</span>
+          <span class="s">{% if st.paid_year_card %}non-card · {{ st.paid_year_card | money0 }} on cards{% elif st.paid_year_non_card %}all non-card{% else %}nothing yet{% endif %}</span></div>
+        <div class="pay-tile"><span class="k">All time</span><span class="v">{{ st.all_time | money0 }}</span>
+          <span class="s">{% if st.since %}since {{ st.since }}{% else %}no payments on record{% endif %}</span></div>
+        <div class="pay-tile"><span class="k">Projects</span><span class="v">{{ st.projects }}</span>
+          <span class="s">{{ st.projects_active }} active</span></div>
+        {% set w = st.w9 %}
+        {% if w.status == 'on_file' %}
+        <div class="pay-tile ok"><span class="k">W-9</span><span class="v small">On file</span><span class="s">received {{ w.date | fmtdate }}{% if w.source == 'doc' %} · from the document{% endif %}</span></div>
+        {% elif w.status == 'not_required' %}
+        <div class="pay-tile muted"><span class="k">W-9</span><span class="v small">Not required</span><span class="s">W-2 employee</span></div>
+        {% elif w.status == 'under_threshold' %}
+        <div class="pay-tile muted"><span class="k">W-9</span><span class="v small">Not on file</span><span class="s">under the {{ d.year }} threshold</span></div>
+        {% else %}
+        <div class="pay-tile bad"><span class="k">W-9</span><span class="v small">Missing</span><span class="s">reportable in {{ d.year }}</span></div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <div class="pay-cols">
+    <div class="pay-col-main">
+
+      <section class="pay-card" aria-label="Paid by year">
+        <div class="pay-card-h"><span>Paid by year</span><span class="sub">What QuickBooks will report. Threshold per tax year.</span></div>
+        <div class="pay-scroll">
+          {% set cols = "90px 1fr 1fr 1fr 120px 200px" %}
+          <div class="pay-table" role="table" style="min-width:560px">
+            <div class="pay-row head" role="row" style="grid-template-columns:{{ cols }}">
+              <div class="pay-row-cell">Year</div><div class="pay-row-cell r">Card</div><div class="pay-row-cell r">Non-card</div><div class="pay-row-cell r">Total</div><div class="pay-row-cell r">Threshold</div><div class="pay-row-cell">1099</div>
+            </div>
+            {% for r in d.paid_by_year %}
+            <div class="pay-row{% if r.flag.level == 'red' %} flag{% endif %}" role="row" style="grid-template-columns:{{ cols }}">
+              <div class="pay-row-cell b pay-num">{{ r.year if r.year else 'Undated' }}</div>
+              <div class="pay-row-cell r pay-num">{{ r.card | money0 }}</div>
+              <div class="pay-row-cell r b pay-num">{{ r.non_card | money0 }}</div>
+              <div class="pay-row-cell r pay-num">{{ r.total | money0 }}</div>
+              <div class="pay-row-cell r m pay-num">{% if r.threshold is not none %}{{ r.threshold | money0 }}{% else %}—{% endif %}</div>
+              <div class="pay-row-cell"><span class="pay-st {{ r.flag.level }}">{{ r.flag.label }}</span></div>
+            </div>
+            {% endfor %}
+            {% if not d.paid_by_year %}<div class="pay-empty">No payments attributed to this payee yet.</div>{% endif %}
+          </div>
+        </div>
+      </section>
+
+      <section class="pay-card" aria-label="Projects">
+        <div class="pay-card-h"><span>Projects</span><span class="sub">{{ d.projects | length }} · newest first</span></div>
+        <div class="pay-scroll">
+          {% set cols = "minmax(200px,1.4fr) minmax(140px,1fr) 150px 110px 110px 90px" %}
+          <div class="pay-table" role="table" style="min-width:560px">
+            <div class="pay-row head" role="row" style="grid-template-columns:{{ cols }}">
+              <div class="pay-row-cell">Project</div><div class="pay-row-cell">Role</div><div class="pay-row-cell">Dates</div><div class="pay-row-cell r">Budgeted</div><div class="pay-row-cell r">Paid</div><div class="pay-row-cell">Status</div>
+            </div>
+            {% for p in d.projects %}
+            <div class="pay-row" role="row" style="grid-template-columns:{{ cols }}">
+              <div class="pay-row-cell"><a class="name" href="{{ p.url }}">{{ p.project_name }}</a></div>
+              <div class="pay-row-cell" title="{{ p.roles | join(', ') }}">{{ p.roles | join(', ') if p.roles else '—' }}</div>
+              <div class="pay-row-cell m pay-num">{{ p.dates or '—' }}</div>
+              <div class="pay-row-cell r pay-num">{{ p.budgeted | money0 }}</div>
+              <div class="pay-row-cell r b pay-num">{{ p.paid | money0 }}</div>
+              <div class="pay-row-cell"><span class="pay-chip sq {{ 'active' if p.status == 'active' else '' }}">{{ (p.status or 'active') | capitalize }}</span></div>
+            </div>
+            {% endfor %}
+            {% if not d.projects %}<div class="pay-empty">Not on any project yet.</div>{% endif %}
+          </div>
+        </div>
+      </section>
+
+      <section class="pay-card" aria-label="Evidence trail">
+        <div class="pay-card-h"><span>Evidence trail</span><span class="sub">Invoices, receipts, timecards and payroll rows across projects</span></div>
+        <div class="pay-scroll">
+          {% set cols = "100px 100px minmax(220px,1.4fr) minmax(160px,1fr) 110px 170px" %}
+          <div class="pay-table" role="table" style="min-width:560px">
+            <div class="pay-row head" role="row" style="grid-template-columns:{{ cols }}">
+              <div class="pay-row-cell">Date</div><div class="pay-row-cell">Type</div><div class="pay-row-cell">Document</div><div class="pay-row-cell">Project</div><div class="pay-row-cell r">Amount</div><div class="pay-row-cell">Charge</div>
+            </div>
+            {% for e in d.evidence %}
+            <div class="pay-row" role="row" style="grid-template-columns:{{ cols }}">
+              <div class="pay-row-cell m pay-num">{{ e.date_label or '—' }}</div>
+              <div class="pay-row-cell"><span class="pay-chip sq">{{ e.category | replace('_', ' ') | capitalize }}</span></div>
+              <div class="pay-row-cell"><a href="{{ e.url }}" target="_blank" rel="noopener" title="{{ e.name }}">{{ e.name }}</a></div>
+              <div class="pay-row-cell">{{ e.project_name or '—' }}</div>
+              <div class="pay-row-cell r b pay-num">{% if e.amount is not none %}${{ '{:,.2f}'.format(e.amount) }}{% else %}—{% endif %}</div>
+              <div class="pay-row-cell"><span class="pay-st {{ e.charge.state }}">{{ e.charge.text }}</span></div>
+            </div>
+            {% endfor %}
+            {% if not d.evidence %}<div class="pay-empty">No invoices, receipts or timecards attached to this payee.</div>{% endif %}
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="pay-col-side">
+
+      <section class="pay-card" aria-label="Documents on file">
+        <div class="pay-card-h"><span>Documents on file</span><span class="sub">Crew Database · Dropbox</span></div>
+        {% for g in d.paperwork %}
+        <div class="pay-grp">{{ g.label }}</div>
+        {% for doc in g.docs %}
+        <div class="pay-doc{% if doc.coi %} {{ doc.coi.state if doc.coi.state in ('warn','bad') else '' }}{% endif %}">
+          <span class="pay-dot {{ 'ok' if doc.synced else '' }}" title="{{ 'In the Crew Database folder' if doc.synced else 'Not yet copied to Dropbox' }}"></span>
+          <a class="nm" href="{{ doc.url }}" target="_blank" rel="noopener" title="{{ doc.name }}">{% if doc.subtype %}{{ doc.subtype }} · {% endif %}{{ doc.name }}{% if doc.project_name %} <span class="pay-chip sq" style="margin-left:6px">{{ doc.project_name }}</span>{% endif %}</a>
+          {% if doc.coi %}<span class="dt {{ doc.coi.state }} pay-num">{{ doc.coi.text }}</span>{% else %}<span class="dt pay-num">{{ doc.date_label }}</span>{% endif %}
+        </div>
+        {% endfor %}
+        {% endfor %}
+        {% if not d.paperwork %}<div class="pay-empty">No tax forms, IDs, contracts or COIs on file.</div>{% endif %}
+        <div class="pay-card-f">
+          <span style="display:inline-flex;align-items:center;gap:6px" id="pp-sync-status"><span class="pay-dot {{ 'ok' if not d.paperwork_unsynced and d.paperwork else '' }}"></span>{% if not d.paperwork %}Nothing to sync{% elif d.paperwork_unsynced %}{{ d.paperwork_unsynced }} not yet in Dropbox{% else %}Synced to Dropbox{% endif %}</span>
+          {% if current_user.role == 'super_admin' %}<button type="button" class="btn btn-xs btn-outline" id="pp-sync-btn" onclick="payeeSyncDocs({{ id.id }})">Sync to Dropbox</button>{% endif %}
+        </div>
+      </section>
+
+      <section class="pay-card" aria-label="QuickBooks">
+        <div class="pay-card-h"><span>QuickBooks</span><span class="sub">read-only mirror</span></div>
+        {% if qb.linked %}
+        <div class="pay-kv">
+          <span class="k">Vendor</span><span class="v">{{ qb.vendor_name }}</span>
+          <span class="k">Track for 1099</span><span class="v"><span class="pay-st {{ 'ok' if qb.vendor_1099 else 'warn' }}">{{ 'On' if qb.vendor_1099 else 'Off' }}</span></span>
+          <span class="k">Matches W-9</span><span class="v">
+            {% if qb.matches_w9 == 'yes' %}<span class="pay-st ok">Yes</span>
+            {% elif qb.matches_w9 == 'no' %}<span class="pay-st muted">No</span>
+            {% else %}<span class="pay-st warn">Mismatch</span>{% endif %}</span>
+          <span class="k">Last synced</span><span class="v pay-num">{{ qb.synced_label or '—' }}</span>
+          {% if qb.origin == 'fpbudget' %}<span class="k">Origin</span><span class="v">Created from FPBudget</span>{% endif %}
+        </div>
+        <div class="pay-note">Tax ID and 1099 filing live in QuickBooks. Fix mismatches there.</div>
+        {% else %}
+        <div class="pay-kv">
+          <span class="k">Vendor</span><span class="v"><span class="pay-st muted">Not linked</span></span>
+          <span class="k">Track for 1099</span><span class="v"><span class="pay-st muted">—</span></span>
+        </div>
+        <div class="pay-note">{% if id.is_w2_employee %}Employees are paid through Wrapbook and are not QuickBooks vendors.{% else %}The QuickBooks vendor mirror arrives with Documents Phase 3. QuickBooks cannot file a 1099 for a payee it does not know.{% endif %}</div>
+        {% endif %}
+      </section>
+
+      <section class="pay-card" aria-label="Vendor names">
+        <div class="pay-card-h"><span>Vendor names</span><span class="sub">how charges reach this payee</span></div>
+        <div class="pay-aliases">
+          {% for a in d.vendor_names %}
+          <span class="pay-alias" title="seen as “{{ a.raw }}” · confirmed {{ a.confirm_count }}×">{{ a.clean }}{% if a.raw and a.raw != a.clean | lower %}<span class="raw">· {{ a.raw }}</span>{% endif %}</span>
+          {% endfor %}
+          {% if not d.vendor_names %}<span class="muted" style="font-size:.8rem">No learned vendor names match this payee yet.</span>{% endif %}
+        </div>
+        <div class="pay-note">Names are matched by text for now. Linking and unlinking a vendor name to a payee arrives with Documents Phase 3.</div>
+      </section>
+
+      {% if id.notes %}
+      <section class="pay-card" aria-label="Notes">
+        <div class="pay-card-h"><span>Notes</span></div>
+        <div class="pay-notes">{{ id.notes }}</div>
+      </section>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Edit modal: the crew edit form + Payee fields → POST /crew/<cid>/edit (returns here via next) -->
+<div id="edit-payee-modal" class="modal hidden pay-modal">
+  <div class="modal-overlay" onclick="this.parentElement.classList.add('hidden')"></div>
+  <div class="modal-box">
+    <h2>Edit — {{ id.name }}</h2>
+    <form method="POST" action="{{ d.edit_url }}" id="edit-payee-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="next" value="{{ url_for('payee_page', payee_id=id.id, year=d.year) }}">
+      {% include "_crew_fields.html" %}
+      {% include "_payee_fields.html" %}
+      <div class="field-row" style="margin-top:.75rem">
+        <label class="checkbox-label"><input type="checkbox" name="active" value="1" {% if id.active %}checked{% endif %}> Active</label>
+      </div>
+      {% if qb.linked %}<p class="muted" style="font-size:.76rem;margin-top:.5rem">This payee is linked to a QuickBooks vendor. Mirrored fields (vendor name, 1099 flag) are read-only here and change in QuickBooks.</p>{% endif %}
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="document.getElementById('edit-payee-modal').classList.add('hidden')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* Prefill the edit form from the page's own data (no extra fetch). */
+var PAYEE = {{ d.identity | tojson }};
+function _setVal(form, name, v){ var el = form.querySelector('[name="' + name + '"]'); if (el && el.type !== 'checkbox' && el.type !== 'hidden') el.value = (v == null ? '' : v); }
+function _setSel(form, name, v){ var el = form.querySelector('select[name="' + name + '"]'); if (!el) return; for (var i = 0; i < el.options.length; i++) if (el.options[i].value === v) { el.selectedIndex = i; return; } }
+function openEditPayee(){
+  var m = document.getElementById('edit-payee-modal'), f = document.getElementById('edit-payee-form');
+  _setVal(f, 'name', PAYEE.name); _setVal(f, 'department', PAYEE.department); _setVal(f, 'company', PAYEE.company);
+  _setVal(f, 'email', PAYEE.email); _setVal(f, 'phone', PAYEE.phone);
+  _setVal(f, 'default_rate', PAYEE.default_rate); _setVal(f, 'default_agent_pct', PAYEE.default_agent_pct);
+  _setSel(f, 'default_rate_type', PAYEE.default_rate_type || 'day_10'); _setSel(f, 'default_fringe', PAYEE.default_fringe || 'N');
+  _setSel(f, 'kind', PAYEE.kind || 'person');
+  _setVal(f, 'legal_name', PAYEE.legal_name); _setVal(f, 'address_line1', PAYEE.address_line1); _setVal(f, 'address_line2', PAYEE.address_line2);
+  _setVal(f, 'city', PAYEE.city); _setVal(f, 'state', PAYEE.state); _setVal(f, 'postal_code', PAYEE.postal_code);
+  _setVal(f, 'w9_received_on', {{ d.stats.w9.date | tojson }} && {{ d.stats.w9.source | tojson }} === 'payee' ? {{ d.stats.w9.date | tojson }} : '');
+  _setVal(f, 'wrapbook_worker_id', PAYEE.wrapbook_worker_id); _setVal(f, 'notes', PAYEE.notes);
+  var w2 = f.querySelector('input[type="checkbox"][name="is_w2_employee"]'); if (w2) w2.checked = !!PAYEE.is_w2_employee;
+  m.classList.remove('hidden');
+}
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') document.getElementById('edit-payee-modal').classList.add('hidden'); });
+
+{% if current_user.role == 'super_admin' %}
+window.payeeSyncDocs = async function(cid){
+  var btn = document.getElementById('pp-sync-btn'), st = document.getElementById('pp-sync-status');
+  btn.disabled = true; st.textContent = 'Copying…';
+  try {
+    var r = await fetch('/crew/' + cid + '/docs/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    var d = await r.json();
+    if (!r.ok) { st.textContent = (d && d.error) || ('Failed: ' + r.status); return; }
+    st.textContent = 'Copied ' + d.copied + (d.skipped ? ' · ' + d.skipped + ' skipped (' + d.note + ')' : '');
+    if (d.copied) setTimeout(function(){ location.reload(); }, 1200);
+  } catch (e) { st.textContent = 'Error: ' + e.message; }
+  finally { btn.disabled = false; }
+};
+{% endif %}
+</script>
+{% endblock %}

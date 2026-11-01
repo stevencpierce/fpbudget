@@ -1,0 +1,66 @@
+{# Payee fields shared by the New payee modal (payees.html) and the Payee
+   page's Edit modal (payee.html). Posts alongside _crew_fields.html to
+   /crew/new or /crew/<cid>/edit, which hand these to
+   routes.payees.apply_payee_fields. No tax identification number is asked
+   for anywhere: QuickBooks holds it. (DOCUMENTS_HANDOFF Phase 1.) #}
+<div class="pay-fieldset">
+  <div class="lbl">Payee</div>
+  <div class="field-row-3">
+    <div class="field">
+      <label>Kind</label>
+      <select name="kind" class="select-sm">
+        <option value="person">Person</option>
+        <option value="loan_out">Loan-out</option>
+        <option value="vendor">Vendor</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Legal name <span style="font-weight:400;font-size:.78rem;color:var(--text-muted)">(as on the W-9)</span></label>
+      <input type="text" name="legal_name" placeholder="e.g. Vega Camera LLC">
+    </div>
+    <div class="field">
+      <label>W-9 received on</label>
+      <input type="date" name="w9_received_on">
+    </div>
+  </div>
+  <div class="field-row-2">
+    <div class="field">
+      <label>Address line 1</label>
+      <input type="text" name="address_line1">
+    </div>
+    <div class="field">
+      <label>Address line 2</label>
+      <input type="text" name="address_line2">
+    </div>
+  </div>
+  <div class="field-row-3">
+    <div class="field">
+      <label>City</label>
+      <input type="text" name="city">
+    </div>
+    <div class="field">
+      <label>State</label>
+      <input type="text" name="state" maxlength="40">
+    </div>
+    <div class="field">
+      <label>Postal code</label>
+      <input type="text" name="postal_code" maxlength="20">
+    </div>
+  </div>
+  <div class="field-row-2">
+    <div class="field">
+      <label class="checkbox-label" style="margin-top:1.1rem">
+        <input type="hidden" name="is_w2_employee" value="0">
+        <input type="checkbox" name="is_w2_employee" value="1"> W-2 employee (Wrapbook payroll, no 1099)
+      </label>
+    </div>
+    <div class="field">
+      <label>Wrapbook worker id</label>
+      <input type="text" name="wrapbook_worker_id" maxlength="60">
+    </div>
+  </div>
+  <div class="field">
+    <label>Notes</label>
+    <textarea name="notes" rows="2"></textarea>
+  </div>
+</div>

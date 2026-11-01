@@ -2455,3 +2455,351 @@ def sync_working_to_actual(project_id, user_id=None):
     db.session.commit()
     log.info(f"[actuals] Sync W→A project #{project_id}: {summary}")
     return summary
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Payee reporting (DOCUMENTS_HANDOFF Phase 1, 2026-11-01)
+# ═══════════════════════════════════════════════════════════════════════════
+# What QuickBooks will report per Payee and calendar year, and the ONE W-9
+# rule. FPBudget never files a 1099: it previews what QuickBooks will file so
+# a missing W-9 is caught months before year end. Everything money-shaped
+# below is a float for display; the stored amounts stay db.Numeric.
+#
+# The pure helpers (threshold_for_year, is_card_payment, attribute_payee,
+# aggregate_paid, w9_status_for, flag_1099) take plain objects so
+# tests/unit/test_payee_rules.py can pin them without a database; the DB
+# wrappers (reporting_threshold, paid_by_payee, payee_w9_status) sit on top.
+
+# IRS 1099-NEC floor when a year has no reporting_threshold row: $600
+# through 2025, $2,000 from 2026 (One Big Beautiful Bill Act).
+THRESHOLD_FALLBACK_PRE_2026 = 600.0
+THRESHOLD_FALLBACK_2026_ON  = 2000.0
+
+CARD_PAYMENT_METHODS = frozenset({'company_card', 'personal_card'})
+
+PAYEE_KINDS = ('person', 'loan_out', 'vendor')
+
+W9_ON_FILE        = 'on_file'
+W9_MISSING        = 'missing'
+W9_NOT_REQUIRED   = 'not_required'    # W-2 employee: Wrapbook, not 1099
+W9_UNDER_THRESHOLD = 'under_threshold'
+
+# A payee-year is "shared" when a budget line it was paid through carries
+# more than one crew member: the money is real but belongs to nobody in
+# particular until Transaction.payee_id (Phase 3) says who.
+SHARED_LINE = 'shared_line'
+
+
+def threshold_for_year(year, rows=None):
+    """The reporting floor for a calendar year. `rows` is {year: amount}
+    (from reporting_threshold); a missing year falls back to the IRS rule:
+    600 before 2026, 2000 from 2026 on."""
+    try:
+        y = int(year)
+    except (TypeError, ValueError):
+        y = None
+    if rows and y is not None and y in rows and rows[y] is not None:
+        try:
+            return float(rows[y])
+        except (TypeError, ValueError):
+            pass
+    if y is None:
+        return THRESHOLD_FALLBACK_2026_ON
+    return THRESHOLD_FALLBACK_PRE_2026 if y < 2026 else THRESHOLD_FALLBACK_2026_ON
+
+
+def reporting_threshold(year):
+    """DB wrapper: threshold_for_year() over the reporting_threshold table."""
+    from models import ReportingThreshold
+    rows = {}
+    try:
+        for r in ReportingThreshold.query.all():
+            rows[int(r.tax_year)] = float(r.amount)
+    except Exception as _e:   # table missing on a never-migrated DB → fallback
+        log.warning("[payees] reporting_threshold unavailable: %s", _e)
+    return threshold_for_year(year, rows)
+
+
+def reporting_threshold_rows():
+    """{year: amount} for every seeded year (directory year picker)."""
+    from models import ReportingThreshold
+    try:
+        return {int(r.tax_year): float(r.amount) for r in ReportingThreshold.query.all()}
+    except Exception:
+        return {}
+
+
+def is_card_payment(txn):
+    """Card vs non-card for 1099 purposes: card payments are reported by the
+    card network on a 1099-K, so only NON-card money counts toward the
+    1099-NEC floor. A row is card when payment_method is company_card or
+    personal_card, or when payment_method is unset and the row carries a
+    card_last4 (a synced card charge)."""
+    pm = getattr(txn, 'payment_method', None)
+    if pm:
+        return pm in CARD_PAYMENT_METHODS
+    return bool(getattr(txn, 'card_last4', None))
+
+
+def txn_year(txn):
+    """Calendar year of txn_date (YYYY-MM-DD string) or None when undated."""
+    d = getattr(txn, 'txn_date', None) or ''
+    try:
+        return int(str(d)[:4])
+    except (TypeError, ValueError):
+        return None
+
+
+def attribute_payee(txn, doc_owner_by_id, line_owners_by_id):
+    """Who a transaction was paid to, until Transaction.payee_id exists
+    (Documents Phase 3 — this function then becomes `return txn.payee_id`).
+
+      1. its document's owner  (doc_upload_id → DocUpload.crew_member_id)
+      2. else its budget line  (budget_line_id → the ONE crew member on the
+         line via CrewAssignment.crew_member_id / BudgetLine.assigned_crew_id)
+
+    `doc_owner_by_id`   {doc_upload_id: crew_member_id}
+    `line_owners_by_id` {budget_line_id: set(crew_member_id)}
+
+    Returns a crew_member_id, SHARED_LINE when the line carries more than
+    one person (the money is never split or double-counted — it lands in
+    the shared bucket), or None when nothing names a payee."""
+    did = getattr(txn, 'doc_upload_id', None)
+    if did and doc_owner_by_id.get(did):
+        return doc_owner_by_id[did]
+    lid = getattr(txn, 'budget_line_id', None)
+    if lid:
+        owners = line_owners_by_id.get(lid) or set()
+        if len(owners) == 1:
+            return next(iter(owners))
+        if len(owners) > 1:
+            return SHARED_LINE
+    return None
+
+
+def aggregate_paid(rows):
+    """Fold (payee, year, amount, is_card) rows into
+    {payee: {year: {card, non_card, total, n}}}. `payee` may be SHARED_LINE;
+    `year` may be None (undated)."""
+    out = {}
+    for payee, year, amount, card in rows:
+        if payee is None:
+            continue
+        bucket = out.setdefault(payee, {}).setdefault(
+            year, {"card": 0.0, "non_card": 0.0, "total": 0.0, "n": 0})
+        amt = float(amount or 0)
+        bucket["card" if card else "non_card"] += amt
+        bucket["total"] += amt
+        bucket["n"] += 1
+    for payee in out.values():
+        for b in payee.values():
+            for k in ("card", "non_card", "total"):
+                b[k] = round(b[k], 2)
+    return out
+
+
+def paid_by_payee(payee_id=None, year=None, by='year'):
+    """Paid per (payee, calendar year), split card / non-card — the ONE
+    reporting query behind the Payee directory, the Payee page, the CSV
+    and the Wrap Book 1099 check.
+
+    Rows: every Transaction that counts_as_spend() (the Phase 0 rule: not
+    excluded, activated if doc-born, not a backup, not a split container),
+    signed (credits subtract), attributed by attribute_payee(): the
+    document's owner first, else the single crew member on the budget line.
+    A line with more than one crew member attributes to nobody and is
+    counted once under the SHARED_LINE key, never double-counted.
+    transaction_split pieces attribute through THEIR line (the parent is a
+    container and is skipped by counts_as_spend).
+
+    Returns {payee_id_or_SHARED_LINE: {year: {card, non_card, total, n}}}
+    filtered to `payee_id` / `year` when given (year None = every year;
+    undated rows sit under year None). With by='project' the inner key is
+    the transaction's project_id instead of the year (the Payee page's
+    Projects table) — same rows, same attribution.
+
+    Transaction.payee_id does not exist yet (Documents Phase 3). When it
+    lands, attribute_payee() returns txn.payee_id and everything above it
+    stays the same."""
+    from sqlalchemy import or_
+    from models import TransactionSplit
+
+    # Attribution maps (two bulk queries + one for splits).
+    doc_owner = {did: cid for did, cid in
+                 db.session.query(DocUpload.id, DocUpload.crew_member_id)
+                 .filter(DocUpload.crew_member_id.isnot(None)).all()}
+    line_owners = {}
+    for lid, cid in (db.session.query(CrewAssignment.budget_line_id,
+                                      CrewAssignment.crew_member_id)
+                     .filter(CrewAssignment.crew_member_id.isnot(None)).all()):
+        line_owners.setdefault(lid, set()).add(cid)
+    for lid, cid in (db.session.query(BudgetLine.id, BudgetLine.assigned_crew_id)
+                     .filter(BudgetLine.assigned_crew_id.isnot(None)).all()):
+        line_owners.setdefault(lid, set()).add(cid)
+
+    q = Transaction.query.filter(counts_as_spend())
+    if year is not None:
+        q = q.filter(Transaction.txn_date.like(f"{int(year)}-%"))
+    if payee_id is not None:
+        # Narrow to rows that CAN name this payee (their doc or their line);
+        # attribute_payee() still decides.
+        doc_ids = [d for d, c in doc_owner.items() if c == payee_id]
+        line_ids = [l for l, s in line_owners.items() if payee_id in s]
+        conds = []
+        if doc_ids:
+            conds.append(Transaction.doc_upload_id.in_(doc_ids))
+        if line_ids:
+            conds.append(Transaction.budget_line_id.in_(line_ids))
+        if not conds:
+            return {}
+        q = q.filter(or_(*conds))
+
+    _key = (lambda t: t.project_id) if by == 'project' else txn_year
+    rows = []
+    for t in q.all():
+        who = attribute_payee(t, doc_owner, line_owners)
+        if who is None:
+            continue
+        rows.append((who, _key(t),
+                     signed_amount_value(t.amount, t.is_expense), is_card_payment(t)))
+
+    # Split pieces (parents are excluded by counts_as_spend).
+    try:
+        sq = (db.session.query(TransactionSplit, Transaction)
+              .join(Transaction, Transaction.id == TransactionSplit.transaction_id)
+              .filter(Transaction.not_project_expense == False,       # noqa: E712
+                      Transaction.backup_of_txn_id.is_(None)))
+        if year is not None:
+            sq = sq.filter(Transaction.txn_date.like(f"{int(year)}-%"))
+        for sp, t in sq.all():
+            owners = line_owners.get(sp.budget_line_id) or set()
+            who = (next(iter(owners)) if len(owners) == 1
+                   else (SHARED_LINE if owners else None))
+            if who is None or (payee_id is not None and who != payee_id):
+                continue
+            rows.append((who, _key(t),
+                         signed_amount_value(sp.amount, t.is_expense), is_card_payment(t)))
+    except Exception as _e:
+        log.warning("[payees] split attribution skipped: %s", _e)
+
+    out = aggregate_paid(rows)
+    if payee_id is not None:
+        return {payee_id: out.get(payee_id, {})} if payee_id in out else {}
+    return out
+
+
+def w9_status_for(payee, non_card=None, threshold=None, fallback_date=None):
+    """The ONE "W-9 on file" rule.
+
+      not_required     is_w2_employee (Wrapbook payroll, no 1099)
+      on_file          w9_received_on is set (Phase 1 truth) — or, until
+                       Phase 2 writes it on upload, `fallback_date` from a
+                       tax_form document that names a W-9 / W-8
+      under_threshold  no W-9, and this year's non-card total is below the
+                       floor (only when non_card and threshold are given)
+      missing          no W-9 and the year is (or may be) reportable
+
+    Returns {"status", "date" (ISO or None), "source" ('payee'|'doc'|None)}."""
+    if getattr(payee, 'is_w2_employee', False):
+        return {"status": W9_NOT_REQUIRED, "date": None, "source": None}
+    d = getattr(payee, 'w9_received_on', None)
+    if d:
+        return {"status": W9_ON_FILE,
+                "date": d.isoformat() if hasattr(d, 'isoformat') else str(d),
+                "source": 'payee'}
+    if fallback_date:
+        return {"status": W9_ON_FILE,
+                "date": (fallback_date.isoformat() if hasattr(fallback_date, 'isoformat')
+                         else str(fallback_date)),
+                "source": 'doc'}
+    if non_card is not None and threshold is not None and float(non_card) < float(threshold):
+        return {"status": W9_UNDER_THRESHOLD, "date": None, "source": None}
+    return {"status": W9_MISSING, "date": None, "source": None}
+
+
+def w9_fallback_dates(payee_ids=None):
+    """{crew_member_id: date} from tax_form documents whose sub-type or
+    filename says W-9 / W-8 — the pre-Phase-2 signal, read in ONE query.
+    Phase 2 (tax_form_kind + received_on) retires this."""
+    q = (db.session.query(DocUpload.crew_member_id, DocUpload.doc_date,
+                          DocUpload.uploaded_at, DocUpload.vendor,
+                          DocUpload.filed_filename, DocUpload.original_filename)
+         .filter(DocUpload.crew_member_id.isnot(None),
+                 DocUpload.category == 'tax_form',
+                 DocUpload.status.notin_(('deleted', 'duplicate'))))
+    if payee_ids is not None:
+        ids = list(payee_ids)
+        if not ids:
+            return {}
+        q = q.filter(DocUpload.crew_member_id.in_(ids))
+    hint = _re.compile(r'w-?[89]', _re.I)
+    out = {}
+    for cid, doc_date, uploaded_at, vendor, f1, f2 in q.all():
+        if not hint.search(" ".join(str(x or '') for x in (vendor, f1, f2))):
+            continue
+        d = doc_date or (uploaded_at.date() if uploaded_at else None)
+        if d and (cid not in out or d > out[cid]):
+            out[cid] = d
+    return out
+
+
+def payee_w9_status(payee, year=None, non_card=None, threshold=None):
+    """DB wrapper for w9_status_for(): resolves the document fallback for
+    one payee and the year's threshold when not supplied."""
+    fb = None
+    if not getattr(payee, 'w9_received_on', None) and not getattr(payee, 'is_w2_employee', False):
+        fb = w9_fallback_dates([payee.id]).get(payee.id)
+    if non_card is not None and threshold is None:
+        threshold = reporting_threshold(year)
+    return w9_status_for(payee, non_card=non_card, threshold=threshold, fallback_date=fb)
+
+
+def flag_1099(non_card, threshold, w9_status, qbo_vendor_id=None,
+              qbo_vendor_1099=None, card=0.0):
+    """The 1099 column for one payee-year: what QuickBooks will be able to
+    file. Returns {"level": red|amber|green|grey, "label", "reportable",
+    "needs_attention"}.
+
+      grey   Not required (W-2) · Under threshold · Card only
+      red    reportable and the W-9 is missing — QuickBooks cannot file it
+      amber  reportable, W-9 on file, but QuickBooks cannot file it yet:
+             Not in QuickBooks (no qbo_vendor_id) or 1099 off · mismatch
+             (Vendor1099 false / unknown on the mirrored record)
+      green  reportable and ready: W-9 on file, linked, 1099 tracking on
+
+    needs_attention is true for every reportable year that is not green."""
+    nc = float(non_card or 0)
+    th = float(threshold or 0)
+    if w9_status == W9_NOT_REQUIRED:
+        return {"level": "grey", "label": "Not required", "reportable": False,
+                "needs_attention": False}
+    if nc < th:
+        label = "Card only" if (nc <= 0 and float(card or 0) > 0) else "Under threshold"
+        return {"level": "grey", "label": label, "reportable": False,
+                "needs_attention": False}
+    if w9_status != W9_ON_FILE:
+        return {"level": "red", "label": "Reportable · W-9 missing",
+                "reportable": True, "needs_attention": True}
+    if not qbo_vendor_id:
+        return {"level": "amber", "label": "Not in QuickBooks",
+                "reportable": True, "needs_attention": True}
+    if qbo_vendor_1099 is not True:
+        return {"level": "amber", "label": "1099 off · mismatch",
+                "reportable": True, "needs_attention": True}
+    return {"level": "green", "label": "Reportable · ready",
+            "reportable": True, "needs_attention": False}
+
+
+def qbo_matches_w9(w9_status, qbo_vendor_id, qbo_vendor_1099):
+    """The QuickBooks card's "Matches W-9" row: yes / no / mismatch /
+    unlinked. Both on → yes; both off → no; disagree → mismatch; no
+    QuickBooks record → unlinked."""
+    if not qbo_vendor_id:
+        return "unlinked"
+    have_w9 = (w9_status == W9_ON_FILE)
+    flag = bool(qbo_vendor_1099)
+    if have_w9 and flag:
+        return "yes"
+    if not have_w9 and not flag:
+        return "no"
+    return "mismatch"
