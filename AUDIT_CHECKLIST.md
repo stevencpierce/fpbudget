@@ -67,7 +67,10 @@ Keep this file updated as items land.
   - [x] M1b-1 — Crew & support-contact routes (8 routes, 274 lines) →
     routes/crew.py; the shared _require_global_editor guard stays in app.py.
     Route map re-verified IDENTICAL (361 routes).
-  - [ ] M1b-2 — Continue slicing: /docs (36 routes), /admin (59), actuals.
+  - [x] M1b-2 (actuals, 2026-10-30) — all 60 /projects/<pid>/actuals/...
+    routes + /register (4,063 lines) → routes/actuals.py; the super-admin
+    pool tools (7 routes) → routes/actuals_admin.py. Route map re-verified
+    IDENTICAL (423 routes). Still to slice: /docs (36 routes), /admin (rest).
   - [ ] M1c — Break up the 1,950-line `budget_view`.
   - [ ] M1d — Move boot/migration code (~2.6k lines) into boot.py.
 - [ ] M2 — Collapse the 5 overlapping project-access helpers into one.

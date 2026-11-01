@@ -192,6 +192,22 @@ class Transaction(db.Model):
     # presence IS the "missing electronic transaction" flag.
     no_charge_reason      = db.Column(db.String(300), nullable=True)
 
+    # ── Recoverable Not-project state (ACTUALS_HANDOFF Phase 1, 2026-10-30) ──
+    # not_project_expense stays the fast filter; these three make the
+    # exclusion auditable and reversible (who, when, why). All cleared by
+    # /recover and by link_transaction_to_line (assigning a line is a claim).
+    # Alembic 0020 + the per-worker essential pass in app.py.
+    excluded_at           = db.Column(db.DateTime, nullable=True)
+    excluded_by_user_id   = db.Column(db.Integer, nullable=True)
+    excluded_reason       = db.Column(db.String(300), nullable=True)
+    # How a manual expense was paid so it can be reconciled / reimbursed:
+    # company_card | cash | personal_card | check | ach | other. QBO rows
+    # leave it NULL (the card is on the row already). paid_by_crew_member_id
+    # names the person when it was not the company (personal card, cash
+    # advance). Alembic 0020.
+    payment_method        = db.Column(db.String(20), nullable=True)
+    paid_by_crew_member_id = db.Column(db.Integer, nullable=True)
+
     # ── AI auto-coding suggestion (2026-06-18) ─────────────────────────
     # Advisory only: ai_layer.categorize() (or a learned vendor→code mapping)
     # proposes a COA section for an UNCODED charge. Kept separate from
@@ -223,6 +239,27 @@ class Transaction(db.Model):
     created_via_user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TransactionSplit(db.Model):
+    """One allocation of a Transaction to a budget line (Concur's Allocate;
+    ACTUALS_HANDOFF Phase 2, 2026-10-30). A transaction with splits has
+    budget_line_id NULL and contributes to every rollup ONLY through its
+    splits, which must sum to the transaction's amount to the cent (the
+    split route refuses anything else). project_id mirrors the parent's —
+    splits are within one project only for now. Replaced on every save;
+    DELETE on the split route removes them all."""
+    __tablename__ = "transaction_split"
+    id                 = db.Column(db.Integer, primary_key=True)
+    transaction_id     = db.Column(db.Integer, db.ForeignKey("transaction.id"),
+                                   nullable=False, index=True)
+    budget_line_id     = db.Column(db.Integer, db.ForeignKey("budget_line.id"),
+                                   nullable=True)
+    project_id         = db.Column(db.Integer, nullable=True)
+    amount             = db.Column(db.Numeric(12, 2), nullable=False)
+    note               = db.Column(db.String(300), nullable=True)
+    created_at         = db.Column(db.DateTime, default=datetime.utcnow)
+    created_by_user_id = db.Column(db.Integer, nullable=True)
 
 
 class QBOConnection(db.Model):

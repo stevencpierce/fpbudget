@@ -109,11 +109,14 @@ def counts_as_spend(split_parent_ids=None):
       • backup_of_txn_id is NULL (a receipt row absorbed as backup for another
         charge must not count twice)
       • it is not an itemized / split container: the invoice_split children
-        carry the coding, so the parent's full amount must not count as well.
-        Pass `split_parent_ids` (from app._split_parent_id_set(pid)) to
-        exclude a known set of parent ids; when omitted the clause falls back
-        to a correlated NOT EXISTS over invoice_split children, which is
-        correct but one extra subquery per rollup.
+        (or, since Phase 2, the transaction_split rows) carry the coding, so
+        the parent's full amount must not count as well. Pass
+        `split_parent_ids` (from app._split_parent_id_set(pid), which covers
+        both kinds) to exclude a known set of parent ids; when omitted the
+        clause falls back to correlated NOT EXISTS subqueries, which is
+        correct but two extra subqueries per rollup. Pass an EMPTY set to
+        skip the container rule on purpose (split_sums_by_line does: there
+        the parent must qualify so its pieces count).
 
     Project scoping, line / section scoping and the signed-amount rule stay
     with the caller — this is only the "is it spend at all" question."""
@@ -130,10 +133,15 @@ def counts_as_spend(split_parent_ids=None):
             clauses.append(Transaction.id.notin_(ids))
     else:
         from sqlalchemy.orm import aliased
+        from models import TransactionSplit as _TS
         _Child = aliased(Transaction)
         clauses.append(not_(exists().where(and_(
             _Child.parent_transaction_id == Transaction.id,
             _Child.source == 'invoice_split'))))
+        # …and transaction_split parents (Phase 2, 2026-10-30): their
+        # pieces reach the rollups through split_sums_by_line.
+        clauses.append(not_(exists().where(
+            _TS.transaction_id == Transaction.id)))
     return and_(*clauses)
 
 
@@ -162,6 +170,294 @@ def signed_amount_value(amount, is_expense):
     except (TypeError, ValueError):
         a = 0.0
     return a if is_expense else -a
+
+
+# ── Transaction splits (Concur's Allocate — ACTUALS_HANDOFF Phase 2) ──────
+# One transaction across several budget lines. A split parent has
+# budget_line_id NULL and reaches every rollup ONLY through its
+# transaction_split rows, which must sum to the parent's amount to the cent.
+# The validation is pure (unit-tested); the SQL rollup helper is the ONE
+# function the three rollups (section totals, budget_view per-line, the
+# line-totals.json refresh) call so they never disagree about splits.
+
+PAYMENT_METHODS = ('company_card', 'cash', 'personal_card', 'check', 'ach', 'other')
+
+# log-expense reason_kind → payment_method, for callers that still send the
+# older shape (reason_kind cash / check / other_card / other).
+REASON_KIND_TO_PAYMENT_METHOD = {'cash': 'cash', 'check': 'check',
+                                 'other_card': 'personal_card', 'other': 'other'}
+
+
+def _cents(x):
+    """Money as integer cents (round-half-up on the absolute value), so
+    sum-to-the-cent comparisons never depend on float noise."""
+    from decimal import Decimal, ROUND_HALF_UP
+    try:
+        d = Decimal(str(x if x is not None else 0))
+    except Exception:
+        raise ValueError(f"not a number: {x!r}")
+    return int(d.copy_abs().quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) * 100) * (-1 if d < 0 else 1)
+
+
+def validate_splits(txn_amount, splits, allowed_line_ids=None):
+    """Validate a split request. Pure — no DB.
+
+    splits: list of {budget_line_id, amount, note?}. Rules:
+      • at least two rows (one row is an assignment, not a split)
+      • every row names a budget_line_id; when allowed_line_ids is given,
+        every id must be in it (lines of THIS project's current Working)
+      • every amount is a number, non-zero, and has the same sign as the
+        transaction (a refund splits into negative pieces)
+      • the amounts sum to the transaction amount TO THE CENT
+    Returns (clean_rows, None) on success, where clean_rows carry
+    budget_line_id:int, amount:float (2dp), note:str|None — or
+    (None, {"error": str, "delta": float|None}) on failure. delta is
+    (sum of splits) - (transaction amount), in dollars, when that is the
+    problem."""
+    if not isinstance(splits, (list, tuple)) or len(splits) < 2:
+        return None, {"error": "A split needs at least two lines.", "delta": None}
+    try:
+        total_c = _cents(txn_amount)
+    except ValueError:
+        return None, {"error": "Transaction amount is not a number.", "delta": None}
+    if total_c == 0:
+        return None, {"error": "A $0 transaction cannot be split.", "delta": None}
+    clean, sum_c = [], 0
+    for i, row in enumerate(splits, 1):
+        if not isinstance(row, dict):
+            return None, {"error": f"Split {i} is not an object.", "delta": None}
+        lid = row.get('budget_line_id')
+        try:
+            lid = int(lid)
+        except (TypeError, ValueError):
+            return None, {"error": f"Split {i} has no budget line.", "delta": None}
+        if allowed_line_ids is not None and lid not in allowed_line_ids:
+            return None, {"error": f"Split {i}: line #{lid} is not on this "
+                                   "project's current Working budget.",
+                          "delta": None}
+        try:
+            amt_c = _cents(row.get('amount'))
+        except ValueError:
+            return None, {"error": f"Split {i}: amount is not a number.", "delta": None}
+        if amt_c == 0:
+            return None, {"error": f"Split {i}: amount cannot be $0.", "delta": None}
+        if (amt_c > 0) != (total_c > 0):
+            return None, {"error": f"Split {i}: amount must have the same sign "
+                                   "as the transaction.", "delta": None}
+        note = (row.get('note') or '').strip()[:300] or None
+        clean.append({"budget_line_id": lid, "amount": amt_c / 100.0, "note": note})
+        sum_c += amt_c
+    if sum_c != total_c:
+        delta = (sum_c - total_c) / 100.0
+        return None, {"error": f"Splits total ${sum_c / 100.0:,.2f} but the "
+                               f"transaction is ${total_c / 100.0:,.2f} "
+                               f"({'over' if delta > 0 else 'short'} by "
+                               f"${abs(delta):,.2f}).",
+                      "delta": delta}
+    return clean, None
+
+
+def validate_manual_expense(body):
+    """Validate a hand-typed manual expense (no receipt, no QBO charge).
+    Pure — no DB. body: {vendor, amount, txn_date, budget_line_id?,
+    payment_method, paid_by_crew_member_id?, note?, reason?}.
+
+    Rules: vendor required; amount a non-zero number (negative = a credit);
+    txn_date YYYY-MM-DD; payment_method one of PAYMENT_METHODS; reason
+    required when payment_method is cash; paid_by_crew_member_id and
+    budget_line_id integers when present. Returns (clean, None) or
+    (None, error_string)."""
+    import re
+    if not isinstance(body, dict):
+        return None, "Body must be a JSON object."
+    vendor = (body.get('vendor') or '').strip()
+    if not vendor:
+        return None, "vendor is required."
+    try:
+        amt_c = _cents(body.get('amount'))
+    except ValueError:
+        return None, "amount must be a number."
+    if amt_c == 0:
+        return None, "amount cannot be $0."
+    d = (body.get('txn_date') or '').strip()[:10]
+    if not re.match(r'^\d{4}-\d{2}-\d{2}$', d):
+        return None, "txn_date must be YYYY-MM-DD."
+    try:
+        datetime.strptime(d, '%Y-%m-%d')
+    except ValueError:
+        return None, "txn_date is not a real date."
+    pm = (body.get('payment_method') or '').strip().lower()
+    if pm not in PAYMENT_METHODS:
+        return None, ("payment_method is required: one of "
+                      + ", ".join(PAYMENT_METHODS) + ".")
+    reason = (body.get('reason') or '').strip()[:300] or None
+    if pm == 'cash' and not reason:
+        return None, "A reason is required for a cash expense."
+    def _opt_int(k):
+        v = body.get(k)
+        if v in (None, '', 0, '0'):
+            return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"{k} must be an integer.")
+    try:
+        lid = _opt_int('budget_line_id')
+        who = _opt_int('paid_by_crew_member_id')
+    except ValueError as e:
+        return None, str(e)
+    return {"vendor": vendor[:300], "amount": abs(amt_c) / 100.0,
+            "is_expense": amt_c > 0, "txn_date": d, "payment_method": pm,
+            "paid_by_crew_member_id": who, "budget_line_id": lid,
+            "note": (body.get('note') or '').strip() or None,
+            "reason": reason}, None
+
+
+def split_sums_by_line(project_id, line_ids=None):
+    """{budget_line_id: signed split total} for the project — the ONE helper
+    every rollup adds to its direct-coded sums (section totals, budget_view
+    per-line, line-totals.json). A transaction with splits has
+    budget_line_id NULL, so it is absent from the direct sums and reaches
+    its lines only here. Only splits whose PARENT counts as spend are
+    summed (not-project / backup rows drop out with their splits). Sign
+    follows the parent: a split of a refund nets against its line."""
+    from sqlalchemy import func, case
+    from models import TransactionSplit
+    q = (db.session.query(
+            TransactionSplit.budget_line_id,
+            func.sum(case((Transaction.is_expense == True, TransactionSplit.amount),   # noqa: E712
+                          else_=-TransactionSplit.amount)))
+         .join(Transaction, Transaction.id == TransactionSplit.transaction_id)
+         .filter(Transaction.project_id == project_id,
+                 TransactionSplit.budget_line_id.isnot(None),
+                 counts_as_spend(set())))
+    if line_ids is not None:
+        ids = [int(i) for i in line_ids]
+        if not ids:
+            return {}
+        q = q.filter(TransactionSplit.budget_line_id.in_(ids))
+    return {lid: float(amt or 0) for lid, amt in
+            q.group_by(TransactionSplit.budget_line_id).all()}
+
+
+def split_sums_by_section_code(project_id):
+    """{account_code: signed split total} — the section-level twin of
+    split_sums_by_line for _actuals_by_section_code (top sheet)."""
+    from sqlalchemy import func, case
+    from models import TransactionSplit
+    rows = (db.session.query(
+                BudgetLine.account_code,
+                func.sum(case((Transaction.is_expense == True, TransactionSplit.amount),   # noqa: E712
+                              else_=-TransactionSplit.amount)))
+            .join(Transaction, Transaction.id == TransactionSplit.transaction_id)
+            .join(BudgetLine, BudgetLine.id == TransactionSplit.budget_line_id)
+            .filter(Transaction.project_id == project_id,
+                    counts_as_spend(set()))
+            .group_by(BudgetLine.account_code).all())
+    return {code: float(amt or 0) for code, amt in rows if code is not None}
+
+
+# ── Workspace rows: qbo_txn_id grouping and flags (Phase 2) ───────────────
+
+def group_pool_rows(rows, key=lambda t: (getattr(t, 'qbo_txn_id', None),
+                                         getattr(t, 'qbo_txn_type', None))):
+    """Collapse sibling rows of the same QBO charge (one per project that
+    synced the account) into ONE representative per (qbo_txn_id,
+    qbo_txn_type). Rows with no qbo_txn_id (manual / CSV / receipt-born)
+    are their own group keyed by id. Pure.
+
+    Within a group the representative is the row that carries the claim
+    (budget_line_id / account_code / splits / not_project with a reason),
+    else the first row. Returns [(representative, [all rows in group])] in
+    first-seen order."""
+    groups, order = {}, []
+    for t in rows:
+        qid, qtype = key(t)
+        k = ('qbo', qid, qtype) if qid else ('id', getattr(t, 'id', None), None)
+        if k not in groups:
+            groups[k] = []
+            order.append(k)
+        groups[k].append(t)
+    out = []
+    for k in order:
+        members = groups[k]
+        rep = members[0]
+        for m in members:
+            if (getattr(m, 'budget_line_id', None) or getattr(m, 'account_code', None)
+                    or getattr(m, 'has_splits', False)):
+                rep = m
+                break
+        out.append((rep, members))
+    return out
+
+
+def compute_row_flags(row, *, today=None, date_far_days=7):
+    """Red / yellow flags for one workspace row. Pure; row is a dict or an
+    object with: budget_line_id, splits (list of {amount}), split_sum_ok
+    (bool | None), assigned (bool | None — overrides the line / split
+    test), amount, is_expense, has_backup (evidence row or
+    no_charge_reason), receipt_amount, receipt_date, txn_date,
+    possible_duplicate (bool), claimed_by_project_id, project_id,
+    payment_method, not_project_expense, source.
+
+    Red (blocks nothing, never disappears on its own):
+      no_line        — not assigned and not split and not excluded
+      needs_backup   — assigned (or split) with no evidence and no reason
+      split_mismatch — splits exist but do not sum to the amount
+    Yellow:
+      possible_duplicate — a suspected duplicate was flagged
+      amount_mismatch    — matched receipt amount differs from the charge
+      date_far           — receipt date more than date_far_days from charge
+      paid_by_other      — payment method is personal_card / cash / other
+                           (someone other than the company paid; reconcile)
+    Returns {"red": [...], "yellow": [...]}."""
+    g = (row.get if isinstance(row, dict) else lambda k, d=None: getattr(row, k, d))
+    red, yellow = [], []
+    excluded = bool(g('not_project_expense', False))
+    splits = g('splits') or []
+    # `assigned` (optional) lets a caller count section-only coding or an
+    # itemized parent as assigned; otherwise a line or a split is what counts.
+    assigned = g('assigned')
+    if assigned is None:
+        assigned = bool(g('budget_line_id')) or bool(splits)
+    assigned = bool(assigned)
+    if not excluded:
+        if not assigned:
+            red.append('no_line')
+        if splits:
+            ok = g('split_sum_ok')
+            if ok is None:
+                try:
+                    ok = _cents(sum(float(s.get('amount') if isinstance(s, dict)
+                                          else getattr(s, 'amount', 0) or 0)
+                                    for s in splits)) == _cents(g('amount'))
+                except Exception:
+                    ok = False
+            if not ok:
+                red.append('split_mismatch')
+        if assigned and not g('has_backup', False):
+            red.append('needs_backup')
+    if g('possible_duplicate', False):
+        yellow.append('possible_duplicate')
+    ra, ca = g('receipt_amount'), g('amount')
+    if ra is not None and ca is not None:
+        try:
+            if _cents(ra) != _cents(ca):
+                yellow.append('amount_mismatch')
+        except ValueError:
+            pass
+    rd, td = g('receipt_date'), g('txn_date')
+    if rd and td:
+        try:
+            d1 = datetime.strptime(str(rd)[:10], '%Y-%m-%d').date()
+            d2 = datetime.strptime(str(td)[:10], '%Y-%m-%d').date()
+            if abs((d1 - d2).days) > date_far_days:
+                yellow.append('date_far')
+        except ValueError:
+            pass
+    if (g('payment_method') or '') in ('personal_card', 'cash', 'other'):
+        yellow.append('paid_by_other')
+    return {"red": red, "yellow": yellow}
 
 
 # ── Learned vendor → COA mapping (2026-06-18 AI auto-coding) ──────────────
@@ -1111,6 +1407,12 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     # now given a line must come back into every total. set-coa already did
     # this; set-line did not (ACTUALS_HANDOFF Phase 0, 2026-10-30).
     txn.not_project_expense = False
+    # …and the recoverable-exclusion audit columns go with it (Phase 1): the
+    # row is back in the project, so "who excluded it and why" no longer
+    # applies. The ActivityLog keeps the history.
+    txn.excluded_at         = None
+    txn.excluded_by_user_id = None
+    txn.excluded_reason     = None
     txn.updated_at        = datetime.utcnow()
     if user_id:
         txn.created_via_user_id = user_id
