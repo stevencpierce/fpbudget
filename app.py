@@ -4755,51 +4755,18 @@ def _render_project_budget_pdfs(p):
     with the project still live."""
     out = []
     try:
-        from datetime import date as _date
         budgets = Budget.query.filter_by(project_id=p.id).all()
         if not budgets:
             return out
-        fringe_cfgs = get_fringe_configs(db.session, p.id)
         for b in budgets:
             try:
-                b_lines = BudgetLine.query.filter_by(budget_id=b.id).order_by(
-                    BudgetLine.account_code, BudgetLine.sort_order).all()
-                profile  = b.payroll_profile
-                pw_start = b.payroll_week_start if b.payroll_week_start is not None else (
-                    profile.payroll_week_start if profile else 6)
-                top_sheet = calc_top_sheet(b, b_lines, fringe_cfgs, {}, profile, pw_start)
-                sched_mode = 'working' if b.budget_mode == 'working' else 'estimated'
-                line_results = {}
-                for ln in b_lines:
-                    if ln.use_schedule:
-                        sched = ScheduleDay.query.filter_by(
-                            budget_line_id=ln.id, schedule_mode=sched_mode).all()
-                        line_results[ln.id] = calc_line_from_schedule(
-                            ln, sched, fringe_cfgs, profile, pw_start)
-                    else:
-                        line_results[ln.id] = calc_line(ln, fringe_cfgs)
-                _SECS = FP_COA_SECTIONS
-                _sec = _section_for_code      # ONE rule (budget_calc.section_for_code)
-                sec_map = dict(_SECS)
-                secs_detail = {}
-                for ln in b_lines:
-                    sk = _sec(ln.account_code)
-                    if sk not in secs_detail:
-                        secs_detail[sk] = {"code": sk, "name": sec_map.get(sk, ""), "lines": []}
-                    secs_detail[sk]["lines"].append(ln)
-                secs_ordered = [secs_detail[sk] for sk, _ in _SECS if sk in secs_detail]
-                company_settings = CompanySettings.query.get(1) or CompanySettings()
-                dispersed = bool(b.company_fee_dispersed)
-                fee_m = (1 + float(b.company_fee_pct)) if dispersed else 1.0
-                html_str = render_template("budget_pdf.html",
-                    project=p, budget=b, top_sheet=top_sheet,
-                    coa_sections=FP_COA_SECTIONS,
-                    detail_mode=False, dispersed=dispersed,
-                    company_settings=company_settings,
-                    is_working_view=b.budget_mode == 'working',
-                    sections_ordered=secs_ordered,
-                    line_results=line_results, fee_m=fee_m, today=_date.today(),
-                )
+                # ONE context builder shared with the Export button
+                # (Cleanup D): the archived PDF is the document the owner
+                # would have downloaded (top sheet, default columns).
+                ctx = _budget_pdf_context(p.id, b.id, 'est_to_working')
+                if ctx is None:
+                    continue
+                html_str = render_template("budget_pdf.html", **ctx)
                 pdf_bytes = WeasyprintHTML(string=html_str, base_url="http://localhost").write_pdf()
                 safe_name = re.sub(r"[^\w\-.]", "_", b.name)
                 mode_lbl  = "Working" if b.budget_mode == 'working' else "Estimated"
@@ -13451,10 +13418,32 @@ def export_preview(pid, bid, target):
     return jsonify(data)
 
 
-@app.route("/projects/<int:pid>/budget/<int:bid>/export.pdf")
-@login_required
-def export_pdf(pid, bid):
-    budget  = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+def _budget_pdf_context(pid, bid, basis, opts=None):
+    """The ONE builder of budget_pdf.html's context (Cleanup D, 2026-11-02).
+
+    export_pdf (the download) and _render_project_budget_pdfs (the Dropbox
+    archive on project delete) both render through here, so the archived
+    PDF is the same document the Export button produces: the same schedule
+    rule (legacy NULL-mode days count), the Estimated peer's Top Sheet in
+    the Estimated column, exact dispersed totals, column-visibility flags
+    and parent/child ordering. The archive used to build a thinner context
+    of its own.
+
+    `basis` is a variance-basis key (actuals.VARIANCE_BASES or an alias).
+    `opts` are the Export Options dialog's choices — absent means the
+    defaults (top sheet only, saved fee setting, legacy column defaults):
+      sub_budget      int   render only that sub-budget's lines
+      suppress_zeros  bool
+      fee_dispersed   bool  override the saved company_fee_dispersed
+      detail          bool  full line detail
+      cols            {est, work, act, var: bool}  column picker; None = defaults
+      travel_notes    bool  per-person travel mirror rows
+    Returns the render_template kwargs, or None when the budget is not on
+    this project. Raises LookupError for an unknown sub_budget."""
+    opts = dict(opts or {})
+    budget  = Budget.query.filter_by(id=bid, project_id=pid).first()
+    if budget is None:
+        return None
     project = ProjectSheet.query.get_or_404(pid)
     lines   = BudgetLine.query.filter_by(budget_id=bid).order_by(
         BudgetLine.account_code, BudgetLine.sort_order).all()
@@ -13466,13 +13455,13 @@ def export_pdf(pid, bid):
     # sub-budget. Same template, same calc, just a filtered line set.
     # The Top Sheet rolls up only the included lines, so the GRAND
     # TOTAL is the sub-budget's total (client sees only their slice).
-    sub_budget_id = request.args.get('sub_budget', type=int)
+    sub_budget_id = opts.get('sub_budget')
     sub_budget_obj = None
     if sub_budget_id:
         sub_budget_obj = SubBudget.query.filter_by(
             id=sub_budget_id, project_id=pid).first()
         if not sub_budget_obj:
-            return jsonify({"error": "Sub-budget not found"}), 404
+            raise LookupError("Sub-budget not found")
         # Resolve memberships onto THIS budget's lines (direct / clone
         # chain / desc match) — a strict id set went empty whenever the
         # memberships were created on a sibling version's lines
@@ -13489,9 +13478,9 @@ def export_pdf(pid, bid):
     # Per-export overrides from the Export Options dialog (see export_csv
     # for the same pattern). Applied to the in-memory Budget without
     # persisting so the saved settings stay untouched.
-    suppress_zeros = request.args.get("suppress_zeros") == "1"
-    if "fee_dispersed" in request.args:
-        budget.company_fee_dispersed = request.args.get("fee_dispersed") == "1"
+    suppress_zeros = bool(opts.get("suppress_zeros"))
+    if opts.get("fee_dispersed") is not None:
+        budget.company_fee_dispersed = bool(opts["fee_dispersed"])
     profile  = budget.payroll_profile
     pw_start = budget.payroll_week_start if budget.payroll_week_start is not None else (
         profile.payroll_week_start if profile else 6)
@@ -13499,7 +13488,7 @@ def export_pdf(pid, bid):
     actuals_by_code = _actuals_by_section_code(pid)
 
     top_sheet   = calc_top_sheet(budget, lines, fringe_cfgs, actuals_by_code, profile, pw_start)
-    detail_mode = request.args.get("detail", "0") == "1"
+    detail_mode = bool(opts.get("detail"))
     dispersed   = bool(budget.company_fee_dispersed)
 
     # Build section detail for full-detail export. Schedule fetch MIRRORS
@@ -13699,13 +13688,12 @@ def export_pdf(pid, bid):
     #   vs_estimated   → Estimated - Actual   (overrun vs original plan)
     # The old est_v_work / work_v_act / est_v_act spellings are accepted as
     # aliases so a bookmarked export URL keeps working.
-    _any_col_param = any(k in request.args for k in
-                         ('col_est', 'col_work', 'col_act', 'col_var'))
-    if _any_col_param:
-        col_est  = request.args.get('col_est')  == '1'
-        col_work = request.args.get('col_work') == '1'
-        col_act  = request.args.get('col_act')  == '1'
-        col_var  = request.args.get('col_var')  == '1'
+    _cols = opts.get('cols')
+    if _cols is not None:
+        col_est  = bool(_cols.get('est'))
+        col_work = bool(_cols.get('work'))
+        col_act  = bool(_cols.get('act'))
+        col_var  = bool(_cols.get('var'))
     else:
         # Legacy defaults — no params means no modal-invoked export.
         col_est  = True
@@ -13713,7 +13701,7 @@ def export_pdf(pid, bid):
         col_act  = False
         col_var  = is_working_view
     from actuals import normalize_variance_basis as _nvb
-    var_basis = _nvb(request.args.get('var_basis'), default='est_to_working')
+    var_basis = _nvb(basis, default='est_to_working')
 
     # ── Pull the Estimated peer's Top Sheet so the PDF's Estimated
     # column reads from the actual Estimated budget instead of the
@@ -13815,7 +13803,7 @@ def export_pdf(pid, bid):
     # default export stays compact. User request 2026-05-19: "I can
     # see, like, little hotel flights per diems, all of that. Can
     # that go out on the exports as well?". 2026-05-19.
-    include_travel_notes = (request.args.get('travel_notes') == '1')
+    include_travel_notes = bool(opts.get('travel_notes'))
     travel_mirror_by_line = {}
     if include_travel_notes:
         try:
@@ -13835,7 +13823,7 @@ def export_pdf(pid, bid):
         except Exception as _tm_e:
             logging.warning(f"[export_pdf] travel-mirror compute failed: {_tm_e}")
 
-    html_str = render_template("budget_pdf.html",
+    return dict(
         project=project,
         budget=budget,
         top_sheet=top_sheet,
@@ -13861,6 +13849,38 @@ def export_pdf(pid, bid):
         sub_budget=sub_budget_obj,
         today=date.today(),
     )
+
+
+@app.route("/projects/<int:pid>/budget/<int:bid>/export.pdf")
+@login_required
+def export_pdf(pid, bid):
+    # Export Options dialog → the builder's opts; the context itself comes
+    # from _budget_pdf_context, shared with the Dropbox archive (Cleanup D).
+    opts = {
+        'sub_budget':     request.args.get('sub_budget', type=int),
+        'suppress_zeros': request.args.get("suppress_zeros") == "1",
+        'fee_dispersed':  ((request.args.get("fee_dispersed") == "1")
+                           if "fee_dispersed" in request.args else None),
+        'detail':         request.args.get("detail", "0") == "1",
+        'travel_notes':   request.args.get('travel_notes') == '1',
+        'cols':           ({'est':  request.args.get('col_est')  == '1',
+                            'work': request.args.get('col_work') == '1',
+                            'act':  request.args.get('col_act')  == '1',
+                            'var':  request.args.get('col_var')  == '1'}
+                           if any(k in request.args for k in
+                                  ('col_est', 'col_work', 'col_act', 'col_var'))
+                           else None),
+    }
+    try:
+        ctx = _budget_pdf_context(pid, bid, request.args.get('var_basis'), opts)
+    except LookupError:
+        return jsonify({"error": "Sub-budget not found"}), 404
+    if ctx is None:
+        abort(404)
+    budget, project = ctx['budget'], ctx['project']
+    sub_budget_obj, detail_mode = ctx['sub_budget'], ctx['detail_mode']
+    is_working_view = ctx['is_working_view']
+    html_str = render_template("budget_pdf.html", **ctx)
 
     pdf_bytes = WeasyprintHTML(string=html_str, base_url=request.host_url).write_pdf()
     mode_label = "Working" if is_working_view else "Estimated"
