@@ -29716,6 +29716,18 @@ def _web_worker_essential_columns():
                    )""",
                 "CREATE INDEX IF NOT EXISTS ix_transaction_split_transaction_id "
                 "  ON transaction_split (transaction_id)",
+                # analyzer_batch (audit H7, alembic 0002) was only ever created
+                # by db.create_all() in preDeploy — which ran against sqlite —
+                # so a worker that rehydrates a doc batch after a recycle
+                # could hit UndefinedTable. Mirrors models.AnalyzerBatch.
+                # (Cleanup A #19, 2026-11-02.)
+                """CREATE TABLE IF NOT EXISTS analyzer_batch (
+                     batch_token  VARCHAR(64) PRIMARY KEY,
+                     raw_json     TEXT,
+                     pending_json TEXT,
+                     created_at   TIMESTAMP,
+                     updated_at   TIMESTAMP
+                   )""",
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_transaction_qbo "
                 "  ON transaction (project_id, qbo_txn_id, qbo_txn_type) "
                 "  WHERE qbo_txn_id IS NOT NULL",
