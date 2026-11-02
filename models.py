@@ -208,6 +208,30 @@ class Transaction(db.Model):
     payment_method        = db.Column(db.String(20), nullable=True)
     paid_by_crew_member_id = db.Column(db.Integer, nullable=True)
 
+    # ── Payment attribution (DOCUMENTS_HANDOFF Phase 3, 2026-11-02; alembic
+    # 0024) — WHO this money went to, written at the moment the fact is
+    # known and never inferred at read time:
+    #   payee_source  qbo    EntityRef on the synced Purchase / BillPayment
+    #                        → CrewMember.qbo_vendor_id (free, no matching)
+    #                 line   the single crew member on the budget line it
+    #                        was coded to (link_transaction_to_line)
+    #                 doc    the owner of its document (confirm_match,
+    #                        itemize / payroll-parse rows, the doc editor)
+    #                 alias  VendorAlias.payee_id for the vendor string
+    #                        (CSV import, manual rows, the backfill)
+    #                 manual a person picked it by hand
+    # A value set by a person ('manual') is never overwritten by a sync;
+    # 'qbo' may replace a prior 'qbo' only. Read through
+    # actuals.paid_by_payee(), which falls back to the doc / line
+    # inference for rows still NULL so nothing disappears.
+    payee_id              = db.Column(db.Integer, db.ForeignKey("crew_member.id"),
+                                      nullable=True, index=True)
+    payee_source          = db.Column(db.String(16), nullable=True)
+    # The Vendor id QuickBooks sent on the Purchase / BillPayment
+    # (EntityRef.value) — kept so a vendor linked LATER attributes the
+    # charge without another pull.
+    qbo_entity_ref        = db.Column(db.String(40), nullable=True)
+
     # ── AI auto-coding suggestion (2026-06-18) ─────────────────────────
     # Advisory only: ai_layer.categorize() (or a learned vendor→code mapping)
     # proposes a COA section for an UNCODED charge. Kept separate from
@@ -274,6 +298,38 @@ class QBOConnection(db.Model):
     token_expiry        = db.Column(db.DateTime)
     enabled_account_ids = db.Column(db.Text, default="[]")  # JSON array of QBO account ids
     updated_at          = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Vendor mirror watermark (DOCUMENTS_HANDOFF Phase 3, alembic 0024):
+    # NULL = no full pull yet (sync_vendors pages SELECT * FROM Vendor);
+    # set = the QBO server time of the last run, so the next run is a
+    # ChangeDataCapture sweep of Vendor from that point.
+    vendor_cdc_since    = db.Column(db.DateTime, nullable=True)
+
+
+class QBOVendor(db.Model):
+    """Mirror of ONE QuickBooks Vendor record (DOCUMENTS_HANDOFF Phase 3,
+    alembic 0024). Written only by qbo_sync.sync_vendors (QuickBooks →
+    FPBudget, never the other way). The link to a Payee is NOT here: it is
+    CrewMember.qbo_vendor_id, so this table is the full QuickBooks vendor
+    list and the Link screen (/admin/qbo-vendors) lists the rows no Payee
+    carries. No TIN is mirrored — QuickBooks holds it."""
+    __tablename__ = "qbo_vendor"
+    qbo_vendor_id   = db.Column(db.String(40), primary_key=True)
+    display_name    = db.Column(db.String(200), nullable=True)
+    company_name    = db.Column(db.String(200), nullable=True)
+    given_name      = db.Column(db.String(100), nullable=True)
+    family_name     = db.Column(db.String(100), nullable=True)
+    email           = db.Column(db.String(200), nullable=True)
+    phone           = db.Column(db.String(50), nullable=True)
+    address_line1   = db.Column(db.String(200), nullable=True)
+    address_line2   = db.Column(db.String(200), nullable=True)
+    city            = db.Column(db.String(120), nullable=True)
+    state           = db.Column(db.String(40), nullable=True)
+    postal_code     = db.Column(db.String(20), nullable=True)
+    vendor_1099     = db.Column(db.Boolean, nullable=True)
+    active          = db.Column(db.Boolean, nullable=True)
+    sync_token      = db.Column(db.String(20), nullable=True)
+    qbo_updated_at  = db.Column(db.DateTime, nullable=True)   # MetaData.LastUpdatedTime
+    synced_at       = db.Column(db.DateTime, nullable=True)
 
 
 class CategoryMapping(db.Model):
@@ -1835,6 +1891,11 @@ class VendorAlias(db.Model):
     clean_name        = db.Column(db.String(200), nullable=False)
     confirm_count     = db.Column(db.Integer, default=1)
     last_confirmed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # The Payee this vendor string pays (DOCUMENTS_HANDOFF Phase 3, alembic
+    # 0024): once a raw vendor is linked to a Payee, every later CSV or
+    # manual charge from that vendor attributes automatically
+    # (Transaction.payee_source='alias').
+    payee_id          = db.Column(db.Integer, db.ForeignKey("crew_member.id"), nullable=True)
     __table_args__ = (
         db.UniqueConstraint('project_id', 'raw_canonical', name='uq_vendor_alias'),
     )

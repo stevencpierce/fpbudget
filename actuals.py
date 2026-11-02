@@ -1798,6 +1798,18 @@ def link_transaction_to_line(transaction_id, working_line_id, user_id=None):
     txn.ai_code_reason = None
     record_vendor_category(project_id, txn.vendor, working_line.account_code)
 
+    # ── Payment attribution (Documents Phase 3) ──────────────────────────
+    # The line has exactly one crew member → this money went to them. Fills
+    # a NULL payee_id and replaces an earlier 'line' value (a re-coding
+    # moves the attribution with the row); never touches a value another
+    # source set. A line with no single person clears a stale 'line' value.
+    try:
+        _owner = single_line_owner(working_line.id)
+        set_txn_payee(txn, _owner, 'line', replace=('line',))
+    except Exception:
+        log.info("[actuals/payee] line attribution skipped (fail-open) for txn %s",
+                 getattr(txn, 'id', None), exc_info=True)
+
     # ── ONE-WAY line→person auto-assign (User 2026-07) ────────────────────
     # If this txn carries a document that has NO person yet, and the line we
     # just coded it to has an unambiguous assigned person, stamp that person
@@ -1943,6 +1955,12 @@ def unlink_transaction(transaction_id):
     txn.account_code_name = None
     txn.match_status      = 'unmatched'
     txn.updated_at        = datetime.utcnow()
+    # An attribution that came ONLY from the line goes with the line
+    # (Documents Phase 3); any other source stays.
+    try:
+        set_txn_payee(txn, None, 'line')
+    except Exception:
+        pass
     db.session.commit()
     return {'transaction_id': txn.id}
 
@@ -2652,7 +2670,20 @@ def confirm_match(qbo_transaction_id):
         # Keep the explicit this-is-an-expense stamp from the receipt row.
         if getattr(sister, 'activated_at', None) and not getattr(q, 'activated_at', None):
             q.activated_at = sister.activated_at
+        # …and the receipt row's payee when the bank row has none (Phase 3).
+        if getattr(sister, 'payee_id', None) and not getattr(q, 'payee_id', None):
+            q.payee_id = sister.payee_id
+            q.payee_source = sister.payee_source or 'doc'
         db.session.delete(sister)
+    # Documents Phase 3: the confirmed document names the payee. Fills a
+    # NULL payee_id (a QuickBooks EntityRef or a person's pick already on
+    # the bank row stays).
+    try:
+        _doc = DocUpload.query.get(q.doc_upload_id)
+        if _doc is not None:
+            set_txn_payee(q, doc_owner_id(_doc), 'doc')
+    except Exception:
+        log.info("[actuals/payee] doc attribution skipped on confirm for txn %s", q.id, exc_info=True)
     # Mark reconciled (not still 'qbo_sync') so the QBO-purge tool — which
     # deletes source='qbo_sync' rows — can never wipe a confirmed match. Mirrors
     # the sync-time and manual-merge reconcile paths; qbo_txn_id is preserved so
@@ -2924,10 +2955,12 @@ def txn_year(txn):
 
 
 def attribute_payee(txn, doc_owner_by_id, line_owners_by_id):
-    """Who a transaction was paid to, until Transaction.payee_id exists
-    (Documents Phase 3 — this function then becomes `return txn.payee_id`).
+    """Who a transaction was paid to when Transaction.payee_id is NULL —
+    the read-time FALLBACK (Documents Phase 3 writes payee_id at the
+    moment the fact is known; paid_by_payee() prefers it and calls this
+    only for rows nothing has attributed yet):
 
-      1. its document's owner  (doc_upload_id → DocUpload.crew_member_id)
+      1. its document's owner  (doc_upload_id → DocUpload owner)
       2. else its budget line  (budget_line_id → the ONE crew member on the
          line via CrewAssignment.crew_member_id / BudgetLine.assigned_crew_id)
 
@@ -2991,16 +3024,23 @@ def paid_by_payee(payee_id=None, year=None, by='year'):
     the transaction's project_id instead of the year (the Payee page's
     Projects table) — same rows, same attribution.
 
-    Transaction.payee_id does not exist yet (Documents Phase 3). When it
-    lands, attribute_payee() returns txn.payee_id and everything above it
-    stays the same."""
-    from sqlalchemy import or_
+    Documents Phase 3: a row with Transaction.payee_id set attributes to
+    THAT payee, full stop (it was written when the fact was known — the
+    QuickBooks EntityRef, the coded line, the document's owner, an alias
+    or a person). The doc-owner / line inference above runs only for rows
+    whose payee_id is still NULL, so nothing that counted before
+    disappears; a split piece of a row with payee_id follows the row."""
+    from sqlalchemy import or_, and_, func as _f
     from models import TransactionSplit
 
-    # Attribution maps (two bulk queries + one for splits).
+    # Attribution maps (two bulk queries + one for splits) — the fallback
+    # for rows with no payee_id. The doc owner is owner_payee_id (Phase 2)
+    # with the alias column crew_member_id for rows the data step missed.
     doc_owner = {did: cid for did, cid in
-                 db.session.query(DocUpload.id, DocUpload.crew_member_id)
-                 .filter(DocUpload.crew_member_id.isnot(None)).all()}
+                 db.session.query(DocUpload.id,
+                                  _f.coalesce(DocUpload.owner_payee_id, DocUpload.crew_member_id))
+                 .filter(or_(DocUpload.owner_payee_id.isnot(None),
+                             DocUpload.crew_member_id.isnot(None))).all()}
     line_owners = {}
     for lid, cid in (db.session.query(CrewAssignment.budget_line_id,
                                       CrewAssignment.crew_member_id)
@@ -3014,23 +3054,29 @@ def paid_by_payee(payee_id=None, year=None, by='year'):
     if year is not None:
         q = q.filter(Transaction.txn_date.like(f"{int(year)}-%"))
     if payee_id is not None:
-        # Narrow to rows that CAN name this payee (their doc or their line);
-        # attribute_payee() still decides.
+        # Narrow to rows that CAN name this payee (an explicit payee_id,
+        # their doc or their line); _who() still decides.
         doc_ids = [d for d, c in doc_owner.items() if c == payee_id]
         line_ids = [l for l, s in line_owners.items() if payee_id in s]
-        conds = []
+        conds = [Transaction.payee_id == payee_id]
         if doc_ids:
-            conds.append(Transaction.doc_upload_id.in_(doc_ids))
+            conds.append(and_(Transaction.payee_id.is_(None),
+                              Transaction.doc_upload_id.in_(doc_ids)))
         if line_ids:
-            conds.append(Transaction.budget_line_id.in_(line_ids))
-        if not conds:
-            return {}
+            conds.append(and_(Transaction.payee_id.is_(None),
+                              Transaction.budget_line_id.in_(line_ids)))
         q = q.filter(or_(*conds))
+
+    def _who(t):
+        pid_ = getattr(t, 'payee_id', None)
+        if pid_:
+            return pid_
+        return attribute_payee(t, doc_owner, line_owners)
 
     _key = (lambda t: t.project_id) if by == 'project' else txn_year
     rows = []
     for t in q.all():
-        who = attribute_payee(t, doc_owner, line_owners)
+        who = _who(t)
         if who is None:
             continue
         rows.append((who, _key(t),
@@ -3046,8 +3092,9 @@ def paid_by_payee(payee_id=None, year=None, by='year'):
             sq = sq.filter(Transaction.txn_date.like(f"{int(year)}-%"))
         for sp, t in sq.all():
             owners = line_owners.get(sp.budget_line_id) or set()
-            who = (next(iter(owners)) if len(owners) == 1
-                   else (SHARED_LINE if owners else None))
+            who = getattr(t, 'payee_id', None) or (
+                next(iter(owners)) if len(owners) == 1
+                else (SHARED_LINE if owners else None))
             if who is None or (payee_id is not None and who != payee_id):
                 continue
             rows.append((who, _key(t),
@@ -3186,3 +3233,284 @@ def qbo_matches_w9(w9_status, qbo_vendor_id, qbo_vendor_1099):
     if not have_w9 and not flag:
         return "no"
     return "mismatch"
+
+
+# ── Payment attribution (DOCUMENTS_HANDOFF Phase 3, 2026-11-02) ───────────
+#
+# Transaction.payee_id says WHO the money went to. It is written at the
+# moment the fact becomes known — QuickBooks names the vendor on the synced
+# charge, a line with one crew member is coded, a document with an owner
+# is matched, a vendor string is linked to a Payee — and never inferred at
+# read time. The pure helpers here (set_txn_payee, resolve_payee_candidates,
+# line_owner_id) take plain objects so tests/unit/test_txn_payee_rules.py
+# can pin the precedence without a database.
+
+PAYEE_SOURCES = ('qbo', 'line', 'doc', 'alias', 'manual')
+PAYEE_SOURCE_MANUAL = 'manual'
+
+
+def set_txn_payee(txn, payee_id, source, replace=()):
+    """Write payee_id / payee_source on a Transaction by the ONE rule:
+
+      * a NULL payee_id is filled;
+      * an existing value is replaced only when its payee_source is in
+        `replace` (a sync may replace its own earlier 'qbo' value, a
+        re-coding its own earlier 'line' value, …);
+      * a value a person set by hand ('manual') is never replaced by an
+        automatic write — only another 'manual' write may do that.
+
+    payee_id None with source S clears the attribution when the current
+    source is S or in `replace` (a doc whose owner was removed, a line that
+    lost its one person). Returns True when the row changed."""
+    if source not in PAYEE_SOURCES:
+        raise ValueError(f"unknown payee_source {source!r}")
+    cur_id = getattr(txn, 'payee_id', None)
+    cur_src = getattr(txn, 'payee_source', None)
+    if payee_id is None:
+        if cur_id is None:
+            return False
+        if cur_src == source or (cur_src in replace and cur_src != PAYEE_SOURCE_MANUAL):
+            txn.payee_id = None
+            txn.payee_source = None
+            return True
+        return False
+    payee_id = int(payee_id)
+    if cur_id is None:
+        txn.payee_id = payee_id
+        txn.payee_source = source
+        return True
+    if source == PAYEE_SOURCE_MANUAL:
+        if cur_id == payee_id and cur_src == PAYEE_SOURCE_MANUAL:
+            return False
+        txn.payee_id = payee_id
+        txn.payee_source = source
+        return True
+    if cur_src == PAYEE_SOURCE_MANUAL or cur_src not in replace:
+        return False
+    if cur_id == payee_id and cur_src == source:
+        return False
+    txn.payee_id = payee_id
+    txn.payee_source = source
+    return True
+
+
+def line_owner_id(owners):
+    """The ONE crew member on a budget line, or None when the line carries
+    none or more than one. `owners` is any iterable of crew_member_ids
+    (CrewAssignment.crew_member_id + BudgetLine.assigned_crew_id)."""
+    uniq = {int(o) for o in (owners or ()) if o}
+    return next(iter(uniq)) if len(uniq) == 1 else None
+
+
+def line_owners_map(line_ids=None):
+    """{budget_line_id: set(crew_member_id)} from CrewAssignment and
+    BudgetLine.assigned_crew_id, in two bulk queries (optionally narrowed
+    to `line_ids`)."""
+    out = {}
+    q1 = (db.session.query(CrewAssignment.budget_line_id, CrewAssignment.crew_member_id)
+          .filter(CrewAssignment.crew_member_id.isnot(None)))
+    q2 = (db.session.query(BudgetLine.id, BudgetLine.assigned_crew_id)
+          .filter(BudgetLine.assigned_crew_id.isnot(None)))
+    if line_ids is not None:
+        ids = list(line_ids) or [0]
+        q1 = q1.filter(CrewAssignment.budget_line_id.in_(ids))
+        q2 = q2.filter(BudgetLine.id.in_(ids))
+    for lid, cid in q1.all():
+        out.setdefault(lid, set()).add(cid)
+    for lid, cid in q2.all():
+        out.setdefault(lid, set()).add(cid)
+    return out
+
+
+def single_line_owner(budget_line_id):
+    """DB wrapper: the one crew member on this line, else None."""
+    if not budget_line_id:
+        return None
+    return line_owner_id(line_owners_map([budget_line_id]).get(budget_line_id))
+
+
+def payee_name_index(members):
+    """{lowercased name: crew_member_id} over name / legal_name / company,
+    with a name that two payees share mapped to None (ambiguous — never
+    guessed). `members` yields objects with id, name, legal_name, company."""
+    idx = {}
+    for m in members:
+        for raw in (getattr(m, 'name', None), getattr(m, 'legal_name', None),
+                    getattr(m, 'company', None)):
+            k = (raw or '').strip().lower()
+            if not k:
+                continue
+            if k in idx and idx[k] != m.id:
+                idx[k] = None
+            else:
+                idx.setdefault(k, m.id)
+    return idx
+
+
+def resolve_payee_candidates(txn, doc_owner_by_id, line_owners_by_id,
+                             alias_by_key=None, name_index=None):
+    """Every signal that names a payee for one transaction, for the backfill:
+
+      doc    its document's owner
+      line   the ONE crew member on its budget line
+      alias  VendorAlias.payee_id for canon_vendor(vendor) — `alias_by_key`
+             is {(project_id, canon): payee_id}; the project row wins, then
+             the global (None) row
+      alias  an exact (case-insensitive) match of the vendor string to a
+             payee's name / legal name / company (`name_index`), when
+             exactly one payee carries it
+
+    Returns {"payee_id", "source", "candidates": [(source, id)…]}. When the
+    candidates disagree, payee_id is None and the caller LOGS the conflict
+    instead of guessing; when they agree (or only one speaks) the first in
+    the order above names the source."""
+    cands = []
+    did = getattr(txn, 'doc_upload_id', None)
+    if did and doc_owner_by_id.get(did):
+        cands.append(('doc', int(doc_owner_by_id[did])))
+    lid = getattr(txn, 'budget_line_id', None)
+    if lid:
+        lo = line_owner_id(line_owners_by_id.get(lid))
+        if lo:
+            cands.append(('line', lo))
+    vendor = getattr(txn, 'vendor', None) or ''
+    if vendor.strip():
+        cv = canon_vendor(vendor)
+        if alias_by_key and cv:
+            pid = getattr(txn, 'project_id', None)
+            a = alias_by_key.get((pid, cv))
+            if a is None:
+                a = alias_by_key.get((None, cv))
+            if a:
+                cands.append(('alias', int(a)))
+        if name_index:
+            n = name_index.get(vendor.strip().lower())
+            if n:
+                cands.append(('alias', int(n)))
+    ids = {c[1] for c in cands}
+    if not ids:
+        return {"payee_id": None, "source": None, "candidates": cands}
+    if len(ids) > 1:
+        return {"payee_id": None, "source": None, "candidates": cands, "conflict": True}
+    return {"payee_id": cands[0][1], "source": cands[0][0], "candidates": cands}
+
+
+def payee_for_vendor_string(project_id, vendor):
+    """The Payee a vendor string pays, for CSV-imported and manual rows:
+    VendorAlias.payee_id (this project's row first, then the global row),
+    else an exact case-insensitive match of the string to ONE payee's
+    name / legal name / company. Returns a crew_member_id or None. Never
+    fuzzy — a near miss attributes nobody."""
+    vendor = (vendor or '').strip()
+    if not vendor:
+        return None
+    try:
+        from models import VendorAlias, CrewMember
+        cv = canon_vendor(vendor)
+        if cv:
+            row = (VendorAlias.query
+                   .filter(VendorAlias.raw_canonical == cv,
+                           VendorAlias.payee_id.isnot(None),
+                           db.or_(VendorAlias.project_id == project_id,
+                                  VendorAlias.project_id.is_(None)))
+                   .order_by(VendorAlias.project_id.isnot(None).desc(),
+                             VendorAlias.confirm_count.desc())
+                   .first())
+            if row:
+                return row.payee_id
+        from sqlalchemy import func as _f
+        key = vendor.lower()
+        hits = (CrewMember.query
+                .filter(db.or_(_f.lower(CrewMember.name) == key,
+                               _f.lower(CrewMember.legal_name) == key,
+                               _f.lower(CrewMember.company) == key))
+                .limit(2).all())
+        return hits[0].id if len(hits) == 1 else None
+    except Exception as e:
+        log.warning("[payee] vendor-string lookup failed for %r: %s", vendor, e)
+        return None
+
+
+def propagate_doc_owner_to_txns(upload, replace=('doc', 'line', 'alias', 'qbo')):
+    """A document's owner was set (or cleared) by a person in the editor or
+    the inbox: carry it onto every transaction that document backs. A
+    person's pick on the document outranks every automatic source but a
+    'manual' pick on the transaction itself. Does NOT commit. Returns the
+    number of rows changed. Fail-open."""
+    try:
+        owner = doc_owner_id(upload)
+        n = 0
+        for t in Transaction.query.filter(Transaction.doc_upload_id == upload.id).all():
+            if set_txn_payee(t, owner, 'doc', replace=replace):
+                n += 1
+        return n
+    except Exception as e:
+        log.warning("[payee] doc owner propagation skipped for doc %s: %s",
+                    getattr(upload, 'id', None), e)
+        return 0
+
+
+def attribute_txns_for_qbo_vendor(qbo_vendor_id, payee_id):
+    """A QuickBooks vendor was just linked to a Payee: every synced charge
+    that carries that vendor's id (qbo_entity_ref) and no payee yet, or an
+    earlier 'qbo' value, now attributes to the Payee. Does NOT commit.
+    Returns the number of rows changed."""
+    if not qbo_vendor_id or not payee_id:
+        return 0
+    n = 0
+    for t in Transaction.query.filter(Transaction.qbo_entity_ref == str(qbo_vendor_id)).all():
+        if set_txn_payee(t, payee_id, 'qbo', replace=('qbo',)):
+            n += 1
+    return n
+
+
+def link_vendor_alias_to_payee(project_id, raw_vendor, payee_id, clean_name=None):
+    """Link a raw vendor string to a Payee (VendorAlias.payee_id), creating
+    the alias row when the string is new. Then every transaction with that
+    vendor string and no payee attributes to the Payee ('alias'). Does NOT
+    commit. Returns (alias_row, rows_attributed)."""
+    from models import VendorAlias
+    cv = canon_vendor(raw_vendor)
+    if not cv:
+        raise ValueError("That vendor name is empty after cleanup.")
+    row = VendorAlias.query.filter_by(project_id=project_id, raw_canonical=cv).first()
+    if row is None:
+        row = VendorAlias(project_id=project_id, raw_canonical=cv,
+                          clean_name=(clean_name or raw_vendor or '').strip()[:200] or cv,
+                          confirm_count=1, last_confirmed_at=datetime.utcnow())
+        db.session.add(row)
+    return row, link_alias_row_to_payee(row, payee_id)
+
+
+def link_alias_row_to_payee(alias_row, payee_id):
+    """Point an existing VendorAlias row at a Payee and attribute every
+    transaction whose vendor string canonicalises to it (project-scoped
+    when the alias is). Does NOT commit. Returns rows attributed."""
+    alias_row.payee_id = int(payee_id)
+    db.session.flush()
+    n = 0
+    q = Transaction.query.filter(Transaction.vendor.isnot(None))
+    if alias_row.project_id is not None:
+        q = q.filter(Transaction.project_id == alias_row.project_id)
+    for t in q.all():
+        if canon_vendor(t.vendor) == alias_row.raw_canonical and \
+                set_txn_payee(t, payee_id, 'alias', replace=('alias',)):
+            n += 1
+    return n
+
+
+def unlink_vendor_alias(alias_row):
+    """Remove the Payee link from a vendor alias and clear the 'alias'
+    attribution it produced (other sources stay). Does NOT commit."""
+    pid_ = alias_row.payee_id
+    alias_row.payee_id = None
+    n = 0
+    if pid_:
+        q = Transaction.query.filter(Transaction.payee_id == pid_,
+                                     Transaction.payee_source == 'alias')
+        if alias_row.project_id is not None:
+            q = q.filter(Transaction.project_id == alias_row.project_id)
+        for t in q.all():
+            if canon_vendor(t.vendor) == alias_row.raw_canonical and set_txn_payee(t, None, 'alias'):
+                n += 1
+    return n

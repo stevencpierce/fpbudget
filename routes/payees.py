@@ -39,13 +39,16 @@ from sqlalchemy import func, or_
 from app import (app, admin_required, _log_activity, _line_budget_total, _RATE_TYPE_LABELS,
                  _ingest_document_bytes, _validate_upload_file)
 from models import (db, CrewMember, CrewAssignment, Budget, BudgetLine, ProjectSheet,
-                    DocUpload, Transaction, VendorAlias, ScheduleDay, ProjectCrewMember)
+                    DocUpload, Transaction, VendorAlias, ScheduleDay, ProjectCrewMember,
+                    QBOVendor, QBOConnection)
 import actuals
 from actuals import (paid_by_payee, w9_status_for, w9_fallback_dates, flag_1099,
                      qbo_matches_w9, threshold_for_year, reporting_threshold_rows,
                      canon_vendor, doc_class, doc_owner_id, expiry_state,
+                     payee_w9_status, link_vendor_alias_to_payee, unlink_vendor_alias,
                      TAX_FORM_KIND_LABELS, PAYEE_KINDS, SHARED_LINE,
                      W9_ON_FILE, W9_MISSING, W9_NOT_REQUIRED, W9_UNDER_THRESHOLD)
+import qbo_sync
 
 
 KIND_LABELS = {'person': 'Person', 'loan_out': 'Loan-out', 'vendor': 'Vendor'}
@@ -76,6 +79,10 @@ def _doc_owner_clause(cm_id):
 PAYEE_TEXT_FIELDS = ('legal_name', 'address_line1', 'address_line2', 'city',
                      'state', 'postal_code', 'wrapbook_worker_id', 'notes')
 PAYEE_FIELDS = PAYEE_TEXT_FIELDS + ('kind', 'is_w2_employee', 'w9_received_on')
+# Once a Payee is linked to a QuickBooks vendor these are QuickBooks's
+# (Phase 3): the edit form shows them read-only and a stale form cannot
+# write them here either (the mirror would overwrite them on the next sync).
+QBO_OWNED_FIELDS = frozenset(qbo_sync.MIRRORED_PAYEE_FIELDS)
 
 
 # ── small formatting helpers ───────────────────────────────────────────────
@@ -301,11 +308,26 @@ def _directory_data(year):
             counts["needs_attention"] += 1
 
     shared = paid.get(SHARED_LINE, {}).get(year)
+    # QuickBooks vendor mirror state for the header chip (super-admin sees
+    # the Link screen; admins see the state).
+    qbo = None
+    try:
+        conn = QBOConnection.query.first()
+        linked_ids = {m.qbo_vendor_id for m in members if m.qbo_vendor_id}
+        n_vendors = QBOVendor.query.count()
+        n_unlinked = sum(1 for (vid,) in db.session.query(QBOVendor.qbo_vendor_id).all()
+                         if vid not in linked_ids)
+        qbo = {"connected": bool(conn and conn.refresh_token),
+               "last_sync": (conn.vendor_cdc_since.isoformat() if conn and conn.vendor_cdc_since else None),
+               "vendors": n_vendors, "unlinked": n_unlinked}
+    except Exception:
+        qbo = None
     return {
         "year": year, "threshold": threshold,
         "years": _years_available(thr_rows),
         "rows": rows, "counts": counts,
         "shared_line_year": shared,
+        "qbo": qbo,
     }
 
 
@@ -573,16 +595,39 @@ def _payee_page_data(cm, year):
             "project_name": pname_by_id.get(d.project_id) if d.project_id else None,
         })
 
-    # Vendor names: alias rows whose clean or raw name matches this payee.
+    # Vendor names: alias rows LINKED to this payee (VendorAlias.payee_id,
+    # Phase 3 — every charge from that string attributes here), then rows
+    # whose clean or raw name merely matches by text (link them to make it
+    # stick).
     keys = {canon_vendor(x) for x in (cm.name, cm.legal_name, cm.company) if x}
     keys.discard('')
-    aliases = []
+    aliases, seen_alias = [], set()
+    for a in VendorAlias.query.filter(VendorAlias.payee_id == cm.id).order_by(VendorAlias.clean_name).all():
+        seen_alias.add(a.id)
+        aliases.append({"id": a.id, "raw": a.raw_canonical, "clean": a.clean_name,
+                        "project_id": a.project_id, "confirm_count": a.confirm_count,
+                        "linked": True})
     if keys:
-        for a in VendorAlias.query.all():
+        for a in VendorAlias.query.filter(VendorAlias.payee_id.is_(None)).all():
+            if a.id in seen_alias:
+                continue
             if canon_vendor(a.clean_name) in keys or (a.raw_canonical or '') in keys:
                 aliases.append({"id": a.id, "raw": a.raw_canonical, "clean": a.clean_name,
                                 "project_id": a.project_id,
-                                "confirm_count": a.confirm_count})
+                                "confirm_count": a.confirm_count, "linked": False})
+    # Raw vendor strings on this payee's transactions that no alias covers
+    # yet (so they can be linked in one click).
+    raw_strings = {}
+    try:
+        for (v_,) in (db.session.query(Transaction.vendor)
+                      .filter(Transaction.payee_id == cm.id, Transaction.vendor.isnot(None))
+                      .distinct().all()):
+            cv_ = canon_vendor(v_)
+            if cv_ and cv_ not in {a["raw"] for a in aliases}:
+                raw_strings.setdefault(cv_, (v_ or '').strip())
+    except Exception:
+        pass
+    qbo_row = QBOVendor.query.get(cm.qbo_vendor_id) if cm.qbo_vendor_id else None
 
     lov = CrewMember.query.get(cm.loan_out_vendor_id) if cm.loan_out_vendor_id else None
     loan_outs_through = ([{"id": p.id, "name": p.name} for p in
@@ -628,15 +673,22 @@ def _payee_page_data(cm, year):
         "quickbooks": {
             "linked": bool(cm.qbo_vendor_id),
             "vendor_id": cm.qbo_vendor_id,
-            "vendor_name": cm.legal_name or cm.name,
+            "vendor_name": (qbo_row.display_name if qbo_row and qbo_row.display_name
+                            else (cm.legal_name or cm.name)),
             "vendor_1099": cm.qbo_vendor_1099,
+            "vendor_active": (qbo_row.active if qbo_row else None),
             "matches_w9": qbo_matches_w9(w9["status"], cm.qbo_vendor_id, cm.qbo_vendor_1099),
             "synced_at": cm.qbo_synced_at.isoformat() if cm.qbo_synced_at else None,
             "synced_label": _fmt_date(cm.qbo_synced_at) if cm.qbo_synced_at else '',
             "origin": cm.qbo_origin,
+            "can_create": (not cm.qbo_vendor_id and not cm.is_w2_employee
+                           and bool(QBOConnection.query.first())),
+            "owned_fields": sorted(QBO_OWNED_FIELDS) if cm.qbo_vendor_id else [],
         },
         "vendor_names": aliases,
+        "vendor_strings_unlinked": [{"canon": k, "raw": v} for k, v in sorted(raw_strings.items())],
         "edit_url": url_for('crew_edit', cid=cm.id),
+        "qbo_create_url": url_for('payee_qbo_create', payee_id=cm.id),
         "upload_url": url_for('payee_docs_upload', payee_id=cm.id),
         "pending_duplicates": [e for g in paperwork_groups for e in g["docs"] if e["dup_pending"]],
     }
@@ -683,8 +735,11 @@ def apply_payee_fields(cm, src):
             changes[field] = [before, after]
             setattr(cm, field, value)
 
+    _qbo_owned = bool(getattr(cm, 'qbo_vendor_id', None))
     for f in PAYEE_TEXT_FIELDS:
         if f in src:
+            if _qbo_owned and f in QBO_OWNED_FIELDS:
+                continue        # QuickBooks owns it (Phase 3)
             v = (src.get(f) or '')
             v = str(v).strip() or None
             _set(f, v)
@@ -778,3 +833,124 @@ def payee_docs_upload(payee_id):
     payload = dict(payload)
     payload["payee_id"] = cm.id
     return jsonify(payload), code
+
+
+# ── Create in QuickBooks (DOCUMENTS_HANDOFF Phase 3, Steven Nov 1) ─────────
+
+def _payee_to_quickbooks(cm):
+    """The one write FPBudget makes to QuickBooks, for one Payee: link to an
+    exact DisplayName match, else create a Vendor. Raises ValueError (→ 409)
+    when the Payee is already linked or is a W-2 employee, RuntimeError
+    when QuickBooks is unreachable. Commits + logs on success. Returns the
+    result dict of qbo_sync.ensure_vendor_for_payee."""
+    conn = QBOConnection.query.first()
+    if not conn or not conn.refresh_token:
+        raise RuntimeError("QuickBooks is not connected.")
+    w9 = payee_w9_status(cm)
+    r = qbo_sync.ensure_vendor_for_payee(conn, db, cm, w9_on_file=(w9["status"] == W9_ON_FILE))
+    n = actuals.attribute_txns_for_qbo_vendor(r["vendor_id"], cm.id)
+    db.session.commit()
+    _log_activity(action='update', entity_type='payee', entity_id=cm.id, entity_label=cm.name,
+                  field_changes={"qbo_vendor_id": [None, r["vendor_id"]],
+                                 "qbo_origin": [None, cm.qbo_origin]},
+                  after={"action": r["action"], "display_name": r["display_name"],
+                         "vendor_1099": bool(w9["status"] == W9_ON_FILE),
+                         "created_payload": r.get("payload"), "charges_attributed": n},
+                  note=(f"Created QuickBooks vendor “{r['display_name']}” (#{r['vendor_id']})"
+                        if r["action"] == 'created' else
+                        f"Linked to existing QuickBooks vendor “{r['display_name']}” (#{r['vendor_id']}) — not duplicated"))
+    r["charges_attributed"] = n
+    return r
+
+
+@app.route("/payees/<int:payee_id>/qbo-create", methods=["POST"])
+@login_required
+@admin_required
+def payee_qbo_create(payee_id):
+    """Create this Payee in QuickBooks (or link an exact DisplayName match).
+    409 when already linked or a W-2 employee. FPBudget may CREATE in
+    QuickBooks; it never updates, sparse-updates or overwrites a record
+    that exists there — after this the record is QuickBooks's."""
+    cm = CrewMember.query.get_or_404(payee_id)
+    want_json = request.is_json or request.args.get('fmt') == 'json'
+    try:
+        r = _payee_to_quickbooks(cm)
+    except ValueError as e:
+        db.session.rollback()
+        if want_json:
+            return jsonify({"ok": False, "error": str(e)}), 409
+        flash(str(e), "error")
+        return redirect(url_for('payee_page', payee_id=payee_id))
+    except Exception as e:
+        db.session.rollback()
+        if want_json:
+            return jsonify({"ok": False, "error": f"QuickBooks: {e}"}), 502
+        flash(f"QuickBooks: {e}", "error")
+        return redirect(url_for('payee_page', payee_id=payee_id))
+    if want_json:
+        return jsonify({"ok": True, "action": r["action"], "vendor_id": r["vendor_id"],
+                        "display_name": r["display_name"],
+                        "charges_attributed": r["charges_attributed"]})
+    flash((f"Created “{r['display_name']}” in QuickBooks." if r["action"] == 'created'
+           else f"Linked to the existing QuickBooks vendor “{r['display_name']}”."), "success")
+    return redirect(url_for('payee_page', payee_id=payee_id))
+
+
+# ── Vendor names ↔ Payee (DOCUMENTS_HANDOFF Phase 3) ───────────────────────
+
+@app.route("/payees/<int:payee_id>/vendor-names", methods=["POST"])
+@login_required
+@admin_required
+def payee_vendor_name_link(payee_id):
+    """Link a raw vendor string to this Payee (VendorAlias.payee_id). Body
+    {raw: str, project_id?: int, alias_id?: int}: an existing alias row by
+    id, or a new / global row from the string. Every transaction carrying
+    that string with no payee (or an earlier alias attribution) attributes
+    here."""
+    cm = CrewMember.query.get_or_404(payee_id)
+    src = request.get_json(silent=True) if request.is_json else request.form
+    src = src or {}
+    try:
+        alias_id = int(src.get("alias_id") or 0)
+    except (TypeError, ValueError):
+        alias_id = 0
+    try:
+        if alias_id:
+            a = VendorAlias.query.get_or_404(alias_id)
+            if a.payee_id and a.payee_id != cm.id:
+                return jsonify({"ok": False, "error": "That vendor name is linked to another payee — unlink it there first."}), 409
+            n = actuals.link_alias_row_to_payee(a, cm.id)
+        else:
+            raw = (src.get("raw") or '').strip()
+            if not raw:
+                return jsonify({"ok": False, "error": "Type a vendor name to link."}), 400
+            try:
+                pid_ = int(src.get("project_id")) if src.get("project_id") not in (None, '', 'null') else None
+            except (TypeError, ValueError):
+                pid_ = None
+            a, n = link_vendor_alias_to_payee(pid_, raw, cm.id, clean_name=cm.name)
+    except ValueError as e:
+        db.session.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 400
+    db.session.commit()
+    _log_activity(action='update', entity_type='payee', entity_id=cm.id, entity_label=cm.name,
+                  after={"vendor_alias_id": a.id, "raw": a.raw_canonical, "charges_attributed": n},
+                  note=f"Vendor name “{a.clean_name}” linked to {cm.name}; {n} charge{'s' if n != 1 else ''} attributed")
+    return jsonify({"ok": True, "alias_id": a.id, "raw": a.raw_canonical, "clean": a.clean_name,
+                    "charges_attributed": n})
+
+
+@app.route("/payees/<int:payee_id>/vendor-names/<int:alias_id>/unlink", methods=["POST"])
+@login_required
+@admin_required
+def payee_vendor_name_unlink(payee_id, alias_id):
+    cm = CrewMember.query.get_or_404(payee_id)
+    a = VendorAlias.query.get_or_404(alias_id)
+    if a.payee_id != cm.id:
+        return jsonify({"ok": False, "error": "That vendor name is not linked to this payee."}), 409
+    n = unlink_vendor_alias(a)
+    db.session.commit()
+    _log_activity(action='update', entity_type='payee', entity_id=cm.id, entity_label=cm.name,
+                  after={"vendor_alias_id": a.id, "raw": a.raw_canonical, "charges_cleared": n},
+                  note=f"Vendor name “{a.clean_name}” unlinked from {cm.name}")
+    return jsonify({"ok": True, "alias_id": a.id, "charges_cleared": n})

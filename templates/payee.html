@@ -212,25 +212,44 @@
           <span class="k">Last synced</span><span class="v pay-num">{{ qb.synced_label or '—' }}</span>
           {% if qb.origin == 'fpbudget' %}<span class="k">Origin</span><span class="v">Created from FPBudget</span>{% endif %}
         </div>
-        <div class="pay-note">Tax ID and 1099 filing live in QuickBooks. Fix mismatches there.</div>
+        {% if qb.vendor_active is sameas false %}<div class="pay-note" style="color:var(--yellow)">This vendor is inactive in QuickBooks.</div>{% endif %}
+        <div class="pay-note">Tax ID and 1099 filing live in QuickBooks. Fix mismatches there. Name, contact and address on this page mirror the QuickBooks record and update on each sync.</div>
         {% else %}
         <div class="pay-kv">
           <span class="k">Vendor</span><span class="v"><span class="pay-st muted">Not linked</span></span>
           <span class="k">Track for 1099</span><span class="v"><span class="pay-st muted">—</span></span>
         </div>
-        <div class="pay-note">{% if id.is_w2_employee %}Employees are paid through Wrapbook and are not QuickBooks vendors.{% else %}The QuickBooks vendor mirror arrives with Documents Phase 3. QuickBooks cannot file a 1099 for a payee it does not know.{% endif %}</div>
+        <div class="pay-note">{% if id.is_w2_employee %}Employees are paid through Wrapbook and are not QuickBooks vendors.{% else %}QuickBooks cannot file a 1099 for a payee it does not know.{% if qb.can_create %} Create the vendor there from this record — an exact name match is linked instead, never duplicated.{% elif not current_user.role == 'super_admin' %}{% endif %}{% endif %}</div>
+        {% if qb.can_create %}
+        <div class="pay-card-f">
+          <span class="muted" style="font-size:.76rem" id="pp-qbo-status">Not in QuickBooks</span>
+          <button type="button" class="btn btn-xs btn-primary" id="pp-qbo-create-btn" onclick="payeeCreateInQbo()">Create in QuickBooks</button>
+        </div>
+        {% endif %}
         {% endif %}
       </section>
 
       <section class="pay-card" aria-label="Vendor names">
         <div class="pay-card-h"><span>Vendor names</span><span class="sub">how charges reach this payee</span></div>
-        <div class="pay-aliases">
+        <div class="pay-aliases" id="pp-aliases">
           {% for a in d.vendor_names %}
-          <span class="pay-alias" title="seen as “{{ a.raw }}” · confirmed {{ a.confirm_count }}×">{{ a.clean }}{% if a.raw and a.raw != a.clean | lower %}<span class="raw">· {{ a.raw }}</span>{% endif %}</span>
+          <span class="pay-alias{% if a.linked %} linked{% endif %}" data-alias="{{ a.id }}" title="seen as “{{ a.raw }}” · confirmed {{ a.confirm_count }}×{% if a.linked %} · linked: every charge from this name attributes here{% else %} · matches by text only — link it to make it stick{% endif %}">
+            {% if a.linked %}<span class="pay-dot ok"></span>{% endif %}{{ a.clean }}{% if a.raw and a.raw != a.clean | lower %}<span class="raw">· {{ a.raw }}</span>{% endif %}
+            {% if a.linked %}<button type="button" class="pay-alias-x" title="Unlink" onclick="payeeAliasUnlink({{ a.id }})">✕</button>
+            {% else %}<button type="button" class="pay-alias-x" title="Link this vendor name to {{ id.name }}" onclick="payeeAliasLink({alias_id: {{ a.id }}})">+ link</button>{% endif %}
+          </span>
           {% endfor %}
-          {% if not d.vendor_names %}<span class="muted" style="font-size:.8rem">No learned vendor names match this payee yet.</span>{% endif %}
+          {% for r in d.vendor_strings_unlinked %}
+          <span class="pay-alias" title="a charge attributed to this payee carries this vendor name; link it so future charges attribute automatically">{{ r.raw }}
+            <button type="button" class="pay-alias-x" onclick="payeeAliasLink({raw: {{ r.raw | tojson }}})">+ link</button></span>
+          {% endfor %}
+          {% if not d.vendor_names and not d.vendor_strings_unlinked %}<span class="muted" style="font-size:.8rem">No vendor names linked to this payee yet.</span>{% endif %}
         </div>
-        <div class="pay-note">Names are matched by text for now. Linking and unlinking a vendor name to a payee arrives with Documents Phase 3.</div>
+        <div class="pay-card-f" style="gap:8px">
+          <input type="text" id="pp-alias-new" class="pay-search" placeholder="Vendor name as it appears on charges" style="flex:1 1 auto;min-width:0;height:28px">
+          <button type="button" class="btn btn-xs btn-outline" onclick="payeeAliasLink({raw: document.getElementById('pp-alias-new').value})">Link</button>
+        </div>
+        <div class="pay-note">A linked name attributes every charge that carries it — CSV imports, manual rows and bank text — to this payee. QuickBooks charges attribute through the vendor record instead.</div>
       </section>
 
       {% if id.notes %}
@@ -256,7 +275,7 @@
       <div class="field-row" style="margin-top:.75rem">
         <label class="checkbox-label"><input type="checkbox" name="active" value="1" {% if id.active %}checked{% endif %}> Active</label>
       </div>
-      {% if qb.linked %}<p class="muted" style="font-size:.76rem;margin-top:.5rem">This payee is linked to a QuickBooks vendor. Mirrored fields (vendor name, 1099 flag) are read-only here and change in QuickBooks.</p>{% endif %}
+      {% if qb.linked %}<p class="muted" style="font-size:.76rem;margin-top:.5rem" id="pp-qbo-owned-note">This payee is linked to QuickBooks vendor “{{ qb.vendor_name }}”. QuickBooks owns the legal name, email, phone and address (greyed out): change them in QuickBooks and they update here on the next sync.</p>{% endif %}
       <div class="modal-actions">
         <button type="button" class="btn btn-outline" onclick="document.getElementById('edit-payee-modal').classList.add('hidden')">Cancel</button>
         <button type="submit" class="btn btn-primary">Save</button>
@@ -284,8 +303,49 @@ function openEditPayee(){
   _setVal(f, 'w9_received_on', {{ d.stats.w9.date | tojson }} && {{ d.stats.w9.source | tojson }} === 'payee' ? {{ d.stats.w9.date | tojson }} : '');
   _setVal(f, 'wrapbook_worker_id', PAYEE.wrapbook_worker_id); _setVal(f, 'notes', PAYEE.notes);
   var w2 = f.querySelector('input[type="checkbox"][name="is_w2_employee"]'); if (w2) w2.checked = !!PAYEE.is_w2_employee;
+  // Mirrored fields are QuickBooks's once linked (Phase 3): read-only here.
+  (QBO_OWNED_FIELDS || []).concat(QBO_OWNED_FIELDS.length ? ['email', 'phone'] : []).forEach(function(name){
+    var el = f.querySelector('[name="' + name + '"]');
+    if (el) { el.readOnly = true; el.style.opacity = '.6'; el.title = 'QuickBooks owns this field — change it in QuickBooks.'; }
+  });
   m.classList.remove('hidden');
 }
+var QBO_OWNED_FIELDS = {{ d.quickbooks.owned_fields | tojson }};
+var QBO_CREATE_URL = {{ d.qbo_create_url | tojson }};
+window.payeeCreateInQbo = async function(){
+  var btn = document.getElementById('pp-qbo-create-btn'), st = document.getElementById('pp-qbo-status');
+  if (!btn || btn.disabled) return;
+  if (!confirm('Create “' + (PAYEE.legal_name || PAYEE.name) + '” in QuickBooks?\n\nIf a vendor with exactly this name already exists there it is linked instead — never duplicated or changed.')) return;
+  btn.disabled = true; if (st) st.textContent = 'Talking to QuickBooks…';
+  try {
+    var r = await fetch(QBO_CREATE_URL + '?fmt=json', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok || !d.ok) { if (st) st.textContent = d.error || ('Failed (' + r.status + ')'); btn.disabled = false; return; }
+    if (st) st.textContent = (d.action === 'created' ? 'Created in QuickBooks' : 'Linked to the existing vendor') + ' — reloading…';
+    setTimeout(function(){ location.reload(); }, 900);
+  } catch (e) { if (st) st.textContent = 'Error: ' + e.message; btn.disabled = false; }
+};
+var ALIAS_URL = {{ url_for('payee_vendor_name_link', payee_id=d.identity.id) | tojson }};
+window.payeeAliasLink = async function(body){
+  if (body.raw !== undefined && !(body.raw || '').trim()) { alert('Type a vendor name first.'); return; }
+  try {
+    var r = await fetch(ALIAS_URL, { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok || !d.ok) { alert(d.error || ('Failed (' + r.status + ')')); return; }
+    location.reload();
+  } catch (e) { alert('Error: ' + e.message); }
+};
+window.payeeAliasUnlink = async function(aliasId){
+  try {
+    var r = await fetch(ALIAS_URL + '/' + aliasId + '/unlink', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok || !d.ok) { alert(d.error || ('Failed (' + r.status + ')')); return; }
+    location.reload();
+  } catch (e) { alert('Error: ' + e.message); }
+};
 document.addEventListener('keydown', function(e){ if (e.key === 'Escape') document.getElementById('edit-payee-modal').classList.add('hidden'); });
 
 /* Upload paperwork to this payee (Documents Phase 2): sequential, fail-open

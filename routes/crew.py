@@ -113,10 +113,30 @@ def crew_new():
     db.session.add(m)
     db.session.commit()
 
+    # "Create in QuickBooks" (DOCUMENTS_HANDOFF Phase 3, Steven Nov 1): the
+    # one write FPBudget makes there — link an exact DisplayName match or
+    # create a Vendor. Hidden for W-2 employees in the form and refused
+    # here. Fail-open: the payee exists either way; a QuickBooks problem
+    # is reported, never a reason to lose the record.
+    _qbo_msg = None
+    if _rd_new and str(_rd_new.get("qbo_create") or "").strip().lower() in ("1", "true", "on", "yes") \
+            and not m.is_w2_employee:
+        try:
+            from routes.payees import _payee_to_quickbooks
+            _r = _payee_to_quickbooks(m)
+            _qbo_msg = (f"Created “{_r['display_name']}” in QuickBooks." if _r["action"] == 'created'
+                        else f"Linked to the existing QuickBooks vendor “{_r['display_name']}”.")
+        except Exception as _qe:
+            db.session.rollback()
+            _qbo_msg = f"Saved, but QuickBooks said: {_qe}"
+            if not want_json:
+                flash(_qbo_msg, "error")
+
     if want_json:
         return jsonify({"ok": True, "id": m.id, "name": m.name,
-                        "department": m.department or "", "company": m.company or ""})
-    flash(f"Added {m.name}.", "success")
+                        "department": m.department or "", "company": m.company or "",
+                        "qbo_vendor_id": m.qbo_vendor_id, "qbo_message": _qbo_msg})
+    flash(f"Added {m.name}." + (f" {_qbo_msg}" if _qbo_msg and m.qbo_vendor_id else ""), "success")
     return redirect(_payee_next())
 
 
@@ -143,8 +163,12 @@ def crew_edit(cid):
             return jsonify({"error": f"Invalid email: {_email}"}), 400
         flash(f"Invalid email address: {_email}", "error")
         return redirect(url_for("crew_list"))
-    m.email = _email
-    m.phone = _normalize_phone(_get("phone", "").strip())
+    # Email / phone are QuickBooks's once the payee is linked to a vendor
+    # (Phase 3): the form shows them read-only; a stale form cannot write
+    # them here either.
+    if not m.qbo_vendor_id:
+        m.email = _email
+        m.phone = _normalize_phone(_get("phone", "").strip())
     m.company = _get("company", "").strip() or None
     # Vendor / loan-out + per-vendor required docs.
     _src = request.json if want_json else request.form

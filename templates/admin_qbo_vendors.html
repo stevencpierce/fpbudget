@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}QuickBooks vendors — FPBudget{% endblock %}
+
+{# ══════════════════════════════════════════════════════════════════════════
+   QuickBooks vendor Link screen (DOCUMENTS_HANDOFF Phase 3, 2026-11-02).
+   Super-admin only. Lists every QuickBooks vendor the mirror has seen that
+   no Payee carries (routes/qbo_admin._screen_data), with an exact-name
+   suggestion chip (advisory — a person clicks), a picker to link to an
+   existing Payee, and Create payee from this vendor. Sync now runs
+   qbo_sync.sync_vendors (QuickBooks → FPBudget only). Same look as the
+   Payee directory (pay-* tokens in static/style.css).
+   ══════════════════════════════════════════════════════════════════════ #}
+{% block content %}
+<div class="pay-page">
+  <div class="pay-head">
+    <div class="pay-crumbs">
+      <a href="{{ url_for('dashboard') }}">FPBudget</a><span class="sep">/</span>
+      <a href="{{ url_for('payees_directory') }}">Payees</a><span class="sep">/</span>
+      <span class="cur">QuickBooks vendors</span>
+      <span class="pay-chip">Super-admin</span>
+    </div>
+    <div class="pay-actions">
+      <span class="pay-sync" id="qv-sync-status">
+        <span class="pay-dot {{ 'ok' if d.last_sync else '' }}"></span>
+        {% if not d.connected %}QuickBooks not connected{% elif d.last_sync %}Last mirrored {{ d.last_sync_label }}{% else %}Never mirrored{% endif %}
+      </span>
+      <button type="button" class="pay-btn" id="qv-sync-btn" onclick="qvSyncNow()" {% if not d.connected %}disabled{% endif %}
+              title="Pull every vendor from QuickBooks into FPBudget. Nothing is written to QuickBooks.">Sync now</button>
+    </div>
+  </div>
+
+  <div class="pay-toolbar">
+    <span class="pay-threshold">{{ d.total }} vendors in QuickBooks · {{ d.linked }} linked to a payee · <b>{{ d.unlinked | length }}</b> to link</span>
+    <span class="pay-spacer"></span>
+    <label for="qv-search" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Search vendors</label>
+    <input id="qv-search" class="pay-search" type="search" placeholder="Search vendor, company, email" autocomplete="off">
+  </div>
+
+  <div class="pay-card">
+    <div class="pay-scroll">
+      {% set cols = "minmax(220px,1.4fr) minmax(160px,1fr) 90px 90px minmax(260px,1.3fr) 200px" %}
+      <div class="pay-table" role="table" aria-label="QuickBooks vendors with no payee" style="min-width:1100px" id="qv-table">
+        <div class="pay-row head" role="row" style="grid-template-columns:{{ cols }}">
+          <div class="pay-row-cell">QuickBooks vendor</div><div class="pay-row-cell">Contact</div>
+          <div class="pay-row-cell">1099</div><div class="pay-row-cell r">Charges</div>
+          <div class="pay-row-cell">Link to payee</div><div class="pay-row-cell"></div>
+        </div>
+        {% for v in d.unlinked %}
+        <div class="pay-row{% if v.active is sameas false %} inactive{% endif %}" role="row" style="grid-template-columns:{{ cols }}; height:auto; min-height:36px; padding:4px 0"
+             data-vid="{{ v.id }}" data-q="{{ (v.display_name ~ ' ' ~ (v.company_name or '') ~ ' ' ~ (v.email or '')) | lower }}">
+          <div class="pay-row-cell" style="flex-direction:column;align-items:flex-start;justify-content:center;white-space:normal">
+            <span style="font-weight:500">{{ v.display_name }}</span>
+            {% if v.company_name and v.company_name != v.display_name %}<span class="sub" style="margin-left:0">{{ v.company_name }}</span>{% endif %}
+            {% if v.active is sameas false %}<span class="pay-chip sq" style="margin-top:2px">Inactive in QuickBooks</span>{% endif %}
+          </div>
+          <div class="pay-row-cell" style="flex-direction:column;align-items:flex-start;justify-content:center;white-space:normal">
+            {% if v.email %}<span style="font-size:.8rem">{{ v.email }}</span>{% endif %}
+            {% if v.phone %}<span style="font-size:.78rem;color:var(--text-muted)">{{ v.phone }}</span>{% endif %}
+            {% if v.address %}<span style="font-size:.74rem;color:var(--text-muted)" title="{{ v.address }}">{{ v.address }}</span>{% endif %}
+            {% if not v.email and not v.phone and not v.address %}<span class="pay-st muted">—</span>{% endif %}
+          </div>
+          <div class="pay-row-cell"><span class="pay-st {{ 'ok' if v.vendor_1099 else 'muted' }}">{{ 'On' if v.vendor_1099 else ('Off' if v.vendor_1099 is sameas false else '—') }}</span></div>
+          <div class="pay-row-cell r pay-num{% if v.charges %} b{% endif %}">{{ v.charges or '—' }}</div>
+          <div class="pay-row-cell" style="gap:6px;white-space:normal;flex-wrap:wrap">
+            {% for s in v.suggestions %}
+            <button type="button" class="pay-chip sq {{ s.kind }}" style="cursor:pointer;border:0"
+                    title="Exact name match — click to pick" onclick="qvPick('{{ v.id }}', {{ s.id }})">↳ {{ s.name }}</button>
+            {% endfor %}
+            <select class="pay-select qv-pick" data-vid="{{ v.id }}" style="max-width:260px">
+              <option value="">— pick a payee —</option>
+              {% for p in d.payees %}<option value="{{ p.id }}">{{ p.name }}{% if p.kind != 'person' %} · {{ p.kind | replace('_', '-') }}{% endif %}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="pay-row-cell" style="gap:6px">
+            <button type="button" class="pay-btn primary" style="height:28px;padding:0 10px;font-size:.78rem" onclick="qvLink('{{ v.id }}')">Link</button>
+            <button type="button" class="pay-btn" style="height:28px;padding:0 10px;font-size:.78rem" onclick="qvCreate('{{ v.id }}', {{ v.display_name | tojson }})"
+                    title="Create a vendor payee in FPBudget from this QuickBooks record. Nothing is written to QuickBooks.">Create payee</button>
+          </div>
+        </div>
+        {% endfor %}
+        {% if not d.unlinked %}
+        <div class="pay-empty">{% if not d.connected %}Connect QuickBooks on a project's Actuals page first.{% elif not d.last_sync %}Nothing mirrored yet — click <b>Sync now</b>.{% else %}Every QuickBooks vendor is linked to a payee. ✓{% endif %}</div>
+        {% endif %}
+        <div class="pay-empty" id="qv-none" style="display:none">No vendors match.</div>
+      </div>
+    </div>
+    <div class="pay-card-f">
+      <span id="qv-foot">{{ d.unlinked | length }} QuickBooks vendor{{ '' if d.unlinked | length == 1 else 's' }} without a payee</span>
+      <span>One way: QuickBooks → FPBudget. Linking mirrors the vendor's name, contact and 1099 flag onto the payee; QuickBooks owns them from then on.</span>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  const rows = Array.from(document.querySelectorAll('#qv-table .pay-row[data-vid]'));
+  const search = document.getElementById('qv-search');
+  const none = document.getElementById('qv-none');
+  if (search) search.addEventListener('input', function(){
+    const q = search.value.trim().toLowerCase();
+    let shown = 0;
+    rows.forEach(r => { const ok = !q || r.dataset.q.includes(q); r.style.display = ok ? '' : 'none'; if (ok) shown++; });
+    if (none) none.style.display = (rows.length && !shown) ? '' : 'none';
+  });
+})();
+function _qvRow(vid){ return document.querySelector('#qv-table .pay-row[data-vid="' + CSS.escape(vid) + '"]'); }
+window.qvPick = function(vid, payeeId){
+  const sel = document.querySelector('.qv-pick[data-vid="' + CSS.escape(vid) + '"]');
+  if (sel) sel.value = String(payeeId);
+};
+async function _qvPost(url, body){
+  const r = await fetch(url + '?fmt=json', { method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.ok) throw new Error(d.error || ('Failed (' + r.status + ')'));
+  return d;
+}
+window.qvLink = async function(vid){
+  const sel = document.querySelector('.qv-pick[data-vid="' + CSS.escape(vid) + '"]');
+  const payeeId = sel && sel.value;
+  if (!payeeId) { alert('Pick a payee first.'); return; }
+  try {
+    const d = await _qvPost('/admin/qbo-vendors/' + encodeURIComponent(vid) + '/link', { payee_id: payeeId });
+    const row = _qvRow(vid); if (row) row.remove();
+    _qvFoot((d.charges_attributed ? d.charges_attributed + ' charge' + (d.charges_attributed !== 1 ? 's' : '') + ' attributed.' : ''));
+  } catch (e) { alert(e.message); }
+};
+window.qvCreate = async function(vid, name){
+  if (!confirm('Create a vendor payee in FPBudget named “' + name + '”?\n\nNothing is written to QuickBooks.')) return;
+  try {
+    const d = await _qvPost('/admin/qbo-vendors/' + encodeURIComponent(vid) + '/create-payee', {});
+    const row = _qvRow(vid); if (row) row.remove();
+    _qvFoot('Created — <a href="' + d.url + '">open the payee</a>.');
+  } catch (e) { alert(e.message); }
+};
+function _qvFoot(extra){
+  const n = document.querySelectorAll('#qv-table .pay-row[data-vid]').length;
+  const f = document.getElementById('qv-foot');
+  if (f) f.innerHTML = n + ' QuickBooks vendor' + (n === 1 ? '' : 's') + ' without a payee' + (extra ? ' · ' + extra : '');
+}
+window.qvSyncNow = async function(){
+  const btn = document.getElementById('qv-sync-btn'), st = document.getElementById('qv-sync-status');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true; const orig = btn.textContent; btn.textContent = 'Syncing…';
+  try {
+    const d = await _qvPost('/admin/qbo-vendors/sync', {});
+    if (st) st.textContent = 'Mirrored ' + d.fetched + ' (' + d.mode + ') · ' + d.linked + ' linked by name · ' + d.unlinked + ' unlinked · reloading…';
+    setTimeout(() => location.reload(), 900);
+  } catch (e) { alert(e.message); btn.disabled = false; btn.textContent = orig; }
+};
+</script>
+{% endblock %}

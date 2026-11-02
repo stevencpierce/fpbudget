@@ -516,10 +516,13 @@
   }
 
   // ── itemize ──────────────────────────────────────────────────────────
-  function itemAddRow(desc, amount, lineId) {
+  function itemAddRow(desc, amount, lineId, crewMemberId) {
     const host = $('docItemizeRows'); if (!host) return;
     const row = document.createElement('div');
     row.className = 'ditem-row';
+    // Payee behind the row (Documents Phase 3): the payroll parse names the
+    // person; the save sends it so the child transaction attributes to them.
+    if (crewMemberId) row.dataset.crewMemberId = String(crewMemberId);
     row.style.cssText = 'display:flex;gap:6px;margin-bottom:5px;align-items:center';
     row.innerHTML =
       '<input class="ditem-desc" placeholder="description" value="' + esc(desc || '') + '" oninput="window._docItemizeDirty=true" style="flex:1.5;min-width:0;font-size:12px;padding:4px 6px;background:var(--bg-input);color:var(--text);border:1px solid var(--border);border-radius:5px">' +
@@ -609,7 +612,7 @@
       if (d.existing && d.existing.length) {
         block.open = true;
         if (cnt) cnt.textContent = '· ' + d.existing.length + ' subline' + (d.existing.length !== 1 ? 's' : '');
-        d.existing.forEach(x => itemAddRow(x.description, x.amount, x.budget_line_id));
+        d.existing.forEach(x => itemAddRow(x.description, x.amount, x.budget_line_id, x.payee_id));
       } else itemUpdateTotal();
       itemSetOverride(d.existing ? d.existing.length : 0);
       window._docItemizeDirty = false;
@@ -623,7 +626,8 @@
       const amt = parseFloat((r.querySelector('.ditem-amt') || {}).value || 0);
       const line = (r.querySelector('.ditem-line') || {}).value || '';
       const desc = (r.querySelector('.ditem-desc') || {}).value || '';
-      if (amt && line) rows.push({ amount: amt, budget_line_id: line, description: desc });
+      const cm = r.dataset.crewMemberId || null;
+      if (amt && line) rows.push({ amount: amt, budget_line_id: line, description: desc, crew_member_id: cm });
       else if (amt) { uncoded++; uncodedAmt += amt; }
     });
     const mainLine = ($('docDetailLinePicker') || {}).value || '';
@@ -682,7 +686,7 @@
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) { if (st) { st.style.color = '#e0a13a'; st.textContent = j.error || ('Parse failed (' + r.status + ')'); } return; }
       if (!j.rows || !j.rows.length) { if (st) { st.style.color = '#e0a13a'; st.textContent = 'No per-person rows found in this document.'; } return; }
-      j.rows.forEach(row => itemAddRow(row.desc, row.amount, row.line_id || ''));
+      j.rows.forEach(row => itemAddRow(row.desc, row.amount, row.line_id || '', row.crew_member_id));
       window._docItemizeDirty = true;
       const blk = $('docDetailItemizeBlock'); if (blk) blk.open = true;
       const unmatched = (j.total_rows || 0) - (j.matched || 0);
