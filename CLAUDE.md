@@ -53,6 +53,12 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
   `?tab=actuals`. The document editor MODAL on the budget page stays
   (`#docDetailOverlay`, b03.js) and needs `#actualsLineOptsTpl` + the picker
   glue in b04.js.
+- One rule per decision (Cleanup D, 2026-11-02): `counts_as_spend`,
+  `canon_vendor` (+ `vendor_match_key` / `payee_name_key`),
+  `section_for_code`, `FP.esc` / `FP.money` (static/fp-utils.js),
+  `DOCUMENT_TYPES` / `DOC_TYPE_LABELS`, `PAYMENT_METHODS`, `MODE_META` —
+  never a private copy. The lists reach templates through
+  `app.inject_globals` and JS through `window.__FP_*` in base.html.
 
 ## Splitting app.py (M1, ongoing)
 Route slices move to `routes/<name>.py` — plain modules using `@app.route` on
