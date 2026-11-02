@@ -580,6 +580,34 @@ def actuals_line_transactions(pid, lid):
             "account_code": t.account_code,
             "note": t.note,
         })
+    # Split pieces landing on this line (parent has budget_line_id NULL).
+    try:
+        from actuals import split_pieces_for_lines
+        for sp, pt in split_pieces_for_lines(pid, _sib_ids):
+            doc = DocUpload.query.get(pt.doc_upload_id) if pt.doc_upload_id else None
+            _dt = pt.txn_date
+            out.append({
+                "id": pt.id,
+                "split_id": sp.id,
+                "vendor": pt.vendor,
+                "amount": float(sp.amount or 0),
+                "split_of": float(pt.amount) if pt.amount is not None else None,
+                "is_split": True,
+                "date": (_dt.isoformat() if hasattr(_dt, 'isoformat') else _dt),
+                "source": pt.source,
+                "match_status": pt.match_status,
+                "is_expense": bool(pt.is_expense),
+                "doc_upload_id": pt.doc_upload_id,
+                "has_image": bool(doc and doc.content_type and doc.content_type.startswith('image/')),
+                "doc_category": (doc.category if doc else None),
+                "doc_filename": (doc.filed_filename or doc.original_filename) if doc else None,
+                "qbo_txn_id": pt.qbo_txn_id,
+                "account_code": line.account_code,
+                "note": sp.note or pt.note,
+            })
+        out.sort(key=lambda r: ((r.get("date") or ""), -r["id"]), reverse=True)
+    except Exception as _spe:
+        logging.warning(f"[line-txns] split pieces skipped for line {lid}: {_spe}")
     return jsonify({
         "ok": True,
         "line": {"id": line.id, "code": line.account_code,
@@ -770,6 +798,44 @@ def actuals_line_ledger(pid, lid):
                          and getattr(t, 'backup_of_txn_id', None) is None),
             "backups": backups_by_target.get(t.id, []),
         })
+
+    # Split pieces (Phase 2 splits): the parent charge has budget_line_id
+    # NULL, so the query above never sees it — list each piece that lands on
+    # this line with ITS amount, marked as a split of the whole charge.
+    try:
+        from actuals import split_pieces_for_lines
+        for sp, pt in split_pieces_for_lines(pid, sib_ids):
+            doc = DocUpload.query.get(pt.doc_upload_id) if pt.doc_upload_id else None
+            _dt = pt.txn_date
+            amt = float(sp.amount or 0)
+            if pt.is_expense:
+                coded_total += amt
+            out.append({
+                "id": pt.id,
+                "split_id": sp.id,
+                "date": (_dt.isoformat() if hasattr(_dt, 'isoformat') else _dt),
+                "vendor": pt.vendor,
+                "amount": amt,
+                "split_of": float(pt.amount) if pt.amount is not None else None,
+                "note": sp.note or pt.note,
+                "source": pt.source,
+                "is_split": True,
+                "doc": ({"id": doc.id,
+                         "filename": (doc.filed_filename or doc.original_filename
+                                      or f'Upload #{doc.id}'),
+                         "has_thumb": True} if doc else None),
+                "po_number": None,
+                "reviewed": bool(pt.reviewed_at),
+                "reviewed_at": (pt.reviewed_at.isoformat() if pt.reviewed_at else None),
+                "reviewed_by": pt.reviewed_by,
+                "flagged": False,
+                "matched": pt.doc_upload_id is not None,
+                "awaiting": False,
+                "backups": backups_by_target.get(pt.id, []),
+            })
+        out.sort(key=lambda r: ((r.get("date") or ""), r["id"]))
+    except Exception as _spe:
+        logging.warning(f"[ledger] split pieces skipped for line {lid}: {_spe}")
 
     # Forecast total: the Working sister's working_total (the evolving forecast),
     # falling back to the resolved line's own working_total / estimated_total.

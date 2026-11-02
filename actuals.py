@@ -709,6 +709,26 @@ def split_sums_by_line(project_id, line_ids=None):
             q.group_by(TransactionSplit.budget_line_id).all()}
 
 
+def split_pieces_for_lines(project_id, line_ids):
+    """The split PIECES that land on these lines, as (split, parent) pairs,
+    for the per-line drill-downs (ledger.json / transactions.json). The
+    sums above already count them; the lists did not show them at all, so
+    a charge split across two lines looked uncoded when you opened either
+    line (Steven, Nov 2 2026). Only pieces whose parent counts as spend."""
+    from models import TransactionSplit
+    ids = [int(i) for i in (line_ids or [])]
+    if not ids:
+        return []
+    rows = (db.session.query(TransactionSplit, Transaction)
+            .join(Transaction, Transaction.id == TransactionSplit.transaction_id)
+            .filter(Transaction.project_id == project_id,
+                    TransactionSplit.budget_line_id.in_(ids),
+                    counts_as_spend(set()))
+            .order_by(Transaction.txn_date.asc().nullsfirst(), TransactionSplit.id.asc())
+            .all())
+    return [(sp, t) for sp, t in rows]
+
+
 def split_sums_by_section_code(project_id):
     """{account_code: signed split total} — the section-level twin of
     split_sums_by_line for _actuals_by_section_code (top sheet)."""

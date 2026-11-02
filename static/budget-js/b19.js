@@ -108,7 +108,9 @@
         docCell = '<span class="ll-no-doc">no receipt</span>';
       }
       const splitTag = r.is_split
-        ? '<span class="ll-split" title="Part of a document split across multiple lines">(split)</span>'
+        ? (r.split_of != null
+            ? '<span class="ll-split" title="This line\'s share of a charge split across lines">(split of ' + _money(r.split_of) + ')</span>'
+            : '<span class="ll-split" title="Part of a document split across multiple lines">(split)</span>')
         : '';
       const flagTag = r.flagged ? '<span class="ll-flag" title="Has an unresolved flag">⚠</span>' : '';
       const waitTag = r.awaiting
