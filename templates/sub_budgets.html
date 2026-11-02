@@ -121,6 +121,8 @@
   (cap, actualized rollup, remaining), but a line can belong to multiple sub-budgets
   AND a PO simultaneously. Each sub-budget exports as a mini-PDF so clients see
   only the rows that pertain to them — totals roll up to that slice's grand total.
+  Sub-budgets are always on the current Working budget: when a new Working
+  starts, their lines follow it.
 </p>
 
 {# sb-cards-region wraps everything that changes when a sub-budget is
@@ -421,7 +423,6 @@ async function saveSubBudget() {
     description:     document.getElementById('sb-description').value.trim(),
     total_committed: document.getElementById('sb-total-committed').value || null,
     notes:           document.getElementById('sb-notes').value.trim(),
-    budget_id:       PROJECT_RETURN_BID,
   };
   if (_editingSbId) body.id = _editingSbId;
   if (!body.name) {

@@ -355,7 +355,11 @@ class Budget(db.Model):
     id              = db.Column(db.Integer, primary_key=True)
     project_id      = db.Column(db.Integer, nullable=False)
     name            = db.Column(db.String(200), nullable=False)
-    budget_mode     = db.Column(db.String(20), default="estimated")  # estimated | schedule | hybrid
+    # 'estimated' | 'working' — nothing else is ever written. A project's
+    # live pair is the NEWEST Estimated and the NEWEST Working (they may
+    # carry different version_numbers); legacy Actual budgets are the rows
+    # flagged is_actual (archived, read-only). Cleanup C, 2026-11-02.
+    budget_mode     = db.Column(db.String(20), default="estimated")
     company_fee_pct       = db.Column(db.Numeric(6, 4), default=0.18)
     company_fee_dispersed = db.Column(db.Boolean, default=False, nullable=False)
     # Production Company Fee mode — 'pct' (default, fee = pct × eligible
@@ -1640,9 +1644,10 @@ class SubBudget(db.Model):
     description     = db.Column(db.Text,        nullable=True)
     # Optional: cap budget for over-spend warnings (parallel to PO cap)
     total_committed = db.Column(db.Numeric(12, 2), nullable=True)
-    # Pinned to a specific budget version (Working by default).
-    # Sub-budget always reflects this budget's lines — assignments are
-    # to BudgetLine.id rows on this specific budget.
+    # Legacy "pinned version" column — no longer written (Cleanup C,
+    # 2026-11-02). A sub-budget is always on the project's CURRENT Working:
+    # every rollup resolves its lines onto that budget (see
+    # app._resolve_sub_budget_lines). Kept only so old rows still load.
     budget_id       = db.Column(db.Integer, db.ForeignKey("budget.id"), nullable=True)
     notes           = db.Column(db.Text,        nullable=True)
     archived        = db.Column(db.Boolean, default=False, nullable=False)

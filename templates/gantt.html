@@ -146,13 +146,13 @@
   <div class="mode-switcher-seg">
     {% if current_estimated_bid %}
     <a href="{{ url_for('gantt_view', pid=project.id, bid=current_estimated_bid) }}"
-       class="mode-seg-btn {% if budget.budget_mode not in ('working','actual') %}active mode-estimated{% endif %}">Estimated</a>
+       class="mode-seg-btn {% if budget.budget_mode != 'working' %}active mode-estimated{% endif %}">Estimated</a>
     {% else %}
     <span class="mode-seg-btn mode-seg-inactive" title="No estimated budget">Estimated</span>
     {% endif %}
     {% if current_working_bid %}
     <a href="{{ url_for('gantt_view', pid=project.id, bid=current_working_bid) }}"
-       class="mode-seg-btn {% if budget.budget_mode in ('working','actual') %}active mode-working{% endif %}">Working</a>
+       class="mode-seg-btn {% if budget.budget_mode == 'working' %}active mode-working{% endif %}">Working</a>
     {% else %}
     <span class="mode-seg-btn mode-seg-inactive" title="No Working budget — create one in the Budget tab">Working</span>
     {% endif %}

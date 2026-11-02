@@ -6,9 +6,9 @@
 } %}
 {% set cur_mode = MODE_META.get(budget.budget_mode, MODE_META['estimated']) %}
 {# True when a Working budget version exists OR we are currently viewing one #}
-{% set working_exists = (budget.budget_mode in ('working', 'actual')) or has_working_budget %}
+{% set working_exists = (budget.budget_mode == 'working') or has_working_budget %}
 {# True only when THIS budget IS the working/actual budget — enables frozen-est + variance columns #}
-{% set is_working_view = budget.budget_mode in ('working', 'actual') %}
+{% set is_working_view = budget.budget_mode == 'working' %}
 {# True when any per-line actuals exist for this project — coded transactions
    can exist BEFORE an Actual (or even Working) budget does (owner 2026-08-19:
    Estimated-only project with actuals coded in). The Actual column must get
@@ -807,13 +807,13 @@
   <div class="mode-switcher-seg">
     {% if peer_estimated_bid %}
     <a href="{{ url_for('budget_view', pid=project.id, bid=peer_estimated_bid) }}"
-       class="mode-seg-btn {% if not is_actual_view and budget.budget_mode not in ('working','actual') %}active mode-estimated{% endif %}">Estimated</a>
+       class="mode-seg-btn {% if not is_actual_view and budget.budget_mode != 'working' %}active mode-estimated{% endif %}">Estimated</a>
     {% else %}
     <span class="mode-seg-btn mode-seg-inactive" title="No estimated budget">Estimated</span>
     {% endif %}
     {% if peer_working_bid %}
     <a href="{{ url_for('budget_view', pid=project.id, bid=peer_working_bid) }}"
-       class="mode-seg-btn {% if not is_actual_view and budget.budget_mode in ('working','actual') %}active mode-working{% endif %}"
+       class="mode-seg-btn {% if not is_actual_view and budget.budget_mode == 'working' %}active mode-working{% endif %}"
        title="Working budget — live spend, with each line's transactions expandable inline">Working</a>
     {% else %}
     <span class="mode-seg-btn mode-seg-inactive" title="No Working budget for this version — initialize one from the version picker">Working</span>
@@ -827,7 +827,7 @@
 
 <!-- ═══ TOP SHEET ═══════════════════════════════════════════════════════════ -->
 <div class="tab-panel {% if sections %}active{% endif %}" id="tab-topsheet">
-  {% if budget.budget_mode not in ('working','actual') and current_working_bid %}
+  {% if budget.budget_mode != 'working' and current_working_bid %}
   <div class="mode-safety-banner" id="mode-safety-banner">
     <span>⚠ You are editing the <strong>Estimated</strong> budget — a Working budget already exists. Changes here will <em>not</em> affect the Working budget.</span>
     <div style="display:flex;gap:.5rem;align-items:center;flex-shrink:0">
@@ -1084,7 +1084,7 @@
          columns, it's clear which one is the "live" focus. #}
       {% if is_actual_view %}
         {% set _active_mode_label = 'Actual' %}
-      {% elif budget.budget_mode in ('working', 'actual') %}
+      {% elif budget.budget_mode == 'working' %}
         {% set _active_mode_label = 'Working' %}
       {% else %}
         {% set _active_mode_label = 'Estimated' %}
@@ -1212,9 +1212,9 @@
     <div style="display:flex;align-items:center;gap:.4rem;margin-left:1rem">
       <span class="muted" style="font-size:.78rem">Variance basis:</span>
       <div class="var-basis-group" style="display:flex;gap:.2rem">
-        <button type="button" class="var-btn budget-var-btn {% if budget.budget_mode in ('working','actual') and not is_actual_view %}active{% endif %}" data-basis="e_vs_w" title="Estimated minus Working. Negative = Working is over Estimated (in the red).">Estimated V Working</button>
+        <button type="button" class="var-btn budget-var-btn {% if budget.budget_mode == 'working' and not is_actual_view %}active{% endif %}" data-basis="e_vs_w" title="Estimated minus Working. Negative = Working is over Estimated (in the red).">Estimated V Working</button>
         <button type="button" class="var-btn budget-var-btn" data-basis="w_vs_a" title="Working minus Actual. Negative = Actual is over Working (in the red).">Working V Actual</button>
-        <button type="button" class="var-btn budget-var-btn {% if not (budget.budget_mode in ('working','actual')) or is_actual_view %}active{% endif %}" data-basis="e_vs_a" title="Estimated minus Actual. Negative = Actual is over Estimated (in the red).">Estimated V Actual</button>
+        <button type="button" class="var-btn budget-var-btn {% if not (budget.budget_mode == 'working') or is_actual_view %}active{% endif %}" data-basis="e_vs_a" title="Estimated minus Actual. Negative = Actual is over Estimated (in the red).">Estimated V Actual</button>
       </div>
     </div>
     <div class="wb-search-wrap" style="margin-left:auto">
@@ -4676,7 +4676,7 @@ __BJ["b04_PROJ_ID"] = {{ project.id }};
            cluttered this picker). Un-archive one to copy from it. #}
         {% for vb in all_budgets if not vb.is_actual and vb.version_status != 'archived' %}
         <option value="{{ vb.id }}" {% if vb.id == cur_est.id %}selected{% endif %}>
-          v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode in ('working', 'actual') else 'Estimated' }}){% if vb.version_status != 'current' %} · previous{% endif %}{% if vb.internal_label %} · “{{ vb.internal_label }}”{% endif %}
+          v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode == 'working' else 'Estimated' }}){% if vb.version_status != 'current' %} · previous{% endif %}{% if vb.internal_label %} · “{{ vb.internal_label }}”{% endif %}
         </option>
         {% endfor %}
       </select>
@@ -11207,7 +11207,7 @@ function normalizePhone(v) {
   <label style="display:block;font-size:.72rem;color:var(--text-muted);margin-top:.5rem">Copy from</label>
   <select id="vpull-src" style="width:100%;margin-top:2px" onchange="loadPullCandidates()">
     {% for vb in all_budgets if vb.id != budget.id and not vb.is_actual %}
-    <option value="{{ vb.id }}" {% if vb.budget_mode == 'working' and loop.first %}selected{% endif %}>v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode in ('working','actual') else 'Estimated' }})</option>
+    <option value="{{ vb.id }}" {% if vb.budget_mode == 'working' and loop.first %}selected{% endif %}>v{{ vb.version_number or 1 }} · {{ vb.name }} ({{ 'Working' if vb.budget_mode == 'working' else 'Estimated' }})</option>
     {% endfor %}
   </select>
   <div id="vpull-list" style="max-height:280px;overflow:auto;margin-top:.5rem;font-size:.78rem"></div>
