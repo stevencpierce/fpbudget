@@ -40,6 +40,13 @@ tagged `err_ref` matching the user-facing ERR-XXXX code. Test route:
 - Boot DDL must stay idempotent; data migrations need marker + advisory lock.
 - Money: `db.Numeric` only. AI features: advisory + fail-open, never
   auto-confirm financial mutations.
+- Versions (Cleanup C, 2026-11-02): "current" = the NEWEST of its kind —
+  `actuals.get_current_working_budget` / `get_current_estimated_budget` /
+  `get_live_budget` are the ONE rule (never copy the query). The live
+  Estimated and Working may carry DIFFERENT version numbers. The budget
+  page header rule is `working_exists_for_version` ("a Working exists for
+  THIS version"), not "any Working at all"; `budget_mode` is only
+  `estimated` | `working` (legacy Actual budgets are `is_actual`, archived).
 - Docs and Actuals are their own screens (`/projects/<pid>/docs`,
   `/projects/<pid>/actuals`). The budget page has NO in-page Docs/Actuals
   panes any more (Cleanup B, 2026-11-02) — link there, never `?tab=docs` /

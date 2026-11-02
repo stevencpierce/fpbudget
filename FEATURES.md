@@ -145,6 +145,23 @@ bottom under "Recent Pushes".
 
 ---
 
+## Budget page header (Cleanup C, 2026-11-02)
+
+| Status | Feature | Plain English |
+|---|---|---|
+| ✅ | Overview tab (replaces Dashboard) | Estimated / Working / Actual-to-date cards with variance lines, a By-department table (top sections, Est · Working · Actual · Var, link to the full Top Sheet), a "Needs you" list (Unclaimed charges → Actuals, Receipts to place → Actuals · Receipts, Documents to review → Docs inbox, Matches to review → Actuals · needs backup) with live counts from the same rules those screens use, Recent activity (5 rows), and the review queue below. Old `?tab=topsheet` links still open it. |
+| ✅ | Version strip | Above the tabs: "Estimated vN · ● Working vN live" and "Spend is tracked on Working vN." Three states: (A) paired; (B) a newer Estimated with no Working yet — yellow border, "edits there do not change what is being tracked", and the **Start Working vN** button; (C) no Working at all — "Start Working v1". The strip reads the project's LIVE pair (newest Estimated, newest Working — they may be different versions), not the budget on screen. |
+| ✅ | One way to start a Working | The strip's **Start Working vN** button (the version dropdown's "+ Initialize Working" row and the Top Sheet banner are gone). It carries coded charges from the previous Working. |
+| ✅ | Viewing toggle | "Viewing: Estimated \| Working" switches between the two budgets of THIS version; Working is disabled when this version has none (the same rule as the Start button). |
+| ✅ | One-row tab strip | Overview · Top Sheet · Budget · Schedule · People · Actuals · Docs · More ▾ (Travel, POs, Catering, Sub-Budgets, Locations, Call Sheets, Assumptions, Activity, Tools — with counts) · ⚙ Settings. Every tab keeps its `?tab=` key. |
+| ✅ | Notes button | "Notes (N)" in the page header and on the Budget tab bar opens the existing internal-notes drawer for the version. |
+| ✅ | Budget tab control bar | Single Line \| Quick Entry · "Changes save automatically." · search · Notes · ONE **Variance** control: **vs Estimated · vs Working · Estimated → Working**. The choice is stored per project and drives the Budget grid, the Top Sheet and the Export dialog; the column header reads "Var vs Working" / "Var vs Estimated" / "Est → Working". Every basis reads + = under. |
+| ✅ | Per-line actions | Hover or focus a row for a trailing **+** (Line below · Sub-header · Spacer · Duplicate line) and **⋯** (Flag: Discussion point, Lever · Note: Internal note · Line: Attach PO, Add to sub-budget, Move to section…, Delete line). The old always-visible "+ PO 💬 ⋮ ✕" cluster is gone. Flagged rows show a blue **Discussion** or orange **Lever** chip after the description; a line with an internal note shows a lock-dot whose hover card shows the latest note. Esc closes a menu and returns focus; arrow keys walk the items. Reconcile / Line ledger stay on the Actual cell's ▸. |
+| ✅ | Settings regrouped | Budget Info · Display · Payroll and fees · Project Fringes · Maintenance (Clean up vendor names, Scan for issues — project-scoped; they left the Dashboard). The Production Company Profile card moved to Admin; a note bar links there. |
+| ✅ | Sub-budgets always on the current Working | A sub-budget is no longer pinned to a version; when a new Working starts, its lines follow. |
+
+---
+
 ## Projects & Budgets
 
 | Status | Feature | Plain English |
@@ -153,8 +170,8 @@ bottom under "Recent Pushes".
 | ✅ | Create project | New project: name, client, optional template; auto-creates first budget |
 | ✅ | Template at creation | Pick a pre-built template — budget lines auto-populate |
 | ✅ | Multiple budgets per project | Each project can have several budget versions in parallel |
-| ✅ | Budget modes | Three modes: **Estimated** (baseline), **Working** (live), **Actual** (real spend) |
-| ✅ | Version management | Working budget can be archived & cloned; estimated stays read-only when a working sibling exists |
+| ✅ | Budget modes | Two modes: **Estimated** (baseline) and **Working** (live — spend is tracked here). Legacy **Actual** budgets were retired in July 2026 and archived; their URLs redirect to the live budget (Cleanup C). |
+| ✅ | Version management | "Current" = the newest of its kind: the live Working is the newest Working, the live Estimated the newest Estimated, and they may carry different version numbers (Estimated v8 can exist while spend is still tracked on Working v7). The version picker shows archived versions under "Show N archived". |
 | ✅ | Project archive / reactivate | Archived projects move to `_ARCHIVED/` in Dropbox; reactivate restores them |
 | ✅ | Project access control | Per-project member roles (`viewer`, `editor`, `dept_head`, `admin`, `super_admin`) |
 
@@ -343,7 +360,9 @@ bottom under "Recent Pushes".
 | ✅ | Payroll profile | Pick the union profile that drives ST/OT/DT calculations |
 | ✅ | Payroll week start | Override the profile's default week-start day |
 | ✅ | Timezone | Per budget |
-| ✅ | Production details for PDFs | Client name, prepared by, title, email, phone — appears on PDF cover |
+| ✅ | Production details for PDFs | Client name, prepared by, title, email, phone — appears on PDF cover (now under Budget Info) |
+| ✅ | Maintenance | Clean up vendor names · Scan for issues (POs over cap, lines over plan on the live Working, spend coded twice) — results land in the Overview's review queue |
+| 🗑️ | Production Company Profile | Moved to Admin (Cleanup C) |
 
 ---
 
