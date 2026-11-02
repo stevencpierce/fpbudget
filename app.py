@@ -762,12 +762,16 @@ def _csrf_protect():
     from flask import session as _s
     expected = _s.get("_csrf")
     if not expected:
-        # Transition path: sessions minted before this deploy carry no token
-        # yet. Seed one now; the next page load embeds it. (Blocking here
-        # would 403 every logged-in user mid-session at rollout.)
+        # No token in the session means no page of ours rendered it, so
+        # this mutation didn't come from our UI. The rollout-era
+        # "seed and allow" transition path (2026-07-20) is gone — it let any
+        # cross-site POST through for a session that had never loaded a page
+        # (Cleanup A #15, 2026-11-02). Seed a token so the next page load
+        # works, and refuse this request.
         import secrets as _sec
         _s["_csrf"] = _sec.token_urlsafe(32)
-        return
+        return jsonify({"error": "Session expired — reload the page and try "
+                                 "again."}), 403
     sent = (request.headers.get("X-CSRFToken")
             or request.form.get("csrf_token")
             or ((request.get_json(silent=True) or {}).get("csrf_token")
@@ -4020,6 +4024,24 @@ If you didn't request this, ignore this email — your password won't change.
     return render_template("forgot_password.html")
 
 
+def _revoke_api_tokens(user_id, reason="password changed"):
+    """Mark every live mobile-API bearer token of a user revoked. Called on
+    every password change (self-service, reset link, admin reset) so a
+    stolen phone token dies with the old password (Cleanup A #15,
+    2026-11-02). Does NOT commit — the caller's commit carries it. Tokens
+    have no expiry column yet; that is a later schema change."""
+    try:
+        n = (ApiToken.query
+             .filter(ApiToken.user_id == user_id, ApiToken.revoked_at.is_(None))
+             .update({"revoked_at": datetime.utcnow()}, synchronize_session=False))
+        if n:
+            logging.info(f"[api-token] revoked {n} token(s) for user {user_id}: {reason}")
+        return int(n or 0)
+    except Exception as _e:
+        logging.warning(f"[api-token] revoke failed for user {user_id}: {_e}")
+        return 0
+
+
 @app.route("/reset-password/<token>", methods=["GET", "POST"])
 def reset_password(token):
     if current_user.is_authenticated:
@@ -4041,6 +4063,7 @@ def reset_password(token):
         user.reset_token = None
         user.reset_token_expires = None
         user.must_change_password = False
+        _revoke_api_tokens(user.id, "reset link")
         db.session.commit()
         flash("Password updated. You can now log in.", "success")
         return redirect(url_for("login"))
@@ -26677,17 +26700,24 @@ def admin_docs_reprocess_unpaired(pid):
 def cron_reprocess_unpaired():
     """Unattended trigger for the reprocess job (no browser session needed) —
     for a scheduled 4pm-ET kick-off. The worker re-OCRs unpaired receipts, then
-    runs AI cleanup + the double-coded scan. Auth: a secret token (env CRON_TOKEN)
-    via ?token=, an X-Cron-Token header, or JSON body. DISABLED unless CRON_TOKEN
-    is set on the server. Target with ?pid= or ?project=<name substring>.
+    runs AI cleanup + the double-coded scan. Auth: the secret token (env
+    CRON_TOKEN) in the X-Cron-Token header ONLY — a ?token= URL parameter
+    lands in access logs, browser history and referrers, so it is no longer
+    accepted (Cleanup A #15, 2026-11-02). DISABLED unless CRON_TOKEN is set
+    on the server. Target with ?pid= or ?project=<name substring>.
     (User 2026-06-18.)"""
     expected = os.getenv("CRON_TOKEN")
     body = request.get_json(silent=True) or {}
-    token = (request.args.get("token") or request.headers.get("X-Cron-Token")
-             or body.get("token"))
+    token = request.headers.get("X-Cron-Token")
     import hmac as _cron_hmac
-    if not expected or not token or not _cron_hmac.compare_digest(str(token), str(expected)):
-        return jsonify({"error": "forbidden"}), 403
+    if not expected:
+        return jsonify({"error": "cron disabled — CRON_TOKEN is not set"}), 401
+    if not token:
+        return jsonify({"error": "unauthorized — send the token in the "
+                                 "X-Cron-Token header (the ?token= URL "
+                                 "parameter is no longer accepted)"}), 401
+    if not _cron_hmac.compare_digest(str(token), str(expected)):
+        return jsonify({"error": "unauthorized — bad X-Cron-Token"}), 401
     # Resolve the target project by id or by name substring.
     proj = None
     pid_raw = request.args.get("pid") or body.get("pid")
@@ -27281,6 +27311,7 @@ def admin_user_reset_password(uid):
     temp_pw = secrets.token_urlsafe(8)
     u.set_password(temp_pw)
     u.must_change_password = True
+    _revoke_api_tokens(u.id, "admin reset")
     db.session.commit()
     sent = _send_email(
         u.email,
@@ -28695,6 +28726,7 @@ def profile():
                 return redirect(url_for("profile"))
             current_user.set_password(new_pw)
             current_user.must_change_password = False
+            _revoke_api_tokens(current_user.id, "self-service change")
             db.session.commit()
             flash("Password updated successfully.", "success")
             if current_user.is_admin:
