@@ -383,6 +383,156 @@ def signed_amount_value(amount, is_expense):
     return a if is_expense else -a
 
 
+# ── Safety rules (Cleanup A, 2026-11-02) ──────────────────────────────────
+# Pure, DB-free predicates behind the data-loss fixes in app.py and
+# routes/actuals.py. Each is unit-tested in tests/unit/test_safety_rules.py
+# with SimpleNamespace rows, so the rule is pinned independently of the
+# route that applies it.
+
+# Rows whose vendor / amount / date came from the BANK (or a bank export).
+# They are the record of what was actually paid; a receipt edit, a review-
+# queue "accept amount", or a manual amount edit must never rewrite them.
+BANK_SOURCES = ('qbo_sync', 'csv_import', 'reconciled')
+
+
+def is_bank_sourced(txn):
+    """True when the row's money facts come from the bank."""
+    return getattr(txn, 'source', None) in BANK_SOURCES
+
+
+def doc_edit_writes_through_to(txn):
+    """Which linked Transaction rows a DocUpload edit (vendor / amount / date /
+    note / card) may overwrite: ONLY the document's own ledger row
+    (source='doc_upload'). A matched bank charge keeps the bank's values —
+    the old write-through rewrote qbo_sync / reconciled / csv_import rows
+    with the receipt's values and a blank doc date wiped the bank date.
+    invoice_split children are excluded too (their amount is the subline's)."""
+    return getattr(txn, 'source', None) == 'doc_upload'
+
+
+def amount_edit_allowed(txn, new_amount, split_amounts):
+    """Rule for editing a transaction's amount by hand.
+
+    Returns (ok, reason). Refused when:
+      • the row is bank-sourced (qbo_sync / csv_import / reconciled) — the
+        amount is what the bank says it is;
+      • the row is split across lines and the new amount no longer equals
+        the split sum to the cent — clear the split first.
+    A no-op edit (same amount) is always allowed.
+    """
+    try:
+        old_c = _cents(getattr(txn, 'amount', None))
+        new_c = _cents(new_amount)
+    except ValueError:
+        return False, "amount must be a number"
+    if old_c == new_c:
+        return True, None
+    if is_bank_sourced(txn):
+        return False, ("This amount came from the bank and can't be edited here. "
+                       "If the bank charge is wrong, fix it in QuickBooks and sync again.")
+    if split_amounts:
+        try:
+            split_c = sum(_cents(a) for a in split_amounts)
+        except ValueError:
+            split_c = None
+        if split_c != new_c:
+            return False, ("This transaction is split across budget lines and the "
+                           "new amount doesn't match the split total. Clear the "
+                           "split first, then change the amount.")
+    return True, None
+
+
+def is_duplicate_twin(candidate, other):
+    """True when `other` is an existing twin of `candidate` — same |amount|,
+    same date, same vendor (or same card), and a different id. Deleting a
+    'duplicate' bank row is only allowed when such a twin survives; without
+    one the charge would simply vanish from the ledger."""
+    if other is None or candidate is None:
+        return False
+    if getattr(other, 'id', None) == getattr(candidate, 'id', None):
+        return False
+    try:
+        if _cents(getattr(candidate, 'amount', None)) == 0:
+            return False
+        if abs(_cents(getattr(candidate, 'amount', None))) != abs(_cents(getattr(other, 'amount', None))):
+            return False
+    except ValueError:
+        return False
+    if (getattr(candidate, 'txn_date', None) or '')[:10] != (getattr(other, 'txn_date', None) or '')[:10]:
+        return False
+    v1 = _re.sub(r'[^a-z0-9]', '', (getattr(candidate, 'vendor', None) or '').lower())
+    v2 = _re.sub(r'[^a-z0-9]', '', (getattr(other, 'vendor', None) or '').lower())
+    c1 = (getattr(candidate, 'card_last4', None) or '').strip()
+    c2 = (getattr(other, 'card_last4', None) or '').strip()
+    if v1 and v1 == v2:
+        return True
+    if c1 and c1 == c2:
+        return True
+    return False
+
+
+def review_resolve_allowed(action, txn, flag_txn_ids):
+    """Rules for the review-queue resolve actions that touch a transaction.
+
+    Returns (ok, reason).
+      • the transaction must be one the flag is ABOUT (flag_txn_ids);
+      • delete_txn is refused for anything but the document's own row
+        (source='doc_upload') — bank charges are unlinked / excluded, never
+        deleted from a queue click.
+    """
+    if txn is None:
+        return False, "transaction not found"
+    if getattr(txn, 'id', None) not in set(flag_txn_ids or ()):
+        return False, "That transaction isn't part of this review item."
+    if action == 'delete_txn' and getattr(txn, 'source', None) != 'doc_upload':
+        return False, ("Only a document's own row can be deleted from the review "
+                       "queue. This is a bank charge — mark it not-project or "
+                       "un-code it instead.")
+    return True, None
+
+
+def anomaly_flag_txn_ids(flag, payload):
+    """Every transaction id a review-queue flag refers to: its transaction_id
+    column plus any ids carried in its payload (double_coded members,
+    people_line / vendor_cleanup transaction_id)."""
+    ids = set()
+    tid = getattr(flag, 'transaction_id', None)
+    if tid:
+        ids.add(int(tid))
+    payload = payload or {}
+    for key in ('transaction_id', 'tid'):
+        v = payload.get(key)
+        if v:
+            try:
+                ids.add(int(v))
+            except (TypeError, ValueError):
+                pass
+    for m in payload.get('members') or []:
+        if isinstance(m, dict) and m.get('tid'):
+            try:
+                ids.add(int(m['tid']))
+            except (TypeError, ValueError):
+                pass
+    return ids
+
+
+def budget_lock_denial(budget, anchor):
+    """The budget write-gate's lock rule as a pure function: a version is
+    read-only when its own `locked` flag is set OR its Estimated anchor's is.
+    Returns the error text, or None when writes are allowed. Used by the
+    before_request gate AND inside upsert_line / delete_line so the mobile
+    API (which calls those handlers directly) respects the lock too."""
+    if budget is None:
+        return None
+    locked = bool(getattr(budget, 'locked', False))
+    if not locked and anchor is not None:
+        locked = bool(getattr(anchor, 'locked', False))
+    if locked:
+        return ("This version is locked (read-only). Unlock it via ✎ in the "
+                "version menu first.")
+    return None
+
+
 # ── Transaction splits (Concur's Allocate — ACTUALS_HANDOFF Phase 2) ──────
 # One transaction across several budget lines. A split parent has
 # budget_line_id NULL and reaches every rollup ONLY through its

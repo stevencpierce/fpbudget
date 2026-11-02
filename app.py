@@ -39942,7 +39942,8 @@ def docs_upload_update(uid):
     # every linked Transaction, bank rows included, so retyping a matched
     # invoice as a contract silently destroyed the bank charge. Mirrors the
     # single-delete path (docs_upload_delete). 2026-10-30.
-    from actuals import is_non_ledger_category as _is_non_ledger
+    from actuals import (is_non_ledger_category as _is_non_ledger,
+                         doc_edit_writes_through_to as _doc_edit_writes_through_to)
     try:
         if _is_non_ledger(upload.category):
             _doomed_ids = [r[0] for r in db.session.query(Transaction.id)
@@ -39980,11 +39981,21 @@ def docs_upload_update(uid):
             # overwrote every itemized line with the full invoice total on any
             # doc Save (user 2026-07-20: "it doesn't hold the value of that
             # line and replaces it with the total value for the invoice").
+            #
+            # And ONLY onto the doc's OWN row(s) — source='doc_upload'. A
+            # matched bank charge (qbo_sync / csv_import / reconciled /
+            # manual) carries the BANK's vendor, amount and date; a receipt
+            # edit must never rewrite those, and a blank doc date used to
+            # wipe the bank date outright. (Cleanup A #1, 2026-11-02.) The
+            # pure rule lives in _doc_edit_writes_through_to() so it is
+            # unit-tested.
             linked_txns = (Transaction.query
                            .filter(Transaction.doc_upload_id == upload.id,
                                    Transaction.source != 'invoice_split')
                            .all())
             for _t in linked_txns:
+                if not _doc_edit_writes_through_to(_t):
+                    continue
                 _t.vendor   = upload.vendor
                 _t.amount   = upload.amount
                 _t.txn_date = upload.doc_date.isoformat() if upload.doc_date else None
