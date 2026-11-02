@@ -6633,6 +6633,20 @@ def _delete_budget_cascade(bid):
         # Delete children of budget_lines
         ScheduleDay.query.filter(ScheduleDay.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
         CrewAssignment.query.filter(CrewAssignment.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
+        # Cleanup A #18 (2026-11-02): three more tables point at budget_line
+        # with no DB cascade and used to 500 the delete on the FK —
+        # transaction_split (the allocation survives uncoded, like a
+        # transaction), budget_comment (thread moves to budget level, then
+        # goes with the budget below) and sub_budget_line (junction row).
+        TransactionSplit.query.filter(TransactionSplit.budget_line_id.in_(line_ids)).update(
+            {"budget_line_id": None}, synchronize_session=False)
+        try:
+            from models import BudgetComment as _BC_l, SubBudgetLine as _SBL_l
+            _BC_l.query.filter(_BC_l.budget_line_id.in_(line_ids)).update(
+                {"budget_line_id": None}, synchronize_session=False)
+            _SBL_l.query.filter(_SBL_l.budget_line_id.in_(line_ids)).delete(synchronize_session=False)
+        except Exception as _lce:
+            logging.warning(f"[budget-cascade] line child cleanup failed: {_lce}")
 
     # Drop any remaining TravelDetail rows attached to budget-level
     # ScheduleDays (rows with no budget_line_id) before nuking the
@@ -6665,6 +6679,20 @@ def _delete_budget_cascade(bid):
     except Exception:
         # Table may not exist on older deploys; harmless to skip.
         pass
+    # Budget-level tables with NOT NULL budget FKs and no ORM cascade (#18):
+    # comments, estimate shares, schedule waypoints, levers. SubBudget pins
+    # to a budget through a nullable FK → unpin, keep the sub-budget.
+    try:
+        from models import (BudgetComment as _BC_b, EstimateShare as _ES_b,
+                            ScheduleWaypoint as _SW_b, BudgetLever as _BL_b,
+                            SubBudget as _SB_b)
+        _BC_b.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+        _ES_b.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+        _SW_b.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+        _BL_b.query.filter_by(budget_id=bid).delete(synchronize_session=False)
+        _SB_b.query.filter_by(budget_id=bid).update({"budget_id": None}, synchronize_session=False)
+    except Exception as _bce:
+        logging.warning(f"[budget-cascade] budget child cleanup failed: {_bce}")
     BudgetLine.query.filter_by(budget_id=bid).delete(synchronize_session=False)
 
     # ── Cross-row Budget back-references (2026-05-26) ─────────────────
@@ -11460,6 +11488,14 @@ def delete_line(pid, bid, lid):
         except Exception:
             # Location.budget_line_id may not exist on every install
             pass
+        # 5. (Cleanup A #18) transaction_split / budget_comment keep their
+        #    row but lose the line pointer; sub_budget_line junction rows go.
+        TransactionSplit.query.filter_by(budget_line_id=lid)\
+            .update({TransactionSplit.budget_line_id: None}, synchronize_session=False)
+        from models import BudgetComment as _BC_dl, SubBudgetLine as _SBL_dl
+        _BC_dl.query.filter_by(budget_line_id=lid)\
+            .update({_BC_dl.budget_line_id: None}, synchronize_session=False)
+        _SBL_dl.query.filter_by(budget_line_id=lid).delete(synchronize_session=False)
     except Exception as _fe:
         db.session.rollback()
         logging.exception(f"[delete_line] FK cleanup failed for line {lid}: {_fe}")
