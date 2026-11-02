@@ -786,7 +786,7 @@ def _csrf_protect():
 # Enforced via before_request on the endpoints below so every guarded route
 # gets identical behavior without per-handler edits.
 _BUDGET_WRITE_ENDPOINTS = {
-    'upsert_line', 'add_kit_fee', 'line_insert', 'line_duplicate',
+    'upsert_line', 'delete_line', 'add_kit_fee', 'line_insert', 'line_duplicate',
     'line_reorder', 'line_set_group', 'remove_schedule_instance',
     'schedule_purge_tag', 'schedule_purge_all', 'travel_apply_doc',
     'toggle_sync_omit', 'import_csv_apply', 'budget_from_template',
@@ -795,7 +795,26 @@ _BUDGET_WRITE_ENDPOINTS = {
     'expand_gantt', 'set_schedule_label',
     'schedule_waypoint_restore', 'schedule_waypoint_copy_version',
     'budget_fee_disperse_total',
+    # Mobile API (routes/api_v1.py) — these call upsert_line / delete_line
+    # directly, so they are gated here AND inside those handlers
+    # (Cleanup A #10, 2026-11-02).
+    'api_budget_line_save', 'api_budget_line_delete',
 }
+
+
+def _budget_lock_error(budget):
+    """The lock rule for one budget: its own `locked` flag, or its version's
+    Estimated anchor's. Returns the error text or None. Pure rule in
+    actuals.budget_lock_denial; this resolves the anchor."""
+    if budget is None:
+        return None
+    from actuals import budget_lock_denial as _lock_rule
+    _anchor = None
+    if not getattr(budget, 'locked', False) and budget.version_number is not None:
+        _anchor = Budget.query.filter_by(project_id=budget.project_id,
+                                         version_number=budget.version_number,
+                                         budget_mode='estimated').first()
+    return _lock_rule(budget, _anchor)
 
 
 @app.before_request
@@ -810,15 +829,9 @@ def _budget_write_gate():
     budget = Budget.query.get(_bid)
     if budget is None:
         return   # the handler's own 404 will fire
-    _locked = bool(getattr(budget, 'locked', False))
-    if not _locked and budget.version_number is not None:
-        _anchor = Budget.query.filter_by(project_id=budget.project_id,
-                                         version_number=budget.version_number,
-                                         budget_mode='estimated').first()
-        _locked = bool(_anchor is not None and getattr(_anchor, 'locked', False))
-    if _locked:
-        return jsonify({"error": "This version is locked (read-only). "
-                                 "Unlock it via ✎ in the version menu first."}), 403
+    _lock_err = _budget_lock_error(budget)
+    if _lock_err:
+        return jsonify({"error": _lock_err}), 403
     if budget.budget_mode == 'estimated' and not budget.is_actual:
         from flask_login import current_user as _cu
         if getattr(_cu, 'role', None) in ('super_admin', 'admin'):
@@ -10241,6 +10254,11 @@ def budget_view(pid, bid):
 def upsert_line(pid, bid):
     """AJAX: create or update a budget line. Returns updated line totals."""
     budget = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    # Locked versions are read-only from every door — the mobile API calls
+    # this handler directly, bypassing the before_request gate (#10).
+    _lock_err = _budget_lock_error(budget)
+    if _lock_err:
+        return jsonify({"error": _lock_err}), 403
     data   = request.get_json(force=True)
     lid    = data.get("id")
 
@@ -11390,6 +11408,13 @@ def schedule_purge_all(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/line/<int:lid>", methods=["DELETE"])
 @login_required
 def delete_line(pid, bid, lid):
+    # The budget must belong to the project in the URL (Cleanup A #9) and
+    # the version must not be locked (#10 — the API calls this directly,
+    # bypassing the before_request gate).
+    _b_del = Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
+    _lock_err = _budget_lock_error(_b_del)
+    if _lock_err:
+        return jsonify({"error": _lock_err}), 403
     ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     # Snapshot for activity log + undo before any cascade.
     _act_before = _budget_line_snapshot(ln)
@@ -13673,6 +13698,7 @@ def qbo_oauth_disconnect():
 @login_required
 def toggle_sync_omit(pid, bid, lid):
     """Toggle sync_omit on a schedule-driven line. When True the line is excluded from auto-recalc."""
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     ln.sync_omit = not bool(ln.sync_omit)
     if ln.sync_omit:
@@ -16704,6 +16730,7 @@ def budget_lever_save(pid, bid):
 @login_required
 def budget_lever_delete(pid, bid, lid):
     _require_project_role(pid, 'editor')
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     lv = BudgetLever.query.filter_by(id=lid, budget_id=bid).first_or_404()
     db.session.delete(lv)
     db.session.commit()
@@ -16978,6 +17005,7 @@ def upsert_tax_credit(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/tax-credit/<int:tcid>", methods=["DELETE"])
 @login_required
 def delete_tax_credit(pid, bid, tcid):
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     tc = TaxCredit.query.filter_by(id=tcid, budget_id=bid).first_or_404()
     _name = tc.name
     db.session.delete(tc)
@@ -18438,7 +18466,7 @@ def gantt_totals(pid, bid):
 @login_required
 def set_schedule_label(pid, bid, lid):
     """Set or clear a custom display label for one instance of a schedule row."""
-    BudgetLine.query.filter_by(budget_id=bid).first()  # verify budget access
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     ln = BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     data     = request.get_json(force=True)
     instance = str(data.get("instance", 1))
@@ -22774,6 +22802,7 @@ def assign_crew(pid, bid, lid):
     can show one combined prompt and the user opts in. Auto-applying
     silently was overwriting line-level overrides without warning.
     """
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     BudgetLine.query.filter_by(id=lid, budget_id=bid).first_or_404()
     data   = request.get_json(force=True)
     cid    = data.get("crew_id")
@@ -22948,7 +22977,11 @@ def _require_global_editor():
 @login_required
 def set_role_number(pid, bid, caid):
     Budget.query.filter_by(id=bid, project_id=pid).first_or_404()
-    ca = CrewAssignment.query.get_or_404(caid)
+    # The assignment must sit on a line of THIS budget (Cleanup A #9).
+    ca = (CrewAssignment.query
+          .join(BudgetLine, BudgetLine.id == CrewAssignment.budget_line_id)
+          .filter(CrewAssignment.id == caid, BudgetLine.budget_id == bid)
+          .first_or_404())
     data = request.get_json(force=True)
     ca.role_number = data.get("role_number", "").strip() or None
     db.session.commit()
@@ -23010,6 +23043,7 @@ def direct_contact_add(pid, bid):
 @app.route("/projects/<int:pid>/budget/<int:bid>/direct-contacts/<int:dcid>/delete", methods=["POST"])
 @login_required
 def direct_contact_delete(pid, bid, dcid):
+    Budget.query.filter_by(id=bid, project_id=pid).first_or_404()   # Cleanup A #9
     dc = BudgetDirectContact.query.filter_by(id=dcid, budget_id=bid).first_or_404()
     db.session.delete(dc)
     db.session.commit()
